@@ -2452,12 +2452,30 @@ EOF
   assert test "$rv_usage_rc" -eq 2
   assert grep -q 'usage: claudeb revive <name>' "$WORK/rv-usage.err"
 
-  seed_creds rvoff 1
+  # Worker-pool membership is spend consent (shared-invariants q) and says nothing about
+  # reading usage data: an out-of-pool account refreshes like any other.
+  seed_creds rvoff "$rv_fresh_ms"
+  : >"$token_attempts_file"; rm -f "$limits_dir/rvoff.json"
   rv_off_rc=0
   revive_account rvoff >/dev/null 2>"$WORK/rv-off.err" || rv_off_rc=$?
-  assert test "$rv_off_rc" -eq 1
-  assert grep -q 'rvoff is disabled' "$WORK/rv-off.err"
-  assert jq -se 'any(.[]; .account == "rvoff" and .kind == "revive" and .outcome == "skipped-disabled")' "$token_attempts_file" >/dev/null
+  assert test "$rv_off_rc" -eq 0
+  assert_fails grep -q 'is disabled' "$WORK/rv-off.err"
+  assert jq -se 'all(.[]; .outcome != "skipped-disabled")' "$token_attempts_file" >/dev/null
+  assert jq -e '.fable.used_percentage == 33' "$limits_dir/rvoff.json" >/dev/null
+
+  # What the heartbeat asks before it chooses between a usage GET and a minutes-long session;
+  # the near-expiry margin stays token_needs_refresh's alone.
+  assert token_fresh rvoff
+  seed_creds rvstale 1
+  assert_fails token_fresh rvstale
+  rv_tf_rc=0
+  token_fresh ghostacct >/dev/null 2>"$WORK/rv-tf.err" || rv_tf_rc=$?
+  assert test "$rv_tf_rc" -eq 2
+  assert grep -q 'token-fresh: unknown account ghostacct' "$WORK/rv-tf.err"
+  rv_tf_rc=0
+  token_fresh >/dev/null 2>"$WORK/rv-tf-usage.err" || rv_tf_rc=$?
+  assert test "$rv_tf_rc" -eq 2
+  assert grep -q 'usage: claudeb token-fresh <name>' "$WORK/rv-tf-usage.err"
 
   seed_creds rvauth 1
   printf '{"auth_needed":true,"auth_checked_at":%s}' "$now" >"$limits_dir/rvauth.json"
@@ -2466,7 +2484,7 @@ EOF
   assert test "$rv_auth_rc" -eq 1
   assert grep -q 'rvauth needs a human login' "$WORK/rv-auth.err"
   assert jq -se 'any(.[]; .account == "rvauth" and .kind == "revive" and .outcome == "skipped-auth-needed")' "$token_attempts_file" >/dev/null
-  # None of the three refusals may drive a session.
+  # Neither refusal may drive a session, and the out-of-pool probe above needed none either.
   assert_fails test -e "$RV_DRIVER_LOG"
 
   # auth_needed is not a life sentence: once the human has logged in, the token is live and
@@ -2575,4 +2593,4 @@ EOF
   rm -f "$token_freeze_file"
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/disabled/logged-out-auth_needed accounts without driving a session while an auth_needed account with a live token self-heals through the probe, rotating an expired token through the session driver while the token freeze holds and never touching the token endpoint, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver while the token freeze holds and never touching the token endpoint, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"

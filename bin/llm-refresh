@@ -97,6 +97,8 @@ else
 fi
 revive_timeout=${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}
 case "$revive_timeout" in ''|*[!0-9]*|0) revive_timeout=240 ;; esac
+probe_timeout=${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}
+case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=90 ;; esac
 store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
@@ -124,13 +126,15 @@ normalized_state() {
        }})) | from_entries'
 }
 
-# Third column: an account no refresh can help (removed, disabled, or needing a login).
+# Third column: an account no refresh can help (removed, or needing a login). Worker-pool
+# membership is spend consent and says nothing about reading usage data, so `enabled` is
+# deliberately absent here (shared-invariants q).
 account_rows() {
   local vendor=$1
   [ -r "$store" ] || return 0
   jq -r --arg vendor "$vendor" '
     def blocked:
-      .removed == true or .enabled == false or .auth_needed == true or
+      .removed == true or .auth_needed == true or
       ((.auth.status? // "") | . == "expired" or . == "failed");
     def row($name):
       [$name,
@@ -370,6 +374,7 @@ run_tick() {
   local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]'
+  local direct expired probed session_account claude_touched
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -424,6 +429,8 @@ run_tick() {
       stale=$(drop_reserved "$stale")
     fi
     tried='[]'
+    probed='[]'
+    session_account=''
     outcome=fresh-passive
     detail='passive collect made all accounts fresh'
     step=0
@@ -433,55 +440,97 @@ run_tick() {
 
     if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
       if [ "$vendor" = claude ]; then
-        # Claude rotates only through a real interactive session (docs/EXIT-PLAN.md
-        # § Token-freeze experiment), so a heartbeat tick opens exactly one — the
-        # account that waited longest for its turn — and the rest wait for the next tick.
-        account=$(next_revive_account "$vendor" "$stale" \
-          "$(jq -c --arg vendor "$vendor" '.[$vendor].attempts' <<<"$state")")
         if [ ! -x "$claudeb_bin" ]; then
           claude_note="no claudeb to revive with: $claudeb_bin"
-        elif [ -z "$account" ]; then
-          claude_note='no stale Claude account could be selected'
         else
-          step=1
-          tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
-          # Every attempt stamps, success or not — that is what rotates the selection.
-          state=$(jq -c --arg vendor "$vendor" --arg account "$account" --argjson now "$now" \
-            --argjson known "$(account_names_json "$vendor")" \
-            '.[$vendor].attempts = ((.[$vendor].attempts | with_entries(select(.key | IN($known[]))))
-                                    + {($account): $now})' <<<"$state")
-          refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
-          tick_tmp=$refresh_log
-          rc=0
-          # An interactive session runs for minutes; holding the tick lock across it would park
-          # every other vendor's refresh behind it, so it is handed back like the opencode probe.
-          # The stamp must reach the FILE before the lock goes: a tick that starts while this
-          # session runs picks its account from what is on disk, and would otherwise open a
-          # second interactive session on the same account.
-          state_persist "$state" || return 5
-          refresh_lock_release
-          ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
-            timeout_command "$revive_timeout" "$claudeb_bin" revive "$account" ) \
-            >/dev/null 2>"$refresh_log" || rc=$?
-          if refresh_lock_acquire "$lock_dir"; then
-            # Whatever ran while we were out owns the file now; our own stamp is already in it.
-            state=$(state_read)
-          else
-            lock_lost=1
+          # A valid token makes revive a single usage GET, no session: such accounts never wait
+          # for the one-session-per-tick slot. claudeb owns the near-expiry margin (invariant b).
+          direct='[]'
+          expired='[]'
+          while IFS= read -r account; do
+            [ -n "$account" ] || continue
+            if "$claudeb_bin" token-fresh "$account" >/dev/null 2>&1; then
+              direct=$(jq -c --arg account "$account" '. + [$account]' <<<"$direct")
+            else
+              expired=$(jq -c --arg account "$account" '. + [$account]' <<<"$expired")
+            fi
+          done < <(jq -r '.[]' <<<"$stale")
+          # Seconds each, so the tick lock stays held: no other vendor waits long enough for the
+          # handback to pay for itself. No attempt stamp either — that map exists to rotate the
+          # single session slot among the accounts that need one.
+          while IFS= read -r account; do
+            [ -n "$account" ] || continue
+            step=1
+            tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+            probed=$(jq -c --arg account "$account" '. + [$account]' <<<"$probed")
+            refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
+            tick_tmp=$refresh_log
+            rc=0
+            ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
+              timeout_command "$probe_timeout" "$claudeb_bin" revive "$account" ) \
+              >/dev/null 2>"$refresh_log" || rc=$?
+            errors=$(recorded_errors "$vendor" "$account" "$now")
+            if [ "$rc" -eq 4 ]; then
+              claude_note="$account needs a human login; no automated path can refresh it"
+            elif [ "$rc" -ne 0 ] && { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
+              pushback=1
+            fi
+            [ "$rc" -eq 0 ] || target_rc=$rc
+            rm -f "$refresh_log"
+            tick_tmp=''
+          done < <(jq -r '.[]' <<<"$direct")
+          # Claude rotates an expired token only through a real interactive session
+          # (docs/EXIT-PLAN.md § Token-freeze experiment), so a heartbeat tick opens exactly
+          # one — the account that waited longest for its turn — and the rest wait for the
+          # next tick.
+          account=$(next_revive_account "$vendor" "$expired" \
+            "$(jq -c --arg vendor "$vendor" '.[$vendor].attempts' <<<"$state")")
+          if [ -n "$account" ]; then
+            step=1
+            session_account=$account
+            tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+            # Every attempt stamps, success or not — that is what rotates the selection.
+            state=$(jq -c --arg vendor "$vendor" --arg account "$account" --argjson now "$now" \
+              --argjson known "$(account_names_json "$vendor")" \
+              '.[$vendor].attempts = ((.[$vendor].attempts | with_entries(select(.key | IN($known[]))))
+                                      + {($account): $now})' <<<"$state")
+            refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
+            tick_tmp=$refresh_log
+            rc=0
+            # An interactive session runs for minutes; holding the tick lock across it would park
+            # every other vendor's refresh behind it, so it is handed back like the opencode probe.
+            # The stamp must reach the FILE before the lock goes: a tick that starts while this
+            # session runs picks its account from what is on disk, and would otherwise open a
+            # second interactive session on the same account.
+            state_persist "$state" || return 5
+            refresh_lock_release
+            ( export LLM_LIMITS_ANNOUNCE_SUPPRESS=1
+              timeout_command "$revive_timeout" "$claudeb_bin" revive "$account" ) \
+              >/dev/null 2>"$refresh_log" || rc=$?
+            if refresh_lock_acquire "$lock_dir"; then
+              # Whatever ran while we were out owns the file now; our own stamp is already in it.
+              state=$(state_read)
+            else
+              lock_lost=1
+            fi
+            errors=$(recorded_errors "$vendor" "$account" "$now")
+            if [ "$rc" -eq 4 ]; then
+              claude_note="$account needs a human login; no automated path can refresh it"
+            elif [ "$rc" -ne 0 ] && { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
+              pushback=1
+            fi
+            [ "$rc" -eq 0 ] || target_rc=$rc
+            rm -f "$refresh_log"
+            tick_tmp=''
+          elif [ "$(jq 'length' <<<"$probed")" -eq 0 ]; then
+            claude_note='no stale Claude account could be selected'
           fi
-          # revive writes the claudeb snapshot; only a collect folds it into the merged
-          # store the post-state below is read from — and it replaces revive's own announce.
-          "$collector" >/dev/null 2>&1 || true
-          errors=$(recorded_errors "$vendor" "$account" "$now")
-          blocked=$(blocked_accounts_json "$vendor" "$interval")
-          if [ "$rc" -eq 4 ]; then
-            claude_note="$account needs a human login; no automated path can refresh it"
-          elif [ "$rc" -ne 0 ] && { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
-            pushback=1
+          if [ "$step" -eq 1 ]; then
+            # revive writes the claudeb snapshot; only a collect folds it into the merged
+            # store the post-state below is read from — and it replaces revive's own announce.
+            "$collector" >/dev/null 2>&1 || true
+            blocked=$(blocked_accounts_json "$vendor" "$interval")
           fi
-          [ "$rc" -eq 0 ] || target_rc=$rc
-          rm -f "$refresh_log"
-          tick_tmp=''
         fi
       else
         while IFS= read -r account; do
@@ -527,8 +576,16 @@ run_tick() {
           detail='refresh path completed but accounts remain stale'
         fi
       fi
-      if [ "$vendor" = claude ] && [ -z "$claude_note" ] && [ "$(jq 'length' <<<"$post_stale")" -gt 0 ]; then
-        detail="$detail; one session per tick, the rest wait for the next tick"
+      if [ "$vendor" = claude ]; then
+        claude_touched=''
+        [ "$(jq 'length' <<<"$probed")" -eq 0 ] || \
+          claude_touched="probed: $(jq -r 'join(",")' <<<"$probed")"
+        [ -z "$session_account" ] || \
+          claude_touched="${claude_touched:+$claude_touched; }session: $session_account"
+        [ -z "$claude_touched" ] || detail="$claude_touched; $detail"
+        if [ -z "$claude_note" ] && [ "$(jq 'length' <<<"$post_stale")" -gt 0 ]; then
+          detail="$detail; one session per tick, the rest wait for the next tick"
+        fi
       fi
     elif [ "$passive_rc" -ne 0 ]; then
       if store_readable; then

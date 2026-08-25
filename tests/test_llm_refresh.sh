@@ -49,6 +49,12 @@ CB_STUB="$WORK/claudeb"
 cat >"$CB_STUB" <<'EOF'
 #!/usr/bin/env bash
 set -u
+# Answered before any logging: the tick asks it about every stale account, and a token verdict
+# is not an attempt at anything, so the argv assertions below stay whole-file comparisons.
+if [ "${1:-}" = token-fresh ]; then
+  case " ${CB_TOKEN_FRESH:-} " in *" ${2:-} "*) exit 0 ;; esac
+  exit 1
+fi
 printf '%s\n' "$*" >>"$CB_LOG"
 # Kept out of CB_LOG so the argv assertions stay whole-file comparisons.
 if [ -d "${LLM_REFRESH_STATE}.lock" ]; then printf 'lock-held\n' >>"${CB_ENV:-/dev/null}"
@@ -185,7 +191,9 @@ run_refresh() {
     LLM_LIMITS_REFRESH_CLAUDEB="${CB_BIN:-$CB_STUB}" CB_LOG="$dir/claudeb.log" \
     CB_ENV="$dir/claudeb-env.log" \
     CB_RESULT="${CB_RESULT:-ok}" CB_STEAL_PID="${CB_STEAL_PID:-$$}" \
+    CB_TOKEN_FRESH="${CB_TOKEN_FRESH:-}" \
     LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
+    LLM_LIMITS_REFRESH_PROBE_TIMEOUT="${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
@@ -287,6 +295,68 @@ jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "partial" and
 run_refresh "$case_dir" "$((NOW + 3600))" || fail 'second one-per-tick run failed'
 [ "$(sed -n 2p "$case_dir/claudeb.log")" = 'revive alpha' ] || \
   fail 'the next tick did not move on to the account that waited'
+pass
+
+# A token that still carries a request needs no session: `claudeb revive` on it is one usage GET,
+# so every such account is read in the SAME tick and only an expired token queues for the slot.
+case_dir="$WORK/claude-direct-probes"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts += [
+  {account:"zeta",five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}},
+  {account:"theta",five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_TOKEN_FRESH="alpha zeta" run_refresh "$case_dir" "$NOW" || fail 'direct-probe run failed'
+[ "$(tr '\n' ' ' <"$case_dir/claudeb.log")" = 'revive alpha revive zeta revive theta ' ] || \
+  fail "the fresh-token accounts were not all read in one tick: $(tr '\n' ' ' <"$case_dir/claudeb.log")"
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "refreshed" and
+  .accounts_tried == ["alpha","zeta","theta"] and (.detail | test("probed: alpha,zeta") and
+  test("session: theta")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "the tick did not report what it probed and what it opened a session for: $(cat "$case_dir/journal.jsonl")"
+# The attempts map rotates the ONE session slot; a probe that spends no session must not take a turn.
+jq -e --argjson now "$NOW" '.claude.attempts == {theta:$now}' "$case_dir/state.json" >/dev/null || \
+  fail "a direct probe stamped the session rotation: $(jq -c '.claude.attempts' "$case_dir/state.json")"
+pass
+
+# Worker-pool membership is spend consent: it says nothing about reading an account's usage,
+# so a disabled account is refreshed like any other and is not `unrefreshable`.
+case_dir="$WORK/claude-disabled-still-probed"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts=[{account:"off1",enabled:false,
+  five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_TOKEN_FRESH="off1" run_refresh "$case_dir" "$NOW" || fail 'disabled-account run failed'
+[ "$(cat "$case_dir/claudeb.log")" = 'revive off1' ] || \
+  fail "an out-of-pool account was skipped by the refresh: $(cat "$case_dir/claudeb.log" 2>/dev/null)"
+jq -eR 'fromjson | select(.vendor == "claude" and .outcome == "refreshed" and
+  (.detail | test("probed: off1") and (test("unrefreshable") | not)))' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail "an out-of-pool account was journaled as unrefreshable: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# The reserved names are unrefreshable whatever their token says: the split runs after they are
+# dropped, so no probe may reach one either.
+case_dir="$WORK/claude-reserved-not-probed"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq --argjson now "$NOW" '.vendors.claude.accounts += [{account:"main",
+  five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
+  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+CB_TOKEN_FRESH="alpha main" run_refresh "$case_dir" "$NOW" || fail 'reserved-name probe run failed'
+[ "$(cat "$case_dir/claudeb.log")" = 'revive alpha' ] || \
+  fail "a reserved name was probed: $(cat "$case_dir/claudeb.log")"
+jq -eR 'fromjson | select(.vendor == "claude" and (.detail | test("unrefreshable: main")))' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'a reserved name stopped being unrefreshable'
 pass
 
 # A failing revive leaves as_of untouched, so staleness alone would hand it every tick forever:

@@ -388,8 +388,11 @@ rl_merge() {
   [ -n "$old_rl" ] || old_rl='{}'
   # An idle session re-renders its last known rate_limits forever; accepting
   # such rewrites would keep re-freshening stale data over live probe merges.
-  # Only a strictly newer window (or higher pct in the same window) is taken.
-  merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$(date +%s)" '
+  # Only a strictly newer window (or higher pct in the same window) is taken —
+  # unless this session has spent since its last accepted merge, which makes the
+  # payload a live reading of a window that simply has not moved.
+  merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$(date +%s)" \
+    --arg cost "$rl_cost_now" --arg prevcost "$rl_cost_prev" '
     # A cached header-origin week is synthetic (shared-invariants n) and must not survive
     # the merge: newer() only replaces on a HIGHER pct within the same window, so a
     # leftover 100 would outlive every real reading until the weekly reset.
@@ -404,9 +407,15 @@ rl_merge() {
         or ((($f.resets_at? // 0) == ($o.resets_at? // 0))
             and (((($f.used_percentage? // 0)) | round) > ((($o.used_percentage? // 0)) | round)))
       );
+    ((($cost | tonumber?) // -1) > (($prevcost | tonumber?) // -1)) as $live |
+    def unmoved($k): ($fresh[$k] // null) as $f | ($old[$k] // null) as $o |
+      ($f != null) and ($o != null)
+      and (($f.resets_at? // 0) == ($o.resets_at? // 0))
+      and (((($f.used_percentage? // 0)) | round) == ((($o.used_percentage? // 0)) | round));
+    def accept($k): newer($k) or ($live and unmoved($k));
     ($old
-    + (if newer("five_hour") then {five_hour: ($fresh.five_hour | stamp)} else {} end)
-    + (if newer("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)) as $out |
+    + (if accept("five_hour") then {five_hour: ($fresh.five_hour | stamp)} else {} end)
+    + (if accept("seven_day") then {seven_day: ($fresh.seven_day | stamp)} else {} end)) as $out |
     # A live session on the account IS the login evidence, and nothing else clears the flag in
     # the background: while it stands every automated refresh skips the account as unrefreshable.
     # An idle session replays its last readings forever, so only a five-hour window that opened
@@ -420,6 +429,17 @@ rl_merge() {
 
 rl_from_cache=""
 rl_mtime=""
+# The rate-limit cache is per ACCOUNT and shared by every chat on it, so the spend a merge was
+# last accepted at is remembered per session instead — and a render with no session to remember
+# through passes no cost at all, or it would claim liveness on every idle replay forever.
+rl_cost_file=""
+rl_cost_prev=""
+rl_cost_now=""
+if [ -n "$session_id" ]; then
+  rl_cost_file="$statusline_cache_dir/rl-cost-$session_id"
+  [ -r "$rl_cost_file" ] && read -r rl_cost_prev < "$rl_cost_file" 2>/dev/null
+  rl_cost_now="$cost_raw"
+fi
 if [ -n "$rl_json" ]; then
   rl_target="$cache_rl"
   if [ "$acct" != main ]; then
@@ -438,6 +458,12 @@ if [ -n "$rl_json" ]; then
     if [ -n "$merged_rl" ] && [ "$merged_rl" != "$old_rl" ]; then
       tmp_rl="$rl_target.tmp.$$"
       printf '%s' "$merged_rl" > "$tmp_rl" && mv "$tmp_rl" "$rl_target" || rm -f "$tmp_rl"
+      if [ -n "$rl_cost_file" ] && [ -n "$cost_raw" ] && [ "$cost_raw" != "$rl_cost_prev" ] &&
+         mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+        tmp_cost="$rl_cost_file.tmp.$$"
+        printf '%s\n' "$cost_raw" > "$tmp_cost" 2>/dev/null &&
+          mv "$tmp_cost" "$rl_cost_file" 2>/dev/null || rm -f "$tmp_cost" 2>/dev/null
+      fi
     fi
     rmdir "$snapshot_lock" 2>/dev/null
   else

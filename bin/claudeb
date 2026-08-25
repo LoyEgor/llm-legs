@@ -1796,6 +1796,7 @@ show_help() {
   printf '                                          %sfalls back to a minimal paid prompt only if that fails.%s\n' "$dim" "$reset"
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb revive <name>%s                   %sRotate an expired token in a real session (no model tokens), then refresh limits.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb token-fresh <name>%s              %sExit 0 while the keychain token would still carry a request, 1 otherwise.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
@@ -2252,6 +2253,22 @@ session_driver_cmd() {
   command -v claude-session-driver 2>/dev/null || return 1
 }
 
+# Whether the keychain token would carry a request right now, for callers that must choose
+# between a seconds-long probe and a minutes-long session (bin/llm-refresh). Read-only, and the
+# near-expiry margin stays owned by token_needs_refresh alone.
+token_fresh() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    printf 'usage: claudeb token-fresh <name>\n' >&2
+    return 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'claudeb: token-fresh: unknown account %s\n' "$name" >&2
+    return 2
+  fi
+  ! token_needs_refresh "$name"
+}
+
 # Rotate an expired token through a real interactive session, then land the full
 # snapshot (five_hour, seven_day AND fable) from the usage endpoint. Deliberately
 # exempt from token_freeze_active — it is the sanctioned replacement for the
@@ -2268,11 +2285,6 @@ revive_account() {
   if ! account_exists "$name"; then
     printf 'claudeb: revive: unknown account %s\n' "$name" >&2
     return 2
-  fi
-  if is_disabled "$name"; then
-    token_journal "$name" revive skipped-disabled
-    printf 'claudeb: revive: %s is disabled — `claudeb enable %s` first\n' "$name" "$name" >&2
-    return 1
   fi
   if token_needs_refresh "$name"; then needs_token=true; fi
   # Nothing clears auth_needed in the background — only the usage merge below does. Skipping on
@@ -2783,6 +2795,12 @@ case "${1:-}" in
     announce_limits_probed "$claudeb_root"
     exit "$revive_rc"
     ;;
+  token-fresh)
+    shift
+    token_fresh_rc=0
+    token_fresh "${1:-}" || token_fresh_rc=$?
+    exit "$token_fresh_rc"
+    ;;
   token-upkeep)
     token_upkeep
     ;;
@@ -2861,7 +2879,7 @@ case "${1:-}" in
     # `stauts` should not cost a second attempt. A near-miss on a mutating one only
     # suggests — autocorrecting into `remove` would eventually delete an account.
     # `|| true`: a failing awk must not take the whole CLI down under `set -e`.
-    typo_target=$(similar_names "${1:-}" status accounts help warm revive token-upkeep add enable disable remove use || true)
+    typo_target=$(similar_names "${1:-}" status accounts help warm revive token-fresh token-upkeep add enable disable remove use || true)
     case "$typo_target" in
       '') profile_required ;;
       status|accounts|help)

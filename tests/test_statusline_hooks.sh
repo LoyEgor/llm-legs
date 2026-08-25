@@ -1343,6 +1343,51 @@ run_statusline "$replay_payload" replayacct >/dev/null || fail "statusline repla
 assert jq -e '.five_hour.used_percentage == 51 and .auth_needed == true and
   .auth_cause == "needs-relogin"' "$CLAUDEB_FIX/limits/replayacct.json" >/dev/null
 
+# A window that sits at the same percentage for hours is not stale data while the chat is
+# working: spend since the last accepted merge is the liveness signal, and without it the row
+# dims mid-session. The marker is per session because the cache is per account.
+live_rl='{"five_hour":{"used_percentage":30,"resets_at":'"$((NOW + 3600))"'},"seven_day":{"used_percentage":60,"resets_at":'"$((NOW + 86400))"'}}'
+seed_live_cache() {
+  jq -cn --argjson now "$NOW" '
+    {five_hour:{used_percentage:30,resets_at:($now+3600),as_of:($now-5000),origin:"session"},
+     seven_day:{used_percentage:60,resets_at:($now+86400),as_of:($now-5000),origin:"session"},
+     auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/liveacct.json"
+}
+seed_live_cache
+run_statusline "$(statusline_payload status-live "{\"cost\":{\"total_cost_usd\":1.5},\"rate_limits\":$live_rl}")" liveacct \
+  >/dev/null || fail "statusline live-merge seeding failed"
+assert_eq "1.5" "$(cat "$STATE_DIR/rl-cost-status-live")"
+
+# Same reading, same spend: the session sent nothing, so this IS the idle replay and the
+# timestamps must stand where they were.
+seed_live_cache
+run_statusline "$(statusline_payload status-live "{\"cost\":{\"total_cost_usd\":1.5},\"rate_limits\":$live_rl}")" liveacct \
+  >/dev/null || fail "statusline idle-cost merge failed"
+assert jq -e --argjson now "$NOW" '.five_hour.as_of == ($now - 5000) and .seven_day.as_of == ($now - 5000)' \
+  "$CLAUDEB_FIX/limits/liveacct.json" >/dev/null
+
+# Same reading, more spend: both windows are re-stamped as measured now.
+run_statusline "$(statusline_payload status-live "{\"cost\":{\"total_cost_usd\":2.25},\"rate_limits\":$live_rl}")" liveacct \
+  >/dev/null || fail "statusline live-cost merge failed"
+assert jq -e --argjson floor "$NOW" '.five_hour.as_of >= $floor and .seven_day.as_of >= $floor and
+  .five_hour.used_percentage == 30 and .seven_day.used_percentage == 60 and
+  .five_hour.origin == "session" and .seven_day.origin == "session"' \
+  "$CLAUDEB_FIX/limits/liveacct.json" >/dev/null
+assert_eq "2.25" "$(cat "$STATE_DIR/rl-cost-status-live")"
+
+# A re-stamp is not login evidence: clearing the flag takes a five-hour window the merge
+# accepted as NEWER, so an unmoved window re-stamped for liveness leaves the verdict standing
+# even though it opened after it.
+jq -cn --argjson now "$NOW" \
+  '{five_hour:{used_percentage:30,resets_at:($now+3600),as_of:($now-5000),origin:"session"},
+    auth_needed:true,auth_cause:"needs-relogin",auth_checked_at:($now-600)}' \
+  > "$CLAUDEB_FIX/limits/liveauthacct.json"
+run_statusline "$(statusline_payload status-live-auth "{\"cost\":{\"total_cost_usd\":0.5},\"rate_limits\":$live_rl}")" liveauthacct \
+  >/dev/null || fail "statusline live-auth merge failed"
+assert jq -e --argjson floor "$NOW" '.five_hour.as_of >= $floor and .auth_needed == true and
+  .auth_cause == "needs-relogin" and (has("auth") | not)' \
+  "$CLAUDEB_FIX/limits/liveauthacct.json" >/dev/null
+
 cost_payload=$(statusline_payload status-cost '{"cost":{"total_cost_usd":18.2007}}')
 cost_out=$(printf '%s' "$cost_payload" | env -u LANG LC_ALL=ru_RU.UTF-8 \
   CLAUDE_LIMITS_ACCOUNT=main CLAUDEB_DIR="$CLAUDEB_FIX" LLM_LIMITS_FILE="$WORK/limits.json" \
