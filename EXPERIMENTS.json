@@ -24,5 +24,18 @@
    "menubar LLM Limits review doctor row"
   ],
   "how_to_remove": "run `review-bench doctor --uninstall-agent` (removes the launchd plist and the ~/.local/libexec/review-doctord wrapper), delete the appendDoctor block and its call in hammerspoon/llm-limits.lua with the renderer tests in tests/llm_limits_renderer_harness.lua, delete <state-dir>/doctor-snapshot.json, and keep `review-bench doctor` and its own tests — the command is not the experiment. Delete this registry entry last."
+ },
+ {
+  "id": "review-latency-analysis",
+  "what": "Temporary review-bench leg latency and coverage analysis, read only when working on tier timing or coverage",
+  "started": "2026-08-24",
+  "review_by": "2026-10-01",
+  "state_marker": "docs/analysis",
+  "evidence": "docs/analysis/review-latency-2026-08-24.md and docs/analysis/review-waits-2026-08-24.md with their stats scripts",
+  "surfaces": [
+   "docs/analysis (opt-in tier timing or coverage work only)"
+  ],
+  "pinned_catalog": "9175b538aa818d2f83c8f1b387c109fb7279897295b2f74aea900cd68416ccd5",
+  "how_to_remove": "delete docs/analysis/, delete this registry entry, and delete the catalog-pin and opt-in-reading asserts from tests/test_experiments_registry.sh"
  }
 ]

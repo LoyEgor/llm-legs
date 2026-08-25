@@ -8,10 +8,48 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 REGISTRY="$ROOT/EXPERIMENTS.json"
+export RBENCH_SHARE="$ROOT/share"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 assert() { if ! "$@"; then fail "assert $((asserts + 1)): $*"; fi; asserts=$((asserts + 1)); }
 today=${EXPERIMENTS_TODAY_OVERRIDE:-$(date '+%Y-%m-%d')}
+
+catalog_pin() {
+  python3 - <<'PY'
+import hashlib
+import json
+import os
+import sys
+
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench as rb
+
+names = (
+    "REVIEW_TIER_AGY",
+    "OPENCODE_REVIEW_LEG",
+    "OPENCODE_REVIEW_LEG_MAX",
+    "WORTHLESS_MODELS",
+    "CAP_WINDOW_DAYS",
+    "DURATION_CAP_GRACE_S",
+    "DURATION_CAP_THIN_SAMPLES",
+    "DURATION_CAP_DEFAULT_S",
+    "AGY_DURATION_CEILING_S",
+    "STALL_CAP_GRACE_S",
+    "STALL_CAP_FLOOR_S",
+    "CELL_ATTEMPTS_MAX",
+)
+missing = [name for name in names if not hasattr(rb, name)]
+if missing:
+    raise SystemExit(f"missing catalog names: {', '.join(missing)}")
+payload = {name: getattr(rb, name) for name in names}
+print(hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest())
+PY
+}
+
+if [ "${EXPERIMENTS_PRINT_CATALOG_PIN:-}" = 1 ]; then
+  catalog_pin
+  exit
+fi
 
 [ -r "$REGISTRY" ] || fail "EXPERIMENTS.json is missing: every experiment must be registered"
 jq -e 'type == "array"' "$REGISTRY" >/dev/null || fail "EXPERIMENTS.json must be a JSON array"
@@ -81,6 +119,20 @@ surface_errors=$(jq -r '
 [ -z "$surface_errors" ] || fail "EXPERIMENTS.json surfaces: $surface_errors"
 asserts=$((asserts + 1))
 
+actual_pin=$(catalog_pin) || fail "could not compute the review-latency-analysis catalog pin"
+expected_pin=$(jq -er '.[] | select(.id == "review-latency-analysis") | .pinned_catalog' "$REGISTRY") \
+  || fail "review-latency-analysis is missing pinned_catalog"
+repin_command="EXPERIMENTS_PRINT_CATALOG_PIN=1 bash $ROOT/tests/test_experiments_registry.sh"
+[ "$actual_pin" = "$expected_pin" ] \
+  || fail "docs/analysis is stale against the catalog — delete it per how_to_remove, or regenerate the tables and re-pin: $repin_command"
+asserts=$((asserts + 1))
+
+for opt_in_file in CLAUDE.md docs/DIAGNOSTICS.md docs/review-contract.md docs/statusline-contract.md; do
+  ! grep -Fq 'docs/analysis' "$ROOT/$opt_in_file" \
+    || fail "$opt_in_file points always-loaded context at docs/analysis; keep the analysis opt-in"
+done
+asserts=$((asserts + 1))
+
 overdue=$(jq -r --arg today "$today" '.[] | select(.review_by < $today) | "\(.id) (review_by \(.review_by))"' "$REGISTRY")
 if [ -n "$overdue" ]; then
   printf 'FAIL: EXPERIMENT REVIEW OVERDUE: %s\n' "$(printf '%s' "$overdue" | tr '\n' ';')" >&2
@@ -91,4 +143,4 @@ if [ -n "$overdue" ]; then
 fi
 asserts=$((asserts + 1))
 
-printf 'PASS: %s asserts; experiment registry (schema, real calendar dates, code tags round-trip, visible surfaces, review deadlines)\n' "$asserts"
+printf 'PASS: %s asserts; experiment registry (schema, real calendar dates, code tags round-trip, visible surfaces, catalog pin, opt-in analysis, review deadlines)\n' "$asserts"
