@@ -171,16 +171,27 @@ def timed_cells(cells):
             and not isinstance(cell.get("duration_ms"), bool) and cell["duration_ms"] >= 0]
 
 
+def cell_verify_ms(cell):
+    """Of a cell's verification, the part that held the RUN open — its whole duration on a record
+    written before verification started overlapping the panel.
+    """
+    if cell.get("verify_wall_ms") is not None:
+        return report_ms(cell["verify_wall_ms"])
+    return report_ms(cell.get("verify_ms"))
+
+
 def cell_chain_ms(cell):
     """How long one cell held its slot of the run open: what it ran, what the retry it earned ran,
-    and the verification of its findings that ran after it.
+    and the verification of its findings, which starts when the cell itself is done and so may
+    run beside other cells — of which only the part that outlived the panel is this cell's own
+    stretch of the wall.
 
     The queue it waited in is deliberately outside this. That time is what the header's LOST names,
     and folded in here it would read as the cell's own cost and vanish from the block entirely.
     """
     return (
         report_ms(cell.get("duration_ms"))
-        + report_ms(cell.get("verify_ms"))
+        + cell_verify_ms(cell)
         + sum(report_ms(attempt.get("duration_ms")) for attempt in cell.get("attempts") or ())
     )
 
@@ -229,20 +240,25 @@ def report_header_value(summary, meta, scheme):
         chain = max(candidates, key=cell_chain_ms)
         # The chain the row is named for, minus the verification printed beside it: shown as the
         # final attempt alone, the components of a retried cell no longer add up to the wall.
-        held_ms = cell_chain_ms(chain) - report_ms(chain.get("verify_ms"))
+        chain_verify_ms = cell_verify_ms(chain)
+        held_ms = cell_chain_ms(chain) - chain_verify_ms
         value += f" / {report_minutes(held_ms)} {report_cell_name(chain['rater'], scheme)}"
         if chain.get("stalled_s") or _panel.watchdog_killed(chain):
             value += " killed"
-        if report_ms(chain.get("verify_ms")) >= REPORT_DURATION_FLOOR_MS:
-            value += f" + {report_minutes(chain['verify_ms'])} verify"
+        if chain_verify_ms >= REPORT_DURATION_FLOOR_MS:
+            value += f" + {report_minutes(chain_verify_ms)} verify"
         if wall_s is not None:
-            # Every OTHER cell's verification is accounted time too: the run verifies serially
-            # after the panel closes, so pricing the chain alone reported the whole verifier pass
-            # as time nothing in the block accounts for.
-            lost_ms = wall_s * 1000 - cell_chain_ms(chain) - sum(
-                report_ms(cell.get("verify_ms"))
-                for cell in summary["cells"] if cell is not chain
-            )
+            # The panel's own stretch is the chain minus its verification, and the verification
+            # of the whole run is one span, not a sum: cells verify side by side, so subtracting
+            # each remainder on its own prices one shared span once per cell and drove this
+            # negative. A record written before the overlap carries no span and verified serially.
+            after_panel_ms = summary.get("verify_after_panel_ms")
+            if after_panel_ms is None:
+                after_panel_ms = sum(
+                    report_ms(cell.get("verify_ms")) for cell in summary["cells"]
+                )
+            lost_ms = (wall_s * 1000 - (cell_chain_ms(chain) - chain_verify_ms)
+                       - report_ms(after_panel_ms))
             # `T1 max` is the tier plus its composition, and only the tier has a budget: read
             # whole, every max run falls back to the flat cap and loses the share of its own.
             budget_min = _catalog.REVIEW_TIERS.get(

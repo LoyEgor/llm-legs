@@ -445,9 +445,14 @@ OPENCODE_PLAN_WALL_RE = re.compile(
 OPENCODE_LIMIT_NAME_RE = re.compile(
     r'''["']?limitName["']?\s*[:=]\s*["']?([A-Za-z0-9_.-]+)''', re.IGNORECASE
 )
+# The whole 5xx family and a curl-level HTTP 000, because that is what the client's own
+# transient_status retries (shared-invariants row az): the bench asks opencode-go for one attempt
+# per gate hold, so anything narrower fails a cell on a 504 or a dropped connection that used to
+# cost nothing but a retry.
 OPENCODE_TRANSIENT_RE = re.compile(
     r"provider rate limit|rate limit exceeded|too many requests"
-    r"|\b(?:429|500|502|503|529)\b|overloaded|at capacity|temporarily unavailable",
+    r"|\b429\b|" + _catalog.HTTP_SERVER_STATUS
+    + r"|overloaded|at capacity|temporarily unavailable",
     re.IGNORECASE,
 )
 CODEX_TRANSIENT_RE = re.compile(
@@ -517,7 +522,7 @@ def opencode_transient_failure(stderr):
 OPENCODE_PROVIDER_OUTAGE_RE = re.compile(
     r"Router\.Unavailable|failover_exhausted|inference_recovery_timeout"
     r"|provider error inside stream|stream response carried no SSE data chunks"
-    r"|HTTP (?:5[0-9][0-9]|000)\b",
+    r"|" + _catalog.HTTP_SERVER_STATUS,
     re.IGNORECASE,
 )
 
@@ -893,7 +898,8 @@ def measured_worthless(rater):
     """
     if rater["model"] == "haiku":
         return "caught 0 defects across 11 recorded runs while producing 11 false claims"
-    return _catalog.WORTHLESS_CELLS.get(_raters.normalize_legacy_rater(rater["spec"]))
+    spec_reason = _catalog.WORTHLESS_CELLS.get(_raters.normalize_legacy_rater(rater["spec"]))
+    return spec_reason or _catalog.WORTHLESS_MODELS.get(rater["model"])
 
 
 def refuse_retired_cells(raters, lens=None):

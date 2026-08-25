@@ -67,7 +67,8 @@ OPENCODE_MODEL_FACTS = {
     "oc-mmm3": {"off": False, "scales": False, "off_s": 204, "low_s": None,
                 "note": "ignores every knob, needs the 64k ceiling; 1 of 7 runs completed"},
     "oc-grok45": {"off": False, "scales": True, "off_s": None, "low_s": 87,
-                  "note": "the leg's precise half: 11 true claims of 15, 7 defects; no bare failure"},
+                  "note": "was the leg's precise half (11 true of 15); retired 2026-08-24 — "
+                          "79% of attempts fail with in-gate 5xx walks, 0 confirmed since 08-13"},
     "oc-dsv4pro": {"off": False, "scales": False, "off_s": 905, "low_s": None,
                    "note": "precise but 2 of 12 runs completed, ~900s each; too slow for any tier"},
     "oc-dsv4flash": {"off": True, "scales": True, "off_s": 12, "low_s": 79,
@@ -77,16 +78,23 @@ OPENCODE_MODEL_FACTS = {
 # Derived, so the policy cannot drift from the measurement: a model that ignores the
 # reasoning-off knob AND is measurably fixed by a budget is offered only with one.
 OPENCODE_EFFORT_REQUIRED_MODELS = frozenset({"oc-grok45"})
+# A gateway failure, spelled only where the text says the number IS a status (`HTTP 504`,
+# `status: 502`, the curl-level `HTTP 000`): a rater's prose cites line numbers, and a bare
+# `5[0-9][0-9]` read `line 512` as a dead gateway and retried a cell that had already answered.
+# The class itself — 5xx plus 000 — is the client's own (shared-invariants row az).
+HTTP_SERVER_STATUS = r"(?:HTTP(?:/[0-9.]+)?\s+|status(?:_code)?\s*[:=]\s*)(?:5[0-9][0-9]|000)\b"
 # Refused outright, with the evidence in the message. Not a taste call: no
 # configuration of these ever produced a review, so a cell would only spend the
 # subscription's window and the run's wall clock.
 OPENCODE_UNUSABLE_MODELS = set()
-# The only OpenCode cells that survived strict adjudication on four commits: grok-4.5
-# is precise and repeats its real findings, kimi-k3 is the wide net, and deepseek-v4-flash
-# finds what neither does. Every other cell scored at most one true claim per three passes,
-# so a wider leg costs the window and returns noise. Also the tiers' eco OpenCode block.
-OPENCODE_REVIEW_LEG = ("oc-kimik3 x2", "oc-grok45-low x2", "oc-dsv4flash x2")
-OPENCODE_REVIEW_LEG_MAX = ("oc-kimik3 x3", "oc-grok45-low x3", "oc-dsv4flash x3")
+# The only OpenCode cells that survived strict adjudication AND the 2026-08-24 waits audit
+# (docs/analysis/review-waits-2026-08-24.md): kimi-k3 is the wide net and earns its repeats
+# (a second copy adds a defect in 26% of panels), deepseek-v4-flash finds what it misses but
+# runs single — its second copy added a panel-unique defect once in 100 runs while setting the
+# panel wall in 10 of them. grok-4.5 is retired in WORTHLESS_MODELS. Every other cell scored at
+# most one true claim per three passes. Also the tiers' eco OpenCode block.
+OPENCODE_REVIEW_LEG = ("oc-kimik3 x2", "oc-dsv4flash")
+OPENCODE_REVIEW_LEG_MAX = ("oc-kimik3 x3", "oc-dsv4flash")
 OPENCODE_VERIFIER = "oc-dsv4flash"
 # Fallbacks for a verifier the gateway is refusing, in measured order. Scored 2026-08-04 against
 # hand-adjudicated verdicts: deepseek-v4-flash on the shapes prompt keeps 16 of 24 real defects
@@ -129,6 +137,16 @@ WORTHLESS_CELLS = {
         "answers with a one-line announce and stops (10-token completions, findings leak into "
         "reasoning_content); 0 parseable reviews in 3 runs on 2026-07-28"
     ),
+    # Retired on failure cost, not on claim quality: its early precision never came back.
+    "oc-grok45-low": (
+        "79% of 1166 recorded attempts failed, spending 546 failing minutes against 111 model "
+        "minutes and holding a gate slot through its 5xx walks; 0 confirmed defects in the "
+        "2026-08-13..24 triage window (162 instances)"
+    ),
+    "oc-grok45-high": (
+        "retired with the model on 2026-08-24: grok-4.5 answers 5xx to most calls whatever "
+        "the effort (see oc-grok45-low), and high has 1 recorded attempt to price it by"
+    ),
     "oc-hy3": "23 claims over 2 commits, 4 true",
     "oc-kimik27code": "21 claims over 2 commits, 3 true",
     "oc-qwen37max": "18 claims over 2 commits, 4 true",
@@ -140,6 +158,16 @@ WORTHLESS_CELLS = {
         "1 of the 17 defects on the 2 commits it ran, where opus-high took 7 of one commit's 8; "
         "it spent 5 tool turns to that cell's 18 there, so the higher effort bought fewer reads "
         "rather than deeper ones"
+    ),
+}
+# Read after the per-cell list above and keyed by the model: an effort and a review-profile
+# suffix are spellings of one model, so a list of exact specs leaves whichever spelling nobody
+# thought to write down launchable.
+WORTHLESS_MODELS = {
+    "oc-grok45": (
+        "grok-4.5 is retired: 79% of 1166 recorded attempts failed at every effort, spending 546 "
+        "failing minutes against 111 model minutes, and 0 of its claims were confirmed in the "
+        "2026-08-13..24 triage window"
     ),
 }
 EXCLUDED_CELLS = {
@@ -366,8 +394,9 @@ REVIEW_TIER_FLOOR_MAX = {
 # coverage; max is the measured ceiling within the tier's budget, trimmed of cells whose
 # marginal is under ~1 defect on the corpus (owner rule 2026-08-04). The OpenCode layer is never
 # trimmed (owner rule). `coverage_pct` is the whole panel over the four commits every one of its
-# cells ran on (143fc2f, 8448a35, 8553616, fabcae4) — recomputed 2026-08-14 against a corpus that
-# has grown to 235 adjudicated defects, which moved every figure on its own. Recompute the Codex
+# cells ran on (143fc2f, 8448a35, 8553616, fabcae4) — recomputed 2026-08-25 with
+# `frontier_inputs` + `hit_rates` + `composition_coverage` over that corpus, after the OpenCode
+# leg lost grok-4.5 and the second deepseek copy — which cost every tier 5 to 7 points of it. Recompute the Codex
 # cells with frontier, don't hand-edit. It answers for no other side, each for its own reason.
 # Not for the Gemini block: it prices a composition at the max of its cells' minutes under a
 # wall-clock budget, which is the model the block above rejects, so a frontier answer there
@@ -410,7 +439,7 @@ REVIEW_TIERS = {
     "T0": {
         "budget_min": 3,
         "when": "Up to 20 changed lines in up to 2 files",
-        "coverage_pct": {"eco": 40.5, "max": 46.3},
+        "coverage_pct": {"eco": 34.2, "max": 37.5},
         "cells": [
             *REVIEW_TIER_FLOOR["T0"],
             "opus-low",
@@ -428,7 +457,7 @@ REVIEW_TIERS = {
     "T1": {
         "budget_min": 6,
         "when": "Up to 150 changed lines, or any change under bin/ or tests/",
-        "coverage_pct": {"eco": 47.9, "max": 55.6},
+        "coverage_pct": {"eco": 42.6, "max": 48.1},
         "cells": [
             *REVIEW_TIER_FLOOR["T1"],
             "opus-medium",
@@ -449,7 +478,7 @@ REVIEW_TIERS = {
     "T2": {
         "budget_min": 10,
         "when": "Up to 600 changed lines, or a core measurement tool change",
-        "coverage_pct": {"eco": 58.2, "max": 67.3},
+        "coverage_pct": {"eco": 53.7, "max": 60.7},
         "cells": [
             *REVIEW_TIER_FLOOR["T2"],
             "opus-high",
@@ -473,7 +502,7 @@ REVIEW_TIERS = {
     "T3": {
         "budget_min": 20,
         "when": "More than 600 changed lines",
-        "coverage_pct": {"eco": 70.1, "max": 78.5},
+        "coverage_pct": {"eco": 66.1, "max": 72.3},
         "cells": [
             *REVIEW_TIER_FLOOR["T3"],
             "opus-high",

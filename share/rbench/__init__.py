@@ -43,7 +43,7 @@ from .catalog import (
     RATER_TIMEOUT_S, REVIEW_TIERS, REVIEW_TIER_AGY, REVIEW_TIER_AGY_MAX, REVIEW_TIER_FLOOR,
     REVIEW_TIER_FLOOR_MAX, SHORT_EFFORT_NAMES, SHORT_MODEL_NAMES, STALL_FLOOR_S, STALL_GRACE_S,
     STALL_POLL_S, STALL_STREAM_RATIO, VERDICTS, WATCHDOG_FLOOR_S, WATCHDOG_GRACE_S, WEIGHTS,
-    WORTHLESS_CELLS, model_name_parts,
+    WORTHLESS_CELLS, WORTHLESS_MODELS, model_name_parts,
 )
 from .raters import (
     ALWAYS_EFFORT_SIDES, LOCATION_RE, PRIORITY_RE, RATER_ATTEMPT_RE, RATER_RE, RATER_REPEAT_RE,
@@ -194,7 +194,8 @@ from .report import (
     FINDINGS_SUMMARY_CHARS, HEALTH_DEFAULT_RUNS, HEALTH_WORST_CELLS, REPORT_DURATION_FLOOR_MS,
     REPORT_LABEL_WIDTH, REPORT_LOST_CAP_S, REPORT_LOST_SHARE, REPORT_WIDTH_FALLBACK,
     REVIEW_LATE_FLOOR_S, REVIEW_LATE_MULTIPLIER, SEVERITY_ORDER, SIDE_LEG_NAME,
-    aligned_report_lines, append_review_log, cell_chain_ms, cmd_findings, cmd_fork, cmd_health,
+    aligned_report_lines, append_review_log, cell_chain_ms, cell_verify_ms, cmd_findings,
+    cmd_fork, cmd_health,
     cmd_report, confirmed_tally, emit_report, estimated_tokens_text, findings_lines, fork_line,
     health_lines, health_runs,
     health_tally, late_review_line, line_sort_key, log_review_event, report_block_lines,

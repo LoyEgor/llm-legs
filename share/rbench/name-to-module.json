@@ -323,6 +323,7 @@
  "cell_attempt_rows": "panel",
  "cell_available": "accounts",
  "cell_chain_ms": "report",
+ "cell_verify_ms": "report",
  "cell_chunk_paths": "scope",
  "cell_envelope": "scope",
  "cell_failure_reason": "panel",

@@ -544,6 +544,14 @@ def cmd_run(args):
     skipped = list(skipped) + cooling_skipped
     panel_skipped = list(panel_skipped) + cooling_skipped
     skip_states.update({spec: "cooling" for spec, _ in cooling_skipped})
+    # Only the composition nobody chose cell by cell: a hand-written `--raters` is the bench's
+    # ungated surface (DIAGNOSTICS.md), and measuring seven copies of one cell is what it is for.
+    gate_skipped = []
+    if tier_name:
+        raters, gate_skipped = _launch.cap_opencode_panel(raters)
+    skipped = list(skipped) + gate_skipped
+    panel_skipped = list(panel_skipped) + gate_skipped
+    skip_states.update({spec: "gate" for spec, _ in gate_skipped})
     # Carried into the run's own record rather than printed and forgotten: the report's leg row is
     # read hours later, and a side nobody launched reads as a side nobody wanted without it.
     skip_records = [
@@ -696,6 +704,72 @@ def cmd_run(args):
             print(f"warning: could not update review progress: {exc}", file=sys.stderr)
             progress_warned = True
 
+    tree = _verify.repo_tree(repo, sha)
+
+    def extract_findings(rater, result):
+        rc, _, text, _, _ = result
+        findings = _prompts.normalize_findings(text, rater["spec"])
+        findings = [
+            dict(row, file=_verify.canonical_finding_path(row.get("file"), tree))
+            for row in findings
+        ]
+        # Named on the finding as well as carried in its path: the adjudicator merges rows from
+        # several raters and has to weigh two claims about one repository against two halves of
+        # one contract, and a prefix it has to parse out of a path is a fact it can miss.
+        if members:
+            findings = [
+                dict(row, repo=_scope.merged_finding_label(row.get("file"), members))
+                for row in findings
+            ]
+        is_error = rc != 0 or (rc == 0 and text and _accounts.is_429_error(text))
+        unusable = "" if is_error else _prompts.unusable_review(text, findings)
+        return findings, is_error, unusable
+
+    def timed_verify(spec, findings, side):
+        verify_started = time.monotonic()
+        kept, audit = _verify.verify_findings(findings, repo, sha, verify_model, tree, side)
+        verify_spans[spec] = (verify_started, time.monotonic())
+        return kept, audit, round((verify_spans[spec][1] - verify_started) * 1000)
+
+    def verify_wall_ms(spec):
+        """Of one cell's verification, the part that actually held the run open.
+
+        A verification that ran while other cells were still going added nothing to the wall,
+        and the report subtracts this — not the whole duration — when it prices the time
+        nothing in the block accounts for.
+        """
+        span = verify_spans.get(spec)
+        if span is None or panel_closed is None:
+            return None
+        return round(max(0.0, span[1] - max(span[0], panel_closed)) * 1000)
+
+    def verify_after_panel_ms():
+        """The whole run's post-panel verification as WALL CLOCK: overlaps counted once.
+
+        Cells verify side by side, so their remainders are not additive — a per-cell sum prices
+        one shared span once per cell and drives the report's own remainder negative.
+        """
+        if panel_closed is None:
+            return None
+        total = 0.0
+        reached = panel_closed
+        for start, end in sorted(verify_spans.values()):
+            if end <= reached:
+                continue
+            total += end - max(start, reached)
+            reached = end
+        return round(total * 1000)
+
+    # Verification starts the moment its cell lands, not after the whole panel: run serially
+    # after the slowest cell it added a median 26s and a p90 115s of wall per run (28% of all
+    # measured excess), all of it spent while other cells were still running anyway. The gate
+    # still prefers rater cells — a verifier enters it at priority zero.
+    verify_pool = None
+    verify_futures = {}
+    verify_spans = {}
+    panel_closed = None
+    extracted = {}
+
     try:
         try:
             directory = _store.state_dir() / _store.PROGRESS_DIR
@@ -746,12 +820,27 @@ def cmd_run(args):
                 except Exception as exc:
                     results.append((rater, None, (1, 0, "", f"task exception: {exc}", [])))
                     cell_failed = True
+                else:
+                    if verify_model and rater["side"] in _round.VERIFIED_SIDES:
+                        triple = extract_findings(rater, result[2])
+                        extracted[rater["spec"]] = triple
+                        findings, is_error, unusable = triple
+                        if findings and not is_error and not unusable:
+                            if verify_pool is None:
+                                verify_pool = concurrent.futures.ThreadPoolExecutor(
+                                    max_workers=_launch.OPENCODE_MAX_CONCURRENCY
+                                )
+                            verify_futures[rater["spec"]] = verify_pool.submit(
+                                timed_verify, rater["spec"], findings, rater["side"]
+                            )
                 for progress_path, progress in progress_documents:
                     try:
                         _store.complete_review_progress(progress, rater["spec"], cell_failed)
                         _store.persist_review_progress(progress_path, progress)
                     except Exception as exc:
                         warn_progress(exc)
+
+        panel_closed = time.monotonic()
 
         result_by_spec = {}
         for rater, account, result in results:
@@ -769,27 +858,15 @@ def cmd_run(args):
         errored_raters = set()
         gateway_down = set()
         failed = False
-        tree = _verify.repo_tree(repo, sha)
         for requested in raters:
             rater, account, result = result_by_spec[requested["spec"]]
             rc, duration, text, stderr, command = result
             model_resolved = _launch.resolved_model_from_envelope(
                 _scope.cell_envelope(run_dir, rater["spec"])
             )
-            findings = _prompts.normalize_findings(text, rater["spec"])
-            findings = [
-                dict(row, file=_verify.canonical_finding_path(row.get("file"), tree)) for row in findings
-            ]
-            # Named on the finding as well as carried in its path: the adjudicator merges rows from
-            # several raters and has to weigh two claims about one repository against two halves of
-            # one contract, and a prefix it has to parse out of a path is a fact it can miss.
-            if members:
-                findings = [
-                    dict(row, repo=_scope.merged_finding_label(row.get("file"), members))
-                    for row in findings
-                ]
-            is_error = rc != 0 or (rc == 0 and text and _accounts.is_429_error(text))
-            unusable = "" if is_error else _prompts.unusable_review(text, findings)
+            findings, is_error, unusable = (
+                extracted.get(rater["spec"]) or extract_findings(rater, result)
+            )
             if unusable:
                 is_error = True
                 stderr = "\n".join(part for part in ((stderr or "").rstrip(), unusable) if part)
@@ -805,11 +882,13 @@ def cmd_run(args):
             # The verifier's error rate is measured on the OpenCode and agy legs
             # (docs/verifier-tuning.md); other sides' findings pass unverified until measured.
             if verify_model and findings and not is_error and rater["side"] in _round.VERIFIED_SIDES:
-                verify_started = time.monotonic()
-                kept, audit = _verify.verify_findings(
-                    findings, repo, sha, verify_model, tree, rater["side"]
-                )
-                verify_ms = round((time.monotonic() - verify_started) * 1000)
+                pending = verify_futures.get(rater["spec"])
+                if pending is not None:
+                    kept, audit, verify_ms = pending.result()
+                else:
+                    kept, audit, verify_ms = timed_verify(
+                        rater["spec"], findings, rater["side"]
+                    )
                 _store.write_jsonl(run_dir / f"verified-{rater['spec']}.jsonl", audit)
                 dropped = len(findings) - len(kept)
                 unverified = sum(1 for row in audit if row.get("walled"))
@@ -889,6 +968,7 @@ def cmd_run(args):
                     run_meta["max_quiet_ms"] = rater["max_quiet_ms"]
                 if verify_ms is not None:
                     run_meta["verify_ms"] = verify_ms
+                    run_meta["verify_wall_ms"] = verify_wall_ms(rater["spec"])
                     run_meta["verifier_audited"] = audited
                     run_meta["verifier_by_model"] = verified_by
                 if model_resolved:
@@ -918,6 +998,7 @@ def cmd_run(args):
             "started": started.isoformat(), "sealed_at": sealed_at.isoformat(),
             "finished": _store.iso_now(), "focus": args.focus or "",
             "verifier": verify_model or "",
+            "verify_after_panel_ms": verify_after_panel_ms(),
             # Rewritten from scratch when the run ends, and the triage nag reads the finished
             # document: dropped here, the launching chat would be forgotten exactly when it is asked.
             **_store.session_stamp(),
@@ -999,6 +1080,10 @@ def cmd_run(args):
         _report.emit_report(run_dir, meta)
         return 1 if (failed or errored_raters) else 0
     finally:
+        if verify_pool is not None:
+            # Joined, not detached: its threads are joined at interpreter exit anyway, and a
+            # shutdown that claims otherwise hides a failed run's wait for a live verifier.
+            verify_pool.shutdown(wait=True, cancel_futures=True)
         for progress_path, _ in progress_documents:
             try:
                 progress_path.unlink(missing_ok=True)

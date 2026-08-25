@@ -2224,4 +2224,36 @@ assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'
 assert grep -Fq '## Sanctioned launchers' "$ROOT/docs/routing-contract.md"
 
+# --- Row az: one gateway-failure class, read only as a status ----------------
+# The client retries a status; the bench classifies TEXT. One class, and the text side anchored,
+# or a rater's `line 512` reads as a dead gateway and the cell that answered is retried.
+assert grep -Fq 'transient_status() { [[ $1 == 5?? || $1 == 000 ]]; }' "$ROOT/bin/opencode-go"
+assert grep -Fq 'HTTP_SERVER_STATUS = ' "$RB_PKG/catalog.py"
+assert grep -Fq '_catalog.HTTP_SERVER_STATUS' "$RB_PKG/accounts.py"
+assert grep -Fq '_catalog.HTTP_SERVER_STATUS' "$RB_PKG/panel.py"
+# A second spelling is the whole failure this row exists to catch.
+for rb_reader in accounts panel; do
+  if grep -Fq '5[0-9][0-9]' "$RB_PKG/$rb_reader.py"; then
+    fail "row ba: $rb_reader.py spells the status class instead of reading catalog's"
+  fi
+done
+status_class=$(python3 - "$RB_PKG" <<'STATUSPY'
+import re
+import sys
+
+sys.path.insert(0, str(sys.argv[1]) + "/..")
+from rbench import catalog
+
+pattern = re.compile(catalog.HTTP_SERVER_STATUS)
+matched = [text for text in ("HTTP 504 Gateway Timeout", "HTTP/1.1 503", "status: 502",
+                             "curl exit 52 after 3s (HTTP 000)")
+           if pattern.search(text)]
+missed = [text for text in ("the check at line 512 never runs", "504 findings", "HTTP 200")
+          if pattern.search(text)]
+print(f"{len(matched)} {len(missed)}")
+STATUSPY
+)
+assert eq "$status_class" '4 0'
+assert doc_has 'One gateway-failure class, read only as a STATUS'
+
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, and the launchers a headless vendor run may reach the machine through) and match %s\n' "$asserts" "$DOC"

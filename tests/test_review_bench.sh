@@ -764,7 +764,7 @@ pool_names = [rb.short_cell_name(rater) for rater in rb.review_pool_raters()]
 assert sorted(set(pool_names)) == [
     "deepseek", "gem-flash35-high", "gem-flash35-med", "gem-flash36-high", "gem-flash36-med",
     "gem-flash37-high", "gem-flash37-med",
-    "gem-pro", "grok", "kimi", "opus-high-bare", "opus-low", "opus-low-bare", "opus-med",
+    "gem-pro", "kimi", "opus-high-bare", "opus-low", "opus-low-bare", "opus-med",
     "opus-med-bare", "sol-high", "sol-high-bare", "sol-low", "sol-low-bare", "sol-max",
     "sol-max-bare", "sol-med-bare", "sol-xhigh", "sol-xhigh-bare",
 ], sorted(set(pool_names))
@@ -1313,7 +1313,9 @@ try:
         124, "", "rater timed out after 900s", {"spec": "agy-pro-high-skill"}
     ) is None
     assert rb.cell_retry_cause(1, "", "gateway timeout", {"spec": "oc-kimik3"}) is None
-    assert rb.cell_retry_cause(1, "", "gateway said 503", {"spec": "oc-kimik3"}) == "server error"
+    assert rb.cell_retry_cause(
+        1, "", "gateway said HTTP 503", {"spec": "oc-kimik3"}
+    ) == "server error"
     assert rb.cell_retry_cause(
         1, "", "GoUsageLimitError limitName=opencode-plan", {"spec": "oc-kimik3"}
     ) is None
@@ -1590,6 +1592,62 @@ assert not re.search(r"\d{2}:\d{2}", chain_header), chain_header
 # The cell that RAN longest is the gemini one, and naming it would send the reader to tune a cap
 # that was never the panel's cost.
 assert "gem-pro" not in chain_header, chain_header
+# Verification now starts as each cell lands, so another cell's verify_ms is time the wall may
+# never have paid for: subtracting all of it drove LOST negative and dropped the row from every
+# report exactly when queueing was worst. The run records what its verification actually added as
+# ONE span; a record written before the overlap carries none and stays serial.
+overlap_lost_meta = {
+    "verify_after_panel_ms": 0,
+    "run_id": "overlap-lost", "tier": "T2",
+    "raters": ["oc-kimik3", "oc-kimik3#2", "oc-dsv4flash", "agy-pro-high-skill"],
+    "rater_runs": [
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+         "duration_ms": 60_000, "verify_ms": 600_000, "verify_wall_ms": 0},
+        {"rater": "oc-kimik3#2", "side": "opencode", "exit_code": 0, "findings": 1,
+         "duration_ms": 60_000, "verify_ms": 600_000, "verify_wall_ms": 0},
+        {"rater": "oc-dsv4flash", "side": "opencode", "exit_code": 0, "findings": 1,
+         "duration_ms": 60_000, "verify_ms": 600_000, "verify_wall_ms": 0},
+        {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 0,
+         "duration_ms": 660_000},
+    ],
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:25:00Z",
+}
+overlap_lost_header = rb.report_lines(duration_dir, overlap_lost_meta)[0]
+assert overlap_lost_header.endswith("14.0 min LOST"), overlap_lost_header
+# Read as a serial pass the same run subtracts thirty verifier minutes it never waited, which is
+# a negative remainder — and a negative one is below every threshold, so the row that names the
+# queueing disappears from the report that needed it most.
+serial_lost_meta = json.loads(json.dumps(overlap_lost_meta))
+for serial_row in serial_lost_meta["rater_runs"]:
+    serial_row.pop("verify_wall_ms", None)
+serial_lost_meta.pop("verify_after_panel_ms")
+serial_lost_header = rb.report_lines(duration_dir, serial_lost_meta)[0]
+assert "LOST" not in serial_lost_header, serial_lost_header
+# Cells verify SIDE BY SIDE, so their remainders are not a sum: three cells sharing five minutes
+# past the panel held the run open for five, and pricing that span once per cell subtracts fifteen
+# — negative again, and the row vanishes again.
+shared_lost_meta = json.loads(json.dumps(overlap_lost_meta))
+shared_lost_meta["verify_after_panel_ms"] = 300_000
+for shared_row in shared_lost_meta["rater_runs"]:
+    if shared_row["side"] == "opencode":
+        shared_row["verify_wall_ms"] = 300_000
+shared_lost_header = rb.report_lines(duration_dir, shared_lost_meta)[0]
+assert shared_lost_header.endswith("9.0 min LOST"), shared_lost_header
+# And the chain cell's own verification counts for what it held the RUN open, not for how long it
+# ran: read whole, a cell that verified beside the panel wears minutes the wall never paid.
+chain_verify_meta = {
+    "run_id": "chain-verify", "tier": "T2", "raters": ["oc-kimik3", "agy-pro-high-skill"],
+    "verify_after_panel_ms": 60_000,
+    "rater_runs": [
+        {"rater": "oc-kimik3", "side": "opencode", "exit_code": 0, "findings": 1,
+         "duration_ms": 600_000, "verify_ms": 600_000, "verify_wall_ms": 60_000},
+        {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 0, "findings": 0,
+         "duration_ms": 300_000},
+    ],
+    "started": "2026-08-22T00:00:00Z", "finished": "2026-08-22T00:12:00Z",
+}
+chain_verify_header = rb.report_lines(duration_dir, chain_verify_meta)[0]
+assert "10.0 min kimi + 1.0 min verify" in chain_verify_header, chain_verify_header
 
 
 # `True` is an int in Python and these numbers come back out of a file anyone can hand-edit: a
@@ -1678,7 +1736,7 @@ shape_rows = [
      "duration_ms": 60_000},
     {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0, "duration_ms": 30_000},
     {"rater": "oc-grok45-low", "side": "opencode", "exit_code": 1, "errored": True,
-     "duration_ms": 45_000, "stderr": "gateway returned 503"},
+     "duration_ms": 45_000, "stderr": "gateway returned HTTP 503"},
     {"rater": "oc-grok45-low#2", "side": "opencode", "not_run": True},
     {"rater": "agy-pro-high-skill", "side": "agy", "exit_code": 124, "errored": True,
      "duration_ms": 900_000, "timeout_s": 900, "stderr": "rater timed out after 900s"},
@@ -1810,7 +1868,7 @@ retry_meta = {
     "run_id": "retry", "tier": "T1", "raters": ["sol-high"],
     "rater_runs": [
         {"rater": "sol-high", "side": "codex", "exit_code": 1, "errored": True,
-         "duration_ms": 45_000, "stderr": "gateway returned 503"},
+         "duration_ms": 45_000, "stderr": "gateway returned HTTP 503"},
         {"rater": "sol-high", "side": "codex", "exit_code": 0, "findings": 1,
          "duration_ms": 90_000, "retry_of": "server error"},
     ],
@@ -2234,11 +2292,18 @@ for text, expected in (
     ("opencode returned empty content (finish_reason='length')", "bad output"),
     ("opencode stopped before reviewing", "bad output"),
     ("the model is at capacity", "capacity"),
-    ("gateway said 503", "server error"),
+    ("gateway said HTTP 503", "server error"),
     # A cell that died on its own clock: our own two kills are named by their status, never off
     # wording every provider spells its own way.
     ("Error: timeout waiting for response", "timeout"),
+    # The gateway's own 5xx family, named as one cause so the cell earns the retry the client
+    # used to take on its own: a 504 is the gateway timing out, not our cap expiring. Read as a
+    # STATUS and nowhere else — a rater citing a line number is not a dead gateway.
+    ("HTTP 504 Gateway Timeout", "server error"),
+    ("HTTP 520 unknown error", "server error"),
+    ("curl exited with HTTP 000", "server error"),
     ("504 Gateway Timeout", "timeout"),
+    ("the guard at line 512 never runs", "unclassified"),
     ("cannot review the root commit", "root commit"),
     ('a tool required the "command" permission that headless runs cannot grant', "permission"),
     ("error: the argument '--commit <SHA>' cannot be used with '[PROMPT]'", "bad command"),
@@ -2372,8 +2437,15 @@ for duplicate in ("sol-high,sol-high", "sol-high x2,sol-high", "sol-high x2,sol-
         assert "duplicates" in str(exc), (duplicate, exc)
     else:
         raise AssertionError(f"accepted duplicate rater: {duplicate}")
-expected_oc_floor = ["oc-kimik3 x2", "oc-grok45-low x2", "oc-dsv4flash x2"]
-expected_oc_floor_max = ["oc-kimik3 x3", "oc-grok45-low x3", "oc-dsv4flash x3"]
+# grok-4.5 is retired (79% of attempts fail holding a gate slot) and deepseek-v4-flash runs
+# single (its second copy added a panel-unique defect once in 100 runs) — review-waits audit,
+# 2026-08-24. The leg must also never outgrow the OpenCode gate: cells past
+# OPENCODE_MAX_CONCURRENCY only wait for the others.
+expected_oc_floor = ["oc-kimik3 x2", "oc-dsv4flash"]
+expected_oc_floor_max = ["oc-kimik3 x3", "oc-dsv4flash"]
+for oc_leg in (expected_oc_floor, expected_oc_floor_max):
+    assert len(rb.parse_raters(",".join(oc_leg))) <= rb.launch.OPENCODE_MAX_CONCURRENCY, oc_leg
+assert not any("grok" in cell for cell in rb.OPENCODE_REVIEW_LEG + rb.OPENCODE_REVIEW_LEG_MAX)
 # The Gemini block is a per-tier ladder because it is billed per run against a subscription
 # window: a panel's Gemini price is the sum of its cells, so a shared composition would spend
 # T3's quota on a T0 review. Pro is the priciest cell per defect it finds, so it enters only where
@@ -2449,14 +2521,17 @@ expected_tier_max_cells = {
         "sol-high", "sol-max x2", "sol-max-bare", "sol-xhigh-bare",
     ],
 }
+# Recomputed 2026-08-25 over the four commits the figures are measured on, after the OpenCode leg
+# lost grok-4.5 and the second deepseek copy: a trimmed panel finds less, and a table still
+# advertising the old panel's coverage is the tiers lying about what they buy.
 expected_coverage_pct = {
-    "T0": {"eco": 40.5, "max": 46.3},
-    "T1": {"eco": 47.9, "max": 55.6},
-    "T2": {"eco": 58.2, "max": 67.3},
-    "T3": {"eco": 70.1, "max": 78.5},
+    "T0": {"eco": 34.2, "max": 37.5},
+    "T1": {"eco": 42.6, "max": 48.1},
+    "T2": {"eco": 53.7, "max": 60.7},
+    "T3": {"eco": 66.1, "max": 72.3},
 }
-oc_counts = Counter({"oc-kimik3": 2, "oc-grok45-low": 2, "oc-dsv4flash": 2})
-oc_counts_max = Counter({"oc-kimik3": 3, "oc-grok45-low": 3, "oc-dsv4flash": 3})
+oc_counts = Counter({"oc-kimik3": 2, "oc-dsv4flash": 1})
+oc_counts_max = Counter({"oc-kimik3": 3, "oc-dsv4flash": 1})
 agy_counts = {
     "T0": Counter({
         "agy-flash35-high-skill": 1, "agy-flash35-medium-skill": 1,
@@ -2710,7 +2785,6 @@ for standalone_grok_spec in ("grok-low", "grok-medium", "grok-high"):
         assert "invalid rater" in str(exc) and "standalone" not in str(exc), exc
     else:
         raise AssertionError(f"accepted a standalone grok rater: {standalone_grok_spec}")
-rb.refuse_retired_cells([rb.parse_rater("oc-grok45-low")])
 standalone_grok = subprocess.run(
     [sys.argv[1], "run", "HEAD", "--repo", str(repo), "--raters", "grok-low"],
     text=True,
@@ -2761,6 +2835,9 @@ for dead, needle in (
     ("haiku-medium", "0 defects"),
     ("oc-glm52", "3 true"),
     ("oc-grok45-medium", "one-line announce"),
+    # Retired whole on the 2026-08-24 waits audit.
+    ("oc-grok45-low", "79% of 1166"),
+    ("oc-grok45-high", "retired with the model"),
     ("agy-flash36-low-skill", "0 true"),
 ):
     try:
@@ -2769,6 +2846,53 @@ for dead, needle in (
         assert dead in str(exc) and needle in str(exc), exc
     else:
         raise AssertionError(f"accepted a cell the corpus retired: {dead}")
+# Every copy goes with the retired cell: the WORTHLESS key is matched with the #N attempt
+# suffix stripped, so a second copy cannot slip back in under its own spec.
+try:
+    rb.refuse_retired_cells(rb.parse_raters("oc-grok45-low x2"))
+except RuntimeError as exc:
+    assert "oc-grok45-low#2" in str(exc) and "79% of 1166" in str(exc), exc
+else:
+    raise AssertionError("accepted a copy of a retired cell")
+# And every spelling of the model, not the efforts someone remembered to list: a review-profile
+# suffix is the same model behind the same gateway, so the retirement is keyed by model.
+for grok_spelling in ("oc-grok45-low-google", "oc-grok45-high-anthropic", "oc-grok45-medium-google"):
+    try:
+        rb.refuse_retired_cells([rb.parse_rater(grok_spelling)])
+    except RuntimeError as exc:
+        assert grok_spelling in str(exc) and "grok-4.5 is retired" in str(exc), exc
+    else:
+        raise AssertionError(f"accepted a spelling of a retired model: {grok_spelling}")
+assert set(rb.WORTHLESS_MODELS) == {"oc-grok45"}, rb.WORTHLESS_MODELS
+# A live model's profile spellings are untouched by that key.
+assert not rb.measured_worthless(rb.parse_rater("oc-dsv4flash-low-google"))
+# A panel may never select more OpenCode cells than the gate admits at once: an overflow cell
+# cannot start until the first five release a slot, so it only stretches the run by its own
+# duration (406 recorded runs selected 6-7 against a gate of 5). Other sides pass untouched.
+gate_panel = rb.parse_raters("oc-kimik3 x4, opus-medium, oc-dsv4flash x3, sol-high")
+gate_kept, gate_over = rb.launch.cap_opencode_panel(gate_panel)
+assert [r["spec"] for r in gate_kept] == [
+    "oc-kimik3", "oc-kimik3#2", "oc-kimik3#3", "oc-kimik3#4", "opus-medium",
+    "oc-dsv4flash", "sol-high",
+], [r["spec"] for r in gate_kept]
+assert [spec for spec, _ in gate_over] == ["oc-dsv4flash#2", "oc-dsv4flash#3"], gate_over
+assert all(
+    f"gate admits {rb.launch.OPENCODE_MAX_CONCURRENCY} concurrent cells" in reason
+    for _, reason in gate_over
+), gate_over
+assert rb.launch.cap_opencode_panel(gate_kept) == (gate_kept, [])
+# A top-level def never opens on the last line of the function above it: the gate cap arrived
+# glued to `opencode_env`, and the next reader edits one function while reading another's name.
+for module_path in sorted(
+    (pathlib.Path(rb.__file__).parent).glob("*.py")
+):
+    module_lines = module_path.read_text().splitlines()
+    glued = [
+        index + 1
+        for index, line in enumerate(module_lines)
+        if index and line.startswith(("def ", "class ")) and module_lines[index - 1].startswith((" ", "\t"))
+    ]
+    assert not glued, f"{module_path.name}: {glued}"
 retired_grok = subprocess.run(
     [
         sys.argv[1], "run", "HEAD", "--repo", str(repo),
@@ -3932,6 +4056,10 @@ rb.run_opencode(
 )
 assert rb.opencode_profiles() == ["-"] and rb.accounts.pool_account("opencode", set()) == \
     "opencode-go" and default_profile_capture.read_text().strip() == "unset"
+# One request per gate hold: opencode-go's own 5xx retries sleep 15-45s inside the slot this
+# cell occupies, while run_rater_task already retries the same transient failure off-gate.
+rater_args = (work / "opencode-args").read_text().splitlines()
+assert rater_args[rater_args.index("--retries") + 1] == "1", rater_args
 del os.environ["OPENCODE_GO_PROFILE"]
 
 profiles_path.parent.mkdir(parents=True)
@@ -4813,6 +4941,22 @@ assert not rb.opencode_transient_failure(
     'HTTP 429 {"error":{"type":"GoUsageLimitError","message":"Weekly usage limit reached"}}'
 )
 assert not rb.opencode_transient_failure("opencode returned malformed JSON envelope")
+# The bench asks opencode-go for ONE attempt per gate hold, so its own transient class has to
+# cover everything the client's `transient_status` retried: the whole 5xx family and a
+# curl-level HTTP 000. Narrower, a 504 or a dropped connection fails the cell outright.
+for transient_status in ("HTTP 504 Gateway Timeout", "HTTP 520", "HTTP 522", "HTTP 000",
+                         "HTTP/1.1 502 Bad Gateway", "status: 500",
+                         "curl: (52) empty reply — HTTP 000"):
+    assert rb.opencode_transient_failure(transient_status), transient_status
+# And only where the number IS a status: a rater's prose cites line numbers, and a cell that
+# answered would be launched again over the word "line".
+for prose_number in ("the guard at line 512 never runs",
+                     "cli.py:508 caps 500 panels", "opencode returned 512 findings"):
+    assert not rb.opencode_transient_failure(prose_number), prose_number
+# A spent plan says so in words and stays a wall whatever status carries it.
+assert not rb.opencode_transient_failure(
+    'HTTP 503 {"error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached"}}'
+)
 assert rb.codex_transient_failure("", "Selected model is at capacity")
 assert not rb.codex_transient_failure("", "HTTP 429 usage limit exceeded")
 
@@ -6064,10 +6208,20 @@ for locked in sorted(rb.OPENCODE_EFFORT_REQUIRED_MODELS):
     assert locked not in rb.verifier_choices()
     try:
         rb.verifier_model(f"{locked}-low")
-    except ValueError as exc:
-        assert "cannot carry an effort" in str(exc), exc
+    except RuntimeError as exc:
+        # Every model on this list is retired today, so the retirement answers first — the
+        # effort rule itself is exercised below on a model the pool still launches.
+        assert "retired by measurement" in str(exc), exc
     else:
-        raise AssertionError("the verifier prompt suppresses reasoning; an effort is a lie")
+        raise AssertionError("a retired model cannot verify at any effort")
+# The rule the list above can no longer reach, since every model on it is retired: an effort
+# spelled on a LIVE verifier is refused for what it claims about the prompt.
+try:
+    rb.verifier_model(f"{rb.OPENCODE_VERIFIER}-low")
+except ValueError as exc:
+    assert "cannot carry an effort" in str(exc), exc
+else:
+    raise AssertionError("the verifier prompt suppresses reasoning; an effort is a lie")
 assert rb.verifier_model(rb.OPENCODE_VERIFIER) == rb.OPENCODE_VERIFIER
 assert rb.OPENCODE_VERIFIER in rb.verifier_choices()
 # A rater runs once, a verifier runs once per finding against a far shorter deadline, so a
@@ -6504,7 +6658,7 @@ assert len(review_log_rows) == 1, review_log_rows
 review_log_event = review_log_rows[0]
 assert review_log_event["event"] == "run" and review_log_event["tier"] == "T1"
 assert review_log_event["run_id"] == review_meta["run_id"]
-assert review_log_event["findings"] == 6
+assert review_log_event["findings"] == 3
 assert review_log_event["confirmed"] == review_log_event["duplicate"] == 0
 assert review_log_event["false_positive"] == review_log_event["token_estimate"] == 0
 assert all(cell["status"] == "completed" for cell in review_log_event["cells"])
@@ -6548,7 +6702,7 @@ opencode_specs = [
 assert filtered_meta["verifier"] == rb.OPENCODE_VERIFIER
 assert sum(
     row.get("verifier_dropped", 0) for row in filtered_meta["rater_runs"]
-) == len(opencode_specs) == 6
+) == len(opencode_specs) == 3
 assert all(rb.read_jsonl(filtered_run / f"findings-{rater}.jsonl") == []
            for rater in opencode_specs)
 assert all(
@@ -6566,7 +6720,7 @@ assert all(
 # Who judged, not just how many were dropped: the chain advances per finding, so a report
 # naming no model leaves the reader unable to tell which verifier produced the rejections.
 filtered_report = "\n".join(rb.report_lines(filtered_run, filtered_meta, []))
-assert "verifier:     deepseek 6/6" in filtered_report, filtered_report
+assert "verifier:     deepseek 3/3" in filtered_report, filtered_report
 assert "fixture finding" not in filtered_output
 assert rb.panel.bench_summary(filtered_run, filtered_meta)["findings"] == 0
 
@@ -11346,7 +11500,7 @@ raw_opencode_store = work / "raw-opencode-claudeb"
 os.environ["CLAUDEB_DIR"] = str(raw_opencode_store)
 os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-drop.json")
 raw_opencode_rc = rb.cli.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
+    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-dsv4flash",
     leg=False, verify=None, no_verify=False, auto=None, focus=None,
 ))
 raw_opencode_run = next((raw_opencode_store / "worker-stats" / "benches").iterdir())
@@ -11362,6 +11516,25 @@ assert all(
     and row["verifier_dropped"] == 0 and "verify_ms" not in row
     for row in raw_opencode_meta["rater_runs"]
 ), raw_opencode_meta["rater_runs"]
+
+# A hand-written panel is the bench's ungated surface (DIAGNOSTICS.md): seven copies of one cell
+# on one commit is exactly what it is for, and the gate cap belongs to the composition nobody
+# chose cell by cell. The cap trimmed these silently, with a `skipped` line as the only trace.
+ungated_store = work / "ungated-panel-claudeb"
+os.environ["CLAUDEB_DIR"] = str(ungated_store)
+with contextlib.redirect_stdout(io.StringIO()):
+    ungated_rc = rb.cli.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3 x7",
+        leg=False, verify=None, no_verify=False, auto=None, focus=None,
+    ))
+ungated_meta = json.loads(
+    (next((ungated_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert ungated_rc == 0, ungated_meta
+assert len(ungated_meta["raters"]) == 7, ungated_meta["raters"]
+assert sorted(ungated_meta["completed_raters"]) == sorted(ungated_meta["raters"]), ungated_meta
+assert not [row for row in ungated_meta.get("skipped") or () if row.get("state") == "gate"], \
+    ungated_meta.get("skipped")
 
 # Asked for by name it is refused rather than quietly ignored: a bench row that came back raw
 # while its caller believes it was checked is the seam this whole rule exists to close.
@@ -11382,7 +11555,7 @@ assert "review-bench review <target> --tier <tier>" in bench_verify_refusal, \
 refused_verify_store = work / "refused-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(refused_verify_store)
 refused_verify_rc = rb.cli.cmd_run(argparse.Namespace(
-    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-grok45-low",
+    repo=str(pin_repo), commitish=pin_sha, raters="oc-kimik3,oc-dsv4flash",
     leg=False, verify=None, no_verify=True, auto=None, focus=None,
 ))
 refused_verify_run = next((refused_verify_store / "worker-stats" / "benches").iterdir())
@@ -11487,8 +11660,187 @@ assert agy_raw_rc == 0, agy_raw_meta
 assert agy_raw_meta["verifier"] == "", agy_raw_meta["verifier"]
 assert len(rb.read_jsonl(agy_raw_run / f"findings-{agy_verify_spec}.jsonl")) == 1
 assert not list(agy_raw_run.glob("verified-*.jsonl")), "a refused verifier checked agy findings"
+
+# Verification overlaps the panel: an early cell's findings are judged while the slowest cell
+# is still running, not in a serial phase after every cell — that phase measured 415 wall
+# minutes (28% of all recorded excess). The slow cell here WAITS for the verifier's capture
+# file, so a driver that verifies only after the whole panel waits the marker out and fails.
+overlap_capture = work / "overlap-opencode-args"
+overlap_ambient_capture = os.environ["OPENCODE_CAPTURE_ARGS"]
+os.environ["OPENCODE_CAPTURE_ARGS"] = str(overlap_capture)
+overlap_slow_spec = "agy-flash36-high-skill"
+overlap_seen = {}
+
+
+def overlap_agy_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    if rater["spec"] != overlap_slow_spec:
+        return 0, 1, json.dumps({
+            "severity": "P2", "file": "pinned.txt", "line": 1,
+            "summary": f"{rater['spec']} fixture finding",
+        }), "", []
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline and not overlap_capture.exists():
+        time.sleep(0.05)
+    overlap_seen["verifier_ran_during_panel"] = overlap_capture.exists()
+    return 0, 1, json.dumps({
+        "severity": "P3", "file": "pinned.txt", "line": 2,
+        "summary": "slow cell fixture finding",
+    }), "", []
+
+
+rb.SIDE_RUNNERS["agy"] = overlap_agy_runner
+os.environ["CLAUDEB_DIR"] = str(work / "verify-overlap-claudeb")
+os.environ["OPENCODE_FIXTURE_STDOUT"] = str(fixtures / "opencode-verify-keep.json")
+with contextlib.redirect_stdout(io.StringIO()), \
+        fixture_tier([agy_verify_spec, overlap_slow_spec]) as overlap_tier:
+    overlap_rc = rb.cli.cmd_run(argparse.Namespace(
+        repo=str(pin_repo), commitish=pin_sha, raters=None, tier=overlap_tier,
+        leg=False, verify=None, no_verify=False, auto=None, focus=None,
+    ))
+os.environ["OPENCODE_CAPTURE_ARGS"] = overlap_ambient_capture
+overlap_run = next((work / "verify-overlap-claudeb" / "worker-stats" / "benches").iterdir())
+overlap_meta = json.loads((overlap_run / "meta.json").read_text())
+assert overlap_rc == 0, overlap_meta
+assert overlap_seen.get("verifier_ran_during_panel") is True, \
+    "the verifier only ran after the whole panel finished"
+assert sorted(overlap_meta["completed_raters"]) == sorted(
+    [agy_verify_spec, overlap_slow_spec]
+), overlap_meta
+# And what the overlap costs the WALL is recorded per cell, because the report prices the run by
+# subtracting the other cells' verification from it: a verification that ran while the panel was
+# still going added none of its own minutes, and subtracting them all reads as a negative
+# remainder — which is silently below every threshold.
+overlap_rows = {row["rater"]: row for row in overlap_meta["rater_runs"]}
+overlap_verified = overlap_rows[agy_verify_spec]
+assert type(overlap_verified["verify_wall_ms"]) is int, overlap_verified
+assert 0 <= overlap_verified["verify_wall_ms"] <= overlap_verified["verify_ms"], overlap_verified
 rb.SIDE_RUNNERS["agy"] = tier_runner
 os.environ["OPENCODE_FIXTURE_STDOUT"] = agy_verify_ambient_stdout
+
+# One ceiling over every verifier call in flight, whatever cell asked for it: verification used to
+# run one cell at a time, so `verify_findings`' own thread count WAS that ceiling. Verified as
+# cells land, five cells' pools are five times it — and the Gemini link runs off the OpenCode gate
+# by design, so nothing else bounds the geminib processes it spawns against the accounts the
+# panel's own agy cells are still using.
+slot_live = {"now": 0, "peak": 0}
+slot_lock = threading.Lock()
+slot_real_gemini = rb.verify.gemini_verify
+
+
+def slot_gemini_verify(prompt_text, index):
+    with slot_lock:
+        slot_live["now"] += 1
+        slot_live["peak"] = max(slot_live["peak"], slot_live["now"])
+    time.sleep(0.2)
+    with slot_lock:
+        slot_live["now"] -= 1
+    return {"code_matches": False, "is_defect": False, "why": "fixture verifier"}, True, False
+
+
+rb.verify.gemini_verify = slot_gemini_verify
+slot_findings = [
+    {"file": "pinned.txt", "line": line, "severity": "P3", "summary": f"claim {line}"}
+    for line in range(1, 6)
+]
+slot_tree = rb.repo_tree(pin_repo, pin_sha)
+gate_held = 0
+slot_threads = []
+try:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as slot_pool:
+        slot_futures = [
+            slot_pool.submit(rb.verify.verify_findings, slot_findings, pin_repo, pin_sha,
+                             rb.OPENCODE_VERIFIER, slot_tree, "agy")
+            for _ in range(4)
+        ]
+        for slot_future in slot_futures:
+            slot_future.result()
+    assert slot_live["peak"] > 1, slot_live
+    assert slot_live["peak"] <= rb.launch.OPENCODE_MAX_CONCURRENCY, slot_live
+
+    # And the ceiling counts CALLS, not queues: an OpenCode verify waiting for the gateway gate
+    # holds no slot, or the gate's own queue starves every other side of the ceiling it shares —
+    # the agy link that exists to answer off the gateway would wait behind it.
+    gate_probe = {"done": False}
+    for _ in range(rb.launch.OPENCODE_MAX_CONCURRENCY):
+        rb.launch.OPENCODE_GATE.acquire(0)
+        gate_held += 1
+    queued = threading.Thread(target=rb.verify.verify_findings, args=(
+        slot_findings, pin_repo, pin_sha, rb.OPENCODE_VERIFIER, slot_tree, "opencode"))
+    queued.start()
+    slot_threads.append(queued)
+
+    def slot_probe():
+        rb.verify.verify_findings(slot_findings[:1], pin_repo, pin_sha, rb.OPENCODE_VERIFIER,
+                                  slot_tree, "agy")
+        gate_probe["done"] = True
+
+    prober = threading.Thread(target=slot_probe)
+    prober.start()
+    slot_threads.append(prober)
+    prober.join(30)
+    assert gate_probe["done"], "an agy verify waited on a slot a gate-queued cell was holding"
+finally:
+    rb.verify.gemini_verify = slot_real_gemini
+    for _ in range(gate_held):
+        rb.launch.OPENCODE_GATE.release()
+    for slot_thread in slot_threads:
+        slot_thread.join(60)
+
+# The map's production state is what a retune reads to rebuild the leg, so a model refused by the
+# launcher may not still be standing in that sentence.
+production_state = (repo / "docs/opencode-model-map.md").read_text().split(
+    "## Production state", 1
+)[1]
+leg_sentence = production_state.split("`OPENCODE_REVIEW_LEG` = ", 1)[1].split(".", 1)[0]
+diagnostics = (repo / "docs/DIAGNOSTICS.md").read_text()
+for retired_model in rb.WORTHLESS_MODELS:
+    retired_word = rb.model_name_parts(retired_model)[0]
+    assert retired_word not in leg_sentence, leg_sentence
+    assert retired_word in production_state, retired_model
+    # The map answers for what the leg is; the system map teaches specs a reader will type, and
+    # a refused one taught there costs a run before the refusal says so.
+    assert retired_model not in diagnostics, retired_model
+
+# The waits analysis splits one run's excess across every mechanism it funds, so its run counts
+# overlap by construction — and the overlapping total it states is only readable if it is the sum
+# of its own table.
+waits_doc = (repo / "docs/analysis/review-waits-2026-08-24.md").read_text()
+waits_over, waits_runs = re.search(
+    r"they sum to (\d+) over those (\d+) runs", waits_doc
+).groups()
+assert re.search(rf"\*\*{waits_runs} runs\*\*|{waits_runs} runs had excess", waits_doc), \
+    waits_runs
+waits_mechanisms = re.findall(r"^\| [^|]+\| (\d+) \| ([0-9.]+) \|", waits_doc, re.M)
+assert len(waits_mechanisms) >= 8, waits_mechanisms
+assert sum(int(runs) for runs, _ in waits_mechanisms) == int(waits_over), waits_mechanisms
+
+waits_stats = types.ModuleType("waits_stats")
+waits_stats.__file__ = str(repo / "docs/analysis/review-waits-stats.py")
+exec(compile((repo / "docs/analysis/review-waits-stats.py").read_text(),
+             waits_stats.__file__, "exec"), waits_stats.__dict__)
+# A store with nothing to report is the analyzer's normal first answer on a fresh machine.
+assert waits_stats.pct([], 0.9) == 0
+# A store this machine does not have is the analyzer's first answer on a fresh checkout, and a
+# traceback out of `iterdir` reads as a broken analyzer rather than as a path to pass.
+try:
+    waits_stats.load_runs(work / "no-bench-store-here")
+except SystemExit as exc:
+    assert "no bench store at" in str(exc), exc
+else:
+    raise AssertionError("a missing bench store was read as an empty one")
+assert waits_stats.pct([1], 0.9) == 1
+assert waits_stats.pct(list(range(1, 11)), 0.9) == 9
+# And a cell that walked accounts failed on the ones it left, not on the one that answered.
+waits_started = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
+waits_views = waits_stats.cell_views([
+    {"rater": "oc-kimik3", "side": "opencode", "state": "failed", "exit_code": 1,
+     "account": "walked-account", "duration_ms": 30_000},
+    {"rater": "oc-kimik3", "side": "opencode", "state": "completed", "exit_code": 0,
+     "findings": 1, "account": "answering-account", "duration_ms": 10_000},
+], waits_started)
+assert len(waits_views) == 1, waits_views
+assert waits_views[0]["account"] == "answering-account", waits_views[0]
+assert waits_views[0]["attempt_accounts"] == [("walked-account", 30.0)], waits_views[0]
 
 explicit_verify_store = work / "explicit-review-verify-claudeb"
 os.environ["CLAUDEB_DIR"] = str(explicit_verify_store)
@@ -12950,28 +13302,28 @@ os.environ["CLAUDEB_DIR"] = str(cooldown_wiring_store)
 cooldown_wiring_state = cooldown_wiring_store / "worker-stats"
 cooldown_wiring_state.mkdir(parents=True)
 (cooldown_wiring_state / "gateway-cooldown.json").write_text(json.dumps({
-    "oc-grok45-low": {"until": "2099-01-01T00:00:00+00:00", "since": "2099-01-01T00:00:00+00:00",
-                      "reason": "3 attempt(s) failed"},
+    "oc-dsv4flash": {"until": "2099-01-01T00:00:00+00:00", "since": "2099-01-01T00:00:00+00:00",
+                     "reason": "3 attempt(s) failed"},
 }))
 cooldown_wiring_stdout = io.StringIO()
 with contextlib.redirect_stdout(cooldown_wiring_stdout), contextlib.redirect_stderr(io.StringIO()):
     rb.cli.cmd_run(argparse.Namespace(
         repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
-        raters="oc-grok45-low x3", leg=False, verify=None, auto=None, focus=None,
+        raters="oc-dsv4flash x3", leg=False, verify=None, auto=None, focus=None,
     ))
 assert "cooling until" in cooldown_wiring_stdout.getvalue(), cooldown_wiring_stdout.getvalue()
 cooldown_wiring_meta = json.loads(
     (next((cooldown_wiring_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
 )
 assert cooldown_wiring_meta["raters"] == \
-    ["oc-grok45-low", "oc-grok45-low#2", "oc-grok45-low#3"], cooldown_wiring_meta
-assert cooldown_wiring_meta["completed_raters"] == ["oc-grok45-low"], cooldown_wiring_meta
+    ["oc-dsv4flash", "oc-dsv4flash#2", "oc-dsv4flash#3"], cooldown_wiring_meta
+assert cooldown_wiring_meta["completed_raters"] == ["oc-dsv4flash"], cooldown_wiring_meta
 assert json.loads((cooldown_wiring_state / "gateway-cooldown.json").read_text()) == {}, \
     "the canary answered and the run left the cell cooling anyway"
 
 
 def cooldown_wiring_failing_runner(rater, repo_path, commit, focus, run_dir, diff, account):
-    return 1, 1, "", "gateway 502", []
+    return 1, 1, "", "gateway HTTP 502", []
 
 
 for cooldown_wiring_side in rb.SIDE_RUNNERS:
@@ -12979,10 +13331,10 @@ for cooldown_wiring_side in rb.SIDE_RUNNERS:
 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
     rb.cli.cmd_run(argparse.Namespace(
         repo=str(agy_gate_repo), commitish=None, worktree=True, paths=None,
-        raters="oc-grok45-low x2", leg=False, verify=None, auto=None, focus=None,
+        raters="oc-dsv4flash x2", leg=False, verify=None, auto=None, focus=None,
     ))
 assert list(json.loads((cooldown_wiring_state / "gateway-cooldown.json").read_text())) == \
-    ["oc-grok45-low"], "a run whose every gateway attempt failed recorded no wait"
+    ["oc-dsv4flash"], "a run whose every gateway attempt failed recorded no wait"
 for cooldown_wiring_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[cooldown_wiring_side] = agy_gate_runner
 
@@ -14320,9 +14672,8 @@ rows = [
     ("board-shared", "oc-kimik3", "oc-kimik3", "a" * 40, 1, 3, 0, 20_000),
     ("board-repeat", "oc-kimik3#2", "oc-kimik3", "b" * 40, 9, 0, 2, 40_000),
     ("board-solo", "oc-glm52", "oc-glm52", "b" * 40, 5, 0, 0, 700_000),
-    # One family under three spellings, of which the pool launches the first alone. Named
-    # against the pool alone all three are "grok", so the two the pool cannot launch would take
-    # the live cell's own name away from it.
+    # One retired family under three spellings, none of which any tier launches now. Named
+    # off the family alone all three are "grok"; the board still has to keep them apart.
     ("board-grok", "oc-grok45-low", "oc-grok45", "f" * 40, 1, 0, 0, 100_000),
     ("board-grok", "oc-grok45-medium", "oc-grok45", "f" * 40, 1, 0, 0, 110_000),
     ("board-grok", "oc-grok45", "oc-grok45", "f" * 40, 1, 0, 0, 120_000),
@@ -14437,7 +14788,7 @@ assert board_has '[.[] | .display] | length == (unique | length)'
 assert board_has '.[] | select(.cell == "oc-grok45-low") | .display == "grok"'
 assert board_has '.[] | select(.cell == "oc-grok45-medium") | .display != "grok"'
 assert board_has '.[] | select(.cell == "oc-grok45") | .display == "oc-grok45"'
-assert board_has '.[] | select(.cell == "oc-grok45-low") | .in_panel == true'
+assert board_has '.[] | select(.cell == "oc-grok45-low") | .in_panel == false'
 assert board_has '.[] | select(.cell == "oc-grok45-medium") | .in_panel == false'
 # Against the panel of the cell's OWN tier: a cell measured at T0 answers for what T0 launches.
 # A cell no one has adjudicated is still in the panel it is in: membership belongs to the pool,
@@ -14835,8 +15186,7 @@ for tier_budget in "T0 (3 min)" "T1 (6 min)" "T2 (10 min)" "T3 (20 min)"; do
 done
 assert contains "$tiers_table" "eco (default):"
 assert contains "$tiers_table" "max:"
-for cell in "oc-kimik3 x2" "oc-kimik3 x3" "oc-grok45-low x2" "oc-grok45-low x3" \
-  "oc-dsv4flash x2" "oc-dsv4flash x3" agy-pro-high-skill \
+for cell in "oc-kimik3 x2" "oc-kimik3 x3" oc-dsv4flash agy-pro-high-skill \
   "agy-flash35-medium-skill x2" "agy-flash35-high-skill x2" \
   "agy-flash36-medium-skill x2" "agy-flash36-high-skill x2" \
   agy-flash35-medium-skill agy-flash35-high-skill agy-flash36-medium-skill \
@@ -14851,19 +15201,19 @@ assert contains "$tiers_table" \
 assert test "$(grep -Ec '^  (eco \\(default\\)|max):.*agy-flash35-low-skill' <<<"$tiers_table")" -eq 0
 owner_table="$("$SCRIPT" tiers --table 2>&1)"
 assert contains "$owner_table" "T1 max"
-assert contains "$owner_table" "kimi x2, grok x2, deepseek x2"
-assert contains "$owner_table" "kimi x3, grok x3, deepseek x3"
+assert contains "$owner_table" "kimi x2, deepseek"
+assert contains "$owner_table" "kimi x3, deepseek"
 assert contains "$owner_table" "gem-flash35-med, gem-flash35-high, gem-flash36-med, gem-flash36-high x2, gem-flash37-med, gem-pro"
 assert contains "$owner_table" "gem-flash37-med, gem-pro"
 assert contains "$owner_table" "sol-low, sol-low-bare"
 assert contains "$owner_table" "opus-med"
 assert contains "$owner_table" "cover"
 assert contains "$owner_table" "agy-flash35-low-skill:"
-# T0's --max buys three extra OpenCode passes over its eco, so the owner-facing table owes a
+# T0's --max buys an extra OpenCode pass over its eco, so the owner-facing table owes a
 # row for it; a tier whose two compositions are identical still gets one row.
 assert test "$(grep -c '^T0 max' <<<"$owner_table")" -eq 1
 assert contains "$(WORKER_STATS_DIR="$SD" "$SCRIPT" oc-models 2>&1)" \
-  "--raters 'oc-kimik3 x2,oc-grok45-low x2,oc-dsv4flash x2'"
+  "--raters 'oc-kimik3 x2,oc-dsv4flash'"
 max_without_tier="$("$SCRIPT" run HEAD --max 2>&1 || true)"
 assert contains "$max_without_tier" "--max requires --tier"
 tier_guard="$("$SCRIPT" run HEAD --tier T2 2>&1 || true)"

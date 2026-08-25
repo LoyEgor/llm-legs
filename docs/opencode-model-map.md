@@ -154,7 +154,8 @@ preview, and the 2026-08-12/13 figures — including all gate-closing waves — 
 
 ## Production state to reconcile at retune (`bin/review-bench:112-114`)
 
-`OPENCODE_REVIEW_LEG` = kimi-k3 off x2, grok-4.5 low x2 (vendor-dead), ds-flash off x2; verifier
-ds-flash. `WORTHLESS_CELLS` still condemns `oc-kimik27code` ("21 claims over 2 commits, 3 true")
+`OPENCODE_REVIEW_LEG` = kimi-k3 off x2, ds-flash off; verifier ds-flash. grok-4.5 left the leg on
+2026-08-24 and is refused by model in `WORTHLESS_MODELS`, and ds-flash's second copy left with it
+(docs/analysis/review-waits-2026-08-24.md). `WORTHLESS_CELLS` still condemns `oc-kimik27code` ("21 claims over 2 commits, 3 true")
 and `oc-qwen37max` ("18 claims over 2 commits, 4 true") on July data that this campaign overturned
 — lift both at retune. The retune is its own commit (owner rule).

@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import tempfile
+import threading
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -13,6 +14,14 @@ from . import accounts as _accounts
 from . import panel as _panel
 from . import prompts as _prompts
 from . import launch as _launch
+
+# One ceiling over every verifier call in flight, whatever side it answers on and whichever cell
+# asked for it. Verification used to run one cell at a time, so `verify_findings`' own thread
+# count was that ceiling; with cells verified as they land, five cells' pools would be five
+# times it — and the Gemini link deliberately runs off the OpenCode gate, so nothing else caps
+# the geminib processes it would spawn against the accounts live agy cells are still using.
+VERIFY_SLOTS = threading.BoundedSemaphore(_launch.OPENCODE_MAX_CONCURRENCY)
+
 
 def verifier_model(spec):
     """Every refusal a rater faces applies here too, or the cheapest way to run a refused
@@ -413,6 +422,25 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
     asked = False
     gemini_walled = False
     holds_gate = False
+    holds_slot = False
+
+    def take_slot():
+        """Bound the verifier calls in flight, and only while one of them IS in flight.
+
+        Held through the gate's queue instead, the ceiling would ration waiting rather than
+        requests — and a thread blocking on the gate with a slot in hand is the other half of a
+        cycle with one blocking on a slot with the gate in hand.
+        """
+        nonlocal holds_slot
+        if not holds_slot:
+            VERIFY_SLOTS.acquire()
+            holds_slot = True
+
+    def drop_slot():
+        nonlocal holds_slot
+        if holds_slot:
+            holds_slot = False
+            VERIFY_SLOTS.release()
 
     def take_gate():
         """Hold a gateway slot only while this finding is actually on the gateway.
@@ -425,8 +453,10 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
         """
         nonlocal holds_gate
         if not holds_gate:
+            drop_slot()
             _launch.OPENCODE_GATE.acquire(0)
             holds_gate = True
+        take_slot()
 
     def drop_gate():
         """Whatever wall this thread found goes on record before the slot changes hands.
@@ -486,6 +516,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
                 # link exists to outlive would stall the OpenCode cells queued behind it for
                 # as long as the rotation takes.
                 drop_gate()
+                take_slot()
                 judgment, gemini_asked, gemini_walled = gemini_verify(prompt_text, index)
                 asked = asked or gemini_asked
                 if judgment is not None:
@@ -561,6 +592,7 @@ def verify_one(index, finding, repo, sha, model, lines, ref=None, side="opencode
     finally:
         record_opencode_wall()
         drop_gate()
+        drop_slot()
         Path(prompt_file.name).unlink(missing_ok=True)
     row = verify_row(index, finding)
     if judgment is None:

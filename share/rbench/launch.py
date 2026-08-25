@@ -63,6 +63,31 @@ class PriorityGate:
 
 OPENCODE_MAX_CONCURRENCY = max(1, int(os.environ.get("REVIEW_BENCH_OPENCODE_CONCURRENCY", "5")))
 OPENCODE_GATE = PriorityGate(OPENCODE_MAX_CONCURRENCY)
+
+
+def cap_opencode_panel(raters):
+    """Never select more OpenCode cells than the gate admits at once.
+
+    An overflow cell cannot start until one of the first five releases a slot, so it only
+    stretches the panel by its own duration: 406 recorded runs selected 6-7 OpenCode cells
+    against a gate of 5, and the 6th cell was hostage to the rest of the leg every time.
+    Returns (kept, skipped) with the overflow as (spec, reason) rows for the run's record.
+    """
+    kept, skipped, opencode_kept = [], [], 0
+    for rater in raters:
+        if rater["side"] == "opencode" and opencode_kept >= OPENCODE_MAX_CONCURRENCY:
+            skipped.append((
+                rater["spec"],
+                f"the OpenCode gate admits {OPENCODE_MAX_CONCURRENCY} concurrent cells; "
+                "an overflow cell only waits for the others",
+            ))
+            continue
+        if rater["side"] == "opencode":
+            opencode_kept += 1
+        kept.append(rater)
+    return kept, skipped
+
+
 def opencode_env(account, **values):
     env = dict(os.environ, **values)
     if account == "opencode-go":
@@ -538,6 +563,11 @@ def run_opencode(rater, repo, sha, focus, run_dir, diff, account):
                 "--prompt-file", prompt_file.name,
                 "--json", "--max-tokens", str(max_tokens),
                 "--answer-must-match", _prompts.OPENCODE_ANSWER_SHAPE,
+                # One request per gate hold: the client's own 5xx retries sleep 15-45s INSIDE
+                # the slot this cell occupies, while run_rater_task already retries the same
+                # transient failure with the gate released. The buffered->stream escalation
+                # survives this — opencode-go makes it reachable at --retries 1 by design.
+                "--retries", "1",
             ]
             if rater["effort"]:
                 command += ["--effort", rater["effort"]]
