@@ -303,6 +303,10 @@ reset_format_def='def format_reset($now):
   elif $epoch == null then $iso
   else limits_reset_text($epoch; $now) end;'
 
+color_stdout() {
+  [ -t 1 ] || [ -n "${CLICOLOR_FORCE:-}" ]
+}
+
 pct_cell() {
   # $4 is the raw numeric sort key emitted by jq (-1 = missing value); $5 dims the cell:
   # expired/stale values must never render in the live severity colors.
@@ -324,9 +328,21 @@ dim_cell() {
   pct_cell "$1" "$2" "$3" -1 "${4:-0}"
 }
 
+# The AGE cell answers to one flag the collector already computed, never to its own reading of
+# the text: `never` and a two-day span are the same verdict and must not drift apart here.
+age_cell() {
+  local cell
+  printf -v cell '%-*s' "$2" "$1"
+  if [ "$3" -eq 1 ] && [ "${4:-0}" -eq 1 ]; then
+    printf '\033[31m%s\033[0m' "$cell"
+  else
+    printf '%s' "$cell"
+  fi
+}
+
 render_table() {
   local table_color=0
-  if [ -t 1 ]; then
+  if color_stdout; then
     table_color=1
   fi
   # Sentinels (-1 / 9999999999) push rows with missing values last for every sort direction.
@@ -360,6 +376,7 @@ render_table() {
        ($s5 // 9999999999), ($sw // 9999999999),
        ([($s5 // 9999999999), ($sw // 9999999999), ($sf // 9999999999)] | min),
        ($pf // -1), $d5, $dw, $df,
+       (if .alarm then 1 else 0 end),
        .src, marked_pct(.five), marked_pct(.week), marked_pct(.fable),
        (.five.resets_at | format_reset($render_now)),
        (.week.resets_at | format_reset($render_now)),
@@ -371,9 +388,11 @@ render_table() {
          ($v.claude.accounts[]
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
-             age: compact_age($render_now),
+             age: compact_age($render_now), alarm: (.age_alarm == true),
              rot: rotation, credits: "-", status: account_status})
-       else {src: "claude", five: null, week: null, fable:null, age:"-", rot:"-", credits:"-", status:($v.claude.status // "-")} end),
+       else {src: "claude", five: null, week: null, fable:null,
+             age: ($v.claude | compact_age($render_now)), alarm: ($v.claude.age_alarm == true),
+             rot:"-", credits:"-", status:($v.claude.status // "-")} end),
       (("codex", "gemini") as $k | $v[$k]
        | select(.removed != true)
        | if ((.accounts | type) == "array") and
@@ -381,16 +400,18 @@ render_table() {
            (.accounts[] | select(.removed != true)
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
-                 age: compact_age($render_now), rot: rotation,
+                 age: compact_age($render_now), alarm: (.age_alarm == true), rot: rotation,
                  credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
                  status:account_status})
          elif .available then
            {src: $k, five: .five_hour, week: .weekly, fable:null,
-            age: compact_age($render_now), rot: ((.accounts[0] // .) | rotation),
+            age: compact_age($render_now), alarm: (.age_alarm == true),
+            rot: ((.accounts[0] // .) | rotation),
             credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
             status:"-"}
            else
-           {src: $k, five: null, week: null, fable:null, age:"-", rot:"-", credits:"-",
+           {src: $k, five: null, week: null, fable:null,
+            age: compact_age($render_now), alarm: (.age_alarm == true), rot:"-", credits:"-",
             status:(if .auth_needed == true then "login needed" else (.status // "-") end)}
          end)
     ] | .[] | row
@@ -403,9 +424,9 @@ render_table() {
     sorted=$rows
   fi
 
-  local k5 kw e5 ew kr kf dim5 dimw dimf src p5 pw pf r5 rw rf age rot credits status
+  local k5 kw e5 ew kr kf dim5 dimw dimf alarm src p5 pw pf r5 rw rf age rot credits status
   local w_src=6 w_p5=3 w_pw=3 w_pf=3 w_r5=8 w_rw=8 w_rf=8 w_age=3 w_rot=3 w_cr=2
-  while IFS=$'\t' read -r k5 kw e5 ew kr kf dim5 dimw dimf src p5 pw pf r5 rw rf age rot credits status; do
+  while IFS=$'\t' read -r k5 kw e5 ew kr kf dim5 dimw dimf alarm src p5 pw pf r5 rw rf age rot credits status; do
     [ -n "$src" ] || continue
     [ "${#src}" -gt "$w_src" ] && w_src=${#src}
     [ "${#p5}" -gt "$w_p5" ] && w_p5=${#p5}
@@ -423,7 +444,7 @@ render_table() {
     "$w_src" SOURCE "$w_p5" "5H%" "$w_pw" "WK%" "$w_pf" "FB%" \
     "$w_r5" "5H RESET" "$w_rw" "WK RESET" "$w_rf" "FB RESET" \
     "$w_age" AGE "$w_rot" ROT "$w_cr" CR STATUS
-  while IFS=$'\t' read -r k5 kw e5 ew kr kf dim5 dimw dimf src p5 pw pf r5 rw rf age rot credits status; do
+  while IFS=$'\t' read -r k5 kw e5 ew kr kf dim5 dimw dimf alarm src p5 pw pf r5 rw rf age rot credits status; do
     [ -n "$src" ] || continue
     printf '%-*s  ' "$w_src" "$src"
     pct_cell "$p5" "$w_p5" "$table_color" "$k5" "$dim5"; printf '  '
@@ -432,7 +453,7 @@ render_table() {
     dim_cell "$r5" "$w_r5" "$table_color" "$dim5"; printf '  '
     dim_cell "$rw" "$w_rw" "$table_color" "$dimw"; printf '  '
     dim_cell "$rf" "$w_rf" "$table_color" "$dimf"; printf '  '
-    printf '%-*s  ' "$w_age" "$age"
+    age_cell "$age" "$w_age" "$table_color" "$alarm"; printf '  '
     printf '%-*s  %-*s  %s\n' "$w_rot" "$rot" "$w_cr" "$credits" "$status"
   done <<<"$sorted"
 }
@@ -1474,7 +1495,8 @@ opencode_seen_tsv=$(opencode_profiles | while IFS= read -r opencode_profile; do
 done)
 
 opencode=$(jq -Rsc --argjson now "$now_epoch" \
-  --arg walls "$(cat "$opencode_state_dir/walls.jsonl" 2>/dev/null)" "$LIMITS_VIEW_JQ"'
+  --arg walls "$(cat "$opencode_state_dir/walls.jsonl" 2>/dev/null)" \
+  --argjson alarm "$LIMITS_AGE_ALARM" "$LIMITS_VIEW_JQ"'
   def marks: {"5-hour":"5h","weekly":"wk","monthly":"mo"};
   def mark_of: marks[.window // ""] // "?";
   ($walls | split("\n") | map(fromjson? // empty) |
@@ -1504,10 +1526,12 @@ opencode=$(jq -Rsc --argjson now "$now_epoch" \
       # The age is when the plan last SERVED this account. A 429 is not an answer about the account
       # being alive, and dating the row by one would show a walled account getting fresher the more
       # often it refuses.
-      (if $served == null then {}
-       else {as_of:($served | todateiso8601), stale_seconds:([$now - $served, 0] | max)} end)) |
-  {source:"opencode-go", accounts:.}' <<<"$opencode_seen_tsv")
-[ -n "$opencode" ] || opencode='{"source":"opencode-go","accounts":[]}'
+      (if $served == null then {age_alarm:true}
+       else ([$now - $served, 0] | max) as $age |
+         {as_of:($served | todateiso8601), stale_seconds:$age,
+          age_alarm:limits_age_alarm($age; $alarm)} end)) |
+  {source:"opencode-go", accounts:., age_alarm:true}' <<<"$opencode_seen_tsv")
+[ -n "$opencode" ] || opencode='{"source":"opencode-go","accounts":[],"age_alarm":true}'
 
 # Live experiments travel with the data so consumers need no repo knowledge.
 experiments_json=$(experiments_active_lines "$(experiments_registry_path "$script_dir")" \
@@ -1520,6 +1544,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
   --argjson gemini_attempted "$gemini_refresh_attempted" --arg global_error "$global_refresh_error" \
   --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" --arg gemini_error "$gemini_refresh_error" \
+  --argjson alarm "$LIMITS_AGE_ALARM" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
     . as $value |
@@ -1558,10 +1583,12 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     map(select(. != null)) | min;
   def set_data_age:
     data_as_of as $asof |
-    if $asof == null then del(.as_of, .stale_seconds)
-    else .as_of = ($asof | todateiso8601) |
-      .stale_seconds = ([$now - $asof, 0] | max)
-    end;
+    (if $asof == null then del(.as_of, .stale_seconds)
+     else .as_of = ($asof | todateiso8601) |
+       .stale_seconds = ([$now - $asof, 0] | max)
+     end)
+    | .age_alarm = limits_age_alarm((if (.stale_seconds | type) == "number"
+                                     then .stale_seconds else null end); $alarm);
   def under_limit($bucket):
     ($bucket | type) != "object" or $bucket.effective_pct == null or $bucket.effective_pct < 100;
   def account_usable($key):
@@ -1773,7 +1800,7 @@ else
   experiments_banner
   plain_dim=''
   plain_rst=''
-  if [ -t 1 ]; then
+  if color_stdout; then
     plain_dim=$'\033[2m'
     plain_rst=$'\033[0m'
   fi

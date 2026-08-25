@@ -8,6 +8,9 @@
 LIMITS_STALE_FIVE_HOUR=1800
 LIMITS_STALE_WEEKLY=21600
 LIMITS_STALE_FABLE=21600
+# A reading a day old and a row carrying no reading at all are one verdict — nothing here is
+# worth trusting — so every surface paints both the same red instead of inventing its own alert.
+LIMITS_AGE_ALARM=86400
 
 # Reset epochs below one year are placeholder zeros, never real times.
 LIMITS_VIEW_JQ='
@@ -33,8 +36,11 @@ def limits_reset_text($epoch; $now):
            + " " + ($epoch | strflocaltime("%H:%M")))
      else ($epoch | strflocaltime("%H:%M")) end)
   else ($epoch | strflocaltime("%m-%d %H:%M")) end;
+def limits_age_alarm($seconds; $alarm):
+  ($seconds == null) or ($seconds >= $alarm);
 def limits_age_text($seconds):
-  if $seconds == null or $seconds < 0 then "-"
+  if $seconds == null then "never"
+  elif $seconds < 0 then "-"
   elif $seconds < 60 then "0m"
   elif $seconds < 3600 then (($seconds / 60 | floor | tostring) + "m")
   elif $seconds < 86400 then

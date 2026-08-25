@@ -38,8 +38,10 @@ local function dimColor()
 end
 
 -- Everything trailing an account name that is not the pin: age, "!", "login needed".
-local function metaTitle(text)
-  return hs.styledtext.new(text, { font = menuFont, color = dimColor() })
+local function metaTitle(text, alarm, dim)
+  local color = dimColor()
+  if alarm then color = dim and dimRedColor or redColor end
+  return hs.styledtext.new(text, { font = menuFont, color = color })
 end
 
 -- The pin carries no colour of its own, which is what makes it read exactly as strong as the rest
@@ -62,10 +64,10 @@ local function infoTitle(text, warning, dim, atLimit)
   return hs.styledtext.new(text, attributes)
 end
 
-local function loginNeededTitle(account, pinned, age, needsUserEntry, unused)
+local function loginNeededTitle(account, pinned, age, needsUserEntry, unused, ageAlarm)
   local title = infoTitle(account, false, unused == true)
   if pinned then title = title .. pinTitle() end
-  if age then title = title .. metaTitle("  " .. age) end
+  if age then title = title .. metaTitle("  " .. age, ageAlarm, unused == true) end
   if needsUserEntry then title = title .. metaTitle("  !") end
   return title .. metaTitle("  login needed")
 end
@@ -73,7 +75,7 @@ end
 -- Keep logged-out vendor actions in one constructor so their UX cannot drift; a pin action is
 -- clear-only because logged-out accounts must never become newly pinnable.
 local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinFn, age,
-    needsUserEntry, unused)
+    needsUserEntry, unused, ageAlarm)
   local menu = {
     { title = "Log in…", fn = loginFn },
     { title = "Hard refresh", fn = hardRefreshFn },
@@ -87,19 +89,19 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinF
     table.insert(menu, { title = "Remove " .. label, fn = removeFn })
   end
   return {
-    title = loginNeededTitle(label, clearPinFn ~= nil, age, needsUserEntry, unused),
+    title = loginNeededTitle(label, clearPinFn ~= nil, age, needsUserEntry, unused, ageAlarm),
     menu = menu,
   }
 end
 
-local function geminiLoginNeededRow(label, account, pinned, age, needsUserEntry, unused)
+local function geminiLoginNeededRow(label, account, pinned, age, needsUserEntry, unused, ageAlarm)
   local clearPinFn
   if pinned then clearPinFn = function() M.pinGemini(account, true) end end
   return loginNeededRow(label,
     function() M.loginGemini(account) end,
     function() M.hardRefreshGemini(account) end,
     function() M.removeGemini(account) end,
-    clearPinFn, age, needsUserEntry, unused)
+    clearPinFn, age, needsUserEntry, unused, ageAlarm)
 end
 
 local function truncateText(text, maxLength)
@@ -162,7 +164,7 @@ end
 local function formatAccountAge(value)
   local timestamp = parseTime(value)
   if not timestamp then
-    return nil
+    return "never"
   end
 
   local seconds = math.max(0, os.time() - timestamp)
@@ -182,7 +184,7 @@ end
 
 -- The pin goes straight after the name, ahead of the age and the warnings: it says which account
 -- the workers are held to, and reading that must not mean scanning past everything else on the row.
-local function accountTitle(text, age, atLimit, needsUserEntry, pinned, suffix, unused)
+local function accountTitle(text, age, atLimit, needsUserEntry, pinned, suffix, unused, ageAlarm)
   local title = infoTitle(text, false, unused == true, atLimit)
   if pinned then
     title = title .. pinTitle()
@@ -193,7 +195,7 @@ local function accountTitle(text, age, atLimit, needsUserEntry, pinned, suffix, 
     title = title .. infoTitle(suffix, false, unused == true, atLimit)
   end
   if age then
-    title = title .. metaTitle("  " .. age)
+    title = title .. metaTitle("  " .. age, ageAlarm, unused == true)
   end
   if needsUserEntry then
     title = title .. metaTitle("  !")
@@ -275,7 +277,8 @@ local function appendOpenCode(menu, limits)
     local walled = account.walled == true
     local windows = type(account.windows) == "table" and account.windows or {}
     table.insert(menu, {
-      title = accountTitle(account.account, formatAccountAge(account.as_of), walled),
+      title = accountTitle(account.account, formatAccountAge(account.as_of), walled,
+        nil, nil, nil, nil, account.age_alarm == true),
       disabled = true,
     })
     if walled and #windows > 0 then
@@ -1197,12 +1200,14 @@ function M.menuItems()
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
           unavailableRow = geminiLoginNeededRow(entry.label, "main", pinnedAccount == "main",
-            formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, unused)
+            formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, unused,
+            vendor.age_alarm == true)
           renderedPin = pinnedAccount == "main"
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label, false,
-              formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, unused)
+              formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, unused,
+              vendor.age_alarm == true)
               or infoTitle(string.format("%-6s  no live data", entry.label)),
             disabled = true,
           }
@@ -1238,7 +1243,7 @@ function M.menuItems()
         if not isAccountRows then
           blocks = {{ account = entry.label, five_hour = vendor.five_hour,
             weekly = vendor.weekly, fable = vendor.fable, as_of = vendor.as_of,
-            is_current = false }}
+            age_alarm = vendor.age_alarm, is_current = false }}
         end
         if isAccountRows then
           local sectionMenu = {}
@@ -1252,7 +1257,8 @@ function M.menuItems()
           local geminiPinned = entry.key == "gemini" and pinnedAccount == "main"
           local fallbackRow = {
             title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
-              vendor.needs_user_entry == true, geminiPinned, nil, unused),
+              vendor.needs_user_entry == true, geminiPinned, nil, unused,
+              vendor.age_alarm == true),
             disabled = true,
           }
           local account = vendor.current_account or vendor.account
@@ -1297,6 +1303,7 @@ function M.menuItems()
           local enabled = poolStateFor(entry.key, acct, block.enabled ~= false)
           local authNeeded = block.auth_needed == true
           local accountAge = formatAccountAge(block.as_of)
+          local accountAgeAlarm = block.age_alarm == true
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pins[entry.key] == acct
           local pinFn
@@ -1326,17 +1333,17 @@ function M.menuItems()
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
               else
                 accountRow = geminiLoginNeededRow(acct, acct, pinExists,
-                  accountAge, block.needs_user_entry == true, unused)
+                  accountAge, block.needs_user_entry == true, unused, accountAgeAlarm)
               end
               if not accountRow then
                 local clearPinFn
                 if pinExists then clearPinFn = function() pinFn(true) end end
                 accountRow = loginNeededRow(acct, loginFn, hardRefreshFn, removeFn, clearPinFn,
-                  accountAge, block.needs_user_entry == true, unused)
+                  accountAge, block.needs_user_entry == true, unused, accountAgeAlarm)
               end
             else
               local title = accountTitle(acct, accountAge, generalAtLimit,
-                block.needs_user_entry == true, pinExists, resetSuffix, unused)
+                block.needs_user_entry == true, pinExists, resetSuffix, unused, accountAgeAlarm)
               accountRow = {
                 title = title,
                 disabled = true,

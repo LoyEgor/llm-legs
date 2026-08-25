@@ -98,9 +98,15 @@ local function titleText(item)
   return type(item.title) == "table" and item.title.text or item.title
 end
 
+-- Every account row now trails an age (`never` when the snapshot carries no instant), so the row
+-- is found by its name field, not by the whole title.
 local function accountIndex(menu, account)
   for index, item in ipairs(menu) do
-    if titleText(item) == account then return index end
+    local text = titleText(item)
+    if text:sub(1, #account) == account
+        and (text:len() == #account or text:sub(#account + 1, #account + 1):match("%s")) then
+      return index
+    end
   end
   error("account row missing: " .. account)
 end
@@ -1872,6 +1878,37 @@ do
   tasks[1].callback(1, "", "worker-model: failed to lock")
   assert(alerts[2] and alerts[2]:find("failed", 1, true),
     "a failed role write said nothing")
+end
+
+-- The age is the collector's verdict, never a clock this file reads: an account whose newest
+-- window is a day old and one that carried no window at all are the same red.
+do
+  local alarmFixture = { schema = 1, vendors = {
+    claude = {
+      available = true,
+      source = "claudeb-store",
+      accounts = {
+        { account = "ancient", enabled = true, age_alarm = true,
+          as_of = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 2 * 86400),
+          five_hour = bucket(10) },
+        { account = "undated", enabled = true, age_alarm = true, five_hour = bucket(10) },
+        { account = "current", enabled = true, age_alarm = false,
+          as_of = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 600),
+          five_hour = bucket(10) },
+      },
+    },
+    codex = { available = false },
+    gemini = { available = false },
+  }}
+  local alarmMenu = loadModule(alarmFixture).menuItems()
+  local ancient = accountItem(alarmMenu, "ancient")
+  assert(redRuns(ancient.title)[1] == "  2d", "a day-old age did not render red")
+  local undated = accountItem(alarmMenu, "undated")
+  assert(redRuns(undated.title)[1] == "  never",
+    "an account with no instant showed no age, or showed it as an ordinary one")
+  local current = accountItem(alarmMenu, "current")
+  assert(#redRuns(current.title) == 0, "a fresh age rendered red")
+  assert(titleText(current):find("10m", 1, true), "a fresh age lost its span")
 end
 
 return "PASS: Hammerspoon projection contract"

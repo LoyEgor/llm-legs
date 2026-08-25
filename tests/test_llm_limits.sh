@@ -1581,7 +1581,7 @@ codex_auth_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_AC
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "Codex auth-needed table failed"
 codex_auth_plain=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "Codex auth-needed plain failed"
-grep -Eq '^codex/work\* +- +- +- +- +- +- +- +- +- +login needed$' <<<"$codex_auth_table" \
+grep -Eq '^codex/work\* +- +- +- +- +- +- +never +- +- +login needed$' <<<"$codex_auth_table" \
   || fail "Codex auth-needed table status missing: $codex_auth_table"
 grep -q '^codex/work\*: .* | status login needed$' <<<"$codex_auth_plain" \
   || fail "Codex auth-needed plain status missing: $codex_auth_plain"
@@ -1898,6 +1898,53 @@ grep -Eq ' +1h1m +limit-5h +- +-$' <<<"$honest_row" || fail "table age or limit-
 grep -q 'claude/honest\*: 5h 100%~ @ .* | wk 0%! @ ' <<<"$honest_plain" || fail "honesty plain lost markers or the effective expired value"
 grep 'claude/honest\*:' <<<"$honest_plain" | grep -q '| age 1h1m | rot limit-5h | cr - | status -' \
   || fail "plain age or explicit state fields missing"
+
+# A row carrying no dated window and a row a day old are one verdict, and neither may render as an
+# ordinary age. The flag is the collector's alone: every surface paints it, none re-derives it.
+ALARM_STORE="$WORK/alarm-store"
+ALARM_CACHE="$WORK/alarm-cache.json"
+mkdir -p "$ALARM_STORE/limits"
+alarm_now=$(date +%s)
+printf 'recent\n' >"$ALARM_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":12,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((alarm_now + 5000))" "$((alarm_now - 120))" "$alarm_now" >"$ALARM_STORE/limits/recent.json"
+printf '{"five_hour":{"used_percentage":21,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+  "$((alarm_now + 5000))" "$((alarm_now - 172800))" "$alarm_now" >"$ALARM_STORE/limits/twodays.json"
+printf '{"auth":{"status":"ok","checked_at":%s}}\n' "$alarm_now" >"$ALARM_STORE/limits/nodata.json"
+alarm_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" LLM_LIMITS_CACHE="$ALARM_CACHE" \
+  bash "$SCRIPT" --json) || fail "age-alarm collection failed"
+jq -e '
+  ([.vendors.claude.accounts[] | select(.account == "nodata")][0]
+   | .age_alarm == true and (has("as_of") | not)) and
+  ([.vendors.claude.accounts[] | select(.account == "twodays")][0] | .age_alarm == true) and
+  ([.vendors.claude.accounts[] | select(.account == "recent")][0] | .age_alarm == false) and
+  .vendors.claude.age_alarm == false' <<<"$alarm_json" >/dev/null \
+  || fail "age_alarm mismatch on Claude accounts or the hoisted vendor object"
+jq -e '[.vendors[] | (.accounts[]? // .) | .age_alarm] | length > 0 and all(type == "boolean")' \
+  <<<"$alarm_json" >/dev/null || fail "an account or vendor object reached the projection without age_alarm"
+ALARM_UNDATED_STORE="$WORK/alarm-undated-store"
+mkdir -p "$ALARM_UNDATED_STORE/limits"
+printf 'nodata\n' >"$ALARM_UNDATED_STORE/.claudeb-state"
+printf '{"auth":{"status":"ok","checked_at":%s}}\n' "$alarm_now" >"$ALARM_UNDATED_STORE/limits/nodata.json"
+alarm_undated=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_UNDATED_STORE" \
+  LLM_LIMITS_CACHE="$WORK/alarm-undated-cache.json" bash "$SCRIPT" --json) \
+  || fail "undated-vendor age-alarm collection failed"
+jq -e '.vendors.claude | .age_alarm == true and (has("as_of") | not)' <<<"$alarm_undated" >/dev/null \
+  || fail "a vendor with no dated window did not raise age_alarm"
+alarm_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" LLM_LIMITS_CACHE="$ALARM_CACHE" \
+  bash "$SCRIPT" --table) || fail "age-alarm table collection failed"
+awk '$1 == "claude/nodata" {print $(NF-3)}' <<<"$alarm_table" | grep -qx never \
+  || fail "an account with no dated window must render AGE as never: $alarm_table"
+awk '$1 == "claude/twodays" {print $(NF-3)}' <<<"$alarm_table" | grep -qx 2d \
+  || fail "a two-day age lost its span: $alarm_table"
+printf '%s' "$alarm_table" | grep -q $'\033' && fail "the redirected table emitted colour escapes"
+alarm_color=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
+  LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --table) \
+  || fail "age-alarm colour table collection failed"
+grep -q $'\033\[31mnever' <<<"$alarm_color" || fail "the never age did not render red"
+grep -q $'\033\[31m2d' <<<"$alarm_color" || fail "a day-old age did not render red"
+grep '^claude/recent' <<<"$alarm_color" | grep -q $'\033\[31m' \
+  && fail "a fresh age rendered red"
 
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
@@ -2311,5 +2358,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, bare JSON default, atomic cache, per-account newest-wins merge, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, missing exit 3"
 exit 0

@@ -346,6 +346,10 @@ local function loadModule(fixture, state)
   return chunk()
 end
 local function title(item) return type(item.title) == "table" and item.title.text or item.title end
+-- Every row trails an age now, so a row is found by the name it opens with, not by its whole title.
+local function named(text, name)
+  return text == name or text:match("^" .. name:gsub("%W", "%%%0") .. "%s") ~= nil
+end
 local now = os.time()
 local expiredState = { starts = {}, alerts = {} }
 local expired = loadModule({ schema = 1, vendors = {
@@ -359,7 +363,7 @@ local expired = loadModule({ schema = 1, vendors = {
 local expiredMenu = expired.menuItems()
 local expiredRow
 for i, item in ipairs(expiredMenu) do
-  if title(item) == "alona" then expiredRow = expiredMenu[i + 1] break end
+  if named(title(item), "alona") then expiredRow = expiredMenu[i + 1] break end
 end
 if not expiredRow or not title(expiredRow):match("%s–%s*$") then error("null reset did not render dash") end
 local color = expiredRow.title.attributes.color
@@ -407,7 +411,7 @@ local changes = 0
 fallback.onRefreshStateChanged = function() changes = changes + 1 end
 for _, item in ipairs(fallback.menuItems()) do
   local name = title(item)
-  if (name == "Claude" or name == "Codex" or name == "Gemini") and item.menu then
+  if (named(name, "Claude") or named(name, "Codex") or named(name, "Gemini")) and item.menu then
     for _, sub in ipairs(item.menu) do
       if title(sub) == "Hard refresh" then sub.fn() end
     end
@@ -505,10 +509,10 @@ local function resetColumn(stamp)
   return string.format("%9s", text)
 end
 local expectedBlocks = {
-  { "-", "-\n        ?   ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
+  { "-", "-  never\n        ?   ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
   -- Two windows walled at once are two rows, in window order rather than in record order;
   -- alt also carries an active legacy no-window record, which a named wall must silence.
-  { "alt", "alt\n        5h  ▓▓▓▓▓        " .. resetColumn(ocNow + 4 * 3600)
+  { "alt", "alt  never\n        5h  ▓▓▓▓▓        " .. resetColumn(ocNow + 4 * 3600)
     .. "\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 2 * 86400) },
   -- The only thing that opens a walled account: a completion the plan served after the refusal.
   -- The age is that same served call — the wall is older and says nothing about being alive.
@@ -516,12 +520,13 @@ local expectedBlocks = {
   -- The only other thing the Go plan tells an unwalled account about itself is when it was served.
   { "served", "served  1h\n            ░░░░░" },
   -- The collector takes the recorded reset as its writer capped it, however far out it reaches.
-  { "far", "far\n        mo  ▓▓▓▓▓        " .. resetColumn(ocNow + 19 * 86400) },
+  { "far", "far  never\n        mo  ▓▓▓▓▓        " .. resetColumn(ocNow + 19 * 86400) },
   -- Written by bin/opencode-go itself, from a 429 the stubbed gateway answered this run.
-  { "evyoxqy", "evyoxqy\n        wk  ▓▓▓▓▓        " .. resetColumn(ocEvyoxqyReset) },
+  { "evyoxqy", "evyoxqy  never\n        wk  ▓▓▓▓▓        " .. resetColumn(ocEvyoxqyReset) },
   -- The gateway dates its resets to the day, so a horizon an hour past retires nothing: the wall
-  -- still stands, it prints the horizon as recorded, and an account that only ever refused has no age.
-  { "fresh", "fresh\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow - 3600) },
+  -- still stands, it prints the horizon as recorded, and an account the plan never served says
+  -- `never` where an age would go rather than leaving the column blank.
+  { "fresh", "fresh  never\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow - 3600) },
   -- A refusal in the very second of the served stamp: the tie keeps the wall standing.
   { "tied", "tied  15m\n        wk  ▓▓▓▓▓        " .. resetColumn(ocNow + 86400) },
 }
