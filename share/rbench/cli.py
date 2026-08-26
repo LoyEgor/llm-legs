@@ -150,12 +150,27 @@ def owner_named(panel, now=None):
         return False
 
 
+def under_agent_runtime():
+    """Claude Code exports CLAUDECODE into every command it runs, so a pseudo-terminal an agent
+    opens for itself is not mistaken for Egor's own."""
+    return bool(os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"))
+
+
+def launcher_at_keyboard(pid):
+    """Whether the process that started this panel holds a terminal of its own, asked of the
+    LAUNCHER: the panel runs on DEVNULL in a session of its own and has no controlling terminal
+    left to answer with."""
+    try:
+        line = subprocess.run(["ps", "-o", "tty=", "-p", str(pid)],
+                              capture_output=True, text=True, check=False).stdout.strip()
+    except OSError:
+        return False
+    return bool(line) and line not in ("?", "??", "-")
+
+
 def owner_at_keyboard():
-    """Egor's own shell: a terminal on both ends, and no agent runtime around it. Claude Code
-    exports CLAUDECODE into every command it runs, so a pseudo-terminal an agent opens for itself
-    is not mistaken for him.
-    """
-    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_ENTRYPOINT"):
+    """Egor's own shell: a terminal on both ends, and no agent runtime around it."""
+    if under_agent_runtime():
         return False
     return all(
         getattr(stream, "isatty", lambda: False)()
@@ -165,14 +180,20 @@ def owner_at_keyboard():
 
 
 def panel_owner_child():
-    """Whether this process is the detached child of a launcher that already put the owner question
-    to the keyboard it still had.
+    """Whether this process is the detached child of a launcher that put the owner question to the
+    keyboard it still had, AND had one.
 
     The two environment variables are not the evidence — anything may export them, and exported by
-    hand they started an owner tier this gate exists to refuse (audit, 2026-08-26). The RENDEZVOUS
-    is: a directory `cmd_review_detached` made under `panel_handle_root()`, naming as this
-    process's own parent the launcher that made it. A caller who is not that child cannot answer
-    both at once by setting variables.
+    hand they started an owner tier this gate exists to refuse (audit, 2026-08-26). Neither is the
+    rendezvous alone: a shell can make its own directory under `panel_handle_root()`, write its own
+    pid into it and run this command itself, and every structural test here passed for it. So the
+    launcher's answer is carried in `PANEL_GRANT` and RE-DERIVED against that launcher — the
+    terminal it holds, and the environment this child inherited from it. A forged rendezvous now
+    buys exactly what its forger could already claim by standing at a keyboard with no agent
+    runtime around it, which is the gate itself.
+
+    Only the keyboard answer travels this way. A grant Egor named through `review-owner-gate.sh`
+    leaves a marker that outlives the launch, and `guard_tier_owner` reads that marker directly.
     """
     handle = os.environ.get(PANEL_HANDLE_ENV) or ""
     if not handle or os.environ.get(PANEL_OWNER_ENV) != "1":
@@ -184,9 +205,14 @@ def panel_owner_child():
         if directory.parent.resolve() != panel_handle_root().resolve():
             return False
         launcher = (directory / PANEL_LAUNCHER).read_text().strip()
+        grant = (directory / PANEL_GRANT).read_text().strip()
     except OSError:
         return False
-    return launcher.isdigit() and int(launcher) == os.getppid()
+    if grant != PANEL_GRANT_KEYBOARD:
+        return False
+    if not (launcher.isdigit() and int(launcher) == os.getppid()):
+        return False
+    return not under_agent_runtime() and launcher_at_keyboard(os.getppid())
 
 
 def guard_tier_owner(tier_name, use_max):
@@ -197,7 +223,7 @@ def guard_tier_owner(tier_name, use_max):
         return
     # The detached panel is this same command in a child with no stdin and a log for stdout, where
     # `owner_at_keyboard` can only ever answer no: its launcher put this question to the keyboard
-    # it still had, and says so through the rendezvous only that launcher can name.
+    # it still had, and the panel re-derives that answer against the launcher itself.
     if panel_owner_child():
         return
     if owner_at_keyboard():
@@ -273,6 +299,10 @@ PANEL_LOG = "panel.log"
 # The launcher's own pid, written into the rendezvous before the child is started: it is what tells
 # the detached panel from any other process holding the same two environment variables.
 PANEL_LAUNCHER = "launcher.pid"
+# How the launcher passed the owner gate, written only when it passed at a keyboard: the panel
+# re-derives that answer rather than taking it, so the file is a claim to check and never a grant.
+PANEL_GRANT = "launcher.grant"
+PANEL_GRANT_KEYBOARD = "keyboard"
 PANEL_PID = "panel.pid"
 PANEL_HANDOFF = "panel.handoff"
 PANEL_EXIT = "panel.exit"
@@ -389,6 +419,8 @@ def cmd_review_detached(args):
     reap_panel_handles(root)
     handle = Path(tempfile.mkdtemp(prefix="panel-", dir=root))
     (handle / PANEL_LAUNCHER).write_text(f"{os.getpid()}\n")
+    if owner_at_keyboard():
+        (handle / PANEL_GRANT).write_text(f"{PANEL_GRANT_KEYBOARD}\n")
     log_path = handle / PANEL_LOG
     environment = dict(os.environ)
     environment[PANEL_HANDLE_ENV] = str(handle)

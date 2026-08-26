@@ -1323,6 +1323,32 @@ capped_full=$(WORKER_RUN_UNNAMED_INLINE_MAX="$CAPPED_COUNT" "$RUNNER" wait "$RUN
 assert grep -qF "$DIRT_TOP/bin/capped-one" <<<"$capped_full"
 assert eval "\"$RUNNER\" $(sed 's/.*claim yours: worker-run //' <<<"$capped_full")" >/dev/null
 
+# The record it sends the reader to is spelled against the repository TOP, while `claim` resolves a
+# relative operand against the run's WORKDIR: for a run launched in a subdirectory a row pasted as
+# it stands names a path the run never touched, and the widened repository check takes it. So the
+# line states the prefix, and following it mechanically claims what the record actually holds.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/capped-sub-one' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO/tests"
+for capped in one two three; do
+  printf 'through the shell\n' >"$DIRT_REPO/bin/capped-sub-$capped"
+done
+assert await_done
+capped_sub_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 \
+  | grep '^UNNAMED: ')
+assert grep -qF -e "--paths $DIRT_TOP/<row>" <<<"$capped_sub_line"
+capped_sub_rows=$(grep -v '^WORKDIR: ' "$RUN_DIR/dirty" | sed '/^$/d')
+capped_sub_paths=$(while IFS= read -r capped_row; do
+  printf '%q ' "$DIRT_TOP/$capped_row"
+done <<<"$capped_sub_rows")
+assert eval "\"$RUNNER\" claim \"$RUN_ID\" --paths $capped_sub_paths" >/dev/null
+while IFS= read -r capped_row; do
+  assert grep -qxF "$DIRT_TOP/$capped_row" "$RUN_DIR/files"
+done <<<"$capped_sub_rows"
+assert test ! -e "$RUN_DIR/dirty"
+
 # A run whose own list is complete has nothing for anyone to claim, so the line is never printed.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))

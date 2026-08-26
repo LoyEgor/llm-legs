@@ -9363,6 +9363,46 @@ cov_old_meta["finished"] = sr_stamp(
 cov_old_sha = cov_commit("src/b.py", message="a late landing")
 assert cov_cover(cov_old_sha) == (0, ""), cov_cover(cov_old_sha)
 assert not (cov_old_run / rb.FIX_RECEIPT).exists()
+# `finished_at` is the older spelling of that stamp and stored rounds still carry it, so a window
+# blind to it reads a dated round as one that stamped no instant at all — which this keeps rather
+# than drops, so every such round stayed coverable for ever.
+cov_older = sr_store()
+cov_older_run = sr_fix_run(cov_older, cov_reviewed, run_id="20260601T000601Z-covolder",
+                           repo=cov_repo)
+cov_older_meta = json.loads((cov_older_run / "meta.json").read_text())
+cov_older_meta["finished_at"] = cov_older_meta.pop("finished")
+cov_older_meta.pop("sealed_at", None)
+assert rb.round.round_within_fixing_window(cov_older_meta) is True, cov_older_meta
+cov_older_meta["finished_at"] = sr_stamp(
+    int(time.time()) - (rb.round.ROUND_LINEAGE_MAX_HOURS + 1) * 3600)
+(cov_older_run / "meta.json").write_text(json.dumps(cov_older_meta))
+assert rb.round.round_within_fixing_window(cov_older_meta) is False, cov_older_meta
+(cov_repo / "src" / "b.py").write_text("fixed long after the older spelling\n")
+cov_older_sha = cov_commit("src/b.py", message="a late landing, older spelling")
+assert cov_cover(cov_older_sha) == (0, ""), cov_cover(cov_older_sha)
+assert not (cov_older_run / rb.FIX_RECEIPT).exists()
+
+# A run id names ONE round, and the rest of the store is not walked at all: this runs inside a
+# commit hook, over a store 824 rounds deep on the day this was written.
+cov_named = sr_store()
+cov_named_run = sr_fix_run(cov_named, cov_reviewed, run_id="20260601T000602Z-covnamed",
+                           repo=cov_repo)
+(cov_repo / "src" / "a.py").write_text("named by run id\n")
+cov_named_sha = cov_commit("src/a.py", message="a round named by id")
+cov_walked = []
+cov_iterdir_real = pathlib.Path.iterdir
+pathlib.Path.iterdir = lambda self: (
+    cov_walked.append(str(self)) or cov_iterdir_real(self))
+try:
+    cov_named_rounds = rb.round.coverable_runs(
+        cov_repo, "chat-1", cov_named_sha, run_id=cov_named_run.name)
+    cov_missing_rounds = rb.round.coverable_runs(
+        cov_repo, "chat-1", cov_named_sha, run_id="20260601T999999Z-nosuchround")
+finally:
+    pathlib.Path.iterdir = cov_iterdir_real
+assert [row[0] for row in cov_named_rounds] == [cov_named_run], cov_named_rounds
+assert cov_missing_rounds == [], cov_missing_rounds
+assert str(cov_named) not in cov_walked, cov_walked
 
 # (i) The tally the report prints answers the triage it was written against. A re-adjudication
 # leaves a hand-typed `fixed` standing beside a `confirmed` restamped from the new rows, which is
@@ -9512,6 +9552,21 @@ for ign_pattern, ign_yes, ign_no in (
     ("\\!literal.md", ["!literal.md"], ["literal.md"]),
     # An unclosed `[` is that character, not a class that swallows the rest of the pattern.
     ("a[b.md", ["a[b.md"], ["ab.md"]),
+    # `\` escapes INSIDE a class too. Handed to `re` with its backslashes doubled instead,
+    # `[a\-c]` became the range `\`..`c` and ignored most of the alphabet, `[\]]` ended at its own
+    # escaped bracket, and `[!-%]` — whose `-` is a literal — built the range `/`..`%`, which
+    # `re.compile` refuses outright and which took every reader of the file down with it.
+    ("[a\\-c].py", ["a.py", "-.py", "src/c.py"], ["b.py", "].py", "^.py"]),
+    ("[\\]].py", ["].py"], ["a.py", "\\.py"]),
+    ("[!-%].py", ["a.py"], ["-.py", "%.py"]),
+    # A `-` first or last in the class is the character itself, never a range.
+    ("[-a].py", ["-.py", "a.py"], ["b.py"]),
+    ("[a-].py", ["-.py", "a.py"], ["b.py"]),
+    # No class takes a separator, exactly as `*` does not: spelled as a range, one may hold `/`
+    # without ever naming it.
+    ("docs[.-z]notes.md", ["docsXnotes.md"], ["docs/notes.md"]),
+    # A descending range matches nothing in gitignore, and `re` will not compile one at all.
+    ("[c-a].py", [], ["a.py", "b.py", "c.py"]),
 ):
     ign_negated, ign_regex = rb.debt.compile_debt_ignore(ign_pattern)
     assert not ign_negated
@@ -9519,6 +9574,24 @@ for ign_pattern, ign_yes, ign_no in (
         assert ign_regex.match(ign_path), (ign_pattern, ign_regex.pattern, ign_path)
     for ign_path in ign_no:
         assert not ign_regex.match(ign_path), (ign_pattern, ign_regex.pattern, ign_path)
+# A line `re` refuses is one rule this file does not get, and never the reason the statusline,
+# `debt --list` and every panel behind them stop answering at all.
+ign_compile_real = rb.debt.compile_debt_ignore
+
+
+def ign_refuses(pattern):
+    raise re.error("bad character range")
+
+
+(ign_repo / ".claude" / rb.DEBT_IGNORE_FILE.split("/")[-1]).write_text("*.md\n")
+try:
+    rb.debt.compile_debt_ignore = ign_refuses
+    assert rb.debt.debt_ignore_rules(ign_repo) == []
+    with contextlib.redirect_stderr(io.StringIO()):
+        assert sorted(sr_answer(repo=ign_repo, listing=True).splitlines()) == [
+            "docs/keep.md", "docs/notes.md", "src/a.py"], sr_answer(repo=ign_repo, listing=True)
+finally:
+    rb.debt.compile_debt_ignore = ign_compile_real
 # And the whole reading, through the file the repository commits: `**/notes.md` names that file at
 # any depth, which an anchored reading refuses at the root.
 (ign_repo / "notes.md").write_text("prose at the root\n")
@@ -9611,6 +9684,7 @@ def detach_fake_popen(command, **kwargs):
     # beside the run, the pid lands, and the run id — what the launcher polls — is written last.
     detach_seen["launcher"] = (
         pathlib.Path(handle) / rb.cli.PANEL_LAUNCHER).read_text().strip()
+    detach_seen["grant"] = (pathlib.Path(handle) / rb.cli.PANEL_GRANT).exists()
     os.environ[rb.PANEL_HANDLE_ENV] = handle
     rb.cli.claim_panel_handle(detach_run)
     return DetachChild()
@@ -9658,25 +9732,43 @@ assert rb.cli.PANEL_OWNER_ENV in detach_seen["kwargs"]["env"], detach_seen["kwar
 # exists to refuse. So the handle has to be a directory the launcher made under
 # `panel_handle_root()`, naming that launcher as this process's own parent.
 assert detach_seen["launcher"] == str(os.getpid()), detach_seen["launcher"]
+# The launcher records HOW it passed, and only the keyboard answer travels: this launch passed
+# nothing (the T2 above needs no owner), so there is no claim in the rendezvous at all.
+assert detach_seen["grant"] is False, detach_seen
 detach_owner_environ = dict(os.environ)
 detach_rendezvous = rb.cli.panel_handle_root() / "panel-owner-fixture"
 detach_rendezvous.mkdir()
 (detach_rendezvous / rb.cli.PANEL_LAUNCHER).write_text(f"{os.getppid()}\n")
+(detach_rendezvous / rb.cli.PANEL_GRANT).write_text(f"{rb.cli.PANEL_GRANT_KEYBOARD}\n")
 detach_forged = work / "forged-rendezvous"
 detach_forged.mkdir()
 (detach_forged / rb.cli.PANEL_LAUNCHER).write_text(f"{os.getppid()}\n")
+(detach_forged / rb.cli.PANEL_GRANT).write_text(f"{rb.cli.PANEL_GRANT_KEYBOARD}\n")
 detach_unowned = rb.cli.panel_handle_root() / "panel-no-launcher"
 detach_unowned.mkdir()
+(detach_unowned / rb.cli.PANEL_GRANT).write_text(f"{rb.cli.PANEL_GRANT_KEYBOARD}\n")
 detach_stranger = rb.cli.panel_handle_root() / "panel-other-launcher"
 detach_stranger.mkdir()
 (detach_stranger / rb.cli.PANEL_LAUNCHER).write_text(f"{os.getpid()}\n")
+(detach_stranger / rb.cli.PANEL_GRANT).write_text(f"{rb.cli.PANEL_GRANT_KEYBOARD}\n")
+# The rendezvous a forger can build for itself: its own directory under the root, its own pid, and
+# the two variables exported by hand. It answered every structural test, so the claim it carries is
+# re-derived against that launcher instead of taken (audit, 2026-08-26).
+detach_ungranted = rb.cli.panel_handle_root() / "panel-no-grant"
+detach_ungranted.mkdir()
+(detach_ungranted / rb.cli.PANEL_LAUNCHER).write_text(f"{os.getppid()}\n")
+detach_keyboard_real = rb.cli.launcher_at_keyboard
 try:
+    rb.cli.launcher_at_keyboard = lambda pid: True
     os.environ[rb.cli.PANEL_OWNER_ENV] = "1"
     os.environ[rb.cli.PANEL_HANDLE_ENV] = str(detach_rendezvous)
+    os.environ.pop("CLAUDECODE", None)
+    os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
     rb.cli.guard_tier_owner(rb.OWNER_TIERS[0], True)
     # A rendezvous outside the root, one naming no launcher, one naming a process that is not this
-    # one's parent, and a name nobody ever made: each answers the two variables and nothing else.
-    for detach_bypass in (detach_forged, detach_unowned, detach_stranger,
+    # one's parent, one carrying no grant at all, and a name nobody ever made: each answers the two
+    # variables and nothing else.
+    for detach_bypass in (detach_forged, detach_unowned, detach_stranger, detach_ungranted,
                           rb.cli.panel_handle_root() / "panel-never-made"):
         os.environ[rb.cli.PANEL_HANDLE_ENV] = str(detach_bypass)
         assert rb.cli.panel_owner_child() is False, detach_bypass
@@ -9686,12 +9778,28 @@ try:
             assert "the owner's to start" in str(exc), exc
         else:
             assert False, f"an owner tier started on {detach_bypass}"
+    # And the grant is only ever as good as the launcher it names: an agent's shell exports
+    # CLAUDECODE into everything it runs, and a launcher holding no terminal never answered the
+    # keyboard question at all.
+    os.environ[rb.cli.PANEL_HANDLE_ENV] = str(detach_rendezvous)
+    for detach_variable in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        os.environ[detach_variable] = "1"
+        assert rb.cli.panel_owner_child() is False, detach_variable
+        os.environ.pop(detach_variable)
+    assert rb.cli.panel_owner_child() is True
+    rb.cli.launcher_at_keyboard = lambda pid: False
+    assert rb.cli.panel_owner_child() is False
+    rb.cli.launcher_at_keyboard = detach_keyboard_real
+    # pid 1 holds no controlling terminal on any machine this runs on.
+    assert rb.cli.launcher_at_keyboard(1) is False
 finally:
+    rb.cli.launcher_at_keyboard = detach_keyboard_real
     os.environ.clear()
     os.environ.update(detach_owner_environ)
     shutil.rmtree(detach_rendezvous, ignore_errors=True)
     shutil.rmtree(detach_unowned, ignore_errors=True)
     shutil.rmtree(detach_stranger, ignore_errors=True)
+    shutil.rmtree(detach_ungranted, ignore_errors=True)
 # And the launcher itself is refused exactly as before, with no rendezvous of its own to lean on.
 try:
     rb.cli.cmd_review_detached(argparse.Namespace(
@@ -9701,6 +9809,23 @@ except ValueError as exc:
     assert "the owner's to start" in str(exc), exc
 else:
     assert False, "an owner tier detached itself without Egor having asked for it"
+# A launcher that DID answer at the keyboard writes that answer down, and only then: it is the one
+# thing the child cannot ask about a terminal that is no longer its own.
+detach_keyboard_owner = rb.cli.owner_at_keyboard
+detach_grant_out = io.StringIO()
+sys.argv = ["review-bench", "review", "--tier", rb.OWNER_TIERS[0], "--max"]
+try:
+    rb.cli.owner_at_keyboard = lambda: True
+    rb.cli.subprocess.Popen = detach_fake_popen
+    with contextlib.redirect_stdout(detach_grant_out):
+        assert rb.cli.cmd_review_detached(argparse.Namespace(
+            tier=rb.OWNER_TIERS[0], max=True, foreground=False,
+        )) == 0
+finally:
+    rb.cli.owner_at_keyboard = detach_keyboard_owner
+    rb.cli.subprocess.Popen = detach_popen
+    sys.argv = detach_argv
+assert detach_seen["grant"] is True, detach_seen
 detach_lines = detach_out.getvalue().splitlines()
 assert detach_lines[0] == f"run id: {detach_run.name}", detach_lines
 assert f"wait with: review-bench wait {detach_run.name}" in detach_lines, detach_lines

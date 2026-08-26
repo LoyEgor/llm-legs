@@ -1107,6 +1107,19 @@ for _, item in ipairs(loadModule(geminiRemovedFixture).menuItems()) do
   assert(not titleText(item):find("Gemini", 1, true), "removed Gemini still rendered a row")
 end
 
+-- And the hide is REMOVAL's alone: a roster whose accounts have never been refreshed is empty and
+-- unavailable in exactly the same way, and it is a vendor to set up rather than one to hide.
+local geminiFirstRunFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false, status = "no quota snapshot" },
+}}
+local geminiFirstRunRow = false
+for _, item in ipairs(loadModule(geminiFirstRunFixture).menuItems()) do
+  if titleText(item):find("Gemini", 1, true) then geminiFirstRunRow = true end
+end
+assert(geminiFirstRunRow, "a never-refreshed Gemini was hidden like a removed one")
+
 local geminiErrorFixture = { schema = 1, vendors = {
   claude = { available = false },
   codex = { available = false },

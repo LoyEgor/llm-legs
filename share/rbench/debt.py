@@ -512,6 +512,61 @@ def haunted_paths(repo, candidates):
     }
 
 
+def bracket_expression(pattern, index):
+    r"""gitignore's `[...]` starting at `pattern[index]`, as `(regex, index past it)`, or None when
+    it never closes and the `[` is the character itself.
+
+    Read here rather than handed to `re` with its metacharacters doubled: `\` escapes inside a
+    class too, so `[a\-c]` names three characters and doubled became the range `\`..`c`, which
+    ignored most of the alphabet; `[\]]` ended at its own escaped bracket; and `[!-%]`, whose `-`
+    is a literal, built the range `/`..`%` and raised `re.error` out of every reader of the file
+    (audit, 2026-08-26). No class ever takes a separator, exactly as `*` does not.
+    """
+    close = index + 1
+    negated = close < len(pattern) and pattern[close] in "!^"
+    if negated:
+        close += 1
+    items = []
+    while close < len(pattern):
+        # A `]` first in the class is that character and not the end of it, gitignore's own
+        # reading of POSIX.
+        if pattern[close] == "]" and items:
+            break
+        low = pattern[close]
+        if low == "\\" and close + 1 < len(pattern):
+            low = pattern[close + 1]
+            close += 2
+        else:
+            close += 1
+        # `a-c` is a range; a `-` last in the class is the character itself.
+        if close + 1 < len(pattern) and pattern[close] == "-" and pattern[close + 1] != "]":
+            close += 1
+            high = pattern[close]
+            if high == "\\" and close + 1 < len(pattern):
+                high = pattern[close + 1]
+                close += 1
+            close += 1
+            items.append((low, high))
+        else:
+            items.append((low, None))
+    if close >= len(pattern) or not items:
+        return None
+    body = []
+    for low, high in items:
+        if high is None:
+            body.append(re.escape(low))
+        elif low <= high:
+            body.append(re.escape(low) + "-" + re.escape(high))
+        # A descending range matches nothing in gitignore, and `re` refuses to compile one at all.
+    if negated:
+        return "[^/" + "".join(body) + "]", close + 1
+    if not body:
+        return "(?!)", close + 1
+    # The lookahead is the separator rule: a class spelled as a range may hold `/` without naming
+    # it, and `[.-z]` would then match across components.
+    return "(?!/)[" + "".join(body) + "]", close + 1
+
+
 def compile_debt_ignore(pattern):
     r"""One `.claude/review-debt-ignore` line as `(negated, regex)`, in gitignore's grammar: `!`
     negates, a trailing `/` matches a directory's contents, a `/` anywhere else anchors the pattern
@@ -525,7 +580,7 @@ def compile_debt_ignore(pattern):
     `[...]` is a bracket expression and `\` escapes the character after it, both of them the
     grammar the docstring above promises: escaped wholesale instead, `*.py[cod]` compiled to a
     literal `[cod]` and a rule written in gitignore syntax silently ignored nothing at all
-    (audit, 2026-08-26). A negated class never takes a separator, exactly as `*` does not.
+    (audit, 2026-08-26). `bracket_expression` reads the class itself, separator rule included.
     """
     negated = pattern.startswith("!")
     if negated:
@@ -559,26 +614,13 @@ def compile_debt_ignore(pattern):
             body.append(re.escape(pattern[index + 1]))
             index += 2
         elif pattern[index] == "[":
-            close = index + 1
-            if close < len(pattern) and pattern[close] in "!^":
-                close += 1
-            # A `]` first in the class is that character and not the end of it, gitignore's own
-            # reading of POSIX; Python's `re` needs it escaped either way, below.
-            if close < len(pattern) and pattern[close] == "]":
-                close += 1
-            while close < len(pattern) and pattern[close] != "]":
-                close += 1
-            if close >= len(pattern):
+            expression = bracket_expression(pattern, index)
+            if expression is None:
                 body.append(re.escape(pattern[index]))
                 index += 1
             else:
-                inner = pattern[index + 1:close]
-                negated_class = inner[:1] in ("!", "^")
-                if negated_class:
-                    inner = inner[1:]
-                inner = inner.replace("\\", "\\\\").replace("]", "\\]").replace("^", "\\^")
-                body.append("[" + ("^/" if negated_class else "") + inner + "]")
-                index = close + 1
+                body.append(expression[0])
+                index = expression[1]
         else:
             body.append(re.escape(pattern[index]))
             index += 1
@@ -601,7 +643,12 @@ def debt_ignore_rules(repo):
     for line in text.splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            rules.append(compile_debt_ignore(line))
+            try:
+                rules.append(compile_debt_ignore(line))
+            except re.error:
+                # A line `re` refuses is one rule this file does not get; it is never the reason
+                # the statusline, `debt --list` and every panel behind them stop answering.
+                continue
     return rules
 
 

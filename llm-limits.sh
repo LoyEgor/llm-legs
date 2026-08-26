@@ -1427,7 +1427,10 @@ gemini_refresh_error=$(jq -rn --argjson rows "$gemini_accounts" --argjson record
   end
 ')
 
-gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wall" '
+gemini_main_removed_json=false
+if gemini_main_removed; then gemini_main_removed_json=true; fi
+gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wall" \
+  --argjson main_removed "$gemini_main_removed_json" '
   [$accounts[] | select(.removed != true)] as $visible |
   [$visible[] |
    select(.auth_needed != true and
@@ -1438,7 +1441,13 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
   ($usable | sort_by(if .account == "main" then 1 else 0 end,
                      ([.five_hour.used_pct,.weekly.used_pct] | max), .account) | .[0]) as $selected |
   if ($accounts | length) == 0 then
-    {available:false,status:"no quota snapshot",source:"agy-local-rpc",last_wall:$wall}
+    # `geminib remove main` takes main out of the roster instead of leaving a row behind, so with
+    # no profile beside it the vendor states its removal HERE — it is the one thing that tells a
+    # store Egor emptied on purpose from one whose accounts have simply never been refreshed, and
+    # the menubar skips a removed vendor whole where it renders the other as "no live data".
+    {available:false,source:"agy-local-rpc",last_wall:$wall} +
+    (if $main_removed then {removed:true,status:"removed"}
+     else {status:"no quota snapshot"} end)
   # The flat shape is what a store holding nothing but the base profile has always been; every
   # other roster, main deleted or not, is rendered as named account rows.
   elif ($accounts | length) == 1 and $accounts[0].account == "main" then
@@ -1746,18 +1755,15 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   | if $claude_outcome == null then . else .vendors.claude.refresh_error = $claude_outcome end
   | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
   | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
-  # A hidden vendor, and a roster with no accounts in it at all, both have nothing a refresh could
-  # have been for, so a login-needed cause still attached to one is a verdict about an account that
-  # has since been removed. The status word alone is NOT that test: the multi-account branch spells
-  # the same `no quota snapshot` whenever nothing is selectable — every account walled at 100, or
-  # every one of them removed — and gated on it a real refresh failure was deleted and every
-  # surface showed a failed refresh with no cause (audit, 2026-08-26). The empty roster is the one
-  # branch that emits that status while carrying no `accounts` array; the single-`main` flat shape
-  # carries none either, and answers here through `removed` alone, which is what `geminib remove
-  # main` writes.
-  | if .vendors.gemini.removed == true or
-       (.vendors.gemini.status == "no quota snapshot" and
-        ((.vendors.gemini.accounts // []) | length) == 0)
+  # A removed vendor has nothing a refresh could have been for, so a cause still attached to one is
+  # a verdict about an account that no longer exists. `removed` is the whole test: the status word
+  # is not, because the multi-account branch spells `no quota snapshot` whenever nothing is
+  # selectable — every account walled at 100, every one of them removed, or a roster whose accounts
+  # have never been cached and so emit no row at all — and gated on that word a real refresh
+  # failure was deleted and every surface showed a failed refresh with no cause (audit,
+  # 2026-08-26). Removal itself is what `geminib remove main` writes, and the empty-roster branch
+  # above states it.
+  | if .vendors.gemini.removed == true
     then .vendors.gemini |= del(.refresh_error) else . end
   | .vendors |= with_entries(
       .value |= (

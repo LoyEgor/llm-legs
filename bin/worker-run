@@ -1659,8 +1659,11 @@ unnamed_line() { # directory
     # The list is the record's, not this line's, past the point where it stops being readable: the
     # 887-path case above printed a multi-kilobyte shell-quoted line at the end of every wait,
     # crowding out the outcome and the result tail it is printed beside.
-    printf 'UNNAMED: %s path(s) changed in this run'"'"'s window that no record names, listed one per line in %s — claim yours: worker-run claim %s --paths <path>...\n' \
-      "$count" "$directory/dirty" "${directory##*/}"
+    # The rows are spelled against the repository TOP, and `claim` resolves a relative operand
+    # against the run's WORKDIR: for a run launched in a subdirectory a row pasted as it stands
+    # names a path this run never touched, so the prefix is part of the instruction.
+    printf 'UNNAMED: %s path(s) changed in this run'"'"'s window that no record names, listed one per line in %s — claim yours: worker-run claim %s --paths %s/<row>...\n' \
+      "$count" "$directory/dirty" "${directory##*/}" "$top"
     return 0
   fi
   # Quoted for the shell this line is pasted into: a path carrying a space arrives at `claim` as

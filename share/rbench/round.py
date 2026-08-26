@@ -1419,7 +1419,8 @@ def round_within_fixing_window(meta, now=None):
     instant at all is kept rather than dropped: a bound nobody can evaluate must not close a door
     silently, and `fixes --done` is the answer for a pass that ran later than this.
     """
-    stamped = _store.parse_iso_timestamp(meta.get("finished") or meta.get("sealed_at"))
+    stamped = _store.parse_iso_timestamp(
+        meta.get("finished") or meta.get("finished_at") or meta.get("sealed_at"))
     if stamped is None:
         return True
     now = _store.utc_now() if now is None else now
@@ -1456,9 +1457,14 @@ def coverable_runs(repo, session, commit, run_id=None):
     if not landed:
         return []
     rounds = []
-    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
-        if run_id is not None and run_dir.name != run_id:
-            continue
+    if run_id is not None:
+        named = benches / run_id
+        candidates = (named,) if named.parent == benches and named.is_dir() else ()
+    elif benches.exists():
+        candidates = sorted(benches.iterdir(), reverse=True)
+    else:
+        candidates = ()
+    for run_dir in candidates:
         try:
             meta = json.loads((run_dir / "meta.json").read_text())
         except (OSError, ValueError):

@@ -503,7 +503,10 @@ jq -e '.vendors.gemini | (.accounts | length) == 1 and .accounts[0].account == "
   .current_account == "com" and .available == true and (. | has("account") | not)' \
   <<<"$no_main_sole" >/dev/null || fail "the last Gemini account collapsed into the legacy shape"
 
-# No accounts at all is a stated verdict, not a crash and not a resurrected main.
+# No accounts at all because main was REMOVED is a stated verdict, not a crash and not a resurrected
+# main — and the verdict is `removed`, which is what the menubar skips a vendor whole on. Emptying
+# the roster without saying so left removed Gemini rendering a "no live data" row with a Refresh
+# submenu, the opposite of removed (audit, 2026-08-26).
 GEMINI_EMPTY_PROFILES="$WORK/gemini-empty-profiles"
 GEMINI_EMPTY_CACHE="$WORK/gemini-empty-cache"
 mkdir -p "$GEMINI_EMPTY_PROFILES" "$GEMINI_EMPTY_CACHE"
@@ -513,11 +516,11 @@ no_main_empty=$(GEMINIB_PROFILES_DIR="$GEMINI_EMPTY_PROFILES" \
   LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-empty-main.json" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-empty-store.json" /bin/bash "$SCRIPT" --json) \
   || true
-jq -e '.vendors.gemini | .available == false and .status == "no quota snapshot" and
+jq -e '.vendors.gemini | .available == false and .removed == true and .status == "removed" and
   (. | has("accounts") | not) and (. | has("current_account") | not) and .usable_now == false' \
-  <<<"$no_main_empty" >/dev/null || fail "a Gemini vendor with no accounts did not state its verdict"
-# An empty ROSTER has nothing a refresh could have been for, so a cause carried over from before it
-# emptied is a verdict about an account that is gone.
+  <<<"$no_main_empty" >/dev/null || fail "a Gemini vendor emptied by removal did not state its verdict"
+# A REMOVED vendor has nothing a refresh could have been for, so a cause carried over from before
+# the removal is a verdict about an account that is gone.
 printf '{"schema":1,"vendors":{"gemini":{"available":true,"refresh_error":{"cause":"login needed (not signed in)","at":1}}}}\n' \
   >"$WORK/gemini-empty-cause-store.json"
 no_main_empty_cause=$(GEMINIB_PROFILES_DIR="$GEMINI_EMPTY_PROFILES" \
@@ -525,9 +528,27 @@ no_main_empty_cause=$(GEMINIB_PROFILES_DIR="$GEMINI_EMPTY_PROFILES" \
   LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-empty-main.json" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-empty-cause-store.json" \
   /bin/bash "$SCRIPT" --json) || true
-jq -e '.vendors.gemini | .status == "no quota snapshot" and (. | has("refresh_error") | not)' \
+jq -e '.vendors.gemini | .removed == true and (. | has("refresh_error") | not)' \
   <<<"$no_main_empty_cause" >/dev/null \
-  || fail "an empty Gemini roster kept a cause about an account it no longer has"
+  || fail "a removed Gemini kept a cause about an account it no longer has"
+
+# An account that has never been refreshed emits no row either, so the roster is empty here TOO —
+# and its failed refresh is a live cause about an account that very much exists. Deleted on the
+# empty roster alone, a first-run Gemini showed a failed refresh with no cause on every surface,
+# which is the exact symptom the removal filter was written to end (audit, 2026-08-26).
+GEMINI_FIRST_RUN_PROFILES="$WORK/gemini-first-run-profiles"
+GEMINI_FIRST_RUN_CACHE="$WORK/gemini-first-run-cache"
+mkdir -p "$GEMINI_FIRST_RUN_PROFILES" "$GEMINI_FIRST_RUN_CACHE"
+gemini_first_run=$(GEMINIB_PROFILES_DIR="$GEMINI_FIRST_RUN_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_FIRST_RUN_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-first-run-main.json" \
+  LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD=/usr/bin/false \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-first-run-store.json" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json) || true
+jq -e '.vendors.gemini | .status == "no quota snapshot" and (. | has("removed") | not) and
+  ((.accounts // []) | length) == 0 and .refresh_error.cause == "live query failed"' \
+  <<<"$gemini_first_run" >/dev/null \
+  || fail "a never-cached Gemini account lost the cause of its own failed refresh: $(jq -c '.vendors.gemini' <<<"$gemini_first_run")"
 
 # `no quota snapshot` is ALSO what the multi-account branch says when nothing is selectable — every
 # account walled at 100, or every one of them removed — and gated on that word instead of on the

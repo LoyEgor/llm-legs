@@ -1193,8 +1193,9 @@ function M.menuItems()
       -- profile, and that profile is deletable.
       local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
-      -- Removing gemini's main now empties the roster instead of flagging the vendor, so this
-      -- reads a store written before that change: a `removed` vendor is still skipped whole.
+      -- Removing gemini's main empties the roster, and the collector states that emptiness as
+      -- `removed` on the vendor: without it a removed Gemini rendered a "no live data" row with a
+      -- Refresh submenu, which is the opposite of removed.
       if type(vendor) == "table" and vendor.removed == true then
         vendor = nil
       elseif type(vendor) ~= "table" or (vendor.available ~= true and not hasGeminiAccounts) then
