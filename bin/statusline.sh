@@ -1173,7 +1173,7 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
   if [ -n "$fork_cache" ] && [ -r "$fork_cache" ]; then
     IFS=$'\x1f' read -r fc1 fc2 fc3 fc4 fc5 fc6 fc7 fc8 fc9 fc10 fc11 fc12 fc13 \
       < "$fork_cache" 2>/dev/null || :
-    if [ "$fc1" = v2 ] && [ "$fc2" = "$fork_sid" ] && [ "$fc3" = "$fork_anchor_uuid" ] \
+    if [ "$fc1" = v3 ] && [ "$fc2" = "$fork_sid" ] && [ "$fc3" = "$fork_anchor_uuid" ] \
        && [ "$fc4" = "$fork_own_ts" ] && [ -r "$fc5" ]; then
       parent_size=$(file_size "$fc5")
       parent_mtime=$(file_mtime "$fc5")
@@ -1236,17 +1236,21 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
       parent_seen=""; parent_last=""
       IFS=$'\t' read -r parent_seen parent_last parent_boundary parent_assist_ts \
         parent_assist_uuid parent_assist_ttl parent_anchor_ts <<< "$parent_tail" || :
-      if [ "$parent_bytes" -ge "$parent_size" ] && [ "$parent_seen" = 1 ] \
-         && [ "$parent_last" = "$fork_anchor_uuid" ]; then
+      # An anchor inside the scanned tail settles the fork either way - anything the
+      # parent added after it sits in that same tail. Only an unseen anchor needs the
+      # whole file to tell "something after it" from "deeper than the window"; a
+      # parent bigger than the window (63 MB transcripts exist) must not read as unknown.
+      if [ "$parent_seen" = 1 ] && [ "$parent_last" = "$fork_anchor_uuid" ] \
+         && { [ "$parent_bytes" -ge "$parent_size" ] || [ "$parent_assist_ts" -gt 0 ] 2>/dev/null; }; then
         fork_state=tail
-      elif [ "$parent_bytes" -ge "$parent_size" ]; then
+      elif [ "$parent_seen" = 1 ] || [ "$parent_bytes" -ge "$parent_size" ]; then
         fork_state=mid
       else
         fork_state=unknown
       fi
       if [ -n "$fork_cache" ]; then
         mkdir -p "$(dirname "$fork_cache")" 2>/dev/null
-        printf 'v2\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+        printf 'v3\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
           "$fork_sid" "$fork_anchor_uuid" "$fork_own_ts" "$parent_file" "$parent_size" \
           "$parent_mtime" "$fork_state" "$parent_boundary" "$parent_assist_ts" \
           "$parent_assist_uuid" "$parent_assist_ttl" "$parent_anchor_ts" \

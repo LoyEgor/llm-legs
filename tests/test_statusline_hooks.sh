@@ -2003,6 +2003,30 @@ assert grep -Fq "${YELLOW}111k${RESET}" <<< "$fork_cache_changed"
 assert test "${fork_cache_changed#*→}" = "$fork_cache_changed"
 assert_eq 2 "$(grep -Fc "$PARENT_TRANSCRIPT" "$TAIL_LOG")"
 
+# A parent bigger than the 8 MiB scan window: the anchor is in the scanned tail with
+# nothing after it, which settles the fork as a tail fork without reading the rest.
+PARENT_TRANSCRIPT="$WORK/parent-big.jsonl"
+t_reset
+yes '{"type":"attachment","timestamp":"'"$(iso_utc $((NOW - 900)))"'","uuid":"pad"}' \
+  | head -c 8500000 > "$PARENT_TRANSCRIPT"; printf '\n' >> "$PARENT_TRANSCRIPT"
+parent_assist $((NOW - 300)) big-anchor
+t_assist_fork $((NOW - 300)) parent-big big-anchor
+printf '{"type":"system","subtype":"local_command","timestamp":"%s","uuid":"branch-own"}\n' \
+  "$(iso_utc $((NOW - 250)))" >> "$TRANSCRIPT"
+printf 'v1 %s acctgen 3600 big-anchor\n' "$((NOW - 300))" \
+  > "$STATE_DIR/cache-ttl-track-parent-big.model-fixmodel"
+fork_big=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+fork_big_death=$(TZ=Europe/Kyiv date -r $((NOW - 300 + 3600)) +%H:%M)
+assert grep -Fq "${DIM}→${fork_big_death}${RESET}" <<< "$fork_big"
+assert test "${fork_big#*111k}" = "$fork_big"
+assert grep -q $'^v3\x1fparent-big\x1fbig-anchor\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
+assert grep -q $'\x1ftail\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
+# The same oversized parent with an own entry after the anchor is a mid fork, not unknown.
+printf '{"type":"user","timestamp":"%s","uuid":"big-after"}\n' "$(iso_utc $((NOW - 280)))" >> "$PARENT_TRANSCRIPT"
+fork_big_mid=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${YELLOW}? 111k${RESET}" <<< "$fork_big_mid"
+assert grep -q $'\x1fmid\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
+
 CROSS_ROOT="$WORK/projects"
 CROSS_CHILD="$CROSS_ROOT/child-project"
 CROSS_PARENT="$CROSS_ROOT/parent-project"
