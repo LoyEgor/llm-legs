@@ -15,7 +15,7 @@ is visibility, not blocking.
 
 ## Truth sources
 
-1. **Commit journal** — `<git-dir>/claude-commit-journal`, written by the
+1. **Commit journal** — `<journal-dir>/claude-commit-journal`, written by the
    PostToolUse hook (`commit-journal.sh`, claude-setup). Entry format:
    `<session-id>\t<epoch>\t<repo-relative-path>`, NUL-terminated, deduped per
    (session, path). Entries with no TAB are legacy (unowned, no timestamp) and are
@@ -43,6 +43,19 @@ is visibility, not blocking.
    alongside the runs that recorded editor calls only, the runs still going, and
    the runs whose supervisor is gone (abandoned, never "still running") — and the
    session that delegated to them owns the gap.
+   **One ledger per git FAMILY.** `<journal-dir>` is the COMMON git dir —
+   `git rev-parse --path-format=absolute --git-common-dir`, resolved by
+   `store.journal_dir` in llm-legs and `rj_journal_dir` in claude-setup — so a main
+   checkout and every linked worktree of it read and write ONE commit journal and ONE
+   debt journal. Per-worktree git dirs held a ledger each, and coverage has always been
+   family-keyed: a waiver from the main checkout cleared 33 paths while 12 stayed owed
+   in a worktree of the same project, and the statusline and `review-bench debt`
+   answered from different files (2026-08-26). A worktree's own ledger from before this
+   is folded into the family's — records appended unless already there, then the file
+   unlinked — by whoever asks for the directory next, reader or writer alike. Every
+   `debt --list` and `debt --split` answer prints `ledger: <journal-dir>/claude-review-debt`
+   on STDERR, so the file behind an answer is nameable while stdout stays exactly what
+   the commit gate parses.
 2. **Run records** — `review-bench` stores per run: `session`, `scope`, `started`/
    `finished`, per-panel `(model, effort, duration_ms)`, triage state, and
    `reviewed{path: blob-sha}` — every path of the sealed snapshot commit, read out
@@ -191,8 +204,8 @@ at all, since both belong to a checkout while the file is shared by all of them.
 With no `--paths` the question is the repository's, and its universe is what the
 artifacts hold plus what the journals name — never every file in the tree.
 
-**Authors.** Uncommitted debt is attributed through `<git-dir>/claude-commit-journal`;
-debt a commit carried away is attributed through `<git-dir>/claude-review-debt`,
+**Authors.** Uncommitted debt is attributed through `<journal-dir>/claude-commit-journal`;
+debt a commit carried away is attributed through `<journal-dir>/claude-review-debt`,
 which the gate appends to at the commit that lands it, in the same
 `session TAB epoch TAB path` NUL-separated records, pruning on every write the
 entries of paths no longer in debt.
@@ -292,7 +305,10 @@ command naming every one of them is printed instead. A round settles only what i
 read, so the rest would stand unreviewed behind a panel that came back clean — and
 paying for one panel and one triage instead of three is the reason the merged mode
 exists. `--this-repo-only --reason '...'` is the way past it, the reason recorded
-with the run the way a waiver's is. Every surface that hands a chat this command —
+with the run the way a waiver's is. A `--reason` with no such decision behind it
+costs a stderr warning and not the launch: it is kept on the run's meta as `reason`,
+answering for nothing, since a refusal there spent a whole launch over a word the run
+can simply carry. Every surface that hands a chat this command —
 the commit notice, the settle ask, the adjudication handoff, the waiver's refusal —
 prints that same merged form, or the gate would arrange the very split round the
 tool refuses. What the scope left out is NAMED beside the target —

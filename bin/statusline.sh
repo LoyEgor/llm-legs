@@ -96,6 +96,20 @@ repo_dirs() {
   REPO_NAME="${REPO_ROOT##*/}"
 }
 
+# Identity and NAME of the repository one path belongs to, for the two places that report a review
+# over a foreign one. The name is the repository's — the main checkout's basename, exactly what `»`
+# prints — never the worktree directory's, whose branch slug names no repository. An empty or
+# unresolvable path belongs to no repository at all: `git -C ""` answers for the CWD, which would
+# pass a vanished repository off as the render's own.
+review_repo_identity() {
+  review_repo_name=""
+  review_repo_common=""
+  [ -n "$1" ] || return 1
+  repo_dirs "$1" || return 1
+  review_repo_name="$REPO_NAME"
+  review_repo_common="$REPO_COMMON"
+}
+
 # ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
 process_start_epoch() {
   local pid="$1" now="$2" elapsed days=0 hours=0 mins secs field
@@ -172,16 +186,18 @@ review_gate_verdict() { # toplevel session
 # Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
 # `git status`, and the commit journal the gate reads this chat's pending paths from (the
 # PostToolUse hook appends to it as the chat edits, and a repository with no journal yet keys on a
-# fixed 0). Everything the key cannot see — a second edit to an already-modified file, another
-# chat's commit landing, a run being triaged — is bounded by the TTL.
+# fixed 0). The journal is the checkout FAMILY's, one file under the common dir, so an edit made in
+# a sibling worktree moves this key too — as it moves the gate's own answer. Everything the key
+# cannot see — a second edit to an already-modified file, another chat's commit landing, a run
+# being triaged — is bounded by the TTL.
 review_verdict_line() { # toplevel session status_key now
   local top="$1" sid="$2" status_key="$3" now="$4"
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
   local lock="$cache.lock"
-  local key cached_key cached cache_mtime journal_mtime gitdir lock_mtime
-  gitdir=$(git -C "$top" rev-parse --absolute-git-dir 2>/dev/null)
+  local key cached_key cached cache_mtime journal_mtime commondir lock_mtime
+  commondir=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
   journal_mtime=""
-  [ -n "$gitdir" ] && journal_mtime=$(file_mtime "$gitdir/claude-commit-journal" 2>/dev/null)
+  [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
   key="$top|$status_key|$journal_mtime"
   cache_mtime=$(file_mtime "$cache" 2>/dev/null)
@@ -582,30 +598,20 @@ if [ -z "$active_top" ]; then
   fi
 fi
 
-# The review is the centre of attention: while this chat has one in flight or unanswered, the
-# folder shown is the one that review is about, never the shell's — Egor must not see one folder
-# and a review about another. The dir/branch/diff cluster follows it; the ports probe and the
-# live-progress match keep the session's own workdir (session_top), since a port belongs to the
-# project the chat is sitting in. The `rev` verdict follows the anchor only inside one repository:
-# where the anchor holds ANOTHER one, the folder may move but the session's own debt may not
-# vanish with it (Egor, 2026-08-24), and `anchor_foreign` is what keeps it on the line.
-session_top="$active_top"
-session_common="$active_common"
-anchor_extra=""
-anchor_foreign=0
+# The folder NEVER moves: the dir/branch/diff cluster, the ports probe and the gate's question are
+# the session's own workdir, whatever this chat has under review elsewhere — a folder that followed
+# the review showed one repository and a number about another (Egor, 2026-08-26). A review over a
+# foreign repository is reported by NAME in the counter slot instead: live as a named counter,
+# merely pending as the dim marker this anchor feeds. Repository identity, like `»`: an anchor on a
+# sibling worktree is the same family and says nothing extra.
+anchor_name=""
+anchor_common=""
 if [ -n "$session_id" ]; then
   anchor_line=$(review_anchor_line "$session_id" "$git_dir" "$now")
   anchor_path="${anchor_line%% +*}"
-  if [ -n "$anchor_path" ] && repo_dirs "$anchor_path"; then
-    git_dir="$anchor_path"
-    adopt_repo_dirs
-    # Repository identity, like `»`: an anchor on a sibling worktree of the same repository is the
-    # same debt read family-wide, and nothing about the line changes for it. With no session
-    # repository at all there is no own debt to keep, so the anchor's own verdict stands as before.
-    [ -n "$session_common" ] && [ "$active_common" != "$session_common" ] && anchor_foreign=1
-    # `+N` only with the anchor itself: an anchor whose repository is gone is ignored whole, or
-    # the session's own folder wears the dead panel's member count.
-    [ "$anchor_path" != "$anchor_line" ] && anchor_extra="${anchor_line##* }"
+  if review_repo_identity "$anchor_path" && [ "$review_repo_common" != "$active_common" ]; then
+    anchor_name="$review_repo_name"
+    anchor_common="$review_repo_common"
   fi
 fi
 
@@ -637,7 +643,6 @@ if [ -n "$active_top" ]; then
     wt_part=" ${wt_color}⧉ ${active_top##*/}${RESET}"
   fi
 fi
-[ -n "$anchor_extra" ] && dir_part="${dir_part} ${DIM}${anchor_extra}${RESET}"
 dir_part="${dir_part}${wt_part}"
 
 branch_part=""
@@ -1576,7 +1581,7 @@ if [ -n "$session_id" ]; then
   ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
-    ( "$probe_bin" "$session_id" "$PPID" "$session_top" >/dev/null 2>&1 & ) 2>/dev/null
+    ( "$probe_bin" "$session_id" "$PPID" "$active_top" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     # `read` still sets the var on a newline-less EOF; ignore the nonzero return.
@@ -1594,27 +1599,16 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-# What the review gate says about this chat's uncommitted work, spoken by the gate itself.
+# What the review gate says about this chat's uncommitted work, spoken by the gate itself. Always
+# about the tree the reader is standing in: a number about a repository shown nowhere on the line
+# is worse than none, and a review elsewhere is named beside this instead.
 review_style=""
 review_text=""
-# Whose debt, though, is the reader's own tree: while the anchor holds another repository the
-# question goes to the session's workdir, not the folder on the line — the review over there is
-# named by the `rev` marker beside this, and the number a reader can act on here must not
-# disappear behind it. Its own `git status` keys the answer, or an edit in the tree being asked
-# about would not invalidate the cache.
-verdict_top="$active_top"
-verdict_status="$git_status"
-verdict_status_rc="$git_status_rc"
-if [ "$anchor_foreign" = 1 ] && [ -n "$session_top" ]; then
-  verdict_top="$session_top"
-  verdict_status=$(git -C "$session_top" status --porcelain 2>/dev/null)
-  verdict_status_rc=$?
-fi
-if [ -n "$verdict_top" ]; then
-  review_status_key=$(printf '%s' "$verdict_status" | cksum 2>/dev/null)
+if [ -n "$active_top" ]; then
+  review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
   review_status_key="${review_status_key// /-}"
-  [ "$verdict_status_rc" -eq 0 ] || review_status_key="unreadable"
-  review_verdict=$(review_verdict_line "$verdict_top" "$session_id" "$review_status_key" "$now")
+  [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
+  review_verdict=$(review_verdict_line "$active_top" "$session_id" "$review_status_key" "$now")
   review_style=${review_verdict%% *}
   case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
   # Truncated and nothing else: the words are the gate's, and a segment that rewrites them is the
@@ -1624,7 +1618,9 @@ fi
 
 
 review_part=""
-if [ -n "$session_top" ] || [ -n "$session_id" ]; then
+progress_named=""
+progress_common=""
+if [ -n "$active_top" ] || [ -n "$session_id" ]; then
   # A run in flight owns the slot: review-bench writes one progress file per run, and while it
   # lives the label reports that panel instead of the gate's verdict. Liveness is derived here,
   # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
@@ -1639,6 +1635,7 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
   progress_session=""
   progress_owner_pid=""
   progress_top=""
+  progress_repo_path=""
   progress_dir="$worker_stats_dir/progress"
   if [ -d "$progress_dir" ]; then
     # Every file is read and matched on the repository recorded inside it, never on its name:
@@ -1703,7 +1700,7 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
       # worktree is another chat's news, and a subdirectory the run was started from still resolves
       # to the tree it belongs to.
       progress_run_top=$(git_worktree_top "$progress_repo" 2>/dev/null)
-      if [ -z "$session_top" ] || [ "$progress_run_top" != "$session_top" ]; then
+      if [ -z "$active_top" ] || [ "$progress_run_top" != "$active_top" ]; then
         [ -n "$session_id" ] || continue
         [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
       fi
@@ -1721,11 +1718,28 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
         progress_session=$progress_run_session
         progress_owner_pid=$progress_pid
         progress_top=$progress_run_top
+        progress_repo_path=$progress_repo
       fi
     done
   fi
   if [ -n "$progress_total" ]; then
     progress_label="rev"
+    # A run over a FOREIGN repository is named on the line, since the folder beside it is the
+    # session's own and a bare count would be read as that folder's (Egor, 2026-08-26). Identity,
+    # not toplevel: a run in a sibling worktree counts the same family the folder names. A run
+    # whose repository no longer resolves belongs to no family and is named by the path it
+    # recorded rather than left bare.
+    if review_repo_identity "$progress_top"; then
+      progress_common="$review_repo_common"
+      progress_named_by="$review_repo_name"
+    else
+      progress_common=""
+      progress_named_by="${progress_repo_path##*/}"
+    fi
+    if [ -z "$active_common" ] || [ "$progress_common" != "$active_common" ]; then
+      progress_named="$progress_named_by"
+      [ -n "$progress_named" ] && progress_label="${progress_label} ${progress_named}"
+    fi
     # The max panel is a variant of a tier, never a run of its own: --max is refused without
     # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
     # tier rather than rendered as a panel size nothing names.
@@ -1747,22 +1761,26 @@ if [ -n "$session_top" ] || [ -n "$session_id" ]; then
   fi
 fi
 
-if [ "$anchor_foreign" = 1 ]; then
-  # The marker is carried by a counter over the anchored tree only. A newer counter over the
-  # session tree is separate news and cannot silently rename the foreign folder.
-  if [ -z "$progress_total" ] || [ "$progress_top" != "$active_top" ]; then
-    review_part=" ${sep} ${DIM}rev${RESET}${review_part}"
-  fi
-  # Each segment keeps its own word here: the two numbers are about two repositories, and a bare
-  # count beside a foreign folder names nothing the reader can place.
-else
-  # One repository, so one word for both: the counter in flight already says `rev` and the verdict
-  # beside it prints its numbers alone. It is never taken away — any review over this tree, this
-  # chat's or another's, used to blank the debt the reader acts on (Egor, 2026-08-24) — and a style
-  # word this build does not know is printed whole, never trimmed.
-  if [ -n "$progress_total" ] && [ "${review_style:-}" != loud ]; then
-    review_text=${review_text#rev }
-  fi
+# A round of this chat's over a foreign repository that is finished but not yet answered has no
+# counter to carry it, and the dim marker is what says a review is out there and where. A live
+# counter over that same repository already names it, and two names for one review are one too
+# many.
+anchor_marked=0
+if [ -n "$anchor_name" ] &&
+  { [ -z "$progress_total" ] || [ "$progress_common" != "$anchor_common" ]; }; then
+  review_part=" ${sep} ${DIM}rev ${anchor_name}${RESET}${review_part}"
+  anchor_marked=1
+fi
+
+# One repository, so one word for both: the counter in flight already says `rev` and the verdict
+# beside it prints its numbers alone. Beside anything NAMED both keep their word — those numbers
+# are about two repositories, and a bare count beside a named one names nothing the reader can
+# place. The verdict is never taken away — any review over this tree, this chat's or another's,
+# used to blank the debt the reader acts on (Egor, 2026-08-24) — and a style word this build does
+# not know is printed whole, never trimmed.
+if [ -n "$progress_total" ] && [ -z "$progress_named" ] && [ "$anchor_marked" = 0 ] &&
+  [ "${review_style:-}" != loud ]; then
+  review_text=${review_text#rev }
 fi
 
 verdict_part=""

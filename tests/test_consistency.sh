@@ -1012,7 +1012,8 @@ assert doc_has 'Review debt journal'
 assert grep -Fq 'DEBT_JOURNAL = "claude-review-debt"' "$RB_STORE"
 assert grep -Fq 'COMMIT_JOURNAL = "claude-commit-journal"' "$RB_STORE"
 if test -r "$FLOW_GATE"; then
-  assert grep -Fq 'journal="$gitdir/claude-review-debt"' "$FLOW_GATE"
+  # Through the family resolver (row `bd`) and never a path of its own.
+  assert grep -Fq 'rj_journal_dir' "$FLOW_GATE"
   # Both writers append through the one carrier, and appending is the invariant: two chats
   # rewriting this file in the same second lose whichever ownership landed first.
   assert grep -Fq 'rj_append "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
@@ -1037,10 +1038,10 @@ if test -r "$COMMIT_REPORT"; then
   # commits a pull brings, and only a commit carrying a second parent was made by the call.
   assert grep -Fq 'if [ "${SNAPSHOT_KIND:-commit}" = merge ]; then' "$COMMIT_REPORT"
   assert grep -Fq 'git -C "$1" rev-list --no-walk --merges --stdin' "$COMMIT_REPORT"
-  # One filter for both readers of this call's commits — the debt stamp and the fix coverage — or
-  # a commit that closes a round is one the debt journal never saw.
+  # One filter for every reader of this call's commits — the debt stamp, the fix coverage and the
+  # paths those commits carried — or a commit that closes a round is one the debt journal never saw.
   assert grep -Fq 'own_landed_commits() { # top pre' "$COMMIT_REPORT"
-  assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 2
+  assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 3
   assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
   # A merge answers `--name-only` with nothing at all unless the diff is taken against its FIRST
   # parent, so every path a merge brought to this line went into no debt row.
@@ -1974,7 +1975,8 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # journals' own spelling for a path in debt that no record answers for (`journal_entries`).
   assert grep -Fq '[ -e "$1/journaled" ] || rj_run_final "$1" || return 0' "$COMMIT_JOURNAL"
   assert grep -Fq 'run_listing_names "$1" "$absolute" && mine=1' "$COMMIT_JOURNAL"
-  assert grep -Fq 'rj_append "$git_dir/claude-review-debt" "$3" "$now" "$2"' "$COMMIT_JOURNAL"
+  # The record's own three fields; the file it lands in is the resolver's to name (row `bd`).
+  assert grep -Eq 'rj_append .* "\$3" "\$now" "\$2"' "$COMMIT_JOURNAL"
   assert grep -Fq 'stamp_deferred "$1" "$2" ""' "$COMMIT_JOURNAL"
   # Including the note about a listing no workdir can anchor: keyed and printed under the SWEEPING
   # chat it is spent on a marker the owner never sees and read by a chat that can do nothing about
@@ -1999,7 +2001,7 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
   # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
-  assert grep -Fq 'rj_append "$git_dir/claude-review-debt" "$session" "$now" "$relative"' "$COMMIT_JOURNAL"
+  assert grep -Eq 'rj_append .* "\$session" "\$now" "\$relative"' "$COMMIT_JOURNAL"
 else
   printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"
 fi
@@ -2346,5 +2348,67 @@ for gemini_marker_reader in "$LLMLIMITS" "$GEMINIB"; do
     fail "row bc: $(basename "$gemini_marker_reader") spells main's marker instead of resolving it"
   fi
 done
+
+# --- Row bd: one journal ledger per git family ---------------------------------
+# Per-worktree git dirs gave one project two ledgers: a waiver from the main checkout cleared 33
+# paths while twelve stayed owed in a worktree of it, and each surface answered from whichever file
+# it had opened. Both sides resolve the directory with the SAME command, name the two files once
+# apiece, and nothing else in either repository's code may spell them.
+assert doc_has 'Journal ledger resolver'
+JOURNAL_RESOLVE='rev-parse --path-format=absolute --git-common-dir'
+assert doc_has "$JOURNAL_RESOLVE"
+rb_journal_dir=$(sed -n '/^def journal_dir(/,/^def [a-z_]*(/p' "$RB_STORE")
+assert grep -Fq "$JOURNAL_RESOLVE" <<<"$rb_journal_dir"
+# The statusline keys its review-class cache on the journal, so it has to open the same file the
+# answer it caches was read out of.
+statusline_review=$(sed -n '/^review_verdict_line() {/,/^}/p' "$STATUSLINE")
+assert grep -Fq "$JOURNAL_RESOLVE" <<<"$statusline_review"
+# One lock over one ledger, or the two languages exclude nothing: both folds take `mkdir
+# <journal>.lock` beside the file, destination before source, and skip the fold on a busy lock.
+assert doc_has 'mkdir "<journal>.lock"'
+assert grep -Fq 'lock.mkdir()' "$RB_STORE"
+assert grep -Fq 'journal.with_name(journal.name + ".lock")' "$RB_STORE"
+rb_fold_journal=$(sed -n '/^def fold_journal(/,/^def _fold_journal_locked(/p' "$RB_STORE")
+assert grep -Fq 'journal_lock_taken(target_lock)' <<<"$rb_fold_journal"
+assert grep -Fq 'journal_lock_taken(source_lock)' <<<"$rb_fold_journal"
+# Every checkout's ledger, not only the caller's: `git worktree remove` takes an unread one whole.
+assert eq "$(grep -Fc 'worktrees.iterdir()' <<<"$rb_journal_dir")" 1
+JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+if test -r "$JOURNAL_LIB"; then
+  rj_journal_dir=$(sed -n '/^rj_journal_dir()/,/^}/p' "$JOURNAL_LIB")
+  assert grep -Fq "$JOURNAL_RESOLVE" <<<"$rj_journal_dir"
+  assert grep -Fq 'mkdir "$1" 2>/dev/null' <<<"$(sed -n '/^rj_lock()/,/^}/p' "$JOURNAL_LIB")"
+  rj_absorb_journal=$(sed -n '/^rj_absorb_journal()/,/^}/p' "$JOURNAL_LIB")
+  assert grep -Fq 'local dst_lock=$2.lock src_lock=$1.lock' <<<"$rj_absorb_journal"
+  assert grep -Fq 'rj_lock "$dst_lock" || return 1' <<<"$rj_absorb_journal"
+  assert grep -Fq 'rj_lock "$src_lock" ||' <<<"$rj_absorb_journal"
+  # The file names themselves, extracted from both sides and compared: two spellings of one ledger
+  # is the same split by another route.
+  rb_debt_name=$(sed -n 's/^DEBT_JOURNAL = "\(.*\)"$/\1/p' "$RB_STORE")
+  rb_commit_name=$(sed -n 's/^COMMIT_JOURNAL = "\(.*\)"$/\1/p' "$RB_STORE")
+  rj_debt_name=$(sed -n 's/^RJ_DEBT_JOURNAL=\(.*\)$/\1/p' "$JOURNAL_LIB")
+  rj_commit_name=$(sed -n 's/^RJ_COMMIT_JOURNAL=\(.*\)$/\1/p' "$JOURNAL_LIB")
+  assert eq "$rb_debt_name" "$rj_debt_name"
+  assert eq "$rb_commit_name" "$rj_commit_name"
+  assert eq "$rb_debt_name" claude-review-debt
+  assert eq "$rb_commit_name" claude-commit-journal
+else
+  printf 'SKIP: journal ledger resolver across claude-setup (%s is unreadable)\n' "$JOURNAL_LIB"
+fi
+# The prose that sends a reader to one of them names the family's dir too: pointed at a worktree's
+# own git dir, a debugging session opens a file the resolver has already folded away.
+for journal_stale_doc in docs/DIAGNOSTICS.md docs/review-contract.md docs/statusline-contract.md; do
+  assert eq "$(grep -Fc '<git-dir>/claude-' "$ROOT/$journal_stale_doc")" 0
+done
+# And nowhere else: a hook or script that spells a journal path itself is how a private ledger
+# grows back beside the shared one. Tests and docs may name the files; code may not.
+journal_scan_dirs=()
+for journal_dir_candidate in "$ROOT/bin" "$ROOT/share" "$CLAUDE_SETUP/bin" "$CLAUDE_SETUP/hooks"; do
+  [ -d "$journal_dir_candidate" ] && journal_scan_dirs+=("$journal_dir_candidate")
+done
+journal_strays=$(grep -rlE 'claude-review-debt|claude-commit-journal' \
+  --exclude-dir=__pycache__ --exclude='*.pyc' "${journal_scan_dirs[@]}" 2>/dev/null |
+  grep -v -x -e "$RB_STORE" -e "$JOURNAL_LIB" -e "$STATUSLINE" | sort | tr '\n' ' ')
+assert eq "$journal_strays" ""
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, and the one file that says gemini main is removed) and match %s\n' "$asserts" "$DOC"

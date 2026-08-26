@@ -583,9 +583,13 @@ def cmd_run(args):
                 "unreviewed is a decision, and it is recorded with the run like a waiver's"
             )
     elif str(getattr(args, "reason", "") or "").strip():
-        raise ValueError(
-            "--reason records the decision --this-repo-only makes; with no such decision to "
-            "record there is nothing for it to say, and it would be dropped in silence"
+        # Warned and not refused: the flag names no decision here, but it is spelled beside a
+        # review somebody is about to run, and a refusal cost them the whole launch over a word
+        # the run can simply carry (`reason` on the meta).
+        print(
+            "--reason records the decision --this-repo-only makes; with none to record it is kept "
+            "on the run's meta and answers for nothing. The review runs.",
+            file=sys.stderr,
         )
     if getattr(args, "scope_lines", None) is not None and not debt_mode:
         raise ValueError(
@@ -644,6 +648,9 @@ def cmd_run(args):
     debt_all = bool(getattr(args, "all", False))
     debt_asker = _store.caller_chat() or ""
     debt_alone = str(getattr(args, "reason", "") or "") if getattr(args, "this_repo_only", False) else ""
+    # A `--reason` naming no `--this-repo-only` decision: warned about above and kept here, so the
+    # word the caller wrote is on the record rather than dropped by a run that accepted it.
+    free_reason = "" if debt_alone else str(getattr(args, "reason", "") or "").strip()
     debt_lines = getattr(args, "scope_lines", None)
     debt_retry_repos = repos if getattr(args, "repo", None) else ()
     if debt_mode:
@@ -925,6 +932,8 @@ def cmd_run(args):
         launch_meta["reviewed"] = reviewed
     if debt_alone:
         launch_meta["this_repo_only"] = debt_alone
+    if free_reason:
+        launch_meta["reason"] = free_reason
     if members:
         for member in members:
             # A ranged member has no working tree to drift: its content is committed already.
@@ -1292,6 +1301,8 @@ def cmd_run(args):
             meta["reviewed"] = _scope.attested_paths(reviewed, unread)
         if debt_alone:
             meta["this_repo_only"] = debt_alone
+        if free_reason:
+            meta["reason"] = free_reason
         if members:
             meta["repos"] = [
                 dict(member, reviewed=_scope.attested_paths(

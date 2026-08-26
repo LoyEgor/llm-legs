@@ -1462,7 +1462,7 @@ def debt_path_authors(repo, debt):
         for path, artifact in debt
         if isinstance(artifact, dict) and artifact.get("epoch")
     }
-    directory = _store.git_dir_path(repo)
+    directory = _store.journal_dir(repo)
     if directory is None:
         return authors
     # A worker a chat spawned IS that chat, so the launcher is an author of every record its worker
@@ -1572,6 +1572,19 @@ def session_timeout_run(repo, session):
     return None
 
 
+def print_ledger(repo):
+    """Name the file this answer was read out of, on stderr.
+
+    Never stdout: `--list` is a path per line and `--split` is one machine-read line, and both are
+    parsed by the claude-setup gate, which discards stderr wholesale. The line exists because the
+    same question used to be answered from two files — a per-worktree ledger and the family's —
+    and neither surface named which one it had opened (live case 2026-08-26).
+    """
+    directory = _store.journal_dir(repo)
+    if directory is not None:
+        print(f"ledger: {directory / _store.DEBT_JOURNAL}", file=sys.stderr)
+
+
 def cmd_debt(args):
     """What this repository owes a review, in one line and nothing else.
 
@@ -1607,6 +1620,7 @@ def cmd_debt(args):
         # One shape whatever the answer is, including nothing owed: the statusline's translator
         # switches on the counts and never on which of two lines came back.
         print("split %d %d %d" % debt_split(repo, paths, session))
+        print_ledger(repo)
         return 0
     records = _store.worker_run_dirs()
     claims = _store.run_record_claims(repo, records)
@@ -1622,6 +1636,7 @@ def cmd_debt(args):
         # can open.
         if ignored:
             print(f"ignored: {len(ignored)} path(s) by {DEBT_IGNORE_FILE}", file=sys.stderr)
+        print_ledger(repo)
         return 0
     # Before the kill and never after it: a hung review over content some artifact has since
     # settled demands nothing, and reported anyway it is a red statusline no later artifact clears.
@@ -2129,7 +2144,7 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
             ))
     for repo in sorted(repos):
         # A checkout that is gone, or was never a git working tree, answers neither question.
-        if _store.git_dir_path(repo) is None:
+        if _store.journal_dir(repo) is None:
             continue
         # Built once and handed to both: each of them otherwise walks the whole benches directory
         # for the same answer, and this scan is over every checkout the store has ever recorded.

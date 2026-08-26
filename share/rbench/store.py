@@ -52,7 +52,7 @@ RECEIPT_HASH_HEX = 8
 # a caller that hand-picks paths instead is choosing the scope, which is the choice this removes.
 DEBT_REVIEW_COMMAND = "REVIEW_ASKED=1 review-bench review --debt --tier T1"
 # Where the artifacts that answer for a path live: the waivers beside the receipts, and the two
-# journals beside each other in the git directory a chat commits from.
+# journals beside each other in the one git dir a whole family shares (`journal_dir`).
 WAIVER_DIR = "waivers"
 WAIVER_LOCK = ".waivers.lock"
 # Where a checkout of this repository's family lives inside it (the in-repo worktree convention
@@ -891,22 +891,155 @@ def stored_path_blob_shas(repo, paths):
     return shas
 
 
-def git_dir_path(repo):
-    """The per-worktree git directory, where both journals live. The absolute git dir and not the
-    common one: linked worktrees share the common dir, and a sibling's journal would answer for
-    work this tree never saw.
-    """
+def _git_line(repo, *arguments):
     # A run's recorded repository outlives the tree — a removed worktree, a pruned merged
     # workspace — and subprocess with a missing cwd RAISES rather than failing, which would cost
     # the caller its receipt entirely. Guarded here for every caller, as `git_common_dir` is.
     if not Path(repo).is_dir():
         return None
     proc = subprocess.run(
-        ["git", "rev-parse", "--absolute-git-dir"], cwd=repo, capture_output=True, text=True,
+        ["git", "-C", str(repo), *arguments], capture_output=True, text=True,
     )
     if proc.returncode != 0 or not proc.stdout.strip():
         return None
     return Path(proc.stdout.strip())
+
+
+JOURNAL_LOCK_WAIT_S = 0.1
+JOURNAL_LOCK_TRIES = 5
+JOURNAL_LOCK_STALE_S = 60
+
+
+def journal_lock_taken(lock):
+    """`mkdir <journal>.lock`, the lock the hooks take on the very same files (`rj_lock` in
+    hooks/lib/review-journal.sh) — one primitive across bash and Python, or the two would rewrite
+    one ledger side by side while each believed it held it.
+
+    Bounded wait and never proceeded through: a caller that cannot take it does not touch the file.
+    A lock older than a minute belonged to a process that died holding it.
+    """
+    for attempt in range(JOURNAL_LOCK_TRIES):
+        try:
+            lock.mkdir()
+            return True
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > JOURNAL_LOCK_STALE_S:
+                    lock.rmdir()
+            except OSError:
+                pass
+        except OSError:
+            return False
+        if attempt + 1 < JOURNAL_LOCK_TRIES:
+            time.sleep(JOURNAL_LOCK_WAIT_S)
+    return False
+
+
+def journal_lock_path(journal):
+    return journal.with_name(journal.name + ".lock")
+
+
+def fold_journal(source, target):
+    """Append `source`'s records to `target` unless it already holds them, then remove it.
+
+    Records are NUL-terminated and deduplicated whole, so a fold that runs twice — or races
+    another — costs nothing: the second pass finds every record already standing there.
+
+    Both files are held under the hooks' own `mkdir` lock for the whole fold, destination first as
+    the hooks take them, so an append or a whole-file rewrite from the bash side and this fold
+    exclude each other: unlocked, a record appended between the read and the unlink was deleted
+    unread, and a concurrent rewrite of the destination discarded what this append had just added.
+    A busy lock skips the fold outright — the source stays where it is and the next reader (the
+    statusline asks every few seconds) does it.
+    """
+    try:
+        # Two spellings of ONE file — a symlinked path, a `/var` against its `/private/var` — read
+        # as a fold with nothing to add and would unlink the family's own ledger.
+        if source.samefile(target):
+            return
+    except OSError:
+        pass
+    target_lock = journal_lock_path(target)
+    if not journal_lock_taken(target_lock):
+        return
+    try:
+        source_lock = journal_lock_path(source)
+        if not journal_lock_taken(source_lock):
+            return
+        try:
+            _fold_journal_locked(source, target)
+        finally:
+            try:
+                source_lock.rmdir()
+            except OSError:
+                pass
+    finally:
+        try:
+            target_lock.rmdir()
+        except OSError:
+            pass
+
+
+def _fold_journal_locked(source, target):
+    try:
+        records = [record for record in source.read_bytes().split(b"\0") if record]
+    except OSError:
+        return
+    try:
+        standing = target.read_bytes()
+    except OSError:
+        standing = b""
+    held = set(standing.split(b"\0"))
+    fresh = []
+    for record in records:
+        if record in held:
+            continue
+        held.add(record)
+        fresh.append(record)
+    if fresh:
+        with open(target, "ab") as handle:
+            # A journal whose last record lost its terminator would otherwise swallow the first
+            # record appended after it into the same row.
+            if standing and not standing.endswith(b"\0"):
+                handle.write(b"\0")
+            handle.write(b"".join(record + b"\0" for record in fresh))
+    source.unlink(missing_ok=True)
+
+
+def journal_dir(repo):
+    """The one directory both journals live in for a whole git family — the common git dir every
+    checkout of it shares — or None where this is not a repository.
+
+    Per-worktree git dirs held a ledger EACH: a waiver granted in the main checkout cleared 33
+    paths while 12 stayed owed in a worktree of the same project, and the statusline and
+    `review-bench debt` answered from different files (live case 2026-08-26). Coverage has always
+    been keyed by family (`repo_family`), so the ledger the coverage is priced against must be too.
+    A worktree's own ledger, from before this or written by a stale writer, is folded in here
+    rather than read: every reader and every writer arrives through this function, so whoever comes
+    first migrates it and nothing is left behind for the other to answer from. EVERY checkout's,
+    not just the caller's: a ledger left in a sibling worktree's git dir is read by nobody until
+    somebody runs a review from inside that worktree, and `git worktree remove` throws the whole
+    directory away — the family's own record of that work, gone with a checkout nobody was reading
+    from. One caller from anywhere in the family sweeps them all.
+    """
+    common = _git_line(repo, *"rev-parse --path-format=absolute --git-common-dir".split())
+    if common is None:
+        return None
+    # A family with no linked worktree has no second git dir to hold a second ledger, and this
+    # reader is on the statusline's own path: the check costs a stat instead of a git process.
+    worktrees = common / "worktrees"
+    if not worktrees.is_dir():
+        return common
+    try:
+        private_dirs = sorted(worktrees.iterdir())
+    except OSError:
+        private_dirs = []
+    for private in private_dirs:
+        for name in (DEBT_JOURNAL, COMMIT_JOURNAL):
+            source = private / name
+            if source.exists():
+                fold_journal(source, common / name)
+    return common
 
 
 def journal_entries(path):
@@ -941,7 +1074,7 @@ def journal_rows(repo):
     Both of them, always: a path the chat has since committed has moved out of the commit journal
     into the debt one, and a reader of either alone calls that work unrecorded.
     """
-    directory = git_dir_path(repo)
+    directory = journal_dir(repo)
     if directory is None:
         return []
     return [
