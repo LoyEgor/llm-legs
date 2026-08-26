@@ -18,7 +18,6 @@ from . import accounts as _accounts
 from . import scope as _scope
 from . import panel as _panel
 from . import prompts as _prompts
-from . import memlog as _memlog
 
 class PriorityGate:
     """Concurrency limiter that admits the longest expected job first.
@@ -1053,54 +1052,6 @@ def chunk_pass_failure(spec, rc, text, stderr):
     return _prompts.unusable_review(text, _prompts.normalize_findings(text, spec))[:400]
 
 
-_MEMLOG_LOCK = threading.Lock()
-_memlog_handle = None
-_memlog_cells = 0
-_memlog_atexit = False
-
-
-def hold_panel_memlog(run_dir):
-    """Take a share of the run's RAM sampler, starting it on the first cell to ask.
-
-    The panel is owned by `cli`, which has no place to hang a start/stop pair that also covers a
-    detached run, so the cells hold the sampler between them instead: first in starts it, last out
-    stops it, and an atexit release covers a panel that dies with cells still holding.
-    """
-    global _memlog_handle, _memlog_cells, _memlog_atexit
-    with _MEMLOG_LOCK:
-        _memlog_cells += 1
-        if _memlog_cells > 1 or _memlog_handle is not None:
-            return
-        try:
-            _memlog_handle = _memlog.start(run_dir)
-        except Exception as exc:
-            _memlog_handle = None
-            print(f"memlog: no RAM telemetry for this run: {exc}")
-            return
-        if _memlog_handle is None:
-            print("memlog: no RAM telemetry for this run")
-            return
-        if not _memlog_atexit:
-            _memlog_atexit = True
-            atexit.register(release_panel_memlog, True)
-
-
-def release_panel_memlog(force=False):
-    global _memlog_handle, _memlog_cells
-    with _MEMLOG_LOCK:
-        if force:
-            _memlog_cells = 0
-        else:
-            _memlog_cells = max(0, _memlog_cells - 1)
-            if _memlog_cells:
-                return
-        handle, _memlog_handle = _memlog_handle, None
-    try:
-        _memlog.stop(handle)
-    except Exception as exc:
-        print(f"memlog: sampler did not stop cleanly: {exc}")
-
-
 def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
     """One cell, reading its chunks one after another under a single rater name.
 
@@ -1115,64 +1066,60 @@ def run_rater_chunks(rater, repo, sha, focus, run_dir, diff, chunks):
     number — the watchdog cap, the duration median, the late line — prices ONE invocation, and a
     cell's total handed to them reads as a rater that suddenly got N times slower.
     """
-    hold_panel_memlog(run_dir)
-    try:
-        if not chunks:
-            rater["chunks_read"] = []
-            return run_rater_task(rater, repo, sha, focus, run_dir, diff)
-        read = []
-        texts = []
-        notes = []
-        elapsed = 0
-        account = None
-        last = None
-        # Every pass clears the kill markers of the one before it (`run_rater_task`), so without
-        # this a watchdog or stall kill in an early chunk reaches neither the run's record nor
-        # `timed_out`, and the cap that fired learns nothing from the hang it fired at.
-        marks = {}
-        # Every pass overwrites `started_at` too, and the cell's `duration_ms` is the SUM of them
-        # all: left at the last chunk's stamp, the cell reads as having sat in a queue for
-        # everything the chunks before it took, and the header names a leg that never held it.
-        cell_started = None
-        passes = 0
-        for chunk in chunks:
-            rater["chunk"] = chunk
-            _, account, last = run_rater_task(
-                rater, repo, sha, focus, run_dir, chunk["diff"]
-            )
-            passes += 1
-            cell_started = cell_started or rater.get("started_at")
-            rc, duration, text, stderr, _ = last
-            elapsed += duration
-            for key in ("stalled_s", "killed", "killed_cap_s"):
-                if rater.get(key) is not None and key not in marks:
-                    marks[key] = rater[key]
-            quiet = rater.get("max_quiet_ms")
-            if quiet is not None:
-                marks["max_quiet_ms"] = max(quiet, marks.get("max_quiet_ms", quiet))
-            failure = chunk_pass_failure(rater["spec"], rc, text, stderr)
-            if failure:
-                notes.append(f"chunk {chunk['index']}: exit {rc}: {failure}")
-            else:
-                read.append(chunk["index"])
-                texts.append(text or "")
-            print(f"{rater['spec']}: chunk {chunk['index'] + 1}/{len(chunks)}, "
-                  f"{duration} ms, exit {rc}")
-            # A kill ends the whole cell: the chunks after it are not read, and are left in debt.
-            if rater.get("killed"):
-                break
-        rater.pop("chunk", None)
-        rater.update(marks)
-        if cell_started:
-            rater["started_at"] = cell_started
-        rater["chunks_read"] = read
-        rater["passes"] = passes
-        if not read:
-            rc, _, text, stderr, command = last
-            return (rater, account, (rc or 1, elapsed, text, stderr, command))
-        return (rater, account, (0, elapsed, "\n\n".join(texts), "\n".join(notes), last[4]))
-    finally:
-        release_panel_memlog()
+    if not chunks:
+        rater["chunks_read"] = []
+        return run_rater_task(rater, repo, sha, focus, run_dir, diff)
+    read = []
+    texts = []
+    notes = []
+    elapsed = 0
+    account = None
+    last = None
+    # Every pass clears the kill markers of the one before it (`run_rater_task`), so without this
+    # a watchdog or stall kill in an early chunk reaches neither the run's record nor `timed_out`,
+    # and the cap that fired learns nothing from the hang it fired at.
+    marks = {}
+    # Every pass overwrites `started_at` too, and the cell's `duration_ms` is the SUM of them all:
+    # left at the last chunk's stamp, the cell reads as having sat in a queue for everything the
+    # chunks before it took, and the header names a leg that never held it.
+    cell_started = None
+    passes = 0
+    for chunk in chunks:
+        rater["chunk"] = chunk
+        _, account, last = run_rater_task(
+            rater, repo, sha, focus, run_dir, chunk["diff"]
+        )
+        passes += 1
+        cell_started = cell_started or rater.get("started_at")
+        rc, duration, text, stderr, _ = last
+        elapsed += duration
+        for key in ("stalled_s", "killed", "killed_cap_s"):
+            if rater.get(key) is not None and key not in marks:
+                marks[key] = rater[key]
+        quiet = rater.get("max_quiet_ms")
+        if quiet is not None:
+            marks["max_quiet_ms"] = max(quiet, marks.get("max_quiet_ms", quiet))
+        failure = chunk_pass_failure(rater["spec"], rc, text, stderr)
+        if failure:
+            notes.append(f"chunk {chunk['index']}: exit {rc}: {failure}")
+        else:
+            read.append(chunk["index"])
+            texts.append(text or "")
+        print(f"{rater['spec']}: chunk {chunk['index'] + 1}/{len(chunks)}, "
+              f"{duration} ms, exit {rc}")
+        # A kill ends the whole cell: the chunks after it are not read, and are left in debt.
+        if rater.get("killed"):
+            break
+    rater.pop("chunk", None)
+    rater.update(marks)
+    if cell_started:
+        rater["started_at"] = cell_started
+    rater["chunks_read"] = read
+    rater["passes"] = passes
+    if not read:
+        rc, _, text, stderr, command = last
+        return (rater, account, (rc or 1, elapsed, text, stderr, command))
+    return (rater, account, (0, elapsed, "\n\n".join(texts), "\n".join(notes), last[4]))
 
 
 def redact_command(rater, command):
