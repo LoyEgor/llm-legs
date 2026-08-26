@@ -9292,6 +9292,51 @@ cov_over_sha = cov_commit("src/b.py", message="fix three P1s")
 assert cov_cover(cov_over_sha) == (0, "")
 assert sr_answer("src/b.py", repo=cov_repo) == "debt 1 other locked", sr_answer(
     "src/b.py", repo=cov_repo)
+# (c1) Unless the fork on record says `fix`: that arm of the gate's own text names no second pass,
+# and refusing the cover there left a live 9-confirmed round with a recorded `fix` decision, a
+# commit carrying every one of its fixes, and no round at all that could close it (2026-08-27).
+# The A/B is over the RECORD and nothing else — the same round, the same commit, one field apart.
+cov_forked = sr_store()
+(cov_repo / "src" / "d.py").write_text("what the panel read\n")
+cov_commit("src/d.py", message="the code the forked round read")
+cov_forked_run = sr_fix_run(cov_forked, {"src/d.py": rb.path_blob_sha(cov_repo, "src/d.py")},
+                            run_id="20260601T000250Z-covforked", repo=cov_repo)
+sr_judged(cov_forked_run, "P1", 3)
+(cov_repo / "src" / "d.py").write_text("three P1s Egor decided to fix as they stand\n")
+cov_forked_sha = cov_commit("src/d.py", message="fix the three P1s")
+
+
+def cov_fork_choice(choice):
+    with contextlib.redirect_stdout(io.StringIO()):
+        rb.report.cmd_fork(argparse.Namespace(
+            run_id="20260601T000250Z-covforked", choice=choice, check=False, session="chat-1",
+            why="The three P1s are all local to one lookup; the block around them is sound and "
+                "the scope stays exactly as designed.",
+        ))
+
+
+cov_fork_choice("simplify")
+assert cov_cover(cov_forked_sha) == (0, ""), "a `simplify` fork let the commit close its round"
+assert not (cov_forked_run / rb.FIX_RECEIPT).exists()
+cov_fork_choice("fix")
+cov_forked_rc, cov_forked_out = cov_cover(cov_forked_sha)
+assert cov_forked_rc == 0, cov_forked_out
+assert "20260601T000250Z-covforked fixes: closed by" in cov_forked_out, cov_forked_out
+assert "1 fixed path(s) covered" in cov_forked_out, cov_forked_out
+cov_forked_record = json.loads((cov_forked_run / rb.FIX_RECEIPT).read_text())
+assert cov_forked_record["state"] == "done", cov_forked_record
+assert cov_forked_record["closed_by"] == [cov_forked_sha], cov_forked_record
+assert cov_forked_record["covers"] == [{"repo": str(cov_repo), "paths": {
+    "src/d.py": rb.path_blob_sha(cov_repo, "src/d.py")}}], cov_forked_record["covers"]
+# Named by id, the refusal a `simplify` fork earns is the escalated one and says so.
+cov_fork_choice("simplify")
+try:
+    cov_cover(cov_forked_sha, run_id="20260601T000250Z-covforked")
+except ValueError as exc:
+    assert "escalated with budget left and no `fix` fork on record" in str(exc), exc
+else:
+    assert False, "a `simplify` fork was named as a round this commit closes"
+cov_fork_choice("fix")
 # (d) One commit closes every round it finished: a chat that reviewed twice and fixed both in one
 # landing owes neither of them a second command.
 cov_two = sr_store()
@@ -16829,6 +16874,24 @@ assert test "$(grep -Fc -- "re-review" <<<"$fix_first")" -eq 0
 fix_first_fork=$(fix_bench fork 20260801T000000Z-fixround1) \
   || fail "fork refused a round that owes one"
 assert contains "$fix_first_fork" "re-review"
+# And once the decision on record is `fix`, the row is answered and goes: that arm names no second
+# pass — the commit carrying the fixes closes the round — so a block still printing the gate's
+# demand asks for a review Egor already declined. Off the same dial the coverage reads.
+FIX_FORK_JSON="$FIX_SD/benches/20260801T000000Z-fixround1/fork.json"
+fix_forked_report=$(fix_bench report 20260801T000000Z-fixround1) \
+  || fail "the forked round has no report"
+assert test "$(grep -Ec '^round: +' <<<"$fix_forked_report")" -eq 0
+assert test "$(sed -n 's/^confirmed: *//p' <<<"$fix_forked_report")" = "P1 0 · P2 1 · P3 0 · 1 total"
+# The other two arms send the scope back and keep the row, so what went is the CHOICE and not the
+# record's existence.
+for fix_other_arm in simplify re-review; do
+  jq -c --arg choice "$fix_other_arm" '.choice = $choice' "$FIX_FORK_JSON" >"$WORK/fork-arm.json"
+  mv "$WORK/fork-arm.json" "$FIX_FORK_JSON"
+  assert contains "$(fix_bench report 20260801T000000Z-fixround1)" "round:        stub fork"
+done
+jq -c '.choice = "fix"' "$FIX_FORK_JSON" >"$WORK/fork-arm.json"
+mv "$WORK/fork-arm.json" "$FIX_FORK_JSON"
+assert test "$(grep -Ec '^round: +' <<<"$(fix_bench report 20260801T000000Z-fixround1)")" -eq 0
 
 # The blocked form carries the reason into the block, so the chat reads why the work stopped
 # rather than that it did.

@@ -681,6 +681,18 @@ def read_fork(run_dir):
     return record
 
 
+def fork_closes_round(run_dir):
+    """Whether the decision on record settles this round where it stands.
+
+    `fix` is the one arm of the fork that names no second pass: the findings are patched and the
+    commit carrying them ends the round, exactly as an unescalated round ends. The other two send
+    the scope back — a rework or a full re-review reads those fix bytes itself — so they leave the
+    round owing what the gate said it owed. Read through `read_fork` like every other reader of the
+    record (`fork --check`, which both PreToolUse gates relay, and the delivery line).
+    """
+    return (read_fork(run_dir) or {}).get("choice") == "fix"
+
+
 def fork_owed(run_dir, meta, verdicts=None):
     """Asked of the gate through `escalation_verdict` like every other reader (row af); a gate
     that cannot be asked owes nothing here, since the report already says so out loud."""
@@ -1307,8 +1319,15 @@ def round_covers_its_fixes(run_dir, meta, rows):
     escalated-and-spent covered nothing and owed nothing at once, and its fix bytes could be
     answered by no review that exists — only by a waiver somebody had to know to write (audit,
     2026-08-26). The dials do not move; only the question of who reads these lines does.
+
+    And with the fork's own answer, which is not an exception at all: a round Egor decided `fix`
+    on has no second pass to owe the bytes to, and the escalation text it was decided from promises
+    exactly that. Refusing the cover there left the live 9-confirmed round of 2026-08-27 with a
+    recorded `fix` decision and a commit that could close nothing.
     """
     if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is None:
+        return True
+    if fork_closes_round(run_dir):
         return True
     return round_budget_spent(run_dir)
 
@@ -1436,9 +1455,9 @@ def coverable_runs(repo, session, commit, run_id=None):
 
     Refused, in order: a round nobody triaged, since a receipt is an answer to confirmed findings;
     a round whose pass recorded `--blocked`, since a stop is a record and a commit does not undo
-    it; a round the gate escalated over a scope with budget left, since the pass it owes reads the
-    fixes itself; and a round holding NO confirmed finding, which has no fixing pass at all for a
-    commit to be the evidence of — `fix_status` already calls it done ("nothing to fix") whoever
+    it; a round the gate escalated over a scope with budget left and no `fix` fork on record, since
+    the pass it owes reads the fixes itself; and a round holding NO confirmed finding, which has no
+    fixing pass at all for a commit to be the evidence of — `fix_status` already calls it done ("nothing to fix") whoever
     commits next, and covered by a commit anyway it retired that commit's own bytes as reviewed
     work no panel had read (a clean round plus a commit rewriting a reviewed file wrote
     `covers={f.txt: <the new sha>}`; audit, 2026-08-26). The tally path refuses the same case with
@@ -1501,8 +1520,9 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
     A round the gate closed is one nothing will ever read again — no second pass is owed over it —
     so its fixes left in debt are a waiver every later chat has to know to write, over work this
     very receipt accounts for. A round the gate escalated covers nothing: the pass it owes reads
-    the fixes itself, and so does the mandatory one a locked round demands. Priced by asking the
-    gate rather than by counting here, so the two dials keep living in one place
+    the fixes itself, and so does the mandatory one a locked round demands — unless the fork on
+    record says `fix`, which names no such pass. Asked of `round_covers_its_fixes` and never priced
+    here, so this path and the commit's answer the same question once
     (docs/shared-invariants.md row `af`) — and an unreachable gate covers nothing, which is the
     behaviour of every round written before this receipt held coverage at all.
 
@@ -1622,9 +1642,10 @@ def cmd_fixes_cover(args):
         if not rounds:
             raise ValueError(
                 f"{args.run_id} is not a round this commit closes: it is another chat's or "
-                f"another repository's, untriaged, blocked, escalated with budget left, outside "
-                f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, holds no confirmed finding for a "
-                f"fixing pass to answer, or {commit[:7]} carried none of the paths it reviewed"
+                f"another repository's, untriaged, blocked, escalated with budget left and no "
+                f"`fix` fork on record, outside the {ROUND_LINEAGE_MAX_HOURS}h fixing window, "
+                f"holds no confirmed finding for a fixing pass to answer, or {commit[:7]} carried "
+                f"none of the paths it reviewed"
             )
     else:
         rounds = coverable_runs(repo, session, commit)

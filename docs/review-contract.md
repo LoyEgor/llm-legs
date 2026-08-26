@@ -324,7 +324,8 @@ one debt scope per member, one receipt per member.
 are ONE thing (Egor, 2026-08-25). The commit hook asks `review-bench fixes --cover --commit
 <sha>` for every repository a Bash call landed a commit in, and every round of the committing
 chat over that repository that is triaged, holds a confirmed finding, is not `blocked` and is
-closed by `escalation-verdict` is closed BY that commit and covers what it carried, at the shas
+closed by `escalation-verdict` — or whose recorded fork says `fix`, which is that decision keeping
+the promise it was made on — is closed BY that commit and covers what it carried, at the shas
 the commit itself holds — bounded, like every coverage, by the paths that round's own snapshot
 holds. A round with NOTHING confirmed is closed by no commit: it has no fixing pass for one to be
 the evidence of (`fix_status` already calls it done), and covered anyway it retired that commit's
@@ -359,7 +360,8 @@ complete, and the workdir dirt it gained inside the window. Where a co-tenant ra
 run over the same path too, nothing can tell the two apart and the path stays in debt. The path must be one the run's snapshot holds, because a fix that touched a file no
 cell was shown is new work. A pass that fixed nothing wrote no fix bytes to cover. And a
 round recorded `blocked` and a round the gate escalated cover nothing at all — their
-fixes ride the round they owe. With one exception, which closes a hole and moves no dial:
+fixes ride the round they owe, unless its fork on record says `fix`, which leaves no such round.
+With one further exception, which closes a hole and moves no dial:
 an escalated round whose scope has SPENT its round budget covers its fixes like a closed
 one, because `artifact_owes_second_round` already refuses to reopen it — escalated and
 spent, it covered nothing and owed nothing at once, and its fix bytes could be answered by
@@ -441,7 +443,11 @@ disk: `review-bench fork <run-id> --choice fix|simplify|re-review --why '<text>'
 writes `<run-dir>/fork.json` (`choice`, `why`, `session`, `at`). `--why` is the
 strategic reason for the choice — why fix rather than simplify or redesign the
 block — never a list of findings, and is refused under 80 characters
-(`FORK_WHY_MIN_CHARS`). `review-bench fork <run-id> --check` is the one verdict
+(`FORK_WHY_MIN_CHARS`). A `fix` decision is the one arm that names no second
+pass, so the commit carrying the fixes closes that round exactly as it closes an
+unescalated one, and the report stops printing the `round:` row asking for the
+review that decision declined; `simplify` and `re-review` both send the scope
+back, and their fix bytes stay for the round that reads them. `review-bench fork <run-id> --check` is the one verdict
 the gates relay: exit 3 with the `fork` command while the round crossed a dial
 and no record stands, exit 0 otherwise — a round under both dials never needs
 one. Three gates read it and none composes a threshold of its own: the Bash

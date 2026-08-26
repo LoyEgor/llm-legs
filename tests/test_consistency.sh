@@ -1387,6 +1387,13 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   # dials it would have to spell are exactly the pair this row keeps in the gate.
   assert grep -Fq 'if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is None:' \
     "$RB_ROUND"
+  # The one override of that answer is the RECORD and never a dial of its own: `fix` is the arm of
+  # the gate's own text that names no second pass, read off `fork.json` through the same
+  # `read_fork` the gates relay, and both coverage paths and the report row ask it in one place.
+  assert grep -Fq 'return (read_fork(run_dir) or {}).get("choice") == "fix"' "$RB_ROUND"
+  assert grep -Fq '    if fork_closes_round(run_dir):' "$RB_ROUND"
+  assert grep -Fq 'not _round.fork_closes_round(run_dir)' "$RB_REPORT"
+  assert doc_has 'Its ONE override is the fork RECORD and not a dial'
   # The two dials, in the gate and only there. There is no third: a count at which the fork led
   # with the rework was one, and that choice is inside what the P1 branch already asks.
   assert grep -Fq 'SECOND_REVIEW_P1S=3' "$FLOW_GATE"

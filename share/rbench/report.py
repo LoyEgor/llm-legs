@@ -538,7 +538,11 @@ def report_lines(run_dir, meta, verdicts=None):
     # to end.
     if earned == _round.ESCALATION_UNKNOWN:
         rows.append(("round:", earned, True))
-    elif earned and _round.review_round(run_dir, meta) < _round.ROUND_BUDGET:
+    # A recorded `fix` decision is the answer to this very row, and off the same dial the commit's
+    # coverage reads (`round_covers_its_fixes`): the round ends with the fixes, so a block still
+    # asking for a second one asks a question Egor already closed.
+    elif (earned and not _round.fork_closes_round(run_dir)
+            and _round.review_round(run_dir, meta) < _round.ROUND_BUDGET):
         rows.append(("round:", _round.escalation_headline(earned), True))
     decreed = _round.read_decree(run_dir)
     if decreed:

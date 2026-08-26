@@ -487,6 +487,7 @@
  "fix_written_paths": "round",
  "fold_journal": "store",
  "foreign_run_claims": "store",
+ "fork_closes_round": "round",
  "fork_command": "round",
  "fork_line": "report",
  "fork_missing": "round",
