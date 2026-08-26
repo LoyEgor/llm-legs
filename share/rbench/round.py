@@ -892,25 +892,35 @@ def cmd_receipt(args):
     return 0
 
 
-def gate_asks_spent(marker, mark):
-    """Whether this run has spent its asks at the Stop gate, counting this one where `mark` says to.
+def gate_asks_spent(marker, mark, state=""):
+    """Whether this ask is one the Stop gate has already made, counting this one where `mark` says to.
 
-    One appended line per ask, counted back. A number read, incremented and rewritten loses an
-    increment whenever two stop hooks fire together — Egor runs several chats at once — and the
-    allowance quietly stretches. A marker that cannot be read counts as spent: a gate blind to its
-    own state must go quiet rather than block a stop it can never release.
+    One appended `<iso> <state>` line per ask, counted back. A number read, incremented and
+    rewritten loses an increment whenever two stop hooks fire together — Egor runs several chats at
+    once — and the allowance quietly stretches. A marker that cannot be read counts as spent: a gate
+    blind to its own state must go quiet rather than block a stop it can never release.
+
+    The `state` is the QUESTION, not the run: asked once and answered by nobody, repeating it at
+    every Stop is nagging, but a state that has moved — another path in the residual, a run that has
+    since been triaged and now owes a fork — is a different question and gets its own ask. The count
+    stays as the loop guard for a state that flaps. A marker line from before this format carries no
+    state, which no real question equals, so it costs one ask and no more.
     """
     try:
-        asked = sum(1 for line in marker.read_text().splitlines() if line.strip())
+        lines = [line for line in marker.read_text().splitlines() if line.strip()]
     except FileNotFoundError:
-        asked = 0
+        lines = []
     except (OSError, UnicodeDecodeError):
-        asked = TRIAGE_GATE_ASKS
-    if asked >= TRIAGE_GATE_ASKS:
+        return True
+    if state and lines:
+        _, _, last = lines[-1].strip().partition(" ")
+        if last == state:
+            return True
+    if len(lines) >= TRIAGE_GATE_ASKS:
         return True
     if mark:
         with marker.open("a") as handle:
-            handle.write(_store.iso_now() + "\n")
+            handle.write(f"{_store.iso_now()} {state}\n")
     return False
 
 
@@ -922,9 +932,12 @@ def cmd_pending_report(args):
         # begins: a round whose budget is spent while its own scope is still in debt.
         return unsettled_report(args.repo, session, args.mark)
     run_dir, meta = pending
-    if gate_asks_spent(run_dir / TRIAGE_NUDGED, args.mark):
+    triaged = _store.run_triaged(run_dir)
+    if gate_asks_spent(
+        run_dir / TRIAGE_NUDGED, args.mark, f"{run_dir.name} {'fork' if triaged else 'record'}"
+    ):
         return 1
-    if _store.run_triaged(run_dir):
+    if triaged:
         print(f"{run_dir.name} {confirmed_count(recorded_verdict_rows(run_dir))}")
         print(fork_command(run_dir.name))
         return 0
@@ -949,9 +962,15 @@ def unsettled_round(repo, session):
     A round still owed a follow-up is passed over: the fork and the lock speak for those, and a
     second demand over the same round would ask for a waiver the lock refuses. So is a round whose
     fixing pass has not answered — its bytes are still landing — and one whose snapshot this
-    repository is not in. So, finally, is one whose residual debt is entirely a co-tenant's: the
-    `paths` are what this session may answer for, and the line count is over those same paths, or
-    the demand names a number no command it prints can settle.
+    repository is not in.
+
+    `paths` is this session's OWN debt and nothing else, and the line count is over those same
+    paths, or the demand names a number no command it prints can settle. A co-tenant's residual is
+    that chat's round to ask for and a waiver `waive` refuses by their name. Orphaned residual is
+    nobody's to waive on a demand made of whoever happened to stop here — no record names it for
+    this chat, and this gate may not turn "nobody's" into "yours" by asking. It stays where a
+    question nobody is being asked belongs: the statusline's third number, `doctor`, and
+    `review --debt --all`.
     """
     from . import debt as _debt  # here and not at module top: debt imports this module at load
     resolved = _store.resolve_repo_arg(repo) if repo else None
@@ -994,23 +1013,18 @@ def unsettled_round(repo, session):
             )
         records, claims, dirty, covering, reviewed_shas, holders = inputs
         shas = {}
+        bases = {}
         debt = _debt.repo_debt(
             resolved, paths=sorted(reviewed), covering=covering, shas=shas, claims=claims,
-            dirty=dirty, reviewed=reviewed_shas, holders=holders,
+            dirty=dirty, reviewed=reviewed_shas, holders=holders, bases=bases,
         )
         if not debt:
             continue
         buckets = _debt.debt_ownership(resolved, debt, session, claims=claims, records=records)
-        paths = [
-            path for path, _ in debt
-            if path in buckets["own"] or path in buckets["orphaned"]
-        ]
-        # Residual that is entirely another chat's is no debt of this session's to settle: neither
-        # answer the demand prints is one it may give — the waiver `waive` refuses by that chat's
-        # name, and a review of a co-tenant's work is that chat's round to ask for.
+        paths = [path for path, _ in debt if path in buckets["own"]]
         if not paths:
             continue
-        lines = _debt.debt_line_counts(resolved, debt, shas=shas)
+        lines = _debt.debt_line_counts(resolved, debt, shas=shas, bases=bases)
         return run_dir, sum(lines.get(path, 0) for path in paths), paths
     return None
 
@@ -1114,7 +1128,9 @@ def unsettled_report(repo, session, mark):
         return 1
     if live_worker_run(repo, session):
         return 1
-    if gate_asks_spent(run_dir / SETTLE_NUDGED, mark):
+    # shlex.join, not a plain space: the state is ONE path set, and space-joined it is not — a path
+    # spelled `a b` reads back as the pair `a`, `b` and buys that other question's silence.
+    if gate_asks_spent(run_dir / SETTLE_NUDGED, mark, shlex.join(sorted(paths))):
         return 1
     print(f"{run_dir.name} {lines}")
     print(shlex.join([
@@ -1279,6 +1295,199 @@ def fix_written_paths(repo, scope, session, window):
     return covered
 
 
+def round_covers_its_fixes(run_dir, meta, rows):
+    """Whether this round's own fixing pass settles the bytes it wrote, or a second pass owes them.
+
+    The gate's answer and never a count taken here, so the two dials keep living in one place
+    (docs/shared-invariants.md row `af`): a round the gate CLOSED is one nothing will read again,
+    and a round it escalated owes its fixes to the pass it is sending the chat back for.
+
+    With ONE exception, which is a hole and not a policy: a scope whose round budget is spent has
+    no further pass to owe. `artifact_owes_second_round` already refuses to reopen such a round, so
+    escalated-and-spent covered nothing and owed nothing at once, and its fix bytes could be
+    answered by no review that exists — only by a waiver somebody had to know to write (audit,
+    2026-08-26). The dials do not move; only the question of who reads these lines does.
+    """
+    if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is None:
+        return True
+    return round_budget_spent(run_dir)
+
+
+def commit_paths(repo, commit):
+    """The paths a commit carried, against its first parent, as `{path: blob sha}`.
+
+    The sha is the one the COMMIT holds and never the working tree's: what this covers is the
+    content that landed, so an edit made after the commit is debt again at the next reading,
+    exactly as an edit after a waiver is. A path the commit DELETED holds no blob and is left out
+    — a removal has nothing for a later review to read.
+    """
+    listed = subprocess.run(
+        ["git", "log", "-1", "--format=", "--name-only", "--first-parent", "-z", commit],
+        cwd=repo, capture_output=True, text=True,
+    )
+    if listed.returncode != 0:
+        return {}
+    names = [name for name in listed.stdout.split("\0") if name]
+    if not names:
+        return {}
+    try:
+        entries = _scope.tree_path_entries(repo, f"{commit}^{{tree}}", names, literal=True)
+    except RuntimeError:
+        return {}
+    return {path: entry[1] for path, entry in entries.items() if entry[1]}
+
+
+def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
+    """What a commit closes of this round: the `covers` entries for every path the commit carried
+    that this round's own scope holds, at the shas the commit left them standing at.
+
+    The commit IS the evidence, which is the whole of the mechanism. `fix_written_paths` asks the
+    journals instead, and they answer only where a debt row happened to be stamped inside the
+    fixing window naming the fixing session — which is not when they are written: the row goes down
+    at COMMIT time, after the receipt, so 51 of 71 done receipts in a three-week window carried no
+    coverage at all and their own fix bytes read back as fresh debt (audit, 2026-08-26). A commit
+    needs no such luck: it names its paths, it names its contents, and the chat that made it is the
+    chat this is being asked on behalf of.
+
+    Bounded by `set(reviewed)` like every other coverage: a fix that touched a file no cell was
+    ever shown is new work, and no panel read the content this would settle it at.
+
+    `landed` is the commit's own path map, for a caller closing several rounds with one commit: the
+    paths are the COMMIT's and not the round's, so asking git once per round asks it the same
+    question over and over inside the hook the commit is waiting on. `meta` is the round's own
+    record where the caller already parsed it, for the same reason.
+    """
+    if meta is None:
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            return []
+    if not isinstance(meta, dict):
+        return []
+    landed = commit_paths(repo, commit) if landed is None else landed
+    if not landed:
+        return []
+    resolved = _store.resolved_repo_path(repo)
+    family = _store.repo_family(repo)
+    covers = []
+    for entry in [meta] + [row for row in meta.get("repos") or () if isinstance(row, dict)]:
+        recorded = str(entry.get("repo") or "")
+        reviewed = entry.get("reviewed")
+        if not recorded or not isinstance(reviewed, dict) or not reviewed:
+            continue
+        # `family is not None` exactly as `run_repo_record` reads it: two repositories neither of
+        # which HAS a family are not one repository, and matched on that shared None an unrelated
+        # round's scope took this commit's shas for its own coverage.
+        if _store.resolved_repo_path(recorded) != resolved and not (
+                family is not None and _store.repo_family(recorded) == family):
+            continue
+        paths = {path: sha for path, sha in landed.items() if path in reviewed}
+        if paths:
+            covers.append({"repo": recorded, "paths": paths})
+    return covers
+
+
+def merge_fix_coverage(existing, fresh):
+    """One round's `covers` block with a commit's entries folded in, per repository.
+
+    A path already covered takes the NEW sha: coverage follows the bytes the same pass wrote, and
+    a second commit over a path this receipt already answers for is that pass still working — read
+    against the older sha it came back as debt the moment it landed (audit, 2026-08-26).
+    """
+    merged = [dict(entry, paths=dict(entry.get("paths") or {}))
+              for entry in existing or () if isinstance(entry, dict)]
+    for entry in fresh:
+        standing = next(
+            (row for row in merged
+             if _store.resolved_repo_path(str(row.get("repo") or ""))
+             == _store.resolved_repo_path(entry["repo"])),
+            None,
+        )
+        if standing is None:
+            merged.append({"repo": entry["repo"], "paths": dict(entry["paths"])})
+        else:
+            standing["paths"].update(entry["paths"])
+    return merged
+
+
+def round_within_fixing_window(meta, now=None):
+    """Whether this round is still close enough to its own fixing pass for a commit to close it.
+
+    `ROUND_LINEAGE_MAX_HOURS` is the same doctrine the lineage reads it by: a round and the pass
+    that fixes it are one piece of work, days at the outside. Without it every commit in this
+    checkout re-prices every round the store has ever held, for ever. A round that stamped no
+    instant at all is kept rather than dropped: a bound nobody can evaluate must not close a door
+    silently, and `fixes --done` is the answer for a pass that ran later than this.
+    """
+    stamped = _store.parse_iso_timestamp(meta.get("finished") or meta.get("sealed_at"))
+    if stamped is None:
+        return True
+    now = _store.utc_now() if now is None else now
+    return (now - stamped) <= timedelta(hours=ROUND_LINEAGE_MAX_HOURS)
+
+
+def coverable_runs(repo, session, commit, run_id=None):
+    """Every round of `session` over `repo` whose fixing pass this commit may close, newest first.
+
+    A worker a chat spawned IS that chat (docs/shared-invariants.md row `am`), so a round that
+    worker launched is folded into its launcher here exactly as debt folds it — otherwise a review
+    dispatched to a worker could be closed by nobody's commit.
+
+    Refused, in order: a round nobody triaged, since a receipt is an answer to confirmed findings;
+    a round whose pass recorded `--blocked`, since a stop is a record and a commit does not undo
+    it; a round the gate escalated over a scope with budget left, since the pass it owes reads the
+    fixes itself; and a round holding NO confirmed finding, which has no fixing pass at all for a
+    commit to be the evidence of — `fix_status` already calls it done ("nothing to fix") whoever
+    commits next, and covered by a commit anyway it retired that commit's own bytes as reviewed
+    work no panel had read (a clean round plus a commit rewriting a reviewed file wrote
+    `covers={f.txt: <the new sha>}`; audit, 2026-08-26). The tally path refuses the same case with
+    `if not fixed`.
+
+    This runs inside a commit hook, so it is bounded twice: the commit's paths are read from git
+    ONCE for every round it may close, and a round outside the fixing window above is dropped
+    before anything reads its verdicts or asks the gate about it. `run_id` names the single round
+    a caller already has in hand, which is the rest of the store not walked at all.
+    """
+    launchers = worker_session_launchers()
+    resolved = _store.resolved_repo_path(repo)
+    family = _store.repo_family(repo)
+    benches = _store.state_dir() / "benches"
+    landed = commit_paths(repo, commit)
+    if not landed:
+        return []
+    rounds = []
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        if run_id is not None and run_dir.name != run_id:
+            continue
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        owner = str(meta.get("session") or "")
+        if owner != session and launchers.get(owner) != session:
+            continue
+        if _store.run_repo_record(resolved, meta, family) is None:
+            continue
+        if not round_within_fixing_window(meta):
+            continue
+        if not _store.run_triaged(run_dir):
+            continue
+        record = read_fix_status(run_dir)
+        if isinstance(record, dict) and record.get("state") == "blocked":
+            continue
+        rows = recorded_verdict_rows(run_dir)
+        if rows is None or not confirmed_count(rows):
+            continue
+        if not round_covers_its_fixes(run_dir, meta, rows):
+            continue
+        covers = commit_fix_coverage(run_dir, repo, commit, landed=landed, meta=meta)
+        if covers:
+            rounds.append((run_dir, meta, rows, record, covers))
+    return rounds
+
+
 def fix_coverage(run_dir, session, recorded, rows, fixed):
     """What a done receipt covers besides the run's own snapshot: the bytes this round's OWN fixing
     pass wrote, per repository of the run, as `covers` entries.
@@ -1309,7 +1518,7 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
         return []
     if not fixed or rows is None:
         return []
-    if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is not None:
+    if not round_covers_its_fixes(run_dir, meta, rows):
         return []
     sealed = _store.parse_iso_timestamp(meta.get("sealed_at"))
     if sealed is None:
@@ -1330,13 +1539,108 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
     return covers
 
 
+def cover_receipt(run_dir, meta, rows, record, covers, commit, session):
+    """The done receipt a commit writes for one round, with that commit's coverage folded in.
+
+    The tally is the triage's own where nobody typed one: the counts are what the report PRINTS,
+    and no reader of the debt engine has ever read them (`repo_debt` takes `covers` and nothing
+    else). Making them the price of coverage is what left 51 of 71 receipts covering nothing.
+
+    Stamped against the triage standing NOW, because that is the triage this commit answers: a
+    receipt carrying an older fingerprint is one `fix_coverage_artifact` reads as stale, so it
+    would record coverage no reader would ever honour.
+    """
+    confirmed = confirmed_count(rows)
+    digest = triage_digest(rows)
+    standing = record if isinstance(record, dict) and record.get("state") == "done" else {}
+    # The tally is kept only where it answers THIS triage. Carried across a re-adjudication it
+    # stands beside a `confirmed` restamped from the new rows, and the report prints a pair that
+    # belongs to neither triage. The COVERAGE is kept either way: it records which bytes a pass
+    # wrote, which no later judging of the findings can take back.
+    tally = standing if standing.get("triage") == digest else {}
+    fixed = tally.get("fixed")
+    written = {
+        "state": "done",
+        "fixed": confirmed if not isinstance(fixed, int) else fixed,
+        "false_positives": tally.get("false_positives") if isinstance(
+            tally.get("false_positives"), int) else 0,
+        "confirmed": confirmed,
+        "triage": digest,
+        # NOW and never the standing receipt's: this stamp is the fixes artifact's epoch
+        # (`debt.fix_coverage_artifact`) and the instant `review_round` weighs against a later
+        # round's seal, so shas that advanced under a timestamp that did not lost to artifacts
+        # written between the two commits.
+        "recorded_at": _store.iso_now(),
+        "covers": merge_fix_coverage(standing.get("covers"), covers),
+        # Which commits closed this pass, in order. Nothing reads it back — the coverage is in the
+        # shas — and it is the only place a reader can see WHY a round it never typed a receipt for
+        # is closed.
+        "closed_by": list(dict.fromkeys(list(standing.get("closed_by") or ()) + [commit])),
+    }
+    owner = session or _store.round_session(run_dir) or ""
+    if owner:
+        written["session"] = owner
+    (run_dir / _store.FIX_RECEIPT).write_text(json.dumps(written, indent=2, sort_keys=True) + "\n")
+    return written
+
+
+def cmd_fixes_cover(args):
+    """Close every fixing pass this commit finished, and cover what it landed.
+
+    A review was done and its fixes landed: those two are ONE thing, so the commit that carries the
+    fixes is what ends the round (Egor, 2026-08-25). No second command a model can forget stands
+    between them — `fixes --done` remains for the tally the report prints and gates nothing.
+
+    One commit may close several rounds, and a round is closed once: the coverage is a map of path
+    to sha, so a later commit over the same path re-stamps it rather than adding a second answer.
+    """
+    commit = str(getattr(args, "commit", "") or "").strip()
+    if not commit:
+        raise ValueError("--cover needs --commit <sha>: the commit is the evidence it writes from")
+    repo = _store.resolve_repo_arg(getattr(args, "repo", None) or ".")
+    if repo is None:
+        # Silent and exit 0: this runs from a commit hook, and a repository it cannot resolve is a
+        # commit that landed somewhere this tool has nothing to say about.
+        return 0
+    session = str(getattr(args, "session", "") or "") or _store.caller_chat()
+    if not session:
+        return 0
+    if args.run_id:
+        run_dir = _store.state_dir() / "benches" / args.run_id
+        if not (run_dir / "meta.json").exists():
+            raise ValueError(f"unknown run id: {args.run_id}")
+        # Walked for that run alone, and said out loud when it is not this commit's to close: a
+        # caller who named a round is owed an answer about THAT round, and exit 0 with nothing on
+        # stdout reads as a round that was closed.
+        rounds = coverable_runs(repo, session, commit, run_id=args.run_id)
+        if not rounds:
+            raise ValueError(
+                f"{args.run_id} is not a round this commit closes: it is another chat's or "
+                f"another repository's, untriaged, blocked, escalated with budget left, outside "
+                f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, holds no confirmed finding for a "
+                f"fixing pass to answer, or {commit[:7]} carried none of the paths it reviewed"
+            )
+    else:
+        rounds = coverable_runs(repo, session, commit)
+    for run_dir, meta, rows, record, covers in rounds:
+        cover_receipt(run_dir, meta, rows, record, covers, commit, session)
+        covered = sum(len(entry["paths"]) for entry in covers)
+        print(f"{run_dir.name} fixes: closed by {commit[:7]}; {covered} fixed path(s) covered")
+    return 0
+
+
 def cmd_fixes(args):
     """Record what happened to a triaged round's confirmed findings, so the report can say it.
 
-    Two forms and no third: the work was done, with the two counts the report prints, or it was
-    not, with the reason it was not. A round with nothing on record is neither — it reads as
-    pending, which is what an interrupted fixing pass actually leaves behind.
+    Three forms and no fourth: the commit that carried the fixes closed the pass (`--cover`), the
+    work was done with the two counts the report prints, or it was not, with the reason it was not.
+    A round with nothing on record is none of them — it reads as pending, which is what an
+    interrupted fixing pass actually leaves behind.
     """
+    if getattr(args, "cover", False):
+        return cmd_fixes_cover(args)
+    if not args.run_id:
+        raise ValueError("fixes needs a run id; only --cover resolves its own rounds")
     run_dir = _store.state_dir() / "benches" / args.run_id
     if not (run_dir / "meta.json").exists():
         raise ValueError(f"unknown run id: {args.run_id}")
@@ -1363,12 +1667,17 @@ def cmd_fixes(args):
         }
         line = f"NOT APPLIED — {reason}"
     else:
-        if args.fixed is None or args.fp is None:
-            raise ValueError("--done needs --fixed N and --fp M: the report prints both numbers")
-        if args.fixed < 0 or args.fp < 0:
-            raise ValueError("--fixed and --fp count findings, so neither can be negative")
         rows = recorded_verdict_rows(run_dir)
         confirmed = confirmed_count(rows)
+        # The tally is what the report PRINTS and nothing else — the debt engine reads `covers`
+        # alone — so a pass that answered every confirmed finding may say so without counting them
+        # again. A number typed by hand still binds, and the checks below are what bind it.
+        if args.fixed is None and args.fp is None:
+            args.fixed, args.fp = confirmed, 0
+        elif args.fixed is None or args.fp is None:
+            raise ValueError("--fixed and --fp are one answer: give both numbers or neither")
+        if args.fixed < 0 or args.fp < 0:
+            raise ValueError("--fixed and --fp count findings, so neither can be negative")
         docs = _panel.docs_confirmed_count(run_dir, rows)
         split = f" ({confirmed - docs} in code, {docs} in docs)" if docs else ""
         # A done receipt says the round's confirmed findings were answered, and the two counts are
@@ -1413,6 +1722,17 @@ def cmd_fixes(args):
         record["session"] = session
     if record["state"] == "done":
         covers = fix_coverage(run_dir, session, recorded, rows, args.fixed)
+        # Folded into what the COMMIT already covered, never written over it: this tally is the
+        # optional line after the commit closed the round, and rebuilt from scratch it erased that
+        # commit's `covers` and `closed_by` — the fixed bytes then read back as fresh debt, which
+        # is the very hole the commit receipt was written to close.
+        standing = read_fix_status(run_dir)
+        standing = standing if isinstance(standing, dict) and standing.get("state") == "done" \
+            else {}
+        covers = merge_fix_coverage(standing.get("covers"), covers)
+        closed_by = list(dict.fromkeys(standing.get("closed_by") or ()))
+        if closed_by:
+            record["closed_by"] = closed_by
         if covers:
             record["covers"] = covers
             line += f"; {sum(len(entry['paths']) for entry in covers)} fixed path(s) covered"
@@ -1701,7 +2021,6 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
         + (" --no-corpus" if worktree else "")
         + f" --verdicts {shlex.quote(verdict_path)}"
     )
-    fixes_done = f"review-bench fixes {shlex.quote(run_id)} --done --fixed <N> --fp <M>"
     fixes_blocked = (
         f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
     )
@@ -1754,9 +2073,10 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
           "the diff and nothing is picked by hand.")
     print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
           "running in maximum autonomy never pauses for it — it takes the decision itself.")
-    print(f"\nSTEP 2 is a pass of its own, briefed by `record`: {fixes_done} is where it ends up, "
-          "and the brief naming what it fixes cannot be written before the triage says what "
-          "survived.")
+    print("\nSTEP 2 is a pass of its own, briefed by `record`: fix the confirmed findings and "
+          "COMMIT — the commit closes the pass and covers what it carried, so there is no second "
+          "command to remember. The brief naming what it fixes cannot be written before the "
+          "triage says what survived.")
 
 
 def round_fixable(meta):
@@ -1842,7 +2162,8 @@ def fix_handoff_lines(run_dir, meta, verdicts):
         "assert fails, restore it. Neither commit nor stage anything — leave the work in the tree."
     )
     lines.append(
-        "Then record the outcome exactly with: "
+        "Nothing else is recorded: the COMMIT that later carries these fixes is what closes the "
+        "round and covers what it landed. A tally for the report is optional — "
         f"review-bench fixes {shlex.quote(run_id)} --done --fixed <N> --fp <M>"
     )
     lines.append(fix_worker_recommendation(severities))
@@ -1860,8 +2181,8 @@ def commit_mode_command(args):
         command = ["review-bench", "review", "HEAD", "--tier", tier]
         if getattr(args, "max", False):
             command.append("--max")
-        if getattr(args, "foreground", False):
-            command.append("--foreground")
+        # No --foreground: a review detaches its own panel, so the flag is the test harness's way
+        # back in-process and never advice to a caller who has to type this line.
         if args.verify:
             command += ["--verify", args.verify]
         # A refusal the reproduce line cannot express is a refusal it ignores: replaying without

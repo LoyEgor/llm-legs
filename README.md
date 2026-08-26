@@ -117,7 +117,9 @@ window, then re-reads the free usage endpoints. Vendors that cannot be started a
 stderr, never skipped silently.
 The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens.
 The `main` profile keeps the legacy cache `~/.llm-limits-gemini.json`; named profiles use
-`~/.llm-limits-gemini/<name>.json`. `--refresh-account gemini/<name>` refreshes only that
+`~/.llm-limits-gemini/<name>.json`. `--gemini-remove` is the menubar's spelling of `geminib
+remove main`: both write `~/.llm-limits-gemini.json.removed`, which takes `main` out of every
+roster until that file is deleted. `--refresh-account gemini/<name>` refreshes only that
 profile; a bare vendor name (`--refresh-account claude|codex|gemini`) refreshes every account of
 that vendor and touches no other, always free — `--start-windows` stays a single-account request.
 Without `--refresh`, collection remains token-free and external-network-free.
@@ -133,9 +135,9 @@ Never make availability decisions from raw `used_pct`.
 `vendors.codex.accounts` is always a non-empty array when Codex is available; legacy snapshots synthesize `main`.
 `vendors.codex.current_account` names the account whose buckets remain hoisted at vendor level.
 Each `vendors.codex.accounts[]` may expose `reset_credits` and `auth_needed`; auth-needed accounts have no usage buckets and are never usable.
-With only `main`, Gemini retains its legacy single-vendor shape. Once a named profile exists,
 `vendors.gemini.accounts` contains per-profile buckets, auth-needed state, refresh causes, and
-removed markers; `main` remains hoisted for compatibility.
+removed markers; the vendor-level buckets hoist from the lowest-spending usable account, and a
+`main` removed through its marker (`geminib remove main`) appears nowhere.
 Raw usage values persist for provenance after a window expires, while `effective_pct` becomes 0.
 Claude `usable_now` considers enabled, authenticated accounts and their general 5h/weekly limits;
 the model-specific fable bucket does not block other Claude work.
@@ -197,9 +199,11 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   filters, Enter `exec`s `claudeb profile <p> --resume <id>` in the target chat's directory. It opens
   on the last week and loads more history when he scrolls past the end; `--days N` / `--all` pin one
   window instead, `--print` shows the launch line rather than running it. Needs a terminal of its own.
-- `bin/chat-name` → `~/.local/bin/chat-name` — `<session-id>` prints `<original title> (<short id>)`
+- `bin/chat-name` → `~/.local/bin/chat-name` — `<session-id>...` prints `<original title> (<short id>)`
   off the one resolver (`share/chat_names.py`), and exits 1 with nothing where the chat has no name
-  it may surface by. The symlink is the whole install: the shell surfaces that hold no Python find
+  it may surface by. Several ids in one call are a line each, which is how a caller naming a
+  turn's chats pays the corpus walk behind an 8-hex prefix once instead of once per id. The
+  symlink is the whole install: the shell surfaces that hold no Python find
   it on PATH (`../claude-setup/hooks/commit-report.sh`) and fall silently back to a bare uuid when
   they cannot, so an unlinked entry point is a feature that never once runs.
 - `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`

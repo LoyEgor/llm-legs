@@ -1150,6 +1150,188 @@ assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
 
+# --- Naming what the run could not name -----------------------------------------------------------
+# A run that worked through the shell lists nothing and its work is owned by nobody. The launching
+# chat is the one reader who knows which of the paths that changed in the run's window are its
+# worker's, so `wait` prints them and `claim` records the answer.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-one' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export CLAUDE_CODE_SESSION_ID=chat-abc
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-one"
+printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-two"
+assert await_done
+assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
+# The line the orchestrator acts on, and the paths in it are already spelled the way `claim` takes
+# them: a list it has to re-spell is a list it gets wrong.
+assert grep -qxF "UNNAMED: 2 path(s) changed in this run's window that no record names — claim yours: worker-run claim $RUN_ID --paths $DIRT_TOP/bin/claimed-one $DIRT_TOP/bin/claimed-two" \
+  "$WORK/wait.out"
+
+# A live run is still writing its own record, and a claim landing mid-flight is overwritten by the
+# next sweep — so the run has to have ended before anybody may name its files.
+mv "$RUN_DIR/exit_code" "$RUN_DIR/exit_code.held"
+assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'is still running' \
+  <<<"$("$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+mv "$RUN_DIR/exit_code.held" "$RUN_DIR/exit_code"
+
+# Only the chat that spawned the run may name its work: another chat signing for it is one session
+# taking a waiver over work it has never read.
+assert_fails env CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'launched by chat-abc' \
+  <<<"$(CLAUDE_CODE_SESSION_ID=chat-somebody-else "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+
+# A shell that names no chat at all is not the launching chat either: read as an empty session it
+# would match a record whose launcher is empty and claim the work of a run nobody can answer for.
+assert_fails env -u CLAUDE_CODE_SESSION_ID "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'this shell names no chat' \
+  <<<"$(env -u CLAUDE_CODE_SESSION_ID "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+
+# And a run whose own record names no launching chat is claimable by nobody, whoever is asking:
+# the answer to "whose worker was this" is the record, and an empty one is not an open invitation.
+mv "$RUN_DIR/launcher" "$RUN_DIR/launcher.held"
+: >"$RUN_DIR/launcher"
+assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one
+assert grep -q 'records no launching chat' \
+  <<<"$("$RUNNER" claim "$RUN_ID" --paths bin/claimed-one 2>&1 >/dev/null)"
+mv -f "$RUN_DIR/launcher.held" "$RUN_DIR/launcher"
+
+# A path outside the run's workdir is not the run's to claim, and the whole call is refused rather
+# than half applied — a claim that took some of its paths leaves the caller unable to tell which.
+assert_fails "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
+assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one ../outside-the-workdir
+assert_fails grep -qx 'bin/claimed-one' "$RUN_DIR/files"
+assert_fails "$RUNNER" claim "$RUN_ID"
+
+# The claim itself: an ordinary listing row, the caveat beside it untouched, and the path gone from
+# the dirt record — it carries an owner now.
+claimed=$("$RUNNER" claim "$RUN_ID" --paths bin/claimed-one)
+assert grep -qx "CLAIMED: 1 path(s) for $RUN_ID" <<<"$claimed"
+assert grep -qx 'bin/claimed-one' <<<"$claimed"
+assert grep -qx 'bin/claimed-one' "$RUN_DIR/files"
+assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP"
+assert_fails grep -qx 'bin/claimed-one' "$RUN_DIR/dirty"
+assert grep -qx 'bin/claimed-two' "$RUN_DIR/dirty"
+# The rewritten record keeps the header its rows are spelled against: dropped, `unnamed_line` bails
+# out on an empty `top` and every later wait silently stops naming what nobody has claimed.
+assert test "$(head -n1 "$RUN_DIR/dirty")" = "WORKDIR: $DIRT_TOP"
+
+# Absolute or workdir-relative, one answer; and a path the dirt record never held is named without
+# being ADDED to the set of paths nobody names.
+assert "$RUNNER" claim "$RUN_ID" --paths "$DIRT_TOP/bin/claimed-two" bin/never-was-dirty >/dev/null
+assert grep -qx 'bin/claimed-two' "$RUN_DIR/files"
+assert grep -qx 'bin/never-was-dirty' "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/dirty"
+# Nothing left unnamed, so the line is gone although the run's own list is still a floor.
+assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
+assert_fails grep -q '^UNNAMED: ' <<<"$("$RUNNER" wait "$RUN_ID" --max 0)"
+
+# `--complete` is the caller stating that this IS the whole list, and it is the only thing that
+# retires the caveat: an ordinary claim adds real paths and says nothing about what stands beside
+# them.
+printf '%s\n' "UNKNOWN: no session transcript for a claim test" >>"$RUN_DIR/files"
+assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-one --complete >/dev/null
+assert test "$(grep -c '^PARTIAL: \|^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
+assert grep -qx 'bin/claimed-one' "$RUN_DIR/files"
+assert grep -qx 'bin/claimed-two' "$RUN_DIR/files"
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP"
+
+# The printed line is pasted into a shell, so it has to survive one: a path carrying a space
+# reached `claim` as several paths, and one carrying a `*` as whatever the tree held beside it.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ "bin/named with a space"' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'through the shell\n' >"$DIRT_REPO/bin/named with a space"
+assert await_done
+printed=$(grep '^UNNAMED: ' "$WORK/wait.out")
+assert test -n "$printed"
+assert eval "\"$RUNNER\" ${printed#*claim yours: worker-run }" >/dev/null
+assert grep -qxF 'bin/named with a space' "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/dirty"
+
+# The path split inside `claim` is lexical too: a `*` answered by the directory the caller happens
+# to be standing in names a file this run never touched, and names it as the caller's own work.
+printf 'a decoy the split must not find\n' >"$DIRT_REPO/globbedXstar"
+assert eval '(cd "$DIRT_REPO" && "$RUNNER" claim "$RUN_ID" --paths "bin/globbed*star")' >/dev/null
+assert grep -qxF 'bin/globbed*star' "$RUN_DIR/files"
+assert_fails grep -q 'globbedXstar' "$RUN_DIR/files"
+
+# A run launched in a SUBDIRECTORY: its dirt is its REPOSITORY's, spelled against the top, so the
+# command `wait` prints names paths outside the workdir. Checked against the workdir alone, that
+# exact command is refused whole and not one of its paths is claimed.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-from-a-subdirectory' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO/tests"
+printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-from-a-subdirectory"
+assert await_done
+assert grep -qxF "UNNAMED: 1 path(s) changed in this run's window that no record names — claim yours: worker-run claim $RUN_ID --paths $DIRT_TOP/bin/claimed-from-a-subdirectory" \
+  "$WORK/wait.out"
+assert eval "\"$RUNNER\" $(grep '^UNNAMED: ' "$WORK/wait.out" | sed 's/.*claim yours: worker-run //')" >/dev/null
+# Spelled absolutely in the listing, exactly as any path outside the workdir is.
+assert grep -qxF "$DIRT_TOP/bin/claimed-from-a-subdirectory" "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/dirty"
+# Outside the repository is still nobody's to claim: what widened is the run's own tree, no more.
+assert_fails "$RUNNER" claim "$RUN_ID" --paths /etc/hosts
+
+# What the UNNAMED line turns on is the run saying it cannot name its own files — not on there
+# being dirt. A caveat retired by `--complete` over a record that still holds rows prints nothing,
+# and the complete-listing run below would pass that assertion with the guard deleted.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/still-unnamed' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'through the shell\n' >"$DIRT_REPO/bin/still-unnamed"
+assert await_done
+assert grep -q '^UNNAMED: ' "$WORK/wait.out"
+assert "$RUNNER" claim "$RUN_ID" --paths bin/was-never-dirty --complete >/dev/null
+assert grep -qx 'bin/still-unnamed' "$RUN_DIR/dirty"
+assert_fails grep -q '^UNNAMED: ' <<<"$("$RUNNER" wait "$RUN_ID" --max 0)"
+
+# A run whose window changed hundreds of paths printed all of them shell-quoted into ONE line at
+# the end of every wait — multiple kilobytes, crowding out the outcome and the result tail it is
+# printed beside. Past the cap the count is still exact and the reader is sent to the record.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/capped-one' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+for capped in one two three; do
+  printf 'through the shell\n' >"$DIRT_REPO/bin/capped-$capped"
+done
+assert await_done
+CAPPED_COUNT=$(grep -cv '^WORKDIR: ' "$RUN_DIR/dirty")
+assert test "$CAPPED_COUNT" -ge 3
+capped_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 | grep '^UNNAMED: ')
+assert grep -qF "UNNAMED: $CAPPED_COUNT path(s)" <<<"$capped_line"
+# Named by the run's own record — spelled the way `wait` spells it, which is not always the
+# absolute form `start` printed.
+assert grep -qF "listed one per line in " <<<"$capped_line"
+assert grep -qF "$RUN_ID/dirty" <<<"$capped_line"
+assert_fails grep -q 'bin/capped-one' <<<"$capped_line"
+assert test "${#capped_line}" -lt 400
+# Under the cap it is still the paste-ready list, spelled the way `claim` takes it.
+capped_full=$(WORKER_RUN_UNNAMED_INLINE_MAX="$CAPPED_COUNT" "$RUNNER" wait "$RUN_ID" --max 0 \
+  | grep '^UNNAMED: ')
+assert grep -qF "$DIRT_TOP/bin/capped-one" <<<"$capped_full"
+assert eval "\"$RUNNER\" $(sed 's/.*claim yours: worker-run //' <<<"$capped_full")" >/dev/null
+
+# A run whose own list is complete has nothing for anyone to claim, so the line is never printed.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$DIRT_REPO"
+assert await_done
+assert_fails grep -q '^UNNAMED: ' "$WORK/wait.out"
+
 # A running run's liveness, for the one reader who has nothing else: claudeb writes its JSON once,
 # at the end, so OUT-BYTES reads 0 for the whole run and a wrapper agent declared a healthy
 # 52-minute run stalled one minute before it finished (live 2026-08-24). The dirt tracker already
@@ -2069,4 +2251,4 @@ assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 await_done || fail "the delegated run never finished"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex and agy alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, and reports terminal outcomes"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex and agy alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes"

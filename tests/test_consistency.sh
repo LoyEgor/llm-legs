@@ -688,7 +688,7 @@ assert doc_has '`^={10,}$`'
 CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
 COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
 REPORT_NUDGE="$CLAUDE_SETUP/hooks/review-report-nudge.sh"
-DELIVERY_GATE="$CLAUDE_SETUP/hooks/review-report-delivery-gate.sh"
+DELIVERY_GATE="$CLAUDE_SETUP/hooks/stop.d/notice-review-report-delivery.sh"
 if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
   assert test "$(grep -Ec '^FRAME_WIDTH=' "$COMMIT_REPORT")" -eq 1
   cs_frame_width=$(grep -E '^FRAME_WIDTH=[0-9]+$' "$COMMIT_REPORT" | cut -d= -f2)
@@ -851,8 +851,11 @@ blocked|done|pending"
   # flag, the sentence review-bench raises, the `review-bench: ` prefix main() puts before it, and
   # the regex both hooks read the launcher out of. Any one of them drifting alone frames another
   # chat's review in this chat's window, which is what happened live (2026-08-22).
-  cs_foreign_re='(?m)^review-bench: run \S+ belongs to chat (\S+)\s*$'
-  assert grep -Fq 'raise ValueError(f"run {run_dir.name} belongs to chat {launcher}")' "$RB_REPORT"
+  # The chat's NAME rides that line after its id (row `aw`), which is why the regex ends on an
+  # optional parenthesised tail: the id stays the machine-readable field and stays first.
+  cs_foreign_re='(?m)^review-bench: run \S+ belongs to chat (\S+)(?: \(.*\))?\s*$'
+  assert grep -Fq \
+    'f"run {run_dir.name} belongs to chat {launcher}{_store.chat_suffix(launcher)}"' "$RB_REPORT"
   assert grep -Fq 'print(f"review-bench: {exc}", file=sys.stderr)' "$RB_CLI"
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert grep -Fq "FOREIGN_RE = re.compile(r\"$cs_foreign_re\")" "$cs_hook"
@@ -872,8 +875,8 @@ import re
 import sys
 
 run_dir = type("run", (), {"name": "20260822T180004Z-628edbc"})
-line = "review-bench: " + "run {run_dir.name} belongs to chat {launcher}".format(
-    run_dir=run_dir, launcher="73403494")
+line = "review-bench: " + "run {run_dir.name} belongs to chat {launcher}{name}".format(
+    run_dir=run_dir, launcher="73403494", name=" (a named chat)")
 match = re.search(sys.argv[1], line)
 print(match.group(1) if match else repr(line))
 FOREIGNPY
@@ -1033,7 +1036,11 @@ if test -r "$COMMIT_REPORT"; then
   # A `git merge` that FAST-FORWARDS creates nothing either: it is the same range of other people's
   # commits a pull brings, and only a commit carrying a second parent was made by the call.
   assert grep -Fq 'if [ "${SNAPSHOT_KIND:-commit}" = merge ]; then' "$COMMIT_REPORT"
-  assert grep -Fq 'git -C "$top" rev-list --no-walk --merges --stdin' "$COMMIT_REPORT"
+  assert grep -Fq 'git -C "$1" rev-list --no-walk --merges --stdin' "$COMMIT_REPORT"
+  # One filter for both readers of this call's commits — the debt stamp and the fix coverage — or
+  # a commit that closes a round is one the debt journal never saw.
+  assert grep -Fq 'own_landed_commits() { # top pre' "$COMMIT_REPORT"
+  assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 2
   assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
   # A merge answers `--name-only` with nothing at all unless the diff is taken against its FIRST
   # parent, so every path a merge brought to this line went into no debt row.
@@ -1059,7 +1066,7 @@ if test -r "$COMMIT_REPORT"; then
   # per repository: git's summary lines are silent for a quiet commit and for a repository the
   # command never printed, and a clock over a bare HEAD answers for a co-tenant's commit as readily.
   # One snapshot per call, consumed here — nothing may keep a marker of what it reported instead.
-  assert grep -Fq 'shas=$(landed_commits "$top" "$pre")' "$COMMIT_REPORT"
+  assert grep -Fq 'shas=$(landed_commits "$1" "$2")' "$COMMIT_REPORT"
   assert grep -Fq 'git -C "$1" log --first-parent --format=%H "$range"' "$COMMIT_REPORT"
   # `--amend` and a rebase REPLACE the commit the snapshot named: required to descend from it, the
   # hook enumerated nothing and the amend that landed was answered for by nobody. Shared history is
@@ -1116,32 +1123,28 @@ if test -r "$COMMIT_REPORT"; then
   # A co-tenant's journal row alone is that chat's pending work, swept in by `git commit -a`.
   assert grep -Fq 'case "$foreign" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
     "$COMMIT_REPORT"
-  # And a run whose own listing cannot answer for its files answers with its whole workdir: passed
-  # over where that listing EXISTS, since its own sweep will resolve them, and recorded under the
-  # LAUNCHER where the run never wrote one at all — nothing else will ever name those paths, and a
-  # workdir is normally the whole repository.
-  assert grep -Fq 'scope="HEIR: ${directory##*/} $owner"' "$COMMIT_REPORT"
+  # And a run whose own listing cannot answer for its files answers with its whole workdir only
+  # while it may still be writing, since its own sweep will resolve them. A FINAL record claims
+  # nothing beyond what its listing names: no sweep of it will ever name the rest, and a chat
+  # answers for a path only through a record that NAMES it. Inherited off the run's dirt instead,
+  # a workdir that is normally the whole repository took every commit made in that checkout.
   assert grep -Fq 'scope="DIR: ${directory##*/}"' "$COMMIT_REPORT"
-  assert grep -Fq 'if [ -n "$owner" ] && { [ -n "$heir" ] || rj_run_final "$directory"; }; then' \
-    "$COMMIT_REPORT"
-  # `journaled` says the record has been READ, not that its files are named: the sweep retires a run
-  # whose listing was missing or vague on the same marker, and closed on that alone the scope it
-  # never resolved passes to whoever commits next. The heir file is that scope and outranks it here.
-  assert grep -Fq '[ -e "$directory/journaled" ] && [ -z "$heir" ] && continue' "$COMMIT_REPORT"
-  assert grep -Fq '[ -f "$directory/heir" ] && {' "$COMMIT_REPORT"
-  # Whose that scope is comes off the heir itself, whose owner line is EMPTY where the launcher
-  # named nobody a journal entry could carry: read off the launcher alone, a name this flow rejects
-  # everywhere else would inherit the debt here.
-  assert grep -Fq 'owner=$(sed -n 1p "$directory/heir" 2>/dev/null)' "$COMMIT_REPORT"
-  assert grep -Fq 'rj_append "$debt" "${heir_owners[index]}" "$now" "$path"' "$COMMIT_REPORT"
+  assert grep -Fq 'rj_run_final "$directory" && continue' "$COMMIT_REPORT"
+  assert test -z "$(grep -nwE 'heir|HEIR' "$COMMIT_REPORT" \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh" 2>/dev/null)"
+  # `journaled` says the record has been READ, and nothing outranks it here: the retired record is
+  # closed to this scan, and what it never named is nobody's rather than the next committer's.
+  assert grep -Fq '[ -e "$directory/journaled" ] && continue' "$COMMIT_REPORT"
   # A commit is claimed only where the debt journal does not already answer for it: a worker that
   # committed in its own shell went through no hook of this flow, and its sweep's stamp does not
   # predate that commit — a stamp landing in the commit's own second is that same sweep, and read as
-  # older it handed the worker's file to whoever was committing beside it. Another name's row only:
-  # a settled row of OUR own is what this commit's content must not inherit.
+  # older it handed the worker's file to whoever was committing beside it. Another NAME's row only:
+  # a settled row of OUR own is what this commit's content must not inherit, and a row naming
+  # nobody — what a deferred path no run listing named comes back as — is no sweep of anybody's.
   assert grep -Fq 'case "$newer" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
     "$COMMIT_REPORT"
-  assert grep -Fq "awk -F\"\$tab\" -v c=\"\$ct\" -v o=\"\$own\" '\$1 != o && \$2 >= c { print \$3 }'" \
+  assert grep -Fq \
+    "awk -F\"\$tab\" -v c=\"\$ct\" -v o=\"\$own\" '\$1 != \"\" && \$1 != o && \$2 >= c { print \$3 }'" \
     "$COMMIT_REPORT"
   # An entry of ours is not a debt row of ours: the append that should have followed it can fail.
   assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
@@ -1161,11 +1164,11 @@ if test -r "$JOURNAL_LIB"; then
   # dropped record.
   assert grep -Fq 'rj_lock "$lock" && locked=1' "$JOURNAL_LIB"
   assert grep -Fq 'rj_append_raw "$@"' "$JOURNAL_LIB"
-  # A settled episode's record never counts as authorship of the next one on the same path — and
-  # that floor chooses between a path's records instead of emptying the set, or a path back in debt
-  # through a channel no hook stamps answers `unknown` while its author is written down.
-  assert grep -Fq 'if epoch is None or epoch >= floor' "$RB_DEBT"
-  assert grep -Fq 'for session in standing or {session for session, _ in records}:' "$RB_DEBT"
+  # A settled episode's record never counts as authorship of the next one on the same path, and the
+  # floor is ABSOLUTE: a path whose every record stands at or below its covering artifact has no
+  # author and is nobody's. Kept as a fallback, the leftovers answered for three co-tenants' commits
+  # under one chat's name (live 2026-08-25), and a wrong `own` is worse than nobody's.
+  assert grep -Fq 'if floor and epoch is not None and epoch <= floor' "$RB_DEBT"
   # Rewriters may not replace an inode a raw append just landed on: every swap is size-guarded.
   assert grep -Fq 'rj_swap() { # file tmp snap_size' "$JOURNAL_LIB"
   if test -r "$FLOW_GATE"; then
@@ -1201,6 +1204,10 @@ if test -r "$JOURNAL_LIB"; then
   # EPERM from a foreign-owned live process must not read as death.
   assert eq "$(grep -c '^[^#]*kill -0' "$JOURNAL_LIB")" 0
 fi
+# A detached panel is judged by the same rule: `wait` calls a live panel dead and prints a log tail
+# where a run is still going, or waits for ever on one that is gone.
+assert grep -Fq 'return _round.pid_still_running(*stamp)' "$RB_CLI"
+assert eq "$(grep -c 'def pid_still_running(' "$RB_ROUND")" 1
 
 
 # --- Row ap: the P1 threshold binds the waiver ---------------------------------
@@ -1283,6 +1290,26 @@ if test -r "$FLOW_GATE"; then
 else
   printf 'SKIP: debt review command across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
 fi
+# What a checkout says it is never owed a review over is one file name, spelled in the tool and in
+# the prose the reader acts on: a repository ignoring by one name while the contract documents
+# another is an ignore file that silently does nothing.
+rb_ignore_file=$(sed -n 's/^DEBT_IGNORE_FILE = "\(.*\)"$/\1/p' "$RB_DEBT")
+assert eq "$rb_ignore_file" '.claude/review-debt-ignore'
+assert grep -Fq "\`$rb_ignore_file\` is the project's own answer" "$ROOT/docs/review-contract.md"
+assert grep -Fq "ignored: N path(s) by $rb_ignore_file" "$ROOT/docs/review-contract.md"
+# The notice rides stderr: `--list`'s stdout is read one path per line by the flow gate, so a
+# count printed among the paths reaches that reader as a path it cannot resolve.
+assert grep -Fq 'print(f"ignored: {len(ignored)} path(s) by {DEBT_IGNORE_FILE}", file=sys.stderr)' "$RB_DEBT"
+assert grep -Fq "stays one path per line" "$ROOT/docs/review-contract.md"
+if test -r "$FLOW_GATE"; then
+  assert grep -Fq 'read_debt_paths' "$FLOW_GATE"
+fi
+# And what the commit closes is the round itself: the hook asks review-bench with the commit, and
+# the contract says so, or the fixing pass waits for a command nobody types.
+if test -r "$CLAUDE_SETUP/hooks/commit-report.sh"; then
+  assert grep -Fq 'review-bench fixes --cover --commit' "$CLAUDE_SETUP/hooks/commit-report.sh"
+fi
+assert grep -Fq 'The COMMIT closes the fixing pass' "$ROOT/docs/review-contract.md"
 
 # --- Row az: a computed sweep is named before it is read ----------------------
 # The number is the whole rule: a chat past it may only proceed by typing back the size it read,
@@ -1338,7 +1365,7 @@ assert doc_has 'the account ending its own pin'
 # --- Row af: one voice for what a round earned -------------------------------
 # The thresholds and the wording live in the gate; a second copy in a caller is the drift this
 # guards. And the mode must sit ABOVE the payload read, or every caller hangs on an open pipe.
-REPORT_GATE="${REVIEW_REPORT_GATE:-$HOME/.claude/hooks/review-report-gate.sh}"
+REPORT_GATE="${REVIEW_REPORT_GATE:-$HOME/.claude/hooks/stop.d/ask-review-report.sh}"
 if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fq 'if [ "${1:-}" = escalation-verdict ]; then' "$FLOW_GATE"
   gate_verdict_line=$(grep -n 'escalation-verdict \]; then' "$FLOW_GATE" | head -1 | cut -d: -f1)
@@ -1352,7 +1379,7 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
     "$RB_ROUND"
   # The fix-bytes receipt asks the same question rather than pricing a closed round itself: the
   # dials it would have to spell are exactly the pair this row keeps in the gate.
-  assert grep -Fq 'if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is not None:' \
+  assert grep -Fq 'if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is None:' \
     "$RB_ROUND"
   # The two dials, in the gate and only there. There is no third: a count at which the fork led
   # with the rework was one, and that choice is inside what the P1 branch already asks.
@@ -1901,9 +1928,11 @@ assert grep -Fq 'mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before
 assert grep -Fq '[ -f "$directory/dirty-before" ] || return 0' "$WORKER_RUN"
 assert grep -Fq 'mv -f "$directory/dirty.tmp.$$" "$directory/dirty"' "$WORKER_RUN"
 assert rb_all_have 'listing="dirty"' "$RB_STORE" "$RB_ROUND"
-# Folded into the debt universe and NEVER into the mapping that names a launcher: a name attached
-# to a path `git status` alone knows about hands one chat a waiver over another's work.
+# Folded into the debt universe and NEVER into a reading that names an owner: a name attached to a
+# path `git status` alone knows about hands one chat a waiver over another's work, and answers for
+# a co-tenant's commits on that chat's own statusline (live 2026-08-25).
 assert eq "$(sed -n '/^def run_record_claims/,/^def /p' "$RB_STORE" | grep -c 'dirty')" 0
+assert eq "$(sed -n '/^def debt_ownership/,/^def /p' "$RB_DEBT" | grep -c 'dirt')" 0
 assert grep -Fq 'named = _store.journal_paths(repo) | set(claims) | set(dirty)' "$RB_DEBT"
 assert doc_has '`<run-dir>/dirty`'
 assert doc_has '`<run-dir>/dirty-before`'
@@ -1922,7 +1951,7 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq 'emit_terminal_notes' "$COMMIT_JOURNAL"
   assert grep -Fq 'session=$owner' "$COMMIT_JOURNAL"
   assert grep -Fq "sed -n 's/^WORKDIR: //p' \"\$listing\"" "$COMMIT_JOURNAL"
-  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*) vague=1 ;;" "$COMMIT_JOURNAL"
+  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'WORKDIR: '*|'') ;;" "$COMMIT_JOURNAL"
   # A record about ANOTHER chat's run is that chat's to act on: whoever sweeps it leaves the
   # sentence in the OWNER's spool, since printed here it reaches a reader who can do nothing with
   # it while the chat whose files are named nowhere never hears of them at all.
@@ -1936,6 +1965,17 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # the sweep below to it, and a commit deferring a path lands after that marker as readily as
   # before it. Consumed by the same move-aside, so a report appending mid-read loses nothing.
   assert grep -Fq 'consume_deferred "$directory" "$owner"' "$COMMIT_JOURNAL"
+  # ...but never before the run can no longer change: the listing that decides who answers for the
+  # path is written at the run's end, and consumed early a path it is about to name is nobody's for
+  # good. And decided by that listing alone — the workdir the commit was passed over on is a
+  # promise that this run's sweep will name the path, never evidence that the run wrote it, and
+  # taken as evidence it made every co-tenant's commit under a repository-wide workdir that chat's
+  # work (live 2026-08-25). What no listing names is stamped with an EMPTY session, which is the
+  # journals' own spelling for a path in debt that no record answers for (`journal_entries`).
+  assert grep -Fq '[ -e "$1/journaled" ] || rj_run_final "$1" || return 0' "$COMMIT_JOURNAL"
+  assert grep -Fq 'run_listing_names "$1" "$absolute" && mine=1' "$COMMIT_JOURNAL"
+  assert grep -Fq 'rj_append "$git_dir/claude-review-debt" "$3" "$now" "$2"' "$COMMIT_JOURNAL"
+  assert grep -Fq 'stamp_deferred "$1" "$2" ""' "$COMMIT_JOURNAL"
   # Including the note about a listing no workdir can anchor: keyed and printed under the SWEEPING
   # chat it is spent on a marker the owner never sees and read by a chat that can do nothing about
   # it, while the one whose files are named nowhere never hears of them.
@@ -1952,15 +1992,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # A final record that will never gain a listing is retired unread: there is nothing left to
   # import, and its readers hold the whole workdir as pending while it sits there.
   assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 3
-  # Retired is not resolved. A run retired without its files ever being named leaves an heir naming
-  # the launcher and the workdir, or the marker alone tells the claiming hook the record is settled
-  # and the scope nobody resolved goes to whoever commits next.
-  assert grep -Fq 'leave_heir "$directory" "$owner" "$run_workdir"' "$COMMIT_JOURNAL"
-  # A launcher naming nobody usable leaves one too, with an EMPTY owner line: the marker alone would
-  # close that workdir to the claim scan, and a name no journal entry can carry may not inherit it.
-  assert grep -Fq 'leave_heir "$directory" "" "$run_workdir"' "$COMMIT_JOURNAL"
-  assert grep -Fq "printf '%s\\n%s\\n' \"\$2\" \"\$3\" >\"\$1/heir\"" "$COMMIT_JOURNAL"
-  assert eq "$(grep -c 'leave_heir "\$directory" "\$owner" "\$run_workdir"' "$COMMIT_JOURNAL")" 2
+  # Retired is not resolved, and nothing inherits what the record never named: no heir file is
+  # written, and a path the run never listed is nobody's rather than the next committer's or the
+  # launcher's (live 2026-08-24, 2026-08-25).
+  assert test -z "$(grep -nwE 'heir|HEIR' "$COMMIT_JOURNAL" 2>/dev/null)"
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
   # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
@@ -2141,7 +2176,7 @@ assert test -z "$(grep -rl '"\.claude" / "projects"' --include='*.py' "$RB_PKG")
 # question this row exists to keep single.
 CHATNAME="$ROOT/bin/chat-name"
 assert test -x "$CHATNAME"
-assert grep -Fq 'from chat_names import chat_name, short_session' "$CHATNAME"
+assert grep -Fq 'from chat_names import chat_label, chat_name, resolve_session, short_session' "$CHATNAME"
 assert doc_has '`bin/chat-name`'
 COMMIT_REPORT_NAMES="$CLAUDE_SETUP/hooks/commit-report.sh"
 if [ -r "$COMMIT_REPORT_NAMES" ]; then
@@ -2163,6 +2198,17 @@ assert test -z "$(grep -rl 'aiTitle' --include='*.py' "$RB_PKG")"
 chat_short=$(grep -oE '^SHORT_ID = [0-9]+' "$CHATNAMES" | grep -oE '[0-9]+')
 assert eq "$chat_short" 8
 assert doc_has 'first 8 characters'
+# Every review-bench surface that prints a session id prints its NAME beside it, through the two
+# spellings `store` owns and never a resolver call of its own: a bare id is a chat Egor cannot find
+# in his window list, and a surface reaching past these two is how one id gets two names.
+assert doc_has '`chat_display`'
+assert doc_has '`chat_suffix`'
+assert grep -Fq 'def chat_display(session, launchers=None, store=None):' "$RB_STORE"
+assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STORE"
+assert grep -Fq '_store.chat_display(session)' "$RB_DEBT"
+assert grep -Fq '_store.chat_suffix(session)' "$RB_DEBT"
+# Both foreign-chat refusals name the chat: they exist to send a reader to another conversation.
+assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
 
 # --- Row ax: a diff too big for one cell is split, not the panel ---------------
 # The two numbers are spelled in the tool and in the contract prose the reader acts on. Moved in
@@ -2279,4 +2325,26 @@ assert eq "$3" "$4"
 assert doc_has "(${1}s at T0/T1, ${3}s at T2/T3)"
 assert grep -Fq "(${1}s at T0/T1, ${3}s at T2/T3)" "$ROOT/docs/review-contract.md"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, and the review cap rules the contract spells with the code) and match %s\n' "$asserts" "$DOC"
+# --- Row bc: gemini main's removal marker ------------------------------------
+# Two spellings of this path is a removal one tool performs and the other never sees: the menubar
+# hides main while `geminib run main` still launches it, or the reverse.
+assert doc_has "Gemini main's removal marker"
+assert doc_has '`~/.llm-limits-gemini.json.removed`'
+gemini_main_marker=$(gemini_base_home=/fixture-home \
+  /bin/bash -c '. "'"$GEMINI_ACCOUNTS"'" && gemini_removal_marker main')
+assert eq "$gemini_main_marker" '/fixture-home/.llm-limits-gemini.json.removed'
+gemini_named_marker=$(gemini_base_home=/fixture-home \
+  /bin/bash -c '. "'"$GEMINI_ACCOUNTS"'" && gemini_removal_marker work')
+assert eq "$gemini_named_marker" '/fixture-home/.llm-limits-gemini/work.json.removed'
+# Both readers reach it through the shared resolver rather than spelling it.
+assert grep -Fq 'gemini_legacy_removed=$(gemini_removal_marker main)' "$LLMLIMITS"
+assert grep -Fq 'gemini_account_marker() { gemini_removal_marker "$1"; }' "$LLMLIMITS"
+assert grep -Fq 'gemini_main_removed() { [ -e "$(gemini_removal_marker main)" ]; }' "$GEMINI_ACCOUNTS"
+assert grep -Fq 'marker=$(gemini_removal_marker "$name")' "$GEMINIB"
+for gemini_marker_reader in "$LLMLIMITS" "$GEMINIB"; do
+  if grep -Fq '.llm-limits-gemini.json.removed' "$gemini_marker_reader"; then
+    fail "row bc: $(basename "$gemini_marker_reader") spells main's marker instead of resolving it"
+  fi
+done
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers that lock a waiver, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the five header words the bench renders, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose six class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, and the one file that says gemini main is removed) and match %s\n' "$asserts" "$DOC"

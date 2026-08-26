@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from difflib import SequenceMatcher
 from pathlib import Path
-from chat_names import worker_run_root, worker_session_launchers
+from chat_names import chat_label, chat_name, worker_run_root, worker_session_launchers
 
 # The package sits two levels under the repository root, and everything the program resolves
 # by path hangs off these two: bin/review-bench (the shim launchd plists name), the sibling
@@ -157,21 +157,6 @@ def family_member_path(common, directory):
     return container in directory.parents
 
 
-def head_tree_paths(repo):
-    """Every path HEAD holds, or None where HEAD cannot be read at all. It is what tells a
-    deletion still owed a review from a path that is simply not in this repository any more, which
-    is nobody's debt. A failure is not an empty tree: read as one it declares every deleted path a
-    ghost at once, so the caller keeps every candidate as debt instead.
-    """
-    if not Path(repo).is_dir():
-        return None
-    proc = subprocess.run(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"],
-                          cwd=repo, capture_output=True)
-    if proc.returncode != 0:
-        return None
-    return {os.fsdecode(name) for name in proc.stdout.split(b"\0") if name}
-
-
 def resolve_repo_arg(path, require_worktree=False):
     """The working tree `path` sits in, which is the identity a receipt and a progress file are
     keyed on. Resolving no further than `Path.resolve()` keyed them on the directory the caller
@@ -292,6 +277,22 @@ def caller_chat():
     """
     session = launching_session()
     return worker_session_launchers().get(session, session) if session else session
+
+
+def chat_display(session, launchers=None, store=None):
+    """What to call a chat where a surface names one and prints no id: its own name, else a short
+    id. `share/chat_names.py` is the one resolver (docs/shared-invariants.md row `aw`).
+    """
+    return chat_label(session, launchers=launchers, store=store) if session else ""
+
+
+def chat_suffix(session, launchers=None, store=None):
+    """The same name in parentheses, for a surface whose id is the machine-readable part and has to
+    stay. Empty where the chat has no name of its own: a uuid followed by its own first eight
+    characters tells the reader nothing it did not already have.
+    """
+    name = chat_name(session, launchers=launchers, store=store) if session else None
+    return f" ({name})" if name else ""
 
 
 # Where the review flow gate leaves the pre-call HEAD snapshot of every repository a Bash call of
@@ -1158,99 +1159,6 @@ def session_run_paths(repo, session, claims=None):
         path for path, rows in (run_record_claims(repo) if claims is None else claims).items()
         if any(launcher == session for _, launcher in rows)
     }
-
-
-def run_listed_paths(repo, directories=None, floors=None):
-    """Which chats' runs NAMED each path in a listing of their own, as `{path: {launcher}}`.
-
-    Read PAST the `journaled` marker, unlike `run_record_claims`: this is not a claim waiting to be
-    swept but evidence about what a record SAYS, and it outlives the journal entry the sweep left —
-    those are pruned the moment a path goes clean, while the listing stands as long as the record
-    does.
-    """
-    listed = {}
-    for directory in (worker_run_dirs() if directories is None else directories):
-        try:
-            launcher = (directory / "launcher").read_text().strip()
-        except OSError:
-            continue
-        if not launcher:
-            continue
-        epoch = run_id_epoch(directory.name)
-        for path in run_record_paths(repo, directory):
-            if epoch < (floors or {}).get(path, 0):
-                continue
-            listed.setdefault(path, set()).add(launcher)
-    return listed
-
-
-def heir_window_claims(repo, directories=None):
-    """The paths a retired listless run left its owner holding, as `[(owner, paths)]`, each path
-    repository-relative.
-
-    `commit-journal.sh` retires a run that ended unable to name its own files by leaving
-    `<run-dir>/heir` — the launcher and the workdir — and `commit-report.sh` then records the paths
-    a commit carried under that record as the launcher's (row `ao`). Those journal records are
-    indistinguishable from the ones a chat's own edit leaves, so the heir record is the only thing
-    that can tell a claim made by NAMING a file from one made by standing over a run.
-
-    The window is that run's own `dirty` record and never its WORKDIR, which is normally the whole
-    repository: read as the directory, one listless run of 2026-08-21 went on claiming every path
-    of every commit anybody made in that checkout for the record's whole seven-day life, and four
-    legacy files nobody had touched since sat as two live chats' own debt (2026-08-24). An heir
-    answers for what was DIRTY in its workdir when the run ended, and a record with no dirt
-    snapshot answers for nothing beyond what its `files` listing already names. An empty owner line
-    claims nothing, the way it inherits nothing: a name no journal entry can carry may not hold the
-    debt either.
-    """
-    windows = []
-    for directory in (worker_run_dirs() if directories is None else directories):
-        try:
-            lines = (directory / "heir").read_text().splitlines()
-        except OSError:
-            continue
-        owner = lines[0].strip() if lines else ""
-        workdir = lines[1].strip() if len(lines) > 1 else ""
-        if not owner or not workdir:
-            continue
-        # Through the one parser that reads a run's path files, so the reader and `commit-report.sh`
-        # cannot come to disagree about what a `WORKDIR:` line anchors.
-        paths = frozenset(run_record_paths(repo, directory, listing="dirty"))
-        if not paths:
-            continue
-        windows.append((owner, paths))
-    return windows
-
-
-def path_under_window(window, path):
-    """Whether `path` is one of the paths a heir record answers for."""
-    return str(path) in window
-
-
-def session_dirt_paths(repo, session, records=None):
-    """The paths this chat's OWN finished runs recorded as workdir dirt.
-
-    Weaker evidence than every other store here and read only where they are all silent: dirt is
-    about content, not authorship, so a co-tenant's journal entry or run listing over the same path
-    outranks it. What it answers is the case nothing else can — a worker whose vendor keeps no
-    per-file record edits a file through the shell, and the chat that ordered the work sees its own
-    bytes as debt owed by nobody, on the foreign side of its own statusline (live case 2026-08-22).
-    """
-    if not session:
-        return set()
-    launchers = worker_session_launchers()
-    paths = set()
-    for directory in (worker_run_dirs() if records is None else records):
-        if not (directory / "exit_code").exists():
-            continue
-        try:
-            launcher = (directory / "launcher").read_text().strip()
-        except OSError:
-            continue
-        if not launcher or (launcher != session and launchers.get(launcher) != session):
-            continue
-        paths.update(run_record_paths(repo, directory, listing="dirty"))
-    return paths
 
 
 def reviews_current_tree(repo, sha, worktree=False):

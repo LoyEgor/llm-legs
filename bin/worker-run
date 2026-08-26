@@ -5,7 +5,8 @@ usage() {
   printf '%s\n' \
     'usage: worker-run start <claudeb|codex|gemini> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search]' \
     '       worker-run wait <run-id> [--max <sec>]' \
-    '       worker-run report <run-id>' >&2
+    '       worker-run report <run-id>' \
+    '       worker-run claim <run-id> --paths <path>... [--complete]' >&2
   exit 2
 }
 
@@ -1479,6 +1480,7 @@ terminal_report() {
   reroute_lines "$directory"
   workdir_escape_line "$directory"
   print_outcome "$directory" "$vendor" "$code"
+  unnamed_line "$directory"
   result_tail "$directory" "$vendor" 40
   if [ "$code" != 0 ]; then
     printf 'ERR-TAIL:\n'
@@ -1635,6 +1637,169 @@ report_run() {
   fi
 }
 
+# How many of those paths the line still spells out itself. Past it the reader is pointed at the
+# record instead: the list is there to be pasted, and one nobody can read at the end of a report is
+# not one anybody pastes.
+UNNAMED_INLINE_MAX=${WORKER_RUN_UNNAMED_INLINE_MAX:-25}
+
+# The paths a run's window changed that no record on this machine names, spelled absolutely so the
+# claim below takes them exactly as they are printed. The `dirty` record is only ever written where
+# the run itself says its own list cannot be complete, so its rows ARE the unowned set — printed at
+# the end of `wait` because that is the one moment the launching chat is looking at this run and can
+# still say which of them are its worker's (live case 2026-08-25: 887 lines nobody answered for).
+unnamed_line() { # directory
+  local directory="$1" top paths count listed path
+  grep -q '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null || return 0
+  top=$(sed -n 's/^WORKDIR: //p' "$directory/dirty" 2>/dev/null | head -n1)
+  [ -n "$top" ] || return 0
+  paths=$(grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null | sed '/^$/d')
+  [ -n "$paths" ] || return 0
+  count=$(grep -c '' <<<"$paths")
+  if [ "$count" -gt "$UNNAMED_INLINE_MAX" ]; then
+    # The list is the record's, not this line's, past the point where it stops being readable: the
+    # 887-path case above printed a multi-kilobyte shell-quoted line at the end of every wait,
+    # crowding out the outcome and the result tail it is printed beside.
+    printf 'UNNAMED: %s path(s) changed in this run'"'"'s window that no record names, listed one per line in %s — claim yours: worker-run claim %s --paths <path>...\n' \
+      "$count" "$directory/dirty" "${directory##*/}"
+    return 0
+  fi
+  # Quoted for the shell this line is pasted into: a path carrying a space arrives at `claim` as
+  # two paths, and one carrying a metacharacter as whatever that shell makes of it.
+  listed=$(while IFS= read -r path; do printf '%q ' "$top/$path"; done <<<"$paths")
+  printf 'UNNAMED: %s path(s) changed in this run'"'"'s window that no record names — claim yours: worker-run claim %s --paths %s\n' \
+    "$count" "${directory##*/}" "${listed% }"
+}
+
+# What the run's own listing is spelled against. The record's first line where it has one, since that
+# is what every reader of `files` resolves its rows with; the metadata otherwise, so a run whose
+# listing could not be established at all still has an anchor to check a claim against.
+claim_workdir() { # directory
+  local workdir
+  workdir=$(sed -n 's/^WORKDIR: //p' "$1/files" 2>/dev/null | head -n1)
+  [ -n "$workdir" ] || workdir=$(jq -r '.workdir // empty' "$1/meta.json" 2>/dev/null)
+  [ "$workdir" != null ] || workdir=''
+  printf '%s' "$workdir"
+}
+
+# Lexical, like every other path answer here: a claimed target need not still exist, and a symlink
+# resolved would answer about a path the run never named. Globbing off for the split, or a `*` in a
+# claimed path is answered by whatever the filesystem happens to hold beside it.
+normalize_path() { # path
+  local part out='' IFS=/ globbing=on
+  case $- in *f*) globbing=off ;; esac
+  set -f
+  for part in $1; do
+    case "$part" in
+      ''|.) ;;
+      ..) out=${out%/*} ;;
+      *) out="$out/$part" ;;
+    esac
+  done
+  [ "$globbing" = off ] || set +f
+  printf '%s' "${out:-/}"
+}
+
+# `worker-run claim <run-id> --paths <p>... [--complete]` — the launching chat NAMING the work its
+# worker did through the shell. A run that edited that way lists no file and its work is owned by
+# nobody; only the chat that spawned it knows which of the paths that changed in its window are its
+# worker's, so only that chat may say so, and only once the run has ended and the set has stopped
+# moving. The PARTIAL/UNKNOWN caveat stands through an ordinary claim — the claimed rows are real,
+# and whatever stood beside them may still be missing — and is retired only by `--complete`, which
+# is the caller stating that this IS the whole list.
+claim_run() {
+  [ "$#" -ge 1 ] || usage
+  local run_id="$1" directory workdir top complete=false session launcher path absolute relative
+  local -a paths=() resolved=()
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --complete) complete=true; shift ;;
+      --paths)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in --*) break ;; esac
+          paths+=("$1"); shift
+        done
+        ;;
+      *) usage ;;
+    esac
+  done
+  [ "${#paths[@]}" -gt 0 ] || usage
+  directory=$(run_path "$run_id")
+  [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $run_id"
+  # A live run is still writing its own record: a claim landing mid-flight is overwritten by the next
+  # `persist_run_files`, and the paths it named read back as nobody's again.
+  [ -f "$directory/exit_code" ] ||
+    fail "run $run_id is still running; claim its files once it has ended"
+  session="${CLAUDE_CODE_SESSION_ID:-}"
+  launcher=$(tr -d '[:space:]' <"$directory/launcher" 2>/dev/null)
+  [ -n "$launcher" ] ||
+    fail "run $run_id records no launching chat, so nobody may claim its files"
+  [ -n "$session" ] ||
+    fail "this shell names no chat (CLAUDE_CODE_SESSION_ID), and run $run_id answers to $launcher"
+  [ "$session" = "$launcher" ] ||
+    fail "run $run_id was launched by $launcher, not by this chat; the launching chat is the only one that may claim its files"
+  workdir=$(claim_workdir "$directory")
+  [ -n "$workdir" ] || fail "run $run_id records no workdir to resolve a claim against"
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || top=''
+  # Every path is checked before any is written: a claim half applied leaves the caller unable to
+  # tell which of its paths are named and which are still nobody's.
+  #
+  # Under the workdir, or anywhere in the REPOSITORY that workdir sits in: the dirt record this
+  # claim answers is spelled against the repository top whatever directory the run was launched in,
+  # so a run launched in a subdirectory has the very line `wait` prints refused whole (and the
+  # listing already spells a path outside the workdir absolutely). Anything outside that
+  # repository is nothing this run's records ever named.
+  for path in "${paths[@]}"; do
+    case "$path" in
+      /*) absolute=$(normalize_path "$path") ;;
+      *) absolute=$(normalize_path "$workdir/$path") ;;
+    esac
+    case "$absolute" in
+      "$workdir"/*) ;;
+      *)
+        [ -n "$top" ] && [ "$absolute" != "${absolute#"$top"/}" ] ||
+          fail "$path is not under this run's workdir ($workdir)${top:+ or its repository ($top)}"
+        ;;
+    esac
+    resolved+=("$absolute")
+  done
+  {
+    if [ "$complete" = true ]; then
+      grep '^WORKDIR: ' "$directory/files" 2>/dev/null
+    else
+      grep '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null
+    fi
+    { grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null
+      for absolute in "${resolved[@]}"; do
+        relative=${absolute#"$workdir"/}
+        printf '%s\n' "$relative"
+      done; } | sed '/^$/d' | sort -u
+  } >"$directory/files.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
+    { rm -f "$directory/files.tmp.$$" 2>/dev/null; fail "could not rewrite the listing of $run_id"; }
+  # A claimed path carries an owner now, and the dirt record is exactly the set that carries none.
+  if [ -n "$top" ] && [ -f "$directory/dirty" ]; then
+    local remaining
+    # A difference, never a symmetric one: a claimed path the dirt record never held must not be
+    # ADDED to it by the very call that names it.
+    remaining=$(comm -23 \
+      <(grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null | sed '/^$/d' | sort -u) \
+      <(for absolute in "${resolved[@]}"; do
+          case "$absolute" in "$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
+        done | sort -u))
+    if [ -n "$remaining" ]; then
+      { printf 'WORKDIR: %s\n' "$top"; printf '%s\n' "$remaining"; } >"$directory/dirty.tmp.$$" &&
+        mv -f "$directory/dirty.tmp.$$" "$directory/dirty" 2>/dev/null ||
+        rm -f "$directory/dirty.tmp.$$" 2>/dev/null
+    else
+      rm -f "$directory/dirty" 2>/dev/null
+    fi
+  fi
+  printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "${#resolved[@]}" "$run_id"
+  head -n 20 "$directory/files" 2>/dev/null
+}
+
 CONFIG_FILE="${WORKER_RUN_CONFIG_FILE:-$HOME/.claude/worker-model}"
 CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
 # Every arm exits from inside the case: workers edit this very file while their
@@ -1646,6 +1811,7 @@ case "${1:-}" in
   start) shift; start_run "$@"; exit $? ;;
   wait) shift; wait_run "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;
+  claim) shift; claim_run "$@"; exit $? ;;
   _supervise) shift; supervise "$@"; exit $? ;;
   *) usage ;;
 esac

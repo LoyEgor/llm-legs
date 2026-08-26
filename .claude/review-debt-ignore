@@ -1,0 +1,5 @@
+# Paths review debt is never asked about here, gitignore-style.
+# Markdown in this repository is technical documentation for the tools beside it: it executes
+# nowhere and a panel's minutes buy nothing by reading it. Every other repository keeps its own
+# answer — this file is per checkout, and no other one carries it.
+*.md

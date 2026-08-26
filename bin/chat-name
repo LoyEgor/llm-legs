@@ -7,6 +7,11 @@ put a bare id in parentheses beside nothing — every consumer here already has 
 about, and its own spelling of it is the fallback (`chat_names.chat_label` is the Python-side
 equivalent for a caller that wants the short id supplied for it).
 
+Several ids may be named in one call: a line each in the order asked, the ones with no name left
+out, exit 1 where none of them had one. Each line carries the short id it answers, so a caller
+handing over a list still knows which chat is which — and resolving a prefix reads the whole
+transcript corpus, which one call pays once and twenty calls pay twenty times.
+
 The resolver behind it is `share/chat_names.py` and nothing else: a chat is the name Claude Code
 gave it and Egor has actually seen, and a worker run folds to the chat that LAUNCHED it — surfaced
 under a name of its own, an errand would answer a question asked about a conversation.
@@ -17,24 +22,64 @@ import sys
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
-from chat_names import chat_name, short_session  # noqa: E402
+from chat_names import chat_label, chat_name, resolve_session, short_session  # noqa: E402
 
 
-def main(argv):
-    if len(argv) != 1 or not argv[0]:
-        print("usage: chat-name <session-id>", file=sys.stderr)
-        return 2
-    session = argv[0]
+def label(session):
+    """`chat_label` over a store that may be half-written: a candidate this cannot name is listed
+    under its own short id, which is what an unnamed chat is listed under anyway."""
+    try:
+        return chat_label(session)
+    except Exception:
+        return short_session(session)
+
+
+def answer(session):
+    """This id's line on stdout where it has a name — True — and False where it has none. None is
+    a prefix naming several chats: shown under either it hands the reader the wrong conversation,
+    so it is shown under neither and the candidates go to stderr instead, which is the refusal an
+    ambiguous worker session already gets.
+    """
+    try:
+        candidates = resolve_session(session)
+    except Exception:
+        candidates = [session]
+    if len(candidates) > 1:
+        print(f"chat-name: {session} names {len(candidates)} chats:", file=sys.stderr)
+        for candidate in candidates:
+            print(f"  {candidate} {label(candidate)}", file=sys.stderr)
+        return None
+    session = candidates[0]
     try:
         name = chat_name(session)
     except Exception:
         # A hook printing this line is reporting somebody's commit, and a resolver that broke on a
         # half-written transcript must cost the line its NAME and never the line.
-        return 1
+        return False
     if not name:
-        return 1
+        return False
     print(f"{name} ({short_session(session)})")
-    return 0
+    return True
+
+
+def main(argv):
+    # The 8 hex characters every surface prints a chat by are what a reader has in hand, and asking
+    # about one of them printed nothing at all (live 2026-08-25).
+    #
+    # Several ids in ONE call, because resolving one of those prefixes reads the whole transcript
+    # corpus: the stop notice naming the chats of a turn asks about up to twenty, and a process
+    # each pays that walk twenty times inside the one second all twenty have between them.
+    if not argv or not all(argv):
+        print("usage: chat-name <session-id|8+-hex prefix>...", file=sys.stderr)
+        return 2
+    several = len(argv) > 1
+    named = False
+    for session in argv:
+        found = answer(session)
+        if found is None and not several:
+            return 3
+        named = named or bool(found)
+    return 0 if named else 1
 
 
 if __name__ == "__main__":

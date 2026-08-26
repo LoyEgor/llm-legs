@@ -1,11 +1,15 @@
 import argparse
 import concurrent.futures
+import contextlib
 import fcntl
+import io
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 from pathlib import Path
@@ -160,11 +164,41 @@ def owner_at_keyboard():
     ) and None not in (sys.stdin, sys.stdout)
 
 
+def panel_owner_child():
+    """Whether this process is the detached child of a launcher that already put the owner question
+    to the keyboard it still had.
+
+    The two environment variables are not the evidence — anything may export them, and exported by
+    hand they started an owner tier this gate exists to refuse (audit, 2026-08-26). The RENDEZVOUS
+    is: a directory `cmd_review_detached` made under `panel_handle_root()`, naming as this
+    process's own parent the launcher that made it. A caller who is not that child cannot answer
+    both at once by setting variables.
+    """
+    handle = os.environ.get(PANEL_HANDLE_ENV) or ""
+    if not handle or os.environ.get(PANEL_OWNER_ENV) != "1":
+        return False
+    directory = Path(handle)
+    try:
+        if not directory.is_dir():
+            return False
+        if directory.parent.resolve() != panel_handle_root().resolve():
+            return False
+        launcher = (directory / PANEL_LAUNCHER).read_text().strip()
+    except OSError:
+        return False
+    return launcher.isdigit() and int(launcher) == os.getppid()
+
+
 def guard_tier_owner(tier_name, use_max):
     wanted = {"t3"} if tier_name in _store.OWNER_TIERS else set()
     if use_max:
         wanted.add("max")
     if not wanted:
+        return
+    # The detached panel is this same command in a child with no stdin and a log for stdout, where
+    # `owner_at_keyboard` can only ever answer no: its launcher put this question to the keyboard
+    # it still had, and says so through the rendezvous only that launcher can name.
+    if panel_owner_child():
         return
     if owner_at_keyboard():
         return
@@ -231,6 +265,210 @@ def guard_review_armed(args):
         "reviews are commit-triggered — prefix with REVIEW_ASKED=1 (Egor's commit permission "
         "counts as the ask; reviews ride commits)"
     )
+
+
+PANEL_HANDLE_ENV = "REVIEW_BENCH_PANEL_HANDLE"
+PANEL_OWNER_ENV = "REVIEW_BENCH_PANEL_OWNER"
+PANEL_LOG = "panel.log"
+# The launcher's own pid, written into the rendezvous before the child is started: it is what tells
+# the detached panel from any other process holding the same two environment variables.
+PANEL_LAUNCHER = "launcher.pid"
+PANEL_PID = "panel.pid"
+PANEL_HANDOFF = "panel.handoff"
+PANEL_EXIT = "panel.exit"
+PANEL_RUN_ID = "run-id"
+# How long the launcher waits for the panel to name its run before it stops speaking for it. Every
+# refusal ahead of the run directory — a clean tree, an unarmed review, the one-panel rule — is
+# reached in seconds; past this the panel is alive and the launcher has nothing to add.
+PANEL_ANNOUNCE_S = 600
+PANEL_POLL_S = 2.0
+PANEL_DEAD_TAIL_LINES = 40
+# How long a rendezvous directory may sit before the next launch takes it away. A launcher that
+# stopped waiting — killed at its harness's ten minutes, or past PANEL_ANNOUNCE_S — leaves one
+# behind that nothing else would ever remove, and its panel writes a run id into a directory no
+# reader has left; well past the announce window, so a handle in use is never swept.
+PANEL_HANDLE_STALE_S = 24 * 3600
+
+
+def panel_handle_root():
+    root = _store.state_dir() / "panels"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def reap_panel_handles(root, now=None):
+    """Every rendezvous nobody is waiting on any more, removed. Best effort: a handle that cannot
+    be read or removed costs a directory, and never a launch."""
+    now = time.time() if now is None else now
+    try:
+        stale = list(root.iterdir())
+    except OSError:
+        return
+    for directory in stale:
+        try:
+            if directory.is_dir() and now - directory.stat().st_mtime > PANEL_HANDLE_STALE_S:
+                shutil.rmtree(directory, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def claim_panel_handle(run_dir):
+    """Furnish the rendezvous the detached launcher is waiting on.
+
+    The run id lands last and through a rename: it is the one file the launcher polls, and a
+    reader handed a run id has to find the panel's log and pid already beside the run.
+    """
+    handle = os.environ.pop(PANEL_HANDLE_ENV, "")
+    if not handle:
+        return
+    directory = Path(handle)
+    try:
+        os.replace(directory / PANEL_LOG, run_dir / PANEL_LOG)
+    except OSError:
+        pass
+    elapsed = _round.pid_elapsed_seconds(os.getpid()) or 0
+    (run_dir / PANEL_PID).write_text(
+        f"{os.getpid()} {int(_store.utc_now().timestamp()) - elapsed}\n"
+    )
+    fresh = directory / (PANEL_RUN_ID + ".new")
+    fresh.write_text(run_dir.name + "\n")
+    os.replace(fresh, directory / PANEL_RUN_ID)
+
+
+def panel_pid_stamp(run_dir):
+    try:
+        fields = (run_dir / PANEL_PID).read_text().split()
+    except OSError:
+        return None
+    if not fields:
+        return None
+    return fields[0], (fields[1] if len(fields) > 1 else None)
+
+
+def panel_still_running(run_dir):
+    stamp = panel_pid_stamp(run_dir)
+    if stamp is None:
+        return False
+    return _round.pid_still_running(*stamp)
+
+
+def await_panel_run_id(handle, child):
+    marker = handle / PANEL_RUN_ID
+    deadline = time.time() + PANEL_ANNOUNCE_S
+    while True:
+        if marker.exists():
+            return marker.read_text().strip()
+        exited = child.poll() is not None
+        # Read once more after the exit: the panel can name its run and die inside one tick, and
+        # a launcher that missed it would report a run that is running fine as a failed launch.
+        if exited:
+            return marker.read_text().strip() if marker.exists() else None
+        if time.time() > deadline:
+            return None
+        time.sleep(0.2)
+
+
+def cmd_review_detached(args):
+    """Start the panel in a session of its own and hand back its run id.
+
+    A tier runs for tens of minutes; the harness that types the command is killed at ten and
+    takes its whole process group with it, so a panel that shares that group dies with orphaned
+    cells. `--foreground` is the way back in-process, for tests and for a runner with no kill
+    window, and it is what the detached child itself is given.
+    """
+    if getattr(args, "foreground", False):
+        return cmd_review(args)
+    tier_name = getattr(args, "tier", None)
+    use_max = bool(getattr(args, "max", False))
+    if use_max and not tier_name:
+        raise ValueError("--max requires --tier")
+    # Asked HERE, where the terminal Egor typed into still is: the child runs on DEVNULL and a log,
+    # so `owner_at_keyboard` answers no for every launch, and his own T3 came back refused.
+    guard_tier_owner(tier_name, use_max)
+    root = panel_handle_root()
+    reap_panel_handles(root)
+    handle = Path(tempfile.mkdtemp(prefix="panel-", dir=root))
+    (handle / PANEL_LAUNCHER).write_text(f"{os.getpid()}\n")
+    log_path = handle / PANEL_LOG
+    environment = dict(os.environ)
+    environment[PANEL_HANDLE_ENV] = str(handle)
+    environment[PANEL_OWNER_ENV] = "1"
+    # Ahead of any `--`, never appended after one: argparse hands everything past that separator to
+    # the positionals, so the flag would reach the panel as a commitish and kill the launch.
+    forwarded = list(sys.argv[1:])
+    at = forwarded.index("--") if "--" in forwarded else len(forwarded)
+    forwarded.insert(at, "--foreground")
+    with open(log_path, "w") as log:
+        child = subprocess.Popen(
+            [sys.executable, os.path.abspath(sys.argv[0])] + forwarded,
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+            start_new_session=True, env=environment,
+        )
+    run_id = await_panel_run_id(handle, child)
+    if run_id:
+        shutil.rmtree(handle, ignore_errors=True)
+        run_dir = _store.state_dir() / "benches" / run_id
+        print(f"run id: {run_id}")
+        print(f"panel detached as pid {child.pid}; its output goes to {run_dir / PANEL_LOG}")
+        print(f"wait with: review-bench wait {run_id}")
+        return 0
+    # No run means the panel never launched one: everything it printed is a refusal the caller
+    # asked for, so it is theirs, on the stream refusals come out of.
+    try:
+        # errors="replace": the log carries whatever the cells printed, and a rater that emitted
+        # one non-UTF-8 byte would cost the caller the whole refusal it is waiting to read.
+        sys.stderr.write(log_path.read_text(errors="replace"))
+    except OSError:
+        pass
+    code = child.poll()
+    if code is None:
+        print(f"panel has not named a run in {PANEL_ANNOUNCE_S}s; it is still running as pid "
+              f"{child.pid} and its output goes to {log_path}, which moves to that run's own "
+              f"directory as {PANEL_LOG} the moment the panel names it", file=sys.stderr)
+        return 1
+    shutil.rmtree(handle, ignore_errors=True)
+    return code
+
+
+def cmd_wait(args):
+    run_dir = _store.state_dir() / "benches" / args.run_id
+    if not (run_dir / "meta.json").exists():
+        raise ValueError(f"unknown run id: {args.run_id}")
+    # The handoff below is the report frame the delivery hooks key on, headers and REPORT_END
+    # markers included, so waiting on a foreign run id frames another chat's review as this one's.
+    # The same refusal `report` already makes over the same text.
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text())
+    except (OSError, ValueError):
+        meta = {}
+    _report.refuse_foreign_chat(
+        run_dir, meta if isinstance(meta, dict) else {},
+        str(getattr(args, "session", "") or "").strip() or _store.caller_chat(),
+    )
+    while panel_still_running(run_dir):
+        time.sleep(PANEL_POLL_S)
+    closing = run_dir / PANEL_HANDOFF
+    if closing.exists():
+        sys.stdout.write(closing.read_text(errors="replace"))
+        try:
+            return int((run_dir / PANEL_EXIT).read_text().strip())
+        except (OSError, ValueError):
+            # The exit code is written BEFORE the handoff, so a handoff without one is a torn
+            # record and never a run that ended well: read as 0 it reports a failed panel as clean.
+            print(f"panel {args.run_id} handed over without an exit code in "
+                  f"{run_dir / PANEL_EXIT}", file=sys.stderr)
+            return 1
+    log = run_dir / PANEL_LOG
+    try:
+        tail = log.read_text(errors="replace").splitlines()[-PANEL_DEAD_TAIL_LINES:]
+    except OSError:
+        tail = []
+    for line in tail:
+        print(line, file=sys.stderr)
+    print(f"panel {args.run_id} died before it reported: nothing handed anything over, and the "
+          f"lines above are the tail of {log}. `review-bench doctor` names what it left behind "
+          f"and how to clear it.", file=sys.stderr)
+    return 1
 
 
 def cmd_review(args):
@@ -312,6 +550,11 @@ def cmd_run(args):
                 "--this-repo-only needs --reason '...': leaving this chat's other repositories "
                 "unreviewed is a decision, and it is recorded with the run like a waiver's"
             )
+    elif str(getattr(args, "reason", "") or "").strip():
+        raise ValueError(
+            "--reason records the decision --this-repo-only makes; with no such decision to "
+            "record there is nothing for it to say, and it would be dropped in silence"
+        )
     if getattr(args, "scope_lines", None) is not None and not debt_mode:
         raise ValueError(
             "--scope-lines names the size of the scope --debt computes; every other target names "
@@ -679,6 +922,9 @@ def cmd_run(args):
     }
     launch_meta.update(lens_meta)
     (run_dir / "meta.json").write_text(json.dumps(launch_meta, indent=2) + "\n")
+    # After the meta and not after the mkdir: the launcher prints this run id the moment it
+    # appears, and every reader it sends here — `wait` first — asks the run what it is.
+    claim_panel_handle(run_dir)
     diff = "" if chunks else (_store.commit_diff(repo, sha) if any(
         rater["side"] in ("claude", "opencode") or rater["bare"]
         for rater in raters) else "")
@@ -1049,30 +1295,52 @@ def cmd_run(args):
                                      worktree=target_worktree,
                                      lens=lens["name"] if lens else None,
                                      scope=target_scope)
-        if errored_raters:
-            errored = [rater for rater in raters if rater["spec"] in errored_raters]
-            rerun = ",".join(_raters.collapse_rater_attempts(rater["spec"] for rater in errored))
-            # Always the sha, even for --worktree: the tree can drift before the rerun, and
-            # only the snapshot commit pins the errored cells to what the others reviewed.
-            rerun_command = ["review-bench", "run", sha, "--raters", rerun]
-            # The merged commit lives in the workspace and nowhere else, so the rerun has to be
-            # pointed at it; the workspace answers for the same repositories this run did.
-            if members:
-                rerun_command += ["--repo", str(repo)]
-            # A rerun without the lens completes a lens run with a stock review of the cell.
-            if lens:
-                rerun_command += ["--lens", lens["name"]]
-            # No verifier flag of any spelling: the rerun is a bench run, and a bench run reports
-            # what the rater said. A tier's errored cell is completed raw, which is the same
-            # answer the reader would get by asking the cell again by hand.
-            print(f"rerun: {shlex.join(rerun_command)}")
-        print(f"run id: {run_id}")
-        _round.handoff(run_id, paths, members, worktree=worktree_mode, fixable=all(
-            _store.reviews_current_tree(target, target_sha, target_worktree)
-            for target, target_sha, _, target_worktree in receipt_targets
-        ))
-        _report.emit_report(run_dir, meta)
-        return 1 if (failed or errored_raters) else 0
+        # Kept as well as printed. A detached panel's stdout is a log holding every cell's noise,
+        # and `wait` owes its caller exactly what a foreground run said once the panel was over.
+        closing = io.StringIO()
+        code = 1 if (failed or errored_raters) else 0
+        # Handed over whatever happens: the handoff and the exit code are the only thing `wait`
+        # has, and a report that raised took the run id, the rerun line and the whole review with
+        # it — `wait` then called a finished round a panel that died before it reported.
+        try:
+            with contextlib.redirect_stdout(closing):
+                if errored_raters:
+                    errored = [rater for rater in raters if rater["spec"] in errored_raters]
+                    rerun = ",".join(
+                        _raters.collapse_rater_attempts(rater["spec"] for rater in errored)
+                    )
+                    # Always the sha, even for --worktree: the tree can drift before the rerun, and
+                    # only the snapshot commit pins the errored cells to what the others reviewed.
+                    rerun_command = ["review-bench", "run", sha, "--raters", rerun]
+                    # The merged commit lives in the workspace and nowhere else, so the rerun has
+                    # to be pointed at it; the workspace answers for the same repositories this
+                    # run did.
+                    if members:
+                        rerun_command += ["--repo", str(repo)]
+                    # A rerun without the lens completes a lens run with a stock review of the cell.
+                    if lens:
+                        rerun_command += ["--lens", lens["name"]]
+                    # No verifier flag of any spelling: the rerun is a bench run, and a bench run
+                    # reports what the rater said. A tier's errored cell is completed raw, which is
+                    # the same answer the reader would get by asking the cell again by hand.
+                    print(f"rerun: {shlex.join(rerun_command)}")
+                print(f"run id: {run_id}")
+                _round.handoff(run_id, paths, members, worktree=worktree_mode, fixable=all(
+                    _store.reviews_current_tree(target, target_sha, target_worktree)
+                    for target, target_sha, _, target_worktree in receipt_targets
+                ))
+                _report.emit_report(run_dir, meta)
+        except Exception as error:
+            code = 1
+            closing.write(f"the report this run owed could not be printed: {error}\n")
+            raise
+        finally:
+            # The exit code lands FIRST: `wait` takes the handoff for the whole record, and a
+            # reader arriving between the two writes read a missing code as a clean run.
+            (run_dir / PANEL_EXIT).write_text(f"{code}\n")
+            (run_dir / PANEL_HANDOFF).write_text(closing.getvalue())
+            sys.stdout.write(closing.getvalue())
+        return code
     finally:
         if verify_pool is not None:
             # Joined, not detached: its threads are joined at interpreter exit anyway, and a
@@ -1368,7 +1636,7 @@ def main():
     review.add_argument("--max", action="store_true", help="Use the full tier composition")
     review.add_argument(
         "--foreground", action="store_true",
-        help="Allow long tiers when stdout is not a terminal",
+        help="Run the panel in this process instead of detaching it",
     )
     review.add_argument("--focus", default="")
     # extend, not the default store: a repeated --paths silently kept only the last flag's
@@ -1389,7 +1657,16 @@ def main():
         "--no-verify", action="store_true",
         help="Report every finding unchecked, including the ones that cite code as it is not",
     )
-    review.set_defaults(func=cmd_review)
+    review.set_defaults(func=cmd_review_detached)
+    wait = subparsers.add_parser(
+        "wait", help="Block until a detached panel is over, then print what it handed over"
+    )
+    wait.add_argument("run_id")
+    wait.add_argument(
+        "--session", default="", metavar="ID",
+        help="Refuse the run unless this chat launched it",
+    )
+    wait.set_defaults(func=cmd_wait)
     receipt = subparsers.add_parser(
         "receipt", help="Print this repository's review receipt as JSON"
     )
@@ -1478,7 +1755,8 @@ def main():
     fixes = subparsers.add_parser(
         "fixes", help="Record whether a triaged round's confirmed findings were fixed"
     )
-    fixes.add_argument("run_id")
+    fixes.add_argument("run_id", nargs="?",
+                       help="the round; only --cover may leave it out and resolve its own")
     fixes_state = fixes.add_mutually_exclusive_group(required=True)
     fixes_state.add_argument(
         "--done", action="store_true", help="the confirmed findings are fixed"
@@ -1486,8 +1764,18 @@ def main():
     fixes_state.add_argument(
         "--blocked", metavar="REASON", help="why they were not applied"
     )
+    fixes_state.add_argument(
+        "--cover", action="store_true",
+        help="close the fixing pass of every round this commit finished and cover what it landed",
+    )
+    fixes.add_argument("--commit", metavar="SHA",
+                       help="the commit that carried the fixes (with --cover)")
+    fixes.add_argument("--repo", metavar="PATH",
+                       help="the checkout the commit landed in (with --cover)")
+    fixes.add_argument("--session", metavar="ID",
+                       help="the chat whose rounds this closes; defaults to the calling chat")
     fixes.add_argument("--fixed", type=int, metavar="N",
-                       help="confirmed findings fixed (with --done)")
+                       help="confirmed findings fixed (with --done; defaults to the triage's own)")
     fixes.add_argument("--fp", type=int, metavar="M",
                        help="findings that turned out false while fixing (with --done)")
     fixes.set_defaults(func=_round.cmd_fixes)
@@ -1543,10 +1831,6 @@ def main():
     run.add_argument("--worktree", action="store_true")
     run.add_argument("--range", metavar="A..B", help=RANGE_FLAG_HELP)
     run.add_argument("--repo", action="append", metavar="PATH", help=REPO_FLAG_HELP)
-    run.add_argument("--scope-lines", type=int, metavar="N", help=DEBT_SCOPE_LINES_HELP)
-    run.add_argument("--this-repo-only", action="store_true", help=DEBT_ALONE_FLAG_HELP)
-    run.add_argument("--reason", default="", metavar="TEXT",
-                       help="Why this repository goes alone, recorded with the run")
     selection = run.add_mutually_exclusive_group()
     selection.add_argument("--tier", choices=_catalog.REVIEW_TIERS)
     selection.add_argument(

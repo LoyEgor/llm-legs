@@ -207,6 +207,50 @@ rm -rf "$HOME/.gemini-profiles/legacy" "$HOME/.gemini-profiles/ownconf" \
   "$HOME/.gemini-profiles/emptyconf" "$HOME/.gemini-profiles/linkedconf" \
   "$HOME/.gemini-profiles/relative"
 
+# A config DIRECTORY linked anywhere other than main's is shared just the same: left standing, the
+# rewrite lands in that external config and an `mcp enable` on the far side re-arms the leg. It is
+# privatized by copy — the leg's own files under it survive — and the far side is never written.
+SHARED_CONFIG="$WORK/shared-config"
+mkdir -p "$SHARED_CONFIG" "$HOME/.gemini-profiles/sharedconf/.gemini"
+printf '{"mcpServers":{"outside":{"command":"noop"}}}\n' >"$SHARED_CONFIG/mcp_config.json"
+printf 'private\n' >"$SHARED_CONFIG/own-file"
+SHARED_CONFIG_SUM="$(shasum "$SHARED_CONFIG/mcp_config.json" | cut -d' ' -f1)"
+ln -s "$SHARED_CONFIG" "$HOME/.gemini-profiles/sharedconf/.gemini/config"
+bash "$SCRIPT" list >/dev/null
+assert test ! -L "$HOME/.gemini-profiles/sharedconf/.gemini/config"
+assert test -d "$HOME/.gemini-profiles/sharedconf/.gemini/config"
+assert test "$(shasum "$SHARED_CONFIG/mcp_config.json" | cut -d' ' -f1)" = "$SHARED_CONFIG_SUM"
+assert grep -qx private "$HOME/.gemini-profiles/sharedconf/.gemini/config/own-file"
+assert test "$(jq -r '.mcpServers.outside.disabled' \
+  "$HOME/.gemini-profiles/sharedconf/.gemini/config/mcp_config.json")" = true
+shopt -s nullglob
+sharedconf_aside=("$HOME/.gemini-profiles/sharedconf/.gemini/.config."*)
+shopt -u nullglob
+assert test "${#sharedconf_aside[@]}" -eq 0
+rm -rf "$HOME/.gemini-profiles/sharedconf"
+
+# A source jq cannot parse — a JSONC comment, plausible for a VS Code-derived product, or a partial
+# write — must leave a fresh leg with NO mcp_config.json and say so, never with a verbatim copy of
+# main's ENABLED server list.
+BASE_MCP_GOOD="$WORK/base-mcp-good.json"
+cp "$BASE_MCP" "$BASE_MCP_GOOD"
+cat >"$BASE_MCP" <<'EOF'
+{
+  // figma
+  "mcpServers": {"figma": {"command": "npx", "args": ["mcp-remote"]}}
+}
+EOF
+mkdir -p "$HOME/.gemini-profiles/badbase"
+unparsable_warning=$(bash "$SCRIPT" list 2>&1 >/dev/null)
+assert grep -q 'is unparsable' <<<"$unparsable_warning"
+assert test ! -e "$HOME/.gemini-profiles/badbase/.gemini/config/mcp_config.json"
+cp "$BASE_MCP_GOOD" "$BASE_MCP"
+bash "$SCRIPT" list >/dev/null
+assert test "$(jq -c '[.mcpServers[].disabled]' \
+  "$HOME/.gemini-profiles/badbase/.gemini/config/mcp_config.json")" = '[true,true]'
+rm -rf "$HOME/.gemini-profiles/badbase"
+assert test "$(shasum "$BASE_MCP" | cut -d' ' -f1)" = "$BASE_MCP_SUM"
+
 # A DANGLING config link — what the legacy absolute one becomes the moment ~/.gemini/config is
 # renamed. `mkdir -p` on it fails, and under `set -e` that took `list` down with it: every healthy
 # account vanished from the output and worker-run read the whole leg as unavailable.
@@ -219,6 +263,19 @@ assert test "$(jq -c '[.mcpServers[].disabled]' \
   "$HOME/.gemini-profiles/dangling/.gemini/config/mcp_config.json")" = '[true,true]'
 assert grep -q alpha <<<"$DANGLING_LIST"
 rm -rf "$HOME/.gemini-profiles/dangling"
+
+# main's config directory unreadable: `resolved_path` returned the status of the subshell that
+# could not enter it, and the standalone assignment reading it aborted `list` under `set -e` —
+# every healthy account vanished from the output and worker-run read the whole vendor as gone.
+chmod 000 "$HOME/.gemini/config"
+UNREADABLE_RC=0
+UNREADABLE_LIST="$(bash "$SCRIPT" list)" || UNREADABLE_RC=$?
+# Restored before the verdict: exiting at 000 leaves a directory the EXIT trap cannot descend into,
+# so a failure here also leaks the whole temp tree.
+chmod 755 "$HOME/.gemini/config"
+[ "$UNREADABLE_RC" = 0 ] || fail "an unreadable main config took list down"
+assert grep -q '^alpha:' <<<"$UNREADABLE_LIST"
+bash "$SCRIPT" list >/dev/null
 
 # The per-entry links are main's config mirrored, so they are refreshed on every pass: created
 # once, a file Antigravity or Egor adds to main afterwards reached no existing leg at all — the
@@ -829,8 +886,10 @@ assert grep -q "$IMAGE_REPLY $WORK/image-output/converted.png" "$IMAGE_MAGICK_CA
 assert grep -qx converted "$WORK/image-output/converted.png"
 
 # main has no profile directory to delete, so `remove` hides it by marker alone: the real HOME
-# keeps its Antigravity login, and every enumerator must behave as though main never existed.
-MAIN_MARKER="$HOME/.llm-limits-gemini/main.json.removed"
+# keeps its Antigravity login, and every enumerator must behave as though main never existed. The
+# marker path is llm-limits.sh's — the menubar's `--gemini-remove` writes exactly this file, and a
+# spelling of geminib's own would make the two tools disagree about whether main is there.
+MAIN_MARKER="$HOME/.llm-limits-gemini.json.removed"
 assert test ! -e "$MAIN_MARKER"
 : >"$AGY_CALLS"
 : >"$ANNOUNCE_LOG"
@@ -838,6 +897,7 @@ remove_main_output=$(bash "$SCRIPT" remove main) || fail "remove main failed"
 assert grep -qx 'geminib: removed main' <<<"$remove_main_output"
 assert grep -qF "$MAIN_MARKER" <<<"$remove_main_output"
 assert test -e "$MAIN_MARKER"
+assert test ! -e "$HOME/.llm-limits-gemini/main.json.removed"
 assert test -f "$HOME/.gemini/settings.json"
 assert test -f "$HOME/.gemini/antigravity-cli/settings.json"
 assert wait_announce ''
@@ -863,5 +923,18 @@ assert_fails grep -q '^gemini_profile=' "$PIN_CONFIG"
 rm -f "$MAIN_MARKER"
 assert bash "$SCRIPT" run main
 assert grep -qx "CALL home=$HOME argc=0" "$AGY_CALLS"
+
+# main removable makes an EMPTY roster reachable for the first time, and macOS system bash (3.2 —
+# what a launchd or Hammerspoon PATH resolves `#!/usr/bin/env bash` to) aborts on a bare
+# "${pids[@]}" of an empty array under `set -u`.
+EMPTY_HOME="$WORK/empty-home"
+mkdir -p "$EMPTY_HOME/.gemini/config"
+: >"$EMPTY_HOME/.llm-limits-gemini.json.removed"
+empty_roster=$(HOME="$EMPTY_HOME" GEMINIB_PROFILES_DIR="$EMPTY_HOME/.gemini-profiles" \
+  /bin/bash "$SCRIPT" list 2>&1) || fail "an empty Gemini roster took list down"
+assert test -z "$empty_roster"
+empty_roster_status=$(HOME="$EMPTY_HOME" GEMINIB_PROFILES_DIR="$EMPTY_HOME/.gemini-profiles" \
+  /bin/bash "$SCRIPT" status 2>&1) || fail "an empty Gemini roster took status down"
+assert test -z "$empty_roster_status"
 
 echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg with every server forced disabled (main untouched, compliant files not rewritten), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"

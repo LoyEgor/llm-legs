@@ -34,6 +34,9 @@ ARGV_ROOM = 128 * 1024
 HEADLESS_VIA = "sdk-cli"
 DERIVED_NAME_SOURCE = "derived"
 SESSION_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+# What every surface prints a chat by, and therefore what a reader has to hand when asking about
+# one. Eight is the shortest run of hex that is not a coincidence across this machine's stores.
+SESSION_PREFIX = re.compile(r"^[0-9a-fA-F]{8,}$")
 ROOTS_ENV = "CHAT_NAME_ROOTS"
 CACHE_ENV = "CHAT_NAMES_CACHE"
 CACHE_VERSION = 1
@@ -199,6 +202,81 @@ def transcript_path(session):
         for path in sorted(root.glob(f"*/{session}.jsonl")):
             return path
     return None
+
+
+@lru_cache(maxsize=4)
+def _session_id_index(roots, stores, runs):
+    found = set()
+    for root in roots:
+        try:
+            paths = list(Path(root).glob("*/*.jsonl"))
+        except OSError:
+            continue
+        for path in paths:
+            found.add(path.stem)
+    for store in stores:
+        try:
+            entry = json.loads(Path(store).read_text())
+        except (OSError, ValueError):
+            continue
+        session = isinstance(entry, dict) and str(entry.get("sessionId") or "")
+        if session:
+            found.add(session)
+    # The launcher and worker ids beside a run: a chat whose transcript has been swept still names
+    # the runs it spawned, and that record is the only place its id survives.
+    try:
+        directories = sorted(Path(runs).iterdir())
+    except OSError:
+        directories = []
+    for directory in directories:
+        for name in ("launcher", "worker-session"):
+            try:
+                text = (directory / name).read_text()
+            except (OSError, ValueError):
+                continue
+            for token in text.split():
+                if SESSION_OK.match(token):
+                    found.add(token)
+    return tuple(sorted(found))
+
+
+def session_ids():
+    """Every session id this machine holds, off the transcripts, the live session records and the
+    worker-run store.
+
+    Read ONCE per process, and keyed by the stores it was read from so a caller that repoints them
+    is never answered out of the other one: asking about several ids then walks the corpus — 19k
+    transcript files here — once rather than once per id, which is what the stop notice naming the
+    chats of a turn does inside a budget of one second for up to twenty.
+    """
+    return _session_id_index(
+        tuple(str(root) for root in transcript_roots()),
+        tuple(str(path) for path in session_store_files()),
+        str(worker_run_root()),
+    )
+
+
+def session_prefix_matches(prefix):
+    """Every session id `prefix` names, across the transcripts, the live session records and the
+    worker-run store.
+
+    A full id carries dashes and never reaches here; a bare run of hex does, because the 8
+    characters every surface prints a chat by ARE a prefix and asking about one of them used to
+    answer nothing at all.
+    """
+    if not SESSION_PREFIX.match(prefix):
+        return []
+    lowered = prefix.lower()
+    return sorted(session for session in session_ids() if session.lower().startswith(lowered))
+
+
+def resolve_session(token):
+    """The session ids `token` could be: itself where it is no bare hex prefix or names nothing,
+    and every id it prefixes otherwise. More than one is a question the caller has to put back to
+    whoever asked — shown under either, a prefix hands the reader the wrong conversation.
+    """
+    token = str(token or "")
+    return session_prefix_matches(token) or [token]
 
 
 def store_names():

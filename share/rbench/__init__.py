@@ -8,11 +8,12 @@ from .store import (
     PROGRESS_DIR, RECEIPT_DIR, RECEIPT_FIELDS, RECEIPT_HASH_HEX, REPORT_RECEIPT,
     SESSION_REGISTRY_DIR_ENV, SESSION_WALK_HOPS, TRIAGE_GATE_HOURS, WAIVER_DIR, WAIVER_LOCK,
     WORKTREE_PATH_PREFIX,
-    blob_bytes, caller_chat, chat_call_repos, command_path, commit_diff, complete_review_progress,
+    blob_bytes, caller_chat, chat_call_repos, chat_display, chat_suffix,
+    command_path, commit_diff, complete_review_progress,
     content_blob_sha, counted_int, debt_query_paths, empty_tree_hash, extract_json_values,
     family_member_path, file_bytes, finding_rows, finding_similarity, foreign_run_claims,
     git_common_dir,
-    git_dir_path, head_tree_paths, iso_now, iso_to_epoch, journal_entries, journal_paths,
+    git_dir_path, iso_now, iso_to_epoch, journal_entries, journal_paths,
     journal_rows, launching_session, median, nested_working_tree, newest_run_dir,
     object_format,
     owner_grant_dir, parent_pid, parse_iso_timestamp, path_blob_sha, path_content_bytes,
@@ -21,12 +22,10 @@ from .store import (
     rater_timeout, read_jsonl, receipt_file_name, record_anchor, repo_family, repo_identity,
     resolve_commit,
     resolve_repo_arg, resolved_repo_path, review_progress_document, review_receipt,
-    heir_window_claims,
-    reviews_current_tree, round_session, run_dirty_paths, run_id_epoch, run_listed_paths,
+    reviews_current_tree, round_session, run_dirty_paths, run_id_epoch,
     run_record_claims,
     run_record_paths, run_repo_record, run_triaged, scope_path_relative, scope_receipt_slug,
-    session_dirt_paths, session_registry_dir, session_run_paths, session_runs, session_stamp,
-    path_under_window,
+    session_registry_dir, session_run_paths, session_runs, session_stamp,
     state_dir, subprocess_text, text_file_tail, utc_now, walk_launching_session,
     worker_run_dirs, write_jsonl, write_review_receipt,
 )
@@ -171,6 +170,7 @@ from .round import (
     write_report_receipt,
 )
 from .debt import (
+    DEBT_IGNORE_FILE,
     DEBT_LINE_CACHE, DEBT_LINE_CACHE_BATCH, DEBT_LINE_CACHE_FILE, DEBT_LINE_CACHE_MAX,
     DELIVERY_LEDGER_DIR, DELIVERY_LEDGER_KEY, DELIVERY_LEDGER_SUFFIX, DOCTOR_AGENT_INTERVAL_S,
     DOCTOR_AGENT_LABEL, DOCTOR_AGENT_WRAPPER, DOCTOR_AGES_S, DOCTOR_CLASSES,
@@ -190,9 +190,10 @@ from .debt import (
     doctor_orphan_debt, doctor_row, doctor_scan, doctor_snapshot_document,
     doctor_triage_instant, doctor_wrapper_exec_line, fix_coverage_artifact, haunted_paths,
     head_path_blobs, journal_epochs, unreviewed_parent_blob,
-    listless_window_yields, lock_discharged, owners_of, path_lock_stands,
+    lock_discharged, owners_of, path_lock_stands,
     read_run_confirmed_counts, read_waivers,
-    remove_doctor_agent, repo_artifacts, repo_debt, reviewed_shas, round_locked,
+    remove_doctor_agent, repo_artifacts, repo_debt, reviewed_shas, round_fixes_stuck,
+    round_locked,
     run_confirmed_counts, save_debt_line_cache, session_timeout_run, waived_decrees,
     waiver_file, waiver_files, write_doctor_agent, write_doctor_snapshot,
 )
@@ -223,10 +224,12 @@ from .stats import (
     handscored_values, hit_rates, lens_check_lines, lens_list_lines, opencode_health,
 )
 from .cli import (
-    DEBT_ALL_FLAG_HELP, DEBT_FLAG_HELP, RANGE_FLAG_HELP, REPO_FLAG_HELP, SCOPE_FLAG_HELP,
-    append_review_records, cmd_record, cmd_review, cmd_run, cmd_tiers, cmd_tiers_table,
+    DEBT_ALL_FLAG_HELP, DEBT_FLAG_HELP, PANEL_EXIT, PANEL_HANDLE_ENV, PANEL_HANDOFF, PANEL_LOG,
+    PANEL_PID, RANGE_FLAG_HELP, REPO_FLAG_HELP, SCOPE_FLAG_HELP,
+    append_review_records, claim_panel_handle, cmd_record, cmd_review, cmd_review_detached,
+    cmd_run, cmd_tiers, cmd_tiers_table, cmd_wait,
     guard_review_armed, guard_tier_foreground, guard_tier_owner, guard_verifier_scope, main,
-    owner_at_keyboard, owner_named, tier_table_vendor_cells,
+    owner_at_keyboard, owner_named, panel_still_running, tier_table_vendor_cells,
 )
 
 # The tier tables validate against the measured-skill data in accounts, so the check can

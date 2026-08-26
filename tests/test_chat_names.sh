@@ -211,4 +211,34 @@ assert test "$("$CLI" "$SHARED" >/dev/null 2>&1; echo $?)" = 1
 assert test "$("$CLI" >/dev/null 2>&1; echo $?)" = 2
 assert test "$("$CLI" "" >/dev/null 2>&1; echo $?)" = 2
 
+# --- the short id every surface prints is a question this resolver answers ----
+# `<name> (11111111)` is what Egor and every hook see, so 11111111 is what a reader has in hand;
+# asked about one of those the resolver printed nothing at all (live 2026-08-25).
+assert test "$("$CLI" 11111111)" = "renamed after the cache was written (11111111)"
+# A worker's short id folds to the chat that launched it, exactly as its full id does.
+assert test "$("$CLI" 44444444)" = "renamed after the cache was written (44444444)"
+# The full id keeps answering as it always did: a prefix is an addition, not a replacement.
+assert test "$("$CLI" "$CHAT")" = "renamed after the cache was written (11111111)"
+# Shorter than eight is a coincidence waiting to happen, and a non-hex token is not a short id at
+# all: both are taken as the id they are spelled as, which names no chat.
+assert test "$("$CLI" 1111111 >/dev/null 2>&1; echo $?)" = 1
+assert test "$("$CLI" zzzzzzzz >/dev/null 2>&1; echo $?)" = 1
+assert test "$("$CLI" deadbeef >/dev/null 2>&1; echo $?)" = 1
+
+# Two chats behind one prefix: shown under either it hands the reader the wrong conversation, so it
+# is shown under neither and the candidates are listed instead. The second of them exists only in a
+# run record — a chat whose transcript has been swept still names the runs it spawned.
+AMBIG_A=aabbccdd-0000-0000-0000-000000000000
+AMBIG_B=aabbccdd-1111-1111-1111-111111111111
+transcript "$AMBIG_A" "one of two behind the same prefix"
+worker_run 20260101T1400Z-ambiguous "$AMBIG_B" ambiguous-worker
+assert test "$("$CLI" aabbccdd >/dev/null 2>&1; echo $?)" = 3
+assert test -z "$("$CLI" aabbccdd 2>/dev/null)"
+ambiguous=$("$CLI" aabbccdd 2>&1 >/dev/null)
+assert grep -q 'names 2 chats' <<<"$ambiguous"
+assert grep -qF "$AMBIG_A" <<<"$ambiguous"
+assert grep -qF "$AMBIG_B" <<<"$ambiguous"
+# The full id is unambiguous however crowded its prefix is.
+assert test "$("$CLI" "$AMBIG_A")" = "one of two behind the same prefix (aabbccdd)"
+
 echo "PASS: chat-names ($asserts assertions)"

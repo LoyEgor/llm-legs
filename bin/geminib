@@ -98,12 +98,32 @@ reserved_name() {
 resolved_path() {
   local target="$1" directory base
   if [ -d "$target" ]; then
-    (cd -P "$target" 2>/dev/null && pwd)
-    return
+    # A directory that cannot be entered answers nothing, and answers it SUCCESSFULLY: the
+    # subshell's status is the caller's standalone assignment's, and under `set -e` that took the
+    # whole of `list`/`status` down.
+    (cd -P "$target" 2>/dev/null && pwd) || return 0
+    return 0
   fi
   directory=$(cd -P "$(dirname "$target")" 2>/dev/null && pwd) || return 0
   base=$(basename "$target")
   printf '%s/%s\n' "${directory%/}" "$base"
+}
+
+# Writes `source` to `destination` with every MCP server forced disabled, or writes nothing at all
+# and fails: a destination left holding an ENABLED server list is the per-leg process storm the
+# whole mechanism exists to prevent, so an unparsable source must never reach one.
+mcp_write_disabled() {
+  local source="$1" destination="$2" temporary="${2%/*}/.${2##*/}.$$"
+  if jq -e '(.mcpServers // {}) | all(.[]; .disabled == true)' >/dev/null 2>&1 <"$source"; then
+    [ "$source" = "$destination" ] || cp "$source" "$destination" || return 1
+    return 0
+  fi
+  if jq '.mcpServers |= with_entries(.value.disabled = true)' <"$source" >"$temporary" 2>/dev/null; then
+    mv -f "$temporary" "$destination"
+    return 0
+  fi
+  rm -f "$temporary"
+  return 1
 }
 
 # Antigravity starts every enabled MCP server on every launch, so main's server list, once shared
@@ -112,17 +132,32 @@ resolved_path() {
 # is also what leaves the interactive main profile free to enable servers by hand.
 ensure_mcp_disabled() {
   local directory="$1" config_dir="$directory/.gemini/config"
-  local base_config="$base_home/.gemini/config" file entry name temporary
+  local base_config="$base_home/.gemini/config" file entry name private
   local base_resolved
   base_resolved=$(resolved_path "$base_config")
-  # Two links are replaced by a directory of the leg's own: one INTO main's config, and a dangling
-  # one — what the whole-directory link of the previous shape becomes the moment ~/.gemini/config
-  # is renamed. Left standing, the dangling one takes `mkdir -p` with it and, under `set -e`, the
-  # whole of `list`/`status` with that.
-  if [ -L "$config_dir" ] && { [ ! -e "$config_dir" ] || {
-    [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]
-  }; }; then
-    rm -f "$config_dir"
+  # No leg keeps a LINKED config directory. A link INTO main's config and a dangling one — what the
+  # whole-directory link of the previous shape becomes the moment ~/.gemini/config is renamed — are
+  # dropped and rebuilt from the mirror below; a dangling one left standing also takes `mkdir -p`
+  # with it and, under `set -e`, the whole of `list`/`status` with that. A link anywhere ELSE is
+  # copied into place first: everything under it is shared, so the rewrites below would land in
+  # another profile's config and an `mcp enable` on the far side would re-arm this leg.
+  if [ -L "$config_dir" ]; then
+    if [ ! -e "$config_dir" ] ||
+      { [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]; }; then
+      rm -f "$config_dir"
+    else
+      private="$directory/.gemini/.config.$$"
+      rm -rf "$private"
+      if mkdir -p "$private" 2>/dev/null && cp -R "$config_dir/." "$private/" 2>/dev/null &&
+        rm -f "$config_dir"; then
+        mv "$private" "$config_dir"
+      else
+        rm -rf "$private"
+        printf 'geminib: %s stays linked to a shared config; its MCP servers were left alone.\n' \
+          "$config_dir" >&2
+        return 0
+      fi
+    fi
   fi
   mkdir -p "$config_dir" 2>/dev/null || return 0
   if [ -d "$base_config" ]; then
@@ -143,28 +178,26 @@ ensure_mcp_disabled() {
   for entry in "$config_dir"/* "$config_dir"/.[!.]*; do
     [ -L "$entry" ] && [ ! -e "$entry" ] && rm -f "$entry"
   done
-  if [ ! -e "$config_dir/mcp_config.json" ] && [ -f "$base_config/mcp_config.json" ]; then
-    cp "$base_config/mcp_config.json" "$config_dir/mcp_config.json"
-  fi
   file="$config_dir/mcp_config.json"
-  temporary="$config_dir/.mcp_config.json.$$"
   # Whatever the leg's config dir turned out to be, main's is never rewritten in place.
   if [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]; then
     return 0
   fi
-  # Writing through a link would land in whatever config it points at — main's, usually.
-  if [ -L "$file" ]; then
-    if cp "$file" "$temporary" 2>/dev/null; then mv -f "$temporary" "$file"; else rm -f "$temporary"; fi
-  fi
-  [ -s "$file" ] || return 0
-  if jq -e '(.mcpServers // {}) | all(.[]; .disabled == true)' >/dev/null 2>&1 <"$file"; then
+  # Sanitized on the way IN, never after a copy is already committed into the leg.
+  if [ ! -e "$file" ] && [ -f "$base_config/mcp_config.json" ]; then
+    mcp_write_disabled "$base_config/mcp_config.json" "$file" ||
+      printf 'geminib: %s is unparsable; %s gets no MCP config rather than an enabled copy of it.\n' \
+        "$base_config/mcp_config.json" "$config_dir" >&2
     return 0
   fi
-  if jq '.mcpServers |= with_entries(.value.disabled = true)' <"$file" >"$temporary" 2>/dev/null; then
-    mv -f "$temporary" "$file"
-  else
-    rm -f "$temporary"
+  # Writing through a link would land in whatever config it points at — main's, usually.
+  if [ -L "$file" ]; then
+    private="${file%/*}/.${file##*/}.link.$$"
+    if cp "$file" "$private" 2>/dev/null; then mv -f "$private" "$file"; else rm -f "$private"; fi
   fi
+  [ -s "$file" ] || return 0
+  mcp_write_disabled "$file" "$file" ||
+    printf 'geminib: %s is unparsable; its MCP servers could not be disabled.\n' "$file" >&2
 }
 
 ensure_profile() {
@@ -291,7 +324,7 @@ remove_account() {
     rm -f "$gemini_accounts_cache_dir/$name.json"
   fi
   if is_disabled "$name"; then set_disabled "$name" off; fi
-  mkdir -p "$gemini_accounts_cache_dir"
+  mkdir -p "$(dirname "$marker")"
   : >"$marker"
   announce_account_removed "$geminib_root"
   printf 'geminib: removed %s\n' "$name"
@@ -345,7 +378,10 @@ parallel_account_output() {
     "$probe" "$name" >"$directory/$index" &
     pids[$index]=$!
   done <"$names_file"
-  for pid in "${pids[@]}"; do
+  # An empty roster — main removed and no named profile left — is reachable, and bash 3.2 (what a
+  # launchd or Hammerspoon PATH resolves) aborts on a bare "${pids[@]}" of an empty array under
+  # `set -u`.
+  for pid in ${pids[@]+"${pids[@]}"}; do
     wait "$pid" || true
   done
   index=0

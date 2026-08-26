@@ -479,9 +479,9 @@ gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$HOME/.llm-limits-gemini}"
 gemini_main_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
-gemini_legacy_removed="${LLM_LIMITS_GEMINI_REMOVED:-${gemini_main_cache}.removed}"
 agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
+gemini_legacy_removed=$(gemini_removal_marker main)
 . "$script_dir/share/worker-pool.sh"
 . "$script_dir/share/experiments.sh"
 . "$script_dir/share/limits-view.sh"
@@ -546,12 +546,19 @@ gemini_account_cache() {
   fi
 }
 
-gemini_account_marker() {
-  if [ "$1" = main ]; then printf '%s\n' "$gemini_legacy_removed"
-  else printf '%s/%s.json.removed\n' "$gemini_accounts_cache_dir" "$1"
-  fi
-}
+gemini_account_marker() { gemini_removal_marker "$1"; }
 
+# Written before the roster is read, so the removing run renders exactly what every run after it
+# renders: `--gemini-remove` is the menubar's spelling of `geminib remove main`, and both write and
+# read the one marker `gemini_removal_marker main` names.
+if [ "$gemini_remove" -eq 1 ]; then
+  mkdir -p "$(dirname "$gemini_legacy_removed")" 2>/dev/null || true
+  # A swallowed write turns removal into a silent no-op; surface it and fail.
+  if ! : > "$gemini_legacy_removed" 2>/dev/null; then
+    echo "llm-limits.sh: failed to write gemini removed-marker: $gemini_legacy_removed" >&2
+    exit 1
+  fi
+fi
 gemini_refresh_accounts_list=$(gemini_account_names)
 gemini_accounts_list=$(
   {
@@ -568,17 +575,6 @@ gemini_accounts_list=$(
     fi
   } | awk 'NF && !seen[$0]++'
 )
-gemini_just_removed_marker=''
-if [ "$gemini_remove" -eq 1 ]; then
-  mkdir -p "$(dirname "$gemini_legacy_removed")" 2>/dev/null || true
-  # A swallowed write turns removal into a silent no-op; surface it and fail.
-  if : > "$gemini_legacy_removed" 2>/dev/null; then
-    gemini_just_removed_marker="$gemini_legacy_removed"
-  else
-    echo "llm-limits.sh: failed to write gemini removed-marker: $gemini_legacy_removed" >&2
-    exit 1
-  fi
-fi
 gemini_refresh_error=''
 gemini_refresh_attempted=0
 gemini_refresh_succeeded=0
@@ -1357,12 +1353,10 @@ while IFS= read -r gemini_account; do
     gemini_account_json=''
   fi
   if [ -e "$gemini_removed_marker" ]; then
-    # Never self-clear the marker in the very run that set it: gemini removal is a
-    # UX hide with creds still valid, so the "creds look fine → un-remove" check
-    # would otherwise fire immediately and make removal a no-op. A later run (after
-    # a genuine re-login) still clears it.
-    if [ "$gemini_removed_marker" != "$gemini_just_removed_marker" ] \
-       && printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and (.five_hour | type) == "object"' >/dev/null 2>&1; then
+    # Only NAMED accounts reach this: a removed one is a profile whose creds went bad, so valid
+    # creds again (owner re-logged in via agy) self-clear it. main never reaches it — its removal
+    # is deliberate, and a self-clear would undo `geminib remove main` on the very next collect.
+    if printf '%s' "$gemini_account_json" | jq -e '.auth_needed != true and (.five_hour | type) == "object"' >/dev/null 2>&1; then
       rm -f "$gemini_removed_marker"
     else
       gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
@@ -1752,7 +1746,19 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   | if $claude_outcome == null then . else .vendors.claude.refresh_error = $claude_outcome end
   | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
   | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
-  | if .vendors.gemini.removed == true then .vendors.gemini |= del(.refresh_error) else . end
+  # A hidden vendor, and a roster with no accounts in it at all, both have nothing a refresh could
+  # have been for, so a login-needed cause still attached to one is a verdict about an account that
+  # has since been removed. The status word alone is NOT that test: the multi-account branch spells
+  # the same `no quota snapshot` whenever nothing is selectable — every account walled at 100, or
+  # every one of them removed — and gated on it a real refresh failure was deleted and every
+  # surface showed a failed refresh with no cause (audit, 2026-08-26). The empty roster is the one
+  # branch that emits that status while carrying no `accounts` array; the single-`main` flat shape
+  # carries none either, and answers here through `removed` alone, which is what `geminib remove
+  # main` writes.
+  | if .vendors.gemini.removed == true or
+       (.vendors.gemini.status == "no quota snapshot" and
+        ((.vendors.gemini.accounts // []) | length) == 0)
+    then .vendors.gemini |= del(.refresh_error) else . end
   | .vendors |= with_entries(
       .value |= (
         if (.accounts | type) == "array" then .accounts |= map(set_data_age) else . end

@@ -1193,8 +1193,8 @@ function M.menuItems()
       -- profile, and that profile is deletable.
       local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
-      -- A removed single-account vendor (gemini marker) is skipped entirely until its
-      -- creds are valid again; llm-limits.sh clears the marker on that recovery.
+      -- Removing gemini's main now empties the roster instead of flagging the vendor, so this
+      -- reads a store written before that change: a `removed` vendor is still skipped whole.
       if type(vendor) == "table" and vendor.removed == true then
         vendor = nil
       elseif type(vendor) ~= "table" or (vendor.available ~= true and not hasGeminiAccounts) then

@@ -700,7 +700,9 @@ def refuse_foreign_chat(run_dir, meta, asking):
     launcher = str(meta.get("session") or "")
     if (asking and launcher and launcher != asking
             and worker_session_launchers().get(launcher) != asking):
-        raise ValueError(f"run {run_dir.name} belongs to chat {launcher}")
+        raise ValueError(
+            f"run {run_dir.name} belongs to chat {launcher}{_store.chat_suffix(launcher)}"
+        )
 
 
 def cmd_fork(args):
@@ -734,7 +736,10 @@ def cmd_fork(args):
         # asking chat is the environment's unless the caller names one, never argv alone.
         asking = str(getattr(args, "session", "") or "").strip() or _store.launching_session() or ""
         if meta.get("session") and not asking:
-            raise ValueError(f"run {run_dir.name} belongs to chat {meta['session']}; name yours with --session")
+            raise ValueError(
+                f"run {run_dir.name} belongs to chat {meta['session']}"
+                f"{_store.chat_suffix(meta['session'])}; name yours with --session"
+            )
         refuse_foreign_chat(run_dir, meta, asking)
         record = {"choice": choice, "why": why, "session": asking, "at": _store.iso_now()}
         (run_dir / _round.FORK_RECORD).write_text(json.dumps(record) + "\n")

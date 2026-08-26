@@ -210,39 +210,46 @@ jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.stale_seconds > 1
   || fail "auth_needed preservation re-stamped the old snapshot's as_of as fresh"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
-# Gemini "remove": a persistent marker hides the vendor everywhere while its creds stay
-# invalid, and self-clears the moment a refresh finds valid creds again (owner re-logged
-# in via agy) — self-healing, no orphan state.
+# `--gemini-remove` is the menubar's spelling of `geminib remove main`, and the two share ONE
+# marker file. So it means what geminib means by it: main leaves the roster entirely — no row at
+# all, not even a removed one — and deleting the marker is the whole undo. A self-clear on valid
+# creds would undo a deliberate removal on the very next collect, so main never gets one.
 GEMINI_MARKER="$GEMINI_CACHE.removed"
+gemini_shared_marker=$(gemini_base_home="$HOME_FIXTURE" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  /bin/bash -c '. "'"$ROOT"'/share/gemini-accounts.sh" && gemini_removal_marker main')
+[ "$gemini_shared_marker" = "$GEMINI_MARKER" ] \
+  || fail "geminib and llm-limits.sh name different removal markers for gemini main: $gemini_shared_marker vs $GEMINI_MARKER"
 LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_AUTH_HELPER" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini --json >/dev/null
 gemini_removed=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
-  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --gemini-remove --json)
-jq -e '.vendors.gemini.removed == true and .vendors.gemini.available == false and
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --gemini-remove --json) || true
+jq -e '.vendors.gemini.available == false and
+  ([.vendors.gemini.accounts[]? | select(.account == "main")] | length) == 0 and
   (.vendors.gemini | has("refresh_error") | not)' \
   <<<"$gemini_removed" >/dev/null \
-  || fail "gemini-remove did not mark the vendor removed, or left a stale login-needed cause on a hidden row"
+  || fail "gemini-remove did not take main out of its own run, or left a stale login-needed cause behind"
 [ -e "$GEMINI_MARKER" ] || fail "gemini-remove did not persist the removed marker"
-gemini_removed_table=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
-  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --table)
-awk 'NR > 1 && $1 == "gemini"' <<<"$gemini_removed_table" | grep -q . \
-  && fail "removed gemini still rendered a table row"
-gemini_removed_plain=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
-  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --plain)
-grep -q '^gemini:' <<<"$gemini_removed_plain" && fail "removed gemini still rendered a plain row"
 gemini_still=$(LLM_LIMITS_GEMINI_REFRESH=0 LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
-  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json)
-jq -e '.vendors.gemini.removed == true' <<<"$gemini_still" >/dev/null \
-  || fail "removed gemini un-hid itself on a passive collect while still logged out"
-[ -e "$GEMINI_MARKER" ] || fail "passive collect cleared the marker while still logged out"
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --json) || true
+jq -e '([.vendors.gemini.accounts[]? | select(.account == "main")] | length) == 0 and
+  .vendors.gemini.available == false' <<<"$gemini_still" >/dev/null \
+  || fail "removed gemini main came back on a passive collect"
+[ -e "$GEMINI_MARKER" ] || fail "passive collect cleared the marker"
+gemini_valid_creds=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" \
+  LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json) || true
+jq -e '([.vendors.gemini.accounts[]? | select(.account == "main")] | length) == 0' \
+  <<<"$gemini_valid_creds" >/dev/null \
+  || fail "valid gemini creds resurrected a main its owner removed on purpose"
+[ -e "$GEMINI_MARKER" ] || fail "valid gemini creds cleared a deliberate removal marker"
+rm -f "$GEMINI_MARKER"
 gemini_healed=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh-account gemini --json)
 jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("removed") | not) and
   .vendors.gemini.weekly.used_pct == 25' <<<"$gemini_healed" >/dev/null \
-  || fail "valid gemini creds did not self-clear the removed marker"
-[ ! -e "$GEMINI_MARKER" ] || fail "valid gemini creds left the removed marker in place"
+  || fail "deleting the marker did not bring gemini main back"
 rm -f "$GEMINI_SENTINEL"
 printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 
@@ -427,10 +434,11 @@ jq -e '[.vendors.gemini.accounts[] | select(.account == "gone")][0] |
 [ ! -e "$GEMINI_REMOVED_ONLY_CACHE/gone.json.removed" ] \
   || fail "recreated Gemini profile left its removed marker"
 
-# `geminib remove main` writes its marker into the accounts cache. The base profile then leaves
-# the store entirely — no row at all, not even a removed one — and what is left carries the
-# vendor: current_account is the first enabled account in the account order, and the hoisted
-# windows come from the account that spends least.
+# `geminib remove main` writes its marker beside main's legacy cache file — the one path the
+# menubar's `--gemini-remove` writes too. The base profile then leaves the store entirely — no row
+# at all, not even a removed one — and what is left carries the vendor: current_account is the
+# first enabled account in the account order, and the hoisted windows come from the account that
+# spends least.
 GEMINI_NO_MAIN_PROFILES="$WORK/gemini-no-main-profiles"
 GEMINI_NO_MAIN_CACHE="$WORK/gemini-no-main-cache"
 GEMINI_NO_MAIN_STORE="$WORK/gemini-no-main-store.json"
@@ -441,11 +449,19 @@ gemini_account_snapshot() {
 }
 gemini_account_snapshot com 0.7 0.6
 gemini_account_snapshot work 0.5 0.4
-: >"$GEMINI_NO_MAIN_CACHE/main.json.removed"
+GEMINI_NO_MAIN_MARKER="$WORK/gemini-no-main-main.json.removed"
+: >"$GEMINI_NO_MAIN_MARKER"
+# The path geminib itself would write, resolved by the module both tools source — a marker spelled
+# anywhere else is one geminib writes and llm-limits.sh never sees.
+gemini_no_main_marker_shared=$(gemini_base_home="$HOME_FIXTURE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-no-main-main.json" \
+  /bin/bash -c '. "'"$ROOT"'/share/gemini-accounts.sh" && gemini_removal_marker main')
+[ "$gemini_no_main_marker_shared" = "$GEMINI_NO_MAIN_MARKER" ] \
+  || fail "the shared resolver names $gemini_no_main_marker_shared, the collector reads $GEMINI_NO_MAIN_MARKER"
 gemini_no_main() {
   GEMINIB_PROFILES_DIR="$GEMINI_NO_MAIN_PROFILES" \
     LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_NO_MAIN_CACHE" \
-    LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+    LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-no-main-main.json" \
     HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$GEMINI_NO_MAIN_STORE" /bin/bash "$SCRIPT" "$@"
 }
 no_main=$(gemini_no_main --json)
@@ -456,7 +472,7 @@ jq -e '.vendors.gemini |
   .accounts[0].is_current == true and .accounts[1].is_current == false and
   .five_hour.used_pct == 30 and .weekly.used_pct == 40' <<<"$no_main" >/dev/null \
   || fail "removed Gemini main still shaped the vendor row"
-[ -e "$GEMINI_NO_MAIN_CACHE/main.json.removed" ] \
+[ -e "$GEMINI_NO_MAIN_MARKER" ] \
   || fail "a passive collect cleared the Gemini main removal marker"
 no_main_table=$(gemini_no_main --table)
 grep -q '^gemini/main' <<<"$no_main_table" && fail "removed Gemini main still rendered a table row"
@@ -481,7 +497,7 @@ GEMINI_SOLE_PROFILES="$WORK/gemini-sole-profiles"
 mkdir -p "$GEMINI_SOLE_PROFILES/com"
 no_main_sole=$(GEMINIB_PROFILES_DIR="$GEMINI_SOLE_PROFILES" \
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_NO_MAIN_CACHE" \
-  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-no-main-main.json" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-sole-store.json" /bin/bash "$SCRIPT" --json)
 jq -e '.vendors.gemini | (.accounts | length) == 1 and .accounts[0].account == "com" and
   .current_account == "com" and .available == true and (. | has("account") | not)' \
@@ -491,15 +507,49 @@ jq -e '.vendors.gemini | (.accounts | length) == 1 and .accounts[0].account == "
 GEMINI_EMPTY_PROFILES="$WORK/gemini-empty-profiles"
 GEMINI_EMPTY_CACHE="$WORK/gemini-empty-cache"
 mkdir -p "$GEMINI_EMPTY_PROFILES" "$GEMINI_EMPTY_CACHE"
-: >"$GEMINI_EMPTY_CACHE/main.json.removed"
+: >"$WORK/gemini-empty-main.json.removed"
 no_main_empty=$(GEMINIB_PROFILES_DIR="$GEMINI_EMPTY_PROFILES" \
   LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_EMPTY_CACHE" \
-  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-exhausted-main.json" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-empty-main.json" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-empty-store.json" /bin/bash "$SCRIPT" --json) \
   || true
 jq -e '.vendors.gemini | .available == false and .status == "no quota snapshot" and
   (. | has("accounts") | not) and (. | has("current_account") | not) and .usable_now == false' \
   <<<"$no_main_empty" >/dev/null || fail "a Gemini vendor with no accounts did not state its verdict"
+# An empty ROSTER has nothing a refresh could have been for, so a cause carried over from before it
+# emptied is a verdict about an account that is gone.
+printf '{"schema":1,"vendors":{"gemini":{"available":true,"refresh_error":{"cause":"login needed (not signed in)","at":1}}}}\n' \
+  >"$WORK/gemini-empty-cause-store.json"
+no_main_empty_cause=$(GEMINIB_PROFILES_DIR="$GEMINI_EMPTY_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_EMPTY_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-empty-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-empty-cause-store.json" \
+  /bin/bash "$SCRIPT" --json) || true
+jq -e '.vendors.gemini | .status == "no quota snapshot" and (. | has("refresh_error") | not)' \
+  <<<"$no_main_empty_cause" >/dev/null \
+  || fail "an empty Gemini roster kept a cause about an account it no longer has"
+
+# `no quota snapshot` is ALSO what the multi-account branch says when nothing is selectable — every
+# account walled at 100, or every one of them removed — and gated on that word instead of on the
+# roster a real refresh failure was deleted, so --json/--table/the menubar showed a failed refresh
+# with no cause at all. The roster here is two accounts deep.
+GEMINI_WALLED_CACHE="$WORK/gemini-walled-cache"
+mkdir -p "$GEMINI_WALLED_CACHE"
+for walled_account in com work; do
+  printf '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"5h","remainingFraction":0,"resetTime":"2099-01-01T00:00:00Z"},{"window":"weekly","remainingFraction":0,"resetTime":"2099-01-02T00:00:00Z"}]}]}\n' \
+    >"$GEMINI_WALLED_CACHE/$walled_account.json"
+done
+printf '{"schema":1,"vendors":{"gemini":{"available":true,"refresh_error":{"cause":"live query failed","at":1}}}}\n' \
+  >"$WORK/gemini-walled-store.json"
+gemini_walled=$(GEMINIB_PROFILES_DIR="$GEMINI_NO_MAIN_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_WALLED_CACHE" \
+  LLM_LIMITS_GEMINI_CACHE="$WORK/gemini-no-main-main.json" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$WORK/gemini-walled-store.json" \
+  /bin/bash "$SCRIPT" --json) || true
+jq -e '.vendors.gemini | .available == false and .status == "no quota snapshot" and
+  (.accounts | length) == 2 and .refresh_error.cause == "live query failed"' \
+  <<<"$gemini_walled" >/dev/null \
+  || fail "a walled Gemini roster lost its refresh cause: $(jq -c '.vendors.gemini | {status,refresh_error,accounts:(.accounts|length)}' <<<"$gemini_walled")"
 
 GEMINI_PARALLEL_PROFILES="$WORK/gemini-parallel-profiles"
 GEMINI_PARALLEL_CACHE="$WORK/gemini-parallel-cache"

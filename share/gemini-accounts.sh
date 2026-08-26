@@ -1,6 +1,15 @@
 # main runs under the real HOME, so nothing about it can be deleted to mark it gone: `geminib
 # remove main` writes this marker instead, and every enumerator decides main's existence by it.
+# main's marker sits beside its legacy cache FILE rather than in the per-account cache directory,
+# because that is the path the menubar's `--gemini-remove` writes; a second spelling leaves a
+# removal only one of the two tools can see.
 gemini_removal_marker() {
+  local main_cache
+  if [ "$1" = main ]; then
+    main_cache="${gemini_main_cache:-${LLM_LIMITS_GEMINI_CACHE:-$gemini_base_home/.llm-limits-gemini.json}}"
+    printf '%s\n' "${LLM_LIMITS_GEMINI_REMOVED:-$main_cache.removed}"
+    return
+  fi
   printf '%s/%s.json.removed\n' \
     "${gemini_accounts_cache_dir:-${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$gemini_base_home/.llm-limits-gemini}}" \
     "$1"
