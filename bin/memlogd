@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# Source of truth; `memlogd install-agent` deploys a copy to ~/.local/libexec/memlogd, which is
+# what launchd runs. The copy is not a convenience: a LaunchAgent that execs off /Volumes/Work
+# gets EPERM from TCC unless that exact program path was granted, and a memory logger must also
+# keep running while that volume is unmounted. Re-run install-agent after editing this file.
+set -u
+
+resolve_script() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")" && printf '%s/%s\n' "$PWD" "$(basename "$source")"
+}
+
+script_path=$(resolve_script)
+repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+
+log_dir="${MEMLOGD_DIR:-$HOME/Library/Logs/memlogd}"
+quiet_interval="${MEMLOGD_QUIET_INTERVAL:-15}"
+incident_interval="${MEMLOGD_INCIDENT_INTERVAL:-1}"
+enter_avail_mb="${MEMLOGD_ENTER_AVAIL_MB:-4096}"
+enter_swap_mb="${MEMLOGD_ENTER_SWAP_MB:-6144}"
+exit_avail_mb="${MEMLOGD_EXIT_AVAIL_MB:-5120}"
+exit_swap_mb="${MEMLOGD_EXIT_SWAP_MB:-5120}"
+recover_seconds="${MEMLOGD_RECOVER_SECONDS:-60}"
+retention_days="${MEMLOGD_RETENTION_DAYS:-21}"
+max_ticks="${MEMLOGD_MAX_TICKS:-0}"
+sync_writes="${MEMLOGD_SYNC:-1}"
+
+label=com.egor.memlogd
+agent_plist="$HOME/Library/LaunchAgents/$label.plist"
+wrapper="$HOME/.local/libexec/memlogd"
+lock_dir="$log_dir/memlogd.lock"
+current_file=""
+
+# -1 is "the probe failed", and every threshold test rejects it: a vm_stat that returns nothing
+# must not read as zero bytes available and fake an incident.
+available_mb() {
+  vm_stat 2>/dev/null | awk '
+    NR == 1 { for (i = 1; i <= NF; i++) if ($i == "of") page = $(i + 1) + 0 }
+    /^Pages free:/ { free = $3 + 0; seen = 1 }
+    /^Pages inactive:/ { inactive = $3 + 0 }
+    /^Pages speculative:/ { speculative = $3 + 0 }
+    END {
+      if (!seen) { print "-1"; exit }
+      if (page <= 0) page = 4096
+      printf "%d\n", (free + inactive + speculative) * page / 1048576
+    }'
+}
+
+swap_used_mb() {
+  sysctl -n vm.swapusage 2>/dev/null | awk '
+    { for (i = 1; i <= NF; i++) if ($i == "used") { value = $(i + 2); seen = 1; break } }
+    END {
+      if (!seen) { print "-1"; exit }
+      unit = substr(value, length(value), 1)
+      number = value + 0
+      if (unit == "G") number *= 1024
+      else if (unit == "K") number /= 1024
+      printf "%d\n", number
+    }'
+}
+
+node_stats() {
+  ps -axo rss=,comm= 2>/dev/null | awk '
+    {
+      rss = $1
+      $1 = ""
+      sub(/^ +/, "", $0)
+      name = $0
+      sub(/.*\//, "", name)
+      if (name == "node") { count++; total += rss }
+    }
+    END { printf "%d %d\n", count + 0, (total + 0) / 1024 }'
+}
+
+log_path() { printf '%s/%s.log\n' "$log_dir" "$1"; }
+
+flush() { [ "$sync_writes" = 1 ] || return 0; sync; }
+
+append() { printf '%s\n' "$*" >>"$current_file"; }
+
+write_incident_block() {
+  {
+    printf '%s incident avail_mb=%s swap_used_mb=%s node_count=%s node_rss_mb=%s\n' \
+      "$1" "$2" "$3" "$4" "$5"
+    printf 'PS-BEGIN %s\n' "$1"
+    ps -axo pid,ppid,pgid,rss,etime,command 2>/dev/null
+    printf 'PS-END %s\n' "$1"
+  } >>"$current_file"
+  flush
+}
+
+pressure() {
+  { [ "$1" -ge 0 ] && [ "$1" -lt "$enter_avail_mb" ]; } && return 0
+  { [ "$2" -ge 0 ] && [ "$2" -gt "$enter_swap_mb" ]; } && return 0
+  return 1
+}
+
+# Every reading that can enter the incident has to clear its own exit threshold, or sustained swap
+# on a healthy-RAM machine reopens the incident on the tick after each recovery. A failed probe is
+# unknown, not pressure — the same rule pressure() applies, so a vm_stat that breaks mid-incident
+# cannot latch the 1 Hz dumps forever.
+recovered() {
+  { [ "$1" -lt 0 ] || [ "$1" -ge "$exit_avail_mb" ]; } || return 1
+  { [ "$2" -lt 0 ] || [ "$2" -le "$exit_swap_mb" ]; } || return 1
+  return 0
+}
+
+# An anchored INCIDENT is the only keep signal; a command line inside a ps block can carry the
+# word too, and only the marker starts a line with it.
+rotate() {
+  local cutoff file base
+  cutoff=$(date -v-"${retention_days}"d +%F 2>/dev/null) || return 0
+  [ -n "$cutoff" ] || return 0
+  for file in "$log_dir"/????-??-??.log; do
+    [ -f "$file" ] || continue
+    base=${file##*/}
+    base=${base%.log}
+    [[ "$base" < "$cutoff" ]] || continue
+    grep -q '^INCIDENT ' "$file" && continue
+    rm -f "$file"
+  done
+}
+
+acquire_lock() {
+  local holder attempt
+  if ! mkdir "$lock_dir" 2>/dev/null; then
+    # A lock whose pid is not written yet belongs to a daemon still starting, never to a crash:
+    # taking it over on an empty holder is how two daemons end up sampling the same file.
+    for attempt in 1 2; do
+      holder=$(cat "$lock_dir/pid" 2>/dev/null || true)
+      [ -z "$holder" ] || break
+      [ "$attempt" = 2 ] || sleep 0.5
+    done
+    if [ -z "$holder" ]; then
+      printf 'memlogd: lock at %s is held with no pid written; not taking it over\n' "$lock_dir" >&2
+      exit 3
+    fi
+    if kill -0 "$holder" 2>/dev/null; then
+      printf 'memlogd: already running (pid %s)\n' "$holder" >&2
+      exit 3
+    fi
+    rm -rf "$lock_dir"
+    mkdir "$lock_dir" 2>/dev/null || {
+      printf 'memlogd: cannot take the lock at %s\n' "$lock_dir" >&2
+      exit 3
+    }
+  fi
+  printf '%s\n' "$$" >"$lock_dir/pid"
+  trap 'rm -rf "$lock_dir"' EXIT
+  trap 'exit 129' HUP INT TERM
+}
+
+run_loop() {
+  local today day now avail swap counts node_count node_rss
+  local state=quiet recover_since=0 ticks=0 interval
+  mkdir -p "$log_dir" || return 1
+  acquire_lock
+  today=$(date +%F)
+  rotate
+  current_file=$(log_path "$today")
+  while :; do
+    now=$(date +%s)
+    day=$(date +%F)
+    if [ "$day" != "$today" ]; then
+      today=$day
+      mkdir -p "$log_dir"
+      rotate
+      current_file=$(log_path "$today")
+      # Without a marker of its own the new day's file is a quiet log to rotate(), and the tail of
+      # an incident that spans midnight is what gets deleted first.
+      if [ "$state" = incident ]; then
+        append "INCIDENT $now continued=1"
+        flush
+      fi
+    fi
+    avail=$(available_mb)
+    swap=$(swap_used_mb)
+    counts=$(node_stats)
+    node_count=${counts% *}
+    node_rss=${counts#* }
+
+    if [ "$state" = quiet ] && pressure "$avail" "$swap"; then
+      state=incident
+      recover_since=0
+      append "INCIDENT $now avail_mb=$avail swap_used_mb=$swap"
+      flush
+    fi
+
+    if [ "$state" = incident ]; then
+      write_incident_block "$now" "$avail" "$swap" "$node_count" "$node_rss"
+      if recovered "$avail" "$swap"; then
+        [ "$recover_since" -ne 0 ] || recover_since=$now
+        # A backwards clock jump would otherwise hold the incident open forever.
+        [ "$now" -ge "$recover_since" ] || recover_since=$now
+        if [ $((now - recover_since)) -ge "$recover_seconds" ]; then
+          state=quiet
+          recover_since=0
+          append "RECOVERED $now avail_mb=$avail swap_used_mb=$swap"
+          flush
+        fi
+      else
+        recover_since=0
+      fi
+      interval=$incident_interval
+    else
+      append "$now quiet avail_mb=$avail swap_used_mb=$swap node_count=$node_count node_rss_mb=$node_rss"
+      interval=$quiet_interval
+    fi
+
+    ticks=$((ticks + 1))
+    if [ "$max_ticks" -gt 0 ] && [ "$ticks" -ge "$max_ticks" ]; then break; fi
+    sleep "$interval"
+  done
+}
+
+install_agent() {
+  local plist_source="$repo_root/launchd/$label.plist" deployed_tmp
+  if [ ! -f "$plist_source" ]; then
+    printf 'memlogd: no plist at %s — run install-agent from the repo checkout\n' "$plist_source" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$wrapper")" "$(dirname "$agent_plist")"
+  deployed_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
+  cat "$script_path" >"$deployed_tmp"
+  chmod 755 "$deployed_tmp"
+  mv -f "$deployed_tmp" "$wrapper"
+  cp "$plist_source" "$agent_plist"
+  launchctl bootout "gui/$UID" "$agent_plist" >/dev/null 2>&1 || true
+  if ! launchctl bootstrap "gui/$UID" "$agent_plist"; then
+    launchctl load -w "$agent_plist"
+  fi
+  printf 'Installed %s from %s; logs under %s.\n' "$label" "$wrapper" "$log_dir"
+}
+
+uninstall_agent() {
+  launchctl bootout "gui/$UID" "$agent_plist" >/dev/null 2>&1 || \
+    launchctl unload -w "$agent_plist" >/dev/null 2>&1 || true
+  rm -f "$agent_plist"
+  if [ -f "$wrapper" ] && grep -qF "label=$label" "$wrapper"; then
+    rm -f "$wrapper"
+  fi
+  printf 'Uninstalled %s.\n' "$label"
+}
+
+usage() {
+  printf 'usage: memlogd [run|install-agent|uninstall-agent]\n' >&2
+  exit 2
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-run}" in
+    run) [ "$#" -le 1 ] || usage; run_loop ;;
+    install-agent) [ "$#" -eq 1 ] || usage; install_agent ;;
+    uninstall-agent) [ "$#" -eq 1 ] || usage; uninstall_agent ;;
+    *) usage ;;
+  esac
+fi
