@@ -997,12 +997,26 @@ def _fold_journal_locked(source, target):
         held.add(record)
         fresh.append(record)
     if fresh:
-        with open(target, "ab") as handle:
-            # A journal whose last record lost its terminator would otherwise swallow the first
-            # record appended after it into the same row.
-            if standing and not standing.endswith(b"\0"):
-                handle.write(b"\0")
-            handle.write(b"".join(record + b"\0" for record in fresh))
+        payload = b""
+        # A journal whose last record lost its terminator would otherwise swallow the first
+        # record appended after it into the same row.
+        if standing and not standing.endswith(b"\0"):
+            payload += b"\0"
+        payload += b"".join(record + b"\0" for record in fresh)
+        try:
+            before = target.stat().st_size if target.exists() else 0
+            with open(target, "ab") as handle:
+                handle.write(payload)
+            landed = target.stat().st_size
+        except OSError:
+            return
+        # The bytes have to be THERE before the source is thrown away: a short write, a full disk
+        # or an appender that raced this one leaves the destination a different size than the copy
+        # accounts for, and the source is the only other place those records exist. Kept, the next
+        # fold carries them over — the reader collapses a (session, path) to its newest write, so
+        # a fold that happened twice costs nothing (this is the twin of bash `rj_absorb_journal`).
+        if landed != before + len(payload):
+            return
     source.unlink(missing_ok=True)
 
 

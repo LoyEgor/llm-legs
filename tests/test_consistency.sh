@@ -1012,8 +1012,13 @@ assert doc_has 'Review debt journal'
 assert grep -Fq 'DEBT_JOURNAL = "claude-review-debt"' "$RB_STORE"
 assert grep -Fq 'COMMIT_JOURNAL = "claude-commit-journal"' "$RB_STORE"
 if test -r "$FLOW_GATE"; then
-  # Through the family resolver (row `bd`) and never a path of its own.
-  assert grep -Fq 'rj_journal_dir' "$FLOW_GATE"
+  # Through the family resolver (row `bd`) and never a path of its own. The ASSIGNMENT is what is
+  # pinned, and the hand-rolled spelling forbidden outright: a bare mention of the name matches a
+  # comment, and a gate that went back to `gitdir=$(git rev-parse --git-dir)` with the ledger name
+  # appended to it kept a per-worktree ledger while reading green here.
+  gate_gitdirs=$(grep -Ec '^[[:space:]]*gitdir=\$\(' "$FLOW_GATE")
+  assert test "$gate_gitdirs" -ge 1
+  assert eq "$(grep -Ec '^[[:space:]]*gitdir=\$\(rj_journal_dir "' "$FLOW_GATE")" "$gate_gitdirs"
   # Both writers append through the one carrier, and appending is the invariant: two chats
   # rewriting this file in the same second lose whichever ownership landed first.
   assert grep -Fq 'rj_append "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
@@ -1038,10 +1043,10 @@ if test -r "$COMMIT_REPORT"; then
   # commits a pull brings, and only a commit carrying a second parent was made by the call.
   assert grep -Fq 'if [ "${SNAPSHOT_KIND:-commit}" = merge ]; then' "$COMMIT_REPORT"
   assert grep -Fq 'git -C "$1" rev-list --no-walk --merges --stdin' "$COMMIT_REPORT"
-  # One filter for every reader of this call's commits — the debt stamp, the fix coverage and the
-  # paths those commits carried — or a commit that closes a round is one the debt journal never saw.
+  # One filter for every reader of this call's commits — the debt stamp and the fix coverage — or a
+  # commit that closes a round is one the debt journal never saw.
   assert grep -Fq 'own_landed_commits() { # top pre' "$COMMIT_REPORT"
-  assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 3
+  assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 2
   assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
   # A merge answers `--name-only` with nothing at all unless the diff is taken against its FIRST
   # parent, so every path a merge brought to this line went into no debt row.
@@ -1975,8 +1980,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # journals' own spelling for a path in debt that no record answers for (`journal_entries`).
   assert grep -Fq '[ -e "$1/journaled" ] || rj_run_final "$1" || return 0' "$COMMIT_JOURNAL"
   assert grep -Fq 'run_listing_names "$1" "$absolute" && mine=1' "$COMMIT_JOURNAL"
-  # The record's own three fields; the file it lands in is the resolver's to name (row `bd`).
-  assert grep -Eq 'rj_append .* "\$3" "\$now" "\$2"' "$COMMIT_JOURNAL"
+  # The record's own three fields, and the LEDGER they land in: the directory is the resolver's to
+  # name (row `bd`), the file name is not — stamped into the commit journal instead, an ownership
+  # record is read by nobody pricing debt while the guard that let it through still passes.
+  assert grep -Eq 'rj_append "[^"]*\$RJ_DEBT_JOURNAL" "\$3" "\$now" "\$2"' "$COMMIT_JOURNAL"
   assert grep -Fq 'stamp_deferred "$1" "$2" ""' "$COMMIT_JOURNAL"
   # Including the note about a listing no workdir can anchor: keyed and printed under the SWEEPING
   # chat it is spent on a marker the owner never sees and read by a chat that can do nothing about
@@ -2001,7 +2008,8 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
   # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
   # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
-  assert grep -Eq 'rj_append .* "\$session" "\$now" "\$relative"' "$COMMIT_JOURNAL"
+  assert grep -Eq 'rj_append "[^"]*\$RJ_DEBT_JOURNAL" "\$session" "\$now" "\$relative"' \
+    "$COMMIT_JOURNAL"
 else
   printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"
 fi

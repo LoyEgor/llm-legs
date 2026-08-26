@@ -10251,6 +10251,19 @@ assert rb.journal_entries(fam_gitdir / rb.DEBT_JOURNAL) == [
 assert not led_held.exists() and not led_source_held.exists(), led_held
 (fam_gitdir / rb.DEBT_JOURNAL).unlink()
 
+# The source is thrown away only once the destination has GROWN by the bytes the fold accounts for.
+# Appended and unlinked unconditionally, a destination that swallowed the write — a short write, a
+# full disk, a path that is not the file it looks like — left those records in neither ledger. The
+# bash twin (`rj_absorb_journal`) has compared sizes across the copy since it was written.
+sr_journal(rb.DEBT_JOURNAL, "chat-5", "src/must-not-vanish.py", gitdir=led_private)
+(fam_gitdir / rb.DEBT_JOURNAL).symlink_to("/dev/null")
+assert pathlib.Path(rb.journal_dir(fam_main)) == fam_gitdir
+assert rb.journal_entries(led_private / rb.DEBT_JOURNAL) == [
+    ("chat-5", 1800000000, "src/must-not-vanish.py")], rb.journal_entries(
+    led_private / rb.DEBT_JOURNAL)
+(fam_gitdir / rb.DEBT_JOURNAL).unlink()
+(led_private / rb.DEBT_JOURNAL).unlink()
+
 # --- which shell typed the command ------------------------------------------------------------
 # A round answers to the chat its own RECORD names. Keyed on the caller's environment instead, the
 # same round's receipt, report and fix coverage moved to whichever shell happened to close it —
