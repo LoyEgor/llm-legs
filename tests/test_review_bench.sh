@@ -9383,7 +9383,17 @@ cov_round = sr_fix_run(cov_one, cov_reviewed, run_id="20260601T000000Z-covone", 
 assert sr_answer("src/a.py", repo=cov_repo).startswith("debt 1"), sr_answer(
     "src/a.py", repo=cov_repo)
 cov_sha = cov_commit("src/a.py", message="fix the confirmed finding")
-cov_rc, cov_out = cov_cover(cov_sha)
+cov_meta_seen = []
+cov_coverage_real = rb.round.commit_fix_coverage
+rb.round.commit_fix_coverage = lambda *a, **kw: (
+    cov_meta_seen.append(kw.get("meta")) or cov_coverage_real(*a, **kw))
+try:
+    cov_rc, cov_out = cov_cover(cov_sha)
+finally:
+    rb.round.commit_fix_coverage = cov_coverage_real
+# The round's own record is HANDED to it, never asked for again: this is the walk a commit hook
+# waits on, once per round the commit may close.
+assert cov_meta_seen and all(isinstance(seen, dict) for seen in cov_meta_seen), cov_meta_seen
 assert cov_rc == 0 and "20260601T000000Z-covone fixes: closed by" in cov_out, cov_out
 assert "1 fixed path(s) covered" in cov_out, cov_out
 assert sr_answer("src/a.py", repo=cov_repo) == "none", sr_answer("src/a.py", repo=cov_repo)
@@ -9409,30 +9419,26 @@ try:
     ) == [{"repo": str(cov_repo), "paths": rb.round.commit_paths(cov_repo, cov_sha)}]
 finally:
     cov_meta_path.write_text(cov_meta_text)
-# A SECOND commit of the same pass advances the receipt's shas, and its timestamp with them: that
-# stamp is the fixes artifact's own epoch and the instant a later round's seal is weighed against,
-# so coverage dated before the artifact it must outrank loses to it and the bytes read as debt.
+# A round closes ONCE, by the first commit that landed its fixes. A LATER commit over a path it
+# once reviewed closes nothing of it: re-covered it retired bytes no panel had read, and re-listed
+# itself in `closed_by` it was named as closed on the `review:` row of every unrelated commit for
+# as long as the fixing window held it open (seen live: a round closed 2026-08-26 in three of the
+# next day's commit blocks).
+(cov_repo / "src" / "b.py").write_text("a later commit over a path this round once read\n")
+cov_second_sha = cov_commit("src/b.py", message="unrelated work over the same scope")
+assert cov_cover(cov_second_sha) == (0, ""), cov_cover(cov_second_sha)
 cov_stamped = json.loads((cov_round / rb.FIX_RECEIPT).read_text())
-cov_stamped["recorded_at"] = "2020-01-01T00:00:00Z"
-(cov_round / rb.FIX_RECEIPT).write_text(json.dumps(cov_stamped))
-(cov_repo / "src" / "b.py").write_text("the same pass, still working\n")
-cov_second_sha = cov_commit("src/b.py", message="the rest of the same fixing pass")
-cov_meta_seen = []
-cov_coverage_real = rb.round.commit_fix_coverage
-rb.round.commit_fix_coverage = lambda *a, **kw: (
-    cov_meta_seen.append(kw.get("meta")) or cov_coverage_real(*a, **kw))
+assert cov_stamped["closed_by"] == [cov_sha], cov_stamped
+assert sorted(cov_stamped["covers"][0]["paths"]) == ["src/a.py"], cov_stamped
+assert sr_answer("src/b.py", repo=cov_repo).startswith("debt "), sr_answer(
+    "src/b.py", repo=cov_repo)
+# And the named-run form says so rather than falling silent, since a chat that asked about ONE
+# round is owed the reason that round is not the one this commit closes.
 try:
-    assert "1 fixed path(s) covered" in cov_cover(cov_second_sha)[1]
-finally:
-    rb.round.commit_fix_coverage = cov_coverage_real
-# And the round's own record is HANDED to it, never asked for again: this is the walk a commit hook
-# waits on, once per round the commit may close.
-assert cov_meta_seen and all(isinstance(seen, dict) for seen in cov_meta_seen), cov_meta_seen
-cov_stamped = json.loads((cov_round / rb.FIX_RECEIPT).read_text())
-assert cov_stamped["closed_by"] == [cov_sha, cov_second_sha], cov_stamped
-assert sorted(cov_stamped["covers"][0]["paths"]) == ["src/a.py", "src/b.py"], cov_stamped
-assert rb.parse_iso_timestamp(cov_stamped["recorded_at"]) > rb.parse_iso_timestamp(
-    "2020-01-01T00:00:00Z"), cov_stamped["recorded_at"]
+    cov_cover(cov_second_sha, run_id=cov_round.name)
+    raise AssertionError("a round an earlier commit had closed was closed a second time")
+except ValueError as cov_closed_error:
+    assert "already closed by an earlier commit" in str(cov_closed_error), cov_closed_error
 # (b) A commit by another chat closes nothing of this one's: the round is its launcher's.
 cov_foreign = sr_store()
 sr_fix_run(cov_foreign, cov_reviewed, run_id="20260601T000100Z-covforeign", repo=cov_repo)
@@ -9868,23 +9874,36 @@ assert f"{rb.DOCTOR_ROUND_OVERFLOW}: 1" in cov_over_lines, cov_over_lines
 assert rb.DOCTOR_ROUND_OVERFLOW not in rb.doctor_snapshot_document(
     cov_over_findings, rb.store.utc_now())["anomalies"]
 
-# (i) The tally the report prints answers the triage it was written against. A re-adjudication
-# leaves a hand-typed `fixed` standing beside a `confirmed` restamped from the new rows, which is
-# a pair belonging to neither triage — while the COVERAGE, a record of bytes, survives both.
+# (i) The tally the report prints answers the triage it was written against. A `fixes --done`
+# standing when the commit lands is kept only while its digest still matches the rows: a
+# re-adjudication between the two would leave a hand-typed `fixed` beside a `confirmed` restamped
+# from the new rows, a pair belonging to neither triage — while the COVERAGE, a record of bytes,
+# survives both.
 cov_retally = sr_store()
 cov_retally_run = sr_fix_run(cov_retally, cov_reviewed, run_id="20260601T000700Z-covretally",
                              repo=cov_repo, judged=("P2", 3))
-(cov_repo / "src" / "a.py").write_text("three findings answered\n")
-cov_retally_sha = cov_commit("src/a.py", message="answer three findings")
-assert "1 fixed path(s) covered" in cov_cover(cov_retally_sha)[1]
+assert sr_fixes(run_id="20260601T000700Z-covretally", fixed=3)[0] == 0
 sr_judged(cov_retally_run, "P2", 1)
-(cov_repo / "src" / "a.py").write_text("and one more landing over the new triage\n")
-cov_retally_second = cov_commit("src/a.py", message="the re-adjudicated finding")
-assert "1 fixed path(s) covered" in cov_cover(cov_retally_second)[1]
+(cov_repo / "src" / "a.py").write_text("the one finding the new triage left\n")
+cov_retally_sha = cov_commit("src/a.py", message="answer the re-adjudicated finding")
+assert "1 fixed path(s) covered" in cov_cover(cov_retally_sha)[1]
 cov_retally_record = json.loads((cov_retally_run / rb.FIX_RECEIPT).read_text())
 assert cov_retally_record["fixed"] == cov_retally_record["confirmed"] == 1, cov_retally_record
-assert cov_retally_record["closed_by"] == [cov_retally_sha, cov_retally_second], \
-    cov_retally_record["closed_by"]
+assert cov_retally_record["closed_by"] == [cov_retally_sha], cov_retally_record["closed_by"]
+assert cov_retally_record["covers"] == [{"repo": str(cov_repo), "paths": {
+    "src/a.py": rb.path_blob_sha(cov_repo, "src/a.py")}}], cov_retally_record["covers"]
+# A tally the triage did not move under is the model's own count of what its pass answered, and
+# the commit keeps it rather than restamping it from the confirmed total.
+cov_kept = sr_store()
+cov_kept_run = sr_fix_run(cov_kept, cov_reviewed, run_id="20260601T000710Z-covkept",
+                          repo=cov_repo, judged=("P2", 3))
+assert sr_fixes(run_id="20260601T000710Z-covkept", fixed=2, fp=1)[0] == 0
+(cov_repo / "src" / "a.py").write_text("two of the three answered\n")
+cov_kept_sha = cov_commit("src/a.py", message="two fixed, one a false positive")
+assert "1 fixed path(s) covered" in cov_cover(cov_kept_sha)[1]
+cov_kept_record = json.loads((cov_kept_run / rb.FIX_RECEIPT).read_text())
+assert (cov_kept_record["fixed"], cov_kept_record["false_positives"],
+        cov_kept_record["confirmed"]) == (2, 1, 3), cov_kept_record
 
 # (j) `fixes --done` is the optional tally AFTER the commit closed the round, so it folds into that
 # commit's receipt: rebuilt from scratch it erased the `covers` and `closed_by` the commit wrote,

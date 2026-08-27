@@ -324,10 +324,13 @@ the commit itself holds — bounded, like every coverage, by the paths that roun
 holds. A round with NOTHING confirmed is closed by no commit: it has no fixing pass for one to be
 the evidence of (`fix_status` already calls it done), and covered anyway it retired that commit's
 own bytes as reviewed work no panel had read (audit, 2026-08-26). One commit may
-close several rounds; a round is closed once, and a later commit over a path it already
-answers for re-stamps that path rather than adding a second answer. The receipt keeps the
-commits in `closed_by`, which nothing reads back — the coverage is in the shas — and which
-is the only place a reader can see why a round nobody typed a receipt for is closed. There is no second
+close several OPEN rounds; a round is closed ONCE, by the first commit that lands its fixes, and a
+later commit over a path it reviewed closes nothing of it and covers nothing of it — those bytes
+are work no panel has read. The receipt names that one commit in `closed_by`, which nothing reads
+back for coverage — that is in the shas — and which is the only place a reader can see why a round
+nobody typed a receipt for is closed, and the only thing the commit block's `review:` row
+reads a closed round off (re-listed there, a round settled yesterday was named closed by every
+unrelated commit today; audit, 2026-08-27). There is no second
 command to remember, which is the point: the debt-journal row the window below waits for is
 stamped at COMMIT time, AFTER a receipt, so 51 of 71 done receipts in a three-week window
 covered nothing at all and their own fix bytes read back as fresh debt (audit, 2026-08-26).

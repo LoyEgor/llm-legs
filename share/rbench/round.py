@@ -1410,9 +1410,10 @@ def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
 def merge_fix_coverage(existing, fresh):
     """One round's `covers` block with a commit's entries folded in, per repository.
 
-    A path already covered takes the NEW sha: coverage follows the bytes the same pass wrote, and
-    a second commit over a path this receipt already answers for is that pass still working — read
-    against the older sha it came back as debt the moment it landed (audit, 2026-08-26).
+    A path already covered takes the NEW sha: the `--done` tally and the commit that closed the
+    round answer for one pass, and what stands is what the commit left — read against the tally's
+    older sha the fixed bytes came back as debt the moment they landed (audit, 2026-08-26). No
+    later commit reaches here: `_coverable_round_state` refuses a round already closed.
     """
     merged = [dict(entry, paths=dict(entry.get("paths") or {}))
               for entry in existing or () if isinstance(entry, dict)]
@@ -1456,8 +1457,10 @@ def coverable_runs(repo, session, commit, run_id=None):
 
     Refused, in order: a round nobody triaged, since a receipt is an answer to confirmed findings;
     a round whose pass recorded `--blocked`, since a stop is a record and a commit does not undo
-    it; a round 1 whose band or decision names a second pass, since that pass reads the fixes
-    itself; and a round holding NO confirmed finding, which has no fixing pass at all for a
+    it; a round a commit ALREADY closed, since a round closes once and what a later commit writes
+    over a path it once reviewed is work no panel has read; a round 1 whose band or decision names
+    a second pass, since that pass reads the fixes itself; and a round holding NO confirmed
+    finding, which has no fixing pass at all for a
     commit to be the evidence of — `fix_status` already calls it done ("nothing to fix") whoever
     commits next, and covered by a commit anyway it retired that commit's own bytes as reviewed
     work no panel had read (a clean round plus a commit rewriting a reviewed file wrote
@@ -1514,9 +1517,12 @@ def coverable_runs(repo, session, commit, run_id=None):
 
 
 def _coverable_round_state(run_dir, rows, record):
+    # `closed_by` refuses here and not only in `coverable_runs`, because the chain path in
+    # `cmd_fixes_cover` closes a round 1 through this same gate.
     return (
         _store.run_triaged(run_dir)
-        and not (isinstance(record, dict) and record.get("state") == "blocked")
+        and not (isinstance(record, dict)
+                 and (record.get("state") == "blocked" or record.get("closed_by")))
         and rows is not None
         and bool(confirmed_count(rows))
     )
@@ -1606,10 +1612,10 @@ def cover_receipt(run_dir, meta, rows, record, covers, commit, session):
         # written between the two commits.
         "recorded_at": _store.iso_now(),
         "covers": merge_fix_coverage(standing.get("covers"), covers),
-        # Which commits closed this pass, in order. Nothing reads it back — the coverage is in the
-        # shas — and it is the only place a reader can see WHY a round it never typed a receipt for
-        # is closed.
-        "closed_by": list(dict.fromkeys(list(standing.get("closed_by") or ()) + [commit])),
+        # The commit that closed this pass, and there is only ever one — a list because the
+        # `review:` row and every reader of it already parse one. It is the only place a reader can
+        # see WHY a round nobody typed a receipt for is closed; the coverage is in the shas.
+        "closed_by": [commit],
     }
     owner = session or _store.round_session(run_dir) or ""
     if owner:
@@ -1625,8 +1631,11 @@ def cmd_fixes_cover(args):
     fixes is what ends the round (Egor, 2026-08-25). No second command a model can forget stands
     between them — `fixes --done` remains for the tally the report prints and gates nothing.
 
-    One commit may close several rounds, and a round is closed once: the coverage is a map of path
-    to sha, so a later commit over the same path re-stamps it rather than adding a second answer.
+    One commit may close several rounds, and a round is closed ONCE — by the first commit that
+    lands its fixes. A later commit over a path that round reviewed closes nothing of it and covers
+    nothing of it: those bytes are work no panel has read, and re-stamped they retired as reviewed
+    (and re-listed on the `review:` row of every unrelated commit for as long as the fixing window
+    held it open).
     """
     commit = str(getattr(args, "commit", "") or "").strip()
     if not commit:
@@ -1650,8 +1659,8 @@ def cmd_fixes_cover(args):
         if not rounds:
             raise ValueError(
                 f"{args.run_id} is not a round this commit closes: it is another chat's or "
-                f"another repository's, untriaged, stopped, a round 1 a second pass is owed "
-                f"over, outside "
+                f"another repository's, untriaged, stopped, already closed by an earlier "
+                f"commit, a round 1 a second pass is owed over, outside "
                 f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, holds no confirmed finding for a "
                 f"fixing pass to answer, or {commit[:7]} carried none of the paths it reviewed"
             )
