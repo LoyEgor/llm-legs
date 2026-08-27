@@ -1800,7 +1800,11 @@ worker_pick_vendor() {
     cb) name_ok='^[A-Za-z0-9_][A-Za-z0-9._-]*$' ;;
     *) name_ok='^[a-z0-9][a-z0-9-]*$' ;;
   esac
-  for field in $worker_pick_prediction; do
+  # A vendor field carries `?` (`cb~?`), which the split would expand against the render's CWD.
+  set -f
+  set -- $worker_pick_prediction
+  set +f
+  for field in "$@"; do
     case "$field" in "$tag"*) ;; *) continue ;; esac
     case "$field" in
       "$tag"⏸*) wp_state=off; return ;;
@@ -2021,13 +2025,18 @@ fit_width() {
   local s=$1
   s=${s//"$RESET"/}; s=${s//"$CYAN"/}; s=${s//"$BLUE"/}; s=${s//"$DIM"/}
   s=${s//"$GREEN"/}; s=${s//"$YELLOW"/}; s=${s//"$RED"/}; s=${s//"$MAGENTA"/}
-  fit_len=${#s}
+  # `⚡` is the one glyph on the line a terminal gives two cells (every other one — ⎇ │ · ✓ » ↓ ↑
+  # ⇢ ⧉ ▶ ⏸ — is narrow); counted as one, a line measured as exactly $COLUMNS wraps.
+  local narrow=${s//⚡/}
+  fit_len=$(( ${#s} + ${#s} - ${#narrow} ))
 }
 
 fit_trunc() {
   fit_out=$1
   [ "${#fit_out}" -le "$2" ] || fit_out=${fit_out:0:$2}
 }
+
+fit_dir_short_len=8
 
 fit_initials() {
   local rest word out=""
@@ -2043,6 +2052,10 @@ fit_initials() {
       ;;
   esac
   [ -n "$out" ] || out=${1:0:3}
+  # Initials of a many-word name are longer than step 5's cut, so this step would GROW the line and
+  # cost the directory its place further down the ladder.
+  fit_trunc "$1" "$fit_dir_short_len"
+  [ "${#out}" -le "${#fit_out}" ] || out=$fit_out
   fit_out=$out
 }
 
@@ -2058,7 +2071,7 @@ fit_dir_name() {
   fi
   case "$fit_dir_mode" in
     initials) fit_initials "$1" ;;
-    short) fit_trunc "$1" 8 ;;
+    short) fit_trunc "$1" "$fit_dir_short_len" ;;
     *) fit_out=$1 ;;
   esac
 }

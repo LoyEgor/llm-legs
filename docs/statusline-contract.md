@@ -98,7 +98,9 @@ shrinks** — every segment renders its full form.
 
 Measurement is visible cells: the colour escapes are stripped as the literal strings that produced
 them (bash patterns have no quantifier, so no regex is available in-process) and the remainder is
-counted with `${#…}`. Every glyph the line can print (`⎇ │ · ✓ » ↓ ↑ ⚡ ⇢ ⧉ ▶ ⏸`) is single-cell. In
+counted with `${#…}` plus one cell per `⚡`, the only glyph the line can print that a terminal gives
+two columns (`⎇ │ · ✓ » ↓ ↑ ⇢ ⧉ ▶ ⏸` are all single-cell, and a fast-mode line measured as exactly
+`$COLUMNS` used to wrap). In
 a non-UTF-8 locale the count over-reads and the line shrinks earlier than it must — conservative by
 construction, never an overflow.
 
@@ -114,7 +116,9 @@ each, and the first order that fits wins:
 | 5 | directory names | 8 characters each — both sides of `»` and the `⧉` worktree label — except a ticket-named one (`^[A-Za-z]+[-_][0-9]+`, the worktree convention), whose shortest form is that prefix and nothing shorter: `WUT-12345-fix-header` → `WUT-12345`, `WUT_1234-fix` → `WUT_1234`, separator as written. The digits are the identity the owner reads, so no cut may reach into them (Egor, 2026-08-27) |
 | 6 | head model+effort | abbreviated (`Fable 5 high` → `FB5 hi`) |
 | 7 | review counter | `rev <n>` → `r<n>` (the gate's own verdict words are never rewritten) |
-| 8 | directory names | initials: split on `-`/`_`, first letter of each word (`claude-setup`→`cs`); one word → 3 characters; the `»` pair loses its spaces (`cs»ll`). A ticket-named directory skips this step entirely and stays at its step-5 prefix (`wut-25-portal` holds `wut-25` while the plain name beside it goes to initials); step 11 dropping the cluster is the only thing that takes it off the line |
+| 8 | directory names | initials: split on `-`/`_`, first letter of each word (`claude-setup`→`cs`); one word → 3 characters; the `»` pair loses its spaces (`cs»ll`). Initials that are not shorter than
+step 5's cut are not used at all (`a-b-c-d-e-f-g-h-i-j` stays `a-b-c-d-`) — this step may only
+shrink the line. A ticket-named directory skips this step entirely and stays at its step-5 prefix (`wut-25-portal` holds `wut-25` while the plain name beside it goes to initials); step 11 dropping the cluster is the only thing that takes it off the line |
 | 9 | worker | drop the candidate whole; `unpushed` shortens to a red `↑!` |
 | 10 | `»` pair | keep the active side only |
 | 11 | directory | drop the cluster, worktree label included |

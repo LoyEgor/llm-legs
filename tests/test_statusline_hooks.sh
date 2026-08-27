@@ -1160,6 +1160,17 @@ worker_out=$(run_statusline "$(statusline_payload status-w-auto-walled)" main)
 assert test "${worker_out#*·PR}" = "$worker_out"
 assert test "${worker_out#*·SL}" = "$worker_out"
 
+# The unusable fields carry `?`, so splitting the prediction must not glob against the CWD the
+# render happens to run in — a file there would be read as the account of a walled vendor.
+glob_bait="$WORK/glob-bait"
+mkdir -p "$glob_bait"
+: > "$glob_bait/cb~z"
+: > "$glob_bait/cx✗·z"
+worker_out=$(cd "$glob_bait" && run_statusline "$(statusline_payload status-w-auto-glob)" main)
+assert test "${worker_out#*"${MAGENTA}z"}" = "$worker_out"
+assert test "${worker_out#*·FB}" = "$worker_out"
+assert test "${worker_out#*·SL}" = "$worker_out"
+
 # A fixed vendor switched off keeps saying so — a parked switch is not a walled account.
 printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\nclaudeb_effort=high\n' > "$worker_file"
@@ -1205,6 +1216,12 @@ for fit_repo_dir in "$FIT_REPO" "$FIT_FOREIGN"; do
   git -C "$fit_repo_dir" add tracked.txt
   git -C "$fit_repo_dir" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 done
+FIT_MANY="$FIXTURES/a-b-c-d-e-f-g-h-i-j"
+mkdir -p "$FIT_MANY"
+git -C "$FIT_MANY" init -q -b main
+printf 'one\n' > "$FIT_MANY/tracked.txt"
+git -C "$FIT_MANY" add tracked.txt
+git -C "$FIT_MANY" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
 printf 'two\nthree\n' >> "$FIT_REPO/tracked.txt"
 printf 'fresh\n' > "$FIT_REPO/untracked.txt"
 FIT_TOP=$(git -C "$FIT_REPO" rev-parse --show-toplevel)
@@ -1335,6 +1352,44 @@ assert grep -Fq "⧉ fy" <<< "$fit_wt_plain_ini"
 fit_floor=$(fit_render fit-floor 12)
 assert grep -Fq 'fita' <<< "$fit_floor"
 assert test "${fit_floor#*fitac}" = "$fit_floor"
+
+# Initials longer than the 8-character cut would make step 8 GROW the line, and the directory
+# would be dropped at a width its truncated form fits.
+fit_many_full=$(fit_render fit-many "" "$FIT_MANY")
+assert grep -Fq 'a-b-c-d-e-f-g-h-i-j' <<< "$fit_many_full"
+for many_cols in 60 55 50 44 40 34; do
+  many_line=$(fit_render "fit-many-$many_cols" "$many_cols" "$FIT_MANY")
+  asserts=$((asserts + 1))
+  [ "${many_line#*abcdefghij}" = "$many_line" ] ||
+    fail "fit width $many_cols took the dir to longer initials: $many_line"
+done
+fit_many_cut=$(fit_render fit-many-cut 50 "$FIT_MANY")
+assert grep -Fq 'a-b-c-d- main' <<< "$fit_many_cut"
+
+# `⚡` is two terminal cells: measured as one, a line judged to fit exactly is one cell over, wraps
+# and pushes line 2 out of view.
+fast_render() { # session cols
+  local out
+  out=$(FIT_COLUMNS="$2" run_statusline \
+    "$(statusline_payload "$1" \
+       '{"model":{"display_name":"Fable 5"},"effort":{"level":"xhigh"},"fast_mode":true}' \
+       "$FIT_REPO")" fitaccount) || fail "fast fit render failed: $1 at $2"
+  fit_visible "$out"
+}
+fast_full=$(fast_render fit-fast "")
+assert grep -Fq '⚡' <<< "$fast_full"
+fast_edge=$(fast_render fit-fast-edge 88)
+assert_eq 87 "${#fast_edge}"
+fast_over=$(fast_render fit-fast-over 87)
+assert test "${#fast_over}" -lt 87
+for fast_cols in 90 80 70 60 50 40; do
+  fast_line=$(fast_render "fit-fast-$fast_cols" "$fast_cols")
+  asserts=$((asserts + 1))
+  [ "$(( ${#fast_line} + 1 ))" -le "$fast_cols" ] ||
+    fail "fast fit width $fast_cols: $(( ${#fast_line} + 1 )) cells: $fast_line"
+  asserts=$((asserts + 1))
+  grep -Fq '⚡' <<< "$fast_line" || fail "fast fit width $fast_cols lost ⚡: $fast_line"
+done
 rm -f "$worker_file"
 
 NOW=$(date +%s)
@@ -3536,6 +3591,9 @@ progress_render() {
   run_statusline "$(statusline_payload "review-progress-$1" "" "$REVIEW_CLEAN")" \
     || fail "review progress render failed: $1"
 }
+# Lateness is measured against the render's own clock, so these stamps are taken now: the suite's
+# global NOW is minutes old by the time this section runs and would eat the freshness budget.
+progress_started() { printf '%s' "$(( $(date +%s) - ${1:-0} ))"; }
 
 # A run in flight is the whole story the slot tells about a tree: the panel and its counter.
 write_progress "$$" T2 3 8 2026-07-27T22:00:00+00:00
@@ -3549,7 +3607,7 @@ assert grep -Fq 'rT2 3/8' <<< "$progress_fit_out"
 assert test "${progress_fit_out#*rev T2}" = "$progress_fit_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
-jq --argjson started_epoch "$((NOW - 121))" \
+jq --argjson started_epoch "$(progress_started 121)" \
   '. + {started_epoch:$started_epoch,expected:{"cell-0":1000}}' \
   "$PROGRESS_DIR/$progress_prefix$$.json" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
@@ -3557,7 +3615,7 @@ mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$
 progress_late_out=$(progress_render late)
 assert grep -Fq " ${DIM}│${RESET} ${RED}rev T2 0/1${RESET}" <<< "$progress_late_out"
 
-jq --argjson started_epoch "$NOW" '.started_epoch = $started_epoch' \
+jq --argjson started_epoch "$(progress_started)" '.started_epoch = $started_epoch' \
   "$PROGRESS_DIR/$progress_prefix$$.json" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
@@ -3565,7 +3623,7 @@ progress_fresh_out=$(progress_render fresh)
 assert grep -Fq " ${DIM}│${RESET} rev T2 0/1" <<< "$progress_fresh_out"
 assert test "${progress_fresh_out#*"${RED}rev"}" = "$progress_fresh_out"
 
-jq --argjson started_epoch "$((NOW - 121))" \
+jq --argjson started_epoch "$(progress_started 121)" \
   '.started_epoch = $started_epoch | .done = ["cell-0"]' \
   "$PROGRESS_DIR/$progress_prefix$$.json" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
@@ -3575,7 +3633,7 @@ assert grep -Fq " ${DIM}│${RESET} rev T2 1/1" <<< "$progress_done_late_out"
 assert test "${progress_done_late_out#*"${RED}rev"}" = "$progress_done_late_out"
 
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
-jq --argjson started_epoch "$((NOW - 121))" '.started_epoch = $started_epoch' \
+jq --argjson started_epoch "$(progress_started 121)" '.started_epoch = $started_epoch' \
   "$PROGRESS_DIR/$progress_prefix$$.json" \
   > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
 mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
