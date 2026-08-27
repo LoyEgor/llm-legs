@@ -288,9 +288,15 @@ narrowed by it: either the whole computed scope is reviewed or nothing runs.
 
 And the panel is one per CHAT, not one per repository. Before a single-repository
 round launches, the repositories this chat currently owes debt in are enumerated
-from the flow gate's own per-call HEAD snapshots; if more than one owes and the
+from the flow gate's own per-call HEAD snapshots and from
+`~/.cache/claude/review-journal/<session>.repos`, where the journal hooks write down
+every repository they take a record in under that chat's name; if more than one owes and the
 command's `--repo` set does not cover them all, nothing launches and the merged
-command naming every one of them is printed instead. A round settles only what it
+command naming every one of them is printed instead. Both sources, because a snapshot
+answers only for the repositories a Bash call SPELLED and is swept at 120 minutes: debt
+born through a `git -C "$dir"` nothing expands, through a worker, or three hours ago was
+in no candidate pool, the guard stayed silent, and `debt --command` handed the chat the
+one-repository command it then doubled by hand (live, 2026-08-27). A round settles only what it
 read, so the rest would stand unreviewed behind a panel that came back clean — and
 paying for one panel and one triage instead of three is the reason the merged mode
 exists. `--this-repo-only --reason '...'` is the way past it, the reason recorded

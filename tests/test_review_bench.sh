@@ -10702,6 +10702,22 @@ assert rb.journal_entries(led_private / rb.DEBT_JOURNAL) == [
 (fam_gitdir / rb.DEBT_JOURNAL).unlink()
 (led_private / rb.DEBT_JOURNAL).unlink()
 
+# A destination whose last record lost its NUL is repaired even where the fold adds NOTHING — every
+# record the source holds already standing there. Gated on fresh records, that source was consumed
+# with the terminator never written, and the next append fused two rows into one for good.
+led_torn = b"chat-6\t1800000000\tsrc/torn.py"
+(fam_gitdir / rb.DEBT_JOURNAL).write_bytes(b"chat-6\t1800000000\tsrc/whole.py\0" + led_torn)
+(led_private / rb.DEBT_JOURNAL).write_bytes(led_torn + b"\0")
+assert pathlib.Path(rb.journal_dir(fam_main)) == fam_gitdir
+assert not (led_private / rb.DEBT_JOURNAL).exists(), led_private
+with (fam_gitdir / rb.DEBT_JOURNAL).open("ab") as led_torn_handle:
+    led_torn_handle.write(b"chat-7\t1800000000\tsrc/after.py\0")
+assert rb.journal_entries(fam_gitdir / rb.DEBT_JOURNAL) == [
+    ("chat-6", 1800000000, "src/whole.py"),
+    ("chat-6", 1800000000, "src/torn.py"),
+    ("chat-7", 1800000000, "src/after.py")], rb.journal_entries(fam_gitdir / rb.DEBT_JOURNAL)
+(fam_gitdir / rb.DEBT_JOURNAL).unlink()
+
 # --- which shell typed the command ------------------------------------------------------------
 # A round answers to the chat its own RECORD names. Keyed on the caller's environment instead, the
 # same round's receipt, report and fix coverage moved to whichever shell happened to close it —
@@ -12498,6 +12514,61 @@ try:
 finally:
     os.environ["HOME"] = panel_home_before
     os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+
+# The candidates are what this chat's RECORDS name, not only what its calls did. A snapshot answers
+# for the repositories a Bash call spelled and is swept at 120 minutes, so debt taken through a
+# `git -C "$dir"` nothing expands, through a worker, or three hours ago was in no pool at all — and
+# `debt --command` handed the chat a one-repository command it then had to double by hand.
+reg_home = work / "registered-repos-home"
+(reg_home / ".cache" / "claude" / "review-journal").mkdir(parents=True)
+reg_repos = []
+for reg_name in ("alpha", "beta"):
+    reg_repo = work / f"registered-{reg_name}"
+    reg_repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(reg_repo)], check=True)
+    for reg_key, reg_value in (("user.email", "bench@example.test"),
+                               ("user.name", "Review Bench")):
+        subprocess.run(["git", "-C", str(reg_repo), "config", reg_key, reg_value], check=True)
+    reg_repo = pathlib.Path(subprocess.run(
+        ["git", "-C", str(reg_repo), "rev-parse", "--show-toplevel"],
+        check=True, capture_output=True, text=True).stdout.strip())
+    (reg_repo / "owed.py").write_text(f"{reg_name} one\n")
+    subprocess.run(["git", "-C", str(reg_repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(reg_repo), "commit", "-qm", "initial"], check=True)
+    (reg_repo / "owed.py").write_text(f"{reg_name} one\n{reg_name} two\n")
+    reg_gitdir = pathlib.Path(subprocess.run(
+        ["git", "-C", str(reg_repo), "rev-parse", "--absolute-git-dir"],
+        check=True, capture_output=True, text=True).stdout.strip())
+    with (reg_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
+        handle.write(f"chat-registered\t{base_now - 60}\towed.py\0".encode())
+    reg_repos.append(reg_repo)
+reg_alpha, reg_beta = reg_repos
+(reg_home / ".cache" / "claude" / "review-journal" / "chat-registered.call-1.heads").write_text(
+    f"KIND\tcommit\n{reg_alpha}\tdeadbeef\n"
+)
+# Beta is in no snapshot at all; alpha is in both, and being registered twice over is not two repos.
+(reg_home / ".cache" / "claude" / "review-journal" / "chat-registered.repos").write_text(
+    f"{reg_beta}\n{reg_alpha}\n"
+)
+reg_home_before = os.environ["HOME"]
+os.environ["HOME"] = str(reg_home)
+try:
+    assert rb.chat_call_repos("chat-registered") == [str(reg_alpha), str(reg_beta)], \
+        rb.chat_call_repos("chat-registered")
+    # Another chat's index is not this chat's business either, exactly as its snapshots are not.
+    assert rb.chat_call_repos("chat-registere") == [], rb.chat_call_repos("chat-registere")
+    assert rb.debt_owed_repos("chat-registered") == sorted([str(reg_alpha), str(reg_beta)]), \
+        rb.debt_owed_repos("chat-registered")
+    try:
+        rb.debt_one_panel_guard([reg_alpha], "chat-registered", False, "T1", "")
+        reg_refusal = ""
+    except ValueError as exc:
+        reg_refusal = str(exc)
+    assert "owes a review in 2 repositories and this command reads 1" in reg_refusal, reg_refusal
+    assert rb.debt_review_command(sorted([str(reg_alpha), str(reg_beta)]), "T1") in reg_refusal, \
+        reg_refusal
+finally:
+    os.environ["HOME"] = reg_home_before
 
 for debt_side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[debt_side] = tier_runner

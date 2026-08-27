@@ -303,10 +303,17 @@ CALL_HEADS_DIR = (".cache", "claude", "review-journal")
 CALL_HEADS_SUFFIX = ".heads"
 CALL_HEADS_KIND = "KIND"
 
+# Where the journal hooks write down every repository a chat has taken a RECORD in, one absolute
+# top per line (`rj_register_repo`, same directory). Read BESIDE the snapshots above and never
+# instead of them: those answer only for the repositories a Bash call spelled and are swept at 120
+# minutes, so debt born through a `git -C "$dir"` nothing expands, through a worker, or three hours
+# ago is in this file alone — and invisible here it costs the chat a panel per repository.
+CHAT_REPOS_SUFFIX = ".repos"
+
 
 def chat_call_repos(session):
-    """Every repository the calls of `session` have reached, as absolute paths in the order they
-    were first seen.
+    """Every repository this chat's records name — the trees its calls reached and the ones its
+    journal records were taken in — as absolute paths in the order they were first seen.
 
     The gate's own enumeration, read rather than recomputed: it is what decides which trees get a
     commit notice, and a second implementation of "which repositories is this chat working in"
@@ -334,6 +341,13 @@ def chat_call_repos(session):
             top = row.split("\t")[0]
             if top and top != CALL_HEADS_KIND:
                 repos.setdefault(top, None)
+    try:
+        registered = (directory / (session + CHAT_REPOS_SUFFIX)).read_text().splitlines()
+    except OSError:
+        registered = []
+    for row in registered:
+        if row:
+            repos.setdefault(row, None)
     return list(repos)
 
 
@@ -995,13 +1009,15 @@ def _fold_journal_locked(source, target):
             continue
         held.add(record)
         fresh.append(record)
-    if fresh:
-        payload = b""
-        # A journal whose last record lost its terminator would otherwise swallow the first
-        # record appended after it into the same row.
-        if standing and not standing.endswith(b"\0"):
-            payload += b"\0"
-        payload += b"".join(record + b"\0" for record in fresh)
+    payload = b""
+    # A journal whose last record lost its terminator would otherwise swallow the first record
+    # appended after it into the same row. Never gated on there being fresh records: a source
+    # holding exactly what the destination already holds is consumed below all the same, and the
+    # terminator it would have carried in then never went in at all.
+    if standing and not standing.endswith(b"\0"):
+        payload += b"\0"
+    payload += b"".join(record + b"\0" for record in fresh)
+    if payload:
         try:
             before = target.stat().st_size if target.exists() else 0
             with open(target, "ab") as handle:

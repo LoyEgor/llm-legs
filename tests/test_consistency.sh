@@ -1075,6 +1075,31 @@ if test -r "$COMMIT_REPORT"; then
     "$COMMIT_REPORT"
   assert grep -Fq "call=\$(printf '%s' \"\$input\" | jq -r '.tool_use_id // empty' 2>/dev/null)" \
     "$FLOW_GATE"
+
+  # --- Row bf: the chat repository index ---------------------------------------
+  # The pool the one-panel rule enumerates candidates from is the snapshots PLUS this file, because a
+  # snapshot answers only for the repositories a Bash call SPELLED and is swept at 120 minutes: debt
+  # born through a `git -C "$dir"` nothing expands, through a worker, or three hours ago was in no
+  # pool at all, and the chat launched a panel per repository over debt it owed in several.
+  assert doc_has 'Chat repository index'
+  assert grep -Fq "printf '%s/.cache/claude/review-journal/%s.repos' \"\$HOME\" \"\$1\"" \
+    "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'CHAT_REPOS_SUFFIX = ".repos"' "$RB_STORE"
+  assert grep -Fq 'session + CHAT_REPOS_SUFFIX' "$RB_STORE"
+  # Only a plain name, the same alphabet the snapshot path is composed under: this writer composes a
+  # filename off the id too. Pinned on the line FOLLOWING this composer's own header, so a
+  # validation dropped from it cannot read green off the snapshot path's copy of the same case.
+  assert grep -Fq "case \$1 in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac" \
+    <(grep -A1 -F 'rj_session_repos() { # session' \
+      "$CLAUDE_SETUP/hooks/lib/review-journal.sh")
+  assert grep -Fq 'rj_register_repo() { # session top' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  # Every append under an owner registers, or debt born at that site reaches no pool: the chat's own
+  # edits, the worker sweep's deferred rows, the gate's commit-point names, and the debt a commit
+  # inside one Bash call lands.
+  assert grep -Fq 'rj_register_repo "$session" "$top" || :' "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  assert eq "$(grep -c 'rj_register_repo' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 3
+  assert grep -Fq 'rj_register_repo "$session" "$top_dir" || :' "$FLOW_GATE"
+  assert grep -Fq 'rj_register_repo "$own" "$top" || :' "$COMMIT_REPORT"
   assert grep -Fq 'snapshot_file=$(rj_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
   # What the call landed is the range between the HEAD the gate wrote down before it and this one,
   # per repository: git's summary lines are silent for a quiet commit and for a repository the
