@@ -64,9 +64,8 @@ def aligned_report_lines(rows):
         if not value:
             lines.append(label)
             continue
-        # A row whose value runs to several lines — the escalation fork is three arms and a closing
-        # sentence — keeps them under the value column: written flush left they read as rows of
-        # their own with the label missing.
+        # A row whose value runs to several lines keeps them under the value column: written flush
+        # left they read as rows of their own with the label missing.
         head, *rest = str(value).split("\n")
         lines.append(f"{label:<{width}}  {head}")
         lines.extend(f"{'':<{width}}  {line}" for line in rest)
@@ -151,19 +150,22 @@ def report_frame_word(run_dir, meta, state=None, summary=None):
     """
     if not _panel.tier_from_meta(meta):
         return _round.REPORT_BENCH_WORD
+    # Which round this is, before any state: it is the block's own identity — a reader who cannot
+    # see it at the top has to reach the `before:` row to know which of the two he is holding.
+    word = _round.round_frame_word(_round.review_round(run_dir, meta))
     state = _round.round_state(run_dir) if state is None else state
     if state == "blocked":
-        return _round.REPORT_BLOCKED_WORD
+        return f"{word} · {_round.REPORT_BLOCKED_SUFFIX}"
     cells = (summary if summary is not None else _panel.bench_summary(run_dir, meta))["cells"]
     if not any(cell["status"] == "completed" for cell in cells):
-        return _round.REPORT_NO_PANEL_WORD
+        return f"{word} · {_round.REPORT_NO_PANEL_SUFFIX}"
     # Undated it would say a block is old and refuse to say how old. In the reader's own zone,
     # because his clock is what he compares it against — the record keeps UTC.
     finished = _panel.run_finished_at(meta)
     if finished and _store.utc_now() - finished > timedelta(hours=_round.REPORT_STALE_HOURS):
         local = finished.astimezone()
-        return f"{_round.REPORT_STALE_WORD} · {local.day} {local.strftime('%b')}"
-    return _round.REPORT_FRAME_WORD
+        return f"{word} · {_round.REPORT_STALE_SUFFIX} · {local.day} {local.strftime('%b')}"
+    return word
 
 
 def timed_cells(cells):
@@ -449,31 +451,116 @@ def triaged_line(run_dir, meta):
 
 
 def fork_line(run_dir):
+    """The one line a recorded decision reaches the chat as. The reason is deliberately not in it:
+    it is the length of a paragraph, it is already on disk, and a confirmation is read for what was
+    decided and what happens next.
+    """
     fork = _round.read_fork(run_dir)
     if fork is None:
-        raise ValueError(f"run {run_dir.name} has no fork on record")
-    return f"{_round.REPORT_FRAME_WORD} {run_dir.name} · fork: {fork['choice']} — {fork['why']}"
+        raise ValueError(f"run {run_dir.name} has no decision on record")
+    follows = "no round 2" if fork["choice"] == _round.BAND_FIX else "round 2"
+    return f"review {run_dir.name} · decision: {fork['choice']} → {follows}"
 
 
 def round_fork_text(run_dir, meta, verdicts=None):
     """The whole of what a round's report does NOT say: which way it goes from here.
 
-    It is three arms and a command, and Egor does not read it — the model that has to act on it
-    does, so `review-bench fork` hands it to the hook instead of the block spending eight lines on
-    it. Empty is the ordinary answer: nothing is owed and there is no fork.
+    Egor does not read it — the model that has to act on it does, so `review-bench fork` hands it
+    to the hook instead of the block spending eight lines on it. Empty is the ordinary answer: the
+    round is in the `fix` band, or its decision is already on disk.
     """
     rows = verdicts if verdicts is not None else _round.recorded_verdict_rows(run_dir)
     parts = []
-    earned = _round.escalation_verdict(*_round.escalation_numbers(run_dir, meta, rows or []))
-    if earned == _round.ESCALATION_UNKNOWN:
-        parts.append(earned)
-    elif earned:
-        parts.append(
-            _round.ROUND_BUDGET_SPENT if _round.review_round(run_dir, meta) >= _round.ROUND_BUDGET else earned
-        )
-    if _round.fix_status(run_dir, _round.confirmed_count(rows), rows)[1] == "blocked":
+    state = _round.fix_status(run_dir, _round.confirmed_count(rows), rows)[1]
+    if _round.review_round(run_dir, meta) >= _round.ROUND_BUDGET:
+        # Only while that round still owes its fixing pass. `pending` is the whole of that: a round
+        # with nothing confirmed, or one whose pass has answered, is closed, and telling the model
+        # to fix what is confirmed and leave it uncommitted is work nobody asked for. A pass that
+        # STOPPED is spoken for by the blocked text below instead.
+        if state == "pending":
+            parts.append(_round.ROUND_BUDGET_SPENT)
+    elif _round.fork_missing(run_dir, meta, rows or []):
+        p1, total = _round.escalation_numbers(run_dir, meta, rows or [])
+        parts.append(round_decision_ask(p1, total))
+    if state == "blocked":
         parts.append(_round.REPORT_BLOCKED_FORK)
     return "\n".join(parts)
+
+
+def round_decision_ask(p1, total):
+    """What a round owing a decision is told, in the four words and nothing else."""
+    band = _round.round_band(p1, total)
+    lead = (
+        f"{p1} confirmed P1s, {total} confirmed findings: this round is a decision and not a list"
+        if band == _round.BAND_HARD else
+        f"{total} confirmed findings in one round: the way through it is a decision"
+    )
+    reason = (
+        " — and `fix` here has to say why the code is worth keeping as it stands"
+        if band == _round.BAND_HARD else ""
+    )
+    return (
+        f"{lead}. Pick one of {_round.DECISION_MENU} and record it{reason}.\n"
+        "fix closes on the commit that carries the fixes and runs no round 2; simplify, cut and "
+        "redesign each run round 2 over the full original scope plus the fixes, and round 2 is "
+        "the last round there is."
+    )
+
+
+def round_one_of(run_dir, meta):
+    """A round 2's own round 1, as `(run_dir, meta)`, or None where the link names nothing this
+    store still holds."""
+    return next(iter(_round.chain_rounds(run_dir, meta)), None)
+
+
+def round_one_tally(run_dir, meta):
+    """Round 1's `confirmed:` value, rendered by the same call that wrote it, so the `before:` row
+    beneath it is the very line that round's own block carried."""
+    rows = _round.recorded_verdict_rows(run_dir)
+    if rows is None:
+        return ""
+    summary = _panel.bench_summary(run_dir, meta, rows)
+    return confirmed_tally(summary["severities"], summary["confirmed"], summary["docs"])
+
+
+def fixes_row_value(run_dir, meta, verdicts, number):
+    """What the round still owes, in the contract's three answers and no fourth.
+
+    A non-fix decision moves the obligation to `next:` instead of describing that choice as a fix.
+    """
+    line, state = _round.fix_status(run_dir, _round.confirmed_count(verdicts), verdicts)
+    # A pass that stopped, or a receipt answering for a triage this round no longer carries: both
+    # are news about THIS round's fixes and outrank what would otherwise close it.
+    if state == "blocked" or (state == "pending" and line):
+        return line
+    if number >= _round.ROUND_BUDGET:
+        return "fix — the commit closes both rounds"
+    if _round.fork_missing(run_dir, meta, verdicts):
+        return f"decision first — {_round.DECISION_MENU}"
+    decided = _round.read_fork(run_dir)
+    if decided and decided["choice"] != _round.BAND_FIX:
+        return None
+    return "fix — the commit closes"
+
+
+def next_row_value(run_dir, meta, verdicts, number):
+    """Whether another round follows this one, which is the whole of what makes a chain finite: a
+    round 2 says so itself, and every other answer is read off the decision on disk.
+    """
+    if number >= _round.ROUND_BUDGET:
+        return "none — last round"
+    band = _round.round_band(*_round.escalation_numbers(run_dir, meta, verdicts))
+    decided = _round.read_fork(run_dir)
+    if decided and decided["choice"] != _round.BAND_FIX and band == _round.BAND_HARD:
+        return (
+            f"round 2 required (P1 ≥ {_round.HANDOFF_P1_STOP}, "
+            f"confirmed ≥ {_round.ROUND_HARD_MIN})"
+        )
+    if (decided and decided["choice"] != _round.BAND_FIX) or (
+        not decided and band != _round.BAND_FIX
+    ):
+        return "round 2 by decision"
+    return "none"
 
 
 def report_lines(run_dir, meta, verdicts=None):
@@ -517,37 +604,29 @@ def report_lines(run_dir, meta, verdicts=None):
         True,
     ))
     verdict_rows = verdicts if verdicts is not None else (_round.recorded_verdict_rows(run_dir) or [])
-    fixes_line, fixes_state = _round.fix_status(run_dir, total, verdict_rows)
+    number = _round.review_round(run_dir, meta)
+    parent = round_one_of(run_dir, meta) if number >= _round.ROUND_BUDGET else None
+    if parent is not None:
+        # What this round is read against, in the same columns as the row above it. A round 2 whose
+        # predecessor's tally cannot be read prints no row rather than a zero, which would read as
+        # a first round that found nothing.
+        before = round_one_tally(*parent)
+        if before:
+            rows.append(("before:", before, True))
+        decided = _round.read_fork(parent[0])
+        if decided:
+            rows.append(("decision:", f"{decided['choice']} (round 1)", True))
+    fixes_state = _round.fix_status(run_dir, total, verdict_rows)[1]
     record = _round.read_fix_status(run_dir) or {}
-    if fixes_state != "done":
-        rows.append(("fixes:", fixes_line, True))
-    elif total and _store.counted_int(record.get("fixed")) + _store.counted_int(
-        record.get("false_positives")
-    ) < total:
-        # A receipt answering for fewer findings than the triage confirmed. `fixes` refuses to
-        # write one, so this is a receipt from before that refusal existed — and the round it
-        # retired is one nobody finished.
-        rows.append(("fixes:", f"{_store.counted_int(record.get('fixed'))} of {total}", True))
-    # The verdict on those very numbers. The commit gate has always priced it, but it speaks only
-    # when a commit is attempted, and the report is where the fixer decides the work is finished —
-    # so the round that earned another one has to say so here. The fork itself is not in this
-    # block: `review-bench fork` hands it to the model, which is who acts on it.
-    earned = _round.escalation_verdict(*_round.escalation_numbers(run_dir, meta, verdict_rows))
-    # A gate that could not be asked says so here too: filtered out, a round nobody could price
-    # printed no row at all and read as closed — the silent clean bill the unknown wording exists
-    # to end.
-    if earned == _round.ESCALATION_UNKNOWN:
-        rows.append(("round:", earned, True))
-    elif earned and _round.review_round(run_dir, meta) < _round.ROUND_BUDGET:
-        rows.append(("round:", _round.escalation_headline(earned), True))
-    decreed = _round.read_decree(run_dir)
-    if decreed:
-        rows.append((
-            "decree:",
-            f"{decreed['reason']} — Egor's recorded unlock of this round's withheld waiver; "
-            "no second panel answered it",
-            True,
-        ))
+    unanswered = fixes_state != "done" or (
+        total and _store.counted_int(record.get("fixed"))
+        + _store.counted_int(record.get("false_positives")) < total
+    )
+    if summary["tier"]:
+        fixes = fixes_row_value(run_dir, meta, verdict_rows, number) if unanswered else None
+        if fixes:
+            rows.append(("fixes:", fixes, True))
+        rows.append(("next:", next_row_value(run_dir, meta, verdict_rows, number), True))
     verifier_value = verifier_report_value(run_dir, summary, scheme)
     if verifier_value:
         rows.append(("verifier:", verifier_value, True))
@@ -641,10 +720,17 @@ def report_lines(run_dir, meta, verdicts=None):
                 f"{name:<{name_width}}  {cause:<{cause_width}}  {duration:>8}".rstrip(),
                 False,
             ))
+    # Last, and the CHAIN's rather than this run's: the two rounds are one piece of work, and an id
+    # is what a reader types back into a command — one of them, never two to pick between.
+    rows.append(("id:", _round.chain_id(run_dir, meta), False))
     return report_block_lines(rows)
 
 
 def emit_report(run_dir, meta, verdicts=None):
+    # A record missing the launch's round stamp is asked the store once, here: every row that says
+    # which round this is reads `meta`, and rendered off a bare record a second pass prints as a
+    # first round with nothing before it.
+    meta = dict(meta, **_round.recovered_round_stamp(run_dir, meta))
     # The markers are what the report hook keys on, so only a triaged run may carry them. Printed
     # either way, they made a list of cells look like a report, and that is what reached Egor.
     if verdicts is None and not (run_dir / "verdicts.jsonl").exists():
@@ -705,6 +791,25 @@ def refuse_foreign_chat(run_dir, meta, asking):
         )
 
 
+def decision_refusal(run_dir, meta):
+    """Why this run takes no decision, in whichever of `fork_owed`'s three answers is the true one.
+
+    A refusal naming the band over a round 2 or an untriaged run sends its reader to re-count
+    findings that were never the reason.
+    """
+    if _round.recorded_verdict_rows(run_dir) is None:
+        return (
+            f"run {run_dir.name} has no triage on record; there is nothing to decide over until "
+            "the verdicts are"
+        )
+    if _round.review_round(run_dir, meta) >= _round.ROUND_BUDGET:
+        return (
+            f"run {run_dir.name} is round 2, the last round there is; it takes no decision — fix "
+            "what it confirmed and commit, and that closes both rounds"
+        )
+    return f"run {run_dir.name} is in the fix band; it takes no decision"
+
+
 def cmd_fork(args):
     """Print the fork a round's report deliberately does not carry, for the hook that hands the
     model its context. Silent where nothing is owed: the report says the round is closed, and a
@@ -730,7 +835,7 @@ def cmd_fork(args):
                 f"{_round.FORK_WHY_MIN_CHARS} characters; got {len(why)}"
             )
         if not _round.fork_owed(run_dir, meta):
-            raise ValueError(f"run {run_dir.name} crossed no threshold; no fork is owed")
+            raise ValueError(decision_refusal(run_dir, meta))
         # The record is the launching chat's alone: a co-tenant chat (a worker the gate refused
         # a fixing pass to included) must not write the fork that unblocks its own gate. The
         # asking chat is the environment's unless the caller names one, never argv alone.
@@ -980,5 +1085,3 @@ def report_late_review(spec, duration_ms, median_ms):
     if line:
         print(line)
     return line
-
-

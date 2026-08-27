@@ -71,21 +71,26 @@ for long_word in ("a" * 48, "a" * 60):
 # never sees. A round merely still owing an answer keeps the plain word — the loud one read off
 # "no fixes recorded" is what put NOT FINISHED in front of Egor over a round whose fixes were
 # landing at that moment.
-assert rb.REPORT_FRAME_WORDS == (
-    "review", "review · NOT FINISHED", "review · NO PANEL", "review · STALE", "bench",
-), rb.REPORT_FRAME_WORDS
-frame_shape = re.compile(
-    r"=+ (?:bench|review(?: · (?:NOT FINISHED|NO PANEL|STALE · \d{1,2} [A-Za-z]{3}))?) =+"
+assert (rb.REPORT_BLOCKED_SUFFIX, rb.REPORT_NO_PANEL_SUFFIX, rb.REPORT_STALE_SUFFIX) == (
+    "NOT FINISHED", "NO PANEL", "STALE",
 )
-for state_word in rb.REPORT_FRAME_WORDS:
-    # The stale word is the one that carries a date, and it is never rendered without one.
-    rendered = rb.report.report_frame_header(
-        f"{state_word} · 19 Aug" if state_word == rb.REPORT_STALE_WORD else state_word
-    )
-    assert len(rendered) == 50, rendered
-    assert frame_shape.fullmatch(rendered), rendered
-    assert not re.fullmatch(r"={10,}", rendered), rendered
-assert len(set(rb.REPORT_FRAME_WORDS)) == len(rb.REPORT_FRAME_WORDS)
+assert rb.REPORT_BENCH_WORD == "bench"
+# A review block names its ROUND in the header, and the state suffixes hang off that: a reader
+# holding one of a chain's two blocks has to be able to tell which without reaching the rows.
+assert rb.round.round_frame_word(1) == "review · round 1", rb.round.round_frame_word(1)
+assert rb.round.round_frame_word(2) == "review · round 2", rb.round.round_frame_word(2)
+frame_shape = re.compile(
+    r"=+ (?:bench|review · round \d+"
+    r"(?: · (?:NOT FINISHED|NO PANEL|STALE · \d{1,2} [A-Za-z]{3}))?) =+"
+)
+for round_number in (1, rb.ROUND_BUDGET):
+    for suffix in ("", "NOT FINISHED", "NO PANEL", "STALE · 19 Aug"):
+        word = rb.round.round_frame_word(round_number)
+        rendered = rb.report.report_frame_header(f"{word} · {suffix}" if suffix else word)
+        assert len(rendered) == 50, rendered
+        assert frame_shape.fullmatch(rendered), rendered
+        assert not re.fullmatch(r"={10,}", rendered), rendered
+assert frame_shape.fullmatch(rb.report.report_frame_header(rb.REPORT_BENCH_WORD))
 # No frame is built out of a constant any more: the word is picked per run, so a state word that
 # reached no emitter is a state no report can wear.
 assert not [name for name in vars(rb) if name.startswith("REPORT_") and name.endswith("_BEGIN")], \
@@ -101,8 +106,19 @@ rb.round.REPORT_END = "FIXTURE-REVIEW-REPORT-END"
 FIXTURE_FRAME_PREFIX = "FIXTURE-REVIEW-REPORT-BEGIN"
 
 
-def fixture_frame(word=rb.REPORT_FRAME_WORD):
-    return rb.report.report_frame_header(word)
+def round_word(suffix="", number=1):
+    """The frame word a review block of round `number` wears, with a state suffix where one
+    applies. Everything the suite asserts a header against goes through this."""
+    word = rb.round.round_frame_word(number)
+    return f"{word} · {suffix}" if suffix else word
+
+
+def fixture_frame(suffix=None, number=1):
+    """The frame a review block of round `number` opens with, wearing the state suffix the caller
+    names.
+    """
+    word = rb.round.round_frame_word(number)
+    return rb.report.report_frame_header(f"{word} · {suffix}" if suffix else word)
 
 
 assert rb.round.TRIAGE_PENDING == "REVIEW-TRIAGE-PENDING"
@@ -1423,7 +1439,7 @@ with contextlib.redirect_stdout(marked_report):
     rb.emit_report(max_tier_dir, max_tier_meta, [])
 marked_lines = marked_report.getvalue().splitlines()
 # Weeks past its own `finished`: STALE, dated by that finish, and nothing else about the run matters.
-assert marked_lines[0] == fixture_frame(f"{rb.REPORT_STALE_WORD} · 30 Jul"), marked_lines
+assert marked_lines[0] == fixture_frame(f"{rb.REPORT_STALE_SUFFIX} · 30 Jul"), marked_lines
 assert marked_lines[-1] == rb.round.REPORT_END, marked_lines
 # `record --no-corpus` leaves only the receipt behind, and its rows are the triage's one copy:
 # a re-render of the run — the report hook recovering a capture whose closing rule the
@@ -1436,7 +1452,7 @@ receipt_report = io.StringIO()
 with contextlib.redirect_stdout(receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 receipt_lines = receipt_report.getvalue().splitlines()
-assert receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_WORD} · 30 Jul"), receipt_lines
+assert receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_SUFFIX} · 30 Jul"), receipt_lines
 assert receipt_lines[-1] == rb.round.REPORT_END, receipt_lines
 assert any(line.startswith("confirmed:") for line in receipt_lines), receipt_lines
 # A round still owing an answer keeps the ordinary word: the loud one read off "no fixes
@@ -1467,7 +1483,7 @@ clean_receipt_report = io.StringIO()
 with contextlib.redirect_stdout(clean_receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 clean_receipt_lines = clean_receipt_report.getvalue().splitlines()
-assert clean_receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_WORD} · 30 Jul"), clean_receipt_lines
+assert clean_receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_SUFFIX} · 30 Jul"), clean_receipt_lines
 assert clean_receipt_lines[-1] == rb.round.REPORT_END, clean_receipt_lines
 # A clean triage owes nothing, and the two rows that speak only when something is owed go quiet.
 assert not [line for line in clean_receipt_lines
@@ -1705,7 +1721,10 @@ shape_report = rb.report_lines(shape_dir, shape_meta, shape_verdicts)
 assert shape_report == [
     "T2:           25.0 min / 15.0 min kimi + 2.0 min verify · 8.0 min LOST",
     "confirmed:    P1 1 · P2 1 · P3 0 · 2 total",
-    "fixes:        NOT APPLIED — pending",
+    # Two confirmed is the `fix` band: no decision is owed, and the commit that carries the fixes
+    # is the whole of what closes the round.
+    "fixes:        fix — the commit closes",
+    "next:         none",
     # Above `rejected:` and per model, because the two rows are one story: who threw the claims
     # out, and how many. A tally of the panel's own would name the wrong judge.
     "verifier:     deepseek 3/1 · qwen37plus 1/0 · 1 unchecked",
@@ -1723,6 +1742,9 @@ assert shape_report == [
     # for twice, and a bare `not run` row beside the failure it was skipped for says nothing.
     "failed:       grok ×2  server error   0.8 min",
     "              gem-pro  killed · cap  15.0 min",
+    # Last line, always, and the chain's id rather than the run's: it is what a reader types back
+    # into a command, and a round 2 hands back the id of the chain both its rounds answer for.
+    "id:           20260822T000000Z-shape",
 ], shape_report
 
 
@@ -1945,7 +1967,9 @@ assert "confirmed:    P1 0 · P2 1 · P3 0 · 1 total" in done_report, done_repo
     {"state": "done", "fixed": 0, "false_positives": 0, "confirmed": 1,
      "triage": rb.triage_digest(quiet_rows_verdicts)}
 ))
-assert "fixes:        0 of 1" in rb.report_lines(
+# A receipt answering for fewer findings than the triage confirmed leaves the round unanswered, so
+# the row stands — in the one vocabulary, which has no spelling for how far the pass got.
+assert "fixes:        fix — the commit closes" in rb.report_lines(
     quiet_rows_dir, quiet_rows_meta, quiet_rows_verdicts
 ), rb.report_lines(quiet_rows_dir, quiet_rows_meta, quiet_rows_verdicts)
 (quiet_rows_dir / rb.FIX_RECEIPT).unlink()
@@ -1953,19 +1977,17 @@ assert "fixes:        0 of 1" in rb.report_lines(
 assert rb.report_lines(quiet_rows_dir, quiet_rows_meta, [])[1] == "confirmed:    0", \
     rb.report_lines(quiet_rows_dir, quiet_rows_meta, [])
 
-# The fork — which way the round goes from here — is the model's to act on and Egor does not read
-# it, so it leaves the block and `fork` hands it over. The two dials and the wording are the
-# commit gate's alone (shared-invariants row af), so the verdict is taken from a stub of it.
-fork_gate = work / "report-fork-gate.sh"
-fork_gate.write_text(
-    "#!/bin/bash\n"
-    '[ "$1" = escalation-verdict ] || exit 1\n'
-    '[ "${2:-0}" -ge 3 ] || exit 1\n'
-    "printf 'stub fork. Pick one and carry it out:\\n'\n"
-)
-fork_gate.chmod(0o755)
-fork_gate_before = rb.round.ESCALATION_GATE
-rb.round.ESCALATION_GATE = fork_gate
+# The decision — which way the round goes from here — is the model's to act on and Egor does not
+# read it, so it leaves the block and `fork` hands it over. The bands that decide whether one is
+# owed live in rbench and are asked of no hook: a copy of them anywhere else is a round that earns
+# a decision in one voice and closes itself in the other.
+assert rb.round.round_band(0, rb.ROUND_FIX_MAX) == rb.BAND_FIX
+assert rb.round.round_band(0, rb.ROUND_FIX_MAX + 1) == rb.BAND_DECIDE
+assert rb.round.round_band(0, rb.ROUND_HARD_MIN) == rb.BAND_HARD
+assert rb.round.round_band(rb.HANDOFF_P1_STOP, 3) == rb.BAND_HARD
+assert rb.round.round_band(rb.HANDOFF_P1_STOP - 1, 3) == rb.BAND_FIX
+assert not rb.round.round_decision_owed(0, rb.ROUND_FIX_MAX)
+assert rb.round.round_decision_owed(0, rb.ROUND_FIX_MAX + 1)
 fork_dir = work / "report-fork-benches" / "20260822T000000Z-fork"
 fork_dir.mkdir(parents=True)
 fork_meta = {
@@ -1986,14 +2008,31 @@ fork_verdicts = [
     "".join(json.dumps(row) + "\n" for row in fork_verdicts)
 )
 owed_report = rb.report_lines(fork_dir, fork_meta, fork_verdicts)
-# The block says what the GATE says, in one row and in the gate's own words: a sentence of this
-# file's own said "second review owed" over the verdict that withholds the waiver and over the one
-# that leaves `waive` open alike.
-assert "round:        stub fork" in owed_report, owed_report
-assert not [line for line in owed_report if "second review owed" in line], owed_report
+# Three confirmed P1s is the hard band: the block says a decision comes first, and the decision
+# settles whether round 2 follows. The decision text itself stays out — `review-bench fork` hands
+# it to the model, which is who acts on it.
+assert f"fixes:        decision first — {rb.DECISION_MENU}" in owed_report, owed_report
+assert "next:         round 2 by decision" in owed_report, owed_report
 assert not [line for line in owed_report if "Pick one" in line], owed_report
-assert rb.round_fork_text(fork_dir, fork_meta, fork_verdicts).startswith("stub fork."), \
-    rb.round_fork_text(fork_dir, fork_meta, fork_verdicts)
+assert rb.round_fork_text(fork_dir, fork_meta, fork_verdicts).startswith(
+    f"{rb.HANDOFF_P1_STOP} confirmed P1s, 3 confirmed findings"
+), rb.round_fork_text(fork_dir, fork_meta, fork_verdicts)
+# The middle band asks for the same four words, and never for a reason to keep the code: that
+# demand belongs to the band where `fix` is the exception.
+assert rb.round_decision_ask(0, rb.ROUND_FIX_MAX + 1).startswith(
+    f"{rb.ROUND_FIX_MAX + 1} confirmed findings in one round")
+assert "worth keeping as it stands" not in rb.round_decision_ask(0, rb.ROUND_FIX_MAX + 1)
+assert "worth keeping as it stands" in rb.round_decision_ask(0, rb.ROUND_HARD_MIN)
+(fork_dir / rb.FORK_RECORD).write_text(json.dumps({
+    "choice": "simplify", "why": "the cluster is one abstraction pulled apart " * 3,
+    "session": "chat-1", "at": rb.iso_now(),
+}))
+hard_decided_report = rb.report_lines(fork_dir, fork_meta, fork_verdicts)
+assert not [line for line in hard_decided_report if line.startswith("fixes:")], \
+    hard_decided_report
+assert (f"next:         round 2 required (P1 ≥ {rb.HANDOFF_P1_STOP}, "
+        f"confirmed ≥ {rb.ROUND_HARD_MIN})") in hard_decided_report, hard_decided_report
+(fork_dir / rb.FORK_RECORD).unlink()
 fork_state = work / "report-fork-state"
 (fork_state / "benches").mkdir(parents=True)
 os.replace(fork_dir, fork_state / "benches" / fork_dir.name)
@@ -2001,7 +2040,8 @@ os.environ["WORKER_STATS_DIR"] = str(fork_state)
 fork_output = io.StringIO()
 with contextlib.redirect_stdout(fork_output):
     assert rb.cmd_fork(argparse.Namespace(run_id=fork_dir.name)) == 0
-assert fork_output.getvalue().startswith("stub fork."), fork_output.getvalue()
+assert fork_output.getvalue().startswith(
+    f"{rb.HANDOFF_P1_STOP} confirmed P1s"), fork_output.getvalue()
 # A round that owes nothing has no fork, and printing one is work nobody asked for.
 closed_fork = fork_state / "benches" / "20260822T000001Z-closed"
 closed_fork.mkdir()
@@ -2024,37 +2064,189 @@ assert closed_output.getvalue() == "", closed_output.getvalue()
 ))
 assert rb.round_fork_text(closed_fork, closed_meta) == rb.REPORT_BLOCKED_FORK, \
     rb.round_fork_text(closed_fork, closed_meta)
-assert rb.report_frame_word(closed_fork, closed_meta) == rb.REPORT_BLOCKED_WORD
+assert rb.report_frame_word(closed_fork, closed_meta) == (
+    f"{rb.round.round_frame_word(1)} · {rb.REPORT_BLOCKED_SUFFIX}")
 blocked_report = rb.report_lines(closed_fork, closed_meta)
-assert "fixes:        NOT APPLIED — the scope is wrong" in blocked_report, blocked_report
+# A pass that stopped says so with its reason and no state word: `blocked` is a ledger key, and
+# `not applied` and `pending` are in no report line at all any more.
+assert "fixes:        stopped — the scope is wrong" in blocked_report, blocked_report
+assert not [line for line in blocked_report
+            if "NOT APPLIED" in line or "blocked" in line], blocked_report
 assert not [line for line in blocked_report if "not the fixer's" in line], blocked_report
-# A gate nobody could ask says so in BOTH places. Filtered out of either, a round nothing could
-# price printed no row and handed over no fork, which reads exactly like a round that owes
-# nothing — the silent clean bill the unknown wording exists to end.
-rb.round.ESCALATION_GATE = work / "missing-escalation-gate"
-unknown_report = rb.report_lines(fork_state / "benches" / fork_dir.name, fork_meta, fork_verdicts)
-assert [line for line in unknown_report if line.startswith("round:") and "unknown" in line], \
-    unknown_report
-assert rb.round_fork_text(
-    fork_state / "benches" / fork_dir.name, fork_meta, fork_verdicts
-) == rb.ESCALATION_UNKNOWN
-rb.round.ESCALATION_GATE = fork_gate_before
 os.environ.pop("WORKER_STATS_DIR", None)
+
+# The block names its ROUND in the frame, and a round 2 says what it is read against. Told apart
+# by the rows alone, a reader holding one of a chain's two blocks has to reach `before:` to know
+# which one he has — and both carry the CHAIN's id, so what he types back into a command is one id
+# and not two to pick between.
+chain_state = work / "round-chain-state"
+(chain_state / "benches").mkdir(parents=True)
+os.environ["WORKER_STATS_DIR"] = str(chain_state)
+
+
+def chain_round(run_id, number=None, chain=None, confirmed=1, severity="P2"):
+    directory = chain_state / "benches" / run_id
+    directory.mkdir()
+    meta = {
+        "run_id": run_id, "tier": "T1", "raters": ["sol-low"],
+        "rater_runs": [{"rater": "sol-low", "side": "codex", "exit_code": 0,
+                        "findings": confirmed, "duration_ms": 30_000}],
+        "started": "2026-08-22T00:00:00Z", "finished": rb.iso_now(),
+    }
+    if number is not None:
+        meta["round"] = number
+    if chain is not None:
+        meta["chain"] = chain
+    (directory / "meta.json").write_text(json.dumps(meta))
+    (directory / "findings-sol-low.jsonl").write_text("".join(
+        json.dumps({"file": "src/a.py", "line": index + 1, "severity": severity,
+                    "summary": "real"}) + "\n"
+        for index in range(confirmed)
+    ))
+    rows = [{"rater": "sol-low", "idx": index, "verdict": "confirmed"}
+            for index in range(confirmed)]
+    (directory / "verdicts.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows))
+    return directory, meta, rows
+
+
+def chain_value(lines, label):
+    return next((line[len(label):].strip() for line in lines if line.startswith(label)), None)
+
+
+chain_one, chain_one_meta, chain_one_rows = chain_round(
+    "20260822T010000Z-chainone", confirmed=rb.ROUND_FIX_MAX + 1)
+chain_one_lines = rb.report_lines(chain_one, chain_one_meta, chain_one_rows)
+assert rb.report_frame_word(chain_one, chain_one_meta) == "review · round 1", \
+    rb.report_frame_word(chain_one, chain_one_meta)
+# A first round has nothing before it, so neither row is printed: a `before:` reading 0 would say
+# the round it answers found nothing.
+assert chain_value(chain_one_lines, "before:") is None, chain_one_lines
+assert chain_value(chain_one_lines, "decision:") is None, chain_one_lines
+assert chain_one_lines[-1] == f"{'id:':<14}{chain_one.name}", chain_one_lines
+assert chain_value(chain_one_lines, "fixes:") == f"decision first — {rb.DECISION_MENU}", \
+    chain_one_lines
+# The middle band leaves the number of rounds to the decision, so `next:` says who settles it.
+assert chain_value(chain_one_lines, "next:") == "round 2 by decision", chain_one_lines
+(chain_one / rb.FORK_RECORD).write_text(json.dumps({
+    "choice": "simplify", "why": "the cluster is one abstraction pulled apart " * 3,
+    "session": "chat-1", "at": rb.iso_now(),
+}))
+chain_one_decided = rb.report_lines(chain_one, chain_one_meta, chain_one_rows)
+assert chain_value(chain_one_decided, "fixes:") is None, chain_one_decided
+assert chain_value(chain_one_decided, "next:") == "round 2 by decision", chain_one_decided
+chain_two, chain_two_meta, chain_two_rows = chain_round(
+    "20260822T020000Z-chaintwo", number=rb.ROUND_BUDGET, chain=chain_one.name, confirmed=2)
+chain_two_lines = rb.report_lines(chain_two, chain_two_meta, chain_two_rows)
+assert rb.report_frame_word(chain_two, chain_two_meta) == f"review · round {rb.ROUND_BUDGET}", \
+    rb.report_frame_word(chain_two, chain_two_meta)
+assert rb.round.chain_id(chain_two, chain_two_meta) == chain_one.name
+assert rb.round.chain_id(chain_one, chain_one_meta) == chain_one.name
+assert [row[0] for row in rb.round.chain_rounds(chain_two, chain_two_meta)] == [chain_one], \
+    rb.round.chain_rounds(chain_two, chain_two_meta)
+# The `before:` value is round 1's own `confirmed:` line, rendered by the very call that wrote it.
+assert chain_value(chain_two_lines, "before:") == rb.report.round_one_tally(
+    chain_one, chain_one_meta), chain_two_lines
+assert chain_value(chain_two_lines, "decision:") == "simplify (round 1)", chain_two_lines
+assert chain_value(chain_two_lines, "fixes:") == "fix — the commit closes both rounds", \
+    chain_two_lines
+assert chain_value(chain_two_lines, "next:") == "none — last round", chain_two_lines
+# The text `fork` hands the model over a round 2 is the spent budget — while that round still owes
+# its fixing pass. Once the pass has answered, or where there was nothing to fix, the round is
+# closed and the fork is silent: printed anyway it tells a finished round to fix what is confirmed
+# and leave it uncommitted, which is work nobody asked for.
+assert rb.report.round_fork_text(chain_two, chain_two_meta, chain_two_rows) == \
+    rb.ROUND_BUDGET_SPENT, rb.report.round_fork_text(chain_two, chain_two_meta, chain_two_rows)
+(chain_two / rb.FIX_RECEIPT).write_text(json.dumps(
+    {"state": "done", "fixed": 2, "false_positives": 0}
+))
+assert rb.report.round_fork_text(chain_two, chain_two_meta, chain_two_rows) == "", \
+    rb.report.round_fork_text(chain_two, chain_two_meta, chain_two_rows)
+(chain_two / rb.FIX_RECEIPT).unlink()
+chain_clean, chain_clean_meta, chain_clean_rows = chain_round(
+    "20260822T021000Z-chainclean", number=rb.ROUND_BUDGET, chain=chain_one.name, confirmed=0)
+assert rb.report.round_fork_text(chain_clean, chain_clean_meta, chain_clean_rows) == "", \
+    rb.report.round_fork_text(chain_clean, chain_clean_meta, chain_clean_rows)
+# And a round 2 takes no decision, so `fork --choice` refuses it by THAT reason and not by a band
+# it was never in.
+try:
+    rb.report.cmd_fork(argparse.Namespace(
+        run_id=chain_two.name, check=False, choice="simplify", session="chat-1",
+        why="the second round cannot be decided any further " * 3,
+    ))
+    raise AssertionError("a round 2 recorded a decision")
+except ValueError as chain_two_error:
+    assert str(chain_two_error) == (
+        f"run {chain_two.name} is round 2, the last round there is; it takes no decision — fix "
+        "what it confirmed and commit, and that closes both rounds"
+    ), str(chain_two_error)
+# Last row of both blocks, and the same id in both: the two rounds are one piece of work.
+assert chain_two_lines[-1] == f"{'id:':<14}{chain_one.name}", chain_two_lines
+# A round 2 whose link names a round this store no longer holds answers with its own id rather
+# than with nothing — an id is what a reader types back into a command.
+chain_orphan, chain_orphan_meta, chain_orphan_rows = chain_round(
+    "20260822T030000Z-chainorphan", number=rb.ROUND_BUDGET, chain="20260101T000000Z-gone")
+assert rb.report.round_one_of(chain_orphan, chain_orphan_meta) is None
+assert rb.round.chain_id(chain_orphan, chain_orphan_meta) == chain_orphan.name, \
+    rb.round.chain_id(chain_orphan, chain_orphan_meta)
+chain_orphan_lines = rb.report_lines(chain_orphan, chain_orphan_meta, chain_orphan_rows)
+assert chain_value(chain_orphan_lines, "before:") is None, chain_orphan_lines
+assert chain_orphan_lines[-1] == f"{'id:':<14}{chain_orphan.name}", chain_orphan_lines
+# A link naming the run itself is round 1 wearing a chain, not a round with something before it:
+# followed, it would print the round's own tally as what it is measured against.
+chain_self, chain_self_meta, chain_self_rows = chain_round(
+    "20260822T040000Z-chainself", chain="20260822T040000Z-chainself")
+assert rb.report.round_one_of(chain_self, chain_self_meta) is None
+chain_self_lines = rb.report_lines(chain_self, chain_self_meta, chain_self_rows)
+assert chain_value(chain_self_lines, "before:") is None, chain_self_lines
+assert chain_value(chain_self_lines, "decision:") is None, chain_self_lines
+assert chain_self_lines[-1] == f"{'id:':<14}{chain_self.name}", chain_self_lines
+os.environ.pop("WORKER_STATS_DIR", None)
+
+# A value too long for the line wraps INTO the value column and never back to the left margin,
+# breaking only between its ` · ` items: a continuation under the labels reads as a row whose
+# label nobody can look up, and a pair split down the middle says nothing on either line.
+wrap_items = [f"oc-model-{index} {index}/9" for index in range(8)]
+# Pinned, like the narrow block below it: the value is 133 characters, and read off the ambient
+# terminal this asserts that a wide one wraps — which it does not.
+os.environ["COLUMNS"] = "80"
+try:
+    wrap_lines = rb.report.report_block_lines([("found:", " · ".join(wrap_items), True)])
+    wrap_fixed = rb.report.report_block_lines([("failed:", " · ".join(wrap_items), False)])
+finally:
+    os.environ.pop("COLUMNS")
+wrap_column = max(rb.report.REPORT_LABEL_WIDTH, len("found:") + 1)
+assert len(wrap_lines) > 1, wrap_lines
+assert wrap_lines[0][:wrap_column].strip() == "found:", wrap_lines
+for wrap_line in wrap_lines[1:]:
+    assert wrap_line[:wrap_column] == " " * wrap_column, wrap_lines
+    assert wrap_line[wrap_column] != " ", wrap_lines
+assert [item for line in wrap_lines
+        for item in line[wrap_column:].split(" · ")] == wrap_items, wrap_lines
+# An unwrappable row is one line whatever its length: the `failed:` rows are columns of their own
+# and a break inside one puts a duration under a cell name.
+assert len(wrap_fixed) == 1, wrap_fixed
 
 # A panel where no cell completed has no findings to report and nothing to say about fixes; the
 # state is the frame word's to carry, and an explicit `--raters` bench is not a review at all.
 no_panel_meta = dict(leg_meta, rater_runs=[
     {"rater": "opus-medium", "side": "claude", "not_run": True}], raters=["opus-medium"])
-assert rb.report_frame_word(duration_dir, no_panel_meta) == rb.REPORT_NO_PANEL_WORD
+assert rb.report_frame_word(duration_dir, no_panel_meta) == (
+    f"{rb.round.round_frame_word(1)} · {rb.REPORT_NO_PANEL_SUFFIX}")
 # A watchdog kill has NO word of its own. It is stated on the `failed:` row of the cell it killed,
 # and how much of the diff the survivors covered is the triage receipt's answer, not the frame's —
 # a run the kill left nothing behind on is already NO PANEL by the rule above.
 assert rb.report_frame_word(
-    duration_dir, dict(leg_meta, timed_out=True, finished=rb.iso_now())) == rb.REPORT_FRAME_WORD
-assert rb.report_frame_word(duration_dir, dict(
+    duration_dir, dict(leg_meta, timed_out=True, finished=rb.iso_now())
+) == rb.round.round_frame_word(1)
+untiered_meta = dict(
     leg_meta, tier=None, raters=["sol-low"], rater_runs=[
         {"rater": "sol-low", "side": "codex", "exit_code": 0, "findings": 0}],
-)) == rb.REPORT_BENCH_WORD
+)
+assert rb.report_frame_word(duration_dir, untiered_meta) == rb.REPORT_BENCH_WORD
+untiered_lines = rb.report_lines(duration_dir, untiered_meta)
+assert not [line for line in untiered_lines if line.startswith(("fixes:", "next:"))], \
+    untiered_lines
 # STALE is a clock and nothing else: a block older than REPORT_STALE_HOURS is not about the tree in
 # front of the reader. Content and delivery checks were tried and called a block stale right after
 # its own fixing pass moved the tree — a reader cannot tell that from a report out of the past.
@@ -2063,19 +2255,19 @@ stale_dir.mkdir(parents=True)
 stale_fresh = (rb.store.utc_now() - timedelta(hours=rb.REPORT_STALE_HOURS - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 stale_meta = dict(leg_meta, run_id=stale_dir.name, finished=stale_fresh)
 (stale_dir / "meta.json").write_text(json.dumps(stale_meta))
-assert rb.report_frame_word(stale_dir, stale_meta) == rb.REPORT_FRAME_WORD
+assert rb.report_frame_word(stale_dir, stale_meta) == round_word()
 # The date is the run's own finish in the READER's zone, because his clock is what he compares it
 # against — the record keeps UTC.
 old_finish = "2026-08-22T20:01:00Z"
 stale_meta = dict(stale_meta, finished=old_finish)
-assert rb.report_frame_word(stale_dir, stale_meta) == f"{rb.REPORT_STALE_WORD} · 23 Aug", \
+assert rb.report_frame_word(stale_dir, stale_meta) == round_word("STALE · 23 Aug"), \
     rb.report_frame_word(stale_dir, stale_meta)
 # A delivery mark or a moved tree changes nothing: the clock alone answers.
 (stale_dir / rb.DELIVERY_MARK).write_text(json.dumps({"state": "done", "queued": rb.iso_now()}))
 assert rb.report_frame_word(stale_dir, dict(stale_meta, finished=stale_fresh), "done") \
-    == rb.REPORT_FRAME_WORD
+    == round_word()
 (stale_dir / rb.DELIVERY_MARK).unlink()
-assert rb.report_frame_word(stale_dir, stale_meta, "blocked") == rb.REPORT_BLOCKED_WORD
+assert rb.report_frame_word(stale_dir, stale_meta, "blocked") == round_word("NOT FINISHED")
 # The tree half of the same rule, and the half a regression would reintroduce: the reviewed
 # repository has moved on since the run recorded its commit, and the word is still the clock's.
 stale_repo = work / "stale-frame-repo"
@@ -2092,14 +2284,14 @@ stale_reviewed = subprocess.run(
 (stale_repo / "a.py").write_text("x = 2\n")
 moved_meta = dict(stale_meta, repo=str(stale_repo), commit=stale_reviewed)
 assert rb.report_frame_word(
-    stale_dir, dict(moved_meta, finished=stale_fresh)) == rb.REPORT_FRAME_WORD, \
+    stale_dir, dict(moved_meta, finished=stale_fresh)) == round_word(), \
     rb.report_frame_word(stale_dir, dict(moved_meta, finished=stale_fresh))
-assert rb.report_frame_word(stale_dir, moved_meta) == f"{rb.REPORT_STALE_WORD} · 23 Aug", \
+assert rb.report_frame_word(stale_dir, moved_meta) == round_word("STALE · 23 Aug"), \
     rb.report_frame_word(stale_dir, moved_meta)
 # A run that recorded no finish has no date to be read against, and this word is never rendered
 # without one: undated it says a block is old and refuses to say how old.
 undated_stale_meta = dict(stale_meta, finished=None, finished_at=None)
-assert rb.report_frame_word(stale_dir, undated_stale_meta) == rb.REPORT_FRAME_WORD
+assert rb.report_frame_word(stale_dir, undated_stale_meta) == round_word()
 
 # The terminal's width, not the author's: continuation lines indent to the value column and break
 # only between ` · ` items, and a `name n/m` pair is never split across two lines.
@@ -7080,17 +7272,20 @@ def sr_store():
 
 def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
            triaged=True, timed_out=False, repo=None, report=None, sealed_at=None,
-           errored=False):
+           errored=False, number=None, chain=None, decision=None):
     directory = benches / run_id
     directory.mkdir()
     meta = {
         "run_id": run_id, "repo": str(repo or sr_repo), "session": session,
         "worktree": True, "reviewed": dict(reviewed or {}),
-        # A real run always carries one, and the round budget needs it: two rounds of one piece of
-        # work sit days apart, and a run of the same scope from another month is not the pass that
-        # answers this one.
         "finished": rb.iso_now(),
     }
+    # Which round of its chain this run is, exactly as the launcher stamps it: no reader derives
+    # the number any more, so a fixture that leaves it out IS a first round.
+    if number is not None:
+        meta["round"] = number
+    if chain is not None:
+        meta["chain"] = chain
     if sealed_at is not None:
         meta["sealed_at"] = sealed_at
     if scope is not None:
@@ -7108,6 +7303,11 @@ def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
              "errored": True, "stderr": "rater produced no parseable finding"},
         ]
     (directory / "meta.json").write_text(json.dumps(meta))
+    if decision is not None:
+        (directory / rb.FORK_RECORD).write_text(json.dumps({
+            "choice": decision, "why": "recorded by the fixture " * 4,
+            "session": session, "at": rb.iso_now(),
+        }))
     if report is not None:
         (directory / rb.REPORT_RECEIPT).write_text(json.dumps(report))
     elif triaged:
@@ -7327,123 +7527,39 @@ assert sr_answer("src/a.py") == "debt 1 other"
 # Nothing in debt is nothing to waive.
 assert sr_waive("src/blob.bin") == (1, "waive: nothing here is in debt")
 
-# A round that came back badly is not a round a chat may waive away: the run holding the debt path
-# carries its own tally, and the P1 threshold — the one the fixing pass stops at — locks it.
-sr_locked = sr_store()
-sr_run(sr_locked, "20260101T000100Z-aaaaaaa", sr_blobs,
+# A round that came back badly is still a round a chat may waive: the tally decides which BAND the
+# round is in and what the decision has to be, and nothing in the debt line withholds a waiver. The
+# state word the P1 lock used to add is gone with it, at every tally.
+sr_hard = sr_store()
+sr_run(sr_hard, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-assert sr_answer("src/a.py") == "debt 1 other locked"
-sr_rc, sr_said = sr_waive("src/a.py", reason="not now")
-assert sr_rc == 1 and sr_said.startswith("waive: refused"), (sr_rc, sr_said)
-# The tally alone does NOT lock, however far past its own threshold it runs: that round is owed a
-# second review in the fork's voice, and the waiver may still answer it — a waiver records its
-# reason, so what is left is a judged skip and never a silent one.
+assert sr_answer("src/a.py") == "debt 1 other"
+assert sr_waive("src/a.py", reason="Egor decided this ships; the reason is on record")[0] == 0
 sr_findings_only = sr_store()
 sr_run(sr_findings_only, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 8, "confirmed_by_severity": {"P1": 0}})
 assert sr_answer("src/a.py") == "debt 1 other"
 assert sr_waive("src/a.py", reason="eight small ones, each judged")[0] == 0
-# Under the threshold it is ordinary debt, waiver and all.
 sr_soft = sr_store()
 sr_run(sr_soft, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
 assert sr_answer("src/a.py") == "debt 1 other"
 assert sr_waive("src/a.py", reason="tiny")[0] == 0
-# The lock belongs to the run and not to the path: the follow-up review that reads the current
-# content settles the debt outright, which is what the fork asks for — but only a review of the
-# full original scope is that follow-up. A later run narrower than the locked one takes no path
-# back from it, or a one-path rerun would discharge a second review by answering for a corner of
-# it, and a waiver takes none at any width.
+# The follow-up review that reads the current content settles the debt outright, whatever the round
+# before it found.
 sr_cleared = sr_store()
 sr_run(sr_cleared, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-assert sr_answer("src/a.py") == "debt 1 other locked"
+assert sr_answer("src/a.py") == "debt 1 other"
 sr_run(sr_cleared, "20260101T000200Z-bbbbbbb", {"src/a.py": sr_sha("src/a.py")})
-assert sr_answer("src/a.py") == "debt 1 other locked"
-# And the refusal names what is locked and which round has to answer for it: a caller told only
-# that something is locked has nothing to act on.
-sr_rc, sr_said = sr_waive("src/a.py", reason="the narrow rerun will do")
-assert sr_rc == 1 and "src/a.py" in sr_said and "20260101T000100Z-aaaaaaa" in sr_said, sr_said
-sr_run(sr_cleared, "20260101T000300Z-ccccccc", dict(sr_blobs, **{"src/a.py": sr_sha("src/a.py")}))
 assert sr_answer("src/a.py") == "none"
-
-# The round budget lets a lock go whole (row ap): the second round over a scope is offered no third
-# pass, so a lock demanding one is a gate nothing opens — the waiver is refused for being locked and
-# the review the refusal names is the pass the budget spent.
-sr_spent = sr_store()
-sr_first_round = sr_run(sr_spent, "20260101T000100Z-aaaaaaa", sr_blobs,
-                        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-(sr_first_round / rb.FIX_RECEIPT).write_text(json.dumps({"state": "done", "fixed": 2}))
-sr_run(sr_spent, "20260101T000200Z-bbbbbbb", sr_blobs,
-       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-assert sr_answer("src/a.py") == "debt 1 other"
-assert sr_waive("src/a.py", reason="the budget of two is spent")[0] == 0
-# A round the first one never fixed still locks: only a `done` receipt spends the budget.
-sr_stopped = sr_store()
-sr_stopped_first = sr_run(sr_stopped, "20260101T000100Z-aaaaaaa", sr_blobs,
-                          report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-(sr_stopped_first / rb.FIX_RECEIPT).write_text(
-    json.dumps({"state": "blocked", "reason": "P1 threshold"}))
-sr_run(sr_stopped, "20260101T000200Z-bbbbbbb", sr_blobs,
-       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-assert sr_answer("src/a.py") == "debt 1 other locked"
-
-# Egor's own word discharges a lock, and nothing else does: the decree is the ONE door out of the
-# withheld waiver, it is recorded on the round it unlocks, and it is loud everywhere that round is
-# read — a model that ran this on its own judgment is a round forgiving itself, and the only defence
-# against that is that the reason is in front of Egor in the report he reads.
-
-
-def sr_decree(run_id, reason="Egor took the fork: ship it"):
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        rc = rb.cmd_decree(argparse.Namespace(run_id=run_id, reason=reason))
-    return rc, out.getvalue().strip()
-
-
-sr_decreed = sr_store()
-sr_decreed_dir = sr_run(sr_decreed, "20260101T000100Z-aaaaaaa", sr_blobs,
-                        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-assert sr_answer("src/a.py") == "debt 1 other locked"
-assert sr_decree("nobody-launched-this")[0] == 1
-assert sr_decree("20260101T000100Z-aaaaaaa", reason="   ")[0] == 1
-sr_rc, sr_said = sr_decree("20260101T000100Z-aaaaaaa")
-assert sr_rc == 0, sr_said
-assert "decree: Egor took the fork: ship it" in sr_said, sr_said
-assert "is discharged" in sr_said, sr_said
-# Once and once only: a second one over the same round would be a reason nobody can trace back.
-assert sr_decree("20260101T000100Z-aaaaaaa", reason="and again")[0] == 1
-# The one-line answer names the discharge where it named the lock. It has no room for the reason,
-# and read as an ordinary unlocked round the decree would be invisible to the two surfaces that act
-# on this line — which is the whole defence against a decree nobody authorised.
-assert sr_answer("src/a.py") == "debt 1 other decreed"
-sr_rc, sr_said = sr_waive("src/a.py", reason="decreed above")
-assert sr_rc == 0, sr_said
-assert "decree: 20260101T000100Z-aaaaaaa — Egor took the fork: ship it" in sr_said, sr_said
-# And the round's own report says it, or the block Egor reads shows a round that answered its
-# second review when nothing ever did.
-sr_decreed_meta = json.loads((sr_decreed_dir / "meta.json").read_text())
-sr_decreed_report = "\n".join(rb.report_lines(sr_decreed_dir, sr_decreed_meta))
-assert "decree:" in sr_decreed_report, sr_decreed_report
-assert "Egor took the fork: ship it" in sr_decreed_report, sr_decreed_report
-# A round that is not locked is refused outright: there is nothing to discharge, and a decree on
-# record over an ordinary round is a reason that looks like an unlock and never was one.
-sr_unlocked_decree = sr_store()
-sr_run(sr_unlocked_decree, "20260101T000100Z-aaaaaaa", sr_blobs,
-       report={"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
-assert sr_answer("src/a.py") == "debt 1 other"
-sr_rc, sr_said = sr_decree("20260101T000100Z-aaaaaaa")
-assert sr_rc == 1 and "not locked" in sr_said, (sr_rc, sr_said)
-assert not (sr_unlocked_decree / "20260101T000100Z-aaaaaaa" / rb.DECREE_RECEIPT).exists()
-# And a round whose tally cannot be READ is locked fail-closed, so a decree on it would discharge
-# a lock nobody ever established — for good, since a round carrying `decree.json` is unlocked
-# whatever a later triage turns out to say. The way out is triaging it again.
-sr_untriaged_decree = sr_store()
-sr_run(sr_untriaged_decree, "20260101T000100Z-aaaaaaa", sr_blobs, triaged=False)
-assert rb.round_locked(sr_untriaged_decree / "20260101T000100Z-aaaaaaa")
-sr_rc, sr_said = sr_decree("20260101T000100Z-aaaaaaa")
-assert sr_rc == 1 and "no readable triage tally" in sr_said, (sr_rc, sr_said)
-assert not (sr_untriaged_decree / "20260101T000100Z-aaaaaaa" / rb.DECREE_RECEIPT).exists()
+# Debt has two answers and no third: content an artifact covers, or content nothing does. A state
+# only a word of Egor's could open is a hold no reader of the debt line can see.
+assert not hasattr(rb, "cmd_decree")
+assert not hasattr(rb, "read_decree")
+assert not hasattr(rb, "artifact_locked")
+assert not hasattr(rb, "round_locked")
+assert not hasattr(rb, "debt_locked")
 
 # A held path that is GONE owes nothing, whoever held it: a removal leaves no content for a panel
 # to read, so priced whole against what it used to hold it is a bill no review can ever settle —
@@ -7678,17 +7794,17 @@ assert [row["rater"] for row in sr_error_meta["rater_runs"] if row.get("errored"
 assert sr_error_meta["completed_raters"] != sr_error_meta["raters"], sr_error_meta
 assert sr_answer("src/a.py", session="chat-2") == "none"
 
-# A LOCKED round's artifact postdates every stamp there is: it was written after the work it read,
-# so the chat that owes the second review holds nothing but spent records and the path is nobody's.
-# That is the price of the floor being absolute, paid on purpose: read the other way round, every
-# leftover of a settled episode answers for whatever landed on that path afterwards, and one chat's
-# statusline priced three co-tenants' commits as its own debt (live case 2026-08-25).
-sr_locked_floor = sr_store()
-sr_source.write_text(sr_moved + "locked floor\n")
-sr_run(sr_locked_floor, "20280101T000100Z-ccccccc", {"src/a.py": "stale-sha"},
+# An artifact that postdates every stamp there is was written after the work it read, so the chat
+# holds nothing but spent records and the path is nobody's. That is the price of the floor being
+# absolute, paid on purpose: read the other way round, every leftover of a settled episode answers
+# for whatever landed on that path afterwards, and one chat's statusline priced three co-tenants'
+# commits as its own debt (live case 2026-08-25).
+sr_late_floor = sr_store()
+sr_source.write_text(sr_moved + "late floor\n")
+sr_run(sr_late_floor, "20280101T000100Z-ccccccc", {"src/a.py": "stale-sha"},
        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py")
-assert sr_answer("src/a.py", session="chat-1") == "debt 1 other locked"
+assert sr_answer("src/a.py", session="chat-1") == "debt 1 other"
 assert rb.debt_authors(sr_repo, [("src/a.py", {"epoch": 1830000000})]) == set()
 # An edit made after that artifact names its author again, which is the ordinary case: debt is
 # content standing above the artifact, so the stamp of the edit that made it postdates the floor.
@@ -7743,46 +7859,25 @@ with (sr_gitdir / rb.COMMIT_JOURNAL).open("ab") as handle:
 assert rb.journal_entries(sr_gitdir / rb.COMMIT_JOURNAL) == [("", 1750000000, "src/a.py")]
 sr_clear_journals()
 
-# A round whose tally nobody can read is not a clean round: read as one it would release whatever
-# lock it earned along with the file that failed to parse.
+# A round whose tally nobody can read still answers for the paths it read: the tally decides which
+# band a LIVE round is in, and nothing in the debt line is priced off it.
 sr_untallied = sr_store()
 sr_source.write_text(sr_moved + "untallied\n")
 sr_untallied_dir = sr_run(sr_untallied, "20260101T000100Z-aaaaaaa", sr_blobs,
                           report={"confirmed": 0, "confirmed_by_severity": {"P1": 0}})
 (sr_untallied_dir / rb.REPORT_RECEIPT).write_text("{ truncated")
 assert rb.run_confirmed_counts(sr_untallied_dir) is None
-assert sr_answer("src/a.py") == "debt 1 other locked"
-sr_rc, sr_said = sr_waive("src/a.py", reason="cannot read its own tally")
-assert sr_rc == 1 and "20260101T000100Z-aaaaaaa" in sr_said, (sr_rc, sr_said)
-# The memo keeps answers and never that failure, so triaging the run again ends the lock inside the
-# same process rather than after the next launch.
-(sr_untallied_dir / rb.REPORT_RECEIPT).write_text(
-    json.dumps({"confirmed": 1, "confirmed_by_severity": {"P1": 1}})
-)
-assert rb.run_confirmed_counts(sr_untallied_dir) == (1, 1)
 assert sr_answer("src/a.py") == "debt 1 other"
+assert sr_waive("src/a.py", reason="cannot read its own tally")[0] == 0
 
-# Fixing a round's findings routinely deletes a file it read, and no later run can ever hold a path
-# that is gone: the second review owes the scope still standing, or the lock has no release at all.
-sr_gone_scope = sr_store()
-(sr_repo / "src" / "doomed.py").write_text("to be deleted\n")
-sr_run(sr_gone_scope, "20260101T000100Z-aaaaaaa",
-       dict(sr_blobs, **{"src/doomed.py": sr_sha("src/doomed.py")}),
-       report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-sr_source.write_text(sr_moved + "fixed\n")
-(sr_repo / "src" / "doomed.py").unlink()
-assert sr_answer("src/a.py") == "debt 1 other locked"
-sr_run(sr_gone_scope, "20260101T000200Z-bbbbbbb",
-       {"src/a.py": sr_sha("src/a.py"), "src/blob.bin": sr_blobs["src/blob.bin"]})
-assert sr_answer("src/a.py") == "none"
-# A path that still stands is owed as it always was: dropping one of those from the rerun is the
-# narrow round the lock exists to refuse.
+# The newest artifact holding a path is what that path is priced against, whatever the round before
+# it found: a later run that read the path takes it back.
 sr_narrow = sr_store()
 sr_source.write_text(sr_moved + "narrow\n")
 sr_run(sr_narrow, "20260101T000100Z-aaaaaaa", sr_blobs,
        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_run(sr_narrow, "20260101T000200Z-bbbbbbb", {"src/a.py": sr_sha("src/a.py")})
-assert sr_answer("src/a.py") == "debt 1 other locked"
+assert sr_answer("src/a.py") == "none"
 
 # Paths named and every spelling rejected is not the repository's question: run as the pathless
 # form, a waiver aimed at two files would settle everything this chat owns.
@@ -7846,25 +7941,22 @@ assert sr_waive(reason="a legacy row, and mine now") == (
     0, "waived 1 path(s): a legacy row, and mine now [src/a.py (no journal author)]")
 (sr_repo / "docs" / "worker.md").unlink()
 
-# A round's fixes routinely delete a file it read, and no snapshot a later run writes can hold a
-# path that is gone: the debt leaves with the deletion, so nothing is left locked over it and no
-# waiver has to be written for it.
-sr_deleted_lock = sr_store()
+# A round's fixes routinely delete a file it read: the debt leaves with the deletion, and the path
+# still standing is owed exactly as it always was.
+sr_deleted_path = sr_store()
 sr_clear_journals()
 (sr_repo / "src" / "pair.py").write_text("the other path of the round\n")
 sr_commit("src/pair.py", message="the other path of the round")
-sr_source.write_text(sr_moved + "the locked round read this\n")
-sr_run(sr_deleted_lock, "20260101T000100Z-aaaaaaa",
+sr_source.write_text(sr_moved + "the round read this\n")
+sr_run(sr_deleted_path, "20260101T000100Z-aaaaaaa",
        {"src/a.py": sr_sha("src/a.py"), "src/pair.py": sr_sha("src/pair.py")},
        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 sr_source.write_text(sr_moved + "and then the fixes\n")
 (sr_repo / "src" / "pair.py").unlink()
-assert sr_answer("src/a.py") == "debt 1 other locked"
+assert sr_answer("src/a.py") == "debt 1 other"
 assert sr_answer("src/pair.py") == "none"
-assert sr_answer("src/a.py", "src/pair.py") == "debt 1 other locked"
-# The path still standing is owed as it always was.
-sr_rc, sr_said = sr_waive("src/a.py", reason="and this one along with it")
-assert sr_rc == 1 and "20260101T000100Z-aaaaaaa" in sr_said, (sr_rc, sr_said)
+assert sr_answer("src/a.py", "src/pair.py") == "debt 1 other"
+assert sr_waive("src/a.py", reason="and this one along with it")[0] == 0
 sr_commit("src/pair.py", message="the fixes deleted it")
 
 # A worker THIS chat launched is this chat: until the commit journal sweeps its record, the
@@ -8293,22 +8385,21 @@ assert sr_scope_line.endswith("include with --all"), sr_scope_line
 assert rb.debt_skipped_line(sr_repo, []) == ""
 # And the one-liner says the same thing in its own grammar, for the same reason.
 assert sr_answer("src/mine.py", "src/theirs.py") == "debt 2 mine 1 (+1 foreign)"
-# A path a LOCKED round holds is never skipped, whoever wrote it — so the share must not count it
-# either. The count a chat reads BEFORE it decides and the scope that decision produces are one
-# reading, or the line prices an exclusion the review never makes.
-(sr_repo / "src" / "locked-theirs.py").write_text("locked\n")
-sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/locked-theirs.py")
-sr_scope_lock = sr_run(sr_scope_store, "20260101T000200Z-lock",
-                       {"src/locked-theirs.py": sr_sha("src/locked-theirs.py")},
+# Another chat's is skipped whatever the round holding it found: the count a chat reads BEFORE it
+# decides and the scope that decision produces are one reading, or the line prices an exclusion the
+# review never makes.
+(sr_repo / "src" / "hard-theirs.py").write_text("theirs, and a hard round read it\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/hard-theirs.py")
+sr_scope_hard = sr_run(sr_scope_store, "20260101T000200Z-hard",
+                       {"src/hard-theirs.py": sr_sha("src/hard-theirs.py")},
                        report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-(sr_repo / "src" / "locked-theirs.py").write_text("locked and moved on\n")
-sr_scope_locked_out = rb.debt_scope(sr_repo, "chat-1")[1]
-assert "src/theirs.py" in sr_scope_locked_out, sr_scope_locked_out
-assert "src/locked-theirs.py" not in sr_scope_locked_out, sr_scope_locked_out
-assert sr_answer("src/mine.py", "src/theirs.py", "src/locked-theirs.py") == (
-    "debt 3 mine 1 (+1 foreign) locked"), sr_answer("src/mine.py", "src/theirs.py", "src/locked-theirs.py")
-(sr_repo / "src" / "locked-theirs.py").unlink()
-shutil.rmtree(sr_scope_lock)
+(sr_repo / "src" / "hard-theirs.py").write_text("theirs, moved on\n")
+sr_scope_left_out = rb.debt_scope(sr_repo, "chat-1")[1]
+assert {"src/theirs.py", "src/hard-theirs.py"} <= set(sr_scope_left_out), sr_scope_left_out
+assert sr_answer("src/mine.py", "src/theirs.py", "src/hard-theirs.py") == (
+    "debt 3 mine 1 (+2 foreign)"), sr_answer("src/mine.py", "src/theirs.py", "src/hard-theirs.py")
+(sr_repo / "src" / "hard-theirs.py").unlink()
+shutil.rmtree(sr_scope_hard)
 # Whose the skipped debt is comes out of EITHER store: a co-tenant's worker run the journals have
 # not swept yet has its owner written down, and a sentence promising whose it is that names nobody
 # is the one thing the reader of it came for.
@@ -8676,23 +8767,10 @@ assert sr_split(repo=work / "session-review-not-a-repo") == "split 0 0 0"
 sr_clear_journals()
 
 # --- A clean round covers the bytes its own fixing pass wrote ---------------------------------
-# A round that closed under both of the gate's dials earns no second review, so nothing will ever
-# read its fixes: left in debt they are a waiver every chat after this one would have to know to
-# write, over work the done receipt already answers for. Five guards keep that receipt off
-# everybody else's bytes — the window, the session, the scope, a pass that fixed nothing, and a
-# round the gate did not close.
-sr_fix_gate = work / "session-review-flow-gate.sh"
-# The two dials and the wording are the gate's alone (shared-invariants row af), so the round
-# outcome is taken from a stub of it: what the live gate says today is not this suite's to depend on.
-sr_fix_gate.write_text(
-    "#!/bin/bash\n"
-    '[ "$1" = escalation-verdict ] || exit 1\n'
-    '[ "${2:-0}" -ge 3 ] || [ "${3:-0}" -gt 8 ] || exit 1\n'
-    "printf 'stub fork. Pick one and carry it out:\\n'\n"
-)
-sr_fix_gate.chmod(0o755)
-sr_gate_before = rb.round.ESCALATION_GATE
-rb.round.ESCALATION_GATE = sr_fix_gate
+# A round in the `fix` band earns no round 2, so nothing will ever read its fixes: left in debt
+# they are a waiver every chat after this one would have to know to write, over work the done
+# receipt already answers for. Five guards keep that receipt off everybody else's bytes — the
+# window, the session, the scope, a pass that fixed nothing, and a round that owes a decision.
 sr_fix_worker_runs = work / "session-review-fix-worker-runs"
 sr_fix_worker_runs.mkdir()
 os.environ["WORKER_RUN_DIR"] = str(sr_fix_worker_runs)
@@ -9036,15 +9114,15 @@ assert "covered" not in sr_fixes(fixed=9)[1]
 assert sr_answer("src/a.py") == "debt 1 mine"
 sr_clear_journals()
 
-# And one over the P1 dial owes a MANDATORY one: its debt reads locked, which is the state a
-# receipt that covered its own fixes would have hidden.
+# And one over the P1 dial is a decision and covers nothing either: its own fixes stay in debt
+# until the decision names `fix` or round 2 reads them.
 sr_p1_fixes = sr_store()
 sr_source.write_text(sr_moved)
 sr_judged(sr_fix_run(sr_p1_fixes), "P1", 3)
 sr_source.write_text(sr_moved + "three P1s answered anyway\n")
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
 assert "covered" not in sr_fixes(fixed=3)[1]
-assert sr_answer("src/a.py") == "debt 1 mine locked"
+assert sr_answer("src/a.py") == "debt 1 mine"
 sr_clear_journals()
 
 # A killed panel's own done receipt covers its fix bytes like any other closed round's: the kill
@@ -9282,15 +9360,16 @@ assert sr_answer("src/b.py", repo=cov_repo).startswith("debt 1"), sr_answer(
 # and not the commit.
 assert "1 fixed path(s) covered" in cov_cover(cov_foreign_sha)[1]
 assert sr_answer("src/b.py", repo=cov_repo) == "none", sr_answer("src/b.py", repo=cov_repo)
-# (c) A round the gate escalated owes a second review of its whole scope, and that pass reads the
-# fixes itself: covered by the commit they would be settled before it ever ran.
+# (c) A round 1 outside the fix band closes on no commit until its decision is on disk: a decision
+# naming simplify, cut or redesign runs a round 2 that reads the fixes itself, so covered by this
+# commit they would be settled before that pass ever ran.
 cov_over = sr_store()
 sr_judged(sr_fix_run(cov_over, cov_reviewed, run_id="20260601T000200Z-covover", repo=cov_repo),
           "P1", 3)
 (cov_repo / "src" / "b.py").write_text("three P1s answered anyway\n")
 cov_over_sha = cov_commit("src/b.py", message="fix three P1s")
 assert cov_cover(cov_over_sha) == (0, "")
-assert sr_answer("src/b.py", repo=cov_repo) == "debt 1 other locked", sr_answer(
+assert sr_answer("src/b.py", repo=cov_repo) == "debt 1 other", sr_answer(
     "src/b.py", repo=cov_repo)
 # (d) One commit closes every round it finished: a chat that reviewed twice and fixed both in one
 # landing owes neither of them a second command.
@@ -9403,6 +9482,260 @@ finally:
 assert [row[0] for row in cov_named_rounds] == [cov_named_run], cov_named_rounds
 assert cov_missing_rounds == [], cov_missing_rounds
 assert str(cov_named) not in cov_walked, cov_walked
+
+# Which rounds a commit may close is the contract's three bands and nothing else: a round 1 inside
+# the fix band, a round 1 whose recorded decision names `fix`, and any round 2. A round 1 whose
+# band or decision asks for a second pass covers nothing — that pass reads the fixes itself, and
+# covered here its bytes would reach the second panel already recorded as reviewed.
+cov_bands = sr_store()
+cov_band_fix = sr_fix_run(cov_bands, cov_reviewed, run_id="20260601T000800Z-covbandfix",
+                          repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX))
+cov_band_owed = sr_fix_run(cov_bands, cov_reviewed, run_id="20260601T000801Z-covbandowed",
+                           repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1))
+(cov_repo / "src" / "a.py").write_text("the fix band closes on the commit\n")
+cov_band_sha = cov_commit("src/a.py", message="fixes over two bands")
+
+
+def cov_band_names(commit=None):
+    return sorted(row[0].name for row in rb.round.coverable_runs(
+        cov_repo, "chat-1", commit or cov_band_sha))
+
+
+assert cov_band_names() == [cov_band_fix.name], cov_band_names()
+# The decision naming `fix` IS the ruling that no second pass follows, so the commit closes that
+# round like any other.
+(cov_band_owed / rb.FORK_RECORD).write_text(json.dumps({
+    "choice": rb.BAND_FIX, "why": "the findings are local and the shape is right " * 3,
+    "session": "chat-1", "at": rb.iso_now(),
+}))
+assert cov_band_names() == sorted([cov_band_fix.name, cov_band_owed.name]), cov_band_names()
+for cov_band_choice in ("simplify", "cut", "redesign"):
+    (cov_band_owed / rb.FORK_RECORD).write_text(json.dumps({
+        "choice": cov_band_choice, "why": "the cluster is one abstraction pulled apart " * 3,
+        "session": "chat-1", "at": rb.iso_now(),
+    }))
+    assert cov_band_names() == [cov_band_fix.name], (cov_band_choice, cov_band_names())
+# And the named-run path refuses it by name rather than falling silent, since a chat that asked
+# about ONE round is owed the reason that round is not the one this commit closes.
+try:
+    cov_cover(cov_band_sha, run_id=cov_band_owed.name)
+    raise AssertionError("a round owing a second pass was closed by a commit")
+except ValueError as cov_band_error:
+    assert "a round 1 a second pass is owed over" in str(cov_band_error), cov_band_error
+
+# A round 2 is always coverable, and the commit closing it closes its round 1 with it: the two
+# rounds are one piece of work, and a round 1 left open behind its own second round is a debt no
+# command could ever settle — its own band withholds it from `coverable_runs` by construction.
+cov_chain = sr_store()
+cov_chain_one = sr_fix_run(cov_chain, cov_reviewed, run_id="20260601T000900Z-covchainone",
+                           repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1),
+                           decision="redesign")
+cov_chain_two = sr_fix_run(cov_chain, cov_reviewed, run_id="20260601T000901Z-covchaintwo",
+                           repo=cov_repo, judged=("P2", 2), number=rb.ROUND_BUDGET,
+                           chain=cov_chain_one.name)
+(cov_repo / "src" / "a.py").write_text("what the second round confirmed, fixed\n")
+cov_chain_sha = cov_commit("src/a.py", message="fixes from round 2")
+assert cov_band_names(cov_chain_sha) == [cov_chain_two.name], cov_band_names(cov_chain_sha)
+cov_chain_rc, cov_chain_out = cov_cover(cov_chain_sha)
+assert cov_chain_rc == 0, cov_chain_out
+assert f"{cov_chain_two.name} fixes: closed by" in cov_chain_out, cov_chain_out
+assert (f"{cov_chain_one.name} fixes: closed by {cov_chain_sha[:7]} with round 2 "
+        f"{cov_chain_two.name}") in cov_chain_out, cov_chain_out
+assert rb.round.round_closed(cov_chain_one), cov_chain_out
+assert rb.round.round_closed(cov_chain_two), cov_chain_out
+
+# Closing round 2 never rewrites a stopped round 1 into a completed pass. The stop is its own
+# receipt, and a later commit cannot claim the blocked work happened.
+cov_blocked_chain = sr_store()
+cov_blocked_one = sr_fix_run(
+    cov_blocked_chain, cov_reviewed, run_id="20260601T000902Z-covblockedone",
+    repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1), decision="redesign",
+)
+(cov_blocked_one / rb.FIX_RECEIPT).write_text(json.dumps({
+    "state": "blocked", "reason": "the worker stopped", "confirmed": rb.ROUND_FIX_MAX + 1,
+    "triage": rb.triage_digest(rb.recorded_verdict_rows(cov_blocked_one)),
+}))
+cov_blocked_two = sr_fix_run(
+    cov_blocked_chain, cov_reviewed, run_id="20260601T000903Z-covblockedtwo",
+    repo=cov_repo, judged=("P2", 1), number=rb.ROUND_BUDGET, chain=cov_blocked_one.name,
+)
+(cov_repo / "src" / "a.py").write_text("the second round landed without finishing the stopped pass\n")
+cov_blocked_sha = cov_commit("src/a.py", message="close only the second round")
+cov_blocked_out = cov_cover(cov_blocked_sha)[1]
+assert f"{cov_blocked_two.name} fixes: closed by" in cov_blocked_out, cov_blocked_out
+assert cov_blocked_one.name not in cov_blocked_out, cov_blocked_out
+assert json.loads((cov_blocked_one / rb.FIX_RECEIPT).read_text())["state"] == "blocked"
+assert rb.round.round_closed(cov_blocked_two), cov_blocked_out
+
+# THE LAUNCH is what settles a round's number, and there is no round 3. A chain whose round 2 no
+# commit has closed is refused before a snapshot commit is written — the third pass over one scope
+# is the loop this contract exists to end, and the answer to an open round 2 is to finish it.
+cov_stamp_targets = [(str(cov_repo), ["src/a.py"])]
+cov_stamp = sr_store()
+assert rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1") == {}
+cov_stamp_one = sr_fix_run(cov_stamp, cov_reviewed, run_id="20260601T001000Z-stampone",
+                           repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1),
+                           decision="simplify")
+# A decision on record over this scope is what makes the next launch round 2, and the chain it
+# joins is that round's own id.
+assert rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1") == {
+    "round": rb.ROUND_BUDGET, "chain": cov_stamp_one.name,
+}, rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1")
+# And the second round is found through the CHAIN, not through a decision of its own: a round 2
+# never carries one — `fork` refuses to record it — so a refusal that demanded one on the round 2
+# side would let every later sweep be stamped round 2 again over the round 1 still standing there.
+cov_stamp_two = sr_fix_run(cov_stamp, cov_reviewed, run_id="20260601T001001Z-stamptwo",
+                           repo=cov_repo, judged=("P2", 2), number=rb.ROUND_BUDGET,
+                           chain=cov_stamp_one.name)
+assert rb.round.read_fork(cov_stamp_two) is None
+assert rb.round.chain_second_round(cov_stamp_two.parent / cov_stamp_one.name) == cov_stamp_two
+try:
+    rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1")
+    raise AssertionError("a third round over one scope was allowed")
+except ValueError as cov_stamp_error:
+    assert str(cov_stamp_error) == (
+        f"{cov_stamp_two.name} is already round 2 over this scope and no commit has closed it; "
+        "there is no round 3 — fix what it confirmed and commit, and that closes both rounds"
+    ), str(cov_stamp_error)
+# A round 2 the commit CLOSED starts no third pass either: it is simply out of the way, and the
+# next launch over that scope is a chain of its own — its round 1 has had its second pass, whatever
+# that round's own receipt still says.
+(cov_stamp_two / rb.FIX_RECEIPT).write_text(json.dumps(
+    {"state": "done", "closed_by": ["0" * 40]}
+))
+assert rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1") == {}, \
+    rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1")
+(cov_stamp_one / rb.FIX_RECEIPT).write_text(json.dumps(
+    {"state": "done", "closed_by": ["0" * 40]}
+))
+assert rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1") == {}
+
+# A decision naming `fix` explicitly closes without round 2, so it never makes an unrelated review
+# over an overlapping path inherit a chain or spend that scope's second pass.
+cov_fix_stamp = sr_store()
+sr_fix_run(cov_fix_stamp, cov_reviewed, run_id="20260601T001010Z-stampfix",
+           repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1), decision="fix")
+assert rb.cli.resolve_round_stamp(cov_stamp_targets, "chat-1") == {}
+
+# Every repository in a merged debt launch is checked before the stamp is returned. The first may
+# owe round 2 while a later member has already spent it; that later member refuses the whole launch.
+cov_merged_stamp = sr_store()
+cov_merged_one = sr_fix_run(
+    cov_merged_stamp, cov_reviewed, run_id="20260601T001020Z-mergedone",
+    repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1), decision="simplify",
+)
+pin_reviewed = {"pinned.txt": rb.path_blob_sha(pin_repo, "pinned.txt")}
+cov_merged_other_one = sr_fix_run(
+    cov_merged_stamp, pin_reviewed, run_id="20260601T001021Z-mergedotherone",
+    repo=pin_repo, judged=("P2", rb.ROUND_FIX_MAX + 1), decision="redesign",
+)
+cov_merged_other_two = sr_fix_run(
+    cov_merged_stamp, pin_reviewed, run_id="20260601T001022Z-mergedothertwo",
+    repo=pin_repo, judged=("P2", 1), number=rb.ROUND_BUDGET,
+    chain=cov_merged_other_one.name, decision="redesign",
+)
+try:
+    rb.cli.resolve_round_stamp([
+        (str(cov_repo), ["src/a.py"]), (str(pin_repo), ["pinned.txt"]),
+    ], "chat-1")
+    raise AssertionError("a merged launch skipped a member whose round budget was spent")
+except ValueError as cov_merged_error:
+    assert cov_merged_other_two.name in str(cov_merged_error), cov_merged_error
+    assert "there is no round 3" in str(cov_merged_error), cov_merged_error
+
+# Two members reopening two DIFFERENT chains are refused outright: one run carries one round, and
+# stamped with the first chain the other round 1 stays reopened with no second pass that can ever
+# close it.
+cov_two_chains = sr_store()
+cov_chain_a = sr_fix_run(cov_two_chains, cov_reviewed, run_id="20260601T001030Z-chaina",
+                         repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1), decision="simplify")
+cov_chain_b = sr_fix_run(cov_two_chains, pin_reviewed, run_id="20260601T001031Z-chainb",
+                         repo=pin_repo, judged=("P2", rb.ROUND_FIX_MAX + 1), decision="cut")
+cov_two_chain_targets = [(str(cov_repo), ["src/a.py"]), (str(pin_repo), ["pinned.txt"])]
+try:
+    rb.cli.resolve_round_stamp(cov_two_chain_targets, "chat-1")
+    raise AssertionError("one run was stamped with two chains at once")
+except ValueError as cov_two_chain_error:
+    assert cov_chain_a.name in str(cov_two_chain_error), cov_two_chain_error
+    assert cov_chain_b.name in str(cov_two_chain_error), cov_two_chain_error
+    assert "reopens two chains at once" in str(cov_two_chain_error), cov_two_chain_error
+# A member starting a chain of its own beside a reopened one is not refused: a merged round is
+# priced as one round, and its fresh member rides the second pass.
+cov_one_chain = sr_store()
+sr_fix_run(cov_one_chain, cov_reviewed, run_id="20260601T001040Z-chainonly", repo=cov_repo,
+           judged=("P2", rb.ROUND_FIX_MAX + 1), decision="simplify")
+assert rb.cli.resolve_round_stamp(cov_two_chain_targets, "chat-1") == {
+    "round": rb.ROUND_BUDGET, "chain": "20260601T001040Z-chainonly",
+}, rb.cli.resolve_round_stamp(cov_two_chain_targets, "chat-1")
+
+# What releases a round a decision REOPENED, and what does not. The whole of its surviving scope in
+# ONE run: several narrow reviews displacing it path by path discharge, between them, a second pass
+# none of them ran, and the scope the fork ruled on is never read whole.
+cov_reopened = sr_store()
+cov_reopened_one = sr_fix_run(cov_reopened, cov_reviewed, run_id="20260601T001100Z-reopened",
+                              repo=cov_repo, judged=("P2", rb.ROUND_FIX_MAX + 1),
+                              decision="simplify")
+
+
+def cov_covering():
+    return {path: artifact["id"]
+            for path, artifact in rb.debt.covering_artifacts(str(cov_repo)).items()}
+
+
+sr_fix_run(cov_reopened, {"src/a.py": cov_reviewed["src/a.py"]},
+           run_id="20260601T001101Z-narrow", repo=cov_repo)
+assert cov_covering() == {path: cov_reopened_one.name for path in cov_reviewed}, cov_covering()
+cov_second_pass = sr_fix_run(cov_reopened, cov_reviewed, run_id="20260601T001102Z-secondpass",
+                             repo=cov_repo)
+assert cov_covering() == {path: cov_second_pass.name for path in cov_reviewed}, cov_covering()
+# A path the fixing pass DELETED is covered by definition: no run can ever hold a file no panel can
+# read, and demanded back it wedges the round open for good — which `cut`, the decision that most
+# often deletes, would do every time.
+cov_gone = sr_store()
+cov_gone_one = sr_fix_run(cov_gone, dict(cov_reviewed, **{"src/gone.py": cov_reviewed["src/b.py"]}),
+                          run_id="20260601T001110Z-gone", repo=cov_repo,
+                          judged=("P2", rb.ROUND_FIX_MAX + 1), decision="cut")
+assert not (cov_repo / "src" / "gone.py").exists()
+assert cov_covering() == {path: cov_gone_one.name
+                          for path in (*cov_reviewed, "src/gone.py")}, cov_covering()
+cov_gone_two = sr_fix_run(cov_gone, cov_reviewed, run_id="20260601T001111Z-gonetwo",
+                          repo=cov_repo)
+assert cov_covering() == dict({path: cov_gone_two.name for path in cov_reviewed},
+                              **{"src/gone.py": cov_gone_one.name}), cov_covering()
+# And a WAIVER displaces it path by path: it is a chat saying out loud that this content goes
+# unreviewed and why, which `waive` records and reports. Refused here, that waiver was written,
+# printed as `waived N path(s)` and then disregarded by the very scope it was meant to shrink.
+cov_reopened_artifact = next(
+    artifact for artifact in rb.debt.repo_artifacts(str(cov_repo))
+    if artifact["id"] == cov_gone_one.name
+)
+assert rb.debt.artifact_owes_second_round(cov_reopened_artifact)
+assert rb.debt.reopened_round_released(str(cov_repo), cov_reopened_artifact, {
+    "kind": "waiver", "id": "waiver-1", "shas": {"src/a.py": cov_reviewed["src/a.py"]},
+})
+assert not rb.debt.reopened_round_released(str(cov_repo), cov_reopened_artifact, {
+    "kind": "run", "id": "20260601T001112Z-corner",
+    "shas": {"src/a.py": cov_reviewed["src/a.py"]},
+})
+
+# A run carrying a round past the budget is the launcher's refusal having FAILED, so `doctor` says
+# so in a line of its own — beside the five classes and none of them, since no age qualifies it and
+# a sixth class would reach the menubar as a backlog somebody is merely late on.
+cov_over = sr_store()
+cov_over_run = sr_fix_run(cov_over, cov_reviewed, run_id="20260601T001100Z-overbudget",
+                          repo=cov_repo, number=rb.ROUND_BUDGET + 1,
+                          chain="20260601T001000Z-stampone")
+cov_over_findings = rb.doctor_scan()
+assert [row["what"] for row in cov_over_findings[rb.DOCTOR_ROUND_OVERFLOW]] == [
+    f"{cov_over_run.name} round {rb.ROUND_BUDGET + 1}"
+], cov_over_findings[rb.DOCTOR_ROUND_OVERFLOW]
+assert rb.DOCTOR_ROUND_OVERFLOW not in rb.DOCTOR_CLASSES, rb.DOCTOR_CLASSES
+assert rb.DOCTOR_ROUND_OVERFLOW not in rb.DOCTOR_AGES_S, rb.DOCTOR_AGES_S
+cov_over_lines = rb.doctor_lines(cov_over_findings)
+assert f"{rb.DOCTOR_ROUND_OVERFLOW}: 1" in cov_over_lines, cov_over_lines
+# And it never reaches the snapshot the menubar renders, whose keys are the five classes alone.
+assert rb.DOCTOR_ROUND_OVERFLOW not in rb.doctor_snapshot_document(
+    cov_over_findings, rb.store.utc_now())["anomalies"]
 
 # (i) The tally the report prints answers the triage it was written against. A re-adjudication
 # leaves a hand-typed `fixed` standing beside a `confirmed` restamped from the new rows, which is
@@ -10130,32 +10463,6 @@ assert sr_answer("src/split.py", repo=fam_worktree) == "debt 1 mine", sr_answer(
 (fam_gitdir / rb.COMMIT_JOURNAL).unlink()
 (fam_wt_gitdir / rb.COMMIT_JOURNAL).unlink()
 
-# (m) The lock survives it. What discharges a round the thresholds locked is its full original
-# scope reviewed again, so a sibling checkout standing at content that round never read may not
-# retire it — the escape above would otherwise hand a second review away to whichever family member
-# happened to record those bytes.
-fam_lock = sr_store()
-(fam_main / "src" / "held.py").write_text("what the locked round read\n")
-(fam_main / "src" / "beside.py").write_text("and the rest of its scope\n")
-fam_lock_dir = sr_run(fam_lock, "20260601T170000Z-lockedmain", repo=fam_main, triaged=False,
-                      reviewed={"src/held.py": sr_sha("src/held.py", repo=fam_main),
-                                "src/beside.py": sr_sha("src/beside.py", repo=fam_main)})
-sr_judged(fam_lock_dir, "P1", rb.SECOND_REVIEW_P1S)
-sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/held.py", gitdir=fam_gitdir)
-# A NARROW later artifact of the family records the sibling's own content for that one path — a
-# run of the worktree, since a waiver over a locked path is refused outright. It cannot take the
-# path from the locked round, so the locked round is still what covers it.
-(fam_worktree / "src" / "held.py").write_text("the branch's content\n")
-sr_run(fam_lock, "20260601T170100Z-branchread", repo=fam_worktree,
-       reviewed={"src/held.py": sr_written_sha("src/held.py", repo=fam_worktree)})
-(fam_main / "src" / "held.py").write_text("the branch's content\n")
-fam_lock_debt = rb.debt.repo_debt(fam_main, ["src/held.py"])
-assert [artifact["id"] for _, artifact in fam_lock_debt] == [
-    "20260601T170000Z-lockedmain"], fam_lock_debt
-assert sr_answer("src/held.py", repo=fam_main) == "debt 1 mine locked", sr_answer(
-    "src/held.py", repo=fam_main)
-(fam_gitdir / rb.COMMIT_JOURNAL).unlink()
-
 # --- which shell typed the command ------------------------------------------------------------
 # A round answers to the chat its own RECORD names. Keyed on the caller's environment instead, the
 # same round's receipt, report and fix coverage moved to whichever shell happened to close it —
@@ -10258,22 +10565,34 @@ sr_fix_p2 = sr_recorded("20260601T000200Z-fixp2", "P2", 1)
 assert "recommend a fast worker, after reading the P2s" in sr_fix_p2, sr_fix_p2
 sr_fix_p1 = sr_recorded("20260601T000300Z-fixp1", "P1", 1)
 assert "recommend a strong worker" in sr_fix_p1, sr_fix_p1
-# At the threshold the fixing pass is not dispatched at all: the brief names the stop and the
-# second review, and nothing to fix.
+# Past the fix band the fixing pass is not dispatched at all: the brief names the decision, the
+# four words it may be, and nothing to fix.
 sr_fix_stop = sr_recorded("20260601T000400Z-fixstop", "P1", rb.HANDOFF_P1_STOP)
-assert f"THRESHOLD STOP — {rb.HANDOFF_P1_STOP} confirmed P1s" in sr_fix_stop, sr_fix_stop
-assert "review-bench fixes 20260601T000400Z-fixstop --blocked 'P1 threshold'" in sr_fix_stop, \
-    sr_fix_stop
+assert (f"DECISION FIRST — {rb.HANDOFF_P1_STOP} confirmed, {rb.HANDOFF_P1_STOP} of them P1"
+        in sr_fix_stop), sr_fix_stop
+assert ("review-bench fork 20260601T000400Z-fixstop --choice "
+        f"{'|'.join(rb.DECISION_WORDS)}") in sr_fix_stop, sr_fix_stop
 assert "--done --fixed" not in sr_fix_stop, sr_fix_stop
 assert "recommend a" not in sr_fix_stop, sr_fix_stop
+# And the ordinary fixing brief once the decision is on disk: the demand is the RECORD's absence
+# and never the tally, so a round whose decision named `fix` dispatches its pass like any other.
+sr_stop_dir = rb.store.state_dir() / "benches" / "20260601T000400Z-fixstop"
+(sr_stop_dir / rb.FORK_RECORD).write_text(json.dumps({
+    "choice": "fix", "why": "the module is deleted next sprint and every finding lives in it" * 2,
+    "session": "chat-1", "at": rb.iso_now(),
+}))
+sr_decided = io.StringIO()
+with contextlib.redirect_stdout(sr_decided):
+    rb.emit_fix_handoff(sr_stop_dir, json.loads((sr_stop_dir / "meta.json").read_text()),
+                        rb.recorded_verdict_rows(sr_stop_dir))
+assert "DECISION FIRST" not in sr_decided.getvalue(), sr_decided.getvalue()
+assert "recommend a strong worker" in sr_decided.getvalue(), sr_decided.getvalue()
 # A merged run hands the debt reader its members, never the synthetic workspace it skips.
 sr_fixable_before = rb.round.round_fixable
 sr_debt_command_before = rb.debt.debt_chat_review_command
-sr_escalation_before = rb.round.escalation_numbers
 rb.round.round_fixable = lambda meta: True
 rb.debt.debt_chat_review_command = lambda session, repos=(), tier="": \
     "review-members " + " ".join(str(repo) for repo in repos)
-rb.round.escalation_numbers = lambda run_dir, meta, verdicts: (rb.HANDOFF_P1_STOP, 0)
 try:
     sr_fix_merged = sr_recorded(
         "20260601T000450Z-fixmerged", "P1", rb.HANDOFF_P1_STOP,
@@ -10285,17 +10604,17 @@ try:
 finally:
     rb.round.round_fixable = sr_fixable_before
     rb.debt.debt_chat_review_command = sr_debt_command_before
-    rb.round.escalation_numbers = sr_escalation_before
 assert f"review-members {sr_repo} {pin_repo}" in sr_fix_merged, sr_fix_merged
-assert "Run that command once for the round" in sr_fix_merged, sr_fix_merged
+assert "once, with `review-members" in sr_fix_merged, sr_fix_merged
 # A threshold stop fixes NOTHING by construction, so its round leaves no path in debt: the bytes it
-# read are the bytes standing there. Read off the debt alone, the second review the contract makes
-# mandatory scopes to nothing at all and can never be launched — so the reopening walk reads every
-# artifact standing over the repository instead.
+# read are the bytes standing there. Read off the debt alone, the round 2 its decision named scopes
+# to nothing at all and can never be launched — so the reopening walk reads every artifact standing
+# over the repository instead.
 sr_clear_journals()
 sr_stop_store = sr_store()
 sr_source.write_text(sr_moved + "threshold stop\n")
 sr_run(sr_stop_store, "20260601T000700Z-stopscope", {"src/a.py": sr_sha("src/a.py")},
+       decision="redesign",
        report={"confirmed": rb.HANDOFF_P1_STOP,
                "confirmed_by_severity": {"P1": rb.HANDOFF_P1_STOP}})
 assert rb.repo_debt(sr_repo, ["src/a.py"]) == [], rb.repo_debt(sr_repo, ["src/a.py"])
@@ -10306,16 +10625,15 @@ assert "src/a.py" in sr_stop_scope, sr_stop_scope
 # the side it carries is the EMPTY one, spelled out rather than left as None — read as None the base
 # builder takes it for an ordinary debt path and prices it against HEAD, which is the fixes alone.
 assert sr_stop_scope["src/a.py"] == rb.unread_artifact("src/a.py"), sr_stop_scope["src/a.py"]
-# And a gate nobody can ask does not take that scope away. The lock is the P1 count, read here; a
-# locked round the scope cannot reach is a repository that can neither review nor waive its way
-# out — the waiver refuses it for being locked and the review has nothing to read.
-sr_stop_gate = rb.round.ESCALATION_GATE
-rb.round.ESCALATION_GATE = work / "no-gate-at-this-path.sh"
-rb.ESCALATION_VERDICT_CACHE.clear()
-assert rb.escalation_verdict(rb.HANDOFF_P1_STOP, rb.HANDOFF_P1_STOP) == rb.ESCALATION_UNKNOWN
-assert "src/a.py" in dict(rb.debt_review_scope(sr_repo)), rb.debt_review_scope(sr_repo)
-rb.round.ESCALATION_GATE = sr_stop_gate
-rb.ESCALATION_VERDICT_CACHE.clear()
+# And a round 1 whose decision named `fix` reopens nothing: the commit that carries the fixes is the
+# whole of what it is owed.
+sr_fix_decision = sr_store()
+sr_run(sr_fix_decision, "20260601T000800Z-fixdecision", {"src/a.py": sr_sha("src/a.py")},
+       decision="fix",
+       report={"confirmed": rb.HANDOFF_P1_STOP,
+               "confirmed_by_severity": {"P1": rb.HANDOFF_P1_STOP}})
+assert dict(rb.debt_review_scope(sr_repo)) == {}, rb.debt_review_scope(sr_repo)
+assert rb.round.round_band(rb.HANDOFF_P1_STOP, rb.HANDOFF_P1_STOP) == rb.BAND_HARD
 
 # Nothing confirmed is nothing to dispatch: the round's fix status is done of its own accord, and a
 # brief here would send a worker to fix an empty list.
@@ -10328,7 +10646,6 @@ sr_fix_stale = sr_recorded("20260601T000600Z-fixstale", "P3", 1,
                                         "commit": pin_sha})
 assert "FIX HANDOFF" not in sr_fix_stale, sr_fix_stale
 
-rb.round.ESCALATION_GATE = sr_gate_before
 os.environ["WORKER_RUN_DIR"] = str(sr_worker_runs)
 
 sr_clear_journals()
@@ -10378,7 +10695,8 @@ assert "STEP 1 of 2: blind triage" in handoff_text, handoff_text
 assert "Fix nothing in this pass" in handoff_text, handoff_text
 assert "STEP 2 is a pass of its own, briefed by `record`" in handoff_text, handoff_text
 assert f"THRESHOLD STOP — {rb.HANDOFF_P1_STOP} or more confirmed P1s" in handoff_text, handoff_text
-assert "review-bench fixes plain-run --blocked 'P1 threshold'" in handoff_text, handoff_text
+# And no second ritual for the stop: the decision record IS what says the pass never ran.
+assert "--blocked" not in handoff_text, handoff_text
 # The one line aimed past the worker: at the threshold a chat with nobody to ask decides for
 # itself rather than stalling on a fork Egor is not there to take.
 assert "maximum autonomy" in handoff_text, handoff_text
@@ -10399,16 +10717,17 @@ assert "STEP 2" not in durable_text, durable_text
 assert "THRESHOLD STOP" not in durable_text, durable_text
 assert "review-bench fixes stale-run" not in durable_text, durable_text
 assert "No fixing pass follows, and no fix status is recorded." in durable_text, durable_text
-# The threshold a merged panel stops at is one repository's, the way the gate that prices the round
-# counts it: three findings spread over three repositories reached no member's threshold.
+# A merged panel is priced whole like any other round — the count is never per repository — and the
+# one round 2 it can ask for is the chat's own, never a bare command repeated in each member.
 merged_handoff = io.StringIO()
 with contextlib.redirect_stdout(merged_handoff):
     rb.handoff("merged-run", ["/fixture/findings-sol-high.jsonl"],
                members=[{"label": "a", "repo": "/tmp/a"}, {"label": "b", "repo": "/tmp/b"}])
-assert "confirmed P1s in ANY ONE of the repositories above" in merged_handoff.getvalue(), \
+assert f"{rb.HANDOFF_P1_STOP} or more confirmed P1s over the whole round" \
+    in merged_handoff.getvalue(), merged_handoff.getvalue()
+assert "in ANY ONE of the repositories" not in merged_handoff.getvalue(), \
     merged_handoff.getvalue()
-assert "in ANY ONE of the repositories" not in handoff_text, handoff_text
-assert "Run that second review once with" in merged_handoff.getvalue(), merged_handoff.getvalue()
+assert "round 2 runs once with" in merged_handoff.getvalue(), merged_handoff.getvalue()
 assert "in each repository above" not in merged_handoff.getvalue(), merged_handoff.getvalue()
 progress_run_dir = worktree_run_store / "worker-stats" / rb.PROGRESS_DIR
 assert not list(progress_run_dir.glob("*.json")), list(progress_run_dir.glob("*.json"))
@@ -11075,9 +11394,6 @@ debt_claudeb_before = os.environ["CLAUDEB_DIR"]
 debt_first_sha = debt_sha("reviewed.py")
 debt_pair_sha = debt_sha("pair.py")
 debt_settled_sha = debt_sha("settled.py")
-# The scope reopens a round the FORK says is owed a second one, and the fork is the gate's word:
-# the stub above answers it here too, so this suite never depends on the gate installed today.
-rb.round.ESCALATION_GATE = sr_fix_gate
 debt_stores = 0
 
 
@@ -11093,13 +11409,18 @@ def debt_store():
     return directory
 
 
-def debt_artifact(benches, run_id, reviewed, report=None):
+def debt_artifact(benches, run_id, reviewed, report=None, decision=None):
     directory = benches / run_id
     directory.mkdir()
     (directory / "meta.json").write_text(json.dumps({
         "run_id": run_id, "repo": str(debt_repo), "session": "chat-1", "worktree": True,
         "reviewed": dict(reviewed), "finished": rb.iso_now(),
     }))
+    if decision is not None:
+        (directory / rb.FORK_RECORD).write_text(json.dumps({
+            "choice": decision, "why": "recorded by the fixture " * 4,
+            "session": "chat-1", "at": rb.iso_now(),
+        }))
     if report is None:
         (directory / "verdicts.jsonl").write_text("")
     else:
@@ -11171,13 +11492,11 @@ assert debt_verdict() == "debt 1 mine", debt_verdict()
 debt_meta, debt_diff, _ = debt_review()
 assert debt_meta["reviewed"] == {"born.py": debt_sha("born.py")}, debt_meta
 assert "committed, never read" in debt_diff, debt_diff
-# It is the repository's own question, so it stamps the repository's own receipt and its scope
-# never reaches the round key — a scoped receipt here would leave the debt standing after the
-# review, and a key made of these paths would make every round a scope of its own.
+# It is the repository's own question, so it stamps the repository's own receipt: a scoped receipt
+# here would leave the debt standing after the review that answered it.
 assert debt_meta["scope"] == ["born.py"] and debt_meta["debt"] is True, debt_meta
 assert rb.review_receipt(debt_repo)["run_id"] == debt_meta["run_id"], "no plain receipt"
 assert rb.review_receipt(debt_repo, scope=["born.py"]) is None, "a scoped receipt was written"
-assert [key[1] for key in rb.run_scope_key(debt_meta)] == [()], rb.run_scope_key(debt_meta)
 assert debt_verdict() == "none", debt_verdict()
 # The journals are the debt universe for paths no artifact holds, and every scenario below asks
 # about a fresh store: a name left in them would put this settled file back in the next answer.
@@ -11203,18 +11522,41 @@ debt_base = rb.diff_base(debt_repo, debt_meta["commit"])
 assert debt_base not in debt_git("rev-list", "HEAD").split(), debt_base
 assert debt_git("show", "-s", "--format=%s", debt_base) == "review-bench debt base", debt_base
 
-# A locked round is discharged by the run this mode produces, and by nothing narrower: the lock is
-# released only by a run holding every surviving path of that round, and a path standing at the sha
-# the round recorded is NOT in debt — so a scope made of the debt alone can never answer it.
-debt_locked_store = debt_store()
-debt_artifact(debt_locked_store, "20260101T000100Z-aaaaaaa",
+# A round 2 reads the FULL scope of the round its decision reopened, and a path standing at the sha
+# that round recorded is NOT in debt — so a scope made of the debt alone can never answer it.
+debt_cover_store = debt_store()
+debt_cover_round = debt_artifact(
+    debt_cover_store, "20260101T000050Z-covering", {"reviewed.py": debt_sha("reviewed.py")},
+    decision="redesign",
+)
+debt_run_artifact = {
+    "kind": "run", "id": debt_cover_round.name, "dir": debt_cover_round, "epoch": 1,
+    "shas": {"reviewed.py": debt_sha("reviewed.py")},
+}
+debt_fixes_artifact = {
+    "kind": "fixes", "id": f"{debt_cover_round.name}+fixes", "dir": debt_cover_round,
+    "epoch": 2, "shas": {"reviewed.py": debt_sha("reviewed.py")},
+}
+assert rb.covering_artifacts(
+    debt_repo, artifacts=[debt_run_artifact, debt_fixes_artifact]
+)["reviewed.py"]["kind"] == "run"
+
+debt_reopened_store = debt_store()
+debt_artifact(debt_reopened_store, "20260101T000100Z-aaaaaaa",
               {"reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha},
+              decision="redesign",
               report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 (debt_repo / "reviewed.py").write_text("one\ntwo\ncommitted three\nuncommitted four\nfixed\n")
-assert debt_verdict() == "debt 1 other locked", debt_verdict()
+assert debt_verdict() == "debt 1 other", debt_verdict()
 assert [path for path, _ in rb.repo_debt(debt_repo)] == ["reviewed.py"], rb.repo_debt(debt_repo)
 assert [path for path, _ in rb.debt_review_scope(debt_repo)] == ["pair.py", "reviewed.py"], \
     rb.debt_review_scope(debt_repo)
+debt_journal("reviewed.py", session="chat-2")
+debt_reopened_scope, debt_reopened_skipped = rb.debt_scope(debt_repo, "chat-1")
+assert "reviewed.py" in dict(debt_reopened_scope), debt_reopened_scope
+assert "reviewed.py" not in debt_reopened_skipped, debt_reopened_skipped
+for debt_name in (rb.DEBT_JOURNAL, rb.COMMIT_JOURNAL):
+    (debt_gitdir / debt_name).unlink(missing_ok=True)
 debt_meta, debt_diff, _ = debt_review()
 # And the round that owed the second review is REOPENED: its own receipt is not read, so every
 # path it held compares against whatever answered for that path BEFORE it and its full scope comes
@@ -11232,16 +11574,16 @@ assert debt_meta["reviewed"] == {
 }, debt_meta
 # And it answers for the paths it was WIDENED to rather than for the ones that happen to show in
 # the snapshot: a path the base holds nothing for and the tree no longer carries is in neither
-# listing, and left out of `reviewed` the run holds it nowhere and discharges no lock.
+# listing, and left out of `reviewed` the run holds it nowhere.
 assert rb.reviewed_blobs(
     debt_repo, ["pair.py"], debt_meta["commit"], paths=["pair.py", "vanished.py"]
 ) == {"pair.py": debt_pair_sha, "vanished.py": ""}, rb.reviewed_blobs(
     debt_repo, ["pair.py"], debt_meta["commit"], paths=["pair.py", "vanished.py"]
 )
 
-# The other direction: a round below both thresholds owes nothing, so its receipt stands and the
-# scope is the ordinary debt delta. Reopening every round would hand each review its predecessor's
-# whole scope forever.
+# The other direction: a round whose decision is `fix`, or which owes none at all, reopens nothing,
+# so its receipt stands and the scope is the ordinary debt delta. Reopening every round would hand
+# each review its predecessor's whole scope forever.
 debt_settled_round = debt_store()
 debt_artifact(debt_settled_round, "20260101T000100Z-aaaaaaa",
               {"reviewed.py": debt_sha("reviewed.py"), "pair.py": debt_pair_sha},
@@ -11282,11 +11624,12 @@ assert debt_verdict() == "none", debt_verdict()
 debt_narrow = debt_store()
 debt_artifact(debt_narrow, "20260101T000100Z-aaaaaaa",
               {"reviewed.py": debt_first_sha, "pair.py": debt_pair_sha},
+              decision="redesign",
               report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
 debt_artifact(debt_narrow, "20260101T000200Z-bbbbbbb", {"reviewed.py": debt_sha("reviewed.py")})
 rb.RUN_CONFIRMED_COUNTS.clear()
 rb.ROUND_BUDGET_SPENT_CACHE.clear()
-assert debt_verdict() == "debt 1 other locked", debt_verdict()
+assert debt_verdict() == "none", debt_verdict()
 
 # A recorded sha this store can no longer read is no base at all, so the path takes the side its
 # PRICE takes: dirty in the working tree, that is the content HEAD holds, and the panel reads the
@@ -11351,25 +11694,8 @@ finally:
         os.environ["REVIEW_ASKED"] = debt_asked_before
 assert "REVIEW_ASKED=1" in debt_armed, debt_armed
 
-# The second review a locked round owes IS this command, and both the waiver's refusal and the
-# adjudication handoff name it rather than asking the reader to widen a path list by hand.
-debt_waive_store = debt_store()
-debt_artifact(debt_waive_store, "20260101T000100Z-aaaaaaa",
-              {"reviewed.py": debt_first_sha, "pair.py": debt_pair_sha},
-              report={"confirmed": 3, "confirmed_by_severity": {"P1": 3}})
-rb.RUN_CONFIRMED_COUNTS.clear()
-rb.ROUND_BUDGET_SPENT_CACHE.clear()
-debt_waive_out = io.StringIO()
-os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
-try:
-    with contextlib.redirect_stdout(debt_waive_out):
-        debt_waive_rc = rb.cmd_waive(argparse.Namespace(
-            repo=str(debt_repo), reason="the narrow rerun will do", paths=["reviewed.py"],
-        ))
-finally:
-    os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
-assert debt_waive_rc == 1, debt_waive_out.getvalue()
-assert rb.DEBT_REVIEW_COMMAND in debt_waive_out.getvalue(), debt_waive_out.getvalue()
+# Round 2 IS this command, and the adjudication handoff names it rather than asking the reader to
+# widen a path list by hand.
 debt_handoff = io.StringIO()
 with contextlib.redirect_stdout(debt_handoff):
     rb.handoff("debt-run", ["/tmp/findings.jsonl"])
@@ -11415,6 +11741,61 @@ except ValueError as exc:
 assert "--all widens the scope --debt computes" in debt_all_refusal, debt_all_refusal
 (debt_repo / "theirs.py").unlink()
 (debt_gitdir / rb.COMMIT_JOURNAL).unlink(missing_ok=True)
+
+# The round the LAUNCH settles reaches the FINISHED record. That document is rewritten from scratch
+# when the panel ends, and dropped there every round 2 reads back as a first round with no chain:
+# its block says `round 1`, the `before:` and `decision:` rows go, and the launcher's own refusal of
+# a third pass — which reads this very field — never fires again (live, 2026-08-26).
+debt_chain_store = debt_store()
+(debt_repo / "chained.py").write_text("the first round read this\n")
+debt_git("add", "-A")
+debt_git("commit", "-qm", "chained")
+debt_chain_one = sr_fix_run(
+    debt_chain_store, {"chained.py": debt_sha("chained.py")},
+    run_id="20260601T002000Z-debtchainone", repo=debt_repo,
+    judged=("P2", rb.ROUND_FIX_MAX + 1), decision="simplify",
+    session=rb.store.caller_chat() or "chat-1",
+)
+debt_chain_meta, _, _ = debt_review()
+assert debt_chain_meta["round"] == rb.ROUND_BUDGET, debt_chain_meta
+assert debt_chain_meta["chain"] == debt_chain_one.name, debt_chain_meta
+debt_chain_two = rb.state_dir() / "benches" / debt_chain_meta["run_id"]
+# And a record carrying neither key is read back off the same link the launch used, so the block a
+# reader is handed for it is still the round 2 it is.
+debt_chain_bare = {key: value for key, value in debt_chain_meta.items()
+                   if key not in ("round", "chain")}
+(debt_chain_two / "meta.json").write_text(json.dumps(debt_chain_bare))
+assert rb.round.recovered_round_stamp(debt_chain_two, debt_chain_bare) == {
+    "round": rb.ROUND_BUDGET, "chain": debt_chain_one.name,
+}, rb.round.recovered_round_stamp(debt_chain_two, debt_chain_bare)
+debt_chain_out = io.StringIO()
+with contextlib.redirect_stdout(debt_chain_out):
+    rb.report.emit_report(debt_chain_two, debt_chain_bare)
+debt_chain_block = debt_chain_out.getvalue()
+assert "before:" in debt_chain_block, debt_chain_block
+assert "simplify (round 1)" in debt_chain_block, debt_chain_block
+# Which is the recovery and not the rows being printed for every run: read off the bare record, the
+# same block has neither.
+assert chain_value(rb.report_lines(debt_chain_two, debt_chain_bare), "before:") is None, \
+    rb.report_lines(debt_chain_two, debt_chain_bare)
+# A round 1 whose own decision is not on record yet is nobody's second pass, whatever a later
+# record says: the second pass is the run launched AFTER the decision.
+debt_chain_late = debt_store()
+debt_chain_late_one = sr_fix_run(
+    debt_chain_late, {"chained.py": debt_sha("chained.py")},
+    run_id="20260601T002100Z-debtchainlate", repo=debt_repo,
+    judged=("P2", rb.ROUND_FIX_MAX + 1), session=rb.store.caller_chat() or "chat-1",
+)
+(debt_chain_late_one / rb.FORK_RECORD).write_text(json.dumps({
+    "choice": "cut", "why": "recorded after the run below was launched " * 3,
+    "session": rb.store.caller_chat() or "chat-1", "at": rb.iso_now(),
+}))
+debt_chain_early = dict(debt_chain_bare, started="2026-06-01T00:00:00+00:00")
+assert rb.round.recovered_round_stamp(debt_chain_two, debt_chain_early) == {}, \
+    rb.round.recovered_round_stamp(debt_chain_two, debt_chain_early)
+(debt_repo / "chained.py").unlink()
+debt_git("add", "-A")
+debt_git("commit", "-qm", "chained gone")
 
 
 # --- the base a --debt panel reads, and the size it names before reading it --------------------
@@ -12810,7 +13191,7 @@ assert "2 verdict(s) triaged into this run's report receipt; no corpus row writt
     no_corpus_stdout.getvalue(), no_corpus_stdout.getvalue()
 assert no_corpus_stdout.getvalue().count(FIXTURE_FRAME_PREFIX) == 1, \
     no_corpus_stdout.getvalue()
-assert "fixes:        NOT APPLIED — pending" in no_corpus_stdout.getvalue(), \
+assert "fixes:" not in no_corpus_stdout.getvalue() and "next:" not in no_corpus_stdout.getvalue(), \
     no_corpus_stdout.getvalue()
 assert not (no_corpus_dir / "verdicts.jsonl").exists(), "a verdict file was left behind"
 # The receipt carries the severity tally of exactly those verdicts — the same numbers the block
@@ -14490,13 +14871,13 @@ PY
 
 report_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" report report-adjudicated) \
   || fail "adjudicated report failed"
-report_frame_header='===================== review ====================='
+report_frame_header='================ review · round 1 ================'
 report_frame_footer='=================================================='
 # Every report carries the verdict on its own tally, in the commit gate's words: a round is closed
 # here or it owes another, and the block that says neither is the one a chat read as "done" while a
 # second review was owed (2026-08-08). No stamp anywhere in it: a report Egor is handed is about
 # the tree in front of him, and only the frame word ever says otherwise.
-expected_report="$report_frame_header"$'\nT2:           5.5 min / 4.0 min gem-flash36-med killed\nconfirmed:    P1 1 · P2 0 · P3 0 · 1 total\nfixes:        NOT APPLIED — pending\nverifier:     off · 2 unchecked\nrejected:     1 duplicate  ~400 tok\n              2 false       ~3k tok\nfound:        sol-high  1/2\nnoise:        kimi 1 · sol-high 1\nfailed:       gem-flash36-med  killed · cap   4.0 min\n              gem-flash35-low  mismatch       0.5 min\n              opus-med-bare    unclassified\n'"$report_frame_footer"
+expected_report="$report_frame_header"$'\nT2:           5.5 min / 4.0 min gem-flash36-med killed\nconfirmed:    P1 1 · P2 0 · P3 0 · 1 total\nfixes:        fix — the commit closes\nnext:         none\nverifier:     off · 2 unchecked\nrejected:     1 duplicate  ~400 tok\n              2 false       ~3k tok\nfound:        sol-high  1/2\nnoise:        kimi 1 · sol-high 1\nfailed:       gem-flash36-med  killed · cap   4.0 min\n              gem-flash35-low  mismatch       0.5 min\n              opus-med-bare    unclassified\nid:           report-adjudicated\n'"$report_frame_footer"
 assert test "$report_output" = "$expected_report"
 # The frame is what the reader and every consumer of this block see first: a word centered in '='
 # to exactly 50 characters, and a footer of exactly 50 more.
@@ -14507,7 +14888,7 @@ assert test "$(python3 -c 'import sys; print(len(sys.argv[1]))' \
   "$report_frame_header")" -eq 50
 assert test "${#report_frame_footer}" -eq 50
 # Every state word keeps the shape the hooks find the block by (shared-invariants row ab).
-assert grep -qE '^=+ (bench|review( · (NOT FINISHED|NO PANEL|STALE · [0-9]{1,2} [A-Z][a-z]{2}))?) =+$' \
+assert grep -qE '^=+ (bench|review · round [0-9]+( · (NOT FINISHED|NO PANEL|STALE · [0-9]{1,2} [A-Z][a-z]{2}))?) =+$' \
   <<<"$(head -1 <<<"$report_output")"
 assert grep -qE '^={10,}$' <<<"$(tail -1 <<<"$report_output")"
 # The header must not read as the footer, or a consumer closing the block on its end shape closes
@@ -16052,54 +16433,6 @@ if findings:
     ) + "\n")
 GATEPY
 }
-# A fixes receipt is dated when it was written, and a fixture that backdates a run's clock has to
-# backdate its receipt too: left at the real now, it reads as recorded after every backdated run.
-fix_backdate() { # run-id hours-ago
-  python3 - "$FIX_SD/benches/$1/fixes.json" "$2" <<'BACKPY'
-import json
-import sys
-from datetime import datetime, timedelta, timezone
-
-path = sys.argv[1]
-record = json.loads(open(path).read())
-record["recorded_at"] = (
-    datetime.now(timezone.utc) - timedelta(hours=float(sys.argv[2]))
-).isoformat()
-open(path, "w").write(json.dumps(record, indent=2, sort_keys=True) + "\n")
-BACKPY
-}
-# A panel seals its tree when it STARTS and answers hours later; the fixture spells one instant
-# for both, so only this can ask which of the two a lineage receipt is measured against.
-fix_stretch() { # run-id hours-before-finish
-  python3 - "$FIX_SD/benches/$1/meta.json" "$2" <<'STRETCHPY'
-import json
-import sys
-from datetime import datetime, timedelta
-
-path = sys.argv[1]
-meta = json.loads(open(path).read())
-meta["started"] = (
-    datetime.fromisoformat(meta["finished"]) - timedelta(hours=float(sys.argv[2]))
-).isoformat()
-open(path, "w").write(json.dumps(meta) + "\n")
-STRETCHPY
-}
-# The seal instant the tool stamps for itself, which `started` is minutes later than: only a
-# fixture spelling the two apart can ask which of them a lineage receipt is measured against.
-fix_seal() { # run-id hours-before-finish
-  python3 - "$FIX_SD/benches/$1/meta.json" "$2" <<'SEALPY'
-import json
-import sys
-from datetime import datetime, timedelta
-
-path = sys.argv[1]
-meta = json.loads(open(path).read())
-meta["sealed_at"] = (
-    datetime.fromisoformat(meta["finished"]) - timedelta(hours=float(sys.argv[2]))
-).isoformat()
-open(path, "w").write(json.dumps(meta) + "\n")
-SEALPY
-}
 gate_run 20260731T000000Z-gatefresh 0 0
 gate_pending=$(WORKER_STATS_DIR="$GATE_SD" "$SCRIPT" pending-report --repo "$GATE_REPO") \
   || fail "pending-report missed an untriaged worktree run"
@@ -16475,24 +16808,30 @@ assert test "$(grep -c . "$settle_nudged")" = "2"
 rm -f "$SETTLE_REPO/a.py" "$SETTLE_REPO/b.py" "$SETTLE_REPO/a.py b.py"
 : >"$settle_nudged"
 settle_names "$SETTLE_REPO" sess-settle f.py g.py
-# A round still OWED a follow-up is the fork's and the lock's to demand, never this one's: asked
-# here too it would offer a waiver the lock refuses.
-LOCKED_SD="$WORK/gate-settle-locked"
-LOCKED_REPO="$WORK/gate-settle-locked-repo"
-git init -q "$LOCKED_REPO"
-printf 'one\ntwo\nthree\n' >"$LOCKED_REPO/f.py"
-GATE_SD="$LOCKED_SD" GATE_REPO="$LOCKED_REPO" GATE_SESSION=sess-locked GATE_REVIEWED=f.py \
-  gate_run 20260801T020000Z-gatelocked 0 0
-settle_names "$LOCKED_REPO" sess-locked f.py
+# A round whose DECISION named a second pass is that pass's to demand, never this one's: asked here
+# too, the same scope would be settled twice over.
+REOPENED_SD="$WORK/gate-settle-reopened"
+REOPENED_REPO="$WORK/gate-settle-reopened-repo"
+git init -q "$REOPENED_REPO"
+printf 'one\ntwo\nthree\n' >"$REOPENED_REPO/f.py"
+GATE_SD="$REOPENED_SD" GATE_REPO="$REOPENED_REPO" GATE_SESSION=sess-reopened GATE_REVIEWED=f.py \
+  gate_run 20260801T020000Z-gatereopened 0 0
+settle_names "$REOPENED_REPO" sess-reopened f.py
 printf '%s\n' '{"confirmed": 3, "confirmed_by_severity": {"P1": 3}}' \
-  >"$LOCKED_SD/benches/20260801T020000Z-gatelocked/reported.json"
-# Its fixes on record and its fork recorded, so the lock is the only thing left holding it back.
+  >"$REOPENED_SD/benches/20260801T020000Z-gatereopened/reported.json"
 printf '%s\n' '{"state": "done", "confirmed": 3, "fixed": 3, "false_positives": 0}' \
-  >"$LOCKED_SD/benches/20260801T020000Z-gatelocked/fixes.json"
-printf '%s\n' '{"choice": "fix", "why": "the P1s are all in one block", "session": "sess-locked"}' \
-  >"$LOCKED_SD/benches/20260801T020000Z-gatelocked/fork.json"
-assert test -z "$(WORKER_STATS_DIR="$LOCKED_SD" "$SCRIPT" pending-report --repo "$LOCKED_REPO" \
-  --session sess-locked --mark || true)"
+  >"$REOPENED_SD/benches/20260801T020000Z-gatereopened/fixes.json"
+printf '%s\n' '{"choice": "redesign", "why": "the block wants rebuilding", "session": "sess-reopened"}' \
+  >"$REOPENED_SD/benches/20260801T020000Z-gatereopened/fork.json"
+assert test -z "$(WORKER_STATS_DIR="$REOPENED_SD" "$SCRIPT" pending-report --repo "$REOPENED_REPO" \
+  --session sess-reopened --mark || true)"
+# And the same round with `fix` on record owes no second pass, so the demand IS this gate's: the
+# commit that carries the fixes is all it was ever waiting for, and nothing else comes back.
+printf '%s\n' '{"choice": "fix", "why": "the P1s are all in one block, and the block stays"}' \
+  >"$REOPENED_SD/benches/20260801T020000Z-gatereopened/fork.json"
+rm -f "$REOPENED_SD/benches/20260801T020000Z-gatereopened/settle-nudged"
+assert contains "$(WORKER_STATS_DIR="$REOPENED_SD" "$SCRIPT" pending-report --repo "$REOPENED_REPO" \
+  --session sess-reopened --mark || true)" "20260801T020000Z-gatereopened"
 # And a run of another chat is not this one's debt to settle either.
 assert test -z "$(WORKER_STATS_DIR="$SETTLE_SD" "$SCRIPT" pending-report --repo "$SETTLE_REPO" \
   --session sess-elsewhere --mark || true)"
@@ -16506,19 +16845,8 @@ FIX_QUIET_REPO="$WORK/fix-quiet-repo"
 FIX_HOME="$WORK/fix-home"
 git init -q "$FIX_REPO"
 git init -q "$FIX_QUIET_REPO"
-mkdir -p "$FIX_HOME/.claude/hooks"
-# The fork's wording is the commit gate's alone (shared-invariants row af), so the round budget is
-# measured against a stub of it: what the real gate says today is not this suite's to depend on.
-cat >"$FIX_HOME/.claude/hooks/review-flow-gate.sh" <<'FLOWSTUB'
-#!/bin/bash
-[ "$1" = escalation-verdict ] || exit 1
-[ "${3:-0}" -ge 1 ] || exit 1
-printf 'stub fork. Pick one and carry it out:\n'
-printf -- '- fix them and commit;\n'
-printf -- '- re-review, over the FULL original scope plus the fixes.\n'
-FLOWSTUB
-chmod +x "$FIX_HOME/.claude/hooks/review-flow-gate.sh"
-fix_blocked_header='============= review · NOT FINISHED =============='
+mkdir -p "$FIX_HOME/.claude"
+fix_blocked_header='======== review · round 1 · NOT FINISHED ========='
 for fix_frame in "$fix_blocked_header" "$report_frame_header"; do
   asserts=$((asserts + 1))
   test "$(python3 -c 'import sys; print(len(sys.argv[1]))' "$fix_frame")" = 50 ||
@@ -16528,10 +16856,10 @@ fix_row() { grep -E '^fixes: +' <<<"$1" | sed -E 's/^fixes: +//'; }
 # The ORDINARY word for a run under REPORT_STALE_HOURS old and the dated STALE one past it; what
 # neither may wear is the loud word, which is read off the receipt alone.
 fix_plain_frame() {
-  grep -qE '^=+ review =+$' <<<"$1"
+  grep -qE '^=+ review · round [0-9]+ =+$' <<<"$1"
 }
 fix_stale_frame() {
-  grep -qE '^=+ review · STALE · [0-9]{1,2} [A-Z][a-z]{2} =+$' <<<"$1"
+  grep -qE '^=+ review · round [0-9]+ · STALE · [0-9]{1,2} [A-Z][a-z]{2} =+$' <<<"$1"
 }
 fix_bench() { HOME="$FIX_HOME" WORKER_STATS_DIR="$FIX_SD" "$SCRIPT" "$@"; }
 
@@ -16541,11 +16869,9 @@ printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' \
   '{"rater":"oc-kimik3","idx":1,"verdict":"false_positive"}' >"$WORK/fix-verdicts.jsonl"
 fix_first=$(fix_bench record 20260801T000000Z-fixround1 --no-corpus \
   --verdicts "$WORK/fix-verdicts.jsonl") || fail "the first round refused its own triage"
-# Nothing on record is pending, never applied: a report silent about the fixes reads as fixed.
-# Framed in the PLAIN word: `record` seals the triage and the fixing pass starts right after it,
-# so the loud word here is the one Egor read as "nothing was fixed" while the fixes were landing
-# (2026-08-20). The row says the truth; the frame does not shout it.
-assert test "$(fix_row "$fix_first")" = "NOT APPLIED — pending"
+# A round in the fix band says what closes it and nothing about a state: the states this row used
+# to spell were read as "nothing was fixed" while the fixes were landing (2026-08-20).
+assert test "$(fix_row "$fix_first")" = "fix — the commit closes"
 assert fix_plain_frame "$fix_first"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_first")" -eq 0
 # Nothing stopped, so there is no fork to take and no row claiming there is.
@@ -16614,93 +16940,110 @@ assert test "$(REVIEW_BENCH_SESSION_DIR="$FIX_SESSIONS" fix_bench review-anchor 
 rm -rf "$FIX_SESSIONS"
 rm -f "$FIX_SD/progress/anchor-merged.json"
 rm -rf "$FIX_SD/benches/20260731T000000Z-merged" "$WORK/anchor-other"
-# The triage Stop gate owes a triaged run one thing more where the stub gate's fork opened: the
-# fork decision, on record before any fixing pass. It asks for the `fork` command in the place of
-# the `record` one, under the same bounded counter, and goes quiet the moment it is on record.
-fix_first_gate=$(fix_bench pending-report --repo "$FIX_REPO") \
-  || fail "the Stop gate passed a forked round with no fork on record"
-assert test "$(sed -n 1p <<<"$fix_first_gate")" = "20260801T000000Z-fixround1 1"
-assert contains "$(sed -n 2p <<<"$fix_first_gate")" "review-bench fork 20260801T000000Z-fixround1 --choice fix|simplify|re-review --why"
-fix_first_check=$(fix_bench fork 20260801T000000Z-fixround1 --check 2>&1 >/dev/null; echo "rc=$?")
-assert contains "$fix_first_check" "rc=3"
-assert contains "$fix_first_check" "has no fork on record; record it first: review-bench fork 20260801T000000Z-fixround1"
-# `--why` is the strategic reason, not a list of findings: under 80 characters it is refused.
-fix_short_why=$(fix_bench fork 20260801T000000Z-fixround1 --choice fix --why 'fix it' 2>&1 || true)
-assert contains "$fix_short_why" "needs at least 80 characters"
-assert test ! -e "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json"
-fix_why='The one confirmed defect is local to a lookup; the block around it is sound and stays as designed.'
-# The record is the launching chat's alone — the same ownership `report --session` answers — so a
-# co-tenant chat, a fixing worker the gate refused included, cannot write the fork that unblocks
-# its own gate; the asking chat is the environment's unless named, and a caller naming none is
-# refused rather than trusted.
-fix_fork_foreign=$(fix_bench fork 20260801T000000Z-fixround1 --choice fix --why "$fix_why" --session sess-elsewhere 2>&1) &&
-  fail "fork recorded another chat's decision: $fix_fork_foreign"
-assert contains "$fix_fork_foreign" "run 20260801T000000Z-fixround1 belongs to chat sess-fix"
-fix_fork_env=$(CLAUDE_CODE_SESSION_ID=sess-elsewhere fix_bench fork 20260801T000000Z-fixround1 --choice fix --why "$fix_why" 2>&1) &&
-  fail "fork trusted a foreign chat's environment: $fix_fork_env"
-assert contains "$fix_fork_env" "belongs to chat sess-fix"
-fix_fork_nobody=$(CLAUDE_CODE_SESSION_ID= fix_bench fork 20260801T000000Z-fixround1 --choice fix --why "$fix_why" 2>&1) &&
-  fail "fork recorded a decision for nobody: $fix_fork_nobody"
-assert contains "$fix_fork_nobody" "name yours with --session"
-assert test ! -e "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json"
-assert contains "$(fix_bench fork 20260801T000000Z-fixround1 --check 2>&1 >/dev/null; echo "rc=$?")" "rc=3"
-CLAUDE_CODE_SESSION_ID=sess-fix fix_bench fork 20260801T000000Z-fixround1 --choice fix --why "$fix_why" >/dev/null \
-  || fail "fork refused the launching chat's own environment"
-assert test "$(jq -r .session "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json")" = sess-fix
-rm -f "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json"
-fix_forked=$(fix_bench fork 20260801T000000Z-fixround1 --choice fix --why "$fix_why" --session sess-fix) \
-  || fail "fork refused a recorded decision"
-assert test "$fix_forked" = "review 20260801T000000Z-fixround1 · fork: fix — $fix_why"
-assert test "$(jq -r .choice "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json")" = fix
-assert test "$(jq -r .session "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json")" = sess-fix
-assert test "$(fix_bench fork 20260801T000000Z-fixround1 --check; echo "rc=$?")" = "rc=0"
-fix_first_gate=$(fix_bench pending-report --repo "$FIX_REPO" || true)
-assert test -z "$fix_first_gate"
-# The decision reaches Egor as one line, once: `fork` beside the `triaged` line — both counted,
-# since a fork printed INSTEAD of the triaged line would pass a count of the fork alone — and
-# `report --line fork` renders the same line the record printed.
-fix_first_delivery=$(fix_bench pending-delivery --session sess-fix) \
-  || fail "pending-delivery refused the forked round"
-assert test "$(grep -c '^20260801T000000Z-fixround1 fork$' <<<"$fix_first_delivery")" = 1
-assert test "$(grep -c '^20260801T000000Z-fixround1 triaged$' <<<"$fix_first_delivery")" = 1
-assert test "$(grep -c '^20260801T000000Z-fixround1 ' <<<"$fix_first_delivery")" = 2
-# The fork line rides its record's own instant through the same window the triaged line does:
-# aged past TRIAGE_GATE_HOURS it is named no more, whatever the run's other lines do.
-fix_fork_at=$(jq -r .at "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json")
-fix_fork_aged_at=$(PYTHONPATH="$ROOT/share" python3 -c 'import datetime, rbench
-print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=rbench.TRIAGE_GATE_HOURS, minutes=1)).isoformat())')
-jq -c --arg at "$fix_fork_aged_at" '.at = $at' "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json" >"$WORK/fork-aged.json"
-mv "$WORK/fork-aged.json" "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json"
-fix_aged_delivery=$(fix_bench pending-delivery --session sess-fix || true)
-assert test "$(grep -c '^20260801T000000Z-fixround1 fork$' <<<"$fix_aged_delivery")" = 0
-assert test "$(grep -c '^20260801T000000Z-fixround1 triaged$' <<<"$fix_aged_delivery")" = 1
-jq -c --arg at "$fix_fork_at" '.at = $at' "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json" >"$WORK/fork-aged.json"
-mv "$WORK/fork-aged.json" "$FIX_SD/benches/20260801T000000Z-fixround1/fork.json"
-assert test "$(grep -c '^20260801T000000Z-fixround1 fork$' <<<"$(fix_bench pending-delivery --session sess-fix)")" = 1
-assert test "$(fix_bench report 20260801T000000Z-fixround1 --line fork)" = "$fix_forked"
+# A round inside the fix band owes no decision at all: the Stop gate is quiet over it, and its
+# block says what closes it and that nothing follows.
+assert test -z "$(fix_bench pending-report --repo "$FIX_REPO" || true)"
+assert contains "$fix_first" "next:         none"
+assert test "$(grep -Fc -- "decision:" <<<"$fix_first")" -eq 0
+assert test -z "$(fix_bench fork 20260801T000000Z-fixround1 || true)"
 # And the triaged line is the confirmed row's own tally, one line, no frame.
 fix_first_line=$(fix_bench report 20260801T000000Z-fixround1 --line) \
   || fail "report --line refused a triaged round"
 assert test "$(wc -l <<<"$fix_first_line" | tr -d ' ')" = 1
 assert test "$fix_first_line" = "review 20260801T000000Z-fixround1 · triaged: P1 0 · P2 1 · P3 0 · 1 total — fixing pass next"
 assert test "$(sed -n 's/^confirmed: *//p' <<<"$fix_first")" = "P1 0 · P2 1 · P3 0 · 1 total"
-# Round one may still be offered the pass the gate priced.
-assert contains "$fix_first" "round:        stub fork"
-# And the fork itself is not in the block: three arms and a command are the model's context, and
-# `fork` is where the report hook picks them up.
-assert test "$(grep -Fc -- "re-review" <<<"$fix_first")" -eq 0
-fix_first_fork=$(fix_bench fork 20260801T000000Z-fixround1) \
-  || fail "fork refused a round that owes one"
-assert contains "$fix_first_fork" "re-review"
+
+# Past the fix band the round owes one thing before any fixing pass: the decision, on record. The
+# Stop gate asks for the `fork` command in the place of the `record` one, under the same bounded
+# counter, and goes quiet the moment it is on record.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260801T000030Z-decide 0 10
+python3 -c 'import json, sys
+sys.stdout.write("".join(json.dumps({"rater": "oc-kimik3", "idx": n,
+    "verdict": "confirmed" if n < 9 else "false_positive"}) + "\n" for n in range(10)))' \
+  >"$WORK/decide-verdicts.jsonl"
+fix_decide=$(fix_bench record 20260801T000030Z-decide --no-corpus \
+  --verdicts "$WORK/decide-verdicts.jsonl") || fail "the decide-band round refused its own triage"
+assert test "$(fix_row "$fix_decide")" = "decision first — fix / simplify / cut / redesign"
+assert contains "$fix_decide" "next:         round 2 by decision"
+assert contains "$fix_decide" "DECISION FIRST — 9 confirmed, 0 of them P1"
+fix_first_gate=$(fix_bench pending-report --repo "$FIX_REPO") \
+  || fail "the Stop gate passed a round with no decision on record"
+assert test "$(sed -n 1p <<<"$fix_first_gate")" = "20260801T000030Z-decide 9"
+assert contains "$(sed -n 2p <<<"$fix_first_gate")" "review-bench fork 20260801T000030Z-decide --choice fix|simplify|cut|redesign --why"
+fix_first_check=$(fix_bench fork 20260801T000030Z-decide --check 2>&1 >/dev/null; echo "rc=$?")
+assert contains "$fix_first_check" "rc=3"
+assert contains "$fix_first_check" "is a decision and has none on record; record it first: review-bench fork 20260801T000030Z-decide"
+# `--why` is the strategic reason, not a list of findings: under 80 characters it is refused.
+fix_short_why=$(fix_bench fork 20260801T000030Z-decide --choice fix --why 'fix it' 2>&1 || true)
+assert contains "$fix_short_why" "needs at least 80 characters"
+assert test ! -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+# Every word outside the four is refused by the parser itself, so no fifth arm can be recorded.
+fix_bad_choice=$(fix_bench fork 20260801T000030Z-decide --choice re-review --why 'x' 2>&1 || true)
+assert contains "$fix_bad_choice" "invalid choice"
+fix_why='The nine confirmed defects are local to one lookup; the block around them is sound and stays as designed.'
+# The record is the launching chat's alone — the same ownership `report --session` answers — so a
+# co-tenant chat, a fixing worker the gate refused included, cannot write the fork that unblocks
+# its own gate; the asking chat is the environment's unless named, and a caller naming none is
+# refused rather than trusted.
+fix_fork_foreign=$(fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" --session sess-elsewhere 2>&1) &&
+  fail "fork recorded another chat's decision: $fix_fork_foreign"
+assert contains "$fix_fork_foreign" "run 20260801T000030Z-decide belongs to chat sess-fix"
+fix_fork_env=$(CLAUDE_CODE_SESSION_ID=sess-elsewhere fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" 2>&1) &&
+  fail "fork trusted a foreign chat's environment: $fix_fork_env"
+assert contains "$fix_fork_env" "belongs to chat sess-fix"
+fix_fork_nobody=$(CLAUDE_CODE_SESSION_ID= fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" 2>&1) &&
+  fail "fork recorded a decision for nobody: $fix_fork_nobody"
+assert contains "$fix_fork_nobody" "name yours with --session"
+assert test ! -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+assert contains "$(fix_bench fork 20260801T000030Z-decide --check 2>&1 >/dev/null; echo "rc=$?")" "rc=3"
+CLAUDE_CODE_SESSION_ID=sess-fix fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" >/dev/null \
+  || fail "fork refused the launching chat's own environment"
+assert test "$(jq -r .session "$FIX_SD/benches/20260801T000030Z-decide/fork.json")" = sess-fix
+rm -f "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+fix_forked=$(fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" --session sess-fix) \
+  || fail "fork refused a recorded decision"
+assert test "$fix_forked" = "review 20260801T000030Z-decide · decision: fix → no round 2"
+assert test "$(jq -r .choice "$FIX_SD/benches/20260801T000030Z-decide/fork.json")" = fix
+assert test "$(jq -r .session "$FIX_SD/benches/20260801T000030Z-decide/fork.json")" = sess-fix
+assert test "$(fix_bench fork 20260801T000030Z-decide --check; echo "rc=$?")" = "rc=0"
+fix_first_gate=$(fix_bench pending-report --repo "$FIX_REPO" || true)
+assert test -z "$fix_first_gate"
+# `fix` on record closes the round on its commit and runs no round 2, and the block says both.
+fix_decided=$(fix_bench report 20260801T000030Z-decide) || fail "the decided round has no report"
+assert test "$(fix_row "$fix_decided")" = "fix — the commit closes"
+assert contains "$fix_decided" "next:         none"
+# The decision reaches Egor as one line, once: `fork` beside the `triaged` line — both counted,
+# since a fork printed INSTEAD of the triaged line would pass a count of the fork alone — and
+# `report --line fork` renders the same line the record printed.
+fix_first_delivery=$(fix_bench pending-delivery --session sess-fix) \
+  || fail "pending-delivery refused the forked round"
+assert test "$(grep -c '^20260801T000030Z-decide fork$' <<<"$fix_first_delivery")" = 1
+assert test "$(grep -c '^20260801T000030Z-decide triaged$' <<<"$fix_first_delivery")" = 1
+assert test "$(grep -c '^20260801T000030Z-decide ' <<<"$fix_first_delivery")" = 2
+# The fork line rides its record's own instant through the same window the triaged line does:
+# aged past TRIAGE_GATE_HOURS it is named no more, whatever the run's other lines do.
+fix_fork_at=$(jq -r .at "$FIX_SD/benches/20260801T000030Z-decide/fork.json")
+fix_fork_aged_at=$(PYTHONPATH="$ROOT/share" python3 -c 'import datetime, rbench
+print((datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=rbench.TRIAGE_GATE_HOURS, minutes=1)).isoformat())')
+jq -c --arg at "$fix_fork_aged_at" '.at = $at' "$FIX_SD/benches/20260801T000030Z-decide/fork.json" >"$WORK/fork-aged.json"
+mv "$WORK/fork-aged.json" "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+fix_aged_delivery=$(fix_bench pending-delivery --session sess-fix || true)
+assert test "$(grep -c '^20260801T000030Z-decide fork$' <<<"$fix_aged_delivery")" = 0
+assert test "$(grep -c '^20260801T000030Z-decide triaged$' <<<"$fix_aged_delivery")" = 1
+jq -c --arg at "$fix_fork_at" '.at = $at' "$FIX_SD/benches/20260801T000030Z-decide/fork.json" >"$WORK/fork-aged.json"
+mv "$WORK/fork-aged.json" "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+assert test "$(grep -c '^20260801T000030Z-decide fork$' <<<"$(fix_bench pending-delivery --session sess-fix)")" = 1
+assert test "$(fix_bench report 20260801T000030Z-decide --line fork)" = "$fix_forked"
 
 # The blocked form carries the reason into the block, so the chat reads why the work stopped
 # rather than that it did.
 fix_blocked=$(fix_bench fixes 20260801T000000Z-fixround1 --blocked 'P1 threshold, fork pending') \
   || fail "fixes --blocked refused a triaged run"
-assert contains "$fix_blocked" "NOT APPLIED — P1 threshold, fork pending"
+assert contains "$fix_blocked" "stopped — P1 threshold, fork pending"
 fix_blocked_report=$(fix_bench report 20260801T000000Z-fixround1) \
   || fail "the blocked round has no report"
-assert test "$(fix_row "$fix_blocked_report")" = "NOT APPLIED — P1 threshold, fork pending"
+assert test "$(fix_row "$fix_blocked_report")" = "stopped — P1 threshold, fork pending"
 # NOT FINISHED belongs to the blocked state alone, and the frame has to make the situation
 # unmistakable: the reason on the row, and beneath it what stopped the round and whose the fork is.
 assert contains "$fix_blocked_report" "$fix_blocked_header"
@@ -16709,14 +17052,14 @@ assert contains "$fix_blocked_report" "$fix_blocked_header"
 # had already read, saying a thing its receipt never said (2026-08-20).
 assert test "$(grep -Fc -- "$report_frame_header" <<<"$fix_blocked_report")" -eq 0
 # The fork under it is the model's context and not Egor's reading, so the block keeps the reason
-# and `fork` carries the three arms.
+# and `fork` carries the four words.
 assert test "$(grep -Fc -- "stopped:" <<<"$fix_blocked_report")" -eq 0
 assert test "$(grep -Fc -- "is Egor's decision and not the fixer's" <<<"$fix_blocked_report")" -eq 0
 fix_blocked_fork=$(fix_bench fork 20260801T000000Z-fixround1) \
   || fail "fork refused a stopped round"
-assert contains "$fix_blocked_fork" "the fixing pass stopped over this round's findings, for the reason"
-assert contains "$fix_blocked_fork" "fixing them as they stand, reworking the code they cluster in,"
-assert contains "$fix_blocked_fork" "is Egor's decision and not the fixer's"
+assert contains "$fix_blocked_fork" "the fixing pass stopped over this round's findings"
+assert contains "$fix_blocked_fork" "fix, simplify, cut or redesign"
+assert contains "$fix_blocked_fork" "is Egor's"
 # `--blocked` takes whichever reason the pass actually had, and the fork under the loud word
 # asserts none of its own: a round stopped by a walled worker read "stopped at the P1 threshold
 # and fixed nothing" over a receipt that said neither.
@@ -16724,9 +17067,9 @@ fix_bench fixes 20260801T000000Z-fixround1 --blocked 'the worker was walled mid-
   || fail "fixes --blocked refused a reason that is not the threshold"
 fix_walled_report=$(fix_bench report 20260801T000000Z-fixround1) \
   || fail "the walled round has no report"
-assert test "$(fix_row "$fix_walled_report")" = "NOT APPLIED — the worker was walled mid-pass"
+assert test "$(fix_row "$fix_walled_report")" = "stopped — the worker was walled mid-pass"
 assert contains "$fix_walled_report" "$fix_blocked_header"
-assert contains "$fix_walled_report" "NOT APPLIED — the worker was walled mid-pass"
+assert contains "$fix_walled_report" "stopped — the worker was walled mid-pass"
 assert test "$(grep -Fc -- "stopped at the P1 threshold" <<<"$fix_walled_report")" -eq 0
 # A blocked receipt answers for the triage it stopped over, exactly as a done one answers for the
 # triage it fixed: re-adjudicated to different findings, the round owes an answer again rather than
@@ -16736,7 +17079,7 @@ printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"false_positive"}' \
 fix_blockswap=$(fix_bench record 20260801T000000Z-fixround1 --no-corpus \
   --verdicts "$WORK/fix-verdicts-blockswap.jsonl") || fail "re-adjudication of a blocked round refused"
 assert test "$(fix_row "$fix_blockswap")" \
-  = "NOT APPLIED — recorded against a different triage of the same 1 confirmed"
+  = "re-triaged — the receipt answers for a different triage of the same 1 confirmed"
 assert fix_plain_frame "$fix_blockswap"
 assert test "$(grep -Fc -- "stopped:" <<<"$fix_blockswap")" -eq 0
 # And the delivery line names the NEW triage, never the state of the receipt the report has
@@ -16796,35 +17139,43 @@ assert test -z "$(fix_row "$fix_quiet")"
 assert fix_plain_frame "$fix_quiet"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_quiet")" -eq 0
 
-# Two rounds over one scope and no third. Derived from the runs on disk — an earlier run of the
-# same scope with fix status recorded — so it holds for a caller who never heard of the budget.
+# A decision naming anything but `fix` is what reopens the round, and the block says so.
+printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' >"$WORK/fix-verdicts3.jsonl"
+fix_bench fork 20260801T000030Z-decide --choice simplify --why "$fix_why" --session sess-fix >/dev/null \
+  || fail "fork refused to record a decision naming simplify"
+fix_reopened=$(fix_bench report 20260801T000030Z-decide) || fail "the reopened round has no report"
+assert test -z "$(fix_row "$fix_reopened")"
+assert contains "$fix_reopened" "next:         round 2 by decision"
+# Round 2 is the last round there is. The link to its round 1 is STAMPED on the run at launch, so
+# a run carrying none is a first round whatever else the state directory holds.
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
   gate_run 20260801T020000Z-fixround2 0 1
 printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' >"$WORK/fix-verdicts2.jsonl"
 fix_second=$(fix_bench record 20260801T020000Z-fixround2 --no-corpus \
   --verdicts "$WORK/fix-verdicts2.jsonl") || fail "the second round refused its own triage"
-assert test "$(grep -Fc -- "round:" <<<"$fix_second")" -eq 0
+assert fix_plain_frame "$fix_second"
+assert contains "$fix_second" "next:         none"
+assert test "$(grep -Fc -- "before:" <<<"$fix_second")" -eq 0
+jq -c --arg chain 20260801T000030Z-decide '.round = 2 | .chain = $chain' \
+  "$FIX_SD/benches/20260801T020000Z-fixround2/meta.json" >"$WORK/fix-round2-meta.json"
+mv "$WORK/fix-round2-meta.json" "$FIX_SD/benches/20260801T020000Z-fixround2/meta.json"
+fix_second=$(fix_bench report 20260801T020000Z-fixround2) || fail "round 2 lost its report"
+assert grep -qE '^=+ review · round 2 =+$' <<<"$(head -1 <<<"$fix_second")"
+# What it is read against, and by whose decision it runs at all.
+assert contains "$fix_second" "before:       P1 0 · P2 9 · P3 0 · 9 total"
+assert contains "$fix_second" "decision:     simplify (round 1)"
+assert test "$(fix_row "$fix_second")" = "fix — the commit closes both rounds"
+assert contains "$fix_second" "next:         none — last round"
+# One chain, one id: round 2 is read under the id the chain started with.
+assert test "$(sed -n 's/^id: *//p' <<<"$fix_second")" = 20260801T000030Z-decide
 # The third round is refused in the fork the model reads, not in the block Egor reads.
 fix_second_fork=$(fix_bench fork 20260801T020000Z-fixround2) \
   || fail "fork refused the round whose budget is spent"
 assert contains "$fix_second_fork" "the budget of two is spent"
 assert contains "$fix_second_fork" "false-positive doctrine"
-# A round of another scope is still its own first: the budget is per scope, not per repository
-# the state directory happens to hold.
-fix_other=$(fix_bench report 20260801T010000Z-fixquiet) || fail "the clean round lost its report"
+# A round nobody chained is nobody's second: the clean round keeps its own first.
 assert test "$(grep -Fc -- "the budget of two is spent" \
   <<<"$(fix_bench fork 20260801T010000Z-fixquiet)")" -eq 0
-# And a scope whose own findings earned the fork keeps it: the round on record belongs to another
-# tree, so what spends the budget is the scope matching, never a fix receipt merely existing
-# somewhere in a state directory every repository shares.
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
-  gate_run 20260801T040000Z-fixotherfirst 0 1
-printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' >"$WORK/fix-verdicts3.jsonl"
-fix_other_first=$(fix_bench record 20260801T040000Z-fixotherfirst --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the other scope's round refused its own triage"
-assert contains "$fix_other_first" "round:        stub fork"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260801T040000Z-fixotherfirst)")" -eq 0
 
 # A receipt answers for confirmed findings, so a run nobody judged has none to answer for. Taken
 # here it would spend the scope's budget over a pass that never happened.
@@ -16834,119 +17185,18 @@ fix_untriaged=$(fix_bench fixes 20260801T050000Z-fixuntriaged --done --fixed 1 -
 assert contains "$fix_untriaged" "has no triage on record"
 assert test ! -e "$FIX_SD/benches/20260801T050000Z-fixuntriaged/fixes.json"
 
-# The budget is spent by a round that was FIXED, never by one that stopped: the fork a blocked
-# round stopped for is what the next round is, and pricing it as the second leaves that fork with
-# nowhere to go.
+# A pass that stopped is a fact about the pass and never about the round's place in a chain: the
+# stopped round is still whatever its own stamp says it is.
 FIX_BLOCKED_REPO="$WORK/fix-blocked-repo"
 git init -q "$FIX_BLOCKED_REPO"
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_BLOCKED_REPO" GATE_SESSION=sess-fix \
   gate_run 20260801T060000Z-fixstopped 0 1
 fix_bench record 20260801T060000Z-fixstopped --no-corpus \
   --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the stopped round refused its triage"
-fix_bench fixes 20260801T060000Z-fixstopped --blocked 'P1 threshold' >/dev/null \
+fix_bench fixes 20260801T060000Z-fixstopped --blocked 'the worker was walled mid-pass' >/dev/null \
   || fail "fixes --blocked refused a triaged run"
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_BLOCKED_REPO" GATE_SESSION=sess-fix \
-  gate_run 20260801T070000Z-fixafterstop 0 1
-fix_after_stop=$(fix_bench record 20260801T070000Z-fixafterstop --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the round after a stop refused its triage"
-assert contains "$fix_after_stop" "round:        stub fork"
 assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260801T070000Z-fixafterstop)")" -eq 0
-
-# And the scope is a piece of work, not a checkout: an unrelated later review of the same
-# repository must keep its own first round, or one fixed round costs that repository the
-# escalation fork for good. The second round is the run that reads everything the first one read —
-# the coverage that discharges the first round's lock.
-FIX_LINEAGE_REPO="$WORK/fix-lineage-repo"
-git init -q "$FIX_LINEAGE_REPO"
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix GATE_REVIEWED="a.py b.py" \
-  gate_run 20260801T080000Z-fixlineage1 0 2
-fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
-  --verdicts "$WORK/fix-verdicts.jsonl" >/dev/null || fail "the lineage round refused its triage"
-fix_bench fixes 20260801T080000Z-fixlineage1 --done --fixed 1 --fp 0 >/dev/null \
-  || fail "fixes --done refused the lineage round"
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix GATE_REVIEWED="c.py" \
-  gate_run 20260801T090000Z-fixelsewhere 0 1
-fix_elsewhere=$(fix_bench record 20260801T090000Z-fixelsewhere --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the unrelated round refused its triage"
-assert contains "$fix_elsewhere" "round:        stub fork"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260801T090000Z-fixelsewhere)")" -eq 0
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_LINEAGE_REPO" GATE_SESSION=sess-fix \
-  GATE_REVIEWED="a.py b.py c.py" gate_run 20260801T100000Z-fixlineage2 0 1
-fix_lineage2=$(fix_bench record 20260801T100000Z-fixlineage2 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second lineage round refused its triage"
-fix_fork_fix_lineage2=$(fix_bench fork 20260801T100000Z-fixlineage2) \
-  || fail "fork failed on 20260801T100000Z-fixlineage2"
-assert contains "$fix_fork_fix_lineage2" "the budget of two is spent"
-# And the earlier round's receipt is read exactly as its own REPORT reads it: a re-adjudication
-# leaves the receipt standing over a triage it no longer answers, and taken at its raw word the
-# round the report itself calls pending goes on spending the scope's budget of two.
-printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' \
-  '{"rater":"oc-kimik3","idx":1,"verdict":"confirmed"}' >"$WORK/fix-lineage-restale.jsonl"
-fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
-  --verdicts "$WORK/fix-lineage-restale.jsonl" >/dev/null || fail "re-adjudication refused"
-fix_stale_lineage=$(fix_bench record 20260801T100000Z-fixlineage2 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second lineage round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260801T100000Z-fixlineage2)")" -eq 0
-assert contains "$fix_stale_lineage" "round:        stub fork"
-fix_bench record 20260801T080000Z-fixlineage1 --no-corpus \
-  --verdicts "$WORK/fix-verdicts.jsonl" >/dev/null || fail "re-adjudication back refused"
-
-# A merged panel's own repo is the workspace built for that one run, and the fixes give the next
-# round a workspace of its own: keyed on it, the budget would never bind for a merged review at
-# all. Its members are the scope.
-FIX_MERGED_A="$WORK/fix-merged-a"
-FIX_MERGED_B="$WORK/fix-merged-b"
-git init -q "$FIX_MERGED_A"
-git init -q "$FIX_MERGED_B"
-fix_members="[{\"label\":\"a\",\"repo\":\"$FIX_MERGED_A\",\"scope\":[]},{\"label\":\"b\",\"repo\":\"$FIX_MERGED_B\",\"scope\":[]}]"
-GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-merged-workspace-1" GATE_SESSION=sess-fix \
-  GATE_MEMBERS="$fix_members" gate_run 20260801T110000Z-fixmerged1 0 1
-fix_bench record 20260801T110000Z-fixmerged1 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the merged round refused its triage"
-fix_bench fixes 20260801T110000Z-fixmerged1 --done --fixed 1 --fp 0 >/dev/null \
-  || fail "fixes --done refused the merged round"
-GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-merged-workspace-2" GATE_SESSION=sess-fix \
-  GATE_MEMBERS="$fix_members" gate_run 20260801T120000Z-fixmerged2 0 1
-fix_merged2=$(fix_bench record 20260801T120000Z-fixmerged2 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the second merged round refused its triage"
-fix_fork_fix_merged2=$(fix_bench fork 20260801T120000Z-fixmerged2) \
-  || fail "fork failed on 20260801T120000Z-fixmerged2"
-assert contains "$fix_fork_fix_merged2" "the budget of two is spent"
-
-# And what a merged panel READ is its members' maps as much as the workspace's own: only the
-# members' hold a debt review's zero-diff survivors, since the workspace map is that snapshot's
-# diff and a path standing exactly where the locked round recorded it shows nothing in one. Read
-# off the workspace alone every merged panel offers the empty set, and one fixed round answers for
-# every later review of those repositories.
-FIX_MEMBERS_A="$WORK/fix-members-a"
-FIX_MEMBERS_B="$WORK/fix-members-b"
-git init -q "$FIX_MEMBERS_A"
-git init -q "$FIX_MEMBERS_B"
-fix_members_read="[{\"label\":\"a\",\"repo\":\"$FIX_MEMBERS_A\",\"scope\":[],\"reviewed\":{\"a.py\":\"sha-a\"}},{\"label\":\"b\",\"repo\":\"$FIX_MEMBERS_B\",\"scope\":[],\"reviewed\":{\"b.py\":\"sha-b\"}}]"
-fix_members_elsewhere="[{\"label\":\"a\",\"repo\":\"$FIX_MEMBERS_A\",\"scope\":[],\"reviewed\":{\"z.py\":\"sha-z\"}},{\"label\":\"b\",\"repo\":\"$FIX_MEMBERS_B\",\"scope\":[],\"reviewed\":{\"y.py\":\"sha-y\"}}]"
-GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-1" GATE_SESSION=sess-fix \
-  GATE_MEMBERS="$fix_members_read" gate_run 20260801T130000Z-fixmembers1 0 1
-fix_bench record 20260801T130000Z-fixmembers1 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the member-read round refused its triage"
-fix_bench fixes 20260801T130000Z-fixmembers1 --done --fixed 1 --fp 0 >/dev/null \
-  || fail "fixes --done refused the member-read round"
-GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-2" GATE_SESSION=sess-fix \
-  GATE_MEMBERS="$fix_members_elsewhere" gate_run 20260801T140000Z-fixmemberselse 0 1
-fix_members_else=$(fix_bench record 20260801T140000Z-fixmemberselse --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the unrelated merged round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260801T140000Z-fixmemberselse)")" -eq 0
-assert contains "$fix_members_else" "round:        stub fork"
-GATE_SD="$FIX_SD" GATE_REPO="$WORK/fix-members-workspace-3" GATE_SESSION=sess-fix \
-  GATE_MEMBERS="$fix_members_read" gate_run 20260801T150000Z-fixmembers2 0 1
-fix_members2=$(fix_bench record 20260801T150000Z-fixmembers2 --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering merged round refused its triage"
-fix_fork_fix_members2=$(fix_bench fork 20260801T150000Z-fixmembers2) \
-  || fail "fork failed on 20260801T150000Z-fixmembers2"
-assert contains "$fix_fork_fix_members2" "the budget of two is spent"
+  <<<"$(fix_bench fork 20260801T060000Z-fixstopped)")" -eq 0
 
 # A receipt answers for the triage it was written against. Re-adjudicating replaces the verdicts
 # and leaves the receipt where it is, so a round that came back with more confirmed findings than
@@ -16955,7 +17205,7 @@ printf '%s\n' '{"rater":"oc-kimik3","idx":0,"verdict":"confirmed"}' \
   '{"rater":"oc-kimik3","idx":1,"verdict":"confirmed"}' >"$WORK/fix-verdicts4.jsonl"
 fix_restale=$(fix_bench record 20260801T000000Z-fixround1 --no-corpus \
   --verdicts "$WORK/fix-verdicts4.jsonl") || fail "re-adjudication refused"
-assert contains "$fix_restale" "recorded against a triage of 1 confirmed, and this one has 2"
+assert contains "$fix_restale" "re-triaged — the receipt answers for 1 confirmed, and this round has 2"
 # A receipt that no longer answers the triage is a pass that has not answered: the plain word,
 # since the fixer may be working through the new findings right now.
 assert fix_plain_frame "$fix_restale"
@@ -17033,11 +17283,11 @@ assert test "$(grep -c '^20260730T010000Z-fixabandoned triaged$' <<<"$fix_abando
 assert test "$(grep -Fc -- "20260730T010000Z-fixabandoned done" <<<"$fix_abandoned")" -eq 0
 fix_abandoned_report=$(fix_bench report 20260730T010000Z-fixabandoned) \
   || fail "the unanswered round has no report"
-# And never the loud word while it waits: ten hours on it is STALE, and the `fixes:` row is what
-# says the pass still owes an answer.
+# And never the loud word while it waits: ten hours on it is STALE, and the `fixes:` row says what
+# closes the round rather than that nobody has yet.
 assert fix_stale_frame "$fix_abandoned_report"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_abandoned_report")" -eq 0
-assert test "$(fix_row "$fix_abandoned_report")" = "NOT APPLIED — pending"
+assert test "$(fix_row "$fix_abandoned_report")" = "fix — the commit closes"
 # The TRIAGE's age is the whole guard, and no queued mark ever exempts it: a round whose pass
 # never answered inside the window is named at no later age — promoting such rounds is what
 # rendered 39 pre-receipt-mechanism rounds into a single message, live (2026-08-20).
@@ -17093,7 +17343,7 @@ fix_aged_report=$(fix_bench report 20260729T020000Z-fixagedblocked) \
   || fail "the aged blocked round has no report"
 assert contains "$fix_aged_report" "$fix_blocked_header"
 assert test "$(grep -Fc -- "$report_frame_header" <<<"$fix_aged_report")" -eq 0
-assert contains "$fix_aged_report" "NOT APPLIED — P1 threshold, fork pending"
+assert contains "$fix_aged_report" "stopped — P1 threshold, fork pending"
 fix_aged_delivery=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260729T020000Z-fixagedblocked" <<<"$fix_aged_delivery")" -eq 0
 
@@ -17174,7 +17424,7 @@ assert test -z "$(fix_row "$fix_swap_same")"
 fix_swapped=$(fix_bench record 20260802T040000Z-fixswap --no-corpus \
   --verdicts "$WORK/fix-swap-b.jsonl") || fail "re-adjudication to a swapped triage refused"
 assert test "$(fix_row "$fix_swapped")" \
-  = "NOT APPLIED — recorded against a different triage of the same 2 confirmed"
+  = "re-triaged — the receipt answers for a different triage of the same 2 confirmed"
 assert fix_plain_frame "$fix_swapped"
 
 # The two counts of a done receipt ARE the answer to the confirmed findings, so fewer between them
@@ -17192,74 +17442,6 @@ fix_overtotal=$(fix_bench fixes 20260802T040000Z-fixswap --done --fixed 2 --fp 1
 assert contains "$fix_overtotal" "answer for more findings than the 2 this triage confirmed"
 assert test "$(jq -r .fixed "$FIX_SD/benches/20260802T040000Z-fixswap/fixes.json")" = 2
 
-# And the second round of a scope is a round of the same PIECE OF WORK. Held to the paths alone
-# this was unbounded in time: a full-repository scope reads a superset of every earlier round of
-# the same checkout, and a run carrying no `reviewed` map at all offers the empty set, so one fixed
-# round priced every later review of that repository as its second — forever, escalation fork and
-# waiver lock included.
-FIX_AGED_REPO="$WORK/fix-aged-repo"
-git init -q "$FIX_AGED_REPO"
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
-  gate_run 20260701T000000Z-fixlongago 400 1
-fix_bench record 20260701T000000Z-fixlongago --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the old round refused its triage"
-fix_bench fixes 20260701T000000Z-fixlongago --done --fixed 1 --fp 0 >/dev/null \
-  || fail "fixes --done refused the old round"
-fix_backdate 20260701T000000Z-fixlongago 398
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
-  gate_run 20260802T050000Z-fixmuchlater 0 1
-fix_much_later=$(fix_bench record 20260802T050000Z-fixmuchlater --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the later round refused its triage"
-assert contains "$fix_much_later" "round:        stub fork"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260802T050000Z-fixmuchlater)")" -eq 0
-# Inside the lineage window the very same shape IS the second round: what the bound refuses is a
-# stranger, not the pass that answers a fixed round.
-GATE_SD="$FIX_SD" GATE_REPO="$FIX_AGED_REPO" GATE_SESSION=sess-fix \
-  gate_run 20260802T060000Z-fixjustafter 396 1
-fix_just_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-fix_fork_fix_just_after=$(fix_bench fork 20260802T060000Z-fixjustafter) \
-  || fail "fork failed on 20260802T060000Z-fixjustafter"
-assert contains "$fix_fork_fix_just_after" "the budget of two is spent"
-# And a round is the second one over fixes it could actually READ: a receipt recorded after this
-# run sealed its tree answers for work that landed later, and counted as lineage it spends the
-# budget and releases the lock over a pass that saw none of it.
-fix_backdate 20260701T000000Z-fixlongago 0
-fix_late_receipt=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260802T060000Z-fixjustafter)")" -eq 0
-assert contains "$fix_late_receipt" "round:        stub fork"
-fix_backdate 20260701T000000Z-fixlongago 398
-# And "could read" is the tree it SEALED and never the hour it answered: a T2 panel runs for hours,
-# and a receipt written while it ran names fixes its snapshot never held. Measured against the
-# finish that receipt counted as lineage and released the lock over a pass that saw none of them.
-fix_stretch 20260802T060000Z-fixjustafter 2
-fix_backdate 20260701T000000Z-fixlongago 397
-fix_mid_run_receipt=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260802T060000Z-fixjustafter)")" -eq 0
-assert contains "$fix_mid_run_receipt" "round:        stub fork"
-# The same receipt one hour the other side of the seal is the lineage it was always meant to be.
-fix_backdate 20260701T000000Z-fixlongago 399
-fix_sealed_after=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-fix_fork_fix_sealed_after=$(fix_bench fork 20260802T060000Z-fixjustafter) \
-  || fail "fork failed on 20260802T060000Z-fixjustafter"
-assert contains "$fix_fork_fix_sealed_after" "the budget of two is spent"
-fix_backdate 20260701T000000Z-fixlongago 398
-# And the run's own seal stamp outranks its launch stamp wherever it carries one: the tool seals
-# the tree, then sweeps availability and may refresh limits before it writes `started`, so a
-# receipt landing in that gap answers for work no cell of this panel could read.
-fix_seal 20260802T060000Z-fixjustafter 3
-fix_backdate 20260701T000000Z-fixlongago 398.5
-fix_pre_seal=$(fix_bench record 20260802T060000Z-fixjustafter --no-corpus \
-  --verdicts "$WORK/fix-verdicts3.jsonl") || fail "the answering round refused its triage"
-assert test "$(grep -Fc -- "the budget of two is spent" \
-  <<<"$(fix_bench fork 20260802T060000Z-fixjustafter)")" -eq 0
-assert contains "$fix_pre_seal" "round:        stub fork"
 
 # A review of part of the tree never answers for the repository: `receipt` with no selector finds
 # nothing, and the scope's own receipt is readable only when asked for by name.
@@ -17471,8 +17653,14 @@ DOC_EMPTY="$WORK/doctor-empty"
 mkdir -p "$DOC_EMPTY/benches"
 doc_empty=$(WORKER_STATS_DIR="$DOC_EMPTY" XDG_CACHE_HOME="$DOC_CACHE" "$SCRIPT" doctor) \
   || fail "doctor exited nonzero on an empty store"
-assert test "$doc_empty" = "ok: untriaged, undelivered, stuck_fixes, eternal_lock, orphan_debt, kill_asymmetry"
+assert test "$doc_empty" = \
+  "ok: untriaged, undelivered, stuck_fixes, orphan_debt, kill_asymmetry, rounds_past_two"
 assert test "$(doctor_json "$DOC_EMPTY" | jq -r '.total')" = "0"
+# The overflow line is named clean beside the five and detailed with them, while the counts the
+# menubar reads stay the five classes alone: a class printed in one output and missing from the
+# machine-readable one is invisible to every reader that is not a person.
+assert test "$(doctor_json "$DOC_EMPTY" | jq -r '.anomalies.rounds_past_two')" = "null"
+assert test "$(doctor_json "$DOC_EMPTY" | jq -r '.details.rounds_past_two | length')" = "0"
 
 # untriaged: the Stop gate's own question asked at the age nobody is going to answer it at. A run
 # still inside that gate's window is not one it failed to ask about, and a commit-point panel
@@ -17736,46 +17924,6 @@ WORKER_STATS_DIR="$DOC_BLOCKED" "$SCRIPT" fixes 20260801T000000Z-docblocked \
   --blocked 'P1 threshold' >/dev/null || fail "fixes --blocked refused the round"
 assert test "$(doctor_count "$DOC_BLOCKED" stuck_fixes)" = "1"
 
-# eternal_lock: a round locked on the P1 count that no later run holds. The lock is the mechanical
-# second round, so one nothing has answered in a week is a chat that walked away from it.
-DOC_LOCK_REPO="$WORK/doctor-lock-repo"
-git init -q "$DOC_LOCK_REPO"
-printf 'locked\n' >"$DOC_LOCK_REPO/held.py"
-doc_lock_sha=$(git -C "$DOC_LOCK_REPO" hash-object -w held.py)
-DOC_LOCK="$WORK/doctor-lock"
-doc_lock_artifact() { # store run-id p1s
-  mkdir -p "$1/benches/$2"
-  python3 - "$1/benches/$2" "$2" "$DOC_LOCK_REPO" "$doc_lock_sha" "$3" <<'DOCPY'
-import json
-import pathlib
-import sys
-from datetime import datetime, timedelta, timezone
-run = pathlib.Path(sys.argv[1])
-finished = datetime.now(timezone.utc) - timedelta(hours=1)
-(run / "meta.json").write_text(json.dumps({
-    "run_id": sys.argv[2], "worktree": True, "repo": sys.argv[3], "session": "doc-chat",
-    "raters": ["oc-kimik3"], "completed_raters": ["oc-kimik3"], "rater_runs": [],
-    "reviewed": {"held.py": sys.argv[4]},
-    "started": finished.isoformat(), "finished": finished.isoformat(),
-}) + "\n")
-(run / "reported.json").write_text(json.dumps({
-    "reported_at": finished.isoformat(), "verdicts": 0, "confirmed": int(sys.argv[5]),
-    "confirmed_by_severity": {"P1": int(sys.argv[5]), "P2": 0, "P3": 0}, "rows": [],
-}) + "\n")
-DOCPY
-}
-doc_lock_artifact "$DOC_LOCK" 20260101T000000Z-doclock 3
-assert test "$(doctor_count "$DOC_LOCK" eternal_lock)" = "1"
-# Discharged by a later run holding every surviving path of it, which is exactly what
-# `covering_artifacts` hands the path over to — nothing here re-derives that rule.
-doc_lock_artifact "$DOC_LOCK" 20260102T000000Z-docdischarge 0
-assert test "$(doctor_count "$DOC_LOCK" eternal_lock)" = "0"
-# A lock earned this week is the second round working, not one standing for ever.
-DOC_FRESH_LOCK="$WORK/doctor-fresh-lock"
-doc_lock_artifact "$DOC_FRESH_LOCK" "$(date -u -v-2d '+%Y%m%dT%H%M%SZ' 2>/dev/null \
-  || date -u -d '2 days ago' '+%Y%m%dT%H%M%SZ')-docfresh" 3
-assert test "$(doctor_count "$DOC_FRESH_LOCK" eternal_lock)" = "0"
-
 # orphan_debt: debt paths whose only journal record is the original bare-path format, so no chat
 # is ever asked to review or waive them.
 DOC_DEBT_REPO="$WORK/doctor-debt-repo"
@@ -17946,7 +18094,7 @@ doc_snapshot="$DOC_SNAP/doctor-snapshot.json"
 assert test -f "$doc_snapshot"
 assert test "$(jq -r 'keys | join(",")' "$doc_snapshot")" = "anomalies,as_of,total"
 assert test "$(jq -r '.anomalies | keys | sort | join(",")' "$doc_snapshot")" \
-  = "eternal_lock,kill_asymmetry,orphan_debt,stuck_fixes,undelivered,untriaged"
+  = "kill_asymmetry,orphan_debt,stuck_fixes,undelivered,untriaged"
 assert test "$(jq -r '.as_of | type' "$doc_snapshot")" = "number"
 assert test "$(jq -r '.total' "$doc_snapshot")" = "1"
 assert test "$(jq -r '.anomalies.untriaged' "$doc_snapshot")" = "1"
@@ -18012,8 +18160,7 @@ assert rb.doctor_triage_instant(broken) is not None
 # threshold, spelled in the one dict and nowhere else.
 assert set(rb.DOCTOR_AGES_S) <= set(rb.DOCTOR_CLASSES), rb.DOCTOR_AGES_S
 assert rb.DOCTOR_AGES_S == {
-    "untriaged": 18 * 3600, "undelivered": 6 * 3600,
-    "stuck_fixes": 48 * 3600, "eternal_lock": 7 * 24 * 3600,
+    "untriaged": 18 * 3600, "undelivered": 6 * 3600, "stuck_fixes": 48 * 3600,
 }, rb.DOCTOR_AGES_S
 DOCPY
 # The heredoc's own exit status, the way every other block here is read: unasked, an AssertionError
@@ -18062,21 +18209,10 @@ assert contains "$doc_loaded" "Installed com.llm-legs.review-doctor"
 DOCS_SD="$WORK/docs weight state"
 DOCS_HOME="$WORK/docs-weight-home"
 DOCS_REPO="$WORK/docs-weight-repo"
-DOCS_ARGV="$WORK/docs-weight-gate-argv"
 git init -q "$DOCS_REPO"
-mkdir -p "$DOCS_HOME/.claude/hooks" "$DOCS_SD/benches"
-# The two dials and the wording are the commit gate's alone (shared-invariants row af), so this
-# stub spells them and logs the pair it was handed.
-cat >"$DOCS_HOME/.claude/hooks/review-flow-gate.sh" <<'DOCSTUB'
-#!/bin/bash
-[ "$1" = escalation-verdict ] || exit 1
-printf '%s %s\n' "${2:-}" "${3:-}" >>"$DOCS_ARGV"
-{ [ "${2:-0}" -ge 3 ] || [ "${3:-0}" -ge 8 ]; } || exit 1
-printf 'stub fork. Pick one and carry it out:\n'
-DOCSTUB
-chmod +x "$DOCS_HOME/.claude/hooks/review-flow-gate.sh"
+mkdir -p "$DOCS_HOME/.claude" "$DOCS_SD/benches"
 docs_bench() {
-  HOME="$DOCS_HOME" WORKER_STATS_DIR="$DOCS_SD" DOCS_ARGV="$DOCS_ARGV" "$SCRIPT" "$@"
+  HOME="$DOCS_HOME" WORKER_STATS_DIR="$DOCS_SD" "$SCRIPT" "$@"
 }
 docs_run() { # run-id findings-json
   mkdir -p "$DOCS_SD/benches/$1"
@@ -18120,7 +18256,6 @@ docs_run 20260823T000000Z-docsmix '[
   {"severity":"P3","file":"c.py","line":3,"summary":"code three"},
   {"severity":"P1","file":"docs/one.md","line":4,"summary":"prose one"},
   {"severity":"P2","file":"docs/two.md","line":5,"summary":"prose two"}]'
-: >"$DOCS_ARGV"
 docs_mix=$(docs_bench record 20260823T000000Z-docsmix --no-corpus \
   --verdicts "$DOCS_SD/confirm-all.jsonl") || fail "the mixed round refused its own triage"
 assert test "$(docs_row "$docs_mix")" = "P1 1 · P2 1 · P3 1 · 3 total · 2 in docs"
@@ -18129,9 +18264,9 @@ assert test "$(docs_receipt 20260823T000000Z-docsmix confirmed)" = 3
 assert test "$(docs_receipt 20260823T000000Z-docsmix docs)" = 2
 assert test "$(docs_receipt 20260823T000000Z-docsmix confirmed_by_severity)" \
   = "{'P1': 1, 'P2': 1, 'P3': 1}"
-# And the gate is handed those very numbers: counted whole, five confirmed findings with one P1
-# each side of the line would have priced a round the contract prices at three.
-assert test "$(sort -u "$DOCS_ARGV")" = "1 3"
+# And the band is read off those very numbers: counted whole, five confirmed findings with one P1
+# each side of the line would price a round the contract prices at three.
+assert test "$(fix_row "$docs_mix")" = "fix — the commit closes"
 # The cell still answers for all five: they were confirmed, and the row that says which cell found
 # what is not a tally of what a round is priced on.
 assert contains "$docs_mix" "5/5"
@@ -18145,8 +18280,8 @@ docs_done=$(docs_bench fixes 20260823T000000Z-docsmix --done --fixed 4 --fp 1) \
   || fail "fixes refused counts answering for every confirmed finding"
 assert contains "$docs_done" "done — 4 fixed, 1 false positives"
 
-# Nine confirmed of which two are prose is a round of seven, under the tally dial: it owes no
-# second review, and counted whole it would have claimed one.
+# Nine confirmed of which two are prose is a round of seven, inside the fix band: it owes no
+# decision, and counted whole it would have demanded one.
 docs_run 20260823T010000Z-docstally "$(python3 -c '
 import json
 print(json.dumps(
@@ -18154,12 +18289,11 @@ print(json.dumps(
     + [{"severity": "P3", "file": f"doc{index}.md", "line": 1, "summary": "prose"}
        for index in range(2)]
 ))')"
-: >"$DOCS_ARGV"
 docs_tally=$(docs_bench record 20260823T010000Z-docstally --no-corpus \
   --verdicts "$DOCS_SD/confirm-all.jsonl") || fail "the tally round refused its own triage"
 assert test "$(docs_row "$docs_tally")" = "P1 0 · P2 0 · P3 7 · 7 total · 2 in docs"
-assert test "$(sort -u "$DOCS_ARGV")" = "0 7"
-assert test "$(grep -Fc -- "round:" <<<"$docs_tally")" -eq 0
+assert test "$(fix_row "$docs_tally")" = "fix — the commit closes"
+assert contains "$docs_tally" "next:         none"
 docs_tally_fork=$(docs_bench fork 20260823T010000Z-docstally) \
   || fail "fork refused a round it owes nothing over"
 assert test "$(grep -Fc -- "Pick one" <<<"$docs_tally_fork")" -eq 0
@@ -18183,7 +18317,7 @@ assert test "$(docs_forkline 20260823T020000Z-docsnone)" = "rc=0"
 docs_why='The three P1s are one weak lookup keyed by basename; fixing it locally keeps the block, which is sound otherwise.'
 docs_none_fork=$(docs_bench fork 20260823T020000Z-docsnone --choice fix --why "$docs_why" --session sess-docs 2>&1) &&
   fail "fork recorded a decision over a round that owes none: $docs_none_fork"
-assert contains "$docs_none_fork" "crossed no threshold"
+assert contains "$docs_none_fork" "is in the fix band; it takes no decision"
 assert test ! -e "$DOCS_SD/benches/20260823T020000Z-docsnone/fork.json"
 docs_run 20260823T030000Z-docsp1s "$(python3 -c '
 import json
@@ -18197,7 +18331,7 @@ assert contains "$(docs_forkline 20260823T030000Z-docsp1s)" "record it first: re
 docs_p1_gate=$(docs_bench pending-report --repo "$DOCS_REPO") \
   || fail "the Stop gate passed a 3-P1 round with no fork on record"
 assert test "$(sed -n 1p <<<"$docs_p1_gate")" = "20260823T030000Z-docsp1s 3"
-assert contains "$(sed -n 2p <<<"$docs_p1_gate")" "review-bench fork 20260823T030000Z-docsp1s --choice fix|simplify|re-review --why"
+assert contains "$(sed -n 2p <<<"$docs_p1_gate")" "review-bench fork 20260823T030000Z-docsp1s --choice fix|simplify|cut|redesign --why"
 # The triage MOVED the question — this round owed a record, and owes a fork now — so the gate asks
 # again over a marker whose first ask is still standing unanswered. Silenced on the line count
 # alone, the fork demand would never be made of a round asked for its report three times.
@@ -18213,7 +18347,7 @@ if test -x "$GATE_HOOK"; then
   docs_hook_out="$(jq -nc --arg cwd "$DOCS_REPO" '{stop_hook_active:false,cwd:$cwd,session_id:"sess-docs"}' \
     | PATH="$ROOT/bin:$PATH" HOME="$DOCS_HOME" WORKER_STATS_DIR="$DOCS_SD" "$GATE_HOOK")"
   assert test "$(jq -r '.decision' <<<"$docs_hook_out")" = "block"
-  assert contains "$(jq -r '.reason' <<<"$docs_hook_out")" "no fork decision on record"
+  assert contains "$(jq -r '.reason' <<<"$docs_hook_out")" "is a decision and has none on record"
   assert contains "$(jq -r '.reason' <<<"$docs_hook_out")" "review-bench fork 20260823T030000Z-docsp1s --choice"
   assert test "$(grep -c . "$DOCS_SD/benches/20260823T030000Z-docsp1s/report-nudged")" = 1
   rm -f "$DOCS_SD/benches/20260823T030000Z-docsp1s/report-nudged"
@@ -18254,7 +18388,7 @@ assert contains "$(docs_forkline 20260823T040000Z-docsnine)" "rc=3"
 docs_nine_gate=$(docs_bench pending-report --repo "$DOCS_REPO") \
   || fail "the Stop gate passed a 9-confirmed round with no fork on record"
 assert test "$(sed -n 1p <<<"$docs_nine_gate")" = "20260823T040000Z-docsnine 9"
-docs_bench fork 20260823T040000Z-docsnine --choice re-review --why "$docs_why" --session sess-docs >/dev/null \
+docs_bench fork 20260823T040000Z-docsnine --choice cut --why "$docs_why" --session sess-docs >/dev/null \
   || fail "fork refused the 9-confirmed decision"
 assert test "$(docs_forkline 20260823T040000Z-docsnine)" = "rc=0"
 assert test -z "$(docs_bench pending-report --repo "$DOCS_REPO" || true)"
@@ -18265,4 +18399,4 @@ assert test "$(grep -c ' fork$' <<<"$docs_delivery")" = 2
 assert test "$(grep -c '^20260823T040000Z-docsnine fork$' <<<"$docs_delivery")" = 1
 assert test "$(grep -c '^20260823T020000Z-docsnone fork$' <<<"$docs_delivery")" = 0
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask and spent by neither the settle demand a review of this chat already answers nor one a worker run it launched is still writing the content of, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held in debt while a held path now GONE is nobody'"'"'s debt at all — priced against HEAD while the tree is dirty, against the parent of the oldest commit under the earliest journal stamp while it is clean, and against HEAD for no lines at all where no stamp places a commit, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, a round past the second-round thresholds locking that waiver until a later run answers for it, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and answering for every panel cell in exactly one of four rows — what each cell confirmed of what it claimed, whose claims were false, how many said nothing at all, and one row per family and cause for the ones that failed with a whole unlaunched leg collapsed into one — priced by a header naming the wall clock of the run, the longest chain inside it, the time no cell of it accounts for and, last and always, when the run finished in the reader'"'"'s own zone, wrapped to the terminal between its own separators, with a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done — with the two counts the report prints or with neither, which answers for the triage'"'"'s own confirmed findings — or blocked with its reason, refused with one count of the two and refused for a run nobody launched, rendered into a `fixes:` row the report carries only where something is owed and into the frame word alone, which is the one place a block states its state — the plain review while the pass may still be running, the stale date once the block outlives the tree it describes, NO PANEL, the bench word for a panel no tier launched, and NOT FINISHED only where a receipt says the pass stopped — a watchdog kill wearing no word at all, since the cell it killed says so on its own failed: row, with the fork that round has to take handed to the model by the fork command instead of printed at Egor — so a round whose pass still owes an answer is delivered once as `triaged` while its triage is young and named by no delivery line past that window, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may, locking no waiver it could not answer, keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected — the re-triage named in its place — and a round whose fixing pass has not answered named `triaged` exactly while its own triage is inside the window, no queued mark stretching it, at any run age and dead delegate or not, speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it — queued past the window where nobody ever delivered it, or written off by name into a listing of its own — with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it, reading its panel over the very base the debt is PRICED against — HEAD for a dirty path nothing recorded, the pre-commit parent for a clean one, the whole file only where HEAD holds none — printing that scope size before it seals anything and launching nothing above the line ceiling until the caller names back the number it printed, and refusing to answer for one repository while the chat owes others, naming the merged command every surface hands over and taking --this-repo-only only with a reason recorded in the run, and coverage keyed by CONTENT across a checkout FAMILY — a worktree'"'"'s run answering for the main checkout and pricing its diff there, content recorded under any path staying current wherever it moved, and a path spelled under another checkout or standing in neither the tree nor HEAD being nobody'"'"'s debt, with a --reason nothing records refused rather than dropped, the debt flags spelled only on the subcommand that can enter that mode, and the settle demand keyed on the path SET itself, so one path spelled with a space never buys another pair'"'"'s silence\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask and spent by neither the settle demand a review of this chat already answers nor one a worker run it launched is still writing the content of, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held in debt while a held path now GONE is nobody'"'"'s debt at all — priced against HEAD while the tree is dirty, against the parent of the oldest commit under the earliest journal stamp while it is clean, and against HEAD for no lines at all where no stamp places a commit, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and answering for every panel cell in exactly one of four rows — what each cell confirmed of what it claimed, whose claims were false, how many said nothing at all, and one row per family and cause for the ones that failed with a whole unlaunched leg collapsed into one — priced by a header naming the wall clock of the run, the longest chain inside it, the time no cell of it accounts for and, last and always, when the run finished in the reader'"'"'s own zone, wrapped to the terminal between its own separators, with a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done — with the two counts the report prints or with neither, which answers for the triage'"'"'s own confirmed findings — or blocked with its reason, refused with one count of the two and refused for a run nobody launched, rendered into a `fixes:` row the report carries only where something is owed and into the frame suffix, which is the one place a block states its state — no suffix at all while the pass may still be running, the stale date once the block outlives the tree it describes, NO PANEL, the bench word in place of `review` for a panel no tier launched — which is the one frame carrying no round number, and NOT FINISHED only where a receipt says the pass stopped — a watchdog kill wearing no suffix at all, since the cell it killed says so on its own failed: row, with the fork that round has to take handed to the model by the fork command instead of printed at Egor — so a round whose pass still owes an answer is delivered once as `triaged` while its triage is young and named by no delivery line past that window, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may — the round priced into a band by one number, so a round of eight confirmed findings or fewer is a fixing pass whose commit closes it while a bigger one, or one carrying three P1s or twenty findings, owes a decision first, spelled fix / simplify / cut / redesign and recorded before round 2 runs, both rounds carried in the block'"'"'s own chain id and closed by that one commit, a third round refused before it starts and a round past the budget named by the doctor rather than by the snapshot — keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected — the re-triage named in its place — and a round whose fixing pass has not answered named `triaged` exactly while its own triage is inside the window, no queued mark stretching it, at any run age and dead delegate or not, speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it — queued past the window where nobody ever delivered it, or written off by name into a listing of its own — with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it, reading its panel over the very base the debt is PRICED against — HEAD for a dirty path nothing recorded, the pre-commit parent for a clean one, the whole file only where HEAD holds none — printing that scope size before it seals anything and launching nothing above the line ceiling until the caller names back the number it printed, and refusing to answer for one repository while the chat owes others, naming the merged command every surface hands over and taking --this-repo-only only with a reason recorded in the run, and coverage keyed by CONTENT across a checkout FAMILY — a worktree'"'"'s run answering for the main checkout and pricing its diff there, content recorded under any path staying current wherever it moved, and a path spelled under another checkout or standing in neither the tree nor HEAD being nobody'"'"'s debt, with a --reason nothing records refused rather than dropped, the debt flags spelled only on the subcommand that can enter that mode, and the settle demand keyed on the path SET itself, so one path spelled with a space never buys another pair'"'"'s silence\n' "$asserts"

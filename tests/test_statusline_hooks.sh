@@ -3098,6 +3098,151 @@ GATE_CMD="$GATE_STUB"
 GATE_ANSWER=off
 GATE_RC=0
 
+# --- a commit of this chat its upstream does not hold ----------------------------------------
+# The marker is the gate's `unpushed` answer and nothing else: the Stop ask that tells the chat to
+# push reads that same subcommand, so a marker deriving ownership on its own would stand over
+# commits that ask disowns. A stub answers it apart from the verdict, which shares this gate.
+UNPUSHED_STUB="$FIXTURES/unpushed-gate-stub.sh"
+cat > "$UNPUSHED_STUB" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$GATE_LOG"
+case "$1" in
+  unpushed) printf '%s\n' "$UNPUSHED_ANSWER" ;;
+  *) printf '%s\n' "$GATE_ANSWER" ;;
+esac
+STUB
+chmod +x "$UNPUSHED_STUB"
+UNPUSHED_TIMEOUT_BIN="$FIXTURES/unpushed-timeout-bin"
+UNPUSHED_TIMEOUT_LOG="$FIXTURES/unpushed-timeout.log"
+mkdir -p "$UNPUSHED_TIMEOUT_BIN"
+cat > "$UNPUSHED_TIMEOUT_BIN/timeout" <<'TIMEOUT'
+#!/bin/bash
+printf '%s\n' "$*" >> "$UNPUSHED_TIMEOUT_LOG"
+shift
+exec "$@"
+TIMEOUT
+chmod +x "$UNPUSHED_TIMEOUT_BIN/timeout"
+export UNPUSHED_TIMEOUT_LOG
+export UNPUSHED_ANSWER=""
+GATE_CMD="$UNPUSHED_STUB"
+# Named for nothing in the marker's own vocabulary: the directory label prints the repository name,
+# and a fixture called `unpushed` would answer every search for the word.
+AHEAD_REPO="$FIXTURES/ahead-repo"
+git clone -q "$REPO_A" "$AHEAD_REPO"
+git -C "$AHEAD_REPO" config user.email t@example.test
+git -C "$AHEAD_REPO" config user.name t
+AHEAD_TOP=$(git -C "$AHEAD_REPO" rev-parse --show-toplevel)
+ahead_gitdir=$(git -C "$AHEAD_REPO" rev-parse --absolute-git-dir)
+UNPUSHED_MARK=" ${DIM}│${RESET} unpushed"
+# Absence is asked of the WORD: a dim marker differs from UNPUSHED_MARK only in the escapes, so a
+# negative case matching the bright spelling would pass while the marker is on the line.
+unpushed_silent() { # rendered-line
+  ! grep -Fq unpushed <<< "$1"
+}
+unpushed_calls() { grep -c '^unpushed ' "$GATE_LOG" 2>/dev/null | tr -d ' '; }
+unpushed_await() { # session calls
+  local i
+  for i in $(seq 1 100); do
+    [ "$(unpushed_calls)" = "$2" ] && [ ! -d "$STATE_DIR/unpushed-$1.lock" ] && return 0
+    sleep 0.05
+  done
+  fail "the backgrounded unpushed answer never landed: $1 ($(unpushed_calls) asks)"
+}
+unpushed_render() { # session repo calls
+  local payload
+  rm -f "$STATE_DIR/unpushed-$1"
+  rmdir "$STATE_DIR/unpushed-$1.lock" 2>/dev/null
+  payload=$(statusline_payload "$1" "" "$2")
+  run_statusline "$payload" >/dev/null || fail "unpushed render failed: $1"
+  unpushed_await "$1" "${3:-1}"
+  run_statusline "$payload" || fail "unpushed render failed: $1"
+}
+
+# A branch level with its upstream is answered without the gate at all, which is what keeps this
+# off the render path in every repository it never marks.
+: > "$GATE_LOG"
+: > "$UNPUSHED_TIMEOUT_LOG"
+UNPUSHED_ANSWER=deadbee
+unpushed_level_out=$(run_statusline "$(statusline_payload unpushed-level "" "$AHEAD_REPO")") ||
+  fail "unpushed level render failed"
+assert unpushed_silent "$unpushed_level_out"
+assert_eq 0 "$(unpushed_calls)"
+
+printf 'ahead\n' > "$AHEAD_REPO/ahead.txt"
+git -C "$AHEAD_REPO" add ahead.txt
+git -C "$AHEAD_REPO" commit -q -m "ahead of the upstream"
+: > "$GATE_LOG"
+unpushed_ahead_out=$(PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
+  unpushed_render unpushed-ahead "$AHEAD_REPO")
+assert grep -Fq "$UNPUSHED_MARK" <<< "$unpushed_ahead_out"
+assert_eq "unpushed $AHEAD_TOP unpushed-ahead" "$(grep -m1 '^unpushed ' "$GATE_LOG")"
+assert_eq "10 $UNPUSHED_STUB unpushed $AHEAD_TOP unpushed-ahead" \
+  "$(grep -m1 -F "$UNPUSHED_STUB unpushed " "$UNPUSHED_TIMEOUT_LOG")"
+# Never dimmed: the commit is this chat's own to act on.
+assert test "${unpushed_ahead_out#*"${DIM}unpushed"}" = "$unpushed_ahead_out"
+# After the verdict and before the workers, where the rest of the repository cluster ends.
+unpushed_order_line="${unpushed_ahead_out%%$'\n'*}"
+assert grep -Fq "${DIM}w:" <<< "${unpushed_order_line#*"$UNPUSHED_MARK"}"
+assert test "${unpushed_order_line%%"$UNPUSHED_MARK"*}" != "$unpushed_order_line"
+
+# A gate naming no commit is a branch ahead of its upstream by nobody's work here — a co-tenant's
+# commits are theirs — and the marker says nothing rather than pointing at the count.
+: > "$GATE_LOG"
+UNPUSHED_ANSWER=""
+unpushed_theirs_out=$(unpushed_render unpushed-theirs "$AHEAD_REPO")
+assert unpushed_silent "$unpushed_theirs_out"
+# And a gate that is not there marks nothing: the marker may not invent an answer where the one
+# thing that decides it could not be reached.
+UNPUSHED_ANSWER=deadbee
+# Over a cache the gate itself filled a moment ago, so the silence is the missing gate and not the
+# render having nothing to say: asked with the cache cleared, this passes on the pending state
+# whatever the gate does.
+: > "$GATE_LOG"
+unpushed_warm_out=$(unpushed_render unpushed-nogate "$AHEAD_REPO")
+assert grep -Fq "$UNPUSHED_MARK" <<< "$unpushed_warm_out"
+GATE_CMD="$FIXTURES/no-such-gate.sh"
+unpushed_nogate_out=$(run_statusline "$(statusline_payload unpushed-nogate "" "$AHEAD_REPO")") ||
+  fail "unpushed no-gate render failed"
+assert unpushed_silent "$unpushed_nogate_out"
+GATE_CMD="$UNPUSHED_STUB"
+
+# Asked once per key, not once per render: the gate forks git per candidate commit, which is not a
+# cost this may pay on every prompt.
+: > "$GATE_LOG"
+unpushed_render unpushed-cache "$AHEAD_REPO" >/dev/null
+run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/null ||
+  fail "unpushed cache render failed"
+assert_eq 1 "$(unpushed_calls)"
+# And asked again the moment the debt journal moves: whose the commit is is read out of it, so a
+# row appended there changes the answer with no commit made and nothing in `git status` moving.
+printf 'unpushed-cache\t1750000000\tchange.txt\0' > "$ahead_gitdir/claude-review-debt"
+run_statusline "$(statusline_payload unpushed-cache "" "$AHEAD_REPO")" >/dev/null ||
+  fail "unpushed cache third render failed"
+unpushed_await unpushed-cache 2
+assert_eq 2 "$(unpushed_calls)"
+rm -f "$ahead_gitdir/claude-review-debt"
+
+# And the answer under that key is the only one the fallback may serve. The cache is the session's,
+# so a chat that moved to another tree has a cached `unpushed` about the tree it left — rendered
+# there, it marks a repository nobody has asked the gate about yet.
+MOVED_REPO="$FIXTURES/moved-repo"
+git clone -q "$REPO_A" "$MOVED_REPO"
+git -C "$MOVED_REPO" config user.email t@example.test
+git -C "$MOVED_REPO" config user.name t
+printf 'moved\n' > "$MOVED_REPO/moved.txt"
+git -C "$MOVED_REPO" add moved.txt
+git -C "$MOVED_REPO" commit -q -m "ahead over there too"
+: > "$GATE_LOG"
+unpushed_moved_warm=$(unpushed_render unpushed-moved "$AHEAD_REPO")
+assert grep -Fq "$UNPUSHED_MARK" <<< "$unpushed_moved_warm"
+unpushed_moved_out=$(run_statusline "$(statusline_payload unpushed-moved "" "$MOVED_REPO")") ||
+  fail "unpushed moved render failed"
+assert unpushed_silent "$unpushed_moved_out"
+
+GATE_CMD="$GATE_STUB"
+GATE_ANSWER=off
+GATE_RC=0
+
 REVIEW_CLEAN="$FIXTURES/review-clean"
 git clone -q "$REPO_A" "$REVIEW_CLEAN"
 review_clean_root=$(cd "$REVIEW_CLEAN" && pwd -P)
@@ -3451,6 +3596,23 @@ assert test "${anchor_same_out#*rev 2}" = "$anchor_same_out"
 rm -f "$PROGRESS_DIR"/anchor-*.json
 write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
 
+# A sibling WORKTREE of the session's own repository is another tree, whatever the repository
+# identity says: its journals, HEAD and upstream are its own, so the verdict and the unpushed
+# marker stay with the session's tree and the anchored review is named by the `rev` marker beside
+# them. Read family-wide, the sibling's answer stood where this chat's belongs.
+: > "$GATE_LOG"
+SIBLING_WT="$FIXTURES/sibling-worktree"
+git -C "$REPO_A" worktree add -q "$SIBLING_WT" -b sibling-worktree
+write_anchor_run 20260727T220000Z-9999999 anchor-sibling "$SIBLING_WT"
+anchor_sibling_out=$(anchor_render anchor-sibling "$REPO_A")
+assert grep -Fq " ${DIM}│${RESET} rev T2 1/2 ${DIM}│${RESET} rev 2" <<< "$anchor_sibling_out"
+assert_eq "verdict $TOP_A anchor-sibling" "$(tail -1 "$GATE_LOG")"
+assert_eq 0 "$(grep -Fc -- "verdict $SIBLING_WT anchor-sibling" "$GATE_LOG" | tr -d ' ')"
+rm -f "$PROGRESS_DIR/anchor-20260727T220000Z-9999999.json"
+rm -rf "$ANCHOR_BENCHES/20260727T220000Z-9999999"
+git -C "$REPO_A" worktree remove --force "$SIBLING_WT"
+git -C "$REPO_A" branch -qD sibling-worktree
+
 # Once the run ends and nothing is owed, the shell's folder is back and the gate is asked about it.
 : > "$GATE_LOG"
 rm -f "$PROGRESS_DIR/anchor-20260727T220000Z-aaaaaaa.json"
@@ -3499,4 +3661,4 @@ rm -f "$STATE_DIR/review-anchor-anchor-gone"
 GATE_ANSWER=off
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, a folder that follows a review into another repository under the \`rev\` marker while the session's own debt keeps its place beside it — one word carried once where the counter and the verdict are about one tree, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, a folder that follows a review into another repository under the \`rev\` marker while the session's own debt keeps its place beside it — one word carried once where the counter and the verdict are about one tree, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

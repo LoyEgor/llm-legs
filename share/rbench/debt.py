@@ -17,13 +17,6 @@ from . import scope as _scope
 from . import panel as _panel
 from . import round as _round
 
-# What a waiver may not step over: a review that came back with this many confirmed P1s owes a
-# second pass, so the debt standing behind it cannot be waived away. One number, and the one the
-# fixing pass already stops at — the stop, the lock and the commit gate's fork are the same
-# question asked at three moments, and the gate is held equal to it by docs/shared-invariants.md.
-# A round that earned its second pass on the tally alone locks nothing: the fork says it is owed,
-# and a waiver may still answer it with a reason on record.
-SECOND_REVIEW_P1S = _round.HANDOFF_P1_STOP
 # The reason the commit gate prints in its paste-ready waive command. A caller that pastes it
 # unedited records the placeholder as the decision, which is a waiver saying nothing at all — so it
 # is the one reason this tool refuses. Held equal to the gate's own literal by
@@ -60,25 +53,28 @@ DOCTOR_AGES_S = {
     # hand that report over, so a literal here would go on asking after the window had moved.
     "undelivered": _store.TRIAGE_GATE_HOURS * 3600,
     "stuck_fixes": 48 * 3600,
-    "eternal_lock": 7 * 24 * 3600,
 }
 # How far back the RUN-level classes above look. Their subject is a record somebody could still
 # act on: nobody triages a panel from last month, delivers its report or fixes its round, and a
 # count that only ever grows is not a statistic — it says the same thing every time it is read,
 # including about mechanisms that did not exist when those runs were written. The two classes
-# about the tree as it stands now — a lock standing over live paths, debt in front of the reader —
+# about the tree as it stands now — debt in front of the reader, a panel that produced nothing —
 # are not bounded by it and never go quiet on their own.
 DOCTOR_WINDOW_S = 14 * 24 * 3600
 # How long a QUEUED report stays owed before `settle-delivery` writes it off. Queueing hands a
 # round to the launching chat's next stop, and a chat that never stops again — closed, but with its
 # transcript still on disk, which is the state `session_transcript_exists` cannot tell from a live
 # one — holds it for ever: 24 rounds from a nine-day span sat `queued` and undelivered through the
-# whole doctor window (live 2026-08-24). A week is the same bound the eternal lock uses, and the
-# round stays readable under `doctor --lapsed` exactly as one whose transcript is already gone.
+# whole doctor window (live 2026-08-24). The round stays readable under `doctor --lapsed` exactly
+# as one whose transcript is already gone.
 DELIVERY_QUEUE_LAPSE_S = 7 * 24 * 3600
 DOCTOR_CLASSES = (
-    "untriaged", "undelivered", "stuck_fixes", "eternal_lock", "orphan_debt", "kill_asymmetry",
+    "untriaged", "undelivered", "stuck_fixes", "orphan_debt", "kill_asymmetry",
 )
+# A line and never a sixth class: the five above are the menubar's whole vocabulary
+# (docs/shared-invariants.md row `av`), and a round past the budget is not a silence somebody is
+# late on — it is the launcher's refusal having failed, which no age and no count can qualify.
+DOCTOR_ROUND_OVERFLOW = "rounds_past_two"
 # The document the collector writes and the menubar reads; its schema is fixed by
 # docs/shared-invariants.md, because the renderer has no other way to learn a class name.
 DOCTOR_SNAPSHOT = "doctor-snapshot.json"
@@ -90,7 +86,6 @@ DOCTOR_AGENT_INTERVAL_S = 6 * 3600
 # never a bare interpreter, and never the PATH symlink a human types.
 DOCTOR_AGENT_WRAPPER = (".local", "libexec", "review-doctord")
 RUN_CONFIRMED_COUNTS = {}
-ESCALATION_VERDICT_CACHE = {}
 # Per repository, the paths review debt is never asked about: gitignore-style patterns, committed
 # with the checkout, because what is worth a panel's minutes is a property of the project and not
 # of whoever is looking. Never priced, never listed, never in a `--debt` scope. Held to one
@@ -335,91 +330,48 @@ def repo_artifacts(repo):
     return artifacts
 
 
-def artifact_locked(artifact):
-    """Whether this artifact is a round no waiver may answer for: it came back with enough
-    confirmed P1s that the fixing pass stopped and the fork sends the chat back to review.
-
-    The tally threshold is deliberately not here. A round that earned its second pass on findings
-    alone is owed one in the gate's fork, and the model may still waive it with its reason on
-    record; only the P1 count takes that judgment away.
-
-    A run whose tally cannot be read at all is locked too. Read as a clean round it would release
-    whatever lock it earned along with the file nobody could parse, and the refusal names the run
-    id, so the way out is triaging it again rather than a number nobody has.
-
-    A round Egor decreed is not locked, whatever its tally: the decree IS the discharge, and the
-    reason it carries is printed wherever the lock would have been named.
-    """
-    if not artifact or artifact["kind"] != "run":
-        return False
-    if _round.read_decree(artifact["dir"]):
-        return False
-    counts = run_confirmed_counts(artifact["dir"])
-    if counts is None:
-        return True
-    p1s, _ = counts
-    owed = p1s >= SECOND_REVIEW_P1S
-    # Except over a scope whose round budget is spent: that round's own report offers no third pass,
-    # and a lock demanding one is a gate nothing can open — the waiver is refused for being locked,
-    # and the review the refusal names is the pass the budget already spent.
-    return owed and not _round.round_budget_spent(artifact["dir"])
-
-
 def artifact_owes_second_round(artifact):
-    """Whether this round is one the gate's fork says is owed a follow-up review — either
-    threshold, not the P1 count alone, since both send the chat back over the full scope.
+    """Whether a round 2 is owed over this round, so its whole scope re-enters the `--debt` diff.
 
-    The second dial is asked of the gate, like every other pricing of a round's tally: it lives
-    there and a copy of it here is a copy that drifts. A gate that cannot be reached widens nothing
-    on that dial — the scope it would widen is the one every reader already sees, and the report
-    prints the unknown where the reader can act on it.
-
-    A LOCKED round is the one thing never left to that ask. Its P1 count — and an unreadable tally,
-    which `artifact_locked` reads the same fail-closed way — is decided here and nowhere else, and
-    a locked round can be discharged by nothing but the review of its full scope: were an
-    unreachable gate to keep it out of the `--debt` scope, the waiver would refuse it for being
-    locked while the one review that answers it could not be computed, and the repository would sit
-    behind a lock nothing can open.
+    One record answers it: the DECISION. `simplify`, `cut` and `redesign` each name a second pass
+    over the full original scope plus the fixes; `fix` names none, and a round still owing its
+    decision names none either — no fixing pass may start before it is recorded, so nothing has
+    moved that a second pass would read.
     """
     if not artifact or artifact["kind"] != "run":
         return False
-    if _round.read_decree(artifact["dir"]) or _round.round_budget_spent(artifact["dir"]):
+    if _round.round_budget_spent(artifact["dir"]):
         return False
-    if artifact_locked(artifact):
+    decision = _round.read_fork(artifact["dir"])
+    return bool(decision) and decision["choice"] != _round.BAND_FIX
+
+
+def reopened_round_stands(repo, path, artifact):
+    """Whether a round a decision reopened still holds `path` back.
+
+    A path that is GONE is held by nothing: no snapshot a later run writes can hold it, and a
+    fixing pass that deletes a file it reviewed — which is what `cut` names — would otherwise wedge
+    that round open over a path no review could ever answer for again.
+    """
+    return artifact_owes_second_round(artifact) and os.path.lexists(Path(repo) / path)
+
+
+def reopened_round_released(repo, reopened, artifact):
+    """Whether `artifact` takes a path back from the round `reopened` reopened.
+
+    A RUN does so only by being the second pass itself — holding every path of that round's scope
+    that still stands in the working tree — because a one-path rerun answering for a corner of it
+    would retire the full second review the decision named. A waiver does so path by path: it is a
+    chat saying out loud that this content goes unreviewed and why, which is the one other answer a
+    scope can have, and refused here it would be recorded, reported as `waived N path(s)` and then
+    silently disregarded by the very scope it was written to shrink.
+    """
+    if artifact["kind"] == "waiver":
         return True
-    verdict = cached_escalation_verdict(*run_confirmed_counts(artifact["dir"]))
-    return bool(verdict) and verdict != _round.ESCALATION_UNKNOWN
-
-
-def cached_escalation_verdict(p1, total):
-    """The gate's answer for one pair of numbers, asked once per process: a scope walks the same
-    round once per path it holds, and each ask is a subprocess under a timeout."""
-    # Keyed on the gate too: a test pointing the module at a stub, and the module at the real one
-    # after it, must not read each other's answers back.
-    key = (str(_round.ESCALATION_GATE), p1, total)
-    if key not in ESCALATION_VERDICT_CACHE:
-        ESCALATION_VERDICT_CACHE[key] = _round.escalation_verdict(p1, total)
-    return ESCALATION_VERDICT_CACHE[key]
-
-
-def round_locked(run_dir):
-    """Whether this round is one no waiver may answer for, asked of the same rule every debt
-    reader asks. Spelled once: a decree refused over a round the waiver is already refused for,
-    or granted over one nothing withholds, is a mechanism answering a different question from the
-    one it exists to discharge.
-    """
-    return artifact_locked({"kind": "run", "id": run_dir.name, "dir": run_dir})
-
-
-def path_lock_stands(repo, path, artifact):
-    """Whether a locked round still holds `path` back.
-
-    A path that is gone is held by nothing. No snapshot a later run writes can hold it, and the
-    waiver that would answer for it is refused for being locked, so the lock over it would outlive
-    every action a chat can take — while the deletion is itself what a reasoned waiver or a range
-    review settles.
-    """
-    return artifact_locked(artifact) and os.path.lexists(Path(repo) / path)
+    if artifact["kind"] != "run":
+        return False
+    surviving = {path for path in reopened["shas"] if os.path.lexists(Path(repo) / path)}
+    return surviving <= set(artifact["shas"])
 
 
 def covering_artifacts(repo, ignoring=(), artifacts=None):
@@ -430,15 +382,8 @@ def covering_artifacts(repo, ignoring=(), artifacts=None):
     enters the full scope of the round that owed it (`debt_review_scope`). Nothing outside that
     scope passes it: the debt every other reader sees is the debt as the artifacts left it.
 
-    A locked round is the exception. What discharges one is the full original scope reviewed again
-    over the fixes, so only a run whose own reviewed paths hold every path that round read may take
-    a path back from it; a one-path rerun, and a waiver at any width, would otherwise retire a
-    second review by answering for a corner of it.
-
-    Over the paths still standing, though, and not the scope as it was read. Fixing a round's
-    findings routinely deletes or renames a file it reviewed, and a path that is gone is one no
-    later run can ever hold: demanded back, it wedges the lock shut for good, with the waiver
-    refusing it and no review able to answer for it.
+    A round a decision reopened is the exception, and it is released WHOLE or not at all — see
+    `reopened_round_released`.
     """
     covering = {}
     for artifact in repo_artifacts(repo) if artifacts is None else artifacts:
@@ -446,22 +391,12 @@ def covering_artifacts(repo, ignoring=(), artifacts=None):
             continue
         for path in artifact["shas"]:
             standing = covering.get(path)
-            if path_lock_stands(repo, path, standing) and not lock_discharged(
+            if reopened_round_stands(repo, path, standing) and not reopened_round_released(
                 repo, standing, artifact
             ):
                 continue
             covering[path] = artifact
     return covering
-
-
-def lock_discharged(repo, locked, artifact):
-    """Whether `artifact` is the second review `locked` owes: a run holding every path that round
-    read which still stands in the working tree.
-    """
-    if artifact["kind"] != "run":
-        return False
-    surviving = {path for path in locked["shas"] if os.path.lexists(Path(repo) / path)}
-    return surviving <= set(artifact["shas"])
 
 
 def reviewed_shas(artifacts, repo):
@@ -729,9 +664,8 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
 
     `reviewed` is every content the family's artifacts read, and a path NO artifact holds standing
     at one of them is current: a file that moved keeps the review its bytes earned. A path some
-    artifact does hold is answered by that artifact alone, or a narrow rerun would take a path back
-    from the locked round `covering_artifacts` withheld it from. `haunted_paths` drops what is
-    nobody's debt here at all.
+    artifact does hold is answered by that artifact alone. `haunted_paths` drops what is nobody's
+    debt here at all.
 
     The universe a repository-wide question asks about is what somebody RECORDED work on, and the
     worker run records are one of those stores: a run's own file list, and the dirt its workdir
@@ -774,8 +708,7 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
             shas[str(path)] = sha
         if artifact is None:
             # Only a path NOTHING holds may escape on content read elsewhere: a held one is
-            # answered by its own artifact, or a narrow rerun would take a path back from the
-            # locked round `covering_artifacts` withheld it from.
+            # answered by its own artifact.
             if sha and sha in reviewed:
                 continue
             if sha or path in named:
@@ -789,12 +722,9 @@ def repo_debt(repo, paths=None, covering=None, shas=None, claims=None, dirty=Non
             # cross-branch delta was priced as fresh debt in BOTH directions and each checkout's
             # own waiver re-opened its sibling the moment it was written (live 2026-08-24).
             # So a content some artifact of the family actually READ is not debt, wherever it was
-            # read. A LOCKED round short-circuits it, exactly as the artifact-alone rule does for
-            # the unheld paths below: what discharges a lock is the full original scope reviewed
-            # again, and a sibling's matching sha would otherwise retire a second review nobody
-            # ran. Line pricing is untouched — a path that IS in debt still prices against the
+            # read. Line pricing is untouched — a path that IS in debt still prices against the
             # newest artifact.
-            if sha and sha in holders.get(path, ()) and not path_lock_stands(repo, path, artifact):
+            if sha and sha in holders.get(path, ()):
                 continue
             debt.append((path, artifact))
     priceless = priceless_paths(repo, debt, shas=measured, bases=bases)
@@ -1130,14 +1060,13 @@ def debt_review_scope(repo):
     """Every path a `--debt` review of `repo` must read, each with the artifact its content is
     compared against, as `(path, artifact)` pairs — the same shape `repo_debt` answers in.
 
-    The debt itself, WIDENED to every surviving path of any locked round standing over it. A lock
-    is discharged by a run whose reviewed paths hold all of them (`lock_discharged`), and a path
-    still sitting at the sha the locked round recorded is by definition NOT in debt — so a scope
-    made of the debt alone can never discharge the very round it exists to answer, and the review
-    the contract demands would have to be widened by hand every time, by the one reader with no way
-    to know what that round read.
+    The debt itself, WIDENED to every surviving path of any round a decision reopened. A path still
+    sitting at the sha that round recorded is by definition NOT in debt — so a scope made of the
+    debt alone can never carry the very round it exists to answer, and the review the contract
+    demands would have to be widened by hand every time, by the one reader with no way to know what
+    that round read.
 
-    A round the thresholds left owing a second one is REOPENED here, and it is looked for among
+    A round whose decision named a second pass is REOPENED here, and it is looked for among
     every artifact standing over this repository rather than among the ones some path is in debt
     against: a round whose reviewed bytes nobody has touched since — the threshold stop that fixed
     nothing being exactly that round — puts no path in debt at all, and read off the debt its
@@ -1149,8 +1078,8 @@ def debt_review_scope(repo):
     those very shas, so a scope built off the newest artifact saw only the fixing pass's own bytes
     and a live second round read 258 lines of fixes and nothing else (2026-08-22).
 
-    Bounded by the round budget the same way the lock is: a second round that owes a third owes it
-    to nobody, so its receipt answers for its scope like any other.
+    Bounded by the round budget: there is no round 3, so a round 2's receipt answers for its scope
+    like any other.
     """
     artifacts = repo_artifacts(repo)
     covering = covering_artifacts(repo, artifacts=artifacts)
@@ -1185,24 +1114,31 @@ def debt_review_scope(repo):
     return sorted(scope.items())
 
 
-def debt_foreign_skipped(repo, debt, session, buckets=None, claims=None, records=None):
-    """The debt paths a `--debt` review of this repository will NOT read: another chat's, less the
-    ones a locked round holds.
+def debt_foreign_skipped(repo, debt, session, buckets=None, claims=None, records=None,
+                         covering=None):
+    """The debt paths a `--debt` review of this repository will NOT read: another chat's, less
+    whatever a reopened round puts back.
 
     One rule, two readers — the scope `debt_scope` computes and the count `debt`'s own line prints
     beside it. A line quoting a number the scope never left out is the same lie as a scope that
     dropped a path silently: the count is what a chat reads BEFORE it decides. With no session
     nothing is foreign to anybody, so the review reads the whole of it and this is empty.
+
+    A path of a round some decision reopened is never foreign: the second pass reads that round's
+    whole scope whoever has touched those paths since, and named as skipped it would be counted out
+    of a scope that in fact holds it.
     """
     if not session:
         return set()
-    locked = {
-        path for _, artifact in debt if artifact and artifact_locked(artifact)
-        for path in artifact["shas"]
-    }
     if buckets is None:
         buckets = debt_ownership(repo, debt, session, claims=claims, records=records)
-    return buckets["foreign"] - locked
+    if covering is None:
+        covering = covering_artifacts(repo)
+    reopened = {
+        path for artifact in covering.values() if artifact_owes_second_round(artifact)
+        for path in artifact["shas"]
+    }
+    return set(buckets["foreign"]) - reopened
 
 
 def debt_scope(repo, session="", include_foreign=False):
@@ -1214,17 +1150,16 @@ def debt_scope(repo, session="", include_foreign=False):
     widens it. What is left out is NAMED by the caller and never silently dropped — a review that
     reads six of nine files while its one-liner says nine is how a chat told Egor work had been
     reviewed clean that no rater ever opened (live case 2026-08-22).
-
-    A path a LOCKED round holds is never skipped, whoever wrote it: the lock is discharged only by
-    a run holding all of them, so dropping one leaves that round owed for ever with no command
-    able to answer it.
     """
     pairs = debt_review_scope(repo)
     if include_foreign or not session:
         return pairs, []
-    debt = repo_debt(repo)
+    artifacts = repo_artifacts(repo)
+    covering = covering_artifacts(repo, artifacts=artifacts)
+    debt = repo_debt(repo, covering=covering, reviewed=reviewed_shas(artifacts, repo),
+                     holders=path_holders(artifacts))
     owed = {str(path) for path, _ in debt}
-    foreign = debt_foreign_skipped(repo, debt, session)
+    foreign = debt_foreign_skipped(repo, debt, session, covering=covering)
     kept = [(path, artifact) for path, artifact in pairs if str(path) not in foreign]
     skipped = sorted(path for path in foreign if path in owed)
     return kept, skipped
@@ -1538,25 +1473,6 @@ def read_run_confirmed_counts(run_dir):
     )
 
 
-def debt_locks(repo, debt):
-    """The bad rounds standing over this debt, as `{run id: [paths]}`. The run holding a debt path
-    came back with enough confirmed P1s that the contract owes a second review, and a waiver is
-    not a way around one — so a refusal can name which paths those are and which round has to
-    answer for them.
-
-    A path that is gone is not one of them, for the reason `path_lock_stands` carries.
-    """
-    locks = {}
-    for path, artifact in debt:
-        if path_lock_stands(repo, path, artifact):
-            locks.setdefault(artifact["id"], set()).add(path)
-    return {run_id: sorted(paths) for run_id, paths in locks.items()}
-
-
-def debt_locked(repo, debt):
-    return bool(debt_locks(repo, debt))
-
-
 def session_timeout_run(repo, session):
     """The run of `session` a watchdog killed, while it is still the newest thing that chat has to
     say. An untriaged run standing on top of a kill says nothing, so it must not speak over it; a
@@ -1635,13 +1551,6 @@ def cmd_debt(args):
             return 0
     buckets = debt_ownership(repo, debt, session, claims=claims, records=records)
     owned = len(buckets["own"])
-    # The lock word, or the reason Egor discharged it: a decree stands exactly where a lock would
-    # have, so the surface the commit gate and the statusline read names the unlock instead of
-    # falling silent and showing a decreed round as one nothing ever withheld.
-    standing = (
-        " locked" if debt_locked(repo, debt)
-        else " decreed" if waived_decrees(debt) else ""
-    )
     if not session:
         # With no asker there is no MINE or OTHER, but `unknown` over debt the records DO name an
         # owner for is the wrong word: it stands over the unowned part alone and drops entirely
@@ -1654,7 +1563,7 @@ def cmd_debt(args):
         foreign = len(buckets["foreign"])
         unowned = len(debt) - foreign
         word = " unknown" if unowned or not foreign else ""
-        print(f"debt {len(debt)}{word}{standing}")
+        print(f"debt {len(debt)}{word}")
         return 0
     owner = "mine" if owned else "other"
     # A chat owning one path of ten reads `debt 10 mine` and answers for all ten. The word keeps
@@ -1663,27 +1572,13 @@ def cmd_debt(args):
     # The part of that count a `--debt` review will not read, named here rather than left for the
     # reader to infer from a number this line does not print: the one-liner is what a chat sees
     # before it decides, and one that said `debt 7` over a scope of one is how six files went to
-    # Egor as reviewed clean (live case 2026-08-22). It stands BEFORE the lock word, which every
-    # reader of this line matches at the END of it.
+    # Egor as reviewed clean (live case 2026-08-22).
     # Withheld only where the owner word already says it: `other` is the chat owning NONE of this
     # debt, and a count repeating that adds nothing.
     others = len(debt_foreign_skipped(repo, debt, session, buckets=buckets))
     foreign = f" (+{others} foreign)" if others and others < len(debt) else ""
-    print(f"debt {len(debt)} {owner}{share}{foreign}{standing}")
+    print(f"debt {len(debt)} {owner}{share}{foreign}")
     return 0
-
-
-def waived_decrees(debt):
-    """The decrees this waiver is riding, as `{run id: reason}`: without them a waiver Egor
-    unlocked by word reads exactly like one no round ever withheld."""
-    decrees = {}
-    for _, artifact in debt:
-        if not artifact or artifact["kind"] != "run":
-            continue
-        decreed = _round.read_decree(artifact["dir"])
-        if decreed:
-            decrees[artifact["id"]] = decreed["reason"]
-    return decrees
 
 
 def cmd_waive(args):
@@ -1796,21 +1691,6 @@ def cmd_waive(args):
                 "settle their work under it. Name what you are not reviewing with --paths."
             )
             return 1
-    locks = debt_locks(repo, debt)
-    if locks:
-        named = "; ".join(
-            f"{run_id} over {', '.join(paths)}" for run_id, paths in sorted(locks.items())
-        )
-        print(
-            f"waive: refused — the review standing over this work came back with "
-            f"{SECOND_REVIEW_P1S}+ confirmed P1s, and that round owes a mandatory second review "
-            "over the full scope plus the fixes. Run it instead of waiving it: "
-            f"({shlex.join(['cd', str(repo)])} && "
-            f"{debt_chat_review_command(_store.caller_chat(), [repo])}) — that mode computes the "
-            "scope itself and widens to what this round still holds. "
-            f"Locked: {named}."
-        )
-        return 1
     path = waiver_file(repo)
     if path is None:
         print("waive: the repository identity is unavailable")
@@ -1846,58 +1726,6 @@ def cmd_waive(args):
         name + ("" if authors.get(name) else " (no journal author)") for name, _ in debt
     ) + "]"
     print(f"waived {len(debt)} path(s): {reason}{signed}")
-    for run_id, decreed in sorted(waived_decrees(debt).items()):
-        print(f"decree: {run_id} — {decreed}")
-    return 0
-
-
-def cmd_decree(args):
-    """Record Egor's unlock of a round the P1 count locked.
-
-    Only his explicit word authorises one (docs/review-contract.md), the same discipline a commit
-    is under: a model running this on its own judgment is the round forgiving itself, which is the
-    one thing the lock exists to make impossible. Nothing here can enforce that — what it can do is
-    make a decree loud, so a misused one is visible in the block Egor reads.
-    """
-    run_dir = _store.state_dir() / "benches" / args.run_id
-    if not (run_dir / "meta.json").exists():
-        print(f"decree: unknown run id: {args.run_id}")
-        return 1
-    reason = " ".join(str(getattr(args, "reason", "") or "").split())
-    if not reason:
-        print("decree: --reason must carry Egor's own words for why this round goes without "
-              "its mandatory second review")
-        return 1
-    standing = _round.read_decree(run_dir)
-    if standing:
-        print(f"decree: {args.run_id} already carries one — {standing.get('reason')}")
-        return 1
-    # `round_locked` calls a round whose tally cannot be read locked, fail-closed, so a decree
-    # accepted on one would discharge a lock nobody ever established — and the discharge outlives
-    # the repair, since a round carrying `decree.json` is unlocked whatever it is triaged to.
-    if run_confirmed_counts(run_dir) is None:
-        print(
-            f"decree: refused — {args.run_id} has no readable triage tally, so nothing here can "
-            "say what it is locked for. Triage it again (review-bench record) and decree the "
-            "round the numbers show."
-        )
-        return 1
-    if not round_locked(run_dir):
-        print(
-            f"decree: refused — {args.run_id} is not locked, so there is nothing to discharge. A "
-            f"decree answers the withheld waiver a round of {SECOND_REVIEW_P1S}+ confirmed P1s "
-            "stands over; every other round is already waivable with a reason on record."
-        )
-        return 1
-    (run_dir / _store.DECREE_RECEIPT).write_text(json.dumps({
-        "reason": reason,
-        "session": _store.launching_session() or "",
-        "recorded_at": _store.iso_now(),
-        "epoch": int(time.time()),
-    }, indent=2, sort_keys=True) + "\n")
-    print(f"decree: {reason}")
-    print(f"{args.run_id} is discharged: the waiver it withheld is grantable, and this reason "
-          "prints in its report and in every frame that named the lock.")
     return 0
 
 
@@ -1939,12 +1767,12 @@ def round_fixes_stuck(run_dir, meta):
     Below the fork thresholds the pass closes ITSELF: the commit carrying the fixes covers the
     round, so a round with no receipt is a round whose optional tally nobody typed, not one nobody
     finished — counted here, that was a class measuring bookkeeping. What is left is the two states
-    only a person can clear: a round the gate escalated, which owes a second review of its whole
-    scope, and one whose receipt says the pass STOPPED.
+    only a person can clear: a round whose decision named a second pass nobody ran, and one whose
+    receipt says the pass STOPPED.
 
     Neither can hide a second round that already ran. A round is only ever succeeded by one once
-    its own fixes are `done` on record (`review_round`), which is a state this function has already
-    excluded, and a `blocked` round is answered by the fork itself and not by a later panel.
+    its own fixes are `done` on record, which is a state this function has already excluded, and a
+    stopped round is answered by its decision and not by a later panel.
     """
     rows = _round.recorded_verdict_rows(run_dir)
     state = _round.round_state(run_dir, rows)
@@ -1982,26 +1810,6 @@ def doctor_row(what, repo, age=None, session=""):
     return row
 
 
-def doctor_locks(repo, now, covering=None):
-    """Rounds this checkout has locked on the P1 count that nothing has discharged, oldest first.
-
-    `covering_artifacts` already hands a path over to the run that answered its lock, so an
-    artifact still covering a path it locked is one no later run holds.
-    """
-    standing = {}
-    if covering is None:
-        covering = covering_artifacts(repo)
-    for path, artifact in covering.items():
-        if path_lock_stands(repo, path, artifact):
-            standing.setdefault(artifact["id"], artifact)
-    rows = []
-    for run_id, artifact in sorted(standing.items()):
-        age = now.timestamp() - artifact["epoch"]
-        if age >= DOCTOR_AGES_S["eternal_lock"]:
-            rows.append(doctor_row(run_id, repo, age))
-    return rows
-
-
 def doctor_orphan_debt(repo, covering=None, reviewed=None, holders=None):
     """Debt paths no chat answers for: every journal record naming them is the original bare-path
     format, or there is no record at all. Nobody will be asked to review or waive these, so they
@@ -2034,11 +1842,11 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
     Pull-only and read-only: nothing here marks a record, speaks to a vendor or costs a token, and
     the answer is a count per class with the records behind it rather than a verdict about any one
     run. The classes are the ways this system has been seen to go quiet — a panel nobody judged, a
-    report nobody delivered, a triage nobody answered, a lock nothing opens, debt nobody owns, and
-    a panel that completed nothing.
+    report nobody delivered, a triage nobody answered, debt nobody owns, and a panel that completed
+    nothing.
     """
     now = now or _store.utc_now()
-    findings = {name: [] for name in DOCTOR_CLASSES}
+    findings = {name: [] for name in (*DOCTOR_CLASSES, DOCTOR_ROUND_OVERFLOW)}
     benches = _store.state_dir() / "benches"
     # Resolved, because every path it is tested against is: under a symlinked state dir — macOS
     # `/tmp` and `/var/folders`, every WORKER_STATS_DIR fixture — an unresolved root shares no
@@ -2070,6 +1878,14 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
         # other way to reach.
         for record in [meta] + [row for row in meta.get("repos") or () if isinstance(row, dict)]:
             remember(str(record.get("repo") or ""))
+        # Not a class and not aged: the launcher refuses a round 3, so a run wearing one says the
+        # mechanics broke rather than that anybody is late. It rides beside the classes because the
+        # five are the menubar's whole vocabulary (docs/shared-invariants.md row `av`).
+        if _round.review_round(run_dir, meta) > _round.ROUND_BUDGET:
+            findings[DOCTOR_ROUND_OVERFLOW].append(doctor_row(
+                f"{run_dir.name} round {_round.review_round(run_dir, meta)}",
+                meta.get("repo"), None, meta.get("session"),
+            ))
         finished = _store.parse_iso_timestamp(meta.get("finished") or meta.get("finished_at"))
         # A launch document carries no finish stamp. Every RUN class below is about a record
         # nobody moved on after it stopped being written to, so a panel still running is none.
@@ -2135,7 +1951,6 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
         # for the same answer, and this scan is over every checkout the store has ever recorded.
         artifacts = repo_artifacts(repo)
         covering = covering_artifacts(repo, artifacts=artifacts)
-        findings["eternal_lock"].extend(doctor_locks(repo, now, covering))
         findings["orphan_debt"].extend(
             doctor_orphan_debt(repo, covering, reviewed_shas(artifacts, repo),
                                path_holders(artifacts))
@@ -2180,8 +1995,8 @@ def doctor_lines(findings):
     "not asked at all", and a class printed only when it fires cannot say which it was.
     """
     lines = []
-    for name in DOCTOR_CLASSES:
-        rows = findings[name]
+    for name in (*DOCTOR_CLASSES, DOCTOR_ROUND_OVERFLOW):
+        rows = findings.get(name) or []
         if not rows:
             continue
         lines.append(f"{name}: {len(rows)}")
@@ -2192,7 +2007,7 @@ def doctor_lines(findings):
         # Named rather than dropped: a cut list that says nothing reads as the whole of it.
         if len(rows) > DOCTOR_DETAIL_LINES:
             lines.append(f"  … {len(rows) - DOCTOR_DETAIL_LINES} more not printed")
-    clean = [name for name in DOCTOR_CLASSES if not findings[name]]
+    clean = [name for name in (*DOCTOR_CLASSES, DOCTOR_ROUND_OVERFLOW) if not findings.get(name)]
     if clean:
         lines.append("ok: " + ", ".join(clean))
     return lines
@@ -2346,7 +2161,12 @@ def cmd_doctor(args):
         print(f"snapshot: {write_doctor_snapshot(findings, now)}", file=sys.stderr)
     if args.json:
         document = doctor_snapshot_document(findings, now)
-        document["details"] = {name: findings[name] for name in DOCTOR_CLASSES}
+        # The five classes plus the overflow LINE: the counts above are the snapshot's fixed
+        # schema, while a machine reading the details is owed everything the text output says.
+        document["details"] = {
+            name: findings.get(name) or []
+            for name in (*DOCTOR_CLASSES, DOCTOR_ROUND_OVERFLOW)
+        }
         print(json.dumps(document, indent=2))
     else:
         for line in doctor_lines(findings):

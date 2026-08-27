@@ -30,29 +30,34 @@ REPORT_FRAME_WORD = "review"
 # A round whose fixing pass STOPPED at the P1 threshold. A pass that has not answered YET keeps
 # the plain word — reading the loud one off "no fixes recorded" is what put NOT FINISHED in front
 # of Egor over a round whose fixes were landing at that moment (2026-08-20).
-REPORT_BLOCKED_WORD = f"{REPORT_FRAME_WORD} · NOT FINISHED"
+REPORT_BLOCKED_SUFFIX = "NOT FINISHED"
 # No cell completed: there is no panel behind the rows, whatever they say. A run the watchdog
 # killed states that on the `failed:` rows of the cells it killed and nowhere else — coverage is
 # the triage receipt's to answer for, and a whole panel that came back with a kill in it is
 # already NO PANEL.
-REPORT_NO_PANEL_WORD = f"{REPORT_FRAME_WORD} · NO PANEL"
+REPORT_NO_PANEL_SUFFIX = "NO PANEL"
 # Not about the tree in front of the reader: the block was never handed over at the moment it was
 # recorded, or the content it priced has moved since. Neither of those is a clock, and a clock was
 # the wrong question — a report read five minutes after a rewrite of the files it read is already
 # about something else, and one delivered the instant it was recorded stays current at any age. It
 # carries the run's own date, which is the only thing that says how far off it is.
-REPORT_STALE_WORD = f"{REPORT_FRAME_WORD} · STALE"
+REPORT_STALE_SUFFIX = "STALE"
 # A worker may run an hour and the fixing pass another: a report older than this is not about the
 # tree in front of the reader, whatever else is true of it. Deliberately a clock and nothing else.
 REPORT_STALE_HOURS = 3
 # A panel nobody asked for by tier — an explicit `--raters` bench. It is not a review round: it
 # settles no debt and owes no fixes, so it wears a word of its own instead of the review one.
 REPORT_BENCH_WORD = "bench"
-REPORT_FRAME_WORDS = (
-    REPORT_FRAME_WORD, REPORT_BLOCKED_WORD, REPORT_NO_PANEL_WORD,
-    REPORT_STALE_WORD, REPORT_BENCH_WORD,
-)
 REPORT_END = "=" * REPORT_FRAME_WIDTH
+
+
+def round_frame_word(number):
+    """The review frame's own word: which round this block is. The state suffixes hang off it, so
+    a reader takes the round and the state from one line.
+    """
+    return f"{REPORT_FRAME_WORD} · round {number}"
+
+
 # What the NOT FINISHED frame owes beyond the reason on the receipt: the pass stopped, and which
 # way the round goes from there is not the fixer's to decide. `fork` hands it to the model that
 # has to act on it rather than the block spending six lines on it at Egor, who does not read it.
@@ -60,12 +65,10 @@ REPORT_END = "=" * REPORT_FRAME_WIDTH
 # `--blocked` takes whichever one the pass actually had, and a fork naming the P1 threshold over
 # a round that stopped for something else tells Egor a thing nobody recorded.
 REPORT_BLOCKED_FORK = (
-    "the fixing pass stopped over this round's findings, for the reason\n"
-    "on its `fixes:` row. Which way the round goes from here —\n"
-    "fixing them as they stand, reworking the code they cluster in,\n"
-    "or cutting the scope — is Egor's decision and not the fixer's,\n"
-    "and it reaches him with the P1 list and the reasoning before\n"
-    "anybody acts on it."
+    "the fixing pass stopped over this round's findings. Which way the\n"
+    "round goes from here — fix, simplify, cut or redesign — is Egor's\n"
+    "decision and not the fixer's, and it reaches him with the P1 list\n"
+    "and the reasoning before anybody acts on it."
 )
 
 # A run without verdicts has no report to print: the triage that decides what to fix is what
@@ -84,11 +87,8 @@ HANDOFF_P1_STOP = 3
 # back twice is answered by fixing what is confirmed and writing the rest into the false-positive
 # doctrine, not by a panel pricing the same code again.
 ROUND_BUDGET = 2
-# How long an earlier fixed round keeps answering for its scope. A round and the round that reads
-# its fixes are one piece of work, and that pass runs over an uncommitted tree — days at the
-# outside. Without the bound the path test below is not enough on its own: a full-repository scope
-# reads a superset of every earlier one, so a single fixed round would price every later review of
-# that checkout as its second forever, taking the escalation fork and the waiver lock with it.
+# How long a round keeps answering for the fixes written after it. A round and the pass that fixes
+# it are one piece of work, and that pass runs over an uncommitted tree — days at the outside.
 ROUND_LINEAGE_MAX_HOURS = 72
 ROUND_BUDGET_SPENT = (
     "second round over this scope — the budget of two is spent, and there is no third:\n"
@@ -111,59 +111,46 @@ DELEGATED_PID_SLACK = 30
 # `worker-run` writes about a minute later; past it the stamp reads dead exactly as a gone pid.
 DELEGATED_CLAIM_SECONDS = 600
 FORK_RECORD = "fork.json"
-FORK_CHOICES = ("fix", "simplify", "re-review")
+# The whole vocabulary a review decision is spelled in — the fork record, the `fixes:` row and the
+# Russian header the model writes under the block, whose word pairs docs/review-contract.md pins.
+# One tuple, because a fifth word invented at any one of those sites is a decision no other site
+# can read back.
+DECISION_WORDS = ("fix", "simplify", "cut", "redesign")
+DECISION_MENU = " / ".join(DECISION_WORDS)
+FORK_CHOICES = DECISION_WORDS
 FORK_WHY_MIN_CHARS = 80
+# Confirmed findings over the WHOLE round, never a repository's share: at or under this the round
+# is a list of defects, the fixing pass takes it, and the commit that carries the fixes closes it.
+ROUND_FIX_MAX = 8
+# At or over this — or at `HANDOFF_P1_STOP` confirmed P1s — the round is not a list to patch but a
+# decision, and `fix` over it has to name why the code is worth keeping as it stands.
+ROUND_HARD_MIN = 20
+BAND_FIX = "fix"
+BAND_DECIDE = "decide"
+BAND_HARD = "hard"
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage
 # that genuinely cannot be done must not block every stop that follows.
 TRIAGE_GATE_ASKS = 3
 ROUND_BUDGET_SPENT_CACHE = {}
-ESCALATION_GATE = Path.home() / ".claude/hooks/review-flow-gate.sh"
-ESCALATION_UNKNOWN = (
-    "unknown — the commit gate could not be asked; attempt the commit for the verdict"
-)
-# The gate's fork opens on this line; everything above it is the verdict itself.
-ESCALATION_FORK_LEAD = "Pick one and carry it out"
 
 
-def escalation_headline(earned):
-    """A verdict of the gate's as ONE report row: its opening sentence, without the fork it hands
-    the model. Never a sentence of this file's own — the P1 verdict withholds the waiver over this
-    work and the tally verdict leaves `waive` open, and one hardcoded row said the same thing for
-    both.
+def round_band(p1, confirmed):
+    """Which of the three bands a round's own numbers put it in.
+
+    Asked here by everything that prices a round, and answered nowhere else: a band decides
+    whether a decision is owed at all, and spelled a second time in a hook the same round earned a
+    decision in one voice and closed itself in the other.
     """
-    head = (earned or "").strip().splitlines()[0].strip()
-    lead = head.find(ESCALATION_FORK_LEAD)
-    if lead > 0:
-        head = head[:lead]
-    return head.strip().rstrip(".;:— -")
+    if p1 >= HANDOFF_P1_STOP or confirmed >= ROUND_HARD_MIN:
+        return BAND_HARD
+    return BAND_DECIDE if confirmed > ROUND_FIX_MAX else BAND_FIX
 
 
-def escalation_verdict(p1, total):
-    """What this round earned, in the commit gate's own words, or None when it is closed.
-
-    Asked of the gate rather than answered here: the thresholds and the three-way wording — the
-    weak-component verdict included, which sends the fixer to redesign the piece instead of
-    reviewing it a second time — are one rule, and a copy of it in this file is a copy that drifts.
-    The gate speaks only at a commit attempt, which needs Egor's permission to reach, so a round
-    that earned another one was settled in silence while the report said nothing (2026-08-08).
-
-    A gate that cannot be reached says so out loud: silence here is the very failure this exists to
-    end, so the caller prints the unknown rather than a clean bill.
-    """
-    try:
-        done = subprocess.run(
-            [str(ESCALATION_GATE), "escalation-verdict", str(p1), str(total)],
-            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ESCALATION_UNKNOWN
-    if done.returncode == 0:
-        return done.stdout.strip() or None
-    if done.returncode == 1:
-        return None
-    return ESCALATION_UNKNOWN
+def round_decision_owed(p1, confirmed):
+    """Whether this round may start no fixing pass until a decision is on disk."""
+    return round_band(p1, confirmed) != BAND_FIX
 
 
 def verdict_scratch_path(run_id):
@@ -211,27 +198,6 @@ def write_report_receipt(run_dir, verdicts, severities=None, docs=0):
             for row in verdicts
         ],
     }) + "\n")
-
-
-def read_decree(run_dir):
-    """Egor's recorded unlock of this round, or None.
-
-    The only thing that discharges a P1 lock without the second review it demands, and it exists
-    because the lock has no other door: the round is locked until a full second panel runs, and
-    when Egor decides that panel is not worth its tokens nothing on disk could say so. A model
-    never writes one on its own judgment — that would be the round forgiving itself — so every
-    surface that would have named the lock names the decree instead: the reason itself wherever
-    there is room for a sentence, and the bare `decreed` word where the answer is one machine-read
-    line, loudly enough that a decree nobody authorised is visible in the same block Egor reads the
-    findings in and never as a round nothing ever withheld.
-    """
-    try:
-        stored = json.loads((run_dir / _store.DECREE_RECEIPT).read_text())
-    except (OSError, ValueError):
-        return None
-    if not isinstance(stored, dict) or not str(stored.get("reason") or "").strip():
-        return None
-    return stored
 
 
 def read_fix_status(run_dir):
@@ -291,9 +257,9 @@ def fix_status(run_dir, confirmed, verdicts=None):
     (a receipt naming why the pass stopped) or `pending` — no receipt at all, or one that answers
     a triage this run no longer carries.
 
-    Carried in every state, because a line printed only sometimes is one whose absence reads as
-    "applied": a round is finished when somebody recorded that it is, never by default. The three
-    are kept apart here rather than collapsed into "not done", because the frame word is picked
+    A round nobody has answered for yet has no line of its own: what it owes is read off the band
+    it is in, and the report's `fixes:` row — never an absent row — is what says so. The three
+    states are kept apart rather than collapsed into "not done", because the frame word is picked
     off this answer and a stopped round and a running one are not the same news.
     """
     record = read_fix_status(run_dir)
@@ -316,8 +282,10 @@ def fix_status(run_dir, confirmed, verdicts=None):
         ), "done"
     reason = " ".join(str((record or {}).get("reason") or "").split())
     if state == "blocked":
-        return f"NOT APPLIED — {reason or 'blocked'}", "blocked"
-    return f"NOT APPLIED — {reason or 'pending'}", "pending"
+        return f"stopped — {reason or 'no reason recorded'}", "blocked"
+    # No line at all: a round nobody has answered for yet is read off the band it is in, which is
+    # what the report's own `fixes:` row says.
+    return "", "pending"
 
 
 def stale_fix_receipt(record, confirmed, verdicts):
@@ -330,8 +298,8 @@ def stale_fix_receipt(record, confirmed, verdicts):
     against = record.get("confirmed")
     if isinstance(against, int) and not isinstance(against, bool) and against != confirmed:
         return (
-            f"NOT APPLIED — recorded against a triage of {against} confirmed, "
-            f"and this one has {confirmed}"
+            f"re-triaged — the receipt answers for {against} confirmed, "
+            f"and this round has {confirmed}"
         )
     # And answers for those findings, not merely for how many there were: a re-adjudication that
     # confirms a different finding in place of the old one leaves the count where it was.
@@ -339,7 +307,8 @@ def stale_fix_receipt(record, confirmed, verdicts):
     if (isinstance(stamped, str) and stamped and verdicts is not None
             and stamped != triage_digest(verdicts)):
         return (
-            f"NOT APPLIED — recorded against a different triage of the same {confirmed} confirmed"
+            f"re-triaged — the receipt answers for a different triage of the same "
+            f"{confirmed} confirmed"
         )
     return None
 
@@ -356,62 +325,14 @@ def round_state(run_dir, verdicts=None):
     return fix_status(run_dir, confirmed_count(rows), rows)[1]
 
 
-def run_scope_key(meta):
-    """What two runs must share to be rounds over one scope: the tree each read and the paths it
-    was narrowed to, every member of a merged panel included. Resolved, because the same checkout
-    reaches a run under more than one spelling and two spellings are not two scopes.
-    """
-    def entry(record):
-        recorded = str(record.get("repo") or "")
-        # A debt review's scope is the repository's whole open question at the moment it ran, not a
-        # narrowing anybody chose — and the second round of one piece of work computes a different
-        # path set from the first, since the fixes moved what is owed. Keyed on those paths the two
-        # rounds would be two scopes, the budget would never bind, and the fork would go on
-        # demanding a third pass for ever.
-        scope = () if record.get("debt") else tuple(
-            sorted(str(item) for item in record.get("scope") or ())
-        )
-        return (str(_store.resolved_repo_path(recorded) or recorded) if recorded else "", scope)
-
-    members = tuple(sorted(
-        entry(record) for record in meta.get("repos") or () if isinstance(record, dict)
-    ))
-    # A merged panel's own `repo` is the workspace built for that one run — a path derived from the
-    # snapshot it read, so two rounds over the very same repositories never share it and the budget
-    # would never bind for a merged review at all. Its members ARE the scope.
-    return members or (entry(meta),)
-
-
-def run_reviewed_paths(meta):
-    """Every path a run recorded reading, in one namespace.
-
-    A merged panel records a map per member as well as its own, and only the members' hold a debt
-    review's zero-diff survivors: the workspace map is that snapshot's diff, which by definition
-    shows nothing for a path standing exactly where the locked round recorded it. Read off the
-    workspace alone, the run that discharges a lock reads as one that never held those paths.
-    """
-    held = set()
-    reviewed = meta.get("reviewed")
-    if isinstance(reviewed, dict):
-        held |= set(reviewed)
-    for record in meta.get("repos") or ():
-        if not isinstance(record, dict):
-            continue
-        member = record.get("reviewed")
-        if isinstance(member, dict):
-            label = str(record.get("label") or "")
-            held |= {f"{label}/{path}" if label else str(path) for path in member}
-    return held
-
-
 def recorded_seal_instant(sha):
     """When a run already on record sealed `sha`, or None where none did.
 
     A rerun is pinned to a snapshot an earlier run sealed and reads exactly the tree that seal
     froze, so a seal stamped from its own clock dates that content to now: every fixes receipt
     written since would read as lineage the panel could have seen, and a rerun of the PRE-FIX
-    snapshot would spend the scope's round budget and open its lock over a pass that saw none of
-    them. The snapshot commit cannot answer this itself — every commit object review-bench writes
+    snapshot would spend the scope's round budget over a pass that saw none of them. The snapshot
+    commit cannot answer this itself — every commit object review-bench writes
     carries one fixed clock, so the same input always answers with the same sha.
     """
     benches = _store.state_dir() / "benches"
@@ -429,72 +350,160 @@ def recorded_seal_instant(sha):
 
 
 def review_round(run_dir, meta):
-    """Which round of its scope this run is: the second once an earlier run of the same scope has
-    its fixes done on record and this run reads everything that one read, the first otherwise.
+    """Which round of its scope this run is, off the number the LAUNCH wrote down.
 
-    Read off the runs on disk rather than off a flag, because the caller that would have to pass
-    the flag is exactly the one a spent round budget exists to argue with — and a round nobody
-    ever fixed is not a round the scope has spent, which is why a `blocked` receipt is not one
-    either: the fork it stopped for is what the next round is.
+    A round's number is a fact about how the run was started — a `--debt` sweep over a scope whose
+    newest open round already carries a decision — and it is settled once, by `chain_parent`,
+    before a cell is launched. Derived instead from the runs on disk it was a heuristic every
+    reader re-ran and disagreed about: a full-repository scope reads a superset of every earlier
+    round of the same checkout, so the lineage answer turned on receipt instants, path subsets and
+    a 72-hour window, and a block re-rendered a day later could change its own round number.
 
-    Held to the paths as well as to the scope key, because that key alone is a repository: every
-    later review of the same checkout — a different commit, months on — would read as the round
-    answering for this one and lose the escalation fork for good. The second round is the run a
-    lock demands, so it is recognised by what discharges a lock: reading the whole of what the
-    round before it read.
-
-    And held to `ROUND_LINEAGE_MAX_HOURS` as well as to the paths, because the path test does not
-    settle that on its own: a full-repository scope reads a SUPERSET of every earlier round of the
-    same checkout, and a run whose meta carries no `reviewed` map at all — every commit-point and
-    ranged run — offers the empty set, which is a subset of anything. Either way one fixed round
-    would answer for every later review of that repository, forever. Two rounds of one piece of
-    work sit days apart at the outside; a round nothing has answered in longer is history.
+    A run written before the field existed is round 1: nothing chained it, and no reader has ever
+    been shown a second round it did not launch itself.
     """
-    key = run_scope_key(meta)
-    held = run_reviewed_paths(meta)
-    # Measured against this run's own finish and never against the clock: a round's number is
-    # printed into its report and read back by every later `debt`, and one computed from `now`
-    # would answer differently every time the same block was re-rendered.
-    since = _store.parse_iso_timestamp(meta.get("finished") or meta.get("finished_at")) or _store.utc_now()
-    floor = since - timedelta(hours=ROUND_LINEAGE_MAX_HOURS)
-    # When this run SEALED its tree, which is the instant it stopped being able to read a fix — and
-    # never its finish, hours later for a T2 panel. Only the receipts before it are lineage. The
-    # launch stamp is the fallback for runs written before the seal instant was recorded; it is
-    # minutes late, and late here spends the scope's budget over fixes the panel never read.
-    sealed = _store.parse_iso_timestamp(
-        meta.get("sealed_at") or meta.get("started") or meta.get("started_at")
-    ) or since
-    benches = run_dir.parent
-    for other in sorted(benches.iterdir()) if benches.exists() else ():
-        if other.name >= run_dir.name:
-            break
-        record = read_fix_status(other)
-        if not record or record.get("state") != "done":
+    number = meta.get("round")
+    if isinstance(number, int) and not isinstance(number, bool) and number >= 1:
+        return number
+    return 1
+
+
+def recovered_round_stamp(run_dir, meta):
+    """The `round`/`chain` a finished run's record does not carry, read back off the store, or `{}`
+    where its record already carries them or nothing chains it.
+
+    The stamp belongs to the LAUNCH and every reader takes it from the record — but a record
+    written before the field existed, or by a launcher that dropped it on the way to the finished
+    document, would have its second pass read back as a first round with nothing before it, which
+    is the one thing the chain is for. The rule is the launch's own, asked of the same
+    `chain_parent`: a `--debt` member whose scope a decision reopened BEFORE this run started. Only
+    a block being rendered pays for it — the walk is the whole store, and every reader on a hot
+    path takes the record as written.
+    """
+    if not isinstance(meta, dict) or meta.get("round") is not None:
+        return {}
+    started = _store.parse_iso_timestamp(meta.get("started"))
+    session = str(meta.get("session") or "")
+    for repo, paths in debt_targets(meta):
+        found = chain_parent(repo, paths, session, before=run_dir.name)
+        if found is None:
             continue
-        # The receipt as the REPORT reads it and never its raw field: a re-adjudication replaces a
-        # run's verdicts and leaves the receipt standing, and a round the report itself calls
-        # pending must not spend the scope's budget of two.
-        if round_state(other) != "done":
+        parent, parent_meta = found
+        decided = _store.parse_iso_timestamp((read_fork(parent) or {}).get("at"))
+        # A decision recorded after this run was launched cannot be what launched it: the second
+        # pass is the run that comes AFTER the record, and without this a round 1 waiting for its
+        # own fork answers as its own second round.
+        if started is not None and decided is not None and decided > started:
+            continue
+        return {"round": ROUND_BUDGET, "chain": chain_id(parent, parent_meta)}
+    return {}
+
+
+def debt_targets(meta):
+    """Every `(repo, paths)` a `--debt` run read, per repository it named: a merged panel's members
+    are the only place its paths are spelled the way that repository's own readers spell them.
+    """
+    members = [entry for entry in meta.get("repos") or () if isinstance(entry, dict)]
+    if members:
+        return [
+            (str(entry.get("repo") or ""),
+             sorted(entry.get("reviewed") or entry.get("scope") or ()))
+            for entry in members if entry.get("debt") and entry.get("repo")
+        ]
+    if not meta.get("debt"):
+        return []
+    return [(str(meta.get("repo") or ""), sorted(meta.get("reviewed") or meta.get("scope") or ()))]
+
+
+def chain_id(run_dir, meta):
+    """The id the chain this run belongs to is read by: round 1's own, whichever round is asking.
+    A round 2 that lost its link answers with its own id rather than with nothing — an id is what
+    a reader types back into a command.
+    """
+    chain = str(meta.get("chain") or "")
+    # Asked of the store and not of the field alone: a link naming a run this store no longer holds
+    # is an id that resolves to nothing, and the row it is printed on is read by typing it back.
+    if chain and chain != run_dir.name and (run_dir.parent / chain / "meta.json").exists():
+        return chain
+    return run_dir.name
+
+
+def chain_second_round(parent, parent_meta=None):
+    """The round 2 already launched on `parent`'s chain, as its run dir, or None where none was.
+
+    A round 2 records the chain it belongs to and carries no decision of its own, so this — and
+    never `chain_parent`, which looks for a decision — is what says a chain's second pass has
+    already been spent.
+    """
+    benches = parent.parent
+    chain = chain_id(parent, parent_meta or {})
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        if run_dir == parent:
             continue
         try:
-            earlier = json.loads((other / "meta.json").read_text())
+            meta = json.loads((run_dir / "meta.json").read_text())
         except (OSError, ValueError):
             continue
-        if not isinstance(earlier, dict) or run_scope_key(earlier) != key:
+        if not isinstance(meta, dict) or str(meta.get("chain") or "") != chain:
             continue
-        finished = _store.parse_iso_timestamp(earlier.get("finished") or earlier.get("finished_at"))
-        if finished is None or finished < floor:
+        if review_round(run_dir, meta) >= ROUND_BUDGET:
+            return run_dir
+    return None
+
+
+def chain_parent(repo, scope, session, before=None):
+    """The round a launch over `scope` continues, as `(run_dir, meta)`, or None where it starts a
+    chain of its own.
+
+    Mechanical and nothing more: the newest round of this chat over this repository that carries a
+    DECISION and no commit has closed. That decision is the record saying a second pass was
+    chosen, so a run launched after it over the same paths is that pass. Anything the store cannot
+    answer — a round holding no snapshot, a scope sharing no path with it — leaves the launch at
+    round 1, because a run wrongly chained inherits a closure it never earned.
+
+    `before` names a run id nothing at or after it may answer for, which is how a run already on
+    disk asks the question a launch asks about itself: at launch the answer is everything there is.
+    """
+    benches = _store.state_dir() / "benches"
+    if not benches.exists():
+        return None
+    launchers = worker_session_launchers()
+    resolved = _store.resolved_repo_path(repo)
+    family = _store.repo_family(repo)
+    wanted = {str(path) for path in scope or ()}
+    for run_dir in sorted(benches.iterdir(), reverse=True):
+        if before is not None and run_dir.name >= before:
             continue
-        # A round is the second one over fixes it could actually read: a receipt recorded after
-        # this run sealed its tree answers for work that landed later, and taken as lineage it
-        # spends the budget and releases the lock over a pass that saw none of it. Receipts from
-        # before the field went in carry no instant and keep their own answer.
-        recorded = _store.parse_iso_timestamp(record.get("recorded_at"))
-        if recorded is not None and recorded > sealed:
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
             continue
-        if run_reviewed_paths(earlier) <= held:
-            return ROUND_BUDGET
-    return 1
+        if not isinstance(meta, dict):
+            continue
+        owner = str(meta.get("session") or "")
+        if session and owner != session and launchers.get(owner) != session:
+            continue
+        record = _store.run_repo_record(resolved, meta, family)
+        if record is None:
+            continue
+        decision = read_fork(run_dir)
+        if decision is None or decision["choice"] == BAND_FIX or round_closed(run_dir):
+            continue
+        # The member's own map, whose keys are repository-relative on both sides. The run-wide one
+        # prefixes a merged panel's paths with their label, and matched against a plain scope it
+        # says two rounds over one checkout share nothing.
+        held = record.get("reviewed") if isinstance(record, dict) else None
+        held = set(held) if isinstance(held, dict) else set()
+        if not held or (wanted and not (held & wanted)):
+            continue
+        return run_dir, meta
+    return None
+
+
+def round_closed(run_dir):
+    """Whether a commit has already closed this round's fixing pass."""
+    record = read_fix_status(run_dir)
+    return bool(isinstance(record, dict) and record.get("closed_by"))
 
 
 def round_budget_spent(run_dir):
@@ -563,36 +572,18 @@ def severity_tallies(run_dir, verdicts, prefixes=("",)):
 
 
 def escalation_numbers(run_dir, meta, verdicts, repo=None):
-    """The two numbers the commit gate prices a round on, counted the way IT counts them: the P1s of
-    one repository and the whole round's confirmed total.
+    """The two numbers a round is banded on: its confirmed P1s and its confirmed total.
 
-    Both halves matter separately because the gate's two thresholds are either-or: a round earns a
-    second pass on its P1s alone or on its whole tally alone. Handed the whole panel's
-    P1s instead, a merged review claims a round no member's gate would ask for; handed a raw count
-    of confirmed verdict rows instead of the severity sum, a row whose finding cannot be joined
-    counts towards a threshold the gate never sees it in.
+    Both over the WHOLE round, every member of a merged panel included. A round is one piece of
+    work and one decision — priced per repository, the same panel was a decision in one checkout
+    and a list of defects in the other, and the chat holding both had to be told two answers about
+    one report. `repo` is accepted and ignored, for callers that still name a member.
 
-    `repo` names the member to answer for. Without one — the report block, which is written once
-    for the whole round — the strictest member answers, because that is the commit that will be
-    blocked.
+    The severity sum and never a raw count of confirmed rows: a row whose finding cannot be joined
+    counts towards a threshold no reader of the block can see it in.
     """
-    labels = {}
-    for entry in meta.get("repos") or ():
-        if isinstance(entry, dict) and isinstance(entry.get("label"), str) and entry["label"]:
-            labels[f"{entry['label']}/"] = entry.get("repo")
-    tallies = severity_tallies(run_dir, verdicts, ("", *labels))
-    whole = tallies[""]
-    own = whole["P1"]
-    if labels and repo is None:
-        own = max(tallies[prefix]["P1"] for prefix in labels)
-    elif labels:
-        common = _store.git_common_dir(repo)
-        own = next(
-            (tallies[prefix]["P1"] for prefix, path in labels.items()
-             if path and common and _store.git_common_dir(path) == common),
-            whole["P1"],
-        )
-    return own, sum(whole.values())
+    whole = severity_tallies(run_dir, verdicts)[""]
+    return whole["P1"], sum(whole.values())
 
 
 def pid_elapsed_seconds(pid):
@@ -682,13 +673,15 @@ def read_fork(run_dir):
 
 
 def fork_owed(run_dir, meta, verdicts=None):
-    """Asked of the gate through `escalation_verdict` like every other reader (row af); a gate
-    that cannot be asked owes nothing here, since the report already says so out loud."""
+    """Whether this round owes a decision before any fixing pass over it: its band, and nothing
+    else. A round the budget has already spent owes none — round 2 is the last one, and a decision
+    there could only name a pass that does not exist."""
     rows = verdicts if verdicts is not None else recorded_verdict_rows(run_dir)
     if rows is None:
         return False
-    earned = escalation_verdict(*escalation_numbers(run_dir, meta, rows))
-    return bool(earned) and earned != ESCALATION_UNKNOWN
+    if review_round(run_dir, meta) >= ROUND_BUDGET:
+        return False
+    return round_decision_owed(*escalation_numbers(run_dir, meta, rows))
 
 
 def fork_missing(run_dir, meta, verdicts=None):
@@ -697,13 +690,16 @@ def fork_missing(run_dir, meta, verdicts=None):
 
 def fork_command(run_id):
     return (
-        f"review-bench fork {shlex.quote(run_id)} --choice fix|simplify|re-review "
+        f"review-bench fork {shlex.quote(run_id)} --choice {'|'.join(DECISION_WORDS)} "
         f"--why '<the strategic reason for the choice, {FORK_WHY_MIN_CHARS}+ chars>'"
     )
 
 
 def fork_refusal(run_id):
-    return f"review run {run_id} crossed a threshold and has no fork on record; record it first: {fork_command(run_id)}"
+    return (
+        f"review run {run_id} is a decision and has none on record; record it first: "
+        f"{fork_command(run_id)}"
+    )
 
 
 def triage_pending_run(repo=None, session=None):
@@ -953,15 +949,14 @@ def unsettled_round(repo, session):
 
     A closed budget may not sleep on unsettled debt. The contract owes no third pass over a scope
     whose second round is done, and none over a round nothing further is owed — so nothing left in
-    the flow will ever come back to those paths: no lock stands over them, no fork demands a round,
-    and the commit notice speaks once, at a commit that may never come. Left there, 252 diff lines
-    of one chat's own fixing pass sat in debt with no waiver and nothing asking for one (live case
-    2026-08-24). The two answers are the two the commit notice prints, and this asks for them at the
-    one moment the chat is deciding it is done.
+    the flow will ever come back to those paths: no decision demands a round, and the commit notice
+    speaks once, at a commit that may never come. Left there, 252 diff lines of one chat's own
+    fixing pass sat in debt with no waiver and nothing asking for one (live case 2026-08-24). The
+    two answers are the two the commit notice prints, and this asks for them at the one moment the
+    chat is deciding it is done.
 
-    A round still owed a follow-up is passed over: the fork and the lock speak for those, and a
-    second demand over the same round would ask for a waiver the lock refuses. So is a round whose
-    fixing pass has not answered — its bytes are still landing — and one whose snapshot this
+    A round still owed a follow-up is passed over: the decision speaks for those. So is a round
+    whose fixing pass has not answered — its bytes are still landing — and one whose snapshot this
     repository is not in.
 
     `paths` is this session's OWN debt and nothing else, and the line count is over those same
@@ -1296,21 +1291,20 @@ def fix_written_paths(repo, scope, session, window):
 
 
 def round_covers_its_fixes(run_dir, meta, rows):
-    """Whether this round's own fixing pass settles the bytes it wrote, or a second pass owes them.
+    """Whether a commit may close this round's fixing pass, or a round 2 owes those bytes.
 
-    The gate's answer and never a count taken here, so the two dials keep living in one place
-    (docs/shared-invariants.md row `af`): a round the gate CLOSED is one nothing will read again,
-    and a round it escalated owes its fixes to the pass it is sending the chat back for.
-
-    With ONE exception, which is a hole and not a policy: a scope whose round budget is spent has
-    no further pass to owe. `artifact_owes_second_round` already refuses to reopen such a round, so
-    escalated-and-spent covered nothing and owed nothing at once, and its fix bytes could be
-    answered by no review that exists — only by a waiver somebody had to know to write (audit,
-    2026-08-26). The dials do not move; only the question of who reads these lines does.
+    Three ways in, and they are the bands of the contract: round 2, which is always the last one;
+    a round in the `fix` band, which owes no decision at all; and a round whose recorded decision
+    NAMES `fix`, since that decision is exactly the ruling that no second pass follows. Everything
+    else — a decision still owed, or one naming simplify, cut or redesign — leaves the fix bytes to
+    the round the decision asked for.
     """
-    if escalation_verdict(*escalation_numbers(run_dir, meta, rows)) is None:
+    if review_round(run_dir, meta) >= ROUND_BUDGET:
         return True
-    return round_budget_spent(run_dir)
+    if not round_decision_owed(*escalation_numbers(run_dir, meta, rows)):
+        return True
+    decision = read_fork(run_dir)
+    return bool(decision) and decision["choice"] == BAND_FIX
 
 
 def commit_paths(repo, commit):
@@ -1436,8 +1430,8 @@ def coverable_runs(repo, session, commit, run_id=None):
 
     Refused, in order: a round nobody triaged, since a receipt is an answer to confirmed findings;
     a round whose pass recorded `--blocked`, since a stop is a record and a commit does not undo
-    it; a round the gate escalated over a scope with budget left, since the pass it owes reads the
-    fixes itself; and a round holding NO confirmed finding, which has no fixing pass at all for a
+    it; a round 1 whose band or decision names a second pass, since that pass reads the fixes
+    itself; and a round holding NO confirmed finding, which has no fixing pass at all for a
     commit to be the evidence of — `fix_status` already calls it done ("nothing to fix") whoever
     commits next, and covered by a commit anyway it retired that commit's own bytes as reviewed
     work no panel had read (a clean round plus a commit rewriting a reviewed file wrote
@@ -1476,15 +1470,14 @@ def coverable_runs(repo, session, commit, run_id=None):
             continue
         if _store.run_repo_record(resolved, meta, family) is None:
             continue
-        if not round_within_fixing_window(meta):
-            continue
-        if not _store.run_triaged(run_dir):
+        # The window off the record it is already holding, and the triage as one stat, before the
+        # receipt and the verdicts: this runs inside a commit hook, and a round outside the window
+        # must cost that hook no parse of the store at all.
+        if not (round_within_fixing_window(meta) and _store.run_triaged(run_dir)):
             continue
         record = read_fix_status(run_dir)
-        if isinstance(record, dict) and record.get("state") == "blocked":
-            continue
         rows = recorded_verdict_rows(run_dir)
-        if rows is None or not confirmed_count(rows):
+        if not _coverable_round_state(run_dir, rows, record):
             continue
         if not round_covers_its_fixes(run_dir, meta, rows):
             continue
@@ -1494,15 +1487,24 @@ def coverable_runs(repo, session, commit, run_id=None):
     return rounds
 
 
+def _coverable_round_state(run_dir, rows, record):
+    return (
+        _store.run_triaged(run_dir)
+        and not (isinstance(record, dict) and record.get("state") == "blocked")
+        and rows is not None
+        and bool(confirmed_count(rows))
+    )
+
+
 def fix_coverage(run_dir, session, recorded, rows, fixed):
     """What a done receipt covers besides the run's own snapshot: the bytes this round's OWN fixing
     pass wrote, per repository of the run, as `covers` entries.
 
     A round the gate closed is one nothing will ever read again — no second pass is owed over it —
     so its fixes left in debt are a waiver every later chat has to know to write, over work this
-    very receipt accounts for. A round the gate escalated covers nothing: the pass it owes reads
-    the fixes itself, and so does the mandatory one a locked round demands. Priced by asking the
-    gate rather than by counting here, so the two dials keep living in one place
+    very receipt accounts for. A round whose decision named a second pass covers nothing: that pass
+    reads the fixes itself. Priced by asking the gate rather than by counting here, so the two dials
+    keep living in one place
     (docs/shared-invariants.md row `af`) — and an unreachable gate covers nothing, which is the
     behaviour of every round written before this receipt held coverage at all.
 
@@ -1622,7 +1624,8 @@ def cmd_fixes_cover(args):
         if not rounds:
             raise ValueError(
                 f"{args.run_id} is not a round this commit closes: it is another chat's or "
-                f"another repository's, untriaged, blocked, escalated with budget left, outside "
+                f"another repository's, untriaged, stopped, a round 1 a second pass is owed "
+                f"over, outside "
                 f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, holds no confirmed finding for a "
                 f"fixing pass to answer, or {commit[:7]} carried none of the paths it reviewed"
             )
@@ -1632,7 +1635,37 @@ def cmd_fixes_cover(args):
         cover_receipt(run_dir, meta, rows, record, covers, commit, session)
         covered = sum(len(entry["paths"]) for entry in covers)
         print(f"{run_dir.name} fixes: closed by {commit[:7]}; {covered} fixed path(s) covered")
+        for parent, parent_meta in chain_rounds(run_dir, meta):
+            if not round_within_fixing_window(parent_meta):
+                continue
+            parent_rows = recorded_verdict_rows(parent)
+            parent_record = read_fix_status(parent)
+            if not _coverable_round_state(parent, parent_rows, parent_record):
+                continue
+            parent_covers = commit_fix_coverage(parent, repo, commit, meta=parent_meta)
+            if not parent_covers:
+                continue
+            cover_receipt(parent, parent_meta, parent_rows, parent_record, parent_covers, commit,
+                          session)
+            print(f"{parent.name} fixes: closed by {commit[:7]} with round 2 {run_dir.name}")
     return 0
+
+
+def chain_rounds(run_dir, meta):
+    """The earlier rounds of this run's chain, as `(run_dir, meta)`. One commit closes the whole
+    chain: round 2 re-read round 1's full scope, so the fixes that land after it answer both, and a
+    round 1 left open behind its own second round is a debt no command could ever settle — its
+    band withholds it from `coverable_runs` by construction.
+    """
+    chain = str(meta.get("chain") or "")
+    if not chain or chain == run_dir.name:
+        return []
+    parent = run_dir.parent / chain
+    try:
+        earlier = json.loads((parent / "meta.json").read_text())
+    except (OSError, ValueError):
+        return []
+    return [(parent, earlier)] if isinstance(earlier, dict) else []
 
 
 def cmd_fixes(args):
@@ -1662,7 +1695,7 @@ def cmd_fixes(args):
             raise ValueError("--fixed and --fp belong to --done; a blocked round fixed nothing")
         reason = " ".join(str(args.blocked).split())
         if not reason:
-            raise ValueError("--blocked must carry the reason the fixes were not applied")
+            raise ValueError("--blocked must carry the reason the pass stopped")
         rows = recorded_verdict_rows(run_dir)
         record = {
             "state": "blocked", "reason": reason,
@@ -1671,7 +1704,7 @@ def cmd_fixes(args):
             # re-adjudication replacing them leaves a stop nobody recorded over the new ones.
             "confirmed": confirmed_count(rows), "triage": triage_digest(rows),
         }
-        line = f"NOT APPLIED — {reason}"
+        line = f"stopped — {reason}"
     else:
         rows = recorded_verdict_rows(run_dir)
         confirmed = confirmed_count(rows)
@@ -1694,7 +1727,7 @@ def cmd_fixes(args):
             raise ValueError(
                 f"--fixed {args.fixed} and --fp {args.fp} answer for fewer findings than the "
                 f"{confirmed} this triage confirmed{split}: a pass that left some of them "
-                "standing is --blocked with the reason, not done"
+                "unfixed is --blocked with the reason, not done"
             )
         # And bounded from above by the same triage, or the shortfall check below is the only
         # thing standing between a typo and a round retired for good on a tally its own verdicts
@@ -2027,9 +2060,6 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
         + (" --no-corpus" if worktree else "")
         + f" --verdicts {shlex.quote(verdict_path)}"
     )
-    fixes_blocked = (
-        f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
-    )
     print("\nADJUDICATION HANDOFF — STEP 1 of 2: blind triage. Fix nothing in this pass; the "
           "fixing pass is dispatched separately, off the brief `record` prints when the verdicts "
           "land.")
@@ -2056,16 +2086,11 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
               "past, so its findings are not about the code in front of you. No fixing pass "
               "follows, and no fix status is recorded.")
         return
-    # Counted per repository for a merged panel, the way the gate that prices the round counts them
-    # (`escalation_numbers`): handed the whole panel's P1s, three findings spread over three
-    # repositories would stop the pass over a threshold no member reached.
-    stop_scope = " in ANY ONE of the repositories above" if members else ""
-    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s{stop_scope}: record the "
-          f"verdicts as above, record the fix status as blocked with `{fixes_blocked}`, then stop "
+    print(f"\nTHRESHOLD STOP — {HANDOFF_P1_STOP} or more confirmed P1s over the whole round, or "
+          f"{ROUND_HARD_MIN} or more confirmed findings: record the verdicts as above, then stop "
           "and report back with the P1 list — no fixing pass is dispatched. At that count the "
-          "second review is mandatory and the waiver over this work is withheld until it runs; a "
-          "round that earns one on its tally alone instead is owed it by default and may be "
-          "waived with a reason on record.")
+          f"round is a decision and not a list: one of {DECISION_MENU}, recorded before anybody "
+          "edits a line, and `fix` there has to say why the code is worth keeping as it stands.")
     # Asked of the CHAT and not of this round's members: one panel per chat is a rule about what
     # gets launched, and a round telling a chat to run the bare command in each repository is a
     # split panel arranged by the very surface that forbids it.
@@ -2073,12 +2098,12 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
     second = _debt.debt_chat_review_command(
         _store.caller_chat(), [member["repo"] for member in members] if members else ()
     )
-    print(f"Run that second review once with `{second}` (raise the tier if the work deserves "
-          "it): it computes its own scope, which is this round's full "
-          "scope plus the fixes — the round that owed it is reopened, so its whole scope re-enters "
-          "the diff and nothing is picked by hand.")
-    print("Orchestrator: at that threshold the next move is Egor's fork decision. A session "
-          "running in maximum autonomy never pauses for it — it takes the decision itself.")
+    print(f"Where the decision names simplify, cut or redesign, round 2 runs once with `{second}` "
+          "(raise the tier if the work deserves it): it computes its own scope, which is this "
+          "round's full scope plus the fixes — the round the decision reopened re-enters the diff "
+          "whole and nothing is picked by hand. Round 2 is the last one; there is no round 3.")
+    print("Orchestrator: at that threshold the next move is Egor's decision. A session running in "
+          "maximum autonomy never pauses for it — it takes the decision itself.")
     print("\nSTEP 2 is a pass of its own, briefed by `record`: fix the confirmed findings and "
           "COMMIT — the commit closes the pass and covers what it carried, so there is no second "
           "command to remember. The brief naming what it fixes cannot be written before the "
@@ -2144,21 +2169,26 @@ def fix_handoff_lines(run_dir, meta, verdicts):
     tally = " · ".join(
         f"{level} {severities[level]}" for level in ("P1", "P2", "P3") if severities.get(level)
     )
-    p1s, _ = escalation_numbers(run_dir, meta, verdicts)
+    p1s, total = escalation_numbers(run_dir, meta, verdicts)
     head = f"\nFIX HANDOFF — STEP 2 of 2: {confirmed} confirmed"
     lines = [f"{head} ({tally})" if tally else head]
-    if p1s >= HANDOFF_P1_STOP:
+    if fork_missing(run_dir, meta, verdicts):
         lines.append(
-            f"THRESHOLD STOP — {p1s} confirmed P1s: fix NOTHING and dispatch no fixing pass. "
-            "Record the stop with: "
-            f"review-bench fixes {shlex.quote(run_id)} --blocked {shlex.quote('P1 threshold')}"
+            f"DECISION FIRST — {total} confirmed, {p1s} of them P1: fix NOTHING and dispatch no "
+            f"fixing pass until the decision is on disk. Record it with: {fork_command(run_id)}"
         )
         from . import debt as _debt  # here and not at module top: debt imports this module at load
+        # The reason requirement belongs to the hard band alone (`round_decision_ask` attaches it
+        # there and nowhere else); told to a decide-band round it is a rule that round never had.
+        reason = (
+            ", and in this band it has to say why the code is worth keeping as it stands"
+            if round_band(p1s, total) == BAND_HARD else ""
+        )
         lines.append(
-            "Then report back with the P1 list: the second review over the full original scope "
-            "plus the fixes is mandatory, the waiver over this work is withheld until it runs, "
-            f"and it is `{_debt.debt_chat_review_command(_store.round_session(run_dir), run_repos(meta))}`. "
-            "Run that command once for the round."
+            f"`fix` closes the round on the commit that carries the fixes and runs no round 2{reason}. "
+            f"simplify, cut and redesign each run round 2 over the full original scope plus the "
+            f"fixes, once, with "
+            f"`{_debt.debt_chat_review_command(_store.round_session(run_dir), run_repos(meta))}`."
         )
         return lines
     lines.append("Orchestrator: this is a dispatch of its own, not the triage pass above.")
