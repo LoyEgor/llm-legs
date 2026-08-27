@@ -698,13 +698,15 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-dir_part="${BLUE}${dir}${RESET}"
-wt_part=""
+dir_foreign=0
+wt_show=0
+wt_name=""
+wt_color=""
 if [ -n "$active_top" ]; then
   # Repository identity, not toplevel: every worktree of the project shares its
   # common dir, so `»` fires on a genuinely foreign repository only.
   if [ "$active_common" != "$project_common" ]; then
-    dir_part="${DIM}${dir}${RESET} ${MAGENTA}»${RESET} ${BLUE}${active_name}${RESET}"
+    dir_foreign=1
   fi
   if [ "$active_is_wt" = 1 ]; then
     # Worktrees belong at <repo>/.claude/worktrees/<name>; a harness-made one or
@@ -723,12 +725,21 @@ if [ -n "$active_top" ]; then
         "$project_root"/.claude/worktrees/*) wt_color="$BLUE" ;;
       esac
     fi
-    wt_part=" ${wt_color}⧉ ${active_top##*/}${RESET}"
+    wt_show=1
+    wt_name="${active_top##*/}"
   fi
 fi
-dir_part="${dir_part}${wt_part}"
 
-branch_part=""
+branch_show=0
+branch_is_sha=0
+branch_name=""
+branch_sha=""
+diff_show=""
+udiff_add=0
+udiff_del=0
+fparts=""
+behind=""
+ahead=""
 head_known=0
 git_status=""
 git_status_rc=1
@@ -741,12 +752,16 @@ if [ -n "$active_top" ]; then
   if [ "$branch" = HEAD ]; then
     head_known=1
     if [ "$active_is_wt" != 1 ]; then
-      short_sha=$(git -C "$git_dir" rev-parse --short HEAD 2>/dev/null)
-      branch_part=" ${BLUE}⎇${RESET} ${RED}@${short_sha}${RESET}"
+      branch_sha=$(git -C "$git_dir" rev-parse --short HEAD 2>/dev/null)
+      branch_show=1
+      branch_is_sha=1
     fi
   elif [ -n "$branch" ]; then
     head_known=1
-    [ "$active_is_wt" = 1 ] || branch_part=" ${BLUE}⎇ ${branch}${RESET}"
+    if [ "$active_is_wt" != 1 ]; then
+      branch_show=1
+      branch_name="$branch"
+    fi
   fi
   if [ "$head_known" = 1 ]; then
     # Uncommitted volume in the ACTIVE repo, whoever wrote it: staged+unstaged
@@ -794,15 +809,13 @@ if [ -n "$active_top" ]; then
     [ "$f_mod" -gt 0 ] 2>/dev/null && fparts="${fparts}~${f_mod}"
     [ "$f_del" -gt 0 ] 2>/dev/null && fparts="${fparts}-${f_del}"
     if [ "$udiff_add" -gt 0 ] 2>/dev/null || [ "$udiff_del" -gt 0 ] 2>/dev/null; then
-      branch_part="${branch_part} ${GREEN}+${udiff_add}${RESET}/${RED}-${udiff_del}${RESET}${fparts:+ ${DIM}${fparts}f${RESET}}"
+      diff_show=lines
     elif [ -n "$fparts" ]; then
       # Dirty with zero countable lines (binary/mode/rename-only): files only.
-      branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
+      diff_show=files
     fi
 
     read -r behind ahead < <(git -C "$git_dir" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
-    [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null && branch_part="${branch_part} ${MAGENTA}↓${behind}${RESET}"
-    [ -n "$ahead" ] && [ "$ahead" -gt 0 ] 2>/dev/null && branch_part="${branch_part} ${MAGENTA}↑${ahead}${RESET}"
   fi
 fi
 
@@ -1488,9 +1501,9 @@ elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -ge 0 ] 2>/dev/null; then
 elif [ "$cache_state" = unknown ]; then
   ctx_tokens_part=" ${DIM}?${RESET}"
 fi
-cb_part=""
+cb_show=0
 if [ -n "$acct" ] && [ "$acct" != main ]; then
-  cb_part=" ${DIM}cb:${RESET}${MAGENTA}${acct}${RESET}"
+  cb_show=1
 fi
 
 worker=""; codex_effort=""; sonnet_effort=""; codex_profile=""; claudeb_profile=""; gemini_profile=""
@@ -1514,17 +1527,37 @@ if [ -f "$worker_file" ]; then
 else
   worker=sonnet
 fi
-abbrev_tier() {
+# Unified short forms for every model and effort this line prints: first letter plus the first
+# consonant after it, uppercased, with the version digits glued on (Fable 5 → FB5, sol → SL). A
+# name with no consonant to take has no short form and is printed whole.
+abbrev_effort() {
   case "$1" in
-    medium) printf med ;; high) printf hi ;; xhigh) printf xh ;;
+    low) printf low ;; medium) printf med ;; high) printf hi ;;
+    xhigh) printf xhi ;; max) printf max ;;
     *) printf '%s' "$1" ;;
   esac
 }
 abbrev_model() {
-  case "$1" in
-    sonnet) printf son ;; haiku) printf hai ;; fable) printf fab ;;
-    *) printf '%s' "$1" ;;
-  esac
+  local name="$1" letters version="" first second="" i c
+  letters=${name%%[^A-Za-z]*}
+  # Only the version that follows the name: a display name can carry digits further along
+  # (`Opus 5 (1M context)`), and collecting all of them would print a version nobody released.
+  [[ "${name#"$letters"}" =~ ^[[:space:]_-]*([0-9]+(\.[0-9]+)*) ]] && version="${BASH_REMATCH[1]}"
+  first=${letters:0:1}
+  i=1
+  while [ "$i" -lt "${#letters}" ]; do
+    c=${letters:$i:1}
+    case "$c" in
+      [AEIOUaeiou]) ;;
+      *) second=$c; break ;;
+    esac
+    i=$((i + 1))
+  done
+  if [ -z "$first" ] || [ -z "$second" ]; then
+    printf '%s' "$name"
+    return
+  fi
+  printf '%s%s' "$(printf '%s%s' "$first" "$second" | tr '[:lower:]' '[:upper:]')" "$version"
 }
 
 # Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
@@ -1536,6 +1569,7 @@ codex_model_short_label() {
   printf '%s' "$label"
 }
 
+worker_pick_fresh=0
 load_worker_pick_prediction() {
   local pick_acct=$acct pick_cache pick_mtime
   { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
@@ -1544,82 +1578,110 @@ load_worker_pick_prediction() {
   if ! [[ "$pick_mtime" =~ ^[0-9]+$ ]] || [ "$((now - pick_mtime))" -gt 90 ]; then
     ("$HOME/.local/bin/worker-pick" >/dev/null 2>&1 &)
   fi
+  # A prediction this old means worker-pick itself stopped answering, and the account it names is
+  # no longer evidence of anything — naming no candidate at all is the honest render.
+  if [[ "$pick_mtime" =~ ^[0-9]+$ ]] && [ "$((now - pick_mtime))" -le 600 ]; then
+    worker_pick_fresh=1
+  fi
   worker_pick_prediction=""
   [ -r "$pick_cache" ] && IFS= read -r worker_pick_prediction <"$pick_cache"
 }
 
-# `<vendor>⏸off` is worker-pick's shape for a vendor switched off for workers, and it has to be
-# read before the account extractors: they would take the literal `off` for a predicted account.
-worker_pick_role_off() {
-  case " $worker_pick_prediction" in *" $1⏸off·"*) return 0 ;; esac
-  return 1
+# One vendor's field of worker-pick's line: `ok` plus the account it would hand out, `off` for a
+# vendor switched off for workers, `no` for anything unusable (walled, `?`, absent). `⏸off` is read
+# before the account itself, which would otherwise take the literal `off` for a prediction. Marks
+# are matched as whole literals: cutting one leading character off a multibyte mark would depend on
+# the render's locale.
+worker_pick_vendor() {
+  local tag=$1 field acct name_ok
+  wp_acct=""; wp_state=no; wp_pinned=0
+  [ "$worker_pick_fresh" = 1 ] || return
+  # claudeb profiles may hold underscores, dots and capitals (claudeb's own add rule); codexb and
+  # geminib only ever create lowercase-and-hyphen names, so anything else in their field is a
+  # corrupt cache and must read as unknown rather than as a confident prediction.
+  case "$tag" in
+    cb) name_ok='^[A-Za-z0-9_][A-Za-z0-9._-]*$' ;;
+    *) name_ok='^[a-z0-9][a-z0-9-]*$' ;;
+  esac
+  for field in $worker_pick_prediction; do
+    case "$field" in "$tag"*) ;; *) continue ;; esac
+    case "$field" in
+      "$tag"⏸*) wp_state=off; return ;;
+      "$tag"✓*) acct=${field#"$tag"✓} ;;
+      "$tag"~*) acct=${field#"$tag"~} ;;
+      "$tag"@*) acct=${field#"$tag"@}; wp_pinned=1 ;;
+      *) return ;;
+    esac
+    acct=${acct%%·*}
+    [[ "$acct" =~ $name_ok ]] || return
+    [ "$acct" = off ] && return
+    wp_acct=$acct
+    wp_state=ok
+    return
+  done
+}
+
+# Model and effort come from the same worker-model keys worker-pick reads, with its defaults: this
+# segment names what a dispatch would launch, and a second reading of that is one reading too many.
+worker_vendor_knobs() {
+  case "$1" in
+    cx) wv_model=$(codex_model_short_label); wv_effort=${codex_effort:-high} ;;
+    cb) wv_model=${claudeb_model:-opus}; wv_effort=${claudeb_effort:-high} ;;
+    gx) wv_model=${gemini_model:-pro}; wv_effort=${gemini_effort:-high} ;;
+  esac
+}
+
+worker_candidate() {
+  local mark=$1 acct=$2 model=$3 effort=$4 tail=""
+  [ -n "$model" ] && tail="·$(abbrev_model "$model")"
+  [ -n "$effort" ] && tail="${tail}·$(abbrev_effort "$effort")"
+  printf '%s' "${MAGENTA}${mark}${acct}${RESET}${tail:+${DIM}${tail}${RESET}}"
 }
 
 case "$worker" in
-  codex)
-    wname=codex
-    wtier="$(codex_model_short_label)·$(abbrev_tier "${codex_effort:-medium}")"
-    if [ -n "$codex_profile" ]; then
-      wpin=$codex_profile
-    else
-      load_worker_pick_prediction
-      if worker_pick_role_off cx; then
-        woff=true
-      else
-        wsel=$(printf '%s\n' "$worker_pick_prediction" |
-          sed -nE 's/^cx.([a-z0-9][a-z0-9-]*)·[^· ]+·[^· ]+( .*)?$/\1/p')
-        [ -n "$wsel" ] || wsel="?"
-      fi
-    fi
-    ;;
-  claudeb)
-    wname=cb
-    wtier="$(abbrev_model "${claudeb_model:-opus}")·$(abbrev_tier "${claudeb_effort:-high}")"
-    if [ -n "$claudeb_profile" ]; then
-      wpin=$claudeb_profile
-    else
-      # The account a spawn will use is worker-pick's choice, not .claudeb-state (which
-      # only records the last profile launched and would render a stale prediction).
-      load_worker_pick_prediction
-      if worker_pick_role_off cb; then
-        woff=true
-      else
-        wsel=$(printf '%s\n' "$worker_pick_prediction" |
-          sed -nE 's/^(.* )?cb[~@]([A-Za-z0-9_][A-Za-z0-9._-]*)·[^·]+·[^·]+( .*)?$/\2/p')
-        [ -n "$wsel" ] || wsel="?"
-      fi
-    fi
-    ;;
-  gemini)
-    wname=gem
-    if [ -n "$gemini_profile" ]; then
-      wpin=$gemini_profile
-    else
-      load_worker_pick_prediction
-      if worker_pick_role_off gx; then
-        woff=true
-      else
-        wsel=$(printf '%s\n' "$worker_pick_prediction" |
-          sed -nE 's/^.* gx.(main|[a-z0-9][a-z0-9-]*)·[^·]+·[^·]+$/\1/p')
-        [ -n "$wsel" ] || wsel="?"
-      fi
-    fi
-    wtier="${gemini_model:-pro}·$(abbrev_tier "${gemini_effort:-high}")"
-    ;;
-  sonnet)
-    wname=son
-    wtier=$(abbrev_tier "$sonnet_effort")
-    ;;
-  auto)
-    wname=auto
-    # Predictive display: what worker-pick would route to right now (codex
-    # state+account, recommended claudeb account·model·effort). The cache is
-    # per own-account because routing excludes the session's own account.
-    load_worker_pick_prediction
-    auto_line=$worker_pick_prediction
-    ;;
-  *) wname="?" ;;
+  codex) wvendor=cx; wpin=$codex_profile ;;
+  # The account a spawn will use is worker-pick's choice, not .claudeb-state (which
+  # only records the last profile launched and would render a stale prediction).
+  claudeb) wvendor=cb; wpin=$claudeb_profile ;;
+  gemini) wvendor=gx; wpin=$gemini_profile ;;
+  sonnet) wvendor=son ;;
+  auto) wvendor=auto ;;
+  *) wvendor="" ;;
 esac
+
+# ONE candidate, never a three-vendor forecast: the vendor+account the next dispatch would land on.
+# In auto that is the first vendor worker-pick's line leaves usable, in worker-pick's own order
+# (docs/routing-contract.md) — claudeb, then codex, then gemini. The cache is per own-account
+# because routing excludes the session's own account.
+worker_body=""
+if [ "$wvendor" = son ]; then
+  worker_body=$(worker_candidate "" "$(abbrev_model sonnet)" "" "$sonnet_effort")
+elif [ "$wvendor" = auto ]; then
+  load_worker_pick_prediction
+  for wtag in cb cx gx; do
+    worker_pick_vendor "$wtag"
+    [ "$wp_state" = ok ] || continue
+    worker_vendor_knobs "$wtag"
+    wmark=""
+    [ "$wp_pinned" = 1 ] && wmark="@"
+    worker_body=$(worker_candidate "$wmark" "$wp_acct" "$wv_model" "$wv_effort")
+    break
+  done
+elif [ -n "$wvendor" ]; then
+  worker_vendor_knobs "$wvendor"
+  if [ -n "$wpin" ]; then
+    worker_body=$(worker_candidate "@" "$wpin" "$wv_model" "$wv_effort")
+  else
+    load_worker_pick_prediction
+    worker_pick_vendor "$wvendor"
+    if [ "$wp_state" = off ]; then
+      # Dim, not magenta: nothing is routed here, and the vendor is parked rather than failing.
+      worker_body="${DIM}⏸off${RESET}"
+    elif [ "$wp_state" = ok ]; then
+      worker_body=$(worker_candidate "" "$wp_acct" "$wv_model" "$wv_effort")
+    fi
+  fi
+fi
 
 # A live tag (seeded by worker-tag-hook from the actual launch command) beats
 # the static config guess while a worker is running in THIS session.
@@ -1631,26 +1693,22 @@ if [ -n "$session_id" ]; then
     tag_mtime=$(file_mtime "$tags_dir/$newest")
     if [[ "$tag_mtime" =~ ^[0-9]+$ ]] && [ "$((now - tag_mtime))" -le 600 ]; then
       IFS= read -r live_tag < "$tags_dir/$newest" 2>/dev/null || live_tag=""
-      live_tag=$(printf '%s' "$live_tag" | sed 's/ · /·/g; s/·gpt-[0-9.-]*-/·/; s/·sonnet/·son/; s/·haiku/·hai/; s/·fable/·fab/; s/·medium/·med/; s/·high/·hi/; s/·xhigh/·xh/')
     fi
   fi
 fi
-
-worker_part=" ${sep} ${DIM}w:${wname}${RESET}"
 if [ -n "$live_tag" ]; then
-  worker_part="${worker_part} ${MAGENTA}▶${live_tag}${RESET}"
-elif [ "$wname" = auto ] && [ -n "${auto_line:-}" ]; then
-  worker_part="${worker_part} ${MAGENTA}${auto_line}${RESET}"
-else
-  if [ -n "$wpin" ]; then
-    worker_part="${worker_part} ${MAGENTA}@${wpin}${RESET}"
-  elif [ "${woff:-}" = true ]; then
-    # Dim, not magenta: nothing is routed here, and the vendor is parked rather than failing.
-    worker_part="${worker_part} ${DIM}⏸off${RESET}"
-  elif [ -n "$wsel" ]; then
-    worker_part="${worker_part} ${MAGENTA}~${wsel}${RESET}"
+  # The hook writes `[account · ]model · effort`, so the two trailing fields are the ones to
+  # abbreviate whether or not the launch text named an account.
+  tag_effort=${live_tag##* · }
+  tag_head=${live_tag% · *}
+  if [ "$tag_head" != "$live_tag" ]; then
+    tag_model=${tag_head##* · }
+    tag_acct=${tag_head% · *}
+    [ "$tag_acct" != "$tag_head" ] || tag_acct=""
+    worker_body=$(worker_candidate "▶" "$tag_acct" "$tag_model" "$tag_effort")
+  else
+    worker_body="${MAGENTA}▶${live_tag}${RESET}"
   fi
-  [ "$wname" != "?" ] && [ -n "$wtier" ] && worker_part="${worker_part}${DIM}·${wtier}${RESET}"
 fi
 
 # Too slow for the render path: read the cache, fire the probe in the background
@@ -1700,7 +1758,7 @@ if [ -n "$active_top" ]; then
 fi
 
 
-review_part=""
+progress_color=""
 progress_named=""
 progress_common=""
 if [ -n "$active_top" ] || [ -n "$session_id" ]; then
@@ -1835,11 +1893,11 @@ if [ -n "$active_top" ] || [ -n "$session_id" ]; then
     # not red either, since being late is that chat's problem to see.
     progress_owner=$(review_run_owner "$progress_session" "$progress_owner_pid")
     if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
-      review_part=" ${sep} ${DIM}${progress_label}${RESET}"
+      progress_color="$DIM"
     elif [ -n "$progress_late" ]; then
-      review_part=" ${sep} ${RED}${progress_label}${RESET}"
+      progress_color="$RED"
     else
-      review_part=" ${sep} ${progress_label}"
+      progress_color=""
     fi
   fi
 fi
@@ -1851,7 +1909,6 @@ fi
 anchor_marked=0
 if [ -n "$anchor_name" ] &&
   { [ -z "$progress_total" ] || [ "$progress_common" != "$anchor_common" ]; }; then
-  review_part=" ${sep} ${DIM}rev ${anchor_name}${RESET}${review_part}"
   anchor_marked=1
 fi
 
@@ -1884,15 +1941,250 @@ fi
 
 # Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
 # on, and the flow it belongs to ends at the push. Asked about the same tree the verdict is.
-unpushed_part=""
+unpushed_show=0
 if [ -n "$active_top" ] &&
   [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ]; then
-  unpushed_part=" ${sep} unpushed"
+  unpushed_show=1
 fi
+
+# Line 1 is built to the terminal's width, not printed once: the harness exports COLUMNS, and a
+# line wider than that wraps and pushes line 2 out of view. Every shrinkable segment has full /
+# short / off forms; the steps below are applied in a fixed order, re-measuring after each
+# (docs/statusline-contract.md "Progressive fit"). The red alarm blocks and `↓N↑N` have no `off`
+# form at all — a width small enough to need them gone is a width that keeps them.
+fit_files=1
+fit_diff_sign=1
+fit_branch_glyph=1
+fit_branch_short=0
+fit_dir_mode=full
+fit_model_short=0
+fit_rev_short=0
+fit_worker=1
+fit_unpushed_short=0
+fit_dir_active_only=0
+fit_dir_off=0
+fit_acct_max=0
+
+# Bash patterns have no quantifier — `*` after a bracket expression matches anything, not "more of
+# the class" — so the escapes are removed as the literal color strings that produced them.
+fit_width() {
+  local s=$1
+  s=${s//"$RESET"/}; s=${s//"$CYAN"/}; s=${s//"$BLUE"/}; s=${s//"$DIM"/}
+  s=${s//"$GREEN"/}; s=${s//"$YELLOW"/}; s=${s//"$RED"/}; s=${s//"$MAGENTA"/}
+  fit_len=${#s}
+}
+
+fit_trunc() {
+  fit_out=$1
+  [ "${#fit_out}" -le "$2" ] || fit_out=${fit_out:0:$2}
+}
+
+fit_initials() {
+  local rest word out=""
+  case "$1" in
+    *-*|*_*)
+      rest=${1//_/-}
+      while [ -n "$rest" ]; do
+        word=${rest%%-*}
+        [ -n "$word" ] && out="${out}${word:0:1}"
+        [ "$word" = "$rest" ] && break
+        rest=${rest#*-}
+      done
+      ;;
+  esac
+  [ -n "$out" ] || out=${1:0:3}
+  fit_out=$out
+}
+
+fit_dir_name() {
+  case "$fit_dir_mode" in
+    initials) fit_initials "$1" ;;
+    short) fit_trunc "$1" 8 ;;
+    *) fit_out=$1 ;;
+  esac
+}
+
+fit_head_part() {
+  local head
+  if [ "$fit_model_short" = 1 ]; then
+    head="$model_abbrev${effort_abbrev:+ $effort_abbrev}"
+  else
+    head="${model}${model_suffix}"
+  fi
+  head_part="${CYAN}${head}${RESET}${fast_part}"
+}
+
+fit_cb_part() {
+  local name=$acct
+  cb_part=""
+  [ "$cb_show" = 1 ] || return
+  if [ "$fit_acct_max" -gt 0 ]; then
+    fit_trunc "$name" "$fit_acct_max"
+    name=$fit_out
+  fi
+  cb_part=" ${MAGENTA}${name}${RESET}"
+}
+
+fit_dir_part() {
+  local left right gap=" "
+  dir_part=""
+  [ "$fit_dir_off" = 1 ] && return
+  [ "$fit_dir_mode" = initials ] && gap=""
+  fit_dir_name "$dir"
+  left=$fit_out
+  if [ "$dir_foreign" = 1 ]; then
+    fit_dir_name "$active_name"
+    right=$fit_out
+    if [ "$fit_dir_active_only" = 1 ]; then
+      dir_part="${BLUE}${right}${RESET}"
+    else
+      dir_part="${DIM}${left}${RESET}${gap}${MAGENTA}»${RESET}${gap}${BLUE}${right}${RESET}"
+    fi
+  else
+    dir_part="${BLUE}${left}${RESET}"
+  fi
+  if [ "$wt_show" = 1 ]; then
+    fit_dir_name "$wt_name"
+    dir_part="${dir_part} ${wt_color}⧉ ${fit_out}${RESET}"
+  fi
+}
+
+fit_branch_part() {
+  local label
+  branch_part=""
+  if [ "$branch_show" = 1 ]; then
+    if [ "$branch_is_sha" = 1 ]; then
+      label="${RED}@${branch_sha}${RESET}"
+      [ "$fit_branch_glyph" = 1 ] && label="${BLUE}⎇${RESET} ${label}"
+    else
+      label=$branch_name
+      if [ "$fit_branch_short" = 1 ]; then
+        if [[ "$label" =~ ^([A-Za-z]+-[0-9]+) ]]; then
+          label="${BASH_REMATCH[1]}"
+        else
+          fit_trunc "$label" 7
+          label=$fit_out
+        fi
+      fi
+      if [ "$fit_branch_glyph" = 1 ]; then
+        label="${BLUE}⎇ ${label}${RESET}"
+      else
+        label="${BLUE}${label}${RESET}"
+      fi
+    fi
+    branch_part=" ${label}"
+  fi
+  if [ "$diff_show" = lines ]; then
+    if [ "$fit_diff_sign" = 1 ]; then
+      branch_part="${branch_part} ${GREEN}+${udiff_add}${RESET}/${RED}-${udiff_del}${RESET}"
+    else
+      branch_part="${branch_part} ${GREEN}${udiff_add}${RESET}/${RED}${udiff_del}${RESET}"
+    fi
+    [ "$fit_files" = 1 ] && [ -n "$fparts" ] &&
+      branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
+  elif [ "$diff_show" = files ]; then
+    # The only evidence the tree is dirty at all, so it outlives the counter beside the numbers.
+    branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
+  fi
+  [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null &&
+    branch_part="${branch_part} ${MAGENTA}↓${behind}${RESET}"
+  [ -n "$ahead" ] && [ "$ahead" -gt 0 ] 2>/dev/null &&
+    branch_part="${branch_part} ${MAGENTA}↑${ahead}${RESET}"
+}
+
+fit_review_part() {
+  local label
+  review_part=""
+  if [ -n "$progress_total" ]; then
+    label=$progress_label
+    [ "$fit_rev_short" = 1 ] && label="r${label#rev }"
+    if [ -n "$progress_color" ]; then
+      review_part=" ${sep} ${progress_color}${label}${RESET}"
+    else
+      review_part=" ${sep} ${label}"
+    fi
+  fi
+  if [ "$anchor_marked" = 1 ]; then
+    if [ "$fit_rev_short" = 1 ]; then
+      label="r${anchor_name}"
+    else
+      label="rev ${anchor_name}"
+    fi
+    review_part=" ${sep} ${DIM}${label}${RESET}${review_part}"
+  fi
+}
+
+fit_unpushed_part() {
+  unpushed_part=""
+  [ "$unpushed_show" = 1 ] || return
+  if [ "$fit_unpushed_short" = 1 ]; then
+    unpushed_part=" ${sep} ${RED}↑!${RESET}"
+  else
+    unpushed_part=" ${sep} unpushed"
+  fi
+}
+
+fit_worker_part() {
+  worker_part=""
+  [ "$fit_worker" = 1 ] || return
+  [ -n "$worker_body" ] || return
+  worker_part=" ${sep} ${worker_body}"
+}
 
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${review_part}${verdict_part}${unpushed_part}${worker_part}"
+fit_compose() {
+  local work
+  fit_head_part
+  fit_cb_part
+  fit_dir_part
+  fit_branch_part
+  fit_review_part
+  fit_unpushed_part
+  fit_worker_part
+  work="${dir_part}${branch_part}${ports_part}"
+  work=${work# }
+  line1="${head_part}${cb_part}"
+  [ -n "$work" ] && line1="${line1} ${sep} ${work}"
+  line1="${line1}${review_part}${verdict_part}${unpushed_part}${worker_part}"
+}
+
+model_abbrev=$(abbrev_model "$model")
+effort_abbrev=""
+[ -n "$effort" ] && effort_abbrev=$(abbrev_effort "$effort")
+
+fit_cols=${COLUMNS:-}
+[[ "$fit_cols" =~ ^[0-9]+$ ]] && [ "$fit_cols" -gt 0 ] || fit_cols=""
+fit_compose
+if [ -n "$fit_cols" ]; then
+  for fit_step in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    fit_width "$line1"
+    [ "$fit_len" -le "$fit_cols" ] && break
+    case "$fit_step" in
+      1) fit_files=0 ;;
+      2) fit_diff_sign=0 ;;
+      3) fit_branch_glyph=0 ;;
+      4) fit_branch_short=1 ;;
+      5) fit_dir_mode=short ;;
+      6) fit_model_short=1 ;;
+      7) fit_rev_short=1 ;;
+      8) fit_dir_mode=initials ;;
+      9) fit_worker=0; fit_unpushed_short=1 ;;
+      10) fit_dir_active_only=1 ;;
+      11) fit_dir_off=1 ;;
+      12) # The floor is four characters: below that an account name stops identifying anything.
+        fit_acct_max=${#acct}
+        while [ "$fit_acct_max" -gt 4 ]; do
+          fit_acct_max=$((fit_acct_max - 1))
+          fit_compose
+          fit_width "$line1"
+          [ "$fit_len" -le "$fit_cols" ] && break
+        done
+        ;;
+    esac
+    fit_compose
+  done
+fi
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
