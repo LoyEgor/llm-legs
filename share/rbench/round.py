@@ -385,7 +385,7 @@ def recovered_round_stamp(run_dir, meta):
     started = _store.parse_iso_timestamp(meta.get("started"))
     session = str(meta.get("session") or "")
     for repo, paths in debt_targets(meta):
-        found = chain_parent(repo, paths, session, before=run_dir.name)
+        found = chain_parent(repo, paths, session, before=run_dir.name, closed_ok=True)
         if found is None:
             continue
         parent, parent_meta = found
@@ -395,7 +395,13 @@ def recovered_round_stamp(run_dir, meta):
         # own fork answers as its own second round.
         if started is not None and decided is not None and decided > started:
             continue
-        return {"round": ROUND_BUDGET, "chain": chain_id(parent, parent_meta)}
+        stamp = {"round": ROUND_BUDGET, "chain": chain_id(parent, parent_meta)}
+        # Written back so every later reader takes the record as written, hot path included.
+        try:
+            (run_dir / "meta.json").write_text(json.dumps(dict(meta, **stamp), indent=2))
+        except OSError:
+            pass
+        return stamp
     return {}
 
 
@@ -451,7 +457,7 @@ def chain_second_round(parent, parent_meta=None):
     return None
 
 
-def chain_parent(repo, scope, session, before=None):
+def chain_parent(repo, scope, session, before=None, closed_ok=False):
     """The round a launch over `scope` continues, as `(run_dir, meta)`, or None where it starts a
     chain of its own.
 
@@ -463,6 +469,8 @@ def chain_parent(repo, scope, session, before=None):
 
     `before` names a run id nothing at or after it may answer for, which is how a run already on
     disk asks the question a launch asks about itself: at launch the answer is everything there is.
+    `closed_ok` is that same question asked of a record whose parent a commit may since have closed:
+    the link was made at launch, and the closure that came after it does not unmake it.
     """
     benches = _store.state_dir() / "benches"
     if not benches.exists():
@@ -487,7 +495,9 @@ def chain_parent(repo, scope, session, before=None):
         if record is None:
             continue
         decision = read_fork(run_dir)
-        if decision is None or decision["choice"] == BAND_FIX or round_closed(run_dir):
+        if decision is None or decision["choice"] == BAND_FIX:
+            continue
+        if not closed_ok and round_closed(run_dir):
             continue
         # The member's own map, whose keys are repository-relative on both sides. The run-wide one
         # prefixes a merged panel's paths with their label, and matched against a plain scope it
@@ -1301,6 +1311,11 @@ def round_covers_its_fixes(run_dir, meta, rows):
     """
     if review_round(run_dir, meta) >= ROUND_BUDGET:
         return True
+    # A record the launcher stamped no round into is asked the same chain link the block is
+    # rendered from: read as a round 1 it would owe a second pass over the very fixes it IS.
+    if meta.get("round") is None and \
+            recovered_round_stamp(run_dir, meta).get("round", 1) >= ROUND_BUDGET:
+        return True
     if not round_decision_owed(*escalation_numbers(run_dir, meta, rows)):
         return True
     decision = read_fork(run_dir)
@@ -1657,6 +1672,8 @@ def chain_rounds(run_dir, meta):
     round 1 left open behind its own second round is a debt no command could ever settle — its
     band withholds it from `coverable_runs` by construction.
     """
+    if meta.get("round") is None:
+        meta = dict(meta, **recovered_round_stamp(run_dir, meta))
     chain = str(meta.get("chain") or "")
     if not chain or chain == run_dir.name:
         return []

@@ -11778,6 +11778,55 @@ assert "simplify (round 1)" in debt_chain_block, debt_chain_block
 # same block has neither.
 assert chain_value(rb.report_lines(debt_chain_two, debt_chain_bare), "before:") is None, \
     rb.report_lines(debt_chain_two, debt_chain_bare)
+# And the GATE reads that same link, not the block alone: a record the launcher stamped nothing
+# into is still the round 2 whose fixes no third pass will ever re-read, so the commit carrying
+# them closes it. Read as the round 1 its bare record spells, its own band would withhold those
+# bytes for a second pass that IS this run, and the commit closed nothing (live, 2026-08-26).
+sr_judged(debt_chain_two, "P2", rb.ROUND_FIX_MAX + 1)
+debt_chain_rows = rb.recorded_verdict_rows(debt_chain_two)
+assert rb.round.round_covers_its_fixes(debt_chain_two, debt_chain_bare, debt_chain_rows), \
+    rb.round.recovered_round_stamp(debt_chain_two, debt_chain_bare)
+assert not rb.round.round_covers_its_fixes(
+    debt_chain_two, dict(debt_chain_bare, round=1), debt_chain_rows), debt_chain_rows
+assert [found.name for found, _ in rb.round.chain_rounds(debt_chain_two, debt_chain_bare)] == \
+    [debt_chain_one.name], rb.round.chain_rounds(debt_chain_two, debt_chain_bare)
+# So one commit over the fixed path closes both rounds of the chain. Written bare again first:
+# every reader above stamped the recovery back into the record, and what the commit hook has to
+# answer for is the document the launcher actually left.
+debt_chain_chat = rb.store.caller_chat() or "chat-1"
+(debt_chain_two / "meta.json").write_text(json.dumps(
+    dict(debt_chain_bare, session=debt_chain_chat)))
+(debt_repo / "chained.py").write_text("what the second round confirmed, fixed\n")
+debt_git("add", "-A")
+debt_git("commit", "-qm", "fixes from the recovered round 2")
+debt_chain_sha = debt_git("rev-parse", "HEAD")
+debt_cover_out = io.StringIO()
+with contextlib.redirect_stdout(debt_cover_out):
+    debt_cover_rc = rb.cmd_fixes(argparse.Namespace(
+        run_id=None, cover=True, blocked=None, fixed=None, fp=None,
+        commit=debt_chain_sha, repo=str(debt_repo), session=debt_chain_chat,
+    ))
+debt_cover_text = debt_cover_out.getvalue()
+assert debt_cover_rc == 0, debt_cover_text
+assert f"{debt_chain_two.name} fixes: closed by {debt_chain_sha[:7]}" in debt_cover_text, \
+    debt_cover_text
+assert (f"{debt_chain_one.name} fixes: closed by {debt_chain_sha[:7]} with round 2 "
+        f"{debt_chain_two.name}") in debt_cover_text, debt_cover_text
+# And the link outlives the closure it just produced: the chain was made at LAUNCH, so a parent a
+# commit has since closed is still the round this one continued. Asked the other way, the NEXT
+# commit over the same scope recovered nothing and covered nothing (live, 2026-08-26).
+assert rb.round.round_closed(debt_chain_one), rb.read_fix_status(debt_chain_one)
+(debt_chain_two / "meta.json").write_text(json.dumps(debt_chain_bare))
+assert rb.round.recovered_round_stamp(debt_chain_two, debt_chain_bare) == {
+    "round": rb.ROUND_BUDGET, "chain": debt_chain_one.name,
+}, rb.read_fix_status(debt_chain_one)
+assert rb.round.round_covers_its_fixes(debt_chain_two, debt_chain_bare, debt_chain_rows), \
+    rb.read_fix_status(debt_chain_one)
+# One recovery and no more: the stamp goes back into the record, so every later reader takes it as
+# written instead of walking the whole store for the answer again.
+debt_chain_written = json.loads((debt_chain_two / "meta.json").read_text())
+assert debt_chain_written.get("round") == rb.ROUND_BUDGET, debt_chain_written
+assert debt_chain_written.get("chain") == debt_chain_one.name, debt_chain_written
 # A round 1 whose own decision is not on record yet is nobody's second pass, whatever a later
 # record says: the second pass is the run launched AFTER the decision.
 debt_chain_late = debt_store()
