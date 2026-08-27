@@ -546,8 +546,16 @@ def round_next_step(run_dir, meta):
     `run_triaged` for the triage, `round_closed` for the commit that spent it, `fork_missing` for
     the decision the band owes, and `artifact_owes_second_round` — the reader the Stop asks price a
     follow-up with — for the round that decision named.
+
+    A run carrying no TIER is no round at all. A tier is what `review-bench review --tier` writes
+    down and a `--raters`/`--leg` launch never does: those panels are the bench measuring itself
+    over the working tree, they read a snapshot like any review, and read as rounds a single one of
+    them sat decision-owed forever — no fixing pass would ever answer a benchmark — and walled
+    every commit in the checkout.
     """
     from . import debt as _debt  # here and not at module top: debt imports this module at load
+    if not isinstance(meta, dict) or not meta.get("tier"):
+        return None
     if not _store.run_triaged(run_dir) or round_closed(run_dir):
         return None
     if fork_missing(run_dir, meta):
@@ -559,23 +567,30 @@ def round_next_step(run_dir, meta):
     return ROUND_STEP_READY
 
 
-def session_open_round(repo, session):
-    """The newest round of `session` over `repo` no commit has closed, as `(run_dir, meta, step)`,
-    or None where that chat has none there.
+def session_open_rounds(repo, session):
+    """Every round of `session` over `repo` no commit has closed, OLDEST FIRST, as
+    `(run_dir, meta, step, outstanding)` — `outstanding` being the paths that round read which no
+    waiver has answered for.
 
-    A waiver of this chat recorded at or after the round, over a path the round read, takes it out
-    of the walk: the waiver is the record saying that work goes unreviewed, and it is the second way
-    past the launcher's refusal below.
+    Oldest first, and all of them, because that is the order they have to be finished in: answered
+    with the newest alone, an older round owing a decision stood behind a newer one whose next step
+    was the commit, and the door reading that answer let the commit through while the decision was
+    never asked for at all.
+
+    A waiver of this chat recorded at or after the round retires the PATHS it names and nothing
+    more. Read as a switch over the whole round — any overlap at all — waiving one file of nine
+    said the other eight go unreviewed too, and the round's own decision went with them.
     """
     from . import debt as _debt
     resolved = _store.resolve_repo_arg(repo) if repo else None
     if resolved is None or not session:
-        return None
+        return []
     family = _store.repo_family(str(resolved))
     benches = _store.state_dir() / "benches"
     launchers = worker_session_launchers()
     waivers = None
-    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+    found = []
+    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
         try:
             meta = json.loads((run_dir / "meta.json").read_text())
         except (OSError, ValueError):
@@ -598,12 +613,51 @@ def session_open_round(repo, session):
             waivers = [entry for entry in _debt.read_waivers(resolved)
                        if str(entry.get("session") or "") == session]
         epoch = _store.run_id_epoch(run_dir.name)
-        if any(_store.counted_int(entry.get("epoch")) >= epoch
-               and set(entry.get("paths") or ()) & set(reviewed)
-               for entry in waivers):
+        waived = {
+            str(path) for entry in waivers
+            if _store.counted_int(entry.get("epoch")) >= epoch
+            for path in (entry.get("paths") or ())
+        }
+        outstanding = {str(path) for path in reviewed} - waived
+        if not outstanding:
             continue
+        found.append((run_dir, meta, step, outstanding))
+    return found
+
+
+def session_open_round(repo, session):
+    """The OLDEST round of `session` over `repo` no commit has closed, as `(run_dir, meta, step)`,
+    or None where that chat has none there — the one that has to be finished before any other."""
+    for run_dir, meta, step, _ in session_open_rounds(repo, session):
         return run_dir, meta, step
     return None
+
+
+def round_covered_paths(repo, session):
+    """Every path of `repo` an open round of `session` has already READ — the work that is that
+    round's to answer for, and therefore not this chat's review debt until the round closes.
+
+    RULE (Egor): review -> commit -> push, and a commit carries nothing unreviewed. A fixing pass
+    rewrites the very files its panel read, so those bytes are the round's own answer and not new
+    work — priced as fresh debt they walled the commit that was about to close the round, and the
+    chat was sent back to review its own fixes.
+
+    A round owing anything but that commit covers NOTHING: an undecided band and an untriaged
+    second pass are each a reading that has not happened yet, and covering their scope would let a
+    commit walk past the step the round is waiting for. It HOLDS its paths back besides, over every
+    ready round of the same chat — two rounds of one chat read one file, and answered by the newer
+    of them alone the older one's decision was covered away by the very round that came after it.
+    A waived path is out for the same reason it is out of the round: the waiver is what answers for
+    it. Another chat's round covers nothing here either; its fixes are that chat's to close.
+    """
+    covered = set()
+    held = set()
+    for _, _, step, outstanding in session_open_rounds(repo, session):
+        if step == ROUND_STEP_READY:
+            covered |= outstanding
+        else:
+            held |= outstanding
+    return covered - held
 
 
 def round_open_guard(repos, session, chainable):
@@ -637,15 +691,16 @@ def round_open_guard(repos, session, chainable):
 
 
 def cmd_round_open(args):
-    """`round-open`: what this chat's open round in a repository owes, as `<run-id>\t<step>`, for
-    the commit gate that may not pass a commit while a round owes anything but that commit. Nothing
-    printed where the chat has no open round there; the exit code answers only whether the store
-    could be read at all, since a hook that cannot ask has to let the commit through.
+    """`round-open`: what each open round of this chat in a repository still owes, one
+    `<run-id>\t<step>` row each, OLDEST FIRST — the order they have to be finished in. Nothing
+    printed where the chat has no open round there.
+
+    A diagnostic and no longer a door: what a commit may carry is priced on the debt itself, which
+    already leaves out what an open round read (`round_covered_paths`). A reader answering one
+    round for a chat holding two is why this prints all of them.
     """
     session = str(getattr(args, "session", "") or "").strip() or _store.caller_chat() or ""
-    found = session_open_round(getattr(args, "repo", None) or ".", session)
-    if found is not None:
-        run_dir, _, step = found
+    for run_dir, _, step, _ in session_open_rounds(getattr(args, "repo", None) or ".", session):
         print(f"{run_dir.name}\t{step}")
     return 0
 
@@ -1581,14 +1636,18 @@ def coverable_runs(repo, session, commit, run_id=None):
     Refused, in order: a round nobody triaged, since a receipt is an answer to confirmed findings;
     a round whose pass recorded `--blocked`, since a stop is a record and a commit does not undo
     it; a round a commit ALREADY closed, since a round closes once and what a later commit writes
-    over a path it once reviewed is work no panel has read; a round 1 whose band or decision names
-    a second pass, since that pass reads the fixes itself; and a round holding NO confirmed
-    finding, which has no fixing pass at all for a
-    commit to be the evidence of — `fix_status` already calls it done ("nothing to fix") whoever
-    commits next, and covered by a commit anyway it retired that commit's own bytes as reviewed
-    work no panel had read (a clean round plus a commit rewriting a reviewed file wrote
-    `covers={f.txt: <the new sha>}`; audit, 2026-08-26). The tally path refuses the same case with
-    `if not fixed`.
+    over a path it once reviewed is work no panel has read; and a round 1 whose band or decision
+    names a second pass, since that pass reads the fixes itself.
+
+    A round holding NO confirmed finding CLOSES here and COVERS nothing, and those are two
+    different questions. It has no fixing pass for a commit to be the evidence of, so covering
+    bytes on its behalf retired that commit's own work as reviewed (a clean round plus a commit
+    rewriting a reviewed file wrote `covers={f.txt: <the new sha>}`; audit, 2026-08-26) — but
+    refusing it outright left it standing open forever, with no commit able to write its
+    `closed_by`, and under the coverage rule (`round_covered_paths`) an unclosable round is a
+    repository whose debt never comes back. So the FIRST commit of this chat closes it, whether or
+    not that commit carried any path it read: there are no fixes to carry, and the round is spent
+    the moment the chat commits after it.
 
     This runs inside a commit hook, so it is bounded twice: the commit's paths are read from git
     ONCE for every round it may close, and a round outside the fixing window above is dropped
@@ -1599,9 +1658,10 @@ def coverable_runs(repo, session, commit, run_id=None):
     resolved = _store.resolved_repo_path(repo)
     family = _store.repo_family(repo)
     benches = _store.state_dir() / "benches"
+    # A commit touching nothing in this repository still closes a round holding no confirmed
+    # finding: that round has no fixes for a commit to carry, and walked past here it would stand
+    # open forever.
     landed = commit_paths(repo, commit)
-    if not landed:
-        return []
     rounds = []
     if run_id is not None:
         named = benches / run_id
@@ -1633,6 +1693,9 @@ def coverable_runs(repo, session, commit, run_id=None):
             continue
         if not round_covers_its_fixes(run_dir, meta, rows):
             continue
+        if not confirmed_count(rows):
+            rounds.append((run_dir, meta, rows, record, []))
+            continue
         covers = commit_fix_coverage(run_dir, repo, commit, landed=landed, meta=meta)
         if covers:
             rounds.append((run_dir, meta, rows, record, covers))
@@ -1647,7 +1710,6 @@ def _coverable_round_state(run_dir, rows, record):
         and not (isinstance(record, dict)
                  and (record.get("state") == "blocked" or record.get("closed_by")))
         and rows is not None
-        and bool(confirmed_count(rows))
     )
 
 
@@ -1784,8 +1846,8 @@ def cmd_fixes_cover(args):
                 f"{args.run_id} is not a round this commit closes: it is another chat's or "
                 f"another repository's, untriaged, stopped, already closed by an earlier "
                 f"commit, a round 1 a second pass is owed over, outside "
-                f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, holds no confirmed finding for a "
-                f"fixing pass to answer, or {commit[:7]} carried none of the paths it reviewed"
+                f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, or {commit[:7]} carried none of "
+                f"the paths it reviewed"
             )
     else:
         rounds = coverable_runs(repo, session, commit)

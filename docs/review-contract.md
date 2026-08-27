@@ -419,10 +419,10 @@ rounds. What a round still owes before that commit is ONE answer, `round.py`
 `round_next_step`: `ready` where the commit itself is the next step (the fixing
 band, or a recorded `fix`, or a chained round 2 whose triage is in), `decide`
 where the band earned a fork nobody recorded, `round2` where the decision named
-a second pass nothing has triaged yet. Both doors of the flow read that word and
-neither composes it again: the commit gate in `../claude-setup/hooks/
-review-flow-gate.sh` asks `review-bench round-open --repo <top> --session <id>`
-and lets a commit-free commit through only on `ready`, and the launcher
+a second pass nothing has triaged yet. Both doors of the flow read it and neither
+composes it again: the commit gate in `../claude-setup/hooks/review-flow-gate.sh`
+asks `review-bench debt`, whose answer leaves out what an open round of the
+committing chat already read (`round_covered_paths`), and the launcher
 (`round_open_guard`, beside `debt_one_panel_guard`) refuses a NEW panel while a
 round of that chat in that repository is anything else — a decided round's own
 `--debt` second pass excepted, since that launch IS the step it owes. `waive` is
@@ -459,7 +459,8 @@ chain. The launcher refuses a third round on a chain
 with one line, `review-bench doctor` prints a `rounds_past_two` line if a run ever
 carries `round` past two, and the commit that closes round 2 closes round 1 with
 it (`fixes --cover`, one receipt per round). `coverable_runs` is therefore: a
-round 1 inside the fix band, a round 1 whose decision named `fix`, and any round 2.
+round 1 inside the fix band, a round 1 whose decision named `fix`, and any round 2 —
+a round that confirmed nothing among them, closed by the next commit like any other.
 
 ### A spent round budget may not sleep on its own debt
 
@@ -599,11 +600,11 @@ review has read, is blocked with `REVIEW GATE: <top> is a commit-free repository
 naming the paths and the one `debt --command` review that closes them, since Egor's
 standing permission means no word of his will arrive to trigger the review the way it
 does everywhere else (2026-08-27, after llm-legs b75b611 landed two unreviewed paths
-under it). It fires only where the committing chat has no round of its own standing
-READY TO CLOSE in that repository (`round_next_step`, asked through `round-open`): the
-order is review, commit, push, so the commit carrying a round's fixes is exactly what
-closes it, and refusing that one walls the second half of what the refusal asks for. A
-round owing its decision, or the round 2 that decision named, is refused too — and told
+under it). It fires on the debt answer alone, which
+leaves out every path an open round of that chat has read (`round_covered_paths`):
+the order is review, commit, push, so the commit carrying a round's fixes is exactly
+what closes it, and a round owing its decision, or the round 2 that decision named,
+covers nothing until that is on record — told
 which of those comes first, never to commit between two rounds (2026-08-27, after it blocked a
 chat's closing commit and cost it a round 2 nobody needed — `fixes --done` is optional,
 and the receipt covering the fixed bytes is written after the commit, not before it).

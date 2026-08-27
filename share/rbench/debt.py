@@ -1150,9 +1150,20 @@ def debt_scope(repo, session="", include_foreign=False):
     widens it. What is left out is NAMED by the caller and never silently dropped — a review that
     reads six of nine files while its one-liner says nine is how a chat told Egor work had been
     reviewed clean that no rater ever opened (live case 2026-08-22).
+
+    What an OPEN round of this chat already read is out of the scope whoever asks
+    (`round_covered_paths`): those bytes are that round's fixing pass answering its own findings,
+    and a second panel over them is a chat paying to be told the same things while the round it is
+    standing on stays open. What is left is the delta — the work done after the review — which is
+    exactly what a chat that worked on past its own round still owes.
     """
     pairs = debt_review_scope(repo)
-    if include_foreign or not session:
+    if not session:
+        return pairs, []
+    covered = _round.round_covered_paths(repo, session)
+    if covered:
+        pairs = [(path, artifact) for path, artifact in pairs if str(path) not in covered]
+    if include_foreign:
         return pairs, []
     artifacts = repo_artifacts(repo)
     covering = covering_artifacts(repo, artifacts=artifacts)
@@ -1543,6 +1554,12 @@ def cmd_debt(args):
     ignored = set()
     debt = repo_debt(repo, paths, claims=claims, dirty=_store.run_dirty_paths(repo, records),
                      ignored=ignored)
+    # The line the commit door prices a commit on, so what an open round of this chat READ is left
+    # out here too (`round_covered_paths`): counted as debt, a fixing pass's own bytes were fresh
+    # unreviewed work and the gate refused the very commit that was about to close the round.
+    covered = _round.round_covered_paths(repo, session) if session else set()
+    if covered:
+        debt = [(path, artifact) for path, artifact in debt if str(path) not in covered]
     if listing:
         for path, _ in debt:
             print(path)

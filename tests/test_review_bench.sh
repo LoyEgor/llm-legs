@@ -9984,10 +9984,12 @@ cov_nofamily_run = sr_run(cov_nofamily, "20260601T000900Z-nofamily", repo=cov_go
 assert rb.round.commit_fix_coverage(cov_nofamily_run, str(cov_gone), "HEAD",
                                     landed={"src/a.py": "1" * 40}) == []
 
-# (l) A round holding NO confirmed finding has no fixing pass for a commit to be the evidence of.
-# Closed by one anyway, the commit's OWN bytes went down as this round's coverage and unreviewed
-# work was retired as reviewed debt — a clean panel plus a commit rewriting a reviewed file wrote
-# `covers={src/d.py: <the new sha>}`. The tally path refuses the same case with `if not fixed`.
+# (l) A round holding NO confirmed finding CLOSES on the next commit of this chat and COVERS
+# nothing, and those are two different questions. Its coverage retired the commit's OWN bytes as
+# reviewed debt — a clean panel plus a commit rewriting a reviewed file wrote
+# `covers={src/d.py: <the new sha>}` — while refusing it outright left the round standing open with
+# no commit able ever to write its `closed_by`, and under the coverage rule
+# (`round_covered_paths`) an unclosable round is a repository whose debt never comes back.
 cov_clean = sr_store()
 (cov_repo / "src" / "d.py").write_text("the content a clean panel read\n")
 cov_commit("src/d.py", message="what the clean round read")
@@ -9997,21 +9999,24 @@ cov_clean_round = sr_fix_run(
 assert rb.round.confirmed_count(rb.round.recorded_verdict_rows(cov_clean_round)) == 0
 (cov_repo / "src" / "d.py").write_text("work no panel has ever read\n")
 cov_clean_sha = cov_commit("src/d.py", message="brand new work in a reviewed file")
-assert cov_cover(cov_clean_sha) == (0, "")
-assert not (cov_clean_round / rb.FIX_RECEIPT).exists(), sorted(
-    path.name for path in cov_clean_round.iterdir())
+assert "0 fixed path(s) covered" in cov_cover(cov_clean_sha)[1], cov_cover(cov_clean_sha)
+cov_clean_receipt = json.loads((cov_clean_round / rb.FIX_RECEIPT).read_text())
+assert cov_clean_receipt["covers"] == [], cov_clean_receipt
+assert cov_clean_receipt["closed_by"] == [cov_clean_sha], cov_clean_receipt
+assert rb.round_closed(cov_clean_round)
 assert sr_answer("src/d.py", repo=cov_repo).startswith("debt 1"), sr_answer(
     "src/d.py", repo=cov_repo)
-# And named outright, the refusal says which door it is rather than exiting 0 over nothing.
-try:
-    cov_cover(cov_clean_sha, run_id="20260601T001000Z-covclean")
-except ValueError as exc:
-    assert "no confirmed finding" in str(exc), exc
-else:
-    assert False, "a commit closed a round with nothing confirmed"
-# The very same round with one confirmed finding IS closed by that same commit, so what (l)
-# measured is the triage and not the commit.
+# Once, by the first commit that lands after it — a second commit over a path it reviewed closes
+# nothing of it, exactly as for a round that did have findings.
+(cov_repo / "src" / "e.py").write_text("later work still nobody has read\n")
+cov_clean_later = cov_commit("src/e.py", message="more brand new work")
+assert cov_cover(cov_clean_later) == (0, ""), cov_cover(cov_clean_later)
+assert json.loads(
+    (cov_clean_round / rb.FIX_RECEIPT).read_text())["closed_by"] == [cov_clean_sha]
+# The very same round with one confirmed finding covers what that commit landed, so what (l)
+# measured is the triage and not the commit: a clean round closes without covering a byte.
 sr_judged(cov_clean_round, "P2", 1)
+(cov_clean_round / rb.FIX_RECEIPT).unlink()
 assert "1 fixed path(s) covered" in cov_cover(cov_clean_sha)[1]
 assert sr_answer("src/d.py", repo=cov_repo) == "none", sr_answer("src/d.py", repo=cov_repo)
 
@@ -12672,17 +12677,19 @@ OPEN_SESSION = "chat-open"
 
 
 def open_round_run(run_id, session=OPEN_SESSION, confirmed=1, decision=None, closed=False,
-                   triaged=True, number=None, chain=None):
+                   triaged=True, number=None, chain=None, reviewed=None, tier="T1"):
     directory = open_state / "benches" / run_id
     directory.mkdir()
     meta = {
         "run_id": run_id, "repo": str(open_repo), "session": session, "worktree": True,
-        "tier": "T1", "raters": ["sol-low"],
+        "raters": ["sol-low"],
         "rater_runs": [{"rater": "sol-low", "side": "codex", "exit_code": 0,
                         "findings": confirmed, "duration_ms": 30_000}],
-        "reviewed": {"owed.py": "0" * 40},
+        "reviewed": {"owed.py": "0" * 40} if reviewed is None else reviewed,
         "started": "2026-08-27T00:00:00Z", "finished": rb.iso_now(),
     }
+    if tier:
+        meta["tier"] = tier
     if number is not None:
         meta["round"] = number
     if chain is not None:
@@ -12857,6 +12864,183 @@ try:
         assert rb.round.cmd_round_open(argparse.Namespace(
             repo=str(open_repo), session="chat-other")) == 0
     assert open_none.getvalue() == "", open_none.getvalue()
+
+    # --- COVERAGE BY ROUND: what an open round READ is not this chat's debt until it closes -----
+    # Egor's rule is review -> commit -> push, and the commit carries nothing unreviewed. A fixing
+    # pass rewrites the very files its panel read, so priced as fresh debt those bytes walled the
+    # commit that was about to close the round. The debt reader answers this and the commit door
+    # has no round predicate of its own — a repository-wide "a round is ready" exemption let every
+    # unreviewed path in the tree ride out on that same commit.
+    def open_debt_line(session=OPEN_SESSION, paths=None):
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(io.StringIO()):
+            assert rb.debt.cmd_debt(argparse.Namespace(
+                repo=str(open_repo), session=session, list=False, split=False, command=False,
+                paths=paths)) == 0
+        return printed.getvalue().splitlines()[0]
+
+    def open_wipe():
+        for stale in sorted((open_state / "benches").iterdir()):
+            shutil.rmtree(stale)
+        stale_waiver = rb.waiver_file(open_repo)
+        if stale_waiver.exists():
+            stale_waiver.unlink()
+
+    # A second tracked file, so "the chat worked more after the review" has a path of its own to be
+    # about. Dirty and named by nothing until an artifact names it, which is what puts it in the
+    # universe a repository-wide debt question asks about.
+    (open_repo / "later.py").write_text("a\n")
+    subprocess.run(["git", "-C", str(open_repo), "add", "later.py"], check=True)
+    subprocess.run(["git", "-C", str(open_repo), "commit", "-qm", "later"], check=True)
+    (open_repo / "later.py").write_text("a\nb\n")
+
+    open_wipe()
+    open_read, _ = open_round_run("20260828T010000Z-read")
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == {"owed.py"}, \
+        rb.round_covered_paths(open_repo, OPEN_SESSION)
+    assert open_debt_line() == "none", open_debt_line()
+    assert open_debt_line(paths=["owed.py"]) == "none", open_debt_line(paths=["owed.py"])
+    assert rb.debt.debt_scope(open_repo, OPEN_SESSION) == ([], []), \
+        rb.debt.debt_scope(open_repo, OPEN_SESSION)
+    # Another chat's round covers nothing for this one: those fixes are that chat's to close, and
+    # covered here a co-tenant's open round would settle work nobody reviewed for whoever commits.
+    assert open_debt_line("chat-other").startswith("debt 1"), open_debt_line("chat-other")
+    # And it is back the moment a commit closes the round: what a later edit writes over a path
+    # that round reviewed is work no panel has read.
+    (open_read / rb.FIX_RECEIPT).write_text(json.dumps({
+        "state": "done", "closed_by": ["deadbee"], "at": rb.iso_now()}))
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == set()
+    assert open_debt_line().startswith("debt 1"), open_debt_line()
+
+    # A round owing a step of its own covers NOTHING — the scope it holds is what that step is
+    # about to read — and it holds those paths back over every ready round of the same chat: two
+    # rounds of one chat read one file, and answered by the newer alone the older one's decision
+    # was covered away by the very round that came after it.
+    for open_owing in (dict(confirmed=rb.ROUND_FIX_MAX + 1),
+                       dict(confirmed=rb.ROUND_FIX_MAX + 1, decision="simplify")):
+        open_wipe()
+        open_round_run("20260828T020000Z-owing", **open_owing)
+        assert rb.round_covered_paths(open_repo, OPEN_SESSION) == set(), open_owing
+        assert open_debt_line().startswith("debt 1"), (open_owing, open_debt_line())
+    open_wipe()
+    open_round_run("20260828T030000Z-older", confirmed=rb.ROUND_FIX_MAX + 1)
+    open_round_run("20260828T040000Z-newer")
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == set(), \
+        rb.round_covered_paths(open_repo, OPEN_SESSION)
+    assert open_debt_line().startswith("debt 1"), open_debt_line()
+    # Every open round, oldest first — the order they have to be finished in, and the order the
+    # answer on argv is read in. The newest alone hid an older round owing a decision behind it.
+    assert [(row[0].name, row[2]) for row in rb.session_open_rounds(open_repo, OPEN_SESSION)] == [
+        ("20260828T030000Z-older", rb.ROUND_STEP_DECISION),
+        ("20260828T040000Z-newer", rb.ROUND_STEP_READY),
+    ], rb.session_open_rounds(open_repo, OPEN_SESSION)
+    assert rb.session_open_round(open_repo, OPEN_SESSION)[0].name == "20260828T030000Z-older"
+    open_rows = io.StringIO()
+    with contextlib.redirect_stdout(open_rows):
+        assert rb.round.cmd_round_open(argparse.Namespace(
+            repo=str(open_repo), session=OPEN_SESSION)) == 0
+    assert open_rows.getvalue() == (
+        f"20260828T030000Z-older\t{rb.ROUND_STEP_DECISION}\n"
+        f"20260828T040000Z-newer\t{rb.ROUND_STEP_READY}\n"
+    ), open_rows.getvalue()
+
+    # Worked more after the review: the delta is what the chat still owes, and the round's own
+    # scope is not. A `--debt` command that reprinted the whole scope paid a second panel to be
+    # told the same things about the files the open round had already read.
+    open_wipe()
+    open_round_run("20260828T050000Z-read")
+    open_round_run("20260828T050500Z-else", session="chat-other",
+                   reviewed={"later.py": "2" * 40})
+    assert sorted(path for path, _ in rb.debt.debt_scope(open_repo, OPEN_SESSION)[0]) == \
+        ["later.py"], rb.debt.debt_scope(open_repo, OPEN_SESSION)
+
+    # And the launch says so in the round's own words: with the scope empty because the open round
+    # covers it, "nothing is in review debt" reads as a clean tree, and the chat runs a panel it
+    # does not need instead of the commit that closes what it has.
+    open_wipe()
+    open_round_run("20260828T055000Z-covers")
+    open_launch = dict(repo=str(open_repo), commitish=None, worktree=False, debt=True, range=None,
+                       paths=None, raters="sol-medium-bare", leg=False, verify=None, auto=None,
+                       focus=None, all=False, scope_lines=None, this_repo_only=False, reason="")
+    try:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rb.cli.cmd_run(argparse.Namespace(**open_launch))
+        open_covered_refusal = ""
+    except ValueError as exc:
+        open_covered_refusal = str(exc)
+    assert "20260828T055000Z-covers" in open_covered_refusal, open_covered_refusal
+    assert "covers everything pending" in open_covered_refusal, open_covered_refusal
+
+    # A tier is what makes a run a REVIEW round. A `--raters`/`--leg` launch panels the working
+    # tree to measure the bench itself and records the same snapshot; read as a round, one of them
+    # sat decision-owed forever — no fixing pass answers a benchmark — and walled every commit in
+    # the checkout.
+    open_wipe()
+    open_bench, open_bench_meta = open_round_run(
+        "20260828T060000Z-bench", confirmed=rb.ROUND_FIX_MAX + 1, tier=None)
+    assert rb.round_next_step(open_bench, open_bench_meta) is None
+    assert rb.session_open_rounds(open_repo, OPEN_SESSION) == []
+    assert open_debt_line().startswith("debt 1"), open_debt_line()
+
+    # A waiver retires the PATHS it names and no more. Read as a switch over the whole round —
+    # any overlap at all — waiving one file of two said the other goes unreviewed too, and the
+    # round's own decision went with it.
+    open_wipe()
+    open_two, _ = open_round_run("20260828T070000Z-two", confirmed=rb.ROUND_FIX_MAX + 1,
+                                 reviewed={"owed.py": "0" * 40, "later.py": "1" * 40})
+    open_waiver_path = rb.waiver_file(open_repo)
+    open_waiver_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def open_waive(*paths):
+        open_waiver_path.write_text(json.dumps({
+            "family": str(rb.repo_family(str(open_repo))),
+            "waivers": [{
+                "id": "waiver-per-path", "epoch": rb.run_id_epoch(open_two.name) + 1,
+                "session": OPEN_SESSION, "reason": "the fixture is not reviewing this",
+                "paths": {path: "0" * 40 for path in paths},
+            }],
+        }) + "\n")
+
+    open_waive("later.py")
+    assert [(row[0].name, sorted(row[3])) for row in
+            rb.session_open_rounds(open_repo, OPEN_SESSION)] == \
+        [("20260828T070000Z-two", ["owed.py"])], rb.session_open_rounds(open_repo, OPEN_SESSION)
+    open_part_waived = ""
+    try:
+        rb.round_open_guard([open_repo], OPEN_SESSION, chainable=True)
+    except ValueError as exc:
+        open_part_waived = str(exc)
+    assert "20260828T070000Z-two" in open_part_waived, open_part_waived
+    open_waive("later.py", "owed.py")
+    assert rb.session_open_rounds(open_repo, OPEN_SESSION) == []
+    open_waiver_path.unlink()
+
+    # A round holding NO confirmed finding CLOSES on the next commit of this chat and COVERS
+    # nothing. Refused outright it stood open forever — no commit could ever write its `closed_by`
+    # — and under the coverage rule an unclosable round is a repository whose debt never returns.
+    # Covered anyway, it retired that commit's own bytes as reviewed work no panel had read.
+    open_wipe()
+    open_clean, open_clean_meta = open_round_run("20260828T080000Z-clean", confirmed=0)
+    assert rb.round_next_step(open_clean, open_clean_meta) == rb.ROUND_STEP_READY
+    subprocess.run(["git", "-C", str(open_repo), "add", "later.py"], check=True)
+    subprocess.run(["git", "-C", str(open_repo), "commit", "-qm", "work"], check=True)
+    open_sha = subprocess.run(["git", "-C", str(open_repo), "rev-parse", "HEAD"],
+                              check=True, capture_output=True, text=True).stdout.strip()
+    open_covered = io.StringIO()
+    with contextlib.redirect_stdout(open_covered):
+        assert rb.round.cmd_fixes_cover(argparse.Namespace(
+            commit=open_sha, repo=str(open_repo), session=OPEN_SESSION, run_id=None,
+            cover=True)) == 0
+    assert f"{open_clean.name} fixes: closed by {open_sha[:7]}; 0 fixed path(s) covered" in \
+        open_covered.getvalue(), open_covered.getvalue()
+    assert rb.round_closed(open_clean)
+    assert json.loads((open_clean / rb.FIX_RECEIPT).read_text())["covers"] == []
+    assert rb.round_next_step(open_clean, open_clean_meta) is None
+    # That commit carried NONE of the paths the round read: there are no fixes to carry, and a
+    # round waiting for paths that never moved is one no commit could close.
+    assert "owed.py" not in subprocess.run(
+        ["git", "-C", str(open_repo), "show", "--name-only", "--format=", open_sha],
+        check=True, capture_output=True, text=True).stdout
 finally:
     os.environ["HOME"] = open_home_before
     if open_stats_before is None:

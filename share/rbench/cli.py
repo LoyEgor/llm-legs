@@ -736,6 +736,17 @@ def cmd_run(args):
         if left_out:
             debt_skipped.append(_debt.debt_skipped_line(repo, left_out))
         if not owed:
+            # An open round of this chat is the usual reason there is nothing left to read, and
+            # naming it is what tells the chat the next step is the COMMIT rather than another
+            # panel: the scope leaves out what that round already read (`round_covered_paths`), so
+            # an empty scope here is the round covering everything pending.
+            standing = _round.session_open_round(repo, debt_asker)
+            if standing is not None and standing[2] == _round.ROUND_STEP_READY:
+                raise ValueError(
+                    f"round {standing[0].name} of this chat is open in {repo} and covers "
+                    "everything pending: the commit that carries its fixes closes it. There is no "
+                    "review to run"
+                )
             raise ValueError(
                 f"nothing in {repo} is in review debt for this chat: "
                 + (_debt.debt_skipped_line(repo, left_out) if left_out else
