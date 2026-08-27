@@ -183,6 +183,14 @@ review_gate_verdict() { # toplevel session
   return 0
 }
 
+# Where both review journals live: ONE directory per git FAMILY, the common git dir
+# (docs/shared-invariants.md row `bd`). Resolved once for every cache key that watches a journal —
+# keyed off a worktree's own git dir instead, a key goes blind to the edits a sibling checkout of
+# the same project folds into the file the answer was actually read from.
+journal_dir() { # toplevel
+  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+}
+
 # Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
 # `git status`, and the commit journal the gate reads this chat's pending paths from (the
 # PostToolUse hook appends to it as the chat edits, and a repository with no journal yet keys on a
@@ -195,7 +203,7 @@ review_verdict_line() { # toplevel session status_key now
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime journal_mtime commondir lock_mtime
-  commondir=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  commondir=$(journal_dir "$top")
   journal_mtime=""
   [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
@@ -243,6 +251,81 @@ review_verdict_line() { # toplevel session status_key now
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf '%s' "$cached"
+  else
+    printf '%s' off
+  fi
+}
+
+# Whether this chat has a commit its branch's upstream does not contain. Prints `unpushed` or `off`.
+#
+# Whose the commit is is the GATE's answer (`unpushed`) and never this render's: the Stop ask that
+# tells the chat to push reads the same subcommand, and a marker deriving ownership on its own would
+# stand over commits that ask disowns. Cached exactly as the verdict beside it — the gate forks git
+# once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
+# can change the answer: the two shas, and the family's journals ownership is read from.
+unpushed_marker() { # toplevel session now
+  local top="$1" sid="$2" now="$3"
+  local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
+  local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
+  local lock="$cache.lock"
+  local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
+  local timeout_bin
+  [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf '%s' off; return 0; }
+  head=$(git -C "$top" rev-parse HEAD 2>/dev/null)
+  # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
+  # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
+  # gate, which is what keeps the marker off the render path for the repositories it never marks.
+  upstream=$(git -C "$top" rev-parse '@{upstream}' 2>/dev/null)
+  [ -n "$head" ] && [ -n "$upstream" ] && [ "$head" != "$upstream" ] ||
+    { printf '%s' off; return 0; }
+  commondir=$(journal_dir "$top")
+  commit_mtime=""
+  debt_mtime=""
+  if [ -n "$commondir" ]; then
+    commit_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
+    debt_mtime=$(file_mtime "$commondir/claude-review-debt" 2>/dev/null)
+  fi
+  [[ "$commit_mtime" =~ ^[0-9]+$ ]] || commit_mtime=0
+  [[ "$debt_mtime" =~ ^[0-9]+$ ]] || debt_mtime=0
+  key="$top|$head|$upstream|$commit_mtime|$debt_mtime"
+  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  cached_key=""
+  cached=""
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
+    IFS= read -r cached_key < "$cache" 2>/dev/null
+    cached=$(tail -n +2 "$cache" 2>/dev/null)
+  fi
+  if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 15 ]; then
+    printf '%s' "${cached:-off}"
+    return 0
+  fi
+  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+    if [ ! -d "$lock" ] ||
+      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
+      (
+        snapshot_lock_acquire "$lock" || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        answer=off
+        timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+        if [ -n "$timeout_bin" ]; then
+          [ -n "$("$timeout_bin" 10 "$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] &&
+            answer=unpushed
+        else
+          [ -n "$("$gate" unpushed "$top" "$sid" 2>/dev/null | head -1)" ] && answer=unpushed
+        fi
+        tmp="$cache.tmp.${BASHPID:-$$}"
+        printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
+          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+      ) >/dev/null 2>&1 &
+    fi
+  fi
+  # Until that lands the last answer stands, and only while it still answers for this state: a
+  # chat that moved tree keeps its cache file, and the key is what says the answer is about it.
+  if [ "$cached" = unpushed ] && [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 120 ]; then
+    printf '%s' unpushed
   else
     printf '%s' off
   fi
@@ -1799,9 +1882,17 @@ elif [ "${review_style:-}" = bright ] || [ "${review_style:-}" = split ]; then
   verdict_part=" ${sep} ${review_text}"
 fi
 
+# Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
+# on, and the flow it belongs to ends at the push. Asked about the same tree the verdict is.
+unpushed_part=""
+if [ -n "$active_top" ] &&
+  [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ]; then
+  unpushed_part=" ${sep} unpushed"
+fi
+
 # Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
-line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${review_part}${verdict_part}${worker_part}"
+line1="${CYAN}${model}${model_suffix}${RESET}${fast_part}${cb_part} ${sep} ${dir_part}${branch_part}${ports_part}${review_part}${verdict_part}${unpushed_part}${worker_part}"
 
 line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 

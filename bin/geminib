@@ -93,8 +93,8 @@ reserved_name() {
 
 # Where a path ENDS UP, symlinks resolved. A leg's config link is recognised by this and never by
 # how it is spelled: a relative or otherwise-spelled link to main's config survives a string
-# compare, and the rewrite below then lands in ~/.gemini/config/mcp_config.json — disabling the
-# servers of Egor's interactive profile.
+# compare, and the rewrite below then lands in ~/.gemini/config/mcp_config.json — emptying the
+# server list of Egor's interactive profile.
 resolved_path() {
   local target="$1" directory base
   if [ -d "$target" ]; then
@@ -109,28 +109,27 @@ resolved_path() {
   printf '%s/%s\n' "${directory%/}" "$base"
 }
 
-# Writes `source` to `destination` with every MCP server forced disabled, or writes nothing at all
-# and fails: a destination left holding an ENABLED server list is the per-leg process storm the
-# whole mechanism exists to prevent, so an unparsable source must never reach one.
-mcp_write_disabled() {
-  local source="$1" destination="$2" temporary="${2%/*}/.${2##*/}.$$"
-  if jq -e '(.mcpServers // {}) | all(.[]; .disabled == true)' >/dev/null 2>&1 <"$source"; then
-    [ "$source" = "$destination" ] || cp "$source" "$destination" || return 1
+# Gives `destination` a server-less MCP config, or writes nothing at all and fails: a destination
+# left holding a server list is the per-leg process storm the whole mechanism exists to prevent.
+mcp_write_empty() {
+  local destination="$1" temporary="${1%/*}/.${1##*/}.$$"
+  if jq -e '(.mcpServers // {}) | length == 0' >/dev/null 2>&1 <"$destination"; then
     return 0
   fi
-  if jq '.mcpServers |= with_entries(.value.disabled = true)' <"$source" >"$temporary" 2>/dev/null; then
-    mv -f "$temporary" "$destination"
+  if printf '{\n  "mcpServers": {}\n}\n' >"$temporary" 2>/dev/null &&
+    mv -f "$temporary" "$destination"; then
     return 0
   fi
   rm -f "$temporary"
   return 1
 }
 
-# Antigravity starts every enabled MCP server on every launch, so main's server list, once shared
-# by symlinking the whole config directory, spawned one process per leg (57 mcp-remote on
-# 2026-08-22). A leg gets its own mcp_config.json with every server forced disabled instead, which
-# is also what leaves the interactive main profile free to enable servers by hand.
-ensure_mcp_disabled() {
+# Antigravity launches every server LISTED in mcp_config.json whatever its `disabled` flag says —
+# the flag only hides that server's tools from the model — so main's server list, once shared by
+# symlinking the whole config directory, spawned one process per leg (57 mcp-remote on
+# 2026-08-22). A leg gets its own mcp_config.json listing nothing at all, which is also what leaves
+# the interactive main profile free to keep its servers.
+ensure_mcp_off() {
   local directory="$1" config_dir="$directory/.gemini/config"
   local base_config="$base_home/.gemini/config" file entry name private
   local base_resolved
@@ -139,8 +138,8 @@ ensure_mcp_disabled() {
   # whole-directory link of the previous shape becomes the moment ~/.gemini/config is renamed — are
   # dropped and rebuilt from the mirror below; a dangling one left standing also takes `mkdir -p`
   # with it and, under `set -e`, the whole of `list`/`status` with that. A link anywhere ELSE is
-  # copied into place first: everything under it is shared, so the rewrites below would land in
-  # another profile's config and an `mcp enable` on the far side would re-arm this leg.
+  # copied into place first: everything under it is shared, so the rewrite below would land in
+  # another profile's config and a server added on the far side would launch under this leg too.
   if [ -L "$config_dir" ]; then
     if [ ! -e "$config_dir" ] ||
       { [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]; }; then
@@ -183,21 +182,46 @@ ensure_mcp_disabled() {
   if [ -n "$base_resolved" ] && [ "$(resolved_path "$config_dir")" = "$base_resolved" ]; then
     return 0
   fi
-  # Sanitized on the way IN, never after a copy is already committed into the leg.
-  if [ ! -e "$file" ] && [ -f "$base_config/mcp_config.json" ]; then
-    mcp_write_disabled "$base_config/mcp_config.json" "$file" ||
-      printf 'geminib: %s is unparsable; %s gets no MCP config rather than an enabled copy of it.\n' \
-        "$base_config/mcp_config.json" "$config_dir" >&2
-    return 0
-  fi
-  # Writing through a link would land in whatever config it points at — main's, usually.
-  if [ -L "$file" ]; then
-    private="${file%/*}/.${file##*/}.link.$$"
-    if cp "$file" "$private" 2>/dev/null; then mv -f "$private" "$file"; else rm -f "$private"; fi
-  fi
-  [ -s "$file" ] || return 0
-  mcp_write_disabled "$file" "$file" ||
-    printf 'geminib: %s is unparsable; its MCP servers could not be disabled.\n' "$file" >&2
+  # A link is dropped rather than followed: writing through it would land in whatever config it
+  # points at — main's, usually — and leaving it standing shares back whatever that side lists.
+  [ ! -L "$file" ] || rm -f "$file"
+  mcp_write_empty "$file" ||
+    printf 'geminib: %s could not be emptied; its MCP servers may still launch.\n' "$file" >&2
+}
+
+# Antigravity writes one project record per folder it opens and never deletes them — throwaway
+# tempdir clones from benches and quota polls left 10 515 by 2026-08-26. The records live under
+# main's config, which every leg mirrors, so one daily pass there covers all of them. A record goes
+# only when it names nothing but vanished temp paths: an unmounted /Volumes reads exactly like a
+# deleted directory, and so does a percent-escaped URI this deliberately does not decode.
+sweep_dead_projects() {
+  local config_dir="$base_home/.gemini/config"
+  local projects_dir="$config_dir/projects" marker="$config_dir/.projects-swept"
+  local today stamp='' record path dead
+  today=$(date '+%Y-%m-%d')
+  [ ! -r "$marker" ] || read -r stamp <"$marker" || true
+  [ "$stamp" != "$today" ] || return 0
+  [ -d "$projects_dir" ] || return 0
+  for record in "$projects_dir"/*.json; do
+    [ -f "$record" ] || continue
+    dead=''
+    while IFS= read -r path; do
+      if [ -e "$path" ]; then dead=no; break; fi
+      [ -n "$dead" ] || dead=yes
+    done < <(jq -r '
+      (.projectResources.resources // []) as $resources
+      | [$resources[]? | .folderUri? | select(type == "string")] as $uris
+      | if ($uris | length) > 0 and ($uris | length) == ($resources | length)
+          and (all($uris[];
+            (startswith("file:///private/var/folders/") or startswith("file:///var/folders/")
+              or startswith("file:///tmp/") or startswith("file:///private/tmp/"))
+            and (contains("%") | not)))
+        then $uris[] | ltrimstr("file://")
+        else empty
+        end' <"$record" 2>/dev/null)
+    if [ "$dead" = yes ]; then rm -f "$record"; fi
+  done
+  printf '%s\n' "$today" 2>/dev/null >"$marker" || true
 }
 
 ensure_profile() {
@@ -213,7 +237,8 @@ ensure_profile() {
   if [ -e "$base_home/.gemini/antigravity-cli/settings.json" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
     ln -s "$base_home/.gemini/antigravity-cli/settings.json" "$target"
   fi
-  ensure_mcp_disabled "$directory"
+  ensure_mcp_off "$directory"
+  sweep_dead_projects
   mkdir -p "$directory/Library/Caches"
   for item in ms-playwright-go ms-playwright; do
     # Linked even before the base cache exists: a dangling link makes the first driver

@@ -1583,7 +1583,7 @@ assert(not doctorRow(loadModule(doctorFixture).menuItems()),
 
 do
   local clean = { as_of = os.time(), total = 0, anomalies = {
-    untriaged = 0, undelivered = 0, stuck_fixes = 0, eternal_lock = 0,
+    untriaged = 0, undelivered = 0, stuck_fixes = 0,
     orphan_debt = 0, kill_asymmetry = 0,
   }}
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
@@ -1597,7 +1597,7 @@ end
 
 do
   local dirty = { as_of = os.time(), total = 4, anomalies = {
-    untriaged = 1, undelivered = 0, stuck_fixes = 3, eternal_lock = 0,
+    untriaged = 1, undelivered = 0, stuck_fixes = 3,
     orphan_debt = 0, kill_asymmetry = 0,
   }}
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,

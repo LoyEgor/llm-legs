@@ -307,7 +307,7 @@ end
 -- one would report on records nobody is writing. Held equal by docs/shared-invariants.md, which
 -- also fixes the document's schema — the class names below exist nowhere else on this side.
 local DOCTOR_CLASSES = {
-  "untriaged", "undelivered", "stuck_fixes", "eternal_lock", "orphan_debt", "kill_asymmetry",
+  "untriaged", "undelivered", "stuck_fixes", "orphan_debt", "kill_asymmetry",
 }
 local DOCTOR_STALE_S = 24 * 3600
 

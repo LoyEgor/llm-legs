@@ -28,7 +28,6 @@ TRIAGE_GATE_HOURS = 6
 DELIVERY_MARK = "delivery.json"
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
-DECREE_RECEIPT = "decree.json"
 # The two heaviest panels are the owner's to start, and no agent's: tier T3, and any tier's --max
 # composition. Enforcement is code on both sides — `bin/review-owner-gate.sh` denies the command
 # until Egor names the panel himself, and the guard below refuses the same two panels wherever
@@ -46,9 +45,9 @@ SESSION_REGISTRY_DIR_ENV = "REVIEW_BENCH_SESSION_DIR"
 SESSION_WALK_HOPS = 15
 RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")
 RECEIPT_HASH_HEX = 8
-# The one command that answers a repository's whole open question — the second review a locked
-# round owes included, since the mode widens to that round's surviving paths by construction. The
-# commit gate prints it verbatim inside a `cd`, and docs/shared-invariants.md holds the two equal;
+# The one command that answers a repository's whole open question — round 2 included, since the
+# mode widens to the surviving paths of the round a decision reopened. The commit gate prints it
+# verbatim inside a `cd`, and docs/shared-invariants.md holds the two equal;
 # a caller that hand-picks paths instead is choosing the scope, which is the choice this removes.
 DEBT_REVIEW_COMMAND = "REVIEW_ASKED=1 review-bench review --debt --tier T1"
 # Where the artifacts that answer for a path live: the waivers beside the receipts, and the two

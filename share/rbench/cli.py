@@ -37,8 +37,8 @@ SCOPE_FLAG_HELP = (
 )
 DEBT_FLAG_HELP = (
     "Review everything this repository owes a review and nothing else: every path whose current "
-    "content nothing that read it stands behind, widened to every surviving path of any locked "
-    "round standing over it, each read from the content its newest artifact recorded — so work "
+    "content nothing that read it stands behind, widened to every surviving path of any round a "
+    "decision reopened, each read from the content its newest artifact recorded — so work "
     "reviewed, committed and edited again is one diff across the commit. The scope is computed, "
     "not given, so it takes no target and no --paths. It reads this chat's own debt and the debt "
     "nobody owns; another chat's is named on the target line and left out, since a co-tenant's "
@@ -503,6 +503,58 @@ def cmd_wait(args):
     return 1
 
 
+def resolve_round_stamp(targets, session):
+    """Which round of its chain this launch is, and which chain, for the run's own record.
+
+    A round 2 is one thing and nothing else: a sweep over a scope whose newest open round already
+    carries a DECISION. That record is what says a second pass was chosen, so the number is
+    settled by the store rather than by a flag the caller passes — and by asking once, at launch,
+    every later reader is spared re-deriving it and disagreeing.
+
+    There is no round 3, and the chain is asked rather than the parent: a round 2 carries no
+    decision of its own — `fork` refuses to record one over a spent budget — so the round 1 whose
+    decision reopened the scope goes on answering `chain_parent` after its second pass has run.
+    The refusal is the second round ALREADY ON that chain, still open, and it is raised here before
+    a snapshot commit is written: the third pass over one scope is the loop this contract exists to
+    end, and the answer to a round 2 that is still open is to finish it. One a commit has closed
+    ends the chain instead — the next sweep over that scope starts one of its own.
+
+    Every member of a merged launch is asked, and the whole launch takes ONE stamp: members that
+    reopen two different chains are refused, since a stamp can name only one of them and the other
+    round 1 would stay open with no second pass to close it. A member starting a chain of its own
+    beside them is not — a merged round is priced as one round, and its fresh member rides it.
+    """
+    stamp = None
+    for repo, paths in targets:
+        found = _round.chain_parent(repo, paths, session)
+        if found is None:
+            continue
+        parent, parent_meta = found
+        second = _round.chain_second_round(parent, parent_meta)
+        if second is not None:
+            if not _round.round_closed(second):
+                raise ValueError(
+                    f"{second.name} is already round 2 over this scope and no commit has closed "
+                    "it; there is no round 3 — fix what it confirmed and commit, and that closes "
+                    "both rounds"
+                )
+            continue
+        if _round.review_round(parent, parent_meta) >= _round.ROUND_BUDGET:
+            raise ValueError(
+                f"{parent.name} is already round 2 over this scope and no commit has closed it; "
+                "there is no round 3 — fix what it confirmed and commit, and that closes both "
+                "rounds"
+            )
+        chain = _round.chain_id(parent, parent_meta)
+        if stamp is not None and stamp["chain"] != chain:
+            raise ValueError(
+                f"this launch reopens two chains at once — {stamp['chain']} and {chain} — and one "
+                "run carries one round: give each its own second pass with --this-repo-only"
+            )
+        stamp = {"round": _round.ROUND_BUDGET, "chain": chain}
+    return stamp or {}
+
+
 def cmd_review(args):
     tier_name = getattr(args, "tier", None)
     use_max = bool(getattr(args, "max", False))
@@ -563,7 +615,7 @@ def cmd_run(args):
         if given:
             raise ValueError(
                 "--debt computes its own target and its own scope — every path nothing that read "
-                "it stands behind, widened to what a locked round still owes — so it takes no "
+                "it stands behind, widened to what a reopened round still holds — so it takes no "
                 "other target: drop " + " and ".join(given)
             )
     if getattr(args, "all", False) and not debt_mode:
@@ -657,10 +709,16 @@ def cmd_run(args):
         # Both before anything is sealed: a snapshot commit is an object written into the caller's
         # repository, and a round refused after writing one has already spent what it refused.
         _debt.debt_one_panel_guard(repos, debt_asker, debt_all, tier_name, debt_alone)
+    # Round 1 unless the store itself says otherwise, and settled BEFORE anything is sealed: a
+    # round refused after writing a snapshot commit has already spent what it refused.
+    round_stamp = {}
     if debt_mode and len(repos) > 1:
         scopes = _debt.debt_member_scopes(repos, debt_asker, debt_all, debt_skipped)
         _debt.debt_scope_gate([(repo, pairs) for _, repo, pairs in scopes], debt_lines,
                               tier_name, debt_all, debt_retry_repos, debt_alone)
+        round_stamp = resolve_round_stamp(
+            [(member, [path for path, _ in pairs]) for _, member, pairs in scopes], debt_asker
+        )
         members = _debt.debt_members(scopes)
         repo, sha = _scope.merged_snapshot_workspace(members)
         scope = []
@@ -684,6 +742,7 @@ def cmd_run(args):
         _debt.debt_scope_gate([(repo, owed)], debt_lines, tier_name, debt_all,
                               debt_retry_repos, debt_alone)
         scope = [path for path, _ in owed]
+        round_stamp = resolve_round_stamp([(repo, scope)], debt_asker)
         sha = _scope.debt_snapshot_commit(repo, owed)
     elif len(repos) > 1:
         members = _scope.merged_members(sources, requested_scope)
@@ -911,7 +970,7 @@ def cmd_run(args):
         spec for spec, _ in panel_skipped if spec not in requested_raters
     ]
     launch_meta = {
-        "run_id": run_id, "commit": sha, "repo": str(repo),
+        "run_id": run_id, "commit": sha, "repo": str(repo), **round_stamp,
         "raters": requested_raters, "completed_raters": [],
         "rater_runs": [], "durations": {},
         "started": started.isoformat(), "sealed_at": sealed_at.isoformat(),
@@ -1269,7 +1328,7 @@ def cmd_run(args):
 
         _accounts.note_gateway_outcome(raters, errored_raters, gateway_down)
         meta = {
-            "run_id": run_id, "commit": sha, "repo": str(repo),
+            "run_id": run_id, "commit": sha, "repo": str(repo), **round_stamp,
             "raters": requested_raters,
             "completed_raters": [
                 rater["spec"] for rater in raters
@@ -1737,7 +1796,7 @@ def main():
     report.set_defaults(func=_report.cmd_report)
     fork = subparsers.add_parser(
         "fork",
-        help="Print which way a triaged round goes from here, or record Egor's fork decision",
+        help="Print which way a triaged round goes from here, or record its decision",
     )
     fork.add_argument("run_id")
     fork.add_argument("--choice", choices=_round.FORK_CHOICES, help="The way the round goes")
@@ -1749,7 +1808,7 @@ def main():
     fork.add_argument("--session", default="", metavar="ID", help="The chat recording it")
     fork.add_argument(
         "--check", action="store_true",
-        help="Exit 3 while the round crossed a threshold and has no fork on record",
+        help="Exit 3 while the round owes a decision and has none on record",
     )
     fork.set_defaults(func=_report.cmd_fork)
     pending = subparsers.add_parser(
@@ -1805,7 +1864,7 @@ def main():
         "--done", action="store_true", help="the confirmed findings are fixed"
     )
     fixes_state.add_argument(
-        "--blocked", metavar="REASON", help="why they were not applied"
+        "--blocked", metavar="REASON", help="why the pass stopped"
     )
     fixes_state.add_argument(
         "--cover", action="store_true",
@@ -1861,14 +1920,6 @@ def main():
     )
     waive.set_defaults(func=_debt.cmd_waive)
 
-    decree = subparsers.add_parser(
-        "decree",
-        help="Record Egor's unlock of a round the P1 count locked (his explicit word only)",
-    )
-    decree.add_argument("run_id")
-    decree.add_argument("--reason", default="", metavar="TEXT",
-                        help="Egor's own words for why the second review is not being run")
-    decree.set_defaults(func=_debt.cmd_decree)
     run = subparsers.add_parser("run", help="Run blind reviewers against one commit")
     run.add_argument("commitish", nargs="?")
     run.add_argument("--worktree", action="store_true")
@@ -2015,4 +2066,3 @@ def main():
     except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
         print(f"review-bench: {exc}", file=sys.stderr)
         return 2
-
