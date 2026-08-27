@@ -96,20 +96,6 @@ repo_dirs() {
   REPO_NAME="${REPO_ROOT##*/}"
 }
 
-# Identity and NAME of the repository one path belongs to, for the two places that report a review
-# over a foreign one. The name is the repository's — the main checkout's basename, exactly what `»`
-# prints — never the worktree directory's, whose branch slug names no repository. An empty or
-# unresolvable path belongs to no repository at all: `git -C ""` answers for the CWD, which would
-# pass a vanished repository off as the render's own.
-review_repo_identity() {
-  review_repo_name=""
-  review_repo_common=""
-  [ -n "$1" ] || return 1
-  repo_dirs "$1" || return 1
-  review_repo_name="$REPO_NAME"
-  review_repo_common="$REPO_COMMON"
-}
-
 # ps reports elapsed time as [[dd-]hh:]mm:ss; the render needs the instant the process started.
 process_start_epoch() {
   local pid="$1" now="$2" elapsed days=0 hours=0 mins secs field
@@ -198,9 +184,11 @@ journal_dir() { # toplevel
 # a sibling worktree moves this key too — as it moves the gate's own answer. Everything the key
 # cannot see — a second edit to an already-modified file, another chat's commit landing, a run
 # being triaged — is bounded by the TTL.
-review_verdict_line() { # toplevel session status_key now
-  local top="$1" sid="$2" status_key="$3" now="$4"
-  local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
+review_verdict_line() { # toplevel session status_key now [cache_tag]
+  local top="$1" sid="$2" status_key="$3" now="$4" tag="${5:-}"
+  # One cache file per tree the render asks about: a chat showing a review elsewhere asks about
+  # that tree AND its own, and one file for both would answer each render from the other's key.
+  local cache="$statusline_cache_dir/review-class-${sid:-unknown}${tag:+-$tag}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime journal_mtime commondir lock_mtime
   commondir=$(journal_dir "$top")
@@ -263,10 +251,10 @@ review_verdict_line() { # toplevel session status_key now
 # stand over commits that ask disowns. Cached exactly as the verdict beside it — the gate forks git
 # once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
 # can change the answer: the two shas, and the family's journals ownership is read from.
-unpushed_marker() { # toplevel session now
-  local top="$1" sid="$2" now="$3"
+unpushed_marker() { # toplevel session now [cache_tag]
+  local top="$1" sid="$2" now="$3" tag="${4:-}"
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
-  local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
+  local cache="$statusline_cache_dir/unpushed-${sid:-unknown}${tag:+-$tag}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
   local timeout_bin
@@ -681,21 +669,224 @@ if [ -z "$active_top" ]; then
   fi
 fi
 
-# The folder NEVER moves: the dir/branch/diff cluster, the ports probe and the gate's question are
-# the session's own workdir, whatever this chat has under review elsewhere — a folder that followed
-# the review showed one repository and a number about another (Egor, 2026-08-26). A review over a
-# foreign repository is reported by NAME in the counter slot instead: live as a named counter,
-# merely pending as the dim marker this anchor feeds. Repository identity, like `»`: an anchor on a
-# sibling worktree is the same family and says nothing extra.
-anchor_name=""
-anchor_common=""
-if [ -n "$session_id" ]; then
-  anchor_line=$(review_anchor_line "$session_id" "$git_dir" "$now")
-  anchor_path="${anchor_line%% +*}"
-  if review_repo_identity "$anchor_path" && [ "$review_repo_common" != "$active_common" ]; then
-    anchor_name="$review_repo_name"
-    anchor_common="$review_repo_common"
+# The middle block — the dir cluster, the branch, the counters, the rev counter, the verdict,
+# `unpushed` — is ATOMIC: all of it renders ONE working tree and nothing in the counter slot is ever
+# named by a repository, because one folder beside a number about another place named neither (Egor,
+# 2026-08-27, superseding 2026-08-26; full rule: docs/statusline-contract.md "Shown tree"). A review
+# elsewhere MOVES the whole block instead.
+#
+# Identity is the WORKING TREE and not the repository: a run in a sibling worktree of home's own
+# repository is an away tree, and shown, it renders as that worktree.
+home_top="$active_top"
+home_dir="$git_dir"
+
+tree_status_key() { # status rc
+  local key
+  if [ "$2" -eq 0 ]; then
+    key=$(printf '%s' "$1" | cksum 2>/dev/null)
+    printf '%s' "${key// /-}"
+  else
+    printf '%s' unreadable
   fi
+}
+
+# What home is holding, asked once per render and only where the answer decides something: with a
+# live run already choosing the tree, home's debt is a gate call nobody would read.
+home_probe_done=0
+home_status=""
+home_status_rc=1
+home_verdict=off
+home_unpushed=off
+home_probe() {
+  [ "$home_probe_done" = 1 ] && return 0
+  home_probe_done=1
+  [ -n "$home_top" ] || return 0
+  home_status=$(git -C "$home_top" status --porcelain 2>/dev/null)
+  home_status_rc=$?
+  home_verdict=$(review_verdict_line "$home_top" "$session_id" \
+    "$(tree_status_key "$home_status" "$home_status_rc")" "$now")
+  home_unpushed=$(unpushed_marker "$home_top" "$session_id" "$now")
+}
+
+# A run in flight owns the counter slot: review-bench writes one progress file per run, and while it
+# lives the slot reports that panel instead of the gate's verdict. Liveness is derived here, never
+# declared by the writer — the file survives kill -9, a crash and a closed terminal, so the pid must
+# be alive AND the process holding it must have started no later than the file's last write, which a
+# pid reused after that run died cannot satisfy.
+#
+# Two slots, because a run is this render's news for one of two reasons: it runs over HOME, whoever
+# started it, or it is THIS session's run somewhere else — the away tree the block may move to. A
+# run that is neither is another chat's business elsewhere and stays invisible.
+ph_started=""; ph_done=""; ph_total=""; ph_tier=""; ph_max=""; ph_late=""
+ph_session=""; ph_pid=""
+pa_started=""; pa_done=""; pa_total=""; pa_tier=""; pa_max=""; pa_late=""; pa_top=""
+progress_dir="$worker_stats_dir/progress"
+if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; then
+  # Every file is read and matched on the repository recorded inside it, never on its name:
+  # review-bench keys the name on the path it was handed, so a run started from a subdirectory
+  # writes a name this render cannot predict. The second pattern covers a repository whose own
+  # directory name begins with a dot; toggling dotglob instead would leave the option set for
+  # the rest of the render if anything ever returns early from this loop.
+  for progress_file in "$progress_dir"/*.json "$progress_dir"/.*.json; do
+    [ -f "$progress_file" ] || continue
+    progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
+    [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
+    # A run whose slowest cell is still out writes nothing for as long as that cell takes,
+    # so there is no tight staleness window here; this is only the wall that stops a wedged
+    # process from holding the segment for a day.
+    [ "$((now - progress_mtime))" -le 7200 ] || continue
+    progress_values=$(jq -er --argjson now "$now" '
+      select(type == "object"
+        and (.repo | type) == "string"
+        and (.pid | type) == "number"
+        and (.pid | floor) == .pid
+        and .pid > 0
+        and (.cells | type) == "array"
+        and (.done | type) == "array"
+        and (.cells | length) > 0
+        and (.done | length) <= (.cells | length)
+        and (.started | type) == "string"
+        and ((.tier | type) == "string" or .tier == null)
+        and ((.max | type) == "boolean" or .max == null))
+      | . as $run
+      | (if (($run.started_epoch | type) == "number"
+                 and ($run.started_epoch | floor) == $run.started_epoch
+                 and $run.started_epoch > 0)
+         then $run.started_epoch else null end) as $started_epoch
+      | (if (($run.expected | type) == "object") then $run.expected else {} end) as $expected
+      | ([
+          $run.cells[] as $cell
+          | select(($cell | type) == "string")
+          | select(($run.done | index($cell)) == null)
+          | $expected[$cell]
+          | select(type == "number" and . >= 0) as $expected_ms
+          | select($started_epoch != null
+              and (($now - $started_epoch) * 1000
+                   > ([3 * $expected_ms, 120000] | max)))
+        ] | length > 0) as $late
+      | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
+         (.done | length | tostring), (.cells | length | tostring), .started,
+         (if $late then "late" else "" end),
+         (if (.session | type) == "string" then .session else "" end)]
+      | join("")
+    ' "$progress_file" 2>/dev/null) || continue
+    IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
+      progress_run_done progress_run_total progress_started progress_run_late \
+      progress_run_session <<< "$progress_values"
+    kill -0 "$progress_pid" 2>/dev/null || continue
+    progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
+    # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
+    # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
+    [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
+    # The tree the run is over, and a subdirectory it was started from still resolves to it. A
+    # recorded repository that no longer resolves leaves the run with no tree at all — and the
+    # block being one tree's rendering, there is nothing left to show such a run with.
+    progress_run_top=$(git_worktree_top "$progress_repo" 2>/dev/null) || continue
+    [ -n "$progress_run_top" ] || continue
+    case "$progress_run_tier" in
+      T[0-3]) ;;
+      *) progress_run_tier="" ;;
+    esac
+    if [ -n "$home_top" ] && [ "$progress_run_top" = "$home_top" ]; then
+      if [ -z "$ph_started" ] || [[ "$progress_started" > "$ph_started" ]]; then
+        ph_started=$progress_started
+        ph_done=$progress_run_done
+        ph_total=$progress_run_total
+        ph_tier=$progress_run_tier
+        ph_max=$progress_run_max
+        ph_late=$progress_run_late
+        ph_session=$progress_run_session
+        ph_pid=$progress_pid
+      fi
+    else
+      [ -n "$session_id" ] || continue
+      [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
+      if [ -z "$pa_started" ] || [[ "$progress_started" > "$pa_started" ]]; then
+        pa_started=$progress_started
+        pa_done=$progress_run_done
+        pa_total=$progress_run_total
+        pa_tier=$progress_run_tier
+        pa_max=$progress_run_max
+        pa_late=$progress_run_late
+        pa_top=$progress_run_top
+      fi
+    fi
+  done
+fi
+
+# The unanswered round comes LAST on purpose: any work or debt at home outranks a review that is
+# already over, so an away tree holds the block only while home is clean, idle and owing nothing —
+# and hands it back by itself when that round is answered.
+shown_away=0
+away_top=""
+away_tag=""
+progress_slot=""
+if [ -n "$ph_started" ]; then
+  progress_slot=home
+elif [ -n "$pa_started" ]; then
+  progress_slot=away
+  away_top="$pa_top"
+else
+  home_probe
+  home_busy=0
+  [ -n "$home_status" ] && home_busy=1
+  [ "$home_status_rc" -eq 0 ] || home_busy=1
+  [ "$home_unpushed" = unpushed ] && home_busy=1
+  case "$home_verdict" in ''|off) ;; *) home_busy=1 ;; esac
+  if [ "$home_busy" = 0 ] && [ -n "$session_id" ]; then
+    # review-bench's own answer to what this chat still has in front of it — a round of this
+    # session that nothing has answered yet, and this render's only source for one.
+    anchor_line=$(review_anchor_line "$session_id" "$home_dir" "$now")
+    anchor_path="${anchor_line%% +*}"
+    if [ -n "$anchor_path" ]; then
+      anchor_top=$(git_worktree_top "$anchor_path" 2>/dev/null) || anchor_top=""
+      [ -n "$anchor_top" ] && [ "$anchor_top" != "$home_top" ] && away_top="$anchor_top"
+    fi
+  fi
+fi
+if [ -n "$away_top" ] && [ "$away_top" != "$home_top" ] && repo_dirs "$away_top"; then
+  shown_away=1
+  git_dir="$away_top"
+  adopt_repo_dirs
+  away_tag=$(printf '%s' "$away_top" | cksum 2>/dev/null)
+  away_tag="${away_tag// /-}"
+elif [ "$progress_slot" = away ]; then
+  # The tree went away between the run's own record and this render: nothing to render the block
+  # from, so nothing for its counter to be about either.
+  progress_slot=""
+fi
+
+progress_done=""
+progress_total=""
+progress_tier=""
+progress_max=""
+progress_late=""
+progress_label=""
+progress_color=""
+if [ "$progress_slot" = home ]; then
+  progress_done=$ph_done; progress_total=$ph_total; progress_tier=$ph_tier
+  progress_max=$ph_max; progress_late=$ph_late
+  # A run another chat started over this tree is this chat's background news, not its call to
+  # action: dim, and not red either, since being late is that chat's problem to see.
+  progress_owner=$(review_run_owner "$ph_session" "$ph_pid")
+  if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
+    progress_color="$DIM"
+  fi
+elif [ "$progress_slot" = away ]; then
+  progress_done=$pa_done; progress_total=$pa_total; progress_tier=$pa_tier
+  progress_max=$pa_max; progress_late=$pa_late
+fi
+if [ -n "$progress_total" ]; then
+  progress_label="rev"
+  # The max panel is a variant of a tier, never a run of its own: --max is refused without
+  # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
+  # tier rather than rendered as a panel size nothing names.
+  if [ -n "$progress_tier" ]; then
+    progress_label="${progress_label} ${progress_tier}"
+    [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
+  fi
+  progress_label="${progress_label} ${progress_done}/${progress_total}"
+  [ -z "$progress_color" ] && [ -n "$progress_late" ] && progress_color="$RED"
 fi
 
 dir_foreign=0
@@ -743,9 +934,15 @@ ahead=""
 head_known=0
 git_status=""
 git_status_rc=1
-if [ -n "$active_top" ]; then
+if [ "$shown_away" = 1 ]; then
   git_status=$(git -C "$active_top" status --porcelain 2>/dev/null)
   git_status_rc=$?
+elif [ -n "$active_top" ]; then
+  home_probe
+  git_status="$home_status"
+  git_status_rc="$home_status_rc"
+fi
+if [ -n "$active_top" ]; then
   branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
   # In a worktree the `⧉` label is the whole identity: no branch segment there,
   # whatever HEAD is. `head_known` still gates the diff counters below.
@@ -1713,6 +1910,7 @@ fi
 
 # Too slow for the render path: read the cache, fire the probe in the background
 # when it's >15s stale, and hide the segment once it's >60s stale (probe presumed dead).
+# Home's tree, not the shown one: these are the servers the session itself is running.
 ports_part=""
 if [ -n "$session_id" ]; then
   probe_self="$0"
@@ -1722,7 +1920,7 @@ if [ -n "$session_id" ]; then
   ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
-    ( "$probe_bin" "$session_id" "$PPID" "$active_top" >/dev/null 2>&1 & ) 2>/dev/null
+    ( "$probe_bin" "$session_id" "$PPID" "$home_top" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     # `read` still sets the var on a newline-less EOF; ignore the nonzero return.
@@ -1740,16 +1938,19 @@ if [ -n "$session_id" ]; then
   fi
 fi
 
-# What the review gate says about this chat's uncommitted work, spoken by the gate itself. Always
-# about the tree the reader is standing in: a number about a repository shown nowhere on the line
-# is worse than none, and a review elsewhere is named beside this instead.
+# What the review gate says about this chat's uncommitted work, spoken by the gate itself. About
+# the SHOWN tree and no other: a number is only ever read as belonging to the folder beside it, so
+# the two answer for one place or the block is a lie about both.
 review_style=""
 review_text=""
 if [ -n "$active_top" ]; then
-  review_status_key=$(printf '%s' "$git_status" | cksum 2>/dev/null)
-  review_status_key="${review_status_key// /-}"
-  [ "$git_status_rc" -eq 0 ] || review_status_key="unreadable"
-  review_verdict=$(review_verdict_line "$active_top" "$session_id" "$review_status_key" "$now")
+  if [ "$shown_away" = 1 ]; then
+    review_verdict=$(review_verdict_line "$active_top" "$session_id" \
+      "$(tree_status_key "$git_status" "$git_status_rc")" "$now" "$away_tag")
+  else
+    home_probe
+    review_verdict="$home_verdict"
+  fi
   review_style=${review_verdict%% *}
   case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
   # Truncated and nothing else: the words are the gate's, and a segment that rewrites them is the
@@ -1758,168 +1959,12 @@ if [ -n "$active_top" ]; then
 fi
 
 
-progress_color=""
-progress_named=""
-progress_common=""
-if [ -n "$active_top" ] || [ -n "$session_id" ]; then
-  # A run in flight owns the slot: review-bench writes one progress file per run, and while it
-  # lives the label reports that panel instead of the gate's verdict. Liveness is derived here,
-  # never declared by the writer — the file survives kill -9, a crash and a closed terminal, so
-  # the pid must be alive AND the process holding it must have started no later than the file's
-  # last write, which a pid reused after that run died cannot satisfy.
-  progress_done=""
-  progress_total=""
-  progress_tier=""
-  progress_max=""
-  progress_late=""
-  progress_newest=""
-  progress_session=""
-  progress_owner_pid=""
-  progress_top=""
-  progress_repo_path=""
-  progress_dir="$worker_stats_dir/progress"
-  if [ -d "$progress_dir" ]; then
-    # Every file is read and matched on the repository recorded inside it, never on its name:
-    # review-bench keys the name on the path it was handed, so a run started from a subdirectory
-    # writes a name this render cannot predict. The second pattern covers a repository whose own
-    # directory name begins with a dot; toggling dotglob instead would leave the option set for
-    # the rest of the render if anything ever returns early from this loop.
-    for progress_file in "$progress_dir"/*.json "$progress_dir"/.*.json; do
-      [ -f "$progress_file" ] || continue
-      progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
-      [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
-      # A run whose slowest cell is still out writes nothing for as long as that cell takes,
-      # so there is no tight staleness window here; this is only the wall that stops a wedged
-      # process from holding the segment for a day.
-      [ "$((now - progress_mtime))" -le 7200 ] || continue
-      progress_values=$(jq -er --argjson now "$now" '
-        select(type == "object"
-          and (.repo | type) == "string"
-          and (.pid | type) == "number"
-          and (.pid | floor) == .pid
-          and .pid > 0
-          and (.cells | type) == "array"
-          and (.done | type) == "array"
-          and (.cells | length) > 0
-          and (.done | length) <= (.cells | length)
-          and (.started | type) == "string"
-          and ((.tier | type) == "string" or .tier == null)
-          and ((.max | type) == "boolean" or .max == null))
-        | . as $run
-        | (if (($run.started_epoch | type) == "number"
-                   and ($run.started_epoch | floor) == $run.started_epoch
-                   and $run.started_epoch > 0)
-           then $run.started_epoch else null end) as $started_epoch
-        | (if (($run.expected | type) == "object") then $run.expected else {} end) as $expected
-        | ([
-            $run.cells[] as $cell
-            | select(($cell | type) == "string")
-            | select(($run.done | index($cell)) == null)
-            | $expected[$cell]
-            | select(type == "number" and . >= 0) as $expected_ms
-            | select($started_epoch != null
-                and (($now - $started_epoch) * 1000
-                     > ([3 * $expected_ms, 120000] | max)))
-          ] | length > 0) as $late
-        | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
-           (.done | length | tostring), (.cells | length | tostring), .started,
-           (if $late then "late" else "" end),
-           (if (.session | type) == "string" then .session else "" end)]
-        | join("\u001f")
-      ' "$progress_file" 2>/dev/null) || continue
-      IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
-        progress_run_done progress_run_total progress_started progress_run_late \
-        progress_run_session <<< "$progress_values"
-      kill -0 "$progress_pid" 2>/dev/null || continue
-      progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
-      # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
-      # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
-      [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
-      # Two ways a run is this render's news: the tree it runs over, or the chat that started it —
-      # the tree alone leaves a review of another repository invisible in the very statusline that
-      # launched it. The tree match is the working tree and not the repository: a run in a sibling
-      # worktree is another chat's news, and a subdirectory the run was started from still resolves
-      # to the tree it belongs to.
-      progress_run_top=$(git_worktree_top "$progress_repo" 2>/dev/null)
-      if [ -z "$active_top" ] || [ "$progress_run_top" != "$active_top" ]; then
-        [ -n "$session_id" ] || continue
-        [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
-      fi
-      case "$progress_run_tier" in
-        T[0-3]) ;;
-        *) progress_run_tier="" ;;
-      esac
-      if [ -z "$progress_newest" ] || [[ "$progress_started" > "$progress_newest" ]]; then
-        progress_newest=$progress_started
-        progress_done=$progress_run_done
-        progress_total=$progress_run_total
-        progress_tier=$progress_run_tier
-        progress_max=$progress_run_max
-        progress_late=$progress_run_late
-        progress_session=$progress_run_session
-        progress_owner_pid=$progress_pid
-        progress_top=$progress_run_top
-        progress_repo_path=$progress_repo
-      fi
-    done
-  fi
-  if [ -n "$progress_total" ]; then
-    progress_label="rev"
-    # A run over a FOREIGN repository is named on the line, since the folder beside it is the
-    # session's own and a bare count would be read as that folder's (Egor, 2026-08-26). Identity,
-    # not toplevel: a run in a sibling worktree counts the same family the folder names. A run
-    # whose repository no longer resolves belongs to no family and is named by the path it
-    # recorded rather than left bare.
-    if review_repo_identity "$progress_top"; then
-      progress_common="$review_repo_common"
-      progress_named_by="$review_repo_name"
-    else
-      progress_common=""
-      progress_named_by="${progress_repo_path##*/}"
-    fi
-    if [ -z "$active_common" ] || [ "$progress_common" != "$active_common" ]; then
-      progress_named="$progress_named_by"
-      [ -n "$progress_named" ] && progress_label="${progress_label} ${progress_named}"
-    fi
-    # The max panel is a variant of a tier, never a run of its own: --max is refused without
-    # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
-    # tier rather than rendered as a panel size nothing names.
-    if [ -n "$progress_tier" ]; then
-      progress_label="${progress_label} ${progress_tier}"
-      [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
-    fi
-    progress_label="${progress_label} ${progress_done}/${progress_total}"
-    # A run another chat started is this chat's background news, not its call to action: dim, and
-    # not red either, since being late is that chat's problem to see.
-    progress_owner=$(review_run_owner "$progress_session" "$progress_owner_pid")
-    if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
-      progress_color="$DIM"
-    elif [ -n "$progress_late" ]; then
-      progress_color="$RED"
-    else
-      progress_color=""
-    fi
-  fi
-fi
-
-# A round of this chat's over a foreign repository that is finished but not yet answered has no
-# counter to carry it, and the dim marker is what says a review is out there and where. A live
-# counter over that same repository already names it, and two names for one review are one too
-# many.
-anchor_marked=0
-if [ -n "$anchor_name" ] &&
-  { [ -z "$progress_total" ] || [ "$progress_common" != "$anchor_common" ]; }; then
-  anchor_marked=1
-fi
-
-# One repository, so one word for both: the counter in flight already says `rev` and the verdict
-# beside it prints its numbers alone. Beside anything NAMED both keep their word — those numbers
-# are about two repositories, and a bare count beside a named one names nothing the reader can
-# place. The verdict is never taken away — any review over this tree, this chat's or another's,
-# used to blank the debt the reader acts on (Egor, 2026-08-24) — and a style word this build does
-# not know is printed whole, never trimmed.
-if [ -n "$progress_total" ] && [ -z "$progress_named" ] && [ "$anchor_marked" = 0 ] &&
-  [ "${review_style:-}" != loud ]; then
+# One tree, so one word for both: the counter in flight already says `rev` and the verdict beside it
+# prints its numbers alone — the block being atomic, they can no longer be about two places. The
+# verdict is never taken away — any review over this tree, this chat's or another's, used to blank
+# the debt the reader acts on (Egor, 2026-08-24) — and a style word this build does not know is
+# printed whole, never trimmed.
+if [ -n "$progress_total" ] && [ "${review_style:-}" != loud ]; then
   review_text=${review_text#rev }
 fi
 
@@ -1942,9 +1987,14 @@ fi
 # Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
 # on, and the flow it belongs to ends at the push. Asked about the same tree the verdict is.
 unpushed_show=0
-if [ -n "$active_top" ] &&
-  [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ]; then
-  unpushed_show=1
+if [ -n "$active_top" ]; then
+  if [ "$shown_away" = 1 ]; then
+    [ "$(unpushed_marker "$active_top" "$session_id" "$now" "$away_tag")" = unpushed ] &&
+      unpushed_show=1
+  else
+    home_probe
+    [ "$home_unpushed" = unpushed ] && unpushed_show=1
+  fi
 fi
 
 # Line 1 is built to the terminal's width, not printed once: the harness exports COLUMNS, and a
@@ -1997,6 +2047,15 @@ fit_initials() {
 }
 
 fit_dir_name() {
+  # A worktree folder is `<TICKET>-junk` and the digits ARE its identity, so — as in
+  # fit_branch_part — the ticket prefix is the floor: no 8-char cut into the digits, no initials.
+  if [[ "$1" =~ ^([A-Za-z]+[-_][0-9]+) ]]; then
+    case "$fit_dir_mode" in
+      full) fit_out=$1 ;;
+      *) fit_out="${BASH_REMATCH[1]}" ;;
+    esac
+    return
+  fi
   case "$fit_dir_mode" in
     initials) fit_initials "$1" ;;
     short) fit_trunc "$1" 8 ;;
@@ -2103,14 +2162,6 @@ fit_review_part() {
     else
       review_part=" ${sep} ${label}"
     fi
-  fi
-  if [ "$anchor_marked" = 1 ]; then
-    if [ "$fit_rev_short" = 1 ]; then
-      label="r${anchor_name}"
-    else
-      label="rev ${anchor_name}"
-    fi
-    review_part=" ${sep} ${DIM}${label}${RESET}${review_part}"
   fi
 }
 

@@ -44,6 +44,10 @@ REPO_F="$REPO_A/.claude/worktrees/auto-slug"
 git -C "$REPO_A" worktree add -q -b claude/agitated-fixture "$REPO_F"
 REPO_J="$REPO_A/.claude/worktrees/wut-25-portal"
 git -C "$REPO_A" worktree add -q -b WUT-259_feat_portal-fixes "$REPO_J"
+REPO_L="$REPO_A/.claude/worktrees/WUT-12345-fix-header"
+git -C "$REPO_A" worktree add -q -b wut-12345-fix "$REPO_L"
+REPO_M="$REPO_A/.claude/worktrees/WUT_12345-fix"
+git -C "$REPO_A" worktree add -q -b wut_12345-fix "$REPO_M"
 # A repository whose git dir lives outside the checkout: `<common>/..` is NOT the
 # main worktree, so the canonical-location check must ask git, not strip `/.git`.
 REPO_G="$FIXTURES/repo-g"
@@ -1295,15 +1299,36 @@ fit_arrow_active=$(fit_render fit-arrow-active 35)
 assert grep -Fq 'osr' <<< "$fit_arrow_active"
 assert test "${fit_arrow_active#*fbp}" = "$fit_arrow_active"
 
-# The worktree label shrinks with the directory names it sits beside.
+# The worktree label shrinks with the directory names it sits beside, but a ticket-named one stops
+# at its ticket: `wut-25`, never `w2p`, and the parent dir goes to initials around it.
 fit_wt=$(fit_render fit-wt "" "$REPO_J")
 assert_eq 57 "${#fit_wt}"
 assert grep -Fq "⧉ wut-25-portal" <<< "$fit_wt"
 fit_wt_short=$(fit_render fit-wt-short 56 "$REPO_J")
-assert grep -Fq "⧉ wut-25-p" <<< "$fit_wt_short"
-assert test "${fit_wt_short#*wut-25-po}" = "$fit_wt_short"
-fit_wt_ini=$(fit_render fit-wt-ini 44 "$REPO_J")
-assert grep -Fq "⧉ w2p" <<< "$fit_wt_ini"
+assert grep -Fq "⧉ wut-25 " <<< "$fit_wt_short"
+assert test "${fit_wt_short#*wut-25-}" = "$fit_wt_short"
+fit_wt_ini=$(fit_render fit-wt-ini 42 "$REPO_J")
+assert grep -Fq "rep ⧉ wut-25" <<< "$fit_wt_ini"
+assert test "${fit_wt_ini#*w2p}" = "$fit_wt_ini"
+
+# The digits are the identity, so neither the 8-character cut nor the initials step may touch them,
+# and the separator of the match is printed as written.
+fit_ticket=$(fit_render fit-ticket "" "$REPO_L")
+assert grep -Fq "⧉ WUT-12345-fix-header" <<< "$fit_ticket"
+fit_ticket_short=$(fit_render fit-ticket-short 60 "$REPO_L")
+assert grep -Fq "⧉ WUT-12345 " <<< "$fit_ticket_short"
+assert test "${fit_ticket_short#*WUT-1234 }" = "$fit_ticket_short"
+fit_ticket_ini=$(fit_render fit-ticket-ini 42 "$REPO_L")
+assert grep -Fq "rep ⧉ WUT-12345" <<< "$fit_ticket_ini"
+fit_ticket_us=$(fit_render fit-ticket-us 50 "$REPO_M")
+assert grep -Fq "⧉ WUT_12345 " <<< "$fit_ticket_us"
+assert test "${fit_ticket_us#*WUT_1234 }" = "$fit_ticket_us"
+
+# A worktree with no ticket in its name keeps the old ladder: 8 characters, then initials.
+fit_wt_plain=$(fit_render fit-wt-plain 50 "$REPO_E")
+assert grep -Fq "⧉ feature- " <<< "$fit_wt_plain"
+fit_wt_plain_ini=$(fit_render fit-wt-plain-ini 44 "$REPO_E")
+assert grep -Fq "⧉ fy" <<< "$fit_wt_plain_ini"
 
 # Step 12: the account is cut from the right and never below four characters, and the line is left
 # overflowing rather than losing anything the floor protects.
@@ -3051,8 +3076,10 @@ review_rev_delimited=" ${DIM}│${RESET} ${DIM}rev"
 # out that word in each of its three colourings; the fixture repository is itself named
 # review-dirty, so a bare word cannot be searched for.
 review_slot_silent() { # rendered
+  # The word with its trailing space: the shown tree can be a folder whose own name starts with it
+  # (`review-clean`), and that folder sits right after a separator once the block moves there.
   case "$1" in
-    *" ${DIM}│${RESET} ${DIM}rev"*|*" ${DIM}│${RESET} ${RED}rev"*|*" ${DIM}│${RESET} rev"*)
+    *" ${DIM}│${RESET} ${DIM}rev "*|*" ${DIM}│${RESET} ${RED}rev "*|*" ${DIM}│${RESET} rev "*)
       return 1 ;;
   esac
   return 0
@@ -3083,21 +3110,33 @@ GATE_CMD="$GATE_STUB"
 # Two renders per case, because the gate is never asked on the render path: the first starts the
 # refresh and shows whatever stood before it, the second reads what landed. A render that returned
 # the answer straight away would be one waiting a second for git on every prompt.
-review_await_verdict() { # session
-  local i
+# Each tree the render asks about caches under its own name: the session's, plus this suffix for a
+# tree the block has moved to, so the two answers cannot serve each other's key.
+away_tag() { # toplevel
+  local key
+  key=$(printf '%s' "$1" | cksum)
+  printf '%s' "${key// /-}"
+}
+review_await_verdict() { # session [away-toplevel]
+  local file="$STATE_DIR/review-class-$1" i
+  [ -n "${2:-}" ] && file="$file-$(away_tag "$2")"
   for i in $(seq 1 100); do
-    [ -s "$STATE_DIR/review-class-$1" ] && [ ! -d "$STATE_DIR/review-class-$1.lock" ] && return 0
+    [ -s "$file" ] && [ ! -d "$file.lock" ] && return 0
     sleep 0.05
   done
   fail "the backgrounded verdict never landed: $1"
 }
-review_render() { # session repo
+review_render() { # session repo [away-toplevel]
   local payload
   rm -f "$STATE_DIR/review-class-$1"
   rmdir "$STATE_DIR/review-class-$1.lock" 2>/dev/null
+  if [ -n "${3:-}" ]; then
+    rm -f "$STATE_DIR/review-class-$1-$(away_tag "$3")"
+    rmdir "$STATE_DIR/review-class-$1-$(away_tag "$3").lock" 2>/dev/null
+  fi
   payload=$(statusline_payload "$1" "" "$2")
   run_statusline "$payload" >/dev/null || fail "review render failed: $1"
-  review_await_verdict "$1"
+  review_await_verdict "$1" "${3:-}"
   run_statusline "$payload" || fail "review render failed: $1"
 }
 
@@ -3605,13 +3644,27 @@ progress_dead_out=$(progress_render dead-pid)
 assert test "${progress_dead_out#*4/7}" = "$progress_dead_out"
 rm -f "$PROGRESS_DIR/${progress_prefix}99999999.json"
 
+# The whole middle block is about ONE tree — the shown tree — and a review elsewhere is reported by
+# MOVING it there, never by naming a repository in the counter slot (Egor, 2026-08-27, superseding
+# the 2026-08-26 rule that the folder never moves).
+progress_home_dir="${BLUE}$(basename "$REVIEW_CLEAN")${RESET}"
+progress_away_dirs="${DIM}$(basename "$REVIEW_CLEAN")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_DIRTY")${RESET}"
+rev_unnamed() { # rendered
+  case "$1" in
+    *"rev $(basename "$REVIEW_DIRTY")"*|*"rev $(basename "$REVIEW_CLEAN")"*|*"rev repo-"*)
+      return 1 ;;
+  esac
+  return 0
+}
+
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_foreign_out=$(progress_render foreign-repo)
 assert test "${progress_foreign_out#*4/7}" = "$progress_foreign_out"
+assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_out"
 
-# A run over another tree belongs to the chat that started it and to no other: reviewing a second
-# repository from here rendered nowhere while the tree was the only thing matched on. It carries
-# that repository's NAME, the folder beside it being the session's own.
+# A run over another tree belongs to the chat that started it and to no other, and a live one of
+# this chat's takes the block with it: the folder, the branch, the counters and the counter beside
+# them are that tree's, so the number is read as belonging to the folder it is actually about.
 progress_set_session() { # session
   jq --arg session "$1" '.session = $session' \
     "$PROGRESS_DIR/$progress_prefix$$.json" > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
@@ -3619,41 +3672,59 @@ progress_set_session() { # session
 }
 progress_set_session review-progress-foreign-mine
 progress_foreign_mine_out=$(progress_render foreign-mine)
-assert grep -Fq "rev $(basename "$REVIEW_DIRTY") T2 4/7" <<< "$progress_foreign_mine_out"
+assert grep -Fq "$progress_away_dirs" <<< "$progress_foreign_mine_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 4/7" <<< "$progress_foreign_mine_out"
+assert rev_unnamed "$progress_foreign_mine_out"
+# The branch and the diff counters move with it: review-dirty's own untracked 21 lines, never the
+# clean home tree's nothing.
+assert grep -Fq "${BLUE}⎇ main${RESET} ${GREEN}+21${RESET}/${RED}-0${RESET}" \
+  <<< "$progress_foreign_mine_out"
 
 progress_set_session review-progress-another-chat
 progress_foreign_other_out=$(progress_render foreign-other)
 assert test "${progress_foreign_other_out#*4/7}" = "$progress_foreign_other_out"
+assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_other_out"
 
 # Without a recorded session the walk still answers, for documents written before review-bench
-# recorded one — and where it cannot, a foreign tree stays invisible, as the tree-scoped render
-# always was.
+# recorded one — and where it cannot, a run elsewhere moves nothing and shows nothing.
 mkdir -p "$HOME/.claude/sessions"
 printf '{"sessionId":"review-progress-foreign-walk"}\n' > "$HOME/.claude/sessions/$$.json"
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_foreign_walk_out=$(progress_render foreign-walk)
-assert grep -Fq "rev $(basename "$REVIEW_DIRTY") T2 4/7" <<< "$progress_foreign_walk_out"
+assert grep -Fq "$progress_away_dirs" <<< "$progress_foreign_walk_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 4/7" <<< "$progress_foreign_walk_out"
 progress_foreign_walk_other_out=$(progress_render foreign-walk-other)
 assert test "${progress_foreign_walk_other_out#*4/7}" = "$progress_foreign_walk_other_out"
+assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_walk_other_out"
 rm -f "$HOME/.claude/sessions/$$.json"
 
 # The recorded session decides how loudly a run on THIS tree renders, and nothing about whether it
-# renders at all: another chat's run here is still this tree's news.
+# renders at all: another chat's run here is still this tree's news, and it moves nothing.
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00
 progress_set_session review-progress-another-chat
 progress_own_tree_other_out=$(progress_render own-tree-other)
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 4/7${RESET}" <<< "$progress_own_tree_other_out"
+assert grep -Fq "$progress_home_dir" <<< "$progress_own_tree_other_out"
 
-# A linked worktree is another chat's working tree, and matching on the repository could not tell
-# the two apart: `--git-common-dir` is one path for all of them, so a review running in a sibling
-# rendered here too. The pair proves the distinction is the working tree and not the repository —
-# the sibling is refused, and a subdirectory of THIS tree (the case that forced content matching
-# in the first place, since its file name is unpredictable) still renders.
+# Identity is the WORKING TREE and not the repository: `--git-common-dir` is one path for every
+# worktree of a project, so matching on it rendered a sibling's review here as if it were this
+# tree's. A sibling nobody here owns is still invisible; a sibling of THIS chat's own is an away
+# tree like any other, and takes the block to the worktree it actually runs in — `⧉` and all.
+# A subdirectory of this tree (the case that forced content matching in the first place, since its
+# file name is unpredictable) still resolves to home and renders there.
 PROGRESS_WT="$FIXTURES/review-clean-wt"
 git -C "$REVIEW_CLEAN" worktree add -q "$PROGRESS_WT" -b progress-sibling
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$PROGRESS_WT"
 progress_sibling_out=$(progress_render sibling-worktree)
 assert test "${progress_sibling_out#*4/7}" = "$progress_sibling_out"
+assert test "${progress_sibling_out#*⧉}" = "$progress_sibling_out"
+
+progress_set_session review-progress-sibling-mine
+progress_sibling_mine_out=$(progress_render sibling-mine)
+assert grep -Fq "$progress_home_dir ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
+  <<< "$progress_sibling_mine_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 4/7" <<< "$progress_sibling_mine_out"
+assert test "${progress_sibling_mine_out#*»}" = "$progress_sibling_mine_out"
 
 mkdir -p "$REVIEW_CLEAN/nested/deeper"
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_CLEAN/nested/deeper"
@@ -3702,36 +3773,49 @@ GATE_ANSWER='bright rev 7'
 progress_one_sided_out=$(review_render review-progress-one-sided "$REVIEW_CLEAN")
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T0 3/9${RESET} ${DIM}│${RESET} 7" \
   <<< "$progress_one_sided_out"
-# A run this chat started over ANOTHER repository is named on the line, and the verdict beside it
-# keeps its own word: the folder is the session's own and the two numbers are about two
-# repositories, so a bare count would be read as belonging to the folder (Egor, 2026-08-26).
+# A run this chat started over ANOTHER tree takes the whole block there, verdict included: the gate
+# is asked about the tree the reader is looking at and about no other, and the counter beside its
+# answer carries the word for both of them.
+: > "$GATE_LOG"
 GATE_ANSWER='split rev 54/10'
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_set_session review-progress-foreign-named
-progress_foreign_named_out=$(review_render review-progress-foreign-named "$REVIEW_CLEAN")
+progress_foreign_named_out=$(review_render review-progress-foreign-named "$REVIEW_CLEAN" \
+  "$TOP_REVIEW_DIRTY")
 assert grep -Fq \
-  " ${DIM}│${RESET} rev $(basename "$REVIEW_DIRTY") T0 3/9 ${DIM}│${RESET} rev 54${DIM}/10${RESET}" \
+  " ${DIM}│${RESET} rev T0 3/9 ${DIM}│${RESET} 54${DIM}/10${RESET}" \
   <<< "$progress_foreign_named_out"
-assert grep -Fq "${BLUE}$(basename "$REVIEW_CLEAN")${RESET}" <<< "$progress_foreign_named_out"
+assert grep -Fq "$progress_away_dirs" <<< "$progress_foreign_named_out"
+assert rev_unnamed "$progress_foreign_named_out"
+assert_eq "verdict $TOP_REVIEW_DIRTY review-progress-foreign-named" \
+  "$(grep -F verdict "$GATE_LOG" | tail -1)"
+assert_eq 0 "$(grep -Fc -- "verdict $review_clean_root " "$GATE_LOG" | tr -d ' ')"
 
-# The name is the REPOSITORY's, like `»`: a run in a linked worktree of a foreign repository is a
-# review OF that repository, and the branch slug its worktree directory carries names nothing the
-# reader can place — the same repository would be named differently per worktree.
+# A run in a linked worktree of a foreign repository moves the block to THAT WORKTREE: `»` names
+# the repository, exactly as it would if the chat stood there, and `⧉` the worktree it is a review
+# of — which the repository's name alone could not tell from any of its siblings.
+TOP_PROGRESS_WT=$(cd "$PROGRESS_WT" && pwd -P)
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 "$PROGRESS_WT"
 progress_set_session review-progress-foreign-wt
-progress_foreign_wt_out=$(review_render review-progress-foreign-wt "$REPO_A")
-assert grep -Fq " rev $(basename "$REVIEW_CLEAN") T0 3/9 " <<< "$progress_foreign_wt_out"
-assert test "${progress_foreign_wt_out#*"$(basename "$PROGRESS_WT")"}" = "$progress_foreign_wt_out"
+progress_foreign_wt_out=$(review_render review-progress-foreign-wt "$REPO_A" "$TOP_PROGRESS_WT")
+assert grep -Fq \
+  "${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_CLEAN")${RESET} ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
+  <<< "$progress_foreign_wt_out"
+assert grep -Fq " ${DIM}│${RESET} rev T0 3/9 " <<< "$progress_foreign_wt_out"
+assert rev_unnamed "$progress_foreign_wt_out"
 
-# A run whose repository no longer resolves belongs to no family, so it is named by the path it
-# recorded. Rendered from INSIDE the session's own checkout, the way the harness launches the
-# statusline: asking git about an empty path answers for the process's own directory, which passed
-# the vanished repository off as this one and left the count bare beside the session's folder.
+# A run whose recorded repository no longer resolves has no tree to render at all, and the block is
+# one tree's rendering: the run is dropped whole rather than moving the block to a path or leaving
+# a count beside the session's own folder. Rendered from INSIDE the session's checkout, the way the
+# harness launches the statusline, since asking git about an empty path answers for the process's
+# own directory.
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 /nonexistent/repo-vanished
 progress_set_session review-progress-repo-vanished
 progress_vanished_out=$(cd "$REPO_A" && review_render review-progress-repo-vanished "$REPO_A")
-assert grep -Fq " rev repo-vanished T0 3/9 " <<< "$progress_vanished_out"
+assert test "${progress_vanished_out#*3/9}" = "$progress_vanished_out"
+assert rev_unnamed "$progress_vanished_out"
 assert grep -Fq "${BLUE}$(basename "$REPO_A")${RESET}" <<< "$progress_vanished_out"
+assert grep -Fq " ${DIM}│${RESET} rev 54${DIM}/10${RESET}" <<< "$progress_vanished_out"
 
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00
 
@@ -3743,11 +3827,13 @@ assert grep -Fq " ${DIM}│${RESET} ${RED}rev 7 held for revi…${RESET}" <<< "$
 rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
 GATE_ANSWER=off
 
-# The folder NEVER moves: the `dir` cluster, the branch/diff counters and the gate's question are
-# the session's own workdir, whatever this chat has under review elsewhere — a chat sitting in one
-# project showed another project's folder beside its own repository's number (Egor, 2026-08-26).
-# A review over a foreign repository is reported by NAME in the counter slot instead: live as the
-# counter itself, merely pending as the anchor's dim marker.
+# The block MOVES to the tree a review of this chat's is about, and comes back when that review is
+# answered (Egor, 2026-08-27, superseding the 2026-08-26 rule that it never moves): a folder that
+# stayed put while the numbers beside it were about another place named neither of them. In order:
+# a live run over home holds the block at home, whoever started it; else this chat's newest live
+# run elsewhere takes it; else home keeps it while it is working or owes a review; else an
+# unanswered round of this chat's elsewhere holds it. Only this chat's own runs and rounds move
+# anything.
 ANCHOR_BENCHES="$CLAUDEB_FIX/worker-stats/benches"
 write_anchor_run() { # run-id session repo [member-repo...]
   local run_id="$1" session="$2" repo="$3"
@@ -3773,161 +3859,159 @@ anchor_await() { # session
   done
   fail "the backgrounded anchor never landed: $1"
 }
-anchor_render() { # session cwd
+anchor_render() { # session cwd [away-toplevel]
   local payload
   rm -f "$STATE_DIR/review-anchor-$1" "$STATE_DIR/review-class-$1"
   rmdir "$STATE_DIR/review-anchor-$1.lock" "$STATE_DIR/review-class-$1.lock" 2>/dev/null
+  [ -n "${3:-}" ] && rm -f "$STATE_DIR/review-class-$1-$(away_tag "$3")"
   payload=$(statusline_payload "$1" "" "$2")
   run_statusline "$payload" >/dev/null || fail "anchor render failed: $1"
   anchor_await "$1"
   run_statusline "$payload" >/dev/null || fail "anchor render failed: $1"
-  review_await_verdict "$1"
+  review_await_verdict "$1" "${3:-}"
   run_statusline "$payload" || fail "anchor render failed: $1"
 }
 anchor_own_dir="${BLUE}$(basename "$REPO_A")${RESET}"
 anchor_clean_name="$(basename "$REVIEW_CLEAN")"
+anchor_clean_dir="${BLUE}$anchor_clean_name${RESET}"
+rm -f "$PROGRESS_DIR"/anchor-*.json "$PROGRESS_DIR/$progress_prefix$$.json"
 
-# (a) A live review over repository B while the shell sits in A: the folder is still A, the counter
-# names B, and A's own debt keeps its own word beside it — two numbers about two repositories. The
-# gate is asked about the session's OWN tree.
+# (a) A live review of this chat's over repository B while the shell sits in A: the whole block is
+# B's — its folder after the `»`, its branch, its counters, its counter — and the gate is asked
+# about B and about nothing else, because the verdict is the number beside all of them.
 : > "$GATE_LOG"
 GATE_ANSWER='bright rev 2'
 write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
-anchor_live_out=$(anchor_render anchor-live "$REPO_A")
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_live_out"
-assert test "${anchor_live_out#*»}" = "$anchor_live_out"
-assert grep -Fq " ${DIM}│${RESET} rev $anchor_clean_name T2 1/2 ${DIM}│${RESET} rev 2" \
+anchor_live_out=$(review_render anchor-live "$REPO_A" "$review_clean_root")
+assert grep -Fq "${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} $anchor_clean_dir" \
   <<< "$anchor_live_out"
-# The live counter over the anchored repository already names it; the pending marker would be a
-# second name for one review.
-assert_eq 1 "$(grep -Fo "rev $anchor_clean_name" <<< "$anchor_live_out" | wc -l | tr -d ' ')"
-assert_eq "verdict $TOP_A anchor-live" "$(tail -1 "$GATE_LOG")"
-# Asked about the session's tree and never about the anchored one: a number about a repository the
-# reader is not standing in is worse than none.
-assert_eq 0 "$(grep -Fc -- "verdict $review_clean_root anchor-live" "$GATE_LOG" | tr -d ' ')"
-assert_eq "$REVIEW_CLEAN" "$(cat "$STATE_DIR/review-anchor-anchor-live")"
+assert grep -Fq " ${DIM}│${RESET} rev T2 1/2 ${DIM}│${RESET} 2" <<< "$anchor_live_out"
+assert rev_unnamed "$anchor_live_out"
+assert_eq "verdict $review_clean_root anchor-live" "$(grep -F verdict "$GATE_LOG" | tail -1)"
+assert_eq 0 "$(grep -Fc -- "verdict $TOP_A anchor-live" "$GATE_LOG" | tr -d ' ')"
 
-# A newer live run from another chat over the session tree is still that tree's dim news, and it
-# says nothing about the review pending elsewhere: that one keeps its own named marker, and the
-# verdict keeps its word beside both.
+# (b) Two live runs with one of them over home: home wins, and another chat's run here is the dim
+# counter it always was — never a mover, in either direction.
 write_progress "$$" T3 4 7 2026-07-27T23:00:00+00:00 "$REPO_A"
 progress_set_session anchor-other-chat
-anchor_other_live_out=$(anchor_render anchor-live "$REPO_A")
-assert grep -Fq \
-  " ${DIM}│${RESET} ${DIM}rev $anchor_clean_name${RESET} ${DIM}│${RESET} ${DIM}rev T3 4/7${RESET} ${DIM}│${RESET} rev 2" \
-  <<< "$anchor_other_live_out"
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_other_live_out"
+anchor_home_wins_out=$(review_render anchor-live "$REPO_A")
+assert grep -Fq "$anchor_own_dir" <<< "$anchor_home_wins_out"
+assert test "${anchor_home_wins_out#*»}" = "$anchor_home_wins_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T3 4/7${RESET} ${DIM}│${RESET} 2" \
+  <<< "$anchor_home_wins_out"
 rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
 
-# A round of this chat merely PENDING over there has no counter to show, and the dim marker is what
-# says a review is out there and where. The folder is untouched and the own debt stands beside it.
-: > "$GATE_LOG"
-printf '%s' "$REVIEW_CLEAN" > "$STATE_DIR/review-anchor-anchor-pending"
-rm -f "$STATE_DIR/review-class-anchor-pending" "$PROGRESS_DIR"/anchor-*.json
-anchor_pending_payload=$(statusline_payload anchor-pending "" "$REPO_A")
-run_statusline "$anchor_pending_payload" >/dev/null || fail "anchor pending render failed"
-review_await_verdict anchor-pending
-anchor_pending_out=$(run_statusline "$anchor_pending_payload") \
-  || fail "anchor pending render failed"
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_pending_out"
-assert test "${anchor_pending_out#*»}" = "$anchor_pending_out"
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev $anchor_clean_name${RESET} ${DIM}│${RESET} rev 2" \
-  <<< "$anchor_pending_out"
-assert_eq "verdict $TOP_A anchor-pending" "$(tail -1 "$GATE_LOG")"
-rm -f "$STATE_DIR/review-anchor-anchor-pending"
-
-# An anchor on the session's OWN repository changes nothing at all: the counter and the debt of
-# the one tree they are both about, byte-identical to the same live run with nothing anchoring it.
-write_anchor_run 20260727T220000Z-eeeeeee anchor-same "$REPO_A"
-anchor_same_out=$(anchor_render anchor-same "$REPO_A")
+# (c) A live run ANOTHER chat started elsewhere stays invisible and moves nothing.
+GATE_ANSWER=off
+write_anchor_run 20260727T221000Z-bbbbbbb anchor-someone-else "$REVIEW_CLEAN"
+anchor_not_mine_out=$(anchor_render anchor-notmine "$REPO_A")
+assert grep -Fq "$anchor_own_dir" <<< "$anchor_not_mine_out"
+assert test "${anchor_not_mine_out#*»}" = "$anchor_not_mine_out"
+assert review_slot_silent "$anchor_not_mine_out"
 rm -f "$PROGRESS_DIR"/anchor-*.json
-rm -rf "$ANCHOR_BENCHES/20260727T220000Z-eeeeeee"
-write_anchor_run 20260727T220000Z-fffffff anchor-same-loose "$REPO_A"
-rm -rf "$ANCHOR_BENCHES/20260727T220000Z-fffffff"
-anchor_same_loose_out=$(anchor_render anchor-same-loose "$REPO_A")
-assert_eq "$anchor_same_loose_out" "$anchor_same_out"
-assert grep -Fq " ${DIM}│${RESET} rev T2 1/2 ${DIM}│${RESET} 2" <<< "$anchor_same_out"
-assert test "${anchor_same_out#*rev 2}" = "$anchor_same_out"
-rm -f "$PROGRESS_DIR"/anchor-*.json
-write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
+rm -rf "$ANCHOR_BENCHES/20260727T221000Z-bbbbbbb" "$ANCHOR_BENCHES/20260727T220000Z-aaaaaaa"
 
-# Once the run ends and nothing is owed, nothing names it any more and the gate is asked about the
-# session's tree exactly as before.
+# (d) No live run and an unanswered round of this chat's elsewhere: a home that is clean, idle and
+# owing nothing lets that round hold the block, branch and diff counters included — review-dirty's
+# own untracked 21 lines, not the clean home tree's nothing.
 : > "$GATE_LOG"
-rm -f "$PROGRESS_DIR/anchor-20260727T220000Z-aaaaaaa.json"
-anchor_ended_out=$(anchor_render anchor-live "$REPO_A")
-assert test "${anchor_ended_out#*"$anchor_clean_name"}" = "$anchor_ended_out"
-assert_eq "verdict $TOP_A anchor-live" "$(tail -1 "$GATE_LOG")"
-rm -rf "$ANCHOR_BENCHES/20260727T220000Z-aaaaaaa"
+printf '%s' "$REVIEW_DIRTY" > "$STATE_DIR/review-anchor-anchor-debt"
+rm -f "$STATE_DIR/review-class-anchor-debt" \
+  "$STATE_DIR/review-class-anchor-debt-$(away_tag "$TOP_REVIEW_DIRTY")"
+anchor_debt_payload=$(statusline_payload anchor-debt "" "$REVIEW_CLEAN")
+run_statusline "$anchor_debt_payload" >/dev/null || fail "anchor debt render failed"
+review_await_verdict anchor-debt
+review_await_verdict anchor-debt "$TOP_REVIEW_DIRTY"
+anchor_debt_out=$(run_statusline "$anchor_debt_payload") || fail "anchor debt render failed"
+assert grep -Fq "$progress_away_dirs" <<< "$anchor_debt_out"
+assert grep -Fq "${GREEN}+21${RESET}/${RED}-0${RESET}" <<< "$anchor_debt_out"
+assert review_slot_silent "$anchor_debt_out"
+# Both trees are asked, each under its own cache name, or one answer would serve the other's key.
+assert_eq 1 "$(grep -Fc -- "verdict $TOP_REVIEW_DIRTY anchor-debt" "$GATE_LOG" | tr -d ' ')"
+assert_eq 1 "$(grep -Fc -- "verdict $review_clean_root anchor-debt" "$GATE_LOG" | tr -d ' ')"
 
-# (b) An anchor in a SIBLING WORKTREE is the same repository family: nothing extra is rendered for
-# it at all — the verdict already answers for that family — and the render is byte-identical to the
-# same chat with no anchor.
+# The round being answered is what hands the block back: nothing else about the chat changes.
+rm -f "$STATE_DIR/review-anchor-anchor-debt"
+anchor_closed_out=$(run_statusline "$anchor_debt_payload") || fail "anchor closed render failed"
+assert grep -Fq "$anchor_clean_dir" <<< "$anchor_closed_out"
+assert test "${anchor_closed_out#*»}" = "$anchor_closed_out"
+
+# (e) Work at home outranks a finished round elsewhere, both ways round: an uncommitted line here
+# holds the block, and so does a review this tree owes.
+printf '%s' "$REVIEW_CLEAN" > "$STATE_DIR/review-anchor-anchor-home-dirty"
+anchor_home_dirty_payload=$(statusline_payload anchor-home-dirty "" "$REVIEW_DIRTY")
+run_statusline "$anchor_home_dirty_payload" >/dev/null || fail "anchor home-dirty render failed"
+review_await_verdict anchor-home-dirty
+anchor_home_dirty_out=$(run_statusline "$anchor_home_dirty_payload") \
+  || fail "anchor home-dirty render failed"
+assert grep -Fq "${BLUE}$(basename "$REVIEW_DIRTY")${RESET}" <<< "$anchor_home_dirty_out"
+assert test "${anchor_home_dirty_out#*»}" = "$anchor_home_dirty_out"
+rm -f "$STATE_DIR/review-anchor-anchor-home-dirty"
+
+GATE_ANSWER='bright rev 2'
+printf '%s' "$REVIEW_DIRTY" > "$STATE_DIR/review-anchor-anchor-home-debt"
+anchor_home_debt_payload=$(statusline_payload anchor-home-debt "" "$REVIEW_CLEAN")
+run_statusline "$anchor_home_debt_payload" >/dev/null || fail "anchor home-debt render failed"
+review_await_verdict anchor-home-debt
+anchor_home_debt_out=$(run_statusline "$anchor_home_debt_payload") \
+  || fail "anchor home-debt render failed"
+assert grep -Fq "$anchor_clean_dir" <<< "$anchor_home_debt_out"
+assert test "${anchor_home_debt_out#*»}" = "$anchor_home_debt_out"
+assert grep -Fq " ${DIM}│${RESET} rev 2" <<< "$anchor_home_debt_out"
+rm -f "$STATE_DIR/review-anchor-anchor-home-debt"
+GATE_ANSWER=off
+
+# (f) Identity is the WORKING TREE: a round in a sibling worktree of home's own repository is an
+# away tree like any other, and the block renders that worktree — same family, so no `»`, and the
+# `⧉` label is what says which of the siblings the review is about.
 printf '%s' "$PROGRESS_WT" > "$STATE_DIR/review-anchor-anchor-sibling"
+rm -f "$STATE_DIR/review-class-anchor-sibling" \
+  "$STATE_DIR/review-class-anchor-sibling-$(away_tag "$TOP_PROGRESS_WT")"
 anchor_sibling_payload=$(statusline_payload anchor-sibling "" "$REVIEW_CLEAN")
 run_statusline "$anchor_sibling_payload" >/dev/null || fail "anchor sibling render failed"
-review_await_verdict anchor-sibling
+review_await_verdict anchor-sibling "$TOP_PROGRESS_WT"
 anchor_sibling_out=$(run_statusline "$anchor_sibling_payload") || fail "anchor sibling render failed"
+assert grep -Fq "$anchor_clean_dir ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
+  <<< "$anchor_sibling_out"
+assert test "${anchor_sibling_out#*»}" = "$anchor_sibling_out"
 rm -f "$STATE_DIR/review-anchor-anchor-sibling"
-anchor_sibling_control_out=$(anchor_render anchor-sibling-control "$REVIEW_CLEAN")
-assert_eq "$anchor_sibling_control_out" "$anchor_sibling_out"
-assert grep -Fq "${BLUE}$anchor_clean_name${RESET}" <<< "$anchor_sibling_out"
-assert test "${anchor_sibling_out#*⧉}" = "$anchor_sibling_out"
 
-# The same worktree seen from ANOTHER repository is named, and named by its repository: the marker
-# says which repository a review is pending over, and a worktree directory's branch slug is no
-# repository's name.
-printf '%s' "$PROGRESS_WT" > "$STATE_DIR/review-anchor-anchor-foreign-wt"
-anchor_foreign_wt_payload=$(statusline_payload anchor-foreign-wt "" "$REPO_A")
-run_statusline "$anchor_foreign_wt_payload" >/dev/null || fail "anchor foreign worktree failed"
-review_await_verdict anchor-foreign-wt
-anchor_foreign_wt_out=$(run_statusline "$anchor_foreign_wt_payload") \
-  || fail "anchor foreign worktree failed"
-rm -f "$STATE_DIR/review-anchor-anchor-foreign-wt"
-assert grep -Fq "${DIM}rev $anchor_clean_name${RESET}" <<< "$anchor_foreign_wt_out"
-assert test "${anchor_foreign_wt_out#*"$(basename "$PROGRESS_WT")"}" = "$anchor_foreign_wt_out"
-
-# (c) A merged panel anchors to the member equal to the shell's repository, else to the first
-# member; only a foreign one is named.
-write_anchor_run 20260727T220000Z-bbbbbbb anchor-merged "$FIXTURES/merged-workspace-gone" \
-  "$REVIEW_CLEAN" "$REVIEW_DIRTY"
-anchor_member_out=$(anchor_render anchor-merged "$REVIEW_DIRTY")
-assert grep -Fq "${BLUE}$(basename "$REVIEW_DIRTY")${RESET}" <<< "$anchor_member_out"
-assert test "${anchor_member_out#*"rev $(basename "$REVIEW_DIRTY")"}" = "$anchor_member_out"
-anchor_first_out=$(anchor_render anchor-merged "$REPO_A")
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev $anchor_clean_name${RESET}" <<< "$anchor_first_out"
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_first_out"
-rm -f "$PROGRESS_DIR/anchor-20260727T220000Z-bbbbbbb.json"
-rm -rf "$ANCHOR_BENCHES/20260727T220000Z-bbbbbbb"
-
-# (d) No review in front of the chat: byte-identical to a chat that never had one.
-anchor_none_out=$(anchor_render anchor-none "$REPO_A")
-anchor_control_out=$(anchor_render anchor-control "$REPO_A")
-assert_eq "$anchor_control_out" "$anchor_none_out"
-assert test "${anchor_none_out#*»}" = "$anchor_none_out"
-assert_eq "" "$(cat "$STATE_DIR/review-anchor-anchor-none")"
-
-# (e) Two runs from one chat: the newest wins the anchor, and nothing else decides.
-write_anchor_run 20260727T220000Z-ccccccc anchor-two "$REVIEW_CLEAN"
-write_anchor_run 20260727T230000Z-ddddddd anchor-two "$REVIEW_DIRTY"
-anchor_two_out=$(anchor_render anchor-two "$REPO_A")
-assert grep -Fq "${DIM}rev $(basename "$REVIEW_DIRTY")${RESET}" <<< "$anchor_two_out"
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_two_out"
+# (g) A merged panel holds the block over the member equal to the shell's own repository — which
+# moves nothing — and over the first member otherwise.
+write_anchor_run 20260727T222000Z-ccccccc anchor-merged-member "$FIXTURES/merged-workspace-gone" \
+  "$REVIEW_CLEAN" "$REPO_A"
+anchor_member_out=$(anchor_render anchor-merged-member "$REVIEW_CLEAN")
+assert grep -Fq "$anchor_clean_dir" <<< "$anchor_member_out"
+assert test "${anchor_member_out#*»}" = "$anchor_member_out"
+rm -f "$PROGRESS_DIR"/anchor-*.json
+rm -rf "$ANCHOR_BENCHES/20260727T222000Z-ccccccc"
+write_anchor_run 20260727T223000Z-ddddddd anchor-merged-first "$FIXTURES/merged-workspace-gone" \
+  "$REVIEW_DIRTY" "$REPO_A"
+anchor_first_out=$(anchor_render anchor-merged-first "$REVIEW_CLEAN" "$TOP_REVIEW_DIRTY")
+assert grep -Fq "$progress_away_dirs" <<< "$anchor_first_out"
 rm -f "$PROGRESS_DIR"/anchor-*.json
 rm -rf "$ANCHOR_BENCHES"
 
-# (f) An anchor whose repository no longer resolves is ignored WHOLE: nothing named, the session's
-# own folder, and no leftover member count from the dead panel.
+# (h) No review in front of the chat at all: byte-identical to a chat that never had one.
+anchor_none_out=$(anchor_render anchor-none "$REVIEW_CLEAN")
+anchor_control_out=$(anchor_render anchor-control "$REVIEW_CLEAN")
+assert_eq "$anchor_control_out" "$anchor_none_out"
+assert grep -Fq "$anchor_clean_dir" <<< "$anchor_none_out"
+assert test "${anchor_none_out#*»}" = "$anchor_none_out"
+assert_eq "" "$(cat "$STATE_DIR/review-anchor-anchor-none")"
+
+# (i) A round whose tree no longer resolves is ignored WHOLE: the session's own folder, and no
+# leftover member count from the dead panel.
 printf '%s' "/nonexistent/repo-gone +2" > "$STATE_DIR/review-anchor-anchor-gone"
-anchor_gone_out=$(run_statusline "$(statusline_payload anchor-gone "" "$REPO_A")") \
+anchor_gone_out=$(run_statusline "$(statusline_payload anchor-gone "" "$REVIEW_CLEAN")") \
   || fail "anchor missing-repo render failed"
-assert grep -Fq "${BLUE}$(basename "$REPO_A")${RESET}" <<< "$anchor_gone_out"
+assert grep -Fq "$anchor_clean_dir" <<< "$anchor_gone_out"
 assert test "${anchor_gone_out#*+2}" = "$anchor_gone_out"
 assert test "${anchor_gone_out#*repo-gone}" = "$anchor_gone_out"
 assert test "${anchor_gone_out#*»}" = "$anchor_gone_out"
 rm -f "$STATE_DIR/review-anchor-anchor-gone"
 
-# (g) The verdict's cache key reads the commit journal of the checkout FAMILY — one file under the
+# (j) The verdict's cache key reads the commit journal of the checkout FAMILY — one file under the
 # common dir, which is where the gate reads this chat's pending paths from. A key watching the
 # worktree's own git dir would serve a stale verdict for as long as the TTL allows after an edit
 # recorded from a sibling checkout.
@@ -3964,4 +4048,4 @@ rm -f "$journal_wt_gitdir/claude-commit-journal" "$journal_wt_common/claude-comm
 GATE_ANSWER=off
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched, that one named by its repository — and nothing else once it ends, a folder that never moves for a review while a foreign one is named beside it by its live counter or by the dim pending marker — one word carried once where the counter and the verdict are about one tree, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the session's own tree and keyed on the checkout family's commit journal, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
