@@ -49,7 +49,12 @@ RECEIPT_HASH_HEX = 8
 # mode widens to the surviving paths of the round a decision reopened. The commit gate prints it
 # verbatim inside a `cd`, and docs/shared-invariants.md holds the two equal;
 # a caller that hand-picks paths instead is choosing the scope, which is the choice this removes.
-DEBT_REVIEW_COMMAND = "REVIEW_ASKED=1 review-bench review --debt --tier T1"
+# The tier is a PLACEHOLDER, never a tier: printed as a real one it was READ as one, and every
+# chat pasted the same T1 over documentation and over the core alike. `<`, `|` and `>` make a
+# blind paste fail in a shell, so the choice has to be made; a caller that already knows the
+# tier (a refusal reprinting the command the user typed) substitutes it for this literal.
+DEBT_REVIEW_TIER = "<T0|T1|T2 — choose, see review-tiers.md>"
+DEBT_REVIEW_COMMAND = "REVIEW_ASKED=1 review-bench review --debt --tier <T0|T1|T2 — choose, see review-tiers.md>"
 # Where the artifacts that answer for a path live: the waivers beside the receipts, and the two
 # journals beside each other in the one git dir a whole family shares (`journal_dir`).
 WAIVER_DIR = "waivers"

@@ -251,7 +251,8 @@ def worktree_snapshot_commit(repo, clean_command=None, paths=None):
 
 def announce_review_target(repo, sha, scope=(), members=None, head_label=None, chunks=0):
     """What this run is about to send to the panel, said out loud before it goes: which base to
-    which head, how many files, how many lines, under which scope.
+    which head, how many files, how many lines, under which scope. Returns that size as
+    `{"files": n, "lines": n}`, which is what the record keeps and the report's `debt:` row prints.
 
     The target was only ever implied by the flags — `--worktree` reads the tree, a commitish reads
     one commit — and nothing ever printed which one won. A review asked for over work that had just
@@ -266,10 +267,12 @@ def announce_review_target(repo, sha, scope=(), members=None, head_label=None, c
     )
     described = []
     total_files = 0
+    total_lines = 0
     for label, where, commit, narrowed, head_label in entries:
         base = diff_base(where, commit)
         changes, _ = diff_numstat(where, [base, commit])
         total_files += len(changes)
+        total_lines += sum(changes.values())
         # A sealed range is named by its own right end: the sha it was sealed into is nothing the
         # caller asked for, and a target line naming it answers a question nobody asked.
         right = head_label or commit
@@ -294,6 +297,9 @@ def announce_review_target(repo, sha, scope=(), members=None, head_label=None, c
         described.append(f"  {chunks} chunks over these repositories")
     for line in described:
         print(line, file=sys.stderr)
+    # Handed back rather than only printed: the report's `debt:` row is this same size, and priced
+    # again at render time it would answer for a tree the fixes have already moved.
+    return {"files": total_files, "lines": total_lines}
 
 
 def parse_range_spec(spec):

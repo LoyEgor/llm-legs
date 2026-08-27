@@ -527,6 +527,129 @@ def round_closed(run_dir):
     return bool(isinstance(record, dict) and record.get("closed_by"))
 
 
+# What an open round still owes before the commit that closes it. The sequence is review -> commit
+# -> push and a commit never sits between two rounds, so both doors of the flow — the commit gate in
+# `../claude-setup/hooks/review-flow-gate.sh` and the launcher below — price a round on this one
+# answer instead of each composing the records their own way.
+ROUND_STEP_READY = "ready"
+ROUND_STEP_DECISION = "decide"
+ROUND_STEP_ROUND2 = "round2"
+
+
+def round_next_step(run_dir, meta):
+    """What `run_dir` owes before the commit that closes it, or None where it is no open round at
+    all: `ROUND_STEP_READY` where that commit IS the next step, `ROUND_STEP_DECISION` where the
+    band owes a fork nobody recorded, `ROUND_STEP_ROUND2` where the decision named a second pass
+    that has not been triaged.
+
+    Composed out of the records the flow already keeps, and nothing new is derived here:
+    `run_triaged` for the triage, `round_closed` for the commit that spent it, `fork_missing` for
+    the decision the band owes, and `artifact_owes_second_round` — the reader the Stop asks price a
+    follow-up with — for the round that decision named.
+    """
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
+    if not _store.run_triaged(run_dir) or round_closed(run_dir):
+        return None
+    if fork_missing(run_dir, meta):
+        return ROUND_STEP_DECISION
+    if _debt.artifact_owes_second_round({"kind": "run", "id": run_dir.name, "dir": run_dir}):
+        second = chain_second_round(run_dir, meta)
+        if second is None or not _store.run_triaged(second):
+            return ROUND_STEP_ROUND2
+    return ROUND_STEP_READY
+
+
+def session_open_round(repo, session):
+    """The newest round of `session` over `repo` no commit has closed, as `(run_dir, meta, step)`,
+    or None where that chat has none there.
+
+    A waiver of this chat recorded at or after the round, over a path the round read, takes it out
+    of the walk: the waiver is the record saying that work goes unreviewed, and it is the second way
+    past the launcher's refusal below.
+    """
+    from . import debt as _debt
+    resolved = _store.resolve_repo_arg(repo) if repo else None
+    if resolved is None or not session:
+        return None
+    family = _store.repo_family(str(resolved))
+    benches = _store.state_dir() / "benches"
+    launchers = worker_session_launchers()
+    waivers = None
+    for run_dir in sorted(benches.iterdir(), reverse=True) if benches.exists() else ():
+        try:
+            meta = json.loads((run_dir / "meta.json").read_text())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        owner = str(meta.get("session") or "")
+        if owner != session and launchers.get(owner) != session:
+            continue
+        record = _store.run_repo_record(resolved, meta, family=family)
+        if record is None:
+            continue
+        reviewed = record.get("reviewed") if isinstance(record, dict) else None
+        if not isinstance(reviewed, dict) or not reviewed:
+            continue
+        step = round_next_step(run_dir, meta)
+        if step is None:
+            continue
+        if waivers is None:
+            waivers = [entry for entry in _debt.read_waivers(resolved)
+                       if str(entry.get("session") or "") == session]
+        epoch = _store.run_id_epoch(run_dir.name)
+        if any(_store.counted_int(entry.get("epoch")) >= epoch
+               and set(entry.get("paths") or ()) & set(reviewed)
+               for entry in waivers):
+            continue
+        return run_dir, meta, step
+    return None
+
+
+def round_open_guard(repos, session, chainable):
+    """RULE: review -> commit -> push, and a new review never starts over a round of this chat that
+    is still open.
+
+    A commit does not sit between two rounds, so the way out of an open round is the step that round
+    owes — the commit that closes a fixing pass, or the second pass a decision named — and never a
+    fresh panel over the same tree: that leaves the first round standing with nobody coming back to
+    it and pays a second panel to be told the same things. A round whose next step IS the commit is
+    no obstacle, since that commit is what the chat is about to make.
+
+    `chainable` is the launch's own mode: a `--debt` sweep over a decided round is that round's
+    second pass and the store stamps it as one (`resolve_round_stamp`), so it goes through, while a
+    `--worktree` or `--range` launch chains to nothing and would start a round 1 beside the open one.
+    """
+    if not session:
+        return
+    for repo in repos:
+        found = session_open_round(repo, session)
+        if found is None:
+            continue
+        run_dir, _, step = found
+        if step == ROUND_STEP_READY or (step == ROUND_STEP_ROUND2 and chainable):
+            continue
+        raise ValueError(
+            f"round {run_dir.name} of this chat is open in {repo}: finish it (fix -> commit closes "
+            "it; or its decided round 2 first). A new review starts only after that, or after "
+            "`review-bench waive`."
+        )
+
+
+def cmd_round_open(args):
+    """`round-open`: what this chat's open round in a repository owes, as `<run-id>\t<step>`, for
+    the commit gate that may not pass a commit while a round owes anything but that commit. Nothing
+    printed where the chat has no open round there; the exit code answers only whether the store
+    could be read at all, since a hook that cannot ask has to let the commit through.
+    """
+    session = str(getattr(args, "session", "") or "").strip() or _store.caller_chat() or ""
+    found = session_open_round(getattr(args, "repo", None) or ".", session)
+    if found is not None:
+        run_dir, _, step = found
+        print(f"{run_dir.name}\t{step}")
+    return 0
+
+
 def round_budget_spent(run_dir):
     """Whether the run in `run_dir` is the second round over its scope, so the contract owes no
     third pass over it. Memoized like every other per-run tally the covering reader asks for once

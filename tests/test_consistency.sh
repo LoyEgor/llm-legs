@@ -788,6 +788,19 @@ FRAMEPY
   assert eq "$frame_render" "ok,ok,ok,ok,ok,ok,ok,ok,ok,ok"
   assert grep -Fq 'fixes = fixes_row_value(run_dir, meta, verdict_rows, number) if unanswered else None' \
     "$RB_REPORT"
+  # The two rows that speak only when they have something to say, and the one that always does: a
+  # `next: none` and a `debt:` row rebuilt at render time were both a block saying a thing that is
+  # not so — nothing follows, and this much was read — where the invariant says it says nothing.
+  assert grep -Fq 'if follows:' "$RB_REPORT"
+  assert grep -Fq 'rows.append(("next:", follows, True))' "$RB_REPORT"
+  assert grep -Fq 'rows.append(("debt:", price, False))' "$RB_REPORT"
+  assert grep -Fq 'price = meta.get("scope_price")' "$RB_REPORT"
+  assert grep -Fq '"scope_price": scope_price,' "$RB_CLI"
+  assert eq "$(grep -c '"scope_price": scope_price,' "$RB_CLI")" 2
+  assert doc_has '`debt:` stands directly under `confirmed:` on every round'
+  assert doc_has 'prints no row at all otherwise'
+  # One width for every block, because the pane it is read in re-wraps anything longer at column 0.
+  assert grep -Fq 'return min(REPORT_WIDTH_MAX, shutil.get_terminal_size' "$RB_REPORT"
   assert grep -Fq 'rows.append(("fixes:", fixes, True))' "$RB_REPORT"
   # The fork the loud word owes is delivered by a command of its own, so no row carries it.
   assert grep -Fq 'REPORT_BLOCKED_FORK' "$RB_ROUND"
@@ -839,14 +852,15 @@ blocked|done|pending"
   # three spellings and drops every other line without a word, so a state added or renamed on the
   # emitting side reaches nobody and nothing fails. Spelled once per repository, here held equal.
   # DELIVERY_STATES stays the two FINAL states `settle-delivery` may queue; `triaged` and `fork`
-  # join the line vocabulary alone — one delivery each, as ONE LINE `report --line` renders, never
-  # queued and never a frame.
+  # join the line vocabulary alone — one delivery each, never queued. Only `fork` is rendered as a
+  # LINE: the triage itself is the whole block the moment it is on record, and a one-liner Egor
+  # then had to wait out was the report arriving twice, late.
   cs_delivery_states='done|blocked'
   assert grep -Fq "DELIVERY_STATES = (\"${cs_delivery_states//|/\", \"}\")" "$RB_ROUND"
   assert grep -Fq 'return "triaged"' "$RB_ROUND"
   assert grep -Fq 'rows.append((run_dir, "fork"))' "$RB_ROUND"
   assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states|triaged|fork)\\Z\")" "$DELIVERY_GATE"
-  assert grep -Fq 'LINE_STATES = ("triaged", "fork")' "$DELIVERY_GATE"
+  assert grep -Fq 'LINE_STATES = ("fork",)' "$DELIVERY_GATE"
   assert grep -Fq 'const="triaged", choices=("triaged", "fork")' "$RB_CLI"
   assert doc_has 'exactly `done`, `blocked`, `triaged` and `fork`'
   # The fork decision is a RECORD the gates require before any fixing pass, never prose demanded
@@ -893,6 +907,25 @@ print(match.group(1) if match else repr(line))
 FOREIGNPY
 )
   assert eq "$cs_foreign_match" "73403494"
+  # What the model owes AFTER the block, in the three places that say it: the hook's directive, the
+  # tier doc a chat reads before a review, and the contract. Worded apart, the contract asked for
+  # judgment the block cannot hold while the other two asked for silence, and a chat obeyed
+  # whichever it had read last.
+  cs_fork_word='the only word on where the round goes'
+  cs_fork_close='carrying the fixes closes it'
+  assert grep -Fq "$cs_fork_word" "$REPORT_NUDGE"
+  assert grep -Fq "$cs_fork_close" "$REPORT_NUDGE"
+  assert grep -Fq "$cs_fork_word" "$ROOT/docs/review-contract.md"
+  assert grep -Fq "$cs_fork_close" "$ROOT/docs/review-contract.md"
+  if test -r "$CLAUDE_SETUP/global/docs/review-tiers.md"; then
+    # Asked of the prose with its line breaks folded away: that doc is rewrapped whenever it is
+    # shortened, and a pin that a rewrap alone can break says the wording changed when it did not.
+    cs_tier_prose=$(tr '\n' ' ' <"$CLAUDE_SETUP/global/docs/review-tiers.md" | tr -s ' ')
+    assert grep -Fq "$cs_fork_word" <<<"$cs_tier_prose"
+    assert grep -Fq "$cs_fork_close" <<<"$cs_tier_prose"
+  else
+    printf 'SKIP: post-block wording (%s is unreadable)\n' "$CLAUDE_SETUP/global/docs/review-tiers.md"
+  fi
   assert doc_has 'Review report header words'
   assert doc_has '`review · round <N>`'
   assert doc_has '`· NOT FINISHED` for a round whose fix status is `blocked`'
@@ -1148,8 +1181,14 @@ if test -r "$COMMIT_REPORT"; then
   # Except for a --dry-run, which lands nothing: the report exits on that same flag before it
   # consumes anything, and the file left standing under the session-only name is read by the chat's
   # next call carrying no id as its own evidence.
-  assert grep -Fq "! printf '%s' \"\$cmd\" | grep -qE -- '(^|[[:space:]])--dry-run([[:space:]]|\$)' &&" \
-    "$FLOW_GATE"
+  # Read ONCE into `dry_run`, because the commit door reads the same answer: a flag spelled twice
+  # is a commit the snapshot skips and the refusal below still walls, or the other way about. And
+  # read as the COMMIT's own token — in the command segment that holds it, quoted runs taken out —
+  # or `git commit -m "--dry-run"` is a real commit nothing here measures. The report still matches
+  # the flag anywhere on the line, so such a commit lands unreported: one spelling left to converge.
+  assert grep -Fq 'git_subcommand "commit([[:space:]]+${arg})*[[:space:]]+--dry-run"' "$FLOW_GATE"
+  assert grep -Fq 'rj_command_segments "$cmd" | sed -E' "$FLOW_GATE"
+  assert grep -Fq '[ -n "${landing:-}" ] && [ -z "$dry_run" ] &&' "$FLOW_GATE"
   # Armed for every kind that CREATES commits, not for `commit` alone: a merge, a cherry-pick and a
   # revert land content under this chat's name and were measured against no pre-call HEAD at all.
   assert grep -Fq 'for candidate in merge cherry-pick revert; do' "$FLOW_GATE"
@@ -1323,7 +1362,15 @@ assert grep -Fq "$(printf '%s' "$FORK_WORDS" | sed 's| | / |g')" "$ROOT/docs/rev
 # looks like an answer.
 assert doc_has 'The review that answers a debt'
 rb_debt_cmd=$(sed -n 's/^DEBT_REVIEW_COMMAND = "\(.*\)"$/\1/p' "$RB_STORE")
-assert eq "$rb_debt_cmd" 'REVIEW_ASKED=1 review-bench review --debt --tier T1'
+assert eq "$rb_debt_cmd" 'REVIEW_ASKED=1 review-bench review --debt --tier <T0|T1|T2 — choose, see review-tiers.md>'
+# The tier in that command is a placeholder and not a tier: printed as a real one it is pasted as
+# one, which is how every chat came to run T1 over documentation and over the core alike. The one
+# caller that knows a tier substitutes THIS literal, so a spelling that drifts leaves the
+# placeholder standing in a command a user already answered for.
+rb_debt_tier=$(sed -n 's/^DEBT_REVIEW_TIER = "\(.*\)"$/\1/p' "$RB_STORE")
+assert eq "$rb_debt_tier" '<T0|T1|T2 — choose, see review-tiers.md>'
+assert grep -Fq -e "--tier $rb_debt_tier" "$RB_STORE"
+assert grep -Fq 'command.replace(_store.DEBT_REVIEW_TIER, tier)' "$RB_DEBT"
 # One builder over that literal, and every surface that HANDS the command to a chat goes through
 # the per-chat form: a notice or a handoff spelling the bare command itself is what arranges the
 # split panel the review then refuses, and a chat told to run it twice runs it twice.
@@ -2541,4 +2588,38 @@ for commit_free_doc in docs/DIAGNOSTICS.md docs/review-contract.md; do
   assert grep -Fq '~/.claude/commit-free' "$ROOT/$commit_free_doc"
 done
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the one whitelist that says which repository families a chat commits in without asking) and match %s\n' "$asserts" "$DOC"
+# The commit door is the one refusal this gate has, and a wall the policy does not describe is a
+# chat reading a block nothing in the contract accounts for: the sentence's own words are pinned in
+# the hook that speaks them and in the contract that grants them.
+# And it fires only where the committing chat has a round of its own standing READY TO CLOSE there:
+# the receipt covering a fixing pass is written AFTER the commit, so a door blind to the round walls
+# the very commit that closes it, and a round owing its decision or its round 2 is told which of
+# those comes first. One reader answers that for both doors of the flow.
+COMMIT_FREE_REFUSAL='is a commit-free repository'
+COMMIT_FREE_ROUND='No round of this chat is open here'
+if test -r "$CLAUDE_SETUP/hooks/review-flow-gate.sh"; then
+  assert grep -Fq "$COMMIT_FREE_REFUSAL" "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  assert grep -Fq "$COMMIT_FREE_ROUND" "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+else
+  printf 'SKIP: commit-free refusal (%s is unreadable)\n' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+fi
+assert grep -Fq "$COMMIT_FREE_REFUSAL" "$ROOT/docs/review-contract.md"
+assert grep -Fq 'READY TO CLOSE in that repository' "$ROOT/docs/review-contract.md"
+# The three words are ONE vocabulary: the hook branches on them and the launcher refuses on them,
+# so a spelling that moves on one side is a commit door reading an answer nobody gives.
+assert grep -Fq 'ROUND_STEP_READY = "ready"' "$ROOT/share/rbench/round.py"
+assert grep -Fq 'ROUND_STEP_DECISION = "decide"' "$ROOT/share/rbench/round.py"
+assert grep -Fq 'ROUND_STEP_ROUND2 = "round2"' "$ROOT/share/rbench/round.py"
+assert grep -Fq 'round_next_step' "$ROOT/docs/review-contract.md"
+assert grep -Fq 'round_open_guard' "$ROOT/share/rbench/cli.py"
+if test -r "$CLAUDE_SETUP/hooks/review-flow-gate.sh"; then
+  assert grep -Fq 'review-bench round-open --repo' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  assert grep -Fq '"$round_step" != ready' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  assert grep -Fq 'round2)' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  assert grep -Fq 'decide)' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+fi
+assert grep -Fq 'round-open' "$RB_CLI"
+assert doc_has 'the commit door beside it'
+assert doc_has 'the same three words the launcher'"'"'s `round_open_guard` refuses a new panel on'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the one whitelist that says which repository families a chat commits in without asking, whose commit door is the one refusal the review gate has, fired unless a round of the committing chat stands there ready to close, in the same three words the launcher refuses a new panel on) and match %s\n' "$asserts" "$DOC"

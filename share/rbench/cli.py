@@ -709,6 +709,10 @@ def cmd_run(args):
         # Both before anything is sealed: a snapshot commit is an object written into the caller's
         # repository, and a round refused after writing one has already spent what it refused.
         _debt.debt_one_panel_guard(repos, debt_asker, debt_all, tier_name, debt_alone)
+    # Beside it and for the same reason: an open round of this chat here owes a step of its own,
+    # and a panel launched over it settles nothing that round was waiting for.
+    if debt_mode or worktree_mode or range_spec or all_ranged:
+        _round.round_open_guard(repos, debt_asker, chainable=debt_mode)
     # Round 1 unless the store itself says otherwise, and settled BEFORE anything is sealed: a
     # round refused after writing a snapshot commit has already spent what it refused.
     round_stamp = {}
@@ -821,7 +825,7 @@ def cmd_run(args):
     # cell reads one chunk, and the run answers for the commit only if every rater reads them all.
     chunk_forced = bool(getattr(args, "chunk", False))
     chunks = _scope.diff_chunks(repo, sha, force=chunk_forced)
-    _scope.announce_review_target(repo, sha, scope, members, head_label=range_head,
+    scope_price = _scope.announce_review_target(repo, sha, scope, members, head_label=range_head,
                            chunks=len(chunks))
     for line in debt_skipped:
         print(line, file=sys.stderr)
@@ -979,6 +983,7 @@ def cmd_run(args):
         "started": started.isoformat(), "sealed_at": sealed_at.isoformat(),
         "focus": args.focus or "",
         "verifier": verify_model or "",
+        "scope_price": scope_price,
         **_store.session_stamp(),
     }
     if worktree_mode:
@@ -1341,6 +1346,9 @@ def cmd_run(args):
             "durations": {row["rater"]: row["duration_ms"] for row in rater_meta},
             "started": started.isoformat(), "sealed_at": sealed_at.isoformat(),
             "finished": _store.iso_now(), "focus": args.focus or "",
+            # The finished record is written from scratch, so the launch's own pricing is carried
+            # into it: recomputed here it would answer for the tree the panel has been reading.
+            "scope_price": scope_price,
             "verifier": verify_model or "",
             "verify_after_panel_ms": verify_after_panel_ms(),
             # Rewritten from scratch when the run ends, and the triage nag reads the finished
@@ -1835,6 +1843,15 @@ def main():
         help="Only runs this chat launched, plus any run recording no launching chat",
     )
     pending.set_defaults(func=_round.cmd_pending_report)
+
+    round_open = subparsers.add_parser(
+        "round-open",
+        help="What this chat's open round in a repository owes: <run-id> TAB ready|decide|round2",
+    )
+    round_open.add_argument("--repo", default=".", help="The repository to answer for")
+    round_open.add_argument("--session", default="", metavar="ID",
+                            help="The chat whose rounds to answer for")
+    round_open.set_defaults(func=_round.cmd_round_open)
 
     delivery = subparsers.add_parser(
         "pending-delivery",

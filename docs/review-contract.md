@@ -11,7 +11,10 @@ Reviews are never a wall. A missing review is made visible — in the statusline
 once at commit time — and the model or Egor decides. There is no class of problem
 called "a commit without review": a review can always run after the commit. The
 intolerable failure is a commit landing unreviewed with nobody noticing; the cure
-is visibility, not blocking.
+is visibility, not blocking. One exception, and it exists because visibility is
+what failed there: in a family `~/.claude/commit-free` lists Egor gives no
+per-commit word, so nothing arrives to trigger the review a notice asked for, and
+a named commit carrying the chat's own unreviewed paths is refused (below).
 
 ## Truth sources
 
@@ -411,6 +414,21 @@ in `share/rbench/round.py` alone (`ROUND_FIX_MAX = 8`, `ROUND_HARD_MIN = 20`,
   why the code is worth keeping as it stands; `simplify`, `cut` and `redesign`
   each mean round 2.
 
+The sequence is review -> commit -> push, and a commit never sits between two
+rounds. What a round still owes before that commit is ONE answer, `round.py`
+`round_next_step`: `ready` where the commit itself is the next step (the fixing
+band, or a recorded `fix`, or a chained round 2 whose triage is in), `decide`
+where the band earned a fork nobody recorded, `round2` where the decision named
+a second pass nothing has triaged yet. Both doors of the flow read that word and
+neither composes it again: the commit gate in `../claude-setup/hooks/
+review-flow-gate.sh` asks `review-bench round-open --repo <top> --session <id>`
+and lets a commit-free commit through only on `ready`, and the launcher
+(`round_open_guard`, beside `debt_one_panel_guard`) refuses a NEW panel while a
+round of that chat in that repository is anything else — a decided round's own
+`--debt` second pass excepted, since that launch IS the step it owes. `waive` is
+the other way out: a waiver of that chat over a path the round read takes the
+round out of both answers.
+
 The decision is a RECORD and never prose:
 `review-bench fork <run-id> --choice fix|simplify|cut|redesign --why '<text>'`
 writes `<run-dir>/fork.json` (`choice`, `why`, `session`, `at`). Those four words
@@ -575,11 +593,32 @@ carries, for the block that is not about the tree in front of the reader.
 his explicit skip — both on the model's honour (2026-08-10). The gate verifies the
 first against the transcript, except in a git family `~/.claude/commit-free` lists,
 where the commit the review rides needs no word of his and so neither does the
-review. The framed block from
+review. That family is also the one place the gate REFUSES: a `git commit` whose
+target the command NAMED there, carrying paths of the committing chat's own that no
+review has read, is blocked with `REVIEW GATE: <top> is a commit-free repository`,
+naming the paths and the one `debt --command` review that closes them, since Egor's
+standing permission means no word of his will arrive to trigger the review the way it
+does everywhere else (2026-08-27, after llm-legs b75b611 landed two unreviewed paths
+under it). It fires only where the committing chat has no round of its own standing
+READY TO CLOSE in that repository (`round_next_step`, asked through `round-open`): the
+order is review, commit, push, so the commit carrying a round's fixes is exactly what
+closes it, and refusing that one walls the second half of what the refusal asks for. A
+round owing its decision, or the round 2 that decision named, is refused too — and told
+which of those comes first, never to commit between two rounds (2026-08-27, after it blocked a
+chat's closing commit and cost it a round 2 nobody needed — `fixes --done` is optional,
+and the receipt covering the fixed bytes is written after the commit, not before it).
+A commit under `REVIEW_GATE_OK=1` passes as before, `--dry-run` is refused
+nothing, and a target nothing resolves — `git -C "$VAR" commit`, a heredoc holding a
+commit line — is never refused either: it is priced over every repository this flow
+knows, and a wall over each of them blocks calls that commit nothing at all. Every
+strict repository is untouched, and so is every unplaceable call: the gate prices,
+records the debt and passes in silence. The framed block from
 `record --no-corpus` is the only review output Egor reads, and the report hook
-prints it: one copy, from review-bench's own rendering, costing no tokens. What the
-model owes after the block is judgment the block cannot hold, never its contents
-restated. The corpus rules (sealed judges, `--bench` opt-in) are unchanged.
+prints it: one copy, from review-bench's own rendering, costing no tokens. After the
+block the model adds NOTHING — no counts, no cells, no timings, no opinion
+paragraph: the fork, where the round earned one, is the only word on where the round goes,
+and without one the commit carrying the fixes closes it. The corpus rules (sealed
+judges, `--bench` opt-in) are unchanged.
 
 **The launch DETACHES its own panel.** `review-bench review …` starts the panel in a
 session of its own with its output going to `<run-dir>/panel.log`, prints the run id the
@@ -679,30 +718,37 @@ for a decision is NOT in the block:
 which is who acts on it, while Egor reads the block. A round whose
 fixing pass has not answered wears the PLAIN word until the clock above dates
 it STALE, and says so in its `fixes:` row either way. While its triage is
-younger than the triage-gate window it is delivered ONCE as `triaged` — ONE
-LINE, never the block: `review <run-id> · triaged: P1 a · P2 b · P3 c · N total
-[· D in docs] — fixing pass next`, rendered by `review-bench report <id> --line`
-off the same tally the `confirmed:` row prints, no fork and no reply expected.
-The recorded fork decision follows the same way under `fork` (`--line fork`).
-Past that window it is delivered by no
+younger than the triage-gate window it is delivered ONCE as `triaged` — the
+WHOLE BLOCK, the moment the triage is on record and whoever ran `record`, since
+that is the report and a one-line herald only made Egor wait for it. `done`
+after it reaches nobody: the round has already been read, and the same block
+again is the same news twice. The recorded fork decision keeps its own second
+delivery, ONE LINE under `fork` (`review-bench report <id> --line fork`), and a
+round the decision reopened is delivered again on its NOT FINISHED word.
+Past that window a triage is delivered by no
 hook at any age — a loud word derived from "no fixes recorded" reports failure
 while the fixes are still landing, and promoting aged rounds to a deliverable
-state floods the Stop gate with every pre-receipt run the chat ever held. The
-finished report follows on its own, from the Stop net's `pending-delivery`
-source, one per state per round.
+state floods the Stop gate with every pre-receipt run the chat ever held.
 
-**The rows, in one order.** `tier:` and `confirmed:` open every block. A round 2 adds
+**The rows, in one order.** `tier:` and `confirmed:` open every block, and `debt:`
+(`<N> lines · <M> files`) stands directly under the tally: what a round confirmed is read
+against how much it read, priced once at LAUNCH and carried in the record, because a size
+re-counted at render time answers for the tree the fixing pass has already moved. A round 2 adds
 `before:` (round 1's own tally) and `decision:` (`<choice> (round 1)`) and a round 1
 prints neither — a round with nothing before it has nothing to be read against. `fixes:`
 speaks while a fix or a decision is owed; after a non-fix decision it goes quiet rather than
-calling simplify, cut or redesign a fix that closes the round. `next:` always speaks on a review
-round — the one row that says what the reader does now. An untiered bench prints neither row.
+calling simplify, cut or redesign a fix that closes the round. `next:` speaks only where
+something FOLLOWS — a decision, or the round 2 it names — and prints no row at all otherwise:
+`next: none` was a row spent repeating that the row above it was the whole answer. An untiered
+bench prints neither of those two.
 Then the panel's own accounting (`verifier:`, `rejected:`, `found:`,
 `noise:`, `quiet:`/`echoed:`/`untriaged:`, `failed:`), and `id:` LAST, carrying the
 CHAIN's id rather than the run's: the two rounds are one piece of work, and an id is
 what a reader types back into a command — one of them, never two to pick between. Every
 value stands in one column, wrapped values included: a continuation that returns to the
-left margin reads as a row label nobody can look up.
+left margin reads as a row label nobody can look up. The block is laid out to
+`REPORT_WIDTH_MAX` however wide the terminal says it is, because a line past the pane it is
+read in is wrapped by that pane — at column 0, under the labels.
 
 **Who may close a round.** `record` and `fixes` key on the session the RUN RECORD
 names, never on the shell they were typed in: a claudeb worker carries a session of

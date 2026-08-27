@@ -76,7 +76,12 @@ SIDE_LEG_NAME = {"claude": "CLAUDE", "codex": "CODEX", "agy": "GEMINI", "opencod
 # The column every value in a report block starts at, wrapped continuations included. Fixed rather
 # than measured off the labels, so the same row sits under the same column in every run's block.
 REPORT_LABEL_WIDTH = 14
-REPORT_WIDTH_FALLBACK = 100
+# The widest a block is ever laid out to, terminal or not. It is read in Egor's chat, where a line
+# longer than the pane is wrapped by the pane itself — at column 0, under the labels, which is the
+# one column a continuation may never start in (screenshot, 2026-08-28: `noise:` broke there). A
+# narrower terminal still wins; a wider one is not the width the block is read at.
+REPORT_WIDTH_MAX = 80
+REPORT_WIDTH_FALLBACK = REPORT_WIDTH_MAX
 # Under half a minute a duration is noise in a block read for where the time went.
 REPORT_DURATION_FLOOR_MS = 30000
 # The share of a tier's own budget that may go unaccounted for before the header shouts about it,
@@ -87,9 +92,10 @@ REPORT_LOST_CAP_S = 300
 
 
 def report_width():
-    """The width a report block is laid out to: the terminal's, `COLUMNS` included, or 100 where
-    there is no terminal — a block rendered into a hook's capture has no width of its own."""
-    return shutil.get_terminal_size((REPORT_WIDTH_FALLBACK, 20)).columns
+    """The width a report block is laid out to: the terminal's, `COLUMNS` included, and never past
+    `REPORT_WIDTH_MAX` — a block rendered into a hook's capture has no width of its own, and the
+    chat it is delivered into re-wraps anything wider at column 0."""
+    return min(REPORT_WIDTH_MAX, shutil.get_terminal_size((REPORT_WIDTH_FALLBACK, 20)).columns)
 
 
 def report_ms(value):
@@ -543,12 +549,32 @@ def fixes_row_value(run_dir, meta, verdicts, number):
     return "fix — the commit closes"
 
 
+def scope_price_value(meta):
+    """The size of what this round READ, priced at launch and carried in the record: `N lines · M
+    files`, or None where the run predates the pricing.
+
+    Never re-priced at render time. The tree moves under a round while its fixes land, so a row
+    counted again would give a different size every time the same report is drawn — and the report
+    hook draws it more than once.
+    """
+    price = meta.get("scope_price")
+    if not isinstance(price, dict):
+        return None
+    files = _store.counted_int(price.get("files"))
+    if not files:
+        return None
+    return f"{_store.counted_int(price.get('lines'))} lines · {files} files"
+
+
 def next_row_value(run_dir, meta, verdicts, number):
-    """Whether another round follows this one, which is the whole of what makes a chain finite: a
-    round 2 says so itself, and every other answer is read off the decision on disk.
+    """What follows this round where anything does — a decision, or the round 2 it names — and
+    None where nothing does, which prints no row at all.
+
+    A round with nothing after it says so by the `fixes:` row it already carries; `next: none` was
+    a row spent saying that the row above it was the whole answer.
     """
     if number >= _round.ROUND_BUDGET:
-        return "none — last round"
+        return None
     band = _round.round_band(*_round.escalation_numbers(run_dir, meta, verdicts))
     decided = _round.read_fork(run_dir)
     if decided and decided["choice"] != _round.BAND_FIX and band == _round.BAND_HARD:
@@ -560,7 +586,7 @@ def next_row_value(run_dir, meta, verdicts, number):
         not decided and band != _round.BAND_FIX
     ):
         return "round 2 by decision"
-    return "none"
+    return None
 
 
 def report_lines(run_dir, meta, verdicts=None):
@@ -603,6 +629,11 @@ def report_lines(run_dir, meta, verdicts=None):
         confirmed_tally(summary["severities"], total, summary["docs"]),
         True,
     ))
+    # Under the tally and above everything the round OWES: how much was read is what the tally is
+    # read against, and a count of findings without the size behind it prices nothing.
+    price = scope_price_value(meta)
+    if price:
+        rows.append(("debt:", price, False))
     verdict_rows = verdicts if verdicts is not None else (_round.recorded_verdict_rows(run_dir) or [])
     number = _round.review_round(run_dir, meta)
     parent = round_one_of(run_dir, meta) if number >= _round.ROUND_BUDGET else None
@@ -626,7 +657,9 @@ def report_lines(run_dir, meta, verdicts=None):
         fixes = fixes_row_value(run_dir, meta, verdict_rows, number) if unanswered else None
         if fixes:
             rows.append(("fixes:", fixes, True))
-        rows.append(("next:", next_row_value(run_dir, meta, verdict_rows, number), True))
+        follows = next_row_value(run_dir, meta, verdict_rows, number)
+        if follows:
+            rows.append(("next:", follows, True))
     verifier_value = verifier_report_value(run_dir, summary, scheme)
     if verifier_value:
         rows.append(("verifier:", verifier_value, True))

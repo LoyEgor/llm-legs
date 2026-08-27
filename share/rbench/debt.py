@@ -1176,7 +1176,7 @@ def debt_review_command(repos=(), tier="", include_foreign=False, scope_lines=No
     """
     command = _store.DEBT_REVIEW_COMMAND
     if tier:
-        command = command.replace("--tier T1", f"--tier {tier}")
+        command = command.replace(_store.DEBT_REVIEW_TIER, tier)
     for repo in repos:
         command += " --repo " + shlex.quote(str(repo))
     if include_foreign:
