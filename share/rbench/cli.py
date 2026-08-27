@@ -819,7 +819,8 @@ def cmd_run(args):
     ]
     # Before the panel is picked, because the chunk count is what the panel is multiplied by: a
     # cell reads one chunk, and the run answers for the commit only if every rater reads them all.
-    chunks = _scope.diff_chunks(repo, sha)
+    chunk_forced = bool(getattr(args, "chunk", False))
+    chunks = _scope.diff_chunks(repo, sha, force=chunk_forced)
     _scope.announce_review_target(repo, sha, scope, members, head_label=range_head,
                            chunks=len(chunks))
     for line in debt_skipped:
@@ -921,9 +922,11 @@ def cmd_run(args):
     ):
         verify_model = _verify.verifier_model(_catalog.OPENCODE_VERIFIER)
     if chunks:
+        why = ("--chunk" if chunk_forced else
+               f"diff over {_scope.DIFF_CHUNK_THRESHOLD_BYTES} byte(s)")
         print(f"diff split into {len(chunks)} chunk(s) of at most "
-              f"{_scope.DIFF_CHUNK_TARGET_LINES} line(s); each cell reads them one after another, "
-              f"so the panel keeps its {len(raters)} cell(s)")
+              f"{_scope.DIFF_CHUNK_TARGET_LINES} line(s) ({why}); each cell reads them one after "
+              f"another, so the panel keeps its {len(raters)} cell(s)")
     print("selected raters:")
     for rater in raters:
         count = counts[_raters.normalize_legacy_rater(rater["spec"])]
@@ -1419,6 +1422,8 @@ def cmd_run(args):
                     # run did.
                     if members:
                         rerun_command += ["--repo", str(repo)]
+                    if chunk_forced:
+                        rerun_command += ["--chunk"]
                     # A rerun without the lens completes a lens run with a stock review of the cell.
                     if lens:
                         rerun_command += ["--lens", lens["name"]]
@@ -1741,6 +1746,11 @@ def main():
         help="Run the panel in this process instead of detaching it",
     )
     review.add_argument("--focus", default="")
+    review.add_argument(
+        "--chunk", action="store_true",
+        help="Split the diff at file boundaries and have each cell read the chunks one after "
+             "another; off unless the diff is past the byte gate no cell survives whole",
+    )
     # extend, not the default store: a repeated --paths silently kept only the last flag's
     # list, and a review scoped to one file of fifteen reported itself exactly like a full one.
     review.add_argument("--paths", nargs="+", action="extend", metavar="PATH",
@@ -1943,6 +1953,12 @@ def main():
         help="Allow long tiers when stdout is not a terminal",
     )
     run.add_argument("--focus", default="")
+    # Spelled on the bench run too, or the rerun line a chunked panel prints replays it unchunked.
+    run.add_argument(
+        "--chunk", action="store_true",
+        help="Split the diff at file boundaries and have each cell read the chunks one after "
+             "another; off unless the diff is past the byte gate no cell survives whole",
+    )
     run.add_argument("--paths", nargs="+", action="extend", metavar="PATH",
                      help=SCOPE_FLAG_HELP)
     run.add_argument("--lens", default="", metavar="SLUG", help=_prompts.LENS_FLAG_HELP)

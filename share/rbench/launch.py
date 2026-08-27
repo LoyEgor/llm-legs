@@ -886,19 +886,30 @@ SIDE_RUNNERS = {
     "agy": run_agy,
     "opencode": run_opencode,
 }
-# The two answers worth asking one more time, and the only ones: a cell that produced nothing
-# readable and a provider that answered with its own fault. Every other cause is the cell's
-# answer — a wall rotates accounts, asking a spent plan again spends the next account too, and a
-# kill of ours (cap or stall) ENDS the cell: 0 of 9 cap-kill retries on record ever produced a
-# confirmed finding, at a median 7.2 minutes of panel wall each.
+# The two answers worth asking one more time whatever they cost: a cell that produced nothing
+# readable and a provider that answered with its own fault.
 CELL_RETRY_CAUSES = ("bad output", "server error")
+# And below this, any nonzero exit is worth one more too, whatever named it. Measured over 665
+# stored runs (2026-08-27): almost every death on a big diff is instant — "no output", "pool
+# empty", "unclassified", "bad command" at dur/cap 0.00-0.03 — so the second attempt costs the
+# panel seconds, while the cell it saves is a whole rater's coverage. A cell that ran for real
+# and then died is a different answer and keeps the old rule.
+CELL_FAST_DEATH_S = 30
+# Except these. Two classes with one answer: an account that refused for ITSELF is answered by the
+# pool's next account and never by asking it again (or, for `pool empty`, by nothing at all), and a
+# cap or stall kill ENDS the cell — 0 of 9 cap-kill retries on record ever produced a confirmed
+# finding, at a median 7.2 minutes of panel wall each. The kill is usually the `killed` marker, and
+# named here as well because a row carrying its wording without the marker is the same cell.
+CELL_FAST_DEATH_EXCLUDED = (
+    "pool empty", "walled", "throttled", "bare 429", "permission", "auth", "timeout", "stalled",
+)
 # Launches one pass may spend on the same answer — transient waits and retry causes together, a
 # wall spending none; a chunked cell has one budget per chunk. Past it the answer stands: one agy
 # cell walked the pool seven times for a 45-minute cell, and 35 such cells burned 280 wall minutes.
 CELL_ATTEMPTS_MAX = 2
 
 
-def cell_retry_cause(rc, text, stderr, rater):
+def cell_retry_cause(rc, text, stderr, rater, duration_ms=None):
     """Why this attempt is worth one more, or None where its answer is the cell's answer."""
     if rater.get("killed"):
         return None
@@ -910,7 +921,15 @@ def cell_retry_cause(rc, text, stderr, rater):
         reason = "bad output" if _prompts.unusable_review(
             text, _prompts.normalize_findings(text, rater["spec"])
         ) else None
-    return reason if reason in CELL_RETRY_CAUSES else None
+    if reason in CELL_RETRY_CAUSES:
+        return reason
+    if rc == 0 or reason in CELL_FAST_DEATH_EXCLUDED:
+        return None
+    # An unmeasured attempt is not a fast one: nothing here may turn a cell that ran for its whole
+    # cap into a retry because its duration went unrecorded.
+    if duration_ms is None or duration_ms >= CELL_FAST_DEATH_S * 1000:
+        return None
+    return reason
 
 
 def superseded_attempt(rater, account, result):
@@ -978,7 +997,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
         # cell's own wait.
         rater["started_at"] = attempt_started.isoformat()
         rater["finished_at"] = _store.iso_now()
-        rc, _, text, stderr, _ = result
+        rc, duration_ms, text, stderr, _ = result
         # The account walled while this cell sat in the gate queue. Nothing was sent, so this
         # is not evidence against the account, and the side may still have other accounts.
         if side == "opencode" and stderr == _accounts.GATE_WALL_STDERR:
@@ -1008,7 +1027,15 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             if delay:
                 time.sleep(delay)
             continue
-        retry_cause = cell_retry_cause(rc, text, stderr, rater) if may_retry else None
+        # Asked BEFORE any retry, because on claude and codex the plan wording lives in the
+        # answer rather than in stderr: classified off stderr alone such an attempt reads as
+        # "unclassified", takes the fast-death retry, and the account is never retired — so the
+        # spent plan eats the second attempt and the next account inherits none.
+        walled_off = _accounts.SIDE_WALL[side](rc, wall_text, stderr)
+        retry_cause = (
+            cell_retry_cause(rc, text, stderr, rater, duration_ms)
+            if may_retry and not walled_off else None
+        )
         if retry_cause:
             rater.setdefault("superseded", []).append(
                 superseded_attempt(rater, candidate, result)
@@ -1016,7 +1043,7 @@ def run_rater_task(rater, repo, sha, focus, run_dir, diff):
             rater["retry_of"] = retry_cause
             print(f"{rater['spec']}: {retry_cause}; retrying once")
             continue
-        if not _accounts.SIDE_WALL[side](rc, wall_text, stderr):
+        if not walled_off:
             return (rater, candidate, result)
         wall_source = _accounts.wall_reset_source(side, stderr, wall_text)
         _accounts.mark_walled(side, candidate, bucket, _accounts.wall_reset_at(wall_source),

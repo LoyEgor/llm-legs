@@ -608,32 +608,42 @@ documentation is not a round that owes a second review. The optional `fixes --do
 counts all of them, docs included — both numbers together or neither, and its refusal
 says so.
 
-**A diff too big for one cell is split, not the panel.** Past `DIFF_CHUNK_THRESHOLD_LINES`
-(1500) the commit's diff is cut at FILE boundaries into chunks packed to
-`DIFF_CHUNK_TARGET_LINES` (800), and each cell reads them one after another. Chunking
+**A diff too big for one cell is split, not the panel.** Chunking is OFF by default and
+turned on two ways: `--chunk`, which is the caller saying so, or a diff past
+`DIFF_CHUNK_THRESHOLD_BYTES` (800000), which is the tool saying no cell would survive it whole.
+Either way the commit's diff is cut at FILE boundaries into chunks packed to
+`DIFF_CHUNK_TARGET_LINES` (800), and each cell reads them one after another; the line the run
+prints names which of the two reasons applied. Chunking
 **never multiplies the panel**: the cell count is the tier's own whatever the diff's size, one
 rater is one cell with one findings file and one verdict namespace, and no `#N` suffix is
 invented here — that spelling stays the tier's word for a rater it deliberately runs twice. A
 cell per (rater, chunk) made a 13-cell tier over a 25-chunk commit 325 concurrent cells and
 hundreds of processes (live, 2026-08-22). A failed pass costs that cell that chunk and nothing
-else: it keeps the findings of the passes that did come back. Both
-numbers are the DIFF's own lines, headers and context included, since what kills a cell is the
-size of the text it is handed and not the number of lines a commit changed. A file is NEVER cut
+else: it keeps the findings of the passes that did come back. The gate is the DIFF's own bytes
+and the target its own lines, headers and context included, since what kills a cell is the text
+it is handed and not the number of lines a commit changed. A file is NEVER cut
 inside: one whose own diff is over the target is a chunk of its own, read whole, and a commit
 that IS one such file is handed out unsplit — the target bounds every chunk holding more than
 one file and nothing else. Cut into sub-hunks instead, the halves of one rewrite went to cells
 that could not see each other's text and the deletion-only pieces were not even valid patches
 (2026-08-22). A chunk's paths therefore say the whole of what it holds, which is all the cells
 reading the repository instead of the pasted text are told. It is ONE run: one receipt, one
-handoff, one set of finding indices; the target line names the chunk count. A chunk NO cell's
+handoff, one set of finding indices; the target line names the chunk count, and a run chunked by
+`--chunk` spells the flag on its rerun line, which would otherwise replay unchunked. A chunk NO cell's
 pass came back from is the one thing that costs the round coverage — its paths stay in debt,
 while a chunk any recorded cell read is covered however many other passes over it died. A pass
 counts as read on its ANSWER and not on its exit code: prose, an empty reply or a 429 in the
 text is a failed pass, since the cell's answer is its chunks joined and another chunk's clean
-marker would carry an unread one. Below the threshold nothing is split and the run is
-byte for byte the one it always was. The numbers are measured, not chosen (`diff_chunks`): diff-fed Claude
-and Codex cells die on a few percent of their cells under 1500 lines, ~16% between 1500 and
-2000, ~29% past 3000, while the cells that read a clone show no such trend.
+marker would carry an unread one. Unchunked, the run is
+byte for byte the one it always was. The gate is measured, not chosen (`diff_chunks`, 665 runs /
+7197 cells, 2026-08-27): LINE count predicts nothing — a 19313-line diff at 36 bytes/line was
+reviewed whole by every leg — while the one deterministic death is a BYTE wall, hit by exactly
+one commit on record (13263 lines, 2397508 bytes) which killed every diff-fed leg in under two
+seconds: argv past ARG_MAX on Claude, the 1048576-character vendor input ceiling on Codex, a
+context length on OpenCode. The threshold sits under both with room for the environment and the
+review template the diff shares ARG_MAX with, and still above the 687 KB largest diff any
+unchunked cell ever completed. Below it chunking is the caller's
+judgement, because a chunked Claude cell costs ~4.7x the wall clock of an unchunked one.
 
 **The header carries the round, then the state** (invariant `as`). A review block
 opens `review · round <N>` and no row below it repeats either fact: which of a chain's

@@ -19,9 +19,10 @@ SCOPE_TRAILER = "Scope-Path: "
 # an ordinary worktree snapshot: both are sealed under the same identity, and a rerun pinned to
 # the sha has nothing else left to read the mode off.
 DEBT_SNAPSHOT_SUBJECT = "review-bench debt snapshot"
-# Above this many diff lines a panel is split; each chunk is packed to the target below. Both are
-# measured in `diff_chunks` and duplicated in docs/review-contract.md, guarded by row `ax`.
-DIFF_CHUNK_THRESHOLD_LINES = 1500
+# Past this many BYTES of diff a commit is chunked whether or not anybody asked; each chunk is
+# packed to the target below. Both are measured in `diff_chunks` and duplicated in
+# docs/review-contract.md, guarded by row `ax`.
+DIFF_CHUNK_THRESHOLD_BYTES = 800_000
 DIFF_CHUNK_TARGET_LINES = 800
 def scope_pathspec_base(repo):
     """The repository root and the directory a `--paths` pathspec is spelled against. Asked by the
@@ -980,16 +981,24 @@ def diff_chunk_groups(changes):
     return groups
 
 
-def diff_chunks(repo, sha):
-    """A big commit's diff split into what one cell reads, or `[]` where the whole of it is small
-    enough that nothing is split at all.
+def diff_chunks(repo, sha, force=False):
+    """A commit's diff split into what one cell reads, or `[]` where the whole of it goes to a cell
+    unsplit. Chunking is off unless `force` says a caller asked for it, or the diff is past the
+    byte gate below, where it stops being reviewable at all.
 
-    Measured, not guessed (606 stored runs with a resolvable target, 2026-08-22): a diff-fed
-    Claude or Codex cell dies on 3-8% of its cells while the diff stays under
-    `DIFF_CHUNK_THRESHOLD_LINES`, on 16% between that and 2000 lines, and on 29% past 3000 — while
-    the -skill and agy cells, which read a clone instead of a pasted diff, show no such trend. Its
-    shape is what picks the numbers: the size of the pasted prompt and nothing else, so every chunk
-    is packed to `DIFF_CHUNK_TARGET_LINES`, well inside the band where the panel is reliable.
+    LINE count does not predict a death (665 stored runs / 7197 cells, 2026-08-27): a 19,313-line
+    diff at 36 bytes/line was reviewed whole by claude, codex and opencode alike, and the deaths a
+    line threshold was built for are not visible in the data — a few percent either side of 1500,
+    with no spike. What IS deterministic is a BYTE wall, and only one commit on record ever hit it:
+    7ed59ee, 13,263 lines but 2,397,508 bytes, killed every diff-fed leg in under two seconds —
+    claude with `[Errno 7] Argument list too long` (the diff rides argv), codex with its own
+    1,048,576-character `input_too_large`, opencode with a context length. So the gate is
+    `DIFF_CHUNK_THRESHOLD_BYTES`. It sits under both ceilings with room to spare, because the
+    claude leg's diff shares macOS's 1,048,576-byte ARG_MAX with the environment and the review
+    template beside it: 800 KB leaves ~250 KB of that for them and is still above the 687 KB
+    largest diff any unchunked cell ever completed. Everything below it is the caller's judgement
+    rather than the tool's: chunking costs ~4.7x wall clock on claude, a cell reading its chunks
+    one after another.
 
     Each chunk is a diff of its own — the commit header, which files it holds, and their hunks —
     so a cell reading one needs nothing the run does not hand it. Cut at FILE boundaries only: a
@@ -998,16 +1007,16 @@ def diff_chunks(repo, sha):
     of it as missing and no two pieces of it ever see each other's text.
     """
     base = diff_base(repo, sha)
-    # The DIFF's own lines and not numstat's: what decides whether a cell dies is the size of the
-    # text it is handed, and numstat counts neither the file headers nor the context lines around
-    # every hunk — a commit of many small scattered edits prices well under the threshold while the
-    # prompt it produces is several times it. Asked of the whole commit in one call, so nothing but
-    # an over-threshold commit pays for the per-file reads below.
+    # The DIFF's own bytes and not numstat's lines: what a cell is handed is this text, headers and
+    # context included, and what kills it is how much of it there is — a commit of many small
+    # scattered edits prices low by any line count while the prompt it produces is several times
+    # that. Asked of the whole commit in one call, so nothing but a chunked commit pays for the
+    # per-file reads below.
     whole = subprocess.run(["git", "show", "--format=", "--no-ext-diff", sha],
                            cwd=repo, capture_output=True, text=True)
     if whole.returncode != 0:
         raise RuntimeError(whole.stderr.strip() or "git show failed")
-    if len(whole.stdout.splitlines()) <= DIFF_CHUNK_THRESHOLD_LINES:
+    if not force and len(whole.stdout.encode("utf-8")) <= DIFF_CHUNK_THRESHOLD_BYTES:
         return []
     changes, renames = diff_numstat(repo, [base, sha])
     proc = subprocess.run(["git", "show", "-s", "--format=fuller", sha],

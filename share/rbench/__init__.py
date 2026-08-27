@@ -78,7 +78,7 @@ from .accounts import (
     wall_ttl_s, walled_accounts, worker_pick_answer,
 )
 from .scope import (
-    DEBT_SNAPSHOT_SUBJECT, DIFF_CHUNK_TARGET_LINES, DIFF_CHUNK_THRESHOLD_LINES, MERGED_DIR,
+    DEBT_SNAPSHOT_SUBJECT, DIFF_CHUNK_TARGET_LINES, DIFF_CHUNK_THRESHOLD_BYTES, MERGED_DIR,
     MERGED_HOME_HEX, MERGED_MANIFEST, SCOPE_TRAILER, announce_review_target, attested_paths,
     cell_artifact, cell_chunk_paths, cell_envelope, debt_snapshot_commit, diff_base,
     diff_chunk_groups, diff_chunks, diff_file_body, diff_numstat, head_tree_hash,
@@ -125,7 +125,8 @@ from .prompts import (
     unusable_review, uses_skill_brief,
 )
 from .launch import (
-    CELL_ATTEMPTS_MAX, CELL_RETRY_CAUSES, DIFF_NARRATION_MIN_ROWS, DIFF_NARRATION_RE,
+    CELL_ATTEMPTS_MAX, CELL_FAST_DEATH_EXCLUDED, CELL_FAST_DEATH_S,
+    CELL_RETRY_CAUSES, DIFF_NARRATION_MIN_ROWS, DIFF_NARRATION_RE,
     GEMINI_VERIFY_PRINT_TIMEOUT, GEMINI_VERIFY_PRINT_TIMEOUT_S, LIVE_CELL_GROUPS, OPENCODE_GATE,
     OPENCODE_MAX_CONCURRENCY, PriorityGate, RaterStalled, SIDE_RUNNERS, VERIFY_MAX_TOKENS,
     VERIFY_TIMEOUT_S, VERIFY_WHOLE_FILE_LINES, VERIFY_WINDOW_LINES, agy_expected_label,

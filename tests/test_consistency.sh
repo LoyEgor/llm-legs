@@ -2254,28 +2254,36 @@ assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
 # one place and not the other, the prose documents a panel nobody runs — and the sizes are what a
 # reader decides whether a chunked round covered its scope by.
 assert doc_has 'A diff too big for one cell is split, not the panel'
-rb_chunk_threshold=$(sed -n 's/^DIFF_CHUNK_THRESHOLD_LINES = \([0-9]*\)$/\1/p' "$RB_SCOPE")
+rb_chunk_threshold=$(sed -n 's/^DIFF_CHUNK_THRESHOLD_BYTES = \([0-9_]*\)$/\1/p' "$RB_SCOPE")
+rb_chunk_threshold=${rb_chunk_threshold//_/}
 rb_chunk_target=$(sed -n 's/^DIFF_CHUNK_TARGET_LINES = \([0-9]*\)$/\1/p' "$RB_SCOPE")
-assert eq "$rb_chunk_threshold" 1500
+assert eq "$rb_chunk_threshold" 800000
 assert eq "$rb_chunk_target" 800
-assert doc_has "\`DIFF_CHUNK_THRESHOLD_LINES = $rb_chunk_threshold\`"
+assert doc_has "\`DIFF_CHUNK_THRESHOLD_BYTES = $rb_chunk_threshold\`"
 assert doc_has "\`DIFF_CHUNK_TARGET_LINES = $rb_chunk_target\`"
-assert grep -Fq "($rb_chunk_threshold) the commit's diff is cut at FILE boundaries" \
+assert grep -Fq "\`DIFF_CHUNK_THRESHOLD_BYTES\` ($rb_chunk_threshold)" \
   "$ROOT/docs/review-contract.md"
 assert grep -Fq "\`DIFF_CHUNK_TARGET_LINES\` ($rb_chunk_target)" "$ROOT/docs/review-contract.md"
+# Off by default in both places: the flag is the caller's word, the gate is the tool's, and a
+# contract that still promises a line threshold sends a reader to chunk a diff nothing splits.
+assert doc_has 'chunking is OFF unless `--chunk` asks for it'
+assert grep -Fq 'Chunking is OFF by default' "$ROOT/docs/review-contract.md"
+assert grep -Fq '"--chunk", action="store_true",' "$RB_CLI"
 # One run whatever the chunk count: the receipt, the handoff and the finding indices are the
 # round's, and a chunk that became a run of its own would split all three.
-assert grep -Fq 'chunks = _scope.diff_chunks(repo, sha)' "$RB_CLI"
+assert grep -Fq 'chunks = _scope.diff_chunks(repo, sha, force=chunk_forced)' "$RB_CLI"
 # And ONE panel whatever the chunk count: a cell per (rater, chunk) made a tier review 325 cells
 # and hundreds of processes (live, 2026-08-22), so a cell reads its chunks one after another.
 assert grep -Fq '_launch.run_rater_chunks, rater, repo, sha, args.focus or "", run_dir,' "$RB_CLI"
 assert doc_has 'never multiplies the panel'
 assert grep -Fq 'never multiplies the panel' "$ROOT/docs/review-contract.md"
-# Both numbers are the diff's own lines. Priced by numstat they leave out every header and context
-# line, so the prose promises a bound on the text a cell is handed that the tool never applies.
-assert grep -Fq 'if len(whole.stdout.splitlines()) <= DIFF_CHUNK_THRESHOLD_LINES:' "$RB_SCOPE"
-assert doc_has "Both numbers count the DIFF's own lines"
-assert grep -Fq "numbers are the DIFF's own lines" "$ROOT/docs/review-contract.md"
+# The gate is the diff's own BYTES and the target its own lines. Priced by numstat either would
+# leave out every header and context line, promising a bound on the text a cell is handed that the
+# tool never applies.
+assert grep -Fq \
+  'if not force and len(whole.stdout.encode("utf-8")) <= DIFF_CHUNK_THRESHOLD_BYTES:' "$RB_SCOPE"
+assert doc_has "The gate counts the DIFF's own BYTES"
+assert grep -Fq "gate is the DIFF's own bytes" "$ROOT/docs/review-contract.md"
 # A chunk nothing came back from is content nobody read, and the snapshot may attest no such path:
 # the one place a dead cell still costs a round coverage.
 assert grep -Fq 'meta["reviewed"] = _scope.attested_paths(reviewed, unread)' "$RB_CLI"

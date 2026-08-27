@@ -1233,8 +1233,9 @@ try:
     assert stalled_rater["max_quiet_ms"] == 360_000, stalled_rater
     # A kill of ours ENDS the cell: neither the cap nor the stall marker earns a second attempt —
     # 0 of 8 cap-kill retries on record ever produced a confirmed finding, at a median 7.4 minutes
-    # of panel wall each. Only these two causes are worth one more; a wall rotates accounts
-    # instead, and asking a spent plan again spends the next account too.
+    # of panel wall each. These two causes are worth one more whatever the attempt cost; anything
+    # else has to have died cheaply, and a wall never does — it rotates accounts instead, and
+    # asking a spent plan again spends the next account too.
     assert rb.CELL_RETRY_CAUSES == ("bad output", "server error"), rb.CELL_RETRY_CAUSES
     assert rb.cell_retry_cause(
         124, "", "rater timed out after 900s",
@@ -1271,6 +1272,53 @@ try:
     ) is None
     assert rb.cell_retry_cause(
         0, '{"is_error":true,"api_error_status":429}', "", {"spec": "oc-kimik3"}
+    ) is None
+    # A death that cost the panel seconds is worth one more launch whatever named it: almost every
+    # death on a big diff is instant (665 runs, 2026-08-27), and the second attempt buys back a
+    # whole rater's coverage for that. The classified cause is what comes back, so the report and
+    # the retry line still name the same thing.
+    assert rb.CELL_FAST_DEATH_S == 30, rb.CELL_FAST_DEATH_S
+    assert rb.cell_retry_cause(
+        1, "", "codex exited in a way nothing here classifies", {"spec": "sol-medium"}, 5_000
+    ) == "unclassified"
+    assert rb.cell_retry_cause(1, "", "", {"spec": "sol-medium"}, 5_000) == "no output"
+    assert rb.cell_retry_cause(
+        1, "", "error: the argument '--commit <SHA>' cannot be used with '[PROMPT]'",
+        {"spec": "sol-medium"}, 60,
+    ) == "bad command"
+    # But a cell that RAN and then died is answering, not stumbling, and the old rule holds.
+    assert rb.cell_retry_cause(
+        1, "", "codex exited in a way nothing here classifies", {"spec": "sol-medium"}, 30_000
+    ) is None
+    # An unmeasured attempt is not a fast one: a duration nobody recorded may not turn a cell that
+    # held its whole cap into a retry.
+    assert rb.cell_retry_cause(
+        1, "", "codex exited in a way nothing here classifies", {"spec": "sol-medium"}
+    ) is None
+    # The account answered for ITSELF, and the reply to that is the pool's next account. Asked
+    # again, a spent plan spends the next one too, however fast it refused. The two kill wordings
+    # are here as well, since a row that carries one without the `killed` marker is the same cell.
+    assert rb.CELL_FAST_DEATH_EXCLUDED == (
+        "pool empty", "walled", "throttled", "bare 429", "permission", "auth",
+        "timeout", "stalled",
+    ), rb.CELL_FAST_DEATH_EXCLUDED
+    for spent_stderr in (
+        "codex has no codex account left",
+        "GoUsageLimitError limitName=opencode-plan",
+        "provider_rate_limit_exceeded",
+        "HTTP 429 from the gateway",
+        "tool required the 'command' permission",
+        "not logged in",
+        "rater timed out after 900s",
+        "rater stalled: no output activity for 241s (stall cap 240s)",
+    ):
+        assert rb.cell_retry_cause(
+            1, "", spent_stderr, {"spec": "oc-kimik3"}, 200
+        ) is None, spent_stderr
+    # And our own kill still ends the cell, however few seconds it took to fire.
+    assert rb.cell_retry_cause(
+        124, "", "rater timed out after 900s",
+        {"spec": "agy-pro-high-skill", "killed": "watchdog"}, 200,
     ) is None
     # And a superseded attempt is recorded whole, the kill it carries included: the minutes it
     # held the panel are the cell's own.
@@ -4162,6 +4210,43 @@ assert rb.SIDE_WALL["codex"](0, codex_limit_content, "") is False
 assert rb.SIDE_WALL["codex"](1, codex_limit_error, "") is True
 assert rb.SIDE_WALL["codex"](1, codex_limit_code, "") is True
 assert rb.SIDE_WALL["codex"](1, codex_capacity_error, "") is False
+
+# --- a wall is never a fast death -----------------------------------------------------------
+# On claude and codex the spent-plan wording lives in the ANSWER and not in stderr. Classified off
+# stderr alone this attempt reads as "no output", which is a cheap death worth one more launch —
+# so the wall predicate is asked FIRST: retried instead, the spent plan eats the second attempt
+# and the next account inherits a budget it never spent.
+assert rb.failure_reason("") == "no output"
+assert rb.cell_retry_cause(1, "", "", {"spec": "opus-medium"}, 500) == "no output"
+wall_first_launches = []
+
+
+def wall_first_runner(rater, repo_path, commit, focus, run_dir, diff, account):
+    wall_first_launches.append(account)
+    return 1, 500, '{"is_error":true,"api_error_status":429}', "", ["fixture"]
+
+
+assert rb.SIDE_WALL["claude"](1, '{"is_error":true,"api_error_status":429}', "") is True
+wall_first_was = rb.SIDE_RUNNERS["claude"]
+rb.SIDE_RUNNERS["claude"] = wall_first_runner
+os.environ["WORKER_PICK_FAKE_ACCOUNTS"] = "wall1"
+rb.accounts._SIDE_ROSTER.clear()
+wall_first_run = work / "claude-wall-before-retry-run"
+wall_first_run.mkdir()
+try:
+    with contextlib.redirect_stdout(io.StringIO()):
+        wall_first_rater, _, wall_first_result = rb.run_rater_task(
+            rb.parse_rater("opus-medium"), repo, sha, "", wall_first_run, "ignored fixture diff"
+        )
+finally:
+    rb.SIDE_RUNNERS["claude"] = wall_first_was
+assert wall_first_launches == ["wall1"], wall_first_launches
+assert rb.is_walled("claude", "wall1"), "the spent plan was never retired"
+assert "superseded" not in wall_first_rater and "retry_of" not in wall_first_rater, wall_first_rater
+assert wall_first_result[0] == 1, wall_first_result
+clear_walls()
+rb.accounts._SIDE_ROSTER.clear()
+del os.environ["WORKER_PICK_FAKE_ACCOUNTS"]
 del os.environ["REVIEW_BENCH_WORKER_PICK_BIN"]
 
 os.environ.update({
@@ -10975,9 +11060,9 @@ for side in rb.SIDE_RUNNERS:
     rb.SIDE_RUNNERS[side] = tier_runner
 
 # --- a diff too big for one cell ----------------------------------------------------------------
-# Measured, not guessed: past ~1500 diff lines the strong diff-fed cells started coming back empty
-# or dying outright, while the -skill cells reading the repository stayed flat. So the panel splits
-# the diff instead of the panel: same run, same receipt, same handoff, one chunk per cell.
+# Off by default and asked for two ways: `--chunk`, or a diff past the BYTE gate no cell survives
+# whole. Then the panel splits the diff instead of the panel: same run, same receipt, same handoff,
+# every cell reading every chunk.
 chunk_repo = work / "chunk-review"
 chunk_repo.mkdir()
 subprocess.run(["git", "init", "-q", str(chunk_repo)], check=True)
@@ -11007,7 +11092,23 @@ assert rb.diff_chunks(chunk_repo, chunk_small_sha) == [], rb.diff_chunks(chunk_r
 chunk_git("add", "-A")
 chunk_git("commit", "-qm", "big")
 chunk_sha = chunk_git("rev-parse", "HEAD")
-chunk_list = rb.diff_chunks(chunk_repo, chunk_sha)
+
+
+def chunk_whole_diff(sha):
+    return subprocess.run(
+        ["git", "-C", str(chunk_repo), "show", "--format=", "--no-ext-diff", sha],
+        check=True, capture_output=True, text=True,
+    ).stdout
+
+
+# LINE count buys nothing: this diff is thousands of lines and nothing splits it, because the only
+# size that ever killed a cell deterministically is a byte wall far above it (665 runs / 7197
+# cells, 2026-08-27) and a chunked claude cell costs ~4.7x the wall clock of an unchunked one.
+assert len(chunk_whole_diff(chunk_sha).splitlines()) > 1500, chunk_sha
+assert len(chunk_whole_diff(chunk_sha).encode()) < rb.DIFF_CHUNK_THRESHOLD_BYTES, chunk_sha
+assert rb.diff_chunks(chunk_repo, chunk_sha) == [], rb.diff_chunks(chunk_repo, chunk_sha)
+# `--chunk` is the caller saying so, and it is the only thing below the gate that splits anything.
+chunk_list = rb.diff_chunks(chunk_repo, chunk_sha, force=True)
 # Packed at FILE boundaries and in git's own order: a file over the target is a chunk of its own
 # rather than half of two, since a reviewer handed half a file reports the other half missing.
 assert [chunk["paths"] for chunk in chunk_list] == [
@@ -11054,8 +11155,8 @@ chunk_lone.write_text("".join(
 chunk_git("commit", "-qam", "lone edited")
 chunk_lone_sha = chunk_git("rev-parse", "HEAD")
 # A commit that IS one such file is handed out unsplit: one chunk is no split at all.
-assert rb.diff_chunks(chunk_repo, chunk_lone_sha) == [], rb.diff_chunks(chunk_repo,
-                                                                       chunk_lone_sha)
+assert rb.diff_chunks(chunk_repo, chunk_lone_sha, force=True) == [], rb.diff_chunks(
+    chunk_repo, chunk_lone_sha, force=True)
 (chunk_repo / "beside.py").write_text("".join(f"n {n}\n" for n in range(20)))
 chunk_lone.write_text("".join(
     (f"line {n} again\n" if n % 20 == 0 else f"line {n}\n") for n in range(16000)
@@ -11063,7 +11164,7 @@ chunk_lone.write_text("".join(
 chunk_git("add", "-A")
 chunk_git("commit", "-qm", "lone and a neighbour")
 chunk_pair_sha = chunk_git("rev-parse", "HEAD")
-chunk_pair_list = rb.diff_chunks(chunk_repo, chunk_pair_sha)
+chunk_pair_list = rb.diff_chunks(chunk_repo, chunk_pair_sha, force=True)
 assert [chunk["paths"] for chunk in chunk_pair_list] == [["beside.py"], ["lone.py"]], [
     chunk["paths"] for chunk in chunk_pair_list
 ]
@@ -11102,11 +11203,44 @@ chunk_stdout = io.StringIO()
 with contextlib.redirect_stdout(chunk_stdout), contextlib.redirect_stderr(chunk_stdout):
     assert rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=chunk_sha, raters="sol-medium-bare,oc-kimik3",
-        leg=False, verify=None, auto=None, focus=None,
+        leg=False, verify=None, auto=None, focus=None, chunk=True,
     )) == 0, chunk_stdout.getvalue()
 chunk_out = chunk_stdout.getvalue()
 assert f"· {len(chunk_list)} chunks" in chunk_out, chunk_out
 assert f"diff split into {len(chunk_list)} chunk(s)" in chunk_out, chunk_out
+# And WHY they are on. The two reasons are not the same news — the flag is a choice somebody made
+# and can unmake, the gate is a diff no cell would survive whole — and after the fact the run's
+# output is the only place a reader can tell them apart.
+assert "(--chunk)" in chunk_out, chunk_out
+assert str(rb.DIFF_CHUNK_THRESHOLD_BYTES) not in chunk_out, chunk_out
+# The flag reaches that path off the REAL parser: spelled only in a hand-built namespace, the
+# whole opt-in would be unreachable from the command line.
+chunk_flag_seen = {}
+chunk_flag_real = rb.cli.cmd_review_detached
+chunk_flag_run = rb.cli.cmd_run
+
+
+def chunk_flag_capture(args):
+    chunk_flag_seen["chunk"] = getattr(args, "chunk", None)
+    return 0
+
+
+chunk_flag_argv = sys.argv
+for chunk_flag_command, chunk_flag_argv_tail, chunk_flag_want in (
+    ("review", ["--tier", "T0", "--chunk", "HEAD"], True),
+    ("review", ["--tier", "T0", "HEAD"], False),
+    ("run", ["--raters", "oc-kimik3", "--chunk", "HEAD"], True),
+):
+    rb.cli.cmd_review_detached = chunk_flag_capture
+    rb.cli.cmd_run = chunk_flag_capture
+    try:
+        sys.argv = ["review-bench", chunk_flag_command, *chunk_flag_argv_tail]
+        assert rb.cli.main() == 0, sys.argv
+    finally:
+        sys.argv = chunk_flag_argv
+        rb.cli.cmd_review_detached = chunk_flag_real
+        rb.cli.cmd_run = chunk_flag_run
+    assert chunk_flag_seen["chunk"] is chunk_flag_want, (chunk_flag_argv_tail, chunk_flag_seen)
 # Chunking splits the DIFF and never the PANEL. A cell per (rater, chunk) made a tier panel over a
 # big commit 325 cells and hundreds of processes (live, 2026-08-22): the cell count is the tier's
 # alone, and a cell reads its chunks one after another under its own name.
@@ -11164,6 +11298,25 @@ assert all("chunks_read" not in row for row in chunk_small_meta["rater_runs"]), 
 assert chunk_meta["raters"] == chunk_small_meta["raters"], (
     chunk_meta["raters"], chunk_small_meta["raters"]
 )
+# And the same thousands-of-lines commit with nobody asking: one whole diff per cell, no chunk
+# record, the panel it always was. A line count decides nothing here any more.
+chunk_default_store = work / "chunk-default-claudeb"
+os.environ["CLAUDEB_DIR"] = str(chunk_default_store)
+del chunk_seen[:]
+chunk_default_stdout = io.StringIO()
+with contextlib.redirect_stdout(chunk_default_stdout), \
+        contextlib.redirect_stderr(chunk_default_stdout):
+    assert rb.cli.cmd_run(argparse.Namespace(
+        repo=str(chunk_repo), commitish=chunk_sha, raters="sol-medium-bare,oc-kimik3",
+        leg=False, verify=None, auto=None, focus=None,
+    )) == 0, chunk_default_stdout.getvalue()
+assert "diff split into" not in chunk_default_stdout.getvalue(), chunk_default_stdout.getvalue()
+assert sorted(spec for spec, _ in chunk_seen) == ["oc-kimik3", "sol-medium-bare"], chunk_seen
+assert all(text == rb.commit_diff(chunk_repo, chunk_sha) for _, text in chunk_seen)
+chunk_default_meta = json.loads(
+    (next((chunk_default_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
+)
+assert "chunks" not in chunk_default_meta, chunk_default_meta
 
 # A changed path whose NAME is pathspec magic is a file like any other, and git is asked about it
 # as one. Raw, `star*.py` also drags in the neighbour a wildcard matches — a file another chunk
@@ -11180,9 +11333,8 @@ assert "diff --git a/star*.py" in chunk_magic_body, chunk_magic_body
 assert "starry.py" not in chunk_magic_body, chunk_magic_body
 assert "diff --git a/:colon.py" in rb.diff_file_body(chunk_repo, chunk_magic_sha, ":colon.py")
 
-# The threshold is the DIFF's own lines and not numstat's changed-line count: headers and context
-# are text the cell is handed too, and a commit of many small scattered edits prices well under the
-# threshold while the prompt it produces is over it.
+# Many small scattered edits pack into chunks like anything else, at file boundaries and in git's
+# own order.
 for chunk_scatter in range(300):
     (chunk_repo / f"scatter{chunk_scatter:03d}.py").write_text(
         "".join(f"s {n}\n" for n in range(10))
@@ -11196,24 +11348,31 @@ for chunk_scatter in range(300):
     )
 chunk_git("commit", "-qam", "scatter edited")
 chunk_scatter_sha = chunk_git("rev-parse", "HEAD")
-chunk_scatter_numstat, _ = rb.scope.diff_numstat(
-    chunk_repo, [rb.diff_base(chunk_repo, chunk_scatter_sha), chunk_scatter_sha]
-)
-assert sum(chunk_scatter_numstat.values()) <= rb.DIFF_CHUNK_THRESHOLD_LINES, \
-    sum(chunk_scatter_numstat.values())
-# And it clears the threshold by more than a context setting: measured with NO context at all —
-# the smallest any `diff.context` can make this diff, and the tool asks git for it without pinning
-# one — it is still over, so nobody's git configuration decides whether this case chunks.
-chunk_scatter_min = subprocess.run(
-    ["git", "-C", str(chunk_repo), "show", "--format=", "--no-ext-diff", "-U0",
-     chunk_scatter_sha],
-    check=True, capture_output=True, text=True,
-).stdout
-assert len(chunk_scatter_min.splitlines()) > rb.DIFF_CHUNK_THRESHOLD_LINES, \
-    len(chunk_scatter_min.splitlines())
-chunk_scatter_list = rb.diff_chunks(chunk_repo, chunk_scatter_sha)
+chunk_scatter_list = rb.diff_chunks(chunk_repo, chunk_scatter_sha, force=True)
 assert len(chunk_scatter_list) > 1, len(chunk_scatter_list)
 chunk_within_bounds(chunk_scatter_sha, chunk_scatter_list)
+
+# The gate is the DIFF's own BYTES and neither numstat's changed-line tally nor the diff's line
+# count: what killed every diff-fed leg on record was 2,397,508 bytes over 13,263 lines, while
+# 19,313 lines at 36 bytes a line went through whole. So a diff of few but very long lines chunks
+# with nobody asking, and the numbers a line threshold would have read stay small.
+for chunk_wide in range(3):
+    (chunk_repo / f"wide{chunk_wide}.py").write_text(
+        "".join(f"# {'w' * 1000} {n}\n" for n in range(400))
+    )
+chunk_git("add", "-A")
+chunk_git("commit", "-qm", "wide")
+chunk_wide_sha = chunk_git("rev-parse", "HEAD")
+chunk_wide_diff = chunk_whole_diff(chunk_wide_sha)
+assert len(chunk_wide_diff.encode()) > rb.DIFF_CHUNK_THRESHOLD_BYTES, len(chunk_wide_diff.encode())
+assert len(chunk_wide_diff.splitlines()) < 1500, len(chunk_wide_diff.splitlines())
+chunk_wide_numstat, _ = rb.scope.diff_numstat(
+    chunk_repo, [rb.diff_base(chunk_repo, chunk_wide_sha), chunk_wide_sha]
+)
+assert sum(chunk_wide_numstat.values()) < 1500, sum(chunk_wide_numstat.values())
+chunk_wide_list = rb.diff_chunks(chunk_repo, chunk_wide_sha)
+assert len(chunk_wide_list) > 1, len(chunk_wide_list)
+chunk_within_bounds(chunk_wide_sha, chunk_wide_list)
 
 # A file added or rewritten WHOLE arrives as one uncuttable hunk, and it goes out as one chunk
 # beside its neighbours rather than as pieces of itself.
@@ -11224,7 +11383,7 @@ chunk_git("commit", "-qm", "one huge hunk")
 chunk_whole_sha = chunk_git("rev-parse", "HEAD")
 chunk_whole_body = rb.diff_file_body(chunk_repo, chunk_whole_sha, "whole.py")
 assert len([line for line in chunk_whole_body.splitlines() if line.startswith("@@")]) == 1
-chunk_whole_list = rb.diff_chunks(chunk_repo, chunk_whole_sha)
+chunk_whole_list = rb.diff_chunks(chunk_repo, chunk_whole_sha, force=True)
 assert [chunk["paths"] for chunk in chunk_whole_list] == [
     ["whole.py"], ["whole_beside.py"],
 ], [chunk["paths"] for chunk in chunk_whole_list]
@@ -11257,7 +11416,7 @@ chunk_rename_body = rb.diff_file_body(
 )
 assert "rename from tail.py" in chunk_rename_body, chunk_rename_body
 assert "new file mode" not in chunk_rename_body, chunk_rename_body
-chunk_rename_list = rb.diff_chunks(chunk_repo, chunk_rename_sha)
+chunk_rename_list = rb.diff_chunks(chunk_repo, chunk_rename_sha, force=True)
 chunk_rename_held = "".join(
     chunk["diff"] for chunk in chunk_rename_list if "moved_tail.py" in chunk["paths"]
 )
@@ -11286,6 +11445,7 @@ with contextlib.redirect_stdout(chunk_partial_stdout), \
     rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=None, worktree=True,
         raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
+        chunk=True,
     ))
 chunk_partial_dir = next((chunk_partial_store / "worker-stats" / "benches").iterdir())
 chunk_partial_meta = json.loads((chunk_partial_dir / "meta.json").read_text())
@@ -11300,7 +11460,17 @@ assert not set(chunk_partial_chunks[1]["paths"]) & set(chunk_partial_meta["revie
 )
 # The partial run kept the cells its raters asked for; the dead chunk cost coverage, not cells.
 assert chunk_partial_meta["raters"] == ["sol-medium-bare", "oc-kimik3"], chunk_partial_meta
-assert all(row["chunks_read"] == [0] for row in chunk_partial_meta["rater_runs"]), (
+chunk_partial_final, chunk_partial_attempts = rb.cell_attempt_rows(
+    chunk_partial_meta["rater_runs"]
+)
+assert all(row["chunks_read"] == [0] for row in chunk_partial_final), (
+    chunk_partial_meta["rater_runs"]
+)
+# The pass died in a millisecond, so it earned its one more launch and died again: the second
+# attempt is what the panel pays seconds for, and every surface still reads ONE cell per spec.
+assert sorted(chunk_partial_attempts) == ["oc-kimik3", "sol-medium-bare"], chunk_partial_attempts
+assert all(len(rows) == 1 for rows in chunk_partial_attempts.values()), chunk_partial_attempts
+assert all(row["retry_of"] == "unclassified" for row in chunk_partial_final), (
     chunk_partial_meta["rater_runs"]
 )
 # And a panel whose passes all came back attests every path of it, chunked or not.
@@ -11338,6 +11508,7 @@ with contextlib.redirect_stdout(chunk_prose_stdout), \
     rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=None, worktree=True,
         raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
+        chunk=True,
     ))
 chunk_prose_dir = next((chunk_prose_store / "worker-stats" / "benches").iterdir())
 chunk_prose_meta = json.loads((chunk_prose_dir / "meta.json").read_text())
@@ -11389,6 +11560,7 @@ with contextlib.redirect_stdout(chunk_marker_stdout), \
     rb.cli.cmd_run(argparse.Namespace(
         repo=str(chunk_repo), commitish=None, worktree=True,
         raters="sol-medium-bare,oc-kimik3", leg=False, verify=None, auto=None, focus=None,
+        chunk=True,
     ))
 chunk_marker_meta = json.loads(
     (next((chunk_marker_store / "worker-stats" / "benches").iterdir()) / "meta.json").read_text()
