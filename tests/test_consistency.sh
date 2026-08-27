@@ -2456,11 +2456,64 @@ done
 # grows back beside the shared one. Tests and docs may name the files; code may not.
 journal_scan_dirs=()
 for journal_dir_candidate in "$ROOT/bin" "$ROOT/share" "$CLAUDE_SETUP/bin" "$CLAUDE_SETUP/hooks"; do
-  [ -d "$journal_dir_candidate" ] && journal_scan_dirs+=("$journal_dir_candidate")
+  if [ -d "$journal_dir_candidate" ]; then
+    journal_scan_dirs+=("$journal_dir_candidate")
+  else
+    printf 'SKIP: journal-name scan (%s is missing)\n' "$journal_dir_candidate"
+  fi
 done
 journal_strays=$(grep -rlE 'claude-review-debt|claude-commit-journal' \
   --exclude-dir=__pycache__ --exclude='*.pyc' "${journal_scan_dirs[@]}" 2>/dev/null |
   grep -v -x -e "$RB_STORE" -e "$JOURNAL_LIB" -e "$STATUSLINE" | sort | tr '\n' ' ')
 assert eq "$journal_strays" ""
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, and the one file that says gemini main is removed) and match %s\n' "$asserts" "$DOC"
+# --- Row be: commit-free repository families -----------------------------------
+# Which repositories a chat may commit in without asking Egor is ONE list read by ONE function: a
+# hook that opened `~/.claude/commit-free` itself is a second definition of that permission, and the
+# one it would drift into is the permission to commit unasked.
+assert doc_has 'Commit-free repository families'
+assert doc_has '`~/.claude/commit-free`'
+assert doc_has '`COMMIT_FREE_FILE`'
+# The prose rule names the same file, or the model reads a permission the hooks never grant.
+if test -r "$CLAUDE_SETUP/global/CLAUDE.md"; then
+  assert grep -Fq 'families listed in `~/.claude/commit-free`' "$CLAUDE_SETUP/global/CLAUDE.md"
+else
+  printf 'SKIP: commit-free prose (%s is unreadable)\n' "$CLAUDE_SETUP/global/CLAUDE.md"
+fi
+COMMIT_FREE_READERS=(
+  "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  "$CLAUDE_SETUP/hooks/stop.d/ask-round-uncommitted.sh"
+  "$CLAUDE_SETUP/hooks/commit-policy.sh"
+)
+if test -r "$JOURNAL_LIB"; then
+  rj_commit_free_body=$(sed -n '/^rj_commit_free()/,/^}/p' "$JOURNAL_LIB")
+  assert grep -Fq 'file=$HOME/.claude/commit-free' <<<"$rj_commit_free_body"
+  assert grep -Fq '[ "${COMMIT_FREE_FILE+x}" = x ]' <<<"$rj_commit_free_body"
+  # Membership is the git FAMILY (row `bd`), so a listed repository lists its worktrees too.
+  assert eq "$(grep -c 'rj_family_id' <<<"$rj_commit_free_body")" 2
+  assert grep -Fq 'common=$(rj_journal_dir "$1")' <<<"$(sed -n '/^rj_family_id()/,/^}/p' "$JOURNAL_LIB")"
+  # And the path and the env name are spelled in that function alone.
+  assert eq "$(grep -c 'commit-free' "$JOURNAL_LIB")" \
+    "$(grep -c 'commit-free' <<<"$rj_commit_free_body")"
+  assert eq "$(grep -c 'COMMIT_FREE_FILE' "$JOURNAL_LIB")" \
+    "$(grep -c 'COMMIT_FREE_FILE' <<<"$rj_commit_free_body")"
+  for commit_free_reader in "${COMMIT_FREE_READERS[@]}"; do
+    if test -r "$commit_free_reader"; then
+      assert grep -Fq 'rj_commit_free ' "$commit_free_reader"
+      assert eq "$(grep -c 'COMMIT_FREE_FILE' "$commit_free_reader")" 0
+      # A mention of the file in prose is fine; opening it is not.
+      assert eq "$(grep -cE '(<|read).*\.claude/commit-free' "$commit_free_reader")" 0
+    else
+      printf 'SKIP: commit-free reader %s is unreadable\n' "$commit_free_reader"
+    fi
+  done
+else
+  printf 'SKIP: commit-free whitelist reader (%s is unreadable)\n' "$JOURNAL_LIB"
+fi
+# The prose a reader acts on names the same file, or a chat asks permission a hook has stopped
+# wanting.
+for commit_free_doc in docs/DIAGNOSTICS.md docs/review-contract.md; do
+  assert grep -Fq '~/.claude/commit-free' "$ROOT/$commit_free_doc"
+done
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the one whitelist that says which repository families a chat commits in without asking) and match %s\n' "$asserts" "$DOC"

@@ -563,7 +563,10 @@ carries, for the block that is not about the tree in front of the reader.
 ## Launches and reports
 
 `REVIEW_ASKED=1` marks a review Egor asked for by name; `REVIEW_GATE_OK=1` marks
-his explicit skip — both on the model's honour (2026-08-10). The framed block from
+his explicit skip — both on the model's honour (2026-08-10). The gate verifies the
+first against the transcript, except in a git family `~/.claude/commit-free` lists,
+where the commit the review rides needs no word of his and so neither does the
+review. The framed block from
 `record --no-corpus` is the only review output Egor reads, and the report hook
 prints it: one copy, from review-bench's own rendering, costing no tokens. What the
 model owes after the block is judgment the block cannot hold, never its contents

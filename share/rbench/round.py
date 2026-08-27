@@ -479,6 +479,11 @@ def chain_parent(repo, scope, session, before=None, closed_ok=False):
     resolved = _store.resolved_repo_path(repo)
     family = _store.repo_family(repo)
     wanted = {str(path) for path in scope or ()}
+    # Newest first, so a chain's second round is met before the round 1 it answers: a chain has
+    # ONE second round, and once a commit has closed it a later run over the same scope is a round
+    # 1 of its own — read as the spent chain's round 2 it would walk past the decision gate (live,
+    # 2026-08-27). An OPEN second round stays in the walk, so the launch above it is still refused.
+    spent = set()
     for run_dir in sorted(benches.iterdir(), reverse=True):
         if before is not None and run_dir.name >= before:
             continue
@@ -488,6 +493,10 @@ def chain_parent(repo, scope, session, before=None, closed_ok=False):
             continue
         if not isinstance(meta, dict):
             continue
+        number = meta.get("round")
+        if isinstance(number, int) and number >= ROUND_BUDGET and meta.get("chain") \
+                and round_closed(run_dir):
+            spent.add(str(meta["chain"]))
         owner = str(meta.get("session") or "")
         if session and owner != session and launchers.get(owner) != session:
             continue
@@ -498,6 +507,8 @@ def chain_parent(repo, scope, session, before=None, closed_ok=False):
         if decision is None or decision["choice"] == BAND_FIX:
             continue
         if not closed_ok and round_closed(run_dir):
+            continue
+        if chain_id(run_dir, meta) in spent:
             continue
         # The member's own map, whose keys are repository-relative on both sides. The run-wide one
         # prefixes a merged panel's paths with their label, and matched against a plain scope it

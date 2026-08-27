@@ -12153,6 +12153,14 @@ assert rb.round.round_covers_its_fixes(debt_chain_two, debt_chain_bare, debt_cha
 debt_chain_written = json.loads((debt_chain_two / "meta.json").read_text())
 assert debt_chain_written.get("round") == rb.ROUND_BUDGET, debt_chain_written
 assert debt_chain_written.get("chain") == debt_chain_one.name, debt_chain_written
+# A chain has ONE second round: a later run over the same scope is a round 1 of its own, and read
+# as the spent chain's round 2 it would walk past the decision gate (live, 2026-08-27).
+debt_chain_three = debt_chain_two.parent / (debt_chain_two.name + "-third")
+debt_chain_three.mkdir()
+debt_chain_three_meta = dict(debt_chain_bare, run_id=debt_chain_three.name, started=rb.iso_now())
+(debt_chain_three / "meta.json").write_text(json.dumps(debt_chain_three_meta))
+assert rb.round.recovered_round_stamp(debt_chain_three, debt_chain_three_meta) == {}, \
+    rb.round.recovered_round_stamp(debt_chain_three, debt_chain_three_meta)
 # A round 1 whose own decision is not on record yet is nobody's second pass, whatever a later
 # record says: the second pass is the run launched AFTER the decision.
 debt_chain_late = debt_store()
