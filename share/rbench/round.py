@@ -667,13 +667,26 @@ def round_covered_paths(repo, session):
     A waived path is out for the same reason it is out of the round: the waiver is what answers for
     it. Another chat's round covers nothing here either; its fixes are that chat's to close.
 
+    A round covers a path only while it is the NEWEST artifact holding it. Any later one — another
+    chat's receipt, a waiver — is the answer that landed after its fixing pass, so whatever stands
+    dirty there now is work the round never read: a round of 15 Aug whose fixes were committed the
+    next day still exempted four paths other chats had reviewed since, and the panel reported 0
+    confirmed over code it never opened (live, 2026-08-28).
+
+    The round's OWN fix-bytes artifact (`<run>+fixes`, written by a `fixes --done` before the
+    closing commit) is the round and not a later answer — the same pair `debt_review_scope` ignores
+    together. Read as somebody else's it un-covered the round's own paths, and the commit that was
+    about to close the round was refused over them as fresh debt.
+
     A round several repositories wide stays open until the LAST of them lands, and the legs a commit
     already covered are debt again from that commit on: the exemption is for bytes a fixing pass has
     not committed yet, and held open while the far leg waited it let new unreviewed work over those
     very paths ride out on any later commit. What that commit did carry is answered by its own
     `covers` entry (`debt.fix_coverage_artifact`), which is coverage of the bytes and not a window.
     """
+    from . import debt as _debt
     resolved = _store.resolve_repo_arg(repo) if repo else None
+    covering = None
     covered = set()
     held = set()
     for run_dir, _, step, outstanding in session_open_rounds(repo, session):
@@ -683,7 +696,13 @@ def round_covered_paths(repo, session):
         if resolved is not None and repo_leg_covered(
                 (read_fix_status(run_dir) or {}).get("covers"), str(resolved)):
             continue
-        covered |= outstanding
+        if covering is None:
+            # The debt's own newest-first reader, so a path is covered here exactly where the
+            # pricing reads this round as the thing answering for it.
+            covering = _debt.covering_artifacts(resolved)
+        own = (run_dir.name, f"{run_dir.name}+fixes")
+        covered |= {path for path in outstanding
+                    if (covering.get(path) or {}).get("id") in own}
     return covered - held
 
 

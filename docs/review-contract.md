@@ -612,7 +612,11 @@ under it). It fires on the debt answer alone, which
 leaves out every path an open round of that chat has read (`round_covered_paths`):
 the order is review, commit, push, so the commit carrying a round's fixes is exactly
 what closes it, and a round owing its decision, or the round 2 that decision named,
-covers nothing until that is on record — told
+covers nothing until that is on record. A round covers a path only while it is the
+NEWEST artifact holding it — under any later receipt, `covers` entry or waiver its
+fixing pass has already landed and what stands dirty there now is work it never read
+(2026-08-28, after a round of 15 Aug exempted four paths other chats had reviewed
+since and the panel reported 0 confirmed over code it never opened) — told
 which of those comes first, never to commit between two rounds (2026-08-27, after it blocked a
 chat's closing commit and cost it a round 2 nobody needed — `fixes --done` is optional,
 and the receipt covering the fixed bytes is written after the commit, not before it).

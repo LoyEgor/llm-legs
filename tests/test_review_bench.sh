@@ -13127,6 +13127,58 @@ try:
     assert rb.round_covered_paths(open_repo, OPEN_SESSION) == set()
     assert open_debt_line().startswith("debt 1"), open_debt_line()
 
+    # A round covers a path only while it is the NEWEST artifact holding it. Any later one — here
+    # another chat's receipt — is the answer that landed after this round's fixing pass, so what
+    # stands dirty over that path now is work the round never read. Covered by age alone, a round
+    # of 15 Aug exempted paths other chats had reviewed since and the panel reported 0 confirmed
+    # over code it never opened (live, 2026-08-28).
+    open_wipe()
+    open_round_run("20260828T090000Z-mine")
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == {"owed.py"}, \
+        rb.round_covered_paths(open_repo, OPEN_SESSION)
+    open_round_run("20260828T091000Z-since", session="chat-other")
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == set(), \
+        rb.round_covered_paths(open_repo, OPEN_SESSION)
+    assert open_debt_line().startswith("debt 1"), open_debt_line()
+    assert sorted(path for path, _ in rb.debt.debt_scope(open_repo, OPEN_SESSION)[0]) == \
+        ["owed.py"], rb.debt.debt_scope(open_repo, OPEN_SESSION)
+    # Its OWN fix-bytes artifact is not a later answer: a `fixes --done` before the closing commit
+    # writes `<run>+fixes` over the very paths the panel read, and it is the newest holder of them
+    # the moment it lands. Read as somebody else's, it un-covered the round's own paths and the
+    # commit that was about to close the round was refused over them as fresh debt.
+    open_wipe()
+    open_fixed, _ = open_round_run("20260828T093000Z-fixed")
+    open_fix_rows = rb.round.recorded_verdict_rows(open_fixed)
+    (open_fixed / rb.FIX_RECEIPT).write_text(json.dumps({
+        "state": "done", "fixed": 1, "false_positives": 0,
+        "confirmed": rb.round.confirmed_count(open_fix_rows),
+        "triage": rb.round.triage_digest(open_fix_rows),
+        # Between the round and the receipt below it, so "newer than its own round" and "older than
+        # somebody else's answer" are both real here rather than an artefact of the wall clock.
+        "recorded_at": "2026-08-28T09:35:00Z",
+        "covers": [{"repo": str(open_repo), "paths": {"owed.py": "1" * 40}}],
+    }))
+    assert rb.debt.covering_artifacts(str(open_repo))["owed.py"]["id"] == \
+        f"{open_fixed.name}+fixes", rb.debt.covering_artifacts(str(open_repo))["owed.py"]
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == {"owed.py"}, \
+        rb.round_covered_paths(open_repo, OPEN_SESSION)
+    assert open_debt_line() == "none", open_debt_line()
+    # A later answer stays a later answer, another round's OWN fix bytes among them: `<run>+fixes`
+    # of somebody else's round is that round answering for the path, not this one's.
+    open_after, _ = open_round_run("20260828T094000Z-after", session="chat-other")
+    open_after_rows = rb.round.recorded_verdict_rows(open_after)
+    (open_after / rb.FIX_RECEIPT).write_text(json.dumps({
+        "state": "done", "fixed": 1, "false_positives": 0,
+        "confirmed": rb.round.confirmed_count(open_after_rows),
+        "triage": rb.round.triage_digest(open_after_rows),
+        "recorded_at": "2026-08-28T09:45:00Z",
+        "covers": [{"repo": str(open_repo), "paths": {"owed.py": "2" * 40}}],
+    }))
+    assert rb.debt.covering_artifacts(str(open_repo))["owed.py"]["id"] == \
+        f"{open_after.name}+fixes", rb.debt.covering_artifacts(str(open_repo))["owed.py"]
+    assert rb.round_covered_paths(open_repo, OPEN_SESSION) == set(), \
+        rb.round_covered_paths(open_repo, OPEN_SESSION)
+    assert open_debt_line().startswith("debt 1"), open_debt_line()
     # A round owing a step of its own covers NOTHING — the scope it holds is what that step is
     # about to read — and it holds those paths back over every ready round of the same chat: two
     # rounds of one chat read one file, and answered by the newer alone the older one's decision
