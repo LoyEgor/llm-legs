@@ -182,6 +182,53 @@ printf '%s\n' "$TOP_A" > "$S"
 run_workdir_hook "$(workdir_payload Bash session-git-mut-home "$REPO_A" "(git -C '$REPO_B' checkout main)")"
 assert_eq "$TOP_B" "$(cat "$S")"
 
+# A `cd` inside a heredoc body or a multi-line quoted string is text a command is
+# fed, not the session moving: the worktree pin, which only a persistent cd
+# breaks, stays put through every spelling of the delimiter.
+S="$STATE_DIR/workdir-session-heredoc-bare"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-heredoc-bare "$REPO_E" \
+  "$(printf "cat <<EOF\ncd '%s'\nEOF" "$REPO_D")")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+S="$STATE_DIR/workdir-session-heredoc-quoted"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-heredoc-quoted "$REPO_E" \
+  "$(printf "cat <<'EOF'\ncd '%s'\nEOF" "$REPO_D")")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+S="$STATE_DIR/workdir-session-heredoc-dash"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-heredoc-dash "$REPO_E" \
+  "$(printf "cat <<-EOF\n\tcd '%s'\n\tEOF" "$REPO_D")")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+# Masking may only ever LOSE a cd: the real one after the body still moves the
+# home, pin and all.
+S="$STATE_DIR/workdir-session-heredoc-then-cd"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-heredoc-then-cd "$REPO_E" \
+  "$(printf "cat <<'EOF'\ncd /nowhere\nEOF\ncd '%s'" "$REPO_D")")"
+assert_eq "$TOP_D" "$(cat "$S")"
+
+S="$STATE_DIR/workdir-session-quoted-span"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-quoted-span "$REPO_E" \
+  "$(printf "echo 'first\ncd %s\nlast'" "$REPO_D")")"
+assert_eq "$TOP_E" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Bash session-quoted-span "$REPO_E" \
+  "$(printf 'echo "first\ncd %s\nlast"' "$REPO_D")")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+# Nesting is no proof the session moved either: an inner subshell cd dies with the
+# command, and a brace group is read as no cd at all.
+S="$STATE_DIR/workdir-session-cd-nested"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-cd-nested "$REPO_E" "( (cd '$REPO_D') )")"
+assert_eq "$TOP_E" "$(cat "$S")"
+run_workdir_hook "$(workdir_payload Bash session-cd-nested "$REPO_E" "{ cd '$REPO_D'; }")"
+assert_eq "$TOP_E" "$(cat "$S")"
+
 # The worktree pin ignores subshell cds outright, at any count: they are the
 # excursions — test runs, greps — stickiness exists to absorb.
 S="$STATE_DIR/workdir-session-subshell-sticky"
@@ -433,6 +480,122 @@ payload=$(workdir_payload Bash session-wt-add-sticky "$REPO_E" \
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_STICKY" rev-parse --show-toplevel)" \
   "$(cat "$STATE_DIR/workdir-session-wt-add-sticky")"
+
+# The created path is read from the worktree list — snapshotted at PreToolUse,
+# diffed at PostToolUse — so the form that expands in the shell, which is what a
+# real dispatch writes and what no text parser can follow, retargets as well.
+WT_ADD_VAR="$REPO_A/.claude/worktrees/hook-wt-var"
+VAR_CMD='R="'"$REPO_A"'"; N=$R/.claude/worktrees/hook-wt-var; git -C "$R" worktree add -b hook-wt-var "$N" HEAD'
+S="$STATE_DIR/workdir-session-wt-add-var"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-var "$REPO_E" "$VAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse"')"
+assert test -f "$S.wtadd"
+git -C "$REPO_A" worktree add -q -b hook-wt-var "$WT_ADD_VAR" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-var "$REPO_E" "$VAR_CMD")"
+assert_eq "$(git -C "$WT_ADD_VAR" rev-parse --show-toplevel)" "$(cat "$S")"
+assert test ! -e "$S.wtadd"
+
+# An add that created nothing — and one that cannot be told from a concurrent
+# add — leave the home alone rather than guess at a path.
+S="$STATE_DIR/workdir-session-wt-add-failed"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-failed "$REPO_E" "$VAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse"')"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-failed "$REPO_E" "$VAR_CMD")"
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.wtadd"
+
+S="$STATE_DIR/workdir-session-wt-add-two"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-two "$REPO_E" "$VAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-two-a "$REPO_A/.claude/worktrees/hook-wt-two-a" HEAD
+git -C "$REPO_A" worktree add -q -b hook-wt-two-b "$REPO_A/.claude/worktrees/hook-wt-two-b" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-two "$REPO_E" "$VAR_CMD")"
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.wtadd"
+
+# One snapshot per CALL, keyed on the id both of its events carry: two adds whose
+# Pre/Post interleave each measure their own baseline, so the first Post cannot
+# adopt what the second add made and the second still finds a baseline of its own.
+WT_ADD_ILA="$REPO_A/.claude/worktrees/hook-wt-il-a"
+WT_ADD_ILB="$REPO_A/.claude/worktrees/hook-wt-il-b"
+S="$STATE_DIR/workdir-session-wt-add-il"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-a"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-il-a "$WT_ADD_ILA" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-b"')"
+assert test -f "$S.wtadd.call-a"
+assert test -f "$S.wtadd.call-b"
+git -C "$REPO_A" worktree add -q -b hook-wt-il-b "$WT_ADD_ILB" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+  jq -c '.tool_use_id = "call-a"')"
+assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.wtadd.call-a"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+  jq -c '.tool_use_id = "call-b"')"
+assert_eq "$(git -C "$WT_ADD_ILB" rev-parse --show-toplevel)" "$(cat "$S")"
+assert test ! -e "$S.wtadd.call-b"
+
+# With no repository to snapshot there must be no snapshot at all: an empty one is
+# a baseline that answers nothing, and the text-parsed path is then never tried.
+WT_ADD_EMPTY="$FIXTURES/wt-add-empty"
+S="$STATE_DIR/workdir-session-wt-add-empty"
+rm -f "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-empty "$NON_GIT" \
+  "git worktree add $WT_ADD_EMPTY hook-wt-empty" | jq -c '.hook_event_name = "PreToolUse"')"
+assert test ! -e "$S.wtadd"
+git -C "$REPO_A" branch hook-wt-empty
+git -C "$REPO_A" worktree add -q "$WT_ADD_EMPTY" hook-wt-empty
+run_workdir_hook "$(workdir_payload Bash session-wt-add-empty "$NON_GIT" \
+  "git worktree add $WT_ADD_EMPTY hook-wt-empty")"
+assert_eq "$(git -C "$WT_ADD_EMPTY" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# A concurrent add in the same family is a single new path too. When the command
+# names a directory that exists, the worktree it made is the only one that path
+# can be, so anything else is somebody else's.
+WT_ADD_TAKEN="$REPO_D/wt-add-taken"
+mkdir -p "$WT_ADD_TAKEN"
+WT_ADD_RIVAL="$REPO_A/.claude/worktrees/hook-wt-rival"
+RIVAL_CMD="git -C '$REPO_A' worktree add '$WT_ADD_TAKEN' hook-wt-rival"
+S="$STATE_DIR/workdir-session-wt-add-rival"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-rival "$REPO_E" "$RIVAL_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-rival"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-rival "$WT_ADD_RIVAL" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-rival "$REPO_E" "$RIVAL_CMD" |
+  jq -c '.tool_use_id = "call-rival"')"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+WT_ADD_NAMED="$REPO_A/.claude/worktrees/hook-wt-named"
+NAMED_CMD="git -C '$REPO_A' worktree add -b hook-wt-named '$WT_ADD_NAMED' HEAD"
+S="$STATE_DIR/workdir-session-wt-add-named"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-named "$REPO_E" "$NAMED_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-named"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-named "$WT_ADD_NAMED" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-named "$REPO_E" "$NAMED_CMD" |
+  jq -c '.tool_use_id = "call-named"')"
+assert_eq "$(git -C "$WT_ADD_NAMED" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# A denied command fires PreToolUse and never the PostToolUse that consumes its
+# snapshot, so the leaked file is swept an hour later rather than after a week.
+S="$STATE_DIR/workdir-session-wt-prune"
+printf '%s\n' "$TOP_A" > "$S"
+: > "$S.wtadd.call-leaked"
+: > "$S.wtadd.call-live"
+# Two hours, not eight days: the week-long `workdir-*` sweep must not be what takes it.
+leaked_stamp=$(date -v-2H +%Y%m%d%H%M 2>/dev/null || date -d '2 hours ago' +%Y%m%d%H%M)
+touch -t "$leaked_stamp" "$S.wtadd.call-leaked"
+touch -t 202001010000 "$STATE_DIR/.workdir-prune"
+run_workdir_hook "$(workdir_payload Bash session-wt-prune "$REPO_A" "cd '$REPO_B'")"
+assert_eq "$TOP_B" "$(cat "$S")"
+assert test ! -e "$S.wtadd.call-leaked"
+assert test -f "$S.wtadd.call-live"
+rm -f "$S.wtadd.call-live"
 
 printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-list"
 payload=$(workdir_payload Bash session-wt-list "$REPO_A" "git -C '$REPO_B' worktree list")
@@ -709,30 +872,37 @@ payload=$(jq -cn --arg session session-wt --arg cwd "$REPO_B" \
 run_workdir_hook "$payload"
 assert test ! -e "$STATE_DIR/workdir-session-wt"
 
-# Sticky worktree home: cd/edit into a sibling worktree or the main checkout of
-# the same repository must NOT retarget a session homed in .claude/worktrees.
+# Sticky worktree home: an edit into a sibling worktree or the main checkout of
+# the same repository must NOT retarget a session homed in .claude/worktrees. A
+# PERSISTENT cd is the exception — cd-guard denies every one the session did not
+# deliberately unlock, so one that reaches PostToolUse is the session moving.
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-cd"
 payload=$(workdir_payload Bash session-sticky-cd "$REPO_E" "cd '$REPO_F' && git status")
 run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-cd")"
+assert_eq "$TOP_F" "$(cat "$STATE_DIR/workdir-session-sticky-cd")"
 
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-main"
 payload=$(workdir_payload Bash session-sticky-main "$REPO_E" "cd '$REPO_A'")
 run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-main")"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-sticky-main")"
 
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-edit"
 payload=$(workdir_payload Edit session-sticky-edit "$REPO_E" "$REPO_F/other.txt")
 run_workdir_hook "$payload"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-edit")"
 
-# A different repository does not retarget either: a worktree-homed session
-# cd-ing into another repo is one-off surgery (test runs, config edits), and
-# following it used to hand the ports segment to that repo mid-task.
+# Another repository is the same story: a persistent cd there is a move, while
+# the subshell form stays the one-off surgery (test runs, config edits) that
+# following used to hand the ports segment to that repo mid-task.
 printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-repo"
 payload=$(workdir_payload Bash session-sticky-repo "$REPO_E" "cd '$REPO_D'")
 run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
+assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
+
+printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-repo-sub"
+payload=$(workdir_payload Bash session-sticky-repo-sub "$REPO_E" "(cd '$REPO_D' && make)")
+run_workdir_hook "$payload"
+assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-repo-sub")"
 
 # Sticky is not permanent. A worktree made by hand never sees an ExitWorktree,
 # so a session that finishes there and works on in the main checkout used to be
@@ -795,14 +965,19 @@ run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/t
 run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
 assert_eq "$TOP_E" "$(cat "$S")"
 
-# Bash cds never break the pin, however many: cd-ing out to run tests or grep
-# another repo is exactly the noise stickiness exists to absorb.
+# A persistent cd needs no run at all: it breaks the pin on the first one and
+# takes a half-built run with it, while the subshell form it is steered into
+# (cd-ing out to run tests or grep another repo) stays absorbed at any count.
 S="$STATE_DIR/workdir-session-away-cds"
 printf '%s\n' "$TOP_E" > "$S"
 for _ in 1 2 3 4 5; do
-  run_workdir_hook "$(workdir_payload Bash session-away-cds "$REPO_E" "cd '$REPO_A' && make test")"
+  run_workdir_hook "$(workdir_payload Bash session-away-cds "$REPO_E" "(cd '$REPO_A' && make test)")"
 done
 assert_eq "$TOP_E" "$(cat "$S")"
+assert test ! -e "$S.away"
+run_workdir_hook "$(workdir_payload Edit session-away-cds "$REPO_E" "$REPO_A/tracked.txt")"
+run_workdir_hook "$(workdir_payload Bash session-away-cds "$REPO_E" "cd '$REPO_A' && make test")"
+assert_eq "$TOP_A" "$(cat "$S")"
 assert test ! -e "$S.away"
 
 # A half-finished run is session state, not history: it dies with the home.
@@ -955,7 +1130,7 @@ assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-empty")"
 # one-off cd into a sibling — the seeded home must hold through stickiness.
 run_workdir_hook "$(session_start_payload startup session-ss-seed-sticky "$REPO_E")"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-seed-sticky")"
-payload=$(workdir_payload Bash session-ss-seed-sticky "$REPO_E" "cd '$REPO_A' && git status")
+payload=$(workdir_payload Bash session-ss-seed-sticky "$REPO_E" "(cd '$REPO_A' && git status)")
 run_workdir_hook "$payload"
 assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-seed-sticky")"
 

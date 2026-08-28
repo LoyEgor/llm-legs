@@ -10,9 +10,36 @@ parsed=$(printf '%s' "$input" | jq -r '
   # would otherwise swallow the closing paren. That separator is reported
   # because such a cd dies with the command — see the away run below.
   def tok: "\\\"(?:\\\\.|[^\\\"])*\\\"|\\x27[^\\x27]*\\x27|[^[:space:];&|()]+";
+  # A `cd` inside a heredoc body or a multi-line quoted string is text a command
+  # is fed, not a command, and the separator anchor below cannot tell the two
+  # apart. Masking preserves the line structure, so a real `cd` on a later line
+  # is still seen, and it can only lose a cd, never invent one.
+  def mask_heredocs:
+    reduce (split("\n")[]) as $line ({out: [], delim: null, dash: false};
+      if .delim != null then
+        (if (if .dash then ($line | sub("^\t+"; "")) else $line end) == .delim
+         then .delim = null else . end)
+        | .out += [""]
+      else
+        .out += [$line]
+        | ([$line | match("(?<!<)<<(?<dash>-?)[ \t]*(?<d>\\\"[^\\\"]*\\\"|\\x27[^\\x27]*\\x27|[A-Za-z_][A-Za-z0-9_.-]*)"; "g")][0]) as $open
+        | if $open == null then .
+          else
+            .dash = (([$open.captures[] | select(.name == "dash") | .string][0]) == "-")
+            | .delim = ([$open.captures[] | select(.name == "d") | .string][0]
+                        | sub("^[\\\"\\x27]"; "") | sub("[\\\"\\x27]$"; ""))
+          end
+      end)
+    | .out | join("\n");
+  # Every quoted span is matched, but only a multi-line one is blanked: pairing
+  # quotes left to right is the point, or the closing quote of a QUOTED heredoc
+  # delimiter opens a span of its own that swallows the command after the body.
+  def mask_quoted_spans:
+    gsub("(?<s>\\x27[^\\x27]*\\x27)"; (.s | if test("\n") then gsub("[^\n]"; " ") else . end))
+    | gsub("(?<s>\\\"[^\\\"]*\\\")"; (.s | if test("\n") then gsub("[^\n]"; " ") else . end));
   def bash_hit:
     tok as $tok
-    | (.tool_input.command // "")
+    | ((.tool_input.command // "") | mask_heredocs | mask_quoted_spans)
     | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+add(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
     | map(
         ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd
@@ -110,11 +137,13 @@ parsed=$(printf '%s' "$input" | jq -r '
    (if .tool_name == "Bash" and ((.tool_input.command // "") | command_read_only) then "1" else "" end),
    ($bash.worktree_add // ""),
    ($bash.worktree_base // ""),
+   ($bash.cd_hit // ""),
+   (.tool_use_id | value | gsub("[^A-Za-z0-9_-]"; "")),
    (if .tool_name == "Task" or .tool_name == "Agent" then dispatch_paths else "" end)]
   | join("")
 ' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_read_only bash_worktree_add bash_worktree_base dispatch <<< "$parsed"
+IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_read_only bash_worktree_add bash_worktree_base bash_cd_hit tool_use_id dispatch <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -168,6 +197,10 @@ case "$tool_name" in
   # brief arrives again at PostToolUse, and counting it twice would let one
   # dispatch fill two thirds of the away run below.
   Task|Agent) [ "$hook_event" = PreToolUse ] || exit 0 ;;
+  # A worktree-add command is heard twice: PreToolUse only to snapshot the
+  # worktree list its PostToolUse diff is measured against.
+  Bash) [ "$hook_event" = PostToolUse ] ||
+    { [ "$hook_event" = PreToolUse ] && [ -n "$bash_worktree_add" ]; } || exit 0 ;;
   *) [ "$hook_event" = PostToolUse ] || exit 0 ;;
 esac
 # Subagent tool events carry the PARENT session_id, so a worker's stray `cd`
@@ -183,49 +216,16 @@ if [ -n "$agent_flag" ]; then
   esac
 fi
 
-case "$tool_name" in
-  ExitWorktree)
-    rm -f "$state_file" "$away_file"
-    exit 0
-    ;;
-  EnterWorktree|Task|Agent)
-    [ -n "$candidate$dispatch" ] || exit 0
-    ;;
-  Edit|Write|NotebookEdit)
-    [ -n "$candidate" ] || exit 0
-    candidate=$(dirname -- "$candidate") || exit 0
-    ;;
-  Read)
-    # A read is too weak to establish anything, so with no home yet it is not
-    # heard at all: the home comes from SessionStart or from a write.
-    [ -n "$candidate" ] && [ -f "$state_file" ] || exit 0
-    candidate=$(dirname -- "$candidate") || exit 0
-    ;;
-  Bash)
-    [ -n "$candidate" ] || exit 0
-    case "$candidate" in
-      \"*\")
-        candidate=${candidate:1:${#candidate}-2}
-        candidate=${candidate//\\\"/\"}
-        candidate=${candidate//\\\\/\\}
-        ;;
-      \'*\') candidate=${candidate:1:${#candidate}-2} ;;
-    esac
-    # `cd "-"` in the resolution subshell lands on the hook's own OLDPWD, not the session's.
-    case "$candidate" in
-      -*) exit 0 ;;
-    esac
-    case "$bash_worktree_base" in
-      \"*\")
-        bash_worktree_base=${bash_worktree_base:1:${#bash_worktree_base}-2}
-        bash_worktree_base=${bash_worktree_base//\\\"/\"}
-        bash_worktree_base=${bash_worktree_base//\\\\/\\}
-        ;;
-      \'*\') bash_worktree_base=${bash_worktree_base:1:${#bash_worktree_base}-2} ;;
-    esac
-    ;;
-  *) exit 0 ;;
-esac
+if [ "$tool_name" = Bash ]; then
+  case "$bash_worktree_base" in
+    \"*\")
+      bash_worktree_base=${bash_worktree_base:1:${#bash_worktree_base}-2}
+      bash_worktree_base=${bash_worktree_base//\\\"/\"}
+      bash_worktree_base=${bash_worktree_base//\\\\/\\}
+      ;;
+    \'*\') bash_worktree_base=${bash_worktree_base:1:${#bash_worktree_base}-2} ;;
+  esac
+fi
 
 [ -n "$base_dir" ] || base_dir=.
 
@@ -275,6 +275,98 @@ resolve_toplevel() {
   (cd "$top" 2>/dev/null && pwd -P)
 }
 
+wtadd_file="$state_file.wtadd"
+# One snapshot per CALL: two adds whose Pre/Post interleave would otherwise share
+# the file, the first Post adopting the second add's path and the second finding
+# no baseline. Both events of one call carry the same `tool_use_id`; a payload
+# without one keeps the session-wide name.
+[ -n "$tool_use_id" ] && wtadd_file="$state_file.wtadd.$tool_use_id"
+
+# The path a `git worktree add` actually created cannot be read out of the command
+# text: `git -C $R worktree add -b X $N` expands in the shell and the hook sees the
+# literal token. So the new worktree is identified by what these repositories'
+# worktree lists GAIN across the call — snapshotted before it, diffed after.
+worktree_union() {
+  local repo dir home=
+  [ -f "$state_file" ] && IFS= read -r home < "$state_file"
+  for repo in "$bash_worktree_base" "$base_dir" "$home"; do
+    [ -n "$repo" ] || continue
+    dir=$(resolve_dir "$repo") || continue
+    [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null)" = true ] || continue
+    git -C "$dir" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p'
+  done | sort -u
+}
+
+if [ "$hook_event" = PreToolUse ] && [ "$tool_name" = Bash ]; then
+  mkdir -p "$cache_dir" || exit 0
+  umask 077
+  if worktree_union > "$wtadd_file.tmp.$$" 2>/dev/null && [ -s "$wtadd_file.tmp.$$" ]; then
+    mv -f "$wtadd_file.tmp.$$" "$wtadd_file" 2>/dev/null || rm -f "$wtadd_file.tmp.$$" 2>/dev/null
+  else
+    # An empty snapshot is not a baseline: leaving no file is what lets the
+    # PostToolUse fall back to the text-parsed path.
+    rm -f "$wtadd_file.tmp.$$" "$wtadd_file" 2>/dev/null
+  fi
+  exit 0
+fi
+
+case "$tool_name" in
+  ExitWorktree)
+    rm -f "$state_file" "$away_file"
+    exit 0
+    ;;
+  EnterWorktree|Task|Agent)
+    [ -n "$candidate$dispatch" ] || exit 0
+    ;;
+  Edit|Write|NotebookEdit)
+    [ -n "$candidate" ] || exit 0
+    candidate=$(dirname -- "$candidate") || exit 0
+    ;;
+  Read)
+    # A read is too weak to establish anything, so with no home yet it is not
+    # heard at all: the home comes from SessionStart or from a write.
+    [ -n "$candidate" ] && [ -f "$state_file" ] || exit 0
+    candidate=$(dirname -- "$candidate") || exit 0
+    ;;
+  Bash)
+    # An add whose path the parser could not extract at all must still reach the
+    # snapshot diff below: that diff, not the token, is what names the worktree.
+    [ -n "$candidate" ] || [ -n "$bash_worktree_add" ] || exit 0
+    case "$candidate" in
+      \"*\")
+        candidate=${candidate:1:${#candidate}-2}
+        candidate=${candidate//\\\"/\"}
+        candidate=${candidate//\\\\/\\}
+        ;;
+      \'*\') candidate=${candidate:1:${#candidate}-2} ;;
+    esac
+    # `cd "-"` in the resolution subshell lands on the hook's own OLDPWD, not the session's.
+    case "$candidate" in
+      -*) exit 0 ;;
+    esac
+    ;;
+  *) exit 0 ;;
+esac
+
+if [ -n "$bash_worktree_add" ] && [ -f "$wtadd_file" ]; then
+  # Exactly one new worktree is the one this command made. None means the add
+  # failed; several mean a concurrent add the diff cannot attribute — both leave
+  # home where it is rather than guess.
+  wtadd_new=$(comm -13 "$wtadd_file" <(worktree_union) 2>/dev/null)
+  rm -f "$wtadd_file"
+  case "$wtadd_new" in
+    ''|*$'\n'*) exit 0 ;;
+  esac
+  # A concurrent add elsewhere in the same repository family is a single new path
+  # too. Whenever the command names a directory that exists, that is the one it
+  # made, so anything else is somebody's; a path the parser could not resolve
+  # (a shell variable) leaves the diff as the only answer.
+  if named_candidate=$(resolve_dir "$candidate") && [ -n "$named_candidate" ]; then
+    [ "$named_candidate" = "$(cd "$wtadd_new" 2>/dev/null && pwd -P)" ] || exit 0
+  fi
+  candidate=$wtadd_new
+fi
+
 if [ -n "$bash_worktree_base" ] && [[ "$candidate" != /* ]]; then
   base_dir=$(resolve_dir "$bash_worktree_base") || exit 0
 fi
@@ -290,8 +382,10 @@ case "$tool_name" in
     ;;
   *)
     if [ -n "$bash_worktree_add" ]; then
-      # PostToolUse has no reliable success field: requiring the candidate to
-      # be its own toplevel rejects both a missing path and an existing subdir.
+      # Unless the snapshot above replaced it, the candidate is the text-parsed
+      # path, which may be one the add never created — or an existing subdir of
+      # one. PostToolUse carries no success field, so demanding the candidate be
+      # its own toplevel is what rejects both.
       resolved_candidate=$(resolve_dir "$candidate") || exit 0
       toplevel=$(resolve_toplevel "$resolved_candidate") || exit 0
       [ "$resolved_candidate" = "$toplevel" ] || exit 0
@@ -315,8 +409,10 @@ esac
 # finishes there and moves on used to be pinned for its whole life — naming a
 # branch and a clean tree that were not the ones being edited. Three WORK events
 # in a row into the same other toplevel are sustained work, not an excursion, and
-# break the pin. Bash cds never break it, however many — running tests elsewhere
-# is exactly the noise stickiness exists to absorb.
+# break the pin. A PERSISTENT cd breaks it on the spot: cd-guard denies every one
+# of them unless the session holds an unlock file, so one that reaches PostToolUse
+# is the session itself moving, not an excursion. A subshell cd is still absorbed
+# — running tests elsewhere is exactly the noise stickiness exists for.
 #
 # The same proof is demanded in ANY home, worktree or not, of the evidence that
 # is weak on its own: a subagent write (a worker is dispatched at a path the
@@ -360,7 +456,7 @@ if [ "$tool_name" != EnterWorktree ] && [ -z "$bash_worktree_add" ] && [ -f "$st
     case "$prev_home" in
       */.claude/worktrees/*)
         case "$tool_name" in
-          Bash) exit 0 ;;
+          Bash) [ -n "$bash_cd_hit" ] && [ -z "$bash_subshell" ] || exit 0 ;;
           *) sustained=1 ;;
         esac
         ;;
@@ -412,6 +508,9 @@ if [[ "$now" =~ ^[0-9]+$ ]] && [[ "$marker_mtime" =~ ^[0-9]+$ ]] && [ "$((now - 
     -mtime +7 -delete
   # A live chat rewrites its anchor every TTL, so a day-old one is a dead chat's; the lock is a
   # DIRECTORY (mkdir), which the -type f sweep above can never reach.
+  # A denied command fires PreToolUse and never the PostToolUse that consumes its
+  # snapshot, so per-call names accumulate; an hour is far past any live call.
+  find "$cache_dir" -type f -name 'workdir-*.wtadd*' -mmin +60 -delete
   find "$cache_dir" -type f -name 'review-anchor-*' -mtime +1 -delete
   find "$cache_dir" -type d -name 'review-anchor-*.lock' -mtime +1 -exec rmdir {} + 2>/dev/null
   touch "$marker"

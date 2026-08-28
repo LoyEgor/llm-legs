@@ -231,7 +231,8 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 
 `statusline-workdir-hook.sh` (PostToolUse matcher
 `Bash|Edit|Write|NotebookEdit|Read|EnterWorktree|ExitWorktree`, plus a PreToolUse matcher
-`Task|Agent`) records the git toplevel a session actually works in; the status line shows it with a
+`Bash|Task|Agent` — `Bash` there only to snapshot the worktree list a `git worktree add` is
+diffed against, so a PreToolUse registration without it kills that path whole) records the git toplevel a session actually works in; the status line shows it with a
 magenta `»` marker when it differs from the launch repo. That is the only question it answers:
 which changed paths are THIS chat's work is the commit journal's (`<common-dir>/claude-commit-journal`
 — one ledger per checkout family, wherever in it the write happened —
@@ -262,11 +263,18 @@ Rules:
   newline-separated all match; `(cd /path && cmd)` is the form the cd-guard hook prescribes).
   A winning cd that sits after `(` is a subshell one and dies with the command — the session's
   own cwd never moves — so it retargets only through the same sustained-work run: three
-  consecutive subshell cds into the SAME toplevel (a worktree-pinned home ignores them entirely,
-  like any other cd). A persistent `cd`/`pushd`, and `git -C <dir>`, still retarget on the first
-  one. `git -C <dir>` counts only when followed by a mutating
+  consecutive subshell cds into the SAME toplevel (a worktree-pinned home ignores them entirely).
+  A persistent `cd`/`pushd`, and `git -C <dir>`, still retarget on the first one, and the
+  persistent cd is the one thing besides sustained work that breaks a worktree pin: cd-guard
+  denies every persistent cd a session has not unlocked, so one that arrives is a deliberate
+  move. `git -C <dir>` counts only when followed by a mutating
   subcommand (worktree/checkout/switch/commit/merge/rebase/cherry-pick/revert/restore/stash/
   am/reset/pull); read-only `git -C ... status/log/diff` never retargets.
+- A Bash `git worktree add` is the one command also heard on PreToolUse, where it snapshots the
+  worktree lists of the `-C` dir, the session cwd and the current home into
+  `workdir-<sid>.wtadd`; the PostToolUse diff of that union names the created path (the command
+  text cannot — `... worktree add $N` expands in the shell), and exactly one new path retargets,
+  a failed or ambiguous add nothing. No snapshot falls back to the parsed token.
 - EnterWorktree records the toplevel of the `worktree at <absolute path>` in `.tool_response`
   (string or object); ExitWorktree deletes the session's state file. tmp/system/`~/.claude*`/
   node_modules paths are excluded; records older than 7 days are pruned.

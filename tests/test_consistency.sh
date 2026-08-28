@@ -2508,6 +2508,12 @@ for statusline_journal_reader in review_verdict_line unpushed_marker; do
   assert grep -Fq 'journal_dir "$top"' \
     <<<"$(sed -n "/^$statusline_journal_reader() {/,/^}/p" "$STATUSLINE")"
 done
+# The workdir hook is heard at BOTH events for Bash: PreToolUse writes the worktree-list snapshot
+# the PostToolUse `git worktree add` diff is measured against, and registered for Task|Agent alone
+# that whole path is dead code the suites still pass.
+WORKDIR_HOOK_MATCHER='select([.hooks[].command] | any(test("statusline-workdir-hook"))) | select(.matcher | test("(^|\\|)Bash(\\||$)"))'
+assert eq "$(jq "[.hooks.PreToolUse[] | $WORKDIR_HOOK_MATCHER] | length" "$WORKER_GATE_SETTINGS")" 1
+assert eq "$(jq "[.hooks.PostToolUse[] | $WORKDIR_HOOK_MATCHER] | length" "$WORKER_GATE_SETTINGS")" 1
 # One lock over one ledger, or the two languages exclude nothing: both folds take `mkdir
 # <journal>.lock` beside the file, destination before source, and skip the fold on a busy lock.
 assert doc_has 'mkdir "<journal>.lock"'
