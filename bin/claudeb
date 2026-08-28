@@ -1959,8 +1959,10 @@ profile_command() {
   if args_are_headless "$@"; then worker_env=(CLAUDEB_WORKER=1)
   elif [ "$stamp_state" = true ]; then write_state_file "$profile"; fi
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
-    CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" "${worker_env[@]}" claude "$@"
+    CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" \
+    ${worker_env[@]+"${worker_env[@]}"} claude "$@"
 }
+  # Interactive launches leave worker_env empty; bash 3.2 (`env bash` where /bin precedes Homebrew) aborts on a bare "${arr[@]}" of an empty array under set -u.
 
 profile_required() {
   local name found=0
