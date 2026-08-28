@@ -673,6 +673,25 @@ documentation is not a round that owes a second review. The optional `fixes --do
 counts all of them, docs included — both numbers together or neither, and its refusal
 says so.
 
+**A cell reading a clone may not run the project's toolchain.** Every launch whose cwd is the
+sealed clone — agy, the claude `-skill` cells, the codex `exec review --commit` cells — is given
+one shim directory of the run's own (`<run-dir>/toolchain-shims`) at the FRONT of its `PATH`, from
+the single helper `launch.py clone_cell_env`, and the same list for every side: the JS, Python and
+build/test/lint drivers (`launch.py TOOLCHAIN_SHIMS`), never the interpreters `node` and
+`python`/`python3`, which the vendors' own CLIs run on. Each shim prints one line naming itself and exits 0 — an agentic CLI
+reads a nonzero exit as a command to fix and run again, which is the fan-out being prevented. A
+review is reading, not building: one cell that ran `pnpm test` inside an nx monorepo fanned out 88
+processes and 6.3 GB in 90 seconds and took the machine down with Egor's work on it (2026-08-28),
+while a measured T1 under the shims cut peak tree RSS 4.12 → 2.86 GB and lost no finding. A
+diff-fed cell holds no clone to run anything in and is never touched. `REVIEW_BENCH_NO_SHIMS=1` is
+the one escape hatch, for a measurement run that needs the real toolchain back — there is no
+per-side switch — and every run records which of the two epochs it belongs to as its meta's
+`toolchain_shims`, since a run's cells are comparable to another's only under the same rule. It is
+BEST-EFFORT by construction: a `PATH` shim answers a bare tool name and nothing else, so a direct
+entry point — `./gradlew`, `node_modules/.bin/jest`, `python -m pytest` — still reaches the real
+toolchain. That is accepted rather than closed: every incident measured so far came through a bare
+name, and the alternative is sandboxing a cell's whole process tree.
+
 **A diff too big for one cell is split, not the panel.** Chunking is OFF by default and
 turned on two ways: `--chunk`, which is the caller saying so, or a diff past
 `DIFF_CHUNK_THRESHOLD_BYTES` (800000), which is the tool saying no cell would survive it whole.

@@ -165,6 +165,74 @@ def codex_environment(account):
     return env
 
 
+# The project's own toolchain is not a review tool: a clone cell that ran `pnpm test` inside an nx
+# monorepo fanned out 88 processes and 6.3 GB in 90 seconds and took the machine down with it
+# (2026-08-28, Egor lost work). Shims answer for those commands in every cell whose cwd is the
+# sealed clone, uniformly across the sides — a measured T1 run under them cut peak tree RSS
+# 4.12 -> 2.86 GB with no finding lost (research handoff 2026-08-26 section 7.5). The interpreters
+# `node` and `python`/`python3` are deliberately absent: the vendors' own CLIs run on them.
+TOOLCHAIN_SHIMS = (
+    "npm", "npx", "pnpm", "yarn", "corepack", "nx", "jest", "vitest", "eslint", "tsc",
+    "playwright", "bun", "cargo", "make", "mvn", "gradle", "go",
+    "pip", "pip3", "poetry", "uv", "pytest", "tox",
+)
+TOOLCHAIN_SHIM_DIR = "toolchain-shims"
+TOOLCHAIN_SHIM_MESSAGE = (
+    "the project toolchain is disabled during review — read the code instead of running it"
+)
+NO_SHIMS_ENV = "REVIEW_BENCH_NO_SHIMS"
+_SHIM_BUILD_LOCK = threading.Lock()
+
+
+def shims_disabled():
+    """The escape hatch, read here and nowhere else: a measurement run that needs the real
+    toolchain back sets REVIEW_BENCH_NO_SHIMS=1 and no cell of any side is shimmed."""
+    return os.environ.get(NO_SHIMS_ENV) == "1"
+
+
+def active_shim_names():
+    """What the run records about itself, so a later corpus comparison can tell a shimmed run
+    from a pre-shim one instead of guessing at its date."""
+    return [] if shims_disabled() else list(TOOLCHAIN_SHIMS)
+
+
+def toolchain_shim_dir(run_dir):
+    """This run's shim directory, built once and shared by every cell of every side."""
+    path = Path(run_dir) / TOOLCHAIN_SHIM_DIR
+    with _SHIM_BUILD_LOCK:
+        path.mkdir(parents=True, exist_ok=True)
+        for name in TOOLCHAIN_SHIMS:
+            shim = path / name
+            if shim.exists():
+                continue
+            # Exit 0, and never a refusal code: an agentic CLI reads a failing command as one to
+            # fix and run again — reinstalling the package manager, reaching for another runner —
+            # which is the fan-out the shim exists to prevent. An answered command is dropped.
+            shim.write_text(
+                "#!/bin/sh\n"
+                f'echo "{name}: {TOOLCHAIN_SHIM_MESSAGE}"\n'
+                "exit 0\n"
+            )
+            shim.chmod(0o755)
+    return path
+
+
+def clone_cell_env(run_dir, base=None):
+    """The environment of a launch whose cwd is the sealed clone. Every such launch — agy,
+    claude, codex — takes its env from here, so the shim rule has one implementation and a
+    diff-fed cell, which has no clone to run anything in, never reaches it."""
+    env = dict(os.environ if base is None else base)
+    if shims_disabled():
+        return env
+    shim_path = str(toolchain_shim_dir(run_dir))
+    base_path = env.get("PATH", "")
+    # An EMPTY PATH entry is the current directory on POSIX, and the current directory here is the
+    # sealed clone: a base with no PATH of its own must leave no separator behind, or the shims
+    # would be followed by the reviewed tree itself as a search path.
+    env["PATH"] = f"{shim_path}{os.pathsep}{base_path}" if base_path else shim_path
+    return env
+
+
 class RaterStalled(Exception):
     """A cell killed by the stall watch: alive by the clock, silent past its pair's own cap."""
 
@@ -421,7 +489,7 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
             # The event stream is the side's own heartbeat: it goes to raw_events, and its growth
             # is what the stall watch reads. raw_final only appears at the end, so it is not one.
             proc = run_streamed(
-                command, cwd=clone, env=codex_environment(account),
+                command, cwd=clone, env=clone_cell_env(run_dir, codex_environment(account)),
                 timeout_s=deadline, stall_s=rater.get("stall_s"),
                 input_text=prompt_input, stdout_path=raw_events,
             )
@@ -494,7 +562,8 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
             # raw_events, which is what the stall watch reads. The answer is the stream's final
             # `result` event alone: every earlier event is machine chatter finding extraction
             # would read as findings.
-            proc = run_streamed(command, cwd=cwd, timeout_s=deadline,
+            proc = run_streamed(command, cwd=cwd, env=clone_cell_env(run_dir),
+                                timeout_s=deadline,
                                 stall_s=rater.get("stall_s"), stdout_path=raw_events)
         except subprocess.TimeoutExpired as exc:
             return _store.rater_timeout(
@@ -832,7 +901,8 @@ def run_agy(rater, repo, sha, focus, run_dir, diff, account):
             # The CLI's own log is this side's heartbeat: a working cell appends to it steadily,
             # and the hung one — the mode this watch exists for — goes silent there first.
             proc = run_streamed(
-                transport, cwd=clone, timeout_s=timeout_s + _catalog.AGY_TIMEOUT_GRACE_S,
+                transport, cwd=clone, env=clone_cell_env(run_dir),
+                timeout_s=timeout_s + _catalog.AGY_TIMEOUT_GRACE_S,
                 stall_s=rater.get("stall_s"), watch_paths=[log_file],
             )
         except (subprocess.TimeoutExpired, RaterStalled) as exc:

@@ -995,6 +995,10 @@ def cmd_run(args):
         "focus": args.focus or "",
         "verifier": verify_model or "",
         "scope_price": scope_price,
+        # The corpus spans both epochs: a run's findings are comparable to another's only where
+        # both read the repository under the same toolchain rule, and nothing else on record says
+        # which of the two this run was.
+        "toolchain_shims": _launch.active_shim_names(),
         **_store.session_stamp(),
     }
     if worktree_mode:
@@ -1361,6 +1365,7 @@ def cmd_run(args):
             # into it: recomputed here it would answer for the tree the panel has been reading.
             "scope_price": scope_price,
             "verifier": verify_model or "",
+            "toolchain_shims": launch_meta["toolchain_shims"],
             "verify_after_panel_ms": verify_after_panel_ms(),
             # Rewritten from scratch when the run ends, and the triage nag reads the finished
             # document: dropped here, the launching chat would be forgotten exactly when it is asked.

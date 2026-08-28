@@ -4859,6 +4859,87 @@ assert (
     and rb.READ_ONLY_REVIEW_INSTRUCTION in rb.skill_brief(pin_sha, "", "/sealed")
 )
 
+# The project's own toolchain is not a review tool: a clone cell that ran `pnpm test` in an nx
+# monorepo fanned out 88 processes and took the machine down (2026-08-28). Every launch whose cwd
+# is the sealed clone — agy, claude, codex alike — gets the run's shim directory in front of its
+# PATH from ONE helper, and a diff-fed cell, which holds no clone to run anything in, is untouched.
+shim_run = work / "toolchain-shim-run"
+shim_run.mkdir()
+shim_calls = []
+shim_real_run_streamed = rb.launch.run_streamed
+
+
+def shim_capture(command, **kwargs):
+    shim_calls.append(kwargs)
+    return shim_real_run_streamed(command, **kwargs)
+
+
+rb.launch.run_streamed = shim_capture
+try:
+    os.environ["AGY_FIXTURE_STDOUT"] = str(fixtures / "agy-skill-output.md")
+    rb.run_agy(
+        rb.parse_rater("agy-flash36-low-skill"), pin_repo, pin_sha, "", shim_run, "", "work"
+    )
+    rb.run_codex(rb.parse_rater("sol-medium"), pin_repo, pin_sha, "", shim_run, "", "sealed")
+    os.environ["CLAUDE_STREAM_ANSWER"] = claude_answer
+    rb.run_claude(
+        rb.parse_rater("opus-medium"), pin_repo, pin_sha, "", shim_run, pin_diff, "fixture"
+    )
+    del os.environ["CLAUDE_STREAM_ANSWER"]
+    rb.run_opencode(opencode_rater, pin_repo, pin_sha, "", shim_run, pin_diff, "opencode-go")
+finally:
+    rb.launch.run_streamed = shim_real_run_streamed
+assert len(shim_calls) == 4, shim_calls
+shim_dir = shim_run / rb.TOOLCHAIN_SHIM_DIR
+shim_clone_calls, shim_diff_call = shim_calls[:3], shim_calls[3]
+for shim_call in shim_clone_calls:
+    assert shim_call["cwd"], shim_call
+    assert shim_call["env"]["PATH"].split(os.pathsep)[0] == str(shim_dir), shim_call["env"]["PATH"]
+# Layered onto the side's own environment and never built from scratch: codex selects its account
+# by CODEX_HOME, which a replacement env would drop.
+assert shim_clone_calls[1]["env"]["CODEX_HOME"].endswith("/.codex-profiles/sealed"), \
+    shim_clone_calls[1]["env"]["CODEX_HOME"]
+assert shim_diff_call.get("cwd") is None, shim_diff_call
+assert shim_diff_call["env"]["PATH"] == os.environ["PATH"], shim_diff_call["env"]["PATH"]
+# One directory for the run and not one per cell: all three sides above prepended this same path.
+assert sorted(path.name for path in shim_dir.iterdir()) == sorted(rb.TOOLCHAIN_SHIMS)
+# The interpreters are deliberately not shimmed: the vendors' own CLIs run on them.
+for shim_interpreter in ("node", "python", "python3"):
+    assert shim_interpreter not in rb.TOOLCHAIN_SHIMS, rb.TOOLCHAIN_SHIMS
+# An empty PATH entry is the current directory on POSIX, and that directory is the sealed clone: a
+# base carrying no PATH must leave the shim directory alone in it, never a trailing separator.
+shim_bare_env = rb.clone_cell_env(shim_run, {"HOME": os.environ["HOME"]})
+assert shim_bare_env["PATH"] == str(shim_dir), shim_bare_env["PATH"]
+for shim_name in rb.TOOLCHAIN_SHIMS:
+    assert os.access(shim_dir / shim_name, os.X_OK), shim_name
+# A shim ANSWERS and exits 0: an agentic CLI reads a nonzero exit as a command to fix and run
+# again — reinstalling the package manager, reaching for another runner — which is the fan-out
+# the shim exists to prevent.
+shim_probe = subprocess.run([str(shim_dir / "pnpm"), "install"], capture_output=True, text=True)
+assert shim_probe.returncode == 0, shim_probe
+assert shim_probe.stdout.splitlines() == [f"pnpm: {rb.TOOLCHAIN_SHIM_MESSAGE}"], shim_probe.stdout
+assert not shim_probe.stderr, shim_probe.stderr
+# One escape hatch for a measurement run that needs the real toolchain back, and no per-side
+# switch beside it: nothing is built and no PATH is touched.
+no_shim_run = work / "toolchain-no-shim-run"
+no_shim_run.mkdir()
+os.environ[rb.NO_SHIMS_ENV] = "1"
+shim_calls.clear()
+rb.launch.run_streamed = shim_capture
+try:
+    os.environ["CLAUDE_STREAM_ANSWER"] = claude_answer
+    rb.run_claude(
+        rb.parse_rater("opus-medium"), pin_repo, pin_sha, "", no_shim_run, pin_diff, "fixture"
+    )
+    del os.environ["CLAUDE_STREAM_ANSWER"]
+    assert rb.shims_disabled() and rb.active_shim_names() == []
+finally:
+    rb.launch.run_streamed = shim_real_run_streamed
+    del os.environ[rb.NO_SHIMS_ENV]
+assert not (no_shim_run / rb.TOOLCHAIN_SHIM_DIR).exists()
+assert shim_calls[0]["env"]["PATH"] == os.environ["PATH"], shim_calls[0]["env"]["PATH"]
+assert not rb.shims_disabled() and rb.active_shim_names() == list(rb.TOOLCHAIN_SHIMS)
+
 pin_run = work / "opencode-pin-run"
 pin_run.mkdir()
 os.environ["OPENCODE_CAPTURE_PROMPT"] = str(work / "opencode-pin-prompt")
@@ -6995,6 +7076,12 @@ assert all(
     and meta["completed_raters"] == []
     and meta["rater_runs"] == []
     for meta in launch_meta_seen
+), launch_meta_seen
+# Both meta writers record which toolchain epoch the run belongs to: its cells are comparable to
+# another run's only where both read the repository under the same rule.
+assert review_meta["toolchain_shims"] == list(rb.TOOLCHAIN_SHIMS), review_meta["toolchain_shims"]
+assert all(
+    meta["toolchain_shims"] == list(rb.TOOLCHAIN_SHIMS) for meta in launch_meta_seen
 ), launch_meta_seen
 assert review_meta["verifier"] == rb.OPENCODE_VERIFIER == "oc-dsv4flash", \
     f"tier review verifier: {review_meta['verifier']!r}"
