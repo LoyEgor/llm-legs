@@ -1194,14 +1194,16 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'if [ -n "$RJ_TARGET_UNRESOLVED" ]; then' "$FLOW_GATE"
   # And the set they price it over is one reader too, or the gate arms a notice in a repository the
   # report will never look for a landing in.
-  assert grep -Fq 'done < <(rj_journal_homes "$1"; rj_command_dirs "${2-}" "$1")' \
+  assert grep -Fq 'rj_repo_set < <(rj_journal_homes "$1"; rj_command_dirs "${2-}" "$1"' \
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-  assert grep -Fq 'rj_target_repos "$cwd" "$cmd"' "$COMMIT_REPORT"
-  assert grep -Fq 'rj_target_repos "$here" "$cmd"' "$FLOW_GATE"
+  assert grep -Fq 'rj_session_repo_lines "${3-}")' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'rj_target_repos "$cwd" "$cmd" "$session"' "$COMMIT_REPORT"
+  assert grep -Fq 'rj_target_repos "$here" "$cmd" "$session"' "$FLOW_GATE"
   # Both hooks scope the snapshot through the same two library readers, or the repository the gate
   # wrote down and the one the report stamps in are not the same set.
-  assert grep -Fq 'done < <(rj_journal_homes "$2"; rj_command_dirs "$3" "$4")' \
+  assert grep -Fq 'done < <(rj_repo_set < <(rj_journal_homes "$2"; rj_command_dirs "$3" "$4"' \
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'rj_session_repo_lines "$1"))' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq 'rj_snapshot_heads "$session" "$dir" "$cmd" "${payload_cwd:-$PWD}" "$landing" "${call:-}"' \
     "$FLOW_GATE"
   # Except for a --dry-run, which lands nothing: the report exits on that same flag before it
@@ -2583,10 +2585,10 @@ COMMIT_FREE_READERS=(
   "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
   "$CLAUDE_SETUP/hooks/stop.d/ask-round-uncommitted.sh"
   "$CLAUDE_SETUP/hooks/commit-policy.sh"
-)
-if test -r "$JOURNAL_LIB"; then
   "$CLAUDE_SETUP/hooks/review-debt-nudge.sh"
   "$CLAUDE_SETUP/hooks/stop.d/ask-review-report.sh"
+)
+if test -r "$JOURNAL_LIB"; then
   rj_commit_free_body=$(sed -n '/^rj_commit_free()/,/^}/p' "$JOURNAL_LIB")
   assert grep -Fq 'file=$HOME/.claude/commit-free' <<<"$rj_commit_free_body"
   assert grep -Fq '[ "${COMMIT_FREE_FILE+x}" = x ]' <<<"$rj_commit_free_body"

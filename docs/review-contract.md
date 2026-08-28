@@ -402,8 +402,10 @@ round that owes a decision.
   the notice. A commit with nothing in debt passes silently. A commit target the
   command NAMES but neither hook can resolve — a token carrying an unexpanded
   shell variable, a path that is no directory, or more than one directory — is
-  priced over every journal home, the call's own cwd and every directory the
-  command itself named, one notice per repository, never over that cwd alone
+  priced over every journal home, the call's own cwd, every directory the
+  command itself named, every repository this chat has a journal record in
+  (`<session>.repos`) and every worktree of all of their families, one notice per
+  repository, never over that cwd alone
   (invariant row ao). Foreign dirty or untracked paths are never priced, never
   mentioned, never block.
 ## Rounds are finite by construction
@@ -625,8 +627,8 @@ which of those comes first, never to commit between two rounds (2026-08-27, afte
 chat's closing commit and cost it a round 2 nobody needed — `fixes --done` is optional,
 and the receipt covering the fixed bytes is written after the commit, not before it).
 A commit under `REVIEW_GATE_OK=1` passes as before, `--dry-run` is refused
-nothing, and a target nothing resolves — `git -C "$VAR" commit`, a heredoc holding a
-commit line — is never refused either: it is priced over every repository this flow
+nothing, and a target nothing resolves — `git -C "$VAR" commit` whose VAR no assignment
+in the SAME command spells out, a heredoc holding a commit line — is never refused either: it is priced over every repository this flow
 knows, and a wall over each of them blocks calls that commit nothing at all. Every
 strict repository is untouched, and so is every unplaceable call: the gate prices,
 records the debt and passes in silence. The framed block from
