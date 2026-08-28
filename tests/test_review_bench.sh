@@ -8939,13 +8939,17 @@ def sr_fixes(run_id="20260601T000000Z-fixcover", fixed=1, fp=0, blocked=None):
     return rc, out.getvalue().strip()
 
 
-def sr_judged(run_dir, severity, count):
+def sr_judged(run_dir, severity, count, files=None):
     """A triage of `count` confirmed findings at one severity, joined the way the gate's numbers
     are: the verdict rows alone carry no severity, so a tally is only readable through the
     findings beside them.
+
+    `files` names the file each finding is about, in a merged panel's own `label/path` spelling:
+    WHICH repository of a round a finding sits in is what says that repository owes a commit.
     """
+    named = list(files or ["src/a.py"] * count)
     (run_dir / "findings-oc-kimik3.jsonl").write_text("".join(
-        json.dumps({"file": "src/a.py", "line": n + 1, "severity": severity,
+        json.dumps({"file": named[n], "line": n + 1, "severity": severity,
                     "summary": f"finding {n}"}) + "\n"
         for n in range(count)
     ))
@@ -9410,12 +9414,12 @@ def cov_commit(*paths, message="fixture"):
                           check=True, capture_output=True, text=True).stdout.strip()
 
 
-def cov_cover(commit, session="chat-1", run_id=None):
+def cov_cover(commit, session="chat-1", run_id=None, repo=None):
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         rc = rb.cmd_fixes(argparse.Namespace(
             run_id=run_id, cover=True, blocked=None, fixed=None, fp=None,
-            commit=commit, repo=str(cov_repo), session=session,
+            commit=commit, repo=str(repo or cov_repo), session=session,
         ))
     return rc, out.getvalue().strip()
 
@@ -9451,8 +9455,9 @@ assert cov_record["state"] == "done" and cov_record["closed_by"] == [cov_sha], c
 # The coverage names the path at the blob the commit left standing — the two are told APART at
 # scenario (f), where the tree has moved on since; nothing has edited src/a.py after this commit,
 # so here they are the same bytes and this assertion measures the entry, not its source.
-assert cov_record["covers"] == [{"repo": str(cov_repo), "paths": rb.round.commit_paths(
-    cov_repo, cov_sha)}], cov_record["covers"]
+assert cov_record["covers"] == [{"repo": str(cov_repo), "commit": cov_sha,
+                                 "paths": rb.round.commit_paths(
+                                     cov_repo, cov_sha)}], cov_record["covers"]
 assert cov_record["covers"][0]["paths"] == {
     "src/a.py": rb.path_blob_sha(cov_repo, "src/a.py")}, cov_record["covers"]
 # And the tally defaulted to the triage's own.
@@ -9465,7 +9470,8 @@ cov_meta_path.unlink()
 try:
     assert rb.round.commit_fix_coverage(
         cov_round, cov_repo, cov_sha, meta=json.loads(cov_meta_text)
-    ) == [{"repo": str(cov_repo), "paths": rb.round.commit_paths(cov_repo, cov_sha)}]
+    ) == [{"repo": str(cov_repo), "commit": cov_sha,
+           "paths": rb.round.commit_paths(cov_repo, cov_sha)}]
 finally:
     cov_meta_path.write_text(cov_meta_text)
 # A round closes ONCE, by the first commit that landed its fixes. A LATER commit over a path it
@@ -9545,7 +9551,7 @@ assert "1 fixed path(s) covered" in cov_forked_out, cov_forked_out
 cov_forked_record = json.loads((cov_forked_run / rb.FIX_RECEIPT).read_text())
 assert cov_forked_record["state"] == "done", cov_forked_record
 assert cov_forked_record["closed_by"] == [cov_forked_sha], cov_forked_record
-assert cov_forked_record["covers"] == [{"repo": str(cov_repo), "paths": {
+assert cov_forked_record["covers"] == [{"repo": str(cov_repo), "commit": cov_forked_sha, "paths": {
     "src/d.py": rb.path_blob_sha(cov_repo, "src/d.py")}}], cov_forked_record["covers"]
 # Named by id, a round a `simplify` decision hands to round 2 is refused out loud rather than
 # silently left uncovered.
@@ -9600,8 +9606,8 @@ assert rb.path_blob_sha(cov_repo, "src/c.py") != cov_landed
 assert "1 fixed path(s) covered" in cov_cover(cov_pin_sha)[1]
 cov_pin_record = json.loads(
     (cov_pinned / "20260601T000500Z-covpinned" / rb.FIX_RECEIPT).read_text())
-assert cov_pin_record["covers"] == [{"repo": str(cov_repo), "paths": {"src/c.py": cov_landed}}], \
-    cov_pin_record["covers"]
+assert cov_pin_record["covers"] == [{"repo": str(cov_repo), "commit": cov_pin_sha,
+                                     "paths": {"src/c.py": cov_landed}}], cov_pin_record["covers"]
 
 # The bytes written after the commit are the pass still working, and they are debt until they land.
 assert sr_answer("src/c.py", repo=cov_repo).startswith("debt 1"), sr_answer(
@@ -9939,8 +9945,9 @@ assert "1 fixed path(s) covered" in cov_cover(cov_retally_sha)[1]
 cov_retally_record = json.loads((cov_retally_run / rb.FIX_RECEIPT).read_text())
 assert cov_retally_record["fixed"] == cov_retally_record["confirmed"] == 1, cov_retally_record
 assert cov_retally_record["closed_by"] == [cov_retally_sha], cov_retally_record["closed_by"]
-assert cov_retally_record["covers"] == [{"repo": str(cov_repo), "paths": {
-    "src/a.py": rb.path_blob_sha(cov_repo, "src/a.py")}}], cov_retally_record["covers"]
+assert cov_retally_record["covers"] == [{"repo": str(cov_repo), "commit": cov_retally_sha,
+                                         "paths": {"src/a.py": rb.path_blob_sha(
+                                             cov_repo, "src/a.py")}}], cov_retally_record["covers"]
 # A tally the triage did not move under is the model's own count of what its pass answered, and
 # the commit keeps it rather than restamping it from the confirmed total.
 cov_kept = sr_store()
@@ -9967,8 +9974,9 @@ assert sr_answer("src/b.py", repo=cov_repo) == "none", sr_answer("src/b.py", rep
 assert sr_fixes(run_id="20260601T000800Z-covtally")[0] == 0
 cov_tally_record = json.loads((cov_tally_run / rb.FIX_RECEIPT).read_text())
 assert cov_tally_record["closed_by"] == [cov_tally_sha], cov_tally_record
-assert cov_tally_record["covers"] == [{"repo": str(cov_repo), "paths": {
-    "src/b.py": rb.path_blob_sha(cov_repo, "src/b.py")}}], cov_tally_record["covers"]
+assert cov_tally_record["covers"] == [{"repo": str(cov_repo), "commit": cov_tally_sha,
+                                       "paths": {"src/b.py": rb.path_blob_sha(
+                                           cov_repo, "src/b.py")}}], cov_tally_record["covers"]
 assert sr_answer("src/b.py", repo=cov_repo) == "none", sr_answer("src/b.py", repo=cov_repo)
 
 # (k) The family guard reads `family is not None` exactly as `run_repo_record` does: two
@@ -10019,6 +10027,203 @@ sr_judged(cov_clean_round, "P2", 1)
 (cov_clean_round / rb.FIX_RECEIPT).unlink()
 assert "1 fixed path(s) covered" in cov_cover(cov_clean_sha)[1]
 assert sr_answer("src/d.py", repo=cov_repo) == "none", sr_answer("src/d.py", repo=cov_repo)
+
+# (m) A round several repositories wide is covered a LEG at a time and CLOSES on the last of them.
+# Closed on the first instead, the other leg was refused as a round already closed, never got a
+# `covers` entry, and its fixed bytes read back as debt for ever: live case
+# 20260827T214354Z-4618c5c, a claude-setup commit and an llm-legs commit one second apart over one
+# round, of which only llm-legs was ever covered.
+cov_far = work / "commit-cover-far"
+cov_far.mkdir()
+subprocess.run(["git", "init", "-q", str(cov_far)], check=True)
+subprocess.run(["git", "-C", str(cov_far), "config", "user.email", "bench@example.test"],
+               check=True)
+subprocess.run(["git", "-C", str(cov_far), "config", "user.name", "Review Bench"], check=True)
+(cov_far / "lib").mkdir()
+
+
+def cov_far_commit(*paths, message="fixture"):
+    subprocess.run(["git", "-C", str(cov_far), "add", "-A", "--", *paths], check=True)
+    subprocess.run(["git", "-C", str(cov_far), "commit", "-qm", message, "--", *paths], check=True)
+    return subprocess.run(["git", "-C", str(cov_far), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def cov_merged_round(benches, run_id, near_path, far_path, findings=None):
+    """One round over two checkouts, recorded the way a merged panel records itself: the members in
+    `repos`, each with its own repository-relative scope, and a top-level `repo` naming the
+    throwaway workspace the panel was assembled in — which is no checkout any commit lands in.
+    """
+    directory = sr_fix_run(benches, {f"near/{near_path}": rb.path_blob_sha(cov_repo, near_path),
+                                     f"far/{far_path}": rb.path_blob_sha(cov_far, far_path)},
+                           run_id=run_id, repo=work / f"merged-{run_id}", judged=None)
+    sr_judged(directory, "P2", 2, files=findings)
+    meta = json.loads((directory / "meta.json").read_text())
+    # A run carrying no tier is no round at all (`round_next_step`), so a fixture that leaves it
+    # out is one no coverage question of an OPEN round can be asked about.
+    meta["tier"] = "T2"
+    meta["repos"] = [
+        {"label": "near", "repo": str(cov_repo),
+         "reviewed": {near_path: rb.path_blob_sha(cov_repo, near_path)}},
+        {"label": "far", "repo": str(cov_far),
+         "reviewed": {far_path: rb.path_blob_sha(cov_far, far_path)}},
+    ]
+    (directory / "meta.json").write_text(json.dumps(meta))
+    return directory
+
+
+cov_multi = sr_store()
+(cov_repo / "src" / "m.py").write_text("the near half the panel read\n")
+cov_commit("src/m.py", message="the near half")
+(cov_far / "lib" / "x.py").write_text("the far half the panel read\n")
+cov_far_commit("lib/x.py", message="the far half")
+cov_multi_round = cov_merged_round(cov_multi, "20260601T002000Z-covmulti", "src/m.py", "lib/x.py")
+(cov_repo / "src" / "m.py").write_text("the near half, fixed\n")
+(cov_far / "lib" / "x.py").write_text("the far half, fixed\n")
+cov_near_sha = cov_commit("src/m.py", message="fix the near half")
+cov_near_rc, cov_near_out = cov_cover(cov_near_sha)
+assert cov_near_rc == 0 and "1 fixed path(s) covered" in cov_near_out, cov_near_out
+assert "open until every repository of the round has committed" in cov_near_out, cov_near_out
+cov_leg = json.loads((cov_multi_round / rb.FIX_RECEIPT).read_text())
+assert [entry["repo"] for entry in cov_leg["covers"]] == [str(cov_repo)], cov_leg["covers"]
+assert cov_leg["covers"][0]["paths"] == {
+    "src/m.py": rb.path_blob_sha(cov_repo, "src/m.py")}, cov_leg["covers"]
+# Open, and every door that prices a round reads exactly that: `closed_by` is not there to be read.
+assert "closed_by" not in cov_leg and cov_leg["covered_by"] == [cov_near_sha], cov_leg
+assert not rb.round_closed(cov_multi_round)
+# The near leg's fixes are answered by the shas the commit left; the far leg's are nobody's
+# coverage yet, which is what the live receipt was missing. Asked with no chat named, so the
+# open round's own coverage (`round_covered_paths`) is out of it and the `covers` block answers.
+assert sr_no_asker("src/m.py", repo=cov_repo) == "none", sr_no_asker("src/m.py", repo=cov_repo)
+assert sr_no_asker("lib/x.py", repo=cov_far).startswith("debt 1"), sr_no_asker(
+    "lib/x.py", repo=cov_far)
+# A second commit in the leg already covered carries bytes no panel has read and covers nothing.
+(cov_repo / "src" / "m.py").write_text("work after the near leg was covered\n")
+cov_near_again = cov_commit("src/m.py", message="more near work")
+assert cov_cover(cov_near_again) == (0, ""), cov_cover(cov_near_again)
+assert json.loads((cov_multi_round / rb.FIX_RECEIPT).read_text())["covered_by"] == [cov_near_sha]
+# And the LAST leg closes the round, with `closed_by` naming every commit that carried one of them.
+cov_far_sha = cov_far_commit("lib/x.py", message="fix the far half")
+cov_far_rc, cov_far_out = cov_cover(cov_far_sha, repo=cov_far)
+assert cov_far_rc == 0 and "closed by" in cov_far_out, cov_far_out
+cov_both = json.loads((cov_multi_round / rb.FIX_RECEIPT).read_text())
+assert [entry["repo"] for entry in cov_both["covers"]] == [str(cov_repo), str(cov_far)], cov_both
+assert cov_both["closed_by"] == [cov_near_sha, cov_far_sha], cov_both
+assert "covered_by" not in cov_both, cov_both
+assert rb.round_closed(cov_multi_round)
+assert sr_no_asker("lib/x.py", repo=cov_far) == "none", sr_no_asker("lib/x.py", repo=cov_far)
+# Closed for good: neither repository's next commit reopens it.
+(cov_far / "lib" / "x.py").write_text("work after the round closed\n")
+assert cov_cover(cov_far_commit("lib/x.py", message="later far work"), repo=cov_far) == (0, "")
+
+# (m1) The inverse order answers the same, because neither repository is the round's first: the
+# live receipt was written by whichever leg the commit hook's snapshot happened to walk first.
+cov_flip = sr_store()
+(cov_repo / "src" / "n.py").write_text("the near half of the second round\n")
+cov_commit("src/n.py", message="the near half again")
+(cov_far / "lib" / "y.py").write_text("the far half of the second round\n")
+cov_far_commit("lib/y.py", message="the far half again")
+cov_flip_round = cov_merged_round(cov_flip, "20260601T003000Z-covflip", "src/n.py", "lib/y.py")
+(cov_repo / "src" / "n.py").write_text("the near half of the second round, fixed\n")
+(cov_far / "lib" / "y.py").write_text("the far half of the second round, fixed\n")
+cov_flip_far = cov_far_commit("lib/y.py", message="fix the far half first this time")
+assert cov_cover(cov_flip_far, repo=cov_far)[0] == 0
+cov_flip_leg = json.loads((cov_flip_round / rb.FIX_RECEIPT).read_text())
+assert [entry["repo"] for entry in cov_flip_leg["covers"]] == [str(cov_far)], cov_flip_leg
+assert "closed_by" not in cov_flip_leg and not rb.round_closed(cov_flip_round), cov_flip_leg
+assert sr_no_asker("src/n.py", repo=cov_repo).startswith("debt 1")
+cov_flip_near = cov_commit("src/n.py", message="fix the near half second this time")
+assert cov_cover(cov_flip_near)[0] == 0
+cov_flip_both = json.loads((cov_flip_round / rb.FIX_RECEIPT).read_text())
+assert cov_flip_both["closed_by"] == [cov_flip_far, cov_flip_near], cov_flip_both
+assert rb.round_closed(cov_flip_round)
+assert sr_no_asker("src/n.py", repo=cov_repo) == "none"
+
+# (m2) A leg holding NOTHING for a commit to carry is not waited on. Fixes that all landed in one
+# repository of two leave the other exactly as its panel read it, and a round no commit could ever
+# cover again would stand open for ever — a repository whose debt never comes back and a chat the
+# launcher never lets review again.
+cov_idle = sr_store()
+(cov_repo / "src" / "p.py").write_text("the near half nobody has fixed yet\n")
+cov_commit("src/p.py", message="the near half, third round")
+(cov_far / "lib" / "z.py").write_text("the far half nothing is wrong with\n")
+cov_far_commit("lib/z.py", message="the far half, third round")
+cov_idle_round = cov_merged_round(cov_idle, "20260601T004000Z-covidle", "src/p.py", "lib/z.py")
+(cov_repo / "src" / "p.py").write_text("the near half, fixed\n")
+cov_idle_sha = cov_commit("src/p.py", message="every finding was in the near half")
+assert "closed by" in cov_cover(cov_idle_sha)[1], cov_cover(cov_idle_sha)
+cov_idle_receipt = json.loads((cov_idle_round / rb.FIX_RECEIPT).read_text())
+assert cov_idle_receipt["closed_by"] == [cov_idle_sha], cov_idle_receipt
+assert rb.round_closed(cov_idle_round)
+# A leg whose reviewed path is GONE owes nothing either, exactly as `commit_paths` leaves a
+# deletion out: a removal has nothing for a later review to read.
+assert not rb.round.leg_owes_commit({"repo": str(cov_far), "reviewed": {"lib/gone.py": "0" * 40}})
+assert not rb.round.leg_owes_commit({"repo": str(work / "no-such-checkout"), "reviewed":
+                                     {"lib/z.py": "0" * 40}})
+
+# (m3) The fixes of one round land one repository at a time — fix near, commit near, fix far,
+# commit far — and the far leg is untouched at the moment the near commit runs. Priced on the
+# working tree alone the round CLOSED there, and the commit that carried the far fix was refused as
+# a round already closed and covered nothing at all. A repository the round confirmed a finding in
+# owes its commit whether or not the pass has written it yet.
+cov_seq = sr_store()
+(cov_repo / "src" / "q.py").write_text("the near half of the fourth round\n")
+cov_commit("src/q.py", message="the near half, fourth round")
+(cov_far / "lib" / "w.py").write_text("the far half of the fourth round\n")
+cov_far_commit("lib/w.py", message="the far half, fourth round")
+cov_seq_round = cov_merged_round(cov_seq, "20260601T005000Z-covseq", "src/q.py", "lib/w.py",
+                                 findings=["near/src/q.py", "far/lib/w.py"])
+(cov_repo / "src" / "q.py").write_text("the near half, fixed\n")
+cov_seq_near = cov_commit("src/q.py", message="fix the near half first")
+assert "open until every repository of the round has committed" in cov_cover(cov_seq_near)[1]
+cov_seq_leg = json.loads((cov_seq_round / rb.FIX_RECEIPT).read_text())
+assert "closed_by" not in cov_seq_leg and cov_seq_leg["covered_by"] == [cov_seq_near], cov_seq_leg
+# And every reader that prices a round reads it as OPEN, the receipt's own `done` notwithstanding:
+# delivered and settled as finished, a half-covered round had the chat asked to waive the other
+# repository's fixes before the commit that carries them.
+assert rb.round_state(cov_seq_round) == "covering", rb.round_state(cov_seq_round)
+assert not rb.round_closed(cov_seq_round)
+# The near leg is COVERED, so its paths are this chat's debt again from that commit on: what the
+# commit carried is answered by its own `covers` entry, and everything written over them after it
+# is work no panel has read. Asked as the chat that owns the round, which is the reader the
+# exemption was for.
+assert sr_answer("src/q.py", repo=cov_repo) == "none", sr_answer("src/q.py", repo=cov_repo)
+(cov_repo / "src" / "q.py").write_text("work written after the near leg was covered\n")
+assert sr_answer("src/q.py", repo=cov_repo).startswith("debt 1"), sr_answer(
+    "src/q.py", repo=cov_repo)
+# The leg still OWED keeps its exemption: those bytes are the round's own fixing pass answering its
+# own findings, and priced as debt they wall the very commit that closes the round.
+(cov_far / "lib" / "w.py").write_text("the far half, fixed\n")
+assert sr_answer("lib/w.py", repo=cov_far) == "none", sr_answer("lib/w.py", repo=cov_far)
+assert sr_no_asker("lib/w.py", repo=cov_far).startswith("debt 1")
+cov_seq_far = cov_far_commit("lib/w.py", message="fix the far half second")
+assert "closed by" in cov_cover(cov_seq_far, repo=cov_far)[1]
+cov_seq_both = json.loads((cov_seq_round / rb.FIX_RECEIPT).read_text())
+assert cov_seq_both["closed_by"] == [cov_seq_near, cov_seq_far], cov_seq_both
+assert rb.round_state(cov_seq_round) == "done" and rb.round_closed(cov_seq_round)
+assert sr_answer("lib/w.py", repo=cov_far) == "none", sr_answer("lib/w.py", repo=cov_far)
+assert sr_answer("src/q.py", repo=cov_repo).startswith("debt 1")
+
+# (m4) The optional `fixes --done` tally writes `covers` entries of its own, off the journals, for
+# bytes no commit has carried. Counted as this repository's leg, it locked the closing commit out of
+# `coverable_runs`: a chat that typed the tally first never got a `closed_by` at all, and its fixed
+# bytes read back as debt for ever. A leg is a COMMIT's entry and nothing else.
+cov_tallied = sr_store()
+cov_tallied_run = sr_fix_run(cov_tallied, cov_reviewed, run_id="20260601T006000Z-covtallied",
+                             repo=cov_repo)
+cov_gitdir = pathlib.Path(rb.journal_dir(cov_repo))
+(cov_repo / "src" / "a.py").write_text("the finding, fixed before the tally\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit, gitdir=cov_gitdir)
+assert "1 fixed path(s) covered" in sr_fixes(run_id="20260601T006000Z-covtallied")[1]
+cov_tallied_tally = json.loads((cov_tallied_run / rb.FIX_RECEIPT).read_text())
+assert not rb.round.repo_leg_covered(cov_tallied_tally["covers"], str(cov_repo)), cov_tallied_tally
+cov_tallied_sha = cov_commit("src/a.py", message="the commit after the tally")
+cov_tallied_rc, cov_tallied_out = cov_cover(cov_tallied_sha, run_id="20260601T006000Z-covtallied")
+assert cov_tallied_rc == 0 and "closed by" in cov_tallied_out, cov_tallied_out
+cov_tallied_record = json.loads((cov_tallied_run / rb.FIX_RECEIPT).read_text())
+assert cov_tallied_record["closed_by"] == [cov_tallied_sha], cov_tallied_record
+assert cov_tallied_record["covers"][0]["commit"] == cov_tallied_sha, cov_tallied_record
+(cov_gitdir / rb.COMMIT_JOURNAL).unlink()
 
 # --- .claude/review-debt-ignore: what a repository never asks a panel about --------------------
 # What is worth a panel's minutes is a property of the project, not of whoever is looking, so the
@@ -12780,8 +12985,10 @@ try:
     open_refusal, _ = open_guard(
         ("20260827T070000Z-owed", dict(confirmed=rb.ROUND_FIX_MAX + 1)))
     assert "round 20260827T070000Z-owed of this chat is open in" in open_refusal, open_refusal
-    assert "finish it (fix -> commit closes it; or its decided round 2 first)" in open_refusal, \
-        open_refusal
+    # The STEP's own command and not merely the name of the step: this refusal is what a chat sent
+    # here by the commit door reads next, and told only that the round is open it went back to the
+    # very review this refuses — commit gate, review, here, commit gate.
+    assert rb.round.fork_command("20260827T070000Z-owed") in open_refusal, open_refusal
     assert "A new review starts only after that, or after `review-bench waive`." in open_refusal, \
         open_refusal
     # It is the chat's own round and no other's, so the refusal names this repository's tree.
@@ -12810,7 +13017,15 @@ try:
     open_unchainable, _ = open_guard(
         ("20260827T070000Z-dec", dict(confirmed=rb.ROUND_FIX_MAX + 1, decision="simplify")),
         chainable=False)
-    assert "round 2 first" in open_unchainable, open_unchainable
+    assert "run the round 2 its decision named" in open_unchainable, open_unchainable
+    # Where that pass has already RUN and nobody triaged it, the refusal names the TRIAGE: told to
+    # run a review, the chat pays a second panel over a tree one has already read.
+    open_untriaged, _ = open_guard(
+        ("20260827T070000Z-dec", dict(confirmed=rb.ROUND_FIX_MAX + 1, decision="simplify")),
+        ("20260827T071000Z-two", dict(number=rb.ROUND_BUDGET, chain="20260827T070000Z-dec",
+                                      triaged=False)),
+        chainable=False)
+    assert "review-bench record 20260827T071000Z-two" in open_untriaged, open_untriaged
 
     # A waiver is the other way out the refusal names: this chat said out loud that the work goes
     # unreviewed, and a door still refusing after that names a way past itself that does not work.

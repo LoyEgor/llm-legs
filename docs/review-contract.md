@@ -327,9 +327,17 @@ the commit itself holds — bounded, like every coverage, by the paths that roun
 holds. A round with NOTHING confirmed is closed by no commit: it has no fixing pass for one to be
 the evidence of (`fix_status` already calls it done), and covered anyway it retired that commit's
 own bytes as reviewed work no panel had read (audit, 2026-08-26). One commit may
-close several OPEN rounds; a round is closed ONCE, by the first commit that lands its fixes, and a
-later commit over a path it reviewed closes nothing of it and covers nothing of it — those bytes
-are work no panel has read. The receipt names that one commit in `closed_by`, which nothing reads
+close several OPEN rounds; a round is closed ONCE per repository it read, by the first commit
+that lands that repository's fixes — a round of several repositories closes with the last of them,
+its state reading `covering` until then, and a leg is owed while it holds fix bytes no commit
+carried or its label has confirmed findings, so a leg the fixing pass never touched holds
+nothing up — and a later commit over a path it reviewed closes nothing of it and covers nothing
+of it — those bytes are work no panel has read. Each `covers` entry names the commit that carried
+its leg; the entry `fixes --done` writes names none and is no leg, so the commit after it still
+covers. From the commit that covers a leg on, that leg's paths are debt again — only the bytes it
+carried are read — while the legs still owed keep their exemption. The receipt names those
+commits in `closed_by`, oldest first, one per repository, holding them in `covered_by` while a
+leg is still owed; nothing reads
 back for coverage — that is in the shas — and which is the only place a reader can see why a round
 nobody typed a receipt for is closed, and the only thing the commit block's `review:` row
 reads a closed round off (re-listed there, a round settled yesterday was named closed by every

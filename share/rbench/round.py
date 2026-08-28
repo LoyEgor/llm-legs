@@ -253,9 +253,10 @@ def triage_digest(verdicts):
 
 
 def fix_status(run_dir, confirmed, verdicts=None):
-    """The report's `fixes:` value and what the round's fixing pass answered: `done`, `blocked`
-    (a receipt naming why the pass stopped) or `pending` — no receipt at all, or one that answers
-    a triage this run no longer carries.
+    """The report's `fixes:` value and what the round's fixing pass answered: `done`, `covering`
+    (a commit carried one repository of the round and the rest are still owed), `blocked` (a
+    receipt naming why the pass stopped) or `pending` — no receipt at all, or one that answers a
+    triage this run no longer carries.
 
     A round nobody has answered for yet has no line of its own: what it owes is read off the band
     it is in, and the report's `fixes:` row — never an absent row — is what says so. The three
@@ -276,10 +277,13 @@ def fix_status(run_dir, confirmed, verdicts=None):
         if stale:
             return stale, "pending"
     if state == "done":
-        return (
+        line = (
             f"done — {_store.counted_int(record.get('fixed'))} fixed, "
             f"{_store.counted_int(record.get('false_positives'))} false positives"
-        ), "done"
+        )
+        if round_covering(record):
+            return f"{line}; open until every repository of the round has committed", "covering"
+        return line, "done"
     reason = " ".join(str((record or {}).get("reason") or "").split())
     if state == "blocked":
         return f"stopped — {reason or 'no reason recorded'}", "blocked"
@@ -522,9 +526,22 @@ def chain_parent(repo, scope, session, before=None, closed_ok=False):
 
 
 def round_closed(run_dir):
-    """Whether a commit has already closed this round's fixing pass."""
+    """Whether a commit has already closed this round's fixing pass — the LAST of them where the
+    round read several repositories, each of which lands its own (`round_legs_landed`)."""
     record = read_fix_status(run_dir)
     return bool(isinstance(record, dict) and record.get("closed_by"))
+
+
+def round_covering(record):
+    """Whether a receipt has covered SOME repository of its round with the rest of them still owed.
+
+    `covered_by` is what a commit writes while a leg of the round has not landed, and `closed_by` is
+    the finished round's own field. Read as `done` regardless, a half-covered round was delivered as
+    a finished one and `unsettled_round` demanded the other repository's fixes be waived before the
+    commit that carries them.
+    """
+    return bool(isinstance(record, dict) and record.get("covered_by")
+                and not record.get("closed_by"))
 
 
 # What an open round still owes before the commit that closes it. The sequence is review -> commit
@@ -649,14 +666,24 @@ def round_covered_paths(repo, session):
     of them alone the older one's decision was covered away by the very round that came after it.
     A waived path is out for the same reason it is out of the round: the waiver is what answers for
     it. Another chat's round covers nothing here either; its fixes are that chat's to close.
+
+    A round several repositories wide stays open until the LAST of them lands, and the legs a commit
+    already covered are debt again from that commit on: the exemption is for bytes a fixing pass has
+    not committed yet, and held open while the far leg waited it let new unreviewed work over those
+    very paths ride out on any later commit. What that commit did carry is answered by its own
+    `covers` entry (`debt.fix_coverage_artifact`), which is coverage of the bytes and not a window.
     """
+    resolved = _store.resolve_repo_arg(repo) if repo else None
     covered = set()
     held = set()
-    for _, _, step, outstanding in session_open_rounds(repo, session):
-        if step == ROUND_STEP_READY:
-            covered |= outstanding
-        else:
+    for run_dir, _, step, outstanding in session_open_rounds(repo, session):
+        if step != ROUND_STEP_READY:
             held |= outstanding
+            continue
+        if resolved is not None and repo_leg_covered(
+                (read_fix_status(run_dir) or {}).get("covers"), str(resolved)):
+            continue
+        covered |= outstanding
     return covered - held
 
 
@@ -680,13 +707,22 @@ def round_open_guard(repos, session, chainable):
         found = session_open_round(repo, session)
         if found is None:
             continue
-        run_dir, _, step = found
+        run_dir, meta, step = found
         if step == ROUND_STEP_READY or (step == ROUND_STEP_ROUND2 and chainable):
             continue
+        # The step's own command, and not merely the name of the step: this refusal is what a chat
+        # sent here by the commit door reads next, and told only that the round is open it went
+        # back to the very review this refuses (commit gate -> review -> here -> commit gate).
+        second = None if step == ROUND_STEP_DECISION else chain_second_round(run_dir, meta)
+        owed = (
+            fork_command(run_dir.name) if step == ROUND_STEP_DECISION else
+            f"`review-bench record {second.name}`, which is the round 2 its decision named and "
+            "nobody has triaged" if second is not None else
+            "run the round 2 its decision named"
+        )
         raise ValueError(
-            f"round {run_dir.name} of this chat is open in {repo}: finish it (fix -> commit closes "
-            "it; or its decided round 2 first). A new review starts only after that, or after "
-            "`review-bench waive`."
+            f"round {run_dir.name} of this chat is open in {repo}: finish it — {owed}. A new "
+            "review starts only after that, or after `review-bench waive`."
         )
 
 
@@ -1535,6 +1571,101 @@ def commit_paths(repo, commit):
     return {path: entry[1] for path, entry in entries.items() if entry[1]}
 
 
+def round_repo_legs(meta):
+    """Every repository this round read, as the recorded entry that holds its scope — the members
+    of a merged panel, or the run itself where it read one checkout.
+
+    A merged run's top-level `repo` is the throwaway workspace the panel was assembled in and no
+    checkout any commit lands in, so where members are recorded they are the whole answer.
+    """
+    members = [entry for entry in meta.get("repos") or ()
+               if isinstance(entry, dict) and entry.get("repo")
+               and isinstance(entry.get("reviewed"), dict) and entry["reviewed"]]
+    if members:
+        return members
+    reviewed = meta.get("reviewed")
+    if meta.get("repo") and isinstance(reviewed, dict) and reviewed:
+        return [meta]
+    return []
+
+
+def repo_leg_covered(covers, repo):
+    """Whether a COMMIT has already carried this repository's leg of the round. Matched on the
+    family like every other coverage, so a leg a worktree read answers for the checkout that
+    commits it.
+
+    An entry naming no commit is the optional `fixes --done` tally's, whose coverage is journal-
+    derived and rides no commit at all. Counted as a leg of the round, a chat that typed that tally
+    before committing locked its own closing commit out of `coverable_runs`, and the round it was
+    about to close stood open for ever.
+    """
+    resolved = _store.resolved_repo_path(repo)
+    family = _store.repo_family(repo)
+    for entry in covers or ():
+        if not isinstance(entry, dict) or not entry.get("commit"):
+            continue
+        recorded = str(entry.get("repo") or "")
+        if not recorded:
+            continue
+        if _store.resolved_repo_path(recorded) == resolved:
+            return True
+        if family is not None and _store.repo_family(recorded) == family:
+            return True
+    return False
+
+
+def leg_owes_commit(entry):
+    """Whether this repository of the round still holds fix bytes no commit has carried: a path
+    its panel read standing at content other than the one the panel read.
+
+    A path that is GONE owes nothing, exactly as `commit_paths` leaves a deletion out — a removal
+    has nothing for a later review to read — and neither does a checkout no longer on disk.
+    """
+    repo = str(entry.get("repo") or "")
+    if not repo or not Path(repo).is_dir():
+        return False
+    for path, sha in (entry.get("reviewed") or {}).items():
+        standing = _store.path_blob_sha(repo, str(path))
+        if standing and standing != sha:
+            return True
+    return False
+
+
+def round_legs_landed(run_dir, meta, covers, confirmed):
+    """Whether every repository of this round has landed its fixes, so the commit in hand is the
+    one that closes it.
+
+    A round spans as many repositories as its panel read and each one's fixes ride a commit of its
+    own, so the LAST leg closes it and `closed_by` names every commit that carried one. Closed on
+    the FIRST of them instead, the leg that lost the race by a second was refused as a round
+    already closed, never got a `covers` entry, and its fixed bytes read back as debt for ever
+    (live case 20260827T214354Z-4618c5c: a claude-setup commit and an llm-legs commit one second
+    apart over one round, and only the llm-legs leg ever covered).
+
+    A leg OWES a commit two ways and no third: the round confirmed a finding in that repository, so
+    a fixing pass is owed there whether or not it has been written yet; or its reviewed paths stand
+    at bytes the panel did not read, which is a pass that wrote them and has not committed. Asked
+    on the working tree alone, a round whose fixes land one repository at a time closed on the
+    FIRST commit — the far repository was still exactly as the panel read it, because its fix was
+    written after — and the commit that carried that fix then covered nothing at all.
+
+    A leg with neither is not waited on: a repository the round confirmed nothing in and nobody has
+    touched holds nothing for a commit to carry, and a round no commit could ever cover again would
+    stand open for ever — which is a repository whose debt never comes back and a chat that may
+    never review again. A round holding no confirmed finding closes on the first commit whatever
+    its repositories hold, which is `coverable_runs`'s own rule for it.
+    """
+    if not confirmed:
+        return True
+    for entry in round_repo_legs(meta):
+        if repo_leg_covered(covers, str(entry.get("repo") or "")):
+            continue
+        label = str(entry.get("label") or "")
+        if leg_owes_commit(entry) or triaged_confirmed(run_dir, f"{label}/" if label else ""):
+            return False
+    return True
+
+
 def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
     """What a commit closes of this round: the `covers` entries for every path the commit carried
     that this round's own scope holds, at the shas the commit left them standing at.
@@ -1581,7 +1712,10 @@ def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
             continue
         paths = {path: sha for path, sha in landed.items() if path in reviewed}
         if paths:
-            covers.append({"repo": recorded, "paths": paths})
+            # The commit is named IN the entry: it is what tells a leg of the round that has landed
+            # from the `fixes --done` tally's coverage of bytes no commit has carried
+            # (`repo_leg_covered`), which is the same block written by another hand.
+            covers.append({"repo": recorded, "paths": paths, "commit": commit})
     return covers
 
 
@@ -1590,8 +1724,9 @@ def merge_fix_coverage(existing, fresh):
 
     A path already covered takes the NEW sha: the `--done` tally and the commit that closed the
     round answer for one pass, and what stands is what the commit left — read against the tally's
-    older sha the fixed bytes came back as debt the moment they landed (audit, 2026-08-26). No
-    later commit reaches here: `_coverable_round_state` refuses a round already closed.
+    older sha the fixed bytes came back as debt the moment they landed (audit, 2026-08-26). The only
+    later commit that reaches here is the one carrying ANOTHER repository's leg of the same round:
+    `_coverable_round_state` refuses a round already closed and a leg already covered.
     """
     merged = [dict(entry, paths=dict(entry.get("paths") or {}))
               for entry in existing or () if isinstance(entry, dict)]
@@ -1603,9 +1738,14 @@ def merge_fix_coverage(existing, fresh):
             None,
         )
         if standing is None:
-            merged.append({"repo": entry["repo"], "paths": dict(entry["paths"])})
-        else:
-            standing["paths"].update(entry["paths"])
+            standing = {"repo": entry["repo"], "paths": {}}
+            merged.append(standing)
+        standing["paths"].update(entry["paths"])
+        # A commit takes over the tally's entry for its repository and never the other way round:
+        # what the tally wrote rides no commit, and left standing as this leg's record it is a round
+        # whose closing commit `repo_leg_covered` turns away.
+        if entry.get("commit"):
+            standing["commit"] = entry["commit"]
     return merged
 
 
@@ -1636,8 +1776,13 @@ def coverable_runs(repo, session, commit, run_id=None):
     Refused, in order: a round nobody triaged, since a receipt is an answer to confirmed findings;
     a round whose pass recorded `--blocked`, since a stop is a record and a commit does not undo
     it; a round a commit ALREADY closed, since a round closes once and what a later commit writes
-    over a path it once reviewed is work no panel has read; and a round 1 whose band or decision
-    names a second pass, since that pass reads the fixes itself.
+    over a path it once reviewed is work no panel has read; a round whose leg in THIS repository
+    another commit already covered, for the same reason one repository deep; and a round 1 whose
+    band or decision names a second pass, since that pass reads the fixes itself.
+
+    A round several repositories wide is covered a leg at a time and stays OPEN until the last of
+    them lands (`round_legs_landed`): each leg's fixes ride a commit of its own, and the round is
+    finished when every repository of it is.
 
     A round holding NO confirmed finding CLOSES here and COVERS nothing, and those are two
     different questions. It has no fixing pass for a commit to be the evidence of, so covering
@@ -1689,7 +1834,7 @@ def coverable_runs(repo, session, commit, run_id=None):
             continue
         record = read_fix_status(run_dir)
         rows = recorded_verdict_rows(run_dir)
-        if not _coverable_round_state(run_dir, rows, record):
+        if not _coverable_round_state(run_dir, rows, record, repo=repo):
             continue
         if not round_covers_its_fixes(run_dir, meta, rows):
             continue
@@ -1702,15 +1847,18 @@ def coverable_runs(repo, session, commit, run_id=None):
     return rounds
 
 
-def _coverable_round_state(run_dir, rows, record):
+def _coverable_round_state(run_dir, rows, record, repo=None):
     # `closed_by` refuses here and not only in `coverable_runs`, because the chain path in
-    # `cmd_fixes_cover` closes a round 1 through this same gate.
-    return (
-        _store.run_triaged(run_dir)
-        and not (isinstance(record, dict)
-                 and (record.get("state") == "blocked" or record.get("closed_by")))
-        and rows is not None
-    )
+    # `cmd_fixes_cover` closes a round 1 through this same gate. A leg a COMMIT already carried is
+    # refused beside it: a round closes once, and once PER REPOSITORY while it is closing — a second
+    # commit over paths one leg covered carries bytes no panel has read.
+    if not _store.run_triaged(run_dir) or rows is None:
+        return False
+    if not isinstance(record, dict):
+        return True
+    if record.get("state") == "blocked" or record.get("closed_by"):
+        return False
+    return not (repo and repo_leg_covered(record.get("covers"), repo))
 
 
 def fix_coverage(run_dir, session, recorded, rows, fixed):
@@ -1767,6 +1915,12 @@ def fix_coverage(run_dir, session, recorded, rows, fixed):
 def cover_receipt(run_dir, meta, rows, record, covers, commit, session):
     """The done receipt a commit writes for one round, with that commit's coverage folded in.
 
+    `closed_by` goes down only when the LAST repository of the round has landed its fixes; until
+    then the commits that covered a leg stand in `covered_by`, which no reader of a closed round
+    ever sees. Every door that prices a round — `round_closed`, the `review:` row, the flow gate's
+    coverage — reads `closed_by` and nothing else, so a receipt naming it early said a round of two
+    repositories was finished while half its fixes were still in the tree.
+
     The tally is the triage's own where nobody typed one: the counts are what the report PRINTS,
     and no reader of the debt engine has ever read them (`repo_debt` takes `covers` and nothing
     else). Making them the price of coverage is what left 51 of 71 receipts covering nothing.
@@ -1784,6 +1938,9 @@ def cover_receipt(run_dir, meta, rows, record, covers, commit, session):
     # wrote, which no later judging of the findings can take back.
     tally = standing if standing.get("triage") == digest else {}
     fixed = tally.get("fixed")
+    merged = merge_fix_coverage(standing.get("covers"), covers)
+    carried = list(dict.fromkeys(
+        [str(sha) for sha in standing.get("covered_by") or () if sha] + [commit]))
     written = {
         "state": "done",
         "fixed": confirmed if not isinstance(fixed, int) else fixed,
@@ -1796,12 +1953,14 @@ def cover_receipt(run_dir, meta, rows, record, covers, commit, session):
         # round's seal, so shas that advanced under a timestamp that did not lost to artifacts
         # written between the two commits.
         "recorded_at": _store.iso_now(),
-        "covers": merge_fix_coverage(standing.get("covers"), covers),
-        # The commit that closed this pass, and there is only ever one — a list because the
-        # `review:` row and every reader of it already parse one. It is the only place a reader can
-        # see WHY a round nobody typed a receipt for is closed; the coverage is in the shas.
-        "closed_by": [commit],
+        "covers": merged,
     }
+    # The commits that closed this pass, oldest first — one per repository the round read. It is
+    # the only place a reader can see WHY a round nobody typed a receipt for is closed; the
+    # coverage is in the shas. While a leg is still owed they are `covered_by` instead: the two
+    # names are what keeps `closed_by` meaning "finished" for every door that reads it.
+    written["closed_by" if round_legs_landed(run_dir, meta, merged, confirmed)
+            else "covered_by"] = carried
     owner = session or _store.round_session(run_dir) or ""
     if owner:
         written["session"] = owner
@@ -1816,11 +1975,12 @@ def cmd_fixes_cover(args):
     fixes is what ends the round (Egor, 2026-08-25). No second command a model can forget stands
     between them — `fixes --done` remains for the tally the report prints and gates nothing.
 
-    One commit may close several rounds, and a round is closed ONCE — by the first commit that
-    lands its fixes. A later commit over a path that round reviewed closes nothing of it and covers
-    nothing of it: those bytes are work no panel has read, and re-stamped they retired as reviewed
-    (and re-listed on the `review:` row of every unrelated commit for as long as the fixing window
-    held it open).
+    One commit may close several rounds, and a round is closed ONCE per repository it read — by
+    the first commit that lands that repository's fixes. A later commit over a path that leg
+    covered closes nothing of it and covers nothing of it: those bytes are work no panel has read,
+    and re-stamped they retired as reviewed (and re-listed on the `review:` row of every unrelated
+    commit for as long as the fixing window held it open). A round of several repositories is
+    CLOSED by the last of those commits and open until then (`round_legs_landed`).
     """
     commit = str(getattr(args, "commit", "") or "").strip()
     if not commit:
@@ -1845,30 +2005,43 @@ def cmd_fixes_cover(args):
             raise ValueError(
                 f"{args.run_id} is not a round this commit closes: it is another chat's or "
                 f"another repository's, untriaged, stopped, already closed by an earlier "
-                f"commit, a round 1 a second pass is owed over, outside "
+                f"commit or covered in this repository by one, a round 1 a second pass is owed "
+                f"over, outside "
                 f"the {ROUND_LINEAGE_MAX_HOURS}h fixing window, or {commit[:7]} carried none of "
                 f"the paths it reviewed"
             )
     else:
         rounds = coverable_runs(repo, session, commit)
     for run_dir, meta, rows, record, covers in rounds:
-        cover_receipt(run_dir, meta, rows, record, covers, commit, session)
+        written = cover_receipt(run_dir, meta, rows, record, covers, commit, session)
         covered = sum(len(entry["paths"]) for entry in covers)
-        print(f"{run_dir.name} fixes: closed by {commit[:7]}; {covered} fixed path(s) covered")
+        print(f"{run_dir.name} fixes: {cover_line(written, commit)}; "
+              f"{covered} fixed path(s) covered")
         for parent, parent_meta in chain_rounds(run_dir, meta):
             if not round_within_fixing_window(parent_meta):
                 continue
             parent_rows = recorded_verdict_rows(parent)
             parent_record = read_fix_status(parent)
-            if not _coverable_round_state(parent, parent_rows, parent_record):
+            if not _coverable_round_state(parent, parent_rows, parent_record, repo=repo):
                 continue
             parent_covers = commit_fix_coverage(parent, repo, commit, meta=parent_meta)
             if not parent_covers:
                 continue
-            cover_receipt(parent, parent_meta, parent_rows, parent_record, parent_covers, commit,
-                          session)
-            print(f"{parent.name} fixes: closed by {commit[:7]} with round 2 {run_dir.name}")
+            parent_written = cover_receipt(parent, parent_meta, parent_rows, parent_record,
+                                           parent_covers, commit, session)
+            print(f"{parent.name} fixes: {cover_line(parent_written, commit)} with round 2 "
+                  f"{run_dir.name}")
     return 0
+
+
+def cover_line(written, commit):
+    """How a `--cover` names what it just did to one round: closed, or one repository of it
+    covered with the rest of them still owed. Said out loud because this is the whole record a
+    commit hook prints, and "closed by" over a round still holding half its fixes is the line that
+    sent a chat off to review its own working tree."""
+    if written.get("closed_by"):
+        return f"closed by {commit[:7]}"
+    return f"covered by {commit[:7]}, open until every repository of the round has committed"
 
 
 def chain_rounds(run_dir, meta):
@@ -1991,9 +2164,10 @@ def cmd_fixes(args):
         standing = standing if isinstance(standing, dict) and standing.get("state") == "done" \
             else {}
         covers = merge_fix_coverage(standing.get("covers"), covers)
-        closed_by = list(dict.fromkeys(standing.get("closed_by") or ()))
-        if closed_by:
-            record["closed_by"] = closed_by
+        for key in ("closed_by", "covered_by"):
+            landed = list(dict.fromkeys(standing.get(key) or ()))
+            if landed:
+                record[key] = landed
         if covers:
             record["covers"] = covers
             line += f"; {sum(len(entry['paths']) for entry in covers)} fixed path(s) covered"
@@ -2033,6 +2207,11 @@ def delivery_state(run_dir):
     receipt for it, and a report held back for one would never be delivered at all.
     """
     state = round_state(run_dir)
+    # A round one repository of which has not committed yet is handed over at neither end: its block
+    # already reached this chat at its triage, and delivered here it would spend the one `done` key
+    # the finished round is ever delivered under while half its fixes were still in the tree.
+    if state == "covering":
+        return None
     if state != "pending":
         return state
     recorded = triage_instant(run_dir)

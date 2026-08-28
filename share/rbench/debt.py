@@ -224,6 +224,9 @@ def fix_coverage_artifact(run_dir, repo, family=None):
     recorded fingerprint as well, because `round_state` calls a round with nothing confirmed done
     whoever answered it: re-adjudicated to all false positives, a round would otherwise keep the
     coverage its first triage bought.
+
+    `covering` answers too: the leg that landed carried its bytes in a commit, and read as
+    unfinished they came back as debt the moment they landed.
     """
     record = _round.read_fix_status(run_dir)
     if not isinstance(record, dict):
@@ -249,7 +252,8 @@ def fix_coverage_artifact(run_dir, repo, family=None):
         return None
     shas = entry.get("paths")
     rows = _round.recorded_verdict_rows(run_dir)
-    if not isinstance(shas, dict) or not shas or _round.round_state(run_dir, rows) != "done":
+    if not isinstance(shas, dict) or not shas or \
+            _round.round_state(run_dir, rows) not in ("done", "covering"):
         return None
     if record.get("triage") != _round.triage_digest(rows):
         return None

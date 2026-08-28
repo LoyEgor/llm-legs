@@ -823,9 +823,12 @@ FRAMEPY
   # finish stamp on every header is what made a stale one indistinguishable from this morning's.
   assert test -z "$(grep -rl "strftime('%b %H:%M')" --include='*.py' "$RB_PKG")"
   assert doc_has 'older than three hours'
-  # Every state the emitter frames is a state the delivery queue can name, minus `pending` — the
-  # queue names that one `triaged`, inside the triage window alone and never past it: a fourth
-  # word added to one side and not the other is a report framed and never delivered.
+  # Every state the emitter frames is a state the delivery queue can name, minus two the queue
+  # names by hand: `pending`, handed over as `triaged` inside the triage window alone and never
+  # past it, and `covering` — a round whose far repository has not committed yet — which is
+  # delivered at NEITHER end, its block having reached the chat at its triage and reaching it
+  # again as `done` when the last leg lands. A word added to one side and not the other is a
+  # report framed and never delivered.
   frame_states=$(python3 - "$RB_ROUND" <<'STATEPY'
 import os
 import re
@@ -843,7 +846,9 @@ print("|".join(sorted(set(re.findall(r'(?m)^\s*(?:return .*|\)), "(\w+)"$', body
 STATEPY
 )
   assert eq "$frame_states" "blocked|done
-blocked|done|pending"
+blocked|covering|done|pending"
+  # And `covering` leaves the queue BY NAME rather than by falling off the end of the vocabulary.
+  assert grep -Fq 'if state == "covering":' "$RB_ROUND"
   # The Stop net's third source is the tool's own answer, so the query and the shape of what it
   # returns are one contract: a flag renamed on either side delivers nothing and says nothing.
   assert grep -Fq '[review_bench, "pending-delivery", "--session", session_id],' "$DELIVERY_GATE"
@@ -2613,7 +2618,7 @@ assert grep -Fq 'round_open_guard' "$ROOT/share/rbench/cli.py"
 # the committing chat read: a round predicate of the hook's own would be a second definition of
 # when a round is finished, and it exempted the whole repository rather than that round's paths.
 if test -r "$CLAUDE_SETUP/hooks/review-flow-gate.sh"; then
-  assert ! grep -Fq 'round-open' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  assert test "$(grep -Fc 'round-open' "$CLAUDE_SETUP/hooks/review-flow-gate.sh")" -eq 0
 fi
 assert grep -Fq 'def round_covered_paths' "$ROOT/share/rbench/round.py"
 assert grep -Fq 'round_covered_paths' "$ROOT/share/rbench/debt.py"
@@ -2626,7 +2631,8 @@ if test -r "$CLAUDE_SETUP/hooks/lib/review-journal.sh"; then
   assert grep -Fq 'rj_dry_run() {' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq 'rj_dry_run commit' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
   assert grep -Fq 'rj_dry_run commit' "$CLAUDE_SETUP/hooks/commit-report.sh"
-  assert ! grep -Fq "grep -qE -- '(^|[[:space:]])--dry-run" "$CLAUDE_SETUP/hooks/commit-report.sh"
+  assert test "$(grep -Fc -- "grep -qE -- '(^|[[:space:]])--dry-run" \
+    "$CLAUDE_SETUP/hooks/commit-report.sh")" -eq 0
 fi
 assert doc_has 'the commit door beside it'
 assert doc_has 'which leaves out what an open round of the committing chat already read'
