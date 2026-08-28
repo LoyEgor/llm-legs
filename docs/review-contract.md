@@ -599,11 +599,14 @@ the gate no hook delivers the block at all.
 
 ## Launches and reports
 
-`REVIEW_ASKED=1` marks a review Egor asked for by name; `REVIEW_GATE_OK=1` marks
-his explicit skip — both on the model's honour (2026-08-10). The gate verifies the
-first against the transcript, except in a git family `~/.claude/commit-free` lists,
-where the commit the review rides needs no word of his and so neither does the
-review. That family is also the one place the gate REFUSES: a `git commit` whose
+`REVIEW_ASKED=1` marks a review launched as the first step of review → commit →
+push; `REVIEW_GATE_OK=1` marks his explicit skip — both on the model's honour
+(2026-08-10, 2026-08-28). The gate verifies the first against the transcript: Egor's
+COMMIT word within the last fifteen real turns, never a review word alone, and never
+a turn that is a question or a `/skill` — in every repository the last real user
+turn being either refuses the launch. A git family `~/.claude/commit-free` lists
+skips the commit-word check (the commit the review rides needs no word of his and so
+neither does the review), but keeps the question/skill refusal. That family is also the one place the gate REFUSES: a `git commit` whose
 target the command NAMED there, carrying paths of the committing chat's own that no
 review has read, is blocked with `REVIEW GATE: <top> is a commit-free repository`,
 naming the paths and the one `debt --command` review that closes them, since Egor's

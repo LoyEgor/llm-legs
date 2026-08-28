@@ -2585,6 +2585,8 @@ COMMIT_FREE_READERS=(
   "$CLAUDE_SETUP/hooks/commit-policy.sh"
 )
 if test -r "$JOURNAL_LIB"; then
+  "$CLAUDE_SETUP/hooks/review-debt-nudge.sh"
+  "$CLAUDE_SETUP/hooks/stop.d/ask-review-report.sh"
   rj_commit_free_body=$(sed -n '/^rj_commit_free()/,/^}/p' "$JOURNAL_LIB")
   assert grep -Fq 'file=$HOME/.claude/commit-free' <<<"$rj_commit_free_body"
   assert grep -Fq '[ "${COMMIT_FREE_FILE+x}" = x ]' <<<"$rj_commit_free_body"
