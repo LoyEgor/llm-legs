@@ -1112,50 +1112,80 @@ select_codex_event() {
   codex_event=$(collect_codex_event)
   codex_origin=headers
   [ -r "$codex_cache" ] || return 0
-  local cache_mtime rollout_epoch cache_event
+  local cache_mtime rollout_epoch cache_event merged
   cache_mtime=$(int_or_empty "$(file_mtime "$codex_cache" 2>/dev/null || true)")
   [ -n "$cache_mtime" ] || return 0
   rollout_epoch=''
   if [ -n "$codex_event" ]; then
     rollout_epoch=$(int_or_empty "$(jq -nr --arg ts "$(jq -r '.timestamp' <<<"$codex_event")" "$iso_def"'$ts | iso2epoch // empty' 2>/dev/null || true)")
   fi
+  cache_event=$(jq -c --arg ts "$(epoch_iso "$cache_mtime")" '
+    if ((.accounts | type) == "array" and (.accounts | length) > 0) or
+       ((.five_hour | type) == "object") or ((.weekly | type) == "object") then
+      (if (.accounts | type) == "array" and (.accounts | length) > 0 then .accounts
+       else [{account:"main",plan_type:(.plan_type // null),five_hour:.five_hour,
+              weekly:.weekly,as_of:(.as_of // null)}] end) as $accounts |
+      (.current // "main") as $current |
+      (first($accounts[] | select(.account == $current)) // $accounts[0]) as $selected |
+      select(([$accounts[].five_hour?, $accounts[].weekly?]
+              | any((.used_pct | type) == "number")) or
+             any($accounts[]; .auth_needed == true)) |
+      {timestamp:$ts,payload:{rate_limits:{
+        primary:{used_percent:($selected.five_hour.used_pct // null),
+                 resets_at:($selected.five_hour.resets_at // null)},
+        secondary:{used_percent:($selected.weekly.used_pct // null),
+                   resets_at:($selected.weekly.resets_at // null)},
+        plan_type:($selected.plan_type // .plan_type // null),
+        accounts:$accounts,current_account:$selected.account}}}
+    else
+      [.rateLimits.primary?, .rateLimits.secondary?
+       | select(type == "object" and (.usedPercent | type) == "number")] as $all |
+      ([$all[] | select((.windowDurationMins // 0) <= 300)][0] //
+       [$all[] | select(.windowDurationMins == null)][0]) as $five |
+      ([$all[] | select((.windowDurationMins // 0) >= 10000)][0] //
+       (if ($all | length) > 1 then $all[1] else null end)) as $week |
+      select($five != null or $week != null) |
+      {timestamp:$ts,payload:{rate_limits:{
+        primary:{used_percent:($five.usedPercent // null),resets_at:($five.resetsAt // null)},
+        secondary:{used_percent:($week.usedPercent // null),resets_at:($week.resetsAt // null)},
+        plan_type:(.rateLimits.planType // null)}}}
+    end' "$codex_cache" 2>/dev/null || true)
+  [ -n "$cache_event" ] || return 0
   if [ -z "$rollout_epoch" ] || [ "$cache_mtime" -ge "$rollout_epoch" ]; then
-    cache_event=$(jq -c --arg ts "$(epoch_iso "$cache_mtime")" '
-      if ((.accounts | type) == "array" and (.accounts | length) > 0) or
-         ((.five_hour | type) == "object") or ((.weekly | type) == "object") then
-        (if (.accounts | type) == "array" and (.accounts | length) > 0 then .accounts
-         else [{account:"main",plan_type:(.plan_type // null),five_hour:.five_hour,
-                weekly:.weekly,as_of:(.as_of // null)}] end) as $accounts |
-        (.current // "main") as $current |
-        (first($accounts[] | select(.account == $current)) // $accounts[0]) as $selected |
-        select(([$accounts[].five_hour?, $accounts[].weekly?]
-                | any((.used_pct | type) == "number")) or
-               any($accounts[]; .auth_needed == true)) |
-        {timestamp:$ts,payload:{rate_limits:{
-          primary:{used_percent:($selected.five_hour.used_pct // null),
-                   resets_at:($selected.five_hour.resets_at // null)},
-          secondary:{used_percent:($selected.weekly.used_pct // null),
-                     resets_at:($selected.weekly.resets_at // null)},
-          plan_type:($selected.plan_type // .plan_type // null),
-          accounts:$accounts,current_account:$selected.account}}}
-      else
-        [.rateLimits.primary?, .rateLimits.secondary?
-         | select(type == "object" and (.usedPercent | type) == "number")] as $all |
-        ([$all[] | select((.windowDurationMins // 0) <= 300)][0] //
-         [$all[] | select(.windowDurationMins == null)][0]) as $five |
-        ([$all[] | select((.windowDurationMins // 0) >= 10000)][0] //
-         (if ($all | length) > 1 then $all[1] else null end)) as $week |
-        select($five != null or $week != null) |
-        {timestamp:$ts,payload:{rate_limits:{
-          primary:{used_percent:($five.usedPercent // null),resets_at:($five.resetsAt // null)},
-          secondary:{used_percent:($week.usedPercent // null),resets_at:($week.resetsAt // null)},
-          plan_type:(.rateLimits.planType // null)}}}
-      end' "$codex_cache" 2>/dev/null || true)
-    if [ -n "$cache_event" ]; then
-      codex_event=$cache_event
-      codex_origin=usage
-    fi
+    codex_event=$cache_event
+    codex_origin=usage
+    return 0
   fi
+  # The cache is the only account roster: a fresher rollout tail comes from the main codex
+  # home alone, so it may overlay main's numbers but never shrink the list to that account.
+  merged=$(jq -c --argjson rollout "$codex_event" --argjson as_of "$rollout_epoch" '
+    (.payload.rate_limits.accounts // []) as $accounts |
+    select(($accounts | length) > 0) |
+    $rollout.payload.rate_limits as $r |
+    .payload.rate_limits.plan_type as $plan |
+    (.payload.rate_limits.current_account // "main") as $current |
+    [$accounts[] |
+      if (.account // "main") == "main" then
+        del(.auth_needed, .cause) +
+        {five_hour:{used_pct:$r.primary.used_percent,resets_at:$r.primary.resets_at,origin:"headers"},
+         weekly:{used_pct:$r.secondary.used_percent,resets_at:$r.secondary.resets_at,origin:"headers"},
+         reset_credits_as_of:(.reset_credits_as_of // .as_of),as_of:$as_of}
+      else
+        . + {five_hour:((.five_hour // {}) + {origin:"usage"}),
+             weekly:((.weekly // {}) + {origin:"usage"})}
+      end] as $merged |
+    (first($merged[] | select((.account // "main") == $current)) // $merged[0]) as $selected |
+    {timestamp:$rollout.timestamp,payload:{rate_limits:{
+      primary:{used_percent:($selected.five_hour.used_pct // null),
+               resets_at:($selected.five_hour.resets_at // null)},
+      secondary:{used_percent:($selected.weekly.used_pct // null),
+                 resets_at:($selected.weekly.resets_at // null)},
+      plan_type:($selected.plan_type // $plan // null),
+      accounts:$merged,current_account:$selected.account}}}' <<<"$cache_event" 2>/dev/null || true)
+  [ -n "$merged" ] || return 0
+  codex_event=$merged
+  codex_origin=usage
+  [ "$(jq -r '.payload.rate_limits.current_account // "main"' <<<"$merged")" != main ] || codex_origin=headers
 }
 
 codex_refresh_target=''
@@ -1252,7 +1282,7 @@ if [ -n "$codex_event" ]; then
          else $asof end) as $bucket_asof |
         {used_pct:($b.used_pct // $b.used_percent // null),
          resets_at:(($b.resets_at // $fallback_reset // null) | reset_iso),
-         as_of:$bucket_asof,origin:$origin,stale:(($now - $bucket_asof) > $threshold)};
+         as_of:$bucket_asof,origin:($b.origin // $origin),stale:(($now - $bucket_asof) > $threshold)};
       def account($a; $current):
         (if ($a.as_of | type) == "number" then $a.as_of else $as_of_epoch end) as $account_asof |
         ([$now - $account_asof, 0] | max) as $account_age |
@@ -1268,8 +1298,9 @@ if [ -n "$codex_event" ]; then
              as_of:($account_asof | todateiso8601),stale_seconds:$account_age}
           end) +
          (if ($a.reset_credits | type) == "number" then
-            {reset_credits:$a.reset_credits,reset_credits_as_of:$account_asof,
-             reset_credits_stale:($account_age > $thrw)}
+            (if ($a.reset_credits_as_of | type) == "number" then $a.reset_credits_as_of else $account_asof end) as $credits_asof |
+            {reset_credits:$a.reset_credits,reset_credits_as_of:$credits_asof,
+             reset_credits_stale:(([$now - $credits_asof, 0] | max) > $thrw)}
           else {} end));
       (if (($e.payload.rate_limits.accounts | type) == "array") and
           ($e.payload.rate_limits.accounts | length) > 0 then

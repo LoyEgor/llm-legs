@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 4+.
+if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && "$modern_bash" -c '[ "${BASH_VERSINFO[0]}" -ge 4 ]' && exec "$modern_bash" "$0" "$@"
+  done
+  echo "worker-run: bash 4+ required (found $BASH_VERSION)" >&2
+  exit 1
+fi
 set -u
 
 usage() {
@@ -1789,7 +1797,7 @@ claim_run() {
     remaining=$(comm -23 \
       <(grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null | sed '/^$/d' | sort -u) \
       <(for absolute in "${resolved[@]}"; do
-          case "$absolute" in "$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
+          case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
         done | sort -u))
     if [ -n "$remaining" ]; then
       { printf 'WORKDIR: %s\n' "$top"; printf '%s\n' "$remaining"; } >"$directory/dirty.tmp.$$" &&

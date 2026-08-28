@@ -1797,6 +1797,39 @@ jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.five_hour.orig
   || fail "newer rollout event did not outrank an older quota cache"
 rm -f "$CODEX_CACHE"
 
+# A newer rollout describes the MAIN codex home only: it overlays main's numbers and must
+# never collapse the multi-account roster the cache owns (the other profiles keep their own
+# as_of so the heartbeat can still see them go stale).
+ROSTER_CACHE="$WORK/codex-roster.json"
+roster_asof=$((now - 100))
+cat >"$ROSTER_CACHE" <<EOF
+{"schema":1,"accounts":[{"account":"main","plan_type":"plus","five_hour":{"used_pct":10,"resets_at":$five_reset_epoch},"weekly":{"used_pct":11,"resets_at":$week_reset_epoch},"as_of":$roster_asof},{"account":"alpha","plan_type":"plus","five_hour":{"used_pct":20,"resets_at":$five_reset_epoch},"weekly":{"used_pct":21,"resets_at":$week_reset_epoch},"as_of":$roster_asof},{"account":"beta","plan_type":"team","five_hour":{"used_pct":30,"resets_at":$five_reset_epoch},"weekly":{"used_pct":31,"resets_at":$week_reset_epoch},"as_of":$roster_asof},{"account":"gamma","plan_type":"plus","five_hour":{"used_pct":40,"resets_at":$five_reset_epoch},"weekly":{"used_pct":41,"resets_at":$week_reset_epoch},"as_of":$roster_asof}],"current":"main"}
+EOF
+touch -t 202607110500 "$ROSTER_CACHE"
+roster_wins=$(LLM_LIMITS_CODEX_CACHE="$ROSTER_CACHE" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" \
+  LLM_LIMITS_CACHE="$WORK/roster-store.json" bash "$SCRIPT" --no-write) || fail "rollout-over-roster collection failed"
+jq -e --argjson asof "$roster_asof" '
+  .vendors.codex.source == "session-rollout" and .vendors.codex.current_account == "main" and
+  (.vendors.codex.accounts | length) == 4 and
+  ([.vendors.codex.accounts[].account] == ["main","alpha","beta","gamma"]) and
+  ([.vendors.codex.accounts[] | select(.account == "main")][0] |
+    .five_hour.used_pct == 74 and .weekly.used_pct == 31 and
+    .five_hour.origin == "headers") and
+  .vendors.codex.five_hour.used_pct == 74 and
+  ([.vendors.codex.accounts[] | select(.account != "main")] |
+    ([.[].five_hour.used_pct] == [20,30,40]) and ([.[].weekly.used_pct] == [21,31,41]) and
+    all(.[]; .five_hour.as_of == $asof and .weekly.as_of == $asof and
+              .five_hour.origin == "usage" and .plan_type != null))' \
+  <<<"$roster_wins" >/dev/null \
+  || fail "a newer rollout replaced the cached codex roster instead of overlaying main"
+roster_table=$(LLM_LIMITS_CODEX_CACHE="$ROSTER_CACHE" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" \
+  LLM_LIMITS_CACHE="$WORK/roster-store.json" bash "$SCRIPT" --table --no-write 2>/dev/null) || fail "rollout-over-roster table failed"
+for account in main alpha beta gamma; do
+  grep -Eq "^codex/$account\*? " <<<"$roster_table" \
+    || fail "table lost the codex/$account row under a newer rollout: $roster_table"
+done
+rm -f "$ROSTER_CACHE"
+
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --start-windows >/dev/null 2>&1
 rc=$?
 [ "$rc" -eq 2 ] || fail "--start-windows without --refresh: expected exit 2, got $rc"
