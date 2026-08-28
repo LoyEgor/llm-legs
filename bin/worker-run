@@ -1547,7 +1547,10 @@ running_report() {
   elapsed=$((now - started)); [ "$elapsed" -ge 0 ] || elapsed=0
   out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
-  printf 'STATUS: running\nELAPSED: %s\nOUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$elapsed" "$out_bytes" "$err_bytes" "$(session_id "$directory")"
+  printf 'STATUS: running\nELAPSED: %s\n' "$elapsed"
+  [ "$elapsed" -ge "${WORKER_RUN_LONG_RUN_S:-1500}" ] &&
+    printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; hand the remainder back as a split brief unless the brief is multi-agent\n' "$((elapsed / 60))"
+  printf 'OUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$out_bytes" "$err_bytes" "$(session_id "$directory")"
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   age=$(last_edit_age "$directory" "$workdir" "$now") || age=none
   printf 'LAST-EDIT: %s\n' "$age"

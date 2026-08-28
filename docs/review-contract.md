@@ -593,8 +593,9 @@ verification that ran after it), the `LOST` minutes nothing in the block account
 for — the chain plus every other cell's verification, which runs serially after
 the panel — and then the members and chunks a merged or chunked round read. The
 header carries NO time of its own: a current block is about now by construction,
-and the one timestamp a report ever prints is the finish date the STALE frame word
-carries, for the block that is not about the tree in front of the reader.
+and the one timestamp a report ever prints is the date the STALE frame word
+carries — which only the manual `review-bench report <id>` ever renders, since past
+the gate no hook delivers the block at all.
 
 ## Launches and reports
 
@@ -717,11 +718,22 @@ only place a block states it. The bare `review · round <N>` — the fixes are d
 there was nothing to fix. `· NOT FINISHED` — and ONLY this — is a round whose fix
 status is `blocked`: the pass stopped at the P1 threshold and fixed nothing.
 `· NO PANEL` names a run no cell completed. `· STALE · <D Mon>`
-names a run that finished older than three hours ago (`REPORT_STALE_HOURS`) — a
+names a run that finished past `TRIAGE_GATE_HOURS`, the one age this tool has — a
 clock and nothing else: content and delivery criteria were tried and called a
-block stale the moment its own fixing pass moved the tree. Its date is the run's
-own finish, in the reader's zone, and is the frame's only timestamp: a current
-block carries no time at all. `bench`, which wears no round at all, is an untiered
+block stale the moment its own fixing pass moved the tree, and a second clock of
+its own let a report be late by one rule and current by another. It is dated from
+the instant the delivery window itself is measured on (`report_instant`): the
+TRIAGE of a round still owing its fixing pass, which is what `delivery_state`
+windows, and the run's own finish in every other state. Dated from the finish
+while the window ran on the triage, a run finished this morning and triaged a
+minute ago wore STALE — a word no net admits — and the block the queue had just
+named reached nobody. That date is in the reader's zone and is the frame's only
+timestamp: a current block carries no time at all. A stale block reaches NOBODY from a hook:
+neither net's header regex admits the word, so past the gate a run's report is
+not printed and takes no ledger key, and nothing retires it as read. `review-bench
+report <id>` still renders it under that header, so a reader who opens an old run
+by hand sees that it is old. The fight is for delivering the report while it is
+current, never for delivering a late one with a warning on it. `bench`, which wears no round at all, is an untiered
 explicit-`--raters` panel, which is no review round and settles no debt. A
 watchdog kill has NO word of its own: the cell it killed says so on its `failed:`
 row (`killed · cap`, `killed · stalled`) and how much of the diff the survivors
@@ -769,18 +781,15 @@ its own and a codex worker inherits the launching chat's environment, and keyed 
 the caller the same round's receipt, report and fix coverage moved to a different
 chat depending on who ran the command.
 
-**Nothing is dropped.** `pending-delivery` asks inside the triage window, which is a
-bound on reports nobody has looked at and not a verdict that an older one is not
-owed. `review-bench settle-delivery [--dry-run]` settles every round `doctor` counts
-as undelivered — the two FINAL states alone, never a `triaged` round, whose window
-is the whole flood guard — one of two ways and never a third: **queued**, so the launching
-chat's next stop hands it over whatever its age, or **lapsed** with the instant,
-because the transcript that stop reads is gone. Both are written into the run's own
-`delivery.json` against the STATE they answer for, so a re-adjudication puts the
-round back in the queue. `doctor` stops counting a lapsed round as undelivered and
-marks a queued one `queued`; `doctor --lapsed` lists the written-off ones, unbounded
-by the scan window, because the whole point of the class is that nobody will ever
-deliver them.
+**A report is delivered while it is current, or not at all.** `pending-delivery`
+names a round only inside `TRIAGE_GATE_HOURS` — a `triaged` one off its triage
+instant, a `fork` off its record's own, and every other state off the run's finish —
+and NOTHING stretches that window for any of them. A report older than it is about a
+diff that has since moved, so no hook ever hands it over: the fight is for delivery
+while the report is current, and a mechanism that put aged rounds back in front of a
+chat handed the Stop gate 39 of them in one message (2026-08-20). `doctor` still
+counts such a round as `undelivered` — it is a silence worth reading — and
+`review-bench report <id>` renders it for anybody who asks by hand, stamped STALE.
 
 ## Doctor
 

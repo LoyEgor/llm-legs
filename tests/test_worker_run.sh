@@ -1387,6 +1387,18 @@ assert grep -Eq '^ELAPSED: [0-9]+$' <<<"$working"
 assert grep -Eq '^ERR-BYTES: [0-9]+$' <<<"$working"
 assert grep -Eq '^SESSION: ' <<<"$working"
 assert grep -Eq '^(LAST-EDIT|CPU-SECONDS): ' <<<"$("$RUNNER" report "$RUN_ID")"
+# Past the long-run mark the report says so next to ELAPSED: the launching chat's prompt cache
+# cools past the hour, so the remainder belongs in a split brief rather than in this run.
+assert_fails grep -q '^LONG-RUN: ' <<<"$working"
+sleep 1
+assert grep -q '^LONG-RUN: 0 min — the orchestrator' \
+  <<<"$(WORKER_RUN_LONG_RUN_S=1 "$RUNNER" wait "$RUN_ID" --max 0)"
+jq '.started_at -= 1560' "$RUN_DIR/meta.json" >"$WORK/aged-meta.json"
+mv "$WORK/aged-meta.json" "$RUN_DIR/meta.json"
+long=$("$RUNNER" wait "$RUN_ID" --max 0)
+assert grep -q '^LONG-RUN: 26 min — the orchestrator' <<<"$long"
+assert grep -Eq '^ELAPSED: [0-9]+$' <<<"$long"
+assert grep -qx 'STATUS: running' <<<"$long"
 assert await_done
 # A terminal report answers with the run's files instead; a liveness row there is a run still going.
 assert test "$(grep -c '^LAST-EDIT: \|^CPU-SECONDS: ' "$WORK/wait.out")" -eq 0

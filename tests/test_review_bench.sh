@@ -67,10 +67,11 @@ for long_word in ("a" * 48, "a" * 60):
     assert re.fullmatch(r"=+ [a-z]+ =+", long_header), long_header
     assert len(long_header) > 50, long_header
 # The state a block is in is carried by its word and by nothing below it, and every one of those
-# words keeps the shape the hooks find blocks by: a report that stops matching it is one Egor
-# never sees. A round merely still owing an answer keeps the plain word — the loud one read off
-# "no fixes recorded" is what put NOT FINISHED in front of Egor over a round whose fixes were
-# landing at that moment.
+# words keeps the frame's shape: this is what `report` RENDERS, which for STALE is the whole of
+# where that word lives — no hook admits it, so the manual render is the only reader it ever has.
+# A round merely still owing an answer keeps the plain word — the loud one read off "no fixes
+# recorded" is what put NOT FINISHED in front of Egor over a round whose fixes were landing at
+# that moment.
 assert (rb.REPORT_BLOCKED_SUFFIX, rb.REPORT_NO_PANEL_SUFFIX, rb.REPORT_STALE_SUFFIX) == (
     "NOT FINISHED", "NO PANEL", "STALE",
 )
@@ -1500,7 +1501,10 @@ receipt_report = io.StringIO()
 with contextlib.redirect_stdout(receipt_report):
     rb.emit_report(max_tier_dir, max_tier_meta)
 receipt_lines = receipt_report.getvalue().splitlines()
-assert receipt_lines[0] == fixture_frame(f"{rb.REPORT_STALE_SUFFIX} · 30 Jul"), receipt_lines
+# Weeks past its finish but triaged a moment ago, the block is CURRENT: the triage that just landed
+# is the information, and it is the instant `delivery_state` windows this round on. Dated from the
+# finish here, the very block `pending-delivery` names would wear a word no hook's regex admits.
+assert receipt_lines[0] == fixture_frame(), receipt_lines
 assert receipt_lines[-1] == rb.round.REPORT_END, receipt_lines
 assert any(line.startswith("confirmed:") for line in receipt_lines), receipt_lines
 # A round still owing an answer keeps the ordinary word: the loud one read off "no fixes
@@ -2310,12 +2314,12 @@ assert rb.report_frame_word(duration_dir, untiered_meta) == rb.REPORT_BENCH_WORD
 untiered_lines = rb.report_lines(duration_dir, untiered_meta)
 assert not [line for line in untiered_lines if line.startswith(("fixes:", "next:"))], \
     untiered_lines
-# STALE is a clock and nothing else: a block older than REPORT_STALE_HOURS is not about the tree in
+# STALE is a clock and nothing else: a block older than TRIAGE_GATE_HOURS is not about the tree in
 # front of the reader. Content and delivery checks were tried and called a block stale right after
 # its own fixing pass moved the tree — a reader cannot tell that from a report out of the past.
 stale_dir = work / "stale-frame-benches" / "20260822T200100Z-stale"
 stale_dir.mkdir(parents=True)
-stale_fresh = (rb.store.utc_now() - timedelta(hours=rb.REPORT_STALE_HOURS - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+stale_fresh = (rb.store.utc_now() - timedelta(hours=rb.TRIAGE_GATE_HOURS - 1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 stale_meta = dict(leg_meta, run_id=stale_dir.name, finished=stale_fresh)
 (stale_dir / "meta.json").write_text(json.dumps(stale_meta))
 assert rb.report_frame_word(stale_dir, stale_meta) == round_word()
@@ -2325,11 +2329,9 @@ old_finish = "2026-08-22T20:01:00Z"
 stale_meta = dict(stale_meta, finished=old_finish)
 assert rb.report_frame_word(stale_dir, stale_meta) == round_word("STALE · 23 Aug"), \
     rb.report_frame_word(stale_dir, stale_meta)
-# A delivery mark or a moved tree changes nothing: the clock alone answers.
-(stale_dir / rb.DELIVERY_MARK).write_text(json.dumps({"state": "done", "queued": rb.iso_now()}))
+# A moved tree changes nothing either: the clock alone answers.
 assert rb.report_frame_word(stale_dir, dict(stale_meta, finished=stale_fresh), "done") \
     == round_word()
-(stale_dir / rb.DELIVERY_MARK).unlink()
 assert rb.report_frame_word(stale_dir, stale_meta, "blocked") == round_word("NOT FINISHED")
 # The tree half of the same rule, and the half a regression would reintroduce: the reviewed
 # repository has moved on since the run recorded its commit, and the word is still the clock's.
@@ -2355,6 +2357,32 @@ assert rb.report_frame_word(stale_dir, moved_meta) == round_word("STALE · 23 Au
 # without one: undated it says a block is old and refuses to say how old.
 undated_stale_meta = dict(stale_meta, finished=None, finished_at=None)
 assert rb.report_frame_word(stale_dir, undated_stale_meta) == round_word()
+# ONE clock: the date and the delivery window are read off the SAME instant, and for a round still
+# owing its fixing pass that instant is its TRIAGE — the one `delivery_state` windows it on. Dated
+# from the finish while the window ran on the triage, a run finished this morning and triaged a
+# minute ago rendered STALE, and since no hook's header regex admits that word the block
+# `pending-delivery` had just named reached nobody at all (2026-08-28).
+triaged_stale_dir = work / "stale-frame-benches" / "20260822T200200Z-triaged"
+triaged_stale_dir.mkdir(parents=True)
+(triaged_stale_dir / "meta.json").write_text(
+    json.dumps(dict(stale_meta, run_id=triaged_stale_dir.name)))
+rb.write_report_receipt(triaged_stale_dir, [
+    {"rater": "opus-high", "idx": 0, "verdict": "confirmed"}])
+assert rb.round_state(triaged_stale_dir) == "pending"
+assert rb.report_frame_word(triaged_stale_dir, stale_meta) == round_word(), \
+    rb.report_frame_word(triaged_stale_dir, stale_meta)
+assert rb.delivery_state(triaged_stale_dir) == "triaged"
+# And past the window that same triage is what dates it: the report is about a diff that has since
+# moved, whichever end of the round is old.
+aged_triage_at = rb.store.utc_now() - timedelta(hours=rb.TRIAGE_GATE_HOURS + 1)
+aged_triage = json.loads((triaged_stale_dir / rb.REPORT_RECEIPT).read_text())
+aged_triage["reported_at"] = aged_triage_at.isoformat()
+(triaged_stale_dir / rb.REPORT_RECEIPT).write_text(json.dumps(aged_triage) + "\n")
+aged_triage_local = aged_triage_at.astimezone()
+assert rb.report_frame_word(triaged_stale_dir, stale_meta) == round_word(
+    f"{rb.REPORT_STALE_SUFFIX} · {aged_triage_local.day} {aged_triage_local.strftime('%b')}"
+), rb.report_frame_word(triaged_stale_dir, stale_meta)
+assert rb.delivery_state(triaged_stale_dir) is None
 
 # The terminal's width, not the author's: continuation lines indent to the value column and break
 # only between ` · ` items, and a `name n/m` pair is never split across two lines.
@@ -18088,7 +18116,7 @@ for fix_frame in "$fix_blocked_header" "$report_frame_header"; do
     fail "a frame this suite pins is not 50 chars wide: $fix_frame"
 done
 fix_row() { grep -E '^fixes: +' <<<"$1" | sed -E 's/^fixes: +//'; }
-# The ORDINARY word for a run under REPORT_STALE_HOURS old and the dated STALE one past it; what
+# The ORDINARY word for a run under TRIAGE_GATE_HOURS old and the dated STALE one past it; what
 # neither may wear is the loud word, which is read off the receipt alone.
 fix_plain_frame() {
   grep -qE '^=+ review · round [0-9]+ =+$' <<<"$1"
@@ -18508,8 +18536,26 @@ fix_bench record 20260730T000000Z-fixstale --no-corpus >/dev/null \
   || fail "the stale run refused its own triage"
 fix_stale=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260730T000000Z-fixstale" <<<"$fix_stale")" -eq 0
+# One rule and one constant: an ANSWERED round an hour past `TRIAGE_GATE_HOURS` is named in no
+# state at all — neither the finished report nor the fork the stopped one owes. Nothing puts an
+# aged report back in the listing; a report is fought for while it is current or it is lost.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260802T020000Z-fixsevendone 7 1
+fix_bench record 20260802T020000Z-fixsevendone --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the seven-hour round refused its triage"
+fix_bench fixes 20260802T020000Z-fixsevendone --done --fixed 1 --fp 0 >/dev/null \
+  || fail "fixes --done refused the seven-hour round"
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260802T020100Z-fixsevenstopped 7 1
+fix_bench record 20260802T020100Z-fixsevenstopped --no-corpus \
+  --verdicts "$WORK/fix-verdicts3.jsonl" >/dev/null || fail "the stopped seven-hour round refused its triage"
+fix_bench fixes 20260802T020100Z-fixsevenstopped --blocked 'the worker was walled mid-pass' \
+  >/dev/null || fail "fixes --blocked refused the seven-hour round"
+fix_seven=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
+assert test "$(grep -Fc -- "20260802T020000Z-fixsevendone" <<<"$fix_seven")" -eq 0
+assert test "$(grep -Fc -- "20260802T020100Z-fixsevenstopped" <<<"$fix_seven")" -eq 0
 # The RUN's age never withholds a fresh triage: the triage that just landed is the information,
-# and the block itself is dated STALE by its own clock.
+# and it is the instant the block is dated from too — ONE clock for the listing and the frame.
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
   gate_run 20260730T010000Z-fixabandoned 10 1
 fix_bench record 20260730T010000Z-fixabandoned --no-corpus \
@@ -18519,14 +18565,15 @@ assert test "$(grep -c '^20260730T010000Z-fixabandoned triaged$' <<<"$fix_abando
 assert test "$(grep -Fc -- "20260730T010000Z-fixabandoned done" <<<"$fix_abandoned")" -eq 0
 fix_abandoned_report=$(fix_bench report 20260730T010000Z-fixabandoned) \
   || fail "the unanswered round has no report"
-# And never the loud word while it waits: ten hours on it is STALE, and the `fixes:` row says what
-# closes the round rather than that nobody has yet.
-assert fix_stale_frame "$fix_abandoned_report"
+# And never the loud word while it waits: the plain one, since the round `pending-delivery` hands
+# over right now must carry a word the hooks admit, and the `fixes:` row says what closes the round
+# rather than that nobody has yet.
+assert fix_plain_frame "$fix_abandoned_report"
 assert test "$(grep -Fc -- "$fix_blocked_header" <<<"$fix_abandoned_report")" -eq 0
 assert test "$(fix_row "$fix_abandoned_report")" = "fix — the commit closes"
-# The TRIAGE's age is the whole guard, and no queued mark ever exempts it: a round whose pass
-# never answered inside the window is named at no later age — promoting such rounds is what
-# rendered 39 pre-receipt-mechanism rounds into a single message, live (2026-08-20).
+# The TRIAGE's age is the whole guard, and nothing exempts it: a round whose pass never answered
+# inside the window is named at no later age — promoting such rounds is what rendered 39
+# pre-receipt-mechanism rounds into a single message, live (2026-08-20).
 python3 - "$FIX_SD/benches/20260730T010000Z-fixabandoned/reported.json" <<'AGEPY'
 import json
 import sys
@@ -18537,11 +18584,13 @@ receipt = json.loads(open(path).read())
 receipt["reported_at"] = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
 open(path, "w").write(json.dumps(receipt) + "\n")
 AGEPY
-printf '%s\n' '{"queued": "2026-08-23T00:00:00+00:00", "state": "triaged", "session": "sess-fix"}' \
-  >"$FIX_SD/benches/20260730T010000Z-fixabandoned/delivery.json"
 fix_aged_triage=$(fix_bench pending-delivery --session sess-fix) || fail "pending-delivery failed"
 assert test "$(grep -Fc -- "20260730T010000Z-fixabandoned" <<<"$fix_aged_triage")" -eq 0
-rm -f "$FIX_SD/benches/20260730T010000Z-fixabandoned/delivery.json"
+# The block goes STALE on that same instant, so the two never disagree: a round nothing delivers is
+# a round rendered by hand, and it says on its header that it is old.
+fix_aged_report=$(fix_bench report 20260730T010000Z-fixabandoned) \
+  || fail "the aged round has no report"
+assert fix_stale_frame "$fix_aged_report"
 # Fresh, the very same round is `triaged` all the same: the run's age was never the question.
 GATE_SD="$FIX_SD" GATE_REPO="$FIX_QUIET_REPO" GATE_SESSION=sess-fix \
   gate_run 20260802T010000Z-fixmidpass 0 1
@@ -18939,159 +18988,6 @@ printf 'run:20260801T000000Z-docdeliver\nrun:20260801T000000Z-docdeliver:blocked
   >"$DOC_CACHE/claude/review-delivery/doc-chat.emitted"
 assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "1"
 rm -f "$DOC_CACHE/claude/review-delivery/doc-chat.emitted"
-
-# The window is a nudge and not a verdict: a round nobody delivered inside it is still owed. Egor's
-# store held 18 of them, the oldest twelve days old, dropped by no decision anybody took.
-# `settle-delivery` puts each back in front of the chat that launched it, or writes it off by name
-# where that chat is gone — the hook that delivers reads the chat's transcript, so a round queued
-# for a session with none left is owed for ever by a reader that can never run.
-DOC_HOME="$WORK/doctor-home"
-mkdir -p "$DOC_HOME/.claude/projects/doc-project"
-: >"$DOC_HOME/.claude/projects/doc-project/doc-chat.jsonl"
-doc_delivery() { # args...
-  WORKER_STATS_DIR="$DOC_DELIVERY" XDG_CACHE_HOME="$DOC_CACHE" HOME="$DOC_HOME" "$SCRIPT" "$@"
-}
-doc_queue=$(doc_delivery pending-delivery --session doc-chat) || fail "pending-delivery failed"
-assert test -z "$doc_queue"
-doc_dry=$(doc_delivery settle-delivery --dry-run) || fail "settle-delivery --dry-run failed"
-assert contains "$doc_dry" "would settle: 1 queued, 0 lapsed"
-assert test ! -e "$DOC_DELIVERY/benches/20260801T000000Z-docdeliver/delivery.json"
-doc_settled=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_settled" "settled: 1 queued, 0 lapsed"
-# Queued, the round is named at its own age: the queue IS the evidence that nobody has seen it, and
-# the age is then the reason to deliver rather than the reason to stop.
-doc_queued=$(doc_delivery pending-delivery --session doc-chat) || fail "pending-delivery failed"
-assert test "$(grep -c '^20260801T000000Z-docdeliver done$' <<<"$doc_queued")" = 1
-# Queueing is not delivering: the count stands until a ledger says the report arrived.
-assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "1"
-
-# A chat with no transcript left can never stop again, so its round is written off with the instant
-# — and kept readable under a listing of its own rather than dropped.
-GATE_SD="$DOC_DELIVERY" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-gone \
-  gate_run 20260801T040000Z-doclapsed 8 0
-WORKER_STATS_DIR="$DOC_DELIVERY" "$SCRIPT" record 20260801T040000Z-doclapsed --no-corpus \
-  >/dev/null || fail "the lapsing round refused its triage"
-doc_lapse=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_lapse" "settled: 1 queued, 1 lapsed"
-assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "1"
-doc_lapsed=$(doc_delivery doctor --lapsed) || fail "doctor --lapsed failed"
-assert contains "$doc_lapsed" "20260801T040000Z-doclapsed done"
-assert contains "$doc_lapsed" "lapsed: 1"
-# A round whose mark names no chat leaves no column and no trailing blanks behind it: a line
-# padded where its last field is empty is one every diff and every eye reads as ragged.
-python3 - "$DOC_DELIVERY/benches/20260801T040000Z-doclapsed" <<'PY'
-import json, sys
-from pathlib import Path
-mark = Path(sys.argv[1]) / "delivery.json"
-recorded = json.loads(mark.read_text())
-recorded["session"] = ""
-mark.write_text(json.dumps(recorded))
-PY
-doc_nameless=$(doc_delivery doctor --lapsed) || fail "doctor --lapsed failed"
-assert contains "$doc_nameless" "20260801T040000Z-doclapsed done"
-assert test -z "$(grep ' $' <<<"$doc_nameless")"
-doc_gone=$(doc_delivery pending-delivery --session doc-gone) || fail "pending-delivery failed"
-assert test -z "$doc_gone"
-# The chat a report is owed to lives under a claudeb PROFILE, which is where every chat on this
-# machine lives: read through the one resolver that names a chat, or the transcript is invisible
-# and a live chat's round is written off as owed to nobody.
-mkdir -p "$DOC_HOME/.claude-profiles/notcom/projects/doc-project"
-: >"$DOC_HOME/.claude-profiles/notcom/projects/doc-project/doc-profile.jsonl"
-GATE_SD="$DOC_DELIVERY" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-profile \
-  gate_run 20260801T050000Z-docprofile 8 0
-WORKER_STATS_DIR="$DOC_DELIVERY" "$SCRIPT" record 20260801T050000Z-docprofile --no-corpus \
-  >/dev/null || fail "the profile round refused its triage"
-doc_profile=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_profile" "queued 20260801T050000Z-docprofile done doc-profile"
-# And a round PAST the scan's fortnight is settled all the same: that window bounds what a reader
-# is asked to look at, and the rounds this command exists for are precisely the ones that outlived
-# it — windowed, they are neither queued nor written off and stay owed by nobody.
-GATE_SD="$DOC_DELIVERY" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-chat \
-  gate_run 20260801T060000Z-docancient 400 0
-WORKER_STATS_DIR="$DOC_DELIVERY" "$SCRIPT" record 20260801T060000Z-docancient --no-corpus \
-  >/dev/null || fail "the ancient round refused its triage"
-# The doctor still leaves it out — the two queued rounds inside the window are its whole count.
-assert test "$(doctor_count "$DOC_DELIVERY" undelivered)" = "2"
-doc_ancient=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_ancient" "queued 20260801T060000Z-docancient done doc-chat"
-doc_ancient_queue=$(doc_delivery pending-delivery --session doc-chat) || fail "pending-delivery failed"
-assert test "$(grep -c '^20260801T060000Z-docancient done$' <<<"$doc_ancient_queue")" = 1
-
-# A queue nobody ever took is the same dead end a missing transcript is: the chat kept its file and
-# never stopped again, so the round says `undelivered` for as long as the record lives — 24 of them
-# from a nine-day span, live 2026-08-24. Inside DELIVERY_QUEUE_LAPSE_S it is queued again; past it
-# the queue is written off, keeping the instant it was owed under.
-doc_queued_at() { # run-id days-ago
-  python3 - "$DOC_DELIVERY/benches/$1/delivery.json" "$2" <<'DOCPY'
-import json
-import sys
-from datetime import datetime, timedelta, timezone
-mark = json.loads(open(sys.argv[1]).read())
-when = datetime.now(timezone.utc) - timedelta(days=float(sys.argv[2]))
-mark["queued"] = when.isoformat().replace("+00:00", "Z")
-open(sys.argv[1], "w").write(json.dumps(mark, sort_keys=True) + "\n")
-DOCPY
-}
-doc_queued_at 20260801T060000Z-docancient 6
-doc_young_queue=$(doc_delivery settle-delivery --dry-run) || fail "settle-delivery --dry-run failed"
-assert contains "$doc_young_queue" "would queue 20260801T060000Z-docancient done doc-chat"
-# The instant belongs to the ROUND. This command runs from every stop, so a standing queue restamped
-# by the pass that finds it would stay seconds old for ever and never reach the lapse at all.
-doc_six_day=$(jq -r .queued "$DOC_DELIVERY/benches/20260801T060000Z-docancient/delivery.json")
-doc_requeue=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_requeue" "queued 20260801T060000Z-docancient done doc-chat"
-assert test "$(jq -r .queued \
-  "$DOC_DELIVERY/benches/20260801T060000Z-docancient/delivery.json")" = "$doc_six_day"
-doc_queued_at 20260801T060000Z-docancient 8
-doc_stale_dry=$(doc_delivery settle-delivery --dry-run) || fail "settle-delivery --dry-run failed"
-assert contains "$doc_stale_dry" "would lapse 20260801T060000Z-docancient done doc-chat"
-# --dry-run wrote nothing, so the mark the real call reads is still the eight-day-old queue.
-assert test "$(jq -r '.lapsed // "none"' \
-  "$DOC_DELIVERY/benches/20260801T060000Z-docancient/delivery.json")" = none
-doc_stale=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_stale" "lapsed 20260801T060000Z-docancient done doc-chat"
-# The queued instant survives the write-off: how long the round was owed is readable nowhere else.
-assert test "$(jq -r '(.queued != null) and (.lapsed != null)' \
-  "$DOC_DELIVERY/benches/20260801T060000Z-docancient/delivery.json")" = true
-doc_stale_lapsed=$(doc_delivery doctor --lapsed) || fail "doctor --lapsed failed"
-assert contains "$doc_stale_lapsed" "20260801T060000Z-docancient done"
-# And it leaves both queues it was standing in: the doctor's undelivered count, and the listing the
-# delivery gate reads — where a mark still carrying `queued` would have exempted it from the window
-# for ever.
-doc_stale_queue=$(doc_delivery pending-delivery --session doc-chat) || fail "pending-delivery failed"
-assert test "$(grep -c '^20260801T060000Z-docancient done$' <<<"$doc_stale_queue")" = 0
-doc_stale_again=$(doc_delivery settle-delivery) || fail "settle-delivery failed"
-assert test "$(grep -c '20260801T060000Z-docancient' <<<"$doc_stale_again")" = 0
-# Every surface that names a chat names it the way Egor knows it. An id says which conversation
-# this is only to a reader who already remembers it, and `share/chat_names.py` is the one resolver
-# (shared-invariants row `aw`) — the transcript's own ai-title, the session record where there is
-# no transcript left to read.
-DOC_NAMED="$WORK/doctor-named"
-printf '%s\n' '{"type":"ai-title","aiTitle":"the chat that owes this round"}' \
-  >"$DOC_HOME/.claude/projects/doc-project/doc-named.jsonl"
-mkdir -p "$DOC_HOME/.claude/sessions"
-printf '%s\n' \
-  '{"sessionId":"doc-titled","name":"the chat that walked away","nameSource":"ai"}' \
-  >"$DOC_HOME/.claude/sessions/doc-titled.json"
-GATE_SD="$DOC_NAMED" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-named \
-  gate_run 20260801T055000Z-docnamed 8 0
-GATE_SD="$DOC_NAMED" GATE_REPO="$DOC_REPO" GATE_SESSION=doc-titled \
-  gate_run 20260801T056000Z-doctitled 8 0
-for doc_named_run in 20260801T055000Z-docnamed 20260801T056000Z-doctitled; do
-  WORKER_STATS_DIR="$DOC_NAMED" "$SCRIPT" record "$doc_named_run" --no-corpus >/dev/null ||
-    fail "the named round refused its triage"
-done
-doc_named=$(WORKER_STATS_DIR="$DOC_NAMED" XDG_CACHE_HOME="$DOC_CACHE" HOME="$DOC_HOME" \
-  "$SCRIPT" settle-delivery) || fail "settle-delivery failed"
-assert contains "$doc_named" \
-  "queued 20260801T055000Z-docnamed done doc-named (the chat that owes this round)"
-# The chat with no transcript is written off, and `doctor --lapsed` — which used to drop the
-# session entirely — names it off the session record instead.
-assert contains "$doc_named" \
-  "lapsed 20260801T056000Z-doctitled done doc-titled (the chat that walked away)"
-doc_named_lapsed=$(WORKER_STATS_DIR="$DOC_NAMED" XDG_CACHE_HOME="$DOC_CACHE" HOME="$DOC_HOME" \
-  "$SCRIPT" doctor --lapsed) || fail "doctor --lapsed failed"
-assert contains "$doc_named_lapsed" "the chat that walked away"
 
 # A benchmark row is not a round: it owes Egor no report, so it can never sit in this count.
 DOC_BENCH="$WORK/doctor-bench"
@@ -19635,4 +19531,4 @@ assert test "$(grep -c ' fork$' <<<"$docs_delivery")" = 2
 assert test "$(grep -c '^20260823T040000Z-docsnine fork$' <<<"$docs_delivery")" = 1
 assert test "$(grep -c '^20260823T020000Z-docsnone fork$' <<<"$docs_delivery")" = 0
 
-printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask and spent by neither the settle demand a review of this chat already answers nor one a worker run it launched is still writing the content of, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held in debt while a held path now GONE is nobody'"'"'s debt at all — priced against HEAD while the tree is dirty, against the parent of the oldest commit under the earliest journal stamp while it is clean, and against HEAD for no lines at all where no stamp places a commit, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and answering for every panel cell in exactly one of four rows — what each cell confirmed of what it claimed, whose claims were false, how many said nothing at all, and one row per family and cause for the ones that failed with a whole unlaunched leg collapsed into one — priced by a header naming the wall clock of the run, the longest chain inside it, the time no cell of it accounts for and, last and always, when the run finished in the reader'"'"'s own zone, wrapped to the terminal between its own separators, with a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done — with the two counts the report prints or with neither, which answers for the triage'"'"'s own confirmed findings — or blocked with its reason, refused with one count of the two and refused for a run nobody launched, rendered into a `fixes:` row the report carries only where something is owed and into the frame suffix, which is the one place a block states its state — no suffix at all while the pass may still be running, the stale date once the block outlives the tree it describes, NO PANEL, the bench word in place of `review` for a panel no tier launched — which is the one frame carrying no round number, and NOT FINISHED only where a receipt says the pass stopped — a watchdog kill wearing no suffix at all, since the cell it killed says so on its own failed: row, with the fork that round has to take handed to the model by the fork command instead of printed at Egor — so a round whose pass still owes an answer is delivered once as `triaged` while its triage is young and named by no delivery line past that window, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may — the round priced into a band by one number, so a round of eight confirmed findings or fewer is a fixing pass whose commit closes it while a bigger one, or one carrying three P1s or twenty findings, owes a decision first, spelled fix / simplify / cut / redesign and recorded before round 2 runs, both rounds carried in the block'"'"'s own chain id and closed by that one commit, a third round refused before it starts and a round past the budget named by the doctor rather than by the snapshot — keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery queue naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected — the re-triage named in its place — and a round whose fixing pass has not answered named `triaged` exactly while its own triage is inside the window, no queued mark stretching it, at any run age and dead delegate or not, speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it — queued past the window where nobody ever delivered it, or written off by name into a listing of its own — with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it, reading its panel over the very base the debt is PRICED against — HEAD for a dirty path nothing recorded, the pre-commit parent for a clean one, the whole file only where HEAD holds none — printing that scope size before it seals anything and launching nothing above the line ceiling until the caller names back the number it printed, and refusing to answer for one repository while the chat owes others, naming the merged command every surface hands over and taking --this-repo-only only with a reason recorded in the run, and coverage keyed by CONTENT across a checkout FAMILY — a worktree'"'"'s run answering for the main checkout and pricing its diff there, content recorded under any path staying current wherever it moved, and a path spelled under another checkout or standing in neither the tree nor HEAD being nobody'"'"'s debt, with a --reason nothing records warned about and kept on the run rather than costing it the launch, ONE debt ledger per checkout family at the common git dir — a worktree'"'"'s own folded into it once and named by every answer on stderr — the debt flags spelled only on the subcommand that can enter that mode, and the settle demand keyed on the path SET itself, so one path spelled with a space never buys another pair'"'"'s silence, and a new panel refused while a round of this chat in that repository still owes the step that closes it — the decision its band earned, or the second pass that decision named — while a round whose next step is the commit, a closed one, another chat'"'"'s, one nobody triaged, a waived one and the decided round'"'"'s own chained second pass all launch as before\n' "$asserts"
+printf 'PASS: %s assertions; canonical review tiers over one shared OpenCode floor and a per-tier Gemini panel that never runs Pro at T0, stays inside the account roster and contains its own tier'"'"'s default panel when escalated, with no retired cell in any of them, cells retired by measurement refused with their counts, tier CLI and fixture-backed tier execution, review receipts, rater grammar (incl. agy and OpenCode families), CLI option surface, worker-pick affordability, gap-driven auto-pick, Codex/Claude normalization, fixture-driven agy and OpenCode fail-closed handling, usage artifacts, resolved-model metadata, SHA-pinned prompt and verifier content, prompt-file transport and max-token fallback, agy sealed clones with no descendant-history leak and /code-review Markdown adaptation, persisted verdict/defect attribution written before the corpus row, re-adjudication replacing the rows of a run instead of silently keeping the old ones, recovered-verdict provenance, a clean-review marker recognised inside Claude and Codex envelopes, the Gemini per-model wall reaching SIDE_WALL from the log, an agy finding judged on its own transport first and handed to the gateway only where that transport declined, tiered path resolution with the parent tree as fallback, the repository a run reviewed stamped into the corpus or reported untraceable, cross-run defect reconciliation with severity taken from the members and every incomplete or repository-spanning grouping refused, the session account schedulable only as the pool'"'"'s reserve and never as a roster tail, and a per-side account exclusion honoured for pooled and fixed sides alike, the frontier engine scoring one fresh run per named cell with legacy specs normalised and a repeat priced as an independent run, record aggregation/dedupe, unique catches, misses, weighted review score, run listing, 429-detection (fixed), per-side account ordering with Gemini rotation onto a second account after a usage wall, errored-rater exclusion, cross-side parallelism result assembly, review lenses registered with a declared slug and their own P1/P2/P3 mapping, resolved through former slugs, replacing the vendor methodology on every side a lens can reach and refused where none can, trimmed to the lens'"'"'s own repeat count and recorded with their hash and source-drift state in both the launch and the finished meta, carried from there into the corpus row, the report header and a receipt of the lens'"'"'s own while every lens row stays out of the canonical defect list, the frontier denominators, the composition corpus and the default leaderboard, worktree runs narrowed to named paths whose snapshot holds only those paths, is deterministic per path set, spelled against the directory the caller stands in and lexically canonicalized so a `..` can neither walk out of the repository nor split one file into two scopes, carries its scope as commit trailers a failed read refuses rather than widens, so a rerun by sha stays inside it, refuses a commitish, a pathspec matching nothing and a scope holding no change — the refusal before any snapshot object is written — and writes only a receipt of its own — leaving the repository'"'"'s receipt untouched byte for byte, a lens narrowed by the same paths naming a combined receipt of its own that leaves the plain, pure-lens and pure-scope receipts byte for byte and survives a rerun by sha with both selectors intact, a day-one repository reviewed end to end — its root commit sealed and cloned, given a deterministic empty base commit inside that clone so the vendor skill diffs its whole content, measured in lines and paths against the empty tree rather than as an unmeasurable diff, and the report a worktree run owes: no markers before its triage, a receipt after it, a bounded ask allowance counted one appended line per ask and spent by neither the settle demand a review of this chat already answers nor one a worker run it launched is still writing the content of, the lookup scoped to the repository so another chat cannot answer for it, both review hooks keyed so exactly one fires, and the one line the gate reads: debt as content against the newest artifact holding a path — a triaged run'"'"'s snapshot whoever launched it, or a waiver — a path no artifact ever held in debt while a held path now GONE is nobody'"'"'s debt at all — priced against HEAD while the tree is dirty, against the parent of the oldest commit under the earliest journal stamp while it is clean, and against HEAD for no lines at all where no stamp places a commit, a link — dangling included — priced by its own text rather than through its target, an untriaged run settling nothing, the debt owned by whoever the two journals name, a waiver covering exactly the shas it recorded and no edit after them, and the newest hung run outranking every older answer until a later triaged run of its own speaks — with the watchdog capping every cell at the longest duration recorded for its own model and effort plus three minutes over a fifteen-minute floor and marking the run it killed timed out, and a merged review of several repositories read by one panel out of a single workspace holding each repository under its own prefix — deterministic, self-contained once built and pruned with the run it belongs to — whose findings and adjudication handoff name the repository each belongs to, whose scopes and progress are per repository, and which stamps EVERY repository it read with that repository'"'"'s own receipt, while refusing a commitish, a repository named twice, a clean tree, a missing repository and its own workspace as a tree to seal, with the gateway being down priced as a wait that expires rather than a verdict — the family whose every attempt failed on the gateway ITSELF cooling for a fixed span while a spent plan, a pool run dry behind one and an unusable answer are left to the records that already carry them, one canary attempt of the cooling family running inside that span so the recovery can be noticed at all, its answer clearing the wait and its failure extending it from the moment the outage began, written under a lock and not written at all where nothing changed, and a side the pool answers for left to the pool, and each repository of one panel named the way its half actually exists — a working tree or a range of its own commits as `PATH@BASE..HEAD`, sealed and stamped per member so the committed half answers only where its right end is the tree in front of the reader, refusing a target flag it duplicates, a bare repository beside it with no --worktree and a scope aimed at a range, and a range of commits reviewed as one target — sealed into a single commit carrying its right end'"'"'s tree over its left end as the parent, so every reader keyed on one sha reads the whole range, named by the commits it sealed rather than by how the caller spelled them so one range is one snapshot with one rerun, announced by its own ends with the seal named beside them, read back out of that seal by a rerun carrying no flags at all, refused when it names no shape or no change, shown as a range while it runs, and kept out of the repository'"'"'s receipt wherever its right end is not the tree standing in front of the reader, and the corpus closed to every commit-point review — the plain record command refused outright with the reporting one named in its place, the refusal and the flag'"'"'s own help promising only what --bench delivers (this run'"'"'s verdicts stored, never a corpus row), that flag refused in turn on a durable run it would buy the plain command'"'"'s own behaviour on, and the handoff printing that one command alone — with the block those reviews are read in framed to a fixed width no over-long word can flatten, opened by a line naming the panel that produced it, and answering for every panel cell in exactly one of four rows — what each cell confirmed of what it claimed, whose claims were false, how many said nothing at all, and one row per family and cause for the ones that failed with a whole unlaunched leg collapsed into one — priced by a header naming the wall clock of the run, the longest chain inside it, the time no cell of it accounts for and, last and always, when the run finished in the reader'"'"'s own zone, wrapped to the terminal between its own separators, with a count missing from an older summary costing its own cell a number rather than the whole block, every one of those names and the tiers table'"'"'s own rendered by one derivation over the pool of cells the tiers can launch — version digits, effort and the bare mark each appearing only where two pool cells would otherwise collide, Claude and Codex effort always spelled because it is a launch parameter, the word skill never rendered at all, a family gaining a second variant IN THE POOL renaming itself with no list to edit, a cell only a stored run holds named against that pool and never over it — the arrival carrying whatever separates it, its report leaving the tiers table byte for byte — a worktree panel refused outright unless Egor asked for it by name — the one door, checked before any repository argument is resolved so a spelling the tool cannot resolve cannot fall through it — and the machine specs commands are spelled in left untouched, and the durable per-cell board that prints coverage only where a run'"'"'s panel held another model that is not an OpenCode cell — a solo or family-only run scoring none at all rather than its own catches back — folding a repeat suffix into the cell it belongs to while the usage file it names keeps that suffix, reading either vendor spelling of the same token record, pricing an OpenCode cell against the Go plan'"'"'s request grant and every other side not at all, bucketing each cell by its median wall clock against the same budgets the tiers are spelled in, marking with a ? every coverage number too few anchored runs or defects stand behind, counting beside it the bench runs of that cell nobody ever adjudicated — over benches that carry a finish stamp alone, so a run still in flight is never sold as evidence, and with a cell only those runs have ever measured given a row of its own whose every corpus-derived key is null rather than missing, pricing the vendors billed per token over their own measured usage in a unit the footer refuses to compare with the plan-request one, and answering the family, tier, machine-format and hand-scored flags it offers over a static block the text table always carries, every one of its rows named by the same derivation the report block spells a cell with — read over the whole board rather than over the pool alone, so two cells no tier can launch never answer to one name and neither takes the name of a cell that still runs — tagged with the leg the same prefix its cost is priced by names, and with whether any tier'"'"'s default panel holds it today, measured or not, beside a tiers block naming those panels in that same spelling, and the fix status a triaged round owes — recorded done — with the two counts the report prints or with neither, which answers for the triage'"'"'s own confirmed findings — or blocked with its reason, refused with one count of the two and refused for a run nobody launched, rendered into a `fixes:` row the report carries only where something is owed and into the frame suffix, which is the one place a block states its state — no suffix at all while the pass may still be running, the stale date once the block outlives the tree it describes, NO PANEL, the bench word in place of `review` for a panel no tier launched — which is the one frame carrying no round number, and NOT FINISHED only where a receipt says the pass stopped — a watchdog kill wearing no suffix at all, since the cell it killed says so on its own failed: row, with the fork that round has to take handed to the model by the fork command instead of printed at Egor — so a round whose pass still owes an answer is delivered once as `triaged` while its triage is young and named by no delivery line past that window, a second round over one scope — derived from an earlier run of that scope having its fixes DONE on record, read whole by this one and recent enough to be the same piece of work, not from a flag or from a blocked stop — offering no third pass where the first one still may — the round priced into a band by one number, so a round of eight confirmed findings or fewer is a fixing pass whose commit closes it while a bigger one, or one carrying three P1s or twenty findings, owes a decision first, spelled fix / simplify / cut / redesign and recorded before round 2 runs, both rounds carried in the block'"'"'s own chain id and closed by that one commit, a third round refused before it starts and a round past the budget named by the doctor rather than by the snapshot — keyed for a merged panel on its members rather than on the workspace built for one run, and a round of a scope nobody has fixed yet, or of work an earlier round never read, still offered its own first, with a done receipt bound by its ROWS and not by their count alone to the triage it answered, so a re-adjudication puts the round back to unanswered whether or not it changed the tally, refused outright where its two counts answer for fewer findings than the triage confirmed, and never taken at all by a run nobody judged, and the delivery listing naming this chat'"'"'s own recorded runs alone, never another chat'"'"'s, never an untriaged one, never one past the triage window, never one whose done receipt the report has already rejected — the re-triage named in its place — and a round whose fixing pass has not answered named `triaged` exactly while its own triage is inside the window, nothing stretching it, at any run age and dead delegate or not, speaking only states the Stop net can read, and spending nothing by answering; and the adjudication handoff ending at `record` for a run whose snapshot the checkout has moved past, counting a merged panel'"'"'s threshold stop per repository the way the gate prices it, and telling the worker to neither commit nor stage, and the report a round is owed reaching the chat its OWN record names whatever shell closed it, with a blind vendor worker fixing pass read off the run record no journal of ours ever saw, and a --debt review naming the foreign debt it left out and taking --all to read it, reading its panel over the very base the debt is PRICED against — HEAD for a dirty path nothing recorded, the pre-commit parent for a clean one, the whole file only where HEAD holds none — printing that scope size before it seals anything and launching nothing above the line ceiling until the caller names back the number it printed, and refusing to answer for one repository while the chat owes others, naming the merged command every surface hands over and taking --this-repo-only only with a reason recorded in the run, and coverage keyed by CONTENT across a checkout FAMILY — a worktree'"'"'s run answering for the main checkout and pricing its diff there, content recorded under any path staying current wherever it moved, and a path spelled under another checkout or standing in neither the tree nor HEAD being nobody'"'"'s debt, with a --reason nothing records warned about and kept on the run rather than costing it the launch, ONE debt ledger per checkout family at the common git dir — a worktree'"'"'s own folded into it once and named by every answer on stderr — the debt flags spelled only on the subcommand that can enter that mode, and the settle demand keyed on the path SET itself, so one path spelled with a space never buys another pair'"'"'s silence, and a new panel refused while a round of this chat in that repository still owes the step that closes it — the decision its band earned, or the second pass that decision named — while a round whose next step is the commit, a closed one, another chat'"'"'s, one nobody triaged, a waived one and the decided round'"'"'s own chained second pass all launch as before\n' "$asserts"

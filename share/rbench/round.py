@@ -6,7 +6,7 @@ import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from chat_names import transcript_path, worker_session_launchers
+from chat_names import worker_session_launchers
 
 from . import store as _store
 from . import catalog as _catalog
@@ -36,15 +36,10 @@ REPORT_BLOCKED_SUFFIX = "NOT FINISHED"
 # the triage receipt's to answer for, and a whole panel that came back with a kill in it is
 # already NO PANEL.
 REPORT_NO_PANEL_SUFFIX = "NO PANEL"
-# Not about the tree in front of the reader: the block was never handed over at the moment it was
-# recorded, or the content it priced has moved since. Neither of those is a clock, and a clock was
-# the wrong question — a report read five minutes after a rewrite of the files it read is already
-# about something else, and one delivered the instant it was recorded stays current at any age. It
-# carries the run's own date, which is the only thing that says how far off it is.
+# Past `_store.TRIAGE_GATE_HOURS` — the ONE age this tool has — the block is not about the tree in
+# front of the reader, and no hook delivers it at all: this word is worn only by the manual
+# `review-bench report <id>`, so a reader who opens an old run by hand sees that it is old.
 REPORT_STALE_SUFFIX = "STALE"
-# A worker may run an hour and the fixing pass another: a report older than this is not about the
-# tree in front of the reader, whatever else is true of it. Deliberately a clock and nothing else.
-REPORT_STALE_HOURS = 3
 # A panel nobody asked for by tier — an explicit `--raters` bench. It is not a review round: it
 # settles no debt and owes no fixes, so it wears a word of its own instead of the review one.
 REPORT_BENCH_WORD = "bench"
@@ -75,9 +70,9 @@ REPORT_BLOCKED_FORK = (
 # makes one. It gets this line instead, and the hooks key on it to demand the missing pass —
 # the marked block used to be printed either way, and a list of cells was what reached Egor.
 TRIAGE_PENDING = "REVIEW-TRIAGE-PENDING"
-# The two FINAL states a round settles in — the only ones `settle-delivery` may queue. The Stop
-# net's line vocabulary adds `triaged` and `fork` (docs/shared-invariants.md as): one line each,
-# never queued.
+# The two FINAL states a round settles in — the only ones `pending-delivery` names as a round's
+# closing report. The Stop net's line vocabulary adds `triaged` and `fork`
+# (docs/shared-invariants.md as): one delivery each.
 DELIVERY_STATES = ("done", "blocked")
 # Confirmed P1s at which the fixing pass stops instead of starting: past it the round is not a
 # list of defects to patch but a fork Egor decides, and a worker that patched its way through one
@@ -2207,20 +2202,39 @@ def triage_instant(run_dir):
     return _store.parse_iso_timestamp(recorded)
 
 
+def report_instant(run_dir, meta, state=None):
+    """The instant this run's report is dated from — the ONE clock the gate window and the frame's
+    STALE date are both read off.
+
+    A round still owing its fixing pass rides its TRIAGE, which is the instant `delivery_state`
+    windows it on; every other state rides the run's own finish, which is what
+    `pending_delivery_rows` windows those on. Read off the finish while the window ran on the
+    triage, a run finished seven hours ago and triaged a minute ago rendered STALE — and since no
+    hook's header regex admits that word, the block `pending-delivery` had just named reached
+    nobody at all (2026-08-28).
+    """
+    state = round_state(run_dir) if state is None else state
+    if state == "pending":
+        recorded = triage_instant(run_dir)
+        if recorded is not None:
+            return recorded
+    return _panel.run_finished_at(meta)
+
+
 def delivery_state(run_dir):
     """What state a triaged round's report would be delivered in, or None where no hook may hand
     it to Egor.
 
     Read through `round_state` and never off the receipt's raw field, so the state a report is
     delivered under is the state its frame was rendered in: a receipt the report has already
-    rejected for answering another triage reads `pending` here too, and queued as `done` it would
+    rejected for answering another triage reads `pending` here too, and named `done` it would
     spend the one ledger key the finished report is ever delivered under.
 
     A `pending` round — verdicts on record, fixing pass unanswered — is `triaged` while that
     triage is younger than the gate window: the counts Egor waited twelve minutes of triage for
     reached him only after the fixing pass, from the orchestrator's prose (2026-08-23). Past the
     window it is None at ANY age — an old triage is about a diff that has since moved, and the
-    pre-receipt backlog must never re-enter the queue.
+    pre-receipt backlog must never be named again.
 
     A round with nothing confirmed is `done` at its triage: no fixing pass will ever record a
     receipt for it, and a report held back for one would never be delivered at all.
@@ -2239,35 +2253,6 @@ def delivery_state(run_dir):
     if _store.utc_now() - recorded > timedelta(hours=_store.TRIAGE_GATE_HOURS):
         return None
     return "triaged"
-
-
-def delivery_mark(run_dir):
-    """What `settle-delivery` recorded about this round's report, as a dict — empty where it has
-    never been asked about."""
-    try:
-        mark = json.loads((run_dir / _store.DELIVERY_MARK).read_text())
-    except (OSError, ValueError):
-        return {}
-    return mark if isinstance(mark, dict) else {}
-
-
-def session_transcript_exists(session):
-    """Whether the chat a report is owed to is still on disk to receive it.
-
-    The Stop hook that delivers reads the transcript the harness hands it, so a session with none
-    left has no stop to reach: a report queued for it would be owed for ever by a reader that can
-    never run.
-
-    Through the one resolver that names a chat (row `aw`) and never a glob of this reader's own:
-    every chat on this machine runs under a claudeb PROFILE, whose transcripts live outside
-    `~/.claude/projects` entirely, so a reading that knew only the default root would write off
-    every round there is as owed to a chat that is gone — which is the silence this command exists
-    to end.
-    """
-    try:
-        return transcript_path(str(session or "")) is not None
-    except OSError:
-        return False
 
 
 def cmd_pending_delivery(args):
@@ -2326,25 +2311,14 @@ def pending_delivery_rows(session):
         # and the report is about to change, and past that it is a report about a diff that moved.
         if state is None:
             continue
-        # A triaged round rides `delivery_state`'s window on the triage instant, and NO queued
-        # mark ever exempts it: promoted past a window, 39 pre-fixes-mechanism runs rendered into
-        # one message at once (2026-08-20).
+        # A triaged round rides `delivery_state`'s window on the triage instant, every other state
+        # rides it on the run's own finish, and NOTHING exempts either: past the window a report is
+        # about a diff that has since moved, and a mechanism that promoted aged rounds rendered 39
+        # pre-fixes-mechanism runs into one message at once (2026-08-20).
         if state == "triaged":
             rows.append((run_dir, state))
             continue
-        mark = delivery_mark(run_dir)
-        # A queued round is named at ANY age. The window is a bound on runs nobody has looked at:
-        # once `settle-delivery` has established that this report was never handed over and that
-        # the chat it is owed to still exists, its age is the reason to deliver it, not to stop.
-        # The mark answers for the STATE it was written against: a re-adjudication moves a round
-        # back through `pending`, and the report it reaches next is not the one settled there.
-        # A round written off as lapsed is out of the queue whatever else the mark says. It keeps
-        # the queued instant it was owed under — that is the record of how long nobody took it —
-        # so read on `queued` alone a queue that RAN OUT would go on exempting its round from the
-        # window for ever, which is the silence `DELIVERY_QUEUE_LAPSE_S` exists to end.
-        queued = (mark.get("queued") and mark.get("state") == state
-                  and not mark.get("lapsed"))
-        if not queued and (now - finished).total_seconds() > _store.TRIAGE_GATE_HOURS * 3600:
+        if (now - report_instant(run_dir, meta)).total_seconds() > _store.TRIAGE_GATE_HOURS * 3600:
             continue
         # The net discards outright any line whose state is not one it knows, so a state this loop
         # could name and that vocabulary does not hold would be delivered to nobody at all.

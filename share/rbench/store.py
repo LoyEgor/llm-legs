@@ -20,12 +20,6 @@ BIN_DIR = REPO_ROOT / "bin"
 # Hours a worktree run keeps owing its report. Past that the diff it reviewed is stale, so the
 # gate stops asking rather than dragging an old run into an unrelated turn.
 TRIAGE_GATE_HOURS = 6
-# What `settle-delivery` writes beside a round whose report the window above has left behind:
-# `{"state": ..., "queued": <iso>}` puts it back in front of its launching chat at any age, and
-# `{"state": ..., "lapsed": <iso>}` records that the chat it was owed to is gone from disk, so
-# nobody will ever read it. Neither is a delivery — the ledger row `au` describes stays the only
-# record that a report reached Egor — and a lapsed round is still listed, by `doctor --lapsed`.
-DELIVERY_MARK = "delivery.json"
 REPORT_RECEIPT = "reported.json"
 FIX_RECEIPT = "fixes.json"
 # The two heaviest panels are the owner's to start, and no agent's: tier T3, and any tier's --max

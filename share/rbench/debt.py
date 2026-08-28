@@ -61,13 +61,6 @@ DOCTOR_AGES_S = {
 # about the tree as it stands now — debt in front of the reader, a panel that produced nothing —
 # are not bounded by it and never go quiet on their own.
 DOCTOR_WINDOW_S = 14 * 24 * 3600
-# How long a QUEUED report stays owed before `settle-delivery` writes it off. Queueing hands a
-# round to the launching chat's next stop, and a chat that never stops again — closed, but with its
-# transcript still on disk, which is the state `session_transcript_exists` cannot tell from a live
-# one — holds it for ever: 24 rounds from a nine-day span sat `queued` and undelivered through the
-# whole doctor window (live 2026-08-24). The round stays readable under `doctor --lapsed` exactly
-# as one whose transcript is already gone.
-DELIVERY_QUEUE_LAPSE_S = 7 * 24 * 3600
 DOCTOR_CLASSES = (
     "untriaged", "undelivered", "stuck_fixes", "orphan_debt", "kill_asymmetry",
 )
@@ -108,64 +101,6 @@ DEBT_LINE_CACHE_BATCH = 32
 # a stamp 4 seconds late read a committed contract file as 0 lines of debt).
 JOURNAL_STAMP_GRACE_S = 600
 DEBT_LINE_CACHE = None
-def cmd_settle_delivery(args):
-    """Put every deliverable round no ledger names back in front of the chat that launched it, and
-    write off the ones whose chat is gone.
-
-    The delivery window is a bound on reports nobody has looked at; it is not a verdict that an
-    older one is not owed. A chat whose stop never came inside it — it was closed, it was
-    compacting, the mechanism did not exist yet — leaves its round marked `done` on disk and
-    delivered nowhere, which is the count `doctor` reports as `undelivered` (18 of them, some 12
-    days old, when this was written). Each is settled one of two ways and never a third: queued,
-    so the launching chat's next stop hands it over whatever its age, or lapsed with the instant,
-    because the transcript that stop reads is gone — or because the queue itself has stood past
-    `DELIVERY_QUEUE_LAPSE_S`, which is the same dead chat wearing a transcript nobody deleted.
-    Nothing is dropped silently — a lapsed round keeps its own listing under `doctor --lapsed`.
-    """
-    # At no window: the scan's fortnight is a bound on what a reader is asked to look at, and the
-    # rounds this command exists for are precisely the ones that outlived it — 18 of them, some 12
-    # days old, when it was written. Windowed, they would fall out of reach two days later and be
-    # neither queued nor written off, which is the silence the docstring above promises to end.
-    findings = doctor_scan(undelivered_window=float("inf"))
-    benches = _store.state_dir() / "benches"
-    queued, lapsed = [], []
-    for row in findings["undelivered"]:
-        run_id, state = row["what"].split()[:2]
-        run_dir = benches / run_id
-        try:
-            session = str(json.loads((run_dir / "meta.json").read_text()).get("session") or "")
-        except (OSError, ValueError):
-            continue
-        # A queue that has already stood a week is the same dead end a missing transcript is: the
-        # chat kept its file and never stopped again, so requeueing it says `undelivered` for ever.
-        # The queued instant is kept beside the write-off — it is the record of how long the round
-        # was actually owed, and the listing is the only place anybody reads it now.
-        held = _round.delivery_mark(run_dir)
-        standing = held.get("state") == state and str(held.get("session") or "") == session
-        queued_at = held.get("queued") if standing else None
-        queued_on = _store.parse_iso_timestamp(queued_at)
-        stale = queued_on is not None and \
-            (_store.utc_now() - queued_on).total_seconds() > DELIVERY_QUEUE_LAPSE_S
-        alive = _round.session_transcript_exists(session) and not stale
-        mark = {"state": state, "session": session}
-        mark["queued" if alive else "lapsed"] = _store.iso_now()
-        # The instant a queue began is the ROUND's, never this pass's. This command runs from every
-        # stop, so restamping a standing queue here would hold it permanently seconds old and no
-        # round would ever reach `DELIVERY_QUEUE_LAPSE_S`.
-        if queued_at is not None:
-            mark["queued"] = queued_at
-        (queued if alive else lapsed).append((run_id, state, session))
-        if not args.dry_run:
-            (run_dir / _store.DELIVERY_MARK).write_text(json.dumps(mark, sort_keys=True) + "\n")
-    for label, rows in (("queued", queued), ("lapsed", lapsed)):
-        verb = ("would queue" if label == "queued" else "would lapse") if args.dry_run else label
-        for run_id, state, session in rows:
-            print(f"{verb} {run_id} {state} {session}{_store.chat_suffix(session)}")
-    prefix = "would settle" if args.dry_run else "settled"
-    print(f"{prefix}: {len(queued)} queued, {len(lapsed)} lapsed")
-    return 0
-
-
 def waiver_file(repo):
     name = _store.receipt_file_name(repo)
     return None if not name else _store.state_dir() / _store.WAIVER_DIR / name
@@ -1867,13 +1802,9 @@ def doctor_orphan_debt(repo, covering=None, reviewed=None, holders=None):
     ]
 
 
-def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
+def doctor_scan(now=None):
     """Every anomaly the review system's own records can be asked about, as
     `{class: [row, ...]}`.
-
-    `undelivered_window` is the one bound a caller may move, because it is the one class whose
-    bound is about ATTENTION and not about the record: `settle-delivery` asks the same question
-    with no window at all, an older report being no less owed than a recent one.
 
     Pull-only and read-only: nothing here marks a record, speaks to a vendor or costs a token, and
     the answer is a count per class with the records behind it rather than a verdict about any one
@@ -1946,21 +1877,12 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
             session = str(meta.get("session") or "")
             # A run no chat launched has no ledger to be missing from: it was never anybody's to
             # deliver, and counted here it would be a permanent finding no action clears.
-            if (age <= undelivered_window and state in _round.DELIVERY_STATES and session
+            if (age <= DOCTOR_WINDOW_S and state in _round.DELIVERY_STATES and session
                     and age >= DOCTOR_AGES_S["undelivered"]):
                 key = DELIVERY_LEDGER_KEY.format(run_id=run_dir.name, state=state)
-                mark = _round.delivery_mark(run_dir)
-                settled = mark.get("state") == state
-                # A round written off as lapsed is not a silence any mechanism will break: the
-                # chat it was owed to is gone from disk. It leaves this count for `--lapsed`,
-                # where it stays readable, rather than standing here for ever.
-                if key not in doctor_ledger_keys(session, ledgers) and not (
-                    settled and mark.get("lapsed")
-                ):
+                if key not in doctor_ledger_keys(session, ledgers):
                     findings["undelivered"].append(doctor_row(
-                        f"{run_dir.name} {state}"
-                        + (" queued" if settled and mark.get("queued") else ""),
-                        meta.get("repo"), age, session,
+                        f"{run_dir.name} {state}", meta.get("repo"), age, session,
                     ))
             if recent and round_fixes_stuck(run_dir, meta):
                 triaged_at = doctor_triage_instant(run_dir)
@@ -1992,31 +1914,6 @@ def doctor_scan(now=None, undelivered_window=DOCTOR_WINDOW_S):
                                path_holders(artifacts))
         )
     return findings
-
-
-def doctor_lapsed():
-    """Every round `settle-delivery` wrote off, oldest first: its id and state, the repository it
-    read, and when it was written off. Unbounded by the scan window above — the whole point of the
-    class is that these reports are owed to nobody and will never be delivered, so the list has to
-    stay readable for as long as the records do rather than go quiet after a fortnight.
-    """
-    benches = _store.state_dir() / "benches"
-    rows = []
-    for run_dir in sorted(benches.iterdir()) if benches.exists() else ():
-        mark = _round.delivery_mark(run_dir)
-        if not mark.get("lapsed"):
-            continue
-        try:
-            repo = json.loads((run_dir / "meta.json").read_text()).get("repo")
-        except (OSError, ValueError):
-            repo = ""
-        session = str(mark.get("session") or "")
-        rows.append({
-            "what": f"{run_dir.name} {mark.get('state') or ''}".strip(),
-            "repo": str(repo or ""), "lapsed": str(mark.get("lapsed")),
-            "session": session, "chat": _store.chat_display(session),
-        })
-    return rows
 
 
 def doctor_age_text(seconds):
@@ -2181,13 +2078,6 @@ def cmd_doctor(args):
         doctor_launchctl(paths["plist"], False)
         remove_doctor_agent(Path.home())
         print(f"Uninstalled {DOCTOR_AGENT_LABEL}.")
-        return 0
-    if getattr(args, "lapsed", False):
-        rows = doctor_lapsed()
-        for row in rows:
-            chat = f"  {row['chat']}" if row.get("chat") else ""
-            print(f"  {row['what']}  {row['repo']}  {row['lapsed']}{chat}")
-        print(f"lapsed: {len(rows)}")
         return 0
     now = _store.utc_now()
     findings = doctor_scan(now)

@@ -167,9 +167,9 @@ def report_frame_word(run_dir, meta, state=None, summary=None):
         return f"{word} · {_round.REPORT_NO_PANEL_SUFFIX}"
     # Undated it would say a block is old and refuse to say how old. In the reader's own zone,
     # because his clock is what he compares it against — the record keeps UTC.
-    finished = _panel.run_finished_at(meta)
-    if finished and _store.utc_now() - finished > timedelta(hours=_round.REPORT_STALE_HOURS):
-        local = finished.astimezone()
+    dated = _round.report_instant(run_dir, meta, state)
+    if dated and _store.utc_now() - dated > timedelta(hours=_store.TRIAGE_GATE_HOURS):
+        local = dated.astimezone()
         return f"{word} · {_round.REPORT_STALE_SUFFIX} · {local.day} {local.strftime('%b')}"
     return word
 

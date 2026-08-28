@@ -1882,16 +1882,6 @@ def main():
                         help="Prefer the merged-panel member equal to this directory's repository")
     anchor.set_defaults(func=_round.cmd_review_anchor)
 
-    settle = subparsers.add_parser(
-        "settle-delivery",
-        help="Queue every deliverable round no ledger names back to its launching chat, or write "
-             "it off where that chat's transcript is gone",
-    )
-    settle.add_argument(
-        "--dry-run", action="store_true", help="Print the split without writing a mark",
-    )
-    settle.set_defaults(func=_debt.cmd_settle_delivery)
-
     fixes = subparsers.add_parser(
         "fixes", help="Record whether a triaged round's confirmed findings were fixed"
     )
@@ -2074,10 +2064,6 @@ def main():
     )
     doctor_mode.add_argument(
         "--uninstall-agent", action="store_true", help="Remove that collector, plist and wrapper",
-    )
-    doctor_mode.add_argument(
-        "--lapsed", action="store_true",
-        help="List instead the rounds written off as undeliverable, with the instant each was",
     )
     doctor.set_defaults(func=_debt.cmd_doctor)
     lens = subparsers.add_parser(

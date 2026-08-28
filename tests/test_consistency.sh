@@ -663,9 +663,12 @@ FRAME_UNFINISHED_MARK='NOT FINISHED'
 # one of them rides the same frame, so a consumer keyed on the bare word finds none of them.
 FRAME_STATE_MARKS='NO_PANEL STALE'
 FRAME_BENCH_WORD=bench
-FRAME_STATE_RE='NOT FINISHED|NO PANEL|STALE · [0-9]{1,2} [A-Z][a-z]{2}'
-# Same alternation as the doc spells it, its date left as the placeholder prose can carry.
-FRAME_DOC_STATE_RE='NOT FINISHED|NO PANEL|STALE · <D Mon>'
+# Only the DELIVERABLE ones: `STALE` is left out on purpose, because a run past the gate is a
+# report no hook hands over at all — not matching IS that rule (row ab), and admitting it back
+# delivers a block about a tree that has moved.
+FRAME_STATE_RE='NOT FINISHED|NO PANEL'
+# Same alternation as the doc spells it.
+FRAME_DOC_STATE_RE='NOT FINISHED|NO PANEL'
 FRAME_FOOTER_RE='={10,}'
 assert test "$(grep -Ec '^REPORT_FRAME_WIDTH = ' "$RB_ROUND")" -eq 1
 rb_frame_width=$(grep -E '^REPORT_FRAME_WIDTH = [0-9]+$' "$RB_ROUND" | awk '{print $3}')
@@ -766,15 +769,18 @@ def rendered(word, found, stopped):
 # Every round of the budget, since the round rides the header: a regex that finds round 1 and not
 # round 2 delivers the first block of a chain and withholds the one that answers it.
 rows = "\n".join(module.report_block_lines([("fixes:", "stopped — the scope is wrong", False)]))
+# The late word is pinned UNMATCHED: past the gate a run's report reaches neither net, and a
+# regex that admits it back delivers a block about a tree that has moved — and takes the ledger
+# key with it, retiring as read a report nobody was ever offered.
 print(",".join(
-    [rendered(f"{module.round_frame_word(number)}{suffix}", True,
+    [rendered(f"{module.round_frame_word(number)}{suffix}", delivered,
               suffix == f" · {module.REPORT_BLOCKED_SUFFIX}")
      for number in (1, module.ROUND_BUDGET)
-     for suffix in (
-        "",
-        f" · {module.REPORT_BLOCKED_SUFFIX}",
-        f" · {module.REPORT_NO_PANEL_SUFFIX}",
-        f" · {module.REPORT_STALE_SUFFIX} · 3 Aug",
+     for suffix, delivered in (
+        ("", True),
+        (f" · {module.REPORT_BLOCKED_SUFFIX}", True),
+        (f" · {module.REPORT_NO_PANEL_SUFFIX}", True),
+        (f" · {module.REPORT_STALE_SUFFIX} · 3 Aug", False),
     )]
     # The bench word is deliberately outside the narrowing (row ab): matched by it, a panel that
     # owes no fixes is delivered as a review round.
@@ -814,15 +820,30 @@ FRAMEPY
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert test "$(grep -c 'KILLED' "$cs_hook")" -eq 0
   done
-  # STALE is a clock and nothing else (row as): one constant, no content or delivery criterion —
-  # those called a block stale the moment its own fixing pass moved the tree.
-  assert grep -Fq 'REPORT_STALE_HOURS = 3' "$RB_ROUND"
-  assert grep -Fq '_store.utc_now() - finished > timedelta(hours=_round.REPORT_STALE_HOURS)' "$RB_REPORT"
+  # STALE is a clock and nothing else (row as), and it is the SAME clock everything else reads:
+  # one age for the whole tool, so a report cannot be late by one rule and current by another.
+  # No content or delivery criterion — those called a block stale the moment its fixing pass
+  # moved the tree — and no second constant, which is what a stale hour of its own was.
+  assert grep -Fq 'TRIAGE_GATE_HOURS = 6' "$RB_STORE"
+  # And ONE instant, held by `report_instant` alone: the frame's date and the delivery window read
+  # the same clock off the same helper, or a round triaged now is handed over wearing the word the
+  # hooks refuse and reaches nobody.
+  assert grep -Fq 'def report_instant(run_dir, meta, state=None):' "$RB_ROUND"
+  assert grep -Fq 'dated = _round.report_instant(run_dir, meta, state)' "$RB_REPORT"
+  assert grep -Fq '_store.utc_now() - dated > timedelta(hours=_store.TRIAGE_GATE_HOURS)' "$RB_REPORT"
+  assert grep -Fq \
+    '(now - report_instant(run_dir, meta)).total_seconds() > _store.TRIAGE_GATE_HOURS * 3600' \
+    "$RB_ROUND"
+  assert test -z "$(grep -F 'run_finished_at' "$RB_REPORT")"
+  assert test -z "$(grep -rl 'REPORT_STALE_HOURS' --include='*.py' "$RB_PKG")"
   assert test -z "$(grep -rl 'def report_delivered_late(\|def report_snapshot_moved(' --include='*.py' "$RB_PKG")"
   # That date is the frame's only timestamp: a current block is about now by construction, and a
   # finish stamp on every header is what made a stale one indistinguishable from this morning's.
   assert test -z "$(grep -rl "strftime('%b %H:%M')" --include='*.py' "$RB_PKG")"
-  assert doc_has 'older than three hours'
+  assert doc_has '`TRIAGE_GATE_HOURS = 6`'
+  # The word's whole delivery rule: past the gate the block is rendered by hand and by
+  # nothing else. A doc that keeps promising a late delivery is a doc for the old hooks.
+  assert doc_has 'no hook ever delivers it'
   # Every state the emitter frames is a state the delivery queue can name, minus two the queue
   # names by hand: `pending`, handed over as `triaged` inside the triage window alone and never
   # past it, and `covering` — a round whose far repository has not committed yet — which is
@@ -856,8 +877,8 @@ blocked|covering|done|pending"
   # And the STATE beside each id, which is half the ledger key: the net's line regex accepts these
   # three spellings and drops every other line without a word, so a state added or renamed on the
   # emitting side reaches nobody and nothing fails. Spelled once per repository, here held equal.
-  # DELIVERY_STATES stays the two FINAL states `settle-delivery` may queue; `triaged` and `fork`
-  # join the line vocabulary alone — one delivery each, never queued. Only `fork` is rendered as a
+  # DELIVERY_STATES stays the two FINAL states, the ones named off the run's own finish; `triaged`
+  # and `fork` join the line vocabulary alone — one delivery each. Only `fork` is rendered as a
   # LINE: the triage itself is the whole block the moment it is on record, and a one-liner Egor
   # then had to wait out was the report arriving twice, late.
   cs_delivery_states='done|blocked'
@@ -2282,7 +2303,6 @@ assert test -n "$(grep -rlF 'from chat_names import' --include='*.py' "$RB_PKG")
 # so a consumer globbing `~/.claude/projects` for itself reads every one of them as gone.
 assert grep -Fq 'def transcript_roots():' "$CHATNAMES"
 assert doc_has '`transcript_path`'
-assert grep -Fq 'return transcript_path(str(session or "")) is not None' "$RB_ROUND"
 assert test -z "$(grep -rl '"\.claude" / "projects"' --include='*.py' "$RB_PKG")"
 # The shell surfaces name a chat through the same resolver, over one entry point rather than a
 # reading of their own: a hook that scanned a transcript for itself is a second answer to the
@@ -2319,7 +2339,6 @@ assert doc_has '`chat_suffix`'
 assert grep -Fq 'def chat_display(session, launchers=None, store=None):' "$RB_STORE"
 assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STORE"
 assert grep -Fq '_store.chat_display(session)' "$RB_DEBT"
-assert grep -Fq '_store.chat_suffix(session)' "$RB_DEBT"
 # Both foreign-chat refusals name the chat: they exist to send a reader to another conversation.
 assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
 
