@@ -2290,7 +2290,13 @@ fork_big=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRA
 fork_big_death=$(TZ=Europe/Kyiv date -r $((NOW - 300 + 3600)) +%H:%M)
 assert grep -Fq "${DIM}→${fork_big_death}${RESET}" <<< "$fork_big"
 assert test "${fork_big#*111k}" = "$fork_big"
-assert grep -q $'^v3\x1fparent-big\x1fbig-anchor\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
+assert grep -q $'^v4\x1fparent-big\x1fbig-anchor\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
+assert grep -q $'\x1ftail\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
+# Turn bookkeeping written after the anchor is not conversation: still a tail fork.
+printf '{"type":"system","subtype":"stop_hook_summary","timestamp":"%s","uuid":"big-hooks"}\n{"type":"system","subtype":"turn_duration","timestamp":"%s","uuid":"big-turn"}\n' \
+  "$(iso_utc $((NOW - 298)))" "$(iso_utc $((NOW - 298)))" >> "$PARENT_TRANSCRIPT"
+fork_big_hooks=$(run_statusline "$(statusline_payload ctx-fork-big "$(warm_extra "$TRANSCRIPT" 55 111000)")")
+assert grep -Fq "${DIM}→${fork_big_death}${RESET}" <<< "$fork_big_hooks"
 assert grep -q $'\x1ftail\x1f' "$STATE_DIR/cache-ttl-track-ctx-fork-big.fork"
 # The same oversized parent with an own entry after the anchor is a mid fork, not unknown.
 printf '{"type":"user","timestamp":"%s","uuid":"big-after"}\n' "$(iso_utc $((NOW - 280)))" >> "$PARENT_TRANSCRIPT"

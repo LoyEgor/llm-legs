@@ -1471,7 +1471,7 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
   if [ -n "$fork_cache" ] && [ -r "$fork_cache" ]; then
     IFS=$'\x1f' read -r fc1 fc2 fc3 fc4 fc5 fc6 fc7 fc8 fc9 fc10 fc11 fc12 fc13 \
       < "$fork_cache" 2>/dev/null || :
-    if [ "$fc1" = v3 ] && [ "$fc2" = "$fork_sid" ] && [ "$fc3" = "$fork_anchor_uuid" ] \
+    if [ "$fc1" = v4 ] && [ "$fc2" = "$fork_sid" ] && [ "$fc3" = "$fork_anchor_uuid" ] \
        && [ "$fc4" = "$fork_own_ts" ] && [ -r "$fc5" ]; then
       parent_size=$(file_size "$fc5")
       parent_mtime=$(file_mtime "$fc5")
@@ -1526,9 +1526,13 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
                        | .ttl = ($u | buckets)
                      else . end
                  else . end)
+              # Only conversation entries extend the prefix the fork shares; the
+              # bookkeeping Claude Code appends after a turn (stop_hook_summary,
+              # turn_duration) carries a uuid too and must not read as "something after".
               | if $uuid == "" or ($cutoff > 0 and $ts != null and $ts > $cutoff) then .
-                else .last = $uuid | (if $uuid == $anchor then .seen = 1 else . end)
-                end)
+                elif $uuid == $anchor then .last = $uuid | .seen = 1
+                elif $x.type == "user" or $x.type == "assistant" then .last = $uuid
+                else . end)
             | [.seen, .last, .boundary, .ats, .au, .ttl, .anchor_ts] | @tsv' 2>/dev/null
       )
       parent_seen=""; parent_last=""
@@ -1548,7 +1552,7 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
       fi
       if [ -n "$fork_cache" ]; then
         mkdir -p "$(dirname "$fork_cache")" 2>/dev/null
-        printf 'v3\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
+        printf 'v4\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
           "$fork_sid" "$fork_anchor_uuid" "$fork_own_ts" "$parent_file" "$parent_size" \
           "$parent_mtime" "$fork_state" "$parent_boundary" "$parent_assist_ts" \
           "$parent_assist_uuid" "$parent_assist_ttl" "$parent_anchor_ts" \
