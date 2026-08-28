@@ -166,31 +166,27 @@ assert grep -q '  801   799   801 512000    01:12 node /tmp/worker.js' "$inciden
 assert_fails grep -q 'UNEXPECTED-PS' "$incident_log"
 assert_fails grep -q 'RECOVERED' "$incident_log"
 
-# --- incident trigger on swap alone ---------------------------------------------------------------
-SWAP_DIR="$WORK/swap-trigger"
-probes 8192 7000
-assert run_memlogd "$SWAP_DIR" MEMLOGD_MAX_TICKS=1
-assert grep -qE '^INCIDENT [0-9]{10} avail_mb=8192 swap_used_mb=7000$' "$(log_file "$SWAP_DIR")"
+# --- swap decides nothing: a machine drowning in swap with healthy RAM stays quiet ----------------
+# macOS keeps swap allocated for hours after the pressure that caused it is gone, so a swap term in
+# the entry test latches 1 Hz process dumps for a whole day.
+SWAP_DIR="$WORK/swap-quiet"
+probes 8192 9000
+assert run_memlogd "$SWAP_DIR" MEMLOGD_MAX_TICKS=2
+swap_log=$(log_file "$SWAP_DIR")
+assert_fails grep -q 'INCIDENT' "$swap_log"
+assert_fails grep -q '^PS-BEGIN ' "$swap_log"
+assert grep -q ' quiet avail_mb=8192 swap_used_mb=9000 ' "$swap_log"
 
-# --- swap that entered the incident has to leave it: healthy RAM alone never recovers -------------
-# A machine with free RAM and permanent swap pressure would otherwise flap INCIDENT/RECOVERED every
-# tick and dump the whole process table at 1 Hz forever.
-FLAP_DIR="$WORK/swap-flap"
-probes 8192 7000
-assert run_memlogd "$FLAP_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_RECOVER_SECONDS=0
-flap_log=$(log_file "$FLAP_DIR")
-assert test "$(grep -c '^INCIDENT ' "$flap_log")" -eq 1
-assert_fails grep -q '^RECOVERED ' "$flap_log"
-assert test "$(grep -c '^PS-BEGIN ' "$flap_log")" -eq 3
-
-# --- and swap leaves it on its own exit threshold, not on the entry one ---------------------------
+# --- and it decides nothing on the way out either: available RAM alone recovers -------------------
 SWAP_EXIT_DIR="$WORK/swap-exit"
-probes 8192 '7000 5500 5000'
+probes '2000 6000 6000' 9000
 assert run_memlogd "$SWAP_EXIT_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_RECOVER_SECONDS=0
 swap_exit_log=$(log_file "$SWAP_EXIT_DIR")
-# 5500 is under the entry threshold and over the exit one: that band is the hysteresis.
-assert grep -qE '^RECOVERED [0-9]{10} avail_mb=8192 swap_used_mb=5000$' "$swap_exit_log"
-assert test "$(grep -c '^PS-BEGIN ' "$swap_exit_log")" -eq 3
+assert grep -qE '^INCIDENT [0-9]{10} avail_mb=2000 swap_used_mb=9000$' "$swap_exit_log"
+# Swap never moved, and the markers still carry it as data.
+assert grep -qE '^RECOVERED [0-9]{10} avail_mb=6000 swap_used_mb=9000$' "$swap_exit_log"
+assert test "$(grep -c '^PS-BEGIN ' "$swap_exit_log")" -eq 2
+assert grep -q ' quiet avail_mb=6000 swap_used_mb=9000 ' "$swap_exit_log"
 
 # --- a probe that breaks mid-incident is unknown, never a reason to stay latched -------------------
 LATCH_DIR="$WORK/latch"
@@ -239,34 +235,32 @@ assert grep -qE '^INCIDENT [0-9]{10} avail_mb=2000 swap_used_mb=1024$' \
 assert grep -qE '^INCIDENT [0-9]{10} continued=1$' "$MIDNIGHT_DIR/$second_day.log"
 assert test "$(grep -c '^PS-BEGIN ' "$MIDNIGHT_DIR/$second_day.log")" -eq 1
 
-# --- rotation: age drops quiet logs, an INCIDENT marker keeps one ---------------------------------
+# --- rotation: three days flat, and an INCIDENT day is no exemption -------------------------------
 ROTATE_DIR="$WORK/rotate"
 mkdir -p "$ROTATE_DIR"
 quiet_line='1700000000 quiet avail_mb=8192 swap_used_mb=0 node_count=0 node_rss_mb=0'
-recent=$(date -v-2d +%F)
-# The 21-day edge itself, a day either side of the cutoff: far enough out that a midnight crossing
-# between these dates and the daemon's own cutoff cannot move either one across it.
-inside_edge=$(date -v-20d +%F)
-outside_edge=$(date -v-22d +%F)
+# A day either side of the 3-day cutoff, never the edge itself: a midnight crossing between these
+# dates and the daemon's own cutoff cannot move either one across it.
+inside_edge=$(date -v-2d +%F)
+outside_edge=$(date -v-4d +%F)
 printf '%s\n' "$quiet_line" >"$ROTATE_DIR/2000-01-01.log"
 printf 'INCIDENT 946684800 avail_mb=100 swap_used_mb=7000\n' >"$ROTATE_DIR/2000-01-02.log"
-printf '  801   799   801 512000 01:12 node --title INCIDENT /tmp/worker.js\n' \
-  >"$ROTATE_DIR/2000-01-03.log"
-printf '%s\n' "$quiet_line" >"$ROTATE_DIR/$recent.log"
 printf '%s\n' "$quiet_line" >"$ROTATE_DIR/$inside_edge.log"
-printf '%s\n' "$quiet_line" >"$ROTATE_DIR/$outside_edge.log"
+printf 'INCIDENT 1700000000 avail_mb=100 swap_used_mb=7000\n' >"$ROTATE_DIR/$outside_edge.log"
 printf 'keep me\n' >"$ROTATE_DIR/notes.txt"
+# Today's file is the one the incident evidence is read from, whatever it holds.
+printf 'INCIDENT 1700000000 avail_mb=100 swap_used_mb=7000\n' >"$ROTATE_DIR/$(date +%F).log"
 probes 8192 1024
 assert run_memlogd "$ROTATE_DIR" MEMLOGD_MAX_TICKS=1
 assert_fails test -e "$ROTATE_DIR/2000-01-01.log"
-assert test -f "$ROTATE_DIR/2000-01-02.log"
-# The word inside a ps command line is not a marker; only a line that starts with it is.
-assert_fails test -e "$ROTATE_DIR/2000-01-03.log"
-assert test -f "$ROTATE_DIR/$recent.log"
+assert_fails test -e "$ROTATE_DIR/2000-01-02.log"
 assert test -f "$ROTATE_DIR/$inside_edge.log"
 assert_fails test -e "$ROTATE_DIR/$outside_edge.log"
 assert test -f "$ROTATE_DIR/notes.txt"
-assert test -f "$(log_file "$ROTATE_DIR")"
+rotate_log=$(log_file "$ROTATE_DIR")
+assert test -f "$rotate_log"
+assert grep -q '^INCIDENT 1700000000 ' "$rotate_log"
+assert grep -q ' quiet avail_mb=8192 ' "$rotate_log"
 
 # --- and the retention window is a knob, not a constant -------------------------------------------
 SHORT_DIR="$WORK/rotate-short"
@@ -279,6 +273,37 @@ probes 8192 1024
 assert run_memlogd "$SHORT_DIR" MEMLOGD_MAX_TICKS=1 MEMLOGD_RETENTION_DAYS=5
 assert test -f "$SHORT_DIR/$short_keep.log"
 assert_fails test -e "$SHORT_DIR/$short_drop.log"
+
+# --- size cap: a day past the cap stops dumping frames, once, and keeps logging lines -------------
+CAP_DIR="$WORK/cap"
+mkdir -p "$CAP_DIR"
+dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\0' 'x' >"$CAP_DIR/$(date +%F).log"
+printf '\n' >>"$CAP_DIR/$(date +%F).log"
+probes '2000 2000 8192 8192' 1024
+assert run_memlogd "$CAP_DIR" MEMLOGD_MAX_TICKS=4 MEMLOGD_RECOVER_SECONDS=0 MEMLOGD_MAX_LOG_MB=1
+cap_log=$(log_file "$CAP_DIR")
+assert_fails grep -q '^PS-BEGIN ' "$cap_log"
+assert grep -qE '^FRAMES-SUPPRESSED [0-9]{10} size_cap$' "$cap_log"
+# The marker announces the cap once; the per-tick lines that replace the frames keep coming.
+assert test "$(grep -c '^FRAMES-SUPPRESSED ' "$cap_log")" -eq 1
+assert test "$(grep -c ' incident avail_mb=' "$cap_log")" -eq 3
+assert grep -qE '^RECOVERED [0-9]{10} avail_mb=8192 swap_used_mb=1024$' "$cap_log"
+assert grep -q ' quiet avail_mb=8192 ' "$cap_log"
+
+# --- and the cap is that day's, not the daemon's: the next day dumps frames again ------------------
+CAP_DAY_DIR="$WORK/cap-day"
+mkdir -p "$CAP_DAY_DIR"
+dd if=/dev/zero bs=1048576 count=2 2>/dev/null | tr '\0' 'x' >"$CAP_DAY_DIR/$first_day.log"
+printf '\n' >>"$CAP_DAY_DIR/$first_day.log"
+printf '%s %s %s' "$first_day" "$first_day" "$second_day" >"$DAY_FILE"
+printf '0' >"$DAY_TICK"
+probes 2000 1024
+assert run_memlogd "$CAP_DAY_DIR" MEMLOGD_MAX_TICKS=2 MEMLOGD_RECOVER_SECONDS=600 \
+  MEMLOGD_MAX_LOG_MB=1 DAY_FILE="$DAY_FILE" DAY_TICK="$DAY_TICK"
+assert grep -q '^FRAMES-SUPPRESSED ' "$CAP_DAY_DIR/$first_day.log"
+assert_fails grep -q '^PS-BEGIN ' "$CAP_DAY_DIR/$first_day.log"
+assert_fails grep -q '^FRAMES-SUPPRESSED ' "$CAP_DAY_DIR/$second_day.log"
+assert test "$(grep -c '^PS-BEGIN ' "$CAP_DAY_DIR/$second_day.log")" -eq 1
 
 # --- single instance ------------------------------------------------------------------------------
 LOCK_DIR="$WORK/lock"
@@ -311,4 +336,4 @@ assert run_memlogd "$LOCK_DIR" MEMLOGD_MAX_TICKS=1
 assert grep -q ' quiet avail_mb=8192 ' "$(log_file "$LOCK_DIR")"
 assert_fails test -e "$LOCK_DIR/memlogd.lock"
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, incident entry on available RAM and on swap alone with a marker and full pid/ppid/pgid/rss/etime blocks, recovery that needs every reading back under its own exit threshold (sustained swap never flaps, the swap band is hysteresis, a probe that breaks mid-incident never latches it), recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file, rotation pinned at the 21-day edge and honouring the retention knob, INCIDENT logs kept and only anchored markers counted, non-log files untouched, and a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, incident entry on available RAM alone with a marker and full pid/ppid/pgid/rss/etime blocks, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob, a size cap that stops that day's frames and announces it once while the lines keep coming, released again at the next rollover, and a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one"

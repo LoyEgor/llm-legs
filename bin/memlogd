@@ -22,11 +22,10 @@ log_dir="${MEMLOGD_DIR:-$HOME/Library/Logs/memlogd}"
 quiet_interval="${MEMLOGD_QUIET_INTERVAL:-15}"
 incident_interval="${MEMLOGD_INCIDENT_INTERVAL:-1}"
 enter_avail_mb="${MEMLOGD_ENTER_AVAIL_MB:-4096}"
-enter_swap_mb="${MEMLOGD_ENTER_SWAP_MB:-6144}"
 exit_avail_mb="${MEMLOGD_EXIT_AVAIL_MB:-5120}"
-exit_swap_mb="${MEMLOGD_EXIT_SWAP_MB:-5120}"
 recover_seconds="${MEMLOGD_RECOVER_SECONDS:-60}"
-retention_days="${MEMLOGD_RETENTION_DAYS:-21}"
+retention_days="${MEMLOGD_RETENTION_DAYS:-3}"
+max_log_mb="${MEMLOGD_MAX_LOG_MB:-200}"
 max_ticks="${MEMLOGD_MAX_TICKS:-0}"
 sync_writes="${MEMLOGD_SYNC:-1}"
 
@@ -35,6 +34,7 @@ agent_plist="$HOME/Library/LaunchAgents/$label.plist"
 wrapper="$HOME/.local/libexec/memlogd"
 lock_dir="$log_dir/memlogd.lock"
 current_file=""
+frames_suppressed=0
 
 # -1 is "the probe failed", and every threshold test rejects it: a vm_stat that returns nothing
 # must not read as zero bytes available and fake an incident.
@@ -83,6 +83,12 @@ flush() { [ "$sync_writes" = 1 ] || return 0; sync; }
 
 append() { printf '%s\n' "$*" >>"$current_file"; }
 
+day_over_cap() {
+  local bytes
+  bytes=$(stat -f %z "$current_file" 2>/dev/null || echo 0)
+  [ "$bytes" -gt $((max_log_mb * 1048576)) ]
+}
+
 write_incident_block() {
   {
     printf '%s incident avail_mb=%s swap_used_mb=%s node_count=%s node_rss_mb=%s\n' \
@@ -94,24 +100,14 @@ write_incident_block() {
   flush
 }
 
-pressure() {
-  { [ "$1" -ge 0 ] && [ "$1" -lt "$enter_avail_mb" ]; } && return 0
-  { [ "$2" -ge 0 ] && [ "$2" -gt "$enter_swap_mb" ]; } && return 0
-  return 1
-}
+# Swap is reported but decides nothing: macOS holds swap allocated for hours after the pressure
+# that caused it is gone, and a swap term here once latched the 1 Hz dumps for 14 hours and 8 GB.
+pressure() { [ "$1" -ge 0 ] && [ "$1" -lt "$enter_avail_mb" ]; }
 
-# Every reading that can enter the incident has to clear its own exit threshold, or sustained swap
-# on a healthy-RAM machine reopens the incident on the tick after each recovery. A failed probe is
-# unknown, not pressure — the same rule pressure() applies, so a vm_stat that breaks mid-incident
-# cannot latch the 1 Hz dumps forever.
-recovered() {
-  { [ "$1" -lt 0 ] || [ "$1" -ge "$exit_avail_mb" ]; } || return 1
-  { [ "$2" -lt 0 ] || [ "$2" -le "$exit_swap_mb" ]; } || return 1
-  return 0
-}
+# A failed probe is unknown, not pressure — the same rule pressure() applies, so a vm_stat that
+# breaks mid-incident cannot latch the dumps forever.
+recovered() { [ "$1" -lt 0 ] || [ "$1" -ge "$exit_avail_mb" ]; }
 
-# An anchored INCIDENT is the only keep signal; a command line inside a ps block can carry the
-# word too, and only the marker starts a line with it.
 rotate() {
   local cutoff file base
   cutoff=$(date -v-"${retention_days}"d +%F 2>/dev/null) || return 0
@@ -121,7 +117,6 @@ rotate() {
     base=${file##*/}
     base=${base%.log}
     [[ "$base" < "$cutoff" ]] || continue
-    grep -q '^INCIDENT ' "$file" && continue
     rm -f "$file"
   done
 }
@@ -171,8 +166,7 @@ run_loop() {
       mkdir -p "$log_dir"
       rotate
       current_file=$(log_path "$today")
-      # Without a marker of its own the new day's file is a quiet log to rotate(), and the tail of
-      # an incident that spans midnight is what gets deleted first.
+      frames_suppressed=0
       if [ "$state" = incident ]; then
         append "INCIDENT $now continued=1"
         flush
@@ -184,7 +178,7 @@ run_loop() {
     node_count=${counts% *}
     node_rss=${counts#* }
 
-    if [ "$state" = quiet ] && pressure "$avail" "$swap"; then
+    if [ "$state" = quiet ] && pressure "$avail"; then
       state=incident
       recover_since=0
       append "INCIDENT $now avail_mb=$avail swap_used_mb=$swap"
@@ -192,8 +186,17 @@ run_loop() {
     fi
 
     if [ "$state" = incident ]; then
-      write_incident_block "$now" "$avail" "$swap" "$node_count" "$node_rss"
-      if recovered "$avail" "$swap"; then
+      if [ "$frames_suppressed" = 1 ] || day_over_cap; then
+        if [ "$frames_suppressed" = 0 ]; then
+          frames_suppressed=1
+          append "FRAMES-SUPPRESSED $now size_cap"
+        fi
+        append "$now incident avail_mb=$avail swap_used_mb=$swap node_count=$node_count node_rss_mb=$node_rss"
+        flush
+      else
+        write_incident_block "$now" "$avail" "$swap" "$node_count" "$node_rss"
+      fi
+      if recovered "$avail"; then
         [ "$recover_since" -ne 0 ] || recover_since=$now
         # A backwards clock jump would otherwise hold the incident open forever.
         [ "$now" -ge "$recover_since" ] || recover_since=$now
