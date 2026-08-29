@@ -847,18 +847,36 @@ def review_prompt(sha, focus, profile=None, lens=None):
     )
 
 
+def clone_state_note(sha, paths=()):
+    """What every cell whose cwd is the sealed clone is told about the tree it reads, chunked or
+    not, skill or diff-fed. The clone is the commit checked out whole (`seal_overlay_clone`): a
+    chunk's sibling files sit at their CHANGED state, and the live working tree's out-of-scope
+    edits — the 40/42 false-positive run of 2026-08-28 — are not in it at all."""
+    siblings = (
+        ", those outside your chunk included, is at the reviewed state and may be read as "
+        "evidence, though findings in them belong to their own chunk;"
+        if paths else " is at the reviewed state,"
+    )
+    return (
+        f" This checkout is commit {sha} sealed whole: every file of its diff{siblings} files it "
+        "does not touch are at their committed state, and live working-tree edits outside the "
+        "commit are not here."
+    )
+
+
 def chunk_instruction(sha, paths):
-    """What a cell reading part of a chunked commit is told, for the sides handed a repository
-    rather than a diff. One sentence, in the same words the pasted-diff chunks carry. A chunk is
-    whole files and never a piece of one, so its paths say the whole of what it holds."""
+    """What a cell reading the repository rather than a pasted diff is told: the chunk it holds,
+    in the words the pasted-diff chunks carry, and the clone-state note every clone cell gets. A
+    chunk is whole files and never a piece of one, so its paths say the whole of what it holds."""
     if not paths:
-        return ""
+        return clone_state_note(sha, paths)
     listed = " ".join(shlex.quote(path) for path in paths)
     return (
         f" This commit was split into chunks so no reviewer is handed more diff than it reads "
         f"reliably: review ONLY these files of it — {', '.join(paths)} — and report nothing about "
         f"what is missing from them, since the other files are being reviewed in parallel by "
         f"other cells. Read them with `git show {sha} -- {listed}`."
+        + clone_state_note(sha, paths)
     )
 
 

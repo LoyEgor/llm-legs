@@ -3512,8 +3512,8 @@ rm -f "$STATE_DIR/ports-r-order"
 
 # --- the real gate, so the two answers cannot drift apart -----------------------------------
 # The stub above proves the rendering; this proves the wiring against the hook that actually
-# answers for a commit. It is skipped where claude-setup is not beside this checkout, exactly as the
-# cross-repository asserts in test_consistency.sh are.
+# answers for a commit. An unreadable neighbour is a FAIL naming CLAUDE_SETUP_ROOT, never a skip:
+# a silent green here is the drift this block exists to catch.
 REAL_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 if [ -x "$REAL_GATE" ]; then
   GATE_CMD="$REAL_GATE"
@@ -3562,7 +3562,7 @@ RB
     "$(find "$REVIEW_DIRTY/.git/objects" -type f | wc -l | tr -d ' ')"
   assert test ! -f "$review_gitdir/review-note-review-real"
 else
-  printf 'SKIP: review label against the real review gate (%s is not executable)\n' "$REAL_GATE"
+  fail "review label against the real review gate: $REAL_GATE is not executable (set CLAUDE_SETUP_ROOT)"
 fi
 GATE_CMD="$GATE_STUB"
 GATE_ANSWER=off

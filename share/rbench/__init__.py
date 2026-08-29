@@ -115,7 +115,7 @@ from .prompts import (
     LENS_FLAG_HELP, LENS_FRONTMATTER_KEYS, LENS_SEVERITIES, LENS_SLUG_RE,
     OPENCODE_ANSWER_SHAPE, OPENCODE_VERDICT_SHAPE, READ_ONLY_REVIEW_INSTRUCTION,
     REVIEW_PROFILES, REVIEW_PROFILE_FILES, agy_structured_clean_review, announce_clean_review,
-    chunk_instruction, clean_marker_candidates, clean_review_declared, clean_review_sentences,
+    chunk_instruction, clean_marker_candidates, clone_state_note, clean_review_declared, clean_review_sentences,
     contains_clean_token, finding_from_dict, findings_from_value, lens_dir, lens_panel,
     lens_plain_cell, lens_rows, lens_source_digest, lens_source_path, lens_source_status,
     load_lenses, methodology_adaptation, normalize_agy_skill_output, normalize_claude_output,

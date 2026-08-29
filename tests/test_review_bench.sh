@@ -3899,7 +3899,8 @@ assert rc == 0 and duration >= 0 and not stderr
 assert len(rb.normalize_findings(text, transport_rater["spec"])) == 2
 assert (work / "agy-head").read_text().strip() == sha
 assert pathlib.Path((work / "agy-cwd").read_text().strip()) != repo
-assert (work / "agy-prompt").read_text() == "/code-review"
+# The agy cell runs in the clone too, so the clone-state note rides after the skill name.
+assert (work / "agy-prompt").read_text() == "/code-review" + rb.clone_state_note(sha)
 assert command[:11] == [
     str(fixtures / "fake-geminib.sh"), "profile", "work",
     "--model", "gemini-3.6-flash-low",
@@ -3910,7 +3911,7 @@ assert command[:11] == [
 assert (work / "geminib-profile").read_text() == "work"
 assert command[11] == "--log-file"
 assert pathlib.Path(command[12]) == transport_run / "agy-agy-flash36-low-skill.log"
-assert command[13:] == ["--print", "/code-review"]
+assert command[13:] == ["--print", "/code-review" + rb.clone_state_note(sha)]
 usage = json.loads((transport_run / "usage-agy-flash36-low-skill.jsonl").read_text())
 assert usage["model"] == "gemini-3.6-flash-low"
 assert usage["duration_ms"] == duration
@@ -4021,8 +4022,8 @@ rc, _, text, stderr, skill_command = rb.run_agy(
 )
 assert rc == 0 and not stderr
 assert len(rb.normalize_findings(text, skill_rater["spec"])) == 2
-assert (work / "agy-prompt").read_text() == \
-    "/code-review\nAdditional review focus: Check cancellation handling"
+assert (work / "agy-prompt").read_text() == "/code-review" + rb.clone_state_note(sha) \
+    + "\nAdditional review focus: Check cancellation handling"
 assert (work / "agy-origin-head").read_text().strip() == parent
 assert skill_command[:7] == [
     str(fixtures / "fake-geminib.sh"), "profile", "work",
@@ -4785,6 +4786,7 @@ captured_stdin = (work / "rater-stdin").read_text()
 assert "Review commit" in captured_stdin, captured_stdin
 assert "Commit diff:" in captured_stdin, captured_stdin
 assert bare_diff in captured_stdin, captured_stdin
+assert rb.clone_state_note(pin_sha) in captured_stdin, captured_stdin
 assert not any("Commit diff:" in arg for arg in bare_command), bare_command
 assert not any(arg.startswith("developer_instructions=") for arg in bare_command), bare_command
 
@@ -4861,6 +4863,8 @@ rc, _, claude_text, stderr, claude_command = rb.run_claude(
 assert rc == 0 and not stderr
 assert claude_command[claude_command.index("--output-format") + 1] == "stream-json"
 assert "--verbose" in claude_command, claude_command
+# Diff-fed, unchunked, and still in the clone: the clone-state note reaches this cell too.
+assert rb.clone_state_note(pin_sha) in claude_command[claude_command.index("-p") + 1]
 assert claude_text == claude_answer, claude_text
 assert (claude_run / "raw-opus-medium.json").read_text() == claude_answer
 assert "raw-events-opus-medium.jsonl" in {path.name for path in claude_run.iterdir()}
@@ -12014,6 +12018,24 @@ assert chunk_whole_added == [f"+w {n}" for n in range(2000)], len(chunk_whole_ad
 # instead of the pasted text are told nothing about lines.
 chunk_told = rb.chunk_instruction(chunk_whole_sha, chunk_whole_list[0]["paths"])
 assert "whole.py" in chunk_told and "lines" not in chunk_told, chunk_told
+# The clone is the commit checked out whole, so a chunk's siblings are at their CHANGED state and
+# the live tree's out-of-scope edits are absent — the 40/42 false-positive run of 2026-08-28 was
+# cells reporting defects in yesterday's neighbours. Pinned whole, chunked and unchunked: a
+# softened spelling is the bug coming back.
+chunk_state = (f" This checkout is commit {chunk_whole_sha} sealed whole: every file of its diff, "
+               "those outside your chunk included, is at the reviewed state and may be read as "
+               "evidence, though findings in them belong to their own chunk; files it does not "
+               "touch are at their committed state, and live working-tree edits outside the "
+               "commit are not here.")
+assert chunk_told.endswith(chunk_state), chunk_told
+assert rb.clone_state_note(chunk_whole_sha, chunk_whole_list[0]["paths"]) == chunk_state
+assert chunk_told in rb.skill_brief(chunk_whole_sha, None, "/sealed", chunk_whole_list[0]["paths"])
+whole_state = (f" This checkout is commit {chunk_whole_sha} sealed whole: every file of its diff "
+               "is at the reviewed state, files it does not touch are at their committed state, "
+               "and live working-tree edits outside the commit are not here.")
+assert rb.chunk_instruction(chunk_whole_sha, []) == whole_state
+assert rb.clone_state_note(chunk_whole_sha) == whole_state
+assert rb.skill_brief(chunk_whole_sha, None, "/sealed").endswith(whole_state)
 assert all("regions" not in chunk for chunk in chunk_whole_list + chunk_list), chunk_list
 
 # A rename reaches its chunk AS a rename. Asked about the destination alone, git has nothing to

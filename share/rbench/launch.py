@@ -449,7 +449,11 @@ def run_codex(rater, repo, sha, focus, run_dir, diff, account):
     prompt_input = None
     lens = rater.get("lens")
     if rater["bare"]:
-        prompt_input = _prompts.review_prompt(sha, focus, lens=lens) + "\n\nCommit diff:\n" + diff
+        prompt_input = (
+            _prompts.review_prompt(sha, focus, lens=lens)
+            + _prompts.clone_state_note(sha, _scope.cell_chunk_paths(rater))
+            + "\n\nCommit diff:\n" + diff
+        )
         command += [
             "-m", "gpt-5.6-sol", "-c",
             f"model_reasoning_effort={rater['effort']}",
@@ -547,7 +551,11 @@ def run_claude(rater, repo, sha, focus, run_dir, diff, account):
     if _prompts.uses_skill_brief(rater):
         prompt = _prompts.skill_brief(sha, focus, clone, _scope.cell_chunk_paths(rater))
     else:
-        prompt = _prompts.review_prompt(sha, focus, lens=rater.get("lens")) + "\n\nCommit diff:\n" + diff
+        prompt = (
+            _prompts.review_prompt(sha, focus, lens=rater.get("lens"))
+            + _prompts.clone_state_note(sha, _scope.cell_chunk_paths(rater))
+            + "\n\nCommit diff:\n" + diff
+        )
     cwd = clone
     command = [
         _store.command_path("REVIEW_BENCH_CLAUDEB_BIN", "claudeb"), "profile", account,

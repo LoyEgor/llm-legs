@@ -977,7 +977,7 @@ FOREIGNPY
     assert grep -Fq "$cs_fork_word" <<<"$cs_tier_prose"
     assert grep -Fq "$cs_fork_close" <<<"$cs_tier_prose"
   else
-    printf 'SKIP: post-block wording (%s is unreadable)\n' "$CLAUDE_SETUP/global/docs/review-tiers.md"
+    fail "post-block wording: $CLAUDE_SETUP/global/docs/review-tiers.md is unreadable (set CLAUDE_SETUP_ROOT)"
   fi
   assert doc_has 'Review report header words'
   assert doc_has '`review · round <N>`'
@@ -1023,7 +1023,7 @@ FOREIGNPY
     "$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$DELIVERY_GATE")" \
     "$cs_launch_re"
 else
-  printf 'SKIP: review report frame across claude-setup (%s is unreadable)\n' "$CLAUDE_SETUP"
+  fail "review report frame across claude-setup: $CLAUDE_SETUP is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
@@ -1097,7 +1097,7 @@ if test -r "$FLOW_GATE"; then
   assert grep -Fq 'review-bench debt --repo "$top_dir" --session "$session" "$@"' "$FLOW_GATE"
   assert grep -Fq 'answer=$(review_debt --split) || { echo off; exit 0; }' "$FLOW_GATE"
 else
-  printf 'SKIP: statusline verdict grammar across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+  fail "statusline verdict grammar across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 
 # --- Row ao: the review debt journal -------------------------------------------
@@ -1389,7 +1389,7 @@ if test -r "$FLOW_GATE"; then
   assert eq "$gate_second_hard" "$rb_hard_min"
   assert grep -Fq 'review-bench fork "$fork_run" --check' "$FLOW_GATE"
 else
-  printf 'SKIP: round dials across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+  fail "round dials across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 if test -d "$CLAUDE_SETUP/hooks"; then
   duplicate_round_dials=$(grep -HnE \
@@ -1399,7 +1399,7 @@ if test -d "$CLAUDE_SETUP/hooks"; then
   [ -z "$duplicate_round_dials" ] ||
     fail "row ap: duplicate round threshold assignment outside review-flow-gate.sh: $duplicate_round_dials"
 else
-  printf 'SKIP: duplicate round dial check (%s/hooks is unreadable)\n' "$CLAUDE_SETUP"
+  fail "duplicate round dial check: $CLAUDE_SETUP/hooks is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 
 # --- Row af: the four decision words are one vocabulary ------------------------
@@ -1455,7 +1455,7 @@ if test -r "$FLOW_GATE"; then
   assert eq "$gate_round2_cmd" "$rb_debt_cmd"
   assert eq "$(grep -c -- '--paths' <<<"$gate_round2_cmd")" 0
 else
-  printf 'SKIP: debt review command across claude-setup (%s is unreadable)\n' "$FLOW_GATE"
+  fail "debt review command across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 # What a checkout says it is never owed a review over is one file name, spelled in the tool and in
 # the prose the reader acts on: a repository ignoring by one name while the contract documents
@@ -1595,8 +1595,7 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
   assert grep -Fq "printf 'claimed %s %s\\n' \"\${sid:-unknown}\" \"\$(date +%s)\"" "$WORKER_GATE"
   assert grep -Fq 'if stamped[0] == "claimed":' "$RB_ROUND"
 else
-  printf 'SKIP: review round voice across claude-setup (%s or %s is unreadable)\n' \
-    "$FLOW_GATE" "$REPORT_GATE"
+  fail "review round voice across claude-setup: $FLOW_GATE or $REPORT_GATE is unreadable (set CLAUDE_SETUP_ROOT / REVIEW_REPORT_GATE)"
 fi
 
 # --- Row ai: usage wall record ------------------------------------------------
@@ -2176,7 +2175,7 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Eq 'rj_append "[^"]*\$RJ_DEBT_JOURNAL" "\$session" "\$now" "\$relative"' \
     "$COMMIT_JOURNAL"
 else
-  printf 'SKIP: worker files reach the launching chat (%s is unreadable)\n' "$COMMIT_JOURNAL"
+  fail "worker files reach the launching chat: $COMMIT_JOURNAL is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 REVIEW_GATE="$CLAUDE_SETUP/hooks/review-flow-gate.sh"
 if [ -r "$REVIEW_GATE" ]; then
@@ -2196,7 +2195,7 @@ if [ -r "$REVIEW_GATE" ]; then
   assert grep -Fq 'fold_worker_journal' "$REVIEW_GATE"
   assert eq "$(grep -c 'fold_listing' "$REVIEW_GATE")" 3
 else
-  printf 'SKIP: the gate reads the same run records (%s is unreadable)\n' "$REVIEW_GATE"
+  fail "the gate reads the same run records: $REVIEW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 if [ -r "$COMMIT_REPORT" ]; then
   # The one sentence a reader gets about a record that has not finished naming its own files, and
@@ -2275,7 +2274,7 @@ LEDGERPY
 )
   assert eq "$ledger_key_match" "run:20260101T000000Z-abcdef0:done"
 else
-  printf 'SKIP: delivery ledger across claude-setup (%s is unreadable)\n' "$CLAUDE_SETUP"
+  fail "delivery ledger across claude-setup: $CLAUDE_SETUP is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 
 # --- Row av: the doctor snapshot is the menubar's whole vocabulary -----------
@@ -2604,7 +2603,7 @@ if test -r "$JOURNAL_LIB"; then
   assert eq "$rb_debt_name" claude-review-debt
   assert eq "$rb_commit_name" claude-commit-journal
 else
-  printf 'SKIP: journal ledger resolver across claude-setup (%s is unreadable)\n' "$JOURNAL_LIB"
+  fail "journal ledger resolver across claude-setup: $JOURNAL_LIB is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 # The prose that sends a reader to one of them names the family's dir too: pointed at a worktree's
 # own git dir, a debugging session opens a file the resolver has already folded away.
@@ -2618,7 +2617,7 @@ for journal_dir_candidate in "$ROOT/bin" "$ROOT/share" "$CLAUDE_SETUP/bin" "$CLA
   if [ -d "$journal_dir_candidate" ]; then
     journal_scan_dirs+=("$journal_dir_candidate")
   else
-    printf 'SKIP: journal-name scan (%s is missing)\n' "$journal_dir_candidate"
+    fail "journal-name scan: $journal_dir_candidate is missing (set CLAUDE_SETUP_ROOT)"
   fi
 done
 journal_strays=$(grep -rlE 'claude-review-debt|claude-commit-journal' \
@@ -2637,7 +2636,7 @@ assert doc_has '`COMMIT_FREE_FILE`'
 if test -r "$CLAUDE_SETUP/global/CLAUDE.md"; then
   assert grep -Fq 'families listed in `~/.claude/commit-free`' "$CLAUDE_SETUP/global/CLAUDE.md"
 else
-  printf 'SKIP: commit-free prose (%s is unreadable)\n' "$CLAUDE_SETUP/global/CLAUDE.md"
+  fail "commit-free prose: $CLAUDE_SETUP/global/CLAUDE.md is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 COMMIT_FREE_READERS=(
   "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
@@ -2665,11 +2664,11 @@ if test -r "$JOURNAL_LIB"; then
       # A mention of the file in prose is fine; opening it is not.
       assert eq "$(grep -cE '(<|read).*\.claude/commit-free' "$commit_free_reader")" 0
     else
-      printf 'SKIP: commit-free reader %s is unreadable\n' "$commit_free_reader"
+      fail "commit-free reader $commit_free_reader is unreadable (set CLAUDE_SETUP_ROOT)"
     fi
   done
 else
-  printf 'SKIP: commit-free whitelist reader (%s is unreadable)\n' "$JOURNAL_LIB"
+  fail "commit-free whitelist reader: $JOURNAL_LIB is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 # The prose a reader acts on names the same file, or a chat asks permission a hook has stopped
 # wanting.
@@ -2690,7 +2689,7 @@ if test -r "$CLAUDE_SETUP/hooks/review-flow-gate.sh"; then
   assert grep -Fq "$COMMIT_FREE_REFUSAL" "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
   assert grep -Fq "$COMMIT_FREE_ROUND" "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
 else
-  printf 'SKIP: commit-free refusal (%s is unreadable)\n' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
+  fail "commit-free refusal: $CLAUDE_SETUP/hooks/review-flow-gate.sh is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 assert grep -Fq "$COMMIT_FREE_REFUSAL" "$ROOT/docs/review-contract.md"
 assert grep -Fq 'leaves out every path an open round of that chat has read' "$ROOT/docs/review-contract.md"
@@ -2750,4 +2749,24 @@ assert grep -Fq '`<run-dir>/toolchain-shims`' "$ROOT/docs/review-contract.md"
 assert grep -Fq 'BEST-EFFORT by construction' "$ROOT/docs/review-contract.md"
 assert doc_has 'answers a BARE tool name only'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the one whitelist that says which repository families a chat commits in without asking, whose commit door is the one refusal the review gate has, fired on the debt answer alone, which leaves out what an open round of the committing chat already read, and the toolchain shims every clone-reading review cell reads under) and match %s\n' "$asserts" "$DOC"
+# --- Rows bh/bi: the Hammerspoon entry points this repository calls ------------
+# Read at the INSTALL path — a symlink into this repo today, a real file once the Lua moves to the
+# hammerspoon repo — so the pin survives the move and refuses to skip. `cancel` is reached through
+# `and` guards at its call site, so its drift degrades silently; that is why it is pinned.
+HS_ROOT="${HS_ROOT:-$HOME/.hammerspoon}"
+CONTINUE_LUA="$HS_ROOT/claude_continue.lua"
+SWITCH_LUA="$HS_ROOT/claude_chat_switch.lua"
+test -r "$CONTINUE_LUA" || fail "row bh: $CONTINUE_LUA is unreadable (set HS_ROOT)"
+test -r "$SWITCH_LUA" || fail "row bi: $SWITCH_LUA is unreadable (set HS_ROOT)"
+assert doc_has '`ClaudeContinue.startTimerFor(id, minutes, customMessage, targetTty)`'
+assert doc_has '`ClaudeChatSwitch.cancel()`'
+timer_sig=$(sed -n 's/^function ClaudeContinue\.startTimerFor(\(.*\))$/\1/p' "$CONTINUE_LUA")
+assert eq "$timer_sig" 'id, minutes, customMessage, targetTty'
+timer_calls=$(grep -o 'startTimerFor([^)]*)' "$ROOT/bin/claude-resume-timer" | LC_ALL=C sort -u)
+assert eq "$timer_calls" 'startTimerFor(\"$surface\", $minutes)
+startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")'
+assert eq "$(grep -c '^function ClaudeChatSwitch\.cancel(' "$SWITCH_LUA")" 1
+assert grep -Fq 'function ClaudeChatSwitch.cancel()' "$SWITCH_LUA"
+assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)" '_G.ClaudeChatSwitch.cancel()'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the one whitelist that says which repository families a chat commits in without asking, whose commit door is the one refusal the review gate has, fired on the debt answer alone, which leaves out what an open round of the committing chat already read, and the toolchain shims every clone-reading review cell reads under, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

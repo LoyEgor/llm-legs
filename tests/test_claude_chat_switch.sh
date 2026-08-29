@@ -15,6 +15,10 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 # Resolved before the stub `hs` goes on PATH; the wall harness needs the real one.
 REAL_HS="$(command -v hs || true)"
+# The wall harness drives THIS checkout's module, never the installed symlink: in a worktree or a
+# sealed clone that symlink is somebody else's copy, and a broken branch edit would pass on it.
+# The override is for the day the Lua moves out of this repo.
+CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$ROOT/hammerspoon/config/claude_chat_switch.lua}"
 
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
@@ -341,8 +345,9 @@ assert grep -qi "Hammerspoon CLI" <<<"$OUT"
 # and its own `require`, so the stubbed gate below is the only chat_gate it can
 # see and the live one is never required, let alone handed a job.
 [ -n "$REAL_HS" ] || fail "Hammerspoon CLI is unavailable (the exit-wall harness needs it)"
+[ -f "$CHAT_SWITCH_LUA" ] || fail "claude_chat_switch.lua is not installed at $CHAT_SWITCH_LUA (set CHAT_SWITCH_LUA)"
 HARNESS="$WORK/wall_harness.lua"
-{ printf 'local MODULE = [[%s]]\n' "$ROOT/hammerspoon/config/claude_chat_switch.lua"
+{ printf 'local MODULE = [[%s]]\n' "$CHAT_SWITCH_LUA"
   cat <<'LUA'
 -- The world the stubbed gate, clock and `ps` answer to; one per scenario, reached
 -- through this single upvalue so the module is loaded once.
