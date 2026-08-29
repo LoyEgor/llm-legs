@@ -472,8 +472,8 @@ def round_fork_text(run_dir, meta, verdicts=None):
     """The whole of what a round's report does NOT say: which way it goes from here.
 
     Egor does not read it — the model that has to act on it does, so `review-bench fork` hands it
-    to the hook instead of the block spending eight lines on it. Empty is the ordinary answer: the
-    round is in the `fix` band, or its decision is already on disk.
+    to the hook instead of the block spending eight lines on it. A round that has nowhere left to go
+    — its decision on disk, or the commit that closed it — is the empty answer.
     """
     rows = verdicts if verdicts is not None else _round.recorded_verdict_rows(run_dir)
     parts = []
@@ -488,6 +488,15 @@ def round_fork_text(run_dir, meta, verdicts=None):
     elif _round.fork_missing(run_dir, meta, rows or []):
         p1, total = _round.escalation_numbers(run_dir, meta, rows or [])
         parts.append(round_decision_ask(p1, total))
+    elif rows is not None and _round.read_fork(run_dir) is None and not _round.round_closed(run_dir):
+        # The fix band, which owes no decision and until now was told so by silence. Only while the
+        # round is still open: past the commit that closes it there is nothing left to say. A clean
+        # triage is the same state here as a pending pass — the fixing pass has answered neither.
+        confirmed = _round.confirmed_count(rows)
+        if state == "pending" or not confirmed:
+            p1, total = _round.escalation_numbers(run_dir, meta, rows)
+            if _round.round_band(p1, total) == _round.BAND_FIX:
+                parts.append(_round.FIX_BAND_NO_DECISION)
     if state == "blocked":
         parts.append(_round.REPORT_BLOCKED_FORK)
     return "\n".join(parts)

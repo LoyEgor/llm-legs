@@ -123,6 +123,16 @@ ROUND_HARD_MIN = 20
 BAND_FIX = "fix"
 BAND_DECIDE = "decide"
 BAND_HARD = "hard"
+# The fix band's own fork text. Silence there was read as room for a decision line: a round triaged
+# to 0 confirmed answered it with «Решение по ревью: фиксим» and a debt-closure summary of its own
+# (2026-08-28). A band with one way through says so rather than saying nothing.
+FIX_BAND_NO_DECISION = (
+    f"This round is in the fix band (≤ {ROUND_FIX_MAX} confirmed, < {HANDOFF_P1_STOP} P1s): it "
+    "takes no decision and no decision line. Write no «Решение по ревью», no debt or closure "
+    "summary, no next-step sentence — Egor reads the block alone and the commit report speaks for "
+    "the debt. Fix what the block confirms (nothing, when it confirms 0), then go on to the commit "
+    "that closes the round."
+)
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
 # end of the turn it was meant to gate (seen live 2026-07-31). Still bounded, because a triage

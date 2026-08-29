@@ -635,8 +635,9 @@ records the debt and passes in silence. The framed block from
 `record --no-corpus` is the only review output Egor reads, and the report hook
 prints it: one copy, from review-bench's own rendering, costing no tokens. After the
 block the model adds NOTHING — no counts, no cells, no timings, no opinion
-paragraph: the fork, where the round earned one, is the only word on where the round goes,
-and without one the commit carrying the fixes closes it. The corpus rules (sealed
+paragraph: the fork is the only word on where the round goes, and in the fix band it says so
+itself — that band takes no decision and no decision line, and the commit
+carrying the fixes closes it. The corpus rules (sealed
 judges, `--bench` opt-in) are unchanged.
 
 **The launch DETACHES its own panel.** `review-bench review …` starts the panel in a

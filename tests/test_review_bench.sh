@@ -2137,6 +2137,31 @@ assert "fixes:        stopped — the scope is wrong" in blocked_report, blocked
 assert not [line for line in blocked_report
             if "NOT APPLIED" in line or "blocked" in line], blocked_report
 assert not [line for line in blocked_report if "not the fixer's" in line], blocked_report
+# The fix band, whose one way through is the fixes and the commit that carries them. Silence there
+# was read as room for a decision: a round triaged to 0 confirmed wrote «Решение по ревью: фиксим»
+# and its own debt closure under the block (2026-08-28), so the band says what it takes.
+fix_band = fork_state / "benches" / "20260822T000002Z-fixband"
+fix_band.mkdir()
+fix_band_meta = dict(fork_meta, run_id=fix_band.name)
+(fix_band / "meta.json").write_text(json.dumps(fix_band_meta))
+(fix_band / "findings-sol-low.jsonl").write_text(
+    json.dumps({"file": "a.py", "line": 1, "severity": "P2", "summary": "real"}) + "\n"
+)
+(fix_band / "verdicts.jsonl").write_text(
+    json.dumps({"rater": "sol-low", "idx": 0, "verdict": "false_positive"}) + "\n"
+)
+assert rb.round_fork_text(fix_band, fix_band_meta) == rb.FIX_BAND_NO_DECISION, \
+    rb.round_fork_text(fix_band, fix_band_meta)
+# Both halves of what the band forbids, and the dials it is spelled off rather than beside.
+assert "Решение по ревью" in rb.FIX_BAND_NO_DECISION, rb.FIX_BAND_NO_DECISION
+assert "no debt or closure summary" in rb.FIX_BAND_NO_DECISION, rb.FIX_BAND_NO_DECISION
+assert f"≤ {rb.ROUND_FIX_MAX} confirmed, < {rb.HANDOFF_P1_STOP} P1s" in rb.FIX_BAND_NO_DECISION, \
+    rb.FIX_BAND_NO_DECISION
+# A round the commit already closed has nowhere left to go, and telling it to go on to that commit
+# is the one thing the text must not do twice.
+(fix_band / rb.FIX_RECEIPT).write_text(json.dumps({"state": "done", "closed_by": "abc1234"}))
+assert rb.round_fork_text(fix_band, fix_band_meta) == "", \
+    rb.round_fork_text(fix_band, fix_band_meta)
 os.environ.pop("WORKER_STATS_DIR", None)
 
 # The block names its ROUND in the frame, and a round 2 says what it is read against. Told apart
@@ -16254,10 +16279,13 @@ assert contains "$report_output" $'found:        sol-high  1/2\nnoise:        ki
 assert test "$(grep -cE '^(cells|errored|timeout|mismatch|not run|walls|false by|wall gated by):' \
   <<<"$report_output")" = "0"
 # The fork — which way the round goes from here — is the model's context and not Egor's reading,
-# so `fork` is where the hook picks it up. This round is closed and owes no fork at all.
+# so `fork` is where the hook picks it up. This round is in the fix band, whose one way through is
+# the fixes and the commit: the fork says so, because silence there was answered with a decision
+# line the band cannot carry.
 fork_output=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" fork report-adjudicated) \
-  || fail "fork failed on a closed round"
-assert test -z "$fork_output"
+  || fail "fork failed on a fix-band round"
+assert contains "$fork_output" "it takes no decision and no decision line"
+assert test "$(grep -Fc -- "Pick one" <<<"$fork_output")" -eq 0
 fork_unknown_rc=0
 fork_unknown=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" fork no-such-run 2>&1) || fork_unknown_rc=$?
 assert test "$fork_unknown_rc" -ne 0
@@ -18292,11 +18320,15 @@ rm -rf "$FIX_SESSIONS"
 rm -f "$FIX_SD/progress/anchor-merged.json"
 rm -rf "$FIX_SD/benches/20260731T000000Z-merged" "$WORK/anchor-other"
 # A round inside the fix band owes no decision at all: the Stop gate is quiet over it, and its
-# block says what closes it and that nothing follows.
+# block says what closes it and that nothing follows. Its fork says the band takes no decision
+# rather than saying nothing — silence there was answered with a decision line of the model's own.
 assert test -z "$(fix_bench pending-report --repo "$FIX_REPO" || true)"
 assert test "$(grep -Fc -- "next:" <<<"$fix_first")" -eq 0
 assert test "$(grep -Fc -- "decision:" <<<"$fix_first")" -eq 0
-assert test -z "$(fix_bench fork 20260801T000000Z-fixround1 || true)"
+assert grep -qF -- "it takes no decision and no decision line" \
+  <<<"$(fix_bench fork 20260801T000000Z-fixround1)"
+assert grep -qF -- "no debt or closure summary" \
+  <<<"$(fix_bench fork 20260801T000000Z-fixround1)"
 # And the triaged line is the confirmed row's own tally, one line, no frame.
 fix_first_line=$(fix_bench report 20260801T000000Z-fixround1 --line) \
   || fail "report --line refused a triaged round"
