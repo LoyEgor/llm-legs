@@ -856,6 +856,19 @@ def cmd_report(args):
     # from framing another chat's review as its own: a run reached by id says nothing about who
     # launched it, and the report he reads IS the indicator that HIS review finished (2026-08-22).
     refuse_foreign_chat(run_dir, meta, str(getattr(args, "session", "") or "").strip())
+    # The state a delivery is keyed under, asked here and derived nowhere else. Both report hooks
+    # used to read it off the block's own frame, which knows two words where this knows three: the
+    # nudge keyed a round whose fixing pass had not answered as `done` while `pending-delivery`
+    # named it `triaged`, so the state key the Stop net looked the delivery up under was one no
+    # channel had written and Egor read the same block again after the closing commit (2026-08-29).
+    # Exit 1 and nothing printed where no hook may hand this round over at all — a `covering` round
+    # and one past the triage window — which is not a state and must not be keyed as one.
+    if getattr(args, "state", False):
+        state = _round.delivery_state(run_dir)
+        if not state:
+            return 1
+        print(state)
+        return 0
     line = getattr(args, "line", None)
     if line == "triaged":
         print(triaged_line(run_dir, meta))
@@ -907,6 +920,16 @@ def cmd_fork(args):
     if not (run_dir / "meta.json").exists():
         raise ValueError(f"unknown run id: {args.run_id}")
     meta = json.loads((run_dir / "meta.json").read_text())
+    # Which band the round's own numbers put it in, for the gate that waits on Egor in the hard one.
+    # `--check` answers whether a decision is owed and never which dial earned it, so a caller that
+    # has to tell the hard band from the decide band had nothing to read and would price the round
+    # a second time off thresholds of its own (docs/shared-invariants.md row `af`).
+    if getattr(args, "band", False):
+        rows = _round.recorded_verdict_rows(run_dir)
+        if rows is None:
+            return 1
+        print(_round.round_band(*_round.escalation_numbers(run_dir, meta, rows)))
+        return 0
     if getattr(args, "check", False):
         if _round.fork_missing(run_dir, meta):
             print(_round.fork_refusal(run_dir.name), file=sys.stderr)

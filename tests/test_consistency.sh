@@ -706,7 +706,9 @@ DECISION_REPORT="$CLAUDE_SETUP/hooks/review-decision-report.sh"
 if test -r "$DECISION_REPORT"; then
   # Neither announcer lays a decision out: both run the renderer that owns it, exactly as they
   # print the report rather than composing one.
-  assert grep -Fq '[review_bench, "decision", run_id], capture_output=True' "$DECISION_REPORT"
+  assert grep -Fq '[review_bench, verb, run_id], capture_output=True' "$DECISION_REPORT"
+  assert grep -Fq 'rendered("decision", run_id)' "$DECISION_REPORT"
+  assert grep -Fq 'rendered("report", run_id)' "$DECISION_REPORT"
   assert test "$(grep -c 'Решение по ревью' "$DECISION_REPORT")" -eq 0
 fi
 if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
@@ -1000,7 +1002,7 @@ FOREIGNPY
   # asks about is the same block delivered twice in one turn (2026-08-20 and again 2026-08-21).
   cs_keys_body() {
     sed -n '/^def ledger_keys(run_id, state, block):$/,/^    return keys$/p' "$1" |
-      grep -E '^ +(keys|if run_id:|return keys)'
+      grep -E '^ +(keys|if run_id and state:|return keys)'
   }
   cs_keys_fn=$(cs_keys_body "$REPORT_NUDGE")
   assert test "$(printf '%s\n' "$cs_keys_fn" | wc -l)" -eq 4
@@ -1008,10 +1010,12 @@ FOREIGNPY
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert grep -Fq 'keys = [hashlib.sha256(block.encode()).hexdigest()]' "$cs_hook"
     assert grep -Fq 'keys.append(f"run:{run_id}:{state}")' "$cs_hook"
-    # Half that key is the state, and it is read off the BLOCK wherever no delivery line named
-    # one: derived differently by the two nets, they write keys neither recognises.
-    assert grep -Fq \
-      'return "blocked" if STOPPED_HEADER_RE.search(block) else "done"' "$cs_hook"
+    # Half that key is the state, and it is review-bench's answer (`report <id> --state`), never a
+    # reading of the block: derived from the frame, the two nets wrote keys neither recognised
+    # and Egor read one block twice (2026-08-29).
+    assert grep -Fq 'argv = [review_bench, "report", run_id, "--state"]' "$cs_hook"
+    assert grep -Fq 'return state if state in DELIVERY_STATES else None' "$cs_hook"
+    assert test "$(grep -c 'STOPPED_HEADER_RE.search(block) else' "$cs_hook")" -eq 0
   done
   cs_launch_re=$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$REPORT_NUDGE")
   assert test -n "$cs_launch_re"

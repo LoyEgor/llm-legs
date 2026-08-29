@@ -18451,6 +18451,18 @@ fix_first_delivery=$(fix_bench pending-delivery --session sess-fix) \
   || fail "pending-delivery refused a chat whose only round is freshly triaged"
 assert test "$(grep -c '^20260801T000000Z-fixround1 triaged$' <<<"$fix_first_delivery")" = 1
 assert test "$(grep -Fc -- "20260801T000000Z-fixround1 done" <<<"$fix_first_delivery")" -eq 0
+# ONE source for that state. Both report hooks used to read it off the block's own frame, which
+# knows two words where this knows three: a round whose fixing pass has not answered wears the
+# PLAIN round word, so the nudge keyed it `done` while this queue named the same round `triaged`,
+# neither channel recognised the other's delivery, and Egor read the block again after the closing
+# commit (2026-08-29). `report --state` is that word and nothing else, for whoever asks.
+assert test "$(fix_bench report 20260801T000000Z-fixround1 --state)" = triaged
+assert test "$(fix_bench report 20260801T000000Z-fixround1 --state --session sess-fix)" = triaged
+# And it is refused for a chat that did not launch the run, exactly as the block is: a state is
+# what a hook keys ANOTHER chat's delivery on if this answers it.
+assert contains \
+  "$(fix_bench report 20260801T000000Z-fixround1 --state --session sess-other 2>&1 >/dev/null; echo "rc=$?")" \
+  "rc=2"
 # The statusline names a pending foreign review through `review-anchor` (its dim `rev <name>`
 # marker; the folder itself never follows a review): a round this chat still has in front of it
 # names its repository, a merged panel names the member equal to --cwd's repository (else the
@@ -18546,6 +18558,31 @@ assert test "$(sed -n 1p <<<"$fix_first_gate")" = "20260801T000030Z-decide 9"
 assert contains "$(sed -n 2p <<<"$fix_first_gate")" "review-bench fork 20260801T000030Z-decide --choice fix|simplify|cut|redesign --why"
 fix_first_check=$(fix_bench fork 20260801T000030Z-decide --check 2>&1 >/dev/null; echo "rc=$?")
 assert contains "$fix_first_check" "rc=3"
+# Which BAND earned that, for the gate that waits on Egor in the hard one alone: `--check` says a
+# decision is owed and never which dial asked for it, so a caller telling the two apart had to
+# price the round a second time off thresholds of its own (row `af`).
+assert test "$(fix_bench fork 20260801T000030Z-decide --band)" = decide
+assert test "$(fix_bench fork 20260801T000000Z-fixround1 --band)" = fix
+# The dial off the module, never a literal here: at ROUND_HARD_MIN confirmed the round is hard
+# whatever the severities were, and a number of this suite's own goes on passing after it moves.
+fix_hard_min=$(python3 -c 'import os, sys
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench
+print(rbench.ROUND_HARD_MIN)')
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260801T000040Z-hard 0 "$fix_hard_min"
+python3 -c 'import json, sys
+sys.stdout.write("".join(json.dumps({"rater": "oc-kimik3", "idx": n, "verdict": "confirmed"}) + "\n"
+                         for n in range(int(sys.argv[1]))))' "$fix_hard_min" >"$WORK/hard-verdicts.jsonl"
+fix_bench record 20260801T000040Z-hard --no-corpus --verdicts "$WORK/hard-verdicts.jsonl" \
+  >/dev/null || fail "the hard-band round refused its own triage"
+assert test "$(fix_bench fork 20260801T000040Z-hard --band)" = hard
+# A round with no triage on record is in no band at all: an answer invented for one would put the
+# gate's wait in front of a tally nobody adjudicated.
+GATE_SD="$FIX_SD" GATE_REPO="$FIX_REPO" GATE_SESSION=sess-fix \
+  gate_run 20260801T000050Z-untriaged 0 2
+assert test "$(fix_bench fork 20260801T000050Z-untriaged --band 2>/dev/null; echo "rc=$?")" = "rc=1"
+rm -rf "$FIX_SD/benches/20260801T000040Z-hard" "$FIX_SD/benches/20260801T000050Z-untriaged"
 assert contains "$fix_first_check" "is a decision and has none on record; record it first: review-bench fork 20260801T000030Z-decide"
 # `--why` is the strategic picture, not a list of findings, and it is bounded at ONE end: over 400
 # characters it is the fix list Egor asked never to read again (2026-08-29). No floor stands under

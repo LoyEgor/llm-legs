@@ -458,7 +458,11 @@ plain lower-case prose wrapped at the report width and closed by the rule; no la
 shouted word, which read as a form to fill in rather than a sentence (the Russian words live
 beside `DECISION_WORDS` in `round.py`, `DECISION_WORDS_RU`, not in a hook).
 `../claude-setup/hooks/review-decision-report.sh` prints what that command renders the
-moment the record is written (ledger key `fork`, once); the Stop net is the fallback for a
+moment the record is written (ledger key `fork`, once) — and prints the round's review block
+(`review-bench report <id>`) ABOVE it in the same message: the terminal folds consecutive
+shell commands into one row and shows only the last hook message, so a decision printed alone
+reached Egor with no counts above it (2026-08-29, finances-web d4bb90e); the reprint takes no
+report key, the report's own delivery stays the nudge's and the net's; the Stop net is the fallback for a
 fork a worker recorded headlessly; no decision on record → exit 1, one line on stderr, and
 both hooks print nothing.
 And the report comes BEFORE the decision, whoever ran `record`: `fork --choice` exits 3 with
@@ -467,6 +471,12 @@ or `run:<id>:done` for the LAUNCHING chat (`round.py` `report_delivered`, readin
 `debt.ledger_delivered`); a neighbouring chat let a worker run `record`, the block queued for
 the Stop net and the chat forked on the worker's miscounted prose. `REVIEW_DELIVERY_UNCHECKED=1`
 is the only bypass, for suites and headless fixtures.
+And in the HARD band the decision is Egor's: `../claude-setup/hooks/review-flow-gate.sh`
+refuses a `fork --choice` on a run `review-bench fork <id> --band` calls `hard` unless a real
+user turn newer than the run's `reported_at` carries one of the eight decision words
+(фиксим/упрощаем/вырезаем/редизайн, fix/simplify/cut/redesign) or any user turn of the session
+carries an autonomy phrase (автономно, сам решай, не спрашивай, на твоё усмотрение) — the model
+shows him the block and waits; the decide band and the fix band wait for nobody.
 `review-bench fork <run-id> --check` is the one verdict the gates relay: exit 3
 with the `fork` command while a decision is owed and none stands, exit 0
 otherwise. Three gates read it and none composes a threshold of its own: the Bash
@@ -807,7 +817,11 @@ after it reaches nobody: the round has already been read, and the same block
 again is the same news twice. The recorded fork decision keeps its own second
 delivery, a BLOCK of its own frame under `fork` (`review-bench decision <id>`; `report <id>
 --line fork` stays the success line of `fork --choice` and is no delivery form), and a
-round the decision reopened is delivered again on its NOT FINISHED word. The ledger is a LOCK
+round the decision reopened is delivered again on its NOT FINISHED word. The state half of every key is
+review-bench's own answer, `report <id> --state` (done | blocked | triaged), asked by both
+nets and read off the block by neither — derived from the frame, the nudge keyed a triaged
+round `done` while the queue named it `triaged`, and Egor read the block again after the
+closing commit (2026-08-29). The ledger is a LOCK
 as well as a dedupe: `round.py` `report_delivered` reads it for `fork --choice`, and only
 `triaged`/`done` clear it (`fork` is the decision's own echo, `blocked` a stopped pass).
 Past that window a triage is delivered by no

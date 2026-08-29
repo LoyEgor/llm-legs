@@ -1834,6 +1834,11 @@ def main():
         "--line", nargs="?", const="triaged", choices=("triaged", "fork"), metavar="STATE",
         help="One delivery line instead of the block: the triaged tally (default) or the fork",
     )
+    report.add_argument(
+        "--state", action="store_true",
+        help="The state this round's report is delivered under — done, blocked or triaged — "
+             "instead of the block; exit 1 where no hook may hand it over",
+    )
     report.set_defaults(func=_report.cmd_report)
     fork = subparsers.add_parser(
         "fork",
@@ -1851,6 +1856,10 @@ def main():
     fork.add_argument(
         "--check", action="store_true",
         help="Exit 3 while the round owes a decision and has none on record",
+    )
+    fork.add_argument(
+        "--band", action="store_true",
+        help="Which band this round's triage puts it in — fix, decide or hard; exit 1 untriaged",
     )
     fork.set_defaults(func=_report.cmd_fork)
     decision = subparsers.add_parser(
