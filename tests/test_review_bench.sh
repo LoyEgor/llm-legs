@@ -13,6 +13,11 @@ trap 'rm -rf "$WORK"' EXIT
 # UTC the conversion that word does would go unmeasured.
 export TZ=Asia/Tokyo
 
+# `fork --choice` refuses until the report hooks' ledger says the block reached Egor, and no hook
+# runs inside a suite — so every fixture here records its decision through the escape hatch. The
+# asserts that test the lock ITSELF clear this variable for their own call.
+export REVIEW_DELIVERY_UNCHECKED=1
+
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
@@ -2087,6 +2092,18 @@ assert rb.round_decision_ask(0, rb.ROUND_FIX_MAX + 1).startswith(
     f"{rb.ROUND_FIX_MAX + 1} confirmed findings in one round")
 assert "worth keeping as it stands" not in rb.round_decision_ask(0, rb.ROUND_FIX_MAX + 1)
 assert "worth keeping as it stands" in rb.round_decision_ask(0, rb.ROUND_HARD_MIN)
+# The ask itself is spelled in one place. A menu of remedies stood here once — what fix does, what
+# simplify does — and a second copy of it is a second thing to keep true; both bands and the text
+# `fork` hands the model quote `round.py` and add only mechanics no reader derives from the words.
+decide_ask = rb.round_decision_ask(0, rb.ROUND_FIX_MAX + 1)
+assert rb.round.DECISION_QUESTIONS in decide_ask, decide_ask
+assert rb.round.DECISION_QUESTIONS in rb.round_decision_ask(rb.HANDOFF_P1_STOP, rb.ROUND_HARD_MIN)
+assert rb.round.DECISION_QUESTIONS in rb.round_fork_text(fork_dir, fork_meta, fork_verdicts), \
+    rb.round_fork_text(fork_dir, fork_meta, fork_verdicts)
+for stale in ("Pick one of", "worth keeping as it stands", "workers", "parallel"):
+    assert stale not in decide_ask, (stale, decide_ask)
+assert "runs no round 2" in decide_ask, decide_ask
+assert "round 2 is the last round there is" in decide_ask, decide_ask
 (fork_dir / rb.FORK_RECORD).write_text(json.dumps({
     "choice": "simplify", "why": "the cluster is one abstraction pulled apart " * 3,
     "session": "chat-1", "at": rb.iso_now(),
@@ -2153,7 +2170,11 @@ fix_band_meta = dict(fork_meta, run_id=fix_band.name)
 assert rb.round_fork_text(fix_band, fix_band_meta) == rb.FIX_BAND_NO_DECISION, \
     rb.round_fork_text(fix_band, fix_band_meta)
 # Both halves of what the band forbids, and the dials it is spelled off rather than beside.
-assert "Решение по ревью" in rb.FIX_BAND_NO_DECISION, rb.FIX_BAND_NO_DECISION
+# The line naming «Решение по ревью» is gone from it: the model writes no such line any more —
+# the decision reaches Egor from the hook that prints the fork record — so a band text forbidding
+# one by name taught the spelling it was there to retire.
+assert "Решение по ревью" not in rb.FIX_BAND_NO_DECISION, rb.FIX_BAND_NO_DECISION
+assert "takes no decision and no decision line" in rb.FIX_BAND_NO_DECISION, rb.FIX_BAND_NO_DECISION
 assert "no debt or closure summary" in rb.FIX_BAND_NO_DECISION, rb.FIX_BAND_NO_DECISION
 assert f"≤ {rb.ROUND_FIX_MAX} confirmed, < {rb.HANDOFF_P1_STOP} P1s" in rb.FIX_BAND_NO_DECISION, \
     rb.FIX_BAND_NO_DECISION
@@ -7562,6 +7583,14 @@ def sr_run(benches, run_id, reviewed=None, session="chat-1", scope=None,
         meta["chain"] = chain
     if sealed_at is not None:
         meta["sealed_at"] = sealed_at
+    # The commit the snapshot was sealed OVER, as every real run records one: it is what says
+    # whether a path the fixing pass journalled was already in the tree the panel read
+    # (`round_repo_base`), and a fixture without it is a round whose new files nothing can tell
+    # from its edits.
+    sr_base = subprocess.run(["git", "-C", str(repo or sr_repo), "rev-parse", "HEAD"],
+                             capture_output=True, text=True)
+    if sr_base.returncode == 0 and sr_base.stdout.strip():
+        meta["base"] = sr_base.stdout.strip()
     if scope is not None:
         meta["scope"] = scope
     if timed_out:
@@ -7734,6 +7763,24 @@ sr_clear_journals()
 sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py", epoch=1600000000)
 assert sr_answer("src/a.py", session="chat-1") == "debt 1 other"
 assert sr_no_asker("src/a.py") == "debt 1 unknown", sr_no_asker("src/a.py")
+sr_clear_journals()
+# The LAST editor owns the path (Egor, 2026-08-29): ownership MOVES, so a chat that edited a file
+# and then watched another chat rewrite it is history rather than its author. Priced off every
+# record ever written, a file each co-tenant once touched stayed everybody's debt for good.
+sr_journal(rb.DEBT_JOURNAL, "chat-1", "src/a.py", epoch=1800000000)
+sr_journal(rb.DEBT_JOURNAL, "chat-2", "src/a.py", epoch=1800000001)
+assert rb.debt_authors(sr_repo, [("src/a.py", None)]) == {"chat-2"}
+assert sr_answer("src/a.py", session="chat-1") == "debt 1 other"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 mine"
+# And back on the older chat's next edit, across both journals at once and with nothing in either
+# of them rewritten: this is how the records are READ, never what is written into them.
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=1800000002)
+assert rb.debt_authors(sr_repo, [("src/a.py", None)]) == {"chat-1"}
+assert sr_answer("src/a.py", session="chat-1") == "debt 1 mine"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 other"
+# A second apart is an order; the same second is none, and every tied chat keeps the path.
+sr_journal(rb.DEBT_JOURNAL, "chat-2", "src/a.py", epoch=1800000002)
+assert rb.debt_authors(sr_repo, [("src/a.py", None)]) == {"chat-1", "chat-2"}
 sr_clear_journals()
 # Asked about no path in particular, the question is the repository's — and its universe is what the
 # artifacts hold plus what the journals name, never every file standing in the tree.
@@ -9214,7 +9261,8 @@ assert sr_answer("src/a.py") == "none"
 sr_clear_journals()
 
 # Another chat wrote the same file inside the window: the receipt answers for its own pass and for
-# nothing standing beside it, so the path keeps its debt whoever else has to settle it.
+# nothing standing beside it, so the path keeps its debt whoever else has to settle it — and it is
+# the LATER writer who has to, the debt having moved to it with the last edit.
 sr_shadowed_fixes = sr_store()
 sr_source.write_text(sr_moved)
 sr_fix_run(sr_shadowed_fixes)
@@ -9223,7 +9271,8 @@ sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
 sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/a.py", epoch=sr_fix_edit + 5)
 sr_shadowed_rc, sr_shadowed_out = sr_fixes()
 assert sr_shadowed_rc == 0 and "covered" not in sr_shadowed_out, sr_shadowed_out
-assert sr_answer("src/a.py") == "debt 1 mine"
+assert sr_answer("src/a.py") == "debt 1 other"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 mine"
 sr_clear_journals()
 
 # And a co-tenant's worker run the journals have not swept yet is that same parallel edit, in the
@@ -9263,7 +9312,9 @@ sr_source.write_text(sr_moved + "and a co-tenant kept typing past the stamp\n")
 sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/a.py", epoch=sr_fix_edit)
 sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/a.py", epoch=int(time.time()) + 600)
 assert "covered" not in sr_fixes()[1]
-assert sr_answer("src/a.py") == "debt 1 mine"
+# And the co-tenant that kept typing owns what it typed: the last edit is where the path belongs.
+assert sr_answer("src/a.py") == "debt 1 other"
+assert sr_answer("src/a.py", session="chat-2") == "debt 1 mine"
 sr_clear_journals()
 
 # A pass that fixed nothing wrote no fix bytes: an all-false-positive round answers its triage in
@@ -10189,6 +10240,11 @@ def cov_far_commit(*paths, message="fixture"):
                           check=True, capture_output=True, text=True).stdout.strip()
 
 
+def cov_head(repo):
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
 def cov_merged_round(benches, run_id, near_path, far_path, findings=None):
     """One round over two checkouts, recorded the way a merged panel records itself: the members in
     `repos`, each with its own repository-relative scope, and a top-level `repo` naming the
@@ -10203,9 +10259,9 @@ def cov_merged_round(benches, run_id, near_path, far_path, findings=None):
     # out is one no coverage question of an OPEN round can be asked about.
     meta["tier"] = "T2"
     meta["repos"] = [
-        {"label": "near", "repo": str(cov_repo),
+        {"label": "near", "repo": str(cov_repo), "base": cov_head(cov_repo),
          "reviewed": {near_path: rb.path_blob_sha(cov_repo, near_path)}},
-        {"label": "far", "repo": str(cov_far),
+        {"label": "far", "repo": str(cov_far), "base": cov_head(cov_far),
          "reviewed": {far_path: rb.path_blob_sha(cov_far, far_path)}},
     ]
     (directory / "meta.json").write_text(json.dumps(meta))
@@ -10363,6 +10419,111 @@ assert cov_tallied_rc == 0 and "closed by" in cov_tallied_out, cov_tallied_out
 cov_tallied_record = json.loads((cov_tallied_run / rb.FIX_RECEIPT).read_text())
 assert cov_tallied_record["closed_by"] == [cov_tallied_sha], cov_tallied_record
 assert cov_tallied_record["covers"][0]["commit"] == cov_tallied_sha, cov_tallied_record
+(cov_gitdir / rb.COMMIT_JOURNAL).unlink()
+
+# (n) The pass's own NEW files ride the closing commit. A fixing pass writes files no cell was
+# ever shown — the test a finding asked for, the module a `simplify` split out — and bounded by the
+# reviewed scope alone the receipt left them out: the bytes this very door had just let through
+# came back as fresh debt on the next reading, and the wall stood in front of the round's own
+# closing commit (`round_fixing_paths`).
+# A file that was already in the tree when the panel sealed, and that no cell was pointed at.
+(cov_repo / "src" / "untouched.py").write_text("what the panel never read\n")
+cov_commit("src/untouched.py", message="a file the round never looked at")
+cov_fresh = sr_store()
+cov_fresh_run = sr_fix_run(cov_fresh, cov_reviewed, run_id="20260601T007000Z-covfresh",
+                           repo=cov_repo)
+cov_fresh_meta = json.loads((cov_fresh_run / "meta.json").read_text())
+(cov_repo / "src" / "a.py").write_text("the finding, fixed\n")
+(cov_repo / "src" / "new.py").write_text("the helper the fix extracted\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/new.py", epoch=sr_fix_edit, gitdir=cov_gitdir)
+# Another chat's work standing beside it is that chat's, and a record stamped BEFORE the round is
+# not the pass's — both leave the path where a panel that never read it belongs.
+(cov_repo / "src" / "theirs.py").write_text("a co-tenant's file\n")
+(cov_repo / "src" / "older.py").write_text("written before the panel sealed\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-2", "src/theirs.py", epoch=sr_fix_edit, gitdir=cov_gitdir)
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/older.py", epoch=sr_fix_sealed - 60,
+           gitdir=cov_gitdir)
+assert rb.round.round_fixing_paths(str(cov_repo), "chat-1", cov_fresh_run, cov_fresh_meta) == \
+    {"src/new.py"}, rb.round.round_fixing_paths(str(cov_repo), "chat-1", cov_fresh_run,
+                                                cov_fresh_meta)
+# An EDIT to a file that was already there is not the pass's new work, whatever hour it was made
+# in: exempted on the window alone, any file this chat touched between the seal and the closing
+# commit stopped being debt and went into the round's `covers` receipt as bytes a panel had read
+# (Egor's rule: new files created during the fixing pass ride the closing commit, everything else
+# stays debt).
+(cov_repo / "src" / "untouched.py").write_text("edited while the round stood open\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/untouched.py", epoch=sr_fix_edit, gitdir=cov_gitdir)
+assert rb.round.round_fixing_paths(str(cov_repo), "chat-1", cov_fresh_run, cov_fresh_meta) == \
+    {"src/new.py"}, rb.round.round_fixing_paths(str(cov_repo), "chat-1", cov_fresh_run,
+                                                cov_fresh_meta)
+assert sr_answer("src/untouched.py", repo=cov_repo).startswith("debt 1"), sr_answer(
+    "src/untouched.py", repo=cov_repo)
+(cov_repo / "src" / "untouched.py").write_text("what the panel never read\n")
+# A round whose base this checkout cannot read tells a new file from an old one nowhere, and takes
+# the failure that costs one refusal over the one that certifies unread bytes for ever.
+assert rb.round.round_fixing_paths(
+    str(cov_repo), "chat-1", cov_fresh_run,
+    dict(cov_fresh_meta, base="", commit="")) == set()
+# A worker of a worker of this chat is still this chat (row `am`): the hop the fixing pass ran
+# under is one the launcher never sees in a record of its own.
+cov_spawner = sr_fix_worker_runs / "20260601T0170Z-covspawner"
+cov_spawner.mkdir()
+(cov_spawner / "launcher").write_text("chat-1\n")
+(cov_spawner / "worker-session").write_text("worker-of-chat-1\n")
+cov_nested = sr_fix_worker_runs / "20260601T0171Z-covnested"
+cov_nested.mkdir()
+(cov_nested / "launcher").write_text("worker-of-chat-1\n")
+(cov_nested / "worker-session").write_text("nested-worker\n")
+(cov_repo / "src" / "nested.py").write_text("what the nested worker wrote\n")
+sr_journal(rb.COMMIT_JOURNAL, "nested-worker", "src/nested.py", epoch=sr_fix_edit,
+           gitdir=cov_gitdir)
+assert rb.round.round_fixing_paths(str(cov_repo), "chat-1", cov_fresh_run, cov_fresh_meta) == \
+    {"src/new.py", "src/nested.py"}, rb.round.round_fixing_paths(
+        str(cov_repo), "chat-1", cov_fresh_run, cov_fresh_meta)
+shutil.rmtree(cov_nested)
+shutil.rmtree(cov_spawner)
+cov_fresh_sha = cov_commit("src/a.py", "src/new.py", message="fix the finding and its helper")
+cov_fresh_rc, cov_fresh_out = cov_cover(cov_fresh_sha)
+assert cov_fresh_rc == 0 and "closed by" in cov_fresh_out, cov_fresh_out
+cov_fresh_record = json.loads((cov_fresh_run / rb.FIX_RECEIPT).read_text())
+assert sorted(cov_fresh_record["covers"][0]["paths"]) == ["src/a.py", "src/new.py"], \
+    cov_fresh_record["covers"]
+# Which is the point of writing it down: the path the commit carried stops being debt, and the one
+# it did not carry is not settled by a receipt about somebody else's bytes.
+assert sr_answer("src/new.py", repo=cov_repo) == "none", sr_answer("src/new.py", repo=cov_repo)
+assert sr_answer("src/theirs.py", repo=cov_repo, session="chat-2").startswith("debt 1"), \
+    sr_answer("src/theirs.py", repo=cov_repo, session="chat-2")
+(cov_gitdir / rb.COMMIT_JOURNAL).unlink()
+
+# (n2) Those new files RIDE the round's own paths and never close a round alone. A commit carrying
+# nothing the panel read is not that round's fixing pass, and taken for one it closed a round with
+# confirmed findings still standing and wrote its bytes into the receipt as reviewed.
+cov_alone = sr_store()
+cov_alone_run = sr_fix_run(cov_alone, cov_reviewed, run_id="20260601T008000Z-covalone",
+                           repo=cov_repo)
+cov_alone_meta = json.loads((cov_alone_run / "meta.json").read_text())
+(cov_repo / "src" / "unrelated.py").write_text("a new file about something else\n")
+sr_journal(rb.COMMIT_JOURNAL, "chat-1", "src/unrelated.py", epoch=sr_fix_edit, gitdir=cov_gitdir)
+cov_alone_sha = cov_commit("src/unrelated.py", message="a new file the round never asked for")
+assert rb.round.round_fixing_paths(str(cov_repo), "chat-1", cov_alone_run, cov_alone_meta) == \
+    {"src/unrelated.py"}
+assert rb.round.commit_fix_coverage(cov_alone_run, str(cov_repo), cov_alone_sha,
+                                    meta=cov_alone_meta, session="chat-1") == [], \
+    rb.round.commit_fix_coverage(cov_alone_run, str(cov_repo), cov_alone_sha,
+                                 meta=cov_alone_meta, session="chat-1")
+try:
+    cov_cover(cov_alone_sha, run_id="20260601T008000Z-covalone")
+except ValueError as cov_alone_exc:
+    assert "is not a round this commit closes" in str(cov_alone_exc), cov_alone_exc
+else:
+    assert False, "a commit carrying nothing the panel read closed the round"
+assert not (cov_alone_run / rb.FIX_RECEIPT).exists() or "closed_by" not in json.loads(
+    (cov_alone_run / rb.FIX_RECEIPT).read_text()), (cov_alone_run / rb.FIX_RECEIPT).read_text()
+# And the fix that answers the finding closes it, carrying the new file along.
+(cov_repo / "src" / "a.py").write_text("the finding, fixed beside a new file\n")
+cov_alone_fix = cov_commit("src/a.py", message="fix the finding")
+cov_alone_rc2, cov_alone_out2 = cov_cover(cov_alone_fix, run_id="20260601T008000Z-covalone")
+assert cov_alone_rc2 == 0 and "closed by" in cov_alone_out2, cov_alone_out2
 (cov_gitdir / rb.COMMIT_JOURNAL).unlink()
 
 # --- .claude/review-debt-ignore: what a repository never asks a panel about --------------------
@@ -11167,6 +11328,27 @@ try:
     assert rb.round_session(sr_anon_dir) == "chat-1"
 finally:
     os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
+# And a worker of a WORKER answers as the launching chat too: stopped one hop short, a nested
+# worker's own review-bench calls came back under an intermediate id no chat here has a record of,
+# while its journal rows were priced against the chat all along (`store.launch_chain` is the one
+# walk both readers make).
+sr_chain_spawner = sr_fix_worker_runs / "20260601T0160Z-chainspawner"
+sr_chain_spawner.mkdir()
+(sr_chain_spawner / "launcher").write_text("chat-1\n")
+(sr_chain_spawner / "worker-session").write_text("worker-of-chat-1\n")
+sr_chain_nested = sr_fix_worker_runs / "20260601T0161Z-chainnested"
+sr_chain_nested.mkdir()
+(sr_chain_nested / "launcher").write_text("worker-of-chat-1\n")
+(sr_chain_nested / "worker-session").write_text("nested-of-chat-1\n")
+os.environ["CLAUDE_CODE_SESSION_ID"] = "nested-of-chat-1"
+try:
+    assert rb.store.caller_chat() == "chat-1", rb.store.caller_chat()
+    assert rb.debt.owners_of("nested-of-chat-1") == {
+        "nested-of-chat-1", "worker-of-chat-1", "chat-1"}, rb.debt.owners_of("nested-of-chat-1")
+finally:
+    os.environ["CLAUDE_CODE_SESSION_ID"] = "chat-1"
+shutil.rmtree(sr_chain_nested)
+shutil.rmtree(sr_chain_spawner)
 
 # --- a commit-point round's own triage ----------------------------------------------------------
 # Such a round never enters the corpus, so reviews.jsonl holds no row for it: read only there, a
@@ -16325,6 +16507,14 @@ assert test ! -e "$REPORT_SD/reviews.jsonl"
 bench_help=$("$SCRIPT" record --help) || fail "record --help failed"
 assert contains "$bench_help" "verdicts.jsonl"
 assert contains "$bench_help" "no corpus row either way"
+# `--why` is asked for on --help in the same words `fork` prints, and argparse collapses that text
+# to one run of spaces — so the pin is a sentence of it, never the block's own line breaks. A help
+# describing the remedies again is the menu coming back through the door the ask closed.
+fork_help=$("$SCRIPT" fork --help | tr -s '[:space:]' ' ') || fail "fork --help failed"
+assert contains "$fork_help" "A decision you cannot explain is a guess, not a decision."
+assert contains "$fork_help" "never a list of findings, up to 400 characters"
+assert contains "$fork_help" "no file names, no function names, no per-finding detail"
+assert test "$(grep -Fc "why fix rather than simplify" <<<"$fork_help")" -eq 0
 # The benchmark opt-in, named on purpose: behind it a worktree run stores its verdicts and still
 # writes no corpus row.
 worktree_recorded=$(WORKER_STATS_DIR="$REPORT_SD" "$SCRIPT" record report-worktree --bench \
@@ -18357,10 +18547,27 @@ assert contains "$(sed -n 2p <<<"$fix_first_gate")" "review-bench fork 20260801T
 fix_first_check=$(fix_bench fork 20260801T000030Z-decide --check 2>&1 >/dev/null; echo "rc=$?")
 assert contains "$fix_first_check" "rc=3"
 assert contains "$fix_first_check" "is a decision and has none on record; record it first: review-bench fork 20260801T000030Z-decide"
-# `--why` is the strategic reason, not a list of findings: under 80 characters it is refused.
-fix_short_why=$(fix_bench fork 20260801T000030Z-decide --choice fix --why 'fix it' 2>&1 || true)
-assert contains "$fix_short_why" "needs at least 80 characters"
+# `--why` is the strategic picture, not a list of findings, and it is bounded at ONE end: over 400
+# characters it is the fix list Egor asked never to read again (2026-08-29). No floor stands under
+# it — two words that name the picture are the whole answer — but an EMPTY why is no why at all.
+# The ceiling is measured on the collapsed text the record keeps, so 400 goes in.
+fix_short_why=$(fix_bench fork 20260801T000030Z-decide --choice fix --why 'fix it' --session sess-fix) \
+  || fail "fork refused a two-word why"
+assert test "$(jq -r .why "$FIX_SD/benches/20260801T000030Z-decide/fork.json")" = "fix it"
+rm -f "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+fix_empty_why=$(fix_bench fork 20260801T000030Z-decide --choice fix --why '   ' \
+  --session sess-fix 2>&1) && fail "fork recorded a decision with no reason: $fix_empty_why"
+assert contains "$fix_empty_why" "--choice and --why go together"
 assert test ! -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+fix_long_why=$(printf 'x%.0s' $(seq 401))
+fix_over_why=$(fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_long_why" \
+  --session sess-fix 2>&1) && fail "fork recorded a why over the ceiling: $fix_over_why"
+assert contains "$fix_over_why" "takes up to 400 characters; got 401"
+assert test ! -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+fix_bench fork 20260801T000030Z-decide --choice fix --why "${fix_long_why%x}" --session sess-fix \
+  >/dev/null || fail "fork refused a why exactly at the ceiling"
+assert test "$(jq -r '.why | length' "$FIX_SD/benches/20260801T000030Z-decide/fork.json")" = 400
+rm -f "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
 # Every word outside the four is refused by the parser itself, so no fifth arm can be recorded.
 fix_bad_choice=$(fix_bench fork 20260801T000030Z-decide --choice re-review --why 'x' 2>&1 || true)
 assert contains "$fix_bad_choice" "invalid choice"
@@ -18383,6 +18590,48 @@ assert contains "$(fix_bench fork 20260801T000030Z-decide --check 2>&1 >/dev/nul
 CLAUDE_CODE_SESSION_ID=sess-fix fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" >/dev/null \
   || fail "fork refused the launching chat's own environment"
 assert test "$(jq -r .session "$FIX_SD/benches/20260801T000030Z-decide/fork.json")" = sess-fix
+rm -f "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+# The report reaches Egor BEFORE the decision, whoever ran `record`: a chat let a worker triage,
+# took the counts out of the worker's prose — where the P1 count was wrong — and recorded `fix`
+# while the block was still queued for the Stop net (2026-08-29). The lock is the report hooks' own
+# ledger under the LAUNCHING chat's name, and only the env hatch below is ever past it.
+fix_lock() { HOME="$FIX_HOME" WORKER_STATS_DIR="$FIX_SD" REVIEW_DELIVERY_UNCHECKED= "$SCRIPT" "$@"; }
+rm -f "$FIX_LEDGER/sess-fix.emitted"
+fix_no_ledger=$(fix_lock fork 20260801T000030Z-decide --choice fix --why "$fix_why" \
+  --session sess-fix 2>&1; echo "rc=$?")
+assert contains "$fix_no_ledger" "rc=3"
+assert contains "$fix_no_ledger" "report first: review-bench report 20260801T000030Z-decide"
+assert test ! -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+# A ledger holding every key but this round's two is no report of this round: the `fork` state is
+# the decision's own echo, and another run's delivery answers for another run.
+mkdir -p "$FIX_LEDGER"
+printf 'run:20260801T000030Z-decide:fork\nrun:20260801T000000Z-fixround1:triaged\n' \
+  > "$FIX_LEDGER/sess-fix.emitted"
+fix_wrong_key=$(fix_lock fork 20260801T000030Z-decide --choice fix --why "$fix_why" \
+  --session sess-fix 2>&1; echo "rc=$?")
+assert contains "$fix_wrong_key" "rc=3"
+assert test ! -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+# Either state that means the BLOCK itself stood in front of him clears it: the Stop net's
+# `triaged` and the nudge's `done` alike.
+for fix_read_state in triaged done; do
+  printf 'run:20260801T000030Z-decide:%s\n' "$fix_read_state" > "$FIX_LEDGER/sess-fix.emitted"
+  fix_lock fork 20260801T000030Z-decide --choice fix --why "$fix_why" --session sess-fix \
+    >/dev/null || fail "fork refused a round the ledger delivered as $fix_read_state"
+  assert test -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+  rm -f "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
+done
+rm -f "$FIX_LEDGER/sess-fix.emitted"
+# `--check` records nothing, so the lock is none of its business: it answers for the missing record
+# alone, and a bare read prints the fork text with no ledger anywhere.
+assert contains "$(fix_lock fork 20260801T000030Z-decide --check 2>&1 >/dev/null; echo "rc=$?")" \
+  "is a decision and has none on record"
+assert contains "$(fix_lock fork 20260801T000030Z-decide)" \
+  "Record one of fix / simplify / cut / redesign"
+# And the hatch, which is how every fixture in this suite records one: no hook runs here to print a
+# block, so nothing would ever write that ledger.
+fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" --session sess-fix >/dev/null \
+  || fail "REVIEW_DELIVERY_UNCHECKED did not record a decision with no ledger behind it"
+assert test -e "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
 rm -f "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
 fix_forked=$(fix_bench fork 20260801T000030Z-decide --choice fix --why "$fix_why" --session sess-fix) \
   || fail "fork refused a recorded decision"
@@ -18418,6 +18667,31 @@ jq -c --arg at "$fix_fork_at" '.at = $at' "$FIX_SD/benches/20260801T000030Z-deci
 mv "$WORK/fork-aged.json" "$FIX_SD/benches/20260801T000030Z-decide/fork.json"
 assert test "$(grep -c '^20260801T000030Z-decide fork$' <<<"$(fix_bench pending-delivery --session sess-fix)")" = 1
 assert test "$(fix_bench report 20260801T000030Z-decide --line fork)" = "$fix_forked"
+# And Egor reads the decision itself as a block of the flow's own frame, laid out HERE and in
+# neither hook: the frame word carries the round, the body is the choice in his language beside its
+# reason, lower-case and unlabelled, and the rule closes it.
+fix_decision=$(fix_bench decision 20260801T000030Z-decide) || fail "decision refused a recorded fork"
+fix_decision_lines=$(wc -l <<<"$fix_decision" | tr -d ' ')
+fix_decision_body=$(sed -n "2,$((fix_decision_lines - 1))p" <<<"$fix_decision")
+assert test "$(sed -n 1p <<<"$fix_decision")" = "=============== decision · round 1 ==============="
+assert test "$(sed -n "${fix_decision_lines}p" <<<"$fix_decision")" = "=================================================="
+assert test "$(paste -sd' ' - <<<"$fix_decision_body")" = "фиксим — $fix_why"
+# Wrapped at the report width, and by the width rather than by the record's own newlines: a why
+# long enough to fold proves the fill runs, and no continuation is indented under the first word.
+assert test "$fix_decision_lines" -gt 3
+assert test "$(python3 -c 'import sys
+print(max(len(line) for line in sys.stdin.read().splitlines()))' <<<"$fix_decision_body")" -le 80
+assert test "$(grep -c '^ ' <<<"$fix_decision")" = 0
+# A run that took no decision renders none, and says so in one line rather than framing an empty
+# block: both hooks print exactly what this command answers, and nothing where it answers nothing.
+fix_undecided=$(fix_bench decision 20260801T000000Z-fixround1 2>&1 >"$WORK/undecided.out"; echo "rc=$?")
+assert contains "$fix_undecided" "rc=1"
+assert contains "$fix_undecided" "has no decision on record"
+assert test ! -s "$WORK/undecided.out"
+# It is the launching chat's block like every other rendering of the run.
+fix_decision_foreign=$(fix_bench decision 20260801T000030Z-decide --session sess-elsewhere 2>&1) &&
+  fail "decision rendered another chat's round: $fix_decision_foreign"
+assert contains "$fix_decision_foreign" "belongs to chat sess-fix"
 
 # The blocked form carries the reason into the block, so the chat reads why the work stopped
 # rather than that it did.

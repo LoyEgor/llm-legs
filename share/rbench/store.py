@@ -268,13 +268,34 @@ def launching_session():
     return session_stamp().get("session") or walk_launching_session()
 
 
+def launch_chain(session, launchers=None):
+    """`session` and every chat up the launch chain from it, the launching CHAT last: a worker a
+    chat spawned IS that chat (docs/shared-invariants.md row `am`), and so is a worker that worker
+    spawned.
+
+    Walked and not read once, because a record names the session that launched THAT hop — for a
+    nested worker that is the outer worker, not the chat. Stopped one hop short, a nested worker's
+    work stood under an intermediate id no chat in the repository answers for. One walker for every
+    reader of the chain (`owners_of`, `caller_chat`), or a chat is its own worker's launcher to one
+    of them and a stranger to the other. A cycle cannot happen through honest records and is
+    refused anyway: the walk stops at the first id it has already taken.
+    """
+    mapping = worker_session_launchers() if launchers is None else launchers
+    chain, seen = [session], {session}
+    while True:
+        launcher = mapping.get(chain[-1])
+        if not launcher or launcher in seen:
+            return chain
+        seen.add(launcher)
+        chain.append(launcher)
+
+
 def caller_chat():
-    """The chat the caller's shell answers to: its own session, or the chat that launched it where
-    the shell is a worker's. A worker a chat spawned IS that chat (docs/shared-invariants.md row
-    `am`), and a command it runs on the round's behalf is the launcher's command.
+    """The chat the caller's shell answers to: its own session, or the chat at the top of the
+    launch chain where the shell is a worker's, however many workers deep it stands.
     """
     session = launching_session()
-    return worker_session_launchers().get(session, session) if session else session
+    return launch_chain(session)[-1] if session else session
 
 
 def chat_display(session, launchers=None, store=None):

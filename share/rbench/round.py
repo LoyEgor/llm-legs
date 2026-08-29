@@ -43,6 +43,8 @@ REPORT_STALE_SUFFIX = "STALE"
 # A panel nobody asked for by tier — an explicit `--raters` bench. It is not a review round: it
 # settles no debt and owes no fixes, so it wears a word of its own instead of the review one.
 REPORT_BENCH_WORD = "bench"
+# The recorded decision's frame word, worn by `review-bench decision` alone.
+REPORT_DECISION_WORD = "decision"
 REPORT_END = "=" * REPORT_FRAME_WIDTH
 
 
@@ -53,6 +55,13 @@ def round_frame_word(number):
     return f"{REPORT_FRAME_WORD} · round {number}"
 
 
+def decision_frame_word(number):
+    """The recorded decision's own frame word. Its own, and not a suffix on the review one: the
+    block is about the choice rather than about the round's findings, and a consumer narrowing the
+    header to `review` must not pick it up as a report."""
+    return f"{REPORT_DECISION_WORD} · round {number}"
+
+
 # What the NOT FINISHED frame owes beyond the reason on the receipt: the pass stopped, and which
 # way the round goes from there is not the fixer's to decide. `fork` hands it to the model that
 # has to act on it rather than the block spending six lines on it at Egor, who does not read it.
@@ -60,10 +69,16 @@ def round_frame_word(number):
 # `--blocked` takes whichever one the pass actually had, and a fork naming the P1 threshold over
 # a round that stopped for something else tells Egor a thing nobody recorded.
 REPORT_BLOCKED_FORK = (
-    "the fixing pass stopped over this round's findings. Which way the\n"
-    "round goes from here — fix, simplify, cut or redesign — is Egor's\n"
-    "decision and not the fixer's, and it reaches him with the P1 list\n"
-    "and the reasoning before anybody acts on it."
+    "the fixing pass stopped over this round's findings, and the way\n"
+    "out of it is a decision — fix, simplify, cut or redesign — that\n"
+    "is Egor's when he is here. Answer these before recording one:\n"
+    "- do you KNOW why the defects cluster where they do, or are you\n"
+    "  guessing? Name it.\n"
+    "- is the weak spot ONE named place, or several candidates?\n"
+    "- if the list is fixed exactly as it stands, what is left that\n"
+    "  the review did not say?\n"
+    "- two ways out you cannot rank without trying one of them: say\n"
+    "  so in the why. A decision you cannot explain is a guess."
 )
 
 # A run without verdicts has no report to print: the triage that decides what to fix is what
@@ -107,13 +122,22 @@ DELEGATED_PID_SLACK = 30
 DELEGATED_CLAIM_SECONDS = 600
 FORK_RECORD = "fork.json"
 # The whole vocabulary a review decision is spelled in — the fork record, the `fixes:` row and the
-# Russian header the model writes under the block, whose word pairs docs/review-contract.md pins.
-# One tuple, because a fifth word invented at any one of those sites is a decision no other site
-# can read back.
+# decision block Egor reads, whose word pairs docs/review-contract.md pins. One tuple, because a
+# fifth word invented at any one of those sites is a decision no other site can read back.
 DECISION_WORDS = ("fix", "simplify", "cut", "redesign")
 DECISION_MENU = " / ".join(DECISION_WORDS)
+# The same four in the language the decision is READ in, beside the record's own spelling rather
+# than in the hook that used to lay the block out.
+DECISION_WORDS_RU = {
+    "fix": "фиксим", "simplify": "упрощаем", "cut": "вырезаем", "redesign": "редизайн",
+}
 FORK_CHOICES = DECISION_WORDS
-FORK_WHY_MIN_CHARS = 80
+# No floor stands beside the ceiling: the model writes as much as it finds necessary and two words
+# are fine (Egor, 2026-08-29). An EMPTY why is still no why, and `--choice and --why go together`
+# refuses that.
+# The picture fits here or it is not a picture. Egor read a why that walked the findings function by
+# function (2026-08-29): a ceiling is what makes the strategic answer the only one that fits.
+FORK_WHY_MAX_CHARS = 400
 # Confirmed findings over the WHOLE round, never a repository's share: at or under this the round
 # is a list of defects, the fixing pass takes it, and the commit that carries the fixes closes it.
 ROUND_FIX_MAX = 8
@@ -123,15 +147,31 @@ ROUND_HARD_MIN = 20
 BAND_FIX = "fix"
 BAND_DECIDE = "decide"
 BAND_HARD = "hard"
+# What a round owing a decision is asked, and the whole of what it is told. A LIST OF REMEDIES used
+# to stand here — fix does this, simplify does that, each of the three runs round 2 — and it read as
+# a menu: the chat picked the line that sounded right and wrote a `--why` paraphrasing its own
+# choice back. None of those sentences is news; the four words are already the answer's grammar, and
+# `fork --choice` refuses a fifth. What was missing is the reasoning, so this asks for it instead.
+DECISION_QUESTIONS = (
+    "- Do you KNOW why the defects cluster where they do, or are you guessing? Name it.\n"
+    "- Is the weak spot ONE named place, or several candidates?\n"
+    "- If the list is fixed exactly as it stands, what is left that the review did not say?\n"
+    "- Two ways out you cannot rank without trying one of them: say so in the why. A decision you "
+    "cannot explain is a guess, not a decision.\n"
+    "The why is the PICTURE, not the fix list: no file names, no function names, no per-finding "
+    "detail — where the defects come from, whether the approach holds, and what stays uncertain. "
+    f"In Russian, plain words, up to {FORK_WHY_MAX_CHARS} characters and as few as it takes: a "
+    "hook prints "
+    "it to Egor under the review block, and he is the one it is for."
+)
 # The fix band's own fork text. Silence there was read as room for a decision line: a round triaged
 # to 0 confirmed answered it with «Решение по ревью: фиксим» and a debt-closure summary of its own
 # (2026-08-28). A band with one way through says so rather than saying nothing.
 FIX_BAND_NO_DECISION = (
     f"This round is in the fix band (≤ {ROUND_FIX_MAX} confirmed, < {HANDOFF_P1_STOP} P1s): it "
-    "takes no decision and no decision line. Write no «Решение по ревью», no debt or closure "
-    "summary, no next-step sentence — Egor reads the block alone and the commit report speaks for "
-    "the debt. Fix what the block confirms (nothing, when it confirms 0), then go on to the commit "
-    "that closes the round."
+    "takes no decision and no decision line. Write no debt or closure summary and no next-step "
+    "sentence — Egor reads the block alone and the commit report speaks for the debt. Fix what the "
+    "block confirms (nothing, when it confirms 0), then go on to the commit that closes the round."
 )
 # How many times a run may be asked for its report before the gate gives up. Not once: a stop
 # hook also fires when the turn is interrupted, and a single ask was spent there instead of at the
@@ -694,7 +734,7 @@ def round_covered_paths(repo, session):
     covering = None
     covered = set()
     held = set()
-    for run_dir, _, step, outstanding in session_open_rounds(repo, session):
+    for run_dir, meta, step, outstanding in session_open_rounds(repo, session):
         if step != ROUND_STEP_READY:
             held |= outstanding
             continue
@@ -708,7 +748,112 @@ def round_covered_paths(repo, session):
         own = (run_dir.name, f"{run_dir.name}+fixes")
         covered |= {path for path in outstanding
                     if (covering.get(path) or {}).get("id") in own}
+        # And what the pass WROTE beside them, which no panel could have read because it did not
+        # exist yet (`round_fixing_paths`). A round owing a step of its own reaches neither line.
+        covered |= round_fixing_paths(repo, session, run_dir, meta, covering)
     return covered - held
+
+
+def round_fix_floor(run_dir, meta):
+    """The instant after which an edit of this repository can only be the round's fixing pass.
+
+    The SEAL and not the launch: that is the moment the panel stopped being able to read the tree,
+    which is what `fix_coverage` opens its own window on for the same reason. A round that stamped
+    no seal falls back to its run id, which is minutes earlier and can only widen the window — an
+    unstamped round covering a little too much is the same failure the run-id fallback has
+    everywhere else, and a floor of None would cover nothing at all for exactly the oldest rounds.
+    """
+    sealed = _store.parse_iso_timestamp(meta.get("sealed_at")) if isinstance(meta, dict) else None
+    return int(sealed.timestamp()) if sealed is not None else _store.run_id_epoch(run_dir.name)
+
+
+def round_repo_base(repo, meta):
+    """The commit this round was sealed OVER in `repo` — the tree the fixing pass started from — or
+    "" where the round's record names no snapshot of this repository at all.
+
+    A merged run holds one member per repository and seals each in its own checkout, so the member
+    matching this repository is the only one whose shas are readable here; the workspace's own
+    commit lives in a directory of the tool's making. A record carrying only the seal is read
+    through its parent, which is what every snapshot this tool writes is built over
+    (`synthetic_base_commit`).
+    """
+    if not isinstance(meta, dict):
+        return ""
+    resolved = _store.resolved_repo_path(repo)
+    family = _store.repo_family(repo)
+    for entry in [meta] + [row for row in meta.get("repos") or () if isinstance(row, dict)]:
+        recorded = str(entry.get("repo") or "")
+        if not recorded:
+            continue
+        if _store.resolved_repo_path(recorded) != resolved and not (
+                family is not None and _store.repo_family(recorded) == family):
+            continue
+        base = str(entry.get("base") or "")
+        if base:
+            return base
+        commit = str(entry.get("commit") or "")
+        if commit:
+            return f"{commit}^"
+    return ""
+
+
+def round_fixing_paths(repo, session, run_dir, meta, covering=None):
+    """The paths of `repo` this chat CREATED after `run_dir`'s round that no artifact answers for —
+    the files the fixing pass wrote, which the closing commit carries like the ones the round read.
+
+    A fixing pass writes new files: a test the finding asked for, a module a `simplify` split out.
+    Exempting only what the panel READ (`round_covered_paths`), the door refused the very commit
+    that closes the round over the pass's own new bytes, and the chat was sent back to review the
+    fix it had just been told to write.
+
+    Bounded four ways, and each one is a way this could cover work no panel read. To the same CHAT:
+    a record naming another chat — or a worker of another chat (row `am`) — is that chat's work,
+    whatever it stands beside. To the same REPOSITORY: the journals are read through this repo's own
+    ledger and nothing else. To paths NO artifact holds: a path some later receipt or waiver already
+    answers for is that artifact's, and this round is not the newest thing standing over it. And to
+    files that did not EXIST when the round was sealed: an edit to a file that was already there is
+    ordinary unreviewed work whatever hour it was made in, and exempted on the window alone it went
+    into the round's `covers` receipt as bytes a panel had read (Egor's rule: new files created
+    during the fixing pass ride the closing commit, everything else stays debt).
+
+    A round whose base this checkout cannot read exempts NOTHING: an unreadable base cannot tell a
+    new file from an old one, and the failure that costs a legitimate closing commit one refusal is
+    the one to take over the failure that certifies unread bytes for ever.
+    """
+    from . import debt as _debt
+    resolved = _store.resolve_repo_arg(repo) if repo else None
+    if resolved is None or not session:
+        return set()
+    floor = round_fix_floor(run_dir, meta)
+    launchers = worker_session_launchers()
+    candidates = set()
+    for owner, epoch, path in _store.journal_rows(resolved):
+        # A record naming nobody belongs to nobody, and one this cannot place in time cannot be
+        # said to postdate the round: both leave the path in debt, where it belongs.
+        if not owner or epoch is None or epoch < floor:
+            continue
+        if session in _debt.owners_of(owner, launchers):
+            candidates.add(path)
+    # The journals FIRST and the artifacts only if they named something. This is called from inside
+    # the commit hook, and the artifact walk reads the whole store — spent unconditionally, a chat
+    # with nothing journalled since the round paid for it on every commit it made.
+    if not candidates:
+        return set()
+    base = round_repo_base(resolved, meta)
+    if not base:
+        return set()
+    try:
+        held = _scope.tree_path_entries(resolved, base, sorted(candidates), literal=True)
+    except (RuntimeError, OSError):
+        return set()
+    candidates -= set(held)
+    if not candidates:
+        return set()
+    if covering is None:
+        covering = _debt.covering_artifacts(resolved)
+    own = (run_dir.name, f"{run_dir.name}+fixes")
+    return {path for path in candidates
+            if covering.get(path) is None or covering[path].get("id") in own}
 
 
 def round_open_guard(repos, session, chainable):
@@ -950,7 +1095,41 @@ def fork_missing(run_dir, meta, verdicts=None):
 def fork_command(run_id):
     return (
         f"review-bench fork {shlex.quote(run_id)} --choice {'|'.join(DECISION_WORDS)} "
-        f"--why '<the strategic reason for the choice, {FORK_WHY_MIN_CHARS}+ chars>'"
+        f"--why '<in Russian, for Egor: the picture, not the fix list — where the defects come "
+        f"from, whether the approach holds, what stays uncertain; "
+        f"up to {FORK_WHY_MAX_CHARS} chars>'"
+    )
+
+
+# The two ledger states that mean the BLOCK itself stood in front of Egor (docs/shared-invariants.md
+# rows `as`, `au`). `fork` is the one-line echo of a decision already taken and `blocked` a fixing
+# pass that stopped, so neither is the report a decision has to come after.
+REPORT_DELIVERED_STATES = ("triaged", "done")
+# The one door past the lock below, for suites and headless fixtures where no hook exists to print
+# a block at all. Nothing else opens it.
+DELIVERY_UNCHECKED_ENV = "REVIEW_DELIVERY_UNCHECKED"
+
+
+def report_delivered(run_dir, meta):
+    """Whether the report hooks' ledger says this round's block reached the LAUNCHING chat.
+
+    The chat that types `fork --choice` is not asked: a worker can run `record`, and the frames go
+    to the chat the run's `meta.json` names, so that ledger is the only place an arrival is on
+    record (row `au`).
+    """
+    from . import debt as _debt  # here and not at module top: debt imports this module at load
+    session = str(meta.get("session") or "")
+    keys = {}
+    return any(
+        _debt.ledger_delivered(session, run_dir.name, state, keys)
+        for state in REPORT_DELIVERED_STATES
+    )
+
+
+def report_first_refusal(run_id):
+    return (
+        f"report first: review-bench report {shlex.quote(run_id)} — the hook prints the block to "
+        "Egor; record the decision after it"
     )
 
 
@@ -1690,7 +1869,8 @@ def round_legs_landed(run_dir, meta, covers, confirmed):
     return True
 
 
-def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
+def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None, session=None,
+                        covering=None):
     """What a commit closes of this round: the `covers` entries for every path the commit carried
     that this round's own scope holds, at the shas the commit left them standing at.
 
@@ -1704,6 +1884,14 @@ def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
 
     Bounded by `set(reviewed)` like every other coverage: a fix that touched a file no cell was
     ever shown is new work, and no panel read the content this would settle it at.
+
+    Bounded by `set(reviewed)` AND by what the fixing pass wrote after the round
+    (`round_fixing_paths`): a file the pass created is a path no cell was ever shown, so the scope
+    bound alone left it out of the receipt — and out of the receipt it is fresh debt from the next
+    reading on, which is the very commit the door had just let through. Recorded here, the entry is
+    what `debt.fix_coverage_artifact` answers with for those bytes afterwards. `session` is what
+    makes that half askable at all; without one this covers the reviewed scope and nothing else,
+    which is what every caller that does not know whose commit it is should get.
 
     `landed` is the commit's own path map, for a caller closing several rounds with one commit: the
     paths are the COMMIT's and not the round's, so asking git once per round asks it the same
@@ -1722,6 +1910,11 @@ def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
         return []
     resolved = _store.resolved_repo_path(repo)
     family = _store.repo_family(repo)
+    # The pass's own new files, asked ONCE for the whole round: the answer is about this checkout
+    # and this chat, and every leg of the round below that matches this repository takes the same
+    # set. Asked of the paths the commit actually carried, so nothing a later commit will land is
+    # settled here.
+    fresh = round_fixing_paths(repo, session, run_dir, meta, covering) if session else set()
     covers = []
     for entry in [meta] + [row for row in meta.get("repos") or () if isinstance(row, dict)]:
         recorded = str(entry.get("repo") or "")
@@ -1734,8 +1927,12 @@ def commit_fix_coverage(run_dir, repo, commit, landed=None, meta=None):
         if _store.resolved_repo_path(recorded) != resolved and not (
                 family is not None and _store.repo_family(recorded) == family):
             continue
-        paths = {path: sha for path, sha in landed.items() if path in reviewed}
-        if paths:
+        paths = {path: sha for path, sha in landed.items()
+                 if path in reviewed or path in fresh}
+        # The pass's new files RIDE the round's own paths and never close a round alone: a commit
+        # carrying nothing the panel read is not that round's fixing pass, and taken for one it
+        # closed the round and wrote its bytes into the receipt as reviewed.
+        if paths and not reviewed.keys().isdisjoint(paths):
             # The commit is named IN the entry: it is what tells a leg of the round that has landed
             # from the `fixes --done` tally's coverage of bytes no commit has carried
             # (`repo_leg_covered`), which is the same block written by another hand.
@@ -1865,7 +2062,8 @@ def coverable_runs(repo, session, commit, run_id=None):
         if not confirmed_count(rows):
             rounds.append((run_dir, meta, rows, record, []))
             continue
-        covers = commit_fix_coverage(run_dir, repo, commit, landed=landed, meta=meta)
+        covers = commit_fix_coverage(run_dir, repo, commit, landed=landed, meta=meta,
+                                     session=session)
         if covers:
             rounds.append((run_dir, meta, rows, record, covers))
     return rounds
@@ -2048,7 +2246,8 @@ def cmd_fixes_cover(args):
             parent_record = read_fix_status(parent)
             if not _coverable_round_state(parent, parent_rows, parent_record, repo=repo):
                 continue
-            parent_covers = commit_fix_coverage(parent, repo, commit, meta=parent_meta)
+            parent_covers = commit_fix_coverage(parent, repo, commit, meta=parent_meta,
+                                                session=session)
             if not parent_covers:
                 continue
             parent_written = cover_receipt(parent, parent_meta, parent_rows, parent_record,
@@ -2495,6 +2694,7 @@ def handoff(run_id, paths, members=None, worktree=False, fixable=True):
           "and report back with the P1 list — no fixing pass is dispatched. At that count the "
           f"round is a decision and not a list: one of {DECISION_MENU}, recorded before anybody "
           "edits a line, and `fix` there has to say why the code is worth keeping as it stands.")
+    print(DECISION_QUESTIONS)
     # Asked of the CHAT and not of this round's members: one panel per chat is a rule about what
     # gets launched, and a round telling a chat to run the bare command in each repository is a
     # split panel arranged by the very surface that forbids it.
@@ -2581,17 +2781,20 @@ def fix_handoff_lines(run_dir, meta, verdicts):
             f"DECISION FIRST — {total} confirmed, {p1s} of them P1: fix NOTHING and dispatch no "
             f"fixing pass until the decision is on disk. Record it with: {fork_command(run_id)}"
         )
-        from . import debt as _debt  # here and not at module top: debt imports this module at load
         # The reason requirement belongs to the hard band alone (`round_decision_ask` attaches it
         # there and nowhere else); told to a decide-band round it is a rule that round never had.
         reason = (
-            ", and in this band it has to say why the code is worth keeping as it stands"
+            " In this band the decision has to say why the code is worth keeping as it stands."
             if round_band(p1s, total) == BAND_HARD else ""
         )
+        lines.append(DECISION_QUESTIONS + reason)
+        from . import debt as _debt  # here and not at module top: debt imports this module at load
+        # What each answer COSTS, which is the mechanics and not a menu: `fix` ends here on the
+        # commit, anything else buys one more panel, and the command that panel runs under is the
+        # chat's own (row `at`) rather than a scope picked by hand.
         lines.append(
-            f"`fix` closes the round on the commit that carries the fixes and runs no round 2{reason}. "
-            f"simplify, cut and redesign each run round 2 over the full original scope plus the "
-            f"fixes, once, with "
+            "`fix` closes the round on the commit that carries the fixes and runs no round 2. "
+            "Any other answer runs round 2 over the full original scope plus the fixes, once, with "
             f"`{_debt.debt_chat_review_command(_store.round_session(run_dir), run_repos(meta))}`."
         )
         return lines

@@ -4,6 +4,7 @@ import os
 import shutil
 import math
 import sys
+import textwrap
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -468,6 +469,42 @@ def fork_line(run_dir):
     return f"review {run_dir.name} · decision: {fork['choice']} → {follows}"
 
 
+def decision_block(run_dir, meta):
+    """The recorded decision as Egor reads it, or "" where the run carries none: the frame every
+    block of this flow wears, and under it the choice in his own language beside its reason.
+
+    Laid out HERE and in no hook: both announcers of a decision print what this renders, the way
+    they already print the report rather than composing one (docs/shared-invariants.md as). Plain
+    lower-case prose — the label and the shouted word it used to carry read as a form to fill in
+    rather than as a sentence (Egor, 2026-08-29).
+    """
+    fork = _round.read_fork(run_dir) or {}
+    word = _round.DECISION_WORDS_RU.get(str(fork.get("choice") or ""))
+    why = " ".join(str(fork.get("why") or "").split())
+    if not word or not why:
+        return ""
+    return "\n".join([
+        report_frame_header(_round.decision_frame_word(_round.review_round(run_dir, meta))),
+        textwrap.fill(f"{word} — {why}", width=report_width()),
+        _round.REPORT_END,
+    ])
+
+
+def cmd_decision(args):
+    benches = _store.state_dir() / "benches"
+    run_dir = benches / args.run_id
+    if not (run_dir / "meta.json").exists():
+        raise ValueError(f"unknown run id {args.run_id}")
+    meta = json.loads((run_dir / "meta.json").read_text())
+    refuse_foreign_chat(run_dir, meta, str(getattr(args, "session", "") or "").strip())
+    block = decision_block(run_dir, meta)
+    if not block:
+        print(f"review-bench: run {run_dir.name} has no decision on record", file=sys.stderr)
+        return 1
+    print(block)
+    return 0
+
+
 def round_fork_text(run_dir, meta, verdicts=None):
     """The whole of what a round's report does NOT say: which way it goes from here.
 
@@ -503,7 +540,12 @@ def round_fork_text(run_dir, meta, verdicts=None):
 
 
 def round_decision_ask(p1, total):
-    """What a round owing a decision is told, in the four words and nothing else."""
+    """What a round owing a decision is asked, spelled once in `round.py` and quoted nowhere.
+
+    A LIST OF REMEDIES stood here — what fix does, what simplify does — and the chat picked the
+    line that sounded right. The questions replace it; what stays is the mechanics, which no
+    reader can derive from the four words alone.
+    """
     band = _round.round_band(p1, total)
     lead = (
         f"{p1} confirmed P1s, {total} confirmed findings: this round is a decision and not a list"
@@ -515,10 +557,11 @@ def round_decision_ask(p1, total):
         if band == _round.BAND_HARD else ""
     )
     return (
-        f"{lead}. Pick one of {_round.DECISION_MENU} and record it{reason}.\n"
-        "fix closes on the commit that carries the fixes and runs no round 2; simplify, cut and "
-        "redesign each run round 2 over the full original scope plus the fixes, and round 2 is "
-        "the last round there is."
+        f"{lead}. Record one of {_round.DECISION_MENU}{reason}.\n"
+        f"{_round.DECISION_QUESTIONS}\n"
+        "fix closes on the commit that carries the fixes and runs no round 2; the other three each "
+        "run round 2 over the full original scope plus the fixes, and round 2 is the last round "
+        "there is."
     )
 
 
@@ -874,10 +917,10 @@ def cmd_fork(args):
     if choice or why:
         if not (choice and why):
             raise ValueError("--choice and --why go together")
-        if len(why) < _round.FORK_WHY_MIN_CHARS:
+        if len(why) > _round.FORK_WHY_MAX_CHARS:
             raise ValueError(
-                f"--why is the strategic reason for the choice and needs at least "
-                f"{_round.FORK_WHY_MIN_CHARS} characters; got {len(why)}"
+                f"--why is the strategic picture behind the choice and takes up to "
+                f"{_round.FORK_WHY_MAX_CHARS} characters; got {len(why)}"
             )
         if not _round.fork_owed(run_dir, meta):
             raise ValueError(decision_refusal(run_dir, meta))
@@ -891,6 +934,14 @@ def cmd_fork(args):
                 f"{_store.chat_suffix(meta['session'])}; name yours with --session"
             )
         refuse_foreign_chat(run_dir, meta, asking)
+        # The report goes in front of Egor BEFORE the decision, whoever ran `record`: a worker's
+        # triage queued its block for the Stop net while the launching chat, holding the counts as
+        # the worker's prose, recorded `fix` at once — and that prose had the P1 count wrong
+        # (2026-08-29). The ledger is the only record that the block itself arrived.
+        if (os.environ.get(_round.DELIVERY_UNCHECKED_ENV) != "1"
+                and not _round.report_delivered(run_dir, meta)):
+            print(_round.report_first_refusal(run_dir.name), file=sys.stderr)
+            return 3
         record = {"choice": choice, "why": why, "session": asking, "at": _store.iso_now()}
         (run_dir / _round.FORK_RECORD).write_text(json.dumps(record) + "\n")
         print(fork_line(run_dir))

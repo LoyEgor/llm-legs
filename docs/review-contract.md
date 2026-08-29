@@ -443,9 +443,30 @@ The decision is a RECORD and never prose:
 `review-bench fork <run-id> --choice fix|simplify|cut|redesign --why '<text>'`
 writes `<run-dir>/fork.json` (`choice`, `why`, `session`, `at`). Those four words
 are the whole vocabulary (`DECISION_WORDS`), shared by the flag, the `fixes:` and
-`decision:` rows and the Russian decision text (фиксим / упрощаем / вырезаем /
-редизайн). `--why` is the strategic reason for the choice — never a list of
-findings — and is refused under 80 characters (`FORK_WHY_MIN_CHARS`).
+`decision:` rows and the Russian decision line the decision hook prints (фиксим /
+упрощаем / вырезаем / редизайн) — the model never writes that line itself.
+`--why` is the strategic picture behind the choice — where the defects come from, whether
+the approach holds, what stays uncertain; no file or function names, no per-finding detail —
+written IN RUSSIAN for Egor, saying what was read, what was verified and what stays assumed,
+and refused only over 400 characters (`FORK_WHY_MAX_CHARS`) — no floor, two words pass, an
+empty `--why` is refused as `--choice and --why go together`; what it is asked for is spelled once,
+in `round.py` `DECISION_QUESTIONS`, and quoted by the fork text and the `--why` help rather
+than restated. The record reaches Egor as a framed block of its own, laid out in
+`share/rbench/report.py` `decision_block` and nowhere else — `review-bench decision <run-id>`,
+frame word `decision · round <N>`, body `<фиксим|упрощаем|вырезаем|редизайн> — <why>` in
+plain lower-case prose wrapped at the report width and closed by the rule; no label and no
+shouted word, which read as a form to fill in rather than a sentence (the Russian words live
+beside `DECISION_WORDS` in `round.py`, `DECISION_WORDS_RU`, not in a hook).
+`../claude-setup/hooks/review-decision-report.sh` prints what that command renders the
+moment the record is written (ledger key `fork`, once); the Stop net is the fallback for a
+fork a worker recorded headlessly; no decision on record → exit 1, one line on stderr, and
+both hooks print nothing.
+And the report comes BEFORE the decision, whoever ran `record`: `fork --choice` exits 3 with
+`report first: review-bench report <id> …` until the delivery ledger holds `run:<id>:triaged`
+or `run:<id>:done` for the LAUNCHING chat (`round.py` `report_delivered`, reading through
+`debt.ledger_delivered`); a neighbouring chat let a worker run `record`, the block queued for
+the Stop net and the chat forked on the worker's miscounted prose. `REVIEW_DELIVERY_UNCHECKED=1`
+is the only bypass, for suites and headless fixtures.
 `review-bench fork <run-id> --check` is the one verdict the gates relay: exit 3
 with the `fork` command while a decision is owed and none stands, exit 0
 otherwise. Three gates read it and none composes a threshold of its own: the Bash
@@ -608,16 +629,27 @@ COMMIT word within the last fifteen real turns, never a review word alone, and n
 a turn that is a question or a `/skill` — in every repository the last real user
 turn being either refuses the launch. A git family `~/.claude/commit-free` lists
 skips the commit-word check (the commit the review rides needs no word of his and so
-neither does the review), but keeps the question/skill refusal. That family is also the one place the gate REFUSES: a `git commit` whose
+neither does the review), but keeps the question/skill refusal. That family is also the one place the gate REFUSES: a `git commit` (`--amend` included; a merge, cherry-pick, revert,
+rebase or `am` moves content some commit already carried and passes unpriced) whose
 target the command NAMED there, carrying paths of the committing chat's own that no
-review has read, is blocked with `REVIEW GATE: <top> is a commit-free repository`,
+review has read — or one this door could not price at all (no `review-bench`, a debt
+answer outside its grammar, no `jq`) — is blocked with `REVIEW GATE: <top> is a commit-free repository`
+(with no jq the commit word is read out of the raw payload by the JSON string's own grammar,
+escaped `\"` inside the span, and commit-freeness is decided from the repository the command
+NAMES, `$PWD` only where none is named or one cannot be placed),
 naming the paths and the one `debt --command` review that closes them, since Egor's
 standing permission means no word of his will arrive to trigger the review the way it
 does everywhere else (2026-08-27, after llm-legs b75b611 landed two unreviewed paths
 under it). It fires on the debt answer alone, which
 leaves out every path an open round of that chat has read (`round_covered_paths`):
 the order is review, commit, push, so the commit carrying a round's fixes is exactly
-what closes it, and a round owing its decision, or the round 2 that decision named,
+what closes it — and it covers what the fixing pass CREATED as well as what the round
+read: paths this chat's journal recorded after the round's seal in that repository
+and that the round's own base commit did not hold — the files the pass CREATED, never a
+pre-existing file it merely edited — ride the closing commit into `covers`
+(`round_fixing_paths`; a round whose base this checkout cannot read exempts nothing), and
+a commit closes a round only if it carries at least one path that round READ, the fresh
+files riding along and never alone — and a round owing its decision, or the round 2 that decision named,
 covers nothing until that is on record. A round covers a path only while it is the
 NEWEST artifact holding it — under any later receipt, `covers` entry or waiver its
 fixing pass has already landed and what stands dirty there now is work it never read
@@ -636,7 +668,7 @@ records the debt and passes in silence. The framed block from
 prints it: one copy, from review-bench's own rendering, costing no tokens. After the
 block the model adds NOTHING — no counts, no cells, no timings, no opinion
 paragraph: the fork is the only word on where the round goes, and in the fix band it says so
-itself — that band takes no decision and no decision line, and the commit
+itself — that band takes no decision, no band asks the model for a decision line, and the commit
 carrying the fixes closes it. The corpus rules (sealed
 judges, `--bench` opt-in) are unchanged.
 
@@ -773,8 +805,11 @@ WHOLE BLOCK, the moment the triage is on record and whoever ran `record`, since
 that is the report and a one-line herald only made Egor wait for it. `done`
 after it reaches nobody: the round has already been read, and the same block
 again is the same news twice. The recorded fork decision keeps its own second
-delivery, ONE LINE under `fork` (`review-bench report <id> --line fork`), and a
-round the decision reopened is delivered again on its NOT FINISHED word.
+delivery, a BLOCK of its own frame under `fork` (`review-bench decision <id>`; `report <id>
+--line fork` stays the success line of `fork --choice` and is no delivery form), and a
+round the decision reopened is delivered again on its NOT FINISHED word. The ledger is a LOCK
+as well as a dedupe: `round.py` `report_delivered` reads it for `fork --choice`, and only
+`triaged`/`done` clear it (`fork` is the decision's own echo, `blocked` a stopped pass).
 Past that window a triage is delivered by no
 hook at any age — a loud word derived from "no fixes recorded" reports failure
 while the fixes are still landing, and promoting aged rounds to a deliverable

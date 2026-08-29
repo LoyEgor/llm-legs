@@ -1321,9 +1321,12 @@ def debt_members(scopes):
 
 
 def owners_of(session, launchers=None):
-    """A session and the chat that launched it: a worker a chat spawned IS that chat (row `am`)."""
-    launcher = (worker_session_launchers() if launchers is None else launchers).get(session)
-    return {session, launcher} if launcher else {session}
+    """A session and every chat up the launch chain from it, as a set: a worker a chat spawned IS
+    that chat (row `am`), and so is a worker that worker spawned. `store.launch_chain` is the walk
+    itself, shared with `caller_chat` so a nested worker's own review-bench calls answer under the
+    same chat its journal rows are priced against.
+    """
+    return set(_store.launch_chain(session, launchers))
 
 
 def debt_path_authors(repo, debt):
@@ -1340,6 +1343,14 @@ def debt_path_authors(repo, debt):
     file (live case 2026-08-25: three co-tenants' commits read back as one chat's own debt). A
     record whose epoch is unreadable is kept, and the commit journal is never filtered: its records
     are pruned the moment a path is clean, so what stands there is present-tense by construction.
+
+    The LAST editor owns the path (Egor, 2026-08-29): of the records still standing for a path,
+    only the newest-stamped ones name its owners, over both journals at once. A chat that edited a
+    file and then watched another chat rewrite it is history, not an author, and priced otherwise
+    every co-tenant a file ever passed through kept carrying its debt for good. Ownership therefore
+    MOVES, and the journals are untouched by that — this is how they are read, not what is written.
+    Equal stamps keep every tied chat, and an undatable record cannot be ordered out of the way of
+    a newer one, so it stands beside it.
     """
     authors = {str(path): set() for path, _ in debt}
     floors = {
@@ -1355,17 +1366,24 @@ def debt_path_authors(repo, debt):
     # this same question under the worker's id while the run is going, and answered `other` it would
     # refuse that session a waiver over the work it just did.
     launchers = worker_session_launchers()
+    records = {path: [] for path in authors}
     for session, epoch, path in _store.journal_entries(directory / _store.DEBT_JOURNAL):
         if not session or path not in authors:
             continue
         floor = floors.get(path)
         if floor and epoch is not None and epoch <= floor:
             continue
-        authors[path].update(owners_of(session, launchers))
-    for session, _, path in _store.journal_entries(directory / _store.COMMIT_JOURNAL):
+        records[path].append((epoch, session))
+    for session, epoch, path in _store.journal_entries(directory / _store.COMMIT_JOURNAL):
         if not session or path not in authors:
             continue
-        authors[path].update(owners_of(session, launchers))
+        records[path].append((epoch, session))
+    for path, pool in records.items():
+        newest = max((epoch for epoch, _ in pool if epoch is not None), default=None)
+        for epoch, session in pool:
+            if newest is not None and epoch is not None and epoch < newest:
+                continue
+            authors[path].update(owners_of(session, launchers))
     return authors
 
 

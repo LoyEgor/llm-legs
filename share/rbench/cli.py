@@ -1843,8 +1843,9 @@ def main():
     fork.add_argument("--choice", choices=_round.FORK_CHOICES, help="The way the round goes")
     fork.add_argument(
         "--why", metavar="TEXT",
-        help=f"The strategic reason for the choice — why fix rather than simplify or redesign the "
-             f"block, never a list of findings; {_round.FORK_WHY_MIN_CHARS}+ characters",
+        help=f"The reasoning behind the choice, never a list of findings, "
+             f"up to {_round.FORK_WHY_MAX_CHARS} characters. "
+             f"{_round.DECISION_QUESTIONS}",
     )
     fork.add_argument("--session", default="", metavar="ID", help="The chat recording it")
     fork.add_argument(
@@ -1852,6 +1853,16 @@ def main():
         help="Exit 3 while the round owes a decision and has none on record",
     )
     fork.set_defaults(func=_report.cmd_fork)
+    decision = subparsers.add_parser(
+        "decision",
+        help="Print the decision recorded on a round as its own block (exit 1 if none)",
+    )
+    decision.add_argument("run_id")
+    decision.add_argument(
+        "--session", default="", metavar="ID",
+        help="Refuse the run (exit 2) unless this chat launched it",
+    )
+    decision.set_defaults(func=_report.cmd_decision)
     pending = subparsers.add_parser(
         "pending-report",
         help="Name the worktree run still owing a triaged report (exit 1 if none)",

@@ -680,9 +680,15 @@ for cs_state_mark in $FRAME_STATE_MARKS; do
 done
 assert grep -Fq 'return f"{REPORT_FRAME_WORD} · round {number}"' "$RB_ROUND"
 assert grep -Fq "REPORT_BENCH_WORD = \"$FRAME_BENCH_WORD\"" "$RB_ROUND"
+# The recorded decision wears the same frame under a word of its own, and `review-bench decision`
+# is the ONE place it is laid out: both hooks that announce a decision print what that renders.
+assert grep -Fq 'REPORT_DECISION_WORD = "decision"' "$RB_ROUND"
+assert grep -Fq 'return f"{REPORT_DECISION_WORD} · round {number}"' "$RB_ROUND"
+assert grep -Fq 'decision.set_defaults(func=_report.cmd_decision)' "$RB_CLI"
 # One frame per run, built where the run's own state is known and nowhere else: a word baked into
-# a module constant is a state the emitter cannot pick between.
-assert rb_pkg_only 'report_frame_header(' 2 "$RB_REPORT"
+# a module constant is a state the emitter cannot pick between. Two emitters, the report's and the
+# decision's, beside the builder itself.
+assert rb_pkg_only 'report_frame_header(' 3 "$RB_REPORT"
 assert test -z "$(grep -rlE '^REPORT_[A-Z_]+_BEGIN' --include='*.py' "$RB_PKG")"
 assert grep -Fq 'REPORT_END = "=" * REPORT_FRAME_WIDTH' "$RB_ROUND"
 assert grep -Fq "f\"{'=' * left} {word} {'=' * (fill - left)}\"" "$RB_REPORT"
@@ -696,7 +702,17 @@ CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
 COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
 REPORT_NUDGE="$CLAUDE_SETUP/hooks/review-report-nudge.sh"
 DELIVERY_GATE="$CLAUDE_SETUP/hooks/stop.d/notice-review-report-delivery.sh"
+DECISION_REPORT="$CLAUDE_SETUP/hooks/review-decision-report.sh"
+if test -r "$DECISION_REPORT"; then
+  # Neither announcer lays a decision out: both run the renderer that owns it, exactly as they
+  # print the report rather than composing one.
+  assert grep -Fq '[review_bench, "decision", run_id], capture_output=True' "$DECISION_REPORT"
+  assert test "$(grep -c 'Решение по ревью' "$DECISION_REPORT")" -eq 0
+fi
 if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
+  assert grep -Fq '"decision" if line else "report"' "$DELIVERY_GATE"
+  assert grep -Fq 'DECISION_HEADER_RE = re.compile(r"(?m)^=+ decision · round [0-9]+ =+' \
+    "$DELIVERY_GATE"
   assert test "$(grep -Ec '^FRAME_WIDTH=' "$COMMIT_REPORT")" -eq 1
   cs_frame_width=$(grep -E '^FRAME_WIDTH=[0-9]+$' "$COMMIT_REPORT" | cut -d= -f2)
   assert eq "$cs_frame_width" "$rb_frame_width"
@@ -886,7 +902,7 @@ blocked|covering|done|pending"
   assert grep -Fq 'return "triaged"' "$RB_ROUND"
   assert grep -Fq 'rows.append((run_dir, "fork"))' "$RB_ROUND"
   assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states|triaged|fork)\\Z\")" "$DELIVERY_GATE"
-  assert grep -Fq 'LINE_STATES = ("fork",)' "$DELIVERY_GATE"
+  assert grep -Fq 'OWN_BLOCK_STATES = ("fork",)' "$DELIVERY_GATE"
   assert grep -Fq 'const="triaged", choices=("triaged", "fork")' "$RB_CLI"
   assert doc_has 'exactly `done`, `blocked`, `triaged` and `fork`'
   # The fork decision is a RECORD the gates require before any fixing pass, never prose demanded
@@ -894,7 +910,16 @@ blocked|covering|done|pending"
   for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
     assert test "$(grep -c 'ESCALATION_NOTE' "$cs_hook")" -eq 0
   done
-  assert grep -Fq 'FORK_WHY_MIN_CHARS = 80' "$RB_ROUND"
+  # The ceiling alone, spelled wherever the why is asked for, or the writer is refused by a bound
+  # nothing named. No floor stands anywhere: the model writes as much as it finds necessary and two
+  # words are fine (Egor, 2026-08-29).
+  assert grep -Fq 'FORK_WHY_MAX_CHARS = 400' "$RB_ROUND"
+  assert grep -Fq 'up to {FORK_WHY_MAX_CHARS} chars>' "$RB_ROUND"
+  assert grep -Fq 'up to {_round.FORK_WHY_MAX_CHARS} characters' "$RB_CLI"
+  assert grep -Fq 'up to {FORK_WHY_MAX_CHARS} characters' "$RB_ROUND"
+  assert test -z "$(grep -rl FORK_WHY_MIN_CHARS "$RB_PKG")"
+  assert grep -Fq 'up to 400 characters and as few as it takes' \
+    "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
   assert grep -Fq 'delivery.add_argument("--session", default="", metavar="ID", required=True,' \
     "$RB_CLI"
   # Whose run it is, asked of ONE run by id: both nets render through `report`, and a run reached
@@ -1104,8 +1129,10 @@ if test -r "$COMMIT_REPORT"; then
   # this call's it puts an upstream author's paths into this chat's review scope.
   assert grep -Fq 'RJ_SNAPSHOT_KIND=KIND' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq "printf '%s%s%s\\n' \"\$RJ_SNAPSHOT_KIND\" \"\$RJ_TAB\" \"\${5:-commit}\"" "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-  assert grep -Fq 'case "${SNAPSHOT_KIND:-commit}" in commit|merge|cherry-pick|revert) return 0 ;; esac' \
-    "$COMMIT_REPORT"
+  # And ONE landing list for both doors of a commit: answered by a whitelist of the report's own, a
+  # kind the gate armed a snapshot for went unread there, so the commits a rebase or an `am` created
+  # closed no round and took no debt row (live 2026-08-29).
+  assert grep -Fq 'for kind in $RJ_LANDING_SUBCOMMANDS; do' "$COMMIT_REPORT"
   # A `git merge` that FAST-FORWARDS creates nothing either: it is the same range of other people's
   # commits a pull brings, and only a commit carrying a second parent was made by the call.
   assert grep -Fq 'if [ "${SNAPSHOT_KIND:-commit}" = merge ]; then' "$COMMIT_REPORT"
@@ -1214,10 +1241,21 @@ if test -r "$COMMIT_REPORT"; then
   # reader itself is the library's, shared with the report (block below).
   assert grep -Fq 'rj_dry_run commit "$cmd" && dry_run=1' "$FLOW_GATE"
   assert grep -Fq '[ -n "${landing:-}" ] && [ -z "$dry_run" ] &&' "$FLOW_GATE"
-  # Armed for every kind that CREATES commits, not for `commit` alone: a merge, a cherry-pick and a
-  # revert land content under this chat's name and were measured against no pre-call HEAD at all.
-  assert grep -Fq 'for candidate in merge cherry-pick revert; do' "$FLOW_GATE"
-  assert grep -Fq 'git_subcommand commit && { kind=commit; landing=commit; }' "$FLOW_GATE"
+  # The SNAPSHOT is armed for every kind that creates commits, from one library reader, or the kind
+  # the gate writes down and the kinds the report reads back drift apart. What the gate PRICES is
+  # the commit alone (an amend among them): a merge, a cherry-pick, a revert, a rebase and an `am`
+  # move content some commit already carried, so the committing chat's unreviewed bytes are not
+  # what they land and this door says nothing about them (Egor, 2026-08-29). `update-ref` is the
+  # plumbing spelling of the same move and stamps like the rest; `commit-tree` lands nothing.
+  assert grep -Fq \
+    'RJ_LANDING_SUBCOMMANDS="commit merge cherry-pick revert rebase am update-ref"' \
+    "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  # The one landing that is a commit written by hand rather than one replayed, so the report frames
+  # it like a `git commit` where the replaying kinds take their journal lines and no block.
+  assert grep -Fq '[ "${SNAPSHOT_KIND:-commit}" = update-ref ] && is_commit=1' "$COMMIT_REPORT"
+  assert grep -Fq 'landing=$(rj_git_lands_commit "$cmd") || landing=""' "$FLOW_GATE"
+  assert grep -Fq 'git_subcommand commit && kind=commit' "$FLOW_GATE"
+  assert grep -Fq 'if [ -z "$verdict_mode" ] && [ "${kind:-}" != commit ]; then' "$FLOW_GATE"
   # A worktree shares its parent's object store, so resolving a sha there is not evidence its
   # content ever landed in that tree.
   assert grep -Fq 'git -C "$top" merge-base --is-ancestor "$full" HEAD' "$COMMIT_REPORT"
@@ -1532,7 +1570,11 @@ if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
     assert test "$(grep -Fc -- "$copy" "$REPORT_GATE")" -eq 0
   done
   assert eq "$(grep -Fc WEAK_LINK_P1S "$FLOW_GATE")" 0
-  assert grep -Fq 'Pick one and carry it out:' "$FLOW_GATE"
+  # The gate asks the decision as QUESTIONS, and the arms it used to list are gone: spelled as a
+  # menu the text was picked from rather than answered, and the `--why` came back a paraphrase of
+  # the pick.
+  assert grep -Fq 'Answer these before you record one:' "$FLOW_GATE"
+  assert eq "$(grep -Fc -- '- fix: the commit that carries the fixes' "$FLOW_GATE")" 0
   if [ -r "$REPORT_NUDGE" ]; then
     assert test "$(grep -Fc 'ESCALATION_MARKER' "$REPORT_NUDGE")" -eq 0
   fi
@@ -2134,7 +2176,11 @@ else
 fi
 REVIEW_GATE="$CLAUDE_SETUP/hooks/review-flow-gate.sh"
 if [ -r "$REVIEW_GATE" ]; then
-  assert grep -Fq 'grep -l -x -F -- "$session" "$runs"/*/launcher' "$REVIEW_GATE"
+  assert grep -Fq 'grep -l -x -F -- "$1" "$runs"/*/launcher' "$REVIEW_GATE"
+  # The chat's own runs first, then the runs its WORKERS launched — one hop and one only, so a
+  # worker of a worker is still this chat (row `am`) while a chain deeper than that costs no walk.
+  assert grep -Fq 'scan_owner_runs "$session"' "$REVIEW_GATE"
+  assert grep -Fq 'scan_owner_runs "$owner"' "$REVIEW_GATE"
   # A record the journal has not taken over is still this chat's pending work.
   assert grep -Fq "'WORKDIR: '*|'UNKNOWN: '*|'PARTIAL: '*|'') continue ;;" "$REVIEW_GATE"
   assert grep -Fq '[ -e "$directory/journaled" ] && continue' "$REVIEW_GATE"
@@ -2196,6 +2242,15 @@ assert grep -Fq 'DELIVERY_LEDGER_KEY = "run:{run_id}:{state}"' "$RB_DEBT"
 # `pending_delivery_rows` (and the statusline anchor over it) honours the ledger.
 assert rb_pkg_only 'DELIVERY_LEDGER_KEY.format(' 2 "$RB_DEBT"
 assert rb_pkg_only 'ledger_delivered(session, run_dir.name, state, ledgers)' 1 "$RB_ROUND"
+# The `fork --choice` lock is that SAME reader and no second spelling of the path or the key: a
+# decision may not be recorded before the round's block has stood in front of Egor, and the ledger
+# is the only place that arrival is written. Its two states are the ones that mean the BLOCK went
+# out — `fork` is the decision's own one-line echo and `blocked` a fixing pass that stopped.
+assert grep -Fq 'REPORT_DELIVERED_STATES = ("triaged", "done")' "$RB_ROUND"
+assert grep -Fq '_debt.ledger_delivered(session, run_dir.name, state, keys)' "$RB_ROUND"
+assert grep -Fq 'not _round.report_delivered(run_dir, meta)' "$RB_REPORT"
+assert grep -Fq 'DELIVERY_UNCHECKED_ENV = "REVIEW_DELIVERY_UNCHECKED"' "$RB_ROUND"
+assert grep -Fq 'os.environ.get(_round.DELIVERY_UNCHECKED_ENV) != "1"' "$RB_REPORT"
 assert test -z "$(grep -rlE 'ledger.*(open\(.*"a"|write_text)' --include='*.py' "$RB_PKG")"
 if test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
   for cs_ledger_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
@@ -2315,7 +2370,6 @@ assert grep -Fq 'from chat_names import chat_label, chat_name, resolve_session, 
 assert doc_has '`bin/chat-name`'
 CHAT_NAME_NOTICE="$CLAUDE_SETUP/hooks/stop.d/notice-chat-names.sh"
 if [ -r "$CHAT_NAME_NOTICE" ]; then
-  assert grep -Fq 'shutil.which("chat-name")' "$CHAT_NAME_NOTICE"
   assert eq "$(grep -c 'aiTitle\|customTitle\|nameSource' "$CHAT_NAME_NOTICE")" 0
 fi
 # The harness placeholder is refused in exactly one place, and neither consumer reads that store
