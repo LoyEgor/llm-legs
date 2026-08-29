@@ -792,7 +792,13 @@ something FOLLOWS — a decision, or the round 2 it names — and prints no row 
 `next: none` was a row spent repeating that the row above it was the whole answer. An untiered
 bench prints neither of those two.
 Then the panel's own accounting (`verifier:`, `rejected:`, `found:`,
-`noise:`, `quiet:`/`echoed:`/`untriaged:`, `failed:`), and `id:` LAST, carrying the
+`noise:`, `quiet:`/`echoed:`/`untriaged:`, `failed:`), then one `escaped:` row per transcript line
+where a cell both wrote and named a live path — the live profile or a checkout THIS run reviewed —
+carrying cell, account and the line, which blocks nothing and is printed because a cell that
+reached outside its clone is otherwise nameable by nobody. The run reads its transcripts once, as
+the panel closes, and keeps the hits in its own `meta.json`: the vendor prunes that brain directory
+on its own schedule, and every later report answers from the record rather than from the scan.
+Then `id:` LAST, carrying the
 CHAIN's id rather than the run's: the two rounds are one piece of work, and an id is
 what a reader types back into a command — one of them, never two to pick between. Every
 value stands in one column, wrapped values included: a continuation that returns to the

@@ -1,9 +1,11 @@
 import json
+import os
 import re
 import math
 import statistics
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from . import store as _store
 from . import catalog as _catalog
@@ -710,3 +712,61 @@ def review_log_event(event, run_dir, meta):
     return payload
 
 
+AGY_CONVERSATION_RE = re.compile(r"Created conversation ([0-9a-fA-F-]{36})")
+ESCAPE_WRITE_RE = re.compile(
+    r"\b(?:ln|cp|mv|rm|tee|chmod|touch|mkdir|sed -i"
+    r"|git (?:checkout|restore|reset|stash|clean|switch))\b"
+)
+ESCAPE_EXCERPT_RE = re.compile(r'"(CommandLine|TargetFile)"\s*:\s*"((?:[^"\\]|\\.)*)"')
+ESCAPE_EXCERPT_CHARS = 160
+
+
+def escape_live_re(meta, home):
+    """The paths a cell reaching outside its clone names: the live Claude profile, and the ORIGINAL
+    of every checkout this run reviewed — the clone is a copy of it, so the original's own path is
+    what separates a write that left the clone from the same write inside it."""
+    parts = [r"~/\.claude", r"/Users/[^/]+/\.claude", re.escape(str(home / ".claude"))]
+    members = [m for m in (meta.get("repos") or ()) if isinstance(m, dict)]
+    for repo in [meta.get("repo")] + [m.get("repo") for m in members]:
+        if repo:
+            parts.append(re.escape(str(repo).rstrip("/")))
+    return re.compile("|".join(parts))
+
+
+def clone_escapes(run_dir, meta, home=None):
+    """`(rater, account, excerpt)` per transcript line where an agy cell both wrote something and
+    named a live path — the live profile or a checkout this run reviewed, never its own clone.
+
+    Grep, not analysis: the match is lexical over the raw transcript line, so a cell that merely
+    QUOTED such a path — a python string in a heredoc — is reported too. One spurious row is the
+    price of a detector this size; nothing is blocked or retried either way, since by the time the
+    panel is over the write has happened (2026-08-29: an agy cell's `ln -f` unlinked a live hook).
+    """
+    home = Path(home or Path.home())
+    run_dir = Path(run_dir)
+    live_re = escape_live_re(meta, home)
+    profiles = Path(os.environ.get("GEMINIB_PROFILES_DIR") or home / ".gemini-profiles")
+    hits = []
+    for row in meta.get("rater_runs") or ():
+        if not isinstance(row, dict) or row.get("side") != "agy":
+            continue
+        rater, account = str(row.get("rater") or ""), str(row.get("account") or "")
+        # A chunked cell reads its chunks under one rater name and logs each under its own stem.
+        logs = [run_dir / f"agy-{rater}.log"] + sorted(run_dir.glob(f"agy-{rater}~c*.log"))
+        text = "".join(log.read_text(errors="replace") for log in logs if log.exists())
+        base = home / ".gemini" if account in ("", "main") else profiles / account / ".gemini"
+        for conversation in AGY_CONVERSATION_RE.findall(text):
+            transcript = (base / "antigravity-cli" / "brain" / conversation
+                          / ".system_generated" / "logs" / "transcript_full.jsonl")
+            if not transcript.exists():
+                continue
+            for line in transcript.read_text(errors="replace").splitlines():
+                for key, value in ESCAPE_EXCERPT_RE.findall(line):
+                    if not live_re.search(value):
+                        continue
+                    if key == "CommandLine" and not ESCAPE_WRITE_RE.search(value):
+                        continue
+                    hit = (rater, account, value[:ESCAPE_EXCERPT_CHARS])
+                    if hit not in hits:
+                        hits.append(hit)
+    return hits

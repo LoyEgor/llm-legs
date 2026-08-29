@@ -1414,6 +1414,13 @@ def cmd_run(args):
         if any(_panel.watchdog_killed(row) or row.get("stalled_s")
                for row in _panel.cell_attempt_rows(rater_meta)[0]):
             meta["timed_out"] = True
+        # Read once, while the vendor still has the transcript: it is pruned on its own schedule,
+        # and a report drawn after that would say the escape never happened.
+        escapes = [list(hit) for hit in _panel.clone_escapes(run_dir, meta)]
+        if escapes:
+            meta["clone_escapes"] = escapes
+        for rater, account, excerpt in escapes:
+            print(f"escaped: {rater} · {account} · {excerpt}")
         meta.update(lens_meta)
         (run_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         _report.log_review_event("run", run_dir, meta)

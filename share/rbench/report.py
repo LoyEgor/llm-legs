@@ -762,6 +762,9 @@ def report_lines(run_dir, meta, verdicts=None):
                 f"{name:<{name_width}}  {cause:<{cause_width}}  {duration:>8}".rstrip(),
                 False,
             ))
+    for index, hit in enumerate(meta.get("clone_escapes") or ()):
+        rows.append(("escaped:" if not index else "",
+                     " · ".join(str(part) for part in hit), True))
     # Last, and the CHAIN's rather than this run's: the two rounds are one piece of work, and an id
     # is what a reader types back into a command — one of them, never two to pick between.
     rows.append(("id:", _round.chain_id(run_dir, meta), False))
