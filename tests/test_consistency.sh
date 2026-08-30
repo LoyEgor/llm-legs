@@ -595,7 +595,7 @@ assert grep -Fq '"dim "*|"bright "*|"split "*) ;;' "$STATUSLINE"
 # Two tones in one segment, cut on the first slash and nowhere else: the numbers are the gate's
 # and the weights are this line's, so a render that split them differently would say whose the
 # debt is with the gate disagreeing.
-assert grep -Fq '${review_text%%/*}${DIM}/${review_text#*/}${RESET}' "$STATUSLINE"
+assert grep -Fq '${text%%/*}${DIM}/${text#*/}${RESET}' "$STATUSLINE"
 assert grep -Fq 'review_text=${review_text#rev }' "$STATUSLINE"
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$RB_DEBT"
@@ -849,12 +849,12 @@ if test -r "$COMMIT_REPORT"; then
   # An entry of ours is not a debt row of ours: the append that should have followed it can fail.
   assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
     "$COMMIT_REPORT"
-  assert grep -Fq 'claimed=$'"'"'\n'"'"'$(foreign_run_claims "$own")' "$COMMIT_REPORT"
+  assert grep -Fq 'claimed=$'"'"'\n'"'"'$(run_claims "$own")' "$COMMIT_REPORT"
   # A path passed over on a DIR claim is left to a sweep that names no path at all for a run ending
-  # unable to list its files: written down beside the run record, it is journalled under that run's
-  # owner when the record is swept instead of staying in nobody's debt row for good.
+  # unable to list its files: written down beside the run record with the committing chat, it is
+  # journalled under that chat when the record is swept naming none of it, never under nobody.
   assert grep -Fq 'defer_path "${dir_ids[index]}" "$top" "$path"' "$COMMIT_REPORT"
-  assert grep -Fq "printf '%s\\t%s\\n' \"\$2\" \"\$3\" >>\"\$dir/deferred-paths\"" "$COMMIT_REPORT"
+  assert grep -Fq "printf '%s\\t%s\\t%s\\n' \"\$4\" \"\$2\" \"\$3\" >>\"\$dir/deferred-paths\"" "$COMMIT_REPORT"
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
@@ -1763,7 +1763,11 @@ assert doc_has 'Journal ledger resolver'
 JOURNAL_RESOLVE='rev-parse --path-format=absolute --git-common-dir'
 assert doc_has "$JOURNAL_RESOLVE"
 rb_journal_dir=$(sed -n '/^def journal_dir(/,/^def [a-z_]*(/p' "$RB_STORE")
-assert grep -Fq "$JOURNAL_RESOLVE" <<<"$rb_journal_dir"
+# review-bench resolves the family once, in the memoized git_common_dir, and journal_dir reads it
+# from there: the command is pinned in the resolver, every reader in the call.
+assert grep -Fq "$JOURNAL_RESOLVE" <<<"$(sed -n '/^def git_common_dir(/,/^def [a-z_]*(/p' "$RB_STORE")"
+assert eq "$(grep -Fc "$JOURNAL_RESOLVE" "$RB_STORE")" 1
+assert grep -Fq 'git_common_dir(repo)' <<<"$rb_journal_dir"
 # The statusline keys BOTH its journal-watching caches on the family's ledger, so each has to open
 # the same file the answer it caches was read out of — resolved once, in one helper, or the two
 # keys drift apart exactly as the two ledgers once did.

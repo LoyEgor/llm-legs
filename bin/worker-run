@@ -1253,13 +1253,46 @@ codex_tool_rows() { # rollout since
               | sub("^\\*\\*\\* Move to: "; "")])
       | map(gsub("\\r$"; ""));
     def js_mask:
-      gsub("\"(?:\\\\.|[^\"\\\\])*\"|\\x27(?:\\\\.|[^\\x27\\\\])*\\x27|`(?:\\\\.|[^`\\\\])*`|//[^\\r\\n]*|/\\*(?:[^*]|\\*+[^*/])*\\*+/"; " ");
+      gsub("(?<m>\"(?:\\\\.|[^\"\\\\])*\"|\\x27(?:\\\\.|[^\\x27\\\\])*\\x27|`(?:\\\\.|[^`\\\\])*`|//[^\\r\\n]*|/\\*(?:[^*]|\\*+[^*/])*\\*+/)"; " " * (.m | length));
     def exec_tools(text):
       [text | js_mask | scan("\\btools\\.[A-Za-z_][A-Za-z_0-9]*\\s*\\(")
             | sub("^tools\\."; "") | sub("\\s*\\($"; "")];
-    def fields(text; key):
-      [text | scan("(?:\"" + key + "\"|\\b" + key + "\\b)\\s*:\\s*\"(?:\\\\.|[^\"\\\\])*\"")
-            | sub("^(?:\"" + key + "\"|" + key + ")\\s*:\\s*\""; "") | sub("\"$"; "")];
+    def js_literal(text; pos):
+      (text[pos:] | sub("^\\s+"; "")) as $rest
+      | ($rest[0:1]) as $quote
+      | (if $quote == "`" then "`(?:\\\\.|[^`\\\\])*`"
+         elif $quote == "\u0027" then "\\x27(?:\\\\.|[^\\x27\\\\])*\\x27"
+         elif $quote == "\"" then "\"(?:\\\\.|[^\"\\\\])*\""
+         else null end) as $shape
+      | if $shape == null then null
+        else ([$rest | match("^" + $shape)] | first | .string) as $literal
+          | if $literal == null or ($quote == "`" and ($literal | test("\\$\\{"))) then null
+            else $literal[1:-1] end
+        end;
+    # One state per call, in source order, so a value never pairs with another call. js_mask keeps the
+    # masked text the same LENGTH as the raw text, so every offset below indexes both: a match found
+    # in the mask (where no string or comment can fake one) reads its value out of the raw text.
+    def key_states(text; tools; key):
+      (text | js_mask) as $mask
+      | [$mask | match("\\b(?:const|let|var)\\s+" + key + "\\s*="; "g")
+             | (.offset + .length) as $at
+             | {at: $at, value: js_literal(text; $at)}] as $bindings
+      | [$mask | match("\\btools\\.(?:" + tools + ")\\s*\\(\\s*\\{[^{}]*\\}"; "g")
+             | {start: .offset, end: (.offset + .length)}]
+      | map(. as $call
+          | [text[$call.start:$call.end]
+             | match("(?:\"" + key + "\"|\\b" + key + "\\b)\\s*(?<colon>:)\\s*"; "g")
+             | select($mask[($call.start + .captures[0].offset):($call.start + .captures[0].offset + 1)] == ":")
+             | ($call.start + .offset + .length)] as $explicit
+          | if ($explicit | length) > 0 then
+              ([$explicit[] | js_literal(text; .)] | map(select(. != null))) as $values
+              | if ($values | length) > 0 then {state: "value", value: $values[0]}
+                else {state: "unresolved"} end
+            elif ($mask[$call.start:$call.end] | test("(?:\\{|,)\\s*" + key + "\\s*(?:,|\\})")) then
+              ([$bindings[] | select(.at < $call.start)] | last) as $binding
+              | if ($binding.value? // null) == null then {state: "unresolved"}
+                else {state: "value", value: $binding.value} end
+            else {state: "absent"} end);
     def result_for(rows; payload):
       [rows[] | .payload? // {}
        | select((.type? == "custom_tool_call_output" or .type? == "function_call_output")
@@ -1300,13 +1333,14 @@ codex_tool_rows() { # rollout since
                else "X\tapply_patch outcome" end
            elif ($name | test("^(exec_command|run|shell)$")) then
              if $payload.name? == "exec" then
-               (fields($blob; "cmd")) as $commands
-               | (fields($blob; "workdir")) as $directories
+               key_states($blob; "exec_command|run|shell"; "cmd") as $commands
+               | key_states($blob; "exec_command|run|shell"; "workdir") as $directories
                | (exec_tools($blob) | map(select(test("^(exec_command|run|shell)$"))) | length) as $calls
-               | if ($commands | length) != $calls or ($directories | length) > $calls then
+               | if ($commands | length) != $calls or any($commands[]; .state != "value")
+                    or any($directories[]; .state == "unresolved") then
                    "X\t" + $name + " arguments"
-                 else ($commands[] | "C\t" + gsub("[\n\r\t]"; " ")),
-                      ($directories[] | "D\t" + .)
+                 else ($commands[] | .value | "C\t" + gsub("[\n\r\t]"; " ")),
+                      ($directories[] | select(.state == "value") | .value | "D\t" + .)
                  end
              else (direct_args($blob)) as $args
                | if $args == null or ($args.cmd? | type) != "string" then "X\t" + $name + " arguments"
@@ -1316,10 +1350,11 @@ codex_tool_rows() { # rollout since
              end
            elif $name == "write_stdin" then
              if $payload.name? == "exec" then
-               (fields($blob; "chars")) as $commands
+               key_states($blob; "write_stdin"; "chars") as $commands
                | (exec_tools($blob) | map(select(. == "write_stdin")) | length) as $calls
-               | if ($commands | length) != $calls then "X\twrite_stdin arguments"
-                 else ($commands[] | "C\t" + gsub("[\n\r\t]"; " ")) end
+               | if ($commands | length) != $calls or any($commands[]; .state != "value") then
+                   "X\twrite_stdin arguments"
+                 else ($commands[] | .value | "C\t" + gsub("[\n\r\t]"; " ")) end
              else (direct_args($blob)) as $args
                | if $args == null or ($args.chars? | type) != "string" then "X\twrite_stdin arguments"
                  else "C\t" + ($args.chars | gsub("[\n\r\t]"; " ")) end

@@ -1810,15 +1810,67 @@ assert await_done
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
   <<<"$("$RUNNER" report "$RUN_ID")"
 
-# Unsupported JavaScript string forms cannot make a shell call disappear; they fail closed.
+# Single quotes and backticks are string literals like any other, and a call spelled with them reads.
 clear_stub
 CX_TS=$(iso $(($(date +%s) + 60)))
 cx_exec "await tools.exec_command({cmd:'git status',workdir:'$cx_workdir'}); await tools.exec_command({cmd:\`git status\`,workdir:\`$cx_workdir\`});" \
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# An interpolated template literal names no command this reader can read, and fails closed.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "const verb = 'status'; const cmd = \`git \${verb}\`; await tools.exec_command({cmd, workdir:'$cx_workdir'});" \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
   <<<"$("$RUNNER" report "$RUN_ID")"
+
+# Shorthand resolves by NAME against the binding standing before the call, so an explicit value and a
+# shorthand one interleaved each keep their own command; taking them in two blocks paired the second
+# call with the first binding, and its `sed` spoiled a run that never wrote through the shell.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "var cmd = \"sed -i '' s/a/b/ bin/cx-not-this-one\"; await tools.exec_command({cmd: 'git status'}); var cmd = 'cat bin/cx-read-only'; await tools.exec_command({cmd});" \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# The same binding serves every shorthand call that follows it, however many there are.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "const cmd = 'git status --short'; await tools.exec_command({cmd}); await tools.exec_command({cmd});" \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A shorthand name with no binding before it resolves to nothing at all.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "await tools.exec_command({cmd}); const cmd = 'git status';" >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# workdir resolves per call the same way: the shorthand of the second call is the directory bound
+# before IT, and reading the first binding instead put every command outside the workdir.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "var workdir = '$WORK/extra'; await tools.exec_command({cmd: 'git status', workdir: '$WORK/extra'}); var workdir = '$cx_workdir'; await tools.exec_command({cmd: 'ls', workdir});" \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert test ! -e "$RUN_DIR/workdir-escape"
+assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
 
 # Tool-looking text in strings and comments is not an executed call.
 clear_stub
@@ -1849,6 +1901,16 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 start_ok codex
 assert await_done
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# JavaScript shorthand arguments resolve through their string bindings.
+clear_stub
+CX_TS=$(iso $(($(date +%s) + 60)))
+cx_exec "const cmd = \"git status --short\"; const workdir = \"$cx_workdir\"; await tools.exec_command({cmd, workdir, yield_time_ms:10000});" \
+  >"$CX_ROLLOUT"
+start_ok codex
+assert await_done
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
   <<<"$("$RUNNER" report "$RUN_ID")"
 
 # Bytes typed into a shell a previous call started are read as a command line like any other.

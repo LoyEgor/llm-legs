@@ -3335,13 +3335,23 @@ GATE_STUB="$FIXTURES/gate-stub.sh"
 cat > "$GATE_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GATE_LOG"
+# The two session-wide verbs answer from their own variables, so a gate that does not know them
+# yet is the default here: nothing printed, and the segment must render as it did before them.
+case "$1" in
+  autonomous) printf '%s\n' "${GATE_AUTONOMOUS-}"; exit "${GATE_VERB_RC:-0}" ;;
+  # The rendered tree is part of the question, so a caller that drops it gets no number at all.
+  debt-total) [ -n "${3:-}" ] || exit 1; printf '%s\n' "${GATE_TOTAL-}"; exit "${GATE_VERB_RC:-0}" ;;
+esac
 printf '%s\n' "$GATE_ANSWER"
 exit "${GATE_RC:-0}"
 STUB
 chmod +x "$GATE_STUB"
-export GATE_LOG GATE_ANSWER GATE_RC
+export GATE_LOG GATE_ANSWER GATE_RC GATE_AUTONOMOUS GATE_TOTAL GATE_VERB_RC
 GATE_ANSWER=off
 GATE_RC=0
+GATE_AUTONOMOUS=
+GATE_TOTAL=
+GATE_VERB_RC=0
 GATE_CMD="$GATE_STUB"
 
 # The verdict is cached for 15s on a key that cannot see a second edit to an already-modified file
@@ -3356,6 +3366,14 @@ away_tag() { # toplevel
   local key
   key=$(printf '%s' "$1" | cksum)
   printf '%s' "${key// /-}"
+}
+review_await_session() { # session
+  local file="$STATE_DIR/review-session-$1" i
+  for i in $(seq 1 100); do
+    [ -s "$file" ] && [ ! -d "$file.lock" ] && return 0
+    sleep 0.05
+  done
+  fail "the backgrounded session answer never landed: $1"
 }
 review_await_verdict() { # session [away-toplevel]
   local file="$STATE_DIR/review-class-$1" i
@@ -3379,6 +3397,18 @@ review_render() { # session repo [away-toplevel]
   review_await_verdict "$1" "${3:-}"
   run_statusline "$payload" || fail "review render failed: $1"
 }
+# The session-wide pair lands in its own cache, so a case that reads it has to wait for that file
+# too — the second render is only allowed to be the one that shows the answer.
+review_session_render() { # session repo
+  local payload
+  rm -f "$STATE_DIR/review-class-$1" "$STATE_DIR/review-session-$1"
+  rmdir "$STATE_DIR/review-class-$1.lock" "$STATE_DIR/review-session-$1.lock" 2>/dev/null
+  payload=$(statusline_payload "$1" "" "$2")
+  run_statusline "$payload" >/dev/null || fail "review session render failed: $1"
+  review_await_verdict "$1"
+  review_await_session "$1"
+  run_statusline "$payload" || fail "review session render failed: $1"
+}
 
 # The gate is asked about the working tree and this chat, and its answer is printed word for word.
 : > "$GATE_LOG"
@@ -3386,7 +3416,7 @@ GATE_ANSWER='dim rev 3'
 GATE_RC=0
 review_none_out=$(review_render review-dirty "$REVIEW_DIRTY")
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev 3${RESET}" <<< "$review_none_out"
-assert_eq "verdict $TOP_REVIEW_DIRTY review-dirty" "$(head -1 "$GATE_LOG")"
+assert grep -Fqx "verdict $TOP_REVIEW_DIRTY review-dirty" "$GATE_LOG"
 
 # Debt this chat authored reads bright — normal weight, no colour of its own — and dim is
 # everyone else's. Both carry the count verbatim; the segment neither invents a number nor strips
@@ -3461,14 +3491,15 @@ assert test "${review_long_out#*nobody}" = "$review_long_out"
 # Asked once per key, not once per render: this runs on every prompt, and the gate's verdict mode
 # reads git and review-bench. A second render with nothing moved must come off the cache.
 GATE_ANSWER='dim rev 3'
-rm -f "$STATE_DIR/review-class-review-cache"
+rm -f "$STATE_DIR/review-class-review-cache" "$STATE_DIR/review-session-review-cache"
 : > "$GATE_LOG"
 run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
   fail "review cache first render failed"
 review_await_verdict review-cache
+review_await_session review-cache
 run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
   fail "review cache second render failed"
-assert_eq 1 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
+assert_eq 1 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 # And asked again the moment the commit journal moves: the gate reads this chat's pending paths out
 # of it, so an entry appended there changes the verdict with nothing in `git status` moving at all.
 review_gitdir=$(git -C "$REVIEW_DIRTY" rev-parse --absolute-git-dir)
@@ -3476,8 +3507,25 @@ printf 'review-cache\t1750000000\tchange.txt\0' > "$review_gitdir/claude-commit-
 run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
   fail "review cache third render failed"
 review_await_verdict review-cache
-assert_eq 2 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
-rm -f "$review_gitdir/claude-commit-journal"
+assert_eq 2 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
+# A recorded review decision changes no Git state or commit journal, so its family clock must
+# invalidate the answer immediately rather than leave the old class behind until the TTL.
+review_clock="$review_gitdir/claude-review-clock"
+touch -t 202001010000 "$review_clock"
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review decision-clock render failed"
+review_await_verdict review-cache
+assert_eq 3 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
+# The pair beside it is about the CHAT, so nothing a tree does moves its key: three re-asked
+# verdicts later it is still the one answer the first render fetched, and its own 15s TTL is the
+# only thing that will ever ask again.
+assert_eq 1 "$(grep -c '^autonomous ' "$GATE_LOG" | tr -d ' ')"
+assert_eq 1 "$(grep -c '^debt-total ' "$GATE_LOG" | tr -d ' ')"
+# The total is asked about the chat AND the tree being rendered: the gate counts that repository
+# whether or not this chat's repository list names it, which is what keeps a `0` from standing
+# beside a repository row that is not 0.
+assert grep -Fqx "debt-total review-cache $TOP_REVIEW_DIRTY" "$GATE_LOG"
+rm -f "$review_gitdir/claude-commit-journal" "$review_clock"
 
 # Nothing is spawned behind the label beyond that one read-only ask: a background review-bench per
 # render is what the tier number used to cost, and a cache file keyed on a chat and its path set is
@@ -3513,6 +3561,143 @@ assert grep -Fq "$review_rev_delimited" <<< "$rorder_out"
 # review-dirty, and its own label would answer first.
 assert grep -Fq ":5173" <<< "${rorder_out%%"$review_rev_delimited"*}"
 rm -f "$STATE_DIR/ports-r-order"
+
+# --- the autonomous marker and the session-wide total ---------------------------------------
+# Two more answers from the same gate, about the CHAT and not the tree: `autonomous <sid>` says
+# whether this chat commits on its own, and `debt-total <sid>` sums the unreviewed lines over every
+# repository it touched. Both are the gate's alone — nothing here counts anything — and a gate that
+# does not know the verbs leaves the segment exactly as it was.
+review_seg=" ${DIM}│${RESET} "
+GATE_RC=0
+GATE_VERB_RC=0
+
+# `no` is the shape everything above already renders: the word stands and no dot appears.
+GATE_ANSWER='bright rev 7'
+GATE_AUTONOMOUS=no
+GATE_TOTAL=
+review_auto_off_out=$(review_session_render review-auto-off "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev 7" <<< "$review_auto_off_out"
+assert test "${review_auto_off_out#*●}" = "$review_auto_off_out"
+
+# `yes` puts a bare dot where the word was — the chat that reviews itself is the one fact a reader
+# needs before believing the number beside it.
+GATE_AUTONOMOUS=yes
+review_auto_on_out=$(review_session_render review-auto-on "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● 7" <<< "$review_auto_on_out"
+assert test "${review_auto_on_out#*"${review_seg}rev"}" = "$review_auto_on_out"
+
+# Split keeps both weights and the dot keeps none of them: it is bright beside a dimmed foreign side.
+GATE_ANSWER='split rev 7/12'
+review_auto_split_out=$(review_session_render review-auto-split "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● 7${DIM}/12${RESET}" <<< "$review_auto_split_out"
+assert test "${review_auto_split_out#*"${DIM}●"}" = "$review_auto_split_out"
+
+# Fit step 7 takes the space with the word: `● 7` folds to `●7`, as `rev 7` folds to `r7`.
+review_auto_fit_out=$(FIT_COLUMNS=24 review_session_render review-auto-fit "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}●7${DIM}/12${RESET}" <<< "$review_auto_fit_out"
+
+# The style the live chat that went unmarked actually shows: another chat's debt alone, dimmed. The
+# dot belongs to this build and not to the gate's number, so it stays bright beside a dim one, and
+# the bar between the two numbers is the separator's own grey with every colour closed around it —
+# the style may reach the numbers and nothing else, and the segment must not bleed into the `│`
+# after it.
+GATE_ANSWER='dim rev 267'
+GATE_AUTONOMOUS=yes
+GATE_TOTAL=30
+worker_dim_saved=$(cat "$HOME/.claude/worker-model" 2>/dev/null)
+printf 'worker=sonnet\n' > "$HOME/.claude/worker-model"
+review_dim_auto_out=$(review_session_render review-dim-auto "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● ${DIM}267${RESET} ${DIM}|${RESET} 30 ${DIM}│${RESET} " <<< "$review_dim_auto_out"
+assert test "${review_dim_auto_out#*"${DIM}●"}" = "$review_dim_auto_out"
+printf '%s' "$worker_dim_saved" > "$HOME/.claude/worker-model"
+
+# The total follows the repository's own number at the same weight, behind a bar.
+GATE_ANSWER='bright rev 7'
+GATE_AUTONOMOUS=no
+GATE_TOTAL=648
+review_total_out=$(review_session_render review-total "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev 7 ${DIM}|${RESET} 648" <<< "$review_total_out"
+review_total_fit_out=$(FIT_COLUMNS=24 review_session_render review-total-fit "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}r7${DIM}|${RESET}648" <<< "$review_total_fit_out"
+
+# A one-sided `dim` verdict is somebody else's number: this chat's own share of the repository is 0,
+# so a total of 0 beside it adds nothing and `rev 60 | 0` is the comparison reading a foreign count
+# as this chat's. A total above that 0 is lines owed in other repositories and does show.
+GATE_ANSWER='dim rev 60'
+GATE_AUTONOMOUS=no
+GATE_TOTAL=0
+review_dim_zero_out=$(review_session_render review-dim-zero "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}${DIM}rev 60${RESET}" <<< "$review_dim_zero_out"
+assert test "${review_dim_zero_out#*"${DIM}rev 60${RESET} ${DIM}|"}" = "$review_dim_zero_out"
+GATE_TOTAL=5
+review_dim_more_out=$(review_session_render review-dim-more "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}${DIM}rev 60${RESET} ${DIM}|${RESET} 5" <<< "$review_dim_more_out"
+
+# A total equal to what this chat owes here is that number said twice, and the segment says it once:
+# the repository the reader is looking at is then the only one this chat owes anything in. Compared
+# against the OWN side, so a split whose own number is the whole total loses the bar too.
+GATE_ANSWER='bright rev 7'
+GATE_TOTAL=7
+review_same_out=$(review_session_render review-total-same "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev 7" <<< "$review_same_out"
+assert test "${review_same_out#*"${review_seg}rev 7 ${DIM}|"}" = "$review_same_out"
+# Below it says even less: a total that does not reach what this chat owes here names no other
+# repository, so the bar is the strict `greater than` and not a difference.
+GATE_TOTAL=3
+review_below_out=$(review_session_render review-total-below "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev 7" <<< "$review_below_out"
+assert test "${review_below_out#*"${review_seg}rev 7 ${DIM}|"}" = "$review_below_out"
+GATE_TOTAL=7
+GATE_ANSWER='split rev 7/12'
+review_same_split_out=$(review_session_render review-total-same-split "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev 7${DIM}/12${RESET}" <<< "$review_same_split_out"
+assert test "${review_same_split_out#*"${DIM}/12${RESET} ${DIM}|"}" = "$review_same_split_out"
+GATE_TOTAL=648
+
+# Both additions at once, dimming only what the gate dimmed.
+GATE_ANSWER='split rev 7/12'
+GATE_AUTONOMOUS=yes
+review_both_out=$(review_session_render review-both "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● 7${DIM}/12${RESET} ${DIM}|${RESET} 648" <<< "$review_both_out"
+review_both_fit_out=$(FIT_COLUMNS=24 review_session_render review-both-fit "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}●7${DIM}/12${RESET}${DIM}|${RESET}648" <<< "$review_both_fit_out"
+
+# Nothing owed in THIS repository is not nothing owed by this chat: the word carries the total alone.
+GATE_ANSWER=off
+GATE_AUTONOMOUS=no
+review_off_total_out=$(review_session_render review-off-total "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev ${DIM}|${RESET} 648" <<< "$review_off_total_out"
+review_off_total_fit_out=$(FIT_COLUMNS=24 review_session_render review-off-total-fit "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}r${DIM}|${RESET}648" <<< "$review_off_total_fit_out"
+
+# Owing nothing anywhere is the empty slot it has always been.
+GATE_TOTAL=0
+review_zero_out=$(review_session_render review-zero "$REVIEW_DIRTY")
+assert review_slot_silent "$review_zero_out"
+
+# Only a bare non-negative integer is a total. Anything else is the gate saying something this
+# render cannot read as a number, and a number is the one thing this segment may not invent.
+GATE_ANSWER='bright rev 7'
+review_junk_n=0
+for review_total_junk in '648 lines' '-3' 'none' ''; do
+  GATE_TOTAL="$review_total_junk"
+  review_junk_out=$(review_session_render "review-total-junk-$((++review_junk_n))" "$REVIEW_DIRTY")
+  assert grep -Fq "${review_seg}rev 7" <<< "$review_junk_out"
+  assert test "${review_junk_out#*"${review_seg}rev 7 ${DIM}|"}" = "$review_junk_out"
+done
+
+# A gate without the verbs — nothing on stdout, nonzero exit — is the state this ships into, and
+# the segment must be byte-for-byte what it was before either addition.
+GATE_ANSWER='split rev 12/34'
+GATE_AUTONOMOUS=
+GATE_TOTAL=
+GATE_VERB_RC=1
+review_stub_out=$(review_session_render review-stub-verbs "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}rev 12${DIM}/34${RESET}" <<< "$review_stub_out"
+assert test "${review_stub_out#*●}" = "$review_stub_out"
+assert test "${review_stub_out#*"${DIM}/34${RESET} ${DIM}|"}" = "$review_stub_out"
+GATE_VERB_RC=0
+GATE_ANSWER=off
 
 # --- the real gate, so the two answers cannot drift apart -----------------------------------
 # The stub above proves the rendering; this proves the wiring against the hook that actually
@@ -4261,7 +4446,7 @@ rm -f "$STATE_DIR/review-anchor-anchor-gone"
 gate_calls_await() { # count
   local i
   for i in $(seq 1 100); do
-    [ "$(grep -c . "$GATE_LOG" | tr -d ' ')" -ge "$1" ] && return 0
+    [ "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')" -ge "$1" ] && return 0
     sleep 0.05
   done
   fail "the gate was never asked $1 times: $(cat "$GATE_LOG")"
@@ -4279,14 +4464,17 @@ run_statusline "$journal_wt_payload" >/dev/null || fail "journal worktree first 
 review_await_verdict journal-wt
 run_statusline "$journal_wt_payload" >/dev/null || fail "journal worktree second render failed"
 journal_wt_key=$(head -1 "$STATE_DIR/review-class-journal-wt")
-assert_eq "$(stat -f %m "$journal_wt_common/claude-commit-journal")" "${journal_wt_key##*|}"
-assert_eq 1 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
+journal_wt_without_clock=${journal_wt_key%|*}
+assert_eq "$(stat -f %m "$journal_wt_common/claude-commit-journal")" \
+  "${journal_wt_without_clock##*|}"
+assert_eq 0 "${journal_wt_key##*|}"
+assert_eq 1 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 # And the family's journal moving is what asks the gate again, with nothing in `git status` and
 # nothing in this worktree's own git dir having moved at all.
 touch -t 202001020000 "$journal_wt_common/claude-commit-journal"
 run_statusline "$journal_wt_payload" >/dev/null || fail "journal worktree common-dir render failed"
 gate_calls_await 2
-assert_eq 2 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
+assert_eq 2 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 rm -f "$journal_wt_gitdir/claude-commit-journal" "$journal_wt_common/claude-commit-journal"
 GATE_ANSWER=off
 
@@ -4329,4 +4517,4 @@ PATH="$anchor_saved_path"
 rm -f "$STATE_DIR/review-anchor-anchor-path"
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

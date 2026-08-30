@@ -178,24 +178,27 @@ journal_dir() { # toplevel
 }
 
 # Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
-# `git status`, and the commit journal the gate reads this chat's pending paths from (the
-# PostToolUse hook appends to it as the chat edits, and a repository with no journal yet keys on a
-# fixed 0). The journal is the checkout FAMILY's, one file under the common dir, so an edit made in
+# `git status`, the commit journal the gate reads this chat's pending paths from, and the review
+# decision clock. The PostToolUse hook appends to the journal as the chat edits, and a repository
+# with neither file yet keys on fixed zeroes. Both are under the checkout FAMILY's common dir, so an edit made in
 # a sibling worktree moves this key too — as it moves the gate's own answer. Everything the key
-# cannot see — a second edit to an already-modified file, another chat's commit landing, a run
-# being triaged — is bounded by the TTL.
+# cannot see — a second edit to an already-modified file or another chat's commit landing — is
+# bounded by the TTL.
 review_verdict_line() { # toplevel session status_key now [cache_tag]
   local top="$1" sid="$2" status_key="$3" now="$4" tag="${5:-}"
   # One cache file per tree the render asks about: a chat showing a review elsewhere asks about
   # that tree AND its own, and one file for both would answer each render from the other's key.
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}${tag:+-$tag}"
   local lock="$cache.lock"
-  local key cached_key cached cache_mtime journal_mtime commondir lock_mtime
+  local key cached_key cached cache_mtime journal_mtime clock_mtime commondir lock_mtime
   commondir=$(journal_dir "$top")
   journal_mtime=""
   [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
-  key="$top|$status_key|$journal_mtime"
+  clock_mtime=""
+  [ -n "$commondir" ] && clock_mtime=$(file_mtime "$commondir/claude-review-clock" 2>/dev/null)
+  [[ "$clock_mtime" =~ ^[0-9]+$ ]] || clock_mtime=0
+  key="$top|$status_key|$journal_mtime|$clock_mtime"
   cache_mtime=$(file_mtime "$cache" 2>/dev/null)
   cached_key=""
   cached=""
@@ -241,6 +244,60 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
     printf '%s' "$cached"
   else
     printf '%s' off
+  fi
+}
+
+# The gate's two answers about the CHAT rather than a tree: whether it runs autonomously, and the
+# unreviewed diff lines it owes summed over every repository it touched. Printed as `<yes|no>|<total>`
+# and cached per session alone — a key on the shown tree would void a session-wide answer at every cd
+# — behind the same off-render-path discipline as the verdict beside it. A gate that does not know
+# the verbs answers nothing, and the segment then renders exactly as it did before them.
+review_session_line() { # session now [rendered toplevel]
+  local sid="$1" now="$2" top="${3:-}"
+  local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
+  local cache="$statusline_cache_dir/review-session-$sid"
+  local lock="$cache.lock"
+  local cached cache_mtime lock_mtime timeout_bin
+  [ -n "$sid" ] && [ -x "$gate" ] || { printf '%s' 'no|'; return 0; }
+  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  cached=""
+  [[ "$cache_mtime" =~ ^[0-9]+$ ]] && IFS= read -r cached < "$cache" 2>/dev/null
+  if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 15 ]; then
+    printf '%s' "$cached"
+    return 0
+  fi
+  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+    if [ ! -d "$lock" ] ||
+      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
+      (
+        snapshot_lock_acquire "$lock" || exit 0
+        trap 'rmdir "$lock" 2>/dev/null' EXIT
+        timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+        # The rendered tree goes with the question: the gate counts it whether or not this chat's
+        # repository list names it, and a chat older than that list would otherwise total 0 beside a
+        # repository row that is not.
+        if [ -n "$timeout_bin" ]; then
+          auto=$("$timeout_bin" 10 "$gate" autonomous "$sid" 2>/dev/null | head -1)
+          total=$("$timeout_bin" 10 "$gate" debt-total "$sid" "$top" 2>/dev/null | head -1)
+        else
+          auto=$("$gate" autonomous "$sid" 2>/dev/null | head -1)
+          total=$("$gate" debt-total "$sid" "$top" 2>/dev/null | head -1)
+        fi
+        [ "$auto" = yes ] || auto=no
+        [[ "$total" =~ ^[0-9]+$ ]] || total=""
+        tmp="$cache.tmp.${BASHPID:-$$}"
+        printf '%s|%s' "$auto" "$total" > "$tmp" 2>/dev/null &&
+          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+      ) >/dev/null 2>&1 &
+    fi
+  fi
+  if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 120 ]; then
+    printf '%s' "$cached"
+  else
+    printf '%s' 'no|'
   fi
 }
 
@@ -1983,20 +2040,15 @@ if [ -n "$progress_total" ] && [ "${review_style:-}" != loud ]; then
   review_text=${review_text#rev }
 fi
 
-verdict_part=""
-if [ "${review_style:-}" = loud ]; then
-  # Nothing the gate says is red: `loud` is this build reading a word the gate grew after it, shown
-  # whole rather than swallowed (docs/statusline-contract.md).
-  verdict_part=" ${sep} ${RED}${review_text}${RESET}"
-elif [ "${review_style:-}" = dim ]; then
-  verdict_part=" ${sep} ${DIM}${review_text}${RESET}"
-elif [ "${review_style:-}" = split ] && [ "$review_text" != "${review_text#*/}" ]; then
-  # Both sides in one segment: this chat's own debt at normal weight, everyone else's dimmed after
-  # the slash. Truncation can eat the slash, and then the whole text stands at the near weight
-  # rather than being printed twice.
-  verdict_part=" ${sep} ${review_text%%/*}${DIM}/${review_text#*/}${RESET}"
-elif [ "${review_style:-}" = bright ] || [ "${review_style:-}" = split ]; then
-  verdict_part=" ${sep} ${review_text}"
+# What the same gate says about the CHAT rather than the shown tree, so neither moves when the
+# block does: the autonomous marker that replaces the word `rev`, and the debt this chat owes
+# across every repository it touched.
+review_autonomous=no
+review_total=""
+if [ -n "$session_id" ]; then
+  review_session=$(review_session_line "$session_id" "$now" "$active_top")
+  review_autonomous=${review_session%%|*}
+  review_total=${review_session#*|}
 fi
 
 # Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
@@ -2189,6 +2241,65 @@ fit_review_part() {
   fi
 }
 
+# The gate's verdict plus the two session-wide facts that ride in the same segment. A `loud`
+# sentence gets neither marker nor total: a word this build cannot classify reaches the reader
+# exactly as the gate said it, and decorating it would be this render speaking over the gate.
+fit_verdict_part() {
+  # The bar carries the separator's own grey and closes it: it divides two numbers exactly as `│`
+  # divides two segments, and the style's colouring reaches the numbers only.
+  local sp=" " bar=" ${DIM}|${RESET} " word=rev text dot="" body="" own
+  verdict_part=""
+  if [ "${review_style:-}" = loud ]; then
+    verdict_part=" ${sep} ${RED}${review_text}${RESET}"
+    return
+  fi
+  [ "$fit_rev_short" = 1 ] && { sp=""; bar="${DIM}|${RESET}"; word=r; }
+  text=$review_text
+  case "${review_style:-}" in
+    dim|bright|split)
+      # The counter beside it may already have taken the word away; the dot is not that word and
+      # stands either way. Only the dot sits outside the style's colour — the word is the gate's
+      # text and carries the gate's weight with the numbers.
+      if [ "$review_autonomous" = yes ]; then
+        dot="●${sp}"
+        text=${text#rev }
+      elif [ "$fit_rev_short" = 1 ]; then
+        case "$text" in "rev "*) text="${word}${sp}${text#rev }" ;; esac
+      fi
+      case "$review_style" in
+        dim) body="${DIM}${text}${RESET}" ;;
+        split)
+          # Truncation can eat the slash, and then the whole text stands at the near weight rather
+          # than being printed twice.
+          if [ "$text" != "${text#*/}" ]; then body="${text%%/*}${DIM}/${text#*/}${RESET}"
+          else body="$text"; fi ;;
+        *) body="$text" ;;
+      esac
+      ;;
+    *)
+      # Nothing owed here, but the chat owes elsewhere: the word alone carries the total.
+      [ -n "$review_total" ] && [ "$review_total" != 0 ] || return
+      if [ "$review_autonomous" = yes ]; then dot="●"; else body="$word"; fi
+      ;;
+  esac
+  # The total is news only where it exceeds what this chat owes HERE — then, and only then, does it
+  # say "and lines in other repositories too". Own-here is the chat's own share of the rendered
+  # repository, which a one-sided `dim` verdict has none of: its number is somebody else's, and
+  # comparing against it printed `rev 60 | 0`.
+  own=0
+  case "${review_style:-}" in
+    bright|split)
+      own=${review_text#rev }
+      own=${own%%/*}
+      [[ "$own" =~ ^[0-9]+$ ]] || own=0
+      ;;
+  esac
+  if [ -n "$review_total" ] && [ "$review_total" -gt "$own" ]; then
+    body="${body}${bar}${review_total}"
+  fi
+  verdict_part=" ${sep} ${dot}${body}"
+}
+
 fit_unpushed_part() {
   unpushed_part=""
   [ "$unpushed_show" = 1 ] || return
@@ -2215,6 +2326,7 @@ fit_compose() {
   fit_dir_part
   fit_branch_part
   fit_review_part
+  fit_verdict_part
   fit_unpushed_part
   fit_worker_part
   work="${dir_part}${branch_part}${ports_part}"
