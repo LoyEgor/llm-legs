@@ -3413,7 +3413,7 @@ assert test "${review_split_long_out#*"${DIM}/"}" = "$review_split_long_out"
 
 # The watchdog has no voice here at all: a killed run settles nothing, so its paths stand in the
 # numbers like any others and the kill is seen through the report flow and `review-bench doctor`
-# (docs/review-contract.md). No word of the gate's own vocabulary is red, and a nonzero exit is
+# (review-bench docs/review-contract.md). No word of the gate's own vocabulary is red, and a nonzero exit is
 # the gate answering rather than the gate failing.
 GATE_RC=2
 review_calm_n=0
