@@ -2546,7 +2546,7 @@ PY
 }
 
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded -c 'return "ok"' 2>/dev/null)" = ok ]; then
-  renderer_output=$(hs_bounded -c "return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
+  renderer_output=$(hs_bounded -c "_G.HS_ROOT = [[${HS_ROOT:-$HOME/.hammerspoon}]]; return dofile([[$ROOT/tests/llm_limits_renderer_harness.lua]])" 2>/dev/null) \
     || fail "Hammerspoon renderer contract checks threw"
   [ "$renderer_output" = "PASS: Hammerspoon projection contract" ] \
     || fail "Hammerspoon renderer contract checks: $renderer_output"

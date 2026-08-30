@@ -1298,8 +1298,9 @@ automationEnv.ClaudeContinue = {
     }
   end,
 }
+local hsRoot = assert(_G.HS_ROOT, "HS_ROOT unset: test_llm_limits.sh injects the Hammerspoon root")
 local automationChunk, automationError = loadfile(
-  root .. "/hammerspoon/config/automation_menu.lua", "t", automationEnv)
+  hsRoot .. "/automation_menu.lua", "t", automationEnv)
 assert(automationChunk, automationError)
 local automationModule = automationChunk()
 assert(automationTitles[#automationTitles] == "⟳ A 05:00", "busy prefix masked the resume timer title")

@@ -566,8 +566,10 @@ assert doc_has 'One limits view'
 
 # --- Row aa: Hammerspoon launchd agent identity -------------------------------
 HS_LABEL="com.egor.hammerspoon"
-HS_PLIST="$ROOT/launchd/com.egor.hammerspoon.plist"
+HS_ROOT="${HS_ROOT:-$HOME/.hammerspoon}"
+HS_PLIST="$HS_ROOT/launchd/$HS_LABEL.plist"
 HS_GUARD="$ROOT/hammerspoon/config/env_guard.lua"
+test -r "$HS_PLIST" || fail "row aa: $HS_PLIST is unreadable (set HS_ROOT)"
 HS_LOG="/Users/egorloy/Library/Logs/$HS_LABEL.log"
 assert eq "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$HS_PLIST")" "$HS_LABEL"
 assert eq "$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$HS_PLIST")" "/Users/egorloy/.local/libexec/hammerspoon"
