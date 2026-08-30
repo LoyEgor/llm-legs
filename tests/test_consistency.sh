@@ -6,7 +6,6 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export RBENCH_SHARE="$ROOT/share"
 DOC="docs/shared-invariants.md"
 CLAUDEB="$ROOT/bin/claudeb"
 STATUSLINE="$ROOT/bin/statusline.sh"
@@ -25,6 +24,10 @@ assert() {
   "$@" || fail "assert $asserts: $*"
 }
 eq() { [ "$1" = "$2" ] || return 1; }
+
+REVIEW_ROOT="${REVIEW_ROOT:-$ROOT/../review-bench}"
+[ -r "$REVIEW_ROOT/bin/review-bench" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
+export RBENCH_SHARE="$REVIEW_ROOT/share"
 
 # Value the doc declares canonical, extracted from its own table so a drifted
 # doc is caught too.
@@ -155,7 +158,7 @@ assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
 assert grep -Fq 'Codex and Gemini `main` profiles rank last on a tie' "$POLICY"
 assert doc_has 'Codex/Gemini base-profile priority'
 
-RB_PKG="$ROOT/share/rbench"
+RB_PKG="$REVIEW_ROOT/share/rbench"
 RB_STORE="$RB_PKG/store.py"
 RB_CATALOG="$RB_PKG/catalog.py"
 RB_ACCOUNTS="$RB_PKG/accounts.py"
@@ -191,7 +194,7 @@ rb_pkg_only() {
 # spelled so this file's own text cannot match them.
 assert test -r "$RB_PKG/name-to-module.json"
 rb_patch_audit=$(python3 - "$RB_PKG/name-to-module.json" \
-  "$ROOT/tests/test_review_bench.sh" "$ROOT/tests/test_consistency.sh" <<'PATCHPY'
+  "$REVIEW_ROOT/tests/test_review_bench.sh" "$ROOT/tests/test_consistency.sh" <<'PATCHPY'
 import json
 import re
 import sys
@@ -224,10 +227,10 @@ assert grep -Fq '"agy-pro": ("low", "high")' "$RB_CATALOG"
 assert grep -Fq '"agy-flash37": ("low", "medium", "high")' "$RB_CATALOG"
 assert grep -Fq '"agy-flash36": ("low", "medium", "high")' "$RB_CATALOG"
 assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$RB_CATALOG"
-assert grep -Fq 'agy-pro-<low|high>' "$ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash37-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash36-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash35-<low|medium|high>' "$ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-pro-<low|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash37-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash36-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash35-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
 assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$RB_LAUNCH"
 assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
@@ -402,7 +405,7 @@ reserved_set() {
   sed -nE 's/^[[:space:]]*(main\|)?(\.\*\|\*\/\*\|)?([a-z|._-]*help[a-z|._-]*)\).*/\3/p' "$1" |
     head -n1 | tr '|' '\n' | grep -vE '^(main|\.\*|\*/\*)$' | sort -u | paste -sd' ' -
 }
-assert eq "$(reserved_set "$CLAUDEB")" "$(reserved_set "$ROOT/bin/claude-chat-switch")"
+assert eq "$(reserved_set "$CLAUDEB")" "$(reserved_set "$REVIEW_ROOT/bin/claude-chat-switch")"
 # Compared against the code's own set rather than a third hand-maintained copy, so adding a
 # subcommand cannot leave the invariant's prose behind.
 doc_reserved=$(sed -nE 's/.*`(help[a-z -]*token-upkeep)`.*/\1/p' "$ROOT/$DOC" |
@@ -475,44 +478,6 @@ assert grep -Fq 'local parts, start, sep = {}, 1, "; "' "$HAMMER"
 assert doc_has 'User-entry refresh classification'
 assert doc_has 'including multiple Claude auth failures, uses `"; "` between entries'
 
-assert grep -Fq 'RECEIPT_DIR = "receipts"' "$RB_STORE"
-assert grep -Fq 'RECEIPT_FIELDS = ("repo", "tree", "commit", "run_id", "ts")' "$RB_STORE"
-rb_receipt_name=$(sed -n '/^def receipt_file_name(repo, lens=None, scope=None):/,/^$/p' "$RB_STORE")
-rb_receipt_hash_len=$(grep -E '^RECEIPT_HASH_HEX = [0-9]+$' "$RB_STORE" | awk '{print $3}')
-assert eq "$rb_receipt_hash_len" 8
-assert grep -Fq 'hashlib.sha1(repo_path.encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
-  <<<"$rb_receipt_name"
-assert grep -Fq 'return f"{repo_name}__{repo_hash}.json"' <<<"$rb_receipt_name"
-# A lens receipt is a sibling of that name, never the name itself: a lens run read the tree by a
-# methodology the tool did not write, and a scoped one read only part of it, so neither may
-# advance the name a full review is sized against.
-assert grep -Fq 'return f"{repo_name}__{repo_hash}__lens-{lens}.json"' <<<"$rb_receipt_name"
-assert grep -Fq 'return f"{repo_name}__{repo_hash}__scope-{scope_receipt_slug(scope)}.json"' \
-  <<<"$rb_receipt_name"
-assert grep -Fq 'hashlib.sha1("\0".join(scope).encode()).hexdigest()[:RECEIPT_HASH_HEX]' \
-  "$RB_STORE"
-# Scope receipts are read per PATH by coverage alone, and the per-path verdict is what keeps a
-# partial review from covering the repository.
-assert grep -Fq 'path = state_dir() / RECEIPT_DIR / name' "$RB_STORE"
-# The receipt is review-bench's own record and nothing renders it: the statusline speaks the
-# gate's verdict about THIS chat (row ah) and keeps no tree-keyed reader, or a repository some
-# other chat reviewed would carry a label here.
-assert doc_has 'no surface outside `bin/review-bench` reads it'
-assert test "$(grep -c 'receipts' "$STATUSLINE")" -eq 0
-assert test "$(grep -Ec 'RECEIPT|receipt_file_name|worktree_matches_tree' "$STATUSLINE")" -eq 0
-assert rb_all_have '"panel"' "$RB_STORE" "$RB_STATS"
-assert grep -Fq '"max": bool(max_panel)' "$RB_STORE"
-assert grep -Fq 'and ((.max | type) == "boolean" or .max == null))' "$STATUSLINE"
-assert grep -Fq 'status --porcelain' "$STATUSLINE"
-assert test "$(grep -Ec 'GIT_INDEX_FILE|git -C "\\$repo" add -A|current_tree_hash' "$STATUSLINE")" -eq 0
-assert doc_has '<state_dir>/receipts/<repoName>__<repoHash>.json'
-assert doc_has '<repoName>__<repoHash>__lens-<slug>.json'
-assert doc_has '<repoName>__<repoHash>__scope-<slug>.json'
-assert doc_has 'SHA-1 over its normalized paths joined with NUL'
-assert doc_has '`repo`, `tree`, `commit`, `run_id`, and `ts`, non-negative integer `errored`'
-assert doc_has 'optional positive integer `panel`'
-assert doc_has "tree\` is the reviewed commit's Git tree object"
-
 rb_late_multiplier=$(grep -E '^REVIEW_LATE_MULTIPLIER = [0-9]+$' "$RB_REPORT" | awk '{print $3}')
 rb_late_floor_s=$(grep -E '^REVIEW_LATE_FLOOR_S = [0-9]+$' "$RB_REPORT" | awk '{print $3}')
 sl_late_pair=$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$STATUSLINE")
@@ -536,32 +501,6 @@ assert grep -Fq 'select(type == "object" and (.used_pct | type) == "number")' "$
 
 assert doc_has 'Account data age'
 assert doc_has 'Absent and null-valued windows do not participate'
-
-# --- Row w: owner-only review panels -----------------------------------------
-OWNER_GATE="$ROOT/bin/review-owner-gate.sh"
-assert grep -Fq 'OWNER_TIERS = ("T3",)' "$RB_STORE"
-assert grep -Fq 'OWNER_GRANT_DIR = "review-grants"' "$RB_STORE"
-rb_grant_ttl=$(grep -E '^OWNER_GRANT_TTL_S = [0-9]+$' "$RB_STORE" | awk '{print $3}')
-gate_grant_min=$(grep -E '^GRANT_TTL_MIN=[0-9]+$' "$OWNER_GATE" | cut -d= -f2)
-assert eq "$rb_grant_ttl" 1800
-assert eq "$((gate_grant_min * 60))" "$rb_grant_ttl"
-# One directory, one marker per panel, mtime the whole state — no payload to agree on.
-assert grep -Fq "printf '%s/review-grants' \"\$state\"" "$OWNER_GATE"
-assert grep -Fq 'state_dir() / OWNER_GRANT_DIR' "$RB_STORE"
-assert grep -Fq '(_store.owner_grant_dir() / panel).stat().st_mtime' "$RB_CLI"
-assert grep -Fq 'find "$(grant_dir)/$1" -mmin "-$GRANT_TTL_MIN"' "$OWNER_GATE"
-# The same two panel names on both sides, and the keyboard exemption is his shell, not any tty.
-assert grep -Fq 'wanted = {"t3"} if tier_name in _store.OWNER_TIERS else set()' "$RB_CLI"
-assert grep -Fq 'named+=(t3)' "$OWNER_GATE"
-assert grep -Fq 'named+=(max)' "$OWNER_GATE"
-assert grep -Fq 'fresh t3' "$OWNER_GATE"
-assert grep -Fq 'fresh max' "$OWNER_GATE"
-assert grep -Fq 'os.environ.get("CLAUDECODE")' "$RB_CLI"
-# Both hook registrations, or half the gate is silently off.
-assert grep -Fq 'review-owner-gate.sh prompt' "$WORKER_GATE_SETTINGS"
-assert grep -Fq 'review-owner-gate.sh bash' "$WORKER_GATE_SETTINGS"
-assert doc_has 'Owner-only review panels'
-assert doc_has '`<state_dir>/review-grants/<panel>`'
 
 # --- Row x: claude account existence -----------------------------------------
 # One enumerator over every claudeb store, main/- filtered on both surfaces,
@@ -625,12 +564,6 @@ assert grep -Fq 'LLM_LIMITS_ANNOUNCE_SUPPRESS=1' "$LLMLIMITS"
 assert grep -Fq 'export CLAUDEB_WARM_USER_EXPLICIT=true' "$CLAUDEB"
 assert doc_has 'One limits view'
 
-# --- Row z: lens registry location -------------------------------------------
-assert grep -Fq 'LENS_DIR = _store.REPO_ROOT / "lenses"' "$RB_PROMPTS"
-assert grep -Fq 'os.environ.get("REVIEW_BENCH_LENS_DIR")' "$RB_PROMPTS"
-assert doc_has 'Lens registry location'
-assert doc_has '`REVIEW_BENCH_LENS_DIR` overrides'
-
 # --- Row aa: Hammerspoon launchd agent identity -------------------------------
 HS_LABEL="com.egor.hammerspoon"
 HS_PLIST="$ROOT/launchd/com.egor.hammerspoon.plist"
@@ -645,387 +578,7 @@ assert grep -Fq -- "/Library/Logs/$HS_LABEL.log" "$HS_GUARD"
 assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
 assert doc_has 'Hammerspoon launchd agent identity'
 
-# --- Row ab: review report frame ----------------------------------------------
-# Two repositories build the same two lines independently: llm-legs prints them,
-# the claude-setup hooks find blocks by their shape. A width that drifts on one
-# side still renders, so nothing fails until a report silently stops being found.
-FRAME_WIDTH=50
-FRAME_WORD=review
-# Which round the block is, carried by the header itself: the state suffixes hang off it, and a
-# consumer whose regex has no room for it finds no review block at all.
-FRAME_ROUND_RE='(?: · round [0-9]+)?'
-FRAME_DOC_ROUND_RE='(?: · round <N>)?'
-# The one mark a round wears inside the same frame, and the only one there is (row as): a fixing
-# pass that stopped at the P1 threshold. Spelled on one side alone it is a report that stops being
-# delivered the moment it starts mattering.
-FRAME_UNFINISHED_MARK='NOT FINISHED'
-# The rest of the state vocabulary of row `as`, underscored for the shell's word splitting. Every
-# one of them rides the same frame, so a consumer keyed on the bare word finds none of them.
-FRAME_STATE_MARKS='NO_PANEL STALE'
-FRAME_BENCH_WORD=bench
-# Only the DELIVERABLE ones: `STALE` is left out on purpose, because a run past the gate is a
-# report no hook hands over at all — not matching IS that rule (row ab), and admitting it back
-# delivers a block about a tree that has moved.
-FRAME_STATE_RE='NOT FINISHED|NO PANEL'
-# Same alternation as the doc spells it.
-FRAME_DOC_STATE_RE='NOT FINISHED|NO PANEL'
-FRAME_FOOTER_RE='={10,}'
-assert test "$(grep -Ec '^REPORT_FRAME_WIDTH = ' "$RB_ROUND")" -eq 1
-rb_frame_width=$(grep -E '^REPORT_FRAME_WIDTH = [0-9]+$' "$RB_ROUND" | awk '{print $3}')
-assert eq "$rb_frame_width" "$FRAME_WIDTH"
-assert grep -Fq "REPORT_FRAME_WORD = \"$FRAME_WORD\"" "$RB_ROUND"
-assert grep -Fq "REPORT_BLOCKED_SUFFIX = \"$FRAME_UNFINISHED_MARK\"" "$RB_ROUND"
-for cs_state_mark in $FRAME_STATE_MARKS; do
-  assert grep -Fq "_SUFFIX = \"${cs_state_mark//_/ }\"" "$RB_ROUND"
-done
-assert grep -Fq 'return f"{REPORT_FRAME_WORD} · round {number}"' "$RB_ROUND"
-assert grep -Fq "REPORT_BENCH_WORD = \"$FRAME_BENCH_WORD\"" "$RB_ROUND"
-# The recorded decision wears the same frame under a word of its own, and `review-bench decision`
-# is the ONE place it is laid out: both hooks that announce a decision print what that renders.
-assert grep -Fq 'REPORT_DECISION_WORD = "decision"' "$RB_ROUND"
-assert grep -Fq 'return f"{REPORT_DECISION_WORD} · round {number}"' "$RB_ROUND"
-assert grep -Fq 'decision.set_defaults(func=_report.cmd_decision)' "$RB_CLI"
-# One frame per run, built where the run's own state is known and nowhere else: a word baked into
-# a module constant is a state the emitter cannot pick between. Two emitters, the report's and the
-# decision's, beside the builder itself.
-assert rb_pkg_only 'report_frame_header(' 3 "$RB_REPORT"
-assert test -z "$(grep -rlE '^REPORT_[A-Z_]+_BEGIN' --include='*.py' "$RB_PKG")"
-assert grep -Fq 'REPORT_END = "=" * REPORT_FRAME_WIDTH' "$RB_ROUND"
-assert grep -Fq "f\"{'=' * left} {word} {'=' * (fill - left)}\"" "$RB_REPORT"
-assert doc_has 'Review report frame'
-assert doc_has '`^=+ [a-z]+ =+$`'
-assert doc_has "\`^=+ $FRAME_WORD$FRAME_DOC_ROUND_RE(?: · (?:$FRAME_DOC_STATE_RE))? =+\$\`"
-assert doc_has "the \`$FRAME_BENCH_WORD\` word"
-assert doc_has '`^={10,}$`'
-
 CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
-COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
-REPORT_NUDGE="$CLAUDE_SETUP/hooks/review-report-nudge.sh"
-DELIVERY_GATE="$CLAUDE_SETUP/hooks/stop.d/notice-review-report-delivery.sh"
-DECISION_REPORT="$CLAUDE_SETUP/hooks/review-decision-report.sh"
-if test -r "$DECISION_REPORT"; then
-  # Neither announcer lays a decision out: both run the renderer that owns it, exactly as they
-  # print the report rather than composing one.
-  assert grep -Fq '[review_bench, verb, run_id], capture_output=True' "$DECISION_REPORT"
-  assert grep -Fq 'rendered("decision", run_id)' "$DECISION_REPORT"
-  assert grep -Fq 'rendered("report", run_id)' "$DECISION_REPORT"
-  assert test "$(grep -c 'Решение по ревью' "$DECISION_REPORT")" -eq 0
-fi
-if test -r "$COMMIT_REPORT" && test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
-  assert grep -Fq '"decision" if line else "report"' "$DELIVERY_GATE"
-  assert grep -Fq 'DECISION_HEADER_RE = re.compile(r"(?m)^=+ decision · round [0-9]+ =+' \
-    "$DELIVERY_GATE"
-  assert test "$(grep -Ec '^FRAME_WIDTH=' "$COMMIT_REPORT")" -eq 1
-  cs_frame_width=$(grep -E '^FRAME_WIDTH=[0-9]+$' "$COMMIT_REPORT" | cut -d= -f2)
-  assert eq "$cs_frame_width" "$rb_frame_width"
-  assert grep -Fq 'local fill=$((FRAME_WIDTH - ${#1} - 2))' "$COMMIT_REPORT"
-  # The review consumers narrow the header to its own word, so a commit or push report framed
-  # identically is never taken for one; the closing rule stays the shared shape. Both of them
-  # PRINT what they locate, so a frame either of them misreads is a report Egor never sees.
-  cs_header_re='(?m)^=+ '"$FRAME_WORD$FRAME_ROUND_RE"'(?: · (?:'"$FRAME_STATE_RE"'))? =+\r?(?=\n|$)'
-  cs_footer_re='(?m)^'"$FRAME_FOOTER_RE"'\r?(?=\n|$)'
-  # One word is worn by TWO rounds — a finished one and one whose fixing pass has not answered —
-  # so the header cannot decide deliverability and both nets apply the same second rule over the
-  # block's rows. Held identical here: a rule one net applies and the other does not is a report
-  # withheld at one stop and delivered at the next.
-  cs_stopped_header_re='(?m)^=+ '"$FRAME_WORD$FRAME_ROUND_RE"' · '"$FRAME_UNFINISHED_MARK"' =+\r?(?=\n|$)'
-  cs_unanswered_row_re='(?mi)^fixes:[ \t]*stopped\b'
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert grep -Fq "HEADER_SPAN_RE = re.compile(r\"$cs_header_re\")" "$cs_hook"
-    assert grep -Fq "FOOTER_SPAN_RE = re.compile(r\"$cs_footer_re\")" "$cs_hook"
-    assert grep -Fq "STOPPED_HEADER_RE = re.compile(r\"$cs_stopped_header_re\")" "$cs_hook"
-    assert grep -Fq "UNANSWERED_ROW_RE = re.compile(r\"$cs_unanswered_row_re\")" "$cs_hook"
-    assert grep -Fq 'if not UNANSWERED_ROW_RE.search(text):' "$cs_hook"
-    # The header is the block's only remaining evidence of a threshold stop, so a head-cut copy
-    # of one is withheld: a row-level fallback here would key on a row the block no longer has.
-    assert grep -Fq 'return bool(STOPPED_HEADER_RE.search(text))' "$cs_hook"
-    assert test "$(grep -c 'STOPPED_ROW_RE' "$cs_hook")" -eq 0
-    assert grep -Fq 'if deliverable(block):' "$cs_hook"
-  done
-  # And a capture is a source for NEITHER of them: what a review-bench command PRINTED is read by
-  # nothing, so the only rule left that recognises a report inside captured output is the one that
-  # finds run ids in the command. Every recovery that read a block out of a tool result — a row
-  # fallback for a head-cut copy, a foreign-header walk, the tail key that deduped one, the sed
-  # range the model was told to re-read with — delivered blocks nobody could attribute.
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert test "$(grep -Ec 'REVIEW_ROW_RE|FOREIGN_HEADER_RE|tail_key|REREAD' "$cs_hook")" -eq 0
-    assert test "$(grep -Fc 'sed -nE' "$cs_hook")" -eq 0
-  done
-  # One fork command for both, asked per run rather than read off the block: a budget-spent round
-  # prints no row for the fork it earns, so a net inferring it from rows escalates nothing.
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert grep -Fq '[review_bench, "fork", run_id],' "$cs_hook"
-    assert grep -Fq '"hookSpecificOutput"' "$cs_hook"
-  done
-  # Row as: every word review-bench actually RENDERS, matched against the very regex the hooks
-  # were just pinned to. A pin on the source strings alone passes while a width, a space or the
-  # separator drifts on the emitting side, and the report that stops being found is exactly the
-  # one that still owes work.
-  frame_render=$(python3 - "$cs_header_re" "$cs_stopped_header_re" \
-    "$cs_unanswered_row_re" <<'FRAMEPY'
-import os
-import re
-import sys
-
-sys.path.insert(0, os.environ["RBENCH_SHARE"])
-import rbench as module
-header = re.compile(sys.argv[1])
-stopped_header = re.compile(sys.argv[2])
-unanswered_row = re.compile(sys.argv[3])
-
-
-def rendered(word, found, stopped):
-    line = module.report_frame_header(word)
-    if len(line) != module.REPORT_FRAME_WIDTH or bool(header.fullmatch(line)) is not found:
-        return repr(line)
-    # The loud word is the consumers' only evidence that an unanswered round is Egor's, so it is
-    # asserted against their narrower regex too: matched by any other word, every hook prints a
-    # report the next fixing pass rewrites.
-    return "ok" if bool(stopped_header.fullmatch(line)) is stopped else repr(line)
-
-
-# Every round of the budget, since the round rides the header: a regex that finds round 1 and not
-# round 2 delivers the first block of a chain and withholds the one that answers it.
-rows = "\n".join(module.report_block_lines([("fixes:", "stopped — the scope is wrong", False)]))
-# The late word is pinned UNMATCHED: past the gate a run's report reaches neither net, and a
-# regex that admits it back delivers a block about a tree that has moved — and takes the ledger
-# key with it, retiring as read a report nobody was ever offered.
-print(",".join(
-    [rendered(f"{module.round_frame_word(number)}{suffix}", delivered,
-              suffix == f" · {module.REPORT_BLOCKED_SUFFIX}")
-     for number in (1, module.ROUND_BUDGET)
-     for suffix, delivered in (
-        ("", True),
-        (f" · {module.REPORT_BLOCKED_SUFFIX}", True),
-        (f" · {module.REPORT_NO_PANEL_SUFFIX}", True),
-        (f" · {module.REPORT_STALE_SUFFIX} · 3 Aug", False),
-    )]
-    # The bench word is deliberately outside the narrowing (row ab): matched by it, a panel that
-    # owes no fixes is delivered as a review round.
-    + [rendered(module.REPORT_BENCH_WORD, False, False)]
-    # The row as the emitter ALIGNS it, not as the source spells it: the label is padded to the
-    # widest one in the block, and a rule anchored to the label matches only by luck.
-    + ["ok" if unanswered_row.search(rows) else repr(rows)]
-))
-FRAMEPY
-)
-  assert eq "$frame_render" "ok,ok,ok,ok,ok,ok,ok,ok,ok,ok"
-  assert grep -Fq 'fixes = fixes_row_value(run_dir, meta, verdict_rows, number) if unanswered else None' \
-    "$RB_REPORT"
-  # The two rows that speak only when they have something to say, and the one that always does: a
-  # `next: none` and a `debt:` row rebuilt at render time were both a block saying a thing that is
-  # not so — nothing follows, and this much was read — where the invariant says it says nothing.
-  assert grep -Fq 'if follows:' "$RB_REPORT"
-  assert grep -Fq 'rows.append(("next:", follows, True))' "$RB_REPORT"
-  assert grep -Fq 'rows.append(("debt:", price, False))' "$RB_REPORT"
-  assert grep -Fq 'price = meta.get("scope_price")' "$RB_REPORT"
-  assert grep -Fq '"scope_price": scope_price,' "$RB_CLI"
-  assert eq "$(grep -c '"scope_price": scope_price,' "$RB_CLI")" 2
-  assert doc_has '`debt:` stands directly under `confirmed:` on every round'
-  assert doc_has 'prints no row at all otherwise'
-  # One width for every block, because the pane it is read in re-wraps anything longer at column 0.
-  assert grep -Fq 'return min(REPORT_WIDTH_MAX, shutil.get_terminal_size' "$RB_REPORT"
-  assert grep -Fq 'rows.append(("fixes:", fixes, True))' "$RB_REPORT"
-  # The fork the loud word owes is delivered by a command of its own, so no row carries it.
-  assert grep -Fq 'REPORT_BLOCKED_FORK' "$RB_ROUND"
-  assert grep -Fq 'def round_fork_text(' "$RB_REPORT"
-  assert grep -Fq 'def cmd_fork(' "$RB_REPORT"
-  assert test -z "$(grep -rl "\"stopped:\"" --include='*.py' "$RB_PKG")"
-  # A watchdog kill wears no word of its own: the cell it killed says so on its `failed:` row, and
-  # coverage is the triage receipt's answer to give. Re-added on the emitting side alone it is a
-  # report every hook stops delivering; re-added on the hooks' alone it is a state nothing frames.
-  assert test -z "$(grep -rl 'KILLED' --include='*.py' "$RB_PKG")"
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert test "$(grep -c 'KILLED' "$cs_hook")" -eq 0
-  done
-  # STALE is a clock and nothing else (row as), and it is the SAME clock everything else reads:
-  # one age for the whole tool, so a report cannot be late by one rule and current by another.
-  # No content or delivery criterion — those called a block stale the moment its fixing pass
-  # moved the tree — and no second constant, which is what a stale hour of its own was.
-  assert grep -Fq 'TRIAGE_GATE_HOURS = 6' "$RB_STORE"
-  # And ONE instant, held by `report_instant` alone: the frame's date and the delivery window read
-  # the same clock off the same helper, or a round triaged now is handed over wearing the word the
-  # hooks refuse and reaches nobody.
-  assert grep -Fq 'def report_instant(run_dir, meta, state=None):' "$RB_ROUND"
-  assert grep -Fq 'dated = _round.report_instant(run_dir, meta, state)' "$RB_REPORT"
-  assert grep -Fq '_store.utc_now() - dated > timedelta(hours=_store.TRIAGE_GATE_HOURS)' "$RB_REPORT"
-  assert grep -Fq \
-    '(now - report_instant(run_dir, meta)).total_seconds() > _store.TRIAGE_GATE_HOURS * 3600' \
-    "$RB_ROUND"
-  assert test -z "$(grep -F 'run_finished_at' "$RB_REPORT")"
-  assert test -z "$(grep -rl 'REPORT_STALE_HOURS' --include='*.py' "$RB_PKG")"
-  assert test -z "$(grep -rl 'def report_delivered_late(\|def report_snapshot_moved(' --include='*.py' "$RB_PKG")"
-  # That date is the frame's only timestamp: a current block is about now by construction, and a
-  # finish stamp on every header is what made a stale one indistinguishable from this morning's.
-  assert test -z "$(grep -rl "strftime('%b %H:%M')" --include='*.py' "$RB_PKG")"
-  assert doc_has '`TRIAGE_GATE_HOURS = 6`'
-  # The word's whole delivery rule: past the gate the block is rendered by hand and by
-  # nothing else. A doc that keeps promising a late delivery is a doc for the old hooks.
-  assert doc_has 'no hook ever delivers it'
-  # Every state the emitter frames is a state the delivery queue can name, minus two the queue
-  # names by hand: `pending`, handed over as `triaged` inside the triage window alone and never
-  # past it, and `covering` — a round whose far repository has not committed yet — which is
-  # delivered at NEITHER end, its block having reached the chat at its triage and reaching it
-  # again as `done` when the last leg lands. A word added to one side and not the other is a
-  # report framed and never delivered.
-  frame_states=$(python3 - "$RB_ROUND" <<'STATEPY'
-import os
-import re
-import sys
-
-sys.path.insert(0, os.environ["RBENCH_SHARE"])
-import rbench as module
-print("|".join(sorted(module.DELIVERY_STATES)))
-# Every state `fix_status` can actually answer, read off its returns rather than off a list beside
-# them: the delivery vocabulary is this set minus `pending`, and a state added here and nowhere
-# else is a round the Stop net drops in silence.
-body = open(sys.argv[1], encoding="utf-8").read().split("\ndef fix_status(", 1)[1]
-body = body.split("\n\n\ndef ", 1)[0]
-print("|".join(sorted(set(re.findall(r'(?m)^\s*(?:return .*|\)), "(\w+)"$', body)))))
-STATEPY
-)
-  assert eq "$frame_states" "blocked|done
-blocked|covering|done|pending"
-  # And `covering` leaves the queue BY NAME rather than by falling off the end of the vocabulary.
-  assert grep -Fq 'if state == "covering":' "$RB_ROUND"
-  # The Stop net's third source is the tool's own answer, so the query and the shape of what it
-  # returns are one contract: a flag renamed on either side delivers nothing and says nothing.
-  assert grep -Fq '[review_bench, "pending-delivery", "--session", session_id],' "$DELIVERY_GATE"
-  assert grep -Fq '"pending-delivery",' "$RB_CLI"
-  # And the STATE beside each id, which is half the ledger key: the net's line regex accepts these
-  # three spellings and drops every other line without a word, so a state added or renamed on the
-  # emitting side reaches nobody and nothing fails. Spelled once per repository, here held equal.
-  # DELIVERY_STATES stays the two FINAL states, the ones named off the run's own finish; `triaged`
-  # and `fork` join the line vocabulary alone — one delivery each. Only `fork` is rendered as a
-  # LINE: the triage itself is the whole block the moment it is on record, and a one-liner Egor
-  # then had to wait out was the report arriving twice, late.
-  cs_delivery_states='done|blocked'
-  assert grep -Fq "DELIVERY_STATES = (\"${cs_delivery_states//|/\", \"}\")" "$RB_ROUND"
-  assert grep -Fq 'return "triaged"' "$RB_ROUND"
-  assert grep -Fq 'rows.append((run_dir, "fork"))' "$RB_ROUND"
-  assert grep -Fq "Z-[0-9a-f]+(?:-\\d+)?) ($cs_delivery_states|triaged|fork)\\Z\")" "$DELIVERY_GATE"
-  assert grep -Fq 'OWN_BLOCK_STATES = ("fork",)' "$DELIVERY_GATE"
-  assert grep -Fq 'const="triaged", choices=("triaged", "fork")' "$RB_CLI"
-  assert doc_has 'exactly `done`, `blocked`, `triaged` and `fork`'
-  # The fork decision is a RECORD the gates require before any fixing pass, never prose demanded
-  # of the model: the `MUST open with your own written analysis` note is gone from both nets.
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert test "$(grep -c 'ESCALATION_NOTE' "$cs_hook")" -eq 0
-  done
-  # The ceiling alone, spelled wherever the why is asked for, or the writer is refused by a bound
-  # nothing named. No floor stands anywhere: the model writes as much as it finds necessary and two
-  # words are fine (Egor, 2026-08-29).
-  assert grep -Fq 'FORK_WHY_MAX_CHARS = 400' "$RB_ROUND"
-  assert grep -Fq 'up to {FORK_WHY_MAX_CHARS} chars>' "$RB_ROUND"
-  assert grep -Fq 'up to {_round.FORK_WHY_MAX_CHARS} characters' "$RB_CLI"
-  assert grep -Fq 'up to {FORK_WHY_MAX_CHARS} characters' "$RB_ROUND"
-  assert test -z "$(grep -rl FORK_WHY_MIN_CHARS "$RB_PKG")"
-  assert grep -Fq 'up to 400 characters and as few as it takes' \
-    "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
-  assert grep -Fq 'delivery.add_argument("--session", default="", metavar="ID", required=True,' \
-    "$RB_CLI"
-  # Whose run it is, asked of ONE run by id: both nets render through `report`, and a run reached
-  # by id says nothing about who launched it. The query and the REFUSAL are one contract — the
-  # flag, the sentence review-bench raises, the `review-bench: ` prefix main() puts before it, and
-  # the regex both hooks read the launcher out of. Any one of them drifting alone frames another
-  # chat's review in this chat's window, which is what happened live (2026-08-22).
-  # The chat's NAME rides that line after its id (row `aw`), which is why the regex ends on an
-  # optional parenthesised tail: the id stays the machine-readable field and stays first.
-  cs_foreign_re='(?m)^review-bench: run \S+ belongs to chat (\S+)(?: \(.*\))?\s*$'
-  assert grep -Fq \
-    'f"run {run_dir.name} belongs to chat {launcher}{_store.chat_suffix(launcher)}"' "$RB_REPORT"
-  assert grep -Fq 'print(f"review-bench: {exc}", file=sys.stderr)' "$RB_CLI"
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert grep -Fq "FOREIGN_RE = re.compile(r\"$cs_foreign_re\")" "$cs_hook"
-    assert grep -Fq 'argv += ["--session", session]' "$cs_hook"
-  done
-  # The run id the ownership check keys on. A `report` the regex cannot resolve to a literal id is
-  # a run neither net may deliver — the Stop net simply finds no id to ask about, and the nudge
-  # says so to the model, so only it spells this.
-  assert grep -Fq 'r"(?!\s+\d{8}T\d{6}Z-[0-9a-f]+(?:-\d+)?\b)")' "$REPORT_NUDGE"
-  assert grep -Fq 'r"review-bench(?:\s+-{1,2}[\w-]+(?:=\S+)?)*\s+(?:record|report)"' \
-    "$REPORT_NUDGE"
-  # And the line review-bench actually PRINTS, matched against that very regex: a pin on the two
-  # source strings alone passes while the wording drifts apart, and the report that stops being
-  # recognised as foreign is the one delivered to the wrong chat.
-  cs_foreign_match=$(python3 - "$cs_foreign_re" <<'FOREIGNPY'
-import re
-import sys
-
-run_dir = type("run", (), {"name": "20260822T180004Z-628edbc"})
-line = "review-bench: " + "run {run_dir.name} belongs to chat {launcher}{name}".format(
-    run_dir=run_dir, launcher="73403494", name=" (a named chat)")
-match = re.search(sys.argv[1], line)
-print(match.group(1) if match else repr(line))
-FOREIGNPY
-)
-  assert eq "$cs_foreign_match" "73403494"
-  # What the model owes AFTER the block, in the three places that say it: the hook's directive, the
-  # tier doc a chat reads before a review, and the contract. Worded apart, the contract asked for
-  # judgment the block cannot hold while the other two asked for silence, and a chat obeyed
-  # whichever it had read last.
-  cs_fork_word='the only word on where the round goes'
-  cs_fork_close='carrying the fixes closes it'
-  assert grep -Fq "$cs_fork_word" "$REPORT_NUDGE"
-  assert grep -Fq "$cs_fork_close" "$REPORT_NUDGE"
-  assert grep -Fq "$cs_fork_word" "$ROOT/docs/review-contract.md"
-  assert grep -Fq "$cs_fork_close" "$ROOT/docs/review-contract.md"
-  if test -r "$CLAUDE_SETUP/global/docs/review-tiers.md"; then
-    # Asked of the prose with its line breaks folded away: that doc is rewrapped whenever it is
-    # shortened, and a pin that a rewrap alone can break says the wording changed when it did not.
-    cs_tier_prose=$(tr '\n' ' ' <"$CLAUDE_SETUP/global/docs/review-tiers.md" | tr -s ' ')
-    assert grep -Fq "$cs_fork_word" <<<"$cs_tier_prose"
-    assert grep -Fq "$cs_fork_close" <<<"$cs_tier_prose"
-  else
-    fail "post-block wording: $CLAUDE_SETUP/global/docs/review-tiers.md is unreadable (set CLAUDE_SETUP_ROOT)"
-  fi
-  assert doc_has 'Review report header words'
-  assert doc_has '`review · round <N>`'
-  assert doc_has '`· NOT FINISHED` for a round whose fix status is `blocked`'
-  assert doc_has 'the STATE hangs off that as a suffix'
-  assert doc_has 'a state may be REMOVED from the vocabulary but never renamed'
-  assert doc_has '`ledger_keys(run_id, state, block)`'
-  assert doc_has 'once ACROSS the channels, not once per hook'
-  assert doc_has '`UNANSWERED_ROW_RE`'
-  assert doc_has 'There is no `stopped:` row any more'
-  assert doc_has '`review-bench fork <run-id>`'
-  assert doc_has '`review-bench pending-delivery --session <id>`'
-  # Both hooks must read one command grammar: a run id only one of them keeps whole — the
-  # collision `-<pid>` suffix included — or a launch only one recognises, splits one delivery
-  # into two behaviours, and the ledger keys they share stop matching.
-  cs_run_re=$(grep -F 'COMMAND_RUN_RE = re.compile(' "$REPORT_NUDGE")
-  assert test -n "$cs_run_re"
-  assert eq "$(grep -F 'COMMAND_RUN_RE = re.compile(' "$DELIVERY_GATE")" "$cs_run_re"
-  assert grep -Fq '(?:-\d+)?' "$REPORT_NUDGE"
-  # And ONE ledger between them, keys included. Both nets can print a frame to Egor, and "one
-  # report per run-state" means once across the two of them: a key one writes and the other never
-  # asks about is the same block delivered twice in one turn (2026-08-20 and again 2026-08-21).
-  cs_keys_body() {
-    sed -n '/^def ledger_keys(run_id, state, block):$/,/^    return keys$/p' "$1" |
-      grep -E '^ +(keys|if run_id and state:|return keys)'
-  }
-  cs_keys_fn=$(cs_keys_body "$REPORT_NUDGE")
-  assert test "$(printf '%s\n' "$cs_keys_fn" | wc -l)" -eq 4
-  assert eq "$(cs_keys_body "$DELIVERY_GATE")" "$cs_keys_fn"
-  for cs_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert grep -Fq 'keys = [hashlib.sha256(block.encode()).hexdigest()]' "$cs_hook"
-    assert grep -Fq 'keys.append(f"run:{run_id}:{state}")' "$cs_hook"
-    # Half that key is the state, and it is review-bench's answer (`report <id> --state`), never a
-    # reading of the block: derived from the frame, the two nets wrote keys neither recognised
-    # and Egor read one block twice (2026-08-29).
-    assert grep -Fq 'argv = [review_bench, "report", run_id, "--state"]' "$cs_hook"
-    assert grep -Fq 'return state if state in DELIVERY_STATES else None' "$cs_hook"
-    assert test "$(grep -c 'STOPPED_HEADER_RE.search(block) else' "$cs_hook")" -eq 0
-  done
-  cs_launch_re=$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$REPORT_NUDGE")
-  assert test -n "$cs_launch_re"
-  assert eq \
-    "$(sed -n '/^LAUNCH_RE = re.compile($/,/review-bench\\s")$/p' "$DELIVERY_GATE")" \
-    "$cs_launch_re"
-else
-  fail "review report frame across claude-setup: $CLAUDE_SETUP is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 
 # --- Row ah: the statusline speaks the gate's verdict --------------------------
@@ -1354,145 +907,6 @@ fi
 assert grep -Fq 'return _round.pid_still_running(*stamp)' "$RB_CLI"
 assert eq "$(grep -c 'def pid_still_running(' "$RB_ROUND")" 1
 
-
-# --- Row ap: both round dials are one number across the two repositories ------
-# The gate WORDS the decision ask and review-bench refuses the fixing pass without a record; both
-# price the same round, so a dial drifting on one side hands a chat a sentence about a band the
-# other disagrees with. The VERDICT is never computed here: the gate relays `fork --check`.
-assert doc_has 'Both round dials are one number across the two repositories'
-rb_second_p1s=$(sed -n 's/^HANDOFF_P1_STOP = \([0-9]*\)$/\1/p' "$RB_ROUND")
-rb_fix_max=$(sed -n 's/^ROUND_FIX_MAX = \([0-9]*\)$/\1/p' "$RB_ROUND")
-rb_hard_min=$(sed -n 's/^ROUND_HARD_MIN = \([0-9]*\)$/\1/p' "$RB_ROUND")
-assert eq "$rb_second_p1s" 3
-assert eq "$rb_fix_max" 8
-assert eq "$rb_hard_min" 20
-# The contract prices the bands in prose off the same three numbers. A doc drawing a band the tool
-# does not is read by a model that then argues with the refusal it gets.
-assert grep -Fq "\`ROUND_FIX_MAX = $rb_fix_max\`, \`ROUND_HARD_MIN = $rb_hard_min\`" \
-  "$ROOT/docs/review-contract.md"
-assert grep -Fq "**≤ $rb_fix_max confirmed**" "$ROOT/docs/review-contract.md"
-assert grep -Fq "**≥ $rb_hard_min confirmed, or ≥ $rb_second_p1s P1**" \
-  "$ROOT/docs/review-contract.md"
-# Neither dial is spelled a third time, and debt.py spells none: a copy left behind is a band
-# nobody can see moving.
-assert test -z "$(grep -rlE 'SECOND_REVIEW_(P1S|FINDINGS|HARD_FINDINGS)' --include='*.py' "$RB_PKG")"
-assert test "$(grep -Ec 'HANDOFF_P1_STOP|ROUND_FIX_MAX|ROUND_HARD_MIN' "$RB_DEBT")" -eq 0
-if test -r "$FLOW_GATE"; then
-  gate_second_p1s=$(sed -n 's/^SECOND_REVIEW_P1S=\([0-9]*\)$/\1/p' "$FLOW_GATE")
-  gate_second_findings=$(sed -n 's/^SECOND_REVIEW_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")
-  gate_second_hard=$(sed -n 's/^SECOND_REVIEW_HARD_FINDINGS=\([0-9]*\)$/\1/p' "$FLOW_GATE")
-  assert eq "$gate_second_p1s" "$rb_second_p1s"
-  assert eq "$gate_second_findings" "$rb_fix_max"
-  # The third dial is the arm `round_band` reaches on the tally alone. Short of it the gate words a
-  # 25-finding round as the middle band and the stop ask lets `fix` past unargued, while the report
-  # beside it prints `round 2 required`.
-  assert eq "$gate_second_hard" "$rb_hard_min"
-  assert grep -Fq 'review-bench fork "$fork_run" --check' "$FLOW_GATE"
-else
-  fail "round dials across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-if test -d "$CLAUDE_SETUP/hooks"; then
-  duplicate_round_dials=$(grep -HnE \
-    '^[[:space:]]*(export[[:space:]]+|readonly[[:space:]]+|local[[:space:]]+)?(([A-Z0-9_]*(ROUND|REVIEW|HARD|FIX)[A-Z0-9_]*(P1S?|FINDINGS?|CONFIRMED|THRESHOLD|LIMIT|MAX|MIN|STOP)[A-Z0-9_]*)|([A-Z0-9_]*(P1S?|FINDINGS?|CONFIRMED|THRESHOLD)[A-Z0-9_]*(ROUND|REVIEW|HARD|FIX)[A-Z0-9_]*))[[:space:]]*=[[:space:]]*(3|8|20)([[:space:]]*(#.*)?)?$|^[[:space:]]*(export[[:space:]]+|readonly[[:space:]]+|local[[:space:]]+)?(HARD_CONFIRMED|HARD_P1S|FIX_ONLY_CONFIRMED)[[:space:]]*=' \
-    "$CLAUDE_SETUP"/hooks/*.sh "$CLAUDE_SETUP"/hooks/stop.d/* "$CLAUDE_SETUP"/hooks/lib/* \
-    2>/dev/null | grep -Fv "$FLOW_GATE:" || true)
-  [ -z "$duplicate_round_dials" ] ||
-    fail "row ap: duplicate round threshold assignment outside review-flow-gate.sh: $duplicate_round_dials"
-else
-  fail "duplicate round dial check: $CLAUDE_SETUP/hooks is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-
-# --- Row af: the four decision words are one vocabulary ------------------------
-# Four sites spell them, and none of the four may hold a fifth word or a different one: the tuple
-# the tool prices with, the flag a chat actually types, the contract Egor reads, and the skill
-# every chat is handed. Drifted apart, a decision one reader accepts is one another refuses, with
-# the fixing pass waiting on the difference nobody can see.
-FORK_WORDS='fix simplify cut redesign'
-assert grep -Fq "DECISION_WORDS = (\"fix\", \"simplify\", \"cut\", \"redesign\")" "$RB_ROUND"
-# The flag takes the tuple itself rather than a list of its own — argparse is what refuses a fifth
-# word at the one moment a person is typing one.
-assert grep -Fq 'FORK_CHOICES = DECISION_WORDS' "$RB_ROUND"
-assert grep -Fq 'fork.add_argument("--choice", choices=_round.FORK_CHOICES' "$RB_CLI"
-assert test "$(grep -Ec '"(fix|simplify|cut|redesign)"' "$RB_CLI")" -eq 0
-assert doc_has '`DECISION_WORDS` = fix, simplify, cut, redesign'
-fork_word_re=$(printf '%s' "$FORK_WORDS" | tr ' ' '|')
-assert grep -Eq "fork <run-id> --choice ($fork_word_re)\|($fork_word_re)\|($fork_word_re)\|($fork_word_re)" \
-  "$ROOT/docs/review-contract.md"
-# The report prints the same four as a menu, and the contract's own table spells that menu back:
-# a doc listing a fifth choice is a chat typing a word `--choice` refuses.
-assert grep -Fq 'DECISION_MENU = " / ".join(DECISION_WORDS)' "$RB_ROUND"
-assert grep -Fq "$(printf '%s' "$FORK_WORDS" | sed 's| | / |g')" "$ROOT/docs/review-contract.md"
-# --- Row at: the review that answers a debt ------------------------------------
-# One command, spelled in both repositories, and it names NO paths on purpose: --debt computes the
-# scope and widens it to the surviving paths of any round a decision reopened. A gate that drifts
-# back to a path list hands over a scope that answers no round, and the narrow review that passes
-# looks like an answer.
-assert doc_has 'The review that answers a debt'
-rb_debt_cmd=$(sed -n 's/^DEBT_REVIEW_COMMAND = "\(.*\)"$/\1/p' "$RB_STORE")
-assert eq "$rb_debt_cmd" 'REVIEW_ASKED=1 review-bench review --debt --tier <T0|T1|T2 — choose, see review-tiers.md>'
-# The tier in that command is a placeholder and not a tier: printed as a real one it is pasted as
-# one, which is how every chat came to run T1 over documentation and over the core alike. The one
-# caller that knows a tier substitutes THIS literal, so a spelling that drifts leaves the
-# placeholder standing in a command a user already answered for.
-rb_debt_tier=$(sed -n 's/^DEBT_REVIEW_TIER = "\(.*\)"$/\1/p' "$RB_STORE")
-assert eq "$rb_debt_tier" '<T0|T1|T2 — choose, see review-tiers.md>'
-assert grep -Fq -e "--tier $rb_debt_tier" "$RB_STORE"
-assert grep -Fq 'command.replace(_store.DEBT_REVIEW_TIER, tier)' "$RB_DEBT"
-# One builder over that literal, and every surface that HANDS the command to a chat goes through
-# the per-chat form: a notice or a handoff spelling the bare command itself is what arranges the
-# split panel the review then refuses, and a chat told to run it twice runs it twice.
-assert grep -Fq 'command = _store.DEBT_REVIEW_COMMAND' "$RB_DEBT"
-assert eq "$(grep -c '_store.DEBT_REVIEW_COMMAND' "$RB_DEBT")" 2
-assert eq "$(grep -c '_store.DEBT_REVIEW_COMMAND' "$RB_ROUND")" 0
-assert grep -Fq 'print(debt_chat_review_command(session, [repo]))' "$RB_DEBT"
-assert eq "$(grep -c 'debt_chat_review_command' "$RB_ROUND")" 3
-assert grep -Fq 'round 2 runs once with `{second}`' "$RB_ROUND"
-if test -r "$FLOW_GATE"; then
-  # The gate's half of the same literal: the round-2 line of `escalation-verdict` is the one place
-  # claude-setup still hands a chat this command, and it carries no scope of its own.
-  gate_round2_cmd=$(sed -n 's/.*Run it as `\([^`]*\)` in each repository.*/\1/p' "$FLOW_GATE" |
-    head -1)
-  assert eq "$gate_round2_cmd" "$rb_debt_cmd"
-  assert eq "$(grep -c -- '--paths' <<<"$gate_round2_cmd")" 0
-else
-  fail "debt review command across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-# What a checkout says it is never owed a review over is one file name, spelled in the tool and in
-# the prose the reader acts on: a repository ignoring by one name while the contract documents
-# another is an ignore file that silently does nothing.
-rb_ignore_file=$(sed -n 's/^DEBT_IGNORE_FILE = "\(.*\)"$/\1/p' "$RB_DEBT")
-assert eq "$rb_ignore_file" '.claude/review-debt-ignore'
-assert grep -Fq "\`$rb_ignore_file\` is the project's own answer" "$ROOT/docs/review-contract.md"
-assert grep -Fq "ignored: N path(s) by $rb_ignore_file" "$ROOT/docs/review-contract.md"
-# The notice rides stderr: `--list`'s stdout is read one path per line by the flow gate, so a
-# count printed among the paths reaches that reader as a path it cannot resolve.
-assert grep -Fq 'print(f"ignored: {len(ignored)} path(s) by {DEBT_IGNORE_FILE}", file=sys.stderr)' "$RB_DEBT"
-assert grep -Fq "stays one path per line" "$ROOT/docs/review-contract.md"
-if test -r "$FLOW_GATE"; then
-  assert grep -Fq 'read_debt_paths' "$FLOW_GATE"
-fi
-# And what the commit closes is the round itself: the hook asks review-bench with the commit, and
-# the contract says so, or the fixing pass waits for a command nobody types.
-if test -r "$CLAUDE_SETUP/hooks/commit-report.sh"; then
-  assert grep -Fq 'review-bench fixes --cover --commit' "$CLAUDE_SETUP/hooks/commit-report.sh"
-fi
-assert grep -Fq 'The COMMIT closes the fixing pass' "$ROOT/docs/review-contract.md"
-
-# --- Row az: a computed sweep is named before it is read ----------------------
-# The number is the whole rule: a chat past it may only proceed by typing back the size it read,
-# so the constant, the row and the flag that names it have to be one value.
-assert doc_has 'A computed sweep is named before it is read'
-rb_scope_max=$(sed -n 's/^DEBT_SCOPE_LINES_MAX = \([0-9]*\)$/\1/p' "$RB_DEBT")
-rb_scope_rows=$(sed -n 's/^DEBT_SCOPE_ROWS_SHOWN = \([0-9]*\)$/\1/p' "$RB_DEBT")
-assert eq "$rb_scope_max" 3000
-assert eq "$rb_scope_rows" 20
-assert doc_has "\`DEBT_SCOPE_LINES_MAX = $rb_scope_max\`"
-assert doc_has "\`DEBT_SCOPE_ROWS_SHOWN = $rb_scope_rows\` rows"
-# Priced by the same differ row ah counts the debt with, or the gate refuses a size no surface shows.
-assert grep -Fq 'counts = debt_line_counts(repo, pairs)' "$RB_DEBT"
-# And the flag names the size rather than disabling the ceiling.
-assert grep -Fq 'lines <= DEBT_SCOPE_LINES_MAX or allowed == lines' "$RB_DEBT"
-
 # --- Row ae: account pin ownership -------------------------------------------
 # Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
 # the marker lives, is a pin a session can move again — the failure this row exists to prevent.
@@ -1528,75 +942,6 @@ assert grep -Fq 'worker_model_clear_walled_pin() {' "$WORKER_MODEL_SH"
 assert eq "$(grep -rlF 'worker_model_clear_walled_pin' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d ' ')" 2
 assert grep -Fq '[ "$3" = exhausted ] || return 0' "$ROOT/bin/worker-pick"
 assert doc_has 'the account ending its own pin'
-
-# --- Row af: one voice for what a round earned -------------------------------
-# The bands are decided inside rbench and asked of no hook: the gate carries the two literals it
-# WORDS the ask with (row ap) and decides nothing, so a caller pricing a round for itself is the
-# drift this guards. And the gate's mode must sit ABOVE the payload read, or every caller hangs on
-# an open pipe.
-REPORT_GATE="${REVIEW_REPORT_GATE:-$HOME/.claude/hooks/stop.d/ask-review-report.sh}"
-# One decider, named in the row and spelled once: a second band table anywhere is a round that
-# earns a decision in one voice and closes itself in the other.
-assert doc_has 'Round bands have one voice'
-assert grep -Fq 'def round_band(p1, confirmed):' "$RB_ROUND"
-assert grep -Fq 'def round_decision_owed(p1, confirmed):' "$RB_ROUND"
-assert grep -Fq 'def fork_missing(' "$RB_ROUND"
-assert rb_pkg_only 'def round_band(' 1 "$RB_ROUND"
-# The gate is no longer ASKED what a round earned: the answer is the band, and a subprocess to a
-# hook was a second place the same question could be answered differently.
-assert test -z "$(grep -rlE 'ESCALATION_GATE|escalation_verdict|escalation-verdict' --include='*.py' "$RB_PKG")"
-assert grep -Fq 'if not round_covers_its_fixes(run_dir, meta, rows):' "$RB_ROUND"
-# Both dials count CODE findings alone. A docs finding is confirmed and fixed and prices nothing,
-# so the filter lives in one predicate the two tallies read — spelled inline anywhere else, one of
-# them prices prose and the round it hands the reader is not the round the report printed.
-assert doc_has 'Both dials count CODE findings alone'
-assert grep -Fq 'def docs_finding(finding):' "$RB_PANEL"
-assert grep -Fqx '        if _panel.docs_finding(finding) or finding.get("severity") not in _catalog.WEIGHTS:' \
-  "$RB_ROUND"
-assert rb_pkg_only '.endswith(".md")' 1 "$RB_PANEL"
-# The retired weak-link dial and the gate's own tally literal stay out of the package entirely.
-for copy in WEAK_LINK_P1S 'weak block' SECOND_REVIEW_FINDINGS SECOND_REVIEW_HARD_FINDINGS; do
-  assert test -z "$(grep -rlF --include='*.py' -- "$copy" "$RB_PKG")"
-done
-if [ -r "$FLOW_GATE" ] && [ -r "$REPORT_GATE" ]; then
-  gate_verdict_line=$(grep -n 'escalation-verdict \]; then' "$FLOW_GATE" | head -1 | cut -d: -f1)
-  gate_read_line=$(grep -n '^[[:space:]]*input=\$(cat)$' "$FLOW_GATE" | head -1 | cut -d: -f1)
-  assert test -n "$gate_verdict_line" -a -n "$gate_read_line"
-  assert test "$gate_verdict_line" -lt "$gate_read_line"
-  # The decision on RECORD is the one thing beside the band that closes a round, and it is read in
-  # one place: `fix` names no second pass, so the commit carrying the fixes ends the round there
-  # exactly as it ends one the fix band never stopped.
-  assert grep -Fq 'return bool(decision) and decision["choice"] == BAND_FIX' "$RB_ROUND"
-  assert doc_has 'a decision naming `fix`'
-  # Neither dial reaches the Stop gate: it relays a verdict and prices nothing.
-  for copy in SECOND_REVIEW_P1S SECOND_REVIEW_FINDINGS SECOND_REVIEW_HARD_FINDINGS \
-    WEAK_LINK_P1S 'weak block'; do
-    assert test "$(grep -Fc -- "$copy" "$REPORT_GATE")" -eq 0
-  done
-  assert eq "$(grep -Fc WEAK_LINK_P1S "$FLOW_GATE")" 0
-  # The gate asks the decision as QUESTIONS, and the arms it used to list are gone: spelled as a
-  # menu the text was picked from rather than answered, and the `--why` came back a paraphrase of
-  # the pick.
-  assert grep -Fq 'Answer these before you record one:' "$FLOW_GATE"
-  assert eq "$(grep -Fc -- '- fix: the commit that carries the fixes' "$FLOW_GATE")" 0
-  if [ -r "$REPORT_NUDGE" ]; then
-    assert test "$(grep -Fc 'ESCALATION_MARKER' "$REPORT_NUDGE")" -eq 0
-  fi
-  # No fixing pass before the fork RECORD: both PreToolUse gates relay review-bench's own
-  # `fork --check` (exit 3) over a `fixes <id> --done|--blocked`, and the Stop gate asks for the
-  # `fork` command where `pending-report` names it. The claim the Agent-spawn hook writes is read
-  # by the one reader of the pid stamp, for a bounded time named once.
-  for cs_gate in "$FLOW_GATE" "$WORKER_GATE"; do
-    assert grep -Fq 'fork_refusal=$(review-bench fork "$fork_run" --check 2>&1 >/dev/null)' "$cs_gate"
-    assert grep -Fq '[ "$?" -eq 3 ] || continue' "$cs_gate"
-  done
-  assert grep -Fq '"review-bench fork "*)' "$REPORT_GATE"
-  assert grep -Fq 'DELEGATED_CLAIM_SECONDS = 600' "$RB_ROUND"
-  assert grep -Fq "printf 'claimed %s %s\\n' \"\${sid:-unknown}\" \"\$(date +%s)\"" "$WORKER_GATE"
-  assert grep -Fq 'if stamped[0] == "claimed":' "$RB_ROUND"
-else
-  fail "review round voice across claude-setup: $FLOW_GATE or $REPORT_GATE is unreadable (set CLAUDE_SETUP_ROOT / REVIEW_REPORT_GATE)"
-fi
 
 # --- Row ai: usage wall record ------------------------------------------------
 # Two processes write this file in two languages — bin/opencode-go at the 429 it sees, bin/review-bench
@@ -2072,7 +1417,7 @@ assert grep -Fq '>>"$directory/worker-session"' "$WORKER_RUN"
 assert grep -Fq '[ "$vendor" = claudeb ] || return 0' "$WORKER_RUN"
 # The third reader: a waiver naming no path must drop the files a co-tenant's worker run claims,
 # which it can only do by looking in the same directory the other two sweep.
-CHATNAMES="$ROOT/share/chat_names.py"
+CHATNAMES="$REVIEW_ROOT/share/chat_names.py"
 rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$CHATNAMES" |
   sed -n 's|.*Path.home() / "\(.*\)" / "\(.*\)")$|\1/\2|p' | head -1)
 worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -1 | sed 's|.*\$HOME/||')
@@ -2232,51 +1577,6 @@ assert grep -Fq 'review_run_owner "$progress_run_session" "$progress_pid"' "$STA
 assert doc_has 'the recorded `session` first, the walk as the fallback'
 
 
-# --- Row au: the delivery ledger is one file with one key shape ---------------
-# Two hooks write it and review-bench's doctor reads it. A reader pointed at another path, or one
-# asking for a key shape nobody writes, reports every delivered round as never delivered.
-assert doc_has '$XDG_CACHE_HOME/claude/review-delivery/<session>.emitted'
-assert doc_has '`run:<id>:<state>`'
-assert grep -Fq 'DELIVERY_LEDGER_DIR = ("claude", "review-delivery")' "$RB_DEBT"
-assert grep -Fq 'DELIVERY_LEDGER_SUFFIX = ".emitted"' "$RB_DEBT"
-assert grep -Fq 'DELIVERY_LEDGER_KEY = "run:{run_id}:{state}"' "$RB_DEBT"
-# Read-only on this side: a diagnostic that wrote a key would retire a report nobody has seen.
-# The key shape is spelled in debt.py alone: the doctor scan and `ledger_delivered`, which is how
-# `pending_delivery_rows` (and the statusline anchor over it) honours the ledger.
-assert rb_pkg_only 'DELIVERY_LEDGER_KEY.format(' 2 "$RB_DEBT"
-assert rb_pkg_only 'ledger_delivered(session, run_dir.name, state, ledgers)' 1 "$RB_ROUND"
-# The `fork --choice` lock is that SAME reader and no second spelling of the path or the key: a
-# decision may not be recorded before the round's block has stood in front of Egor, and the ledger
-# is the only place that arrival is written. Its two states are the ones that mean the BLOCK went
-# out — `fork` is the decision's own one-line echo and `blocked` a fixing pass that stopped.
-assert grep -Fq 'REPORT_DELIVERED_STATES = ("triaged", "done")' "$RB_ROUND"
-assert grep -Fq '_debt.ledger_delivered(session, run_dir.name, state, keys)' "$RB_ROUND"
-assert grep -Fq 'not _round.report_delivered(run_dir, meta)' "$RB_REPORT"
-assert grep -Fq 'DELIVERY_UNCHECKED_ENV = "REVIEW_DELIVERY_UNCHECKED"' "$RB_ROUND"
-assert grep -Fq 'os.environ.get(_round.DELIVERY_UNCHECKED_ENV) != "1"' "$RB_REPORT"
-assert test -z "$(grep -rlE 'ledger.*(open\(.*"a"|write_text)' --include='*.py' "$RB_PKG")"
-if test -r "$REPORT_NUDGE" && test -r "$DELIVERY_GATE"; then
-  for cs_ledger_hook in "$REPORT_NUDGE" "$DELIVERY_GATE"; do
-    assert grep -Fq '"claude" / "review-delivery"' "$cs_ledger_hook"
-    assert grep -qE 'f"[{](session|session_id)[}][.]emitted"' "$cs_ledger_hook"
-    assert grep -Fq 'keys.append(f"run:{run_id}:{state}")' "$cs_ledger_hook"
-  done
-  # The key the reader builds is the key the writers build, over the same run and state — asserted
-  # by running both spellings rather than by matching two source lines that could each be wrong.
-  ledger_key_match=$(python3 - <<'LEDGERPY'
-import os
-import sys
-
-sys.path.insert(0, os.environ["RBENCH_SHARE"])
-import rbench as module
-print(module.DELIVERY_LEDGER_KEY.format(run_id="20260101T000000Z-abcdef0", state="done"))
-LEDGERPY
-)
-  assert eq "$ledger_key_match" "run:20260101T000000Z-abcdef0:done"
-else
-  fail "delivery ledger across claude-setup: $CLAUDE_SETUP is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-
 # --- Row av: the doctor snapshot is the menubar's whole vocabulary -----------
 # The renderer scans no store and computes no threshold: a class the writer adds and the Lua list
 # does not hold is a count nobody ever sees.
@@ -2354,9 +1654,9 @@ done <<<"$doctor_ages"
 # A chat is shown under the name Claude Code gave it and under nothing else. Two consumers name
 # chats and a third store (the harness session records) holds a name that looks like one and is
 # not, so a second reading of any of it is how an invented name reaches Egor.
-CHATFIND="$ROOT/bin/chat-find"
+CHATFIND="$REVIEW_ROOT/bin/chat-find"
 assert doc_has 'One resolver names every chat'
-assert doc_has '`share/chat_names.py`'
+assert doc_has '`../review-bench/share/chat_names.py`'
 assert grep -Fq 'from chat_names import' "$CHATFIND"
 assert test -n "$(grep -rlF 'from chat_names import' --include='*.py' "$RB_PKG")"
 # The transcript ROOTS are part of that one reading: every chat here lives under a claudeb profile,
@@ -2367,10 +1667,10 @@ assert test -z "$(grep -rl '"\.claude" / "projects"' --include='*.py' "$RB_PKG")
 # The shell surfaces name a chat through the same resolver, over one entry point rather than a
 # reading of their own: a hook that scanned a transcript for itself is a second answer to the
 # question this row exists to keep single.
-CHATNAME="$ROOT/bin/chat-name"
+CHATNAME="$REVIEW_ROOT/bin/chat-name"
 assert test -x "$CHATNAME"
 assert grep -Fq 'from chat_names import chat_label, chat_name, resolve_session, short_session' "$CHATNAME"
-assert doc_has '`bin/chat-name`'
+assert doc_has '`../review-bench/bin/chat-name`'
 CHAT_NAME_NOTICE="$CLAUDE_SETUP/hooks/stop.d/notice-chat-names.sh"
 if [ -r "$CHAT_NAME_NOTICE" ]; then
   assert eq "$(grep -c 'aiTitle\|customTitle\|nameSource' "$CHAT_NAME_NOTICE")" 0
@@ -2401,46 +1701,6 @@ assert grep -Fq '_store.chat_display(session)' "$RB_DEBT"
 # Both foreign-chat refusals name the chat: they exist to send a reader to another conversation.
 assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
 
-# --- Row ax: a diff too big for one cell is split, not the panel ---------------
-# The two numbers are spelled in the tool and in the contract prose the reader acts on. Moved in
-# one place and not the other, the prose documents a panel nobody runs — and the sizes are what a
-# reader decides whether a chunked round covered its scope by.
-assert doc_has 'A diff too big for one cell is split, not the panel'
-rb_chunk_threshold=$(sed -n 's/^DIFF_CHUNK_THRESHOLD_BYTES = \([0-9_]*\)$/\1/p' "$RB_SCOPE")
-rb_chunk_threshold=${rb_chunk_threshold//_/}
-rb_chunk_target=$(sed -n 's/^DIFF_CHUNK_TARGET_LINES = \([0-9]*\)$/\1/p' "$RB_SCOPE")
-assert eq "$rb_chunk_threshold" 800000
-assert eq "$rb_chunk_target" 800
-assert doc_has "\`DIFF_CHUNK_THRESHOLD_BYTES = $rb_chunk_threshold\`"
-assert doc_has "\`DIFF_CHUNK_TARGET_LINES = $rb_chunk_target\`"
-assert grep -Fq "\`DIFF_CHUNK_THRESHOLD_BYTES\` ($rb_chunk_threshold)" \
-  "$ROOT/docs/review-contract.md"
-assert grep -Fq "\`DIFF_CHUNK_TARGET_LINES\` ($rb_chunk_target)" "$ROOT/docs/review-contract.md"
-# Off by default in both places: the flag is the caller's word, the gate is the tool's, and a
-# contract that still promises a line threshold sends a reader to chunk a diff nothing splits.
-assert doc_has 'chunking is OFF unless `--chunk` asks for it'
-assert grep -Fq 'Chunking is OFF by default' "$ROOT/docs/review-contract.md"
-assert grep -Fq '"--chunk", action="store_true",' "$RB_CLI"
-# One run whatever the chunk count: the receipt, the handoff and the finding indices are the
-# round's, and a chunk that became a run of its own would split all three.
-assert grep -Fq 'chunks = _scope.diff_chunks(repo, sha, force=chunk_forced)' "$RB_CLI"
-# And ONE panel whatever the chunk count: a cell per (rater, chunk) made a tier review 325 cells
-# and hundreds of processes (live, 2026-08-22), so a cell reads its chunks one after another.
-assert grep -Fq '_launch.run_rater_chunks, rater, repo, sha, args.focus or "", run_dir,' "$RB_CLI"
-assert doc_has 'never multiplies the panel'
-assert grep -Fq 'never multiplies the panel' "$ROOT/docs/review-contract.md"
-# The gate is the diff's own BYTES and the target its own lines. Priced by numstat either would
-# leave out every header and context line, promising a bound on the text a cell is handed that the
-# tool never applies.
-assert grep -Fq \
-  'if not force and len(whole.stdout.encode("utf-8")) <= DIFF_CHUNK_THRESHOLD_BYTES:' "$RB_SCOPE"
-assert doc_has "The gate counts the DIFF's own BYTES"
-assert grep -Fq "gate is the DIFF's own bytes" "$ROOT/docs/review-contract.md"
-# A chunk nothing came back from is content nobody read, and the snapshot may attest no such path:
-# the one place a dead cell still costs a round coverage.
-assert grep -Fq 'meta["reviewed"] = _scope.attested_paths(reviewed, unread)' "$RB_CLI"
-assert doc_has "A chunk NO cell's pass came back from"
-
 # --- Row ay: sanctioned headless launchers ------------------------------------
 # The list of tools that own their launches is spelled in the contract and again in the gate's
 # regex. Drift either way is silent: a launcher the gate forgot has its every run denied, and a
@@ -2468,61 +1728,6 @@ assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0' "$LAUNCH_GATE"
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'
 assert grep -Fq '## Sanctioned launchers' "$ROOT/docs/routing-contract.md"
-
-# --- Row az: one gateway-failure class, read only as a status ----------------
-# The client retries a status; the bench classifies TEXT. One class, and the text side anchored,
-# or a rater's `line 512` reads as a dead gateway and the cell that answered is retried.
-assert grep -Fq 'transient_status() { [[ $1 == 5?? || $1 == 000 ]]; }' "$ROOT/bin/opencode-go"
-assert grep -Fq 'HTTP_SERVER_STATUS = ' "$RB_PKG/catalog.py"
-assert grep -Fq '_catalog.HTTP_SERVER_STATUS' "$RB_PKG/accounts.py"
-assert grep -Fq '_catalog.HTTP_SERVER_STATUS' "$RB_PKG/panel.py"
-# A second spelling is the whole failure this row exists to catch.
-for rb_reader in accounts panel; do
-  if grep -Fq '5[0-9][0-9]' "$RB_PKG/$rb_reader.py"; then
-    fail "row ba: $rb_reader.py spells the status class instead of reading catalog's"
-  fi
-done
-status_class=$(python3 - "$RB_PKG" <<'STATUSPY'
-import re
-import sys
-
-sys.path.insert(0, str(sys.argv[1]) + "/..")
-from rbench import catalog
-
-pattern = re.compile(catalog.HTTP_SERVER_STATUS)
-matched = [text for text in ("HTTP 504 Gateway Timeout", "HTTP/1.1 503", "status: 502",
-                             "curl exit 52 after 3s (HTTP 000)")
-           if pattern.search(text)]
-missed = [text for text in ("the check at line 512 never runs", "504 findings", "HTTP 200")
-          if pattern.search(text)]
-print(f"{len(matched)} {len(missed)}")
-STATUSPY
-)
-assert eq "$status_class" '4 0'
-assert doc_has 'One gateway-failure class, read only as a STATUS'
-
-# --- Row bb: review cap rules ---------------------------------------------------------------
-# Each number lives once in code and once in the contract prose; moved in one place only, the
-# contract promises a cap the panel never hands out.
-assert doc_has 'Review cap rules'
-for cap_name in CAP_WINDOW_DAYS DURATION_CAP_GRACE_S DURATION_CAP_THIN_SAMPLES \
-  DURATION_CAP_DEFAULT_S STALL_CAP_GRACE_S STALL_CAP_FLOOR_S; do
-  cap_value=$(sed -n "s/^$cap_name = \([0-9]*\)$/\1/p" "$RB_CATALOG")
-  assert test -n "$cap_value"
-  assert doc_has "\`$cap_name = $cap_value\`"
-  assert grep -Fq "\`$cap_name = $cap_value\`" "$ROOT/docs/review-contract.md"
-done
-cap_attempts=$(sed -n 's/^CELL_ATTEMPTS_MAX = \([0-9]*\)$/\1/p' "$RB_LAUNCH")
-assert eq "$cap_attempts" 2
-assert doc_has "\`CELL_ATTEMPTS_MAX = $cap_attempts\`"
-assert grep -Fq "\`CELL_ATTEMPTS_MAX = $cap_attempts\`" "$ROOT/docs/review-contract.md"
-agy_ceiling=$(sed -n 's/^AGY_DURATION_CEILING_S = {"T0": \([0-9]*\), "T1": \([0-9]*\), "T2": \([0-9]*\), "T3": \([0-9]*\)}$/\1 \2 \3 \4/p' "$RB_CATALOG")
-assert test -n "$agy_ceiling"
-set -- $agy_ceiling
-assert eq "$1" "$2"
-assert eq "$3" "$4"
-assert doc_has "(${1}s at T0/T1, ${3}s at T2/T3)"
-assert grep -Fq "(${1}s at T0/T1, ${3}s at T2/T3)" "$ROOT/docs/review-contract.md"
 
 # --- Row bc: gemini main's removal marker ------------------------------------
 # Two spellings of this path is a removal one tool performs and the other never sees: the menubar
@@ -2607,13 +1812,15 @@ else
 fi
 # The prose that sends a reader to one of them names the family's dir too: pointed at a worktree's
 # own git dir, a debugging session opens a file the resolver has already folded away.
-for journal_stale_doc in docs/DIAGNOSTICS.md docs/review-contract.md docs/statusline-contract.md; do
-  assert eq "$(grep -Fc '<git-dir>/claude-' "$ROOT/$journal_stale_doc")" 0
+for journal_stale_doc in "$ROOT/docs/DIAGNOSTICS.md" "$REVIEW_ROOT/docs/DIAGNOSTICS.md" \
+  "$REVIEW_ROOT/docs/review-contract.md" "$ROOT/docs/statusline-contract.md"; do
+  assert eq "$(grep -Fc '<git-dir>/claude-' "$journal_stale_doc")" 0
 done
 # And nowhere else: a hook or script that spells a journal path itself is how a private ledger
 # grows back beside the shared one. Tests and docs may name the files; code may not.
 journal_scan_dirs=()
-for journal_dir_candidate in "$ROOT/bin" "$ROOT/share" "$CLAUDE_SETUP/bin" "$CLAUDE_SETUP/hooks"; do
+for journal_dir_candidate in "$ROOT/bin" "$ROOT/share" "$REVIEW_ROOT/bin" "$REVIEW_ROOT/share" \
+  "$CLAUDE_SETUP/bin" "$CLAUDE_SETUP/hooks"; do
   if [ -d "$journal_dir_candidate" ]; then
     journal_scan_dirs+=("$journal_dir_candidate")
   else
@@ -2622,132 +1829,9 @@ for journal_dir_candidate in "$ROOT/bin" "$ROOT/share" "$CLAUDE_SETUP/bin" "$CLA
 done
 journal_strays=$(grep -rlE 'claude-review-debt|claude-commit-journal' \
   --exclude-dir=__pycache__ --exclude='*.pyc' "${journal_scan_dirs[@]}" 2>/dev/null |
-  grep -v -x -e "$RB_STORE" -e "$JOURNAL_LIB" -e "$STATUSLINE" | sort | tr '\n' ' ')
+  grep -v -x -e "$RB_STORE" -e "$JOURNAL_LIB" -e "$STATUSLINE" |
+  sort | tr '\n' ' ')
 assert eq "$journal_strays" ""
-
-# --- Row be: commit-free repository families -----------------------------------
-# Which repositories a chat may commit in without asking Egor is ONE list read by ONE function: a
-# hook that opened `~/.claude/commit-free` itself is a second definition of that permission, and the
-# one it would drift into is the permission to commit unasked.
-assert doc_has 'Commit-free repository families'
-assert doc_has '`~/.claude/commit-free`'
-assert doc_has '`COMMIT_FREE_FILE`'
-# The prose rule names the same file, or the model reads a permission the hooks never grant.
-if test -r "$CLAUDE_SETUP/global/CLAUDE.md"; then
-  assert grep -Fq 'families listed in `~/.claude/commit-free`' "$CLAUDE_SETUP/global/CLAUDE.md"
-else
-  fail "commit-free prose: $CLAUDE_SETUP/global/CLAUDE.md is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-COMMIT_FREE_READERS=(
-  "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
-  "$CLAUDE_SETUP/hooks/stop.d/ask-round-uncommitted.sh"
-  "$CLAUDE_SETUP/hooks/commit-policy.sh"
-  "$CLAUDE_SETUP/hooks/review-debt-nudge.sh"
-  "$CLAUDE_SETUP/hooks/stop.d/ask-review-report.sh"
-)
-if test -r "$JOURNAL_LIB"; then
-  rj_commit_free_body=$(sed -n '/^rj_commit_free()/,/^}/p' "$JOURNAL_LIB")
-  assert grep -Fq 'file=$HOME/.claude/commit-free' <<<"$rj_commit_free_body"
-  assert grep -Fq '[ "${COMMIT_FREE_FILE+x}" = x ]' <<<"$rj_commit_free_body"
-  # Membership is the git FAMILY (row `bd`), so a listed repository lists its worktrees too.
-  assert eq "$(grep -c 'rj_family_id' <<<"$rj_commit_free_body")" 2
-  assert grep -Fq 'common=$(rj_journal_dir "$1")' <<<"$(sed -n '/^rj_family_id()/,/^}/p' "$JOURNAL_LIB")"
-  # And the path and the env name are spelled in that function alone.
-  assert eq "$(grep -c 'commit-free' "$JOURNAL_LIB")" \
-    "$(grep -c 'commit-free' <<<"$rj_commit_free_body")"
-  assert eq "$(grep -c 'COMMIT_FREE_FILE' "$JOURNAL_LIB")" \
-    "$(grep -c 'COMMIT_FREE_FILE' <<<"$rj_commit_free_body")"
-  for commit_free_reader in "${COMMIT_FREE_READERS[@]}"; do
-    if test -r "$commit_free_reader"; then
-      assert grep -Fq 'rj_commit_free ' "$commit_free_reader"
-      assert eq "$(grep -c 'COMMIT_FREE_FILE' "$commit_free_reader")" 0
-      # A mention of the file in prose is fine; opening it is not.
-      assert eq "$(grep -cE '(<|read).*\.claude/commit-free' "$commit_free_reader")" 0
-    else
-      fail "commit-free reader $commit_free_reader is unreadable (set CLAUDE_SETUP_ROOT)"
-    fi
-  done
-else
-  fail "commit-free whitelist reader: $JOURNAL_LIB is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-# The prose a reader acts on names the same file, or a chat asks permission a hook has stopped
-# wanting.
-for commit_free_doc in docs/DIAGNOSTICS.md docs/review-contract.md; do
-  assert grep -Fq '~/.claude/commit-free' "$ROOT/$commit_free_doc"
-done
-
-# The commit door is the one refusal this gate has, and a wall the policy does not describe is a
-# chat reading a block nothing in the contract accounts for: the sentence's own words are pinned in
-# the hook that speaks them and in the contract that grants them.
-# And it fires only where the committing chat has a round of its own standing READY TO CLOSE there:
-# the receipt covering a fixing pass is written AFTER the commit, so a door blind to the round walls
-# the very commit that closes it, and a round owing its decision or its round 2 is told which of
-# those comes first. One reader answers that for both doors of the flow.
-COMMIT_FREE_REFUSAL='is a commit-free repository'
-COMMIT_FREE_ROUND='Review first, then commit:'
-if test -r "$CLAUDE_SETUP/hooks/review-flow-gate.sh"; then
-  assert grep -Fq "$COMMIT_FREE_REFUSAL" "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
-  assert grep -Fq "$COMMIT_FREE_ROUND" "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
-else
-  fail "commit-free refusal: $CLAUDE_SETUP/hooks/review-flow-gate.sh is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-assert grep -Fq "$COMMIT_FREE_REFUSAL" "$ROOT/docs/review-contract.md"
-assert grep -Fq 'leaves out every path an open round of that chat has read' "$ROOT/docs/review-contract.md"
-# The three words are ONE vocabulary: the hook branches on them and the launcher refuses on them,
-# so a spelling that moves on one side is a commit door reading an answer nobody gives.
-assert grep -Fq 'ROUND_STEP_READY = "ready"' "$ROOT/share/rbench/round.py"
-assert grep -Fq 'ROUND_STEP_DECISION = "decide"' "$ROOT/share/rbench/round.py"
-assert grep -Fq 'ROUND_STEP_ROUND2 = "round2"' "$ROOT/share/rbench/round.py"
-assert grep -Fq 'round_next_step' "$ROOT/docs/review-contract.md"
-assert grep -Fq 'round_open_guard' "$ROOT/share/rbench/cli.py"
-# What a commit may carry is priced on the DEBT, which already leaves out what an open round of
-# the committing chat read: a round predicate of the hook's own would be a second definition of
-# when a round is finished, and it exempted the whole repository rather than that round's paths.
-if test -r "$CLAUDE_SETUP/hooks/review-flow-gate.sh"; then
-  assert test "$(grep -Fc 'round-open' "$CLAUDE_SETUP/hooks/review-flow-gate.sh")" -eq 0
-fi
-assert grep -Fq 'def round_covered_paths' "$ROOT/share/rbench/round.py"
-assert grep -Fq 'round_covered_paths' "$ROOT/share/rbench/debt.py"
-assert grep -Fq 'round-open' "$RB_CLI"
-
-# A `--dry-run` is ONE question with two askers: the gate takes no HEAD snapshot and refuses
-# nothing for it, the report prints no block for it. Read apart, a commit one of them called a dry
-# run landed with no `review:` row naming what it carried.
-if test -r "$CLAUDE_SETUP/hooks/lib/review-journal.sh"; then
-  assert grep -Fq 'rj_dry_run() {' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-  assert grep -Fq 'rj_dry_run commit' "$CLAUDE_SETUP/hooks/review-flow-gate.sh"
-  assert grep -Fq 'rj_dry_run commit' "$CLAUDE_SETUP/hooks/commit-report.sh"
-  assert test "$(grep -Fc -- "grep -qE -- '(^|[[:space:]])--dry-run" \
-    "$CLAUDE_SETUP/hooks/commit-report.sh")" -eq 0
-fi
-assert doc_has 'the commit door beside it'
-assert doc_has 'which leaves out what an open round of the committing chat already read'
-
-# --- Row bg: a clone-reading review cell has no project toolchain -------------
-# One helper for all three clone-reading sides, or the rule becomes three copies that drift apart
-# — and a fourth caller would be the diff-fed side quietly joining them.
-assert doc_has 'A clone-reading review cell has no project toolchain'
-assert grep -Fq 'NO_SHIMS_ENV = "REVIEW_BENCH_NO_SHIMS"' "$RB_LAUNCH"
-assert grep -Fq 'TOOLCHAIN_SHIM_DIR = "toolchain-shims"' "$RB_LAUNCH"
-assert eq "$(grep -c 'os.environ.get(NO_SHIMS_ENV)' "$RB_LAUNCH")" 1
-# Counted over CODE lines only: a guard that also sees prose fails on the comment explaining it.
-assert eq "$(grep -cE '^[^#]*clone_cell_env\(' "$RB_LAUNCH")" 4
-assert eq "$(grep -cE '^[^#]*env=clone_cell_env\(run_dir\),' "$RB_LAUNCH")" 2
-assert grep -Fq 'env=clone_cell_env(run_dir, codex_environment(account))' "$RB_LAUNCH"
-# Shimming an interpreter kills the vendor CLIs themselves, so the tuple's own text is searched:
-# the names appear in the prose around it, where they are the rule rather than a breach of it.
-rb_shim_tuple=$(sed -n '/^TOOLCHAIN_SHIMS = (/,/^)$/p' "$RB_LAUNCH")
-assert test -n "$rb_shim_tuple"
-assert eq "$(printf '%s\n' "$rb_shim_tuple" | grep -cE '"(node|python3?)"')" 0
-assert eq "$(printf '%s\n' "$rb_shim_tuple" | grep -cE '"(pnpm|pytest)"')" 2
-# Both meta writers, or a corpus comparison cannot tell the two epochs apart.
-assert eq "$(grep -cE '^[^#]*"toolchain_shims":' "$RB_CLI")" 2
-assert grep -Fq '`REVIEW_BENCH_NO_SHIMS=1` is' "$ROOT/docs/review-contract.md"
-assert grep -Fq '`<run-dir>/toolchain-shims`' "$ROOT/docs/review-contract.md"
-# What the mechanism does NOT cover is part of the contract: a reader who thinks a shimmed cell
-# cannot run the toolchain at all would read a `./gradlew` in a transcript as impossible.
-assert grep -Fq 'BEST-EFFORT by construction' "$ROOT/docs/review-contract.md"
-assert doc_has 'answers a BARE tool name only'
 
 # --- Rows bh/bi: the Hammerspoon entry points this repository calls ------------
 # Read at the INSTALL path — a symlink into this repo today, a real file once the Lua moves to the
@@ -2769,4 +1853,4 @@ assert eq "$(grep -c '^function ClaudeChatSwitch\.cancel(' "$SWITCH_LUA")" 1
 assert grep -Fq 'function ClaudeChatSwitch.cancel()' "$SWITCH_LUA"
 assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)" '_G.ClaudeChatSwitch.cancel()'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, review receipt schema, late review thresholds, account data age, owner-only review panels, claude account existence, one limits view, lens registry location, the Hammerspoon launchd agent identity, the review report frame both repositories build, the account pin no session may move without Egor naming it, the one voice that says what a review round earned, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the round-size numbers the gate words the decision ask with and the four words that decision may be, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, and the round the bench frames every review block with plus the state suffix hanging off it, one of which is worn by a round no hook may deliver — so both of them apply one further rule over the rows of the block itself, and the one review command both repositories hand a chat, which names no paths because the mode computes its own scope, the delivery ledger the two report hooks write and the doctor only reads, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review cap rules the contract spells with the code, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the one whitelist that says which repository families a chat commits in without asking, whose commit door is the one refusal the review gate has, fired on the debt answer alone, which leaves out what an open round of the committing chat already read, and the toolchain shims every clone-reading review cell reads under, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

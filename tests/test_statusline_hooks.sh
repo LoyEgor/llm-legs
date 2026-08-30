@@ -6,6 +6,8 @@ WORKDIR_HOOK="$ROOT/bin/statusline-workdir-hook.sh"
 WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 STATUSLINE="$ROOT/bin/statusline.sh"
+REVIEW_ROOT="${REVIEW_ROOT:-$ROOT/../review-bench}"
+BENCH_CMD="$REVIEW_ROOT/bin/review-bench"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
@@ -16,6 +18,8 @@ assert_eq() {
   asserts=$((asserts + 1))
   [ "$1" = "$2" ] || fail "assert $asserts failed: expected '$1', got '$2'"
 }
+
+[ -x "$BENCH_CMD" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
 
 HOME="$WORK/home"
 FIXTURES="$WORK/fixtures"
@@ -1156,7 +1160,7 @@ run_statusline() {
     COLUMNS="${FIT_COLUMNS:-}" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
-    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" "$STATUSLINE"
+    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" STATUSLINE_REVIEW_BENCH="${BENCH_CMD:-}" "$STATUSLINE"
 }
 
 status_payload=$(statusline_payload status-override)
@@ -4285,6 +4289,44 @@ gate_calls_await 2
 assert_eq 2 "$(grep -c . "$GATE_LOG" | tr -d ' ')"
 rm -f "$journal_wt_gitdir/claude-commit-journal" "$journal_wt_common/claude-commit-journal"
 GATE_ANSWER=off
+
+# (k) Nothing in the environment names the bench and no copy sits beside the statusline: the
+# resolution chain falls through to PATH, and the round it answers with moves the block like any
+# other. Rendered from a copy of the statusline with no sibling, because the repository's own copy
+# would answer before PATH is ever reached.
+NOSIB_DIR="$WORK/nosib"
+mkdir -p "$NOSIB_DIR/bin"
+cp "$STATUSLINE" "$NOSIB_DIR/bin/statusline.sh"
+ln -sfn "$ROOT/share" "$NOSIB_DIR/share"
+PATH_BENCH_DIR="$FIXTURES/path-bench"
+mkdir -p "$PATH_BENCH_DIR"
+cat > "$PATH_BENCH_DIR/review-bench" <<STUB
+#!/bin/bash
+[ "\$1" = review-anchor ] || exit 0
+printf '%s\n' "$REVIEW_DIRTY"
+STUB
+chmod +x "$PATH_BENCH_DIR/review-bench"
+anchor_saved_statusline="$STATUSLINE"
+anchor_saved_bench="$BENCH_CMD"
+anchor_saved_path="$PATH"
+STATUSLINE="$NOSIB_DIR/bin/statusline.sh"
+BENCH_CMD=""
+PATH="$PATH_BENCH_DIR:$PATH"
+rm -f "$STATE_DIR/review-anchor-anchor-path" "$STATE_DIR/review-class-anchor-path" \
+  "$STATE_DIR/review-class-anchor-path-$(away_tag "$TOP_REVIEW_DIRTY")"
+anchor_path_payload=$(statusline_payload anchor-path "" "$REVIEW_CLEAN")
+run_statusline "$anchor_path_payload" >/dev/null || fail "anchor PATH render failed"
+anchor_await anchor-path
+run_statusline "$anchor_path_payload" >/dev/null || fail "anchor PATH render failed"
+review_await_verdict anchor-path
+review_await_verdict anchor-path "$TOP_REVIEW_DIRTY"
+anchor_path_out=$(run_statusline "$anchor_path_payload") || fail "anchor PATH render failed"
+assert_eq "$REVIEW_DIRTY" "$(cat "$STATE_DIR/review-anchor-anchor-path")"
+assert grep -Fq "$progress_away_dirs" <<< "$anchor_path_out"
+STATUSLINE="$anchor_saved_statusline"
+BENCH_CMD="$anchor_saved_bench"
+PATH="$anchor_saved_path"
+rm -f "$STATE_DIR/review-anchor-anchor-path"
 
 
 echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"

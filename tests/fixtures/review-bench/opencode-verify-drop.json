@@ -1,1 +1,0 @@
-{"id":"verify-drop","object":"chat.completion","model":"kimi-k3","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"code_matches\": false, \"is_defect\": false, \"why\": \"claim describes code that is not there\"}"}}],"usage":{"prompt_tokens":900,"completion_tokens":30,"total_tokens":930}}

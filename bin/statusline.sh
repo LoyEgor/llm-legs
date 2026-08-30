@@ -323,8 +323,15 @@ unpushed_marker() { # toplevel session now [cache_tag]
 # cached and refreshed off the render path.
 review_anchor_line() { # session cwd now
   local sid="$1" cwd="$2" now="$3"
-  local bench="${STATUSLINE_REVIEW_BENCH:-$statusline_dir/review-bench}"
+  local bench="${STATUSLINE_REVIEW_BENCH:-}"
   local cache lock cached cache_mtime lock_mtime timeout_bin
+  if [ -z "$bench" ]; then
+    if [ -x "$statusline_dir/review-bench" ]; then
+      bench="$statusline_dir/review-bench"
+    else
+      bench=$(command -v review-bench 2>/dev/null) || bench=""
+    fi
+  fi
   [ -x "$bench" ] || return 0
   # Keyed on the session alone: the cwd only picks a merged panel's member and the TTL bounds
   # that, while a cwd key voided a valid anchor at every cd.
