@@ -35,7 +35,7 @@ MAX_LINE = 4 * 1024 * 1024
 MAX_HITS_PER_FILE = 200
 CACHE = os.environ.get("CHAT_FIND_CACHE") or os.path.expanduser(
     "~/.claude-profiles/.claudeb/chat-recent-cache.json")
-CACHE_VERSION = 4
+CACHE_VERSION = 5
 # A transcript can end with megabytes of tool output after the last word spoken,
 # so the backward scan grows until it finds speech instead of trusting one window.
 TAIL_WINDOWS = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
@@ -313,22 +313,39 @@ def tail_speech(path, size, window):
     lines = chunk.split(b"\n")
     if window < size:
         lines = lines[1:]
-    said, spec = None, None
+    said, spec, boundary, ttl_settled = None, None, None, False
     for raw in reversed(lines):
-        if not raw.startswith(b"{") or not maybe_speech(raw, False):
+        if not raw.startswith(b"{"):
+            continue
+        if not maybe_speech(raw, False) and b'"compact_boundary"' not in raw:
             continue
         try:
             entry = json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
             continue
+        if entry.get("type") == "system":
+            if entry.get("subtype") == "compact_boundary" and boundary is None:
+                boundary = stamp(entry)
+            continue
         # A subagent's reply carries its own model and its own small context; taking
         # either would label a chat by the last worker it spawned rather than by the
         # conversation he was having.
-        if spec is None and entry.get("type") == "assistant" and not entry.get("isSidechain"):
+        if entry.get("type") == "assistant" and not entry.get("isSidechain"):
             message = entry.get("message") or {}
             usage = message.get("usage")
             if isinstance(usage, dict) and message.get("model") != "<synthetic>":
-                spec = {"model": message.get("model"), "ctx": context_tokens(usage)}
+                if spec is None:
+                    when = stamp(entry)
+                    spec = {"model": message.get("model"), "ctx": context_tokens(usage),
+                            "spoke": when.timestamp() if when else None,
+                            "uuid": entry.get("uuid"), "ttl": ttl_bucket(usage)}
+                    # A reply that only read the cache refreshed an entry it did not
+                    # create, so its lifetime is the one the nearest older reply of
+                    # the same model declared.
+                    ttl_settled = bool(spec["ttl"]) or not usage.get("cache_read_input_tokens")
+                elif not ttl_settled and message.get("model") == spec["model"]:
+                    spec["ttl"] = ttl_bucket(usage)
+                    ttl_settled = bool(spec["ttl"])
         if said is None:
             text = visible_text(entry, False)
             when = stamp(entry) if text else None
@@ -337,12 +354,30 @@ def tail_speech(path, size, window):
                         "text": " ".join(BANG.sub(r"! \1", text).split())[:400],
                         "cwd": entry.get("cwd"), "branch": entry.get("gitBranch"),
                         "via": entry.get("entrypoint")}
-        if said and spec:
+        if said and spec and ttl_settled:
             break
     if said is None:
         return None
-    said.update(spec or {"model": None, "ctx": None})
+    # A compaction after the last reply rebuilt the prompt from scratch: whatever
+    # that reply cached is not what the next request will send.
+    if spec and boundary and spec["spoke"] and boundary.timestamp() > spec["spoke"]:
+        spec["ttl"] = 0
+    said.update(spec or {"model": None, "ctx": None, "spoke": None, "uuid": None, "ttl": 0})
     return said
+
+
+def ttl_bucket(usage):
+    """Seconds the reply's cache entry lives, from the bucket it was written to;
+    0 when it wrote none. Same reading as the statusline's."""
+    created = usage.get("cache_creation")
+    if not isinstance(created, dict):
+        return 0
+    ttls = []
+    for key, tokens in created.items():
+        found = re.match(r"ephemeral_(\d+)([mh])_", key)
+        if found and isinstance(tokens, (int, float)) and tokens > 0:
+            ttls.append(int(found.group(1)) * (60 if found.group(2) == "m" else 3600))
+    return min(ttls) if ttls else 0
 
 
 def context_tokens(usage):
@@ -409,7 +444,8 @@ def measured(path, key):
         return {"key": key, "at": None}
     return {"key": key, "at": facts["when"].timestamp(), "role": facts["role"],
             "text": facts["text"], "cwd": facts["cwd"], "branch": facts["branch"],
-            "model": facts["model"], "ctx": facts["ctx"], "via": facts["via"]}
+            "model": facts["model"], "ctx": facts["ctx"], "via": facts["via"],
+            "spoke": facts["spoke"], "uuid": facts["uuid"], "ttl": facts["ttl"]}
 
 
 def scan_recent(root, days, cache_path, agents=False):

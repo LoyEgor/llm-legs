@@ -233,40 +233,31 @@ pin_account() {
 }
 
 selection() {
-  local state="" data name result picked all_walled reset disabled_json sticky_disabled=false
+  local data name result all_walled reset disabled_json
   if ! account_names | grep -q .; then
     printf 'claudeb: no accounts configured; add one with `claudeb add <name>`\n' >&2
     exit 1
   fi
-  [ -r "$state_file" ] && IFS= read -r state < "$state_file" || true
   disabled_json='[]'
   if [ -r "$disabled_file" ]; then
     disabled_json=$(jq -Rn '[inputs | select(length > 0)]' < "$disabled_file")
-  fi
-  if [ -r "$state_file" ] && { [ ! -e "$disabled_file" ] || [ "$state_file" -nt "$disabled_file" ]; }; then
-    sticky_disabled=true
   fi
   data=""
   while IFS= read -r name; do
     data="${data}$(account_data "$name")"$'\n'
   done < <(account_names)
-  result=$(printf '%s' "$data" | jq -sc --arg state "$state" --argjson disabled "$disabled_json" --argjson sticky_disabled "$sticky_disabled" '
+  result=$(printf '%s' "$data" | jq -sc --argjson disabled "$disabled_json" '
     map(. + {disabled: (.name as $n | $disabled | any(. == $n))}) as $all |
     [$all[] | select(.disabled | not)] as $enabled |
     ($enabled | length) as $enabled_count |
     ($enabled_count > 0 and ($enabled | all(.walled))) as $all_walled |
-    ($all | map(select(.name == $state and ((.disabled | not) or $sticky_disabled) and (.walled | not) and .h5 < 90)) | first) as $sticky |
-    (if $sticky != null then $sticky
-     elif $all_walled then $enabled | sort_by(.hreset, .name) | first
-     else [$enabled[] | select(.walled | not)] | sort_by(.h5, .wk, .name) | first
-     end) as $picked |
-    {picked: $picked.name, all_walled: $all_walled, reset: $picked.hreset,
+    {all_walled: $all_walled,
+     reset: (($enabled | sort_by(.hreset, .name) | first | .hreset) // 0),
      enabled_count: $enabled_count, data: $all}')
   if [ "$(printf '%s' "$result" | jq -r .enabled_count)" -eq 0 ]; then
     printf 'claudeb: all accounts are disabled; enable one with `claudeb enable <name>`\n' >&2
     exit 1
   fi
-  picked=$(printf '%s' "$result" | jq -r .picked)
   all_walled=$(printf '%s' "$result" | jq -r .all_walled)
   reset=$(printf '%s' "$result" | jq -r .reset)
   if [ "$all_walled" = true ]; then
@@ -1800,6 +1791,7 @@ show_help() {
   printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
+  printf '                                          %sPICK marks the account worker-pick would give this chat.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb enable <name>|--all%s             %sReturn an account (or every account) to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb disable <name>|--all%s            %sExclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb use <name>|--clear%s              %sPin worker selection to one account; no name prints the pin.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
@@ -1834,6 +1826,17 @@ worker_pick_cmd() {
     return 0
   fi
   command -v worker-pick 2>/dev/null || return 1
+}
+
+# The `*` in status/accounts is a routing answer, so it comes from the one selector every headless
+# caller already asks rather than a second copy of the math here; role `chat` respects the pool
+# toggle but not the pin, which overrides automatic work and never what a human launches by hand.
+chat_account() {
+  local pick name
+  pick=$(worker_pick_cmd) || return 0
+  [ -n "$pick" ] && [ -x "$pick" ] || return 0
+  name=$("$pick" --account claudeb --role chat 2>/dev/null) || return 0
+  printf '%s' "$name"
 }
 
 # Headless callers (find-truth, usage-ai-report, any script) get the account from the same
@@ -1958,11 +1961,11 @@ profile_command() {
   case "${CLAUDEB_NO_STATE_STAMP:-}" in 1|true|TRUE|yes|YES|on|ON) stamp_state=false ;; esac
   if args_are_headless "$@"; then worker_env=(CLAUDEB_WORKER=1)
   elif [ "$stamp_state" = true ]; then write_state_file "$profile"; fi
+  # Interactive launches leave worker_env empty; bash 3.2 (`env bash` where /bin precedes Homebrew) aborts on a bare "${arr[@]}" of an empty array under set -u.
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" \
     ${worker_env[@]+"${worker_env[@]}"} claude "$@"
 }
-  # Interactive launches leave worker_env empty; bash 3.2 (`env bash` where /bin precedes Homebrew) aborts on a bare "${arr[@]}" of an empty array under set -u.
 
 profile_required() {
   local name found=0
@@ -2364,7 +2367,7 @@ revive_account() {
 
 accounts_reselect() {
   accounts_result=$(selection)
-  accounts_picked=$(printf '%s' "$accounts_result" | jq -r .picked)
+  accounts_picked=$(chat_account)
   accounts_show_fable=$(printf '%s' "$accounts_result" | jq -r 'any(.data[]; .fable != null)')
 }
 

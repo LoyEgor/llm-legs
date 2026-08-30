@@ -145,7 +145,7 @@ assert doc_has 'Token-freeze file semantics'
 CODEXB="$ROOT/bin/codexb"
 POLICY="$ROOT/share/worker-policy.md"
 assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)' "$WORKERPICK"
-assert test "$(grep -Fc 'def rank_keys: [.spend, (.h5 // 100), .main_last, .name];' "$WORKERPICK")" -eq 1
+assert test "$(grep -Fc 'def rank_keys: [(if .defer5h then 1 else 0 end), .spend, (.h5 // 100), .main_last, .name];' "$WORKERPICK")" -eq 1
 assert test "$(grep -Fc 'def rank: sort_by(rank_keys);' "$WORKERPICK")" -eq 1
 assert grep -Fq 'def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;' "$WORKERPICK"
 # The render sorts on the band plus the selection keys, so within a band the order is the
@@ -600,13 +600,13 @@ assert grep -Fq 'review_text=${review_text#rev }' "$STATUSLINE"
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$RB_DEBT"
 assert grep -Fq 'print(f"timed-out {hung}")' "$RB_DEBT"
-assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{foreign}")' "$RB_DEBT"
+assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{left_out}")' "$RB_DEBT"
 assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$RB_DEBT"
-assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<f> foreign)]`'
+assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<s> skipped)]`'
 # The share is the debt a `--debt` review leaves out, priced by the one reader that leaves it out:
 # a line quoting a number the scope never skipped is the mismatch the segment exists to end.
-assert grep -Fq 'others = len(debt_foreign_skipped(repo, debt, session, buckets=buckets))' "$RB_DEBT"
-assert grep -Fq 'foreign = debt_foreign_skipped(repo, debt, session, covering=covering)' "$RB_DEBT"
+assert grep -Fq 'others = len(debt_skipped_paths(repo, debt, session, buckets=buckets))' "$RB_DEBT"
+assert grep -Fq 'others = debt_skipped_paths(repo, debt, session, covering=covering) - covered' "$RB_DEBT"
 assert doc_has '`split <own> <foreign> <orphaned>`'
 # The counter is the review target header's, not a second differ: one edit priced two ways is two
 # numbers for one question, and the label is then arguing with the panel's own target line.
@@ -1854,5 +1854,26 @@ startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")'
 assert eq "$(grep -c '^function ClaudeChatSwitch\.cancel(' "$SWITCH_LUA")" 1
 assert grep -Fq 'function ClaudeChatSwitch.cancel()' "$SWITCH_LUA"
 assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)" '_G.ClaudeChatSwitch.cancel()'
+
+
+# --- Row bj: the cache-TTL track line ----------------------------------------
+# The picker reads the account off a line the statusline writes positionally, so reordering that
+# printf keeps every suite green while the picker silently names the wrong account, or none.
+CHATS="$ROOT/bin/chats"
+CHATFIND_LEGS="$ROOT/bin/chat-find"
+assert doc_has 'Cache-TTL track line'
+assert doc_has '`<assist_ts> <acct> <learned_upto> <ttl> <model> <uuid> <scan_bytes> <account_seen_upto> <account_seen>`'
+assert grep -Fq "printf 'v2 %s %s %s %s %s %s %s %s %s\\n'" "$STATUSLINE"
+assert grep -Fq 'statusline_cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"' "$STATUSLINE"
+assert grep -Fq 'os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/claude-statusline")' "$CHATS"
+assert grep -Fq 'track="$statusline_cache_dir/cache-ttl-track-$session_id"' "$STATUSLINE"
+assert grep -Fq '"cache-ttl-track-" + row["session"]' "$CHATS"
+# The two field positions the reader counts on, and the `?` that is no account.
+assert grep -Fq 'if len(fields) < 7 or fields[0] != "v2" or fields[6] != row.get("uuid") or fields[2] == "?":' "$CHATS"
+assert grep -Fq 'return fields[2]' "$CHATS"
+# One spelling of the bucket key per language, and a new bucket must need neither edited.
+assert doc_has '`ephemeral_<n><m\|h>_`'
+assert eq "$(grep -c 'capture("ephemeral_(?<n>\[0-9\]+)(?<u>\[mh\])_")' "$STATUSLINE")" 2
+assert grep -Fq 're.match(r"ephemeral_(\d+)([mh])_", key)' "$CHATFIND_LEGS"
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

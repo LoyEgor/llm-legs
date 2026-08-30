@@ -107,9 +107,9 @@ assert before "$pool_row" 'dry($100)' 'session($100)*'
 assert before "$pool_row" 'session($100)*' 'tie-b($100)'
 assert before "$pool_row" 'tie-b($100)' 'tie-a($100)'
 assert before "$pool_row" 'tie-a($100)' 'dead($100)'
-assert before "$pool_row" 'dead($100)' 'walled-5h($100)'
-assert before "$pool_row" 'walled-5h($100)' 'walled-wk($100)'
-assert before "$pool_row" 'walled-wk($100)' 'off($100)'
+assert before "$pool_row" 'dead($100)' 'walled-wk($100)'
+assert before "$pool_row" 'walled-wk($100)' 'walled-5h($100)'
+assert before "$pool_row" 'walled-5h($100)' 'off($100)'
 # Nothing below a wall may block, and no deleted rung may leave a trace.
 for gone in FLOOR HEADROOM runway 'R8' 'pre-reset cap' 'least-burnt' POLICY 'Fable-reserved' \
             'Fable-gap' 'STALE-REFRESH' FRESH TIGHT WARN; do
@@ -138,6 +138,55 @@ run_filter claude_pool '.vendors.claude.accounts = [
   {account:"tie-b",enabled:true,weekly:{used_pct:20},five_hour:{used_pct:0},fable:{used_pct:0}}]'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb tie-b · opus · high — ACCOUNT: tie-b'
 assert before "$(sed -n '4p' <<<"$output")" 'tie-b($100)' 'tie-a($100) 5h ?'
+
+# The five-hour deferral, the one soft rule in the contract: an account this deep into its
+# five-hour window walls after the first task, so weekly headroom does not make it the answer.
+# The `5h!` tag is what keeps that visible in the line the answer is read from.
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"hot",enabled:true,five_hour:{used_pct:85},weekly:{used_pct:30}},
+  {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
+defer_row=$(sed -n '4p' <<<"$output")
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb cool · opus · high — ACCOUNT: cool'
+assert contains "$defer_row" 'hot($100) 5h 85% wk 30% fb ? score 70 cap 15% 5h!'
+assert not_contains "$defer_row" 'cool($100) 5h 10% wk 50% fb ? score 50 cap 50% 5h!'
+assert before "$defer_row" 'cool($100)' 'hot($100)'
+query --account claudeb
+assert test "$query_out" = cool
+# Below 100% nothing is a hard wall, so a deferred account is still the answer once it is the
+# only candidate left.
+query --account claudeb --exclude cool
+assert test "$query_rc" -eq 0
+assert test "$query_out" = hot
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"hot",enabled:true,five_hour:{used_pct:85},weekly:{used_pct:30}},
+  {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:100}}]'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb hot · opus · high — ACCOUNT: hot'
+assert contains "$(sed -n '4p' <<<"$output")" 'hot($100) 5h 85% wk 30% fb ? score 70 cap 15% 5h!'
+# One threshold, and it is a threshold: 80 defers, 79 does not.
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"hot",enabled:true,five_hour:{used_pct:79},weekly:{used_pct:30}},
+  {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb hot · opus · high — ACCOUNT: hot'
+assert not_contains "$output" '5h!'
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"hot",enabled:true,five_hour:{used_pct:80},weekly:{used_pct:30}},
+  {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb cool · opus · high — ACCOUNT: cool'
+assert contains "$(sed -n '4p' <<<"$output")" 'hot($100) 5h 80% wk 30% fb ? score 70 cap 20% 5h!'
+# A five-hour window nobody measured is no evidence of one, so it never defers — otherwise the
+# tiebreak coalescing (absent reads as 100) would quietly demote a perfectly fresh account.
+run_filter claude_pool '.vendors.claude.accounts = [
+  {account:"nofive",enabled:true,weekly:{used_pct:30}},
+  {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb nofive · opus · high — ACCOUNT: nofive'
+assert not_contains "$output" '5h!'
+# Every vendor ranks by the same keys, so the deferral and its tag reach all three.
+run_filter codex_plain '.vendors.codex.accounts = [
+  {account:"hot",five_hour:{used_pct:85},weekly:{used_pct:20}},
+  {account:"cool",five_hour:{used_pct:10},weekly:{used_pct:50}}]'
+assert contains "$(head -n1 <<<"$output")" 'codex cool · high — 50%'
+assert contains "$(sed -n '2p' <<<"$output")" 'hot 20% 5h 85% ↻0 5h!'
+assert before "$(sed -n '2p' <<<"$output")" 'cool 50%' 'hot 20%'
 run_case claude_pool
 
 # Only a task that asks for Fable spends the fable bucket, and it is ranked by the same rules.
@@ -260,7 +309,7 @@ write_config
 # Rule 3 on the vendor that reports one bucket: 91% is not a wall, so it still routes.
 run_case gemini_high
 assert contains "$(head -n1 <<<"$output")" 'gemini main · pro · high — ACCOUNT: main'
-assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 40% 5h 91%'
+assert contains "$(sed -n '3p' <<<"$output")" 'gemini: main 40% 5h 91% 5h!'
 assert not_contains "$(sed -n '3p' <<<"$output")" WALLED
 run_filter gemini_high '.vendors.gemini.five_hour.used_pct = 100'
 assert contains "$(sed -n '3p' <<<"$output")" 'main 40% 5h 100% WALLED'
@@ -463,6 +512,46 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = dry
 write_config
 
+# `--role chat` asks the same pool under the same walls, minus the two things that are only about
+# workers: the pin, and the session reserve.
+write_config 'claudeb_profile=off'
+query_case claude_pool --account claudeb --role chat --exclude session
+assert test "$query_rc" -eq 0
+assert test "$query_out" = dry
+query --account claudeb
+assert test "$query_out" = off
+# A chat query decides nothing about workers, so the pin it ignores also survives its own wall.
+write_config 'claudeb_profile=walled-wk'
+query_case claude_pool --account claudeb --role chat
+assert test "$query_rc" -eq 0
+assert test "$(sed -n 's/^claudeb_profile=//p' "$CONFIG")" = walled-wk
+# The session account is the one the chat is already spending, so it stands as an ordinary
+# candidate: its 0% weekly wins outright and no answer is marked RESERVE.
+write_config
+query_case claude_pool --account claudeb --role chat
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
+assert test ! -s "$WORK/query.err"
+# The pool toggle is the wall for chat too — `off` is out of the pool and never proposed — so
+# running out of the rest is exit 3, not a quieter answer.
+query --account claudeb --role chat --exclude session,dry,tie-b,tie-a
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable claudeb account' "$WORK/query.err"
+# There is no `<vendor>_chat` wall to invent, and the workers/reviewers ones say nothing about it.
+write_config 'claudeb_workers=off' 'claudeb_reviewers=off' 'claudeb_chat=off'
+query_case claude_pool --account claudeb --role chat
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
+# The role is vendor-agnostic: codex answers it as the pool minus the pin.
+write_config 'codex_profile=with-credit'
+query_case codex_credit --account codex --role chat
+assert test "$query_rc" -eq 0
+assert test "$query_out" = plain
+query --account codex
+assert test "$query_out" = with-credit
+write_config
+
 # Every candidate walled is the one state the orchestrator must not paper over.
 run_case all_walled
 assert contains "$(head -n1 <<<"$output")" 'NEXT: ALL WALLED, ask Egor'
@@ -596,7 +685,8 @@ assert test "$query_out" = worker
 # A value naming nothing would widen the query instead of narrowing it, so it is refused too.
 for bad in "--account nosuchvendor" "--exclude com" "--account" "--account claudeb --bogus x" "stray" \
            "--account claudeb --exclude" "--exclude" "--fable" \
-           "--role reviewers" "--role" "--account claudeb --role" "--account claudeb --role rater"; do
+           "--role reviewers" "--role chat" "--role" "--account claudeb --role" \
+           "--account claudeb --role rater"; do
   bad_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" $bad 2>"$WORK/query-bad.err")
   bad_rc=$?
   assert test "$bad_rc" -eq 2
@@ -618,4 +708,4 @@ for empty_exclude in "" ",,"; do
   assert grep -q 'needs at least one account name' "$WORK/query-bad.err"
 done
 
-printf 'PASS: %s assertions; the three routing-contract rules (pool-toggle candidacy with the session account as reserve, pin-or-lowest-spending-bucket selection with the five-hour tiebreak, walls only at effective 100%% or dead auth), loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, data hygiene and DATA age sourcing, model/effort straight from worker-model, and the output/cache golden contract with no routing prose\n' "$asserts"
+printf 'PASS: %s assertions; the three routing-contract rules (pool-toggle candidacy with the session account as reserve, pin-or-lowest-spending-bucket selection with the five-hour tiebreak, walls only at effective 100%% or dead auth), the five-hour deferral at 80%% with its `5h!` tag, the three roles including a chat that sees neither pin nor reserve, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, data hygiene and DATA age sourcing, model/effort straight from worker-model, and the output/cache golden contract with no routing prose\n' "$asserts"

@@ -268,8 +268,14 @@ emit "$HEADLESS" "{'type':'user','cwd':'/tmp/proj','entrypoint':'sdk-cli','times
 # and its usage, then a client-side notice that nobody said.
 RICH="$CORPUS/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl"
 emit "$RICH" "{'type':'user','cwd':'/tmp/proj','gitBranch':'main','entrypoint':'cli','timestamp':'2026-01-29T10:00:00.000Z','message':{'role':'user','content':'починим хедер?'}}"
-emit "$RICH" "{'type':'assistant','cwd':'/tmp/proj','gitBranch':'main','entrypoint':'cli','timestamp':'2026-01-29T10:01:00.000Z','message':{'role':'assistant','model':'claude-opus-5','usage':{'input_tokens':1000,'cache_read_input_tokens':40000,'cache_creation_input_tokens':1000},'content':[{'type':'text','text':'готово, хедер держится'}]}}"
+emit "$RICH" "{'type':'assistant','cwd':'/tmp/proj','gitBranch':'main','entrypoint':'cli','timestamp':'2026-01-29T10:01:00.000Z','uuid':'reply-b','message':{'role':'assistant','model':'claude-opus-5','usage':{'input_tokens':1000,'cache_read_input_tokens':40000,'cache_creation_input_tokens':1000,'cache_creation':{'ephemeral_1h_input_tokens':1000,'ephemeral_5m_input_tokens':0}},'content':[{'type':'text','text':'done, the header holds'}]}}"
 emit "$RICH" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'cli','timestamp':'2026-02-10T09:00:00.000Z','message':{'role':'assistant','model':'<synthetic>','usage':{'input_tokens':1},'content':[{'type':'text','text':'Login expired · Please run /login'}]}}"
+
+# A schema surprise in the cache buckets: the reply still dates the chat, and the
+# scan that reads every transcript in one pass survives it.
+ODD="$CORPUS/eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl"
+emit "$ODD" "{'type':'user','cwd':'/tmp/proj','entrypoint':'cli','timestamp':'2026-01-29T11:00:00.000Z','message':{'role':'user','content':'and the footer?'}}"
+emit "$ODD" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'cli','timestamp':'2026-01-29T11:01:00.000Z','uuid':'reply-e','message':{'role':'assistant','model':'claude-opus-5','usage':{'input_tokens':10,'cache_creation':1000},'content':[{'type':'text','text':'the footer holds too'}]}}"
 
 # What /clear leaves behind: a transcript holding nothing but the command that
 # opened it. A third of the corpus looks like this.
@@ -320,8 +326,15 @@ assert test "$(python3 -c "
 import json, sys
 row = [r for r in json.load(sys.stdin) if r['session'].startswith('bbbb')][0]
 print(row['model'], row['ctx'], row['branch'], row['cwd'], row['at'] < 1770000000)
-" <<<"$OUT")" = "claude-opus-5 42000 main /tmp/proj True"
+print(row['uuid'], row['ttl'], int(row['spoke']))
+" <<<"$OUT")" = "claude-opus-5 42000 main /tmp/proj True
+reply-b 3600 1769680860"
 assert test -z "$(grep -o 'Login expired' <<<"$OUT")"
+assert test "$(python3 -c "
+import json, sys
+row = [r for r in json.load(sys.stdin) if r['session'].startswith('eeee')][0]
+print(row['model'], row['ttl'])
+" <<<"$OUT")" = "claude-opus-5 0"
 
 # --- the cache answers with the same list, and yields to a new message -------
 assert test -f "$WORK/cache.json"

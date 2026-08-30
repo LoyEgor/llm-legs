@@ -18,18 +18,21 @@ import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 PROFILES = os.path.expanduser("~/.claude-profiles")
 STATE = os.path.join(PROFILES, ".claudeb", ".claudeb-state")
+TRACKS = os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/claude-statusline")
 # A week covers what he is usually looking for; the rest loads when he scrolls
 # past it, so opening the picker never pays for a corpus he will not read.
 WINDOWS = (7, 30, 120, 0)
 # project, model, context — capped so a deep worktree name cannot push the
 # conversation itself off the right edge.
-CAPS = (22, 12, 5)
+CAPS = (22, 12, 10)
 USAGE = ("usage: chats [--days N | --all] [--print]\n"
          "  ↑↓ chat · ←→ claudeb account · type to filter · enter opens it here\n"
+         "  the account follows the chat's live cache, else the optimal one\n"
          "  scrolling past the last row loads more history")
 
 
@@ -89,7 +92,71 @@ def profiles():
     return names
 
 
+def warm_account(row):
+    """The claudeb account whose prompt cache still holds this chat, or None.
+
+    A transcript never says which account a reply went through; the statusline
+    learns that while the chat is open and leaves it in its track file, keyed to
+    the reply's uuid. The verdict is the statusline's own: the newest reply's
+    cache bucket, counted from that reply. `until` is when it expires.
+    """
+    row["until"] = None
+    spoke, ttl = row.get("spoke"), row.get("ttl")
+    if not spoke or not ttl:
+        return None
+    try:
+        with open(os.path.join(TRACKS, "cache-ttl-track-" + row["session"]),
+                  encoding="utf-8") as handle:
+            fields = handle.readline().split()
+    except OSError:
+        return None
+    if len(fields) < 7 or fields[0] != "v2" or fields[6] != row.get("uuid") or fields[2] == "?":
+        return None
+    row["until"] = spoke + ttl
+    return fields[2]
+
+
+def annotate(chats):
+    for row in chats:
+        row["warm"] = warm_account(row)
+    return chats
+
+
+def warm_name(row, now):
+    return row["warm"] if row.get("warm") and now < row["until"] else None
+
+
+def worker_pick():
+    """The selector to ask, resolved like the `chat-find` beside it: the sibling
+    of this script first, so both halves of the picker's answer come from one
+    checkout, and PATH only for an install that ships them apart."""
+    override = os.environ.get("CLAUDEB_WORKER_PICK")
+    if override:
+        return override
+    sibling = os.path.join(HERE, "worker-pick")
+    return sibling if os.access(sibling, os.X_OK) else "worker-pick"
+
+
+def chat_account():
+    """The account worker-pick would give a chat, or None if it can staff none.
+
+    Zero-token — it reads the cached limits table — and asked once, at startup:
+    the answer only moves when those numbers do.
+    """
+    try:
+        done = subprocess.run([worker_pick(), "--account", "claudeb", "--role", "chat"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if done.returncode != 0:
+        return None
+    return done.stdout.strip() or None
+
+
 def current_profile(names, announced):
+    chosen = chat_account()
+    if chosen in names:
+        return names.index(chosen)
     if announced in names:
         return names.index(announced)
     try:
@@ -98,6 +165,20 @@ def current_profile(names, announced):
     except OSError:
         state = ""
     return names.index(state) if state in names else 0
+
+
+def refollow(row, landed, profile, held):
+    """Whether the account should be asked of this row again: on every new
+    landing, and on a row already landed on as long as ←→ has not moved the
+    account since — a cache expiring under a resting cursor must hand it back."""
+    return row.get("session") != landed or profile == held
+
+
+def account_for(row, now, names, default):
+    """The account a landed row implies: the one whose cache still holds this
+    chat, else back to the account the picker opened on."""
+    warm = warm_name(row, now)
+    return names.index(warm) if warm in names else default
 
 
 def label(level, windows):
@@ -116,6 +197,37 @@ def when_label(at, now):
     return "%dd" % (minutes / 1440)
 
 
+def width(text):
+    """Columns the text occupies on screen, not characters it is made of."""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in text)
+
+
+def clip(text, room):
+    """The longest prefix that fits in `room` columns.
+
+    Every cut and every cursor position goes through this and `width`: curses
+    counts an `addnstr` limit in characters at best and in UTF-8 bytes on some
+    builds, so a CJK title handed to it wraps past the right edge, and the next
+    write — placed by `getyx` — lands on top of the row it just drew.
+    """
+    if room <= 0:
+        return ""
+    kept, used = [], 0
+    for ch in text:
+        step = 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+        if used + step > room:
+            break
+        kept.append(ch)
+        used += step
+    return "".join(kept)
+
+
+def pad(text, size, right=False):
+    text = clip(text, size)
+    fill = " " * (size - width(text))
+    return fill + text if right else text + fill
+
+
 def model_label(row):
     # The release date in a model id ("claude-haiku-4-5-20251001") is width the
     # column pays for one model and nobody reads.
@@ -129,12 +241,15 @@ def columns(row, now):
     if said:
         # Who spoke last says whether the chat is finished or waiting on him.
         said = ("you: " if row.get("role") == "user" else "claude: ") + said
+    # A tab or newline inside a title moves the cursor as surely as an overlong
+    # write does, so the name is collapsed exactly like the quote already is.
+    name = " ".join((row.get("name") or "").split())
     return ["%s %4s" % (stamp.strftime("%d.%m %H:%M"), when_label(row["at"], now)),
             os.path.basename(row.get("cwd") or "") or "?",
             model_label(row),
-            "%dk" % (row["ctx"] // 1000) if row.get("ctx") else "",
-            row.get("name") or said or "—",
-            said if row.get("name") else ""]
+            warm_name(row, now) or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""),
+            name or said or "—",
+            said if name else ""]
 
 
 def matches(row, needle):
@@ -156,8 +271,8 @@ def plan(rows):
     for row in rows:
         cells = (os.path.basename(row.get("cwd") or "") or "?",
                  model_label(row),
-                 "%dk" % (row["ctx"] // 1000) if row.get("ctx") else "")
-        sizes = [max(size, len(cell)) for size, cell in zip(sizes, cells)]
+                 row.get("warm") or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""))
+        sizes = [max(size, width(cell)) for size, cell in zip(sizes, cells)]
     return [min(size, cap) for size, cap in zip(sizes, CAPS)]
 
 
@@ -172,7 +287,7 @@ def draw(screen, rows, view, names, profile, needle, used, note):
 
 def paint(screen, rows, view, names, profile, needle, used, note):
     screen.erase()
-    height, width = screen.getmaxyx()
+    height, span = screen.getmaxyx()
     body = max(1, height - 2)
     header = "%d chats · %s · ↑↓ chat · ←→ account · type to filter" % (
         len(rows), view["window"])
@@ -180,7 +295,7 @@ def paint(screen, rows, view, names, profile, needle, used, note):
         header += "   /%s" % needle
     if note:
         header += "   " + note
-    screen.addnstr(0, 0, header.ljust(width - 1), width - 1, curses.A_BOLD)
+    screen.addstr(0, 0, pad(header, span - 1), curses.A_BOLD)
 
     sizes = plan(rows)
     for line in range(body):
@@ -191,39 +306,38 @@ def paint(screen, rows, view, names, profile, needle, used, note):
         chosen = index == view["cursor"]
         fields = ["▸ " if chosen else "  ", cells[0]]
         for cell, size in zip(cells[1:3], sizes[:2]):
-            fields.append(cell[:size].ljust(size))
-        fields.append(cells[3][: sizes[2]].rjust(sizes[2]))
-        head = fields[0] + "  ".join(fields[1:]) + "  "
+            fields.append(pad(cell, size))
+        fields.append(pad(cells[3], sizes[2], right=True))
+        head = clip(fields[0] + "  ".join(fields[1:]) + "  ", span - 1)
         attribute = curses.A_BOLD if chosen else curses.A_NORMAL
-        screen.addnstr(line + 1, 0, head, width - 1, attribute)
-        column = len(head)
-        if column < width - 1:
-            screen.addnstr(line + 1, column, cells[4], width - 1 - column, attribute)
-            # Where the name actually ended, not how many characters it had: a
-            # double-width glyph in a chat's name would otherwise put the quote
-            # on top of it.
-            column = screen.getyx()[1]
+        screen.addstr(line + 1, 0, head, attribute)
+        column = width(head)
+        if column < span - 1:
+            name = clip(cells[4], span - 1 - column)
+            screen.addstr(line + 1, column, name, attribute)
+            column += width(name)
         # The quote is dimmed because it answers a different question than the
         # name does: not what the chat is, but where it stopped.
-        if cells[5] and column < width - 4:
-            screen.addnstr(line + 1, column, " · " + cells[5], width - 1 - column,
-                           curses.A_DIM)
+        if cells[5] and column < span - 4:
+            screen.addstr(line + 1, column, clip(" · " + cells[5], span - 1 - column),
+                          curses.A_DIM)
 
     tail = []
     for position, name in enumerate(names):
         percent = used.get(name)
         label = " %s %d%% " % (name, percent) if percent is not None else " %s " % name
         tail.append((label, curses.A_REVERSE if position == profile else curses.A_DIM))
-    screen.addnstr(height - 1, 0, " " * (width - 1), width - 1)
+    screen.addstr(height - 1, 0, " " * (span - 1))
     column = 0
     for label, attribute in tail:
-        if column >= width - 1:
+        if column >= span - 1:
             break
-        screen.addnstr(height - 1, column, label, width - 1 - column, attribute)
-        column += len(label)
-    hint = "   ↵ open · ^C quit · esc clear"
-    if column < width - 1:
-        screen.addnstr(height - 1, column, hint, width - 1 - column)
+        label = clip(label, span - 1 - column)
+        screen.addstr(height - 1, column, label, attribute)
+        column += width(label)
+    hint = "   ↵ open · ^C quit · esc clear · account: chat's cache, else optimal"
+    if column < span - 1:
+        screen.addstr(height - 1, column, clip(hint, span - 1 - column))
     screen.refresh()
 
 
@@ -241,7 +355,7 @@ def run(screen, chats, names, used, profile, level, windows):
     except curses.error:
         pass
     view = {"cursor": 0, "top": 0, "now": time.time(), "window": label(level, windows)}
-    needle, note, scrolled = "", "", False
+    needle, note, scrolled, landed, default, held = "", "", False, None, profile, profile
     while True:
         view["now"] = time.time()
         rows = [row for row in chats if matches(row, needle)]
@@ -252,11 +366,17 @@ def run(screen, chats, names, used, profile, level, windows):
             view["window"] = "loading…"
             draw(screen, rows, view, names, profile, needle, used, note)
             level += 1
-            chats = load_chats(windows[level])
+            chats = annotate(load_chats(windows[level]))
             view["window"] = label(level, windows)
             scrolled = False
             continue
         view["cursor"] = max(0, min(view["cursor"], len(rows) - 1))
+        # ←→ overrides only while the cursor stays put: the next landing re-asks
+        # account_for, so a row with no live cache returns to the optimal account
+        # rather than keeping whichever chat's cache was picked up on the way.
+        if rows and refollow(rows[view["cursor"]], landed, profile, held):
+            landed = rows[view["cursor"]].get("session")
+            profile = held = account_for(rows[view["cursor"]], view["now"], names, default)
         height = max(1, screen.getmaxyx()[0] - 2)
         view["top"] = max(min(view["top"], view["cursor"]), view["cursor"] - height + 1)
         view["top"] = max(0, min(view["top"], max(0, len(rows) - height)))
@@ -351,7 +471,7 @@ def main():
     used, announced = limits()
     profile = current_profile(names, announced)
 
-    chosen = curses.wrapper(run, chats, names, used, profile, level, windows)
+    chosen = curses.wrapper(run, annotate(chats), names, used, profile, level, windows)
     if not chosen:
         return
     profile, session, cwd = chosen

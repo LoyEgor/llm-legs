@@ -3,8 +3,9 @@
 `worker-pick` answers one question per vendor — **which account** — from the pool toggles
 and measured usage. No scoring. Every selection must be verifiable by one glance at the
 menu: the chosen account is the pin, or else the lowest spending-bucket percentage in the
-pool. This page is the policy; code bends to it, and anything the old implementation did
-beyond it is deleted, not preserved.
+pool that the five-hour deferral has not pushed down the list. This page is the policy;
+code bends to it, and anything the old implementation did beyond it is deleted, not
+preserved.
 
 ## The four rules
 
@@ -13,19 +14,30 @@ beyond it is deleted, not preserved.
    account (`CLAUDE_LIMITS_ACCOUNT`) is the reserve: it joins the candidates only when no
    other candidate is selectable, still requires its own pool toggle, and the answer is
    marked `SESSION RESERVE`. The reserve applies to every consumer identically — worker
-   dispatch, review-bench, anything else that asks; the toggle is the only gate.
+   dispatch, review-bench, anything else that asks; the toggle is the only gate. The one
+   role it does not reach is `chat` (see Roles).
 2. **Selection.** The vendor pin wins when usable — a pin overrides the pool toggle and
    the reserve status, and lapses loudly with a reason when it cannot serve. Otherwise:
    the candidate with the lowest effective percentage in the **bucket the task will
    spend** — weekly for ordinary work (every vendor), the fable bucket only for an
    explicitly-requested fable task. Ties break by lower five-hour percentage, then
    non-`main` before `main`, then name.
+   Above all of that sits the **five-hour deferral**: a candidate whose five-hour effective
+   percentage is 80% or more ranks behind every candidate below 80%, whatever the spending
+   buckets say. Within each of those two groups the order is exactly the one above, and an
+   unmeasured five-hour window is not a reading of 80% — it never defers.
    An account with no measured spending bucket is not a candidate (rule 1), so a vendor
    with no usage numbers answers exit 3 / no quota data. Fable exhaustion alone never
    disqualifies an account from ordinary work.
 3. **Wall.** An account is skipped only when walled: effective 100% in the spending
    bucket or in the five-hour bucket, or dead auth. Below 100% nothing blocks — no
-   floors, no headroom, no soft reserves beyond rule 1. A caller that watches an account
+   floors, no headroom, no soft reserves beyond rule 1, with **one** deliberate exception:
+   the five-hour deferral of rule 2. An account picked on weekly headroom that walls after
+   the first task is the wrong no-brainer answer. It stays soft — a deferred account is still
+   the answer once nothing below the threshold remains — it is one named constant
+   (`FIVE_HOUR_DEFER_PCT`, 80) and never a config key, and it is visible where the answer is
+   read: a ` 5h!` tag in the vendor row beside `WALLED`/`PINNED`. It is the only soft rule
+   there is; no second one may be added beside it. A caller that watches an account
    wall mid-task re-queries with `--exclude`; when every candidate is walled the answer
    is exit 3 / `ALL WALLED` and the orchestrator asks the owner.
    A **pinned** account that walls is the one case where a query writes: the pin is removed
@@ -64,11 +76,14 @@ the operand it is. It fails open on its own errors. Interactive launches — no 
 
 ## Roles
 
-A vendor serves two roles — `workers` (implementation) and `reviewers` (review-bench raters) —
-and `<vendor>_workers` / `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls
-layered over the pool: the literal value `off` closes that vendor for that role, an absent key
-or any other value leaves it open. The default role is `workers`, so every existing caller keeps
-its meaning; a rater asks with `worker-pick --account <vendor> --role reviewers`.
+A vendor serves three roles — `workers` (implementation), `reviewers` (review-bench raters) and
+`chat` (where Egor's own session should move next) — and `<vendor>_workers` /
+`<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered over the pool: the
+literal value `off` closes that vendor for that role, an absent key or any other value leaves it
+open. There is no `<vendor>_chat` key and none is to be invented — the pool toggle is the whole
+gate for a chat. The default role is `workers`, so every existing caller keeps its meaning; a
+rater asks with `worker-pick --account <vendor> --role reviewers`, the chat picker with
+`--role chat`.
 
 The ladder is **pin > roles > pool**. A closed role walls everything the pool would choose:
 without a usable pin the query answers exit 3 / `<vendor> is switched off for <role>`, and the
@@ -76,10 +91,19 @@ pool's own candidate is never handed over instead. The pin overrides it the same
 pool exclusion — a usable pin answers the workers query and the workers table even while
 `<vendor>_workers=off`, and rule 3 still ends it at its wall, unchanged.
 
-The pin is **workers-only**. A reviewers query never sees it: it is neither an override nor a
-forced choice there, and the pinned account stands in the reviewers answer as an ordinary
+The pin is **workers-only**. A reviewers or chat query never sees it: it is neither an override
+nor a forced choice there, and the pinned account stands in those answers as an ordinary
 candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is therefore final
 — no pin opens it.
+
+`chat` is the same candidates under the same walls, minus the two things that are about workers.
+An account Egor took out of the pool is not one to move a chat onto either. The pin it never sees
+(above), and there is no reserve — `CLAUDE_LIMITS_ACCOUNT` is where the chat already is, so under
+this role it ranks as an ordinary candidate rather than rule 1's last resort, and no answer is
+marked `SESSION RESERVE`. A chat query decides nothing about workers and therefore never clears a
+walled pin. It answers for every vendor under those same rules, `claudeb` being the only one with
+a caller today, and its machine face is the others': one bare account name on stdout, exit 3 when
+none is selectable.
 
 In the human table — the workers view — a workers-off vendor with no pin serving reads
 `<vendor> — off for workers` in `NEXT:`, trails the ordering and is never auto-selected, while its

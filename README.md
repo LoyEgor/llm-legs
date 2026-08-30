@@ -195,8 +195,13 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   Headless runs (workers, benches) are left out unless `--agents`; the listing caches per
   `(size, mtime)` in `~/.claude-profiles/.claudeb/chat-recent-cache.json`.
 - `bin/chats` → `~/.local/bin/chats` — full-screen picker over that listing: ↑↓ chat, ←→ claudeb
-  account (default: the account in use, as `llm-limits` reports it, else `.claudeb-state`), typing
-  filters, Enter `exec`s `claudeb profile <p> --resume <id>` in the target chat's directory. It opens
+  account (default: `worker-pick --account claudeb --role chat`, else the account in use as
+  `llm-limits` reports it, else `.claudeb-state`), typing filters, Enter `exec`s `claudeb profile
+  <p> --resume <id> --permission-mode bypassPermissions` in the target chat's directory. The
+  context column names the account instead of a size while that account's prompt cache still holds
+  the chat (the statusline's verdict, shared-invariants row bj), and landing on such a chat moves
+  the account to it; one with no live cache returns to that default, and ←→ holds only until the
+  cursor moves on. It opens
   on the last week and loads more history when he scrolls past the end; `--days N` / `--all` pin one
   window instead, `--print` shows the launch line rather than running it. Needs a terminal of its own.
 - `bin/chat-name` → `~/.local/bin/chat-name` — `<session-id>...` prints `<original title> (<short id>)`
