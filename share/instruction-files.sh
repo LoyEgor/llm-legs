@@ -12,7 +12,13 @@
 # workflow every agent is told to follow, not a way around a denied edit. Guarding it here bought
 # nothing and denied 47 legitimate appends in a measured month, more than any other single shape.
 # Growth of those files is still priced by the bloat gate, at the per-project rate.
-INSTRUCTION_GUARDED_BASENAMES='(CLAUDE\.md|CLAUDE\.local\.md)'
+#
+# `.claude/review-debt-ignore` is here for the opposite reason: not a file every session re-reads,
+# but the ONE way a path leaves review debt (review-bench docs/review-contract.md). A model that
+# can append to it can retire its own unreviewed work by writing a line, which is why it is the
+# project's answer and never the model's. It carries no `.md` suffix on purpose — the bloat gate
+# prices markdown by the byte and has nothing to say about a two-line ignore file.
+INSTRUCTION_GUARDED_BASENAMES='(CLAUDE\.md|CLAUDE\.local\.md|review-debt-ignore)'
 
 # Every consumer of these lists reads them a line and a field at a time, so a name carrying a
 # newline or a tab is refused here rather than downstream: by the time `read` has seen it the

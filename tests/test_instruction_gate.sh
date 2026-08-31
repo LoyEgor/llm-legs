@@ -120,6 +120,15 @@ assert_eq deny "$(decision "echo x > $HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/agents/codex-worker.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/skills/demo/SKILL.md")"
 
+# `review-debt-ignore` is the one way a path leaves review debt, so a model that can append to it
+# retires its own unreviewed work. It carries no `.md` on purpose and is typed from inside
+# `.claude/` as a bare name, which is the spelling the fast path dropped before the guarded
+# basenames were ever built.
+assert_eq deny "$(decision "echo x >> $HOME/.claude/review-debt-ignore")"
+assert_eq deny "$(decision 'echo x >> review-debt-ignore')"
+assert_eq deny "$(decision 'echo x > ../.claude/review-debt-ignore')"
+assert_eq pass "$(decision 'grep -c . review-debt-ignore')"
+
 echo "== write gate: the clobber operator is a redirection too"
 # `>|` is `>` with noclobber off. The operator class knew `>` and `>>` and nothing else, so this
 # spelling walked through.

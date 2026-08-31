@@ -225,8 +225,12 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
         # No gate reachable is no answer, and a label invented where the gate is silent is the fork
         # this segment exists to end. An answer whose style this build does not know is still an
         # answer, and it is shown loud rather than swallowed.
+        # `unknown` is the gate saying nobody could read the repository, which fit_verdict_part
+        # renders as the dim `rev ?`. Loud like an unclassifiable word it would be red over an
+        # outage the reader can do nothing about.
         case "$answer" in
           ''|off) answer=off ;;
+          unknown) ;;
           "dim "*|"bright "*|"split "*) ;;
           *) answer="loud $answer" ;;
         esac
@@ -239,9 +243,13 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
   # Until that lands the last answer stands, and only for as long as an answer can still be about
   # this tree: past the sweep it is a label outliving the state it was read from, which is the one
   # thing worse than no label.
+  # Past it, `unknown` and never `off`: the two are different facts (fit_verdict_part). A cache
+  # that was never written is not a stale answer — the refresh above is still in flight.
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf '%s' "$cached"
+  elif [ -n "$cached" ]; then
+    printf '%s' unknown
   else
     printf '%s' off
   fi
@@ -286,7 +294,9 @@ review_session_line() { # session now [rendered toplevel]
           total=$("$gate" debt-total "$sid" "$top" 2>/dev/null | head -1)
         fi
         [ "$auto" = yes ] || auto=no
-        [[ "$total" =~ ^[0-9]+$ ]] || total=""
+        # The gate prints a number or its own `unknown`, so anything else — an empty answer, a
+        # `timeout` kill, a word — is nobody having answered: neither the old empty string nor `0`.
+        [[ "$total" =~ ^[0-9]+$ ]] || total='?'
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s|%s' "$auto" "$total" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -296,6 +306,8 @@ review_session_line() { # session now [rendered toplevel]
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf '%s' "$cached"
+  elif [ -n "$cached" ]; then
+    printf '%s' 'no|?'
   else
     printf '%s' 'no|'
   fi
@@ -2255,6 +2267,15 @@ fit_verdict_part() {
   fi
   [ "$fit_rev_short" = 1 ] && { sp=""; bar="${DIM}|${RESET}"; word=r; }
   text=$review_text
+  # `off` is the gate answering "nothing owed"; `rev ?` is nobody having answered — a stale cache, a
+  # timeout, the gate's own `unknown`. Rendering the second as the first is how an outage reaches
+  # Egor as a clean bill, and rendering it as no segment at all is the same lie said quieter.
+  if [ "${review_style:-}" = unknown ] ||
+    { [ "$review_total" = '?' ] && [ -z "$text" ]; }; then
+    if [ "$review_autonomous" = yes ]; then dot="●${sp}"; else body="${word}${sp}"; fi
+    verdict_part=" ${sep} ${dot}${DIM}${body}?${RESET}"
+    return
+  fi
   case "${review_style:-}" in
     dim|bright|split)
       # The counter beside it may already have taken the word away; the dot is not that word and
@@ -2294,7 +2315,9 @@ fit_verdict_part() {
       [[ "$own" =~ ^[0-9]+$ ]] || own=0
       ;;
   esac
-  if [ -n "$review_total" ] && [ "$review_total" -gt "$own" ]; then
+  if [ "$review_total" = '?' ]; then
+    body="${body}${bar}?"
+  elif [ -n "$review_total" ] && [ "$review_total" -gt "$own" ]; then
     body="${body}${bar}${review_total}"
   fi
   verdict_part=" ${sep} ${dot}${body}"

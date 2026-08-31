@@ -3335,8 +3335,9 @@ GATE_STUB="$FIXTURES/gate-stub.sh"
 cat > "$GATE_STUB" <<'STUB'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GATE_LOG"
-# The two session-wide verbs answer from their own variables, so a gate that does not know them
-# yet is the default here: nothing printed, and the segment must render as it did before them.
+# The two session-wide verbs answer from their own variables. `debt-total` answers a real `0` by
+# default, because the cases below are about the VERDICT alone and an unreadable total is no longer
+# silent — it is the third state `?`, which would stand in every one of them.
 case "$1" in
   autonomous) printf '%s\n' "${GATE_AUTONOMOUS-}"; exit "${GATE_VERB_RC:-0}" ;;
   # The rendered tree is part of the question, so a caller that drops it gets no number at all.
@@ -3350,7 +3351,7 @@ export GATE_LOG GATE_ANSWER GATE_RC GATE_AUTONOMOUS GATE_TOTAL GATE_VERB_RC
 GATE_ANSWER=off
 GATE_RC=0
 GATE_AUTONOMOUS=
-GATE_TOTAL=
+GATE_TOTAL=0
 GATE_VERB_RC=0
 GATE_CMD="$GATE_STUB"
 
@@ -3675,28 +3676,71 @@ GATE_TOTAL=0
 review_zero_out=$(review_session_render review-zero "$REVIEW_DIRTY")
 assert review_slot_silent "$review_zero_out"
 
-# Only a bare non-negative integer is a total. Anything else is the gate saying something this
-# render cannot read as a number, and a number is the one thing this segment may not invent.
+# Only a bare non-negative integer is a total. Anything else — the gate's own `unknown`, a word, a
+# negative, an empty line, a `timeout` kill — is nobody having answered, which is neither a number
+# this segment may invent nor the `0` that would read as a clean bill. It stands as `?`.
 GATE_ANSWER='bright rev 7'
 review_junk_n=0
-for review_total_junk in '648 lines' '-3' 'none' ''; do
+for review_total_junk in '648 lines' '-3' 'none' 'unknown' ''; do
   GATE_TOTAL="$review_total_junk"
   review_junk_out=$(review_session_render "review-total-junk-$((++review_junk_n))" "$REVIEW_DIRTY")
-  assert grep -Fq "${review_seg}rev 7" <<< "$review_junk_out"
-  assert test "${review_junk_out#*"${review_seg}rev 7 ${DIM}|"}" = "$review_junk_out"
+  assert grep -Fq "${review_seg}rev 7 ${DIM}|${RESET} ?" <<< "$review_junk_out"
 done
 
-# A gate without the verbs — nothing on stdout, nonzero exit — is the state this ships into, and
-# the segment must be byte-for-byte what it was before either addition.
+# A gate that is THERE and cannot answer the verbs — nothing on stdout, nonzero exit — is
+# indistinguishable from one whose `debt-total` timed out, so it is an outage and says so: the
+# repository's own numbers stand and the total beside them is `?`. Only a gate that is not
+# installed at all leaves the slot as it was before either verb (the `no-such-gate` case above).
+# The dot still needs a `yes` nobody gave, so no marker appears.
 GATE_ANSWER='split rev 12/34'
 GATE_AUTONOMOUS=
 GATE_TOTAL=
 GATE_VERB_RC=1
 review_stub_out=$(review_session_render review-stub-verbs "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}rev 12${DIM}/34${RESET}" <<< "$review_stub_out"
+assert grep -Fq "${review_seg}rev 12${DIM}/34${RESET} ${DIM}|${RESET} ?" <<< "$review_stub_out"
 assert test "${review_stub_out#*●}" = "$review_stub_out"
-assert test "${review_stub_out#*"${DIM}/34${RESET} ${DIM}|"}" = "$review_stub_out"
 GATE_VERB_RC=0
+GATE_ANSWER=off
+
+# --- the third state: a number, `off`, and `rev ?` --------------------------------------------
+# `off` is the gate answering "nothing is owed"; `?` is nobody having answered — its library down, a
+# member repository that failed, a `timeout` kill, an answer that outlived the 120s sweep. Rendered
+# as `off`, or as no segment at all, an outage reaches Egor as a clean bill.
+
+# The gate's own outage word, where the repository itself owes nothing: the segment is a state, not
+# a gap. Proves R5's `unknown` reaches the render instead of stopping at the gate.
+GATE_ANSWER=off
+GATE_AUTONOMOUS=no
+GATE_TOTAL=unknown
+review_unknown_out=$(review_session_render review-unknown-total "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}${DIM}rev ?${RESET}" <<< "$review_unknown_out"
+# And a chat that commits on its own keeps its marker in front of it, as it does before a number.
+GATE_AUTONOMOUS=yes
+review_unknown_auto_out=$(review_session_render review-unknown-auto "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● ${DIM}?${RESET}" <<< "$review_unknown_auto_out"
+
+# A gate answering `0` says nothing is owed anywhere, which is the empty slot and never a `?`.
+# Proves the two states did not collapse into one the moment the third was added.
+GATE_AUTONOMOUS=no
+GATE_TOTAL=0
+review_zero_state_out=$(review_session_render review-zero-state "$REVIEW_DIRTY")
+assert review_slot_silent "$review_zero_state_out"
+assert test "${review_zero_state_out#*"rev ?"}" = "$review_zero_state_out"
+
+# A verdict cached before the 120s sweep is an answer about a tree two minutes ago, which for a
+# number Egor acts on is no answer at all. Backdated with the session pair left fresh, so the `?`
+# can only have come from the verdict's own staleness. Proves a stale answer is not a clean bill.
+GATE_ANSWER='bright rev 7'
+GATE_TOTAL=0
+review_stale_payload=$(statusline_payload review-stale "" "$REVIEW_DIRTY")
+rm -f "$STATE_DIR/review-class-review-stale" "$STATE_DIR/review-session-review-stale"
+run_statusline "$review_stale_payload" >/dev/null || fail "stale verdict first render failed"
+review_await_verdict review-stale
+review_await_session review-stale
+touch -t 202001010000 "$STATE_DIR/review-class-review-stale"
+review_stale_out=$(run_statusline "$review_stale_payload") || fail "stale verdict render failed"
+assert grep -Fq "${review_seg}${DIM}rev ?${RESET}" <<< "$review_stale_out"
+assert test "${review_stale_out#*"${review_seg}rev 7"}" = "$review_stale_out"
 GATE_ANSWER=off
 
 # --- the real gate, so the two answers cannot drift apart -----------------------------------

@@ -53,8 +53,10 @@ command=${command//\\$'\n'/ }
 # `.md` rather than the guarded basenames: a command typed from inside ~/.claude/docs names its
 # target `review-tiers.md` and carries no other guarded substring at all. The spellings list
 # already knows the cwd-relative form, so the fast path was the only thing hiding it.
+# `review-debt-ignore` carries no `.md` and is written from inside `.claude/` as a bare name, so
+# neither of the first two patterns sees it and the guarded basename below is never reached.
 case "$command" in
-  *.md*|*.claude/*|*settings.json*) ;;
+  *.md*|*.claude/*|*settings.json*|*review-debt-ignore*) ;;
   *) exit 0 ;;
 esac
 

@@ -581,17 +581,23 @@ assert grep -Fq -- "$HS_LABEL" "$ROOT/docs/DIAGNOSTICS.md"
 assert doc_has 'Hammerspoon launchd agent identity'
 
 CLAUDE_SETUP="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
+RJOURNAL="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 FLOW_GATE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/review-flow-gate.sh"
 
 # --- Row ah: the statusline speaks the gate's verdict --------------------------
 # Three implementations, one sentence: review-bench prints the debt word, the gate translates it
 # into a style plus a label, and the statusline removes only a duplicate `rev` already carried by a
-# live counter over the same repository. Renaming a word on any one side is silent — the gate falls
-# through to `off` on an answer it cannot read, so a review that hung would render as nothing owed.
+# live counter over the same repository. Renaming a word on any one side is silent, and each of the
+# three now has to say so out loud: `unknown` where nobody could answer, never `none`/`0`/`off`, or a
+# review that hung reaches Egor as nothing owed.
 assert doc_has 'The statusline speaks the gate'
 assert grep -Fq '"$gate" verdict "$1" "$2"' "$STATUSLINE"
 assert grep -Fq "''|off) answer=off ;;" "$STATUSLINE"
 assert grep -Fq '"dim "*|"bright "*|"split "*) ;;' "$STATUSLINE"
+# The gate's own `unknown` is a classified answer, not a word this build cannot read: shown loud it
+# is red over an outage, and `off` would be a clean bill over a tree nobody managed to read.
+assert grep -Fq 'unknown) ;;' "$STATUSLINE"
+assert grep -Fq 'split'"'"' '"'"'unknown*)' "$FLOW_GATE"
 # Two tones in one segment, cut on the first slash and nowhere else: the numbers are the gate's
 # and the weights are this line's, so a render that split them differently would say whose the
 # debt is with the gate disagreeing.
@@ -606,18 +612,22 @@ assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<s> skipped)]`'
 # The share is the debt a `--debt` review leaves out, priced by the one reader that leaves it out:
 # a line quoting a number the scope never skipped is the mismatch the segment exists to end.
 assert grep -Fq 'others = len(debt_skipped_paths(repo, debt, session, buckets=buckets))' "$RB_DEBT"
-assert grep -Fq 'others = debt_skipped_paths(repo, debt, session, covering=covering) - covered' "$RB_DEBT"
+assert grep -Fq 'others = debt_skipped_paths(repo, debt, session, covering=covering)' "$RB_DEBT"
 assert doc_has '`split <own> <foreign> <orphaned>`'
+# One number: the commit door (`--list`) and the statusline (`--split`) subtract what an open round
+# already read through ONE helper and with the same session, or a round hides paths from one reader
+# and not the other and the two surfaces disagree about the same repository.
+assert grep -Fq 'def debt_visible(repo, session, paths=None, **kw):' "$RB_DEBT"
+assert test "$(grep -c 'debt_visible(repo, session' "$RB_DEBT")" -ge 3
+# An unresolvable repository is not a clean one. Both spellings, because the gate reads the machine
+# line and a human reads the other, and a `none`/`split 0 0 0` here is a clean bill nobody gave.
+assert grep -Fq 'print("split unknown")' "$RB_DEBT"
+assert grep -Fq 'print("unknown")' "$RB_DEBT"
 # The counter is the review target header's, not a second differ: one edit priced two ways is two
 # numbers for one question, and the label is then arguing with the panel's own target line.
 assert grep -Fq 'changes, _ = _scope.diff_numstat(repo, [str(left), str(right)], no_index=True)' "$RB_DEBT"
 assert grep -Fq 'DEBT_LINE_CACHE_FILE = "debt-lines.json"' "$RB_DEBT"
 assert doc_has '`<state dir>/debt-lines.json`'
-# The header's differ is also what the header REFUSES to count: a path the repository's attributes
-# take out of diffing has no lines on either surface, and the comparison of two files outside the
-# repository is the one place no `.gitattributes` pattern can reach.
-assert grep -Fq '"git", "check-attr", "--stdin", "-z", "diff"' "$RB_DEBT"
-assert doc_has 'take out of diffing (`-diff`)'
 # The owner word is what the gate switches on, so every word review-bench can print is named in
 # the row that promises the gate reads them all — and so is the one line that carries no such word:
 # debt whose owner is entirely on record must not be read back as `unknown`, and a gate parsing the
@@ -651,9 +661,28 @@ if test -r "$FLOW_GATE"; then
   # that landed it, and a question narrowed to one chat's dirty files cannot see the rest.
   assert grep -Fq 'review-bench debt --repo "$top_dir" --session "$session" "$@"' "$FLOW_GATE"
   assert grep -Fq 'answer=$(review_debt --split) || { echo off; exit 0; }' "$FLOW_GATE"
+  # The total is `unknown` wherever a share of it went unread — the journal library down, no reader
+  # on PATH, a member repository that failed or answered outside the grammar — because a total short
+  # by one repository is a smaller number with nothing in it saying so, and `0` is a clean bill.
+  assert grep -Fq 'debt-total) echo unknown; exit 0 ;;' "$FLOW_GATE"
+  assert test "$(grep -c 'dt_unknown=1' "$FLOW_GATE")" -ge 3
+  assert grep -Fq '[ -n "$dt_unknown" ] && { echo unknown; exit 0; }' "$FLOW_GATE"
+  # And no cap on the repositories it sums: a cap is that same silent shortfall written into the
+  # code, and what bounds the render is the caller's own timeout, which answers `unknown` too.
+  assert test "$(grep -c 'DEBT_TOTAL_REPOS' "$FLOW_GATE")" -eq 0
 else
   fail "statusline verdict grammar across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
+# The render's own half of that answer: anything but a bare integer becomes the sentinel `?`, and a
+# cached answer past the 120s sweep becomes it too. `off` is the gate saying nothing is owed and `?`
+# is nobody having answered — collapsed into one, an outage reaches Egor as a clean bill.
+assert grep -Fq "[[ \"\$total\" =~ ^[0-9]+\$ ]] || total='?'" "$STATUSLINE"
+assert grep -Fq "printf '%s' 'no|?'" "$STATUSLINE"
+assert grep -Fq "printf '%s' unknown" "$STATUSLINE"
+assert grep -Fq '[ "${review_style:-}" = unknown ] ||' "$STATUSLINE"
+assert grep -Fq 'verdict_part=" ${sep} ${dot}${DIM}${body}?${RESET}"' "$STATUSLINE"
+assert grep -Fq "if [ \"\$review_total\" = '?' ]; then" "$STATUSLINE"
+assert doc_has 'a dim `rev ?`'
 
 # --- Row ao: the review debt journal -------------------------------------------
 # One record format for both journals in the git dir, one writer for the debt one, and a reader
@@ -672,13 +701,40 @@ if test -r "$FLOW_GATE"; then
   assert eq "$(grep -Ec '^[[:space:]]*gitdir=\$\(rj_journal_dir "' "$FLOW_GATE")" "$gate_gitdirs"
   # Both writers append through the one carrier, and appending is the invariant: two chats
   # rewriting this file in the same second lose whichever ownership landed first.
-  assert grep -Fq 'rj_append "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
+  assert grep -Fq 'rj_append_owned "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
 fi
+# `rj_append_owned` is the ONE debt-ledger writer, and it is what puts the launcher's own row in at
+# WRITE time: folded at read time instead, `worker-run`'s 7-day prune of run records makes the
+# number change by itself and two chats resuming one worker session make the row nobody's.
+assert grep -Fq 'rj_append_owned() { # file session epoch path' "$RJOURNAL"
+assert grep -Fq 'rj_launch_chain_of "$2"' "$RJOURNAL"
+assert grep -Fq 'rj_append "$1" "$launcher" "$3" "$4"' "$RJOURNAL"
+# Resolved OUTSIDE a command substitution, or the memo dies with the subshell and every row
+# rescans every run record; and the WHOLE chain, or a nested worker leaves the top chat on no row.
+assert eq "$(grep -c 'rj_launch_chain_of "$2"' "$RJOURNAL")" 1
+assert test -z "$(grep -n '\$(rj_launcher_of' "$RJOURNAL")"
+assert grep -Fq 'rj_launch_chain_of() { # session -> RJ_LAUNCH_CHAIN' "$RJOURNAL"
+# Each of those chats is written into the per-session repository index too, or `debt-total`
+# enumerates the worker's repositories and drops the tree the chat only reached through it.
+assert grep -Fq 'rj_register_repo "$launcher" "$5"' "$RJOURNAL"
+assert eq "$(grep -o 'rj_append "\$debt"\|rj_append "\$journal"\|rj_append "\$dir' \
+  "$CLAUDE_SETUP/hooks/commit-journal.sh" "$CLAUDE_SETUP/hooks/commit-report.sh" "$FLOW_GATE" |
+  wc -l | tr -d ' ')" 0
+# A row the reader cannot price is QUARANTINED, never erased: the file is spelled once, beside the
+# ledger, so a rewrite that turns out to have been wrong about a row can still be argued with.
+assert grep -Fq 'rj_quarantine() { # file reason record' "$RJOURNAL"
+assert eq "$(grep -c '"\$1.rejected"' "$RJOURNAL")" 1
+# A rename carries the entry rather than reading as a deletion, through one map with two carriers —
+# the uncommitted `git mv` at the gate's rewrite, the landed one at the report's stamp — and both
+# already hold the ledger's lock, so no third writer and no second lock enters for it.
+assert grep -Fq 'rj_rename_map() { # top [pre]' "$RJOURNAL"
+assert grep -Fq 'rj_rename_map "$top_dir"' "$FLOW_GATE"
+assert grep -Fq 'rj_rename_map "$top" "$pre"' "$CLAUDE_SETUP/hooks/commit-report.sh"
 COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
 if test -r "$COMMIT_REPORT"; then
   # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
   # of the other two, and the debt that commit landed is then recorded under no chat at all.
-  assert grep -Fq 'rj_append "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
+  assert grep -Fq 'rj_append_owned "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
   # Every repository the snapshot names, whatever the call's output parsed to: the block this hook
   # renders reads ONE repository, and gated on it a commit in any other took no debt row at all.
   assert grep -Fq '[ -n "$HEAD_SNAPSHOT" ] && snapshot_creates_commits &&' "$COMMIT_REPORT"
@@ -701,10 +757,17 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'own_landed_commits() { # top pre' "$COMMIT_REPORT"
   assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 2
   assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
-  # A merge answers `--name-only` with nothing at all unless the diff is taken against its FIRST
-  # parent, so every path a merge brought to this line went into no debt row.
-  assert grep -Fq 'git -C "$top" log -1 --format= --name-only --first-parent -z "$full"' \
+  # A merge answers with nothing at all unless the diff is taken against its FIRST parent, so
+  # every path a merge brought to this line went into no debt row. ONE walk for the whole call and
+  # not a `git log` per commit, which is what makes the absence of a cap below cost one process.
+  assert grep -Fq 'git -C "$top" log --no-walk --first-parent --format="%H$tab%ct" --name-status -M -z --stdin' \
     "$COMMIT_REPORT"
+  # And the debt sweep does not truncate: a cap here is ownership dropped for every commit past it,
+  # permanently and silently. The cap survives for `fixes --cover` alone, where the cost is N
+  # review-bench subprocesses inside a hook and the loss is a round staying open — the safe way.
+  assert eq "$(awk '/^stamp_landed_debt\(\) \{/,/^\}/' "$COMMIT_REPORT" | grep -c LANDED_CAP)" 0
+  assert grep -Fq 'fixes_truncation_note() { # top count' "$COMMIT_REPORT"
+  assert eq "$(grep -c 'head -n "\$LANDED_CAP"' "$COMMIT_REPORT")" 1
   # One snapshot per CALL: a chat runs Bash calls concurrently, and one name for all of them let the
   # second call's snapshot overwrite the first's. Both hooks key it on the `tool_use_id` their
   # payloads carry — the same id on the PreToolUse that writes the file and the PostToolUse that
@@ -764,7 +827,7 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'if [ "$2" = "$RJ_UNBORN" ]; then' "$COMMIT_REPORT"
   # The cap on one call's landing is read in the caller: a note written inside a command
   # substitution is written into a subshell, and the report carries no trace of what it dropped.
-  assert grep -Fq 'truncation_note "$top" "$landed"' "$COMMIT_REPORT"
+  assert grep -Fq 'fixes_truncation_note "$top" "$landed"' "$COMMIT_REPORT"
   assert grep -Fq 'rm -f "$snapshot_file"' "$COMMIT_REPORT"
   assert test "$(grep -c 'commit-report-last' "$COMMIT_REPORT")" -eq 0
   # The one repository each hook SPEAKS for is derived by both through the same library reader, and
@@ -821,7 +884,7 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'full=$(git -C "$top" rev-parse --verify --quiet "$sha^{commit}" 2>/dev/null)' \
     "$COMMIT_REPORT"
   # A co-tenant's journal row alone is that chat's pending work, swept in by `git commit -a`.
-  assert grep -Fq 'case "$foreign" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
+  assert grep -Fq 'case "$foreign" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) return 0 ;; esac' \
     "$COMMIT_REPORT"
   # And a run whose own listing cannot answer for its files answers with its whole workdir only
   # while it may still be writing, since its own sweep will resolve them. A FINAL record claims
@@ -841,13 +904,17 @@ if test -r "$COMMIT_REPORT"; then
   # older it handed the worker's file to whoever was committing beside it. Another NAME's row only:
   # a settled row of OUR own is what this commit's content must not inherit, and a row naming
   # nobody — what a deferred path no run listing named comes back as — is no sweep of anybody's.
-  assert grep -Fq 'case "$newer" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
+  assert grep -Fq 'case "$newer" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) return 0 ;; esac' \
     "$COMMIT_REPORT"
-  assert grep -Fq \
-    "awk -F\"\$tab\" -v c=\"\$ct\" -v o=\"\$own\" '\$1 != \"\" && \$1 != o && \$2 >= c { print \$3 }'" \
-    "$COMMIT_REPORT"
+  # Folded ONCE into `debt_others` and dated in the walk, never an `awk` per commit: the sweep
+  # reads the whole range uncapped, so a subshell per commit is a cost that grows with a rebase
+  # inside a PostToolUse hook. The three conditions are the invariant, wherever they are spelled.
+  assert grep -Fq 'if [ "$owner" = "$own" ]; then' "$COMMIT_REPORT"
+  assert grep -Fq 'elif [ -n "$owner" ]; then' "$COMMIT_REPORT"
+  assert grep -Fq '[ "${row%%"$tab"*}" -ge "$ct" ]' "$COMMIT_REPORT"
+  assert eq "$(awk '/^stamp_repo_debt\(\) \{/,/^\}/' "$COMMIT_REPORT" | grep -c 'awk -F"\$tab" -v c=')" 0
   # An entry of ours is not a debt row of ours: the append that should have followed it can fail.
-  assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) continue ;; esac' \
+  assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) return 0 ;; esac' \
     "$COMMIT_REPORT"
   assert grep -Fq 'claimed=$'"'"'\n'"'"'$(run_claims "$own")' "$COMMIT_REPORT"
   # A path passed over on a DIR claim is left to a sweep that names no path at all for a run ending
@@ -864,11 +931,16 @@ if test -r "$JOURNAL_LIB"; then
   # dropped record.
   assert grep -Fq 'rj_lock "$lock" && locked=1' "$JOURNAL_LIB"
   assert grep -Fq 'rj_append_raw "$@"' "$JOURNAL_LIB"
-  # A settled episode's record never counts as authorship of the next one on the same path, and the
-  # floor is ABSOLUTE: a path whose every record stands at or below its covering artifact has no
-  # author and is nobody's. Kept as a fallback, the leftovers answered for three co-tenants' commits
-  # under one chat's name (live 2026-08-25), and a wrong `own` is worse than nobody's.
-  assert grep -Fq 'if floor and epoch is not None and epoch <= floor' "$RB_DEBT"
+  # A path with ANY surviving record has an owner, and no artifact's epoch retires one: ownership is
+  # written into the ledger when the work is recorded and lives there until the row leaves. The
+  # epoch floor that discarded settled-looking records returned `orphaned` over debt whose author
+  # the ledger names, which is the ledger and the reader contradicting each other about one path.
+  assert eq "$(grep -c floor "$RB_DEBT")" 0
+  # What keeps an idle chat off another chat's later work is the LAST-editor rule instead: of the
+  # records still standing for a path, only the newest-stamped ones name its owners.
+  assert grep -Fq 'newest = max((epoch for epoch, _ in pool if epoch is not None), default=None)' \
+    "$RB_DEBT"
+  assert grep -Fq 'if newest is not None and epoch is not None and epoch < newest:' "$RB_DEBT"
   # Rewriters may not replace an inode a raw append just landed on: every swap is size-guarded.
   assert grep -Fq 'rj_swap() { # file tmp snap_size' "$JOURNAL_LIB"
   if test -r "$FLOW_GATE"; then
@@ -1494,7 +1566,7 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # The record's own three fields, and the LEDGER they land in: the directory is the resolver's to
   # name (row `bd`), the file name is not — stamped into the commit journal instead, an ownership
   # record is read by nobody pricing debt while the guard that let it through still passes.
-  assert grep -Eq 'rj_append "[^"]*\$RJ_DEBT_JOURNAL" "\$3" "\$now" "\$2"' "$COMMIT_JOURNAL"
+  assert grep -Eq 'rj_append_owned "[^"]*\$RJ_DEBT_JOURNAL" "\$3" "\$now" "\$2"' "$COMMIT_JOURNAL"
   assert grep -Fq 'stamp_deferred "$1" "$2" ""' "$COMMIT_JOURNAL"
   # Including the note about a listing no workdir can anchor: keyed and printed under the SWEEPING
   # chat it is spent on a marker the owner never sees and read by a chat that can do nothing about
@@ -1517,9 +1589,9 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # launcher's (live 2026-08-24, 2026-08-25).
   assert test -z "$(grep -nwE 'heir|HEIR' "$COMMIT_JOURNAL" 2>/dev/null)"
   # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
-  # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, with no
-  # scan for an older record — row ao's epoch floor makes any stand-in invisible to the reader.
-  assert grep -Eq 'rj_append "[^"]*\$RJ_DEBT_JOURNAL" "\$session" "\$now" "\$relative"' \
+  # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, and
+  # through the owned writer, which is what puts the launcher's own row in beside a worker's.
+  assert grep -Eq 'rj_append_owned "[^"]*\$RJ_DEBT_JOURNAL" "\$session" "\$now" "\$relative"' \
     "$COMMIT_JOURNAL"
 else
   fail "worker files reach the launching chat: $COMMIT_JOURNAL is unreadable (set CLAUDE_SETUP_ROOT)"

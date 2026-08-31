@@ -93,7 +93,8 @@ return "MISSING"
 }
 
 assert_codex_account_rows() {
-  local menu="$1" json="$2" count account auth credits needs_entry row rest
+  local menu="$1" json="$2" count account auth credits needs_entry row rest section
+  section=$(vendor_section "$menu" Codex)
   count=$(jq '.vendors.codex.accounts | length' <<<"$json")
   while IFS= read -r account; do
     auth=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .auth_needed == true' <<<"$json")
@@ -101,7 +102,7 @@ assert_codex_account_rows() {
     if [ "$auth" = true ]; then
       needs_entry=$(jq -r --arg account "$account" '.vendors.codex.accounts[] |
         select(.account == $account) | .needs_user_entry == true' <<<"$json")
-      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
+      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$section")
       [ -n "$row" ] || fail "Codex auth-needed row missing: $account"
       [[ "$row" == *"login needed" ]] || fail "Codex auth-needed row lost login needed: $row"
       if [ "$needs_entry" = true ]; then
@@ -117,7 +118,7 @@ assert_codex_account_rows() {
         esac
       fi
     else
-      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$menu")
+      row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$section")
       [ -n "$row" ] || fail "Codex account row missing: $account"
       if [ "$credits" -gt 0 ]; then
         grep -Fq "$account  ↻$credits" <<<"$row" || fail "Codex reset-credit count missing for $account"
