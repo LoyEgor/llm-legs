@@ -29,6 +29,11 @@ preserved.
    An account with no measured spending bucket is not a candidate (rule 1), so a vendor
    with no usage numbers answers exit 3 / no quota data. Fable exhaustion alone never
    disqualifies an account from ordinary work.
+   Two vendor-shaped notes, and no third is to be invented: **grok** measures a weekly bucket and
+   nothing else, so neither the deferral nor the five-hour tiebreak can ever fire for it and its
+   rank is spend, then `main` last, then name; and a grok account whose access token has `expired`
+   is one the CLI refreshes silently, so it stays a candidate and merely ranks behind every
+   signed-in one, while `needs_login` is dead auth like anywhere else.
 3. **Wall.** An account is skipped only when walled: effective 100% in the spending
    bucket or in the five-hour bucket, or dead auth. Below 100% nothing blocks — no
    floors, no headroom, no soft reserves beyond rule 1, with **one** deliberate exception:
@@ -46,27 +51,29 @@ preserved.
    login to fix — and only on data this run calls fresh; every other lapse leaves the pin standing.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
-   outside the pool cannot carry a headless run however it is named: the three vendor CLIs
-   refuse it (`claudeb … -p`, `codexb <name> exec`, `geminib … --print`), and so do `worker-run`
-   and `codex-image`, which launch a vendor binary directly. review-bench raters take their
-   accounts from `worker-pick` and are bound by rule 1; `claudeb warm` is exempt because token
-   warming keeps an account loggable-in, it does not spend work quota. The pin is the only
-   override, because
-   naming an account there is the deliberate "use this one anyway". Interactive launches are
-   the user, not a worker, and are never gated; an empty pool is therefore a legitimate state
-   meaning "no worker may run", answered as `every <vendor> account is out of the worker pool`
+   outside the pool cannot carry a headless run however it is named: the four vendor CLIs
+   refuse it (`claudeb … -p`, `codexb <name> exec`, `geminib … --print`, `grokb … -p`), and so do
+   `worker-run` and `codex-image`, which launch a vendor binary directly. review-bench raters
+   take their accounts from `worker-pick` and are bound by rule 1; `claudeb warm` is exempt
+   because token warming keeps an account loggable-in, it does not spend work quota. The pin is
+   the only override, because naming an account there is the deliberate "use this one anyway".
+   Interactive launches are the user, not a worker, and are never gated; an empty pool is
+   therefore a legitimate state meaning "no worker may run", answered as
+   `every <vendor> account is out of the worker pool`
    and reported by `worker-run` as `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
 ## Sanctioned launchers
 
 Reachability is only half of visibility. A vendor launched as a bare headless CLI call from a
 chat's Bash — `claude -p`, `claudeb … -p`, `codex exec`, `codexb … exec`, `gemini -p`,
-`geminib … --print`, `agy … --print`, `opencode run` — leaves no `worker-run` record, no statusline
-tag, no journal ownership, no pool refusal, no limit signature and no stall watch, so nothing
-downstream can tell a worker ran at all. Every headless run therefore goes through `worker-run` or
-a tool that owns its own launches, and this is the whole list: `worker-run`, `review-bench`,
+`geminib … --print`, `agy … --print`, `opencode run`, `grok … -p`, `grokb … --prompt-file` —
+leaves no `worker-run` record, no statusline tag, no journal ownership, no pool refusal, no limit
+signature and no stall watch, so nothing downstream can tell a worker ran at all. The per-account
+wrapper is denied beside the bare binary, never instead of it: isolating a profile is not
+recording a run. Every headless run therefore goes through `worker-run` or a tool that owns its
+own launches, and this is the whole list: `worker-run`, `review-bench`,
 `llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `codex-image`,
-`gemini-image`, `opencode-go`. `bin/worker-launch-gate.sh` is the mechanical half — a PreToolUse
+`gemini-image`, `grok-image`, `opencode-go`. `bin/worker-launch-gate.sh` is the mechanical half — a PreToolUse
 Bash gate denying a command that spells a bare launch unless the same command names one of those
 launchers. It reads the whole command string, and a vendor name counts only where a
 shell would run it: quoted text collapses into one operand word before the quotes come off, so
@@ -128,7 +135,10 @@ routing-math paragraph the rules above replace.
 
 - Human output keeps the `NEXT:` / per-vendor lines / `DATA:` / `SESSION:` shapes, and
   the statusline cache line keeps its format (model·effort sourced from worker-model
-  only).
+  only). Grok appends a fourth cache field tagged `gr` after `cb`/`cx`/`gx`, and a store
+  carrying no `vendors.grok` at all produces no grok segment, line or field: a vendor this
+  machine has not installed is absent from the answer, never walled and never a failed
+  lookup.
 - `worker-pick --account <vendor> [--exclude a,b]` keeps its contract: bare account name
   on stdout, exit 3 when no candidate remains.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.

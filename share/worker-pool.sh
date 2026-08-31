@@ -1,4 +1,4 @@
-# Worker-pool membership, shared by claudeb, codexb, geminib and llm-limits.sh: one file per
+# Worker-pool membership, shared by claudeb, codexb, geminib, grokb and llm-limits.sh: one file per
 # vendor holding one excluded account name per line, an absent file meaning everything is in.
 #
 # The file lives in a dot-directory beside that vendor's profiles, where the profile
@@ -14,7 +14,7 @@
 
 worker_pool_file() { printf '%s/disabled\n' "$1"; }
 
-# The pool directory per vendor, so the three CLIs and worker-run cannot drift apart on where a
+# The pool directory per vendor, so the four CLIs and worker-run cannot drift apart on where a
 # vendor's membership lives. Codex reads CODEXB_PROFILES_DIR alone — the variable codexb and
 # llm-limits.sh already enumerate accounts by; honouring worker-run's CODEX_PROFILES_DIR as well
 # would let one store hold the accounts and another the exclusions.
@@ -23,6 +23,7 @@ worker_pool_dir() {
     claudeb) printf '%s\n' "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}" ;;
     codex) printf '%s/.codexb\n' "${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}" ;;
     gemini) printf '%s/.geminib\n' "${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}" ;;
+    grok) printf '%s/.grokb\n' "${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}" ;;
     *) return 1 ;;
   esac
 }

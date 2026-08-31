@@ -887,6 +887,16 @@ assert grep -qx -- '--account gemini' "$IMAGE_PICK_CALLS"
 assert grep -qx 'generated:poolacct' "$WORK/image-output/picked.jpg"
 assert test ! -s "$IMAGE_MAGICK_CALLS"
 
+# An answer already in the destination's own format is delivered byte for byte, png included:
+# re-encoding a matching answer changes pixels nobody asked to change. Same rule in codex-image and
+# grok-image.
+: >"$IMAGE_MAGICK_CALLS"
+IMAGE_REPLY="$WORK/generated.png"
+assert image_run --dest "$WORK/image-output/asis.png" --prompt landscape
+assert grep -qx 'generated:poolacct' "$WORK/image-output/asis.png"
+assert test ! -s "$IMAGE_MAGICK_CALLS"
+IMAGE_REPLY="$WORK/generated.jpg"
+
 printf 'gemini_profile=pinacct\n' >"$HOME/.claude/worker-model"
 IMAGE_PICK_MODE=fail
 export IMAGE_PICK_MODE

@@ -20,7 +20,7 @@ query_role=workers
 query_role_given=false
 query_fable=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini [--exclude name[,name...]] [--role workers|reviewers|chat] [--fable]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat] [--fable]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -29,7 +29,7 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -ge 2 ] || usage
       query_vendor="$2"
       case "$query_vendor" in
-        claudeb|codex|gemini) ;;
+        claudeb|codex|gemini|grok) ;;
         *) printf 'worker-pick: unknown vendor %s\n' "$query_vendor" >&2; usage ;;
       esac
       shift 2
@@ -116,9 +116,14 @@ cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-high}
 cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-high}
 gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}
 gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}
+# `auto` is a real value here, not a missing one: resolving it to a model id is worker-run's job,
+# and this line only reports the knob.
+gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
+gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-high}
 cb_pin=$(conf claudeb_profile)
 cx_pin=$(conf codex_profile)
 gm_pin=$(conf gemini_profile)
+gr_pin=$(conf grok_profile)
 case "$gm_effort" in medium) gm_eff_abbr=med ;; high) gm_eff_abbr=hi ;; *) gm_eff_abbr=$gm_effort ;; esac
 
 # The ladder is pin > roles > pool: a role toggle walls the vendor for everything the pool would
@@ -139,15 +144,16 @@ fi
 # The pin is Egor's override for workers only. A rater or a chat handed it would spend an account
 # he aimed at implementation, so those queries are answered by the pool alone and the pinned
 # account stands in them as an ordinary candidate.
-case "$query_role" in reviewers|chat) cb_pin=""; cx_pin=""; gm_pin="" ;; esac
+case "$query_role" in reviewers|chat) cb_pin=""; cx_pin=""; gm_pin=""; gr_pin="" ;; esac
 # The table is the workers view, and a vendor closed for that role is not a candidate in it: the
 # flags are read here so selection, ordering and the ALL WALLED verdict are all decided without
 # it, the way a deliberately empty pool is.
-cb_role_off=false; cx_role_off=false; gm_role_off=false
+cb_role_off=false; cx_role_off=false; gm_role_off=false; gr_role_off=false
 if [ -z "$query_vendor" ]; then
   ! role_off claudeb workers || cb_role_off=true
   ! role_off codex workers || cx_role_off=true
   ! role_off gemini workers || gm_role_off=true
+  ! role_off grok workers || gr_role_off=true
 fi
 
 own="${CLAUDE_LIMITS_ACCOUNT:-}"
@@ -195,11 +201,13 @@ fail_safe() {
   fi
   case "$worker_mode" in
     gemini) printf 'NEXT: gemini %s · %s · %s — unavailable (%s)\n' "${gm_pin:-?}" "$gm_model" "$gm_effort" "$1" ;;
+    grok) printf 'NEXT: grok %s · %s · %s — unavailable (%s)\n' "${gr_pin:-?}" "$gr_model" "$gr_effort" "$1" ;;
     auto) printf 'NEXT: claudeb (rotating) — %s  |  gemini unavailable\n' "$1" ;;
     *) printf 'NEXT: claudeb (rotating) — %s\n' "$1" ;;
   esac
   printf 'codex: unavailable\n'
   printf 'gemini: unavailable\n'
+  printf 'grok: unavailable\n'
   printf 'claude: unavailable\n'
   printf 'DATA: unavailable\n'
   printf 'SESSION: unavailable\n'
@@ -216,8 +224,9 @@ printf '%s' "$tiers_json" | jq -e . >/dev/null 2>&1 || tiers_json='{}'
 summary=$(jq -r \
   --argjson now "$now" --argjson tiers "$tiers_json" --arg own "$rank_own" --arg pin "$cb_pin" \
   --argjson defer5h "$FIVE_HOUR_DEFER_PCT" \
-  --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" \
+  --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" --arg gr_pin "$gr_pin" \
   --arg cb_off "$cb_role_off" --arg cx_off "$cx_role_off" --arg gm_off "$gm_role_off" \
+  --arg gr_off "$gr_role_off" \
   --argjson qx "$query_exclude_json" '
   def epoch:
     if type == "number" then .
@@ -244,6 +253,11 @@ summary=$(jq -r \
   def pct_str: if type == "number" then ((round | tostring) + "%") else "?" end;
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
+  # Grok is the one vendor whose CLI refreshes an expired access token itself, so `expired` is a
+  # live candidate that merely ranks behind a signed-in one; `needs_login` has no refresh token
+  # left and is dead auth like anywhere else.
+  def gr_auth: (.auth.status? // "ok");
+  def gr_auth_ok: .auth_needed != true and (gr_auth | IN("ok", "expired"));
   def gemini_group: ((.group // "") | ascii_downcase | contains("gemini"));
   def account_as_of:
     [.five_hour?, .weekly?, .fable? |
@@ -251,11 +265,13 @@ summary=$(jq -r \
       (.as_of? | epoch)] |
     map(select(. != null));
   def excluded: .name | IN($qx[]);
-  # Rule 2 of the contract, defined once so all three vendors rank identically: the five-hour
-  # deferral first, then lowest spending bucket, then the lower five-hour reading, then `main`
-  # last, then name. An absent five-hour reading is coalesced high — jq sorts null before every
-  # number, so a bucket nobody measured would otherwise beat a measured 0% in the tiebreak.
-  def rank_keys: [(if .defer5h then 1 else 0 end), .spend, (.h5 // 100), .main_last, .name];
+  # Rule 2 of the contract, defined once so all four vendors rank identically: the five-hour
+  # deferral first, then a refreshable-but-expired auth, then lowest spending bucket, then the
+  # lower five-hour reading, then `main` last, then name. An absent five-hour reading is coalesced
+  # high — jq sorts null before every number, so a bucket nobody measured would otherwise beat a
+  # measured 0% in the tiebreak. Only grok rows ever set `auth_late`; on the rest it is null, which
+  # jq reads as false, so the key is a no-op there rather than a fourth ranking function.
+  def rank_keys: [(if .defer5h then 1 else 0 end), (if .auth_late then 1 else 0 end), .spend, (.h5 // 100), .main_last, .name];
   def rank: sort_by(rank_keys);
   # Display bands are applied only while rendering, and within a band the order stays the
   # selection order (shared-invariants g), so the render sorts on the same keys.
@@ -266,7 +282,11 @@ summary=$(jq -r \
   # Gemini is counted over its raw source rather than the quota-filtered rows: an account with
   # no measured Gemini Models group is still a pool member, and dropping it first would report an
   # empty pool while one stands enabled.
-  def pool_empty($rows): if ($rows | length) > 0 and ($rows | all((.enabled // true) | not))
+  # `== false`, never `(.enabled // true) | not`: the alternative operator in jq swallows a literal
+  # `false` along with null, so that spelling answered "no" for every roster and left an emptied
+  # pool reported as a usage limit. An absent key still means in-pool, which is what the raw
+  # gemini source carries.
+  def pool_empty($rows): if ($rows | length) > 0 and ($rows | all(.enabled == false))
     then "yes" else "no" end;
   def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;
   def display_sort($selected): sort_by([display_band($selected)] + rank_keys);
@@ -299,6 +319,10 @@ summary=$(jq -r \
   (.fetched_at | epoch) as $fetched |
   (.vendors.codex // {}) as $cx |
   (.vendors.gemini // {}) as $gm |
+  (.vendors.grok // {}) as $gr |
+  # A vendor this machine has no collector for is not a routing option and not a wall either, so
+  # the whole grok render hangs off the store carrying the key at all.
+  ((.vendors.grok | type) == "object") as $gr_present |
   (if $cx.available == true and (($cx.accounts | type) == "array") then $cx.accounts
    elif $cx.available == true then [{account:"main",five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
    else [] end) as $cx_source |
@@ -306,6 +330,9 @@ summary=$(jq -r \
    elif $gm.auth_needed == true or $gm.removed == true or ($gm | gemini_group) then
      [$gm + {account:"main",is_current:true,enabled:($gm.enabled != false)}]
    else [] end) as $gm_source |
+  (if $gr.available == true and (($gr.accounts | type) == "array") then $gr.accounts
+   elif $gr.available == true then [{account:"main",weekly:($gr.weekly // {})}]
+   else [] end) as $gr_source |
   # Disabled accounts are not polled by the collector, so their frozen as_of would
   # brand the whole DATA line STALE while every routable account is fresh. Routable
   # mirrors the per-vendor selection predicate (claude demands enabled == true),
@@ -314,10 +341,12 @@ summary=$(jq -r \
   # timestamp of ALL accounts, never straight to the store write time.
   ([($cx_source[] | select(.enabled != false or (.account // "main") == $cx_pin) | account_as_of[]),
     ($gm_source[] | select(.enabled != false or (.account // "main") == $gm_pin) | account_as_of[]),
+    ($gr_source[] | select(.enabled != false or (.account // "main") == $gr_pin) | account_as_of[]),
     (.vendors.claude.accounts[]? | select(.enabled == true or (.account // "main") == $pin) | account_as_of[])]
    | min) as $routable_as_of |
   ($routable_as_of //
    ([($cx_source[] | account_as_of[]), ($gm_source[] | account_as_of[]),
+     ($gr_source[] | account_as_of[]),
      (.vendors.claude.accounts[]? | account_as_of[])] | min) // $fetched) as $data_as_of |
   (if $data_as_of == null then "no timestamp"
    elif ($now - $data_as_of) > 7200 then "STALE (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)"
@@ -376,6 +405,33 @@ summary=$(jq -r \
        else ($gm_accounts | display_sort($sel) | map(
          "\(.name) \(.spend | pct_str) 5h \(.h5 | pct_str)\(if .name == $sel and $gm_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .defer5h then " 5h!" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .enabled then "" else " off" end) (5h→\(.r5), wk→\(.rw))") | join(" | ")) end))}) as $gemini |
 
+  # Weekly is the only bucket grok measures, so `spending` finds no five-hour reading to fall back
+  # on and the deferral of rule 2 never fires here — the rank collapses to spend, then name.
+  ([$gr_source[] |
+    {name:(.account // "main"),
+     main_last:(if (.account // "main") == "main" then 1 else 0 end),
+     enabled:(.enabled != false),auth_ok:gr_auth_ok,
+     auth_late:(gr_auth_ok and gr_auth == "expired"),
+     wk:eff(.weekly),rw:reset_str(.weekly)} |
+    .spend = spending | .walled = walled_at(.spend) | eligibility]) as $gr_accounts |
+  ($gr_accounts | map(select(.eligible)) | rank) as $gr_eligible |
+  (first($gr_accounts[] | select(.name == $gr_pin)) // null) as $gr_pin_row |
+  ($gr_accounts | map(select(.name == $gr_pin and (.walled | not) and .measured and
+                            (excluded | not))) | .[0] // null) as $gr_pinned |
+  pin_lapse($gr_pin; $gr_pin_row; $gr_pinned) as $gr_pin_lapse |
+  ($gr_pinned // $gr_eligible[0] // null) as $gr_best |
+  (($gr_best.name // "") as $sel |
+   (if $gr_best == null then "no selectable account" else $sel end) as $target |
+   {selected:($gr_best != null),acct:$sel,pct:(($gr_best.spend // 0) | round),
+    pinned:($gr_pinned != null),
+    line:("grok: " +
+      (if $gr_pin_lapse != "" then "pin \($gr_pin) \($gr_pin_lapse) → \($target) | " else "" end) +
+      (if ($gr_accounts | length) == 0 then
+         (if ($gr.available // false) != true then "unavailable" else "no quota data" end)
+       elif ($gr_accounts | all(.auth_ok | not)) then "login needed"
+       else ($gr_accounts | display_sort($sel) | map(
+         "\(.name) \(.spend | pct_str)\(if .name == $sel and $gr_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .auth_late then " auth expired" else "" end)\(if .enabled then "" else " off" end) (wk→\(.rw))") | join(" | ")) end))}) as $grok |
+
   ([.vendors.claude.accounts[]? |
     {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),
      main_last:0,enabled:(.enabled == true),auth_ok:auth_ok,
@@ -425,6 +481,7 @@ summary=$(jq -r \
   # counting it turns a switch Egor flipped into a verdict about limits.
   (((if $cx_off == "true" and $cx_pinned == null then [] else $cx_accounts end) +
     (if $gm_off == "true" and $gm_pinned == null then [] else $gm_accounts end) +
+    (if $gr_off == "true" and $gr_pinned == null then [] else $gr_accounts end) +
     (if $cb_off == "true" and $pin_rec == null then [] else $cl_accounts end)
     | map(select(.in_pool and .measured)) | length) > 0) as $had_pool |
 
@@ -432,27 +489,44 @@ summary=$(jq -r \
    (if $codex.pinned then "yes" else "no" end),$codex.line,$cx_pin_lapse,
    (if $gemini.selected then "yes" else "no" end),$gemini.acct,
    (if $gemini.pinned then "yes" else "no" end),$gemini.line,$gm_pin_lapse,
+   (if $grok.selected then "yes" else "no" end),$grok.acct,($grok.pct | tostring),
+   (if $grok.pinned then "yes" else "no" end),$grok.line,$gr_pin_lapse,
    $claude_line,($cl_best.name // ""),(if $pin_rec != null then "yes" else "no" end),
    (if $cl_is_reserve then "yes" else "no" end),$pin_lapse,
    ($fb_best.name // ""),(($fb_best.fb // 0) | round | tostring),(($fb_best.wk // 0) | round | tostring),
    (if $fb_is_reserve then "yes" else "no" end),
    $age,(if $had_pool then "yes" else "no" end),
-   pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($cl_accounts)] | join("\u001f")
+   pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($gr_accounts),
+   pool_empty($cl_accounts),(if $gr_present then "yes" else "no" end),
+   (if ($gr_accounts | any(.measured)) then "yes" else "no" end)] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
 IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse \
   gm_selected gm_acct gm_pinned gm_line gm_pin_lapse \
+  gr_selected gr_acct gr_pct gr_pinned gr_line gr_pin_lapse \
   cl_line cl_acct cl_pinned cl_reserve cl_pin_lapse \
-  fb_acct fb_fb fb_wk fb_reserve age had_pool cx_pool_empty gm_pool_empty cl_pool_empty <<<"$summary"
+  fb_acct fb_fb fb_wk fb_reserve age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
+  cl_pool_empty gr_present gr_measured <<<"$summary"
 
 # A pin that served outranks the switch, so the vendor is not closed at all this run.
 [ "$cl_pinned" != yes ] || cb_role_off=false
 [ "$cx_pinned" != yes ] || cx_role_off=false
 [ "$gm_pinned" != yes ] || gm_role_off=false
+[ "$gr_pinned" != yes ] || gr_role_off=false
 if [ "$cb_role_off" = true ]; then cl_acct=""; cl_pinned=no; cl_pin_lapse=""; fi
 if [ "$cx_role_off" = true ]; then cx_selected=no; cx_acct=""; cx_pin_lapse=""; fi
 if [ "$gm_role_off" = true ]; then gm_selected=no; gm_acct=""; gm_pin_lapse=""; fi
+if [ "$gr_role_off" = true ]; then gr_selected=no; gr_acct=""; gr_pin_lapse=""; fi
+
+# A vendor the store carries no row for is not installed here, so the render leaves it out
+# entirely rather than reporting a wall or a failed lookup. The switch, the mode and the pin are
+# statements Egor made about grok, and each of them is worth an answer even with no data behind it.
+gr_known=false
+if [ "$gr_present" = yes ] || [ "$gr_role_off" = true ] || [ "$worker_mode" = grok ] ||
+   [ -n "$gr_pin" ]; then
+  gr_known=true
+fi
 
 # A pin the account has spent is over: `exhausted` is the usage wall alone, and the other lapses
 # are conditions that pass (a login to fix, a toggle to flip, a reading yet to arrive), so they
@@ -469,6 +543,7 @@ case "$age" in
     clear_walled_pin claudeb_profile "$cb_pin" "$cl_pin_lapse" claudeb
     clear_walled_pin codex_profile "$cx_pin" "$cx_pin_lapse" codex
     clear_walled_pin gemini_profile "$gm_pin" "$gm_pin_lapse" gemini
+    clear_walled_pin grok_profile "$gr_pin" "$gr_pin_lapse" grok
     ;;
 esac
 
@@ -482,8 +557,9 @@ fi
 # hunting for limits that are fine.
 all_walled=no
 if [ "$had_pool" = yes ] && [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] &&
-   [ "$gm_selected" != yes ] &&
-   { [ "$cb_role_off" = false ] || [ "$cx_role_off" = false ] || [ "$gm_role_off" = false ]; }; then
+   [ "$gm_selected" != yes ] && [ "$gr_selected" != yes ] &&
+   { [ "$cb_role_off" = false ] || [ "$cx_role_off" = false ] || [ "$gm_role_off" = false ] ||
+     { [ "$gr_known" = true ] && [ "$gr_role_off" = false ]; }; }; then
   all_walled=yes
 fi
 
@@ -512,6 +588,12 @@ if [ -n "$query_vendor" ]; then
       [ "$gm_selected" = yes ] && query_answer="$gm_acct"
       query_reason="$gm_line"
       ;;
+    grok)
+      query_pin="$gr_pin"; query_pinned="$gr_pinned"
+      query_answer=""
+      [ "$gr_selected" = yes ] && query_answer="$gr_acct"
+      query_reason="$gr_line"
+      ;;
   esac
   # Under a workers wall the pin is the only thing left that can answer, so the pool's own
   # candidate is refused here rather than handed over as if the switch were advice.
@@ -532,6 +614,7 @@ if [ -n "$query_vendor" ]; then
     claudeb) query_pool_empty=$cl_pool_empty ;;
     codex) query_pool_empty=$cx_pool_empty ;;
     gemini) query_pool_empty=$gm_pool_empty ;;
+    grok) query_pool_empty=$gr_pool_empty ;;
   esac
   if [ "$query_pool_empty" = yes ]; then
     printf 'worker-pick: every %s account is out of the worker pool (%s)\n' "$query_vendor" "$query_reason" >&2
@@ -606,13 +689,40 @@ else
 fi
 [ -z "$gm_pin_lapse" ] || gm_next="gemini pin $gm_pin $gm_pin_lapse → ${gm_next#gemini }"
 
+gr_next=""; gr_cache=""
+if [ "$gr_known" = true ]; then
+  if [ "$gr_role_off" = true ]; then
+    gr_next="grok — off for workers"
+    gr_mark="⏸"; gr_acct=off
+  elif [ "$gr_selected" = yes ]; then
+    gr_next="grok $gr_acct · $gr_model · $gr_effort — ${gr_pct}%"
+    [ "$gr_pinned" != yes ] || gr_next="$gr_next PINNED"
+    gr_mark="✓"
+  elif [ "$gr_pool_empty" = yes ]; then
+    gr_next="grok unavailable · $gr_model · $gr_effort — every account is out of the worker pool"
+    gr_mark="✗"
+  elif [ "$gr_measured" = no ]; then
+    # A vendor nobody has measured has no wall to report: while the collector is still landing,
+    # `WALLED` here would send Egor looking for a limit that does not exist.
+    gr_next="grok unavailable · $gr_model · $gr_effort — no quota data"
+    gr_mark="✗"
+  else
+    gr_next="grok unavailable · $gr_model · $gr_effort — WALLED"
+    gr_mark="✗"
+  fi
+  [ -z "$gr_pin_lapse" ] || gr_next="grok pin $gr_pin $gr_pin_lapse → ${gr_next#grok }"
+fi
+
 case "$cx_effort" in medium) cx_eff_abbr=med ;; high) cx_eff_abbr=hi ;; xhigh) cx_eff_abbr=xh ;; *) cx_eff_abbr=$cx_effort ;; esac
 case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) cb_eff_abbr=xh ;; *) cb_eff_abbr=$cb_effort ;; esac
 case "$cb_model" in sonnet) cb_model_abbr=son ;; haiku) cb_model_abbr=hai ;; fable) cb_model_abbr=fab ;; *) cb_model_abbr=$cb_model ;; esac
+case "$gr_effort" in medium) gr_eff_abbr=med ;; high) gr_eff_abbr=hi ;; xhigh) gr_eff_abbr=xh ;; *) gr_eff_abbr=$gr_effort ;; esac
 codex_model=$(codex_model_short_label)
-write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s gx%s%s·%s·%s' \
+[ "$gr_known" = false ] ||
+  gr_cache=$(printf ' gr%s%s·%s·%s' "$gr_mark" "${gr_acct:-?}" "$gr_model" "$gr_eff_abbr")
+write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s gx%s%s·%s·%s%s' \
   "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr" \
-  "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr")"
+  "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr" "$gr_cache")"
 
 # The leading segment is the routing answer, so a vendor closed for workers trails the line
 # whatever the mode's usual order is: it is a statement about the switch, not a candidate.
@@ -628,8 +738,11 @@ print_next() {
       cx) text=$cx_next; off=$cx_role_off ;;
       cxw) if [ "$cx_role_off" = true ]; then text=$cx_next; off=true; else text="codex — WALLED"; fi ;;
       gm) text=$gm_next; off=$gm_role_off ;;
+      gr) text=$gr_next; off=$gr_role_off ;;
       allw) text="ALL WALLED, ask Egor" ;;
     esac
+    # A vendor with nothing to say is left out of the line rather than rendered as a blank segment.
+    [ -n "$text" ] || continue
     if [ "$off" = true ]; then
       deferred="${deferred:+$deferred  |  }$text"
     else
@@ -644,20 +757,30 @@ if [ "$all_walled" = yes ]; then
   walled_segments=(allw cxw)
   [ "$cb_role_off" = false ] || walled_segments+=(cb)
   [ "$gm_role_off" = false ] || walled_segments+=(gm)
+  [ "$gr_role_off" = false ] || walled_segments+=(gr)
   print_next "${walled_segments[@]}"
 elif [ "$worker_mode" = gemini ]; then
-  print_next gm cb cx
+  print_next gm cb cx gr
+elif [ "$worker_mode" = grok ]; then
+  print_next gr cb cx gm
 elif [ "$worker_mode" = auto ]; then
+  # One fixed vendor order — claudeb, codex, gemini, grok — with the leader promoted to the head
+  # only when nothing above it can serve, so a vendor is added to auto by taking its place in that
+  # order rather than by a rule of its own.
   if [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] && [ "$gm_selected" = yes ]; then
-    print_next gm cb cxw
+    print_next gm cb cxw gr
+  elif [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] && [ "$gm_selected" != yes ] &&
+       [ "$gr_selected" = yes ]; then
+    print_next gr cb cxw gm
   else
-    print_next cb cx gm
+    print_next cb cx gm gr
   fi
 else
   print_next cb cx
 fi
 printf '%s\n' "$cx_line"
 printf '%s\n' "$gm_line"
+[ "$gr_known" = false ] || printf '%s\n' "$gr_line"
 printf '%s   (* = this session account, the reserve — routed only when nothing else is selectable)\n' "$cl_line"
 printf 'DATA: %s\n' "$age"
 if [ -n "$fb_acct" ]; then

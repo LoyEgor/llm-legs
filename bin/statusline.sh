@@ -1785,6 +1785,7 @@ fi
 
 worker=""; codex_effort=""; sonnet_effort=""; codex_profile=""; claudeb_profile=""; gemini_profile=""
 claudeb_model=""; claudeb_effort=""; gemini_model=""; gemini_effort=""
+grok_profile=""; grok_model=""; grok_effort=""
 worker_file="$HOME/.claude/worker-model"
 if [ -f "$worker_file" ]; then
   while IFS='=' read -r wkey wval; do
@@ -1799,6 +1800,9 @@ if [ -f "$worker_file" ]; then
       claudeb_effort) claudeb_effort=$wval ;;
       gemini_model) gemini_model=$wval ;;
       gemini_effort) gemini_effort=$wval ;;
+      grok_profile) grok_profile=$wval ;;
+      grok_model) grok_model=$wval ;;
+      grok_effort) grok_effort=$wval ;;
     esac
   done < "$worker_file"
 else
@@ -1909,6 +1913,10 @@ worker_vendor_knobs() {
     cx) wv_model=$(codex_model_short_label); wv_effort=${codex_effort:-high} ;;
     cb) wv_model=${claudeb_model:-opus}; wv_effort=${claudeb_effort:-high} ;;
     gx) wv_model=${gemini_model:-pro}; wv_effort=${gemini_effort:-high} ;;
+    # `auto` names no model: it means whichever one the account defaults to, so the candidate
+    # carries the effort alone rather than a version nobody chose.
+    gr) wv_model=${grok_model:-auto}; [ "$wv_model" != auto ] || wv_model=""
+        wv_effort=${grok_effort:-high} ;;
   esac
 }
 
@@ -1925,6 +1933,7 @@ case "$worker" in
   # only records the last profile launched and would render a stale prediction).
   claudeb) wvendor=cb; wpin=$claudeb_profile ;;
   gemini) wvendor=gx; wpin=$gemini_profile ;;
+  grok) wvendor=gr; wpin=$grok_profile ;;
   sonnet) wvendor=son ;;
   auto) wvendor=auto ;;
   *) wvendor="" ;;
@@ -1932,14 +1941,14 @@ esac
 
 # ONE candidate, never a three-vendor forecast: the vendor+account the next dispatch would land on.
 # In auto that is the first vendor worker-pick's line leaves usable, in worker-pick's own order
-# (docs/routing-contract.md) — claudeb, then codex, then gemini. The cache is per own-account
+# (docs/routing-contract.md) — claudeb, then codex, then gemini, then grok. The cache is per own-account
 # because routing excludes the session's own account.
 worker_body=""
 if [ "$wvendor" = son ]; then
   worker_body=$(worker_candidate "" "$(abbrev_model sonnet)" "" "$sonnet_effort")
 elif [ "$wvendor" = auto ]; then
   load_worker_pick_prediction
-  for wtag in cb cx gx; do
+  for wtag in cb cx gx gr; do
     worker_pick_vendor "$wtag"
     [ "$wp_state" = ok ] || continue
     worker_vendor_knobs "$wtag"

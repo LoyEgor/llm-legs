@@ -21,7 +21,7 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
 # Stop gate fires in that minute; the pid stamp overwrites the claim, which is live for
 # DELEGATED_CLAIM_SECONDS (review-bench) and dead after.
 claim_delegated_triage() {
-  case "$worker" in claudeb-worker|codex-worker|gemini-worker|sonnet-worker) ;; *) return 0 ;; esac
+  case "$worker" in claudeb-worker|codex-worker|gemini-worker|grok-worker|sonnet-worker) ;; *) return 0 ;; esac
   local claimed_run claim_stamp
   for claimed_run in $(printf '%s' "$brief_text" |
       grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
@@ -183,7 +183,7 @@ session_model() {
 }
 
 case "$worker" in
-  claudeb-worker|codex-worker|gemini-worker|sonnet-worker) ;;
+  claudeb-worker|codex-worker|gemini-worker|grok-worker|sonnet-worker) ;;
   # A fork always inherits the parent model; the override field is ignored for it.
   fork) exit 0 ;;
   *)
@@ -203,7 +203,7 @@ case "$worker" in
       1) exit 0 ;;
       2) warn "The session-account gate could not use its stamp cache at ${STAMP_DIR}, so it is letting this spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for." ;;
     esac
-    deny "This spawns ${worker:-an agent} with model=${model_override} — a plain agent runs on the SESSION account, the one this Fable chat is living on. Route implementation through the worker the toggle selects (claudeb-, codex- or gemini-worker on an account from worker-pick). If Egor asked for this spawn on purpose, retry the identical call — it passes once."
+    deny "This spawns ${worker:-an agent} with model=${model_override} — a plain agent runs on the SESSION account, the one this Fable chat is living on. Route implementation through the worker the toggle selects (claudeb-, codex-, gemini- or grok-worker on an account from worker-pick). If Egor asked for this spawn on purpose, retry the identical call — it passes once."
     ;;
 esac
 
@@ -212,6 +212,7 @@ case "$worker" in
   claudeb-worker) pin_key=claudeb_profile; vendor=claudeb; limits_vendor=claude; label=Claude ;;
   codex-worker) pin_key=codex_profile; vendor=codex; limits_vendor=codex; label=Codex ;;
   gemini-worker) pin_key=gemini_profile; vendor=gemini; limits_vendor=gemini; label=Gemini ;;
+  grok-worker) pin_key=grok_profile; vendor=grok; limits_vendor=grok; label=Grok ;;
   sonnet-worker) pin_key=''; vendor=sonnet; limits_vendor=''; label=Sonnet ;;
 esac
 [ -n "$pin_key" ] && [ -r "$TOGGLE" ] &&
@@ -224,7 +225,7 @@ toggle_note=''
 toggle_worker=''
 [ -r "$TOGGLE" ] && toggle_worker=$(sed -n 's/^worker=//p' "$TOGGLE" | head -1 | tr -d '[:space:]')
 case "$toggle_worker" in
-  sonnet|claudeb|codex|gemini)
+  sonnet|claudeb|codex|gemini|grok)
     [ "$toggle_worker" = "$vendor" ] ||
       toggle_note="The worker toggle says worker=${toggle_worker}, this spawns ${worker}. Fine if the task called for it; otherwise the toggle is the default and ${toggle_worker}-worker is the one to use."
     ;;
@@ -322,7 +323,9 @@ if [ -z "$spawn_account" ]; then
     spawn_account=$router_account
   else
     spawn_account=$pin
-    [ -n "$spawn_account" ] || [ "$vendor" = claudeb ] || spawn_account=main
+    # claudeb and grok have no main account to name: claudeb keeps none, and grok's is the real
+    # ~/.grok, which carries no login.
+    case "$vendor" in claudeb|grok) ;; *) [ -n "$spawn_account" ] || spawn_account=main ;; esac
   fi
 fi
 
@@ -403,6 +406,13 @@ decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now
       "gemini-worker": {
         vendor:"gemini", shape:"accounts_or_vendor", buckets:["five_hour","weekly"], enabled:false, auth:true,
         available:false, group:"gemini", stale:true, missing:0, empty:"allow"
+      },
+      # Weekly is the only bucket grok measures, and its accounts carry an auth status of their own.
+      # `available` is judged per account for the same reason as Gemini above: a vendor-level flag
+      # cleared by full exhaustion would read as a silent allow.
+      "grok-worker": {
+        vendor:"grok", shape:"accounts_or_vendor", buckets:["weekly"], enabled:false, auth:true,
+        available:false, group:null, stale:false, missing:0, empty:"allow"
       }
     }[$worker];
   specs as $spec |
@@ -484,6 +494,12 @@ case "$worker:$state" in
     ;;
   gemini-worker:deny)
     deny "${fallback_prefix}No Gemini account below ${DENY_AT}% (${summary}) — do not spawn gemini-worker now. Reroute according to worker-pick, or wait for a reset."
+    ;;
+  grok-worker:warn)
+    warn "${fallback_prefix}The freest Grok account is at ${best}% of its weekly window (${summary}). This grok-worker task may hit the wall mid-run; keep it small or be ready to reroute according to worker-pick."
+    ;;
+  grok-worker:deny)
+    deny "${fallback_prefix}No Grok account below ${DENY_AT}% of its weekly window (${summary}) — do not spawn grok-worker now. Reroute according to worker-pick, or wait for the weekly reset."
     ;;
   *:allow|*:noop)
     warn "${fallback_prefix}The local threshold check allows ${worker}."

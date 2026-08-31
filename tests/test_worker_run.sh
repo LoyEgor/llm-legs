@@ -26,9 +26,11 @@ export WORKER_RUN_WORKER_PICK="$WORK/bin/worker-pick"
 export WORKER_RUN_CLAUDEB="$WORK/bin/claudeb"
 export WORKER_RUN_CODEX="$WORK/bin/codex"
 export WORKER_RUN_GEMINIB="$WORK/bin/geminib"
+export WORKER_RUN_GROKB="$WORK/bin/grokb"
 export CLAUDEB_PROFILES_ROOT="$HOME/.claude-profiles"
 export CODEX_PROFILES_DIR="$HOME/.codex-profiles"
 export GEMINIB_PROFILES_DIR="$HOME/.gemini-profiles"
+export GROKB_PROFILES_DIR="$HOME/.grok-profiles"
 export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
@@ -185,6 +187,7 @@ printf 'server.go:1017] Created conversation gemini-conversation\n' >"$log"
 exit "${STUB_CODE:-0}"
 EOF
 
+cp "$ROOT/tests/fixtures/fake-grokb.sh" "$WORK/bin/grokb"
 chmod +x "$WORK/bin"/*
 
 set_config() {
@@ -194,11 +197,13 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION
+  unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
+    STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
-    "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue"
+    "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue" "$STUB_DIR/grok_wall_accounts" \
+    "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied"
 }
 
 start_ok() {
@@ -249,6 +254,14 @@ assert grep -q '^RESULT-TAIL:$' <<<"$second_wait"
 assert grep -q 'test brief' "$STUB_DIR/codex.stdin"
 assert grep -q 'second line' "$STUB_DIR/codex.stdin"
 unset STUB_SLEEP
+
+clear_stub
+set_config 'codex_effort=high'
+export PICK_ACCOUNT=fast PICK_RC=0
+start_ok codex --model default
+assert grep -qx 'TAG: fast · sol · high' "$WORK/start.out"
+assert grep -qx 'fast · sol · high' "$RUN_DIR/tag"
+assert await_done
 
 # A running run whose vendor has already surfaced its id reports it mid-flight,
 # so a budget-spent relay can still hand back a resumable session.
@@ -421,6 +434,7 @@ pool_dir_for() {
     claudeb) printf '%s/.claude-profiles/.claudeb\n' "$HOME" ;;
     codex) printf '%s/.codex-profiles/.codexb\n' "$HOME" ;;
     gemini) printf '%s/.gemini-profiles/.geminib\n' "$HOME" ;;
+    grok) printf '%s/.grok-profiles/.grokb\n' "$HOME" ;;
   esac
 }
 for vendor in claudeb codex gemini; do
@@ -2351,4 +2365,453 @@ assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
 await_done || fail "the delegated run never finished"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex and agy alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes"
+
+# --- grok ----------------------------------------------------------------------------------------
+# The brief rides a FILE (1.0.13 takes no prompt on argv), memory is off by env because the flag
+# that did it is gone, and web search is off unless the brief asks: a worker inheriting the
+# profile's memory carries another task's notes into this one.
+clear_stub
+set_config 'grok_model=auto' 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=grokacct
+grok_workdir=$(cd "$WORK/workdir" && pwd -P)
+start_ok grok
+assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
+assert grep -qx 'grokacct · grok · high' "$RUN_DIR/tag"
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert grep -qx 'SESSION: 01a05811-7788-7d22-a9c9-c028072cbff5' "$WORK/wait.out"
+assert meta_account_is grokacct
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = grok-4.6-build
+assert test "$(jq -r '.max_turns' "$RUN_DIR/meta.json")" = 60
+assert grep -qx 'GROK_MEMORY=0' "$CALL_LOG"
+assert grep -qx 'ARG=--prompt-file' "$CALL_LOG"
+assert grep -qxF "ARG=$RUN_DIR/brief" "$CALL_LOG"
+assert grep -qx 'ARG=streaming-json' "$CALL_LOG"
+assert grep -qx 'ARG=--always-approve' "$CALL_LOG"
+assert grep -qx 'ARG=--no-subagents' "$CALL_LOG"
+assert grep -qx 'ARG=--disable-web-search' "$CALL_LOG"
+assert grep -qxF "ARG=$grok_workdir" "$CALL_LOG"
+# `auto` means "whatever the account defaults to": a resolved id here pins a model nobody named.
+assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
+# The answer arrives as `text` chunks; the raw NDJSON is the one shape a report cannot be read from.
+assert grep -qx 'grok result' <<<"$("$RUNNER" report "$RUN_ID")"
+
+clear_stub
+set_config 'grok_model=grok-4.5' 'grok_effort=medium'
+start_ok grok
+assert grep -qx 'TAG: grokacct · grok-4.5 · medium' "$WORK/start.out"
+assert grep -qx 'grokacct · grok-4.5 · medium' "$RUN_DIR/tag"
+assert await_done
+assert grep -qx 'ARG=-m' "$CALL_LOG"
+assert grep -qx 'ARG=grok-4.5' "$CALL_LOG"
+assert grep -qx 'ARG=--reasoning-effort' "$CALL_LOG"
+assert grep -qx 'ARG=medium' "$CALL_LOG"
+
+# `xhigh` exists on grok-4.6 alone and the CLI is what knows: it travels as asked instead of being
+# clamped here, and only an effort no grok has is refused before launch.
+clear_stub
+start_ok grok --effort xhigh
+assert await_done
+assert grep -qx 'ARG=xhigh' "$CALL_LOG"
+clear_stub
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" --effort ultra >"$WORK/grok-effort.out" 2>"$WORK/grok-effort.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/grok-effort.out"
+assert test ! -s "$CALL_LOG"
+
+clear_stub
+set_config 'grok_effort=high'
+export WORKER_RUN_GROK_MAX_TURNS=7
+start_ok grok
+assert await_done
+assert grep -qx 'ARG=--max-turns' "$CALL_LOG"
+assert grep -qx 'ARG=7' "$CALL_LOG"
+assert test "$(jq -r '.max_turns' "$RUN_DIR/meta.json")" = 7
+unset WORKER_RUN_GROK_MAX_TURNS
+
+clear_stub
+start_ok grok --web-search
+assert await_done
+assert test "$(grep -c '^ARG=--disable-web-search$' "$CALL_LOG")" -eq 0
+
+# 1.0.13 grants directories through --cwd alone and attaches no images, so those flags are refused
+# where a caller can still read the refusal instead of in a CLI error nobody sees.
+for grok_flag in "--add-dir $WORK/extra" "--image $WORK/image.png"; do
+  clear_stub
+  rc=0
+  # shellcheck disable=SC2086
+  "$RUNNER" start grok --brief "$WORK/brief" $grok_flag >"$WORK/grok-flag.out" 2>"$WORK/grok-flag.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -q 'grok does not support --add-dir or --image' "$WORK/grok-flag.err"
+  assert test ! -s "$CALL_LOG"
+done
+
+# A continued session rides `-r`: `-s` only ever CREATES and rejects an id that already exists, so
+# handing it the session to continue ends the run before the brief is read.
+clear_stub
+export STUB_GROK_SESSION=grok-resumed-1
+start_ok grok --account grokacct --resume grok-resumed-1
+assert await_done
+assert grep -qx 'ARG=-r' "$CALL_LOG"
+assert grep -qx 'ARG=grok-resumed-1' "$CALL_LOG"
+assert grep -qx 'SESSION: grok-resumed-1' "$WORK/wait.out"
+assert test "$(grep -c '^ARG=-s$' "$CALL_LOG")" -eq 0
+grok_collision_rc=0
+CALL_LOG="$WORK/grok-collision-calls" "$WORK/bin/grokb" profile grokacct -s grok-resumed-1 \
+  >"$WORK/grok-collision.out" 2>"$WORK/grok-collision.err" || grok_collision_rc=$?
+assert test "$grok_collision_rc" -eq 1
+assert grep -q 'already in use' "$WORK/grok-collision.err"
+assert test ! -s "$WORK/grok-collision.out"
+
+# grok's `main` is the real ~/.grok, which holds no worker login: with the picker gone and nothing
+# pinned the run fails closed where codex and agy fall back to main.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=2 PICK_ACCOUNT=ignored
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" >"$WORK/grok-nomain.out" 2>"$WORK/grok-nomain.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/grok-nomain.out"
+assert grep -q 'grok has no account to fall back on' "$WORK/grok-nomain.err"
+assert test ! -s "$CALL_LOG"
+assert test "$(grep -c 'main' "$WORK/grok-nomain.err")" -eq 0
+clear_stub
+set_config 'grok_effort=high' 'grok_profile=grokpin'
+start_ok grok
+assert meta_account_is grokpin
+assert jq -e '.pinned == true' "$RUN_DIR/meta.json" >/dev/null
+assert await_done
+
+# A vendor the picker can read NOTHING about — no accounts, no usage snapshot — is not a walled one:
+# its quota may be untouched, and this whole system exists so nothing reports a limit it has no data
+# for. Live-caught on the grok leg before its quota reader landed: `no selectable grok account
+# (unavailable)` came back as GROK_USAGE_LIMIT.
+for pick_reason in unavailable 'no quota data'; do
+  clear_stub
+  set_config 'grok_effort=high'
+  export PICK_RC=3 PICK_ACCOUNT=ignored
+  export PICK_STDERR="worker-pick: no selectable grok account ($pick_reason)"
+  rc=0
+  "$RUNNER" start grok --brief "$WORK/brief" >"$WORK/grok-nodata.out" 2>"$WORK/grok-nodata.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/grok-nodata.out"
+  assert grep -q 'no usage data for grok' "$WORK/grok-nodata.err"
+  assert test ! -s "$CALL_LOG"
+  unset PICK_STDERR
+done
+# Any other reason at that exit is the wall it says it is.
+clear_stub
+export PICK_RC=3 PICK_ACCOUNT=ignored
+export PICK_STDERR='worker-pick: no selectable grok account (grok: all walled)'
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" >"$WORK/grok-walled-reason.out" 2>&1 || rc=$?
+assert test "$rc" -eq 3
+assert grep -qx 'OUTCOME: GROK_USAGE_LIMIT' "$WORK/grok-walled-reason.out"
+unset PICK_STDERR
+
+# A vendor switched off for workers is a decision, not a wall: the sentence handed back must be the
+# one every other vendor gives, vendor word apart, or a relay reads a closed role as an outage.
+clear_stub
+set_config 'gemini_workers=off' 'gemini_model=pro' 'gemini_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=picked
+printf 'picked\n' >"$STUB_DIR/gemini_profiles"
+"$RUNNER" start gemini --brief "$WORK/brief" --account picked \
+  >"$WORK/off-gemini.out" 2>"$WORK/off-gemini.err" || :
+set_config 'grok_workers=off' 'grok_effort=high'
+"$RUNNER" start grok --brief "$WORK/brief" --account picked \
+  >"$WORK/off-grok.out" 2>"$WORK/off-grok.err" || :
+grok_off=$(grep 'switched off for workers' "$WORK/off-grok.err")
+assert test -n "$grok_off"
+assert test "${grok_off/grok/gemini}" = "$(grep 'switched off for workers' "$WORK/off-gemini.err")"
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/off-grok.out"
+assert test ! -s "$CALL_LOG"
+clear_stub
+set_config 'grok_workers=off' 'grok_profile=picked' 'grok_effort=high'
+start_ok grok --account picked
+assert meta_account_is picked
+assert await_done
+
+clear_stub
+set_config 'grok_effort=high'
+grok_pool=$(pool_dir_for grok)
+mkdir -p "$grok_pool"
+printf 'benched\n' >"$grok_pool/disabled"
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" --account benched >"$WORK/grok-pool.out" 2>"$WORK/grok-pool.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/grok-pool.out"
+assert grep -q 'benched is out of the worker pool' "$WORK/grok-pool.err"
+assert test ! -s "$CALL_LOG"
+rm -f "$grok_pool/disabled"
+
+# Only the PERSISTENT wording walls an account, and an unpinned run continues on the next one
+# before the outcome ever reaches the caller.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=unused
+printf 'gwall1\n' >"$STUB_DIR/grok_wall_accounts"
+printf '%s\n' '0 gwall1' '0 grescue1' >"$STUB_DIR/pick_queue"
+start_ok grok
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert meta_account_is grescue1
+assert jq -e '.walled_accounts == ["gwall1"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'REROUTE: walled on gwall1 → continued on grescue1' "$WORK/wait.out"
+assert grep -qx -- '--account grok --exclude gwall1' "$PICK_LOG"
+assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 2
+
+# ALL WALLED is the only way the usage-limit outcome still reaches the caller.
+clear_stub
+printf '%s\n' gwall1 gwall2 >"$STUB_DIR/grok_wall_accounts"
+printf '%s\n' '0 gwall1' '0 gwall2' '3' >"$STUB_DIR/pick_queue"
+start_ok grok
+assert await_done
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert grep -qx 'OUTCOME: GROK_USAGE_LIMIT' "$WORK/wait.out"
+assert grep -qx 'WALL: pool exhausted (walled: gwall1, gwall2)' "$WORK/wait.out"
+assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 1
+
+# A picker that already knows every grok account is walled ends `start` on the limit exit, and a pin
+# is no way around a wall it never consulted.
+clear_stub
+set_config 'grok_effort=high' 'grok_profile=grokpin'
+export PICK_RC=3 PICK_ACCOUNT=ignored
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" >"$WORK/grok-wall.out" 2>"$WORK/grok-wall.err" || rc=$?
+assert test "$rc" -eq 3
+assert grep -qx 'OUTCOME: GROK_USAGE_LIMIT' "$WORK/grok-wall.out"
+assert test ! -s "$CALL_LOG"
+
+# Every other persistent wording says the same thing, and the CLI's transient classes say something
+# else entirely: xAI folds 429 and 5xx into the same internal rate-limit class as a real wall, so a
+# bare "rate limit" here would report an exhausted plan on every bad minute.
+for grok_spec in 'You have hit the rate limit for your plan:GROK_USAGE_LIMIT' \
+  'error: subscription:free-usage-exhausted:GROK_USAGE_LIMIT' \
+  'Your team has run out of credits:GROK_USAGE_LIMIT' \
+  'request failed with status 402 Payment Required:GROK_USAGE_LIMIT' \
+  'request failed with status 429 Too Many Requests:GROK_UNAVAILABLE' \
+  'upstream returned status 503:GROK_UNAVAILABLE' \
+  'rate limit exceeded, Retry-After: 30:GROK_UNAVAILABLE'; do
+  grok_error=${grok_spec%:*}
+  grok_outcome=${grok_spec##*:}
+  clear_stub
+  set_config 'grok_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=grokwording STUB_CODE=1 STUB_ERROR="$grok_error"
+  start_ok grok
+  assert await_done
+  assert grep -qx "OUTCOME: $grok_outcome" "$WORK/wait.out"
+  if [ "$grok_outcome" = GROK_UNAVAILABLE ]; then
+    assert grep -qx 'REASON: transient — capacity weather, not a wall; the brief may be relaunched' \
+      "$WORK/wait.out"
+  fi
+done
+
+# An expired login needs a human and says so: relaunching it anywhere spends nothing but time.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=grokauth STUB_CODE=0
+: >"$STUB_DIR/grok_auth"
+start_ok grok
+assert await_done
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/wait.out"
+assert grep -qx 'REASON: auth — the account needs a human login (grokb add <account>)' "$WORK/wait.out"
+assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 1
+
+# A wall stated mid-run arrives as an `error` event on stdout, where every other vendor puts it on
+# stderr: read on stderr alone this run reports an outage while the plan is actually exhausted.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=grokevent STUB_CODE=1 \
+  STUB_GROK_ERROR_EVENT='You have hit the rate limit for your plan'
+start_ok grok
+assert await_done
+assert grep -qx 'OUTCOME: GROK_USAGE_LIMIT' "$WORK/wait.out"
+
+# A failed run whose ANSWER discusses quotas is a plain failure: this repository's own briefs are
+# about walls, and the scan reads stderr and the stream's `error` events, never the agent's text.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=grokchatty STUB_CODE=5 \
+  STUB_GROK_ANSWER='You have hit the credit limit for your plan is what the docs say'
+start_ok grok
+assert await_done
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/wait.out"
+
+# A tool the permission policy refused ends the run normally and is neither a wall nor a failure —
+# but a thin result is unreadable without knowing something was refused.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=grokdenied
+: >"$STUB_DIR/grok_denied"
+start_ok grok
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
+assert jq -e '.denied_tools == 1' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'DENIED-TOOLS: 1' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# The agent quotes the refusal back in its own answer — live-observed, and the whole reason the count
+# is read off the failed tool_call_update: the denial is stated once however often the text repeats it.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=grokdenied \
+  STUB_GROK_ANSWER='I could not run it: Tool `run_terminal_command` was not executed: Denied by permission policy: deny rule on bash'
+: >"$STUB_DIR/grok_denied"
+start_ok grok
+assert await_done
+assert jq -e '.denied_tools == 1' "$RUN_DIR/meta.json" >/dev/null
+
+# A run that only DISCUSSES a refusal was refused nothing: this repository's own briefs quote the
+# sentence verbatim, and a stream scanned as text reports a denial no policy ever made.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=grokquoting \
+  STUB_GROK_ANSWER='The gate answers with `Tool `x` was not executed: Denied by permission policy` when a deny rule matches'
+start_ok grok
+assert await_done
+assert jq -e 'has("denied_tools") | not' "$RUN_DIR/meta.json" >/dev/null
+assert test "$(grep -c '^DENIED-TOOLS:' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+
+# grok names the files it wrote in its own session record, filed under the URL-encoded cwd it ran
+# in: an id found by globbing can belong to a session from another directory entirely, so the
+# session's own summary.json is checked against this run's workdir before a single path is claimed.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=grokfiles
+GROK_SESSION=01a05811-7788-7d22-a9c9-c028072cbff5
+grok_encode() { printf '%s' "$1" | jq -sRr @uri; }
+GROK_UPDATES="$GROKB_PROFILES_DIR/grokfiles/sessions/$(grok_encode "$grok_workdir")/$GROK_SESSION/updates.jsonl"
+mkdir -p "$(dirname "$GROK_UPDATES")"
+grok_summary() { jq -n --arg d "$1" '{info: {cwd: $d}}' >"$(dirname "$GROK_UPDATES")/summary.json"; }
+grok_call() { # id name kind read-only input-json
+  jq -cn --argjson ts "$GROK_TS" --arg id "$1" --arg name "$2" --arg kind "$3" \
+    --argjson ro "$4" --argjson input "$5" \
+    '{timestamp: $ts, method: "session/update", params: {sessionId: "s", update: {
+       sessionUpdate: "tool_call", toolCallId: $id, status: "in_progress", rawInput: $input,
+       _meta: {"x.ai/tool": {name: $name, kind: $kind, read_only: $ro}}}}}'
+}
+grok_update() { # id status [current-dir]
+  jq -cn --argjson ts "$GROK_TS" --arg id "$1" --arg status "$2" --arg dir "${3:-}" \
+    '{timestamp: $ts, method: "session/update", params: {sessionId: "s", update: {
+       sessionUpdate: "tool_call_update", toolCallId: $id, status: $status,
+       rawOutput: (if $dir == "" then null else {current_dir: $dir} end)}}}'
+}
+GROK_TS=$(($(date +%s) + 60))
+grok_summary "$grok_workdir"
+{
+  grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-written" '{file_path: $p}')"
+  grok_update w1 completed
+  grok_call e1 search_replace edit false "$(jq -cn --arg p "$WORK/outside/grok-absolute" '{file_path: $p}')"
+  grok_update e1 completed
+  grok_call r1 read_file read true "$(jq -cn --arg p "$grok_workdir/bin/grok-only-read" '{file_path: $p}')"
+  grok_update r1 completed
+  grok_call c1 run_terminal_command execute false "$(jq -cn '{command: "git status --short"}')"
+  grok_update c1 completed "$grok_workdir"
+} >"$GROK_UPDATES"
+start_ok grok
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 2' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/grok-written' <<<"$report"
+assert grep -qxF "RUN-FILE: $WORK/outside/grok-absolute" <<<"$report"
+assert test "$(grep -c 'grok-only-read' <<<"$report")" -eq 0
+assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
+assert test ! -e "$RUN_DIR/workdir-escape"
+
+# A refused write changed nothing and cannot make the successful call beside it review debt.
+clear_stub
+GROK_TS=$(($(date +%s) + 60))
+{
+  grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-kept" '{file_path: $p}')"
+  grok_update w1 completed
+  grok_call w2 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-refused" '{file_path: $p}')"
+  grok_update w2 failed
+} >"$GROK_UPDATES"
+start_ok grok
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: bin/grok-kept' <<<"$report"
+assert test "$(grep -c 'grok-refused' <<<"$report")" -eq 0
+
+# A tool this reader cannot classify leaves the run unanswerable rather than short by one file, and
+# an unknown tool is the ordinary case: the vendor keeps adding them.
+clear_stub
+GROK_TS=$(($(date +%s) + 60))
+{
+  grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-written" '{file_path: $p}')"
+  grok_update w1 completed
+  grok_call i1 image_gen other false '{}'
+  grok_update i1 completed
+} >"$GROK_UPDATES"
+start_ok grok
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: image_gen)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# The dispatcher tool answers for what it dispatched: a shell through it is a shell.
+clear_stub
+GROK_TS=$(($(date +%s) + 60))
+{
+  grok_call u1 use_tool other false \
+    "$(jq -cn '{tool_name: "bash", tool_input: {command: "printf x > out.txt"}}')"
+  grok_update u1 completed "$grok_workdir"
+} >"$GROK_UPDATES"
+start_ok grok
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A mutating row with no usable time cannot be silently dropped out of the run's window.
+clear_stub
+GROK_TS=null
+{
+  grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-timeless" '{file_path: $p}')"
+  grok_update w1 completed
+} >"$GROK_UPDATES"
+start_ok grok
+assert await_done
+assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
+  <<<"$("$RUNNER" report "$RUN_ID")"
+
+# A session record filed under another directory is not this run's, however well the id matches.
+clear_stub
+GROK_TS=$(($(date +%s) + 60))
+{
+  grok_call w1 write write false "$(jq -cn --arg p "$grok_workdir/bin/grok-elsewhere" '{file_path: $p}')"
+  grok_update w1 completed
+} >"$GROK_UPDATES"
+grok_summary "$WORK/extra"
+start_ok grok
+assert await_done
+assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$("$RUNNER" report "$RUN_ID")"
+# With no summary.json at all the encoded directory name is what answers, and it answers for this
+# run: a record whose own cwd cannot be read is not a licence to claim it.
+rm -f "$(dirname "$GROK_UPDATES")/summary.json"
+clear_stub
+start_ok grok
+assert await_done
+assert grep -qx 'RUN-FILE: bin/grok-elsewhere' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# No record at all is unknown too, and never the workdir.
+clear_stub
+mv "$GROK_UPDATES" "$GROK_UPDATES.moved"
+start_ok grok
+assert await_done
+assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$("$RUNNER" report "$RUN_ID")"
+mv "$GROK_UPDATES.moved" "$GROK_UPDATES"
+
+# Nothing inside the workdir at all is the one failure a launcher cannot see: a green run over an
+# untouched directory.
+clear_stub
+GROK_TS=$(($(date +%s) + 60))
+{
+  grok_call w1 write write false "$(jq -cn --arg p "$WORK/extra/grok-went-elsewhere" '{file_path: $p}')"
+  grok_update w1 completed
+} >"$GROK_UPDATES"
+start_ok grok
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/grok-went-elsewhere" \
+  <<<"$report"
+assert grep -qxF "$WORK/extra/grok-went-elsewhere" "$RUN_DIR/workdir-escape"
+rm -rf "$GROKB_PROFILES_DIR/grokfiles"
+
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex, agy and grok alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes"

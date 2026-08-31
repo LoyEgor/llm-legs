@@ -896,6 +896,14 @@ local geminiAllAuthFixture = { schema = 1, vendors = {
     { account = "work", auth_needed = true },
   }},
 }}
+local grokLoginFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false },
+  grok = { available = true, accounts = {
+    { account = "grokout", auth_needed = true, auth = { status = "needs_login" } },
+  }},
+}}
 
 do
   local cases = {
@@ -910,6 +918,10 @@ do
     {
       vendor = "gemini", fixture = geminiMultiFixture, account = "work",
       config = "gemini_profile=work", command = "geminib",
+    },
+    {
+      vendor = "grok", fixture = grokLoginFixture, account = "grokout",
+      config = "grok_profile=grokout", command = "grokb",
     },
   }
   for _, case in ipairs(cases) do
@@ -964,6 +976,10 @@ local loginCases = {
     scriptContains = { "geminib profile", "work" },
     refreshArgs = { "--refresh-account", "gemini/work" },
     removePath = "geminib", removeArgs = { "remove", "work" } },
+  { vendor = "grok", fixture = grokLoginFixture, needle = "grokout", label = "grokout",
+    scriptContains = { "grokb profile", "grokout", "login" },
+    refreshArgs = { "--refresh-account", "grok/grokout" },
+    removePath = "grokb", removeArgs = { "remove", "grokout", "--force" } },
 }
 for _, case in ipairs(loginCases) do
   local capture = {}
@@ -1020,6 +1036,40 @@ for _, case in ipairs(loginCases) do
     assert(launched.args[index] == expected,
       case.vendor .. " Remove arg " .. index .. " is " .. tostring(launched.args[index])
         .. " not " .. expected)
+  end
+end
+
+-- grokb refuses `remove main` (the real ~/.grok), so its logged-out row must omit Remove
+-- the same way Codex does.
+local grokMainLoginFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = false },
+  gemini = { available = false },
+  grok = { available = true, accounts = {
+    { account = "main", is_current = true, auth_needed = true, auth = { status = "needs_login" } },
+  }},
+}}
+do
+  local menu = loadModule(grokMainLoginFixture).menuItems()
+  local row = rowContaining(menu, "main")
+  assert(row and titleText(row):find("login needed", 1, true),
+    "grok main did not render a login-needed row")
+  for _, sub in ipairs(row.menu or {}) do
+    assert(not titleText(sub):find("Remove", 1, true), "grok main offered a dead Remove action")
+  end
+end
+
+-- A store that never grew vendors.grok omits the section; "no live data" is for a
+-- present-but-unmeasured vendor, not an absent key. Same skip for every vendor.
+do
+  local menu = loadModule({ schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false },
+    gemini = { available = false },
+  }}).menuItems()
+  for _, item in ipairs(menu) do
+    assert(not titleText(item):find("Grok", 1, true),
+      "a store without vendors.grok still rendered a Grok section")
   end
 end
 
@@ -1495,6 +1545,9 @@ do
       { account = "gm-one", is_current = true, enabled = true, five_hour = bucket(10) },
       { account = "gm-two", is_current = false, enabled = false, five_hour = bucket(20) },
     } },
+    grok = { available = true, accounts = {
+      { account = "gk-one", is_current = true, enabled = true, seven_day = bucket(10) },
+    } },
   }}
   local tasks = {}
   local mod = loadModule(headerFixture, driveTasks(tasks))
@@ -1504,8 +1557,19 @@ do
   local cases = {
     { label = "Claude", key = "claude" },
     { label = "Codex", key = "codex" },
+    { label = "Grok", key = "grok" },
     { label = "Gemini", key = "gemini" },
   }
+  -- Section order is Egor's own reading order and nothing else pins it: the harness finds every
+  -- other row by name, so a reshuffled vendors table would pass the whole suite unnoticed.
+  local seen = {}
+  for _, item in ipairs(mod.menuItems()) do
+    for _, case in ipairs(cases) do
+      if titleText(item) == case.label then table.insert(seen, case.label) end
+    end
+  end
+  assert(table.concat(seen, ",") == "Claude,Codex,Grok,Gemini",
+    "vendor sections are out of order: " .. table.concat(seen, ","))
   for _, case in ipairs(cases) do
     local header = headerRow(mod.menuItems(), case.label)
     assert(header.disabled ~= true, case.label .. " header stayed disabled with a submenu")
@@ -1525,6 +1589,156 @@ do
       case.label .. " header Refresh lost the user-explicit warm signal")
     refresh.callback(0, "", "")
   end
+end
+
+do
+  local now = os.time()
+  local grokFixture = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false },
+    gemini = { available = false },
+    grok = {
+      available = true,
+      current_account = "supergrok",
+      refresh_error = { cause = "relogin: not refreshed (needs login)", at = now - 600,
+        needs_user_entry = true },
+      accounts = {
+        { account = "supergrok", is_current = true, enabled = true, plan_type = "SuperGrok",
+          email = "fixture@example.com", period = "weekly", build_pct = 47,
+          as_of = now - 600, auth = { status = "ok" },
+          weekly = { used_pct = 61.2, effective_pct = 61.2, resets_at = now + 86400,
+            as_of = now - 600, stale = false, expired = false } },
+        { account = "relogin", enabled = true, auth_needed = true,
+          as_of = now - 900, auth = { status = "needs_login" } },
+        { account = "expired", enabled = true, auth_needed = true, age_alarm = true,
+          as_of = now - 1200, auth = { status = "expired" },
+          weekly = { used_pct = 33, effective_pct = 33, resets_at = now - 120,
+            as_of = now - 1200, stale = false, expired = true } },
+        { account = "parked", enabled = false, auth = { status = "ok" },
+          as_of = now - 600, period = "USAGE_PERIOD_TYPE_MONTHLY",
+          weekly = { used_pct = 12, effective_pct = 12, resets_at = now + 86400,
+            as_of = now - 600, stale = false, expired = false } },
+      },
+    },
+  }}
+  local tasks, scripts = {}, {}
+  local mod = loadModule(grokFixture, captureTasks(tasks), now, nil,
+    function(script) table.insert(scripts, script); return true, true, {} end,
+    "grok_profile=supergrok\ngrok_workers=off\ngrok_reviewers=on",
+    function(path, attribute)
+      if path == os.getenv("HOME") .. "/.grok-profiles/relogin" and attribute == "mode" then
+        return "directory"
+      end
+      return nil
+    end)
+  local menu = mod.menuItems()
+  assert(mod.refreshState().prefix == "", "Grok entry-only refresh error lit the global warning")
+  local grokEntryError = false
+  for _, item in ipairs(menu) do
+    if titleText(item):find("refresh failed relogin: not refreshed (needs login)", 1, true) then
+      grokEntryError = true
+    end
+  end
+  assert(grokEntryError, "Grok entry-only refresh error did not use the shared error row")
+  local header = headerRow(menu, "Grok")
+  assert(header, "Grok section title did not render")
+  local workers = submenuItem(header, "For workers")
+  local reviewers = submenuItem(header, "For reviewers")
+  assert(workers and workers.checked == false and reviewers and reviewers.checked == true,
+    "Grok role checkboxes did not come from the shared vendor loop")
+  assert(submenuItem(header, "Refresh"), "Grok vendor Refresh is missing")
+
+  local superRow = accountItem(menu, "supergrok")
+  assert(superRow.checked == true, "enabled Grok account row is not checked")
+  assert(accountHasMarker(menu, "supergrok"), "pinned Grok account lost its marker")
+  assert(submenuItem(superRow, "In worker pool").checked == true,
+    "enabled Grok pool checkbox is not checked")
+  assert(submenuItem(superRow, "Pin for workers").checked == true,
+    "pinned Grok checkbox is not checked")
+  assert(submenuItem(superRow, "Hard refresh"), "Grok account Hard refresh is missing")
+  assert(not submenuItem(superRow, "Remove supergrok"),
+    "healthy Grok account offered Remove, bypassing grokb's logged-in guard")
+  local superWeekly = titleText(menu[accountIndex(menu, "supergrok") + 1])
+  assert(superWeekly:find("wk", 1, true) and superWeekly:find("61%", 1, true),
+    "Grok weekly usage did not use the shared bucket formatter")
+  assert(superWeekly:find("build 47%", 1, true), "distinct Grok build usage did not render")
+
+  local loginRow = accountItem(menu, "relogin")
+  assert(titleText(loginRow):find("login needed", 1, true),
+    "Grok needs_login account did not use the shared login row")
+  assert(not submenuItem(loginRow, "In worker pool"),
+    "Grok needs_login row offered worker-pool membership")
+  assert(submenuItem(loginRow, "Log in…") and submenuItem(loginRow, "Hard refresh")
+      and submenuItem(loginRow, "Remove relogin"),
+    "Grok needs_login row lost a shared account action")
+  submenuItem(loginRow, "Log in…").fn()
+  assert(scripts[#scripts]:find("grokb profile 'relogin' login %-%-device%-auth"),
+    "existing Grok profile login did not go through grokb")
+  mod.loginGrok("new-profile")
+  assert(scripts[#scripts]:find("grokb profile 'new%-profile' login %-%-device%-auth"),
+    "new Grok profile login did not go through grokb")
+
+  local expiredRow = accountItem(menu, "expired")
+  assert(not titleText(expiredRow):find("login needed", 1, true),
+    "expired Grok auth rendered as login needed")
+  assert(submenuItem(expiredRow, "Hard refresh"), "expired Grok row is not refreshable")
+  local expiredAgeDim = false
+  for _, run in ipairs(expiredRow.title.runs or {}) do
+    if run.text:find("20m", 1, true) and isDimmed(run.attributes) then expiredAgeDim = true end
+  end
+  assert(expiredAgeDim, "expired Grok auth did not keep a dim age marker")
+  local expiredWeekly = menu[accountIndex(menu, "expired") + 1]
+  assert(isDimmed(expiredWeekly.title.attributes), "expired Grok weekly row was not dimmed")
+  local parkedRow = accountItem(menu, "parked")
+  assert(parkedRow.checked == false
+      and submenuItem(parkedRow, "In worker pool").checked == false,
+    "disabled Grok account checkboxes are not clear")
+  local parkedWeekly = titleText(menu[accountIndex(menu, "parked") + 1])
+  assert(parkedWeekly:find("mo", 1, true)
+      and not parkedWeekly:find("USAGE_PERIOD", 1, true),
+    "non-weekly Grok period rendered the raw enum")
+
+  local grokAt = accountIndex(menu, "supergrok") - 1
+  local grokText = {}
+  for index = grokAt, #menu do
+    local text = titleText(menu[index])
+    if index > grokAt and text == "-" then break end
+    table.insert(grokText, text)
+  end
+  grokText = table.concat(grokText, "\n")
+  assert(not grokText:find("5h", 1, true), "Grok rendered a phantom five-hour row")
+  assert(not grokText:find("?", 1, true) and not grokText:find("nil", 1, true),
+    "Grok section leaked a placeholder for its absent five-hour bucket")
+
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(header, "Refresh").fn()
+  assert(tasks[1] and tasks[1].args[1] == "--refresh-account" and tasks[1].args[2] == "grok",
+    "Grok vendor Refresh did not target the vendor")
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(superRow, "Hard refresh").fn()
+  assert(tasks[1] and tasks[1].args[2] == "grok/supergrok",
+    "Grok account Hard refresh did not target the account")
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(parkedRow, "In worker pool").fn()
+  assert(tasks[1] and tasks[1].path:find("grokb", 1, true)
+      and tasks[1].args[1] == "enable" and tasks[1].args[2] == "parked",
+    "Grok pool checkbox did not use grokb enable")
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(superRow, "Pin for workers").fn()
+  assert(tasks[1] and tasks[1].path:find("grokb", 1, true)
+      and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear",
+    "Grok pin checkbox did not use the shared pin path")
+  local fault = { schema = 1, vendors = {
+    claude = { available = false }, codex = { available = false },
+    gemini = { available = false },
+    grok = { available = false,
+      refresh_error = { cause = "billing endpoint unavailable", at = now - 60 } },
+  }}
+  local faultModule = loadModule(fault, nil, now)
+  assert(faultModule.refreshState().prefix == "⚠ ",
+    "Grok refresh fault did not use the shared warning state")
+  assert(submenuItem(rowContaining(faultModule.menuItems(), "Grok"), "Refresh"),
+    "unavailable Grok vendor lost its Refresh")
 end
 
 -- A Claude vendor object that is not the claudeb store has no per-account pool controls; the free

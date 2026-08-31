@@ -4,7 +4,7 @@
 # (UserPromptSubmit) touches a grant when HIS message names the pin, and `write` / `bash`
 # (PreToolUse) deny a session moving the pin inside ~/.claude/worker-model — through Edit/Write and
 # through a shell redirect alike, since a door on one of them is a door around the other. The
-# command path — `claudeb|codexb|geminib use` — is refused inside worker_model_pin_account itself,
+# command path — `claudeb use|codexb use|geminib use|grokb use` — is refused inside worker_model_pin_account itself,
 # the one chokepoint every spelling of that command reaches.
 #
 # What is denied is the PIN, not the file: the same file carries `worker=`, `*_model=` and
@@ -25,7 +25,7 @@ set -u
 
 MODE="${1:-}"
 GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
-PIN_KEY_RE='^(claudeb|codex|gemini)_profile='
+PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='
 
 grant_path() {
   local state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
@@ -123,7 +123,7 @@ deny() {
   exit 0
 }
 
-DENY_REASON="Blocked: the account pin (claudeb_profile / codex_profile / gemini_profile) in ~/.claude/worker-model is Egor's to move, and he has not named it here. This gate is the rule, not a suggestion — do not reach the file another way; \`claudeb|codexb|geminib use\` is refused at the same door. A per-task account belongs in the brief's ACCOUNT: line, which needs no pin. Everything else in this file — worker=, *_model=, *_effort= — is ungated, so leave the *_profile= lines exactly as they are and this same write passes. If the pin itself should move, ask him in one line and wait."
+DENY_REASON="Blocked: the account pin (claudeb_profile / codex_profile / gemini_profile / grok_profile) in ~/.claude/worker-model is Egor's to move, and he has not named it here. This gate is the rule, not a suggestion — do not reach the file another way; \`claudeb use|codexb use|geminib use|grokb use\` is refused at the same door. A per-task account belongs in the brief's ACCOUNT: line, which needs no pin. Everything else in this file — worker=, *_model=, *_effort= — is ungated, so leave the *_profile= lines exactly as they are and this same write passes. If the pin itself should move, ask him in one line and wait."
 
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat) || exit 0
@@ -166,7 +166,7 @@ case "$MODE" in
       [ "$pending" = "$(current_pins)" ] && exit 0
     else
       printf '%s' "$input" | jq -r '(.tool_input.old_string // "") + "\n" + (.tool_input.new_string // "")' \
-        | grep -Eq '(claudeb|codex|gemini)_profile' || exit 0
+        | grep -Eq '(claudeb|codex|gemini|grok)_profile' || exit 0
     fi
     deny "$DENY_REASON"
     ;;

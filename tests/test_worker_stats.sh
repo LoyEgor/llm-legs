@@ -283,6 +283,8 @@ except ValueError:
 # outcome parsing
 check(wc.classify_outcome({"status":"completed","result_text":"all good"},None)=="ok","ok")
 check(wc.classify_outcome({"status":"completed","result_text":"x OUTCOME: CODEX_USAGE_LIMIT y"},None)=="usage_limit","codex limit")
+check(wc.classify_outcome({"status":"completed","result_text":"x OUTCOME: GROK_USAGE_LIMIT y"},None)=="usage_limit","grok limit")
+check(wc.classify_outcome({"status":"completed","result_text":"x OUTCOME: GEMINI_USAGE_LIMIT y"},None)=="usage_limit","gemini limit")
 check(wc.classify_outcome({"status":"killed","result_text":""},None)=="killed","killed")
 check(wc.classify_outcome({"status":"stopped","result_text":""},None)=="killed","stopped->killed")
 check(wc.classify_outcome({"status":"failed","result_text":""},None)=="failed","failed status")
@@ -300,6 +302,36 @@ check(wc.classify_outcome(None,"plain sync ok")=="ok","sync ok")
 check(wc.valid_model("gpt-5.6-sol")=="gpt-5.6-sol","gpt ok")
 check(wc.valid_model("opus")=="opus","opus ok")
 check(wc.valid_model("sonnet")=="sonnet","sonnet ok")
+# grok's served model is the id its `end` event reports, which is not the id the launch asked for.
+check(wc.valid_model("grok-4.6-build")=="grok-4.6-build","grok served model ok")
+check(wc.valid_model("grok-4.5")=="grok-4.5","grok model ok")
+check("grok-worker" in wc.WORKER_TYPES,"grok-worker is a corpus worker type")
+check("gemini-worker" in wc.WORKER_TYPES,"gemini-worker is a corpus worker type")
+# A blind rater may not read which vendor produced the work it is grading.
+masked=wc.mask_worker_names("grok-worker ran Grok on the grok pool")
+check("grok" not in masked.lower(),f"grok survived masking: {masked}")
+masked_g=wc.mask_worker_names("gemini-worker ran Gemini on the gemini pool")
+check("gemini" not in masked_g.lower(),f"gemini survived masking: {masked_g}")
+stats=wc.recover_sidechain_config([
+    {"subagent_type":"grok-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
+    {"subagent_type":"sonnet-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
+    {"subagent_type":"gemini-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
+], [])
+for vendor in ("grok","sonnet","gemini","codex","claudeb"):
+    check(vendor in stats, f"recovery_stats missing {vendor}")
+check(stats["grok"]["total"]==1 and stats["sonnet"]["total"]==1 and stats["gemini"]["total"]==1,
+      "grok/sonnet/gemini delegations were not counted in their own buckets")
+check(stats["claudeb"]["total"]==0,"non-claudeb workers were folded into claudeb recovery")
+import io
+from contextlib import redirect_stdout
+buf=io.StringIO()
+try:
+    with redirect_stdout(buf):
+        wc.output_records([], [], None)
+        print("still-open")
+    check("still-open" in buf.getvalue(),"output_records closed stdout")
+except ValueError as exc:
+    check(False, f"output_records closed stdout: {exc}")
 for junk in ("py_compile","pytest","transcriber.ctl","http.server","3"):
     check(wc.valid_model(junk)is None,f"junk {junk}")
 

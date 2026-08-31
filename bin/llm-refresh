@@ -114,7 +114,7 @@ normalized_state() {
   jq -cn --argjson now "$now" --argjson state "$input" '
     def rung: if . == 15 or . == 22 or . == 30 or . == 45 or . == 60 then . else 30 end;
     def epoch: if type == "number" and . >= 0 then floor else 0 end;
-    ["claude","codex","gemini","opencode"] | map(. as $vendor |
+    ["claude","codex","gemini","grok","opencode"] | map(. as $vendor |
       (($state.vendors[$vendor] // $state[$vendor] // {}) as $old |
        {key:$vendor, value:{
          interval_min:($old.interval_min | rung),
@@ -145,9 +145,10 @@ account_rows() {
     if (.accounts | type) == "array" and (.accounts | length) > 0 then
       .accounts[] | row(.account)
     else
-      # The Gemini base profile is deletable, so an empty vendor names no account to revive.
+      # The Gemini base profile is deletable and Grok has no fixed base account, so an empty
+      # vendor names no account to revive.
       (if (.current_account | type) == "string" then .current_account
-       elif $vendor == "gemini" then empty
+       elif $vendor == "gemini" or $vendor == "grok" then empty
        else "main" end) as $name | row($name)
     end
   ' "$store" 2>/dev/null
@@ -351,7 +352,7 @@ state_persist() {
   tmp=$(mktemp "${state_file}.tmp.XXXXXX") || return 1
   tick_tmp=$tmp
   if ! printf '%s\n' "$payload" >"$tmp" || ! jq -e '
-    .claude and .codex and .gemini and .opencode and
+    .claude and .codex and .gemini and .grok and .opencode and
     all(.[]; type == "object")' "$tmp" >/dev/null; then
     rm -f "$tmp"
     tick_tmp=''
@@ -389,7 +390,7 @@ run_tick() {
 
   state=$(state_read)
 
-  for vendor in claude codex gemini opencode; do
+  for vendor in claude codex gemini grok opencode; do
     interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
     last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' <<<"$state")
     if cadence_due "$interval" "$last" "$now"; then

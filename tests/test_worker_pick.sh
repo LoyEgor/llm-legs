@@ -375,8 +375,14 @@ run_filter codex_plain '.vendors.codex.accounts = [
   {account:"zeta",five_hour:{used_pct:20},weekly:{used_pct:20}}]'
 assert contains "$(head -n1 <<<"$output")" 'codex zeta · high'
 assert before "$(sed -n '2p' <<<"$output")" 'zeta 20%' 'main 20%'
+# An emptied pool is a switch Egor flipped, never a limit (rule 4), so the line says which of the
+# two it is — and `worker-run` reads that same wording to report UNAVAILABLE over a usage limit.
 run_filter codex_plain '.vendors.codex.accounts |= map(.enabled = false)'
-assert contains "$(head -n1 <<<"$output")" 'codex unavailable · high — WALLED'
+assert contains "$(head -n1 <<<"$output")" 'codex unavailable · high — every account is out of the worker pool'
+assert not_contains "$(head -n1 <<<"$output")" 'codex unavailable · high — WALLED'
+query --account codex
+assert test "$query_rc" -eq 3
+assert grep -q 'every codex account is out of the worker pool' "$WORK/query.err"
 assert contains "$(sed -n '2p' <<<"$output")" 'plain 48% 5h 48% ↻0 off'
 run_filter codex_plain '.vendors.codex = {available:true,accounts:[
   {account:"main",auth_needed:true,status:"login needed"}]}'
@@ -394,6 +400,235 @@ run_filter codex_plain '.vendors.codex.accounts = [
   {account:"plain",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"main",five_hour:{used_pct:100},weekly:{used_pct:20}}]'
 assert contains "$(sed -n '2p' <<<"$output")" 'codex: pin main exhausted → plain'
+write_config
+
+# Grok is the fourth vendor and reads the same three rules, with one bucket and one auth softening:
+# weekly is all it measures, so no five-hour deferral applies, and an `expired` access token is one
+# the CLI refreshes itself — a candidate that merely ranks behind a signed-in one.
+grok_case() {
+  run_filter golden ".vendors.grok = $1"
+}
+grok_query() {
+  jq -c --arg name golden --argjson grok "$1" '.[$name] | .vendors.grok = $grok' "$FIXTURES" \
+    >"$STORE" || fail 'grok fixture transform failed'
+  shift
+  query "$@"
+}
+GROK_PAIR='{available:true,accounts:[
+  {account:"supergrok",enabled:true,weekly:{used_pct:40},auth:{status:"ok"}},
+  {account:"spare",enabled:true,weekly:{used_pct:10},auth:{status:"ok"}}]}'
+GROK_PAIR_JSON='{"available":true,"accounts":[
+  {"account":"supergrok","enabled":true,"weekly":{"used_pct":40},"auth":{"status":"ok"}},
+  {"account":"spare","enabled":true,"weekly":{"used_pct":10},"auth":{"status":"ok"}}]}'
+# A store with no grok row at all is the state of every machine before the collector lands: the
+# vendor is simply absent from the render, never a wall and never a failed lookup.
+run_case golden
+assert not_contains "$output" grok
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 6
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi'
+query_case golden --account grok
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable grok account (grok: unavailable)' "$WORK/query.err"
+
+grok_case "$GROK_PAIR"
+assert contains "$(head -n1 <<<"$output")" 'grok spare · auto · high — 10%'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: spare 10% (wk→?) | supergrok 40% (wk→?)'
+assert test "$(sed -n '4p' <<<"$output" | cut -d: -f1)" = grok
+assert test "$(sed -n '5p' <<<"$output" | cut -d: -f1)" = claude
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 7
+# The cache line keeps its field order and gains a fourth field; `grok_model=auto` is a knob value,
+# not a missing one, so it is printed as it stands and resolved by worker-run.
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi gr✓spare·auto·hi'
+write_config 'grok_model=grok-4.5' 'grok_effort=medium'
+grok_case "$GROK_PAIR"
+assert contains "$(head -n1 <<<"$output")" 'grok spare · grok-4.5 · medium — 10%'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi gr✓spare·grok-4.5·med'
+write_config 'grok_model=grok-4.6' 'grok_effort=xhigh'
+grok_case "$GROK_PAIR"
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi gr✓spare·grok-4.6·xh'
+write_config
+# Auto adds grok by taking the last place in the one vendor order, and promotes it to the head on
+# the same condition as every other vendor: nothing above it can serve.
+next_line=$(head -n1 <<<"$output")
+assert before "$next_line" 'gemini main' 'grok spare'
+assert before "$next_line" 'codex main' 'gemini main'
+run_filter golden ".vendors.grok = $GROK_PAIR
+  | del(.vendors.codex, .vendors.gemini)
+  | .vendors.claude.accounts |= map(.enabled = false)"
+assert test "${output%%$'\n'*}" = 'NEXT: grok spare · auto · high — 10%  |  claudeb unavailable — every account is out of the worker pool  |  codex — WALLED  |  gemini unavailable'
+# `worker=grok` is a mode arm like `worker=gemini`: the vendor leads the line whatever the pool says.
+printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+grok_case "$GROK_PAIR"
+assert contains "$(head -n1 <<<"$output")" 'NEXT: grok spare · auto · high — 10%'
+assert before "$(head -n1 <<<"$output")" 'grok spare' 'claudeb worker'
+write_config
+
+# Rule 2 for a vendor with one bucket: lowest weekly, then `main` last, then name — and `--exclude`
+# walks that same order until nothing is left.
+grok_case '{available:true,accounts:[
+  {account:"main",enabled:true,weekly:{used_pct:20}},
+  {account:"zeta",enabled:true,weekly:{used_pct:20}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok zeta · auto · high — 20%'
+assert before "$(sed -n '4p' <<<"$output")" 'zeta 20%' 'main 20%'
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 0
+assert test "$query_out" = spare
+query --account grok --exclude spare
+assert test "$query_out" = supergrok
+query --account grok --exclude spare,supergrok
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'no selectable grok account' "$WORK/query.err"
+# The session reserve is a claudeb rule and grok neither joins nor disturbs it.
+query --account claudeb
+assert test "$query_out" = worker
+query --account claudeb --exclude worker,worker2
+assert test "$query_out" = session
+assert grep -q 'session is the session account (SESSION RESERVE)' "$WORK/query.err"
+
+# Auth: `expired` is refreshable and stays a candidate behind every signed-in account, however
+# much cheaper it is; `needs_login` has no refresh token and is dead auth.
+grok_case '{available:true,accounts:[
+  {account:"fresh",enabled:true,weekly:{used_pct:40},auth:{status:"ok"}},
+  {account:"stale",enabled:true,weekly:{used_pct:10},auth:{status:"expired"}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok fresh · auto · high — 40%'
+assert contains "$(sed -n '4p' <<<"$output")" 'stale 10% auth expired'
+assert not_contains "$(sed -n '4p' <<<"$output")" 'stale 10% auth expired WALLED'
+assert before "$(sed -n '4p' <<<"$output")" 'fresh 40%' 'stale 10%'
+grok_query '{"available":true,"accounts":[
+  {"account":"fresh","enabled":true,"weekly":{"used_pct":40},"auth":{"status":"ok"}},
+  {"account":"stale","enabled":true,"weekly":{"used_pct":10},"auth":{"status":"expired"}}]}' \
+  --account grok --exclude fresh
+assert test "$query_rc" -eq 0
+assert test "$query_out" = stale
+grok_case '{available:true,accounts:[
+  {account:"gone",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}},
+  {account:"fresh",enabled:true,weekly:{used_pct:40},auth:{status:"ok"}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok fresh · auto · high — 40%'
+assert contains "$(sed -n '4p' <<<"$output")" 'gone 10% WALLED auth!'
+grok_case '{available:true,accounts:[
+  {account:"gone",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}}]}'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: login needed'
+assert not_contains "$(head -n1 <<<"$output")" 'grok gone'
+# Rule 3: effective 100% in the one bucket it has is grok's whole wall, and there is no five-hour
+# reading to defer on — 85% ranks by spend like any other number.
+grok_case '{available:true,accounts:[
+  {account:"spent",enabled:true,weekly:{used_pct:100}},
+  {account:"hot",enabled:true,weekly:{used_pct:85}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok hot · auto · high — 85%'
+assert contains "$(sed -n '4p' <<<"$output")" 'spent 100% WALLED'
+assert not_contains "$output" '5h!'
+# An account out of the pool is out of the answer, and a vendor whose whole pool is off says so
+# rather than reporting a limit.
+grok_case '{available:true,accounts:[
+  {account:"supergrok",enabled:false,weekly:{used_pct:40}},
+  {account:"spare",enabled:false,weekly:{used_pct:10}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — every account is out of the worker pool'
+assert contains "$(sed -n '4p' <<<"$output")" 'spare 10% off'
+grok_query '{"available":true,"accounts":[
+  {"account":"supergrok","enabled":false,"weekly":{"used_pct":40}}]}' --account grok
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert grep -q 'every grok account is out of the worker pool' "$WORK/query.err"
+# A vendor half-installed — a store row the collector has written no reading into yet — has no
+# wall to report, and saying it has one sends Egor hunting for a limit that does not exist.
+grok_case '{available:false}'
+assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — no quota data'
+assert not_contains "$output" 'grok unavailable · auto · high — WALLED'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: unavailable'
+grok_case '{available:true,accounts:[{account:"supergrok",enabled:true}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — no quota data'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: supergrok ? (wk→?)'
+
+# The pin: the one override above the pool, lapsing loudly with a reason, and ended outright by a
+# wall on fresh data — the same rule the other three vendors follow, with only the key differing.
+write_config 'grok_profile=supergrok'
+grok_case '{available:true,accounts:[
+  {account:"supergrok",enabled:false,weekly:{used_pct:40}},
+  {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok supergrok · auto · high — 40% PINNED'
+assert contains "$(sed -n '4p' <<<"$output")" 'supergrok 40% PINNED off'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi gr✓supergrok·auto·hi'
+write_config 'grok_profile=ghost'
+grok_case "$GROK_PAIR"
+assert contains "$(head -n1 <<<"$output")" 'grok pin ghost absent → spare · auto · high — 10%'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: pin ghost absent → spare'
+write_config 'grok_profile=locked'
+grok_case '{available:true,accounts:[
+  {account:"locked",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}},
+  {account:"spare",enabled:true,weekly:{used_pct:40}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok pin locked auth unavailable → spare'
+assert test "$(sed -n 's/^grok_profile=//p' "$CONFIG")" = locked
+write_config 'grok_profile=blank'
+grok_case '{available:true,accounts:[
+  {account:"blank",enabled:true},
+  {account:"spare",enabled:true,weekly:{used_pct:40}}]}'
+assert contains "$(head -n1 <<<"$output")" 'grok pin blank no quota data → spare'
+assert test "$(sed -n 's/^grok_profile=//p' "$CONFIG")" = blank
+cleared_case grok_profile spent spare golden '.vendors.grok = {available:true,accounts:[
+  {account:"spent",enabled:true,weekly:{used_pct:100}},
+  {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
+write_config
+
+# A role switch is not a limit: with `grok_workers=off` every surface says off, the account
+# listing stays intact, and the statusline reads `⏸off` rather than a lookup that failed.
+write_config 'grok_workers=off'
+grok_case "$GROK_PAIR"
+next_line=$(head -n1 <<<"$output")
+assert contains "$next_line" 'grok — off for workers'
+assert not_contains "$next_line" 'grok unavailable'
+assert not_contains "$next_line" 'grok spare'
+assert test "${next_line##*  |  }" = 'grok — off for workers'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: spare 10% (wk→?) | supergrok 40% (wk→?)'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~worker·opus·hi gx✓main·pro·hi gr⏸off·auto·hi'
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: grok is switched off for workers'
+query --account grok --role reviewers
+assert test "$query_rc" -eq 0
+assert test "$query_out" = spare
+write_config 'grok_reviewers=off'
+grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
+assert test "$query_rc" -eq 3
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: grok is switched off for reviewers'
+query --account grok
+assert test "$query_rc" -eq 0
+assert test "$query_out" = spare
+# The ladder is pin > roles > pool for grok too, and a pin that cannot serve leaves the wall up.
+write_config 'grok_profile=supergrok' 'grok_workers=off'
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 0
+assert test "$query_out" = supergrok
+run_store grok-pinned-off
+assert contains "$(head -n1 <<<"$output")" 'grok supergrok · auto · high — 40% PINNED'
+assert not_contains "$output" 'off for workers'
+write_config 'grok_profile=ghost' 'grok_workers=off'
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 3
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: grok is switched off for workers'
+# A vendor switched off never speaks for the ALL WALLED verdict, and never hides one either.
+write_config 'claudeb_workers=off' 'codex_workers=off' 'gemini_workers=off' 'grok_workers=off'
+run_case all_walled
+assert not_contains "$output" 'ALL WALLED'
+write_config 'claudeb_workers=off' 'codex_workers=off' 'gemini_workers=off'
+run_filter all_walled '.vendors.grok = {available:true,accounts:[
+  {account:"spent",enabled:true,weekly:{used_pct:100}}]}'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: ALL WALLED, ask Egor'
+write_config
+run_filter all_walled '.vendors.grok = {available:true,accounts:[
+  {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
+assert not_contains "$output" 'ALL WALLED'
+assert contains "$(head -n1 <<<"$output")" 'grok spare · auto · high — 10%'
+# `--role chat` is the same pool minus the pin, for grok as for the others.
+write_config 'grok_profile=supergrok'
+grok_query "$GROK_PAIR_JSON" --account grok --role chat
+assert test "$query_rc" -eq 0
+assert test "$query_out" = spare
+query --account grok
+assert test "$query_out" = supergrok
 write_config
 
 # Roles are walls layered over the pool: a vendor closed for a role may not serve that work at
@@ -708,4 +943,4 @@ for empty_exclude in "" ",,"; do
   assert grep -q 'needs at least one account name' "$WORK/query-bad.err"
 done
 
-printf 'PASS: %s assertions; the three routing-contract rules (pool-toggle candidacy with the session account as reserve, pin-or-lowest-spending-bucket selection with the five-hour tiebreak, walls only at effective 100%% or dead auth), the five-hour deferral at 80%% with its `5h!` tag, the three roles including a chat that sees neither pin nor reserve, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, data hygiene and DATA age sourcing, model/effort straight from worker-model, and the output/cache golden contract with no routing prose\n' "$asserts"
+printf 'PASS: %s assertions; the three routing-contract rules (pool-toggle candidacy with the session account as reserve, pin-or-lowest-spending-bucket selection with the five-hour tiebreak, walls only at effective 100%% or dead auth), the five-hour deferral at 80%% with its `5h!` tag, the three roles including a chat that sees neither pin nor reserve, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, auto placement, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing, model/effort straight from worker-model, and the output/cache golden contract with no routing prose\n' "$asserts"

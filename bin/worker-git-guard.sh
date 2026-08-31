@@ -11,10 +11,13 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker) ;;
   # A headless claudeb run is a worker session itself, not a subagent of one, so its
-  # agent_type is empty; claudeb marks it so the guard still covers it.
-  *) [ "${CLAUDEB_WORKER:-}" = 1 ] && agent_type=claudeb-headless || exit 0 ;;
+  # agent_type is empty; claudeb marks it so the guard still covers it, and grokb marks a
+  # headless grok run the same way.
+  *) if [ "${CLAUDEB_WORKER:-}" = 1 ]; then agent_type=claudeb-headless
+     elif [ "${GROK_WORKER:-}" = 1 ]; then agent_type=grok-headless
+     else exit 0; fi ;;
 esac
 
 session_id=$(field '.session_id')
@@ -58,9 +61,20 @@ is_revert_segment() {
 
   case "$subcommand" in
     checkout)
+      local skip_next=0 saw_separator=0 remaining=0
       for arg in "$@"; do
-        case "$arg" in --|.|HEAD) return 0 ;; esac
+        if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
+        case "$arg" in
+          --) saw_separator=1; continue ;;
+          -b|-B|-t|--track|--orphan|--conflict) skip_next=1; continue ;;
+          --track=*|--orphan=*|--conflict=*|-b?*|-B?*|-t?*) continue ;;
+          -*) continue ;;
+          .|HEAD|./*|../*|*.*) return 0 ;;
+          *) remaining=$((remaining + 1)) ;;
+        esac
       done
+      [ "$saw_separator" -eq 1 ] && return 0
+      [ "$remaining" -ge 2 ] && return 0
       ;;
     restore) return 0 ;;
     reset)
@@ -82,7 +96,7 @@ is_revert_segment() {
       [ "$dry_run" -eq 1 ] && [ "$other_mode" -eq 0 ] || return 0
       ;;
     stash)
-      case "${1:-}" in drop|clear) return 0 ;; esac
+      case "${1:-}" in list|show) ;; *) return 0 ;; esac
       ;;
   esac
   return 1
@@ -99,5 +113,5 @@ done < <(printf '%s\n' "$command_text" | tr ';&|()' '\n')
 
 [ "$blocked" -eq 1 ] || exit 0
 
-jq -cn '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Shared checkout: uncommitted/untracked changes you did not make this run are other agents'\'' live work, and revert-class git commands (checkout --/restore/reset --hard/clean/stash drop) are blocked for workers. Do not retry or work around this through other tools. Report the unexpected tree state in your OUTCOME instead — the orchestrator arbitrates. Only a '\''GIT-CLEANUP: allowed'\'' line in the brief unlocks these commands."}}' 2>/dev/null
+jq -cn '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Shared checkout: uncommitted/untracked changes you did not make this run are other agents'\'' live work, and revert-class git commands (checkout --/restore/reset --hard/clean/stash) are blocked for workers. Do not retry or work around this through other tools. Report the unexpected tree state in your OUTCOME instead — the orchestrator arbitrates. Only a '\''GIT-CLEANUP: allowed'\'' line in the brief unlocks these commands."}}' 2>/dev/null
 exit 0

@@ -109,7 +109,7 @@ worker_model_clear_walled_pin() {
 # worker-pick had just cleared.
 worker_model_set_role() {
   local vendor="${1-}" role="${2-}" state="${3-}" file key
-  case "$vendor" in claudeb | codex | gemini) ;; *)
+  case "$vendor" in claudeb | codex | gemini | grok) ;; *)
     printf 'worker-model: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
   esac
   case "$role" in workers | reviewers) ;; *)
@@ -146,6 +146,9 @@ worker_model_set_role() {
 worker_model_pin_account() {
   local key="$1" vendor="$2" list_fn="$3" disabled_fn="$4" name="${5:-}"
   local file current near
+  case "$key" in claudeb_profile | codex_profile | gemini_profile | grok_profile) ;; *)
+    printf 'worker-model: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
+  esac
   file=$(worker_model_file)
   case "$name" in
     '')

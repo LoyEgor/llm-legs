@@ -60,12 +60,12 @@ assert_file 'codex_workers=off'
 
 # --- Every vendor × role pair the routers know ---------------------------------------------------
 rm -f "$MODEL"
-for vendor in claudeb codex gemini; do
+for vendor in claudeb codex gemini grok; do
   for role in workers reviewers; do
     assert worker_model_set_role "$vendor" "$role" off
   done
 done
-assert_file $'claudeb_workers=off\nclaudeb_reviewers=off\ncodex_workers=off\ncodex_reviewers=off\ngemini_workers=off\ngemini_reviewers=off'
+assert_file $'claudeb_workers=off\nclaudeb_reviewers=off\ncodex_workers=off\ncodex_reviewers=off\ngemini_workers=off\ngemini_reviewers=off\ngrok_workers=off\ngrok_reviewers=off'
 
 # --- An unknown vendor, role or state never touches the file ------------------------------------
 before=$(cat "$MODEL")

@@ -12,6 +12,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # Unit fixtures must never discover and launch the developer's real agy binary.
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
+export LLM_LIMITS_GROK_REFRESH=0
 # Weather fixtures would otherwise spin claudeb's real convergence loop (240s of sleeps).
 export CLAUDEB_REFRESH_CONVERGE_S=0
 export CLAUDEB_WEATHER_RETRY_DELAY=0
@@ -35,7 +36,7 @@ printf '%s\n' \
 
 CACHE="$WORK/cache.json"
 out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --json) || fail "fixture collection failed"
-jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","opencode"])' <<<"$out" >/dev/null || fail "schema mismatch"
+jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","grok","opencode"])' <<<"$out" >/dev/null || fail "schema mismatch"
 jq -e '.vendors.claude.five_hour.used_pct == 12 and .vendors.claude.weekly.used_pct == 40 and .vendors.claude.source == "statusline-last" and .vendors.claude.current_account == "main" and (.vendors.claude.accounts | length) == 1 and (.vendors.claude | has("session_model") | not)' <<<"$out" >/dev/null || fail "Claude primary snapshot mismatch"
 jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.weekly.used_pct == 31 and
   .vendors.codex.plan_type == "plus" and .vendors.codex.current_account == "main" and
@@ -1487,6 +1488,8 @@ printf '%s\n' "\$*" >>"\$CODEX_QUOTA_SENTINEL"
 printf '%s\n' '{"rateLimits":{"primary":{"usedPercent":31,"windowDurationMins":300,"resetsAt":$((now + 4000))},"secondary":{"usedPercent":64,"windowDurationMins":10080,"resetsAt":$((now + 90000))},"planType":"plus"}}'
 EOF
 chmod +x "$FAKE_BIN/claudeb" "$FAKE_BIN/codex" "$WORK/fake-codex-quota"
+GROK_FIXTURE="$ROOT/tests/fixtures/fake-grok-quota.sh"
+GROK_CACHE="$WORK/grok-quota.json"
 
 # --refresh is zero token spend: claudeb tier-1 snapshot, codex app-server usage query
 # (never codex exec), and the live snapshot outranks the stale rollout tail.
@@ -1547,6 +1550,7 @@ jq -e '.vendors.codex.refresh_error.cause == "live query failed"' <<<"$cached_co
 all_failed=$(LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD=/usr/bin/false \
   LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" LLM_LIMITS_CODEX_REFRESH=1 \
   LLM_LIMITS_CODEX_QUOTA_CMD=/usr/bin/false LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  LLM_LIMITS_GROK_REFRESH=1 LLM_LIMITS_GROK_QUOTA=/usr/bin/false LLM_LIMITS_GROK_CACHE="$GROK_CACHE" \
   LLM_LIMITS_CLAUDEB_CMD=/usr/bin/false HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" \
   LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh 2>/dev/null)
 rc=$?
@@ -1562,6 +1566,7 @@ restored_after_failure=$(CLAUDEB_SENTINEL="$SENTINEL" CODEX_QUOTA_SENTINEL="$COD
   GEMINI_SENTINEL="$GEMINI_SENTINEL" \
   LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
   LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/fake-codex-quota" LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" \
+  LLM_LIMITS_GROK_REFRESH=1 LLM_LIMITS_GROK_QUOTA="$GROK_FIXTURE" LLM_LIMITS_GROK_CACHE="$GROK_CACHE" \
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   /bin/bash "$SCRIPT" --refresh) || fail "successful refresh did not clear standing errors"
 jq -e '(. | has("refresh_error") | not) and all(.vendors[]; has("refresh_error") | not)' \
@@ -1969,7 +1974,7 @@ grep -q '^claude/main' <<<"$table" && fail "main account must be hidden from the
 jq -e 'all(.vendors.claude.accounts[]; .account != "main")' <<<"$multi" >/dev/null || fail "duplicate main account remained in JSON"
 [ "$(grep -c '^claude/' <<<"$table")" -eq 1 ] || fail "table must render one row per non-main claude account"
 order=$(awk 'NR > 1 {print $1}' <<<"$table" | paste -sd, -)
-[ "$order" = "claude/alona*,codex,gemini" ] || fail "default table order mismatch: $order"
+[ "$order" = "claude/alona*,codex,gemini,grok" ] || fail "default table order mismatch: $order"
 head -n 1 <<<"$table" | grep -q 'FB%' || fail "Fable percentage column missing from table"
 head -n 1 <<<"$table" | grep -q 'FB RESET' || fail "Fable reset column missing from table"
 head -n 1 <<<"$table" | grep -q 'NOTE' && fail "NOTE column still present"
@@ -1986,12 +1991,12 @@ printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"fable":{"used_percent
 awk 'NR > 1 && $1 == "codex"' <<<"$table" | grep -Eq '[0-9]{2}:[0-9]{2}' || fail "codex reset time not rendered"
 sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$sorted" | paste -sd, -)
-[ "$order" = "codex,claude/alona*,gemini" ] || fail "--sort 5h order mismatch: $order"
+[ "$order" = "codex,claude/alona*,gemini,grok" ] || fail "--sort 5h order mismatch: $order"
 # zoe: distant 5h reset but imminent weekly reset — --sort reset must use min(5h, weekly).
 printf '{"five_hour":{"used_percentage":11,"resets_at":%s},"seven_day":{"used_percentage":97,"resets_at":%s}}\n' "$((now + 50000))" "$((now + 500))" >"$CLAUDEB/limits/zoe.json"
 reset_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort reset) || fail "reset-sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$reset_sorted" | paste -sd, -)
-[ "$order" = "claude/zoe,codex,claude/alona*,gemini" ] || fail "--sort reset min(5h, weekly) order mismatch: $order"
+[ "$order" = "claude/zoe,codex,claude/alona*,gemini,grok" ] || fail "--sort reset min(5h, weekly) order mismatch: $order"
 rm "$CLAUDEB/limits/zoe.json"
 SORT_RESET_STORE="$WORK/sort-reset-store"
 EMPTY_SORT_HOME="$WORK/sort-reset-home"
@@ -2012,7 +2017,7 @@ HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCR
 rc=$?
 [ "$rc" -eq 2 ] || fail "empty --sort=: expected exit 2, got $rc"
 bare=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "bare piped collection failed"
-jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","opencode"])' <<<"$bare" >/dev/null || fail "piped bare invocation must emit schema-1 JSON"
+jq -e '.schema == 1 and (.vendors | keys == ["claude","codex","gemini","grok","opencode"])' <<<"$bare" >/dev/null || fail "piped bare invocation must emit schema-1 JSON"
 
 sleep 1
 TRUNCATED="$HOME_FIXTURE/.codex/sessions/2026/07/11/rollout-truncated.jsonl"
@@ -2058,7 +2063,7 @@ expired_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$C
 grep -q 'codex: 5h 0%! @ .* | wk 44% @ ' <<<"$expired_plain" || fail "expired plain output must render effective 0 with the expired marker"
 expired_sorted=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table --sort 5h) || fail "expired sorted table collection failed"
 order=$(awk 'NR > 1 {print $1}' <<<"$expired_sorted" | paste -sd, -)
-[ "$order" = "claude/alona*,codex,gemini" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
+[ "$order" = "claude/alona*,codex,gemini,grok" ] || fail "expired 5h sort must rank the stale 100% as 0: $order"
 
 HONEST_STORE="$WORK/honest-store"
 HONEST_HOME="$WORK/honest-home"
@@ -2506,6 +2511,220 @@ if env "${vendor_scope_env[@]}" bash "$SCRIPT" --refresh-account claude --start-
   >/dev/null 2>&1; then
   fail "a bare vendor accepted --start-windows"
 fi
+
+# --- Grok: weekly-only billing quota ------------------------------------------------------
+# The vendor states one weekly pool and no 5h window, so every surface must render WK% with an
+# empty 5H% and never invent a five_hour bucket for it.
+GROK_HOME="$WORK/grok-home"
+GROK_STORE="$WORK/grok-store.json"
+GROK_PROFILES="$WORK/grok-profiles"
+GROK_ROSTER_CACHE="$WORK/grok-roster.json"
+GROK_SENTINEL="$WORK/grok-quota-called"
+mkdir -p "$GROK_HOME" "$GROK_PROFILES/supergrok" "$GROK_PROFILES/second" "$GROK_PROFILES/.grokb"
+grok_env=(HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES"
+  LLM_LIMITS_GROK_QUOTA="$ROOT/tests/fixtures/fake-grok-quota.sh"
+  LLM_LIMITS_GROK_CACHE="$GROK_ROSTER_CACHE" LLM_LIMITS_GROK_REFRESH=1
+  LLM_LIMITS_CACHE="$GROK_STORE" GROK_QUOTA_SENTINEL="$GROK_SENTINEL"
+  FAKE_GROK_ROSTER="supergrok second")
+
+grok_json=$(env "${grok_env[@]}" FAKE_GROK_CASE=busy FAKE_GROK_AS_OF="$now" \
+  LLM_LIMITS_GROK_QUOTA_TIMEOUT=7 bash "$SCRIPT" --refresh --json 2>/dev/null) \
+  || fail "grok refresh collection failed"
+grep -qx -- '--profiles-dir '"$GROK_PROFILES"' --timeout 7' "$GROK_SENTINEL" \
+  || fail "grok refresh did not pass the profiles dir and timeout seam: $(cat "$GROK_SENTINEL")"
+jq -e --argjson now "$now" '.vendors.grok.available == true and
+  .vendors.grok.source == "grok-billing" and .vendors.grok.current_account == "supergrok" and
+  .vendors.grok.usable_now == true and (.vendors.grok.accounts | length) == 2 and
+  .vendors.grok.plan_type == "SUBSCRIPTION_TIER_SUPERGROK" and
+  (.vendors.grok | has("five_hour") | not) and
+  (.vendors.grok.accounts[0] |
+    .account == "supergrok" and .is_current == true and .enabled == true and
+    .auth.status == "ok" and .email == "owner@example.com" and
+    .period == "USAGE_PERIOD_TYPE_WEEKLY" and .build_pct == 18.5 and
+    (has("five_hour") | not) and
+    .weekly.used_pct == 61.2 and .weekly.effective_pct == 61.2 and
+    .weekly.origin == "billing" and .weekly.stale == false and .weekly.as_of == $now and
+    (.stale_seconds | type) == "number")' <<<"$grok_json" >/dev/null || fail "grok store row shape mismatch"
+grok_table=$(env "${grok_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok table failed"
+[ "$(awk '$1 == "grok/supergrok*" {print $2, $3}' <<<"$grok_table")" = "- 61%" ] \
+  || fail "grok table must render WK% with a blank 5H%: $grok_table"
+grok_plain=$(env "${grok_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --plain 2>/dev/null) \
+  || fail "grok plain failed"
+grep -q '^grok/supergrok\*: 5h - @ - | wk 61% @ ' <<<"$grok_plain" \
+  || fail "grok plain line mismatch: $grok_plain"
+
+# A bare vendor name refreshes grok alone; a targeted one asks the helper for that account only
+# and leaves every other row of the roster where the last read left it.
+: >"$GROK_SENTINEL"
+GROK_OTHER_SENTINEL="$WORK/grok-other-codex-called"
+cat >"$WORK/grok-other-codex" <<EOF
+#!/usr/bin/env bash
+printf 'called\n' >>"$GROK_OTHER_SENTINEL"
+exit 1
+EOF
+chmod +x "$WORK/grok-other-codex"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy LLM_LIMITS_CODEX_REFRESH=1 \
+  LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/grok-other-codex" bash "$SCRIPT" --refresh-account grok --json \
+  >/dev/null 2>&1 || fail "vendor-scoped grok refresh failed"
+[ -s "$GROK_SENTINEL" ] || fail "--refresh-account grok did not run the grok helper"
+[ ! -e "$GROK_OTHER_SENTINEL" ] || fail "--refresh-account grok also probed codex"
+: >"$GROK_SENTINEL"
+grok_targeted=$(env "${grok_env[@]}" FAKE_GROK_CASE=walled \
+  bash "$SCRIPT" --refresh-account grok/second --json 2>/dev/null) \
+  || fail "targeted grok refresh failed"
+grep -qx -- '--profiles-dir '"$GROK_PROFILES"' --timeout 10 --account second' "$GROK_SENTINEL" \
+  || fail "targeted grok refresh did not name the single account: $(cat "$GROK_SENTINEL")"
+jq -e '([.vendors.grok.accounts[] | select(.account == "second")][0] |
+    .weekly.used_pct == 100 and .weekly.effective_pct == 100) and
+  ([.vendors.grok.accounts[] | select(.account == "supergrok")][0] | .weekly.used_pct == 61.2) and
+  .vendors.grok.current_account == "supergrok" and .vendors.grok.usable_now == true' \
+  <<<"$grok_targeted" >/dev/null || fail "targeted grok refresh did not keep the untouched account"
+grok_walled_table=$(env "${grok_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok walled table failed"
+awk '$1 == "grok/second"' <<<"$grok_walled_table" | grep -q 'limit-weekly' \
+  || fail "a grok account at 100% must read limit-weekly: $grok_walled_table"
+env "${grok_env[@]}" bash "$SCRIPT" --refresh-account grok/ --json >/dev/null 2>&1
+rc=$?
+[ "$rc" -eq 2 ] || fail "--refresh-account grok/ (no name): expected exit 2, got $rc"
+
+# Out of the worker pool is spend consent, so the row keeps its percentage and reads `off`.
+printf 'second\n' >"$GROK_PROFILES/.grokb/disabled"
+grok_disabled=$(env "${grok_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --json 2>/dev/null) \
+  || fail "grok disabled-account collection failed"
+jq -e '([.vendors.grok.accounts[] | select(.account == "second")][0] |
+  .enabled == false and .weekly.used_pct == 100)' <<<"$grok_disabled" >/dev/null \
+  || fail "an excluded grok account did not read enabled:false"
+grok_disabled_table=$(env "${grok_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok disabled table failed"
+awk '$1 == "grok/second"' <<<"$grok_disabled_table" | grep -q ' off ' \
+  || fail "an excluded grok account must read ROT off: $grok_disabled_table"
+rm -f "$GROK_PROFILES/.grokb/disabled"
+
+# A transient failure states nothing: the last known rows stand and the cause is machine-readable.
+grok_error=$(env "${grok_env[@]}" FAKE_GROK_CASE=error bash "$SCRIPT" --refresh-account grok --json 2>/dev/null) \
+  || fail "grok error refresh collection failed"
+jq -e '.vendors.grok.available == true and
+  (.vendors.grok.accounts[0].weekly.used_pct == 61.2) and
+  (.vendors.grok.refresh_error.cause | test("network error")) and
+  (.vendors.grok.refresh_error.at | type) == "number"' <<<"$grok_error" >/dev/null \
+  || fail "a failed grok read lost the last known rows or its cause"
+jq -e '[.accounts[] | select(.account == "supergrok")][0].used_pct == 61.2' "$GROK_ROSTER_CACHE" \
+  >/dev/null || fail "a failed grok read overwrote the cached row"
+grok_recovered=$(env "${grok_env[@]}" FAKE_GROK_CASE=busy \
+  bash "$SCRIPT" --refresh-account grok --json 2>/dev/null) || fail "grok recovery refresh failed"
+jq -e '.vendors.grok | has("refresh_error") | not' <<<"$grok_recovered" >/dev/null \
+  || fail "a successful grok refresh did not clear the standing error"
+
+# needs_login is the one state no automated path can leave; expired is the CLI's own to heal.
+GROK_AUTH_CACHE="$WORK/grok-auth.json"
+grok_auth_env=("${grok_env[@]}")
+grok_auth_env+=(LLM_LIMITS_GROK_CACHE="$GROK_AUTH_CACHE" FAKE_GROK_ROSTER="solo")
+grok_login=$(env "${grok_auth_env[@]}" FAKE_GROK_CASE=needs_login bash "$SCRIPT" --refresh --json 2>/dev/null) \
+  || fail "grok needs-login collection failed"
+jq -e '.vendors.grok.available == true and .vendors.grok.status == "login needed" and
+  .vendors.grok.usable_now == false and (.vendors.grok | has("refresh_error") | not) and
+  (.vendors.grok.accounts[0] | .auth.status == "needs_login" and .auth_needed == true and
+    .status == "login needed" and .needs_user_entry == true and (has("weekly") | not))' \
+  <<<"$grok_login" >/dev/null || fail "grok needs-login normalization mismatch"
+grok_login_table=$(env "${grok_auth_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok needs-login table failed"
+grep -Eq '^grok/solo\* +- +- +- +- +- +- +never +- +- +login needed$' <<<"$grok_login_table" \
+  || fail "grok needs-login table row mismatch: $grok_login_table"
+grok_expired_auth=$(env "${grok_auth_env[@]}" FAKE_GROK_CASE=expired bash "$SCRIPT" --refresh --json 2>/dev/null) \
+  || fail "grok expired-token collection failed"
+jq -e '(.vendors.grok.status != "login needed") and
+  (.vendors.grok.accounts[0] | .auth.status == "expired" and (has("auth_needed") | not) and
+   (has("status") | not) and .cause == "token rejected: HTTP 401" and
+   (has("needs_user_entry") | not))' \
+  <<<"$grok_expired_auth" >/dev/null || fail "grok expired-token normalization mismatch"
+grok_expired_auth_table=$(env "${grok_auth_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok expired-token table failed"
+awk '$1 ~ /^grok\// && $0 ~ /login needed/' <<<"$grok_expired_auth_table" | grep -q . \
+  && fail "grok expired-token table treated refreshable auth as login needed: $grok_expired_auth_table"
+# An expired token that still has a measured weekly window is a candidate: the CLI refreshes it.
+printf '{"accounts":[{"account":"solo","auth":"expired","used_pct":12,"resets_at":"%s","as_of":%s,"cause":"token rejected: HTTP 401"}]}\n' \
+  "$(date -u -r "$((now + 86400))" '+%Y-%m-%dT%H:%M:%SZ')" "$now" >"$GROK_AUTH_CACHE"
+grok_expired_usable=$(env "${grok_auth_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --json 2>/dev/null) \
+  || fail "grok expired-token with weekly collection failed"
+jq -e '.vendors.grok.usable_now == true and (.vendors.grok.status != "login needed") and
+  (.vendors.grok.accounts[0] | .auth.status == "expired" and .weekly.effective_pct == 12 and
+   (has("auth_needed") | not))' \
+  <<<"$grok_expired_usable" >/dev/null || fail "grok expired-token with weekly must stay usable"
+
+# Staleness and expiry are read off the collector's own flags, never re-derived per surface.
+GROK_AGE_CACHE="$WORK/grok-age.json"
+grok_age_env=("${grok_env[@]}")
+grok_age_env+=(LLM_LIMITS_GROK_CACHE="$GROK_AGE_CACHE" FAKE_GROK_ROSTER="aged")
+grok_stale=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=busy FAKE_GROK_AS_OF="$((now - 30000))" \
+  bash "$SCRIPT" --refresh --json 2>/dev/null) || fail "grok stale collection failed"
+jq -e '.vendors.grok.accounts[0].weekly.stale == true and .vendors.grok.stale == true and
+  .vendors.grok.accounts[0].weekly.effective_pct == 61.2' <<<"$grok_stale" >/dev/null \
+  || fail "an old grok reading was not marked stale"
+grok_stale_table=$(env "${grok_age_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok stale table failed"
+[ "$(awk '$1 == "grok/aged*" {print $3}' <<<"$grok_stale_table")" = "61%~" ] \
+  || fail "a stale grok reading must carry the stale marker: $grok_stale_table"
+grok_expired=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=busy FAKE_GROK_AS_OF="$now" \
+  FAKE_GROK_RESET="$(date -u -r "$((now - 600))" '+%Y-%m-%dT%H:%M:%SZ')" \
+  bash "$SCRIPT" --refresh --json 2>/dev/null) || fail "grok expired-window collection failed"
+jq -e '.vendors.grok.accounts[0].weekly.expired == true and
+  .vendors.grok.accounts[0].weekly.used_pct == 61.2 and
+  .vendors.grok.accounts[0].weekly.effective_pct == 0 and
+  .vendors.grok.usable_now == true' <<<"$grok_expired" >/dev/null \
+  || fail "an elapsed grok window was not marked expired"
+grok_expired_table=$(env "${grok_age_env[@]}" LLM_LIMITS_GROK_REFRESH=0 bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok expired table failed"
+[ "$(awk '$1 == "grok/aged*" {print $3}' <<<"$grok_expired_table")" = "0%!" ] \
+  || fail "an expired grok window must render effective 0: $grok_expired_table"
+# An unmigrated account reports a monthly period; it is carried verbatim, never hidden.
+grok_monthly=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=monthly FAKE_GROK_AS_OF="$now" \
+  bash "$SCRIPT" --refresh --json 2>/dev/null) || fail "grok monthly-period collection failed"
+jq -e '.vendors.grok.accounts[0].period == "USAGE_PERIOD_TYPE_MONTHLY" and
+  .vendors.grok.accounts[0].weekly.used_pct == 12' <<<"$grok_monthly" >/dev/null \
+  || fail "a monthly grok billing period was not carried through verbatim"
+
+# The real helper against a dead endpoint: the access token in auth.json may reach neither the
+# store nor a log, however the read fails.
+GROK_SECRET_HOME="$WORK/grok-secret-home"
+GROK_SECRET_PROFILES="$WORK/grok-secret-profiles"
+mkdir -p "$GROK_SECRET_HOME" "$GROK_SECRET_PROFILES/leaky"
+GROK_TOKEN_SENTINEL='grok-token-sentinel-NEVER-PRINT'
+cat >"$GROK_SECRET_PROFILES/leaky/auth.json" <<EOF
+{"https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":{"key":"$GROK_TOKEN_SENTINEL","refresh_token":"refresh-$GROK_TOKEN_SENTINEL","user_id":"u-1","email":"owner@example.com","expires_at":$((now + 3600))}}
+EOF
+grok_secret=$(env HOME="$GROK_SECRET_HOME" GROKB_PROFILES_DIR="$GROK_SECRET_PROFILES" \
+  LLM_LIMITS_GROK_CACHE="$WORK/grok-secret.json" LLM_LIMITS_GROK_REFRESH=1 \
+  LLM_LIMITS_CACHE="$WORK/grok-secret-store.json" \
+  GROK_QUOTA_ENDPOINT='http://127.0.0.1:1/v1/billing?format=credits' \
+  GROK_QUOTA_CLIENT_VERSION=1.0.13 \
+  bash "$SCRIPT" --refresh-account grok --json 2>"$WORK/grok-secret.err")
+grep -q "$GROK_TOKEN_SENTINEL" <<<"$grok_secret" \
+  && fail "the grok access token leaked into the store"
+grep -q "$GROK_TOKEN_SENTINEL" "$WORK/grok-secret.err" \
+  && fail "the grok access token leaked into the log"
+jq -e '.vendors.grok.refresh_error.cause | test("network error|HTTP")' <<<"$grok_secret" >/dev/null \
+  || fail "an unreachable grok endpoint produced no machine-readable cause"
+
+# A row the endpoint never answered for states no percentage, so the vendor is not usable off it:
+# an unmeasured weekly bucket is exactly what "no capacity known" means for this leg.
+GROK_BLANK_CACHE="$WORK/grok-blank.json"
+printf '{"accounts":[{"account":"broken","error":"network error: timed out","as_of":%s}]}\n' "$now" \
+  >"$GROK_BLANK_CACHE"
+grok_blank=$(env HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES" \
+  LLM_LIMITS_GROK_CACHE="$GROK_BLANK_CACHE" LLM_LIMITS_GROK_REFRESH=0 \
+  LLM_LIMITS_CACHE="$WORK/grok-blank-store.json" bash "$SCRIPT" --json 2>/dev/null) \
+  || fail "grok unmeasured-row collection failed"
+jq -e '.vendors.grok.available == true and .vendors.grok.usable_now == false and
+  (.vendors.grok.accounts[0] | .account == "broken" and (has("weekly") | not) and
+   (has("auth") | not) and (has("as_of") | not))' <<<"$grok_blank" >/dev/null \
+  || fail "an unmeasured grok account must not read as usable capacity"
+grok_blank_table=$(env HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES" \
+  LLM_LIMITS_GROK_CACHE="$GROK_BLANK_CACHE" LLM_LIMITS_GROK_REFRESH=0 \
+  LLM_LIMITS_CACHE="$WORK/grok-blank-store.json" bash "$SCRIPT" --table 2>/dev/null) \
+  || fail "grok unmeasured-row table failed"
+grep -Eq '^grok/broken\* +- +- +- +- +- +- +never ' <<<"$grok_blank_table" \
+  || fail "an unmeasured grok row must render dashes and an alarming age: $grok_blank_table"
 
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"

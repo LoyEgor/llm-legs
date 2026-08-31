@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME|claude|codex|gemini] [--gemini-remove]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME|grok/NAME|claude|codex|gemini|grok] [--gemini-remove]" >&2
 }
 
 format=''
@@ -36,14 +36,14 @@ if [ "$start_windows" -eq 1 ] && [ "$refresh" -eq 0 ]; then
   exit 2
 fi
 case "$refresh_account" in
-  ''|claude|codex|gemini|gemini/?*|claude/?*|codex/?*) ;;
+  ''|claude|codex|gemini|grok|gemini/?*|claude/?*|codex/?*|grok/?*) ;;
   *) usage; exit 2 ;;
 esac
 # A bare vendor name refreshes every account of that vendor and touches no other vendor. It is
 # free by construction: --start-windows (the only paid path) stays a single-account request.
 refresh_vendor=''
 case "$refresh_account" in
-  claude|codex|gemini) refresh_vendor=$refresh_account ;;
+  claude|codex|gemini|grok) refresh_vendor=$refresh_account ;;
 esac
 if [ -n "$refresh_account" ] && [ "$start_windows" -eq 1 ]; then
   case "$refresh_account" in
@@ -356,9 +356,10 @@ render_table() {
       elif (.weekly.effective_pct // 0) >= 100 then "limit-weekly"
       elif (.fable.effective_pct // 0) >= 100 then "fb:limit-fable"
       else "-" end;
-    def account_status:
+    def account_status($vendor):
       if .auth_needed == true or
-         ((.auth.status? | type) == "string" and .auth.status != "ok")
+         ((.auth.status? | type) == "string" and .auth.status != "ok"
+          and ($vendor != "grok" or .auth.status != "expired"))
       then "login needed" else "-" end;
     def row:
       (.five.expired == true) as $x5 | (.week.expired == true) as $xw | (.fable.expired == true) as $xf |
@@ -389,21 +390,21 @@ render_table() {
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
              age: compact_age($render_now), alarm: (.age_alarm == true),
-             rot: rotation, credits: "-", status: account_status})
+             rot: rotation, credits: "-", status: account_status("claude")})
        else {src: "claude", five: null, week: null, fable:null,
              age: ($v.claude | compact_age($render_now)), alarm: ($v.claude.age_alarm == true),
              rot:"-", credits:"-", status:($v.claude.status // "-")} end),
-      (("codex", "gemini") as $k | $v[$k]
+      (("codex", "gemini", "grok") as $k | $v[$k]
        | select(.removed != true)
        | if ((.accounts | type) == "array") and
             (($k == "codex" and any(.accounts[]; .auth_needed == true)) or (.accounts | length) > 1 or
-             ($k == "gemini" and (.accounts | length) > 0)) then
+             (($k == "gemini" or $k == "grok") and (.accounts | length) > 0)) then
            (.accounts[] | select(.removed != true)
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
                  age: compact_age($render_now), alarm: (.age_alarm == true), rot: rotation,
                  credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
-                 status:account_status})
+                 status:account_status($k)})
          elif .available then
            {src: $k, five: .five_hour, week: .weekly, fable:null,
             age: compact_age($render_now), alarm: (.age_alarm == true),
@@ -474,6 +475,7 @@ wall_for() {
 claude_wall=$(wall_for claude)
 codex_wall=$(wall_for codex)
 gemini_wall=$(wall_for gemini)
+grok_wall=$(wall_for grok)
 
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
@@ -485,11 +487,14 @@ gemini_legacy_removed=$(gemini_removal_marker main)
 . "$script_dir/share/worker-pool.sh"
 . "$script_dir/share/experiments.sh"
 . "$script_dir/share/limits-view.sh"
+. "$script_dir/share/worker-model.sh"
 
 codex_pool_dir=$(worker_pool_dir codex)
 gemini_pool_dir=$(worker_pool_dir gemini)
+grok_pool_dir=$(worker_pool_dir grok)
 claude_profiles_root="${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 
 # Account order in the cache, which the menu, --table and --plain all render as-is. The two
 # accounts Egor works from lead every vendor by name; this hardcode is the whole point of the
@@ -499,6 +504,7 @@ account_priority_names() {
     claude) printf 'notcom\ncom\n' ;;
     codex) printf 'main\n' ;;
     gemini) printf 'main\ncom\n' ;;
+    grok) printf 'supergrok\n' ;;
   esac
 }
 
@@ -507,6 +513,7 @@ account_profile_dir() {
     claude) printf '%s/%s\n' "$claude_profiles_root" "$2" ;;
     codex) if [ "$2" = main ]; then printf '%s/.codex\n' "$HOME"; else printf '%s/%s\n' "$codex_profiles_dir" "$2"; fi ;;
     gemini) gemini_account_home "$2" ;;
+    grok) if [ "$2" = main ]; then printf '%s/.grok\n' "$HOME"; else printf '%s/%s\n' "$grok_profiles_dir" "$2"; fi ;;
   esac
 }
 
@@ -1334,6 +1341,163 @@ else
     '{available:false,status:"no rate-limit event",source:"session-rollout",last_wall:$wall}')
 fi
 
+# Live weekly quota through the Grok CLI's own billing endpoint (GET /v1/billing?format=credits):
+# a usage query on the token the CLI already maintains, so zero token spend — and read-only, since
+# the CLI owns auth.json rotation and a second writer there is the one real hazard.
+grok_cache=${LLM_LIMITS_GROK_CACHE:-$HOME/.llm-limits-grok.json}
+grok_refresh_error=''
+grok_refresh_attempted=0
+refresh_grok_quota() {
+  local target=${1:-} grok_quota_cmd=${LLM_LIMITS_GROK_QUOTA:-$script_dir/grok-quota.py}
+  local grok_tmp grok_err fresh old merged detail rc
+  local -a helper_args=(--profiles-dir "$grok_profiles_dir"
+    --timeout "${LLM_LIMITS_GROK_QUOTA_TIMEOUT:-10}")
+  if [ ! -x "$grok_quota_cmd" ]; then
+    grok_refresh_error='helper not executable'
+    echo "llm-limits.sh: Grok quota helper is not executable: $grok_quota_cmd" >&2
+    return 1
+  fi
+  if ! mkdir -p "$(dirname "$grok_cache")"; then
+    grok_refresh_error='cache directory failed'
+    return 1
+  fi
+  [ -z "$target" ] || helper_args+=(--account "$target")
+  grok_tmp=$(mktemp "${grok_cache}.tmp.XXXXXX") || { grok_refresh_error='cache temp failed'; return 1; }
+  grok_err=$(mktemp "${grok_cache}.err.XXXXXX") || { rm -f "$grok_tmp"; grok_refresh_error='cache temp failed'; return 1; }
+  rc=0
+  "$grok_quota_cmd" "${helper_args[@]}" >"$grok_tmp" 2>"$grok_err" || rc=$?
+  fresh=$(jq -c 'select((.accounts | type) == "array")' "$grok_tmp" 2>/dev/null || true)
+  detail=''
+  if [ -n "$fresh" ]; then
+    detail=$(jq -r '[.accounts[] | select((.error | type) == "string") | .account + ": " + .error]
+      | join("; ")' <<<"$fresh" 2>/dev/null || true)
+  fi
+  if [ -z "$fresh" ]; then
+    grok_refresh_error='live query failed'
+    rm -f "$grok_tmp" "$grok_err"
+    printf 'llm-limits.sh: Grok%s live quota query failed (helper exit %s)\n' \
+      "$([ -n "$target" ] && printf ' account %s' "$target")" "$rc" >&2
+    return 1
+  fi
+  old='{"accounts":[]}'
+  if [ -r "$grok_cache" ]; then
+    old=$(jq -c 'select((.accounts | type) == "array")' "$grok_cache" 2>/dev/null || true)
+    [ -n "$old" ] || old='{"accounts":[]}'
+  fi
+  merged=$(jq -c --argjson old "$old" --argjson replace "$([ -n "$target" ] && printf 'false' || printf 'true')" '
+    def stated: (.used_pct | type) == "number" or ((.auth // "ok") != "ok");
+    # A transient failure states nothing about the account, so the row the last successful read
+    # left stands: a network blip must not blank a percentage every surface reads as live. An
+    # auth verdict is the opposite — a definite state that always replaces older data.
+    def settled($old_rows): . as $new |
+      (first($old_rows[] | select(.account == $new.account)) // null) as $prev |
+      if ($new | stated) then $new
+      elif $prev != null and ($prev | stated) then $prev
+      else $new end;
+    ($old.accounts // []) as $old_rows |
+    [.accounts[] | settled($old_rows)] as $rows |
+    if $replace then {accounts:$rows}
+    else
+      ([$rows[].account]) as $names |
+      {accounts:($rows + [$old_rows[] | select(.account as $n | ($names | index($n)) == null)])}
+    end' <<<"$fresh" 2>/dev/null || true)
+  if [ -z "$merged" ] ||
+     ! jq -e '[.accounts[] | select((.used_pct | type) == "number" or ((.auth // "ok") != "ok"))]
+              | length > 0' <<<"$merged" >/dev/null 2>&1; then
+    [ -n "$detail" ] || detail='live query failed'
+    grok_refresh_error=$detail
+    rm -f "$grok_tmp" "$grok_err"
+    printf 'llm-limits.sh: Grok%s live quota query failed: %s\n' \
+      "$([ -n "$target" ] && printf ' account %s' "$target")" "$detail" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$merged" >"$grok_tmp" || ! mv -f "$grok_tmp" "$grok_cache"; then
+    grok_refresh_error='cache replace failed'
+    rm -f "$grok_tmp" "$grok_err"
+    return 1
+  fi
+  rm -f "$grok_err"
+  grok_refresh_error=$detail
+  if [ -n "$detail" ]; then
+    printf 'llm-limits.sh: Grok%s partial quota read: %s\n' \
+      "$([ -n "$target" ] && printf ' account %s' "$target")" "$detail" >&2
+    return 1
+  fi
+}
+
+grok_refresh_target=''
+case "$refresh_account" in grok/*) grok_refresh_target=${refresh_account#grok/} ;; esac
+if [ "$refresh" -eq 1 ] &&
+   { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; }; then
+  if [ "${LLM_LIMITS_GROK_REFRESH:-1}" != 0 ]; then
+    grok_refresh_attempted=1
+    refresh_grok_quota "$grok_refresh_target" || true
+  elif [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; then
+    grok_refresh_attempted=1
+    grok_refresh_error='refresh disabled'
+    printf 'llm-limits.sh: Grok%s refresh is disabled\n' \
+      "$([ -n "$grok_refresh_target" ] && printf ' account %s' "$grok_refresh_target")" >&2
+  fi
+fi
+
+grok_payload='{"accounts":[]}'
+if [ -r "$grok_cache" ]; then
+  grok_payload=$(jq -c 'select((.accounts | type) == "array")' "$grok_cache" 2>/dev/null || true)
+  [ -n "$grok_payload" ] || grok_payload='{"accounts":[]}'
+fi
+grok_cache_mtime=$(int_or_empty "$(file_mtime "$grok_cache" 2>/dev/null || true)")
+[ -n "$grok_cache_mtime" ] || grok_cache_mtime=$now_epoch
+grok_pin=$(worker_model_pinned_account grok_profile 2>/dev/null || true)
+grok_order=$(jq -r '.accounts[]?.account // empty' <<<"$grok_payload" | account_order_json grok)
+grok=$(jq -cn --argjson payload "$grok_payload" --argjson wall "$grok_wall" --argjson now "$now_epoch" \
+  --argjson order "$grok_order" --argjson mtime "$grok_cache_mtime" --arg pin "$grok_pin" \
+  --argjson thrw "$LIMITS_STALE_WEEKLY" \
+  --argjson pool_out "$(worker_pool_disabled_json "$grok_pool_dir")" '
+  def enabled($name): ($pool_out != null and ($pool_out | index($name)) == null);
+  def account($a; $current):
+    (if ($a.as_of | type) == "number" then $a.as_of else $mtime end) as $asof |
+    ([$now - $asof, 0] | max) as $age |
+    ($a.auth // null) as $auth |
+    {account:$a.account,is_current:($a.account == $current),enabled:enabled($a.account)} +
+    (if ($auth | type) == "string" then
+       {auth:{status:$auth}} +
+       # `expired` is refreshable by the CLI itself, so only `needs_login` is a state no
+       # automated path can leave — the one that must reach Egor as an action.
+       (if $auth == "needs_login" then {auth_needed:true,status:"login needed"} else {} end)
+     else {} end) +
+    (if ($a.used_pct | type) == "number" then
+       {weekly:{used_pct:$a.used_pct,resets_at:($a.resets_at // null),
+                as_of:$asof,origin:"billing",stale:($age > $thrw)},
+        as_of:($asof | todateiso8601),stale_seconds:$age}
+     else {} end) +
+    (if ($a.plan_type | type) == "string" then {plan_type:$a.plan_type} else {} end) +
+    (if ($a.email | type) == "string" then {email:$a.email} else {} end) +
+    (if ($a.period | type) == "string" then {period:$a.period} else {} end) +
+    (if ($a.build_pct | type) == "number" then {build_pct:$a.build_pct} else {} end) +
+    (if ($a.cause | type) == "string" then {cause:$a.cause} else {} end);
+  # Rows are ordered before anything reads "the first one": a targeted refresh rewrites the cache
+  # in its own order, and current-account picked off that would follow whichever account was
+  # refreshed last.
+  ($payload.accounts // []
+   | sort_by(.account as $n | (($order | index($n)) // ($order | length)))) as $rows |
+  # The pin is the deliberate "this account" and outranks the roster; without one the first
+  # account a worker could actually use is the one every surface names as current.
+  (if $pin != "" and any($rows[]; .account == $pin) then $pin
+   else ((first($rows[] | select(enabled(.account)) | .account)) // ($rows[0].account // null)) end) as $current |
+  ([$rows[] | account(.; $current)]) as $accounts |
+  (first($accounts[] | select(.is_current)) // $accounts[0] // null) as $selected |
+  if ($accounts | length) == 0 then
+    {available:false,status:"no quota snapshot",source:"grok-billing",last_wall:$wall}
+  else
+    {available:true,current_account:$selected.account,accounts:$accounts,
+     source:"grok-billing",last_wall:$wall} +
+    (if ($selected.weekly | type) == "object" then
+       ($selected | {weekly,as_of,stale_seconds}) +
+       (if ($selected.plan_type | type) == "string" then {plan_type:$selected.plan_type} else {} end)
+     elif $selected.auth_needed == true then {auth_needed:true,status:"login needed"}
+     else {status:"no quota snapshot"} end)
+  end')
+
 gemini_account_lines=''
 while IFS= read -r gemini_account; do
   gemini_cache=$(gemini_account_cache "$gemini_account")
@@ -1503,11 +1667,12 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
 # server-side, so its used_pct is stale noise. Flag it (values kept for provenance).
 global_refresh_error=''
 if [ "$refresh" -eq 1 ] && [ -z "$refresh_account" ]; then
-  refresh_attempts=$((claude_refresh_attempted + codex_refresh_attempted + gemini_refresh_attempted))
+  refresh_attempts=$((claude_refresh_attempted + codex_refresh_attempted + gemini_refresh_attempted + grok_refresh_attempted))
   refresh_successes=0
   if [ "$claude_refresh_attempted" -eq 1 ] && [ "$claude_refresh_succeeded" -eq 1 ]; then refresh_successes=$((refresh_successes + 1)); fi
   if [ "$codex_refresh_attempted" -eq 1 ] && [ -z "$codex_refresh_error" ]; then refresh_successes=$((refresh_successes + 1)); fi
   if [ "$gemini_refresh_attempted" -eq 1 ] && [ "$gemini_refresh_succeeded" -eq 1 ]; then refresh_successes=$((refresh_successes + 1)); fi
+  if [ "$grok_refresh_attempted" -eq 1 ] && [ -z "$grok_refresh_error" ]; then refresh_successes=$((refresh_successes + 1)); fi
   if [ "$refresh_attempts" -gt 0 ] && [ "$refresh_successes" -eq 0 ]; then
     global_refresh_error='all vendor refreshes failed'
   fi
@@ -1585,11 +1750,14 @@ experiments_json=$(experiments_active_lines "$(experiments_registry_path "$scrip
 [ -n "$experiments_json" ] || experiments_json='[]'
 
 if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$experiments_json" --argjson claude "$claude" \
-  --argjson codex "$codex" --argjson gemini "$gemini" --argjson opencode "$opencode" --argjson now "$now_epoch" \
+  --argjson codex "$codex" --argjson gemini "$gemini" --argjson grok "$grok" \
+  --argjson opencode "$opencode" --argjson now "$now_epoch" \
   --argjson previous "$previous_cache" --argjson refresh "$refresh" --arg refresh_account "$refresh_account" \
   --argjson claude_attempted "$claude_refresh_attempted" --argjson codex_attempted "$codex_refresh_attempted" \
-  --argjson gemini_attempted "$gemini_refresh_attempted" --arg global_error "$global_refresh_error" \
-  --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" --arg gemini_error "$gemini_refresh_error" \
+  --argjson gemini_attempted "$gemini_refresh_attempted" --argjson grok_attempted "$grok_refresh_attempted" \
+  --arg global_error "$global_refresh_error" \
+  --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" \
+  --arg gemini_error "$gemini_refresh_error" --arg grok_error "$grok_refresh_error" \
   --argjson alarm "$LIMITS_AGE_ALARM" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
@@ -1641,14 +1809,19 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     .removed != true and
     .enabled != false and
     .auth_needed != true and
-    ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed") and
+    (if $key == "grok" then
+       ((.auth.status? // "ok") | IN("ok", "expired"))
+     else
+       ((.auth.status? // "") != "expired" and (.auth.status? // "") != "failed")
+     end) and
     (if $key == "gemini" then
        (.five_hour.effective_pct | type) == "number" and
        (.weekly.effective_pct | type) == "number"
+     elif $key == "grok" then (.weekly.effective_pct | type) == "number"
      else true end) and
     under_limit(.five_hour) and under_limit(.weekly);
   def vendor_usable($key):
-    if $key == "claude" or $key == "codex" or
+    if $key == "claude" or $key == "codex" or $key == "grok" or
        ($key == "gemini" and (.accounts | type) == "array") then
       .available == true and ((.accounts | type) == "array") and any(.accounts[]; account_usable($key))
     else
@@ -1778,14 +1951,17 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   {schema:1,fetched_at:$fetched_at,experiments:$experiments,vendors:{
     claude:vendor_data("claude"; $claude; $claude_attempted; $claude_error),
     codex:vendor_data("codex"; $codex; $codex_attempted; $codex_error),
-    gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error)}}
+    gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error),
+    grok:vendor_data("grok"; $grok; $grok_attempted; $grok_error)}}
   | .vendors |= with_entries(.key as $key | .value |= newest_accounts($key))
   | heal_claude_error(outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error); .vendors.claude.accounts) as $claude_outcome
   | outcome_error($previous.vendors.codex.refresh_error; $codex_attempted; $codex_error) as $codex_outcome
   | outcome_error($previous.vendors.gemini.refresh_error; $gemini_attempted; $gemini_error) as $gemini_outcome
+  | outcome_error($previous.vendors.grok.refresh_error; $grok_attempted; $grok_error) as $grok_outcome
   | if $claude_outcome == null then . else .vendors.claude.refresh_error = $claude_outcome end
   | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
   | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
+  | if $grok_outcome == null then . else .vendors.grok.refresh_error = $grok_outcome end
   # A removed vendor has nothing a refresh could have been for, so a cause still attached to one is
   # a verdict about an account that no longer exists. `removed` is the whole test: the status word
   # is not, because the multi-account branch spells `no quota snapshot` whenever nothing is
@@ -1881,9 +2057,10 @@ else
       else "-" end;
     def credits:
       if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
-    def account_status:
+    def account_status($vendor):
       if .auth_needed == true or
-         ((.auth.status? | type) == "string" and .auth.status != "ok")
+         ((.auth.status? | type) == "string" and .auth.status != "ok"
+          and ($vendor != "grok" or .auth.status != "expired"))
       then "login needed" else "-" end;
     def aged($row): ($row | compact_age($render_now)) |
       if $row.age_alarm == true then $red + . + $rst else . end;
@@ -1900,15 +2077,15 @@ else
     select(.key != "opencode") |
     if .key == "claude" and .value.available and (.value.accounts | type) == "array" then
         .value.accounts[] |
-        line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; "-"; account_status)
-    elif (.key == "codex" or .key == "gemini") and
+        line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; "-"; account_status("claude"))
+    elif (.key == "codex" or .key == "gemini" or .key == "grok") and
          ((.value.accounts | type) == "array") and
          ((.value.accounts | length) > 1 or
           (.key == "codex" and any(.value.accounts[]; .auth_needed == true)) or
-          (.key == "gemini" and (.value.accounts | length) > 0)) then
+          ((.key == "gemini" or .key == "grok") and (.value.accounts | length) > 0)) then
       .key as $key | .value.accounts[] | select(.removed != true) |
       line($key + "/" + .account + (if .is_current then "*" else "" end); .; rotation;
-        (if $key == "codex" then credits else "-" end); account_status)
+        (if $key == "codex" then credits else "-" end); account_status($key))
     elif .value.available then
       line(.key; .value; ((.value.accounts[0] // .value) | rotation);
         (if .key == "codex" then (.value | credits) else "-" end); "-")

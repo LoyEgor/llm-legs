@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <1:1|2:3|3:2|3:4|4:3|9:16|16:9>] [--ref <absolute image path>]... [--transparent] [--account <profile>]\n' >&2
+  exit 2
+}
+
+normalized_extension() {
+  local value
+  value=$(printf '%s' "${1##*.}" | tr '[:upper:]' '[:lower:]')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+dest=''
+prompt=''
+aspect='1:1'
+account=''
+remove_green=false
+refs=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest)
+      [ "$#" -ge 2 ] || usage
+      dest=$2
+      shift 2
+      ;;
+    --prompt)
+      [ "$#" -ge 2 ] || usage
+      prompt=$2
+      shift 2
+      ;;
+    --aspect)
+      [ "$#" -ge 2 ] || usage
+      aspect=$2
+      shift 2
+      ;;
+    --ref)
+      [ "$#" -ge 2 ] || usage
+      refs+=("$2")
+      shift 2
+      ;;
+    --transparent)
+      remove_green=true
+      shift
+      ;;
+    --account)
+      [ "$#" -ge 2 ] || usage
+      account=$2
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] || usage
+extension=$(normalized_extension "${dest##*/}")
+# An extensionless destination — a bare trailing dot included — names no format for `magick` to
+# infer, and the mismatch below would hand it one anyway.
+{ [[ "${dest##*/}" = *.* ]] && [ -n "$extension" ]; } || usage
+[ -d "$(dirname "$dest")" ] || usage
+if [ "$remove_green" = true ] && [ "$extension" != png ]; then
+  printf 'grok-image: --transparent requires a .png destination\n' >&2
+  exit 2
+fi
+# Unconditional because the answer's own extension is what decides the conversion and no check here
+# can know it yet: a `.jpg` destination answered with a `.png` needs `magick` too. A generation is
+# billed the moment it is sent, so the missing tool costs a whole image if it is found afterwards.
+command -v magick >/dev/null 2>&1 || {
+  printf 'grok-image: magick is required for this output\n' >&2
+  exit 1
+}
+case "$aspect" in
+  1:1|2:3|3:2|3:4|4:3|9:16|16:9) ;;
+  *) usage ;;
+esac
+ref_count=${#refs[@]}
+[ "$ref_count" -le 3 ] || usage
+# The flag surface is every image script's, but the two grok tools behind it take different ratios:
+# `image_gen` documents 1:1, 16:9, 9:16, 3:2 and 2:3, while 4:3 and 3:4 are `image_edit`'s, reached
+# only with references. Refused here rather than sent — the CLI passes the string to the images API
+# unvalidated, and a generation is billed the moment it goes out.
+if [ "$ref_count" -eq 0 ]; then
+  case "$aspect" in
+    4:3|3:4)
+      printf 'grok-image: --aspect %s needs --ref (image_edit); image_gen takes 1:1, 16:9, 9:16, 3:2, 2:3\n' \
+        "$aspect" >&2
+      exit 2
+      ;;
+  esac
+fi
+if [ "$ref_count" -gt 0 ]; then
+  for ref in "${refs[@]}"; do
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+  done
+fi
+if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  usage
+fi
+command -v jq >/dev/null 2>&1 || {
+  printf 'grok-image: jq is required\n' >&2
+  exit 1
+}
+
+root=$(resolve_root)
+. "$root/share/image-chroma.sh"
+worker_pick_cmd="${GROK_IMAGE_WORKER_PICK:-worker-pick}"
+grokb_cmd="${GROK_IMAGE_GROKB:-grokb}"
+
+if [ -z "$account" ]; then
+  pick_rc=0
+  account=$("$worker_pick_cmd" --account grok 2>/dev/null) || pick_rc=$?
+  if [ "$pick_rc" -eq 3 ]; then
+    printf 'GROK_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
+  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'grok-image: worker-pick failed\n' >&2
+    exit 1
+  fi
+fi
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-image.XXXXXX")
+trap 'rm -rf "$tmp_dir"' EXIT
+work_dir="$tmp_dir/work"
+mkdir -p "$work_dir"
+stream_file="$tmp_dir/stream.jsonl"
+stderr_file="$tmp_dir/grok.stderr"
+content=$prompt
+if [ "$remove_green" = true ]; then
+  content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
+  content="$content on a flat solid #00FF00 green background"
+fi
+
+instruction="Generate exactly one image and stop after the image tool completes.
+Aspect ratio: $aspect.
+Requested content: $content"
+tools_arg=image_gen
+if [ "$ref_count" -gt 0 ]; then
+  tools_arg=image_gen,image_edit
+  instruction+=$'\nUse image_edit with these source paths in its image parameter:'
+  for ref in "${refs[@]}"; do
+    instruction+=$'\n- '
+    instruction+="$ref"
+  done
+  instruction+=$'\nApply the requested content as the edit instruction and keep unrelated source details unchanged.'
+else
+  instruction+=$'\nUse image_gen and pass the aspect ratio above as aspect_ratio.'
+fi
+
+generation_rc=0
+GROK_MEMORY=0 "$grokb_cmd" profile "$account" -p "$instruction" \
+  --tools "$tools_arg" --always-approve --max-turns 4 --output-format streaming-json \
+  --disable-web-search --no-subagents --cwd "$work_dir" \
+  >"$stream_file" 2>"$stderr_file" || generation_rc=$?
+
+generated=$(jq -Rr '
+  fromjson? |
+  select(.type == "tool_call_update" and .rawOutput.type == "ImageGen") |
+  .rawOutput.path // empty
+' "$stream_file" 2>/dev/null | tail -n 1) || generated=''
+if [[ "$generated" != /* ]] || [ ! -f "$generated" ]; then
+  generated=''
+fi
+
+if [ -z "$generated" ]; then
+  if grep -Eqi 'hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits' \
+      "$stream_file" "$stderr_file" 2>/dev/null; then
+    printf 'GROK_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
+  if grep -Eqi 'out of the worker pool|treating every account as out of the pool' \
+      "$stream_file" "$stderr_file" 2>/dev/null; then
+    printf 'grok-image: account refused by the worker pool\n' >&2
+    exit 4
+  fi
+  printf 'grok-image: generation failed (exit %s); no ImageGen event with a readable file\n' \
+    "$generation_rc" >&2
+  tail -n 20 "$stderr_file" "$stream_file" 2>/dev/null >&2 || true
+  exit 1
+fi
+
+if [ "$remove_green" = true ]; then
+  chroma_key_to_png "$generated" "$tmp_dir" "$dest"
+elif [ "$extension" != "$(normalized_extension "$generated")" ]; then
+  magick "$generated" "$dest"
+else
+  cp "$generated" "$dest"
+fi
+
+sips_output=$(sips -g pixelWidth -g pixelHeight -g format "$dest")
+width=$(awk '/pixelWidth:/ {print $2; exit}' <<<"$sips_output")
+height=$(awk '/pixelHeight:/ {print $2; exit}' <<<"$sips_output")
+format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
+[ -n "$width" ] && [ -n "$height" ] && [ -n "$format" ] || {
+  printf 'grok-image: could not inspect output\n' >&2
+  exit 1
+}
+printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"

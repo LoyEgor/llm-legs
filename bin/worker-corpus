@@ -8,12 +8,12 @@ from pathlib import Path
 from collections import defaultdict
 import re
 
-WORKER_TYPES = {"codex-worker", "claudeb-worker", "sonnet-worker"}
+WORKER_TYPES = {"codex-worker", "claudeb-worker", "gemini-worker", "grok-worker", "sonnet-worker"}
 
 # Only model-shaped values are real; junk like `py_compile`, `pytest`,
 # `transcriber.ctl`, `http.server` came from `python3 -m <module>` commands.
-MODEL_RE = re.compile(r'^(gpt-|claude-|o[0-9]|sol|opus|sonnet|haiku)', re.IGNORECASE)
-USAGE_LIMIT_RE = re.compile(r'(?:CODEX|CLAUDEB)_USAGE_LIMIT')
+MODEL_RE = re.compile(r'^(gpt-|claude-|grok-|o[0-9]|sol|opus|sonnet|haiku)', re.IGNORECASE)
+USAGE_LIMIT_RE = re.compile(r'(?:CODEX|CLAUDEB|GEMINI|GROK)_USAGE_LIMIT')
 # Failure only when the OUTCOME verdict itself is a failure token (not any line that
 # merely contains "error"/"fail" — e.g. "OUTCOME: done ... 0 errors" or a review
 # reporting "partially failed ... not a run fail" are successes), or a real traceback.
@@ -241,8 +241,8 @@ def count_file_events(transcript_path):
 
 
 def mask_worker_names(text):
-    text = re.sub(r"codex-worker|claudeb-worker|sonnet-worker", "WORKER", text)
-    text = re.sub(r"\bcodex\b|\bclaudeb\b|\bsonnet\b", "WORKER", text, flags=re.IGNORECASE)
+    text = re.sub(r"codex-worker|claudeb-worker|gemini-worker|grok-worker|sonnet-worker", "WORKER", text)
+    text = re.sub(r"\bcodex\b|\bclaudeb\b|\bgemini\b|\bgrok\b|\bsonnet\b", "WORKER", text, flags=re.IGNORECASE)
     return text
 
 
@@ -326,7 +326,7 @@ def extract_sidechain_config(sidechain_file, worker_type):
                                     if m:
                                         account = m.group(1)
 
-                            elif worker_type == "claudeb-worker":
+                            elif worker_type in ("claudeb-worker", "sonnet-worker"):
                                 if "--model" in cmd and not model:
                                     m = re.search(r'--model\s+(\S+)', cmd)
                                     if m:
@@ -343,6 +343,38 @@ def extract_sidechain_config(sidechain_file, worker_type):
                                     m = re.search(r'\.claude-profiles/([a-zA-Z0-9_-]+)', cmd)
                                     if m:
                                         account = m.group(1)
+
+                            elif worker_type == "grok-worker":
+                                if "--reasoning-effort" in cmd and not effort:
+                                    m = re.search(r'--reasoning-effort\s+(\S+)', cmd)
+                                    if m:
+                                        effort = m.group(1)
+                                if " -m " in cmd and not model:
+                                    m = re.search(r' -m (\S+)', cmd)
+                                    if m:
+                                        model = valid_model(m.group(1))
+                                if "grokb profile" in cmd and not account:
+                                    m = re.search(r'grokb profile\s+(\S+)', cmd)
+                                    if m:
+                                        account = m.group(1)
+                                if ".grok-profiles/" in cmd and not account:
+                                    m = re.search(r'\.grok-profiles/([a-zA-Z0-9_-]+)', cmd)
+                                    if m:
+                                        account = m.group(1)
+
+                            elif worker_type == "gemini-worker":
+                                if "--model" in cmd and not model:
+                                    m = re.search(r'--model\s+(\S+)', cmd)
+                                    if m:
+                                        model = m.group(1)
+                                if "geminib profile" in cmd and not account:
+                                    m = re.search(r'geminib profile\s+(\S+)', cmd)
+                                    if m:
+                                        account = m.group(1)
+                                if ".gemini-profiles/" in cmd and not account:
+                                    m = re.search(r'\.gemini-profiles/([a-zA-Z0-9_-]+)', cmd)
+                                    if m:
+                                        account = m.group(1)
                 except:
                     pass
     except:
@@ -352,8 +384,8 @@ def extract_sidechain_config(sidechain_file, worker_type):
 
 
 def recover_sidechain_config(delegations, all_transcript_paths):
-    recovery_stats = {"codex": {"total": 0, "model": 0, "effort": 0, "account": 0},
-                     "claudeb": {"total": 0, "model": 0, "effort": 0, "account": 0}}
+    recovery_stats = {name[:-7]: {"total": 0, "model": 0, "effort": 0, "account": 0}
+                      for name in WORKER_TYPES}
 
     session_to_path = {}
     for fpath in all_transcript_paths:
@@ -369,7 +401,9 @@ def recover_sidechain_config(delegations, all_transcript_paths):
             pass
 
     for d in delegations:
-        worker_key = "codex" if d["subagent_type"] == "codex-worker" else "claudeb"
+        worker_key = d["subagent_type"][:-7] if d["subagent_type"].endswith("-worker") else d["subagent_type"]
+        if worker_key not in recovery_stats:
+            recovery_stats[worker_key] = {"total": 0, "model": 0, "effort": 0, "account": 0}
         recovery_stats[worker_key]["total"] += 1
 
         prompt_head = d["brief_text"][:300]
@@ -728,16 +762,19 @@ def deduplicate_by_tool_use_id(delegations, followups):
 
 
 def output_records(delegations, followups, outfile):
-    output = outfile if outfile else sys.stdout
-    mode = "w" if outfile else None
-
-    with open(output, mode) if mode else output as f:
+    def write(handle):
         for d in delegations:
             clean_d = {k: v for k, v in d.items() if not k.startswith("_")}
-            f.write(json.dumps(clean_d) + "\n")
+            handle.write(json.dumps(clean_d) + "\n")
         for fu in followups:
             clean_f = {k: v for k, v in fu.items() if not k.startswith("_")}
-            f.write(json.dumps(clean_f) + "\n")
+            handle.write(json.dumps(clean_f) + "\n")
+
+    if outfile:
+        with open(outfile, "w") as handle:
+            write(handle)
+    else:
+        write(sys.stdout)
 
 
 def build_summary(delegations, followups):
@@ -823,8 +860,9 @@ def main():
     if args.summary:
         print_summary(delegations, followups)
         print("\nSidechain Recovery Statistics:")
-        print(f"  codex-worker: {recovery_stats['codex']['effort']}/{recovery_stats['codex']['total']} effort resolved")
-        print(f"  claudeb-worker: {recovery_stats['claudeb']['effort']}/{recovery_stats['claudeb']['total']} effort resolved")
+        for name in sorted(recovery_stats):
+            stats = recovery_stats[name]
+            print(f"  {name}-worker: {stats['effort']}/{stats['total']} effort resolved")
 
         followups_with_cycle = sum(1 for f in followups if f.get("fable_tokens_cycle") is not None)
         print(f"\nFable Token Cycles:")

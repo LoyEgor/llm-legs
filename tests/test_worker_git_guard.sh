@@ -8,6 +8,10 @@ HOME=$(mktemp -d "${TMPDIR:-/tmp}/worker-git-guard.XXXXXX") || exit 1
 export HOME
 trap 'rm -rf "$HOME"' EXIT
 
+# Launched from inside a worker session, the launcher's own marks leak in through the environment
+# and every allow case reads as a guarded worker: the suite states the environment it asserts about.
+unset CLAUDEB_WORKER GROK_WORKER
+
 passes=0
 failures=0
 
@@ -54,19 +58,31 @@ assert_allow() {
 }
 
 assert_deny 'checkout paths' codex-worker 'git checkout -- global/CLAUDE.md'
+assert_deny 'checkout separator-free file' codex-worker 'git checkout CLAUDE.md'
+assert_deny 'checkout separator-free nested' grok-worker 'git checkout src/foo.py'
+assert_deny 'checkout relative path' claudeb-worker 'git checkout ./tracked'
+assert_deny 'checkout two paths' gemini-worker 'git checkout file1 file2'
 assert_deny 'restore in chain' claudeb-worker 'cd /x && git restore file'
 assert_deny 'hard reset' gemini-worker 'git reset --hard HEAD~1'
 assert_deny 'clean force' codex-worker 'git clean -fd'
+assert_deny 'grok worker restore' grok-worker 'git restore file'
 assert_deny 'stash drop' codex-worker 'git stash drop'
+assert_deny 'stash bare' grok-worker 'git stash'
+assert_deny 'stash push' claudeb-worker 'git stash push -m wip'
+assert_deny 'stash pop' gemini-worker 'git stash pop'
+assert_deny 'stash untracked' codex-worker 'git stash -u'
 assert_deny 'git directory checkout' codex-worker 'git -C /repo checkout -- .'
 
 assert_allow 'main session' '' 'git checkout -- f'
 assert_allow 'explore agent' Explore 'git checkout -- f'
 assert_allow 'branch checkout' codex-worker 'git checkout feature-branch'
 assert_allow 'new branch checkout' codex-worker 'git checkout -b new-branch'
+assert_allow 'stash list' codex-worker 'git stash list'
+assert_allow 'stash show' grok-worker 'git stash show'
 assert_allow 'clean dry run' codex-worker 'git clean -n'
 assert_allow 'read-only git chain' codex-worker 'git status && git diff'
 assert_allow 'ordinary command' codex-worker 'printf hello'
+assert_allow 'grok branch checkout' grok-worker 'git checkout feature-branch'
 
 unlock_session=unlocked-session
 unlock_dir="$HOME/.cache/claude-worker-tags/$unlock_session"
@@ -114,6 +130,34 @@ if jq -e '.hookSpecificOutput.updatedInput.prompt | test("GIT-CLEANUP NOTE")' \
   pass
 else
   fail 'an unwritable unlock dir left the brief claiming a cleanup the guard will refuse'
+fi
+
+# A headless grok run is a worker session, not a subagent of one: its payload carries no
+# agent_type, so only the launcher's mark brings it under the guard.
+grok_headless=$(payload '' 'git clean -fd' grok-headless-session | GROK_WORKER=1 "$GUARD") ||
+  fail 'grok headless exited nonzero'
+if jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<< "$grok_headless" >/dev/null 2>&1; then
+  pass
+else
+  fail 'GROK_WORKER=1 did not bring a headless grok run under the guard'
+fi
+grok_unmarked=$(payload '' 'git clean -fd' grok-headless-session | "$GUARD") ||
+  fail 'unmarked headless exited nonzero'
+if [ -z "$grok_unmarked" ]; then pass; else fail 'an unmarked session was guarded as a worker'; fi
+
+# The unlock is per agent kind: a cleanup permission granted to a grok worker unlocks nothing else.
+grok_unlock_dir="$HOME/.cache/claude-worker-tags/grok-unlocked"
+mkdir -p "$grok_unlock_dir"
+: > "$grok_unlock_dir/git-unlock-grok-worker"
+grok_unlocked=$(payload grok-worker 'git restore file' grok-unlocked | "$GUARD") ||
+  fail 'grok unlock exited nonzero'
+if [ -z "$grok_unlocked" ]; then pass; else fail 'grok unlock emitted output'; fi
+grok_borrowed=$(payload codex-worker 'git restore file' grok-unlocked | "$GUARD") ||
+  fail 'codex under grok unlock exited nonzero'
+if jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<< "$grok_borrowed" >/dev/null 2>&1; then
+  pass
+else
+  fail "grok's unlock let a codex worker through"
 fi
 
 if [ "$failures" -eq 0 ]; then

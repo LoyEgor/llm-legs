@@ -89,8 +89,14 @@ assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
 # Producer and consumer must name the same cache file.
 assert grep -q 'worker-pick.line' "$WORKERPICK"
 assert grep -q 'worker-pick.line' "$STATUSLINE"
+# Grok appends a fourth field, and only where the store carries the vendor at all: an absent grok
+# is absent from the line rather than rendered as a failed lookup.
+assert grep -Fq " gr%s%s·%s·%s" "$WORKERPICK"
+assert grep -Fq 'gr_cache=""' "$WORKERPICK"
+assert grep -Fq 'gr_mark="⏸"; gr_acct=off' "$WORKERPICK"
 # Doc records the format.
 assert doc_has 'cx%s%s·<model>·%s %s·%s·%s gx%s%s·%s·%s'
+assert doc_has 'gr%s%s·%s·%s'
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -145,14 +151,16 @@ assert doc_has 'Token-freeze file semantics'
 CODEXB="$ROOT/bin/codexb"
 POLICY="$ROOT/share/worker-policy.md"
 assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)' "$WORKERPICK"
-assert test "$(grep -Fc 'def rank_keys: [(if .defer5h then 1 else 0 end), .spend, (.h5 // 100), .main_last, .name];' "$WORKERPICK")" -eq 1
+# `auth_late` ranks a grok account whose access token expired behind every signed-in one without
+# walling it — the CLI refreshes it silently — and reads as false on every other vendor's rows.
+assert test "$(grep -Fc 'def rank_keys: [(if .defer5h then 1 else 0 end), (if .auth_late then 1 else 0 end), .spend, (.h5 // 100), .main_last, .name];' "$WORKERPICK")" -eq 1
 assert test "$(grep -Fc 'def rank: sort_by(rank_keys);' "$WORKERPICK")" -eq 1
 assert grep -Fq 'def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;' "$WORKERPICK"
 # The render sorts on the band plus the selection keys, so within a band the order is the
 # selection order rather than the limits file's.
 assert grep -Fq 'def display_sort($selected): sort_by([display_band($selected)] + rank_keys);' "$WORKERPICK"
 assert test "$(grep -Fc 'sort_by(display_band(' "$WORKERPICK")" -eq 0
-assert test "$(grep -Fc 'display_sort($sel)' "$WORKERPICK")" -eq 3
+assert test "$(grep -Fc 'display_sort($sel)' "$WORKERPICK")" -eq 4
 assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
 assert grep -Fq 'Codex and Gemini `main` profiles rank last on a tie' "$POLICY"
@@ -271,7 +279,7 @@ SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
 assert grep -Fq 'WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"' "$SPAWN_HOOK"
 assert grep -Fq 'acct=$(brief_line ACCOUNT)' "$SPAWN_HOOK"
-for vendor in claudeb codex gemini; do
+for vendor in claudeb codex gemini grok; do
   assert grep -Fq '[ -n "$acct" ] || acct=$(route_account '"$vendor"')' "$SPAWN_HOOK"
 done
 assert grep -Fq '[ -n "$acct" ] || acct=main' "$SPAWN_HOOK"
@@ -380,10 +388,10 @@ assert eq "$(grep -E '^WARN_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_WA
 assert eq "$(grep -E '^DENY_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_DENY"
 assert test "$(grep -Ec '^WARN_AT=' "$WORKER_GATE")" -eq 1
 assert test "$(grep -Ec '^DENY_AT=' "$WORKER_GATE")" -eq 1
-for worker in claudeb-worker codex-worker gemini-worker; do
+for worker in claudeb-worker codex-worker gemini-worker grok-worker; do
   assert grep -Fq "$worker" "$WORKER_GATE"
 done
-for vendor in claudeb codex gemini; do
+for vendor in claudeb codex gemini grok; do
   assert grep -Fq "vendor=$vendor" "$WORKER_GATE"
 done
 assert grep -Fq '"$WORKER_PICK" --account "$vendor"' "$WORKER_GATE"
@@ -422,14 +430,14 @@ assert grep -q '^worker_pool_is_disabled()' "$POOL"
 assert grep -q '^worker_pool_set_disabled()' "$POOL"
 assert grep -q '^worker_pool_disabled_json()' "$POOL"
 assert test "$(grep -c '/disabled"' "$POOL")" -ge 3
-for pool_tool in claudeb codexb geminib; do
+for pool_tool in claudeb codexb geminib grokb; do
   assert grep -Fq 'share/worker-pool.sh"' "$ROOT/bin/$pool_tool"
   assert grep -Fq 'worker_pool_is_disabled "$pool' "$ROOT/bin/$pool_tool"
   assert grep -Fq 'worker_pool_set_disabled "$pool' "$ROOT/bin/$pool_tool"
   # The wall and the directory formula come from the helper too: a vendor that walled headless
   # runs on its own, or spelled its own pool path, is how the three drift apart.
   assert grep -Fq 'worker_pool_refuse_headless ' "$ROOT/bin/$pool_tool"
-  assert grep -Eq 'pool_dir=\$\(worker_pool_dir (claudeb|codex|gemini)\)' "$ROOT/bin/$pool_tool"
+  assert grep -Eq 'pool_dir=\$\(worker_pool_dir (claudeb|codex|gemini|grok)\)' "$ROOT/bin/$pool_tool"
   assert test "$(grep -c 'last enabled account' "$ROOT/bin/$pool_tool")" -eq 0
   # No vendor may re-derive the file format locally.
   assert test "$(grep -c 'grep -qxF -- ' "$ROOT/bin/$pool_tool")" -eq 0
@@ -450,19 +458,21 @@ assert test "$(grep -c 'worker_pool_dir ' "$LLMLIMITS")" -ge 2
 # Every vendor reaches the toggle through its own action, and each action is both defined and
 # wired into a row — a count of menu entries would only measure how many rows happen to exist.
 assert grep -Fq 'In worker pool' "$HAMMER"
-for pool_toggle in toggleAccount toggleCodexAccount toggleGeminiAccount; do
+for pool_toggle in toggleAccount toggleCodexAccount toggleGeminiAccount toggleGrokAccount; do
   assert grep -Fq "function M.$pool_toggle(" "$HAMMER"
   assert test "$(grep -cF "M.$pool_toggle(" "$HAMMER")" -ge 2
 done
 assert doc_has 'Worker-pool membership'
-assert doc_has '.claudeb`, `.codexb`, `.geminib'
-assert doc_has 'the vendor pin (`claudeb_profile`, `codex_profile`, `gemini_profile`) is the one override'
+assert doc_has '.claudeb`, `.codexb`, `.geminib`, `.grokb'
+assert doc_has 'the vendor pin (`claudeb_profile`, `codex_profile`, `gemini_profile`, `grok_profile`) is the one override'
 assert doc_has 'Exclusion IS unreachability for every headless run'
 assert grep -Fq 'cb_pin=$(conf claudeb_profile)' "$WORKERPICK"
 assert grep -Fq 'cx_pin=$(conf codex_profile)' "$WORKERPICK"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
+assert grep -Fq 'gr_pin=$(conf grok_profile)' "$WORKERPICK"
 assert grep -Fq '.name == $cx_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '.name == $gm_pin and (.walled | not)' "$WORKERPICK"
+assert grep -Fq '.name == $gr_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '$pin_account != null and $pin_account.auth_ok and $pin_account.general_usable' "$WORKERPICK"
 # The session account is the reserve, not an exclusion (docs/routing-contract.md rule 1): a pin
 # reaches it, so the gate must not regain an `.own` test, and the footnote must keep saying that
@@ -805,7 +815,7 @@ if test -r "$COMMIT_REPORT"; then
   # edits, the worker sweep's deferred rows, the gate's commit-point names, and the debt a commit
   # inside one Bash call lands.
   assert grep -Fq 'rj_register_repo "$session" "$top" || :' "$CLAUDE_SETUP/hooks/commit-journal.sh"
-  assert eq "$(grep -c 'rj_register_repo' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 3
+  assert eq "$(grep -c 'rj_register_repo' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 4
   assert grep -Fq 'rj_register_repo "$session" "$top_dir" || :' "$FLOW_GATE"
   assert grep -Fq 'rj_register_repo "$own" "$top" || :' "$COMMIT_REPORT"
   assert grep -Fq 'snapshot_file=$(rj_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
@@ -1004,7 +1014,7 @@ assert grep -Fq 'if ! worker_model_pin_allowed; then' "$WORKER_MODEL_SH"
 # The file doors, all three registrations, and the pin-key rule that keeps `/worker` working —
 # half a gate is a gate that is off, and a gate over the whole file is one that gets worked around.
 assert grep -Fq 'canonical_path "$HOME/.claude/worker-model"' "$PIN_GATE"
-assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini)_profile='" "$PIN_GATE"
+assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='" "$PIN_GATE"
 assert grep -Fq 'worker-pin-gate.sh prompt' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh write' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh bash' "$WORKER_GATE_SETTINGS"
@@ -1144,7 +1154,11 @@ assert doc_has "is not bound by this row's retirement rule"
 # `<vendor>_<role>=off`, absent key = on, is spoken by four independent implementations. The vendor
 # and role tokens are spelled once here and every implementation is asked whether it means the same
 # thing; a drifted one leaves the menu showing a switch the routers do not read.
-ROLE_VENDORS="claudeb codex gemini"
+ROLE_VENDORS="claudeb codex gemini grok"
+# review-bench staffs three of them: grok has no rater side yet, so `grok_reviewers` is written and
+# read by the routers alone. The bench check below is asked about its own three, or a vendor with no
+# side at all would fail as a bench that forgot one.
+ROLE_BENCH_VENDORS="claudeb codex gemini grok"
 ROLE_ROLES="workers reviewers"
 ROLE_WORK=$(mktemp -d)
 ROLE_MODEL="$ROLE_WORK/worker-model"
@@ -1202,7 +1216,8 @@ grep -q -- "$role_run_grep" <<<"$role_out" ||
   fail "row aj: bin/worker-run greps '$role_run_grep' but bin/worker-pick prints '$role_out': the workers-wall stderr contract between them drifted"
 
 # The reader in hammerspoon/llm-limits.lua, at the two tables the menu builds keys from.
-lua_prefixes=$(grep -E '^local WORKER_MODEL_PREFIX = ' "$HAMMER" | head -n1)
+# The table body, not its opening line: it wraps once the fourth vendor is in it.
+lua_prefixes=$(awk '/^local WORKER_MODEL_PREFIX = /{found=1} found{print; if (/\}/) exit}' "$HAMMER")
 [ -n "$lua_prefixes" ] ||
   fail "row aj: hammerspoon/llm-limits.lua has no WORKER_MODEL_PREFIX table, so the keys share/worker-model.sh writes are built somewhere else now"
 for vendor in $ROLE_VENDORS; do
@@ -1225,7 +1240,7 @@ assert_role_hammer 'key == prefix .. "_" .. role' 'builds keys as <vendor>_<role
 assert_role_hammer 'value ~= "off"' 'reads "off" as the only veto'
 
 # The reader in bin/review-bench, asked through its own functions: it reads the reviewers half.
-role_bench_out=$(python3 - "$ROLE_MODEL" "$ROLE_VENDORS" 2>&1 <<'PY'
+role_bench_out=$(python3 - "$ROLE_MODEL" "$ROLE_BENCH_VENDORS" 2>&1 <<'PY'
 import os
 import sys
 
@@ -1264,7 +1279,7 @@ rm -rf "$ROLE_WORK"
 assert grep -Fq '"--account", SIDE_POOL_VENDOR[side], "--role", "reviewers"' "$RB_ACCOUNTS"
 assert doc_has 'Per-vendor role switches'
 assert doc_has '`worker-pick: <vendor> is switched off for <role>`'
-assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`'
+assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`/`gr⏸off`'
 
 # --- Row ak: auto-refresh vendor roster --------------------------------------
 # The roster is spelled three times inside one daemon, and a vendor present in the loop but missing
@@ -1272,7 +1287,7 @@ assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`'
 # every state file written before it existed. The fourth vendor is the inverted one: it has no usage
 # endpoint, so anything that would make it poll on the other three's cadence spends the plan.
 LLMREFRESH="$ROOT/bin/llm-refresh"
-REFRESH_VENDORS="claude codex gemini opencode"
+REFRESH_VENDORS="claude codex gemini grok opencode"
 refresh_seed=$(grep -n '| map(. as $vendor |' "$LLMREFRESH" | head -n1 | cut -d: -f1)
 [ -n "$refresh_seed" ] ||
   fail "row ak: bin/llm-refresh's normalized_state no longer seeds a vendor list"
@@ -1290,6 +1305,9 @@ done
 # The inversion, asked of the daemon rather than of its prose: the wall state comes from the
 # collector row (row al), never from the record, and only a standing wall is probed — through the
 # one subcommand that answers for free while the window is shut.
+# Neither Gemini's base profile nor Grok's names an account to revive, so an empty vendor row must
+# name none: a `main` invented here is a refresh against a HOME that carries no login.
+assert grep -Fq 'elif $vendor == "gemini" or $vendor == "grok" then empty' "$LLMREFRESH"
 assert grep -Fq 'opencode-go' <<<"$(grep -F 'opencode_go=' "$LLMREFRESH")"
 assert grep -Fq 'wall-check' "$LLMREFRESH"
 assert grep -Fq '.vendors.opencode.accounts[]? | select(.walled == true)' "$LLMREFRESH"
@@ -1783,21 +1801,21 @@ LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$HOME/.claude/hooks/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
 gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
   grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go)' | sort -u | paste -sd' ' -)
-for launcher in worker-run review-bench llm-limits claude-session-driver codex-image gemini-image opencode-go; do
+for launcher in worker-run review-bench llm-limits claude-session-driver codex-image gemini-image grok-image opencode-go; do
   assert grep -Fq "\`$launcher\`" "$ROOT/$DOC"
   assert grep -Fq "$launcher" "$LAUNCH_GATE"
 done
-assert eq "$gate_sanctioned" 'claude-session-driver codex-image gemini-image llm-limits opencode-go review-bench worker-run'
+assert eq "$gate_sanctioned" 'claude-session-driver codex-image gemini-image grok-image llm-limits opencode-go review-bench worker-run'
 # `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
 # `claudeb` line, or the bare launch it exists to deny walks straight through.
 assert grep -Fq 'claudeb[[:space:]]+(revive|warm)' "$LAUNCH_GATE"
 assert doc_has '`claudeb revive`, `claudeb warm`'
 # Every bare-launch spelling the contract names has a pattern, and every pattern a spelling.
-for launch_spelling in 'claude -p' 'claudeb … -p' 'codex exec' 'codexb … exec' 'gemini -p' 'geminib … --print' 'agy … --print' 'opencode run'; do
+for launch_spelling in 'claude -p' 'claudeb … -p' 'codex exec' 'codexb … exec' 'gemini -p' 'geminib … --print' 'agy … --print' 'opencode run' 'grok … -p' 'grokb … --prompt-file'; do
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/$DOC"
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/docs/routing-contract.md"
 done
-assert eq "$(grep -Fc '${VENDOR_WORD}' "$LAUNCH_GATE")" 5
+assert eq "$(grep -Fc '${VENDOR_WORD}' "$LAUNCH_GATE")" 6
 assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0' "$LAUNCH_GATE"
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'
@@ -1932,6 +1950,28 @@ assert grep -Fq 'function ClaudeChatSwitch.cancel()' "$SWITCH_LUA"
 assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)" '_G.ClaudeChatSwitch.cancel()'
 
 
+# --- Row bk: grok worker knobs ------------------------------------------------
+# One default pair spelled in six places, and the one rule that is not a default: `auto` is the
+# ABSENCE of a model override, so a surface that renders it as a version, or a launcher that
+# substitutes one, answers for a choice nobody made.
+GROK_TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
+assert grep -Fq 'gr_model=$(conf grok_model); gr_model=${gr_model:-auto}' "$WORKERPICK"
+assert grep -Fq 'gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-high}' "$WORKERPICK"
+assert grep -Fq 'model=${model:-$(config_value grok_model)}; model=${model:-auto}' "$WORKER_RUN"
+assert grep -Fq 'effort=${effort:-$(config_value grok_effort)}; effort=${effort:-high}' "$WORKER_RUN"
+assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"
+assert grep -Fq 'low|medium|high|xhigh) ;;' "$WORKER_RUN"
+assert grep -Fq 'grok effort must be low, medium, high or xhigh' "$WORKER_RUN"
+for grok_knob_hook in "$SPAWN_HOOK" "$GROK_TAG_HOOK"; do
+  assert grep -Fq 'worker_conf grok_model' "$grok_knob_hook"
+  assert grep -Fq 'worker_conf grok_effort' "$grok_knob_hook"
+done
+assert grep -Fq 'wv_model=${grok_model:-auto}; [ "$wv_model" != auto ] || wv_model=""' "$STATUSLINE"
+assert grep -Fq 'wv_effort=${grok_effort:-high}' "$STATUSLINE"
+assert grep -Fq '`grok_model=auto|<model id>` and `grok_effort=low|medium|high|xhigh`' "$WORKER_COMMAND"
+assert doc_has 'Grok worker knobs'
+assert doc_has '`grok_model=auto`, `grok_effort=high`'
+
 # --- Row bj: the cache-TTL track line ----------------------------------------
 # The picker reads the account off a line the statusline writes positionally, so reordering that
 # printf keeps every suite green while the picker silently names the wrong account, or none.
@@ -1952,4 +1992,4 @@ assert doc_has '`ephemeral_<n><m\|h>_`'
 assert eq "$(grep -c 'capture("ephemeral_(?<n>\[0-9\]+)(?<u>\[mh\])_")' "$STATUSLINE")" 2
 assert grep -Fq 're.match(r"ephemeral_(\d+)([mh])_", key)' "$CHATFIND_LEGS"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose fourth vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

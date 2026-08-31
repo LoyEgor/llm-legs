@@ -1,0 +1,370 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
+grok_bin="${GROKB_GROK_BIN:-grok}"
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+grokb_root=$(resolve_root)
+. "$grokb_root/share/worker-pool.sh"
+. "$grokb_root/share/worker-model.sh"
+. "$grokb_root/share/account-announce.sh"
+pool_dir=$(worker_pool_dir grok)
+
+is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
+set_disabled() { worker_pool_set_disabled "$pool_dir" "$1" "$2"; }
+pool_suffix() { if is_disabled "$1"; then printf ' (out of pool)'; fi; }
+
+quota_helper="${GROKB_QUOTA_CMD:-$grokb_root/grok-quota.py}"
+grok_cache="${LLM_LIMITS_GROK_CACHE:-$HOME/.llm-limits-grok.json}"
+
+quota_snapshot() {
+  local output
+  if [ ! -x "$quota_helper" ]; then
+    printf '{"accounts":[]}\n'
+    return
+  fi
+  output=$("$quota_helper" --profiles-dir "$profiles_dir" \
+    --timeout "${GROKB_QUOTA_TIMEOUT:-5}" 2>/dev/null) || true
+  if jq -e '.accounts | type == "array"' >/dev/null 2>&1 <<<"$output"; then
+    printf '%s\n' "$output"
+  else
+    printf '{"accounts":[]}\n'
+  fi
+}
+
+format_reset_time() {
+  local timestamp="$1" epoch now delta weekday
+  local -a weekdays=(Sun Mon Tue Wed Thu Fri Sat)
+  epoch=$(jq -nr --arg value "$timestamp" '$value | fromdateiso8601? // 0')
+  if ! [ "$epoch" -gt 0 ] 2>/dev/null; then printf 'unknown'; return; fi
+  now=$(date +%s)
+  delta=$((epoch - now))
+  if [ "$delta" -lt 86400 ]; then
+    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  elif [ "$delta" -lt 604800 ]; then
+    weekday=$(date -r "$epoch" '+%w' 2>/dev/null || date -d "@$epoch" '+%w' 2>/dev/null) || { printf 'unknown'; return; }
+    printf '%s ' "${weekdays[$weekday]}"
+    date -r "$epoch" '+%H:%M' 2>/dev/null || date -d "@$epoch" '+%H:%M' 2>/dev/null || printf 'unknown'
+  else
+    date -r "$epoch" '+%m-%d %H:%M' 2>/dev/null || date -d "@$epoch" '+%m-%d %H:%M' 2>/dev/null || printf 'unknown'
+  fi
+}
+
+account_names() {
+  local path
+  printf 'main\n'
+  if [ -d "$profiles_dir" ]; then
+    for path in "$profiles_dir"/*; do
+      [ -d "$path" ] && basename "$path"
+    done | LC_ALL=C sort
+  fi
+}
+
+account_home() {
+  if [ "$1" = main ]; then
+    printf '%s/.grok\n' "$HOME"
+  else
+    printf '%s/%s\n' "$profiles_dir" "$1"
+  fi
+}
+
+account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
+
+reserved_name() {
+  case "$1" in
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Same two shapes grok-quota.py's auth_entry accepts: a top-level key field, or the first
+# nested object that has one. A single-entry wrapper is the common case, not the only one.
+auth_fields() {
+  local auth
+  auth="$(account_home "$1")/auth.json"
+  [ -r "$auth" ] || { printf '%s\t%s\t%s\n' - - no; return; }
+  jq -r '
+    def entry:
+      if type != "object" then empty
+      elif (.key | type) == "string" then .
+      else first(.[]? | select(type == "object" and (.key | type) == "string"))
+      end;
+    (entry // null) as $e |
+    if $e == null then "-\t-\tno"
+    else
+      [($e.email // "-" | tostring), ($e.expires_at // "-" | tostring),
+       (if (($e.refresh_token // "") | type) == "string" and ($e.refresh_token // "") != ""
+        then "yes" else "no" end)] | @tsv
+    end
+  ' "$auth" 2>/dev/null || printf '%s\t%s\t%s\n' - - no
+}
+
+# Alive = a non-empty key or refresh_token at the top level or in any nested object.
+# A parse failure is treated as alive (fail closed) so a flaky read never turns
+# removal into an unguarded delete — same shape as codex_credentials_alive.
+credentials_alive() {
+  local auth
+  auth="$(account_home "$1")/auth.json"
+  [ -f "$auth" ] || return 1
+  jq -e '
+    def creds:
+      type == "object" and (((.key // "") != "") or ((.refresh_token // "") != ""));
+    type == "object" and (creds or any(.[]?; creds))
+  ' "$auth" >/dev/null 2>&1 && return 0
+  jq -e 'true' "$auth" >/dev/null 2>&1 || return 0
+  return 1
+}
+
+add_account() {
+  local name="${1:-}" directory rc=0
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+    printf 'usage: grokb add <name> (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
+    exit 2
+  fi
+  directory="$profiles_dir/$name"
+  if [ -e "$directory" ] || [ -L "$directory" ]; then
+    printf 'grokb: account already exists: %s\n' "$name" >&2
+    exit 2
+  fi
+  mkdir -p "$directory"
+  printf 'GROK_HOME=%q %q login --device-auth\n' "$directory" "$grok_bin"
+  env -u GROK_WORKER GROK_HOME="$directory" "$grok_bin" login --device-auth || rc=$?
+  announce_account_added "$grokb_root" grok "$name"
+  return "$rc"
+}
+
+remove_account() {
+  local name='' force=false arg directory tmp
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=true ;;
+      -*) printf 'usage: grokb remove <name> [--force]\n' >&2; exit 2 ;;
+      *)
+        if [ -n "$name" ]; then printf 'usage: grokb remove <name> [--force]\n' >&2; exit 2; fi
+        name="$arg"
+        ;;
+    esac
+  done
+  if [ -z "$name" ] || [ "$name" = main ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: grokb remove <name> [--force] (not "main"; lowercase letters, numbers, hyphens)\n' >&2
+    exit 2
+  fi
+  directory="$profiles_dir/$name"
+  if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+    printf 'grokb: unknown account: %s\n' "$name" >&2
+    exit 2
+  fi
+  if [ "$force" != true ] && credentials_alive "$name"; then
+    printf 'grokb: refusing to remove %s: it is still logged in; remove its credentials first or pass --force\n' "$name" >&2
+    exit 1
+  fi
+  rm -rf "$directory"
+  # A pool entry outliving its account keeps the last-member guard counting a ghost, and the
+  # name silently re-excludes a future account created under it.
+  if is_disabled "$name"; then set_disabled "$name" off; fi
+  if [ -r "$grok_cache" ]; then
+    tmp="$grok_cache.tmp.$$"
+    if jq -c --arg name "$name" '
+        if type == "object" and (.accounts | type) == "array"
+        then .accounts |= map(select(.account != $name)) else . end' "$grok_cache" >"$tmp" 2>/dev/null; then
+      mv "$tmp" "$grok_cache"
+    else
+      rm -f "$tmp"
+    fi
+  fi
+  announce_account_removed "$grokb_root"
+  printf 'grokb: removed %s\n' "$name"
+}
+
+# The login text every grokb surface prints, the way codexb prints the CLI's own login line; the
+# missing refresh token is named because it is the one auth fact a human has to act on later.
+login_text() { # email refresh
+  if [ "$2" = yes ]; then printf 'Logged in as %s' "$1"; else printf 'Logged in as %s (no refresh token)' "$1"; fi
+}
+
+list_accounts() {
+  local name fields email expires refresh
+  while IFS= read -r name; do
+    fields=$(auth_fields "$name")
+    IFS=$'\t' read -r email expires refresh <<<"$fields"
+    if [ "$email" = - ]; then
+      printf '%s: login needed%s\n' "$name" "$(pool_suffix "$name")"
+    else
+      printf '%s: %s%s\n' "$name" "$(login_text "$email" "$refresh")" "$(pool_suffix "$name")"
+    fi
+  done < <(account_names)
+}
+
+show_status() {
+  local quotas name fields email expires refresh entry wused wreset
+  quotas=$(quota_snapshot)
+  while IFS= read -r name; do
+    entry=$(jq -c --arg account "$name" '[.accounts[] | select(.account == $account)][0] // {}' <<<"$quotas")
+    fields=$(auth_fields "$name")
+    IFS=$'\t' read -r email expires refresh <<<"$fields"
+    if [ "$email" = - ] || jq -e '.auth == "needs_login"' <<<"$entry" >/dev/null 2>&1; then
+      printf '%s: login needed%s | WEEKLY - reset unknown\n' "$name" "$(pool_suffix "$name")"
+      continue
+    fi
+    wused=$(jq -r 'if (.used_pct | type) == "number" then (.used_pct | round | tostring) + "%" else "-" end' <<<"$entry")
+    wreset=$(format_reset_time "$(jq -r '.resets_at // ""' <<<"$entry")")
+    printf '%s: %s%s | WEEKLY %s reset %s\n' \
+      "$name" "$(login_text "$email" "$refresh")" "$(pool_suffix "$name")" "$wused" "$wreset"
+  done < <(account_names)
+}
+
+pin_account() {
+  worker_model_pin_account grok_profile grokb account_names is_disabled "${1:-}"
+}
+
+set_all_pool() { worker_pool_set_all "$pool_dir" grokb account_names "$1"; }
+
+enable_account() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then printf 'usage: grokb enable <name>|--all\n' >&2; exit 2; fi
+  if [ "$name" = --all ]; then set_all_pool off; return; fi
+  if ! account_exists "$name"; then printf 'grokb: unknown account: %s\n' "$name" >&2; exit 2; fi
+  if ! is_disabled "$name"; then printf 'grokb: %s is already enabled\n' "$name"; return; fi
+  set_disabled "$name" off
+  printf 'grokb: enabled %s\n' "$name"
+}
+
+disable_account() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then printf 'usage: grokb disable <name>|--all\n' >&2; exit 2; fi
+  if [ "$name" = --all ]; then set_all_pool on; return; fi
+  if ! account_exists "$name"; then printf 'grokb: unknown account: %s\n' "$name" >&2; exit 2; fi
+  if is_disabled "$name"; then printf 'grokb: %s is already disabled\n' "$name"; return; fi
+  set_disabled "$name" on
+  printf 'grokb: disabled %s\n' "$name"
+}
+
+# `-p`/`--prompt*`/`agent` are grok's headless forms, the way `-p`/`--print` are claudeb's.
+args_are_headless() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -p|--prompt|--prompt=*|--prompt-file|--prompt-file=*|--prompt-json|--prompt-json=*|agent)
+        return 0 ;;
+    esac
+  done
+  return 1
+}
+
+run_account() {
+  local allow_create="$1" name="${2:-}" directory created=false
+  if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
+    show_help
+    return
+  fi
+  if [ -z "$name" ]; then printf 'usage: grokb profile <name> [grok args...]\n' >&2; exit 2; fi
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf "grokb: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
+    exit 2
+  fi
+  shift 2
+  # An interactive session is Egor, and a login run must reach an account he took out of the pool.
+  if args_are_headless "$@"; then
+    worker_pool_refuse_headless grok "$name" "$(worker_model_pinned_account grok_profile)" || exit 2
+  fi
+  # A headless run is a worker; worker-git-guard keys its branch discipline on GROK_WORKER=1
+  # the way it keys claudeb's on CLAUDEB_WORKER=1. Interactive login/profile must not carry it.
+  # macOS env treats a `-u` after NAME=value as the utility, so unsets go first.
+  local worker_unset=() worker_flag=()
+  if args_are_headless "$@"; then worker_flag=(GROK_WORKER=1)
+  else worker_unset=(-u GROK_WORKER); fi
+  if [ "$name" = main ]; then
+    exec env ${worker_unset[@]+"${worker_unset[@]}"} -u GROK_HOME \
+      GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 \
+      GROK_DISABLE_AUTOUPDATER=1 ${worker_flag[@]+"${worker_flag[@]}"} "$grok_bin" "$@"
+  fi
+  directory="$profiles_dir/$name"
+  if [ ! -d "$directory" ]; then
+    if [ "$allow_create" != true ]; then printf 'grokb: unknown account: %s\n' "$name" >&2; exit 2; fi
+    if reserved_name "$name"; then printf "grokb: invalid profile name '%s'\n" "$name" >&2; exit 2; fi
+    mkdir -p "$directory"
+    created=true
+    printf "grokb: new profile '%s' created at %s — Grok will report if login is required.\n" \
+      "$name" "$directory" >&2
+  fi
+  [ "$created" != true ] || announce_account_added "$grokb_root" grok "$name"
+  exec env ${worker_unset[@]+"${worker_unset[@]}"} GROK_HOME="$directory" \
+    GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 \
+    GROK_DISABLE_AUTOUPDATER=1 ${worker_flag[@]+"${worker_flag[@]}"} "$grok_bin" "$@"
+}
+
+show_help() {
+  printf '%s\n' \
+    'grokb profile <name> [grok args...]  Run Grok headlessly in an isolated profile; creates it if missing. Aliases: p, run.' \
+    'grokb profile <name> login --device-auth  Device-code login for that account (menu Grok login uses this).' \
+    'grokb <name> exec [grok args...]     Run Grok headlessly in an existing isolated profile.' \
+    'grokb add <name>                     Create a profile and run grok login --device-auth.' \
+    'grokb remove <name> [--force]        Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
+    'grokb enable <name>|--all             Return an account (or every account) to worker selection.' \
+    'grokb disable <name>|--all            Exclude an account (or every account) from the worker pool.' \
+    'grokb use <name>|--clear              Pin worker selection to one account; no name prints the pin.' \
+    'grokb list                            List profiles with login state.' \
+    'grokb status                          Per-account login state and quota.'
+}
+
+if [ "${2:-}" = exec ] && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] && account_exists "${1:-}"; then
+  name="$1"
+  shift 2
+  run_account false "$name" "$@"
+fi
+
+case "${1:-}" in
+  add)
+    shift
+    [ "$#" -eq 1 ] || { printf 'usage: grokb add <name>\n' >&2; exit 2; }
+    add_account "$1"
+    ;;
+  remove)
+    shift
+    [ "$#" -ge 1 ] || { printf 'usage: grokb remove <name> [--force]\n' >&2; exit 2; }
+    remove_account "$@"
+    ;;
+  enable)
+    shift
+    enable_account "${1:-}"
+    ;;
+  disable)
+    shift
+    disable_account "${1:-}"
+    ;;
+  use)
+    shift
+    pin_account "${1:-}"
+    ;;
+  list)
+    [ "$#" -eq 1 ] || { printf 'usage: grokb list\n' >&2; exit 2; }
+    list_accounts
+    ;;
+  status)
+    [ "$#" -eq 1 ] || { printf 'usage: grokb status\n' >&2; exit 2; }
+    show_status
+    ;;
+  profile|p|run)
+    shift
+    run_account true "$@"
+    ;;
+  help|-h|--help|'')
+    show_help
+    ;;
+  *)
+    name="$1"
+    if [ "${2:-}" != exec ]; then printf 'usage: grokb <name> exec [grok args...]\n' >&2; exit 2; fi
+    shift 2
+    run_account false "$name" "$@"
+    ;;
+esac

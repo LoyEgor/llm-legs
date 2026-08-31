@@ -9,6 +9,7 @@ local M = {
   claudebCmd = "claudeb",
   codexbCmd = "codexb",
   geminibCmd = "geminib",
+  grokbCmd = "grokb",
   workerModelPath = home .. "/.claude/worker-model",
   workerModelShPath = repoRoot and repoRoot .. "/share/worker-model.sh" or nil,
   workerPickPath = home .. "/.local/bin/worker-pick",
@@ -253,7 +254,7 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   local reset = columns.reset or formatResetTime(bucket.resets_at)
   local prefix = string.format("%-6s  %-2s  ", account or "", label)
   local bar = usageBar(pct)
-  local suffix = string.format("  %4s  %9s", pctText, reset)
+  local suffix = string.format("  %4s%s  %9s", pctText, columns.detail or "", reset)
   if barWarning and not atLimit then
     return infoTitle(prefix, false, dim, false)
       .. infoTitle(bar, true, false, false)
@@ -398,7 +399,9 @@ local function readLlmLimits()
 end
 
 -- The menu speaks the collector's vendor keys; the worker-model file spells Claude "claudeb".
-local WORKER_MODEL_PREFIX = { claude = "claudeb", codex = "codex", gemini = "gemini" }
+local WORKER_MODEL_PREFIX = {
+  claude = "claudeb", codex = "codex", gemini = "gemini", grok = "grok",
+}
 local WORKER_ROLES = { "workers", "reviewers" }
 
 local function defaultWorkerRoles()
@@ -678,7 +681,7 @@ function M.refreshState()
   end
   local vendorErrors = {}
   if limits and type(limits.vendors) == "table" then
-    for _, name in ipairs({ "claude", "codex", "gemini" }) do
+    for _, name in ipairs({ "claude", "codex", "gemini", "grok" }) do
       local vendor = limits.vendors[name]
       local err = errorState(type(vendor) == "table" and vendor.refresh_error or nil)
       if err then vendorErrors[name] = err end
@@ -732,6 +735,10 @@ end
 
 local function resolveGeminib()
   return resolveCommand(M.geminibCmd or "geminib")
+end
+
+local function resolveGrokb()
+  return resolveCommand(M.grokbCmd or "grokb")
 end
 
 -- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
@@ -789,6 +796,10 @@ end
 
 local function runGeminib(args, failMessage, onSuccess)
   runAccountCommand(resolveGeminib(), args, failMessage, onSuccess)
+end
+
+local function runGrokb(args, failMessage, onSuccess)
+  runAccountCommand(resolveGrokb(), args, failMessage, onSuccess)
 end
 
 -- The scheduled refresh asks only the accounts the store marks walled, where the answer is free.
@@ -849,6 +860,11 @@ function M.toggleGeminiAccount(name, currentlyEnabled)
     function() setPoolOverride("gemini", name, not currentlyEnabled) end)
 end
 
+function M.toggleGrokAccount(name, currentlyEnabled)
+  runGrokb({ currentlyEnabled and "disable" or "enable", name }, "toggle failed",
+    function() setPoolOverride("grok", name, not currentlyEnabled) end)
+end
+
 function M.pinClaude(name, currentlyPinned)
   runClaudeb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
 end
@@ -859,6 +875,10 @@ end
 
 function M.pinGemini(name, currentlyPinned)
   runGeminib({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+end
+
+function M.pinGrok(name, currentlyPinned)
+  runGrokb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
 end
 
 local function refreshData(args, kind, budget, key, envExtra)
@@ -884,6 +904,7 @@ end
 function M.hardRefreshClaude(name) hardRefresh("claude/" .. name, true) end
 function M.hardRefreshCodex(name) hardRefresh("codex/" .. name) end
 function M.hardRefreshGemini(name) hardRefresh("gemini/" .. (name or "main")) end
+function M.hardRefreshGrok(name) hardRefresh("grok/" .. name) end
 
 -- A bare vendor name refreshes every account of that vendor and no other vendor, free.
 function M.refreshVendor(vendor)
@@ -946,6 +967,7 @@ function M.removeGemini(name)
     runGeminib({ "remove", name }, "remove failed")
   end
 end
+function M.removeGrok(name) runGrokb({ "remove", name, "--force" }, "remove failed") end
 
 local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
@@ -973,6 +995,10 @@ function M.loginCodex(name)
 end
 function M.loginGemini(name)
   openLoginTerminal((M.geminibCmd or "geminib") .. " profile " .. shellQuote(name or "main"))
+end
+function M.loginGrok(name)
+  openLoginTerminal((M.grokbCmd or "grokb") .. " profile " .. shellQuote(name)
+    .. " login --device-auth")
 end
 
 local function refreshItems(menu)
@@ -1061,7 +1087,7 @@ local function routingDisplayLines(lines)
       for _, part in ipairs(parts) do result[#result + 1] = "  " .. part end
     else
       local vendor, accounts = line:match("^(%a+): (.*)$")
-      if vendor == "codex" or vendor == "gemini" or vendor == "claude" then
+      if vendor == "codex" or vendor == "gemini" or vendor == "grok" or vendor == "claude" then
         local footnote
         if vendor == "claude" then
           local marker = "   (* = this session account"
@@ -1173,11 +1199,15 @@ function M.menuItems()
     local vendors = {
       { key = "claude", label = "Claude" },
       { key = "codex", label = "Codex" },
+      { key = "grok", label = "Grok" },
       { key = "gemini", label = "Gemini" },
     }
 
     for _, entry in ipairs(vendors) do
       local vendor = limits.vendors[entry.key]
+      -- Absent from the store means the leg is not installed: every vendor skips,
+      -- rather than rendering a "no live data" wall that does not exist.
+      if vendor ~= nil then
       local pinnedAccount = pins[entry.key]
       -- A vendor no role may use is still fully operable; its rows only stop claiming attention.
       local unused = not roles[entry.key].workers and not roles[entry.key].reviewers
@@ -1193,12 +1223,15 @@ function M.menuItems()
       -- profile, and that profile is deletable.
       local hasGeminiAccounts = entry.key == "gemini" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
+      local hasGrokAccounts = entry.key == "grok" and type(vendor) == "table"
+        and type(vendor.accounts) == "table" and #vendor.accounts > 0
       -- Removing gemini's main empties the roster, and the collector states that emptiness as
       -- `removed` on the vendor: without it a removed Gemini rendered a "no live data" row with a
       -- Refresh submenu, which is the opposite of removed.
       if type(vendor) == "table" and vendor.removed == true then
         vendor = nil
-      elseif type(vendor) ~= "table" or (vendor.available ~= true and not hasGeminiAccounts) then
+      elseif type(vendor) ~= "table"
+          or (vendor.available ~= true and not hasGeminiAccounts and not hasGrokAccounts) then
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
@@ -1214,11 +1247,11 @@ function M.menuItems()
               or infoTitle(string.format("%-6s  no live data", entry.label)),
             disabled = true,
           }
-          if entry.key == "gemini" then
-            -- Vendor-wide: a Gemini with no live data may have no accounts left to name.
+          if entry.key == "gemini" or entry.key == "grok" then
+            -- Vendor-wide: a Gemini or Grok with no live data may have no accounts left to name.
             unavailableRow.disabled = nil
             unavailableRow.menu = {{
-              title = "Refresh", fn = function() M.refreshVendor("gemini") end,
+              title = "Refresh", fn = function() M.refreshVendor(entry.key) end,
             }}
           end
         end
@@ -1229,12 +1262,15 @@ function M.menuItems()
         appendRoleItems(unavailableRow)
         table.insert(menu, unavailableRow)
       else
-        local blocks = (entry.key == "claude" or entry.key == "codex" or entry.key == "gemini")
+        local blocks = (entry.key == "claude" or entry.key == "codex" or entry.key == "gemini"
+          or entry.key == "grok")
           and vendor.accounts or nil
         local isClaudeAccounts = entry.key == "claude" and type(blocks) == "table" and #blocks > 0
         local isCodexAccounts = entry.key == "codex" and type(blocks) == "table" and #blocks > 0
         local isGeminiAccounts = entry.key == "gemini" and type(blocks) == "table" and #blocks > 0
+        local isGrokAccounts = entry.key == "grok" and type(blocks) == "table" and #blocks > 0
         local isAccountRows = isClaudeAccounts or isCodexAccounts or isGeminiAccounts
+          or isGrokAccounts
         renderedAccountRows = isAccountRows
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
         if isGeminiAccounts then
@@ -1301,13 +1337,19 @@ function M.menuItems()
           table.insert(menu, fallbackRow)
         end
         for _, block in ipairs(blocks) do
-          local fiveHour = block.five_hour or {}
+          local fiveHour = type(block.five_hour) == "table" and block.five_hour or nil
           local weekly = block.weekly
           local acct = block.account or entry.label
           local enabled = poolStateFor(entry.key, acct, block.enabled ~= false)
+          local authStatus = type(block.auth) == "table" and block.auth.status or nil
           local authNeeded = block.auth_needed == true
+          if entry.key == "grok" then
+            authNeeded = authStatus == "needs_login"
+              or (block.auth_needed == true and authStatus ~= "expired")
+          end
           local accountAge = formatAccountAge(block.as_of)
           local accountAgeAlarm = block.age_alarm == true
+            and not (entry.key == "grok" and authStatus == "expired")
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
           local pinExists = pins[entry.key] == acct
           local pinFn
@@ -1315,8 +1357,10 @@ function M.menuItems()
             pinFn = function(pinned) M.pinClaude(acct, pinned) end
           elseif entry.key == "codex" then
             pinFn = function(pinned) M.pinCodex(acct, pinned) end
-          else
+          elseif entry.key == "gemini" then
             pinFn = function(pinned) M.pinGemini(acct, pinned) end
+          else
+            pinFn = function(pinned) M.pinGrok(acct, pinned) end
           end
           if isAccountRows then
             if pinExists then renderedPin = true end
@@ -1335,9 +1379,14 @@ function M.menuItems()
                 hardRefreshFn = function() M.hardRefreshCodex(acct) end
                 -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
                 if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
-              else
+              elseif entry.key == "gemini" then
                 accountRow = geminiLoginNeededRow(acct, acct, pinExists,
                   accountAge, block.needs_user_entry == true, unused, accountAgeAlarm)
+              else
+                loginFn = function() M.loginGrok(acct) end
+                hardRefreshFn = function() M.hardRefreshGrok(acct) end
+                -- grokb refuses to remove `main` (the real ~/.grok); no Remove item.
+                if acct ~= "main" then removeFn = function() M.removeGrok(acct) end end
               end
               if not accountRow then
                 local clearPinFn
@@ -1386,6 +1435,15 @@ function M.menuItems()
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGemini(acct) end },
                 }
+              elseif isGrokAccounts then
+                accountRow.disabled = nil
+                accountRow.checked = enabled
+                accountRow.menu = {
+                  { title = "In worker pool", checked = enabled,
+                    fn = function() M.toggleGrokAccount(acct, enabled) end },
+                  { title = "Hard refresh",
+                    fn = function() M.hardRefreshGrok(acct) end },
+                }
               end
               if accountRow.menu and (block.removed ~= true or pinExists) then
                 table.insert(accountRow.menu, 2, {
@@ -1398,19 +1456,37 @@ function M.menuItems()
             table.insert(menu, accountRow)
           end
           if not authNeeded then
-            local fiveDim = isStale(fiveHour)
-            local fiveRow = {
-              title = rowTitle("", "5h", fiveHour, fiveDim, bucketAtLimit(fiveHour)),
-              disabled = true,
-            }
-            table.insert(menu, fiveRow)
-            local function tailRow(label, bucket, barWarning)
-              if type(bucket) == "table" then
-                return rowTitle("", label, bucket, isStale(bucket), bucketAtLimit(bucket), barWarning)
-              end
-              return rowTitle("", label, nil, false, false, barWarning)
+            if type(fiveHour) == "table" then
+              local fiveRow = {
+                title = rowTitle("", "5h", fiveHour, isStale(fiveHour),
+                  bucketAtLimit(fiveHour)),
+                disabled = true,
+              }
+              table.insert(menu, fiveRow)
             end
-            table.insert(menu, { title = tailRow("wk", weekly), disabled = true })
+            local function tailRow(label, bucket, barWarning, columns)
+              if type(bucket) == "table" then
+                return rowTitle("", label, bucket, isStale(bucket), bucketAtLimit(bucket),
+                  barWarning, columns)
+              end
+              return rowTitle("", label, nil, false, false, barWarning, columns)
+            end
+            local weeklyLabel = "wk"
+            if isGrokAccounts and type(block.period) == "string" then
+              local period = block.period:gsub("^USAGE_PERIOD_TYPE_", ""):lower()
+              if period == "monthly" then weeklyLabel = "mo"
+              elseif period == "daily" then weeklyLabel = "d"
+              end
+            end
+            local weeklyColumns
+            local buildPct = isGrokAccounts and tonumber(block.build_pct) or nil
+            local weeklyPct = type(weekly) == "table" and tonumber(weekly.effective_pct) or nil
+            if buildPct and (not weeklyPct or math.abs(buildPct - weeklyPct) >= 0.05) then
+              weeklyColumns = { detail = string.format("  build %d%%", math.floor(buildPct + 0.5)) }
+            end
+            table.insert(menu, {
+              title = tailRow(weeklyLabel, weekly, false, weeklyColumns), disabled = true,
+            })
             if type(block.fable) == "table" then
               local fableWarning = (tonumber(block.fable.effective_pct) or 0) >= 80
               table.insert(menu, { title = tailRow("fb", block.fable, fableWarning), disabled = true })
@@ -1433,8 +1509,10 @@ function M.menuItems()
           clearPin = function() M.pinClaude(pinnedAccount, true) end
         elseif entry.key == "codex" then
           clearPin = function() M.pinCodex(pinnedAccount, true) end
-        else
+        elseif entry.key == "gemini" then
           clearPin = function() M.pinGemini(pinnedAccount, true) end
+        else
+          clearPin = function() M.pinGrok(pinnedAccount, true) end
         end
         table.insert(menu, {
           title = metaTitle(pinnedAccount) .. pinTitle(),
@@ -1461,6 +1539,7 @@ function M.menuItems()
             disabled = true,
           })
         end
+      end
       end
     end
 

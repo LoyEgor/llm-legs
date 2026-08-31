@@ -1374,6 +1374,60 @@ printf 'worker=frobnicate\ncodex_effort=high\ncodex_profile=alt\n' > "$worker_fi
 worker_out=$(run_statusline "$(statusline_payload status-w-bad)")
 assert test "${worker_out#*@alt}" = "$worker_out"
 
+# grok reads its own knobs off the same file, and `gr` is its field of worker-pick's line.
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med gr✓supergrok·grok-4.6·hi\n' \
+  >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=grok\ngrok_model=grok-4.5\ngrok_effort=medium\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok)")
+assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·GR4.5·med${RESET}" <<< "$worker_out"
+
+# `auto` is not a model id — it is "whatever the account defaults to" — so the segment names the
+# effort alone rather than printing a version the CLI never promised.
+printf 'worker=grok\ngrok_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-auto)")
+assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·hi${RESET}" <<< "$worker_out"
+assert test "${worker_out#*AT}" = "$worker_out"
+
+printf 'worker=grok\ngrok_profile=pinnedgrok\ngrok_model=grok-4.6\ngrok_effort=xhigh\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-pin)")
+assert grep -Fq "${MAGENTA}@pinnedgrok${RESET}${DIM}·GR4.6·xhi${RESET}" <<< "$worker_out"
+
+# grok is last in worker-pick's order: it answers in auto only once every vendor above it is out.
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·pro·hi gr✓supergrok·grok-4.6·hi\n' \
+  >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=auto\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr)" main)
+assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·pro·hi gr✓supergrok·grok-4.6·hi\n' \
+  >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=auto\ngemini_model=pro\ngemini_effort=high\ngrok_model=grok-4.6\ngrok_effort=high\n' \
+  > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr-order)" main)
+assert grep -Fq "${MAGENTA}main${RESET}${DIM}·PR·hi${RESET}" <<< "$worker_out"
+assert test "${worker_out#*supergrok}" = "$worker_out"
+
+# The field is optional: a prediction written before grok existed renders exactly as it did.
+printf 'cx✓alt·sol·med cb⏸off·opus·hi gx⏸off·pro·hi\n' >"$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-auto-nogr)" main)
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·hi${RESET}" <<< "$worker_out"
+
+# A role switched off is a parked switch, not a walled account, for grok as for everyone.
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med gr⏸off·grok-4.6·hi\n' \
+  >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=grok\ngrok_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-off)")
+assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
+assert test "${worker_out#*supergrok}" = "$worker_out"
+rm -f "$HOME/.cache/worker-pick.line.main"
+
+# A live grok worker's tag wears the same short forms as every other vendor's.
+printf 'worker=auto\n' > "$worker_file"
+mkdir -p "$HOME/.cache/claude-worker-tags/status-w-grok-live"
+printf 'supergrok · grok-4.6 · xhigh\n' > "$HOME/.cache/claude-worker-tags/status-w-grok-live/1"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-live)")
+assert grep -Fq "${MAGENTA}▶supergrok${RESET}${DIM}·GR4.6·xhi${RESET}" <<< "$worker_out"
+rm -rf "$HOME/.cache/claude-worker-tags/status-w-grok-live"
+
 # The live tag beats the config candidate and wears the same short forms.
 printf 'worker=auto\n' > "$worker_file"
 mkdir -p "$HOME/.cache/claude-worker-tags/status-w-live"
@@ -3022,8 +3076,8 @@ run_probe_4dig() {
 run_probe_4dig pp-4dig 2001
 assert_eq '8127' "$(cat "$STATE_DIR/ports-pp-4dig")"
 
-# The LLM-tool list is the contract's, and the standalone grok account it was written for is gone:
-# a process by that name is an ordinary one now, and its dev server keeps its place like any other.
+# The LLM-tool list is the contract's, and grok is on it again as a worker vendor: its own RPC
+# socket leads nowhere a human would go, while a dev server one of its runs started IS the work.
 FAKE_PS_TOOLS="$FIXTURES/ports-ps-tools"
 cat > "$FAKE_PS_TOOLS" <<'PSEOFT'
 #!/usr/bin/env bash
@@ -3033,6 +3087,7 @@ cat <<'SNAP'
 2101 2100 node /srv/rpc-worker.js
 2102 1000 grok --prompt-file /tmp/review
 2103 2102 node /srv/grok-rpc.js
+2104 2102 node /srv/dev.js
 SNAP
 PSEOFT
 chmod +x "$FAKE_PS_TOOLS"
@@ -3043,11 +3098,12 @@ cat <<'OUT'
 COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
 node     2101 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
 node     2103 u   12u  IPv4  0t0      TCP 127.0.0.1:61611 (LISTEN)
+node     2104 u   13u  IPv4  0t0      TCP 127.0.0.1:4321 (LISTEN)
 OUT
 LSEOFT
 chmod +x "$FAKE_LSOF_TOOLS"
 STATUSLINE_PS="$FAKE_PS_TOOLS" STATUSLINE_LSOF="$FAKE_LSOF_TOOLS" "$PORTS_PROBE" pp-tools 1000
-assert_eq '61611' "$(cat "$STATE_DIR/ports-pp-tools")"
+assert_eq '4321' "$(cat "$STATE_DIR/ports-pp-tools")"
 
 
 run_probe pp-selfroot 9999
@@ -3268,6 +3324,67 @@ for gemini_launch in \
     '.hookSpecificOutput.updatedInput.description == ($account + " · flash36 · medium — Resume it")' \
     <<<"$gemini_form_output" >/dev/null
 done
+
+grok_seed=$(worker_payload grok-worker worker/grok 'Implement it' \
+  "env GROK_MEMORY=0 $HOME/.local/bin/grokb profile supergrok --prompt-file /tmp/brief --output-format streaming-json -m grok-4.6 --reasoning-effort xhigh")
+grok_seed_output=$(printf '%s' "$grok_seed" | "$WORKER_HOOK") || fail "grok-tag seed exited nonzero"
+assert_eq 'supergrok · grok · xhigh' "$(cat "$TAGDIR/workergrok")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · xhigh — Implement it"' \
+  <<< "$grok_seed_output" >/dev/null
+
+# The knobs answer for what the launch line leaves out, exactly as they do for the other vendors.
+printf 'grok_model=grok-4.5\ngrok_effort=medium\n' > "$HOME/.claude/worker-model"
+for grok_launch in \
+  'grokb profile routed --prompt-file /tmp/brief' \
+  'grokb p short --prompt-file /tmp/brief' \
+  'grokb run rerouted --prompt-file /tmp/brief' \
+  'grokb direct exec --prompt-file /tmp/brief'; do
+  grok_form=$(worker_payload grok-worker worker/grok 'Resume it' "$grok_launch")
+  grok_form_output=$(printf '%s' "$grok_form" | "$WORKER_HOOK") || fail "grok shorthand tag exited nonzero"
+  expected_account=$(printf '%s\n' "$grok_launch" | awk '{if ($2 == "p" || $2 == "run" || $2 == "profile") print $3; else print $2}')
+  assert_eq "$expected_account · grok-4.5 · medium" "$(cat "$TAGDIR/workergrok")"
+  assert jq -e --arg account "$expected_account" \
+    '.hookSpecificOutput.updatedInput.description == ($account + " · grok-4.5 · medium — Resume it")' \
+    <<<"$grok_form_output" >/dev/null
+done
+
+# `auto` never reaches a tag: the vendor word stands in, like codex's `sol`.
+printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
+grok_auto_form=$(worker_payload grok-worker worker/grok 'Resume it' 'grokb profile routed --prompt-file /tmp/brief')
+grok_auto_form_output=$(printf '%s' "$grok_auto_form" | "$WORKER_HOOK") || fail "grok auto tag exited nonzero"
+assert_eq 'routed · grok · high' "$(cat "$TAGDIR/workergrok")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "routed · grok · high — Resume it"' \
+  <<<"$grok_auto_form_output" >/dev/null
+
+# A grokb line that prints nothing headless is the human at the keyboard, and derives no tag.
+rm -f "$TAGDIR/workergrokint"
+grok_interactive=$(worker_payload grok-worker worker/grokint 'Look around' 'grokb profile supergrok models')
+grok_interactive_output=$(printf '%s' "$grok_interactive" | "$WORKER_HOOK") \
+  || fail "grok interactive tag exited nonzero"
+assert test ! -e "$TAGDIR/workergrokint"
+assert_eq "" "$grok_interactive_output"
+
+printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
+grok_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-grok",
+  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
+              prompt:"ACCOUNT: supergrok\nMODEL: grok-4.6\nEFFORT: high\nWorking directory: /tmp"}}')
+grok_spawn_output=$(printf '%s' "$grok_spawn" | "$SPAWN_HOOK") || fail "grok spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · high: Implement fixture"' \
+  <<< "$grok_spawn_output" >/dev/null
+assert_eq 'supergrok · grok · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-grok/pending-grok-worker")"
+
+# No MODEL: line and grok_model=auto — the row says the vendor, not the knob word.
+grok_auto_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-grok-auto",
+  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
+              prompt:"ACCOUNT: supergrok\nEFFORT: high\nWorking directory: /tmp"}}')
+grok_auto_output=$(printf '%s' "$grok_auto_spawn" | "$SPAWN_HOOK") || fail "grok auto spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · high: Implement fixture"' \
+  <<< "$grok_auto_output" >/dev/null
+assert_eq 'supergrok · grok · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-grok-auto/pending-grok-worker")"
 
 printf 'gemini_model=pro\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 spawn_payload=$(jq -cn '{
@@ -4560,5 +4677,45 @@ BENCH_CMD="$anchor_saved_bench"
 PATH="$anchor_saved_path"
 rm -f "$STATE_DIR/review-anchor-anchor-path"
 
+# --- worker-launch-gate.sh: grok ------------------------------------------------------------------
+# A vendor launched as a bare headless CLI from a chat's Bash is a worker nobody can see. grok
+# spells that four ways, and the profile wrapper is denied beside the bare binary exactly as the
+# other vendors' wrappers are: `grokb` isolates a profile, it records nothing about the run, so
+# `worker-run` is the only sanctioned way in. Interactive launches and read-only subcommands stay
+# ungated.
+LAUNCH_GATE_BIN="$ROOT/bin/worker-launch-gate.sh"
+gate_payload() {
+  jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}'
+}
+for gate_denied in \
+  'grok -p "do the thing"' \
+  'grok --print "do the thing"' \
+  'grok --prompt-file /tmp/brief' \
+  'grok --prompt-json /tmp/brief.json' \
+  'grok agent --output-format streaming-json' \
+  'env GROK_MEMORY=0 /opt/homebrew/bin/grok --prompt-file /tmp/brief' \
+  'grokb profile supergrok --prompt-file /tmp/brief --output-format streaming-json' \
+  'grokb supergrok exec --prompt-file /tmp/brief' \
+  'grokb p supergrok -p "do the thing"'; do
+  gate_out=$(gate_payload "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("worker-run start <claudeb\\|codex\\|gemini\\|grok>")' \
+    <<<"$gate_out" >/dev/null
+done
+for gate_allowed in \
+  'worker-run start grok --brief /tmp/brief --workdir /tmp' \
+  'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief' \
+  'grokb profile supergrok' \
+  'grok models' \
+  'grokb list' \
+  'echo "grok -p is the spelling the gate denies"' \
+  'python3 grok-quota.py'; do
+  gate_out=$(gate_payload "$gate_allowed" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+done
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini worker tag propagation"
+# --- statusline-ports-probe.sh: grok is on the tool list -------------------------------------------
+assert grep -Fq 'opencode-go|codex|grok' "$ROOT/bin/statusline-ports-probe.sh"
+
+
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace"

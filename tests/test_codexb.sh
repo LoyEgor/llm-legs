@@ -329,8 +329,13 @@ assert test -d "$HOME/.codex-profiles/menulogin"
 assert grep -qx "CALL account=menulogin home=$HOME/.codex-profiles/menulogin argc=1" "$CODEX_CALLS"
 assert grep -qx 'ARG=login' "$CODEX_CALLS"
 assert grep -qF 'shellQuote(name) .. " login")' "$ROOT/hammerspoon/llm-limits.lua"
-# Whole file minus Lua comments: a line-scoped grep would miss a flag spliced in via a variable.
-if grep -v '^[[:space:]]*--' "$ROOT/hammerspoon/llm-limits.lua" | grep -q -- --device-auth; then
+# Codex's own resolver plus the shared Terminal helper, whole and minus Lua comments: a line-scoped
+# grep would miss a flag spliced in via a variable, and a whole-file grep now reads Grok's resolver
+# — where `--device-auth` is the only login flow there is — as Codex's.
+codex_login_lua=$(awk '/^local function openLoginTerminal\(/,/^end$/' "$ROOT/hammerspoon/llm-limits.lua"
+  awk '/^function M\.loginCodex\(/,/^end$/' "$ROOT/hammerspoon/llm-limits.lua")
+assert grep -q 'openLoginTerminal("codexb run ' <<<"$codex_login_lua"
+if grep -v '^[[:space:]]*--' <<<"$codex_login_lua" | grep -q -- --device-auth; then
   fail "menu Codex login reverted to device-auth"
 fi
 
@@ -701,6 +706,14 @@ assert_fails grep -q 'Use low quality' "$IMAGE_PROMPT"
 assert grep -q -- "- $WORK/reference.jpg" "$IMAGE_PROMPT"
 assert grep -qx 'generated:explicit' "$WORK/image-output/explicit.jpg"
 assert grep -qx 'account=explicit' "$IMAGE_OUT"
+
+# An answer already in the destination's own format is delivered byte for byte, png included: the
+# generator is told to save under that extension, and re-encoding a matching answer changes pixels
+# nobody asked to change. Same rule in gemini-image and grok-image.
+: >"$IMAGE_MAGICK_CALLS"
+assert image_run --dest "$WORK/image-output/asis.png" --prompt 'simple badge' --account explicit
+assert grep -qx 'generated:explicit' "$WORK/image-output/asis.png"
+assert test ! -s "$IMAGE_MAGICK_CALLS"
 
 : >"$IMAGE_MAGICK_CALLS"
 assert image_run --dest "$WORK/image-output/alpha.png" \

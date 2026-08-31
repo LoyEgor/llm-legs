@@ -15,7 +15,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 subagent=$(field '.tool_input.subagent_type')
 case "$subagent" in
-  codex-worker|claudeb-worker|gemini-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker) ;;
   *) exit 0 ;;
 esac
 
@@ -59,6 +59,20 @@ elif [ "$subagent" = codex-worker ]; then
   [ -n "$effort" ] || effort=medium
   codex_model=$(codex_model_short_label)
   prefix="$acct · $codex_model · $effort"
+elif [ "$subagent" = grok-worker ]; then
+  acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=$(route_account grok)
+  [ -n "$acct" ] || acct=$(worker_conf grok_profile)
+  model=$(brief_line MODEL)
+  [ -n "$model" ] || model=$(worker_conf grok_model)
+  [ -n "$model" ] || model=auto
+  # `auto` is the knob's word for "CLI default", meaningless on a menu row beside a claudeb twin
+  # of the same account name — the vendor word is what tells them apart.
+  case "$model" in auto|grok-4.6) model=grok ;; esac
+  effort=$(brief_line EFFORT)
+  [ -n "$effort" ] || effort=$(worker_conf grok_effort)
+  [ -n "$effort" ] || effort=high
+  if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
 else
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account gemini)

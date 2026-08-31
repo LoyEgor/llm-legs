@@ -14,7 +14,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker) ;;
   *) exit 0 ;;
 esac
 agent_id=$(field '.agent_id' | tr -cd 'A-Za-z0-9_-')
@@ -41,6 +41,11 @@ grab() { printf '%s' "$launch" | grep -oE -e "$1" 2>/dev/null | head -n1; }
 # and wrapper words (the documented launches run under CODEX_HOME=… and
 # timeout/nohup). Unanchored, prose naming "claudeb profile X" tags X.
 cmd_word='(^|[;&|(])[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|(nohup|env|nice|timeout)([[:space:]]+(-[^[:space:]]+|[0-9]+[smhd]?))*[[:space:]]+)*([^[:space:];&|()]*/)?'
+
+is_grokb_launch() {
+  printf '%s' "$launch" | grep -qE \
+    "${cmd_word}"'grokb[[:space:]]+((profile|p|run)[[:space:]]+["'\'']*[a-z0-9][a-z0-9-]*|["'\'']*[a-z0-9][a-z0-9-]*["'\'']*[[:space:]]+exec)'
+}
 
 is_geminib_launch() {
   printf '%s' "$launch" | grep -qE \
@@ -118,6 +123,20 @@ elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
   [ -n "$effort" ] || effort=high
   tag="$acct · $model · $effort"
+elif is_grokb_launch &&
+     printf '%s' "$launch" | grep -qE -- '--prompt-file|-p |--prompt-json'; then
+  acct=$(grab "${cmd_word}"'grokb[[:space:]]+(profile|p|run)[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*' |
+    grep -oE '[a-z0-9][a-z0-9-]*' | tail -n1)
+  [ -n "$acct" ] || acct=$(grab "${cmd_word}"'grokb[[:space:]]+["'\'' ]*[a-z0-9][a-z0-9-]*["'\'' ]*[[:space:]]+exec' |
+    grep -oE '[a-z0-9][a-z0-9-]*' | tail -n2 | head -n1)
+  model=$(grab '\-m[= ]+[A-Za-z0-9][A-Za-z0-9_.-]*' | grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*$')
+  [ -n "$model" ] || model=$(worker_conf grok_model)
+  [ -n "$model" ] || model=auto
+  case "$model" in auto|grok-4.6) model=grok ;; esac
+  effort=$(grab '\-\-reasoning-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
+  [ -n "$effort" ] || effort=$(worker_conf grok_effort)
+  [ -n "$effort" ] || effort=high
+  if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
 fi
 
 if [ -n "$tag" ]; then

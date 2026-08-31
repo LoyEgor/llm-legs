@@ -263,13 +263,10 @@ if [ -z "$generated" ]; then
   exit 1
 fi
 
-if [ "$remove_green" = true ] || [ "$extension" = png ] \
-    || [ "$extension" != "$(normalized_extension "$generated")" ]; then
-  if [ "$remove_green" = true ]; then
-    chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-  else
-    magick "$generated" "$dest"
-  fi
+if [ "$remove_green" = true ]; then
+  chroma_key_to_png "$generated" "$tmp_dir" "$dest"
+elif [ "$extension" != "$(normalized_extension "$generated")" ]; then
+  magick "$generated" "$dest"
 else
   cp "$generated" "$dest"
 fi

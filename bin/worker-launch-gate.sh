@@ -33,15 +33,20 @@ VENDOR_WORD="^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|(env|command|ex
 PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt)${EDGE}"
 SUBCOMMAND="([[:space:]]+[^[:space:]]+)*[[:space:]]+"
 
+# Grok's own spellings, not reusable from PRINT_FLAG: folding it back in would let
+# `grokb ... --prompt-file` and `grokb agent` through.
+GROK_PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt(-file|-json)?|agent)${EDGE}"
+
 LAUNCH_RES=(
   "${VENDOR_WORD}claudeb?${PRINT_FLAG}"
   "${VENDOR_WORD}codexb?${SUBCOMMAND}exec${EDGE}"
   "${VENDOR_WORD}geminib?${PRINT_FLAG}"
   "${VENDOR_WORD}agy${PRINT_FLAG}"
   "${VENDOR_WORD}opencode${SUBCOMMAND}run${EDGE}"
+  "${VENDOR_WORD}grokb?${GROK_PRINT_FLAG}"
 )
 
-SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|codex-image|gemini-image|opencode-go)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
+SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|codex-image|gemini-image|grok-image|opencode-go)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
 
 deny() {
   jq -cn --arg r "$1" \
@@ -83,6 +88,6 @@ for launch_re in "${LAUNCH_RES[@]}"; do
   hit=$(grep -Eo "$launch_re" <<<"$scan" 2>/dev/null | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
   [ -n "$hit" ] || continue
-  deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. Launch it through \`worker-run start <claudeb|codex|gemini> --brief <file> --workdir <dir>\`, or through the tool that owns its launches (review-bench, llm-limits, claudeb revive, claude-session-driver, codex-image, gemini-image, opencode-go). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command."
+  deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. Launch it through \`worker-run start <claudeb|codex|gemini|grok> --brief <file> --workdir <dir>\`, or through the tool that owns its launches (review-bench, llm-limits, claudeb revive, claude-session-driver, codex-image, gemini-image, grok-image, opencode-go). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command."
 done
 exit 0

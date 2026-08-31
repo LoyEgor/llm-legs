@@ -11,7 +11,7 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' >&2
@@ -149,6 +149,7 @@ vendor_name() {
     claudeb) printf 'CLAUDEB' ;;
     codex) printf 'CODEX' ;;
     gemini) printf 'GEMINI' ;;
+    grok) printf 'GROK' ;;
   esac
 }
 
@@ -157,6 +158,7 @@ failure_outcome() {
     claudeb) printf 'CLAUDEB_FAILED' ;;
     codex) printf 'CODEX_UNAVAILABLE' ;;
     gemini) printf 'GEMINI_UNAVAILABLE' ;;
+    grok) printf 'GROK_UNAVAILABLE' ;;
   esac
 }
 
@@ -165,6 +167,14 @@ codex_home() {
     printf '%s/.codex' "$HOME"
   else
     printf '%s/%s' "${CODEX_PROFILES_DIR:-$HOME/.codex-profiles}" "$1"
+  fi
+}
+
+grok_home() {
+  if [ "$1" = main ]; then
+    printf '%s/.grok' "$HOME"
+  else
+    printf '%s/%s' "${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}" "$1"
   fi
 }
 
@@ -178,8 +188,26 @@ codex_unsupported_model() {
 # tree named by session id, codex under the profile's sessions tree with the id inside the filename,
 # agy under the profile's brain tree named by conversation id — deterministic from the id the run's
 # own log already gave up, so nothing here searches for it.
+# Grok files a session under the URL-encoded cwd it ran in, so an id found by globbing can belong
+# to a session from another directory entirely: the session's own summary.json names that cwd, and
+# the encoded directory name answers when the summary is missing. Asked without a workdir — a
+# caller that only wants the file — nothing is verified.
+grok_session_dir_matches() { # session-dir workdir
+  local directory="$1" workdir="$2" recorded
+  [ -n "$workdir" ] && [ "$workdir" != null ] || return 0
+  recorded=$(jq -r '.info.cwd // empty' "$directory/summary.json" 2>/dev/null)
+  if [ -n "$recorded" ]; then
+    [ "${recorded%/}" = "${workdir%/}" ]
+    return
+  fi
+  recorded=${directory%/*}
+  recorded=${recorded##*/}
+  recorded=$(printf '%b' "${recorded//%/\\x}" 2>/dev/null) || return 1
+  [ "${recorded%/}" = "${workdir%/}" ]
+}
+
 session_transcript() {
-  local vendor="$1" account="$2" session="$3" transcript=''
+  local vendor="$1" account="$2" session="$3" workdir="${4:-}" transcript='' candidate=''
   [ -n "$session" ] && [ "$session" != - ] || return 1
   # A relative step in an id read out of a log would resolve the path somewhere else entirely.
   case "$session" in .|..|*/*) return 1 ;; esac
@@ -193,6 +221,14 @@ session_transcript() {
     codex) transcript=$(find "$(codex_home "$account")/sessions" -type f -name "*$session*.jsonl" 2>/dev/null | head -n1) ;;
     gemini)
       transcript="$(gemini_account_home "$account")/.gemini/antigravity-cli/brain/$session/.system_generated/logs/transcript_full.jsonl"
+      ;;
+    grok)
+      for candidate in "$(grok_home "$account")/sessions/"*/"$session/updates.jsonl"; do
+        [ -f "$candidate" ] || continue
+        grok_session_dir_matches "${candidate%/updates.jsonl}" "$workdir" || continue
+        transcript="$candidate"
+        break
+      done
       ;;
   esac
   [ -n "$transcript" ] && [ -f "$transcript" ] || return 1
@@ -297,6 +333,7 @@ pick_account() {
   PICKED_RESERVE=false
   PICKED_POOL_EMPTY=false
   PICKED_ROLE_OFF=false
+  PICKED_NO_DATA=false
   picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
   busy=$(busy_accounts "$vendor")
   combined=$(printf '%s\n%s\n' "$walled" "$busy" | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -)
@@ -322,6 +359,11 @@ pick_account() {
   # A vendor closed for this role is the same kind of decision, and its accounts may be at 0%.
   # Only workers is asked for here, so only workers can come back.
   ! grep -q 'is switched off for workers' "$errors" || PICKED_ROLE_OFF=true
+  # A vendor the picker cannot read at all — no accounts, no usage snapshot — is not a walled one.
+  # Its quota may be untouched, and this whole system exists so that nothing reports a limit it has
+  # no data for (docs/DIAGNOSTICS.md, the 429 taxonomy).
+  ! grep -Eq 'no selectable [a-z]+ account \((unavailable|no quota data)\)' "$errors" ||
+    PICKED_NO_DATA=true
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
 }
@@ -448,6 +490,51 @@ supervise_gemini() {
   return "$rc"
 }
 
+supervise_grok() {
+  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied
+  local -a command
+  account=$(jq -r '.account' "$meta")
+  model=$(jq -r '.model' "$meta")
+  effort=$(jq -r '.effort' "$meta")
+  resume=$(jq -r '.resume' "$meta")
+  cli=$(jq -r '.cli' "$meta")
+  turns=$(jq -r '.max_turns' "$meta")
+  # GROK_MEMORY=0 rather than a flag: `--no-memory` was dropped in 1.0.13, and a worker inheriting
+  # the profile's memory would carry another task's notes into this brief.
+  command=(env GROK_MEMORY=0 "$cli" profile "$account" --prompt-file "$directory/brief"
+    --output-format streaming-json --always-approve --cwd "$(jq -r '.workdir' "$meta")"
+    --no-subagents --max-turns "$turns" --reasoning-effort "$effort")
+  [ "$model" = auto ] || command+=(-m "$model")
+  # `-r` resumes; `-s` only ever CREATES and rejects an id that already exists (live 1.0.13).
+  [ -z "$resume" ] || command+=(-r "$resume")
+  [ "$(jq -r '.web_search' "$meta")" = true ] || command+=(--disable-web-search)
+  run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
+  rc=$?
+  served=$(grok_end_field "$directory" '((.modelUsage // {}) | keys_unsorted[0]) // empty')
+  [ -z "$served" ] || meta_update "$directory" '.served_model = $model' --arg model "$served" || :
+  # A tool the permission policy refused is neither a wall nor a failed run — 1.0.13 ends such a run
+  # normally with exit 0 — but it is the one thing a reader of a thin result needs to know about.
+  # Counted off the denial EVENT, never the phrase: the CLI states a policy denial once, in the
+  # failed tool_call_update, and the agent then quotes that same sentence back in its own answer
+  # (live-caught) — so a grep over the stream double-counts a real denial, and reports one for a
+  # brief that merely discusses them.
+  denied=$(jq -rR 'fromjson?
+                   | select(type == "object" and .type == "tool_call_update" and .status == "failed")
+                   | select([.content[]? | .. | strings]
+                            | any(test("was not executed: Denied by permission policy")))
+                   | .toolCallId' "$directory/out" 2>/dev/null | wc -l | tr -d '[:space:]')
+  [[ "$denied" =~ ^[0-9]+$ ]] || denied=0
+  [ "$denied" -eq 0 ] || meta_update "$directory" '.denied_tools = $n' --argjson n "$denied" || :
+  return "$rc"
+}
+
+# One field off the streaming run's terminal `end` event. Read with fromjson? so a truncated line
+# in a killed run's stream is skipped rather than voiding the whole read.
+grok_end_field() { # directory jq-expression
+  jq -rR "fromjson? | select(type == \"object\" and .type == \"end\") | $2" "$1/out" 2>/dev/null |
+    sed '/^$/d' | tail -n1
+}
+
 reroute_walled() {
   # The run ends on a wall only once every account is walled; otherwise the brief
   # continues on the next one and no caller re-dispatches by hand. A caller-given
@@ -493,6 +580,7 @@ supervise() {
       claudeb) supervise_claudeb "$directory" ;;
       codex) supervise_codex "$directory" ;;
       gemini) supervise_gemini "$directory" ;;
+      grok) supervise_grok "$directory" ;;
       *) return 4 ;;
     esac
     rc=$?
@@ -713,7 +801,7 @@ record_worker_session() {
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
-  local account pick_reserve=false pin_fallback=false pin config_model model_label agy_model='' root epoch suffix run_id directory
+  local account pick_reserve=false pin_fallback=false pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
@@ -723,7 +811,7 @@ start_run() {
   command_meta=()
   command=()
   shift
-  case "$vendor" in claudeb|codex|gemini) ;; *) usage ;; esac
+  case "$vendor" in claudeb|codex|gemini|grok) ;; *) usage ;; esac
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --brief) [ "$#" -ge 2 ] || usage; brief="$2"; shift 2 ;;
@@ -755,6 +843,11 @@ start_run() {
       # per-argument ceiling execve fails with a bare E2BIG long after start.
       [ "$(wc -c <"$brief" | tr -d '[:space:]')" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
+    grok)
+      # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), and it takes no
+      # image attachment.
+      [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
+      ;;
   esac
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
@@ -783,6 +876,10 @@ start_run() {
         printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
         fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
       fi
+      if [ "$PICKED_NO_DATA" = true ]; then
+        printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+        fail "worker-pick has no usage data for $vendor, so it can route to no account; name one with --account"
+      fi
       printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
       exit 3
     else
@@ -794,6 +891,11 @@ start_run() {
         pin_fallback=true
       elif [ "$vendor" = claudeb ]; then
         fail 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable'
+      elif [ "$vendor" = grok ]; then
+        # `main` is the real ~/.grok and carries no login, so falling back to it would launch a run
+        # that can only fail at authentication.
+        printf 'OUTCOME: GROK_UNAVAILABLE\n'
+        fail 'grok has no account to fall back on: name one with --account, pin grok_profile, or bring worker-pick back'
       else
         account=main
       fi
@@ -817,6 +919,7 @@ start_run() {
   case "$vendor:$account" in
     gemini:main) ! gemini_main_removed || fail 'gemini account main has been removed' ;;
     gemini:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid gemini account: $account" ;;
+    grok:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid grok account: $account" ;;
     *) [[ "$account" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "invalid account: $account" ;;
   esac
   warn_cold_resume "$vendor" "$account" "$resume" || :
@@ -836,7 +939,11 @@ start_run() {
       explicit_effort=$effort
       model=${model:-$config_model}
       effort=${effort:-$(config_value codex_effort)}; effort=${effort:-medium}
-      model_label=${model##*-}
+      if [ "$model" = default ]; then
+        model_label=${config_model##*-}
+      else
+        model_label=${model##*-}
+      fi
       [[ "$model_label" =~ ^[A-Za-z0-9]+$ ]] || model_label=sol
       cli="${WORKER_RUN_CODEX:-codex}"
       if [ -n "$resume" ]; then
@@ -881,6 +988,26 @@ start_run() {
       [ -z "$resume" ] || command_meta+=(--conversation "$resume")
       command_meta+=(--print "$(<"$brief")")
       ;;
+    grok)
+      model=${model:-$(config_value grok_model)}; model=${model:-auto}
+      effort=${effort:-$(config_value grok_effort)}; effort=${effort:-high}
+      case "$model" in auto|grok-4.6) model_label=grok ;; *) model_label=$model ;; esac
+      # `xhigh` exists on grok-4.6 alone; the CLI refuses it on the others, and silently clamping it
+      # here would spend the run at an effort the brief did not ask for.
+      case "$effort" in
+        low|medium|high|xhigh) ;;
+        *) printf 'OUTCOME: GROK_UNAVAILABLE\n'; fail "grok effort must be low, medium, high or xhigh (got: $effort)" ;;
+      esac
+      grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-60}
+      [[ "$grok_turns" =~ ^[0-9]+$ ]] && [ "$grok_turns" -gt 0 ] || grok_turns=60
+      cli="${WORKER_RUN_GROKB:-$HOME/.local/bin/grokb}"
+      command_meta=(env GROK_MEMORY=0 "$cli" profile "$account" --prompt-file BRIEF
+        --output-format streaming-json --always-approve --cwd "$workdir"
+        --no-subagents --max-turns "$grok_turns" --reasoning-effort "$effort")
+      [ "$model" = auto ] || command_meta+=(-m "$model")
+      [ -z "$resume" ] || command_meta+=(-r "$resume")
+      [ "$web_search" = true ] || command_meta+=(--disable-web-search)
+      ;;
   esac
 
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
@@ -909,6 +1036,7 @@ start_run() {
     case "${command_meta[$value]}" in
       OUT) command_meta[$value]="$directory/out" ;;
       LOG) command_meta[$value]="$directory/log" ;;
+      BRIEF) command_meta[$value]="$directory/brief" ;;
     esac
   done
   printf '%s · %s · %s\n' "$account" "${model_label:-$model}" "$effort" >"$directory/tag"
@@ -917,13 +1045,15 @@ start_run() {
   images_json=$(jq -cn --args '$ARGS.positional' -- "${images[@]}") || fail 'could not encode image metadata'
   started=$(date +%s)
   jq -cn --arg vendor "$vendor" --arg account "$account" --arg model "$model" --arg effort "$effort" \
-    --arg agy_model "$agy_model" --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
+    --arg agy_model "$agy_model" --arg grok_turns "$grok_turns" \
+    --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson pinned "$([ -n "$explicit_account" ] || [ "$pin_fallback" = true ] && printf true || printf false)" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort,pinned:$pinned}
-     + if $vendor == "gemini" then {agy_model:$agy_model} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
+     + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
+     + if $vendor == "grok" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   [ "$pick_reserve" != true ] || meta_update "$directory" '.session_reserve = true' ||
     fail 'could not record the session-reserve note'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
@@ -1017,8 +1147,37 @@ session_id() {
       session=$(grep -Eo 'Created conversation [A-Za-z0-9._-]+' "$directory/log" 2>/dev/null | head -n1 | awk '{print $3}')
       [ -n "$session" ] || session=$(grep -Eo 'conversationID="[A-Za-z0-9._-]+"' "$directory/log" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]*)"/\1/')
       ;;
+    grok) session=$(grok_end_field "$directory" '.sessionId // empty') ;;
   esac
   printf '%s' "${session:--}"
+}
+
+# Grok's PERSISTENT wall wording, and nothing else. The CLI folds capacity weather (429, 5xx,
+# Retry-After) into the same internal `rate_limit` class as a real wall, so a bare "rate limit" here
+# would report an exhausted plan every time xAI has a bad minute.
+GROK_LIMIT_RE='hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits|(status|http)[^0-9]{0,12}402([^0-9]|$)|402 payment required'
+GROK_AUTH_RE='not signed in|credentials were rejected|session has expired'
+GROK_TRANSIENT_RE='(status|http)[^0-9]{0,12}(429|5[0-9][0-9])([^0-9]|$)|too many requests|gateway timeout|retry-after|service unavailable|overloaded'
+
+# Where a grok failure states itself: stderr, plus the `error` events of the stream — the CLI puts a
+# startup failure on stderr alone (the `-s` collision) and a mid-run one in an event on stdout. The
+# agent's own answer text is left out on purpose: this repository's briefs discuss quotas and 429s.
+grok_error_text() { # directory
+  cat "$1/err" 2>/dev/null
+  jq -rR 'fromjson? | select(type == "object" and (.type == "error" or .type == "max_turns_reached"))
+          | tostring' "$1/out" 2>/dev/null
+}
+
+# Which kind of not-a-wall a grok failure was, said where the relay reads its outcome: an expired
+# login needs a human, capacity weather needs nothing but another attempt.
+grok_reason_line() { # directory
+  local text
+  text=$(grok_error_text "$1")
+  if grep -Eiq "$GROK_AUTH_RE" <<<"$text"; then
+    printf 'REASON: auth — the account needs a human login (grokb add <account>)\n'
+  elif grep -Eiq "$GROK_TRANSIENT_RE" <<<"$text"; then
+    printf 'REASON: transient — capacity weather, not a wall; the brief may be relaunched\n'
+  fi
 }
 
 has_limit_signature() {
@@ -1037,6 +1196,9 @@ has_limit_signature() {
     codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests'; scan=("$directory/err"); tail_lines=40 ;;
     claudeb) pattern='usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
+    # grok states a failure in two places — stderr and the stream's own error events — so its text
+    # is assembled rather than read from a file list.
+    grok) grok_error_text "$directory" | grep -Eiq "$GROK_LIMIT_RE"; return ;;
   esac
   # A rejected model override is a 400, never a wall, however the surrounding
   # transcript reads.
@@ -1075,6 +1237,7 @@ print_outcome() {
     [ -z "$reset" ] || printf 'RESET: %s\n' "$reset"
   else
     printf 'OUTCOME: %s\n' "$(failure_outcome "$vendor")"
+    case "$vendor" in grok) grok_reason_line "$directory" ;; esac
   fi
 }
 
@@ -1372,6 +1535,60 @@ codex_tool_rows() { # rollout since
       end' "$1" 2>/dev/null
 }
 
+# Grok's own per-session record. One update line per event, so a call's identity is spread across
+# them: the `tool_call` names the tool and carries its arguments, and the `tool_call_update` lines
+# that follow carry the terminal status and the directory a shell command actually ran in — folded
+# back together by toolCallId here. The tool's own `x.ai/tool` metadata classifies it (`kind`,
+# `read_only`), never a name whitelist: a tool added by an update reads as unknown and leaves the
+# run UNKNOWN, which is the answer a reader can act on. Lines are parsed individually so the
+# partial last line of a live session does not void the whole read.
+grok_tool_rows() { # updates since
+  jq -rRs --argjson since "$2" '
+    [split("\n")[] | select(length > 0) | fromjson? | select(type == "object")] as $all
+    | reduce $all[] as $row ({};
+        ($row.params.update // {}) as $update
+        | ($update._meta["x.ai/tool"] // {}) as $tool
+        | ($update.toolCallId // "") as $id
+        | if $id == "" then .
+          else .[$id] = ((.[$id] // {})
+            + (if $update.sessionUpdate == "tool_call" or ((.[$id].name // "") == "" and ($tool.name // "") != "") then
+                 {name: ($tool.name // ""), kind: ($tool.kind // ""),
+                  read_only: ($tool.read_only // false), input: ($update.rawInput // {})}
+               else {} end)
+            + (if (.[$id].t // null) == null then {t: ($row.timestamp // null)} else {} end)
+            + (if ($update.status // null) != null then {status: ($update.status | tostring | ascii_downcase)} else {} end)
+            + (if (($update.rawOutput // {}).current_dir // "") != "" then {dir: $update.rawOutput.current_dir} else {} end))
+          end)
+    | to_entries[]
+    | .value as $call
+    | ($call.name // "") as $name
+    | ($call.kind // "") as $kind
+    | ($call.status // "") as $status
+    | ($call.input // {}) as $args
+    | ($call.t) as $t
+    | [if $call.read_only == true or $name == "search_tool" then empty
+       elif ($kind | IN("write", "edit")) then
+         if $status == "completed" then
+           "F\t" + (($args.file_path // $args.path // $args.absolute_path // "") | tostring)
+         elif ($status | IN("failed", "cancelled", "canceled", "rejected", "error")) then empty
+         else "X\t" + $name + " outcome" end
+       elif $kind == "execute" then
+         ("C\t" + (($args.command // "") | tostring | gsub("[\n\r\t]"; " "))),
+         (if ($call.dir // "") != "" then "D\t" + $call.dir else empty end)
+       elif $name == "use_tool" then
+         (($args.tool_name // "") | tostring | ascii_downcase) as $dispatched
+         | if ($dispatched | IN("bash", "run_terminal_command", "shell")) then
+             ("C\t" + ((($args.tool_input // {}).command // "") | tostring | gsub("[\n\r\t]"; " "))),
+             (if ($call.dir // "") != "" then "D\t" + $call.dir else empty end)
+           else "X\tuse_tool " + $dispatched end
+       else "X\t" + (if $name == "" then "unnamed tool" else $name end) end] as $classified
+    | if $t == null then
+        if ($classified | length) > 0 then "T\tunparseable" else empty end
+      elif $t < $since then empty
+      else $classified[]
+      end' "$1" 2>/dev/null
+}
+
 transcript_files() {
   # Only the file-writing tool calls, read by recursive descent so a wrapper key around the message
   # (assistant turn, sidechain entry) does not hide the call. NotebookEdit names its target
@@ -1423,7 +1640,7 @@ compute_run_files() {
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
   session=$(session_id "$directory")
-  if ! transcript=$(session_transcript "$vendor" "$account" "$session"); then
+  if ! transcript=$(session_transcript "$vendor" "$account" "$session" "$workdir"); then
     RUN_FILES_REASON="no session transcript for $session"
     return 0
   fi
@@ -1451,6 +1668,13 @@ compute_run_files() {
       ;;
     codex)
       rows=$(codex_tool_rows "$transcript" "$started") || {
+        RUN_FILES_REASON='transcript unreadable'
+        return 0
+      }
+      classify_tool_rows "$rows" "$workdir"
+      ;;
+    grok)
+      rows=$(grok_tool_rows "$transcript" "$started") || {
         RUN_FILES_REASON='transcript unreadable'
         return 0
       }
@@ -1503,11 +1727,23 @@ run_files() {
   [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
 }
 
+# The agent's answer, reassembled out of the stream: `text` events carry it in chunks, and a raw
+# NDJSON tail is the one shape no reader of a report can use. The raw tail stands in where not one
+# chunk parsed, so a stream that broke early is still visible.
+grok_result_text() { # directory
+  local text
+  text=$(jq -jR 'fromjson? | select(type == "object" and .type == "text") | (.data // .text // "")' \
+    "$1/out" 2>/dev/null)
+  if [ -n "$text" ]; then printf '%s\n' "$text"; else tail -n 400 "$1/out" 2>/dev/null; fi
+}
+
 result_tail() {
   local directory="$1" vendor="$2" lines="$3"
   printf 'RESULT-TAIL:\n'
   if [ "$vendor" = claudeb ]; then
     jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n "$lines"
+  elif [ "$vendor" = grok ]; then
+    grok_result_text "$directory" | tail -n "$lines"
   else
     tail -n "$lines" "$directory/out" 2>/dev/null
   fi
@@ -1629,7 +1865,7 @@ wait_run() {
 
 report_run() {
   [ "$#" -eq 1 ] || usage
-  local directory vendor account code status cost s5_rate pid
+  local directory vendor account code status cost s5_rate pid denied
   directory=$(run_path "$1")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   vendor=$(jq -r '.vendor' "$directory/meta.json")
@@ -1657,6 +1893,8 @@ report_run() {
       tail -n 80 "$directory/err" 2>/dev/null
     fi
   fi
+  denied=$(jq -r '.denied_tools // empty' "$directory/meta.json")
+  [ -z "$denied" ] || printf 'DENIED-TOOLS: %s\n' "$denied"
   if [ "$vendor" = claudeb ]; then
     cost=$(jq -r '.total_cost_usd // empty' "$directory/out" 2>/dev/null)
     # The $2/M base permanently defines one Sonnet-5-equivalent token; after the public rate
@@ -1678,6 +1916,8 @@ report_run() {
   printf 'RESULT:\n'
   if [ "$vendor" = claudeb ]; then
     jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n 400
+  elif [ "$vendor" = grok ]; then
+    grok_result_text "$directory" | tail -n 400
   else
     tail -n 400 "$directory/out" 2>/dev/null
   fi

@@ -132,17 +132,20 @@ EOF
 chmod +x "$CB_STUB"
 
 write_store() {
-  local path=$1 now=$2 claude_age=$3 codex_age=$4 gemini_age=$5
+  local path=$1 now=$2 claude_age=$3 codex_age=$4 gemini_age=$5 grok_age=${6:-}
   jq -cn --argjson now "$now" --argjson ca "$claude_age" --argjson coa "$codex_age" \
-    --argjson ga "$gemini_age" '
+    --argjson ga "$gemini_age" --arg gra "$grok_age" '
     def row($name;$age):
       {account:$name,five_hour:{used_pct:10,as_of:($now-$age)},
        weekly:{used_pct:20,as_of:($now-$age)}};
-    {schema:1,vendors:{
+    def weekly_row($name;$age):
+      {account:$name,weekly:{used_pct:20,as_of:($now-$age)}};
+    {schema:1,vendors:({
       claude:{available:true,accounts:[row("alpha";$ca)]},
       codex:{available:true,accounts:[row("beta";$coa)]},
       gemini:{available:true,accounts:[row("gamma";$ga)]}
-    }}' >"$path"
+    } + (if $gra == "" then {}
+         else {grok:{available:true,accounts:[weekly_row("gr";($gra | tonumber))]}} end))}' >"$path"
 }
 
 write_state() {
@@ -235,7 +238,7 @@ mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
 run_refresh "$case_dir" "$NOW" || fail 'first run failed'
 jq -e --argjson now "$NOW" '
-  all(.claude, .codex, .gemini; .interval_min == 30 and .last_attempt_epoch == $now and
+  all(.claude, .codex, .gemini, .grok; .interval_min == 30 and .last_attempt_epoch == $now and
       .clean_since_epoch == $now) and
   (.opencode | .interval_min == 45 and .last_attempt_epoch == $now)' \
   "$case_dir/state.json" >/dev/null || fail 'first run did not create default state'
@@ -669,6 +672,34 @@ jq -eRn '[inputs | fromjson | .vendor == "gemini" and .outcome == "fresh-passive
   fail 'blocked account missing from the gemini journal detail'
 pass
 
+# Grok rides the normal cadence: the billing read is a usage query, so a stale account is
+# refreshed like any codex or gemini one.
+case_dir="$WORK/grok-stale"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60 7200
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$NOW"
+run_refresh "$case_dir" "$NOW" || fail 'grok run failed'
+grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
+  fail 'a stale grok account was not refreshed'
+jq -eR 'fromjson | select(.vendor == "grok" and .step == 1 and .accounts_tried == ["gr"] and
+  .outcome == "refreshed")' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'the grok refresh was not journaled'
+[ "$(jq -r '.grok.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+  fail 'the grok cadence rung was not carried'
+pass
+
+# Grok has no fixed base account, so a vendor with no roster names nobody to refresh — inventing
+# a `main` here would tell the owner to log into an account that does not exist.
+case_dir="$WORK/grok-empty"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$NOW"
+run_refresh "$case_dir" "$NOW" || fail 'empty-grok run failed'
+grep -q 'grok/' "$case_dir/calls.log" && fail 'an empty grok vendor was still given a main account'
+jq -eR 'fromjson | select(.vendor == "grok" and .step == 0 and (.accounts_tried | length) == 0)' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the empty grok vendor was not journaled'
+pass
+
 case_dir="$WORK/store-unreadable"
 mkdir -p "$case_dir/home"
 write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
@@ -676,7 +707,7 @@ STUB_PASSIVE_RC=7 run_refresh "$case_dir" "$NOW" || fail 'unreadable-store run f
 unset STUB_PASSIVE_RC
 jq -eRn '[inputs | fromjson | select(.vendor != "opencode") |
   .outcome == "error" and (.detail | test("exited 7"))] |
-  length == 3 and all' "$case_dir/journal.jsonl" >/dev/null || \
+  length == 4 and all' "$case_dir/journal.jsonl" >/dev/null || \
   fail 'a failed collector plus an unreadable store was journaled as fresh'
 pass
 

@@ -129,6 +129,31 @@ assert_codex_account_rows() {
   done < <(jq -r '.vendors.codex.accounts[]?.account' <<<"$json")
 }
 
+assert_grok_account_rows() {
+  local menu="$1" json="$2" section account auth row role_count
+  section=$(vendor_section "$menu" Grok)
+  grep -Fxq 'Grok' <<<"$menu" || fail "Grok section header missing"
+  role_count=$(grep -Ec '^  For (workers|reviewers)$' <<<"$section")
+  [ "$role_count" -eq 2 ] || fail "Grok section role checkbox count mismatch: $role_count"
+  grep -Fxq '  Refresh' <<<"$section" || fail "Grok vendor Refresh missing"
+  while IFS=$'\t' read -r account auth; do
+    [ -n "$account" ] || continue
+    row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$section")
+    [ -n "$row" ] || fail "Grok account row missing: $account"
+    if [ "$auth" = needs_login ]; then
+      [[ "$row" == *"login needed" ]] || fail "Grok needs_login row lost login needed: $row"
+    else
+      [[ "$row" != *"login needed" ]] || fail "Grok $auth row rendered as login needed: $row"
+    fi
+  done < <(jq -r '.vendors.grok.accounts[]? |
+    [.account, (.auth.status // (if .auth_needed == true then "needs_login" else "ok" end))] |
+    @tsv' <<<"$json")
+  grep -Eq '^[[:space:]]+5h([[:space:]]|$)' <<<"$section" \
+    && fail "Grok section rendered a five-hour bucket"
+  grep -Eq '(^|[[:space:]])(\?|nil)([[:space:]]|$)' <<<"$section" \
+    && fail "Grok section leaked ?/nil for the absent five-hour bucket"
+}
+
 age_short() {
   local timestamp="$1" now delta minutes hours
   [ -n "$timestamp" ] || return
@@ -149,13 +174,14 @@ vendor_section() {
   local menu="$1" label="$2"
   awk -v label="$label" '
     index($0, label) == 1 { inside = 1; next }
-    inside && /^(Claude|Codex|Gemini)/ { inside = 0 }
+    inside && /^(Claude|Codex|Gemini|Grok|OpenCode Go)/ { inside = 0 }
+    inside && /^-$/ { inside = 0 }
     inside { print }' <<<"$menu"
 }
 
 assert_account_ages() {
   local menu="$1" json="$2" vendor account auth asof expected row actual section label
-  for vendor in claude codex gemini; do
+  for vendor in claude codex gemini grok; do
     if [ "$vendor" = gemini ] &&
        [ "$(jq -r '(.vendors.gemini.accounts | type) == "array" and
           (.vendors.gemini.accounts | length) > 1' <<<"$json")" != true ]; then
@@ -165,6 +191,7 @@ assert_account_ages() {
       claude) label=Claude ;;
       codex) label=Codex ;;
       gemini) label=Gemini ;;
+      grok) label=Grok ;;
     esac
     section=$(vendor_section "$menu" "$label")
     # A removed account carries no age and the menu renders no row for it, so demanding one here
@@ -413,6 +440,8 @@ local fallback = loadModule({ schema = 1, vendors = {
   claude = { available = true, current_account = "com", five_hour = { effective_pct = 1, resets_at = now + 60 } },
   codex = { available = true, current_account = "main", five_hour = { effective_pct = 2, resets_at = now + 60 } },
   gemini = { available = true, five_hour = { effective_pct = 3, resets_at = now + 60 } },
+  grok = { available = true, accounts = {{ account = "supergrok", enabled = true,
+    auth = { status = "ok" }, weekly = { effective_pct = 4, resets_at = now + 60 } }}},
 }}, fallbackState)
 local changes = 0
 fallback.onRefreshStateChanged = function() changes = changes + 1 end
@@ -422,10 +451,24 @@ for _, item in ipairs(fallback.menuItems()) do
     for _, sub in ipairs(item.menu) do
       if title(sub) == "Hard refresh" then sub.fn() end
     end
+  -- Grok is the only vendor with accounts in this fixture, so its header carries the shared
+  -- vendor-scoped Refresh rather than the Hard refresh of one fallback account.
+  elseif named(name, "Grok") and item.menu then
+    for _, sub in ipairs(item.menu) do
+      if title(sub) == "Refresh" then sub.fn() end
+    end
   end
 end
-if #fallbackState.starts ~= 4 then error("menu collect and fallback actions did not start four tasks") end
-local passive, a, b, c = fallbackState.starts[1], fallbackState.starts[2], fallbackState.starts[3], fallbackState.starts[4]
+for _, item in ipairs(fallback.menuItems()) do
+  if named(title(item), "supergrok") then
+    for _, sub in ipairs(item.menu or {}) do
+      if title(sub) == "Hard refresh" then sub.fn() end
+    end
+  end
+end
+if #fallbackState.starts ~= 6 then error("menu collect and fallback actions did not start six tasks") end
+local passive, a, b, c, d, e = fallbackState.starts[1], fallbackState.starts[2],
+  fallbackState.starts[3], fallbackState.starts[4], fallbackState.starts[5], fallbackState.starts[6]
 if passive.command ~= "/Volumes/Work/Projects/llm-legs/llm-limits.sh" or #passive.args ~= 0 then
   error("menu-open collector was not a direct argument-free task")
 end
@@ -435,10 +478,14 @@ passive.callback(0, "", "")
 if changes ~= beforeCompletion + 1 then error("menu-open collector completion did not trigger a re-render") end
 if a.args[1] ~= "--refresh-account" or a.args[2] ~= "claude/com" then error("Claude fallback dispatch mismatch") end
 if b.args[1] ~= "--refresh-account" or b.args[2] ~= "codex/main" then error("Codex fallback dispatch mismatch") end
-if c.args[1] ~= "--refresh-account" or c.args[2] ~= "gemini/main" then error("Gemini fallback dispatch mismatch") end
+if c.args[1] ~= "--refresh-account" or c.args[2] ~= "grok" then error("Grok vendor dispatch mismatch") end
+if d.args[1] ~= "--refresh-account" or d.args[2] ~= "gemini/main" then error("Gemini fallback dispatch mismatch") end
+if e.args[1] ~= "--refresh-account" or e.args[2] ~= "grok/supergrok" then error("Grok account dispatch mismatch") end
 if a.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true"
     or b.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true"
-    or c.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true" then
+    or c.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true"
+    or d.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true"
+    or e.environment.CLAUDEB_WARM_USER_EXPLICIT ~= "true" then
   error("Hard refresh did not carry the user-explicit warm signal")
 end
 local globalState = { starts = {}, alerts = {} }
@@ -633,6 +680,15 @@ grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
 grep -Fxq 'Refresh + Start Windows' <<<"$MENU_TXT" || fail "menu missing 'Refresh + Start Windows' action item"
 assert_codex_account_rows "$MENU_TXT" "$JSON"
+if jq -e '.vendors | has("grok")' <<<"$JSON" >/dev/null; then
+  grep -q '^Grok' <<<"$MENU_TXT" || fail "store has vendors.grok but the menu has no Grok section"
+  grep -Fxq '  Refresh' <<<"$(vendor_section "$MENU_TXT" Grok)" \
+    || fail "Grok vendor Refresh missing"
+  if [ "$(jq -r '(.vendors.grok.accounts | type) == "array" and
+      (.vendors.grok.accounts | length) > 0' <<<"$JSON")" = true ]; then
+    assert_grok_account_rows "$MENU_TXT" "$JSON"
+  fi
+fi
 # Same-generation pair for age comparison: MENU_TXT predates the fresh collection
 # above, so its ages lag the store whenever data moved in between (live flake).
 STORE_NOW=$(cat "$STORE") || fail "cannot read store for age check"
@@ -666,8 +722,9 @@ gemini_hard=$(jq 'if (.vendors.gemini.accounts | type) == "array" and
 # The OpenCode leg carries ONE refresh for the whole leg in its section header rather than one per
 # account, so it contributes a single row however many profiles the roster holds.
 opencode_hard=$(jq 'if ((.vendors.opencode.accounts? // []) | length) > 0 then 1 else 0 end' <<<"$JSON")
+grok_hard=$(jq '(.vendors.grok.accounts? // []) | length' <<<"$JSON")
 hard_count=$(grep -Fxc '  Hard refresh' <<<"$MENU_TXT")
-hard_expected=$((claude_hard + codex_hard + gemini_hard + opencode_hard))
+hard_expected=$((claude_hard + codex_hard + gemini_hard + grok_hard + opencode_hard))
 [ "$hard_count" -eq "$hard_expected" ] \
   || fail "Hard refresh submenu count mismatch: expected $hard_expected, got $hard_count"
 pass "menu build: per-account ages and Hard refresh present; aggregate vendor age line absent"
@@ -677,6 +734,9 @@ TABLE=$(llm-limits --table 2>/dev/null) || fail "llm-limits --table exited non-z
 grep -qE '^claude/[^ ]+ ' <<<"$TABLE" || fail "--table has no claude account rows"
 grep -qE '^codex(/| |$)' <<<"$TABLE" || fail "--table missing codex row"
 grep -qE '^gemini(/| |$)' <<<"$TABLE" || fail "--table missing gemini row"
+if jq -e '.vendors | has("grok")' <<<"$JSON" >/dev/null; then
+  grep -qE '^grok(/| |$)' <<<"$TABLE" || fail "--table missing grok row"
+fi
 jq -e '.schema == 1 and (.vendors.claude.accounts | type == "array")
   and (.vendors.claude.accounts[0].five_hour | has("as_of"))
   and (.vendors.codex | has("five_hour")) and (.vendors.gemini | has("five_hour"))' \
@@ -739,7 +799,7 @@ BEFORE=$(cat "$STORE") || fail "cannot read store before refresh"
 before_fetched=$(jq -r '.fetched_at' <<<"$BEFORE")
 before_epoch=$(iso2epoch "$before_fetched")
 declare -A before_err before_asof
-for v in claude codex gemini; do
+for v in claude codex gemini grok; do
   before_err[$v]=$(jq -r --arg v "$v" '.vendors[$v].refresh_error.cause // ""' <<<"$BEFORE")
   before_asof[$v]=$(jq -r --arg v "$v" '.vendors[$v].as_of // ""' <<<"$BEFORE")
 done
@@ -753,7 +813,7 @@ after_epoch=$(iso2epoch "$after_fetched")
   || fail "fetched_at went backwards ($before_fetched -> $after_fetched)"
 
 visible_failures=""
-for v in claude codex gemini; do
+for v in claude codex gemini grok; do
   present=$(jq -r --arg v "$v" 'has("vendors") and (.vendors | has($v))' <<<"$AFTER")
   [ "$present" = true ] || continue
   aerr=$(jq -r --arg v "$v" '.vendors[$v].refresh_error.cause // ""' <<<"$AFTER")
@@ -771,6 +831,15 @@ done
 
 MENU2=$(hs_menu)
 assert_codex_account_rows "$MENU2" "$AFTER"
+if jq -e '.vendors | has("grok")' <<<"$AFTER" >/dev/null; then
+  grep -q '^Grok' <<<"$MENU2" || fail "refreshed store has vendors.grok but the menu has no Grok section"
+  grep -Fxq '  Refresh' <<<"$(vendor_section "$MENU2" Grok)" \
+    || fail "refreshed Grok vendor Refresh missing"
+  if [ "$(jq -r '(.vendors.grok.accounts | type) == "array" and
+      (.vendors.grok.accounts | length) > 0' <<<"$AFTER")" = true ]; then
+    assert_grok_account_rows "$MENU2" "$AFTER"
+  fi
+fi
 assert_account_ages "$MENU2" "$AFTER"
 grep -v 'refresh failed' <<<"$MENU2" | grep -q ' · ' \
   && fail "aggregate vendor age line reappeared after refresh"
