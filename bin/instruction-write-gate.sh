@@ -38,9 +38,10 @@ done
 
 input=$(cat) || exit 0
 values=$(printf '%s' "$input" | jq -r '
-  [(.tool_name // ""), (.session_id // ""), (.cwd // ""), (.tool_input.command // "")]
+  [(.tool_name // ""), (.session_id // ""), (.cwd // ""), (.transcript_path // ""),
+   (.tool_input.command // "")]
   | join("\u001f")' 2>/dev/null) || exit 0
-IFS=$'\x1f' read -r -d '' tool_name sid cwd command <<< "$values" || :
+IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript command <<< "$values" || :
 [ "$tool_name" = Bash ] || exit 0
 [ -n "$command" ] || exit 0
 
@@ -177,7 +178,11 @@ fi
 # The session is part of the key: a parallel chat spending its own retry must not spend this
 # one's, and a later session must not inherit approval Egor gave in an earlier turn.
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$hit" "$command" | shasum -a 256 | cut -c1-16)
-instruction_claim_stamp "$STAMP_DIR" "$hash" && exit 0
+if instruction_stamp_ready "$STAMP_DIR" "$hash"; then
+  if instruction_user_turn_after_stamp "$transcript" "$STAMP_DIR/$hash"; then
+    instruction_stamp_consume "$STAMP_DIR" "$hash" && exit 0
+  fi
+fi
 
 # The number has to be the one THIS file costs. A skill and an agent doc are a factor of thirty
 # apart, and one blanket figure quoted at every class makes the arithmetic the denial asks for

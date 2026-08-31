@@ -404,6 +404,32 @@ instruction_stamp_consume() {
   return 0
 }
 
+instruction_user_turn_after_stamp() {
+  local transcript=$1 stamp=$2 born
+  [ -r "$transcript" ] && [ -d "$stamp" ] || return 1
+  born=$(stat -f %Fm "$stamp" 2>/dev/null) || return 1
+  jq -en --arg born "$born" '$born | tonumber' >/dev/null 2>&1 || return 1
+  jq -eR --argjson born "$born" '
+    def timestamp_epoch:
+      . as $stamp
+      | (($stamp | capture("\\.(?<fraction>[0-9]+)") // {fraction: "0"}).fraction)
+        as $fraction
+      | ($stamp | sub("\\.[0-9]+"; "") | sub("\\+00:?00$"; "Z") | fromdateiso8601?)
+        + (("0." + $fraction) | tonumber);
+    fromjson?
+    | select(type == "object" and .type == "user")
+    | select((.isMeta // false) != true and (.isSidechain // false) != true)
+    | select(.message.role? == "user")
+    | select(
+        (.message.content? | type) == "string"
+        or ((.message.content? | type) == "array"
+            and any(.message.content[]?; type != "object" or .type? != "tool_result"))
+      )
+    | (.timestamp? | strings | timestamp_epoch) as $at
+    | select($at > $born)
+  ' "$transcript" >/dev/null 2>&1
+}
+
 # The whole shape a gate's note has: a byte offset, the transcript it was measured against, and
 # nothing else. Anything a hand or another program left under the same name fails one of the
 # three and is not the sweep's to delete.

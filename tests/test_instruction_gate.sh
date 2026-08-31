@@ -28,9 +28,11 @@ INSTRUCTION_WATCH_ALERT="$WORK/alert-stub"
 INSTRUCTION_WATCH_STATE="$HOME/.cache/watch"
 INSTRUCTION_WATCH_LOG="$HOME/.claude/instruction-changes.log"
 INSTRUCTION_WRITE_GATE_STAMPS="$HOME/.cache/write-gate"
+WRITE_TRANSCRIPT="$WORK/write-transcript.jsonl"
 export INSTRUCTION_WATCH_ALERT INSTRUCTION_WATCH_STATE INSTRUCTION_WATCH_LOG \
        INSTRUCTION_WRITE_GATE_STAMPS
 mkdir -p "$HOME/.claude/docs" "$HOME/.claude/agents" "$HOME/.claude/skills/demo" "$TMPDIR"
+: > "$WRITE_TRANSCRIPT"
 
 # The live layout: ~/.claude/CLAUDE.md is a symlink into a config repository, so a writer
 # can land on either name and the gate has to know both.
@@ -49,7 +51,20 @@ REAL_MD="$REPO/global/CLAUDE.md"
 
 bash_payload() {
   jq -cn --arg c "$1" --arg s "${GATE_SID:-session-one}" --arg d "${GATE_CWD:-}" \
-    '{tool_name:"Bash",session_id:$s,cwd:$d,tool_input:{command:$c}}'
+    --arg t "$WRITE_TRANSCRIPT" \
+    '{tool_name:"Bash",session_id:$s,cwd:$d,transcript_path:$t,tool_input:{command:$c}}'
+}
+
+append_write_user() {
+  jq -cn --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{type:"user",timestamp:$t,message:{role:"user",content:"approved retry"}}' \
+    >> "$WRITE_TRANSCRIPT"
+}
+
+append_write_tool_result() {
+  jq -cn --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{type:"user",timestamp:$t,message:{role:"user",content:[{type:"tool_result",content:"ok"}]}}' \
+    >> "$WRITE_TRANSCRIPT"
 }
 
 gate() { bash_payload "$1" | bash "$WRITE_GATE"; }
@@ -224,6 +239,10 @@ assert_eq deny "$(decision "$cmd")"
 # real retry is waiting for.
 assert_eq deny "$(decision "$cmd")"
 age_stamps
+assert_eq deny "$(decision "$cmd")"
+append_write_tool_result
+assert_eq deny "$(decision "$cmd")"
+append_write_user
 assert_eq pass "$(decision "$cmd")"
 # The claim is consumed by the retry, so the call after it is denied again.
 assert_eq deny "$(decision "$cmd")"
