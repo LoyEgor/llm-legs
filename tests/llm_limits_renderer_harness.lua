@@ -490,7 +490,7 @@ local poolFixture = { schema = 1, vendors = {
 }}
 local function isPoolItem(item)
   local text = item and (type(item.title) == "string" and item.title or titleText(item)) or ""
-  return text == "In worker pool"
+  return text == "In pool"
 end
 
 local poolRows = {}
@@ -800,7 +800,7 @@ do
     "single-account Gemini pin toggle was not checked")
   -- Every account row carries the pool checkbox, the sole one included: an empty pool says no
   -- worker may run, which is a state the user is allowed to reach.
-  local solePool = submenuItem(pinnedRow, "In worker pool")
+  local solePool = submenuItem(pinnedRow, "In pool")
   assert(solePool and solePool.checked == true,
     "single-account Gemini row lost its worker-pool toggle")
   while #tasks > 0 do table.remove(tasks) end
@@ -998,12 +998,13 @@ for _, case in ipairs(loginCases) do
   local row = rowContaining(menu, case.needle)
   assert(titleText(row):find("login needed", 1, true),
     "logged-out " .. case.vendor .. " row did not render a login-needed row")
-  assert(#row.menu == (case.roleSwitches and 5 or 3),
+  assert(#row.menu == (case.roleSwitches and 6 or 3),
     case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove <label>}"
-      .. (case.roleSwitches and " plus the two role switches" or ""))
+      .. (case.roleSwitches and " plus the two role switches and Pause" or ""))
   if case.roleSwitches then
-    assert(titleText(row.menu[4]) == "For workers" and titleText(row.menu[5]) == "For reviewers",
-      case.vendor .. " login row lost the vendor's role switches")
+    assert(titleText(row.menu[4]) == "For workers" and titleText(row.menu[5]) == "For reviewers"
+        and titleText(row.menu[6]) == "Pause",
+      case.vendor .. " login row lost the vendor's role switches or its Pause")
   end
   assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
   assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
@@ -1654,7 +1655,7 @@ do
   local superRow = accountItem(menu, "supergrok")
   assert(superRow.checked == true, "enabled Grok account row is not checked")
   assert(accountHasMarker(menu, "supergrok"), "pinned Grok account lost its marker")
-  assert(submenuItem(superRow, "In worker pool").checked == true,
+  assert(submenuItem(superRow, "In pool").checked == true,
     "enabled Grok pool checkbox is not checked")
   assert(submenuItem(superRow, "Pin for workers").checked == true,
     "pinned Grok checkbox is not checked")
@@ -1673,7 +1674,7 @@ do
   local loginRow = accountItem(menu, "relogin")
   assert(titleText(loginRow):find("login needed", 1, true),
     "Grok needs_login account did not use the shared login row")
-  assert(not submenuItem(loginRow, "In worker pool"),
+  assert(not submenuItem(loginRow, "In pool"),
     "Grok needs_login row offered worker-pool membership")
   assert(submenuItem(loginRow, "Log in…") and submenuItem(loginRow, "Hard refresh")
       and submenuItem(loginRow, "Remove relogin"),
@@ -1698,7 +1699,7 @@ do
   assert(isDimmed(expiredWeekly.title.attributes), "expired Grok weekly row was not dimmed")
   local parkedRow = accountItem(menu, "parked")
   assert(parkedRow.checked == false
-      and submenuItem(parkedRow, "In worker pool").checked == false,
+      and submenuItem(parkedRow, "In pool").checked == false,
     "disabled Grok account checkboxes are not clear")
   local parkedWeekly = titleText(menu[accountIndex(menu, "parked") + 1])
   assert(parkedWeekly:find("mo", 1, true)
@@ -1726,7 +1727,7 @@ do
   assert(tasks[1] and tasks[1].args[2] == "grok/supergrok",
     "Grok account Hard refresh did not target the account")
   while #tasks > 0 do table.remove(tasks) end
-  submenuItem(parkedRow, "In worker pool").fn()
+  submenuItem(parkedRow, "In pool").fn()
   assert(tasks[1] and tasks[1].path:find("grokb", 1, true)
       and tasks[1].args[1] == "enable" and tasks[1].args[2] == "parked",
     "Grok pool checkbox did not use grokb enable")
@@ -2160,7 +2161,7 @@ do
   local soleMenu = loadModule(soleGemini).menuItems()
   local comRow = accountItem(soleMenu, "com")
   assert(comRow, "the last Gemini account did not render an account row")
-  assert(submenuItem(comRow, "In worker pool"), "the last Gemini account lost its pool toggle")
+  assert(submenuItem(comRow, "In pool"), "the last Gemini account lost its pool toggle")
   assert(submenuItem(comRow, "Pin for workers"), "the last Gemini account lost its pin toggle")
   assert(submenuItem(comRow, "Hard refresh"), "the last Gemini account lost its hard refresh")
   for _, item in ipairs(soleMenu) do
@@ -2274,6 +2275,148 @@ do
       "a row with no spendable reset still offered the redeem action")
     assert((titleText(accountItem(menu, "supergrok")):find("↻", 1, true) ~= nil)
       == absent.rendersCount, "the reset count on the row did not follow what was measured")
+  end
+end
+
+-- A PAUSED vendor is parked for months and must not exist for the infrastructure. The collector
+-- writes no store entry for one, so the menu reads the switch off worker-model instead and
+-- collapses the whole section to a single row.
+do
+  local pausedFixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "cl-one", enabled = true, five_hour = bucket(10) },
+    } },
+    codex = { available = true, accounts = {
+      { account = "cx-one", is_current = true, enabled = true, five_hour = bucket(20),
+        weekly = bucket(30), reset_credits = 2 },
+      { account = "cx-two", enabled = true, five_hour = bucket(40) },
+    } },
+    grok = { available = true, accounts = {
+      { account = "gr-one", is_current = true, enabled = true, weekly = bucket(15) },
+    } },
+    gemini = { available = true, accounts = {
+      { account = "gm-one", enabled = true, five_hour = bucket(10) },
+    } },
+    opencode = { source = "opencode-go", accounts = {
+      { account = "oc-one", walled = false, windows = {}, as_of = 1700000000 },
+    } },
+  }}
+
+  local function rowTitled(menu, text)
+    for _, item in ipairs(menu) do
+      if titleText(item) == text then return item end
+    end
+    return nil
+  end
+  local function rowCount(menu, needle)
+    local count = 0
+    for _, item in ipairs(menu) do
+      if titleText(item):find(needle, 1, true) then count = count + 1 end
+    end
+    return count
+  end
+
+  for _, case in ipairs({
+    { key = "codex", config = "codex_paused=on", label = "Codex", gone = { "cx-one", "cx-two" } },
+    { key = "grok", config = "grok_paused=on", label = "Grok", gone = { "gr-one" } },
+    { key = "claude", config = "claudeb_paused=on", label = "Claude", gone = { "cl-one" } },
+    { key = "opencode", config = "opencode_paused=on", label = "OpenCode Go",
+      gone = { "oc-one" } },
+  }) do
+    local menu = loadModule(pausedFixture, nil, nil, nil, nil, case.config).menuItems()
+    local row = rowTitled(menu, case.label .. " — paused")
+    assert(row, case.label .. " did not collapse to a single paused row")
+    assert(rowCount(menu, case.label) == 1,
+      case.label .. " left rows behind the pause that parked it")
+    assert(#row.menu == 1 and titleText(row.menu[1]) == "Resume",
+      case.label .. " paused row did not offer Resume and nothing else")
+    for _, account in ipairs(case.gone) do
+      assert(rowCount(menu, account) == 0,
+        case.label .. " kept the account row " .. account .. " while parked")
+    end
+    -- `↻` is the reset consumable every vendor row renders (shared-invariants bo): it leaves with
+    -- the vendor that published it and stays put on the vendors that did not.
+    assert(rowCount(menu, "↻") == (case.key == "codex" and 0 or 1),
+      case.label .. " parked and the reset counts did not follow the vendor that published them")
+  end
+
+  -- Reading the STORE instead of worker-model would report "not installed" here, because the two
+  -- states are one absence; only the switch tells them apart.
+  local absent = { schema = 1, vendors = { claude = pausedFixture.vendors.claude } }
+  assert(rowTitled(loadModule(absent, nil, nil, nil, nil, "codex_paused=on").menuItems(),
+    "Codex — paused"), "a parked vendor with no store entry rendered no row at all")
+
+  -- With no store at all the menu has nothing to read but the switch, and that is exactly when the
+  -- Resume it carries is needed: a pause that only renders beside live data cannot be lifted from
+  -- the menu that reports the data is gone.
+  for _, case in ipairs({
+    { config = "claudeb_paused=on", label = "Claude", key = "claude" },
+    { config = "codex_paused=on", label = "Codex", key = "codex" },
+    { config = "grok_paused=on", label = "Grok", key = "grok" },
+    { config = "gemini_paused=on", label = "Gemini", key = "gemini" },
+    { config = "opencode_paused=on", label = "OpenCode Go", key = "opencode" },
+  }) do
+    local menu = loadModule(nil, nil, nil, nil, nil, case.config).menuItems()
+    local row = rowTitled(menu, case.label .. " — paused")
+    assert(row, case.label .. " lost its paused row when the store had no data")
+    assert(#row.menu == 1 and titleText(row.menu[1]) == "Resume",
+      case.label .. " paused row offered no Resume with the store unreadable")
+    assert(rowTitled(menu, "no data — press Refresh"),
+      "the no-data notice was dropped for " .. case.label)
+  end
+  -- A running vendor still renders nothing here: the row states a pause, never an absence.
+  assert(not rowTitled(loadModule(nil, nil, nil, nil, nil, "codex_paused=off").menuItems(),
+    "Codex — paused"), "an unpaused vendor got a paused row with no store behind it")
+
+  -- Only the literal `on` parks, and a duplicated key is read first-line-wins like every other.
+  for _, open in ipairs({ "codex_paused=yes", "codex_paused=off", "codex_paused",
+      "codex_paused=off\ncodex_paused=on" }) do
+    local menu = loadModule(pausedFixture, nil, nil, nil, nil, open).menuItems()
+    assert(not rowTitled(menu, "Codex — paused"),
+      "a non-`on` pause value parked the vendor: " .. open)
+  end
+  assert(rowTitled(loadModule(pausedFixture, nil, nil, nil, nil,
+    "codex_paused=on\ncodex_paused=off").menuItems(), "Codex — paused"),
+    "a duplicated pause key was read last-wins, not first")
+
+  -- Resume deletes the line and then refreshes: the store holds nothing for a vendor that was
+  -- parked, so without the refresh the section stays empty until the next poll.
+  for _, case in ipairs({
+    { key = "codex", label = "Codex", refresher = "refreshVendor" },
+    { key = "opencode", label = "OpenCode Go", refresher = "hardRefreshOpenCode" },
+  }) do
+    local mod = loadModule(pausedFixture, nil, nil, nil, nil, case.key .. "_paused=on")
+    local wrote, refreshed = {}, {}
+    mod.setWorkerPaused = function(vendor, pause, onDone)
+      table.insert(wrote, { vendor = vendor, pause = pause })
+      if onDone then onDone() end
+    end
+    mod[case.refresher] = function(vendor) table.insert(refreshed, vendor or case.key) end
+    submenuItem(rowTitled(mod.menuItems(), case.label .. " — paused"), "Resume").fn()
+    assert(wrote[1] and wrote[1].vendor == case.key and wrote[1].pause == false,
+      case.label .. " Resume did not clear the pause switch")
+    assert(refreshed[1] == case.key,
+      case.label .. " Resume did not refresh the vendor it just brought back")
+  end
+
+  -- Pause sits beside the role switches, and on OpenCode — which has no roles — it is the only
+  -- switch there is.
+  local mod = loadModule(pausedFixture)
+  local parked = {}
+  mod.setWorkerPaused = function(vendor, pause) table.insert(parked, { vendor, pause }) end
+  local menu = mod.menuItems()
+  for _, case in ipairs({
+    { label = "Claude", key = "claude" }, { label = "Codex", key = "codex" },
+    { label = "Grok", key = "grok" }, { label = "Gemini", key = "gemini" },
+    { label = "OpenCode Go", key = "opencode" },
+  }) do
+    local header = headerRow(menu, case.label)
+    local pause = submenuItem(header, "Pause")
+    assert(pause, case.label .. " section offered no Pause")
+    assert(not submenuItem(header, "Resume"), case.label .. " offered Resume while running")
+    pause.fn()
+    assert(parked[#parked][1] == case.key and parked[#parked][2] == true,
+      case.label .. " Pause asked to park the wrong vendor")
   end
 end
 

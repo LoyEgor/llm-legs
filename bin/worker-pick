@@ -120,6 +120,27 @@ codex_model_short_label() {
 }
 
 conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
+# A paused vendor is parked for months and must not exist for this router: the collectors drop
+# `vendors.<key>` for it, and nothing here may put it back. So the pause sits ABOVE the pin — the
+# one place in the ladder where the pin does not win — and above the mode with it.
+vendor_paused() { [ "$(conf "$1_paused")" = on ]; }
+cb_paused=false; cx_paused=false; gm_paused=false; gr_paused=false
+! vendor_paused claudeb || cb_paused=true
+! vendor_paused codex || cx_paused=true
+! vendor_paused gemini || gm_paused=true
+! vendor_paused grok || gr_paused=true
+# The one state that names a pause on this surface: with every vendor parked there is no answer to
+# give, and an empty NEXT with no reason reads as a router that broke rather than one Egor switched
+# off. Anywhere else the absence is the whole render.
+NOTHING_ROUTABLE='nothing routable — every vendor is paused'
+all_paused=false
+[ "$cb_paused" = false ] || [ "$cx_paused" = false ] || [ "$gm_paused" = false ] ||
+  [ "$gr_paused" = false ] || all_paused=true
+if [ -n "$query_vendor" ] && vendor_paused "$query_vendor"; then
+  printf 'worker-pick: %s is paused (%s_paused=on in ~/.claude/worker-model)\n' \
+    "$query_vendor" "$query_vendor" >&2
+  exit 3
+fi
 worker_mode=$(conf worker); worker_mode=${worker_mode:-auto}
 # The native Sonnet subagent is gone — implementation always runs on a relay worker's account — so
 # a `worker=sonnet` line left behind in the file is read as `auto` rather than as a fifth vendor.
@@ -127,6 +148,14 @@ if [ "$worker_mode" = sonnet ]; then
   printf 'worker-pick: worker=sonnet is no longer a worker toggle value; routing as auto\n' >&2
   worker_mode=auto
 fi
+# Silently, unlike the `sonnet` note above: that value is a leftover Egor never chose, while a
+# pause is a decision he made after setting the toggle, and a warning on every run would be noise.
+case "$worker_mode" in
+  claudeb) [ "$cb_paused" = false ] || worker_mode=auto ;;
+  codex) [ "$cx_paused" = false ] || worker_mode=auto ;;
+  gemini) [ "$gm_paused" = false ] || worker_mode=auto ;;
+  grok) [ "$gr_paused" = false ] || worker_mode=auto ;;
+esac
 cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
 cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-high}
 cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-high}
@@ -140,6 +169,12 @@ cb_pin=$(conf claudeb_profile)
 cx_pin=$(conf codex_profile)
 gm_pin=$(conf gemini_profile)
 gr_pin=$(conf grok_profile)
+# Read past, never cleared: a pause is meant to be lifted, and the pin Egor placed has to be there
+# when it is.
+[ "$cb_paused" = false ] || cb_pin=""
+[ "$cx_paused" = false ] || cx_pin=""
+[ "$gm_paused" = false ] || gm_pin=""
+[ "$gr_paused" = false ] || gr_pin=""
 # How far the wall already standing when the pin was placed runs (share/worker-model.sh writes it).
 # Absent for a pin placed on a free account, and for one written by hand.
 cb_pin_wall=$(conf claudeb_profile_wall)
@@ -230,19 +265,34 @@ fail_safe() {
     printf 'worker-pick: cannot select a %s account (%s)\n' "$query_vendor" "$1" >&2
     exit 3
   fi
+  fs_next=""
   case "$worker_mode" in
-    gemini) printf 'NEXT: gemini %s · %s · %s — unavailable (%s)\n' "${gm_pin:-?}" "$gm_model" "$gm_effort" "$1" ;;
-    grok) printf 'NEXT: grok %s · %s · %s — unavailable (%s)\n' "${gr_pin:-?}" "$gr_model" "$gr_effort" "$1" ;;
-    auto) printf 'NEXT: claudeb (rotating) — %s  |  gemini unavailable\n' "$1" ;;
-    *) printf 'NEXT: claudeb (rotating) — %s\n' "$1" ;;
+    gemini) fs_next=$(printf 'gemini %s · %s · %s — unavailable (%s)' "${gm_pin:-?}" "$gm_model" "$gm_effort" "$1") ;;
+    grok) fs_next=$(printf 'grok %s · %s · %s — unavailable (%s)' "${gr_pin:-?}" "$gr_model" "$gr_effort" "$1") ;;
+    # No data means no ranking, so the lead is the first vendor of the fixed order still running:
+    # claudeb rotating where it is, and its successor where Egor parked it.
+    *) if [ "$cb_paused" = false ]; then
+         fs_next=$(printf 'claudeb (rotating) — %s' "$1")
+         [ "$worker_mode" != auto ] || [ "$gm_paused" = true ] ||
+           fs_next="$fs_next  |  gemini unavailable"
+       elif [ "$cx_paused" = false ]; then fs_next=$(printf 'codex unavailable (%s)' "$1")
+       elif [ "$gm_paused" = false ]; then fs_next=$(printf 'gemini unavailable (%s)' "$1")
+       elif [ "$gr_paused" = false ]; then fs_next=$(printf 'grok unavailable (%s)' "$1")
+       fi ;;
   esac
-  printf 'codex: unavailable\n'
-  printf 'gemini: unavailable\n'
-  printf 'grok: unavailable\n'
-  printf 'claude: unavailable\n'
+  [ -n "$fs_next" ] || [ "$all_paused" = false ] || fs_next=$NOTHING_ROUTABLE
+  printf 'NEXT: %s\n' "$fs_next"
+  [ "$cx_paused" = true ] || printf 'codex: unavailable\n'
+  [ "$gm_paused" = true ] || printf 'gemini: unavailable\n'
+  [ "$gr_paused" = true ] || printf 'grok: unavailable\n'
+  [ "$cb_paused" = true ] || printf 'claude: unavailable\n'
   printf 'DATA: unavailable\n'
   printf 'SESSION: unavailable\n'
-  write_cache "cx✗·? cb~? gx✗?·${gm_model}·${gm_eff_abbr}"
+  fs_cache=""
+  [ "$cx_paused" = true ] || fs_cache="cx✗·?"
+  [ "$cb_paused" = true ] || fs_cache="${fs_cache:+$fs_cache }cb~?"
+  [ "$gm_paused" = true ] || fs_cache="${fs_cache:+$fs_cache }gx✗?·${gm_model}·${gm_eff_abbr}"
+  write_cache "$fs_cache"
   exit 0
 }
 
@@ -258,6 +308,8 @@ summary=$(jq -r \
   --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" --arg gr_pin "$gr_pin" \
   --arg cb_off "$cb_role_off" --arg cx_off "$cx_role_off" --arg gm_off "$gm_role_off" \
   --arg gr_off "$gr_role_off" \
+  --arg cb_par "$cb_paused" --arg cx_par "$cx_paused" --arg gm_par "$gm_paused" \
+  --arg gr_par "$gr_paused" \
   --argjson cb_claims "$cb_claims" --argjson cx_claims "$cx_claims" \
   --argjson gm_claims "$gm_claims" --argjson gr_claims "$gr_claims" \
   --argjson qx "$query_exclude_json" "$LIMITS_VIEW_JQ"'
@@ -349,9 +401,12 @@ summary=$(jq -r \
   (.vendors.codex // {}) as $cx |
   (.vendors.gemini // {}) as $gm |
   (.vendors.grok // {}) as $gr |
-  # A vendor this machine has no collector for is not a routing option and not a wall either, so
-  # the whole grok render hangs off the store carrying the key at all.
+  # A vendor this machine has no collector for, or one Egor paused, is not a routing option and not
+  # a wall either, so the whole render of it hangs off the store carrying the key at all.
   ((.vendors.grok | type) == "object") as $gr_present |
+  ((.vendors.codex | type) == "object") as $cx_present |
+  ((.vendors.gemini | type) == "object") as $gm_present |
+  ((.vendors.claude | type) == "object") as $cl_present |
   (if $cx.available == true and (($cx.accounts | type) == "array") then $cx.accounts
    elif $cx.available == true then [{account:"main",five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
    else [] end) as $cx_source |
@@ -368,15 +423,21 @@ summary=$(jq -r \
   # plus the vendor pin — a pin overrides pool exclusion, so the age of a pinned
   # account counts even when it is off. Nothing routable falls back to the oldest
   # timestamp of ALL accounts, never straight to the store write time.
-  ([($cx_source[] | select(.enabled != false or (.account // "main") == $cx_pin) | account_as_of[]),
-    ($gm_source[] | select(.enabled != false or (.account // "main") == $gm_pin) | account_as_of[]),
-    ($gr_source[] | select(.enabled != false or (.account // "main") == $gr_pin) | account_as_of[]),
-    (.vendors.claude.accounts[]? | select(.enabled == true or (.account // "main") == $pin) | account_as_of[])]
+  # A parked vendor is not polled and not routed, so its frozen timestamp counts for nothing here
+  # either: the age is read off exactly the vendors the store would carry, absence and pause alike.
+  (if $cx_par == "true" then [] else $cx_source end) as $cx_aged |
+  (if $gm_par == "true" then [] else $gm_source end) as $gm_aged |
+  (if $gr_par == "true" then [] else $gr_source end) as $gr_aged |
+  (if $cb_par == "true" then [] else [.vendors.claude.accounts[]?] end) as $cl_aged |
+  ([($cx_aged[] | select(.enabled != false or (.account // "main") == $cx_pin) | account_as_of[]),
+    ($gm_aged[] | select(.enabled != false or (.account // "main") == $gm_pin) | account_as_of[]),
+    ($gr_aged[] | select(.enabled != false or (.account // "main") == $gr_pin) | account_as_of[]),
+    ($cl_aged[] | select(.enabled == true or (.account // "main") == $pin) | account_as_of[])]
    | min) as $routable_as_of |
   ($routable_as_of //
-   ([($cx_source[] | account_as_of[]), ($gm_source[] | account_as_of[]),
-     ($gr_source[] | account_as_of[]),
-     (.vendors.claude.accounts[]? | account_as_of[])] | min) // $fetched) as $data_as_of |
+   ([($cx_aged[] | account_as_of[]), ($gm_aged[] | account_as_of[]),
+     ($gr_aged[] | account_as_of[]),
+     ($cl_aged[] | account_as_of[])] | min) // $fetched) as $data_as_of |
   (if $data_as_of == null then "no timestamp"
    elif ($now - $data_as_of) > 7200 then "STALE (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)"
    else "fresh (\((([($now - $data_as_of), 0] | max) / 60) | floor) min old)" end) as $age |
@@ -515,11 +576,13 @@ summary=$(jq -r \
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
   # hide an ALL WALLED verdict behind quota nobody is allowed to spend. A vendor closed for
   # workers is out of the same reckoning unless its pin serves: its quota is untouched and
-  # counting it turns a switch Egor flipped into a verdict about limits.
-  (((if $cx_off == "true" and $cx_pinned == null then [] else $cx_accounts end) +
-    (if $gm_off == "true" and $gm_pinned == null then [] else $gm_accounts end) +
-    (if $gr_off == "true" and $gr_pinned == null then [] else $gr_accounts end) +
-    (if $cb_off == "true" and $pin_rec == null then [] else $cl_accounts end)
+  # counting it turns a switch Egor flipped into a verdict about limits. A paused vendor drops out
+  # whatever the store still says: its rows survive until the next collector run, and one such
+  # ghost would answer ALL WALLED where the open vendors are merely out of pool.
+  (((if $cx_par == "true" or ($cx_off == "true" and $cx_pinned == null) then [] else $cx_accounts end) +
+    (if $gm_par == "true" or ($gm_off == "true" and $gm_pinned == null) then [] else $gm_accounts end) +
+    (if $gr_par == "true" or ($gr_off == "true" and $gr_pinned == null) then [] else $gr_accounts end) +
+    (if $cb_par == "true" or ($cb_off == "true" and $pin_rec == null) then [] else $cl_accounts end)
     | map(select(.in_pool and .measured)) | length) > 0) as $had_pool |
 
   [(if $codex.selected then "yes" else "no" end),$codex.acct,($codex.pct | tostring),
@@ -538,7 +601,9 @@ summary=$(jq -r \
    pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($gr_accounts),
    pool_empty($cl_accounts),(if $gr_present then "yes" else "no" end),
    (if ($gr_accounts | any(.measured)) then "yes" else "no" end),
-   (if ($cx_accounts | any(.measured)) then "yes" else "no" end)] | join("\u001f")
+   (if ($cx_accounts | any(.measured)) then "yes" else "no" end),
+   (if $cx_present then "yes" else "no" end),(if $gm_present then "yes" else "no" end),
+   (if $cl_present then "yes" else "no" end)] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
@@ -547,7 +612,7 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse cx
   gr_selected gr_acct gr_pct gr_pinned gr_line gr_pin_lapse gr_budget \
   cl_line cl_acct cl_pinned cl_pin_lapse cl_budget \
   fb_acct fb_fb fb_wk age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
-  cl_pool_empty gr_present gr_measured cx_measured <<<"$summary"
+  cl_pool_empty gr_present gr_measured cx_measured cx_present gm_present cl_present <<<"$summary"
 
 # A pin that served outranks the switch, so the vendor is not closed at all this run.
 [ "$cl_pinned" != yes ] || cb_role_off=false
@@ -559,14 +624,26 @@ if [ "$cx_role_off" = true ]; then cx_selected=no; cx_acct=""; cx_pin_lapse=""; 
 if [ "$gm_role_off" = true ]; then gm_selected=no; gm_acct=""; gm_pin_lapse=""; fi
 if [ "$gr_role_off" = true ]; then gr_selected=no; gr_acct=""; gr_pin_lapse=""; fi
 
-# A vendor the store carries no row for is not installed here, so the render leaves it out
-# entirely rather than reporting a wall or a failed lookup. The switch, the mode and the pin are
-# statements Egor made about grok, and each of them is worth an answer even with no data behind it.
-gr_known=false
-if [ "$gr_present" = yes ] || [ "$gr_role_off" = true ] || [ "$worker_mode" = grok ] ||
-   [ -n "$gr_pin" ]; then
-  gr_known=true
-fi
+# A vendor the store carries no row for is not installed here, so the render leaves it out entirely
+# rather than reporting a wall or a failed lookup. The switch, the mode and the pin are statements
+# Egor made about the vendor, and each is worth an answer even with no data behind it — a PAUSE
+# overrides all three, and is read here as well as off the store because the collector only drops
+# the vendor on its next run.
+vendor_known() {
+  [ "$5" = false ] &&
+    { [ "$1" = yes ] || [ "$2" = true ] || [ "$worker_mode" = "$3" ] || [ -n "$4" ]; }
+}
+cb_known=false; cx_known=false; gm_known=false; gr_known=false
+! vendor_known "$cl_present" "$cb_role_off" claudeb "$cb_pin" "$cb_paused" || cb_known=true
+! vendor_known "$cx_present" "$cx_role_off" codex "$cx_pin" "$cx_paused" || cx_known=true
+! vendor_known "$gm_present" "$gm_role_off" gemini "$gm_pin" "$gm_paused" || gm_known=true
+! vendor_known "$gr_present" "$gr_role_off" grok "$gr_pin" "$gr_paused" || gr_known=true
+# A vendor that is not here selected nothing, whatever a snapshot older than the pause still says;
+# left standing, its account would keep the ALL WALLED verdict from ever being reached.
+[ "$cb_known" = true ] || { cl_acct=""; cl_pinned=no; cl_pin_lapse=""; }
+[ "$cx_known" = true ] || { cx_selected=no; cx_acct=""; cx_pin_lapse=""; }
+[ "$gm_known" = true ] || { gm_selected=no; gm_acct=""; gm_pin_lapse=""; }
+[ "$gr_known" = true ] || { gr_selected=no; gr_acct=""; gr_pin_lapse=""; }
 
 # A pin the account has spent is over: `exhausted` is the usage wall alone, and the other lapses
 # are conditions that pass (a login to fix, a toggle to flip, a reading yet to arrive), so they
@@ -600,7 +677,9 @@ fi
 all_walled=no
 if [ "$had_pool" = yes ] && [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] &&
    [ "$gm_selected" != yes ] && [ "$gr_selected" != yes ] &&
-   { [ "$cb_role_off" = false ] || [ "$cx_role_off" = false ] || [ "$gm_role_off" = false ] ||
+   { { [ "$cb_known" = true ] && [ "$cb_role_off" = false ]; } ||
+     { [ "$cx_known" = true ] && [ "$cx_role_off" = false ]; } ||
+     { [ "$gm_known" = true ] && [ "$gm_role_off" = false ]; } ||
      { [ "$gr_known" = true ] && [ "$gr_role_off" = false ]; }; }; then
   all_walled=yes
 fi
@@ -697,6 +776,7 @@ else
   cb_next="claudeb unavailable — no selectable account"
   cb_cache="cb~?"
 fi
+[ "$cb_known" = true ] || { cb_next=""; cb_cache=""; }
 
 if [ "$cx_role_off" = true ]; then
   cx_next="codex — off for workers"
@@ -720,6 +800,7 @@ fi
 # A pin that could not serve is announced where the routing decision is read, not only in the
 # vendor line: silently routing elsewhere reads as the pin having been honoured.
 [ -z "$cx_pin_lapse" ] || cx_next="codex pin $cx_pin $cx_pin_lapse → ${cx_next#codex }"
+[ "$cx_known" = true ] || cx_next=""
 
 if [ "$gm_role_off" = true ]; then
   gm_next="gemini — off for workers"
@@ -736,6 +817,7 @@ else
   gm_mark="✗"
 fi
 [ -z "$gm_pin_lapse" ] || gm_next="gemini pin $gm_pin $gm_pin_lapse → ${gm_next#gemini }"
+[ "$gm_known" = true ] || gm_next=""
 
 gr_next=""; gr_cache=""
 if [ "$gr_known" = true ]; then
@@ -766,11 +848,24 @@ case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) c
 case "$cb_model" in sonnet) cb_model_abbr=son ;; haiku) cb_model_abbr=hai ;; fable) cb_model_abbr=fab ;; *) cb_model_abbr=$cb_model ;; esac
 case "$gr_effort" in medium) gr_eff_abbr=med ;; high) gr_eff_abbr=hi ;; xhigh) gr_eff_abbr=xh ;; *) gr_eff_abbr=$gr_effort ;; esac
 codex_model=$(codex_model_short_label)
+# Every field is optional and the order never moves, which is what lets the consumer find a vendor
+# by its tag alone: a vendor absent from the store contributes no field, and the statusline's
+# reader answers "no prediction" for a tag it does not find, exactly as it does for `cb~?`.
+cx_cache=""; gm_cache=""
+[ "$cx_known" = false ] ||
+  cx_cache=$(printf 'cx%s%s·%s·%s' "$cx_mark" "$cx_acct" "$codex_model" "$cx_eff_abbr")
+[ "$cb_known" = false ] ||
+  cb_cache=$(printf '%s·%s·%s' "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr")
+[ "$gm_known" = false ] ||
+  gm_cache=$(printf 'gx%s%s·%s·%s' "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr")
 [ "$gr_known" = false ] ||
-  gr_cache=$(printf ' gr%s%s·%s·%s' "$gr_mark" "${gr_acct:-?}" "$gr_model" "$gr_eff_abbr")
-write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s gx%s%s·%s·%s%s' \
-  "$cx_mark" "$cx_acct" "$cx_eff_abbr" "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr" \
-  "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr" "$gr_cache")"
+  gr_cache=$(printf 'gr%s%s·%s·%s' "$gr_mark" "${gr_acct:-?}" "$gr_model" "$gr_eff_abbr")
+cache_line=""
+for cache_field in "$cx_cache" "$cb_cache" "$gm_cache" "$gr_cache"; do
+  [ -n "$cache_field" ] || continue
+  cache_line="${cache_line:+$cache_line }$cache_field"
+done
+write_cache "$cache_line"
 
 # The leading segment is the routing answer, so a vendor closed for workers trails the line
 # whatever the mode's usual order is: it is a statement about the switch, not a candidate.
@@ -784,7 +879,8 @@ print_next() {
     case "$name" in
       cb) text=$cb_next; off=$cb_role_off ;;
       cx) text=$cx_next; off=$cx_role_off ;;
-      cxw) if [ "$cx_role_off" = true ]; then text=$cx_next; off=true
+      cxw) if [ "$cx_known" = false ]; then text=""
+           elif [ "$cx_role_off" = true ]; then text=$cx_next; off=true
            elif [ "$cx_measured" = no ]; then text=$cx_next
            else text="codex — WALLED"; fi ;;
       gm) text=$gm_next; off=$gm_role_off ;;
@@ -800,6 +896,7 @@ print_next() {
     fi
   done
   [ -z "$deferred" ] || open="${open:+$open  |  }$deferred"
+  [ -n "$open" ] || [ "$all_paused" = false ] || open=$NOTHING_ROUTABLE
   printf 'NEXT: %s\n' "$open"
 }
 
@@ -817,13 +914,16 @@ elif [ "$worker_mode" = auto ]; then
   # Auto ranks vendors by the same metric that ranks accounts inside one: the daily budget of the
   # account each vendor selected. A vendor with nothing selectable has no budget to compare and
   # takes the tail in the vendor order the tokens spell, which is also how equal budgets break.
+  # The pin outranks budget: a vendor a usable pin answered leads whatever an unpinned vendor
+  # holds, while a lapsed pin left an ordinary pool pick that ranks by budget like any other.
+  auto_rank() { [ "$1" = yes ] && printf 0 || printf 1; }
   auto_seq=""
   for vendor in $(
-    { [ -z "$cl_acct" ] || printf '%s\tcb\n' "$cl_budget"
-      [ "$cx_selected" != yes ] || printf '%s\tcx\n' "$cx_budget"
-      [ "$gm_selected" != yes ] || printf '%s\tgm\n' "$gm_budget"
-      [ "$gr_selected" != yes ] || printf '%s\tgr\n' "$gr_budget"
-    } | sort -t $'\t' -k1,1gr -k2,2 | cut -f2); do
+    { [ -z "$cl_acct" ] || printf '%s\t%s\tcb\n' "$(auto_rank "$cl_pinned")" "$cl_budget"
+      [ "$cx_selected" != yes ] || printf '%s\t%s\tcx\n' "$(auto_rank "$cx_pinned")" "$cx_budget"
+      [ "$gm_selected" != yes ] || printf '%s\t%s\tgm\n' "$(auto_rank "$gm_pinned")" "$gm_budget"
+      [ "$gr_selected" != yes ] || printf '%s\t%s\tgr\n' "$(auto_rank "$gr_pinned")" "$gr_budget"
+    } | sort -t $'\t' -k1,1n -k2,2gr -k3,3 | cut -f3); do
     auto_seq="$auto_seq $vendor"
   done
   for vendor in cb cx gm gr; do
@@ -833,10 +933,10 @@ elif [ "$worker_mode" = auto ]; then
 else
   print_next cb cx
 fi
-printf '%s\n' "$cx_line"
-printf '%s\n' "$gm_line"
+[ "$cx_known" = false ] || printf '%s\n' "$cx_line"
+[ "$gm_known" = false ] || printf '%s\n' "$gm_line"
 [ "$gr_known" = false ] || printf '%s\n' "$gr_line"
-printf '%s   (* = this session account)\n' "$cl_line"
+[ "$cb_known" = false ] || printf '%s   (* = this session account)\n' "$cl_line"
 printf 'DATA: %s\n' "$age"
 if [ -n "$fb_acct" ]; then
   printf 'SESSION: %s — fb %s%%, wk %s%%\n' "$fb_acct" "$fb_fb" "$fb_wk"

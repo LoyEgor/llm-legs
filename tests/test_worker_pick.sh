@@ -18,6 +18,10 @@ assert() {
   "$@" || fail "assert $asserts failed: $*"
 }
 contains() { grep -Fq -- "$2" <<<"$1"; }
+# Vendor lines are optional — a vendor the store carries no row for prints none — so a case reads
+# the line it means by its prefix rather than by an index the next absent vendor would shift. Line
+# ORDER is asserted by index on its own, in the golden block.
+vline() { grep -m1 -- "^$1" <<<"$output"; }
 not_contains() { ! grep -Fq -- "$2" <<<"$1"; }
 before() {
   local text=$1 left=$2 right=$3 suffix
@@ -93,7 +97,7 @@ write_config
 # an exhausted fable bucket and still ranks, because fable exhaustion never disqualifies
 # ordinary work.
 run_case claude_pool
-pool_row=$(sed -n '4p' <<<"$output")
+pool_row=$(vline 'claude:')
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb session · opus · high — ACCOUNT: session'
 assert contains "$pool_row" 'dry($100) 5h 20% wk 5% fb 100%'
 assert not_contains "$output" 'SESSION RESERVE'
@@ -147,13 +151,13 @@ run_filter claude_pool '.vendors.claude.accounts = [
   {account:"tie-a",enabled:true,weekly:{used_pct:20},fable:{used_pct:0}},
   {account:"tie-b",enabled:true,weekly:{used_pct:20},five_hour:{used_pct:0},fable:{used_pct:0}}]'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb tie-a · opus · high — ACCOUNT: tie-a'
-assert before "$(sed -n '4p' <<<"$output")" 'tie-a($100) 5h ?' 'tie-b($100)'
+assert before "$(vline 'claude:')" 'tie-a($100) 5h ?' 'tie-b($100)'
 
 # The budget is a pace, not a level: at the same percentage the account whose week resets sooner
 # may spend faster, and that is the whole difference between this metric and a bare percentage.
 run_case reset
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb soon · opus · high — ACCOUNT: soon'
-assert before "$(sed -n '4p' <<<"$output")" 'soon($100)' 'later($100)'
+assert before "$(vline 'claude:')" 'soon($100)' 'later($100)'
 query --account claudeb
 assert test "$query_out" = soon
 query --account claudeb --exclude soon
@@ -204,7 +208,7 @@ run_case claude_pool
 run_filter claude_pool '.vendors.claude.accounts = [
   {account:"hot",enabled:true,five_hour:{used_pct:85},weekly:{used_pct:30}},
   {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
-defer_row=$(sed -n '4p' <<<"$output")
+defer_row=$(vline 'claude:')
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb cool · opus · high — ACCOUNT: cool'
 assert contains "$defer_row" 'hot($100) 5h 85% wk 30% fb ? score 70 cap 15% 5h!'
 assert not_contains "$defer_row" 'cool($100) 5h 10% wk 50% fb ? score 50 cap 50% 5h!'
@@ -220,7 +224,7 @@ run_filter claude_pool '.vendors.claude.accounts = [
   {account:"hot",enabled:true,five_hour:{used_pct:85},weekly:{used_pct:30}},
   {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:100}}]'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb hot · opus · high — ACCOUNT: hot'
-assert contains "$(sed -n '4p' <<<"$output")" 'hot($100) 5h 85% wk 30% fb ? score 70 cap 15% 5h!'
+assert contains "$(vline 'claude:')" 'hot($100) 5h 85% wk 30% fb ? score 70 cap 15% 5h!'
 # One threshold, and it is a threshold: 80 defers, 79 does not.
 run_filter claude_pool '.vendors.claude.accounts = [
   {account:"hot",enabled:true,five_hour:{used_pct:79},weekly:{used_pct:30}},
@@ -231,7 +235,7 @@ run_filter claude_pool '.vendors.claude.accounts = [
   {account:"hot",enabled:true,five_hour:{used_pct:80},weekly:{used_pct:30}},
   {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb cool · opus · high — ACCOUNT: cool'
-assert contains "$(sed -n '4p' <<<"$output")" 'hot($100) 5h 80% wk 30% fb ? score 70 cap 20% 5h!'
+assert contains "$(vline 'claude:')" 'hot($100) 5h 80% wk 30% fb ? score 70 cap 20% 5h!'
 # A five-hour window nobody measured is no evidence of one, so it never defers — otherwise the
 # tiebreak coalescing (absent reads as 100) would quietly demote a perfectly fresh account.
 run_filter claude_pool '.vendors.claude.accounts = [
@@ -253,7 +257,7 @@ run_case claude_pool
 query --account claudeb --fable
 assert test "$query_rc" -eq 0
 assert test "$query_out" = session
-assert contains "$(sed -n '6p' <<<"$output")" 'SESSION: session — fb 0%, wk 0%'
+assert contains "$(vline 'SESSION:')" 'SESSION: session — fb 0%, wk 0%'
 query --account claudeb --fable --exclude session
 assert test "$query_out" = tie-a
 query --account claudeb --fable --exclude session,tie-a
@@ -268,7 +272,7 @@ assert test 0 -eq "$(grep -c 'score' "$WORK/query.err")"
 run_filter claude_pool '.vendors.claude.accounts = [
   {account:"fb-late",enabled:true,weekly:{used_pct:0},fable:{used_pct:50,resets_at:2000432000}},
   {account:"fb-soon",enabled:true,weekly:{used_pct:0},fable:{used_pct:50,resets_at:2000010800}}]'
-assert contains "$(sed -n '6p' <<<"$output")" 'SESSION: fb-soon — fb 50%, wk 0%'
+assert contains "$(vline 'SESSION:')" 'SESSION: fb-soon — fb 50%, wk 0%'
 query --account claudeb --fable
 assert test "$query_rc" -eq 0
 assert test "$query_out" = fb-soon
@@ -283,8 +287,8 @@ assert grep -q 'only means something with --account claudeb' "$WORK/query.err"
 run_case reserve_only
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb session · opus · high — ACCOUNT: session'
 assert not_contains "$output" 'SESSION RESERVE'
-assert contains "$(sed -n '4p' <<<"$output")" 'session($100)* 5h 5% wk 10% fb 10% score 90 cap 90%'
-assert not_contains "$(sed -n '4p' <<<"$output")" 'RESERVE'
+assert contains "$(vline 'claude:')" 'session($100)* 5h 5% wk 10% fb 10% score 90 cap 90%'
+assert not_contains "$(vline 'claude:')" 'RESERVE'
 query --account claudeb
 assert test "$query_rc" -eq 0
 assert test "$query_out" = session
@@ -301,12 +305,12 @@ assert test -z "$query_out"
 write_config 'claudeb_profile=off'
 run_case claude_pool
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb off · opus · high — ACCOUNT: off (PINNED)'
-assert contains "$(sed -n '4p' <<<"$output")" 'off($100) 5h 0% wk 0% fb 0% score 100 cap 100% PINNED off'
+assert contains "$(vline 'claude:')" 'off($100) 5h 0% wk 0% fb 0% score 100 cap 100% PINNED off'
 write_config 'claudeb_profile=session'
 run_case claude_pool
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb session · opus · high — ACCOUNT: session (PINNED)'
 assert not_contains "$output" 'SESSION RESERVE'
-assert not_contains "$(sed -n '4p' <<<"$output")" 'RESERVE'
+assert not_contains "$(vline 'claude:')" 'RESERVE'
 query --account claudeb
 assert test "$query_out" = session
 assert test ! -s "$WORK/query.err"
@@ -328,7 +332,7 @@ run_filter claude_pool '.vendors.claude.accounts |= map(
   if .account == "tie-a" then .enabled = false | .blocked = true |
     .rotation = {usable:{general:false,fable:false}} else . end)'
 assert contains "$(head -n1 <<<"$output")" 'NEXT: claudeb tie-a · opus · high — ACCOUNT: tie-a (PINNED)'
-assert contains "$(sed -n '4p' <<<"$output")" 'tie-a($100) 5h 30% wk 20% fb 40% score 80 cap 70% PINNED no-Fable blocked off'
+assert contains "$(vline 'claude:')" 'tie-a($100) 5h 30% wk 20% fb 40% score 80 cap 70% PINNED no-Fable blocked off'
 query --account claudeb
 assert test "$query_out" = tie-a
 # Without the pin the same account is no candidate at all: the toggle is the wall for everyone else.
@@ -344,7 +348,7 @@ lapse_case() {
   write_config "claudeb_profile=$1"
   run_filter claude_pool "$2"
   assert contains "$(head -n1 <<<"$output")" "claudeb pin $1 $3 → $4"
-  assert contains "$(sed -n '4p' <<<"$output")" "claude: pin $1 $3 → $4"
+  assert contains "$(vline 'claude:')" "claude: pin $1 $3 → $4"
 }
 lapse_case ghost '.' absent session
 lapse_case dead '.' 'auth unavailable' session
@@ -569,7 +573,8 @@ assert before "$next_line" 'claudeb session' 'gemini main'
 assert before "$next_line" 'gemini main' 'codex main'
 # A vendor with nothing selectable has no budget to compare and takes the tail.
 run_filter golden ".vendors.grok = $GROK_PAIR
-  | del(.vendors.codex, .vendors.gemini)
+  | .vendors.codex = {available:true,accounts:[{account:\"main\"}]}
+  | .vendors.gemini = {available:true,group:\"Gemini Models\"}
   | .vendors.claude.accounts |= map(.enabled = false)"
 # Nothing measured codex or gemini here, so neither may speak of a wall.
 assert test "${output%%$'\n'*}" = 'NEXT: grok spare · auto · high — 10%  |  claudeb unavailable — every account is out of the worker pool  |  codex unavailable · high — no quota data  |  gemini unavailable'
@@ -589,6 +594,46 @@ run_filter golden ".vendors.grok = $GROK_PAIR
 next_line=$(head -n1 <<<"$output")
 assert contains "$next_line" 'NEXT: gemini main · pro · high — ACCOUNT: main'
 assert before "$next_line" 'gemini main' 'grok spare'
+# The pin is the top override of worker routing, so in auto the vendor a usable pin answered leads
+# the line even where an unpinned vendor holds the larger budget.
+AUTO_PIN_STORE=".vendors.grok = $GROK_PAIR
+  | .vendors.codex.accounts = [{account:\"main\",five_hour:{used_pct:2},weekly:{used_pct:2}}]"
+write_config 'claudeb_profile=session'
+run_filter golden "$AUTO_PIN_STORE"
+next_line=$(head -n1 <<<"$output")
+assert contains "$next_line" 'NEXT: claudeb session · opus · high — ACCOUNT: session (PINNED)'
+assert before "$next_line" 'claudeb session' 'codex main'
+assert before "$next_line" 'codex main' 'grok spare'
+assert before "$next_line" 'grok spare' 'gemini main'
+# Pinned vendors rank among themselves on the same budget the unpinned ones are ranked on, so the
+# larger-budget codex still trails both pins.
+write_config 'claudeb_profile=session' 'grok_profile=supergrok'
+run_filter golden "$AUTO_PIN_STORE"
+next_line=$(head -n1 <<<"$output")
+assert before "$next_line" 'claudeb session' 'grok supergrok'
+assert before "$next_line" 'grok supergrok' 'codex main'
+assert before "$next_line" 'codex main' 'gemini main'
+# A pin that lapsed selected nothing, so its vendor is back to competing on budget like any other.
+write_config 'claudeb_profile=walled-wk'
+run_filter golden "$AUTO_PIN_STORE
+  | .vendors.claude.accounts += [{account:\"walled-wk\",enabled:true,weekly:{used_pct:100}}]"
+next_line=$(head -n1 <<<"$output")
+assert contains "$next_line" 'claudeb pin walled-wk exhausted → session'
+assert before "$next_line" 'codex main' 'grok spare'
+assert before "$next_line" 'grok spare' 'claudeb pin walled-wk'
+assert before "$next_line" 'claudeb pin walled-wk' 'gemini main'
+# Reviewers and chat never see the pin, so it moves neither their answer nor anything else: the
+# pinned account stands in those queries as an ordinary candidate.
+write_config 'claudeb_profile=worker'
+query_case golden --account claudeb
+assert test "$query_out" = worker
+query --account claudeb --role reviewers
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
+query --account claudeb --role chat
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
+write_config
 # `worker=grok` is a mode arm like `worker=gemini`: the vendor leads the line whatever the pool says.
 printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
@@ -1058,6 +1103,161 @@ assert test -e "$CACHE/statusline-cache-rl"
 assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi'
 rm -f "$CACHE/worker-pick.line.live" "$CACHE/statusline-cache-rl"
 
+# A paused vendor is parked for months and must leave no trace: the collector drops its
+# `vendors.<key>` from the store, and every surface here has to render that absence as absence —
+# no NEXT segment, no vendor line, no cache field, and no `paused` word anywhere either.
+write_config 'gemini_paused=on'
+run_filter golden 'del(.vendors.gemini)'
+assert not_contains "$output" gemini
+assert not_contains "$output" paused
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 5
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi'
+# Read off the switch as well as off the store: the collector only drops the vendor on its next
+# run, and a snapshot written before the switch must not keep the parked vendor on screen.
+run_case golden
+assert not_contains "$output" gemini
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi'
+# Every vendor reads the same rule, claudeb and codex included.
+write_config 'codex_paused=on'
+run_case golden
+assert not_contains "$output" codex
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cb~session·opus·hi gx✓main·pro·hi'
+write_config 'claudeb_paused=on'
+run_case golden
+assert not_contains "$output" claude
+assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini main'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi gx✓main·pro·hi'
+# A named vendor is refused rather than quietly rerouted: a caller that spelled it out would read
+# another vendor's account as the one it asked for.
+write_config 'grok_paused=on'
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: grok is paused (grok_paused=on in ~/.claude/worker-model)'
+# Only the literal `on` parks a vendor, mirroring the literal `off` of the role keys.
+write_config 'grok_paused=off'
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 0
+assert test "$query_out" = spare
+# Roles are left exactly as they were, and say nothing while the pause stands: `off for workers` is
+# a rendered segment, and a parked vendor renders none.
+write_config 'grok_paused=on' 'grok_workers=off'
+grok_case "$GROK_PAIR"
+assert not_contains "$output" grok
+assert not_contains "$output" 'off for workers'
+# `worker=<paused vendor>` falls back to auto, silently: the pause is the later of the two
+# decisions, and a note on every run would be noise rather than news. Read off the whole line,
+# because a mode left standing would still order the remaining vendors its own fixed way.
+write_config 'grok_paused=on'
+grok_case "$GROK_PAIR"
+paused_auto_next=$(head -n1 <<<"$output")
+printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=pro' 'gemini_effort=high' 'grok_paused=on' >"$CONFIG"
+grok_case "$GROK_PAIR"
+assert not_contains "$output" grok
+assert test "$(head -n1 <<<"$output")" = "$paused_auto_next"
+assert test ! -s "$WORK/note.err"
+# Pause beats the pin — the one place in the ladder where the pin does not win. The pinned account
+# is dropped from the reckoning entirely, DATA age included: a pin normally keeps an out-of-pool
+# account routable, and a parked vendor's frozen timestamp would brand the whole reading STALE.
+# The pin line itself stays in the file for the day the vendor comes back.
+PAUSED_PIN_STORE='{available:true,accounts:[
+  {account:"parked",enabled:false,weekly:{used_pct:10,as_of:1999000000},auth:{status:"ok"}}]}'
+write_config 'grok_paused=on' 'grok_profile=parked'
+grok_case "$PAUSED_PIN_STORE"
+assert not_contains "$output" grok
+assert not_contains "$output" parked
+assert contains "$output" 'DATA: fresh (0 min old)'
+assert grep -Fqx 'grok_profile=parked' "$CONFIG"
+# The same pin on a vendor that is running is the control: it counts.
+write_config 'grok_profile=parked'
+grok_case "$PAUSED_PIN_STORE"
+assert contains "$output" 'DATA: STALE'
+# An ordinary enabled row the collector has not dropped yet reads the same way: a parked vendor is
+# not polled, so its frozen timestamp is nobody's routing data and may not age the DATA line.
+PAUSED_STALE_STORE='{available:true,accounts:[
+  {account:"supergrok",enabled:true,weekly:{used_pct:10,as_of:1999000000},auth:{status:"ok"}}]}'
+write_config 'grok_paused=on'
+grok_case "$PAUSED_STALE_STORE"
+assert contains "$output" 'DATA: fresh (0 min old)'
+write_config
+grok_case "$PAUSED_STALE_STORE"
+assert contains "$output" 'DATA: STALE'
+# That same undropped row may not vote on the ALL WALLED verdict either: its quota is nobody's to
+# spend, and one such ghost would report the open vendors' empty pool as a limit Egor must fix.
+PARKED_GHOST_FILTER='.vendors.codex = {available:true,accounts:[{account:"main"}]}
+  | .vendors.gemini = {available:true,group:"Gemini Models"}
+  | .vendors.claude.accounts |= map(.enabled = false)'
+write_config 'grok_paused=on'
+run_filter golden "$PARKED_GHOST_FILTER | .vendors.grok = $PAUSED_STALE_STORE"
+assert contains "$output" 'DATA: fresh (0 min old)'
+assert not_contains "$output" 'ALL WALLED'
+assert contains "$output" 'claudeb unavailable — every account is out of the worker pool'
+parked_ghost_next=$(head -n1 <<<"$output")
+# The same store with grok never collected at all is the control: a parked vendor reads as absent.
+write_config
+run_filter golden "$PARKED_GHOST_FILTER"
+assert test "$(head -n1 <<<"$output")" = "$parked_ghost_next"
+
+# Every vendor parked is the one degenerate case that names the pause: nothing is routable, and an
+# empty NEXT without the reason reads as a router that broke. Nothing else appears — no vendor
+# line, no cache field — and the run still answers 0, as the ALL WALLED verdict does.
+ALL_PAUSED=('claudeb_paused=on' 'codex_paused=on' 'gemini_paused=on' 'grok_paused=on')
+write_config "${ALL_PAUSED[@]}"
+run_case golden
+assert test "$(head -n1 <<<"$output")" = 'NEXT: nothing routable — every vendor is paused'
+assert test "$(sed -n '2p' <<<"$output" | cut -d: -f1)" = DATA
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 3
+assert test -z "$(cat "$CACHE/worker-pick.line.session")"
+# The fail-safe is built without the store and needs the same answer, or the one run that has no
+# data to check itself against would name a parked vendor as the fallback.
+printf 'not-json\n' >"$STORE"
+run_store all-paused-fail-safe
+assert test "$(head -n1 <<<"$output")" = 'NEXT: nothing routable — every vendor is paused'
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 3
+assert test -z "$(cat "$CACHE/worker-pick.line.session")"
+# With one vendor still running the fail-safe names it rather than the parked claudeb it defaults
+# to: a caller sent at a leg Egor parked has nowhere to land.
+write_config 'claudeb_paused=on' 'gemini_paused=on' 'grok_paused=on'
+run_store paused-fail-safe
+assert test "$(head -n1 <<<"$output")" = 'NEXT: codex unavailable (limits parse failed)'
+assert not_contains "$output" claudeb
+assert not_contains "$(cat "$CACHE/worker-pick.line.session")" cb
+write_config
+# A duplicate hand-edited line resolves first-wins, as every other key in this file does.
+printf '%s\n' 'worker=auto' 'grok_paused=on' 'grok_paused=off' >"$CONFIG"
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 3
+printf '%s\n' 'worker=auto' 'grok_paused=off' 'grok_paused=on' >"$CONFIG"
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 0
+write_config
+
+# The writer is share/worker-model.sh: `on` writes the line, `off` deletes it rather than spelling
+# an `=off`, and neither touches the role lines beside it.
+PAUSE_MODEL="$WORK/pause-model"
+set_paused() {
+  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+    bash -c '. "$1"; worker_model_set_paused "$2" "$3"' _ "$ROOT/share/worker-model.sh" "$1" "$2"
+}
+printf '%s\n' 'grok_workers=off' 'grok_profile=supergrok' >"$PAUSE_MODEL"
+assert set_paused grok on
+assert grep -Fqx 'grok_paused=on' "$PAUSE_MODEL"
+assert grep -Fqx 'grok_workers=off' "$PAUSE_MODEL"
+assert grep -Fqx 'grok_profile=supergrok' "$PAUSE_MODEL"
+assert set_paused grok off
+assert test -z "$(grep grok_paused "$PAUSE_MODEL")"
+assert grep -Fqx 'grok_workers=off' "$PAUSE_MODEL"
+# OpenCode has no roles and no leg here, and is parkable all the same: review-bench staffs it.
+assert set_paused opencode on
+assert grep -Fqx 'opencode_paused=on' "$PAUSE_MODEL"
+set_paused nosuchvendor on 2>/dev/null && fail 'worker_model_set_paused accepted an unknown vendor'
+set_paused grok sometimes 2>/dev/null && fail 'worker_model_set_paused accepted an unknown state'
+# Parking a vendor takes it out of every router at once, so a session may not do it.
+env "CLAUDECODE=1" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  bash -c '. "$1"; worker_model_set_paused grok on' _ "$ROOT/share/worker-model.sh" 2>/dev/null &&
+  fail 'worker_model_set_paused let a session park a vendor'
+
 # A query answers a caller; it does not announce a routing decision, so the statusline's
 # prediction stays owned by the real invocation.
 QUERY_CACHE="$WORK/query-cache"
@@ -1101,4 +1301,4 @@ for empty_exclude in "" ",,"; do
   assert grep -q 'needs at least one account name' "$WORK/query-bad.err"
 done
 
-printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% or dead auth), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the three roles including a chat that sees no pin, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, auto vendor order following the selected accounts budgets rather than a fixed vendor list, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing, model/effort straight from worker-model, and the output/cache golden contract with no routing prose\n' "$asserts"
+printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% or dead auth), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the three roles including a chat that sees no pin, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, auto vendor order following the selected accounts budgets rather than a fixed vendor list, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, and the output/cache golden contract with no routing prose\n' "$asserts"

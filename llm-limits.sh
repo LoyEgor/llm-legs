@@ -385,7 +385,10 @@ render_table() {
        .age, .rot, .credits, .status] | @tsv;
     .vendors as $v |
     [
-      (if $v.claude.available and (($v.claude.accounts | type) == "array") then
+    # An absent vendor prints nothing. Both branches below otherwise fall through to a row built
+    # out of nulls, which reads as a leg that answered with no data rather than one that is gone.
+      (if ($v | has("claude") | not) then empty
+       elif $v.claude.available and (($v.claude.accounts | type) == "array") then
          ($v.claude.accounts[]
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
@@ -394,7 +397,7 @@ render_table() {
        else {src: "claude", five: null, week: null, fable:null,
              age: ($v.claude | compact_age($render_now)), alarm: ($v.claude.age_alarm == true),
              rot:"-", credits:"-", status:($v.claude.status // "-")} end),
-      (("codex", "gemini", "grok") as $k | $v[$k]
+      (("codex", "gemini", "grok") as $k | select($v | has($k)) | $v[$k]
        | select(.removed != true)
        | if ((.accounts | type) == "array") and
             (($k == "codex" and any(.accounts[]; .auth_needed == true)) or (.accounts | length) > 1 or
@@ -488,6 +491,32 @@ gemini_legacy_removed=$(gemini_removal_marker main)
 . "$script_dir/share/experiments.sh"
 . "$script_dir/share/limits-view.sh"
 . "$script_dir/share/worker-model.sh"
+
+# A paused vendor is parked for months and must not exist for the infrastructure: no collector
+# runs for it and the store carries no entry (docs/routing-contract.md, "Pause"). Read once, so a
+# file edited mid-run cannot make the collectors and the merge below disagree about one vendor.
+# `worker_model_pinned_account` is that file's one generic reader, and `_paused` resolves through
+# it exactly as every other key does — first line wins, literal value only.
+# The store spells Claude `claude` and the worker-model file spells it `claudeb`.
+pause_config_vendor() { case "$1" in claude) printf 'claudeb' ;; *) printf '%s' "$1" ;; esac; }
+paused_vendors=' '
+for pause_vendor in claude codex gemini grok opencode; do
+  [ "$(worker_model_pinned_account "$(pause_config_vendor "$pause_vendor")_paused" 2>/dev/null || true)" = on ] \
+    || continue
+  paused_vendors="$paused_vendors$pause_vendor "
+done
+vendor_paused() { case "$paused_vendors" in *" $1 "*) return 0 ;; esac; return 1; }
+paused_vendors_json=$(printf '%s' "$paused_vendors" | jq -Rc 'split(" ") | map(select(length > 0))')
+
+# --refresh-account names a vendor deliberately, so a parked one is refused rather than quietly
+# skipped: a silent success would leave the caller reading a parked vendor's old numbers as fresh.
+refresh_account_vendor=${refresh_account%%/*}
+if [ -n "$refresh_account_vendor" ] && vendor_paused "$refresh_account_vendor"; then
+  printf '%s is paused (%s_paused=on in ~/.claude/worker-model)\n' \
+    "$(pause_config_vendor "$refresh_account_vendor")" \
+    "$(pause_config_vendor "$refresh_account_vendor")" >&2
+  exit 2
+fi
 
 codex_pool_dir=$(worker_pool_dir codex)
 gemini_pool_dir=$(worker_pool_dir gemini)
@@ -662,22 +691,26 @@ if [ "$gemini_remove" -eq 1 ]; then
     exit 1
   fi
 fi
-gemini_refresh_accounts_list=$(gemini_account_names)
-gemini_accounts_list=$(
-  {
-    printf '%s\n' "$gemini_refresh_accounts_list"
-    if [ -d "$gemini_accounts_cache_dir" ]; then
-      for gemini_removed_path in "$gemini_accounts_cache_dir"/*.json.removed; do
-        [ -e "$gemini_removed_path" ] || continue
-        gemini_removed_name=$(basename "$gemini_removed_path" .json.removed)
-        # A named account keeps a `removed:true` row; main's removal is total absence, so its
-        # marker must not put it back into the roster it was just taken out of.
-        [ "$gemini_removed_name" != main ] || continue
-        printf '%s\n' "$gemini_removed_name"
-      done
-    fi
-  } | awk 'NF && !seen[$0]++'
-)
+gemini_refresh_accounts_list=''
+gemini_accounts_list=''
+if ! vendor_paused gemini; then
+  gemini_refresh_accounts_list=$(gemini_account_names)
+  gemini_accounts_list=$(
+    {
+      printf '%s\n' "$gemini_refresh_accounts_list"
+      if [ -d "$gemini_accounts_cache_dir" ]; then
+        for gemini_removed_path in "$gemini_accounts_cache_dir"/*.json.removed; do
+          [ -e "$gemini_removed_path" ] || continue
+          gemini_removed_name=$(basename "$gemini_removed_path" .json.removed)
+          # A named account keeps a `removed:true` row; main's removal is total absence, so its
+          # marker must not put it back into the roster it was just taken out of.
+          [ "$gemini_removed_name" != main ] || continue
+          printf '%s\n' "$gemini_removed_name"
+        done
+      fi
+    } | awk 'NF && !seen[$0]++'
+  )
+fi
 gemini_refresh_error=''
 gemini_refresh_attempted=0
 gemini_refresh_succeeded=0
@@ -795,7 +828,7 @@ if [ -n "$gemini_refresh_target" ] && ! grep -qxF "$gemini_refresh_target" <<<"$
   printf 'llm-limits.sh: unknown Gemini account: %s\n' "$gemini_refresh_target" >&2
   exit 2
 fi
-if [ "$refresh" -eq 1 ] &&
+if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
    { [ -z "$refresh_account" ] || [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; }; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
     gemini_refresh_pids=()
@@ -817,7 +850,7 @@ if [ "$refresh" -eq 1 ] &&
     printf 'llm-limits.sh: Gemini refresh is disabled\n' >&2
   fi
 fi
-if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ]; then
+if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused gemini; then
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" = 0 ]; then
     echo "llm-limits.sh: gemini window start skipped (LLM_LIMITS_GEMINI_REFRESH=0)" >&2
   else
@@ -870,7 +903,7 @@ case "$refresh_account" in claude/*) claude_refresh_target=${refresh_account#cla
 # never constrain it. Generous defaults favor a complete, honest refresh.
 claude_sw_timeout=${LLM_LIMITS_CLAUDE_SW_TIMEOUT:-1200}
 claude_refresh_timeout=${LLM_LIMITS_CLAUDE_REFRESH_TIMEOUT:-300}
-if [ "$refresh" -eq 1 ] &&
+if [ "$refresh" -eq 1 ] && ! vendor_paused claude &&
    { [ -z "$refresh_account" ] || [ -n "$claude_refresh_target" ] || [ "$refresh_vendor" = claude ]; }; then
   if [ -d "$claudeb_root/limits" ]; then
     claude_refresh_attempted=1
@@ -936,7 +969,9 @@ fi
 shopt -s nullglob
 claudeb_files=("$claudeb_root/limits/"*.json)
 shopt -u nullglob
-if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
+if vendor_paused claude; then
+  :
+elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
   current=$(tr -d '\r\n' <"$claudeb_root/.claudeb-state" 2>/dev/null || true)
   claudeb_disabled="$claudeb_root/disabled"
   accounts_lines=''
@@ -1296,7 +1331,7 @@ select_codex_event() {
 
 codex_refresh_target=''
 case "$refresh_account" in codex/*) codex_refresh_target=${refresh_account#codex/} ;; esac
-if [ "$refresh" -eq 1 ] &&
+if [ "$refresh" -eq 1 ] && ! vendor_paused codex &&
    { [ -z "$refresh_account" ] || [ -n "$codex_refresh_target" ] || [ "$refresh_vendor" = codex ]; }; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" != 0 ]; then
     codex_refresh_attempted=1
@@ -1308,9 +1343,10 @@ if [ "$refresh" -eq 1 ] &&
       "$([ -n "$codex_refresh_target" ] && printf ' account %s' "$codex_refresh_target")" >&2
   fi
 fi
-select_codex_event
+codex_event=''
+vendor_paused codex || select_codex_event
 
-if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ]; then
+if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused codex; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" = 0 ]; then
     echo "llm-limits.sh: codex window start skipped (LLM_LIMITS_CODEX_REFRESH=0)" >&2
   else
@@ -1552,7 +1588,7 @@ if [ -n "$grok_refresh_target" ] && ! grep -qxF "$grok_refresh_target" <<<"$(gro
   printf 'llm-limits.sh: unknown Grok account: %s\n' "$grok_refresh_target" >&2
   exit 2
 fi
-if [ "$refresh" -eq 1 ] &&
+if [ "$refresh" -eq 1 ] && ! vendor_paused grok &&
    { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; }; then
   if [ "${LLM_LIMITS_GROK_REFRESH:-1}" != 0 ]; then
     grok_refresh_attempted=1
@@ -1566,7 +1602,7 @@ if [ "$refresh" -eq 1 ] &&
 fi
 
 grok_payload='{"accounts":[]}'
-if [ -r "$grok_cache" ]; then
+if ! vendor_paused grok && [ -r "$grok_cache" ]; then
   grok_payload=$(jq -c 'select((.accounts | type) == "array")' "$grok_cache" 2>/dev/null || true)
   [ -n "$grok_payload" ] || grok_payload='{"accounts":[]}'
 fi
@@ -1826,16 +1862,19 @@ opencode_profiles() {
   fi
 }
 
-opencode_seen_tsv=$(opencode_profiles | while IFS= read -r opencode_profile; do
-  [ -n "$opencode_profile" ] || continue
-  if [ "$opencode_profile" = '-' ]; then
-    opencode_service=opencode-go
-  else
-    opencode_service="opencode-go-$opencode_profile"
-  fi
-  printf '%s\t%s\t%s\n' "$opencode_profile" "$opencode_service" \
-    "$(cat "$opencode_state_dir/opencode-seen/$opencode_service" 2>/dev/null | tr -dc '0-9')"
-done)
+opencode_seen_tsv=''
+if ! vendor_paused opencode; then
+  opencode_seen_tsv=$(opencode_profiles | while IFS= read -r opencode_profile; do
+    [ -n "$opencode_profile" ] || continue
+    if [ "$opencode_profile" = '-' ]; then
+      opencode_service=opencode-go
+    else
+      opencode_service="opencode-go-$opencode_profile"
+    fi
+    printf '%s\t%s\t%s\n' "$opencode_profile" "$opencode_service" \
+      "$(cat "$opencode_state_dir/opencode-seen/$opencode_service" 2>/dev/null | tr -dc '0-9')"
+  done)
+fi
 
 opencode=$(jq -Rsc --argjson now "$now_epoch" \
   --arg walls "$(cat "$opencode_state_dir/walls.jsonl" 2>/dev/null)" \
@@ -1877,6 +1916,7 @@ opencode=$(jq -Rsc --argjson now "$now_epoch" \
 [ -n "$opencode" ] || opencode='{"source":"opencode-go","accounts":[],"age_alarm":true}'
 
 for shield_vendor in claude codex gemini grok; do
+  ! vendor_paused "$shield_vendor" || continue
   case "$shield_vendor" in
     claude) shield_payload=$claude ;;
     codex) shield_payload=$codex ;;
@@ -1917,7 +1957,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --arg global_error "$global_refresh_error" \
   --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" \
   --arg gemini_error "$gemini_refresh_error" --arg grok_error "$grok_refresh_error" \
-  --argjson alarm "$LIMITS_AGE_ALARM" \
+  --argjson alarm "$LIMITS_AGE_ALARM" --argjson paused "$paused_vendors_json" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
     . as $value |
@@ -2152,7 +2192,12 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # Last, and past every pass above: this vendor states no percentage, so nothing that reads one —
   # staleness, expiry, usability, the "no vendor data" verdict that decides the exit code — has
   # anything to say about it, and a pass that touched it would be inventing a reading.
-  | .vendors.opencode = $opencode'); then
+  | .vendors.opencode = $opencode
+  # Last of all, and after the merge above: a parked vendor collected nothing this run, so any
+  # entry left here came from the previous snapshot, and every surface would read it as a live
+  # measurement of a vendor nobody is polling. Absence is the whole interface — the same one a leg
+  # this machine never installed leaves.
+  | delpaths([$paused[] | ["vendors", .]])'); then
   echo "llm-limits.sh: failed to build cache JSON" >&2
   exit 5
 fi

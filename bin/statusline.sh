@@ -1974,6 +1974,7 @@ codex_model_short_label() {
 }
 
 worker_pick_fresh=0
+wp_line_loaded=no
 load_worker_pick_prediction() {
   local pick_acct=$acct pick_cache pick_mtime
   { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
@@ -1988,7 +1989,12 @@ load_worker_pick_prediction() {
     worker_pick_fresh=1
   fi
   worker_pick_prediction=""
-  [ -r "$pick_cache" ] && IFS= read -r worker_pick_prediction <"$pick_cache"
+  wp_line_loaded=no
+  if [ -r "$pick_cache" ]; then
+    IFS= read -r worker_pick_prediction <"$pick_cache"
+    [ -n "$worker_pick_prediction" ] && [ "$worker_pick_fresh" = 1 ] && wp_line_loaded=yes
+  fi
+  return 0
 }
 
 # One vendor's field of worker-pick's line: `ok` plus the account it would hand out, `off` for a
@@ -2081,17 +2087,21 @@ if [ "$wvendor" = auto ]; then
   done
 elif [ -n "$wvendor" ]; then
   worker_vendor_knobs "$wvendor"
+  load_worker_pick_prediction
+  worker_pick_vendor "$wvendor"
   if [ -n "$wpin" ]; then
-    worker_body=$(worker_candidate "@" "$wpin" "$wv_model" "$wv_effort")
-  else
-    load_worker_pick_prediction
-    worker_pick_vendor "$wvendor"
-    if [ "$wp_state" = off ]; then
-      # Dim, not magenta: nothing is routed here, and the vendor is parked rather than failing.
-      worker_body="${DIM}⏸off${RESET}"
-    elif [ "$wp_state" = ok ]; then
-      worker_body=$(worker_candidate "" "$wp_acct" "$wv_model" "$wv_effort")
+    # A loaded line with no field at all for this vendor means the vendor is PAUSED — worker-pick
+    # omits a paused vendor entirely, where a role switched off still emits `⏸off` — so no dispatch
+    # can land on the pin and it names nothing. No line loaded is not that evidence, only worker-pick
+    # not having written yet, and a legitimate pin must not vanish for it.
+    if [ "$wp_line_loaded" != yes ] || [ "$wp_state" != no ]; then
+      worker_body=$(worker_candidate "@" "$wpin" "$wv_model" "$wv_effort")
     fi
+  elif [ "$wp_state" = off ]; then
+    # Dim, not magenta: nothing is routed here, and the vendor is parked rather than failing.
+    worker_body="${DIM}⏸off${RESET}"
+  elif [ "$wp_state" = ok ]; then
+    worker_body=$(worker_candidate "" "$wp_acct" "$wv_model" "$wv_effort")
   fi
 fi
 

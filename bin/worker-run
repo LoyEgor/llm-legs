@@ -322,6 +322,7 @@ pick_account() {
   # A vendor closed for this role is the same kind of decision, and its accounts may be at 0%.
   # Only workers is asked for here, so only workers can come back.
   ! grep -q 'is switched off for workers' "$errors" || PICKED_ROLE_OFF=true
+  ! grep -Eq 'worker-pick: [a-z]+ is paused \(' "$errors" || PICKED_ROLE_OFF=true
   # A vendor the picker cannot read at all — no accounts, no usage snapshot — is not a walled one.
   # Its quota may be untouched, and this whole system exists so that nothing reports a limit it has
   # no data for (docs/DIAGNOSTICS.md, the 429 taxonomy).

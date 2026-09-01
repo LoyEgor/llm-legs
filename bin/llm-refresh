@@ -116,13 +116,35 @@ wrapper="$HOME/.local/libexec/llm-refresh-heartbeat"
 label=com.llm-refresh
 active_lock=''
 tick_tmp=''
+worker_model_config=${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}
+
+# A paused vendor is parked for months and must not exist for this daemon: no tick, no state entry,
+# no journal line, and so none of the per-account paths below — including grok's token touch — is
+# ever reached for it. Read off worker-pick's own file the way every other reader of it resolves a
+# key: first line wins, and only the literal `on` vetoes. The store cannot answer this, since the
+# collector deliberately writes no entry for a parked vendor.
+vendor_paused() {
+  local key
+  case "$1" in claude) key=claudeb_paused ;; *) key="$1_paused" ;; esac
+  [ -r "$worker_model_config" ] || return 1
+  [ "$(awk -v prefix="$key=" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' \
+    "$worker_model_config" 2>/dev/null)" = on ]
+}
+
+live_vendors() {
+  local vendor
+  for vendor in claude codex gemini grok opencode; do
+    vendor_paused "$vendor" || printf '%s\n' "$vendor"
+  done
+}
 
 normalized_state() {
   local input=${1:-'{}'}
-  jq -cn --argjson now "$now" --argjson state "$input" '
+  jq -cn --argjson now "$now" --argjson state "$input" \
+    --argjson live "$(live_vendors | jq -Rsc 'split("\n") | map(select(length > 0))')" '
     def rung: if . == 15 or . == 22 or . == 30 or . == 45 or . == 60 then . else 30 end;
     def epoch: if type == "number" and . >= 0 then floor else 0 end;
-    ["claude","codex","gemini","grok","opencode"] | map(. as $vendor |
+    $live | map(. as $vendor |
       (($state.vendors[$vendor] // $state[$vendor] // {}) as $old |
        {key:$vendor, value:{
          interval_min:($old.interval_min | rung),
@@ -380,8 +402,11 @@ state_persist() {
   local payload=$1 tmp
   tmp=$(mktemp "${state_file}.tmp.XXXXXX") || return 1
   tick_tmp=$tmp
-  if ! printf '%s\n' "$payload" >"$tmp" || ! jq -e '
-    .claude and .codex and .gemini and .grok and .opencode and
+  # Every LIVE vendor, and only those: a parked vendor has no cadence to keep, so demanding its
+  # entry here would make the pause itself the thing that fails the tick.
+  if ! printf '%s\n' "$payload" >"$tmp" || ! jq -e \
+    --argjson live "$(live_vendors | jq -Rsc 'split("\n") | map(select(length > 0))')" '
+    . as $state | ($live | all(. as $vendor | $state | has($vendor))) and
     all(.[]; type == "object")' "$tmp" >/dev/null; then
     rm -f "$tmp"
     tick_tmp=''
@@ -420,6 +445,7 @@ run_tick() {
   state=$(state_read)
 
   for vendor in claude codex gemini grok opencode; do
+    ! vendor_paused "$vendor" || continue
     interval=$(jq -r --arg vendor "$vendor" '.[$vendor].interval_min' <<<"$state")
     last=$(jq -r --arg vendor "$vendor" '.[$vendor].last_attempt_epoch' <<<"$state")
     if cadence_due "$interval" "$last" "$now"; then

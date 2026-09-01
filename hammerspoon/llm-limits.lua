@@ -265,7 +265,20 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   return infoTitle(prefix .. bar .. suffix, false, dim, atLimit)
 end
 
-local function appendOpenCode(menu, limits)
+-- Parked is read from worker-model and never from the store: the collector writes no entry for a
+-- parked vendor, so the store cannot tell "paused" from "not installed".
+local function pausedRow(vendorKey, label)
+  return {
+    title = infoTitle(label .. " — paused"),
+    menu = {{ title = "Resume", fn = function() M.resumeVendor(vendorKey) end }},
+  }
+end
+
+local function appendOpenCode(menu, limits, paused)
+  if paused and paused.opencode then
+    table.insert(menu, pausedRow("opencode", "OpenCode Go"))
+    return
+  end
   local vendor = limits and type(limits.vendors) == "table" and limits.vendors.opencode
   local accounts = type(vendor) == "table" and vendor.accounts
   if type(accounts) ~= "table" or #accounts == 0 then return end
@@ -274,7 +287,10 @@ local function appendOpenCode(menu, limits)
   -- whole or not at all, never one row at a time.
   table.insert(menu, {
     title = infoTitle("OpenCode Go"),
-    menu = {{ title = "Hard refresh", fn = M.hardRefreshOpenCode }},
+    menu = {
+      { title = "Hard refresh", fn = M.hardRefreshOpenCode },
+      { title = "Pause", fn = function() M.setWorkerPaused("opencode", true) end },
+    },
   })
   for _, account in ipairs(accounts) do
     local walled = account.walled == true
@@ -406,6 +422,21 @@ local WORKER_MODEL_PREFIX = {
 }
 local WORKER_ROLES = { "workers", "reviewers" }
 
+-- OpenCode has no roles, no pin and no worker-pick leg, but review-bench staffs it, so it is
+-- parkable like any other vendor and needs its own prefix table.
+local PAUSE_VENDOR_PREFIX = {
+  claude = "claudeb", codex = "codex", gemini = "gemini", grok = "grok", opencode = "opencode",
+}
+
+-- Section order of the vendor rows, read by the store-backed render and by the no-data one alike:
+-- a parked vendor's row is a switch Egor set, not a reading, so it must not depend on the store.
+local MENU_VENDORS = {
+  { key = "claude", label = "Claude" },
+  { key = "codex", label = "Codex" },
+  { key = "grok", label = "Grok" },
+  { key = "gemini", label = "Gemini" },
+}
+
 local function defaultWorkerRoles()
   local roles = {}
   for vendor in pairs(WORKER_MODEL_PREFIX) do
@@ -415,7 +446,7 @@ local function defaultWorkerRoles()
 end
 
 local function readWorkerModel()
-  local pins, roles = {}, defaultWorkerRoles()
+  local pins, roles, paused = {}, defaultWorkerRoles(), {}
   pcall(function()
     local file = io.open(M.workerModelPath, "r")
     if not file then return end
@@ -428,6 +459,10 @@ local function readWorkerModel()
       local key, value = line:match("^([%w_]+)=(.*)$")
       if key and not seen[key] then
         seen[key] = true
+        for vendor, prefix in pairs(PAUSE_VENDOR_PREFIX) do
+          -- Inverted from the role keys: this one names the parked state, so `on` is its veto.
+          if key == prefix .. "_paused" then paused[vendor] = value == "on" end
+        end
         for vendor, prefix in pairs(WORKER_MODEL_PREFIX) do
           if key == prefix .. "_profile" then
             pins[vendor] = value
@@ -441,7 +476,7 @@ local function readWorkerModel()
       end
     end
   end)
-  return pins, roles
+  return pins, roles, paused
 end
 
 local function baseEnvironment()
@@ -490,7 +525,7 @@ local function logAction(event, detail)
   return ok
 end
 
--- What the menu shows for "in the worker pool" comes from the collector cache, so between a
+-- What the menu shows for "in the pool" comes from the collector cache, so between a
 -- successful toggle and the collect that follows it the rebuilt menu still showed the old state —
 -- and clicking again, which is the natural response, produced the same command, which the
 -- in-flight guard in runAccountCommand then swallowed in silence. The value the command just
@@ -976,6 +1011,52 @@ end
 local WORKER_ROLE_SCRIPT =
   '. "$WORKER_MODEL_SH" && worker_model_set_role "$WM_VENDOR" "$WM_ROLE" "$WM_STATE"'
 
+local WORKER_PAUSE_SCRIPT =
+  '. "$WORKER_MODEL_SH" && worker_model_set_paused "$WM_VENDOR" "$WM_STATE"'
+
+function M.setWorkerPaused(vendor, pause, onDone)
+  local prefix = PAUSE_VENDOR_PREFIX[vendor]
+  if not prefix then return end
+  local state = pause and "on" or "off"
+  local label = string.format("worker-model %s_paused=%s", prefix, state)
+  local key = "worker-paused:" .. prefix
+  if taskForKey(key) then
+    logAction("already-running", label)
+    hs.alert.show("llm-limits: " .. label .. " is still running")
+    return
+  end
+  logAction("launch", label)
+  local id = reserveTask("worker-paused", 60, key)
+  local task = hs.task.new("/bin/bash", function(exitCode, stdOut, stdErr)
+    if exitCode ~= 0 then
+      logAction("failed", string.format("%s exit=%s %s", label, tostring(exitCode),
+        tostring((stdErr or stdOut or ""):gsub("%s+", " "):sub(1, 160))))
+      hs.alert.show("llm-limits: " .. label .. " failed")
+    else
+      logAction("done", label .. " exit=0")
+      if onDone then onDone() end
+    end
+    finishTask(id, exitCode, stdOut, stdErr, "pause toggle failed")
+  end, { "-c", WORKER_PAUSE_SCRIPT })
+  if task then
+    local environment = baseEnvironment()
+    environment.WORKER_MODEL_SH = M.workerModelShPath
+    environment.WORKER_PICK_CONFIG_FILE = M.workerModelPath
+    environment.WM_VENDOR = prefix
+    environment.WM_STATE = state
+    task:setEnvironment(environment)
+  end
+  startTask(id, task, "pause toggle failed")
+end
+
+-- The refresh is chained onto the write, not fired beside it: a collector that starts before the
+-- line is gone reads the vendor as still parked and leaves the section empty for another poll.
+function M.resumeVendor(vendor)
+  M.setWorkerPaused(vendor, false, function()
+    if vendor == "opencode" then M.hardRefreshOpenCode() else M.refreshVendor(vendor) end
+  end)
+end
+
 function M.setWorkerRole(vendor, role, enable)
   local prefix = WORKER_MODEL_PREFIX[vendor]
   local known = false
@@ -1242,7 +1323,7 @@ function M.menuItems()
   })
   table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
-    local pins, roles = readWorkerModel()
+    local pins, roles, paused = readWorkerModel()
     local function roleItems(vendorKey)
       local items = {}
       for _, role in ipairs(WORKER_ROLES) do
@@ -1253,20 +1334,19 @@ function M.menuItems()
           fn = function() M.setWorkerRole(vendorKey, role, not on) end,
         })
       end
+      table.insert(items, {
+        title = "Pause",
+        fn = function() M.setWorkerPaused(vendorKey, true) end,
+      })
       return items
     end
-    local vendors = {
-      { key = "claude", label = "Claude" },
-      { key = "codex", label = "Codex" },
-      { key = "grok", label = "Grok" },
-      { key = "gemini", label = "Gemini" },
-    }
-
-    for _, entry in ipairs(vendors) do
+    for _, entry in ipairs(MENU_VENDORS) do
       local vendor = limits.vendors[entry.key]
       -- Absent from the store means the leg is not installed: every vendor skips,
       -- rather than rendering a "no live data" wall that does not exist.
-      if vendor ~= nil then
+      if paused[entry.key] then
+        table.insert(menu, pausedRow(entry.key, entry.label))
+      elseif vendor ~= nil then
       local pinnedAccount = pins[entry.key]
       -- A vendor no role may use is still fully operable; its rows only stop claiming attention.
       local unused = not roles[entry.key].workers and not roles[entry.key].reviewers
@@ -1382,7 +1462,7 @@ function M.menuItems()
             fallbackRow.disabled = nil
             fallbackRow.checked = soleEnabled
             fallbackRow.menu = {
-              { title = "In worker pool", checked = soleEnabled,
+              { title = "In pool", checked = soleEnabled,
                 fn = function() M.toggleGeminiAccount("main", soleEnabled) end },
               {
                 title = "Pin for workers",
@@ -1466,7 +1546,7 @@ function M.menuItems()
                 accountRow.disabled = nil
                 accountRow.checked = enabled
                 accountRow.menu = {
-                  { title = "In worker pool", checked = enabled,
+                  { title = "In pool", checked = enabled,
                     fn = function() M.toggleAccount(acct, enabled) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshClaude(acct) end },
@@ -1482,7 +1562,7 @@ function M.menuItems()
                 accountRow.disabled = nil
                 accountRow.checked = enabled
                 accountRow.menu = {
-                  { title = "In worker pool", checked = enabled,
+                  { title = "In pool", checked = enabled,
                     fn = function() M.toggleCodexAccount(acct, enabled) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshCodex(acct) end },
@@ -1491,7 +1571,7 @@ function M.menuItems()
                 accountRow.disabled = nil
                 accountRow.checked = enabled
                 accountRow.menu = {
-                  { title = "In worker pool", checked = enabled,
+                  { title = "In pool", checked = enabled,
                     fn = function() M.toggleGeminiAccount(acct, enabled) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGemini(acct) end },
@@ -1500,7 +1580,7 @@ function M.menuItems()
                 accountRow.disabled = nil
                 accountRow.checked = enabled
                 accountRow.menu = {
-                  { title = "In worker pool", checked = enabled,
+                  { title = "In pool", checked = enabled,
                     fn = function() M.toggleGrokAccount(acct, enabled) end },
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGrok(acct) end },
@@ -1608,7 +1688,7 @@ function M.menuItems()
       end
     end
 
-    appendOpenCode(menu, limits)
+    appendOpenCode(menu, limits, paused)
     table.insert(menu, { title = "-" })
     refreshItems(menu)
     reportItem(menu)
@@ -1623,7 +1703,13 @@ function M.menuItems()
         disabled = true,
       })
     end
-    appendOpenCode(menu, limits)
+    local pausedVendors = select(3, readWorkerModel())
+    for _, entry in ipairs(MENU_VENDORS) do
+      if pausedVendors[entry.key] then
+        table.insert(menu, pausedRow(entry.key, entry.label))
+      end
+    end
+    appendOpenCode(menu, limits, pausedVendors)
     refreshItems(menu)
     reportItem(menu)
   end

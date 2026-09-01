@@ -33,7 +33,7 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
 
 ## The four rules
 
-1. **Candidates.** An account is a candidate iff its "In worker pool" toggle is enabled,
+1. **Candidates.** An account is a candidate iff its "In pool" toggle is enabled,
    its auth is alive, and its budget is a number. There is **no session reserve**: the
    session account (`CLAUDE_LIMITS_ACCOUNT`) is an ordinary candidate in every role,
    ranked by its budget like any other, and no answer is marked `SESSION RESERVE`. The
@@ -41,7 +41,10 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    worker dispatch, review-bench, the chat picker, anything else that asks.
 2. **Selection.** The vendor pin wins when usable — usable here being auth alive, a numeric
    budget and no wall, and nothing else: a pin overrides the pool toggle (rule 4), so pool
-   membership is no part of that test. It lapses loudly with a reason when it cannot serve.
+   membership is no part of that test. It is the top override of worker routing, so it decides
+   the account inside its vendor and, in `auto`, carries that vendor to the front of the vendor
+   order whatever budget an unpinned vendor holds. It lapses loudly with a reason when it cannot
+   serve, and a lapsed pin leaves an ordinary pool pick ranked on budget like any other.
    Otherwise the candidates are ranked on one key vector, ascending, identical for all four
    vendors:
 
@@ -181,6 +184,39 @@ accounts hold. `worker-run` refuses a closed vendor for explicit accounts and pi
 the vendor pin excepted, and reports it the way it reports an empty pool —
 `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
+## Pause
+
+`<vendor>_paused=on` in the same file is the deliberate, months-long **parking** of a vendor, and
+it is not a role. A role `off` closes a vendor the surfaces still know about: it walls it, names it
+`off for <role>`, and leaves its account rows intact. A pause removes it. Vendors are
+`claudeb|codex|gemini|grok|opencode` (store keys `claude|codex|gemini|grok|opencode` — claudeb is
+`claude` in the store), the literal `on` is the only veto — an absent key and any other value are
+both "running" — and a duplicated key resolves first-line-wins, exactly as the role keys do. The
+roles under a pause are untouched in both directions: deleting the line restores the vendor whole,
+and the switch writes nothing anywhere else.
+
+The mechanism is the one a leg this machine never installed already produces — **absence from the
+store**, the same absence "Interface kept stable" states for `vendors.grok`. `llm-limits.sh` runs
+no collector for a parked vendor (zero network: no OAuth or usage call, no `grokb`/`codex`/`agy`
+helper, no `opencode-go` probe), reconciles none of its worker-pool shields, and deletes its entry
+after the merge, so a reading the previous snapshot carried cannot survive the pause. Every render
+path then simply has nothing to print — `--table`, `--plain`, the menu, the statusline, the
+worker-pick cache line — and `vendors.claude` is as deletable as any other. `worker-pick` adds three answers of its own on top of that absence: a pin on a parked vendor is ignored rather than honoured (pause stands above the pin, the inverse of the roles ladder), a global `worker=<parked vendor>` reads as `auto` with no warning, and only when EVERY vendor is parked does it say why nothing routes — `NEXT: nothing routable — every vendor is paused`, exit 0, an empty cache line — since a bare `NEXT:` names no reason. `worker-pick --account <parked vendor>` refuses at exit 3 with the `is paused` line below, the shape `worker-run` and review-bench parse. `bin/llm-refresh` gives
+a parked vendor no cadence entry, no tick and no journal line, so no account of it is ever revived,
+probed or token-touched.
+
+What is NAMED is refused rather than silently skipped, because a silent skip reports a parked
+vendor's old numbers as a fresh reading: `llm-limits.sh --refresh-account <vendor>[/<account>]`
+answers one stderr line — `<vendor> is paused (<vendor>_paused=on in ~/.claude/worker-model)`, the
+vendor spelled as the switch spells it — and exits non-zero. review-bench refuses a named cell of a
+parked vendor in those same words.
+
+The one visible trace is a single menubar row, `<Label> — paused`, whose only item is **Resume**. The menu reads the pause off `~/.claude/worker-model` and not off the store — the store has no entry to read — so the row appears for every parked vendor alike, OpenCode included, whether or not a reading ever existed.
+Resume deletes the line and then refreshes that vendor, because the store holds nothing for a
+vendor that was parked and the section would otherwise stay empty until the next poll. Both
+directions are Egor's hand only: `share/worker-model.sh` `worker_model_set_paused` refuses a
+session (`CLAUDECODE`) the way the role writer does, so the menubar is the only way in.
+
 ## Deleted with this contract (not configurable, not dormant)
 
 `FLOOR_PCT` / `HEADROOM_PCT`, the night-window relaxation (`awake_until_reset` / `relax`),
@@ -211,8 +247,9 @@ routing-math paragraph the rules above replace.
   machine has not installed is absent from the answer, never walled and never a failed
   lookup.
 - `worker-pick --account <vendor> [--exclude a,b] [--claim]` keeps its contract: bare account
-  name on stdout, exit 3 when no candidate remains. In `auto`, the `NEXT:` line orders vendors by
-  the daily budget of the account each one selected, highest first; a vendor with nothing
+  name on stdout, exit 3 when no candidate remains. In `auto`, the `NEXT:` line leads with every
+  vendor a usable pin answered, then orders vendors by the daily budget of the account each one
+  selected, highest first — pinned vendors among themselves the same way; a vendor with nothing
   selectable, or switched off for workers, takes the tail.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per

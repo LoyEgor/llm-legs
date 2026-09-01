@@ -2904,6 +2904,101 @@ gray_hits=$(awk '
   }' "$ROOT/hammerspoon/llm-limits.lua")
 [ -z "$gray_hits" ] || fail "opaque gray is unreadable in one appearance — style dim text with dimColor() instead: $gray_hits"
 
+# A PAUSED vendor is parked for months and must not exist for the infrastructure: no helper is
+# run for it, and the store carries no entry at all — the same absence a leg this machine never
+# installed leaves, so every render path already has nothing to print.
+PAUSE_HOME="$WORK/pause-home"
+mkdir -p "$PAUSE_HOME/.claude" "$PAUSE_HOME/.codex/sessions/2026/07/10"
+printf '{"five_hour":{"used_percentage":19,"resets_at":%s},"seven_day":{"used_percentage":53,"resets_at":%s}}\n' \
+  "$((now + 1800))" "$((now + 7200))" >"$PAUSE_HOME/.claude/statusline-cache-rl"
+cat >"$PAUSE_HOME/.codex/sessions/2026/07/10/rollout-pause.jsonl" <<EOF
+{"timestamp":"2026-07-11T10:00:00Z","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":74,"window_minutes":300,"resets_at":$((now + 1000))},"secondary":{"used_percent":31,"window_minutes":10080,"resets_at":$((now + 2000))},"plan_type":"plus"}}}
+EOF
+PAUSE_CACHE="$WORK/pause-cache.json"
+PAUSE_GROK_CACHE="$WORK/pause-grok.json"
+printf '{"accounts":[{"account":"supergrok","used_pct":40,"resets_at":null,"reset_credits":2}]}\n' \
+  >"$PAUSE_GROK_CACHE"
+PAUSE_CALLS="$WORK/pause-helper-calls.log"
+: >"$PAUSE_CALLS"
+for pause_leg in grok codex gemini; do
+  cat >"$WORK/pause-$pause_leg-helper" <<EOF
+#!/usr/bin/env bash
+printf '$pause_leg\n' >>"\$PAUSE_CALLS"
+exit 1
+EOF
+  chmod +x "$WORK/pause-$pause_leg-helper"
+done
+
+pause_run() {
+  env HOME="$PAUSE_HOME" LLM_LIMITS_CACHE="$PAUSE_CACHE" LLM_LIMITS_GROK_CACHE="$PAUSE_GROK_CACHE" \
+    PAUSE_CALLS="$PAUSE_CALLS" \
+    LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_CODEX_REFRESH=1 LLM_LIMITS_GROK_REFRESH=1 \
+    LLM_LIMITS_GEMINI_CMD="$WORK/pause-gemini-helper" \
+    LLM_LIMITS_CODEX_QUOTA_CMD="$WORK/pause-codex-helper" \
+    LLM_LIMITS_GROK_QUOTA="$WORK/pause-grok-helper" \
+    bash "$SCRIPT" "$@"
+}
+
+rm -f "$PAUSE_HOME/.claude/worker-model"
+pause_before=$(pause_run --refresh --json 2>/dev/null || true)
+jq -e '(.vendors | keys) == ["claude","codex","gemini","grok","opencode"]' <<<"$pause_before" >/dev/null \
+  || fail "pause baseline did not collect every vendor"
+grep -qx codex "$PAUSE_CALLS" || fail "pause baseline never ran the codex helper"
+grep -qx grok "$PAUSE_CALLS" || fail "pause baseline never ran the grok helper"
+
+: >"$PAUSE_CALLS"
+printf 'codex_paused=on\ngrok_paused=on\nopencode_paused=on\n' >"$PAUSE_HOME/.claude/worker-model"
+pause_out=$(pause_run --refresh --json 2>/dev/null || true)
+jq -e '(.vendors | keys) == ["claude","gemini"]' <<<"$pause_out" >/dev/null \
+  || fail "a paused vendor still has a store entry"
+# The previous snapshot carried all five, so this is the merge step being asked to carry a parked
+# vendor's numbers forward as if somebody were still measuring them.
+jq -e '(.vendors | keys) == ["claude","gemini"]' "$PAUSE_CACHE" >/dev/null \
+  || fail "the written store kept a paused vendor from the previous snapshot"
+grep -qx gemini "$PAUSE_CALLS" || fail "the paused run refreshed nothing at all"
+grep -qx codex "$PAUSE_CALLS" && fail "a paused codex still ran its quota helper"
+grep -qx grok "$PAUSE_CALLS" && fail "a paused grok still ran its quota helper"
+
+pause_table=$(pause_run --table 2>/dev/null) || true
+grep -Eq '^(codex|grok|opencode)' <<<"$pause_table" && fail "--table printed a row for a paused vendor"
+grep -q '^claude/' <<<"$pause_table" || fail "--table lost the vendors that are still running"
+grep -Fq '↻' <<<"$pause_table" && fail "a paused grok left its reset count on the table"
+pause_plain=$(pause_run --plain 2>/dev/null) || true
+grep -Eq '^(codex|grok|opencode):' <<<"$pause_plain" && fail "--plain printed a line for a paused vendor"
+
+# Only the literal `on` parks, and a duplicated key is read first-line-wins like every other key.
+for pause_open in 'codex_paused=yes' 'codex_paused=off' 'codex_paused' 'codex_paused=off
+codex_paused=on'; do
+  printf '%s\n' "$pause_open" >"$PAUSE_HOME/.claude/worker-model"
+  jq -e '.vendors | has("codex")' <<<"$(pause_run --json 2>/dev/null)" >/dev/null \
+    || fail "a non-on pause value parked codex: $pause_open"
+done
+printf 'codex_paused=on\ncodex_paused=off\n' >"$PAUSE_HOME/.claude/worker-model"
+jq -e '.vendors | has("codex") | not' <<<"$(pause_run --json 2>/dev/null)" >/dev/null \
+  || fail "a duplicated pause key was read last-wins, not first"
+
+# --refresh-account NAMES a vendor, so a parked one is refused rather than silently skipped.
+printf 'grok_paused=on\nclaudeb_paused=on\n' >"$PAUSE_HOME/.claude/worker-model"
+for pause_target in grok/supergrok grok; do
+  pause_err=$(pause_run --refresh-account "$pause_target" 2>&1 >/dev/null) && \
+    fail "--refresh-account $pause_target succeeded on a paused vendor"
+  [ "$pause_err" = 'grok is paused (grok_paused=on in ~/.claude/worker-model)' ] \
+    || fail "--refresh-account $pause_target refusal wording: $pause_err"
+done
+# The store spells Claude `claude`; the switch that parked it spells it `claudeb`.
+pause_err=$(pause_run --refresh-account claude/main 2>&1 >/dev/null) && \
+  fail "--refresh-account claude/main succeeded on a paused claudeb"
+[ "$pause_err" = 'claudeb is paused (claudeb_paused=on in ~/.claude/worker-model)' ] \
+  || fail "paused claude refusal wording: $pause_err"
+
+# The pause is read through worker-pick's own config path, so a fixture can name its own file.
+printf 'gemini_paused=on\n' >"$WORK/pause-config"
+rm -f "$PAUSE_HOME/.claude/worker-model"
+jq -e '(.vendors | keys) == ["claude","codex","grok","opencode"]' \
+  <<<"$(WORKER_PICK_CONFIG_FILE="$WORK/pause-config" pause_run --json 2>/dev/null)" >/dev/null \
+  || fail "WORKER_PICK_CONFIG_FILE was not honoured by the pause reader"
+rm -f "$PAUSE_HOME/.claude/worker-model"
+
 hs_bounded() {
   python3 - "$@" <<'PY'
 import subprocess
@@ -2928,5 +3023,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
 exit 0

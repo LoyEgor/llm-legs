@@ -81,22 +81,30 @@ assert grep -Fq '".claude-profiles"' "$DRIVER"
 assert doc_has 'bin/claude-session-driver'
 
 # --- Row c: worker-pick cache line format ------------------------------------
-# Producer printf and cb prefixes.
-assert grep -Fq 'cx%s%s·'\''"$codex_model"'\''·%s %s·%s·%s gx%s%s·%s·%s' "$WORKERPICK"
+# Per-field producer printfs and cb prefixes.
+assert grep -Fq "'cx%s%s·%s·%s'" "$WORKERPICK"
+assert grep -Fq "'gx%s%s·%s·%s'" "$WORKERPICK"
+assert grep -Fq "'gr%s%s·%s·%s'" "$WORKERPICK"
 assert grep -Eq 'cb_cache="cb~\$' "$WORKERPICK"
 assert grep -Eq 'cb_cache="cb@\$' "$WORKERPICK"
 assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
 # Producer and consumer must name the same cache file.
 assert grep -q 'worker-pick.line' "$WORKERPICK"
 assert grep -q 'worker-pick.line' "$STATUSLINE"
-# Grok appends a fourth field, and only where the store carries the vendor at all: an absent grok
+# Every field is optional, and only the vendors the store carries contribute one: an absent vendor
 # is absent from the line rather than rendered as a failed lookup.
-assert grep -Fq " gr%s%s·%s·%s" "$WORKERPICK"
-assert grep -Fq 'gr_cache=""' "$WORKERPICK"
+for cache_tag in cx cb gm gr; do
+  assert grep -Eq "^\[ \"\\\$${cache_tag}_known\" = (false|true) \]" "$WORKERPICK"
+done
 assert grep -Fq 'gr_mark="⏸"; gr_acct=off' "$WORKERPICK"
+# The consumer finds a vendor by scanning for its tag, which is what makes a missing field legible
+# as "no prediction" rather than shifting every field after it onto the wrong vendor.
+assert grep -Fq 'for field in "$@"; do' "$STATUSLINE"
+assert grep -Fq 'case "$field" in "$tag"*) ;; *) continue ;; esac' "$STATUSLINE"
 # Doc records the format.
-assert doc_has 'cx%s%s·<model>·%s %s·%s·%s gx%s%s·%s·%s'
+assert doc_has 'cx%s%s·%s·%s'
 assert doc_has 'gr%s%s·%s·%s'
+assert doc_has 'EVERY field is optional and the order never moves'
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -173,7 +181,8 @@ done
 assert grep -Fq '`main` is no longer a ranking key on any vendor' "$CONTRACT"
 # codexb ranks its own profiles by the same budget, largest first, name breaking the tie.
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2nr -k1,1' "$CODEXB"
-assert grep -Fq 'the vendors are ordered by the daily budget of the account each one selected' "$POLICY"
+assert grep -Fq 'a vendor a usable workers pin answered leads, then the vendors are ordered by the daily' "$POLICY"
+assert grep -Fq 'budget of the account each one selected' "$POLICY"
 assert doc_has 'Worker rank contract'
 
 RB_PKG="$REVIEW_ROOT/share/rbench"
@@ -494,7 +503,7 @@ assert grep -Fq 'worker_pool_disabled_json' "$LLMLIMITS"
 assert test "$(grep -c 'worker_pool_dir ' "$LLMLIMITS")" -ge 2
 # Every vendor reaches the toggle through its own action, and each action is both defined and
 # wired into a row — a count of menu entries would only measure how many rows happen to exist.
-assert grep -Fq 'In worker pool' "$HAMMER"
+assert grep -Fq 'title = "In pool"' "$HAMMER"
 for pool_toggle in toggleAccount toggleCodexAccount toggleGeminiAccount toggleGrokAccount; do
   assert grep -Fq "function M.$pool_toggle(" "$HAMMER"
   assert test "$(grep -cF "M.$pool_toggle(" "$HAMMER")" -ge 2
@@ -1332,28 +1341,97 @@ rm -rf "$ROLE_WORK"
 assert grep -Fq '"--account", SIDE_POOL_VENDOR[side], "--role", "reviewers"' "$RB_ACCOUNTS"
 assert doc_has 'Per-vendor role switches'
 assert doc_has '`worker-pick: <vendor> is switched off for <role>`'
+
+
+# --- Row bp: per-vendor pause -------------------------------------------------
+# `<vendor>_paused=on` parks a vendor for months, and five independent implementations have to mean
+# the same thing by it: the writer, the collector that drops it from the store, the daemon that
+# stops ticking it, the router, and the bench. A drifted one leaves a vendor Egor put away still
+# spending — or a running vendor invisible.
+PAUSE_VENDORS="claudeb codex gemini grok opencode"
+PAUSE_WORK=$(mktemp -d)
+PAUSE_MODEL="$PAUSE_WORK/worker-model"
+# The writer accepts every vendor the readers know, opencode included, and `off` DELETES the line:
+# an absent key is the running state on every reader, so an `=off` spelling would be a second one.
+for vendor in $PAUSE_VENDORS; do
+  rm -f "$PAUSE_MODEL"
+  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+    bash -c '. "$1"; worker_model_set_paused "$2" on' _ "$WORKER_MODEL_SH" "$vendor" ||
+    fail "row bp: share/worker-model.sh refuses ${vendor}, a vendor llm-limits.sh and bin/llm-refresh both key on"
+  assert eq "$(cat "$PAUSE_MODEL")" "${vendor}_paused=on"
+  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+    bash -c '. "$1"; worker_model_set_paused "$2" off' _ "$WORKER_MODEL_SH" "$vendor"
+  assert eq "$(cat "$PAUSE_MODEL")" ""
+done
+# The router, asked through the binary: an empty limits file is enough, because a parked vendor is
+# refused before any account is looked at. The wording is a parsed contract, so it is compared
+# against the bench's own note rather than restated here.
+printf '{}\n' >"$PAUSE_WORK/limits.json"
+pause_pick() {
+  env "LLM_LIMITS_FILE=$PAUSE_WORK/limits.json" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+    "WORKER_PICK_TIERS_FILE=$PAUSE_WORK/tiers" "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" \
+    WORKER_PICK_NOW=1000000 "CLAUDEB_DIR=$PAUSE_WORK/claudeb" \
+    "$WORKERPICK" --account "$1" 2>&1 >/dev/null
+}
+bench_paused_note() {
+  python3 -c 'import os, sys
+sys.path.insert(0, os.environ["RBENCH_SHARE"])
+import rbench as rb
+side = next(s for s, v in rb.SIDE_VENDOR.items() if v == sys.argv[1])
+print(rb.paused_note(side))' "$1"
+}
+for vendor in claudeb codex gemini grok; do
+  printf '%s_paused=on\n' "$vendor" >"$PAUSE_MODEL"
+  pause_out=$(pause_pick "$vendor") &&
+    fail "row bp: bin/worker-pick answered $vendor while share/worker-model.sh had written ${vendor}_paused=on: reader and writer disagree on the key"
+  assert eq "$pause_out" "worker-pick: $(bench_paused_note "$vendor")"
+  # Only the literal `on` parks a vendor, mirroring the literal `off` of the role keys (row `aj`).
+  printf '%s_paused=off\n' "$vendor" >"$PAUSE_MODEL"
+  grep -Fq 'is paused' <<<"$(pause_pick "$vendor")" &&
+    fail "row bp: bin/worker-pick reads ${vendor}_paused=off as parked, while share/worker-model.sh writes that spelling for nothing and the bench vetoes on \"on\" alone"
+done
+rm -rf "$PAUSE_WORK"
+asserts=$((asserts + 1))
+# The mechanism is absence from the store: the collector deletes the entry, so every reader that
+# renders a vendor off its store row renders a parked one as nothing at all.
+assert grep -Fq 'delpaths([$paused[] | ["vendors", .]])' "$LLMLIMITS"
+# The store spells claudeb `claude`, and the collector and the daemon must translate the same way,
+# or one of them parks a vendor the other keeps polling.
+assert grep -Fq "case \"\$1\" in claude) printf 'claudeb' ;;" "$LLMLIMITS"
+assert grep -Fq 'case "$1" in claude) key=claudeb_paused ;;' "$ROOT/bin/llm-refresh"
+# Both directions are Egor's hand only, so the menu is the one way in.
+assert grep -Fq 'M.setWorkerPaused' "$HAMMER"
+assert grep -Fq 'M.resumeVendor' "$HAMMER"
+# The bench refuses what a caller NAMED and drops what a tier merely expanded to; a parked side
+# leaves no skipped record either way.
+assert grep -Fq 'def vendor_paused' "$RB_ACCOUNTS"
+assert grep -Fq 'def refuse_paused_sides' "$RB_ACCOUNTS"
+assert grep -Fq 'def drop_paused_specs' "$RB_ACCOUNTS"
+assert doc_has 'Per-vendor pause'
+assert doc_has '`<vendor>_paused=on`'
+assert doc_has 'worker_model_set_paused'
 assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`/`gr⏸off`'
 
 # --- Row ak: auto-refresh vendor roster --------------------------------------
-# The roster is spelled three times inside one daemon, and a vendor present in the loop but missing
-# from the seed reads as a null rung on every tick while one missing from the validator throws away
-# every state file written before it existed. `opencode` is the inverted one: it has no usage
-# endpoint, so anything that would make it poll on the other four's cadence spends the plan.
+# The roster is spelled ONCE, in `live_vendors`, and the seed, the tick loop and the state validator
+# all read it: a vendor present in the loop but missing from the seed would read as a null rung on
+# every tick, and one missing from the validator would throw away every state file written before
+# it existed. `opencode` is the inverted one: it has no usage endpoint, so anything that would make
+# it poll on the other four's cadence spends the plan. A paused vendor (row bp) drops out of that
+# one list and so out of all three consumers at once.
 LLMREFRESH="$ROOT/bin/llm-refresh"
 REFRESH_VENDORS="claude codex gemini grok opencode"
-refresh_seed=$(grep -n '| map(. as $vendor |' "$LLMREFRESH" | head -n1 | cut -d: -f1)
-[ -n "$refresh_seed" ] ||
-  fail "row ak: bin/llm-refresh's normalized_state no longer seeds a vendor list"
-refresh_seed=$(sed -n "${refresh_seed}p" "$LLMREFRESH")
-refresh_loop=$(grep -E '^  for vendor in ' "$LLMREFRESH" | head -n1)
-refresh_validator=$(grep -F '.claude and .codex and .gemini' "$LLMREFRESH" | head -n1)
-[ -n "$refresh_loop" ] && [ -n "$refresh_validator" ] ||
-  fail "row ak: bin/llm-refresh's tick loop or state validator no longer spells its vendors"
+refresh_roster=$(sed -n '/^live_vendors() {/,/^}/p' "$LLMREFRESH" | grep -E '^  for vendor in ' | head -n1)
+[ -n "$refresh_roster" ] ||
+  fail "row ak: bin/llm-refresh's live_vendors no longer spells the roster"
 for vendor in $REFRESH_VENDORS; do
-  assert grep -Fq "\"$vendor\"" <<<"$refresh_seed"
-  assert grep -Fq " $vendor" <<<"$refresh_loop"
-  assert grep -Fq ".$vendor" <<<"$refresh_validator"
+  assert grep -Fq " $vendor" <<<"$refresh_roster"
 done
+assert grep -Fq '$live | map(. as $vendor |' "$LLMREFRESH"
+assert grep -Fq '$live | all(. as $vendor | $state | has($vendor))' "$LLMREFRESH"
+[ "$(grep -cE '^  for vendor in claude codex gemini grok opencode' "$LLMREFRESH")" -eq 2 ] ||
+  fail "row ak: bin/llm-refresh's tick loop no longer iterates the same roster live_vendors spells"
+asserts=$((asserts + 1))
 
 # The inversion, asked of the daemon rather than of its prose: the wall state comes from the
 # collector row (row al), never from the record, and only a standing wall is probed — through the
@@ -2165,4 +2243,4 @@ done
 assert test -r "$ROOT/tests/test_worker_pool_shield.sh"
 assert doc_has 'Main-account shield'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

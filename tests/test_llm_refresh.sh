@@ -1006,6 +1006,50 @@ ceiling=$(HOME="$WORK/functions-home" bash -c '. "$1"; ladder_loosen 60' _ "$SCR
 [ "$ceiling" = 60 ] || fail 'cadence ladder crossed the 60-minute ceiling'
 pass
 
+# A PAUSED vendor is parked for months and must not exist for this daemon: no tick, no state
+# entry, no journal line — and so none of the per-account paths, grok's token touch included, is
+# ever reached for it. The switch lives in worker-pick's own file; the store cannot answer it,
+# because the collector deliberately writes no entry for a parked vendor.
+case_dir="$WORK/paused"
+mkdir -p "$case_dir/home/.claude"
+write_store "$case_dir/store.json" "$NOW" 7200 7200 7200 7200
+seed_opencode_wall "$case_dir/store.json" "-" "2033-05-18T00:00:00Z"
+printf 'codex_paused=on\ngrok_paused=on\nopencode_paused=on\n' >"$case_dir/home/.claude/worker-model"
+run_refresh "$case_dir" "$NOW" || fail 'paused run failed'
+jq -e '(keys | sort) == ["claude","gemini"]' "$case_dir/state.json" >/dev/null || \
+  fail 'a paused vendor kept a cadence entry in the daemon state'
+grep -Eq '(codex|grok|opencode)/' "$case_dir/calls.log" && \
+  fail 'a paused vendor was refreshed'
+[ ! -e "$case_dir/opencode.log" ] || fail 'a paused opencode was still probed'
+[ ! -e "$case_dir/grokb.log" ] || fail 'a paused grok still had its token touched'
+jq -eRn '[inputs | fromjson | .vendor] | any(. == "codex" or . == "grok" or . == "opencode") | not' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'a paused vendor was journaled'
+jq -eRn '[inputs | fromjson | .vendor] | (index("claude") != null) and (index("gemini") != null)' \
+  "$case_dir/journal.jsonl" >/dev/null || fail 'the pause stopped the vendors that are still running'
+pass
+
+# Deleting the line brings the vendor back whole — the pause writes nothing anywhere else.
+: >"$case_dir/home/.claude/worker-model"
+rm -f "$case_dir/state.json" "$case_dir/journal.jsonl"
+run_refresh "$case_dir" "$((NOW + 7200))" || fail 'resumed run failed'
+jq -e '(keys | sort) == ["claude","codex","gemini","grok","opencode"]' "$case_dir/state.json" \
+  >/dev/null || fail 'resuming did not bring every vendor back into the cadence state'
+pass
+
+# The daemon reaches a vendor's accounts through `llm-limits.sh --refresh-account`, and that flag
+# NAMES a vendor: a parked one is refused in the collector's own words rather than silently
+# skipped, which would report an old reading as a fresh one.
+printf 'grok_paused=on\n' >"$WORK/paused-config"
+paused_err=$(env HOME="$case_dir/home" WORKER_PICK_CONFIG_FILE="$WORK/paused-config" \
+  bash "$ROOT/llm-limits.sh" --refresh-account grok/gr 2>&1 >/dev/null)
+paused_rc=$?
+# Read the wording as well as the status: every other way this call can fail also exits non-zero,
+# so a status alone would pass with the pause never consulted.
+[ "$paused_rc" -eq 2 ] || fail "paused --refresh-account exit status: $paused_rc"
+[ "$paused_err" = 'grok is paused (grok_paused=on in ~/.claude/worker-model)' ] || \
+  fail "paused --refresh-account refusal wording: $paused_err"
+pass
+
 for journal in "$WORK"/*/journal.jsonl; do
   jq -eRn '[inputs | fromjson |
     has("ts") and has("vendor") and has("step") and

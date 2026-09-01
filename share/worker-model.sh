@@ -168,6 +168,44 @@ worker_model_set_role() {
   ) 9>"$file.lock"
 }
 
+# A pause parks a vendor for months, so the key names the PARKED state and the literal `on` is its
+# veto — inverted from the roles above, whose key names the closed state and vetoes on `off`.
+# Resuming deletes the line, since every reader takes an absent key as running. `opencode` is
+# parkable though it has no roles and no worker-pick leg: review-bench staffs it, and a vendor that
+# cannot be parked is a vendor Egor cannot put away.
+worker_model_set_paused() {
+  local vendor="${1-}" state="${2-}" file key
+  case "$vendor" in claudeb | codex | gemini | grok | opencode) ;; *)
+    printf 'worker-model: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
+  esac
+  case "$state" in on | off) ;; *)
+    printf 'worker-model: unknown state: %s\n' "$state" >&2; return 2 ;;
+  esac
+  # Parking a vendor takes it out of every router at once, so it is Egor's hand only — the menubar
+  # shells out from Hammerspoon, which carries no CLAUDECODE.
+  if [ -n "${CLAUDECODE:-}" ]; then
+    printf 'worker-model: pause switches are Egor'"'"'s: the menubar (LLM Limits -> vendor -> Pause/Resume) is his own hand on them\n' >&2
+    return 3
+  fi
+  file=$(worker_model_file)
+  key="${vendor}_paused"
+  mkdir -p "$(dirname "$file")" || return 2
+  (
+    local tmp="$file.tmp.$$"
+    if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then
+      printf 'worker-model: failed to lock %s\n' "$file.lock" >&2
+      return 2
+    fi
+    trap 'rm -f "$tmp"' EXIT
+    {
+      if [ -r "$file" ]; then grep -v "^${key}=" "$file" || true; fi
+      [ "$state" = off ] || printf '%s=on\n' "$key"
+    } >"$tmp" || return 2
+    mv "$tmp" "$file" || return 2
+    trap - EXIT
+  ) 9>"$file.lock"
+}
+
 worker_model_pin_account() {
   local key="$1" vendor="$2" list_fn="$3" disabled_fn="$4" name="${5:-}" wall_until="${6:-}"
   local file current near

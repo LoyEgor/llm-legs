@@ -372,6 +372,21 @@ for vendor in claudeb codex gemini; do
   unset PICK_STDERR
 done
 
+# A paused vendor is parked, not spent: its refusal must land as UNAVAILABLE the way role-off does.
+for vendor in claudeb codex gemini grok; do
+  clear_stub
+  set_config 'codex_effort=medium'
+  export PICK_RC=3 PICK_ACCOUNT=ignored
+  export PICK_STDERR="worker-pick: $vendor is paused (${vendor}_paused=on in ~/.claude/worker-model)"
+  rc=0
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" >"$WORK/paused.out" 2>"$WORK/paused.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_UNAVAILABLE" "$WORK/paused.out"
+  assert grep -q "$vendor is paused" "$WORK/paused.err"
+  assert test ! -s "$CALL_LOG"
+  unset PICK_STDERR
+done
+
 # The role switch closes the vendor, not one account of it, so naming an account outright — or
 # falling back to the pin — cannot walk around it the way it cannot walk around the pool.
 for vendor in claudeb codex gemini; do

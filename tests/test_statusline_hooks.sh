@@ -455,6 +455,7 @@ assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-wt-add-existing")"
 rm -f "$WT_ADD_EXISTING/blocker"
 rmdir "$WT_ADD_EXISTING"
 
+# A persistent cd on a later line does not outrank the add above it.
 WT_ADD_MULTILINE="$FIXTURES/wt-add-multiline"
 git -C "$REPO_A" branch hook-wt-multiline
 git -C "$REPO_A" worktree add -q "$WT_ADD_MULTILINE" hook-wt-multiline
@@ -462,7 +463,8 @@ multiline_cmd=$(printf "git worktree add %s hook-wt-multiline\ncd '%s'" "$WT_ADD
 printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-add-multiline"
 payload=$(workdir_payload Bash session-wt-add-multiline "$REPO_A" "$multiline_cmd")
 run_workdir_hook "$payload"
-assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-wt-add-multiline")"
+assert_eq "$(git -C "$WT_ADD_MULTILINE" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-multiline")"
 
 EXCLUDED_WT_BASE="$HOME/.claude/worktree-add-base"
 ln -s "$REPO_A" "$EXCLUDED_WT_BASE"
@@ -586,6 +588,32 @@ run_workdir_hook "$(workdir_payload Bash session-wt-add-named "$REPO_E" "$NAMED_
   jq -c '.tool_use_id = "call-named"')"
 assert_eq "$(git -C "$WT_ADD_NAMED" rev-parse --show-toplevel)" "$(cat "$S")"
 
+# The shape a real dispatch writes: the add, then a bootstrap subshell inside the
+# worktree it made. Reading the last hit gave that cd, whose `$W` resolves
+# nowhere, and the add was never heard.
+WT_ADD_BOOT="$REPO_A/.claude/worktrees/hook-wt-boot"
+BOOT_CMD=$(printf 'R=%s\ngit -C $R worktree add -b hook-wt-boot $R/.claude/worktrees/hook-wt-boot HEAD 2>&1 | tail -2\nW=$R/.claude/worktrees/hook-wt-boot\n(cd $W && pnpm install --frozen-lockfile 2>&1 | tail -3 && pnpm nx --version)' "$REPO_A")
+S="$STATE_DIR/workdir-session-wt-add-boot"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-boot "$REPO_E" "$BOOT_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-boot"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-boot "$WT_ADD_BOOT" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-boot "$REPO_E" "$BOOT_CMD" |
+  jq -c '.tool_use_id = "call-boot"')"
+assert_eq "$(git -C "$WT_ADD_BOOT" rev-parse --show-toplevel)" "$(cat "$S")"
+assert test ! -e "$S.wtadd.call-boot"
+
+WT_ADD_ELSEWHERE="$REPO_A/.claude/worktrees/hook-wt-elsewhere"
+ELSEWHERE_CMD=$(printf 'R=%s\ngit -C $R worktree add -b hook-wt-elsewhere $R/.claude/worktrees/hook-wt-elsewhere HEAD\n(cd %s && ls)' "$REPO_A" "$REPO_D")
+S="$STATE_DIR/workdir-session-wt-add-elsewhere"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-elsewhere "$REPO_E" "$ELSEWHERE_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-elsewhere"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-elsewhere "$WT_ADD_ELSEWHERE" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-elsewhere "$REPO_E" "$ELSEWHERE_CMD" |
+  jq -c '.tool_use_id = "call-elsewhere"')"
+assert_eq "$(git -C "$WT_ADD_ELSEWHERE" rev-parse --show-toplevel)" "$(cat "$S")"
+
 # A denied command fires PreToolUse and never the PostToolUse that consumes its
 # snapshot, so the leaked file is swept an hour later rather than after a week.
 S="$STATE_DIR/workdir-session-wt-prune"
@@ -602,10 +630,32 @@ assert test ! -e "$S.wtadd.call-leaked"
 assert test -f "$S.wtadd.call-live"
 rm -f "$S.wtadd.call-live"
 
+# `worktree` is mutating only for the subcommands that write one: a lookup in
+# another checkout leaves no trace at all, not even an away run to accumulate.
 printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-list"
 payload=$(workdir_payload Bash session-wt-list "$REPO_A" "git -C '$REPO_B' worktree list")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-wt-list")"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-list")"
+assert test ! -e "$STATE_DIR/workdir-session-wt-list.away"
+
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-bare"
+payload=$(workdir_payload Bash session-wt-bare "$REPO_A" "git -C '$REPO_B' worktree")
+run_workdir_hook "$payload"
+assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-bare")"
+assert test ! -e "$STATE_DIR/workdir-session-wt-bare.away"
+
+# A subcommand is read on the `git -C` line only: reaching across the line break
+# would eat the next line's `cd` as the subcommand and lose the move entirely.
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-nl"
+payload=$(workdir_payload Bash session-wt-nl "$REPO_A" \
+  "$(printf "git -C '%s' worktree\ncd '%s'" "$REPO_B" "$REPO_D")")
+run_workdir_hook "$payload"
+assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-wt-nl")"
+
+printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-prune-sub"
+payload=$(workdir_payload Bash session-wt-prune-sub "$REPO_A" "git -C '$REPO_B' worktree prune")
+run_workdir_hook "$payload"
+assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-wt-prune-sub")"
 
 payload=$(workdir_payload Bash session-cd-then-ro "$REPO_A" "cd '$REPO_B' && git -C '$REPO_A' log")
 run_workdir_hook "$payload"
@@ -1429,6 +1479,29 @@ assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
 assert test "${worker_out#*alt}" = "$worker_out"
 rm -f "$HOME/.cache/worker-pick.line.main"
 
+# A PAUSED vendor is absent from worker-pick's line altogether (no `gr` field at all, unlike the
+# `⏸off` role switch), so a pin over it names an account no dispatch can reach.
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med\n' \
+  >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=grok\ngrok_profile=pausedgrok\ngrok_paused=on\ngrok_model=grok-4.6\ngrok_effort=high\n' \
+  > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-paused-pin)")
+assert test "${worker_out#*pausedgrok}" = "$worker_out"
+assert test "${worker_out#*alt}" = "$worker_out"
+
+# No line at all is worker-pick not having answered yet, not a pause: the pin still renders.
+rm -f "$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-paused-pin-noline)")
+assert grep -Fq "${MAGENTA}@pausedgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
+
+# A vendor that is present in the line keeps its pin.
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gr✓supergrok·grok-4.6·hi\n' \
+  >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=grok\ngrok_profile=pausedgrok\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-live-pin)")
+assert grep -Fq "${MAGENTA}@pausedgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
+rm -f "$HOME/.cache/worker-pick.line.main"
+
 # A live grok worker's tag wears the same short forms as every other vendor's.
 printf 'worker=auto\n' > "$worker_file"
 mkdir -p "$HOME/.cache/claude-worker-tags/status-w-grok-live"
@@ -1789,7 +1862,10 @@ worker_out=$(run_statusline "$(statusline_payload status-w-codex-beside-roleoff)
 assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
 
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+# Every vendor is present in the line the rest of the suite inherits: a missing field now means a
+# paused vendor, and later cases pin grok expecting it to render.
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi gr✓supergrok·grok-4.6·hi\n' \
+  > "$HOME/.cache/worker-pick.line.main"
 rm -f "$WORK/limits.json" "$worker_file"
 
 cache_rl="$HOME/.claude/statusline-cache-rl"
