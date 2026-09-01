@@ -883,7 +883,7 @@ IMAGE_PICK_ACCOUNT=poolacct
 export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
 assert grep -qx 'account=poolacct' "$IMAGE_OUT"
-assert grep -qx -- '--account gemini' "$IMAGE_PICK_CALLS"
+assert grep -qx -- '--account gemini --claim' "$IMAGE_PICK_CALLS"
 assert grep -qx 'generated:poolacct' "$WORK/image-output/picked.jpg"
 assert test ! -s "$IMAGE_MAGICK_CALLS"
 

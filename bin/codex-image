@@ -109,7 +109,7 @@ root=$(resolve_root)
 if [ -z "$account" ]; then
   pick_rc=0
   if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account codex 2>/dev/null) || pick_rc=$?
+    account=$(worker-pick --account codex --claim 2>/dev/null) || pick_rc=$?
   else
     pick_rc=127
   fi

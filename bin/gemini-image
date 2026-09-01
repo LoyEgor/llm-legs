@@ -107,7 +107,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
 if [ -z "$account" ]; then
   pick_rc=0
   if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account gemini 2>/dev/null) || pick_rc=$?
+    account=$(worker-pick --account gemini --claim 2>/dev/null) || pick_rc=$?
   else
     pick_rc=127
   fi

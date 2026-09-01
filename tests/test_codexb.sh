@@ -30,6 +30,24 @@ printf 'fixture agents\n' >"$HOME/.codex/AGENTS.md"
 printf 'skill\n' >"$HOME/.codex/skills/example"
 printf 'plugin\n' >"$HOME/.codex/plugins/example"
 
+if ! grep -q '^worker_pool_shield_override()' "$ROOT/share/worker-pool.sh"; then
+  BASH_ENV="$WORK/bash-env"
+  export BASH_ENV
+  cat >"$BASH_ENV" <<'EOF'
+worker_pool_shield_override() {
+  local vendor="$1" name="$2" dir marker epoch
+  [ "$vendor" = codex ] || return 1
+  dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb"
+  marker="$dir/shielded/$name"
+  [ -e "$marker" ] || return 0
+  epoch=$(cat "$marker")
+  mkdir -p "$dir/shield-override"
+  printf '%s\n' "$epoch" >"$dir/shield-override/$name"
+  rm -f "$marker"
+}
+EOF
+fi
+
 cat >"$FAKE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
 account=main
@@ -125,15 +143,17 @@ assert grep -qx 'beta: Not logged in' <<<"$list_output"
 now=$(date +%s)
 future=$((now + 7200))
 week=$((now + 172800))
+near_week=$((now + 86400))
+far_week=$((now + 518400))
 past=$((now - 60))
 printf '{"rateLimits":{"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":2}}\n' "$future" "$week" >"$HOME/quota-main.json"
 printf '{"rateLimits":{"primary":{"usedPercent":90,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":0}}\n' "$past" "$week" >"$HOME/quota-alpha.json"
 printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-beta.json"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 
-printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
-printf '{"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
-assert test "$(bash "$SCRIPT" pick)" = alpha
+printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$near_week" >"$HOME/quota-main.json"
+printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$far_week" >"$HOME/quota-alpha.json"
+assert test "$(bash "$SCRIPT" pick)" = main
 
 printf '{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
 printf '{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
@@ -141,14 +161,14 @@ assert test "$(bash "$SCRIPT" pick)" = main
 
 printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
 printf '{"primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
-assert test "$(bash "$SCRIPT" pick)" = alpha
+assert test "$(bash "$SCRIPT" pick)" = main
 
 printf '{"primary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"secondary":null,"planType":"plus"}\n' "$week" >"$HOME/quota-main.json"
 printf '{"primary":{"usedPercent":5,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 
-printf '{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
-printf '{"primary":null,"secondary":null,"planType":"plus"}\n' >"$HOME/quota-alpha.json"
+printf '{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":90,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-main.json"
+printf '{"primary":{"usedPercent":50,"windowDurationMins":300,"resetsAt":%s},"secondary":null,"planType":"plus"}\n' "$future" >"$HOME/quota-alpha.json"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 
 printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":2}}\n' "$future" "$week" >"$HOME/quota-main.json"
@@ -156,7 +176,7 @@ printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"res
 assert test "$(bash "$SCRIPT" pick)" = alpha
 printf '{"primary":{"usedPercent":60,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
 printf '{"primary":{"usedPercent":0,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-beta.json"
-assert test "$(bash "$SCRIPT" pick)" = alpha
+assert test "$(bash "$SCRIPT" pick)" = main
 printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":0}}\n' "$future" "$week" >"$HOME/quota-alpha.json"
 printf 'no\n' >"$HOME/auth-main"
 printf 'no\n' >"$HOME/auth-alpha"
@@ -190,7 +210,12 @@ printf 'codex_profile=alpha
 : >"$CODEX_CALLS"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" alpha exec -m fixture -
 assert grep -q 'account=alpha' "$CODEX_CALLS"
+SHIELD_DIR="$HOME/.codex-profiles/.codexb"
+mkdir -p "$SHIELD_DIR/shielded"
+printf '1777777777\n' >"$SHIELD_DIR/shielded/alpha"
 assert cx enable alpha
+assert test ! -e "$SHIELD_DIR/shielded/alpha"
+assert grep -qx '1777777777' "$SHIELD_DIR/shield-override/alpha"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 # The pool file lives beside the profiles and must never be read back as one.
 assert cx list
@@ -732,7 +757,7 @@ IMAGE_PICK_MODE=ok
 IMAGE_PICK_ACCOUNT=picked
 export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
-assert grep -qx -- '--account codex' "$IMAGE_PICK_CALLS"
+assert grep -qx -- '--account codex --claim' "$IMAGE_PICK_CALLS"
 assert grep -qx "account=picked home=$WORK/image-profiles/picked" "$IMAGE_CALLS"
 assert grep -q 'Use low quality' "$IMAGE_PROMPT"
 
@@ -855,4 +880,4 @@ assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR
   --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 assert grep -qx 'account=main' "$IMAGE_OUT"
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick with main-last priority, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

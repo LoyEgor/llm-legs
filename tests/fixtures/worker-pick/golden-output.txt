@@ -1,6 +1,6 @@
-NEXT: claudeb worker · opus · high — ACCOUNT: worker  |  codex main · high — 48%  |  gemini main · pro · high — ACCOUNT: main
+NEXT: claudeb session · opus · high — ACCOUNT: session  |  gemini main · pro · high — ACCOUNT: main  |  codex main · high — 48%
 codex: main 48% 5h 48% ↻1 (5h→?, wk→?)
 gemini: main 25% 5h 12% (5h→?, wk→?)
-claude: worker($20) 5h 30% wk 40% fb 70% score 60 cap 60% no-Fable | session($100)* 5h 20% wk 20% fb 10% score 80 cap 80%   (* = this session account, the reserve — routed only when nothing else is selectable)
+claude: session($100)* 5h 20% wk 20% fb 10% score 80 cap 80% | worker($20) 5h 30% wk 40% fb 70% score 60 cap 60% no-Fable   (* = this session account)
 DATA: fresh (0 min old)
-SESSION: session — fb 10%, wk 20% (SESSION RESERVE)
+SESSION: session — fb 10%, wk 20%

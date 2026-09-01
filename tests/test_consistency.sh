@@ -147,24 +147,34 @@ assert grep -Fq -- 'token-freeze' "$CLAUDEB"
 assert grep -Fq -- 'token-freeze' "$LLMLIMITS"
 assert doc_has 'Token-freeze file semantics'
 
-# --- Row g: Codex/Gemini base-profile and worker display priority -------------
+# --- Row g: worker rank contract and display priority -------------------------
 CODEXB="$ROOT/bin/codexb"
 POLICY="$ROOT/share/worker-policy.md"
-assert grep -Fq 'main_last:(if (.account // "main") == "main" then 1 else 0 end)' "$WORKERPICK"
+CONTRACT="$ROOT/docs/routing-contract.md"
 # `auth_late` ranks a grok account whose access token expired behind every signed-in one without
 # walling it — the CLI refreshes it silently — and reads as false on every other vendor's rows.
-assert test "$(grep -Fc 'def rank_keys: [(if .defer5h then 1 else 0 end), (if .auth_late then 1 else 0 end), .spend, (.h5 // 100), .main_last, .name];' "$WORKERPICK")" -eq 1
+assert test "$(grep -Fc 'def rank_keys: [(if .defer5h then 1 else 0 end), (if .claimed then 1 else 0 end), (if .auth_late then 1 else 0 end), (0 - (.budget // 0)), .name];' "$WORKERPICK")" -eq 1
 assert test "$(grep -Fc 'def rank: sort_by(rank_keys);' "$WORKERPICK")" -eq 1
+assert grep -Fq '`[five-hour deferral, fresh claim, late auth, −budget, name]`' "$CONTRACT"
+# The five-hour deferral that heads the vector is one number, and the contract quotes it.
+assert eq "$(grep -oE '^FIVE_HOUR_DEFER_PCT=[0-9]+' "$WORKERPICK" | grep -oE '[0-9]+')" 80
+assert grep -Fq 'is 80% or more ranks behind every candidate below 80%' "$CONTRACT"
 assert grep -Fq 'def display_band($selected): if .name == $selected then 0 elif .eligible then 1 elif .in_pool then 2 else 3 end;' "$WORKERPICK"
 # The render sorts on the band plus the selection keys, so within a band the order is the
 # selection order rather than the limits file's.
 assert grep -Fq 'def display_sort($selected): sort_by([display_band($selected)] + rank_keys);' "$WORKERPICK"
 assert test "$(grep -Fc 'sort_by(display_band(' "$WORKERPICK")" -eq 0
 assert test "$(grep -Fc 'display_sort($sel)' "$WORKERPICK")" -eq 4
-assert grep -Fq 'main_last:(if $entry.account == "main" then 1 else 0 end)' "$CODEXB"
-assert grep -Fq 'sort -t $'\''\t'\'' -k2,2n -k3,3n -k4,4n -k1,1' "$CODEXB"
-assert grep -Fq 'Codex and Gemini `main` profiles rank last on a tie' "$POLICY"
-assert doc_has 'Codex/Gemini base-profile priority'
+# `main` is not a ranking key on any vendor any more — the budget decides and the shield
+# (row bn) is what holds a base account back — so no site may reintroduce one.
+for no_main_last in "$WORKERPICK" "$CODEXB" "$POLICY" "$CONTRACT"; do
+  assert test "$(grep -Fc 'main_last' "$no_main_last")" -eq 0
+done
+assert grep -Fq '`main` is no longer a ranking key on any vendor' "$CONTRACT"
+# codexb ranks its own profiles by the same budget, largest first, name breaking the tie.
+assert grep -Fq 'sort -t $'\''\t'\'' -k2,2nr -k1,1' "$CODEXB"
+assert grep -Fq 'the vendors are ordered by the daily budget of the account each one selected' "$POLICY"
+assert doc_has 'Worker rank contract'
 
 RB_PKG="$REVIEW_ROOT/share/rbench"
 RB_STORE="$RB_PKG/store.py"
@@ -336,7 +346,7 @@ assert grep -Fq 'walk(if type == "object" and (.weekly.origin? == "headers") the
 assert doc_has 'Weekly bucket provenance'
 assert doc_has 'no writer may stamp `origin: "headers"` on `seven_day`'
 
-assert doc_has 'always emits boolean `rotation.usable.general`, `rotation.usable.fable`, and `blocked == (rotation.usable.general \| not)`'
+assert doc_has 'always emits boolean `rotation.usable.general`, `rotation.usable.fable`, and `blocked == ((enabled and rotation.usable.general) \| not)`'
 EDGE_WORK=$(mktemp -d)
 EDGE_BIN="$EDGE_WORK/bin"
 EDGE_HOME="$EDGE_WORK/home"
@@ -368,9 +378,12 @@ assert jq -e '
     (.rotation.usable.general | type) == "boolean" and
     (.rotation.usable.fable | type) == "boolean" and
     (.blocked | type) == "boolean" and
-    .blocked == (.rotation.usable.general | not)) and
-  (any(.vendors.claude.accounts[]; .account == "disabled" and
-    .rotation.usable.general == false and .rotation.usable.fable == false)) and
+    .blocked == (((.enabled == true) and .rotation.usable.general) | not)) and
+  # Pool membership is consent, not capability, and it keeps its own field: a disabled account is
+  # `blocked`, while the usable flags still say what it could do — which is what lets the pin
+  # override the toggle instead of being refused by a flag that swallowed it.
+  (any(.vendors.claude.accounts[]; .account == "disabled" and .enabled == false and
+    .blocked == true and .rotation.usable.general == true and .rotation.usable.fable == true)) and
   (any(.vendors.claude.accounts[]; .account == "nonnumeric-fable" and
     .rotation.usable.fable == false)) and
   # worker-pick reads a missing key as true, so the fail-open direction needs its
@@ -380,6 +393,21 @@ assert jq -e '
        .account == "bad-auth" or .account == "empty");
     .rotation.usable.general == false and .rotation.usable.fable == false))
 ' <<<"$EDGE_JSON" >/dev/null
+# End to end over that same snapshot: the pin is the one override above the pool (routing-contract
+# rules 2 and 4), so an out-of-pool account is refused to every ordinary query and answered when it
+# is the pin.
+EDGE_PICK="$EDGE_WORK/limits.json"
+EDGE_MODEL="$EDGE_WORK/worker-model"
+printf '%s' "$EDGE_JSON" >"$EDGE_PICK"
+printf 'worker=auto\n' >"$EDGE_MODEL"
+edge_pick() {
+  env HOME="$EDGE_HOME" LLM_LIMITS_FILE="$EDGE_PICK" WORKER_PICK_CONFIG_FILE="$EDGE_MODEL" \
+    WORKER_PICK_CACHE_DIR="$EDGE_WORK/cache" WORKER_CLAIMS_DIR="$EDGE_WORK/claims" \
+    CLAUDE_LIMITS_ACCOUNT=missing-five "$WORKERPICK" --account claudeb 2>/dev/null
+}
+assert test "$(edge_pick)" != disabled
+printf 'worker=auto\nclaudeb_profile=disabled\n' >"$EDGE_MODEL"
+assert eq "$(edge_pick)" disabled
 rm -rf "$EDGE_WORK"
 
 GATE_WARN=85; GATE_DENY=95
@@ -473,12 +501,28 @@ assert grep -Fq 'gr_pin=$(conf grok_profile)' "$WORKERPICK"
 assert grep -Fq '.name == $cx_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '.name == $gm_pin and (.walled | not)' "$WORKERPICK"
 assert grep -Fq '.name == $gr_pin and (.walled | not)' "$WORKERPICK"
-assert grep -Fq '$pin_account != null and $pin_account.auth_ok and $pin_account.general_usable' "$WORKERPICK"
-# The session account is the reserve, not an exclusion (docs/routing-contract.md rule 1): a pin
-# reaches it, so the gate must not regain an `.own` test, and the footnote must keep saying that
-# the reserve is routed only when nothing else is selectable.
+assert grep -Fq '(if $pin_account != null and $pin_account.auth_ok and' "$WORKERPICK"
+# The pin is the override ABOVE the pool (routing-contract rules 2 and 4), so its acceptance may
+# read neither the toggle nor the collector verdict that carries the toggle inside it.
+assert test "$(grep -cE 'pin_account\.(enabled|blocked|general_usable)' "$WORKERPICK")" -eq 0
+# The pin's wall companion: written by every vendor CLI under its own store vendor key, read back
+# by the picker under the pin key, and stripped wherever the pin itself is.
+assert grep -Fq 'worker_model_pin_wall_until claude ' "$ROOT/bin/claudeb"
+assert grep -Fq 'worker_model_pin_wall_until codex ' "$ROOT/bin/codexb"
+assert grep -Fq 'worker_model_pin_wall_until gemini ' "$ROOT/bin/geminib"
+assert grep -Fq 'worker_model_pin_wall_until grok ' "$ROOT/bin/grokb"
+for pin_key in claudeb codex gemini grok; do
+  assert grep -Fq "_pin_wall=\$(conf ${pin_key}_profile_wall)" "$WORKERPICK"
+done
+assert test "$(grep -Fc 'grep -Ev "^${key}(_wall)?="' "$ROOT/share/worker-model.sh")" -eq 2
+# The session account is no longer a reserve of any kind (docs/routing-contract.md rule 1): it is
+# ranked by its budget like every other account, so neither the gate may regain an `.own` test nor
+# any surface the marker that used to announce the reserve.
 assert test "$(grep -cF 'pin_account.own' "$WORKERPICK")" -eq 0
-assert grep -Fq 'the reserve — routed only when nothing else is selectable' "$WORKERPICK"
+assert grep -Fq 'There is **no session reserve**' "$CONTRACT"
+for no_reserve in "$WORKERPICK" "$STATUSLINE" "$RB_ACCOUNTS"; do
+  assert test "$(grep -cF 'SESSION RESERVE' "$no_reserve")" -eq 0
+done
 
 assert grep -Fq 'needs_user_entry:true' "$LLMLIMITS"
 assert grep -Fq 'needs_user_entry == true' "$HAMMER"
@@ -621,7 +665,8 @@ assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$R
 assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<s> skipped)]`'
 # The share is the debt a `--debt` review leaves out, priced by the one reader that leaves it out:
 # a line quoting a number the scope never skipped is the mismatch the segment exists to end.
-assert grep -Fq 'others = len(debt_skipped_paths(repo, debt, session, buckets=buckets))' "$RB_DEBT"
+assert grep -Fq 'others = len(debt_skipped_paths(repo, debt, session, buckets=buckets, claims=claims,' "$RB_DEBT"
+assert grep -Fq 'records=records, launchers=launchers))' "$RB_DEBT"
 assert grep -Fq 'others = debt_skipped_paths(repo, debt, session, covering=covering)' "$RB_DEBT"
 assert doc_has '`split <own> <foreign> <orphaned>`'
 # One number: the commit door (`--list`) and the statusline (`--split`) subtract what an open round
@@ -976,7 +1021,7 @@ assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$ROOT/bin/worker-run"
 # before they believe the silence — pid 1, because a sandbox hiding every process but our own still
 # lists `$$` and a foreign supervisor then still reads gone.
 assert grep -Fq 'ps -p 1 -o etime=' "$ROOT/bin/worker-run"
-assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 3
+assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 2
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"
   assert grep -Fq '[ "$pid" -gt 0 ] || { printf '"'"'unknown\n'"'"'; return 0; }' "$JOURNAL_LIB"
@@ -1014,7 +1059,7 @@ assert grep -Fq 'if ! worker_model_pin_allowed; then' "$WORKER_MODEL_SH"
 # The file doors, all three registrations, and the pin-key rule that keeps `/worker` working —
 # half a gate is a gate that is off, and a gate over the whole file is one that gets worked around.
 assert grep -Fq 'canonical_path "$HOME/.claude/worker-model"' "$PIN_GATE"
-assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='" "$PIN_GATE"
+assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile(_wall)?='" "$PIN_GATE"
 assert grep -Fq 'worker-pin-gate.sh prompt' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh write' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh bash' "$WORKER_GATE_SETTINGS"
@@ -1992,4 +2037,66 @@ assert doc_has '`ephemeral_<n><m\|h>_`'
 assert eq "$(grep -c 'capture("ephemeral_(?<n>\[0-9\]+)(?<u>\[mh\])_")' "$STATUSLINE")" 2
 assert grep -Fq 're.match(r"ephemeral_(\d+)([mh])_", key)' "$CHATFIND_LEGS"
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, Codex/Gemini main-last priority, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+# --- Row bl: the daily budget formula ----------------------------------------
+# The metric that ranks accounts and vendors is defined once. A consumer that re-derives either
+# number ranks on a second formula nothing else shares.
+for view_def in limits_days_remaining limits_daily_budget; do
+  assert eq "$(grep -c "^def $view_def" "$LIMITSVIEW")" 1
+done
+# The day floor, and the neutral window a reset this file refuses to print falls back to instead.
+assert grep -Fq 'if ($days | type) != "number" then 7 elif $days < 0.25 then 0.25 else $days end' "$LIMITSVIEW"
+assert doc_has 'floored at `0.25`'
+assert doc_has 'neutral `7`-day window'
+# Both defs are called where the ranking happens, never reimplemented beside it.
+for budget_consumer in "$WORKERPICK" "$CODEXB" "$LLMLIMITS"; do
+  assert grep -Fq 'share/limits-view.sh' "$budget_consumer"
+  assert grep -Fq 'limits_daily_budget(' "$budget_consumer"
+  assert grep -Fq 'limits_days_remaining(' "$budget_consumer"
+done
+assert grep -Fq 'limits_daily_budget(effective_pct; limits_days_remaining(resets_at; now))' "$CONTRACT"
+assert test -r "$ROOT/tests/test_limits_view_budget.sh"
+assert doc_has 'Daily budget formula'
+
+# --- Row bm: the worker claims ledger ----------------------------------------
+# One home for the TTL: the picker and every claiming caller source the module rather than
+# spelling a window of their own, and the contract quotes the same default.
+CLAIMS="$ROOT/share/worker-claims.sh"
+claims_ttl=$(grep -oE '\$\{WORKER_CLAIMS_TTL:-[0-9]+\}' "$CLAIMS" | grep -oE '[0-9]+' | sort -u)
+assert eq "$claims_ttl" 600
+assert grep -Fq '`WORKER_CLAIMS_TTL`' "$CONTRACT"
+assert grep -Fq 'seconds (default `600`)' "$CONTRACT"
+assert eq "$(grep -c 'WORKER_CLAIMS_TTL' "$WORKERPICK")" 0
+assert grep -Fq 'worker-claims.sh' "$WORKERPICK"
+assert grep -Fq 'worker_claims_record "$query_vendor" "$query_answer"' "$WORKERPICK"
+assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
+# Every caller that is about to spend the answer takes the claim through the picker's flag; a
+# launcher asking without it hands the same account to the next caller minutes later.
+for claims_caller in "$ROOT/bin/worker-run" "$ROOT/bin/codex-image" \
+    "$ROOT/bin/gemini-image" "$ROOT/bin/grok-image"; do
+  assert grep -Fq -- '--claim' "$claims_caller"
+  assert eq "$(grep -c 'worker-claims.sh' "$claims_caller")" 0
+done
+assert test -r "$ROOT/tests/test_worker_claims.sh"
+assert doc_has 'Worker claims ledger'
+
+# --- Row bn: the main-account shield ------------------------------------------
+# The budget a base account is pulled from the pool at, spelled once in the pool module and
+# quoted by the contract; the collector reconciles against that same constant.
+POOL="$ROOT/share/worker-pool.sh"
+shield_floor=$(sed -nE 's/^WORKER_POOL_SHIELD_PER_DAY=\$\{WORKER_POOL_SHIELD_PER_DAY:-([0-9]+)\}$/\1/p' "$POOL")
+assert eq "$shield_floor" 3
+assert grep -Fq '`WORKER_POOL_SHIELD_PER_DAY` (3 %/day)' "$CONTRACT"
+assert eq "$(grep -c 'WORKER_POOL_SHIELD_PER_DAY' "$LLMLIMITS")" 1
+assert grep -Fq -- '--argjson floor "$WORKER_POOL_SHIELD_PER_DAY"' "$LLMLIMITS"
+# The two markers, and the reset epoch that is their whole state.
+assert grep -Fq 'case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac' "$POOL"
+assert grep -Fq 'worker_pool_shield_set "$pool_vendor" "$name" "$reset"' "$LLMLIMITS"
+assert grep -Fq 'worker_pool_override_current "$pool_vendor" "$name" "$reset"' "$LLMLIMITS"
+# Enabling a shielded account by hand is the only override, and it lives with the vendor CLIs.
+for shield_cli in "$CLAUDEB" "$CODEXB"; do
+  assert grep -Fq 'worker_pool_shield_override' "$shield_cli"
+done
+assert test -r "$ROOT/tests/test_worker_pool_shield.sh"
+assert doc_has 'Main-account shield'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

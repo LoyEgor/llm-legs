@@ -283,26 +283,6 @@ run_path() {
   printf '%s/%s' "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}" "$1"
 }
 
-busy_accounts() {
-  # worker-pick ranks by recorded usage and knows nothing about in-flight runs,
-  # so parallel starts would all land on the same "best" account. Comma list of
-  # accounts carrying a live same-vendor run, for --exclude; busy is a
-  # preference, not a wall — callers must retry unexcluded if the pick fails.
-  local vendor="$1" root directory pid account
-  local -a names=()
-  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
-  for directory in "$root/$vendor-"*; do
-    [ -r "$directory/meta.json" ] || continue
-    [ ! -f "$directory/exit_code" ] || continue
-    pid=$(jq -r '.pid' "$directory/meta.json" 2>/dev/null)
-    supervisor_running "$directory" "$pid" || continue
-    run_overdue "$directory" && continue
-    account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
-    [ -z "$account" ] || names+=("$account")
-  done
-  [ "${#names[@]}" -eq 0 ] || printf '%s\n' "${names[@]}" | sort -u | paste -sd, -
-}
-
 meta_update() {
   local directory="$1" filter="$2" temporary
   shift 2
@@ -317,42 +297,25 @@ meta_update() {
 run_picker() {
   local picker="$1" vendor="$2" exclude="$3" errors="$4"
   if [ -n "$exclude" ]; then
-    "$picker" --account "$vendor" --exclude "$exclude" 2>"$errors"
+    "$picker" --account "$vendor" --claim --exclude "$exclude" 2>"$errors"
   else
-    "$picker" --account "$vendor" 2>"$errors"
+    "$picker" --account "$vendor" --claim 2>"$errors"
   fi
 }
 
 pick_account() {
-  # Answers into PICKED_ACCOUNT / PICKED_RC / PICKED_RESERVE. $2 is the hard
-  # exclusion list — accounts that already walled in this run's chain; busy
-  # accounts are layered on top as a preference only.
-  local vendor="$1" walled="$2" picker busy combined errors
+  local vendor="$1" walled="$2" picker errors
   PICKED_ACCOUNT=''
   PICKED_RC=0
-  PICKED_RESERVE=false
   PICKED_POOL_EMPTY=false
   PICKED_ROLE_OFF=false
   PICKED_NO_DATA=false
   picker="${WORKER_RUN_WORKER_PICK:-worker-pick}"
-  busy=$(busy_accounts "$vendor")
-  combined=$(printf '%s\n%s\n' "$walled" "$busy" | tr ',' '\n' | grep -v '^$' | awk '!seen[$0]++' | paste -sd, -)
-  # The picker says on stderr when its answer is the session account held in reserve, and
-  # dropping that note would launch a worker on the live chat's own quota silently. Each
-  # redirect truncates the file, so only the pick actually used is reported.
   errors=$(mktemp "${TMPDIR:-/tmp}/worker-run-pick.XXXXXX") ||
     fail 'could not create a temporary file for the account query'
-  PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$combined" "$errors")
+  PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$walled" "$errors")
   PICKED_RC=$?
-  # rc 3 once busy accounts are excluded means "everything ELSE is walled", not
-  # walled: fall through to the walled-only query and let the pick queue on a
-  # busy account rather than lie about limits.
-  if [ "$combined" != "$walled" ] && { [ "$PICKED_RC" -ne 0 ] || [ -z "$PICKED_ACCOUNT" ]; }; then
-    PICKED_ACCOUNT=$(run_picker "$picker" "$vendor" "$walled" "$errors")
-    PICKED_RC=$?
-  fi
   [ ! -s "$errors" ] || cat "$errors" >&2
-  ! grep -Fq 'SESSION RESERVE' "$errors" || PICKED_RESERVE=true
   # An empty pool is Egor's choice, not a limit: reporting it as a usage limit would send the
   # orchestrator hunting for quota that is not the problem.
   ! grep -Eq 'every [a-z]+ account is out of the worker pool' "$errors" || PICKED_POOL_EMPTY=true
@@ -362,7 +325,9 @@ pick_account() {
   # A vendor the picker cannot read at all — no accounts, no usage snapshot — is not a walled one.
   # Its quota may be untouched, and this whole system exists so that nothing reports a limit it has
   # no data for (docs/DIAGNOSTICS.md, the 429 taxonomy).
-  ! grep -Eq 'no selectable [a-z]+ account \((unavailable|no quota data)\)' "$errors" ||
+  # worker-pick puts its whole vendor line inside those parens, so the reason arrives prefixed
+  # (`grok: unavailable`) and may carry a pin-lapse clause before it.
+  ! grep -Eq 'no selectable [a-z]+ account \(([a-z]+: )?([^)]*\| )?(unavailable|no( [A-Za-z]+)* quota data|no accounts)\)' "$errors" ||
     PICKED_NO_DATA=true
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
@@ -556,9 +521,8 @@ reroute_walled() {
   # started_at is restamped because run_overdue budgets one deadline, and a chain
   # of full-length attempts would otherwise read as a wedged CLI.
   meta_update "$directory" \
-    '.walled_accounts = ((.walled_accounts // []) + [.account]) | .account = $next | .started_at = $now
-     | if $reserve then .session_reserve = true else del(.session_reserve) end' \
-    --arg next "$PICKED_ACCOUNT" --argjson now "$(date +%s)" --argjson reserve "$PICKED_RESERVE" || return 1
+    '.walled_accounts = ((.walled_accounts // []) + [.account]) | .account = $next | .started_at = $now' \
+    --arg next "$PICKED_ACCOUNT" --argjson now "$(date +%s)" || return 1
   if IFS= read -r tag <"$directory/tag" 2>/dev/null; then
     printf '%s · %s\n' "$PICKED_ACCOUNT" "${tag#* · }" >"$directory/tag"
   fi
@@ -801,7 +765,7 @@ record_worker_session() {
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
-  local account pick_reserve=false pin_fallback=false pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
+  local account pin_fallback=false pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
@@ -864,7 +828,6 @@ start_run() {
     account="$explicit_account"
   else
     pick_account "$vendor" ''
-    pick_reserve=$PICKED_RESERVE
     if [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ]; then
       account="$PICKED_ACCOUNT"
     elif [ "$PICKED_RC" -eq 3 ]; then
@@ -1054,8 +1017,6 @@ start_run() {
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort,pinned:$pinned}
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
-  [ "$pick_reserve" != true ] || meta_update "$directory" '.session_reserve = true' ||
-    fail 'could not record the session-reserve note'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
   # chat spawned IS that chat (Egor, 2026-08-17), and the run is the only place that fact exists —
   # the report says who a worker is, never who asked for it, so ownership read off a report is
@@ -1870,8 +1831,7 @@ report_run() {
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   account=$(jq -r '.account' "$directory/meta.json")
-  printf 'ACCOUNT: %s (%s)%s\n' "$account" "$vendor" \
-    "$(jq -r 'if .session_reserve == true then " SESSION RESERVE" else "" end' "$directory/meta.json")"
+  printf 'ACCOUNT: %s (%s)\n' "$account" "$vendor"
   reroute_lines "$directory"
   if [ -f "$directory/exit_code" ]; then
     code=$(tr -d '[:space:]' <"$directory/exit_code")

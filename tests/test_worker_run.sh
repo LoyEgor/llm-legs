@@ -43,24 +43,20 @@ cat >"$WORK/bin/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$PICK_LOG"
 # A reroute chain needs a different answer per call, and the env of the detached
-# supervisor is frozen at launch: the queue file feeds one "<rc> [account]
-# [reserve]" line per pick, oldest first.
+# supervisor is frozen at launch: the queue file feeds one "<rc> [account]" line
+# per pick, oldest first.
 if [ -s "$STUB_DIR/pick_queue" ]; then
   IFS= read -r queued <"$STUB_DIR/pick_queue"
   sed '1d' "$STUB_DIR/pick_queue" >"$STUB_DIR/pick_queue.next" && mv "$STUB_DIR/pick_queue.next" "$STUB_DIR/pick_queue"
   # shellcheck disable=SC2086
   set -- $queued
   [ "$1" = 0 ] || exit "$1"
-  [ "${3:-}" != reserve ] || printf 'worker-pick: %s is the session account (SESSION RESERVE)\n' "$2" >&2
   printf '%s\n' "$2"
   exit 0
 fi
 case "${PICK_RC:-0}" in
   0)
-    # The real picker announces a session-reserve answer on stderr only; stdout stays the
-    # bare account name.
-    [ "${PICK_ACCOUNT:-picked}" != "${PICK_RESERVE_ACCOUNT:-}" ] ||
-      printf 'worker-pick: %s is the session account (SESSION RESERVE)\n' "${PICK_ACCOUNT}" >&2
+    [ -z "${PICK_STDERR:-}" ] || printf '%s\n' "$PICK_STDERR" >&2
     printf '%s\n' "${PICK_ACCOUNT:-picked}"
     ;;
   *)
@@ -293,7 +289,9 @@ for vendor in claudeb codex gemini; do
   export PICK_ACCOUNT=picked PICK_RC=0
   start_ok "$vendor"
   assert meta_account_is picked
-  assert grep -qx -- "--account $vendor" "$PICK_LOG"
+  # Claims own cross-run spreading, so every automatic launch makes one claimed query and does
+  # not derive a second exclusion layer from worker-run's live-run registry.
+  assert grep -qx -- "--account $vendor --claim" "$PICK_LOG"
   assert jq -e '.pinned == false' "$RUN_DIR/meta.json" >/dev/null
   assert await_done
 
@@ -305,27 +303,17 @@ for vendor in claudeb codex gemini; do
   assert await_done
 done
 
-# The picker's reserve note is the only warning that a worker is about to spend the live
-# session's own quota, so it must reach the launch context and the run's own record.
+# Legacy picker stderr remains visible but has no routing or report semantics.
 clear_stub
 set_config 'codex_effort=medium'
-export PICK_ACCOUNT=reserved PICK_RC=0 PICK_RESERVE_ACCOUNT=reserved
-start_ok codex
-assert meta_account_is reserved
-assert grep -q 'reserved is the session account (SESSION RESERVE)' "$WORK/start.err"
-assert jq -e '.session_reserve == true' "$RUN_DIR/meta.json" >/dev/null
-assert await_done
-assert grep -q '^ACCOUNT: reserved (codex) SESSION RESERVE$' <<<"$("$RUNNER" report "$RUN_ID")"
-
-clear_stub
-export PICK_ACCOUNT=picked
+export PICK_ACCOUNT=picked PICK_RC=0 PICK_STDERR='worker-pick: legacy SESSION RESERVE note'
 start_ok codex
 assert meta_account_is picked
-assert test ! -s "$WORK/start.err"
+assert grep -qxF "$PICK_STDERR" "$WORK/start.err"
 assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
 assert await_done
 assert grep -q '^ACCOUNT: picked (codex)$' <<<"$("$RUNNER" report "$RUN_ID")"
-unset PICK_RESERVE_ACCOUNT
+unset PICK_STDERR
 
 for vendor in codex gemini; do
   clear_stub
@@ -2087,33 +2075,6 @@ assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
 assert grep -qx 'WALL: pinned account pinacct — pool not consulted' "$WORK/wait.out"
 assert test "$(grep -c '^REROUTE:' "$WORK/wait.out")" -eq 0
 
-# Accounts carrying a live same-vendor run are excluded from the pick, so
-# parallel starts spread instead of stacking on one account.
-clear_stub
-set_config 'codex_effort=high'
-export PICK_RC=0 PICK_ACCOUNT=other STUB_SLEEP=2
-start_ok codex --account busy1
-BUSY_RUN_ID=$RUN_ID
-unset STUB_SLEEP
-start_ok codex
-assert meta_account_is other
-assert grep -qx -- '--account codex --exclude busy1' "$PICK_LOG"
-assert await_done
-
-# Busy is a preference, not a wall: an excluded pick that fails is retried
-# without exclusions before any limit verdict.
-clear_stub
-export PICK_RC=3 PICK_ACCOUNT=ignored
-rc=0
-"$RUNNER" start codex --brief "$WORK/brief" >"$WORK/busy-walled.out" 2>&1 || rc=$?
-assert test "$rc" -eq 3
-assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/busy-walled.out"
-assert grep -qx -- '--account codex --exclude busy1' "$PICK_LOG"
-assert grep -qx -- '--account codex' "$PICK_LOG"
-export PICK_RC=0
-RUN_ID=$BUSY_RUN_ID
-assert await_done
-
 # A pid that outlives its run (reboot reuse, supervisor killed before writing
 # exit_code) must not report "running" forever once the deadline is long past.
 clear_stub
@@ -2232,8 +2193,8 @@ assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
 # it is the clock liveness is judged by, and a restamped one reads a live rerouted run as dead.
 assert jq -e '(.pid_started_at | type == "number") and .pid_started_at <= .started_at' \
   "$RUN_DIR/meta.json" >/dev/null
-assert grep -qx -- '--account codex' "$PICK_LOG"
-assert grep -qx -- '--account codex --exclude walled1' "$PICK_LOG"
+assert grep -qx -- '--account codex --claim' "$PICK_LOG"
+assert grep -qx -- '--account codex --claim --exclude walled1' "$PICK_LOG"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert grep -q '^CODEX_HOME=.*/\.codex-profiles/rescue1$' "$CALL_LOG"
 assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' "$WORK/wait.out"
@@ -2255,8 +2216,8 @@ assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert meta_account_is rescue2
 assert jq -e '.walled_accounts == ["walled1","walled2"]' "$RUN_DIR/meta.json" >/dev/null
-assert grep -qx -- '--account codex --exclude walled1' "$PICK_LOG"
-assert grep -qx -- '--account codex --exclude walled1,walled2' "$PICK_LOG"
+assert grep -qx -- '--account codex --claim --exclude walled1' "$PICK_LOG"
+assert grep -qx -- '--account codex --claim --exclude walled1,walled2' "$PICK_LOG"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 3
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 2
 assert grep -qx 'REROUTE: walled on walled2 → continued on rescue2' "$WORK/wait.out"
@@ -2305,34 +2266,6 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
 assert test ! -s "$PICK_LOG"
 assert grep -qx '0 rescue3' "$STUB_DIR/pick_queue"
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
-
-# A re-pick that lands on the session account must say so exactly as the first
-# pick does — the reroute is not a quieter path onto the live chat's quota.
-clear_stub
-set_config 'codex_effort=high'
-printf 'walled1\n' >"$STUB_DIR/wall_accounts"
-printf '%s\n' '0 walled1' '0 reserved1 reserve' >"$STUB_DIR/pick_queue"
-start_ok codex
-assert test ! -s "$WORK/start.err"
-assert await_done
-assert meta_account_is reserved1
-assert jq -e '.session_reserve == true' "$RUN_DIR/meta.json" >/dev/null
-report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'ACCOUNT: reserved1 (codex) SESSION RESERVE' <<<"$report"
-assert grep -qx 'REROUTE: walled on walled1 → continued on reserved1' <<<"$report"
-
-# ...and the note belongs to the account actually in use: rerouting off the
-# reserve clears it.
-clear_stub
-set_config 'codex_effort=high'
-printf 'reserved0\n' >"$STUB_DIR/wall_accounts"
-printf '%s\n' '0 reserved0 reserve' '0 plain1' >"$STUB_DIR/pick_queue"
-start_ok codex
-assert grep -q 'reserved0 is the session account (SESSION RESERVE)' "$WORK/start.err"
-assert await_done
-assert meta_account_is plain1
-assert jq -e 'has("session_reserve") | not' "$RUN_DIR/meta.json" >/dev/null
-assert grep -qx 'ACCOUNT: plain1 (codex)' <<<"$("$RUNNER" report "$RUN_ID")"
 
 # A brief carrying a bench run's own `record` command is that run's triage, delegated: the bench is
 # stamped with the supervisor's pid, which is what tells the Stop gate somebody is writing the
@@ -2487,7 +2420,11 @@ assert await_done
 # its quota may be untouched, and this whole system exists so nothing reports a limit it has no data
 # for. Live-caught on the grok leg before its quota reader landed: `no selectable grok account
 # (unavailable)` came back as GROK_USAGE_LIMIT.
-for pick_reason in unavailable 'no quota data'; do
+# The reasons are the ones worker-pick really prints: its whole vendor line sits inside the
+# parens, so an unprefixed sentence would test only the stub (tests/test_worker_pick.sh pins
+# `no selectable grok account (grok: unavailable)` on the producing side).
+for pick_reason in 'grok: unavailable' 'grok: no quota data' \
+                   'grok: pin gone absent → no selectable account | unavailable'; do
   clear_stub
   set_config 'grok_effort=high'
   export PICK_RC=3 PICK_ACCOUNT=ignored
@@ -2558,7 +2495,7 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert meta_account_is grescue1
 assert jq -e '.walled_accounts == ["gwall1"]' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'REROUTE: walled on gwall1 → continued on grescue1' "$WORK/wait.out"
-assert grep -qx -- '--account grok --exclude gwall1' "$PICK_LOG"
+assert grep -qx -- '--account grok --claim --exclude gwall1' "$PICK_LOG"
 assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 2
 
 # ALL WALLED is the only way the usage-limit outcome still reaches the caller.

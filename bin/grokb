@@ -224,7 +224,8 @@ show_status() {
 }
 
 pin_account() {
-  worker_model_pin_account grok_profile grokb account_names is_disabled "${1:-}"
+  worker_model_pin_account grok_profile grokb account_names is_disabled "${1:-}" \
+    "$(worker_model_pin_wall_until grok "${1:-}")"
 }
 
 set_all_pool() { worker_pool_set_all "$pool_dir" grokb account_names "$1"; }

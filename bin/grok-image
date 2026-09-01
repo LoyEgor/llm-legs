@@ -121,7 +121,7 @@ grokb_cmd="${GROK_IMAGE_GROKB:-grokb}"
 
 if [ -z "$account" ]; then
   pick_rc=0
-  account=$("$worker_pick_cmd" --account grok 2>/dev/null) || pick_rc=$?
+  account=$("$worker_pick_cmd" --account grok --claim 2>/dev/null) || pick_rc=$?
   if [ "$pick_rc" -eq 3 ]; then
     printf 'GROK_USAGE_LIMIT\n' >&2
     exit 3
@@ -176,7 +176,7 @@ if [[ "$generated" != /* ]] || [ ! -f "$generated" ]; then
 fi
 
 if [ -z "$generated" ]; then
-  if grep -Eqi 'hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits' \
+  if grep -Eqi 'hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits|(status|http)[^0-9]{0,12}402([^0-9]|$)|402 payment required' \
       "$stream_file" "$stderr_file" 2>/dev/null; then
     printf 'GROK_USAGE_LIMIT\n' >&2
     exit 3

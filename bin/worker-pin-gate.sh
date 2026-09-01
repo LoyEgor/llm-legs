@@ -25,7 +25,9 @@ set -u
 
 MODE="${1:-}"
 GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
-PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='
+# The `_wall` companion is part of the pin, not a separate knob: writing one by hand extends a pin
+# the same way moving it does.
+PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile(_wall)?='
 
 grant_path() {
   local state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"

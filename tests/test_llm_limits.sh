@@ -1118,9 +1118,11 @@ jq -e '(.vendors.claude.accounts | length) == 2 and
   ([.vendors.claude.accounts[] | select(.account == "alona")][0] |
     .enabled == true and .blocked == false and
     .rotation == {usable:{general:true,fable:false}}) and
+  # The pool toggle is consent, not capability (shared-invariants row o): bree is `blocked`, while
+  # its live auth still reads `usable.general` — which is what lets a pin override the toggle.
   ([.vendors.claude.accounts[] | select(.account == "bree")][0] |
     .enabled == false and .blocked == true and
-    .rotation == {usable:{general:false,fable:false}})' \
+    .rotation == {usable:{general:true,fable:false}})' \
   <<<"$disabled_json" >/dev/null || fail "disabled file did not map to local rotation usability"
 disabled_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_DIS" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "disabled table collection failed"
 awk '$1 == "claude/bree"' <<<"$disabled_table" | grep -q 'off' || fail "disabled account not marked off in table"
@@ -2155,8 +2157,12 @@ printf '{"five_hour":{"used_percentage":100,"resets_at":%s},"seven_day":{"used_p
   "$((now + 5000))" "$((now + 9000))" "$now" >"$USABLE_STORE/limits/full.json"
 claude_full=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude exhausted usability collection failed"
 jq -e '.vendors.claude.usable_now == false' <<<"$claude_full" >/dev/null || fail "Claude all-exhausted usability mismatch"
-jq -e '.vendors.claude.accounts[0].rotation == {usable:{general:true,fable:false}}' \
-  <<<"$claude_full" >/dev/null || fail "limit exhaustion leaked into local rotation eligibility"
+# The shield takes the account out of the POOL (`enabled`), which is consent; its auth is alive, so
+# capability still reads true (shared-invariants row o) and a pin could still reach it.
+jq -e '.vendors.claude.accounts[0] |
+  .shielded == true and .enabled == false and
+  .rotation == {usable:{general:true,fable:false}}' \
+  <<<"$claude_full" >/dev/null || fail "exhausted main account did not enter the worker-pool shield"
 printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"auth":{"status":"ok","checked_at":%s}}\n' \
   "$((now + 5000))" "$((now + 9000))" "$now" >"$USABLE_STORE/limits/free.json"
 claude_free=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude free-account usability collection failed"
@@ -2165,8 +2171,9 @@ printf 'free\n' >"$USABLE_STORE/disabled"
 claude_disabled=$(HOME="$USABLE_HOME" CLAUDEB_DIR="$USABLE_STORE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude disabled-account usability collection failed"
 jq -e '.vendors.claude.usable_now == false' <<<"$claude_disabled" >/dev/null || fail "Disabled under-limit account must not make Claude usable"
 jq -e '.vendors.claude.accounts[] | select(.account == "free") |
-  .rotation == {usable:{general:false,fable:false}}' <<<"$claude_disabled" >/dev/null \
-  || fail "disabled account remained generally usable in local rotation metadata"
+  .enabled == false and .blocked == true and
+  .rotation == {usable:{general:true,fable:false}}' <<<"$claude_disabled" >/dev/null \
+  || fail "a pool-excluded account must read blocked while its live auth still reads usable"
 rm "$USABLE_STORE/disabled"
 printf '{"five_hour":{"used_percentage":20,"resets_at":%s},"seven_day":{"used_percentage":30,"resets_at":%s},"auth":{"status":"expired"}}\n' \
   "$((now + 5000))" "$((now + 9000))" >"$USABLE_STORE/limits/free.json"
@@ -2725,6 +2732,77 @@ grok_blank_table=$(env HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES" \
   || fail "grok unmeasured-row table failed"
 grep -Eq '^grok/broken\* +- +- +- +- +- +- +never ' <<<"$grok_blank_table" \
   || fail "an unmeasured grok row must render dashes and an alarming age: $grok_blank_table"
+
+SHIELD_HOME="$WORK/shield-home"
+SHIELD_STORE="$WORK/shield-store"
+SHIELD_CODEX="$WORK/shield-codex"
+SHIELD_GEMINI="$WORK/shield-gemini"
+SHIELD_GROK="$WORK/shield-grok"
+SHIELD_CACHE="$WORK/shield-cache.json"
+mkdir -p "$SHIELD_HOME" "$SHIELD_STORE/limits" "$SHIELD_STORE/tokens" \
+  "$SHIELD_CODEX" "$SHIELD_GEMINI" "$SHIELD_GROK"
+touch "$SHIELD_STORE/tokens/primary" "$SHIELD_STORE/tokens/worker"
+printf 'manual\n' >"$SHIELD_STORE/disabled"
+cp "$SHIELD_STORE/disabled" "$WORK/shield-disabled.expected"
+shield_now=1900000000
+shield_far=$((shield_now + 604800))
+shield_near=$((shield_now + 10800))
+write_shield_snapshot() {
+  local account="$1" pct="$2" reset="$3"
+  printf '{"five_hour":{"used_percentage":10,"resets_at":%s,"as_of":%s,"origin":"usage"},"seven_day":{"used_percentage":%s,"resets_at":%s,"as_of":%s,"origin":"usage"},"auth":{"status":"ok","checked_at":%s}}\n' \
+    "$((shield_now + 3600))" "$shield_now" "$pct" "$reset" "$shield_now" "$shield_now" \
+    >"$SHIELD_STORE/limits/$account.json"
+}
+collect_shield_fixture() {
+  HOME="$SHIELD_HOME" CLAUDEB_DIR="$SHIELD_STORE" CODEXB_PROFILES_DIR="$SHIELD_CODEX" \
+    GEMINIB_PROFILES_DIR="$SHIELD_GEMINI" GROKB_PROFILES_DIR="$SHIELD_GROK" \
+    LLM_LIMITS_NOW="$shield_now" LLM_LIMITS_CACHE="$SHIELD_CACHE" bash "$SCRIPT" --json
+}
+
+printf 'primary\n' >"$SHIELD_STORE/.claudeb-state"
+write_shield_snapshot primary 90 "$shield_far"
+write_shield_snapshot worker 99 "$shield_far"
+shield_far_json=$(collect_shield_fixture) || fail "far-reset shield collection failed"
+[ "$(cat "$SHIELD_STORE/shielded/primary")" = "$shield_far" ] \
+  || fail "low daily budget did not store the weekly reset epoch in the shield marker"
+[ ! -e "$SHIELD_STORE/shielded/worker" ] || fail "non-main high-usage account was shielded"
+jq -e '([.vendors.claude.accounts[] | select(.account == "primary")][0] |
+    .shielded == true and .enabled == false) and
+  ([.vendors.claude.accounts[] | select(.account == "worker")][0] |
+    .shielded == false and .enabled == true)' <<<"$shield_far_json" >/dev/null \
+  || fail "shielded/enabled account fields did not reflect pool reachability"
+cmp -s "$SHIELD_STORE/disabled" "$WORK/shield-disabled.expected" \
+  || fail "shield reconciliation changed the manual disabled file"
+
+write_shield_snapshot primary 90 "$shield_near"
+shield_near_json=$(collect_shield_fixture) || fail "near-reset shield collection failed"
+[ ! -e "$SHIELD_STORE/shielded/primary" ] \
+  || fail "the 0.25-day budget floor did not clear the shield near reset"
+jq -e '[.vendors.claude.accounts[] | select(.account == "primary")][0] |
+  .shielded == false and .enabled == true' <<<"$shield_near_json" >/dev/null \
+  || fail "near-reset main remained out of the pool"
+
+mkdir -p "$SHIELD_STORE/shielded" "$SHIELD_STORE/shield-override"
+printf '%s\n' "$shield_near" >"$SHIELD_STORE/shielded/primary"
+printf '%s\n' "$shield_near" >"$SHIELD_STORE/shield-override/primary"
+shield_next_week=$((shield_far + 604800))
+write_shield_snapshot primary 1 "$shield_next_week"
+collect_shield_fixture >/dev/null || fail "week-roll shield collection failed"
+[ ! -e "$SHIELD_STORE/shielded/primary" ] || fail "week roll left the old shield marker active"
+[ ! -e "$SHIELD_STORE/shield-override/primary" ] || fail "week roll left the old override active"
+
+write_shield_snapshot primary 90 "$shield_far"
+write_shield_snapshot worker 10 "$shield_far"
+printf 'primary\n' >"$SHIELD_STORE/.claudeb-state"
+collect_shield_fixture >/dev/null || fail "main shield setup collection failed"
+[ -e "$SHIELD_STORE/shielded/primary" ] || fail "main shield setup did not create a marker"
+printf 'worker\n' >"$SHIELD_STORE/.claudeb-state"
+shield_switched_json=$(collect_shield_fixture) || fail "main-switch shield collection failed"
+[ ! -e "$SHIELD_STORE/shielded/primary" ] || fail "account that stopped being main kept its shield"
+jq -e '[.vendors.claude.accounts[] | select(.account == "primary")][0].shielded == false' \
+  <<<"$shield_switched_json" >/dev/null || fail "store kept the old main shielded after the switch"
+cmp -s "$SHIELD_STORE/disabled" "$WORK/shield-disabled.expected" \
+  || fail "shield lifecycle changed the manual disabled file"
 
 EMPTY="$WORK/empty-home"
 mkdir -p "$EMPTY"

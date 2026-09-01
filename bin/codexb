@@ -18,6 +18,7 @@ codexb_root=$(resolve_root)
 . "$codexb_root/share/worker-pool.sh"
 . "$codexb_root/share/worker-model.sh"
 . "$codexb_root/share/account-announce.sh"
+. "$codexb_root/share/limits-view.sh"
 pool_dir=$(worker_pool_dir codex)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -243,7 +244,8 @@ show_status() {
 account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
 
 pin_account() {
-  worker_model_pin_account codex_profile codexb account_names is_disabled "${1:-}"
+  worker_model_pin_account codex_profile codexb account_names is_disabled "${1:-}" \
+    "$(worker_model_pin_wall_until codex "${1:-}")"
 }
 
 set_all_pool() { worker_pool_set_all "$pool_dir" codexb account_names "$1"; }
@@ -261,6 +263,9 @@ enable_account() {
   if ! account_exists "$name"; then
     printf 'codexb: unknown account: %s\n' "$name" >&2
     exit 2
+  fi
+  if [ -e "$pool_dir/shielded/$name" ]; then
+    worker_pool_shield_override codex "$name"
   fi
   if ! is_disabled "$name"; then
     printf 'codexb: %s is already enabled\n' "$name"
@@ -300,7 +305,7 @@ pick_account() {
   while IFS= read -r name; do
     authenticated "$name" || continue
     if is_disabled "$name"; then continue; fi
-    selected=$(jq -r --arg account "$name" --argjson now "$now" '
+    selected=$(jq -r --arg account "$name" --argjson now "$now" "$LIMITS_VIEW_JQ"'
       def effective($bucket):
         if ($bucket.used_pct | type) != "number" then null
         elif ($bucket.resets_at | type) == "number" and $bucket.resets_at <= $now then 0
@@ -308,16 +313,20 @@ pick_account() {
         end;
       [.accounts[] | select(.account == $account and (.auth_needed // false) != true) |
        . as $entry |
-       [effective(.five_hour), effective(.weekly)] | map(select(. != null)) as $known |
+       effective(.five_hour) as $five_hour |
+       effective(.weekly) as $weekly |
+       [$five_hour, $weekly] | map(select(. != null)) as $known |
        select(($known | length) == 0 or ($known | max) < 100) |
-       {account:$entry.account,main_last:(if $entry.account == "main" then 1 else 0 end),
-        unknown:(if ($known | length) == 0 then 1 else 0 end),
-        pressure:(if ($known | length) == 0 then 0 else ($known | max) end)}] | .[0] // empty |
-      [.account, .main_last, .unknown, .pressure] | @tsv
+       {account:$entry.account,
+        budget:(if $weekly == null
+                then limits_daily_budget($five_hour; null)
+                else limits_daily_budget($weekly; limits_days_remaining($entry.weekly.resets_at; $now))
+                end)}] | .[0] // empty |
+      [.account, .budget] | @tsv
     ' <<<"$quotas")
     [ -z "$selected" ] || printf '%s\n' "$selected"
   done < <(account_names) |
-    LC_ALL=C sort -t $'\t' -k2,2n -k3,3n -k4,4n -k1,1 |
+    LC_ALL=C sort -t $'\t' -k2,2nr -k1,1 |
     awk -F '\t' 'NR == 1 {print $1}'
 }
 

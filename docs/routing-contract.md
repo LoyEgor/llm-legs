@@ -1,54 +1,91 @@
 # Account routing contract
 
 `worker-pick` answers one question per vendor — **which account** — from the pool toggles
-and measured usage. No scoring. Every selection must be verifiable by one glance at the
-menu: the chosen account is the pin, or else the lowest spending-bucket percentage in the
-pool that the five-hour deferral has not pushed down the list. This page is the policy;
+and measured usage. One metric decides it: the **weekly budget per remaining day**. The
+chosen account is the pin, or else the largest daily budget in the pool that neither the
+five-hour deferral nor a fresh claim has pushed down the list. This page is the policy;
 code bends to it, and anything the old implementation did beyond it is deleted, not
 preserved.
+
+## The metric
+
+```
+budget = limits_daily_budget(effective_pct; limits_days_remaining(resets_at; now))
+```
+
+Both halves are defined once, in `share/limits-view.sh`, and that file is their only home —
+no surface re-derives either. What is left of the spending window divided by the days left
+in it: `(100 - pct) / days`, with `pct` clamped into `[0, 100]` and `days` floored at `0.25`
+so a window about to roll over cannot divide to infinity. A reset the limits view refuses to
+print — a placeholder epoch, or one over a day past — answers `null` days, which the budget
+reads as a neutral 7-day window rather than the floor, so a garbage timestamp cannot rank an
+account first.
+
+An account is measured on its **weekly** bucket and the reset that bucket carries. A vendor
+that reports no weekly percentage at all is measured on its five-hour reading over the
+neutral window instead — its five-hour reset says nothing about a week. A `--fable` query
+reads the same formula against the fable bucket and the fable reset. An account whose budget
+is `null` — no numeric percentage in either bucket — is not a candidate.
+
+Two accounts at the same percentage are not equal: the one whose week resets sooner may
+spend faster, and the budget says so. That is the whole point of the metric, and it is the
+only pace math anywhere — one formula in one shared home, never a per-surface variant.
 
 ## The four rules
 
 1. **Candidates.** An account is a candidate iff its "In worker pool" toggle is enabled,
-   its auth is alive, and its spending bucket has a measured percentage. The session
-   account (`CLAUDE_LIMITS_ACCOUNT`) is the reserve: it joins the candidates only when no
-   other candidate is selectable, still requires its own pool toggle, and the answer is
-   marked `SESSION RESERVE`. The reserve applies to every consumer identically — worker
-   dispatch, review-bench, anything else that asks; the toggle is the only gate. The one
-   role it does not reach is `chat` (see Roles).
-2. **Selection.** The vendor pin wins when usable — a pin overrides the pool toggle and
-   the reserve status, and lapses loudly with a reason when it cannot serve. Otherwise:
-   the candidate with the lowest effective percentage in the **bucket the task will
-   spend** — weekly for ordinary work (every vendor), the fable bucket only for an
-   explicitly-requested fable task. Ties break by lower five-hour percentage, then
-   non-`main` before `main`, then name.
-   Above all of that sits the **five-hour deferral**: a candidate whose five-hour effective
-   percentage is 80% or more ranks behind every candidate below 80%, whatever the spending
-   buckets say. Within each of those two groups the order is exactly the one above, and an
-   unmeasured five-hour window is not a reading of 80% — it never defers.
-   An account with no measured spending bucket is not a candidate (rule 1), so a vendor
-   with no usage numbers answers exit 3 / no quota data. Fable exhaustion alone never
-   disqualifies an account from ordinary work.
+   its auth is alive, and its budget is a number. There is **no session reserve**: the
+   session account (`CLAUDE_LIMITS_ACCOUNT`) is an ordinary candidate in every role,
+   ranked by its budget like any other, and no answer is marked `SESSION RESERVE`. The
+   pool toggle is the only consent gate, and it applies to every consumer identically —
+   worker dispatch, review-bench, the chat picker, anything else that asks.
+2. **Selection.** The vendor pin wins when usable — usable here being auth alive, a numeric
+   budget and no wall, and nothing else: a pin overrides the pool toggle (rule 4), so pool
+   membership is no part of that test. It lapses loudly with a reason when it cannot serve.
+   Otherwise the candidates are ranked on one key vector, ascending, identical for all four
+   vendors:
+
+   `[five-hour deferral, fresh claim, late auth, −budget, name]`
+
+   The **five-hour deferral** comes first: a candidate whose five-hour effective percentage
+   is 80% or more ranks behind every candidate below 80%, whatever the budgets say, because
+   an account that walls after the first task is the wrong no-brainer answer. An unmeasured
+   five-hour window is not a reading of 80% — it never defers.
+   A **fresh claim** comes next: an account a caller took within the claim TTL is already
+   carrying a run this data has not seen, so it ranks behind every unclaimed candidate (see
+   Claims).
+   **Late auth** is the grok-only softening below. Then the largest budget, then the name.
+   An account with no budget is not a candidate (rule 1), so a vendor with no usage numbers
+   answers exit 3 / no quota data. Fable exhaustion alone never disqualifies an account from
+   ordinary work.
    Two vendor-shaped notes, and no third is to be invented: **grok** measures a weekly bucket and
-   nothing else, so neither the deferral nor the five-hour tiebreak can ever fire for it and its
-   rank is spend, then `main` last, then name; and a grok account whose access token has `expired`
-   is one the CLI refreshes silently, so it stays a candidate and merely ranks behind every
-   signed-in one, while `needs_login` is dead auth like anywhere else.
+   nothing else, so the deferral can never fire for it; and a grok account whose access token has
+   `expired` is one the CLI refreshes silently, so it stays a candidate and merely ranks behind
+   every signed-in one, while `needs_login` is dead auth like anywhere else.
+   `main` is no longer a ranking key on any vendor — the budget decides, and the **main-account
+   shield** (below) is what keeps a base account from being spent by workers.
 3. **Wall.** An account is skipped only when walled: effective 100% in the spending
    bucket or in the five-hour bucket, or dead auth. Below 100% nothing blocks — no
-   floors, no headroom, no soft reserves beyond rule 1, with **one** deliberate exception:
-   the five-hour deferral of rule 2. An account picked on weekly headroom that walls after
-   the first task is the wrong no-brainer answer. It stays soft — a deferred account is still
-   the answer once nothing below the threshold remains — it is one named constant
-   (`FIVE_HOUR_DEFER_PCT`, 80) and never a config key, and it is visible where the answer is
-   read: a ` 5h!` tag in the vendor row beside `WALLED`/`PINNED`. It is the only soft rule
-   there is; no second one may be added beside it. A caller that watches an account
+   floors, no headroom, no reserves — with exactly **two** deliberate softenings, both of
+   them rank keys and neither of them a skip: the five-hour deferral and the claim, both in
+   rule 2. Each stays soft — a deferred or claimed account is still the answer once nothing
+   above it remains. The deferral is one named constant (`FIVE_HOUR_DEFER_PCT`, 80) and never
+   a config key, and it is visible where the answer is read: a ` 5h!` tag in the vendor row
+   beside `WALLED`/`PINNED`. No third softening may be added beside them. A caller that watches an account
    wall mid-task re-queries with `--exclude`; when every candidate is walled the answer
    is exit 3 / `ALL WALLED` and the orchestrator asks the owner.
    A **pinned** account that walls is the one case where a query writes: the pin is removed
    from `~/.claude/worker-model` outright, because it is pinned to be spent and the owner does
    not want it back when the window rolls over. Only the usage wall clears it — dead auth is a
    login to fix — and only on data this run calls fresh; every other lapse leaves the pin standing.
+   The wall that clears a pin is one that ARRIVED after it. A pin placed while the wall already
+   stood is a fresh statement about the window after that wall — the owner pinning an account he
+   can see is at 100% is asking for it once it resets, and the statusline re-querying a second
+   later must not answer that by deleting the pin. So the vendor CLI records how far the standing
+   wall runs when it writes the pin (`<vendor>_profile_wall=<epoch>`, written, replaced and
+   stripped with the pin itself and never on its own), and a query clears the pin only for a wall
+   outliving that record. A pin with no record — written by hand, or placed on a free account —
+   is ended by the first wall exactly as before.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
@@ -61,6 +98,32 @@ preserved.
    therefore a legitimate state meaning "no worker may run", answered as
    `every <vendor> account is out of the worker pool`
    and reported by `worker-run` as `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
+
+## Claims
+
+Usage data lags a run by minutes, so two callers asking in that window would both be handed the
+same account and both spend it. A caller that is about to spend the answer asks with `--claim`:
+the query records the account it printed, and every query for the next `WORKER_CLAIMS_TTL`
+seconds (default `600`) ranks that account behind the unclaimed ones. It is a rank key, never a
+wall — a claimed account is still the answer when nothing else is selectable.
+
+`share/worker-claims.sh` is the whole mechanism and its only home: `worker_claims_record`,
+`worker_claims_fresh` and `worker_claims_prune` over one empty marker file per claim, whose mtime
+is the entire state. A claim nobody renews simply ages out; nothing releases it explicitly.
+
+`--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
+The human table and the statusline prediction **never** claim: they report a decision, they do not
+take one. A query that cannot read the claims directory answers as if there were no claims rather
+than refusing to route.
+
+## The main-account shield
+
+Ranking no longer holds a base account back — `main` is not a rank key. The shield that replaces
+it lives on the pool side, not here: `share/worker-pool.sh` plus `llm-limits.sh` remove a main
+account from the worker pool once its budget falls below `WORKER_POOL_SHIELD_PER_DAY` (3 %/day),
+recording that removal with a marker in the pool directory. Enabling the account by hand overrides
+the shield until the week rolls over. To `worker-pick` the result is an ordinary pool exclusion,
+with no rule of its own.
 
 ## Sanctioned launchers
 
@@ -103,12 +166,11 @@ nor a forced choice there, and the pinned account stands in those answers as an 
 candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is therefore final
 — no pin opens it.
 
-`chat` is the same candidates under the same walls, minus the two things that are about workers.
+`chat` is the same candidates under the same walls, minus the one thing that is about workers.
 An account Egor took out of the pool is not one to move a chat onto either. The pin it never sees
-(above), and there is no reserve — `CLAUDE_LIMITS_ACCOUNT` is where the chat already is, so under
-this role it ranks as an ordinary candidate rather than rule 1's last resort, and no answer is
-marked `SESSION RESERVE`. A chat query decides nothing about workers and therefore never clears a
-walled pin. It answers for every vendor under those same rules, `claudeb` being the only one with
+(above); the session account ranks as an ordinary candidate here as it does everywhere else,
+there being no reserve to be an exception to. A chat query decides nothing about workers and
+therefore never clears a walled pin. It answers for every vendor under those same rules, `claudeb` being the only one with
 a caller today, and its machine face is the others': one bare account name on stdout, exit 3 when
 none is selectable.
 
@@ -121,11 +183,19 @@ the vendor pin excepted, and reports it the way it reports an empty pool —
 
 ## Deleted with this contract (not configurable, not dormant)
 
-score / runway / pre-reset cap math, `FLOOR_PCT` / `HEADROOM_PCT`, the night-window
-relaxation (`awake_until_reset` / `relax`), the R1/R2/R3/R8/R9 rungs and their weights,
-the fable-gap exclusion, the session score, the least-burnt fallback, account tiers as a
+`FLOOR_PCT` / `HEADROOM_PCT`, the night-window relaxation (`awake_until_reset` / `relax`),
+the R1/R2/R3/R8/R9 rungs and their weights, the fable-gap exclusion, the session score, the
+least-burnt fallback, the session reserve, `main` as a ranking key, account tiers as a
 selection input (the `$100`/`$200` label stays display-only), codex reset-credits as a
 selection input (`↻n` stays display-only), and the model/effort recommendation ladder.
+
+The earlier version of this page also forbade score and runway math outright. **That clause is
+superseded by The metric above**: pace math is no longer banned, it is centralized. The
+difference is the point — one formula, `limits_daily_budget` over `limits_days_remaining`, living
+in `share/limits-view.sh` and read by every surface, rather than each surface inventing its own
+rungs and weights. The old prohibition existed because the math was per-surface and unverifiable;
+what replaces it is verifiable from the menu, since the two inputs are the percentage and the
+reset the menu already shows.
 Model and effort come only from `~/.claude/worker-model` defaults plus per-brief
 overrides — quota state never silently degrades work quality. The multi-paragraph
 `POLICY:` prose block is no longer printed, and `share/worker-policy.md` loses every
@@ -139,10 +209,14 @@ routing-math paragraph the rules above replace.
   carrying no `vendors.grok` at all produces no grok segment, line or field: a vendor this
   machine has not installed is absent from the answer, never walled and never a failed
   lookup.
-- `worker-pick --account <vendor> [--exclude a,b]` keeps its contract: bare account name
-  on stdout, exit 3 when no candidate remains.
+- `worker-pick --account <vendor> [--exclude a,b] [--claim]` keeps its contract: bare account
+  name on stdout, exit 3 when no candidate remains. In `auto`, the `NEXT:` line orders vendors by
+  the daily budget of the account each one selected, highest first; a vendor with nothing
+  selectable, or switched off for workers, takes the tail.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.
+- The claude account rows keep their `score` and `cap` tokens, which external tooling greps.
+  They are display-only remaining-window readings, not selection inputs.
 - review-bench affordability derives from worker-pick's answer under these same rules —
   it keeps no thresholds of its own.

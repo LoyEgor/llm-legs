@@ -102,7 +102,7 @@ assert cmp "$FAKE_GROKB_SESSION_ROOT/fake-session/images/1.png" "$OUTPUT_DIR/gen
 assert test "$(sips -g format "$OUTPUT_DIR/generated.png" | awk '/format:/ {print $2}')" = png
 assert test "$(sips -g hasAlpha "$OUTPUT_DIR/generated.png" | awk '/hasAlpha:/ {print $2}')" = yes
 assert test ! -s "$MAGICK_CALLS"
-assert grep -qx -- '--account grok' "$PICK_CALLS"
+assert grep -qx -- '--account grok --claim' "$PICK_CALLS"
 assert grep -qx 'ARG=profile' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=picked' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=--tools' "$FAKE_GROKB_CALLS"

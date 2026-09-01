@@ -12,7 +12,16 @@
 # launches are the human, never a worker, and are never gated — which is also why an empty pool
 # is a legitimate state: it says "no worker may run", not "nobody may work".
 
+WORKER_POOL_SHIELD_PER_DAY=${WORKER_POOL_SHIELD_PER_DAY:-3}
+
 worker_pool_file() { printf '%s/disabled\n' "$1"; }
+
+worker_pool_valid_name() {
+  [ -n "$1" ] || return 1
+  case "$1" in
+    */*|*..*) return 1 ;;
+  esac
+}
 
 # The pool directory per vendor, so the four CLIs and worker-run cannot drift apart on where a
 # vendor's membership lives. Codex reads CODEXB_PROFILES_DIR alone — the variable codexb and
@@ -52,10 +61,12 @@ worker_pool_refuse_headless() {
 # `--` on every grep: an account name may start with a hyphen, and without it grep reads the
 # name as its own options.
 worker_pool_is_disabled() {
-  local file="$1/disabled"
+  local file="$1/disabled" name="$2"
+  worker_pool_valid_name "$name" || return 0
+  [ ! -e "$1/shielded/$name" ] || return 0
   [ -e "$file" ] || return 1
   if [ -f "$file" ] && [ -r "$file" ]; then
-    grep -qxF -- "$2" "$file" && return 0
+    grep -qxF -- "$name" "$file" && return 0
     return 1
   fi
   printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$file" >&2
@@ -64,6 +75,7 @@ worker_pool_is_disabled() {
 
 worker_pool_set_disabled() {
   local dir="$1" name="$2" mode="$3" file="$1/disabled" tmp
+  worker_pool_valid_name "$name" || return 1
   # Rewriting a file we could not read would silently drop every exclusion already in it: the
   # read half below is skipped and the `mv` publishes a file holding only this one change.
   if [ -e "$file" ] && { [ ! -f "$file" ] || [ ! -r "$file" ]; }; then
@@ -101,12 +113,107 @@ worker_pool_set_all() {
 # but cannot be read or parsed — the same fail-closed rule, which the consumer must read as
 # "every account of this vendor is out".
 worker_pool_disabled_json() {
-  local file="$1/disabled"
-  [ -e "$file" ] || { printf '[]'; return 0; }
-  if [ -f "$file" ] && [ -r "$file" ] &&
-     jq -Rn '[inputs | select(length > 0)]' < "$file" 2>/dev/null; then
+  local dir="$1" file="$1/disabled" shield_dir="$1/shielded" marker name
+  if [ -e "$file" ] && { [ ! -f "$file" ] || [ ! -r "$file" ]; }; then
+    printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$file" >&2
+    printf 'null'
     return 0
   fi
-  printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$file" >&2
+  if [ -e "$shield_dir" ] && { [ ! -d "$shield_dir" ] || [ ! -r "$shield_dir" ] || [ ! -x "$shield_dir" ]; }; then
+    printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$shield_dir" >&2
+    printf 'null'
+    return 0
+  fi
+  if {
+    [ ! -r "$file" ] || cat -- "$file"
+    if [ -d "$shield_dir" ]; then
+      while IFS= read -r marker; do
+        name=${marker##*/}
+        worker_pool_valid_name "$name" && printf '%s\n' "$name"
+      done < <(find "$shield_dir" -mindepth 1 -maxdepth 1 -print 2>/dev/null)
+    fi
+  } | LC_ALL=C sort -u | jq -Rn '[inputs | select(length > 0)]' 2>/dev/null; then
+    return 0
+  fi
+  printf 'worker-pool: %s cannot be read; treating every account as out of the pool\n' "$dir" >&2
   printf 'null'
 }
+
+worker_pool_shielded_json() {
+  local dir="$1" shield_dir="$1/shielded" marker name
+  [ -e "$shield_dir" ] || { printf '[]'; return 0; }
+  if [ ! -d "$shield_dir" ] || [ ! -r "$shield_dir" ] || [ ! -x "$shield_dir" ]; then
+    printf 'worker-pool: %s cannot be read; treating every account as shielded\n' "$shield_dir" >&2
+    printf 'null'
+    return 0
+  fi
+  while IFS= read -r marker; do
+    name=${marker##*/}
+    worker_pool_valid_name "$name" && printf '%s\n' "$name"
+  done < <(find "$shield_dir" -mindepth 1 -maxdepth 1 -print 2>/dev/null) |
+    LC_ALL=C sort -u | jq -Rn '[inputs | select(length > 0)]' 2>/dev/null || printf 'null'
+}
+
+worker_pool_marker_epoch() {
+  local vendor="$1" kind="$2" account="$3" dir file epoch
+  case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
+  worker_pool_valid_name "$account" || return 1
+  dir=$(worker_pool_dir "$vendor") || return 1
+  file="$dir/$kind/$account"
+  [ -f "$file" ] && [ -r "$file" ] || return 1
+  epoch=$(tr -d '\r\n' <"$file") || return 1
+  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$epoch"
+}
+
+worker_pool_marker_set() {
+  local vendor="$1" kind="$2" account="$3" epoch="$4" dir marker tmp
+  case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
+  worker_pool_valid_name "$account" || return 1
+  case "$epoch" in ''|*[!0-9]*) return 1 ;; esac
+  dir=$(worker_pool_dir "$vendor") || return 1
+  marker="$dir/$kind/$account"
+  mkdir -p -- "$dir/$kind" || return 1
+  tmp="$dir/.$kind.$account.tmp.$$"
+  if ! printf '%s\n' "$epoch" >"$tmp" || ! mv -f -- "$tmp" "$marker"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+worker_pool_marker_clear() {
+  local vendor="$1" kind="$2" account="$3" dir
+  case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
+  worker_pool_valid_name "$account" || return 1
+  dir=$(worker_pool_dir "$vendor") || return 1
+  rm -f -- "$dir/$kind/$account"
+}
+
+worker_pool_shield_set() { worker_pool_marker_set "$1" shielded "$2" "$3"; }
+worker_pool_shield_clear() { worker_pool_marker_clear "$1" shielded "$2"; }
+
+worker_pool_shield_active() {
+  local vendor="$1" account="$2" dir
+  worker_pool_valid_name "$account" || return 1
+  dir=$(worker_pool_dir "$vendor") || return 1
+  [ -e "$dir/shielded/$account" ]
+}
+
+worker_pool_shield_override() {
+  local vendor="$1" account="$2" epoch
+  worker_pool_valid_name "$account" || return 1
+  worker_pool_dir "$vendor" >/dev/null || return 1
+  worker_pool_shield_active "$vendor" "$account" || return 0
+  epoch=$(worker_pool_marker_epoch "$vendor" shielded "$account") || return 1
+  worker_pool_marker_set "$vendor" shield-override "$account" "$epoch" || return 1
+  worker_pool_shield_clear "$vendor" "$account"
+}
+
+worker_pool_override_current() {
+  local vendor="$1" account="$2" current="$3" stored
+  case "$current" in ''|*[!0-9]*) return 1 ;; esac
+  stored=$(worker_pool_marker_epoch "$vendor" shield-override "$account") || return 1
+  [ "$stored" = "$current" ]
+}
+
+worker_pool_override_clear() { worker_pool_marker_clear "$1" shield-override "$2"; }

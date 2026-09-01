@@ -11,6 +11,7 @@ REPO="/Volumes/Work/Projects/token-map"
 INSTRUCTION_CANARY="/Volumes/Work/Projects/llm-legs/bin/instruction-canary"
 PYTHON="/opt/homebrew/bin/python3"
 RATES="$HOME/.local/share/tokenmap/read-rates.json"
+PAGE_DAYS=31
 LOG="$HOME/Library/Logs/tokenmap-scand.log"
 FRESH_SECONDS=$((20 * 3600))
 MAX_BYTES=1048576
@@ -99,6 +100,15 @@ if [ -x "$INSTRUCTION_CANARY" ]; then
 else
     printf '%s canary instruction unavailable: %s\n' "$(stamp)" "$INSTRUCTION_CANARY" >>"$LOG"
     note_failure "instruction canary missing or not executable: $INSTRUCTION_CANARY"
+fi
+
+# Deliberately outside canary()/note_failure: nothing reads the page but a person opening
+# it, so a failed build leaves the previous one on disk and is logged, not shouted about.
+if [ "$repo_ok" -eq 1 ]; then
+    printf '%s html start\n' "$(stamp)" >>"$LOG"
+    (cd "$REPO" && PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap html --days "$PAGE_DAYS") \
+        >>"$LOG" 2>&1
+    printf '%s html exit=%d\n' "$(stamp)" "$?" >>"$LOG"
 fi
 
 if [ "$failed" -gt 0 ]; then

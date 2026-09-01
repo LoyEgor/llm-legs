@@ -28,6 +28,18 @@ session_id=$(field '.session_id')
 command_text=$(field '.tool_input.command')
 [ -n "$command_text" ] || exit 0
 
+guard_cwd=$(field '.cwd')
+[ -d "$guard_cwd" ] || guard_cwd=$PWD
+
+# A checkout operand is a path when it names something already on disk — which is exactly the
+# clobber case, since only an existing file can carry another agent's uncommitted edits — or when
+# it ends in a file extension. A trailing numeric component (`v1.2.3`, `release-1.0`) is a ref.
+looks_like_file() {
+  local name=${1##*/} extension
+  case "$name" in *.*) extension=${name##*.} ;; *) return 1 ;; esac
+  [ "${#extension}" -le 5 ] && [[ "$extension" =~ ^[A-Za-z][A-Za-z0-9]*$ ]]
+}
+
 is_revert_segment() {
   local segment=$1 subcommand arg dry_run=0 other_mode=0
   local -a words
@@ -66,11 +78,20 @@ is_revert_segment() {
         if [ "$skip_next" -eq 1 ]; then skip_next=0; continue; fi
         case "$arg" in
           --) saw_separator=1; continue ;;
+          # These two need no operand at all: -f re-checks-out HEAD over the whole dirty
+          # worktree, -p rewrites hunks in place.
+          -f|--force|-p|--patch|--ours|--theirs) return 0 ;;
           -b|-B|-t|--track|--orphan|--conflict) skip_next=1; continue ;;
-          --track=*|--orphan=*|--conflict=*|-b?*|-B?*|-t?*) continue ;;
+          # An attached branch name (`-bfeature`) must be read before the cluster arm below, whose
+          # letters would otherwise be found inside it.
+          -b?*|-B?*|-t?*) continue ;;
+          -[!-]*) [[ "$arg" == *f* || "$arg" == *p* ]] && return 0; continue ;;
           -*) continue ;;
-          .|HEAD|./*|../*|*.*) return 0 ;;
-          *) remaining=$((remaining + 1)) ;;
+          .|HEAD|./*|../*|/*) return 0 ;;
+          *)
+            if [ -e "$guard_cwd/$arg" ] || looks_like_file "$arg"; then return 0; fi
+            remaining=$((remaining + 1))
+            ;;
         esac
       done
       [ "$saw_separator" -eq 1 ] && return 0

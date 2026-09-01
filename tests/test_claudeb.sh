@@ -178,6 +178,43 @@ wk_row=$(account_data wkorigin)
 assert jq -e '.wk_raw == null and .wk == 0 and .walled == false' <<<"$wk_row" >/dev/null
 rm -f "$snapshot_wk"
 
+# The wall is worker-pick's, on both buckets alike: 100 walls, 99 does not.
+wall_snap="$CLAUDEB_DIR/limits/wallcheck.json"
+wall_row() {
+  printf '{"five_hour":{"used_percentage":%s,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "seven_day":{"used_percentage":%s,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "auth":{"status":"ok","checked_at":%s}}\n' \
+    "$1" "$((now + 3600))" "$now" "$2" "$((now + 400000))" "$now" "$now" >"$wall_snap"
+  account_data wallcheck
+}
+assert jq -e '.walled == false' <<<"$(wall_row 99 99)" >/dev/null
+assert jq -e '.walled == true' <<<"$(wall_row 100 12)" >/dev/null
+assert jq -e '.walled == true' <<<"$(wall_row 12 100)" >/dev/null
+rm -f "$wall_snap"
+
+# All-walled warning: an account walled only by its weekly bucket is still walled when its 5h
+# window rolls over, so the soonest 5h reset in the pool is not the time to wait for.
+WALL_HOME="$WORK/wall-home"
+WALL_STORE="$WORK/wall-store"
+mkdir -p "$WALL_HOME" "$WALL_STORE/limits" "$WALL_STORE/tokens"
+touch "$WALL_STORE/tokens/walled5h" "$WALL_STORE/tokens/walledwk"
+wall_soon=$((now + 600))
+wall_mid=$((now + 4000))
+wall_far=$((now + 400000))
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "seven_day":{"used_percentage":20,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "auth":{"status":"ok","checked_at":%s}}\n' \
+  "$wall_mid" "$now" "$wall_far" "$now" "$now" >"$WALL_STORE/limits/walled5h.json"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "seven_day":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "auth":{"status":"ok","checked_at":%s}}\n' \
+  "$wall_soon" "$now" "$wall_far" "$now" "$now" >"$WALL_STORE/limits/walledwk.json"
+WALL_ERR="$WORK/wall-status.err"
+env HOME="$WALL_HOME" CLAUDEB_DIR="$WALL_STORE" PATH="$PATH" \
+  bash "$SCRIPT" status --plain </dev/null >/dev/null 2>"$WALL_ERR" || fail "walled status --plain failed"
+assert grep -qF "all accounts are walled; earliest reset is $(format_time "$wall_mid")" "$WALL_ERR"
+assert_fails grep -qF "$(format_time "$wall_soon")" "$WALL_ERR"
+
 REAL_JQ=$(command -v jq)
 jq() {
   if [ "$#" -eq 3 ] && [ "$1" = -c ] && [ "$2" = . ] && [ "$3" = "$snapshot" ]; then
@@ -611,6 +648,28 @@ assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONF
   bash "$SCRIPT" use --clear >"$WORK/pin-clear.out" 2>&1
 assert grep -q 'cleared the pin' "$WORK/pin-clear.out"
 assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
+assert grep -qx 'worker=auto' "$PIN_FILE"
+# Pinning an account whose wall is ALREADY standing records how far that wall runs, so worker-pick
+# can tell it from a wall that arrives after the pin and ends it (routing-contract rule 3).
+WALL_STORE="$WORK/limits-wall.json"
+WALL_AT=$(( $(date +%s) + 7200 ))
+jq -cn --argjson wall "$WALL_AT" '{vendors:{claude:{accounts:[
+  {account:"routed",enabled:true,auth:{status:"ok"},
+   five_hour:{used_pct:100,effective_pct:100,resets_at:($wall|todate)},
+   weekly:{used_pct:20,effective_pct:20,resets_at:(($wall + 86400)|todate)}}]}}}' >"$WALL_STORE"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  LLM_LIMITS_FILE="$WALL_STORE" bash "$SCRIPT" use routed >/dev/null 2>&1
+assert grep -qx "claudeb_profile_wall=$WALL_AT" "$PIN_FILE"
+# An account with nothing standing over it records nothing, and re-pinning never leaves behind a
+# horizon belonging to the account before it.
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  LLM_LIMITS_FILE="$WALL_STORE" bash "$SCRIPT" use gamma >/dev/null 2>&1
+assert_fails grep -q '^claudeb_profile_wall=' "$PIN_FILE"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  LLM_LIMITS_FILE="$WALL_STORE" bash "$SCRIPT" use routed >/dev/null 2>&1
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use --clear >/dev/null 2>&1
+assert_fails grep -q '^claudeb_profile_wall=' "$PIN_FILE"
 assert grep -qx 'worker=auto' "$PIN_FILE"
 # Pinning a name that cannot be routed to is refused, not silently recorded.
 assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
@@ -2628,4 +2687,4 @@ EOF
   rm -f "$token_freeze_file"
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), the PICK star naming worker-pick's chat answer rather than the last-used account (selection() names nobody, an unselectable pool or a missing worker-pick leaves every row bare, in the plain table and the interactive one alike), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver while the token freeze holds and never touching the token endpoint, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, the wall standing at worker-pick's 100 on both buckets and the all-walled warning naming the reset of a bucket that is actually walling, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), the PICK star naming worker-pick's chat answer rather than the last-used account (selection() names nobody, an unselectable pool or a missing worker-pick leaves every row bare, in the plain table and the interactive one alike), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver while the token freeze holds and never touching the token endpoint, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"

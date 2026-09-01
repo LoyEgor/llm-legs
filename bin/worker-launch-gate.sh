@@ -35,7 +35,7 @@ SUBCOMMAND="([[:space:]]+[^[:space:]]+)*[[:space:]]+"
 
 # Grok's own spellings, not reusable from PRINT_FLAG: folding it back in would let
 # `grokb ... --prompt-file` and `grokb agent` through.
-GROK_PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt(-file|-json)?|agent)${EDGE}"
+GROK_PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt(-file|-json)?(=[^[:space:]]*)?|agent)${EDGE}"
 
 LAUNCH_RES=(
   "${VENDOR_WORD}claudeb?${PRINT_FLAG}"

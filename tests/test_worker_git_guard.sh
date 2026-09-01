@@ -24,10 +24,18 @@ fail() {
   failures=$((failures + 1))
 }
 
+# The guard reads an operand's path-ness off the disk it names, so the cases below get a checkout
+# of their own rather than whatever directory the suite was launched from.
+GUARD_CWD="$HOME/checkout"
+mkdir -p "$GUARD_CWD/bin"
+: > "$GUARD_CWD/bin/worker-pick"
+: > "$GUARD_CWD/Makefile"
+
 payload() {
   local agent=$1 command=$2 session=${3:-guard-session}
-  jq -cn --arg agent "$agent" --arg command "$command" --arg session "$session" '
-    {hook_event_name:"PreToolUse",agent_type:$agent,session_id:$session,
+  jq -cn --arg agent "$agent" --arg command "$command" --arg session "$session" \
+    --arg cwd "$GUARD_CWD" '
+    {hook_event_name:"PreToolUse",agent_type:$agent,session_id:$session,cwd:$cwd,
      tool_input:{command:$command}}'
 }
 
@@ -72,6 +80,15 @@ assert_deny 'stash push' claudeb-worker 'git stash push -m wip'
 assert_deny 'stash pop' gemini-worker 'git stash pop'
 assert_deny 'stash untracked' codex-worker 'git stash -u'
 assert_deny 'git directory checkout' codex-worker 'git -C /repo checkout -- .'
+# Every executable in this repo's own bin/ is extensionless, so a name read as a branch because it
+# carries no dot is the shape that restores a live file over another agent's edits.
+assert_deny 'checkout dotless nested path' codex-worker 'git checkout bin/worker-pick'
+assert_deny 'checkout dotless top-level path' grok-worker 'git checkout Makefile'
+assert_deny 'checkout absolute path' claudeb-worker 'git checkout /repo/bin/worker-pick'
+assert_deny 'checkout force' codex-worker 'git checkout -f'
+assert_deny 'checkout force long' grok-worker 'git checkout --force main'
+assert_deny 'checkout patch' gemini-worker 'git checkout -p'
+assert_deny 'checkout force cluster' claudeb-worker 'git checkout -fq main'
 
 assert_allow 'main session' '' 'git checkout -- f'
 assert_allow 'explore agent' Explore 'git checkout -- f'
@@ -83,6 +100,13 @@ assert_allow 'clean dry run' codex-worker 'git clean -n'
 assert_allow 'read-only git chain' codex-worker 'git status && git diff'
 assert_allow 'ordinary command' codex-worker 'printf hello'
 assert_allow 'grok branch checkout' grok-worker 'git checkout feature-branch'
+# A dot in a ref is ordinary; denying these would tell the worker its tree is unexpected when all
+# it did was switch branches.
+assert_allow 'version tag checkout' codex-worker 'git checkout v1.2.3'
+assert_allow 'dotted branch checkout' grok-worker 'git checkout release-1.0'
+assert_allow 'namespaced branch checkout' claudeb-worker 'git checkout feature/new-thing'
+assert_allow 'new branch with dot' codex-worker 'git checkout -b release-2.0'
+assert_allow 'attached new branch name' grok-worker 'git checkout -bfix-force-flag'
 
 unlock_session=unlocked-session
 unlock_dir="$HOME/.cache/claude-worker-tags/$unlock_session"

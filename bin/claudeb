@@ -211,7 +211,7 @@ account_data() {
        h5_dim: ($s5.stale or $s5.expired), wk_dim: ($sw.stale or $sw.expired),
        fable_dim: ($sf.stale or $sf.expired),
        auth: (if $auth == "" then "ok" else $auth end),
-       walled: (($s5.effective // 0) >= 97 or ($sw.effective // 0) >= 99)}' "$file"
+       walled: (($s5.effective // 0) >= 100 or ($sw.effective // 0) >= 100)}' "$file"
   else
     jq -cn --arg name "$name" '{name: $name, h5: 0, wk: 0, hreset: 0, wreset: 0, fable: null, freset: 0, age: -1,
       h5_raw: null, wk_raw: null, fable_raw: null, h5_eff: null, wk_eff: null, fable_eff: null,
@@ -229,7 +229,8 @@ pinned_account() {
 }
 
 pin_account() {
-  worker_model_pin_account claudeb_profile claudeb account_names is_disabled "${1:-}"
+  worker_model_pin_account claudeb_profile claudeb account_names is_disabled "${1:-}" \
+    "$(worker_model_pin_wall_until claude "${1:-}")"
 }
 
 selection() {
@@ -251,8 +252,11 @@ selection() {
     [$all[] | select(.disabled | not)] as $enabled |
     ($enabled | length) as $enabled_count |
     ($enabled_count > 0 and ($enabled | all(.walled))) as $all_walled |
+    # An account walled by its weekly bucket alone is still walled after its 5h window rolls
+    # over, so only the buckets actually at 100 may contribute a reset to wait for.
+    def wall_resets: (select((.h5_eff // 0) >= 100) | .hreset), (select((.wk_eff // 0) >= 100) | .wreset);
     {all_walled: $all_walled,
-     reset: (($enabled | sort_by(.hreset, .name) | first | .hreset) // 0),
+     reset: (([$enabled[] | wall_resets | select(. > 0)] | min) // 0),
      enabled_count: $enabled_count, data: $all}')
   if [ "$(printf '%s' "$result" | jq -r .enabled_count)" -eq 0 ]; then
     printf 'claudeb: all accounts are disabled; enable one with `claudeb enable <name>`\n' >&2
@@ -261,7 +265,7 @@ selection() {
   all_walled=$(printf '%s' "$result" | jq -r .all_walled)
   reset=$(printf '%s' "$result" | jq -r .reset)
   if [ "$all_walled" = true ]; then
-    printf 'claudeb: warning: all accounts are walled; earliest 5h reset is %s\n' "$(format_time "$reset")" >&2
+    printf 'claudeb: warning: all accounts are walled; earliest reset is %s\n' "$(format_time "$reset")" >&2
   fi
   printf '%s\n' "$result"
 }
@@ -1614,7 +1618,7 @@ harvest_session_accounts() {
 set_all_pool() { worker_pool_set_all "$pool_dir" claudeb account_names "$1"; }
 
 enable_account() {
-  local name="${1:-}"
+  local name="${1:-}" shield_overridden=false
   if [ -z "$name" ]; then
     printf 'usage: claudeb enable <name>|--all\n' >&2
     exit 2
@@ -1627,7 +1631,15 @@ enable_account() {
     printf 'claudeb: unknown account: %s\n' "$name" >&2
     exit 2
   fi
+  if worker_pool_shield_active claudeb "$name"; then
+    worker_pool_shield_override claudeb "$name"
+    shield_overridden=true
+  fi
   if ! is_disabled "$name"; then
+    if [ "$shield_overridden" = true ]; then
+      printf 'claudeb: enabled %s\n' "$name"
+      return
+    fi
     printf 'claudeb: %s is already enabled\n' "$name"
     return
   fi

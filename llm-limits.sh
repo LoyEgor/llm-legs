@@ -496,6 +496,86 @@ claude_profiles_root="${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 
+worker_pool_name_in_list() {
+  local target="$1" name
+  shift
+  for name in "$@"; do [ "$name" != "$target" ] || return 0; done
+  return 1
+}
+
+reconcile_vendor_shields() {
+  local vendor="$1" payload="$2" pool_vendor="$1" dir rows name reset main should marker kind
+  local -a accounts=()
+  [ "$pool_vendor" != claude ] || pool_vendor=claudeb
+  dir=$(worker_pool_dir "$pool_vendor") || return 1
+  rows=$(jq -r --arg vendor "$vendor" --argjson now "$now_epoch" \
+    --argjson floor "$WORKER_POOL_SHIELD_PER_DAY" "$iso_def$LIMITS_VIEW_JQ"'
+    (.accounts // [])[] |
+    (.weekly.resets_at | iso2epoch) as $reset |
+    (limits_effective_pct(.weekly.used_pct;
+       limits_bucket_expired($now; $reset))) as $effective |
+    (limits_daily_budget($effective; limits_days_remaining($reset; $now))) as $budget |
+    [ .account,
+      ($reset // ""),
+      (if $vendor == "claude" then (.is_current == true)
+       elif $vendor == "codex" then (.account == "main")
+       else false end),
+      (($budget | type) == "number" and $budget < $floor)
+    ] | map(tostring) | join("\u001f")' <<<"$payload") || return 1
+
+  while IFS=$'\x1f' read -r name reset main should; do
+    [ -n "$name" ] || continue
+    worker_pool_valid_name "$name" || return 1
+    accounts+=("$name")
+    if [ "$vendor" = gemini ] || [ "$vendor" = grok ]; then
+      worker_pool_override_clear "$pool_vendor" "$name" || return 1
+    elif [ -z "$reset" ] || ! worker_pool_override_current "$pool_vendor" "$name" "$reset"; then
+      worker_pool_override_clear "$pool_vendor" "$name" || return 1
+    fi
+    if [ "$main" = true ] && [ "$should" = true ] && [ -n "$reset" ] &&
+       ! worker_pool_override_current "$pool_vendor" "$name" "$reset"; then
+      worker_pool_shield_set "$pool_vendor" "$name" "$reset" || return 1
+    else
+      worker_pool_shield_clear "$pool_vendor" "$name" || return 1
+    fi
+  done <<<"$rows"
+
+  for kind in shielded shield-override; do
+    [ -d "$dir/$kind" ] || continue
+    while IFS= read -r marker; do
+      name=${marker##*/}
+      worker_pool_valid_name "$name" || continue
+      worker_pool_name_in_list "$name" "${accounts[@]}" && continue
+      if [ "$kind" = shielded ]; then
+        worker_pool_shield_clear "$pool_vendor" "$name" || return 1
+      else
+        worker_pool_override_clear "$pool_vendor" "$name" || return 1
+      fi
+    done < <(find "$dir/$kind" -mindepth 1 -maxdepth 1 -print 2>/dev/null)
+  done
+}
+
+apply_vendor_shield_state() {
+  local vendor="$1" payload="$2" pool_vendor="$1" dir pool_out shielded
+  [ "$pool_vendor" != claude ] || pool_vendor=claudeb
+  dir=$(worker_pool_dir "$pool_vendor") || return 1
+  pool_out=$(worker_pool_disabled_json "$dir") || return 1
+  shielded=$(worker_pool_shielded_json "$dir") || return 1
+  jq -c --arg vendor "$vendor" --argjson pool_out "$pool_out" --argjson shielded "$shielded" '
+    if (.accounts | type) != "array" then .
+    else .accounts |= map(
+      .account as $account |
+      .shielded = ($shielded == null or ($shielded | index($account)) != null) |
+      .enabled = ($pool_out != null and ($pool_out | index($account)) == null) |
+      if $vendor == "claude" and (.rotation.usable | type) == "object" then
+        ((.auth | type) == "object" and .auth.status == "ok") as $auth_alive |
+        .blocked = ((.enabled and $auth_alive) | not) |
+        .rotation.usable.general = $auth_alive |
+        .rotation.usable.fable = ($auth_alive and (.fable | type) == "object" and .plan_type != "pro")
+      else . end)
+    end' <<<"$payload"
+}
+
 # Account order in the cache, which the menu, --table and --plain all render as-is. The two
 # accounts Egor works from lead every vendor by name; this hardcode is the whole point of the
 # rule, not a default to be derived from data.
@@ -881,7 +961,10 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
       --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" \
       --argjson thrf "$LIMITS_STALE_FABLE" "$LIMITS_VIEW_JQ"'
       (($d.auth | type) == "object" and $d.auth.status == "expired") as $expired |
-      ($enabled and (($d.auth | type) == "object" and $d.auth.status == "ok")) as $general_usable |
+      # Pool membership is consent and has its own field (`enabled`); `rotation.usable` is
+      # capability alone, so a reader can tell "taken out of the pool" from "cannot work" — the
+      # pin overrides the first and not the second. `blocked` stays the combined verdict.
+      (($d.auth | type) == "object" and $d.auth.status == "ok") as $auth_alive |
       (($d.auth | type) == "object" and
        ($d.auth.status == "expired" or $d.auth.status == "failed")) as $auth_needed |
       (if ($d.five_hour.as_of | type) == "number" then $d.five_hour.as_of else $mtime end) as $account_asof |
@@ -903,15 +986,15 @@ if [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
                         resets_at:(if $five_reset == "" then null else $five_reset end)} + ($x.five // {}) end),
        as_of:($account_asof | todateiso8601),stale_seconds:($now - $account_asof)} +
       (if $plan_type == "" then {} else {plan_type:$plan_type} end) +
-      {blocked:($general_usable | not)} +
+      {blocked:(($enabled and $auth_alive) | not)} +
       (if $d.auth_needed == true or $auth_needed then {auth_needed:true} else {} end) +
       (if $x.auth then {auth:$x.auth} else {} end) +
       (if $has_week == 0 then {} else {weekly:({used_pct:$d.seven_day.used_percentage,
         resets_at:(if $week_reset == "" then null else $week_reset end)} + ($x.week // {}))} end) +
       (if $has_fable == 0 then {} else {fable:({used_pct:$d.fable.used_percentage,
         resets_at:(if $fable_reset == "" then null else $fable_reset end)} + ($x.fable // {}))} end) +
-      {rotation:{usable:{general:$general_usable,
-                         fable:($general_usable and
+      {rotation:{usable:{general:$auth_alive,
+                         fable:($auth_alive and
                                 $has_fable == 1 and $plan_type != "pro")}}}' <<<"$claude_data")
     accounts_lines+="$account_json"$'\n'
   done
@@ -1744,6 +1827,29 @@ opencode=$(jq -Rsc --argjson now "$now_epoch" \
   {source:"opencode-go", accounts:., age_alarm:true}' <<<"$opencode_seen_tsv")
 [ -n "$opencode" ] || opencode='{"source":"opencode-go","accounts":[],"age_alarm":true}'
 
+for shield_vendor in claude codex gemini grok; do
+  case "$shield_vendor" in
+    claude) shield_payload=$claude ;;
+    codex) shield_payload=$codex ;;
+    gemini) shield_payload=$gemini ;;
+    grok) shield_payload=$grok ;;
+  esac
+  reconcile_vendor_shields "$shield_vendor" "$shield_payload" || {
+    printf 'llm-limits.sh: failed to reconcile %s worker-pool shield\n' "$shield_vendor" >&2
+    exit 5
+  }
+  shield_payload=$(apply_vendor_shield_state "$shield_vendor" "$shield_payload") || {
+    printf 'llm-limits.sh: failed to apply %s worker-pool shield state\n' "$shield_vendor" >&2
+    exit 5
+  }
+  case "$shield_vendor" in
+    claude) claude=$shield_payload ;;
+    codex) codex=$shield_payload ;;
+    gemini) gemini=$shield_payload ;;
+    grok) grok=$shield_payload ;;
+  esac
+done
+
 # Live experiments travel with the data so consumers need no repo knowledge.
 experiments_json=$(experiments_active_lines "$(experiments_registry_path "$script_dir")" \
   | jq -Rsc 'split("\n") | map(select(length > 0))')
@@ -1935,8 +2041,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
             # by this run, so a newer cached row must not carry an older verdict of it back in —
             # including blocked/rotation, which are derived from auth+enabled and would
             # otherwise contradict the grafted fields they derive from.
-            ($prev | del(.auth, .auth_needed, .enabled, .removed, .blocked, .rotation, .is_current))
-            + ($new | {auth,auth_needed,enabled,removed,blocked,rotation,is_current}
+            ($prev | del(.auth, .auth_needed, .enabled, .shielded, .removed, .blocked, .rotation, .is_current))
+            + ($new | {auth,auth_needed,enabled,shielded,removed,blocked,rotation,is_current}
                     | with_entries(select(.value != null)))
           else $new end
         end)

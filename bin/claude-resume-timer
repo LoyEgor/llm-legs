@@ -2,14 +2,58 @@
 set -u
 
 usage() {
-  echo "Usage: $(basename "$0") [app|terminal|auto] [extra-minutes]" >&2
+  echo "Usage: $(basename "$0") [app|terminal|auto|all] [extra-minutes] [-m|--message text]" >&2
 }
 
-surface=${1:-auto}
-extra=${2:-10}
+# A signed integer and nothing else: a pattern admitting any mix of digits and hyphens took
+# `10-`, which dies in the arithmetic below, and `1-2`, which quietly becomes a subtraction.
+is_int() {
+  case "${1#-}" in ''|*[!0-9]*) return 1 ;; esac
+  return 0
+}
+
+surface=""
+extra=""
+custom_message=""
+arm_all=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -m|--message)
+      if [ $# -lt 2 ]; then usage; exit 2; fi
+      custom_message=$2
+      shift 2
+      ;;
+    --message=*)
+      custom_message=${1#--message=}
+      shift
+      ;;
+    app|terminal|auto|all)
+      if [ -n "$surface" ]; then usage; exit 2; fi
+      surface=$1
+      shift
+      ;;
+    *)
+      if is_int "$1" && [ -z "$extra" ]; then
+        extra=$1
+        shift
+      else
+        usage
+        exit 2
+      fi
+      ;;
+  esac
+done
+
+surface=${surface:-auto}
+extra=${extra:-10}
 
 case "$surface" in
   app|terminal) ;;
+  all)
+    arm_all=1
+    surface=terminal
+    ;;
   auto)
     if [ -n "${TERM_PROGRAM+x}" ]; then
       surface=terminal
@@ -22,13 +66,6 @@ case "$surface" in
     exit 2
     ;;
 esac
-
-# A signed integer and nothing else: a pattern admitting any mix of digits and hyphens took
-# `10-`, which dies in the arithmetic below, and `1-2`, which quietly becomes a subtraction.
-is_int() {
-  case "${1#-}" in ''|*[!0-9]*) return 1 ;; esac
-  return 0
-}
 
 is_int "$extra" || { usage; exit 2; }
 
@@ -160,34 +197,73 @@ if ! command -v hs >/dev/null 2>&1; then
   exit 1
 fi
 
-target_tty=""
-if [ "$surface" = terminal ]; then
-  target_tty=$(detect_controlling_tty) || target_tty=""
-fi
-case "$target_tty" in
-  /dev/tty*) ;;
-  *) target_tty="" ;;
-esac
+enumerate_claude_ttys() {
+  ps -axo tty=,command= 2>/dev/null | awk '
+    $1 ~ /^ttys[0-9]+$/ {
+      n = split($2, parts, "/")
+      if (parts[n] == "claude") print "/dev/" $1
+    }
+  ' | sort -u
+}
 
-if [ -n "$target_tty" ]; then
-  hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")" 2>&1)
-else
-  hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
-fi
-hs_status=$?
-if [ "$hs_status" -ne 0 ]; then
-  echo "claude-resume-timer: could not reach hs (Hammerspoon CLI): $hs_output" >&2
-  exit 1
-fi
+lua_quote() {
+  python3 -c 'import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' "$1"
+}
+
+arm_one() {
+  local target_tty=$1 hs_output hs_status target_note="" lua_msg
+  case "$target_tty" in
+    /dev/tty*) ;;
+    *) target_tty="" ;;
+  esac
+  if [ -n "$custom_message" ]; then
+    lua_msg=$(lua_quote "$custom_message") || exit 1
+    if [ -n "$target_tty" ]; then
+      hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(
+\"$surface\", $minutes, $lua_msg, \"$target_tty\")" 2>&1)
+    else
+      hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(
+\"$surface\", $minutes, $lua_msg)" 2>&1)
+    fi
+  elif [ -n "$target_tty" ]; then
+    hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")" 2>&1)
+  else
+    hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
+  fi
+  hs_status=$?
+  if [ "$hs_status" -ne 0 ]; then
+    echo "claude-resume-timer: could not reach hs (Hammerspoon CLI): $hs_output" >&2
+    exit 1
+  fi
+  [ -n "$target_tty" ] && target_note=" (target $target_tty)"
+  [ -n "$custom_message" ] && target_note="${target_note} (custom message)"
+  if [ -n "$fallback_reason" ]; then
+    echo "claude-resume-timer: $fallback_reason; armed $surface for +$minutes min (fires ~$fires_clock)$target_note"
+  else
+    echo "claude-resume-timer: armed $surface for $minutes min (fires ~$fires_clock)$target_note"
+  fi
+}
 
 fires_epoch=$(( now + minutes * 60 ))
 fires_clock=$(date -r "$fires_epoch" '+%H:%M' 2>/dev/null || date -j -f %s "$fires_epoch" '+%H:%M' 2>/dev/null || echo "?")
 
-target_note=""
-[ -n "$target_tty" ] && target_note=" (target $target_tty)"
-
-if [ -n "$fallback_reason" ]; then
-  echo "claude-resume-timer: $fallback_reason; armed $surface for +$minutes min (fires ~$fires_clock)$target_note"
-else
-  echo "claude-resume-timer: armed $surface for $minutes min (fires ~$fires_clock)$target_note"
+if [ "$arm_all" -eq 1 ]; then
+  all_ttys=$(enumerate_claude_ttys)
+  if [ -z "$all_ttys" ]; then
+    echo "claude-resume-timer: no active Claude chat ttys" >&2
+    exit 1
+  fi
+  while IFS= read -r target_tty; do
+    [ -n "$target_tty" ] || continue
+    arm_one "$target_tty"
+  done <<EOF
+$all_ttys
+EOF
+  exit 0
 fi
+
+target_tty=""
+if [ "$surface" = terminal ]; then
+  target_tty=$(detect_controlling_tty) || target_tty=""
+fi
+arm_one "$target_tty"
