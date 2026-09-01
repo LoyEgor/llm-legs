@@ -45,6 +45,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A newline in the message would be typed into the chat as a submit, and the call it builds is
+# invisible to the cross-repo guard on this entry point (shared-invariants row bh).
+case $custom_message in
+  *$'\n'*)
+    echo "claude-resume-timer: -m/--message must be a single line" >&2
+    exit 2
+    ;;
+esac
+
 surface=${surface:-auto}
 extra=${extra:-10}
 
@@ -197,11 +206,17 @@ if ! command -v hs >/dev/null 2>&1; then
   exit 1
 fi
 
+# The argv forms a live chat actually runs under, mirrored from `commandIsClaude` in the
+# hammerspoon repo's claude_cmd_keys.lua: a node/bun wrapper around claude-code is as much a
+# claude tty as a bare `claude`, and a tty this misses is a chat that never gets its timer.
 enumerate_claude_ttys() {
   ps -axo tty=,command= 2>/dev/null | awk '
+    function base(path,   n, parts) { n = split(path, parts, "/"); return parts[n] }
     $1 ~ /^ttys[0-9]+$/ {
-      n = split($2, parts, "/")
-      if (parts[n] == "claude") print "/dev/" $1
+      if (base($2) == "claude" || index($2, "/claude/versions/")) { print "/dev/" $1; next }
+      runtime = base($2)
+      if (runtime != "node" && runtime != "bun") next
+      if (index($3, "/@anthropic-ai/claude-code/") || index($3, "/claude-code/")) print "/dev/" $1
     }
   ' | sort -u
 }

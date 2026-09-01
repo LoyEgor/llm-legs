@@ -159,6 +159,71 @@ EOF
 run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "expired-marked-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked expired must be refreshed: $(cat "$CALLS")"
 
+# --- `all`: one timer per live claude tty, in every argv form claude runs under ---
+
+PS_FIXTURE="$WORK/ps.out"
+export PS_FIXTURE
+cat >"$FAKE_BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-axo" ] && [ "${2:-}" = "tty=,command=" ]; then
+  cat "$PS_FIXTURE"
+  exit 0
+fi
+exec /bin/ps "$@"
+EOF
+chmod +x "$FAKE_BIN/ps"
+
+cat >"$PS_FIXTURE" <<'EOF'
+ttys001 /Users/e/.local/bin/claude --resume
+ttys002 /opt/homebrew/bin/node /Users/e/node_modules/@anthropic-ai/claude-code/cli.js --resume
+ttys003 /usr/local/bin/bun /Users/e/dev/claude-code/cli.js
+ttys004 /Users/e/.local/state/claude/versions/1.2.3/cli-native --resume
+ttys001 /Users/e/.local/bin/claude --resume
+ttys005 -zsh
+ttys006 /opt/homebrew/bin/node /Users/e/dev/server.js
+?? /usr/bin/login claude
+EOF
+
+write_limits notcom "$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0) || fail "all run failed"
+for tty in ttys001 ttys002 ttys003 ttys004; do
+  grep -qF "startTimerFor(\"terminal\", 20, nil, \"/dev/$tty\")" "$CALLS" \
+    || fail "all should arm /dev/$tty: $(cat "$CALLS")"
+done
+for tty in ttys005 ttys006; do
+  grep -qF "/dev/$tty" "$CALLS" && fail "all should not arm the non-claude /dev/$tty: $(cat "$CALLS")"
+done
+armed=$(grep -cF 'nil, "/dev/tty' "$CALLS")
+[ "$armed" = "4" ] || fail "all should arm each claude tty exactly once (expected 4, got $armed): $(cat "$CALLS")"
+
+: >"$PS_FIXTURE"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0 2>&1)
+status=$?
+[ "$status" -ne 0 ] || fail "all with no claude tty should exit non-zero"
+echo "$out" | grep -q "no active Claude chat ttys" || fail "all with no claude tty should say so: $out"
+
+# --- custom message: passed through verbatim, single-line only ---
+
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 -m 'continue: "the fix"') \
+  || fail "-m run failed"
+grep -qF '"continue: \"the fix\""' "$CALLS" || fail "-m should pass the message to hs: $(cat "$CALLS")"
+echo "$out" | grep -q "custom message" || fail "-m should be reported: $out"
+
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 --message=keep-going) \
+  || fail "--message= run failed"
+grep -qF '"keep-going"' "$CALLS" || fail "--message= should pass the message to hs: $(cat "$CALLS")"
+
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 -m >/dev/null 2>&1
+status=$?
+[ "$status" -eq 2 ] || fail "-m without a value should exit 2 (got $status)"
+
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 -m 'first
+second' 2>&1)
+status=$?
+[ "$status" -eq 2 ] || fail "a multi-line message should exit 2 (got $status): $out"
+echo "$out" | grep -q "single line" || fail "a multi-line message should say why: $out"
+grep -q HS "$CALLS" && fail "a rejected message must not reach hs: $(cat "$CALLS")"
+
 # --- hs unreachable ---
 
 out=$(PATH="/usr/bin:/bin" HOME="$FIXTURE_HOME" "$SCRIPT" app 0 2>&1)

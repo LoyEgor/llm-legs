@@ -22,6 +22,8 @@ worker_claims_record() {
   mkdir -p -- "$root/$vendor" && touch -- "$root/$vendor/$account"
 }
 
+# Lists the unexpired claims and says nothing else: the status is an error verdict only, never
+# the freshness of whichever file `find` happened to hand over last.
 worker_claims_fresh() {
   local vendor="$1" root ttl now file mtime
   worker_claims_valid_name "$vendor" || return 1
@@ -29,11 +31,13 @@ worker_claims_fresh() {
   ttl=$(worker_claims_ttl) || return 1
   [ -d "$root/$vendor" ] || return 0
   now=$(date +%s) || return 1
-  find -- "$root/$vendor" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null |
-    while IFS= read -r file; do
-      mtime=$(stat -f '%m' "$file" 2>/dev/null) || continue
-      [ $((now - mtime)) -le "$ttl" ] && printf '%s\n' "${file##*/}"
-    done
+  while IFS= read -r file; do
+    mtime=$(stat -f '%m' "$file" 2>/dev/null) || continue
+    if [ $((now - mtime)) -le "$ttl" ]; then
+      printf '%s\n' "${file##*/}"
+    fi
+  done < <(find -- "$root/$vendor" -mindepth 1 -maxdepth 1 -type f -print 2>/dev/null)
+  return 0
 }
 
 worker_claims_prune() {

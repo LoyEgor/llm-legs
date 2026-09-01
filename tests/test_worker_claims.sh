@@ -38,6 +38,12 @@ assert worker_claims_record codex fresh
 assert worker_claims_record codex stale
 assert worker_claims_record gemini stale-other
 touch -t 200001010000 "$WORKER_CLAIMS_DIR/codex/stale" "$WORKER_CLAIMS_DIR/gemini/stale-other"
+# A stale sibling anywhere in the listing — first, last, or both — never makes a live claim
+# read as absent: the status is about errors, and the names carry the answer.
+assert worker_claims_fresh codex >/dev/null
+assert test "$(worker_claims_fresh codex)" = fresh
+assert worker_claims_fresh gemini >/dev/null
+assert test -z "$(worker_claims_fresh gemini)"
 outside="$WORK/outside"
 touch "$outside"
 touch -t 200001010000 "$outside"
@@ -71,4 +77,4 @@ assert worker_claims_fresh codex >"$output"
 assert test ! -s "$output"
 assert test ! -e "$missing"
 
-echo "PASS: $asserts assertions; record and fresh, TTL expiry, vendor isolation, bounded pruning, invalid-name rejection, and missing-directory silence"
+echo "PASS: $asserts assertions; record and fresh, TTL expiry, stale-sibling independence, vendor isolation, bounded pruning, invalid-name rejection, and missing-directory silence"

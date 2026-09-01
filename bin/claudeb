@@ -252,11 +252,13 @@ selection() {
     [$all[] | select(.disabled | not)] as $enabled |
     ($enabled | length) as $enabled_count |
     ($enabled_count > 0 and ($enabled | all(.walled))) as $all_walled |
-    # An account walled by its weekly bucket alone is still walled after its 5h window rolls
-    # over, so only the buckets actually at 100 may contribute a reset to wait for.
-    def wall_resets: (select((.h5_eff // 0) >= 100) | .hreset), (select((.wk_eff // 0) >= 100) | .wreset);
+    # An account walled on several buckets opens only when its LAST wall falls, so its own
+    # moment is the max over the buckets at 100; the pool waits for the earliest of those.
+    def wall_reset:
+      [(select((.h5_eff // 0) >= 100) | .hreset), (select((.wk_eff // 0) >= 100) | .wreset)]
+      | map(select(. > 0)) | max;
     {all_walled: $all_walled,
-     reset: (([$enabled[] | wall_resets | select(. > 0)] | min) // 0),
+     reset: (([$enabled[] | wall_reset | select(. != null)] | min) // 0),
      enabled_count: $enabled_count, data: $all}')
   if [ "$(printf '%s' "$result" | jq -r .enabled_count)" -eq 0 ]; then
     printf 'claudeb: all accounts are disabled; enable one with `claudeb enable <name>`\n' >&2

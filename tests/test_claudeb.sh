@@ -215,6 +215,29 @@ env HOME="$WALL_HOME" CLAUDEB_DIR="$WALL_STORE" PATH="$PATH" \
 assert grep -qF "all accounts are walled; earliest reset is $(format_time "$wall_mid")" "$WALL_ERR"
 assert_fails grep -qF "$(format_time "$wall_soon")" "$WALL_ERR"
 
+# Same rule inside one account: walled on both buckets, it opens when the LATER of the two
+# falls, so its nearer 5h reset is not the pool's earliest either.
+WALL2_HOME="$WORK/wall2-home"
+WALL2_STORE="$WORK/wall2-store"
+mkdir -p "$WALL2_HOME" "$WALL2_STORE/limits" "$WALL2_STORE/tokens"
+touch "$WALL2_STORE/tokens/walledboth" "$WALL2_STORE/tokens/walledlate"
+both_week=$((now + 400000))
+late_week=$((now + 500000))
+printf '{"five_hour":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "seven_day":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "auth":{"status":"ok","checked_at":%s}}\n' \
+  "$wall_soon" "$now" "$both_week" "$now" "$now" >"$WALL2_STORE/limits/walledboth.json"
+printf '{"five_hour":{"used_percentage":10,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "seven_day":{"used_percentage":100,"resets_at":%s,"as_of":%s,"origin":"usage"},
+ "auth":{"status":"ok","checked_at":%s}}\n' \
+  "$wall_mid" "$now" "$late_week" "$now" "$now" >"$WALL2_STORE/limits/walledlate.json"
+WALL2_ERR="$WORK/wall2-status.err"
+env HOME="$WALL2_HOME" CLAUDEB_DIR="$WALL2_STORE" PATH="$PATH" \
+  bash "$SCRIPT" status --plain </dev/null >/dev/null 2>"$WALL2_ERR" || fail "both-buckets walled status --plain failed"
+assert grep -qF "all accounts are walled; earliest reset is $(format_time "$both_week")" "$WALL2_ERR"
+assert_fails grep -qF "$(format_time "$wall_soon")" "$WALL2_ERR"
+assert_fails grep -qF "$(format_time "$late_week")" "$WALL2_ERR"
+
 REAL_JQ=$(command -v jq)
 jq() {
   if [ "$#" -eq 3 ] && [ "$1" = -c ] && [ "$2" = . ] && [ "$3" = "$snapshot" ]; then
