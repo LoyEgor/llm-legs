@@ -92,13 +92,29 @@ return "MISSING"
 ' 2>/dev/null
 }
 
+# The reset consumable is not a Codex feature the other legs borrow: the row renders a count
+# whenever its vendor published one, so the same check runs over every vendor that has rows.
+assert_reset_credits_row() {
+  local vendor="$1" account="$2" row="$3" json="$4" credits
+  credits=$(jq -r --arg vendor "$vendor" --arg account "$account" '.vendors[$vendor].accounts[] |
+    select(.account == $account) | .reset_credits // 0' <<<"$json")
+  if [ "${credits%.*}" -gt 0 ]; then
+    grep -Fq "$account  ↻${credits%.*}" <<<"$row" \
+      || fail "$vendor reset-credit count missing for $account: $row"
+    # The expiry belongs to the redeem action in the submenu; on the row it would displace the age.
+    [[ "$row" != *"↻${credits%.*} → "* ]] \
+      || fail "$vendor row spelled the reset expiry instead of the data age for $account: $row"
+  else
+    [[ "$row" != *↻* ]] || fail "$vendor zero/absent reset credits rendered for $account: $row"
+  fi
+}
+
 assert_codex_account_rows() {
-  local menu="$1" json="$2" count account auth credits needs_entry row rest section
+  local menu="$1" json="$2" count account auth needs_entry row rest section
   section=$(vendor_section "$menu" Codex)
   count=$(jq '.vendors.codex.accounts | length' <<<"$json")
   while IFS= read -r account; do
     auth=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .auth_needed == true' <<<"$json")
-    credits=$(jq -r --arg account "$account" '.vendors.codex.accounts[] | select(.account == $account) | .reset_credits // 0' <<<"$json")
     if [ "$auth" = true ]; then
       needs_entry=$(jq -r --arg account "$account" '.vendors.codex.accounts[] |
         select(.account == $account) | .needs_user_entry == true' <<<"$json")
@@ -120,11 +136,7 @@ assert_codex_account_rows() {
     else
       row=$(awk -v account="$account" '$1 == account {print; exit}' <<<"$section")
       [ -n "$row" ] || fail "Codex account row missing: $account"
-      if [ "$credits" -gt 0 ]; then
-        grep -Fq "$account  ↻$credits" <<<"$row" || fail "Codex reset-credit count missing for $account"
-      else
-        [[ "$row" != *↻* ]] || fail "Codex zero/absent reset credits rendered for $account"
-      fi
+      assert_reset_credits_row codex "$account" "$row" "$json"
     fi
   done < <(jq -r '.vendors.codex.accounts[]?.account' <<<"$json")
 }
@@ -144,6 +156,7 @@ assert_grok_account_rows() {
       [[ "$row" == *"login needed" ]] || fail "Grok needs_login row lost login needed: $row"
     else
       [[ "$row" != *"login needed" ]] || fail "Grok $auth row rendered as login needed: $row"
+      assert_reset_credits_row grok "$account" "$row" "$json"
     fi
   done < <(jq -r '.vendors.grok.accounts[]? |
     [.account, (.auth.status // (if .auth_needed == true then "needs_login" else "ok" end))] |
@@ -674,7 +687,7 @@ AVAIL=$(jq -r '.vendors | to_entries[] | select(.value.available == true) | .key
 [ -n "$AVAIL" ] || fail "no available vendor in store; cannot assert menu rows"
 # A refresh-failure row legitimately joins cause and age with the same separator, so it is
 # excluded rather than widening the ban to any middot.
-grep -v 'refresh failed' <<<"$MENU_TXT" | grep -q ' · ' \
+grep -v 'refresh failed' <<<"$MENU_TXT" | grep -v 'Redeem usage reset' | grep -q ' · ' \
   && fail "banned aggregate vendor age line is still present"
 grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
@@ -841,7 +854,7 @@ if jq -e '.vendors | has("grok")' <<<"$AFTER" >/dev/null; then
   fi
 fi
 assert_account_ages "$MENU2" "$AFTER"
-grep -v 'refresh failed' <<<"$MENU2" | grep -q ' · ' \
+grep -v 'refresh failed' <<<"$MENU2" | grep -v 'Redeem usage reset' | grep -q ' · ' \
   && fail "aggregate vendor age line reappeared after refresh"
 if [ -n "$visible_failures" ]; then
   pass "free refresh: fetched_at advanced, no invisible failures; visible refresh_error(s):$visible_failures"

@@ -545,7 +545,7 @@ assert grep -q 'no selectable grok account (grok: no quota data)' "$WORK/query.e
 
 grok_case "$GROK_PAIR"
 assert contains "$(head -n1 <<<"$output")" 'grok spare · auto · high — 10%'
-assert contains "$(sed -n '4p' <<<"$output")" 'grok: spare 10% (wk→?) | supergrok 40% (wk→?)'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: spare 10% ↻0 (wk→?) | supergrok 40% ↻0 (wk→?)'
 assert test "$(sed -n '4p' <<<"$output" | cut -d: -f1)" = grok
 assert test "$(sed -n '5p' <<<"$output" | cut -d: -f1)" = claude
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 7
@@ -626,10 +626,10 @@ grok_case '{available:true,accounts:[
   {account:"fresh",enabled:true,weekly:{used_pct:40},auth:{status:"ok"}},
   {account:"stale",enabled:true,weekly:{used_pct:10},auth:{status:"expired"}}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok fresh · auto · high — 40%'
-assert contains "$(sed -n '4p' <<<"$output")" 'stale 10% auth expired'
+assert contains "$(sed -n '4p' <<<"$output")" 'stale 10% ↻0 auth expired'
 # The tags render WALLED before the auth words, so that is the string that says `expired` was not
 # read as a wall.
-assert not_contains "$(sed -n '4p' <<<"$output")" 'stale 10% WALLED'
+assert not_contains "$(sed -n '4p' <<<"$output")" 'stale 10% ↻0 WALLED'
 assert before "$(sed -n '4p' <<<"$output")" 'fresh 40%' 'stale 10%'
 grok_query '{"available":true,"accounts":[
   {"account":"fresh","enabled":true,"weekly":{"used_pct":40},"auth":{"status":"ok"}},
@@ -641,7 +641,7 @@ grok_case '{available:true,accounts:[
   {account:"gone",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}},
   {account:"fresh",enabled:true,weekly:{used_pct:40},auth:{status:"ok"}}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok fresh · auto · high — 40%'
-assert contains "$(sed -n '4p' <<<"$output")" 'gone 10% WALLED auth!'
+assert contains "$(sed -n '4p' <<<"$output")" 'gone 10% ↻0 WALLED auth!'
 grok_case '{available:true,accounts:[
   {account:"gone",enabled:true,weekly:{used_pct:10},auth:{status:"needs_login"}}]}'
 assert contains "$(sed -n '4p' <<<"$output")" 'grok: login needed'
@@ -652,7 +652,7 @@ grok_case '{available:true,accounts:[
   {account:"spent",enabled:true,weekly:{used_pct:100}},
   {account:"hot",enabled:true,weekly:{used_pct:85}}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok hot · auto · high — 85%'
-assert contains "$(sed -n '4p' <<<"$output")" 'spent 100% WALLED'
+assert contains "$(sed -n '4p' <<<"$output")" 'spent 100% ↻0 WALLED'
 assert not_contains "$output" '5h!'
 # An account out of the pool is out of the answer, and a vendor whose whole pool is off says so
 # rather than reporting a limit.
@@ -660,7 +660,18 @@ grok_case '{available:true,accounts:[
   {account:"supergrok",enabled:false,weekly:{used_pct:40}},
   {account:"spare",enabled:false,weekly:{used_pct:10}}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — every account is out of the worker pool'
-assert contains "$(sed -n '4p' <<<"$output")" 'spare 10% off'
+assert contains "$(sed -n '4p' <<<"$output")" 'spare 10% ↻0 off'
+# Reset credits are display-only on grok exactly as on codex, and a count too old to act on reads
+# as none rather than as runway nobody measured.
+grok_case '{available:true,accounts:[
+  {account:"plain",enabled:true,weekly:{used_pct:48},auth:{status:"ok"}},
+  {account:"with-credit",enabled:true,weekly:{used_pct:48},auth:{status:"ok"},reset_credits:1},
+  {account:"gone-stale",enabled:true,weekly:{used_pct:48},auth:{status:"ok"},
+   reset_credits:3,reset_credits_stale:true}]}'
+assert contains "$(sed -n '4p' <<<"$output")" 'plain 48% ↻0'
+assert contains "$(sed -n '4p' <<<"$output")" 'with-credit 48% ↻1'
+assert contains "$(sed -n '4p' <<<"$output")" 'gone-stale 48% ↻0'
+assert contains "$(head -n1 <<<"$output")" 'grok gone-stale · auto · high — 48%'
 grok_query '{"available":true,"accounts":[
   {"account":"supergrok","enabled":false,"weekly":{"used_pct":40}}]}' --account grok
 assert test "$query_rc" -eq 3
@@ -675,7 +686,7 @@ assert not_contains "$output" 'grok unavailable · auto · high — WALLED'
 assert contains "$(sed -n '4p' <<<"$output")" 'grok: no quota data'
 grok_case '{available:true,accounts:[{account:"supergrok",enabled:true}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — no quota data'
-assert contains "$(sed -n '4p' <<<"$output")" 'grok: supergrok ? (wk→?)'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: supergrok ? ↻0 (wk→?)'
 
 # The pin: the one override above the pool, lapsing loudly with a reason, and ended outright by a
 # wall on fresh data — the same rule the other three vendors follow, with only the key differing.
@@ -684,7 +695,7 @@ grok_case '{available:true,accounts:[
   {account:"supergrok",enabled:false,weekly:{used_pct:40}},
   {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok supergrok · auto · high — 40% PINNED'
-assert contains "$(sed -n '4p' <<<"$output")" 'supergrok 40% PINNED off'
+assert contains "$(sed -n '4p' <<<"$output")" 'supergrok 40% ↻0 PINNED off'
 assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr✓supergrok·auto·hi'
 write_config 'grok_profile=ghost'
 grok_case "$GROK_PAIR"
@@ -716,7 +727,7 @@ assert contains "$next_line" 'grok — off for workers'
 assert not_contains "$next_line" 'grok unavailable'
 assert not_contains "$next_line" 'grok spare'
 assert test "${next_line##*  |  }" = 'grok — off for workers'
-assert contains "$(sed -n '4p' <<<"$output")" 'grok: spare 10% (wk→?) | supergrok 40% (wk→?)'
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: spare 10% ↻0 (wk→?) | supergrok 40% ↻0 (wk→?)'
 assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr⏸off·auto·hi'
 grok_query "$GROK_PAIR_JSON" --account grok
 assert test "$query_rc" -eq 3

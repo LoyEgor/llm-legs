@@ -1640,7 +1640,7 @@ jq -e --argjson old_as_of "$((now - 700))" '
 ' "$WORK/codex-partial-result.json" >/dev/null \
   || fail "Codex all-account partial failure lost cached buckets or retained a removed profile"
 cat >"$CODEX_ACCOUNTS_CACHE" <<EOF
-{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"accounts":[{"account":"beta","plan_type":"team","reset_credits":0,"five_hour":{"used_pct":100,"resets_at":$expired_reset_epoch},"weekly":{"used_pct":100,"resets_at":$week_reset_epoch},"as_of":$((now - 22000))},{"account":"alpha","plan_type":"plus","reset_credits":2,"five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"alpha"}
+{"schema":1,"fetched_at":"$(date -u '+%Y-%m-%dT%H:%M:%SZ')","plan_type":"plus","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"accounts":[{"account":"beta","plan_type":"team","reset_credits":0,"five_hour":{"used_pct":100,"resets_at":$expired_reset_epoch},"weekly":{"used_pct":100,"resets_at":$week_reset_epoch},"as_of":$((now - 22000))},{"account":"alpha","plan_type":"plus","reset_credits":2,"reset_credits_expires_at":"2099-09-21T00:16:44Z","five_hour":{"used_pct":100,"resets_at":$five_reset_epoch},"weekly":{"used_pct":20,"resets_at":$week_reset_epoch},"as_of":$((now - 1900))}],"current":"alpha"}
 EOF
 codex_accounts_full=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Codex multi-account collection failed"
@@ -1648,6 +1648,8 @@ jq -e '.vendors.codex.current_account == "alpha" and (.vendors.codex.accounts | 
   .vendors.codex.accounts[0].is_current == true and
   .vendors.codex.accounts[0].reset_credits == 2 and
   .vendors.codex.accounts[0].reset_credits_stale == false and
+  .vendors.codex.accounts[0].reset_credits_expires_at == "2099-09-21T00:16:44Z" and
+  (.vendors.codex.accounts[1].reset_credits_expires_at | type) == "null" and
   (.vendors.codex.accounts[0].reset_credits_as_of | type) == "number" and
   .vendors.codex.accounts[0].five_hour.effective_pct == 100 and
   .vendors.codex.accounts[0].five_hour.stale == true and
@@ -2740,6 +2742,31 @@ jq -e '.vendors.grok.accounts[0].period == "USAGE_PERIOD_TYPE_UNSPECIFIED" and
   .vendors.grok.accounts[0].weekly.resets_at == null' <<<"$grok_unknown_period" >/dev/null \
   || fail "an unrecognized grok billing period was not carried through verbatim"
 
+# The reset consumable is vendor-neutral: grok carries the same three fields codex does, plus the
+# expiry the grant states, and the CR column renders it for whichever vendor published one.
+grok_credits=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=with_resets FAKE_GROK_AS_OF="$now" \
+  bash "$SCRIPT" --refresh --json 2>/dev/null) || fail "grok reset-credit collection failed"
+jq -e --argjson now "$now" '.vendors.grok.accounts[0] |
+  .reset_credits == 1 and .reset_credits_stale == false and
+  .reset_credits_as_of == $now and
+  .reset_credits_expires_at == "2099-09-12T18:49:00Z"' <<<"$grok_credits" >/dev/null \
+  || fail "grok reset credits were dropped or read as stale: $grok_credits"
+grok_credits_table=$(env "${grok_age_env[@]}" LLM_LIMITS_GROK_REFRESH=0 \
+  bash "$SCRIPT" --table 2>/dev/null) || fail "grok reset-credit table failed"
+awk '$1 == "grok/aged*" {print $(NF-1)}' <<<"$grok_credits_table" | grep -qx '↻1' \
+  || fail "the CR column did not render grok reset credits: $grok_credits_table"
+grok_credits_plain=$(env "${grok_age_env[@]}" LLM_LIMITS_GROK_REFRESH=0 \
+  bash "$SCRIPT" --plain 2>/dev/null) || fail "grok reset-credit plain render failed"
+grep 'grok/aged\*:' <<<"$grok_credits_plain" | grep -q '| cr ↻1 |' \
+  || fail "the plain render dropped grok reset credits: $grok_credits_plain"
+# A count measured long enough ago is not a count a caller may spend on: worker-pick reads this
+# flag and treats such a row as zero.
+grok_credits_stale=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=stale_resets FAKE_GROK_AS_OF="$now" \
+  bash "$SCRIPT" --refresh --json 2>/dev/null) || fail "grok stale reset-credit collection failed"
+jq -e '.vendors.grok.accounts[0] | .reset_credits == 2 and .reset_credits_stale == true and
+  .weekly.stale == false' <<<"$grok_credits_stale" >/dev/null \
+  || fail "an old grok reset-credit reading was not marked stale: $grok_credits_stale"
+
 # The real helper against a dead endpoint: the access token in auth.json may reach neither the
 # store nor a log, however the read fails.
 GROK_SECRET_HOME="$WORK/grok-secret-home"
@@ -2753,6 +2780,7 @@ grok_secret=$(env HOME="$GROK_SECRET_HOME" GROKB_PROFILES_DIR="$GROK_SECRET_PROF
   LLM_LIMITS_GROK_CACHE="$WORK/grok-secret.json" LLM_LIMITS_GROK_REFRESH=1 \
   LLM_LIMITS_CACHE="$WORK/grok-secret-store.json" \
   GROK_QUOTA_ENDPOINT='http://127.0.0.1:1/v1/billing?format=credits' \
+  GROK_RESETS_ENDPOINT='http://127.0.0.1:1' \
   GROK_QUOTA_CLIENT_VERSION=1.0.13 \
   bash "$SCRIPT" --refresh-account grok --json 2>"$WORK/grok-secret.err")
 grep -q "$GROK_TOKEN_SENTINEL" <<<"$grok_secret" \

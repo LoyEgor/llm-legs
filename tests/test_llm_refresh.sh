@@ -131,6 +131,29 @@ esac
 EOF
 chmod +x "$CB_STUB"
 
+# Stands in for the Grok CLI: it rotates the token as a side effect of an authenticated
+# subcommand while printing "You are not authenticated." and exiting non-zero, so this stub heals
+# the store and fails at the same time — a tick that read its status would learn the opposite of
+# what happened.
+GB_STUB="$WORK/grokb"
+cat >"$GB_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -u
+printf 'grokb %s\n' "$*" >>"$STUB_LOG"
+printf 'You are not authenticated.\n' >&2
+case "${GB_RESULT:-ok}" in
+  ok)
+    tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
+    jq --arg account "${1:-}" '.vendors.grok.accounts |= map(
+      if .account == $account then .auth={status:"ok"} else . end)' "$LLM_LIMITS_CACHE" >"$tmp" && \
+      mv -f "$tmp" "$LLM_LIMITS_CACHE"
+    ;;
+  hang) sleep 30 ;;
+esac
+exit "${GB_EXIT:-1}"
+EOF
+chmod +x "$GB_STUB"
+
 write_store() {
   local path=$1 now=$2 claude_age=$3 codex_age=$4 gemini_age=$5 grok_age=${6:-}
   jq -cn --argjson now "$now" --argjson ca "$claude_age" --argjson coa "$codex_age" \
@@ -228,6 +251,9 @@ run_refresh() {
     CB_RESULT="${CB_RESULT:-ok}" CB_STEAL_PID="${CB_STEAL_PID:-$$}" \
     CB_TOKEN_FRESH="${CB_TOKEN_FRESH:-}" CB_SNAPSHOT="${CB_SNAPSHOT:-$dir/cb-snapshot.log}" \
     CB_LOGIN_ACCOUNTS="${CB_LOGIN_ACCOUNTS:-}" \
+    LLM_LIMITS_REFRESH_GROKB="${GB_BIN:-$GB_STUB}" GB_RESULT="${GB_RESULT:-ok}" \
+    GB_EXIT="${GB_EXIT:-1}" \
+    LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT="${LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT:-30}" \
     LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
     LLM_LIMITS_REFRESH_PROBE_TIMEOUT="${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
@@ -689,6 +715,8 @@ jq -c --argjson due "$((NOW - 45 * 60))" '.vendors.grok.last_attempt_epoch = $du
 run_refresh "$case_dir" "$NOW" || fail 'grok run failed'
 grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
   fail 'a stale grok account was not refreshed'
+grep -q '^grokb ' "$case_dir/calls.log" && \
+  fail 'an account with no auth verdict on record was driven through the CLI'
 jq -eR 'fromjson | select(.vendor == "grok" and .step == 1 and .accounts_tried == ["gr"] and
   .outcome == "refreshed")' "$case_dir/journal.jsonl" >/dev/null || \
   fail 'the grok refresh was not journaled'
@@ -706,6 +734,131 @@ run_refresh "$case_dir" "$NOW" || fail 'empty-grok run failed'
 grep -q 'grok/' "$case_dir/calls.log" && fail 'an empty grok vendor was still given a main account'
 jq -eR 'fromjson | select(.vendor == "grok" and .step == 0 and (.accounts_tried | length) == 0)' \
   "$case_dir/journal.jsonl" >/dev/null || fail 'the empty grok vendor was not journaled'
+pass
+
+# Every expired-token case wants the same frame: grok alone due, its rung seeded, and one account
+# carrying the auth verdict its last poll left behind.
+seed_grok_case() { # <dir> <grok age> <auth status>
+  local dir=$1
+  mkdir -p "$dir/home"
+  write_store "$dir/store.json" "$NOW" 60 60 60 "$2"
+  jq -c --arg status "$3" '.vendors.grok.accounts[0].auth={status:$status}' "$dir/store.json" \
+    >"$dir/store.tmp" && mv "$dir/store.tmp" "$dir/store.json"
+  write_state "$dir/state.json" 30 30 30 "$NOW" "$NOW" 45
+  jq -c --argjson due "$((NOW - 45 * 60))" '.vendors.grok.last_attempt_epoch = $due' \
+    "$dir/state.json" >"$dir/state.tmp" && mv "$dir/state.tmp" "$dir/state.json"
+}
+
+# An expired grok access token is not a dead end: the vendor CLI rotates it on any authenticated
+# subcommand, so the tick touches the profile once and lets the re-poll say what the auth now is.
+# The stub heals the store AND exits non-zero, the way the real CLI does.
+case_dir="$WORK/grok-expired"
+seed_grok_case "$case_dir" 7200 expired
+run_refresh "$case_dir" "$NOW" || fail 'grok expired-token run failed'
+[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "the expired grok account was not touched exactly once: $(cat "$case_dir/calls.log")"
+[ "$(grep -E '^grokb |^--refresh-account grok/' "$case_dir/calls.log" | tr '\n' ' ')" = \
+  'grokb gr exec models --refresh-account grok/gr ' ] || \
+  fail "the token touch did not precede the re-poll: $(cat "$case_dir/calls.log")"
+jq -eR 'fromjson | select(.vendor == "grok" and .step == 1 and .accounts_tried == ["gr"] and
+  .outcome == "refreshed" and (.detail | test("token touch: gr") and
+  (test("unrefreshable") | not)))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "the grok token touch was not journaled as the refresh it was: $(cat "$case_dir/journal.jsonl")"
+# Grok takes no attempt stamp: the claude revive rotates over accounts and reads the stamps to do
+# it, while every stale grok account is touched in the tick it comes up. A stamp nobody reads is
+# state that drifts.
+jq -e '.grok.attempts == {}' "$case_dir/state.json" >/dev/null || \
+  fail "the touch left a stamp nothing reads: $(jq -c '.grok.attempts' "$case_dir/state.json")"
+jq -e --argjson now "$NOW" '.grok.last_attempt_epoch == $now' "$case_dir/state.json" >/dev/null || \
+  fail 'the vendor rung, which is what gates the next touch, did not advance'
+pass
+
+# A touch that rotates nothing must not turn into a retry storm: one attempt per account per tick,
+# and the account waits for the next tick like any other stale one.
+case_dir="$WORK/grok-touch-failed"
+seed_grok_case "$case_dir" 7200 expired
+GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || \
+  fail 'grok failed-touch run failed'
+[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "a failing touch was retried inside one tick: $(cat "$case_dir/calls.log")"
+jq -eR 'fromjson | select(.vendor == "grok" and .outcome == "error" and
+  (.detail | test("token touch: gr") and test("accounts remain stale")))' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail "a touch that did not heal the account was not journaled as such: $(cat "$case_dir/journal.jsonl")"
+GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 3600))" || \
+  fail 'second failed-touch run failed'
+[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 2 ] || \
+  fail "the next tick did not take exactly one more attempt: $(cat "$case_dir/calls.log")"
+jq -e '.grok.attempts == {}' "$case_dir/state.json" >/dev/null || \
+  fail 'a repeated touch started stamping state nothing reads'
+pass
+
+# What bounds the touch is the vendor's rung, not a per-account stamp: a token the CLI cannot
+# rotate leaves the account with no `as_of` and therefore stale on every heartbeat, so a heartbeat
+# inside the rung must not reach the CLI at all.
+case_dir="$WORK/grok-touch-backoff"
+seed_grok_case "$case_dir" 7200 expired
+GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || \
+  fail 'grok backoff first run failed'
+[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "the first tick did not touch once: $(cat "$case_dir/calls.log")"
+GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 60))" || \
+  fail 'grok backoff second run failed'
+[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "a heartbeat inside the rung touched again: $(cat "$case_dir/calls.log")"
+[ "$(grep -c -- '--refresh-account grok/gr' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "a heartbeat inside the rung re-polled anyway: $(cat "$case_dir/calls.log")"
+pass
+
+# Only an expired token earns a CLI touch; a signed-in account is a plain usage re-poll.
+case_dir="$WORK/grok-token-ok"
+seed_grok_case "$case_dir" 7200 ok
+run_refresh "$case_dir" "$NOW" || fail 'grok signed-in run failed'
+grep -q '^grokb ' "$case_dir/calls.log" && \
+  fail 'a signed-in grok account was driven through the CLI'
+grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
+  fail 'the signed-in account was not re-polled'
+jq -e '.grok.attempts == {}' "$case_dir/state.json" >/dev/null || \
+  fail 'a plain re-poll took an attempt stamp'
+pass
+
+# Staleness is what asks for the work: an expired token on a fresh reading is nothing to do this
+# tick — and it is not `unrefreshable` either, which is what kept these accounts stale for hours.
+case_dir="$WORK/grok-expired-fresh"
+seed_grok_case "$case_dir" 60 expired
+run_refresh "$case_dir" "$NOW" || fail 'grok fresh-reading run failed'
+grep -q 'grok' "$case_dir/calls.log" && fail 'a fresh grok reading was refreshed anyway'
+jq -eR 'fromjson | select(.vendor == "grok" and .step == 0 and
+  (.detail | test("unrefreshable") | not))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "an expired grok token was reported as beyond refreshing: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# The touch is a live CLI launch: a wedged one must never hold the heartbeat.
+case_dir="$WORK/grok-touch-hangs"
+seed_grok_case "$case_dir" 7200 expired
+touch_started=$SECONDS
+GB_RESULT=hang LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT=1 run_refresh "$case_dir" "$NOW" || \
+  fail 'hung-touch run failed'
+[ "$((SECONDS - touch_started))" -lt 20 ] || fail 'a hung token touch stalled the tick'
+grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
+  fail 'a hung touch cost the account its re-poll'
+pass
+
+# Claude is the opposite contract: only an interactive session rotates its token, so an expired one
+# stays unrefreshable rather than becoming work every tick repeats.
+case_dir="$WORK/claude-expired-blocked"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 7200 60 60
+jq -c '.vendors.claude.accounts[0].auth={status:"expired"}' "$case_dir/store.json" \
+  >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+jq --argjson now "$NOW" '.vendors.codex.last_attempt_epoch=$now | .vendors.gemini.last_attempt_epoch=$now' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
+run_refresh "$case_dir" "$NOW" || fail 'claude expired-token run failed'
+[ -s "$case_dir/claudeb.log" ] && fail 'an expired Claude token was driven through revive'
+jq -eR 'fromjson | select(.vendor == "claude" and .step == 0 and
+  (.detail | test("unrefreshable: alpha")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "an expired Claude token stopped being unrefreshable: $(cat "$case_dir/journal.jsonl")"
 pass
 
 case_dir="$WORK/store-unreadable"

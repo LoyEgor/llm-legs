@@ -20,7 +20,8 @@ Already present in ~/.llm-limits.json (verified 2026-07-20):
 - Per-account `fable` bucket alongside `five_hour`/`weekly` (used_pct, resets_at,
   effective_pct, staleness) — FB% column in the table.
 - `rotation.usable {general, fable}` flags per Claude account.
-- Codex: `reset_credits` (integer, ↻N in the table's CR column) and `plan_type`.
+- `reset_credits` (integer, ↻N in the table's CR column) from any vendor that reports one —
+  Codex and grok today — plus `plan_type` and `reset_credits_expires_at`.
 
 Gaps to close:
 - Reflect Anthropic's 2026-07-20 change (Fable unavailable on Pro plans) in
@@ -51,7 +52,7 @@ constants in the script, unit-tested with frozen fixtures — never re-derived i
   a. Reset proximity (time): remaining = remaining_now + refund discounted by
      time-to-reset (reset within hours → "spent 50%" behaves closer to 150% capacity
      ahead). Applies per bucket; resets_at is already collected.
-  b. Codex `reset_credits` (count): each credit ≈ one full 100% quota refill on top of
+  b. `reset_credits` (count, Codex and grok): each credit ≈ one full 100% quota refill on top of
      the current window (main at 48% spent with ↻1 has ~152% runway, not 52%). Scoring
      and the POLICY/FRESH-TIGHT verdicts must include credits; confirm the exact
      consumption mechanics (auto-applied on exhaustion vs manual) during implementation

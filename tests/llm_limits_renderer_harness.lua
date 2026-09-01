@@ -6,6 +6,11 @@ assert(root, "renderer harness path is unavailable")
 -- the two documents it is being asked for.
 local DOCTOR_CONTENTS = "<doctor-snapshot>"
 
+-- Confirmation dialogs are answered by the harness rather than by a person: `dialogAnswer` is what
+-- the fake `blockAlert` returns and `dialogCalls` records the arguments it was asked with.
+local dialogAnswer = nil
+local dialogCalls = {}
+
 local Styled = {}
 Styled.__index = Styled
 
@@ -31,6 +36,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     workerModel, fsAttributes, interfaceStyle, doctorSnapshot)
   local mock = {
     alert = { show = alertFn or function() end },
+    dialog = { blockAlert = function(...)
+      table.insert(dialogCalls, { ... })
+      return dialogAnswer
+    end },
     execute = function() return true end,
     fs = { attributes = fsAttributes or function() return nil end },
     host = { interfaceStyle = function() return interfaceStyle end },
@@ -2165,6 +2174,107 @@ do
   local orphanRow = accountItem(orphanMenu, "main")
   assert(orphanRow and submenuItem(orphanRow, "Pin for workers"),
     "a Gemini pin on a departed account left no way to clear it")
+end
+
+-- The reset consumable: one count, one expiry and one action, worded identically for every vendor
+-- that publishes them. Only the vendors with a redeem RPC can act — the rest show the same item
+-- disabled, so an absent action never reads as an absent reset.
+do
+  local function resetFixture(vendor, account)
+    local vendors = {
+      claude = { available = false },
+      codex = { available = false },
+      gemini = { available = false },
+    }
+    vendors[vendor] = { available = true, current_account = account.account,
+      accounts = { account } }
+    return { schema = 1, vendors = vendors }
+  end
+  local function redeemItem(menu, name)
+    local row = accountItem(menu, name)
+    for _, item in ipairs(row.menu or {}) do
+      if titleText(item):find("Redeem usage reset", 1, true) then return item end
+    end
+    return nil
+  end
+
+  local expiryEpoch = os.time() + 11 * 86400
+  local expires = os.date("!%Y-%m-%dT%H:%M:%SZ", expiryEpoch)
+  local aged = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 9 * 60)
+  local expectedLabel = "Redeem usage reset · " .. os.date("%b %d", expiryEpoch)
+  local labels = {}
+  for _, vendor in ipairs({ "grok", "codex" }) do
+    local menu = loadModule(resetFixture(vendor, {
+      account = "acct", is_current = true, enabled = true, five_hour = bucket(10),
+      weekly = bucket(40), as_of = aged, reset_credits = 1, reset_credits_stale = false,
+      reset_credits_expires_at = expires,
+    })).menuItems()
+    local row = titleText(accountItem(menu, "acct"))
+    assert(row:find("↻1", 1, true) and row:find("9m", 1, true),
+      vendor .. " lost the reset count or the data age on the account row: " .. row)
+    assert(not row:find(os.date("%b %d", expiryEpoch), 1, true),
+      vendor .. " still spelled the expiry on the account row: " .. row)
+    local redeem = redeemItem(menu, "acct")
+    assert(redeem, vendor .. " offered no redeem action for a spendable reset")
+    assert(type(redeem.fn) == "function" and not redeem.disabled,
+      vendor .. "'s redeem action was rendered unusable")
+    assert(titleText(redeem) == expectedLabel,
+      vendor .. " worded the redeem action differently: " .. titleText(redeem))
+    table.insert(labels, titleText(redeem))
+  end
+  assert(labels[1] == labels[2], "the two vendors' redeem actions did not read identically")
+
+  -- A vendor that published a count with no redeem RPC behind it states the reason rather than
+  -- dropping the item, so an absent action never reads as an absent reset.
+  local backendless = redeemItem(loadModule(resetFixture("gemini", {
+    account = "main", is_current = true, enabled = true, five_hour = bucket(10),
+    weekly = bucket(20), reset_credits = 2, reset_credits_stale = false,
+  })).menuItems(), "main")
+  assert(backendless, "a row with a reset and no backend offered no redeem row at all")
+  assert(backendless.disabled == true and backendless.fn == nil,
+    "the backendless redeem row was clickable")
+  assert(titleText(backendless):find("no redeem API", 1, true),
+    "the disabled redeem row gave no reason: " .. titleText(backendless))
+
+  -- The spend is irreversible, so the dialog's default (Return, Escape) must be Cancel and the
+  -- redeem must cost a deliberate click on the other button.
+  local launched = 0
+  local confirmable = loadModule(resetFixture("grok", {
+    account = "acct", is_current = true, enabled = true, weekly = bucket(40), as_of = aged,
+    reset_credits = 1, reset_credits_stale = false, reset_credits_expires_at = expires,
+  }), function() launched = launched + 1 return nil end)
+  local action = redeemItem(confirmable.menuItems(), "acct")
+  dialogCalls = {}
+  dialogAnswer = "Cancel"
+  launched = 0
+  action.fn()
+  assert(#dialogCalls == 1, "the redeem did not ask for a confirmation")
+  assert(dialogCalls[1][3] == "Cancel" and dialogCalls[1][4] == "Redeem",
+    "Cancel is not the dialog's default button: " .. tostring(dialogCalls[1][3]))
+  assert(launched == 0, "answering the confirmation with its default button still spent a reset")
+  dialogAnswer = "Redeem"
+  action.fn()
+  assert(launched == 1, "the explicit Redeem click did not run the redeem script")
+  dialogAnswer = nil
+
+  -- Nothing to spend, a count too old to act on, and a vendor that published none: no action in
+  -- any of them. The stale row still SHOWS its count, like every other stale reading — hiding it
+  -- would say the account has no reset when what is old is only the measurement.
+  for _, absent in ipairs({
+    { rendersCount = false, block = { account = "supergrok", is_current = true, enabled = true,
+      weekly = bucket(40), reset_credits = 0 } },
+    { rendersCount = true, block = { account = "supergrok", is_current = true, enabled = true,
+      weekly = bucket(40), reset_credits = 2, reset_credits_stale = true,
+      reset_credits_expires_at = expires } },
+    { rendersCount = false, block = { account = "supergrok", is_current = true, enabled = true,
+      weekly = bucket(40) } },
+  }) do
+    local menu = loadModule(resetFixture("grok", absent.block)).menuItems()
+    assert(not redeemItem(menu, "supergrok"),
+      "a row with no spendable reset still offered the redeem action")
+    assert((titleText(accountItem(menu, "supergrok")):find("↻", 1, true) ~= nil)
+      == absent.rendersCount, "the reset count on the row did not follow what was measured")
+  end
 end
 
 return "PASS: Hammerspoon projection contract"

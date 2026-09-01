@@ -1352,6 +1352,11 @@ done
 # Neither Gemini's base profile nor Grok's names an account to revive, so an empty vendor row must
 # name none: a `main` invented here is a refresh against a HOME that carries no login.
 assert grep -Fq 'elif $vendor == "gemini" or $vendor == "grok" then empty' "$LLMREFRESH"
+# Grok's expired access token is work a tick can do and Claude's is not; spelling that split in
+# prose alone is what left an expired grok row unrefreshed for hours.
+assert grep -Fq '$status == "failed" or ($status == "expired" and $vendor != "grok")' "$LLMREFRESH"
+assert grep -Fq 'exec models' "$LLMREFRESH"
+assert doc_has 'grokb <account> exec models'
 assert grep -Fq 'opencode-go' <<<"$(grep -F 'opencode_go=' "$LLMREFRESH")"
 assert grep -Fq 'wall-check' "$LLMREFRESH"
 assert grep -Fq '.vendors.opencode.accounts[]? | select(.walled == true)' "$LLMREFRESH"
@@ -2078,6 +2083,56 @@ done
 assert test -r "$ROOT/tests/test_worker_claims.sh"
 assert doc_has 'Worker claims ledger'
 
+# --- Row bo: the reset consumable ---------------------------------------------
+# The glyph is the whole vocabulary for this state, so a render that gates it on a vendor name
+# tells the owner one leg has no reset when the leg simply is not codex; and the write RPC that
+# spends it may have exactly one caller.
+RESETS="$ROOT/share/grok_resets.py"
+GROKQUOTA="$ROOT/grok-quota.py"
+CODEXQUOTA="$ROOT/codex-quota.py"
+REDEEM="$ROOT/bin/llm-reset-redeem"
+assert doc_has 'Reset consumable'
+assert doc_has '`prod_mc_billing.ConsumerUiSvc`'
+for credits_site in "$LLMLIMITS" "$WORKERPICK" "$HAMMER"; do
+  assert grep -Fq '↻' "$credits_site"
+  assert eq "$(grep -c '"codex" and (.reset_credits' "$credits_site")" 0
+done
+assert eq "$(grep -c 'if (.reset_credits | type) == "number" then "↻"' "$LLMLIMITS")" 3
+assert eq "$(grep -c '\$key == "codex" then credits' "$LLMLIMITS")" 0
+for credits_field in "$GROKQUOTA" "$CODEXQUOTA"; do
+  assert grep -Fq 'reset_credits' "$credits_field"
+  assert grep -Fq 'reset_credits_expires_at' "$credits_field"
+done
+# One spelling of each vendor's transport, and one caller for each of the two writes.
+APPSERVER="$ROOT/share/codex_appserver.py"
+assert grep -Fq 'SERVICE_PATH = "/prod_mc_billing.ConsumerUiSvc"' "$RESETS"
+assert eq "$(grep -c 'prod_mc_billing.ConsumerUiSvc' "$REDEEM")" 0
+assert eq "$(grep -c 'prod_mc_billing.ConsumerUiSvc' "$GROKQUOTA")" 0
+assert grep -Fq '_call("GetRemainingResets"' "$RESETS"
+assert grep -Fq '_call("RedeemReset"' "$RESETS"
+assert eq "$(grep -rl 'grok_resets.redeem_reset' "$ROOT/bin" "$ROOT/share" "$GROKQUOTA" | wc -l | tr -d ' ')" 1
+assert grep -Fq 'grok_resets.redeem_reset' "$REDEEM"
+assert grep -Fq 'import grok_resets' "$GROKQUOTA"
+assert grep -Fq '"app-server"' "$APPSERVER"
+assert eq "$(grep -c '"app-server"' "$CODEXQUOTA")" 0
+assert eq "$(grep -c '"app-server"' "$REDEEM")" 0
+for appserver_caller in "$CODEXQUOTA" "$REDEEM"; do
+  assert grep -Fq 'import codex_appserver' "$appserver_caller"
+done
+assert eq "$(grep -rl 'rateLimitResetCredit/consume' "$ROOT/bin" "$ROOT/share" "$CODEXQUOTA" | wc -l | tr -d ' ')" 1
+assert grep -Fq 'rateLimitResetCredit/consume' "$REDEEM"
+# One wording for the action, shared by the renderer and the contract that pins it.
+assert grep -Fq 'local title = "Redeem usage reset"' "$HAMMER"
+assert grep -Fq 'title .. " · " .. formatResetTime(block.reset_credits_expires_at)' "$HAMMER"
+assert grep -Fq 'Redeem usage reset · ' "$ROOT/tests/llm_limits_renderer_harness.lua"
+assert doc_has 'Redeem usage reset · <when>'
+# The menu is the only surface that may fire the write, and only for a vendor with a backend.
+assert grep -Fq 'local RESET_REDEEM_VENDORS = { grok = true, codex = true }' "$HAMMER"
+assert grep -Fq 'M.resetRedeemCmd or "llm-reset-redeem"' "$HAMMER"
+assert grep -Fq 'hs.dialog.blockAlert' "$HAMMER"
+assert test -r "$ROOT/tests/test_llm_reset_redeem.sh"
+assert grep -Fq 'test_llm_reset_redeem.sh' "$ROOT/bin/llm-selfcheck"
+
 # --- Row bn: the main-account shield ------------------------------------------
 # The budget a base account is pulled from the pool at, spelled once in the pool module and
 # quoted by the contract; the collector reconciles against that same constant.
@@ -2098,4 +2153,4 @@ done
 assert test -r "$ROOT/tests/test_worker_pool_shield.sh"
 assert doc_has 'Main-account shield'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

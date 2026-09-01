@@ -16,9 +16,13 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "share"))
+import grok_resets  # noqa: E402
+
 ENDPOINT = os.environ.get(
     "GROK_QUOTA_ENDPOINT", "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 )
+RESETS_TIMEOUT = float(os.environ.get("GROK_RESETS_TIMEOUT", "6"))
 FALLBACK_CLIENT_VERSION = "1.0.13"
 BUILD_PRODUCT = "PRODUCT_GROK_BUILD"
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
@@ -198,6 +202,26 @@ def account_row(account: str, entry: dict, body: dict, as_of: int) -> dict:
     return row
 
 
+def reset_credits(row: dict, entry: dict) -> None:
+    """The reset consumable, read through a second service the usage endpoint knows nothing about.
+
+    Its own call, its own timeout and its own failure: a reset read that went wrong may neither
+    fail the usage row nor state anything about the account's auth. The key stays absent unless a
+    call succeeded, so no surface can render a fabricated `↻0`.
+    """
+    try:
+        tokens = grok_resets.get_remaining_resets(entry["key"], RESETS_TIMEOUT)
+    except grok_resets.TransientError:
+        return
+    row["reset_credits"] = len(tokens)
+    ends = [token["validity_end"] for token in tokens if isinstance(token["validity_end"], int)]
+    if not ends:
+        return
+    expires = normalize_iso(datetime.fromtimestamp(min(ends), timezone.utc).isoformat())
+    if expires is not None:
+        row["reset_credits_expires_at"] = expires
+
+
 def collect(account: str, home: Path, timeout: float) -> dict:
     as_of = int(time.time())
     try:
@@ -207,7 +231,7 @@ def collect(account: str, home: Path, timeout: float) -> dict:
     if entry is None:
         return {"account": account, "auth": "needs_login", "as_of": as_of}
     try:
-        return account_row(account, entry, fetch(entry, timeout), as_of)
+        row = account_row(account, entry, fetch(entry, timeout), as_of)
     except AuthError as exc:
         refreshable = isinstance(entry.get("refresh_token"), str) and bool(entry["refresh_token"])
         return {
@@ -217,7 +241,7 @@ def collect(account: str, home: Path, timeout: float) -> dict:
             "cause": f"login needed: {exc}" if not refreshable else f"token rejected: {exc}",
         }
     except PersistentLimit:
-        return {
+        row = {
             "account": account,
             "auth": "ok",
             "used_pct": 100,
@@ -226,6 +250,8 @@ def collect(account: str, home: Path, timeout: float) -> dict:
         }
     except RuntimeError as exc:
         return {"account": account, "error": str(exc), "as_of": as_of}
+    reset_credits(row, entry)
+    return row
 
 
 def profiles(profiles_dir: Path) -> list[tuple[str, Path]]:

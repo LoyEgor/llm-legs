@@ -19,6 +19,7 @@ pass() { passed=$((passed + 1)); }
 TOKEN='grok-access-token-SENTINEL-must-never-be-printed'
 REFRESH='grok-refresh-token-SENTINEL'
 HEADER_LOG="$WORK/headers.log"
+RESET_LOG="$WORK/resets.log"
 
 cat >"$WORK/server.py" <<'PY'
 import json
@@ -29,6 +30,48 @@ import time
 
 HEADER_LOG = sys.argv[1]
 PORT_FILE = sys.argv[2]
+RESET_LOG = sys.argv[3]
+
+
+def varint(value):
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def delimited(field, payload):
+    return varint(field << 3 | 2) + varint(len(payload)) + payload
+
+
+def timestamp(seconds):
+    return b"\x08" + varint(seconds)
+
+
+def reset_token(token_id, start, end):
+    return (delimited(10, token_id.encode())
+            + delimited(20, timestamp(start))
+            + delimited(30, timestamp(end)))
+
+
+def frame(payload):
+    return b"\x00" + len(payload).to_bytes(4, "big") + payload
+
+
+def trailer(status="0"):
+    raw = ("grpc-status: %s\r\n" % status).encode()
+    return b"\x80" + len(raw).to_bytes(4, "big") + raw
+
+
+ONE_RESET = frame(delimited(10, reset_token("restok_vpYDqo", 1786560540, 1789238940))) + trailer()
+TWO_RESETS = frame(delimited(10, reset_token("restok_vpYDqo", 1786560540, 1789238940))
+                   + delimited(10, reset_token("restok_later", 1786560540, 1789843740))) + trailer()
+NO_RESETS = frame(b"") + trailer()
 
 WEEKLY = {"type": "USAGE_PERIOD_TYPE_WEEKLY",
           "start": "2026-08-30T14:50:11.237680+00:00",
@@ -135,6 +178,56 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self.reply(404, {"error": "unknown"})
 
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length)
+        with open(RESET_LOG, "a") as handle:
+            handle.write(json.dumps({"path": self.path, "body": body.hex(),
+                                     "headers": {k.lower(): v for k, v in self.headers.items()}}) + "\n")
+        route = self.path.split("/")[1] if self.path.startswith("/") else ""
+        if route == "resets-slow":
+            time.sleep(3)
+            route = "resets-one"
+        if route == "resets-one":
+            self.grpc(200, ONE_RESET)
+        elif route == "resets-two":
+            self.grpc(200, TWO_RESETS)
+        elif route == "resets-none":
+            self.grpc(200, NO_RESETS)
+        elif route == "resets-unauthorized":
+            self.reply(401, {"error": "unauthorized"})
+        elif route == "resets-grpc16":
+            self.grpc(200, frame(b"") + trailer("16"))
+        elif route == "resets-grpc13":
+            self.grpc(200, frame(b"") + trailer("13"))
+        elif route == "resets-malformed":
+            self.grpc(200, b"\x00\x00\x00\x00\x40not-a-message")
+        elif route == "resets-empty":
+            # A 200 stating neither a status nor a data frame: the service answered nothing.
+            self.grpc(200, b"")
+        elif route == "resets-cut":
+            # Fewer bytes than the length promises, then the socket goes: http.client raises
+            # IncompleteRead, which inherits from neither OSError nor URLError.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/grpc-web+proto")
+            self.send_header("Content-Length", "64")
+            self.end_headers()
+            self.wfile.write(b"\x00\x00\x00\x00\x08")
+            self.close_connection = True
+        elif route == "resets-boom":
+            self.reply(500, {"error": "server"})
+        elif route == "resets-too-many":
+            self.reply(429, {"error": "Too Many Requests"})
+        else:
+            self.reply(404, {"error": "unknown"})
+
+    def grpc(self, status, body):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/grpc-web+proto")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def reply(self, status, payload):
         body = json.dumps(payload).encode()
         self.send_response(status)
@@ -152,7 +245,7 @@ while True:
     time.sleep(3600)
 PY
 
-python3 "$WORK/server.py" "$HEADER_LOG" "$WORK/port" &
+python3 "$WORK/server.py" "$HEADER_LOG" "$WORK/port" "$RESET_LOG" &
 SERVER_PID=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   [ -s "$WORK/port" ] && break
@@ -179,10 +272,13 @@ write_auth() {
 write_auth "$PROFILES/supergrok" "$TOKEN" "$REFRESH"
 write_auth "$PROFILES/second" "$TOKEN"
 
+# The reset read is a second endpoint the helper calls on its own, so every invocation must point
+# it at this stand-in too — a default left in place would reach the real service from a test.
 run() {
   local route=$1
   shift
   env HOME="$WORK/home" GROK_QUOTA_ENDPOINT="$BASE/$route?format=credits" \
+    GROK_RESETS_ENDPOINT="$BASE/${RESETS_ROUTE:-resets-one}" \
     GROK_QUOTA_CLIENT_VERSION=9.9.9 \
     python3 "$HELPER" --profiles-dir "$PROFILES" "$@" 2>"$WORK/last.err"
 }
@@ -377,10 +473,12 @@ mkdir -p "$FAKE_BIN"
 printf '#!/usr/bin/env bash\nprintf "grok/1.2.3 darwin-arm64\\n"\n' >"$FAKE_BIN/grok"
 chmod +x "$FAKE_BIN/grok"
 env HOME="$WORK/home" PATH="$FAKE_BIN:$PATH" GROK_QUOTA_ENDPOINT="$BASE/busy?format=credits" \
+  GROK_RESETS_ENDPOINT="$BASE/resets-one" \
   python3 "$HELPER" --profiles-dir "$PROFILES" --account supergrok >/dev/null 2>&1
 [ "$(jq -r '.headers["x-grok-client-version"]' <<<"$(tail -n 1 "$HEADER_LOG")")" = "1.2.3" ] \
   || fail "the installed grok version did not reach the request header"
 env HOME="$WORK/home" GROK_BIN="$WORK/no-such-grok" GROK_QUOTA_ENDPOINT="$BASE/busy?format=credits" \
+  GROK_RESETS_ENDPOINT="$BASE/resets-one" \
   python3 "$HELPER" --profiles-dir "$PROFILES" --account supergrok >/dev/null 2>&1
 [ "$(jq -r '.headers["x-grok-client-version"]' <<<"$(tail -n 1 "$HEADER_LOG")")" = "1.0.13" ] \
   || fail "a missing grok CLI did not fall back to the pinned client version"
@@ -500,6 +598,73 @@ jq -e '.accounts[0] | .used_pct == 4 and .resets_at == null and
   || fail "a non-object currentPeriod crashed or dropped the percent: $out"
 no_secret "$out" "reading a non-object currentPeriod"
 no_traceback "reading a degraded weekly period"
+pass
+
+# The reset consumable, read through a second service: a count and the instant the grant expires.
+out=$(run busy --account supergrok); rc=$?
+[ "$rc" -eq 0 ] || fail "reset read: expected exit 0, got $rc"
+jq -e '.accounts[0] | .reset_credits == 1 and
+  .reset_credits_expires_at == "2026-09-12T18:49:00Z" and .used_pct == 61.2' <<<"$out" >/dev/null \
+  || fail "one available reset was not published with its expiry: $out"
+last_reset=$(tail -n 1 "$RESET_LOG")
+jq -e --arg token "$TOKEN" '.headers |
+  .authorization == ("Bearer " + $token) and
+  .["content-type"] == "application/grpc-web+proto" and .["x-grpc-web"] == "1"' \
+  <<<"$last_reset" >/dev/null || fail "reset request headers mismatch: $last_reset"
+jq -e '.path == "/resets-one/prod_mc_billing.ConsumerUiSvc/GetRemainingResets" and
+  .body == "0000000000"' <<<"$last_reset" >/dev/null \
+  || fail "the reset read did not POST an empty gRPC-web frame to ConsumerUiSvc: $last_reset"
+no_secret "$out" "reading the reset consumable"
+pass
+
+# Several grants: the count is all of them and the expiry is the FIRST one to lapse, since that is
+# the deadline a reader has to act by.
+out=$(RESETS_ROUTE=resets-two run busy --account supergrok)
+jq -e '.accounts[0] | .reset_credits == 2 and
+  .reset_credits_expires_at == "2026-09-12T18:49:00Z"' <<<"$out" >/dev/null \
+  || fail "two grants did not publish the earliest expiry: $out"
+# No grant left is a measurement, not a failure: ↻0 is what the account actually has.
+out=$(RESETS_ROUTE=resets-none run busy --account supergrok); rc=$?
+[ "$rc" -eq 0 ] || fail "empty reset list: expected exit 0, got $rc"
+jq -e '.accounts[0] | .reset_credits == 0 and (has("reset_credits_expires_at") | not) and
+  .used_pct == 61.2' <<<"$out" >/dev/null \
+  || fail "an empty reset list was not published as zero: $out"
+pass
+
+# Every failure of the reset read leaves the key ABSENT — a rendered ↻0 would be a count nobody
+# measured — and none of them may touch the usage row that already succeeded.
+for reset_route in resets-unauthorized resets-grpc16 resets-grpc13 resets-malformed \
+    resets-boom resets-too-many resets-missing resets-empty resets-cut; do
+  out=$(RESETS_ROUTE="$reset_route" run busy --account supergrok); rc=$?
+  [ "$rc" -eq 0 ] || fail "$reset_route: the usage read must still succeed, got exit $rc"
+  jq -e '.accounts[0] | (has("reset_credits") | not) and
+    (has("reset_credits_expires_at") | not) and .auth == "ok" and .used_pct == 61.2 and
+    (has("error") | not)' <<<"$out" >/dev/null \
+    || fail "$reset_route overwrote the usage row or fabricated a count: $out"
+  no_secret "$out" "failing the reset read with $reset_route"
+  no_traceback "failing the reset read with $reset_route"
+done
+pass
+
+# The reset read owns its own timeout, so a hanging reset service cannot delay or fail the usage
+# reading the whole pool is ranked on.
+out=$(RESETS_ROUTE=resets-slow GROK_RESETS_TIMEOUT=1 run busy --account supergrok); rc=$?
+[ "$rc" -eq 0 ] || fail "hanging reset service: expected exit 0, got $rc"
+jq -e '.accounts[0] | .used_pct == 61.2 and .auth == "ok" and
+  (has("reset_credits") | not)' <<<"$out" >/dev/null \
+  || fail "a hanging reset service broke the usage read: $out"
+no_traceback "timing out the reset read"
+pass
+
+# An account the endpoint refused states no percentage, so there is nothing to attach a count to
+# and no second call to make.
+resets_before=$(wc -l <"$RESET_LOG")
+run unauthorized --account supergrok >/dev/null
+[ "$(wc -l <"$RESET_LOG")" -eq "$resets_before" ] \
+  || fail "a rejected usage read still issued a reset request"
+run zero --account second >/dev/null
+[ "$(wc -l <"$RESET_LOG")" -gt "$resets_before" ] \
+  || fail "a measured account issued no reset request"
 pass
 
 printf 'PASS: %s grok-quota tests\n' "$passed"

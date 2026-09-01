@@ -15,6 +15,12 @@ case "${1:-}" in
     [ "$#" -eq 2 ] && [ "${2:-}" = --device-auth ] || exit 64
     printf 'Device authentication complete\n'
     ;;
+  models)
+    # The heartbeat's token touch: the real CLI says this and rotates the token anyway, so its
+    # own words and exit status are never what decides an account's auth state.
+    printf 'You are not authenticated.\n' >&2
+    printf 'grok-4-fast\n'
+    ;;
   -*) exit 0 ;;
   *)
     printf 'fake-grok: unknown subcommand: %s\n' "$1" >&2

@@ -110,6 +110,13 @@ for invocation in 'profile alpha -p fixture' 'run alpha --prompt-file brief' 'al
   assert test "$(wc -l <"$GROK_CALLS")" -eq "$before"
 done
 
+# The heartbeat's token touch is an authenticated subcommand, not a headless run: spend consent
+# says nothing about renewing an account's own credentials, so it must reach an out-of-pool one.
+: >"$GROK_CALLS"
+assert run_grokb alpha exec models
+assert grep -qx "CALL home=$GROKB_PROFILES_DIR/alpha mcps=0 skills=0 updater=1 worker=<unset> argc=1" "$GROK_CALLS"
+assert grep -qx 'ARG=models' "$GROK_CALLS"
+
 assert run_grokb enable alpha
 assert grep -qx 'grokb: enabled alpha' "$RUN_OUT"
 assert test ! -s "$GROKB_PROFILES_DIR/.grokb/disabled"

@@ -187,7 +187,8 @@ the vendor pin excepted, and reports it the way it reports an empty pool —
 the R1/R2/R3/R8/R9 rungs and their weights, the fable-gap exclusion, the session score, the
 least-burnt fallback, the session reserve, `main` as a ranking key, account tiers as a
 selection input (the `$100`/`$200` label stays display-only), codex reset-credits as a
-selection input (`↻n` stays display-only), and the model/effort recommendation ladder.
+selection input (`↻n` stays display-only on every vendor that reports one), and the model/effort
+recommendation ladder.
 
 The earlier version of this page also forbade score and runway math outright. **That clause is
 superseded by The metric above**: pace math is no longer banned, it is centralized. The
@@ -218,5 +219,11 @@ routing-math paragraph the rules above replace.
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.
 - The claude account rows keep their `score` and `cap` tokens, which external tooling greps.
   They are display-only remaining-window readings, not selection inputs.
+- `↻n` renders on every vendor row whose store entry carries `reset_credits`, Codex and grok
+  today, and a `reset_credits_stale` count reads as `↻0` — a number nobody measured recently is
+  not runway a caller may route on. The count never enters the rank vector on any vendor: a reset
+  is spent by Egor from the menubar — both vendors publish `reset_credits_expires_at` and both
+  have a redeem RPC behind that click — so an account holding one has exactly the capacity its
+  percentage states until he does.
 - review-bench affordability derives from worker-pick's answer under these same rules —
   it keeps no thresholds of its own.

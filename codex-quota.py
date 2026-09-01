@@ -4,110 +4,27 @@
 from __future__ import annotations
 
 import argparse
-import glob
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import select
-import shutil
-import subprocess
 import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "share"))
+import codex_appserver  # noqa: E402
 
-def version_key(path: str) -> tuple[int, ...]:
-    version = os.path.basename(os.path.dirname(os.path.dirname(path)))
-    return tuple(int(part) if part.isdigit() else -1 for part in version.lstrip("v").split("."))
-
-
-def resolve_codex() -> str:
-    configured = os.environ.get("CODEX_BIN", "codex")
-    resolved = shutil.which(configured)
-    if resolved:
-        return resolved
-    if os.path.sep in configured:
-        return configured
-
-    home = os.path.expanduser("~")
-    candidates = sorted(
-        glob.glob(os.path.join(home, ".nvm/versions/node/*/bin/codex")),
-        key=version_key,
-        reverse=True,
-    )
-    candidates.extend([os.path.join(home, ".local/bin/codex"), "/opt/homebrew/bin/codex"])
-    for candidate in candidates:
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return os.path.abspath(candidate)
-    return configured
+READ_METHOD = "account/rateLimits/read"
 
 
 def fetch(codex_home: str | None, timeout: float) -> dict:
-    env = os.environ.copy()
-    if codex_home is None:
-        env.pop("CODEX_HOME", None)
-    else:
-        env["CODEX_HOME"] = codex_home
-    proc = subprocess.Popen(
-        [resolve_codex(), "app-server"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    try:
-        requests = [
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "clientInfo": {
-                        "name": "llm-limits",
-                        "title": "llm-limits",
-                        "version": "1.0",
-                    }
-                },
-            },
-            {"jsonrpc": "2.0", "method": "initialized"},
-            {"jsonrpc": "2.0", "id": 2, "method": "account/rateLimits/read", "params": {}},
-        ]
-        assert proc.stdin is not None
-        assert proc.stdout is not None
-        proc.stdin.write(("\n".join(json.dumps(request) for request in requests) + "\n").encode())
-        proc.stdin.flush()
-
-        deadline = time.monotonic() + timeout
-        buffer = b""
-        fd = proc.stdout.fileno()
-        while time.monotonic() < deadline:
-            readable, _, _ = select.select([fd], [], [], min(0.25, max(0, deadline - time.monotonic())))
-            if not readable:
-                continue
-            chunk = os.read(fd, 65536)
-            if not chunk:
-                raise RuntimeError("codex app-server exited before replying")
-            buffer += chunk
-            while b"\n" in buffer:
-                line, buffer = buffer.split(b"\n", 1)
-                try:
-                    message = json.loads(line)
-                except ValueError:
-                    continue
-                if message.get("id") != 2:
-                    continue
-                if "error" in message:
-                    raise RuntimeError(f"rateLimits/read failed: {message['error']}")
-                result = message.get("result") or {}
-                snapshot = result.get("rateLimits")
-                buckets = [snapshot.get("primary"), snapshot.get("secondary")] if isinstance(snapshot, dict) else []
-                if not any(isinstance(bucket, dict) and isinstance(bucket.get("usedPercent"), (int, float)) for bucket in buckets):
-                    raise RuntimeError("unexpected rateLimits payload")
-                return result
-        raise TimeoutError("codex app-server timed out")
-    finally:
-        proc.kill()
-        proc.wait()
+    result = codex_appserver.call(codex_home, READ_METHOD, {}, timeout, "rateLimits/read")
+    snapshot = result.get("rateLimits")
+    buckets = [snapshot.get("primary"), snapshot.get("secondary")] if isinstance(snapshot, dict) else []
+    if not any(isinstance(bucket, dict) and isinstance(bucket.get("usedPercent"), (int, float)) for bucket in buckets):
+        raise RuntimeError("unexpected rateLimits payload")
+    return result
 
 
 def bucket_data(result: dict) -> tuple[dict, dict]:
@@ -165,6 +82,27 @@ def auth_cause(error: str | None) -> str:
     return "login needed"
 
 
+def credits_expiry(credits: object) -> str | None:
+    """The soonest deadline among the credits that can still be spent, in grok's field format.
+
+    Only `available` ones count: a redeemed credit keeps its `expiresAt` and would otherwise hand
+    every surface a deadline for something nobody can spend.
+    """
+    if not isinstance(credits, list):
+        return None
+    deadlines = [
+        credit.get("expiresAt") for credit in credits
+        if isinstance(credit, dict) and credit.get("status") == "available"
+    ]
+    deadlines = [
+        value for value in deadlines
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    if not deadlines:
+        return None
+    return datetime.fromtimestamp(min(deadlines), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def account_entry(account: str, result: dict | None, as_of: int, error: str | None = None) -> dict:
     if authentication_required(error):
         return {"account": account, "auth_needed": True, "as_of": as_of, "cause": auth_cause(error)}
@@ -185,6 +123,9 @@ def account_entry(account: str, result: dict | None, as_of: int, error: str | No
         available = reset_credits.get("availableCount")
         if isinstance(available, (int, float)) and not isinstance(available, bool):
             entry["reset_credits"] = available
+        expires = credits_expiry(reset_credits.get("credits"))
+        if expires is not None:
+            entry["reset_credits_expires_at"] = expires
     if error:
         entry["error"] = error
     return entry

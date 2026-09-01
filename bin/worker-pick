@@ -435,6 +435,8 @@ summary=$(jq -r \
     {name:(.account // "main"),
      enabled:(.enabled != false),auth_ok:gr_auth_ok,
      auth_late:(gr_auth_ok and gr_auth == "expired"),
+     credits:(if .reset_credits_stale == true then 0
+              elif (.reset_credits | type) == "number" then .reset_credits else 0 end),
      wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rw:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .claimed = claimed_in($gr_claims) |
     .walled = walled_at(.spend) | eligibility]) as $gr_accounts |
@@ -456,7 +458,7 @@ summary=$(jq -r \
          "no quota data"
        elif ($gr_accounts | all(.auth_ok | not)) then "login needed"
        else ($gr_accounts | display_sort($sel) | map(
-         "\(.name) \(.spend | pct_str)\(if .name == $sel and $gr_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .auth_late then " auth expired" else "" end)\(if .enabled then "" else " off" end) (wk→\(.rw))") | join(" | ")) end))}) as $grok |
+         "\(.name) \(.spend | pct_str) ↻\(.credits)\(if .name == $sel and $gr_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .auth_late then " auth expired" else "" end)\(if .enabled then "" else " off" end) (wk→\(.rw))") | join(" | ")) end))}) as $grok |
 
   ([.vendors.claude.accounts[]? |
     {name:.account,tier:($tiers[.account] // 100),own:(.account == $own),

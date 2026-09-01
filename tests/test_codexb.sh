@@ -171,7 +171,10 @@ printf '{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"se
 printf '{"primary":{"usedPercent":50,"windowDurationMins":300,"resetsAt":%s},"secondary":null,"planType":"plus"}\n' "$future" >"$HOME/quota-alpha.json"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 
-printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":2}}\n' "$future" "$week" >"$HOME/quota-main.json"
+credit_expiry=$((now + 950400))
+credit_expiry_iso=$(date -u -r "$credit_expiry" +%Y-%m-%dT%H:%M:%SZ)
+# The spent credit keeps an earlier `expiresAt`: only the ones still available may name the deadline.
+printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":2,"credits":[{"id":"RateLimitResetCredit_spent","status":"redeemed","expiresAt":%s},{"id":"RateLimitResetCredit_live","status":"available","expiresAt":%s}]}}\n' "$future" "$week" "$future" "$credit_expiry" >"$HOME/quota-main.json"
 printf '{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"},"rateLimitResetCredits":{"availableCount":0}}\n' "$future" "$week" >"$HOME/quota-alpha.json"
 assert test "$(bash "$SCRIPT" pick)" = alpha
 printf '{"primary":{"usedPercent":60,"windowDurationMins":300,"resetsAt":%s},"secondary":{"usedPercent":60,"windowDurationMins":10080,"resetsAt":%s},"planType":"plus"}\n' "$future" "$week" >"$HOME/quota-alpha.json"
@@ -468,9 +471,11 @@ assert jq -e '.current == "main" and (.accounts | type) == "array" and
   all(.accounts[]; has("account") and has("as_of") and
     (if .auth_needed == true then (has("five_hour") or has("weekly") | not)
      else has("plan_type") and has("five_hour") and has("weekly") end))' "$CACHE" >/dev/null
-assert jq -e '.rateLimits.primary.usedPercent == 10 and
-  ([.accounts[] | select(.account == "main")][0] | .five_hour.used_pct == 10 and .reset_credits == 2) and
-  ([.accounts[] | select(.account == "alpha")][0].reset_credits == 0) and
+assert jq -e --arg expiry "$credit_expiry_iso" '.rateLimits.primary.usedPercent == 10 and
+  ([.accounts[] | select(.account == "main")][0] | .five_hour.used_pct == 10 and .reset_credits == 2 and
+    .reset_credits_expires_at == $expiry) and
+  ([.accounts[] | select(.account == "alpha")][0] |
+    .reset_credits == 0 and (has("reset_credits_expires_at") | not)) and
   ([.accounts[] | select(.account == "trap")][0] | has("reset_credits") | not) and
   ([.accounts[] | select(.account == "beta")][0] |
     .auth_needed == true and (has("five_hour") or has("weekly") | not))' "$CACHE" >/dev/null

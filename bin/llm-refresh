@@ -95,6 +95,14 @@ else
   claudeb_bin=$repo_root/bin/claudeb
   [ -x "$claudeb_bin" ] || claudeb_bin=$(command -v claudeb 2>/dev/null || printf '%s' "$claudeb_bin")
 fi
+if [ -n "${LLM_LIMITS_REFRESH_GROKB:-}" ]; then
+  grokb_bin=$LLM_LIMITS_REFRESH_GROKB
+else
+  grokb_bin=$repo_root/bin/grokb
+  [ -x "$grokb_bin" ] || grokb_bin=$(command -v grokb 2>/dev/null || printf '%s' "$grokb_bin")
+fi
+grok_touch_timeout=${LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT:-30}
+case "$grok_touch_timeout" in ''|*[!0-9]*|0) grok_touch_timeout=30 ;; esac
 revive_timeout=${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}
 case "$revive_timeout" in ''|*[!0-9]*|0) revive_timeout=240 ;; esac
 probe_timeout=${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}
@@ -133,9 +141,12 @@ account_rows() {
   local vendor=$1
   [ -r "$store" ] || return 0
   jq -r --arg vendor "$vendor" '
+    # Grok is the one vendor whose own CLI rotates an expired access token, so there `expired`
+    # names work this tick can do rather than a state no refresh reaches.
     def blocked:
       .removed == true or .auth_needed == true or
-      ((.auth.status? // "") | . == "expired" or . == "failed");
+      ((.auth.status? // "") as $status |
+       $status == "failed" or ($status == "expired" and $vendor != "grok"));
     def row($name):
       [$name,
        ([.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, .as_of_epoch]
@@ -200,6 +211,24 @@ next_revive_account() {
     fi
   done < <(account_rows "$vendor")
   printf '%s\n' "$best"
+}
+
+# The poller answers `expired` only for a token it saw a refresh_token beside — without one it
+# says `needs_login` instead — so the store's verdict already carries both halves of the
+# condition, and re-reading auth.json here would only race the rotation this is about to start.
+grok_token_expired() {
+  [ -r "$store" ] || return 1
+  jq -e --arg account "$1" '
+    .vendors.grok.accounts[]? | select(.account == $account) |
+    .auth_needed != true and (.auth.status? == "expired")' "$store" >/dev/null 2>&1
+}
+
+# Every attempt stamps, success or not; an account that has left the store loses its stamp.
+stamp_attempt() {
+  jq -c --arg vendor "$1" --arg account "$2" --argjson now "$now" \
+    --argjson known "$(account_names_json "$1")" \
+    '.[$vendor].attempts = ((.[$vendor].attempts | with_entries(select(.key | IN($known[]))))
+                            + {($account): $now})' <<<"$3"
 }
 
 timeout_command() {
@@ -378,7 +407,7 @@ run_tick() {
   local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]'
-  local direct expired probed session_account claude_touched
+  local direct expired probed session_account claude_touched grok_touched grok_note
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -434,6 +463,8 @@ run_tick() {
     fi
     tried='[]'
     probed='[]'
+    grok_touched='[]'
+    grok_note=''
     session_account=''
     outcome=fresh-passive
     detail='passive collect made all accounts fresh'
@@ -494,11 +525,7 @@ run_tick() {
             step=1
             session_account=$account
             tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
-            # Every attempt stamps, success or not — that is what rotates the selection.
-            state=$(jq -c --arg vendor "$vendor" --arg account "$account" --argjson now "$now" \
-              --argjson known "$(account_names_json "$vendor")" \
-              '.[$vendor].attempts = ((.[$vendor].attempts | with_entries(select(.key | IN($known[]))))
-                                      + {($account): $now})' <<<"$state")
+            state=$(stamp_attempt "$vendor" "$account" "$state")
             refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
             tick_tmp=$refresh_log
             rc=0
@@ -551,7 +578,22 @@ run_tick() {
           refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
           tick_tmp=$refresh_log
           rc=0
-          "$collector" --refresh-account "$vendor/$account" >/dev/null 2>"$refresh_log" || rc=$?
+          if [ "$vendor" = grok ] && grok_token_expired "$account"; then
+            if [ ! -x "$grokb_bin" ]; then
+              grok_note="no grokb to revive with: $grokb_bin"
+            else
+              grok_touched=$(jq -c --arg account "$account" '. + [$account]' <<<"$grok_touched")
+              # No attempt stamp here: unlike claude's revive, which rotates over accounts and
+              # reads the stamps to do it, every stale grok account is touched in the tick it
+              # comes up, and the vendor's own rung is what says when that tick happens again.
+              # The Grok CLI rotates the token as a side effect of any authenticated subcommand,
+              # and prints "You are not authenticated." while doing it — so its own exit status
+              # says nothing, and only the re-poll below decides what this account's auth is.
+              timeout_command "$grok_touch_timeout" "$grokb_bin" "$account" exec models \
+                >/dev/null 2>>"$refresh_log" || true
+            fi
+          fi
+          "$collector" --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
           errors=$(recorded_errors "$vendor" "$account" "$now")
           if { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
             pushback=1
@@ -601,6 +643,10 @@ run_tick() {
         if [ -z "$claude_note" ] && [ "$(jq 'length' <<<"$post_stale")" -gt 0 ]; then
           detail="$detail; one session per tick, the rest wait for the next tick"
         fi
+      elif [ "$vendor" = grok ]; then
+        [ "$(jq 'length' <<<"$grok_touched")" -eq 0 ] || \
+          detail="token touch: $(jq -r 'join(",")' <<<"$grok_touched"); $detail"
+        [ -z "$grok_note" ] || detail="${detail:+$detail; }$grok_note"
       fi
     elif [ "$passive_rc" -ne 0 ]; then
       if store_readable; then

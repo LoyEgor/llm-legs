@@ -403,13 +403,13 @@ render_table() {
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
                  age: compact_age($render_now), alarm: (.age_alarm == true), rot: rotation,
-                 credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
+                 credits:(if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
                  status:account_status($k)})
          elif .available then
            {src: $k, five: .five_hour, week: .weekly, fable:null,
             age: compact_age($render_now), alarm: (.age_alarm == true),
             rot: ((.accounts[0] // .) | rotation),
-            credits:(if $k == "codex" and (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
+            credits:(if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
             status:"-"}
            else
            {src: $k, five: null, week: null, fable:null,
@@ -1407,7 +1407,9 @@ if [ -n "$codex_event" ]; then
             (if ($a.reset_credits_as_of | type) == "number" then $a.reset_credits_as_of else $account_asof end) as $credits_asof |
             {reset_credits:$a.reset_credits,reset_credits_as_of:$credits_asof,
              reset_credits_stale:(([$now - $credits_asof, 0] | max) > $thrw)}
-          else {} end));
+          else {} end) +
+         (if ($a.reset_credits_expires_at | type) == "string" then
+            {reset_credits_expires_at:$a.reset_credits_expires_at} else {} end));
       (if (($e.payload.rate_limits.accounts | type) == "array") and
           ($e.payload.rate_limits.accounts | length) > 0 then
          ($e.payload.rate_limits.current_account // "main") as $requested |
@@ -1597,6 +1599,13 @@ grok=$(jq -cn --argjson payload "$grok_payload" --argjson wall "$grok_wall" --ar
     (if ($a.email | type) == "string" then {email:$a.email} else {} end) +
     (if ($a.period | type) == "string" then {period:$a.period} else {} end) +
     (if ($a.build_pct | type) == "number" then {build_pct:$a.build_pct} else {} end) +
+    (if ($a.reset_credits | type) == "number" then
+       (if ($a.reset_credits_as_of | type) == "number" then $a.reset_credits_as_of else $asof end) as $credits_asof |
+       {reset_credits:$a.reset_credits,reset_credits_as_of:$credits_asof,
+        reset_credits_stale:(([$now - $credits_asof, 0] | max) > $thrw)}
+     else {} end) +
+    (if ($a.reset_credits_expires_at | type) == "string" then
+       {reset_credits_expires_at:$a.reset_credits_expires_at} else {} end) +
     (if ($a.cause | type) == "string" then {cause:$a.cause} else {} end);
   # Rows are ordered before anything reads "the first one": a targeted refresh rewrites the cache
   # in its own order, and current-account picked off that would follow whichever account was
@@ -2235,10 +2244,10 @@ else
           ((.key == "gemini" or .key == "grok") and (.value.accounts | length) > 0)) then
       .key as $key | .value.accounts[] | select(.removed != true) |
       line($key + "/" + .account + (if .is_current then "*" else "" end); .; rotation;
-        (if $key == "codex" then credits else "-" end); account_status($key))
+        credits; account_status($key))
     elif .value.available then
       line(.key; .value; ((.value.accounts[0] // .value) | rotation);
-        (if .key == "codex" then (.value | credits) else "-" end); "-")
+        (.value | credits); "-")
     else line(.key; {age_alarm: (.value.age_alarm == true)}; "-"; "-";
       (if .value.auth_needed == true then "login needed" else (.value.status // "-") end)) +
       (if .value.last_wall then " | last wall " + .value.last_wall else "" end) end

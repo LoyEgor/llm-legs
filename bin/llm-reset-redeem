@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Redeem one `<vendor>/<account>` usage-reset consumable, then re-read that account's quota.
+
+Egor's own menu click is the only caller: a reset is one per period and spending it is his
+decision, so nothing here may run on a schedule, a retry ladder or a heartbeat.
+
+Exit codes: 0 redeemed, 2 nothing to redeem, 3 the token was refused, 4 the vendor exposes no
+redeem RPC, 5 the call failed without saying anything (weather or a transient error).
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import os
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "share"))
+import codex_appserver  # noqa: E402
+import grok_resets  # noqa: E402
+
+EXIT_REDEEMED = 0
+EXIT_USAGE = 2
+EXIT_NOTHING = 2
+EXIT_EXPIRED = 3
+EXIT_NO_BACKEND = 4
+EXIT_TRANSIENT = 5
+
+LOG_PATH = Path(os.environ.get("CLAUDEB_DIR")
+                or Path.home() / ".claude-profiles" / ".claudeb") / "reset-redeem.log"
+
+
+def log(event: str, detail: str) -> None:
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_PATH.open("a") as handle:
+            handle.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {event:<18} {detail}\n")
+    except OSError:
+        pass
+
+
+def report(line: str, code: int) -> int:
+    log("exit" if code else "redeemed", f"{line} (exit {code})")
+    print(line, file=sys.stderr if code else sys.stdout)
+    return code
+
+
+# The quota pollers' hyphens keep them off the import path, and each vendor's account shape has
+# exactly one owner: a second reader here would drift from the poller the menubar's numbers come
+# from.
+def poller(name: str) -> object:
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / f"{name}.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def touch_grok(account: str) -> bool:
+    """One non-interactive CLI subcommand, which rotates the access token as a side effect.
+
+    Never a hand-rolled token POST: the vendor's own CLI is the only thing allowed to refresh.
+    """
+    grokb = os.environ.get("LLM_RESET_REDEEM_GROKB") or str(ROOT / "bin" / "grokb")
+    try:
+        subprocess.run([grokb, account, "exec", "models"],
+                       capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return True
+
+
+def refresh(target: str) -> bool:
+    collector = os.environ.get("LLM_RESET_REDEEM_COLLECTOR") or str(ROOT / "llm-limits.sh")
+    try:
+        done = subprocess.run(["bash", collector, "--refresh-account", target],
+                              capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
+
+
+def redeem_grok(account: str, target: str) -> int:
+    module = poller("grok-quota")
+    profiles_dir = Path(os.environ.get("GROKB_PROFILES_DIR", "~/.grok-profiles")).expanduser()
+    try:
+        entry = module.auth_entry(module.resolve(account, profiles_dir))
+    except RuntimeError as exc:
+        return report(f"{target}: {exc} — the CLI is mid-rotation, try again", EXIT_TRANSIENT)
+    if entry is None:
+        return report(f"{target}: nobody is logged in — run: grokb add {account}", EXIT_EXPIRED)
+
+    touched = False
+
+    def call(method, *arguments):
+        nonlocal touched
+        while True:
+            try:
+                return method(entry["key"], *arguments)
+            except grok_resets.AuthError:
+                # Only an authentication refusal may be retried: the server rejected the token
+                # before doing anything, so nothing was spent. A weather failure on RedeemReset is
+                # ambiguous, and a second attempt could spend the consumable twice.
+                if touched:
+                    raise
+                touched = True
+                if not touch_grok(account):
+                    raise
+                try:
+                    refreshed = module.auth_entry(module.resolve(account, profiles_dir))
+                except RuntimeError:
+                    raise grok_resets.AuthError("auth.json was unreadable after the CLI touch") \
+                        from None
+                if refreshed is None:
+                    raise
+                entry.update(refreshed)
+
+    try:
+        tokens = call(grok_resets.get_remaining_resets)
+    except grok_resets.AuthError as exc:
+        return report(f"{target}: token rejected ({exc}) — run: grokb {account} exec models",
+                      EXIT_EXPIRED)
+    except grok_resets.TransientError as exc:
+        return report(f"{target}: reset service unavailable ({exc})", EXIT_TRANSIENT)
+    if not tokens:
+        return report(f"{target}: no usage reset available to redeem", EXIT_NOTHING)
+
+    # The menu shows the soonest deadline the poller published, so that is the grant this spends:
+    # taking an arbitrary one lets the deadline the user was reading lapse unused.
+    dated = [token for token in tokens if isinstance(token.get("validity_end"), int)]
+    spending = min(dated, key=lambda token: token["validity_end"]) if dated else tokens[0]
+
+    try:
+        # `token_id` is the period's grant id, shared across accounts — it names the reset being
+        # spent, never the account spending it.
+        remaining = call(grok_resets.redeem_reset, spending["token_id"])
+    except grok_resets.AuthError as exc:
+        return report(f"{target}: token rejected ({exc}) — run: grokb {account} exec models",
+                      EXIT_EXPIRED)
+    except grok_resets.TransientError as exc:
+        return report(f"{target}: redeem failed ({exc}) — check the account before retrying",
+                      EXIT_TRANSIENT)
+
+    line = f"{target}: usage reset redeemed — {len(remaining)} left"
+    if not refresh(target):
+        line += " (quota re-read failed; press Refresh)"
+    return report(line, EXIT_REDEEMED)
+
+
+CODEX_CONSUME_METHOD = "account/rateLimitResetCredit/consume"
+# `alreadyRedeemed` is a success here and nowhere else: the idempotency key below is derived from
+# the credit, so the call it collides with is this tool's own earlier attempt, which landed.
+CODEX_OUTCOMES = {"reset": EXIT_REDEEMED, "alreadyredeemed": EXIT_REDEEMED,
+                  "nothingtoreset": EXIT_NOTHING, "nocredit": EXIT_NOTHING}
+IDEMPOTENCY_NAMESPACE = uuid.UUID("0f1d6b6a-2f2a-5a3e-9c41-6f7a1d0e5b82")
+
+
+def outcome_tokens(value: object):
+    """Every word the reply states an outcome in, punctuation stripped.
+
+    Values only. A key is a field name, not an answer: a reply carrying `{"nothingToReset": false,
+    "outcome": "reset"}` states a reset, and reading the key would report the spent credit as
+    nothing redeemed. Matching whole normalized words rather than substrings keeps `resetType`
+    from reading as a redeemed `reset`.
+    """
+    if isinstance(value, str):
+        if value:
+            yield "".join(character for character in value if character.isalnum()).lower()
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from outcome_tokens(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from outcome_tokens(item)
+
+
+def codex_outcome(result: dict) -> tuple[str | None, int | None]:
+    for token in outcome_tokens(result):
+        if token in CODEX_OUTCOMES:
+            return token, CODEX_OUTCOMES[token]
+    return None, None
+
+
+def redeem_codex(account: str, target: str) -> int:
+    module = poller("codex-quota")
+    _, codex_home = module.parse_target(account, Path.home())
+    timeout = float(os.environ.get("CODEX_QUOTA_TIMEOUT", "30"))
+    rejected = f"{target}: token rejected — run: codexb run {account} login"
+
+    try:
+        snapshot = codex_appserver.call(codex_home, module.READ_METHOD, {}, timeout,
+                                        "rateLimits/read")
+    except TimeoutError as exc:
+        return report(f"{target}: {exc}", EXIT_TRANSIENT)
+    except OSError as exc:
+        return report(f"{target}: could not run the codex CLI ({exc})", EXIT_TRANSIENT)
+    except RuntimeError as exc:
+        if module.authentication_required(str(exc)):
+            return report(rejected, EXIT_EXPIRED)
+        return report(f"{target}: reset read failed ({exc})", EXIT_TRANSIENT)
+
+    published = snapshot.get("rateLimitResetCredits")
+    if not isinstance(published, dict):
+        published = {}
+    credit = next((item["id"] for item in published.get("credits") or []
+                   if isinstance(item, dict) and item.get("status") == "available"
+                   and isinstance(item.get("id"), str) and item["id"]), None)
+    if credit is None:
+        count = published.get("availableCount")
+        # The count and the id come from two different halves of the same payload, and a summary
+        # without the `credits` array leaves the menu showing a reset this tool cannot name.
+        if isinstance(count, (int, float)) and not isinstance(count, bool) and count >= 1:
+            return report(f"{target}: {int(count)} usage reset published but its credit details "
+                          "are unavailable — redeem it from the vendor UI", EXIT_NOTHING)
+        return report(f"{target}: no usage reset available to redeem", EXIT_NOTHING)
+
+    # Derived from the credit, never random: a reply lost in transit leaves the owner free to click
+    # again, and the vendor answers the retry `alreadyRedeemed` instead of spending a second reset.
+    key = str(uuid.uuid5(IDEMPOTENCY_NAMESPACE, f"{target}/{credit}"))
+    try:
+        result = codex_appserver.call(
+            codex_home, CODEX_CONSUME_METHOD, {"creditId": credit, "idempotencyKey": key},
+            timeout, "rateLimitResetCredit/consume")
+    except TimeoutError as exc:
+        return report(f"{target}: {exc} — check the account before retrying", EXIT_TRANSIENT)
+    except OSError as exc:
+        return report(f"{target}: could not run the codex CLI ({exc})", EXIT_TRANSIENT)
+    except RuntimeError as exc:
+        if module.authentication_required(str(exc)):
+            return report(rejected, EXIT_EXPIRED)
+        return report(f"{target}: redeem failed ({exc}) — check the account before retrying",
+                      EXIT_TRANSIENT)
+
+    log("codex-consume", json.dumps(result, sort_keys=True))
+    token, code = codex_outcome(result)
+    if code == EXIT_NOTHING:
+        return report(f"{target}: nothing redeemed — {token}", EXIT_NOTHING)
+    # An unrecognized outcome still went through, and a second attempt could cost a second reset,
+    # so it counts as spent; the raw reply is in the log for whoever teaches this the real name.
+    line = f"{target}: usage reset redeemed"
+    if token == "alreadyredeemed":
+        line += " — an earlier attempt under this credit's key had already landed"
+    elif token is None:
+        line += f" — unrecognized outcome, see {LOG_PATH}"
+    if not refresh(target):
+        line += " (quota re-read failed; press Refresh)"
+    return report(line, EXIT_REDEEMED)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 1 or "/" not in argv[0]:
+        print("usage: llm-reset-redeem <vendor>/<account>", file=sys.stderr)
+        return EXIT_USAGE
+    target = argv[0]
+    vendor, _, account = target.partition("/")
+    if not vendor or not account:
+        print("usage: llm-reset-redeem <vendor>/<account>", file=sys.stderr)
+        return EXIT_USAGE
+    log("launch", target)
+    if vendor == "grok":
+        return redeem_grok(account, target)
+    if vendor == "codex":
+        return redeem_codex(account, target)
+    return report(f"{target}: NO_REDEEM_BACKEND — {vendor} has no usage-reset consumable",
+                  EXIT_NO_BACKEND)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
