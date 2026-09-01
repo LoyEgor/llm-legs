@@ -14,7 +14,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen) ;;
   *) exit 0 ;;
 esac
 agent_id=$(field '.agent_id' | tr -cd 'A-Za-z0-9_-')
@@ -137,6 +137,13 @@ elif is_grokb_launch &&
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=high
   if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
+elif printf '%s' "$launch" | grep -qE "${cmd_word}"'(codex|gemini|grok)-image([[:space:]]|$)'; then
+  # `--account` is the only account this text can vouch for: without it the script asks worker-pick
+  # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.
+  vendor=$(grab "${cmd_word}"'(codex|gemini|grok)-image' | grep -oE '(codex|gemini|grok)-image$' |
+    sed 's/-image$//')
+  acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
+  [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · image · $vendor"
 fi
 
 if [ -n "$tag" ]; then

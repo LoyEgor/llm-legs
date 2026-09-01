@@ -1004,11 +1004,17 @@ printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_
   'gemini_model=flash' 'gemini_effort=medium' >"$CONFIG"
 run_case gemini_fresh
 assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini main · flash · medium — ACCOUNT: main'
+# `worker=sonnet` is a toggle value that no longer exists — every implementation run belongs to a
+# relay worker on another account — so the reader routes it as `auto` and says so once, instead of
+# falling through to a mode nobody defines.
 printf '%s\n' 'worker=sonnet' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
 run_case golden
-assert test "$(awk -F'  \\|  ' '{print NF}' <<<"$(head -n1 <<<"$output")")" -eq 2
+sonnet_next=$(head -n1 <<<"$output")
+assert grep -Fq 'worker=sonnet is no longer a worker toggle value' "$WORK/note.err"
 write_config
+run_case golden
+assert test "$sonnet_next" = "$(head -n1 <<<"$output")"
 
 # The golden output is the whole contract in one store: line order, the session-account footnote,
 # the statusline cache line, and no POLICY prose anywhere.

@@ -15,7 +15,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 subagent=$(field '.tool_input.subagent_type')
 case "$subagent" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen) ;;
   *) exit 0 ;;
 esac
 
@@ -73,6 +73,19 @@ elif [ "$subagent" = grok-worker ]; then
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=high
   if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
+elif [ "$subagent" = image-gen ]; then
+  # An image run has no model or effort knob, so the middle segment is the word `image` and the
+  # third is the vendor whose quota it spends — the same shape the renderer already reads.
+  vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
+    grep -oE '(codex|gemini|grok)$')
+  [ -n "$vendor" ] || vendor=codex
+  acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=$(route_account "$vendor")
+  [ -n "$acct" ] || acct=$(worker_conf "${vendor}_profile")
+  # The scripts route themselves; a seed nobody can predict says so rather than naming an account
+  # the run may never touch.
+  [ -n "$acct" ] || acct='?'
+  prefix="$acct · image · $vendor"
 else
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account gemini)
@@ -126,7 +139,8 @@ updated="$prefix: $title"
 # Inject the guard unless the brief explicitly unlocks editing; briefs carrying their own
 # MD-GUARD (a re-injection on RESUME) are left alone too.
 md_guard=''
-if ! printf '%s' "$prompt" | grep -qE '^(MD-EDIT:[[:space:]]*allowed|MD-GUARD)'; then
+if [ "$subagent" != image-gen ] &&
+   ! printf '%s' "$prompt" | grep -qE '^(MD-EDIT:[[:space:]]*allowed|MD-GUARD)'; then
   md_guard="MD-GUARD (hook-injected): CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude are READ-ONLY for this task. If your change makes one of them stale, return a DOCS IMPACT note proposing the edit instead of applying it. Only an explicit 'MD-EDIT: allowed' line in the brief unlocks them. The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your OUTCOME and leave it in place."
 fi
 

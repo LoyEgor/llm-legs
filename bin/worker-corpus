@@ -8,7 +8,18 @@ from pathlib import Path
 from collections import defaultdict
 import re
 
-WORKER_TYPES = {"codex-worker", "claudeb-worker", "gemini-worker", "grok-worker", "sonnet-worker"}
+# What the corpus READS, which is not what may be dispatched: `--since` reaches back over
+# retirements, and a type dropped from here does not stop being history — it silently stops being
+# counted. The retired ones are read, masked and summarised like any other, and marked in the
+# summary so past volume is never mistaken for a live choice.
+RETIRED_WORKER_TYPES = {"sonnet-worker"}
+WORKER_TYPES = {"codex-worker", "claudeb-worker", "gemini-worker", "grok-worker"} | RETIRED_WORKER_TYPES
+DISPATCH_WORKER_TYPES = WORKER_TYPES - RETIRED_WORKER_TYPES
+
+# A relay re-attaching to a run already in flight (`ATTACH <run-id>:`) launches nothing: counted as
+# a fresh dispatch it invents a delegation that never happened and reads as a silent retry of the
+# very run it is waiting on.
+ATTACH_RE = re.compile(r"ATTACH\s+[a-z0-9][a-z0-9-]*:")
 
 # Only model-shaped values are real; junk like `py_compile`, `pytest`,
 # `transcriber.ctl`, `http.server` came from `python3 -m <module>` commands.
@@ -159,6 +170,9 @@ def extract_delegations(transcript_path, since_date, until_date, file_event_coun
                     description = tool_input.get("description", "")
                     is_resume = prompt.strip().startswith("RESUME ")
                     resumed_session = None
+                    attach_match = ATTACH_RE.match(prompt.strip())
+                    is_attach = attach_match is not None
+                    attached_run = attach_match.group(0)[:-1].split()[-1] if is_attach else None
 
                     if is_resume:
                         match = re.match(r"RESUME\s+([a-f0-9\-]+):", prompt)
@@ -200,6 +214,8 @@ def extract_delegations(transcript_path, since_date, until_date, file_event_coun
                         "prompt_chars": prompt_chars,
                         "is_resume": is_resume,
                         "resumed_session": resumed_session,
+                        "is_attach": is_attach,
+                        "attached_run": attached_run,
                         "model": model,
                         "effort": effort,
                         "account": account,
@@ -241,7 +257,7 @@ def count_file_events(transcript_path):
 
 
 def mask_worker_names(text):
-    text = re.sub(r"codex-worker|claudeb-worker|gemini-worker|grok-worker|sonnet-worker", "WORKER", text)
+    text = re.sub("|".join(sorted(WORKER_TYPES)), "WORKER", text)
     text = re.sub(r"\bcodexb?\b|\bclaudeb\b|\bgeminib?\b|\bgrokb?\b|\bsonnet\b", "WORKER", text, flags=re.IGNORECASE)
     return text
 
@@ -326,7 +342,7 @@ def extract_sidechain_config(sidechain_file, worker_type):
                                     if m:
                                         account = m.group(1)
 
-                            elif worker_type in ("claudeb-worker", "sonnet-worker"):
+                            elif worker_type == "claudeb-worker":
                                 if "--model" in cmd and not model:
                                     m = re.search(r'--model\s+(\S+)', cmd)
                                     if m:
@@ -664,8 +680,8 @@ def detect_orchestrator_patch(events, after_ts, result_text):
 
 
 def link_retries(delegations):
-    """Flag silent retries: a fresh (non-resume) dispatch that closely repeats an
-    earlier same-session, same-worker delegation whose outcome was infra-broken."""
+    """Flag silent retries: a fresh dispatch — neither a RESUME nor an ATTACH — that closely
+    repeats an earlier same-session, same-worker delegation whose outcome was infra-broken."""
     from difflib import SequenceMatcher
     by_session = defaultdict(list)
     for d in delegations:
@@ -673,7 +689,7 @@ def link_retries(delegations):
     for group in by_session.values():
         group.sort(key=lambda d: d["timestamp"])
         for i, d in enumerate(group):
-            if d["is_resume"]:
+            if d["is_resume"] or d.get("is_attach"):
                 continue
             head = d["brief_text"][:200]
             for j in range(i - 1, -1, -1):
@@ -702,11 +718,14 @@ def link_followups(delegations):
             belong[d["resumed_session"]].append(d)
 
     for i, d in enumerate(delegations):
-        if not d["is_resume"]:
+        # An ATTACH belongs to the run it re-attaches to exactly as a RESUME belongs to its worker
+        # session: it is a followup, never a dispatch of its own. Its run id names no session, so
+        # the chain lookup is skipped and the nearest earlier dispatch below is its parent.
+        if not d["is_resume"] and not d.get("is_attach"):
             continue
 
         parent = None
-        if d["resumed_session"]:
+        if d["is_resume"] and d["resumed_session"]:
             chain = [e for e in belong[d["resumed_session"]]
                      if e["tool_use_id"] != d["tool_use_id"] and e["timestamp"] < d["timestamp"]]
             if chain:
@@ -811,6 +830,8 @@ def print_summary(delegations, followups):
         model_str = model if model else "(default)"
         effort_str = effort if effort else "(default)"
         subagent_str = subagent_type if subagent_type else "(unknown)"
+        if subagent_type in RETIRED_WORKER_TYPES:
+            subagent_str += " (retired)"
 
         print(f"{subagent_str:<20} {model_str:<15} {effort_str:<10} {counts['delegations']:>12} {counts['followups']:>12}")
         total_delegations += counts["delegations"]

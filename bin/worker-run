@@ -464,12 +464,13 @@ supervise_grok() {
   effort=$(jq -r '.effort' "$meta")
   resume=$(jq -r '.resume' "$meta")
   cli=$(jq -r '.cli' "$meta")
-  turns=$(jq -r '.max_turns' "$meta")
+  turns=$(jq -r '.max_turns // empty' "$meta")
   # GROK_MEMORY=0 rather than a flag: `--no-memory` was dropped in 1.0.13, and a worker inheriting
   # the profile's memory would carry another task's notes into this brief.
   command=(env GROK_MEMORY=0 "$cli" profile "$account" --prompt-file "$directory/brief"
     --output-format streaming-json --always-approve --cwd "$(jq -r '.workdir' "$meta")"
-    --no-subagents --max-turns "$turns" --reasoning-effort "$effort")
+    --no-subagents --reasoning-effort "$effort")
+  [ -z "$turns" ] || command+=(--max-turns "$turns")
   [ "$model" = auto ] || command+=(-m "$model")
   # `-r` resumes; `-s` only ever CREATES and rejects an id that already exists (live 1.0.13).
   [ -z "$resume" ] || command+=(-r "$resume")
@@ -965,12 +966,15 @@ start_run() {
         low|medium|high|xhigh) ;;
         *) printf 'OUTCOME: GROK_UNAVAILABLE\n'; fail "grok effort must be low, medium, high or xhigh (got: $effort)" ;;
       esac
-      grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-60}
-      [[ "$grok_turns" =~ ^[0-9]+$ ]] && [ "$grok_turns" -gt 0 ] || grok_turns=60
+      # No turn cap unless one is asked for: an implementation brief is bounded by the wall-clock
+      # deadline like every other vendor's, and a cap ends a run the vendor was still serving.
+      grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}
+      [[ "$grok_turns" =~ ^[0-9]+$ ]] && [ "$grok_turns" -gt 0 ] || grok_turns=''
       cli="${WORKER_RUN_GROKB:-$HOME/.local/bin/grokb}"
       command_meta=(env GROK_MEMORY=0 "$cli" profile "$account" --prompt-file BRIEF
         --output-format streaming-json --always-approve --cwd "$workdir"
-        --no-subagents --max-turns "$grok_turns" --reasoning-effort "$effort")
+        --no-subagents --reasoning-effort "$effort")
+      [ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")
       [ "$model" = auto ] || command_meta+=(-m "$model")
       [ -z "$resume" ] || command_meta+=(-r "$resume")
       [ "$web_search" = true ] || command_meta+=(--disable-web-search)
@@ -1020,7 +1024,7 @@ start_run() {
     --argjson pinned "$([ -n "$explicit_account" ] || [ "$pin_fallback" = true ] && printf true || printf false)" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort,pinned:$pinned}
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
-     + if $vendor == "grok" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
+     + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
   # chat spawned IS that chat (Egor, 2026-08-17), and the run is the only place that fact exists —
   # the report says who a worker is, never who asked for it, so ownership read off a report is
@@ -1133,6 +1137,13 @@ grok_error_text() { # directory
           | tostring' "$1/out" 2>/dev/null
 }
 
+# A turn cap the run hit is the vendor answering fine to the last turn. Read as GROK_UNAVAILABLE it
+# joins capacity weather, and the relay reroutes a brief that will outrun the same cap wherever it
+# lands next.
+grok_max_turns_hit() { # directory
+  grok_error_text "$1" | grep -q 'max_turns_reached'
+}
+
 # Which kind of not-a-wall a grok failure was, said where the relay reads its outcome: an expired
 # login needs a human, capacity weather needs nothing but another attempt.
 grok_reason_line() { # directory
@@ -1203,6 +1214,9 @@ print_outcome() {
     fi
     reset=$(grep -Eioh '(retry[_ -]?at|reset(s)?([_ -]?at|[ _-]?in)?)[[:space:]:=]+[^,;]+' "$directory/out" "$directory/err" 2>/dev/null | head -n1)
     [ -z "$reset" ] || printf 'RESET: %s\n' "$reset"
+  elif [ "$vendor" = grok ] && grok_max_turns_hit "$directory"; then
+    printf 'OUTCOME: GROK_MAX_TURNS\n'
+    grok_reason_line "$directory"
   else
     printf 'OUTCOME: %s\n' "$(failure_outcome "$vendor")"
     case "$vendor" in grok) grok_reason_line "$directory" ;; esac
@@ -1705,16 +1719,10 @@ grok_result_text() { # directory
   if [ -n "$text" ]; then printf '%s\n' "$text"; else tail -n 400 "$1/out" 2>/dev/null; fi
 }
 
-result_tail() {
-  local directory="$1" vendor="$2" lines="$3"
-  printf 'RESULT-TAIL:\n'
-  if [ "$vendor" = claudeb ]; then
-    jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n "$lines"
-  elif [ "$vendor" = grok ]; then
-    grok_result_text "$directory" | tail -n "$lines"
-  else
-    tail -n "$lines" "$directory/out" 2>/dev/null
-  fi
+# `wait` names the answer instead of quoting it: a relay reads `report` next in any case, and a tail
+# here made every terminal wait hand the orchestrator the same result twice.
+result_pointer() { # directory
+  printf 'RESULT: run `worker-run report %s`\n' "${1##*/}"
 }
 
 denied_tools_line() {
@@ -1735,7 +1743,7 @@ terminal_report() {
   print_outcome "$directory" "$vendor" "$code"
   denied_tools_line "$directory"
   unnamed_line "$directory"
-  result_tail "$directory" "$vendor" 40
+  result_pointer "$directory"
   if [ "$code" != 0 ]; then
     printf 'ERR-TAIL:\n'
     tail -n 40 "$directory/err" 2>/dev/null
@@ -1747,7 +1755,7 @@ unknown_report() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
   denied_tools_line "$directory"
-  result_tail "$directory" "$vendor" 40
+  result_pointer "$directory"
   printf 'ERR-TAIL:\n'
   tail -n 40 "$directory/err" 2>/dev/null
 }

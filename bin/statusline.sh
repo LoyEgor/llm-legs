@@ -54,6 +54,27 @@ git_worktree_top() {
   (cd "$top" 2>/dev/null && pwd -P)
 }
 
+# Both identities a progress document needs, in ONE rev-parse: the working tree it runs over and
+# the repository that tree belongs to, resolved exactly as repo_dirs resolves REPO_TOP/REPO_COMMON
+# so all of them compare. The repository is what makes a run in a sibling worktree this
+# repository's news without making it this tree's, and asking for it separately per document put a
+# second fork per foreign run into a render that budgets one git call per directory.
+run_tree_dirs() { # path -> RUN_TOP, RUN_COMMON
+  local out common resolved
+  out=$(git -C "$1" rev-parse --show-toplevel --git-common-dir 2>/dev/null) || return 1
+  RUN_TOP=${out%%$'\n'*}
+  common=${out#*$'\n'}
+  [ -n "$RUN_TOP" ] && [ -n "$common" ] || return 1
+  # `--git-common-dir` comes back relative to the -C directory whenever it sits inside the tree.
+  case "$common" in
+    /*) ;;
+    *) common="$1/$common" ;;
+  esac
+  resolved=$({ cd "$common" && pwd -P && cd "$RUN_TOP" && pwd -P; } 2>/dev/null)
+  { IFS= read -r RUN_COMMON; IFS= read -r RUN_TOP; } <<< "$resolved"
+  [ -n "$RUN_COMMON" ] && [ -n "$RUN_TOP" ] || return 1
+}
+
 # One git call per directory for everything the render needs about its repository:
 # REPO_TOP (this working tree), REPO_COMMON (identity — shared by all worktrees of
 # a repo), REPO_ROOT (the main checkout), REPO_NAME, REPO_IS_WT (this directory is
@@ -794,8 +815,13 @@ home_probe() {
 # started it, or it is THIS session's run somewhere else — the away tree the block may move to. A
 # run that is neither is another chat's business elsewhere and stays invisible.
 ph_started=""; ph_done=""; ph_total=""; ph_tier=""; ph_max=""; ph_late=""
-ph_session=""; ph_pid=""
+ph_session=""; ph_pid=""; ph_class=""; ph_file=""; ph_foreign=0
 pa_started=""; pa_done=""; pa_total=""; pa_tier=""; pa_max=""; pa_late=""; pa_top=""
+pa_class=""; pa_file=""
+# Every run another chat left unconsumed over this repository, kept for the count that stands
+# beside the rendered one: the block shows ONE run, and the rest would otherwise be reviews this
+# statusline never mentions until their results arrive.
+fg_files=(); fg_tops=(); fg_commons=()
 progress_dir="$worker_stats_dir/progress"
 if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; then
   # Every file is read and matched on the repository recorded inside it, never on its name:
@@ -807,10 +833,6 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
     [ -f "$progress_file" ] || continue
     progress_mtime=$(file_mtime "$progress_file" 2>/dev/null)
     [[ "$progress_mtime" =~ ^[0-9]+$ ]] || continue
-    # A run whose slowest cell is still out writes nothing for as long as that cell takes,
-    # so there is no tight staleness window here; this is only the wall that stops a wedged
-    # process from holding the segment for a day.
-    [ "$((now - progress_mtime))" -le 7200 ] || continue
     progress_values=$(jq -er --argjson now "$now" '
       select(type == "object"
         and (.repo | type) == "string"
@@ -840,31 +862,96 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
               and (($now - $started_epoch) * 1000
                    > ([3 * $expected_ms, 120000] | max)))
         ] | length > 0) as $late
+      | (if (["running", "done", "failed", "dead"] | index($run.state)) != null
+         then $run.state else "" end) as $state
+      | (if (($run.heartbeat_epoch | type) == "number"
+                 and ($run.heartbeat_epoch | floor) == $run.heartbeat_epoch
+                 and $run.heartbeat_epoch > 0)
+         then ($run.heartbeat_epoch | tostring) else "" end) as $heartbeat
       | [.repo, (.pid | tostring), (.tier // ""), (if .max then "max" else "" end),
          (.done | length | tostring), (.cells | length | tostring), .started,
          (if $late then "late" else "" end),
-         (if (.session | type) == "string" then .session else "" end)]
+         (if (.session | type) == "string" then .session else "" end),
+         $state, $heartbeat]
       | join("")
     ' "$progress_file" 2>/dev/null) || continue
     IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
       progress_run_done progress_run_total progress_started progress_run_late \
-      progress_run_session <<< "$progress_values"
-    kill -0 "$progress_pid" 2>/dev/null || continue
-    progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
-    # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
-    # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
-    [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
+      progress_run_session progress_run_state progress_run_heartbeat <<< "$progress_values"
+    # What the run is: what review-bench declared it to be, crossed with what this render can still
+    # verify about it. The writer alone knows a finished run from an abandoned one — the document is
+    # no longer unlinked at the end, and outliving its process is now the normal case, not the
+    # kill -9 leftover it used to mean — but liveness of a run still claiming to run is derived
+    # here, never declared: the pid must be alive AND its process must have started no later than
+    # the last write, which a pid reused after that run died cannot satisfy, and the heartbeat says
+    # when the run last spoke. A document with no state is one an older review-bench wrote: it has
+    # neither, so it keeps exactly the rule it shipped with — a live pid under the 2h wall, which is
+    # not a staleness window but the only thing there that can stop a wedged process from holding
+    # the segment for a day.
+    progress_run_class=""
+    case "$progress_run_state" in
+      "")
+        [ "$((now - progress_mtime))" -le 7200 ] || continue
+        kill -0 "$progress_pid" 2>/dev/null || continue
+        progress_start=$(process_start_epoch "$progress_pid" "$now") || continue
+        # The slack absorbs ps's whole-second resolution, not a real gap: pids are handed out
+        # sequentially and wrap near 100k, so a reuse this close to the last write cannot happen.
+        [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
+        progress_run_class=live ;;
+      running)
+        progress_run_class=killed
+        if kill -0 "$progress_pid" 2>/dev/null &&
+          progress_start=$(process_start_epoch "$progress_pid" "$now") &&
+          [ "$progress_start" -le "$((progress_mtime + 5))" ]; then
+          # A run whose slowest cell is still out writes no cell for as long as that cell takes, so
+          # the heartbeat is the only thing that separates "slow" from "wedged"; a document written
+          # before the writer kept one falls back to its own last write.
+          progress_run_beat=$progress_run_heartbeat
+          [ -n "$progress_run_beat" ] || progress_run_beat=$progress_mtime
+          if [ "$((now - progress_run_beat))" -le 120 ]; then
+            progress_run_class=live
+          else
+            progress_run_class=wedged
+          fi
+        fi ;;
+      dead) progress_run_class=killed ;;
+      done) progress_run_class=done ;;
+      failed) progress_run_class=failed ;;
+    esac
+    # Lateness is a statement about a run still working; a finished, wedged or killed one carries
+    # its own mark and nothing else may repaint it.
+    [ "$progress_run_class" = live ] || progress_run_late=""
     # The tree the run is over, and a subdirectory it was started from still resolves to it. A
     # recorded repository that no longer resolves leaves the run with no tree at all — and the
     # block being one tree's rendering, there is nothing left to show such a run with.
-    progress_run_top=$(git_worktree_top "$progress_repo" 2>/dev/null) || continue
-    [ -n "$progress_run_top" ] || continue
+    run_tree_dirs "$progress_repo" 2>/dev/null || continue
+    progress_run_top=$RUN_TOP
+    progress_run_common=$RUN_COMMON
     case "$progress_run_tier" in
       T[0-3]) ;;
       *) progress_run_tier="" ;;
     esac
+    # The count beside the rendered run reads the RECORDED launcher only: the parent walk is a
+    # fallback for a document written before review-bench recorded one, and a run whose launcher
+    # cannot be named is never counted as somebody else's — the doctrine that leaves such a run
+    # bright is the same one that keeps it out of a number about other chats.
+    progress_run_foreign=0
+    if [ -n "$session_id" ] && [ -n "$progress_run_session" ] &&
+      [ "${progress_run_session//[^A-Za-z0-9_-]/}" != "$session_id" ]; then
+      progress_run_foreign=1
+      fg_files+=("$progress_file")
+      fg_tops+=("$progress_run_top")
+      fg_commons+=("$progress_run_common")
+    fi
     if [ -n "$home_top" ] && [ "$progress_run_top" = "$home_top" ]; then
-      if [ -z "$ph_started" ] || [[ "$progress_started" > "$ph_started" ]]; then
+      # This chat's own run holds the slot against any other chat's, however much newer that one
+      # is: a stranger's finished document now survives for a day, and the newest-started rule
+      # alone let it take the one slot from a run of this chat's still working — which then
+      # rendered nowhere, a foreign run being only ever the dim `+N` beside it.
+      if [ -z "$ph_started" ] ||
+        { [ "$ph_foreign" = "$progress_run_foreign" ] && [[ "$progress_started" > "$ph_started" ]]; } ||
+        { [ "$ph_foreign" = 1 ] && [ "$progress_run_foreign" = 0 ]; }; then
+        ph_foreign=$progress_run_foreign
         ph_started=$progress_started
         ph_done=$progress_run_done
         ph_total=$progress_run_total
@@ -873,6 +960,8 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
         ph_late=$progress_run_late
         ph_session=$progress_run_session
         ph_pid=$progress_pid
+        ph_class=$progress_run_class
+        ph_file=$progress_file
       fi
     else
       [ -n "$session_id" ] || continue
@@ -885,6 +974,8 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
         pa_max=$progress_run_max
         pa_late=$progress_run_late
         pa_top=$progress_run_top
+        pa_class=$progress_run_class
+        pa_file=$progress_file
       fi
     fi
   done
@@ -939,9 +1030,29 @@ progress_max=""
 progress_late=""
 progress_label=""
 progress_color=""
+progress_class=""
+# Every other chat's unconsumed run over the SHOWN tree's repository, counted and never named: the
+# block renders one tree and one run, so a second name here is the answer the move exists to
+# remove — but a review nobody here can see is a review whose result arrives unannounced. Sibling
+# worktrees count, since a run there is this repository's news even where it is not this tree's.
+rev_extra=0
+if [ "${#fg_files[@]}" -gt 0 ] && [ -n "$active_top" ]; then
+  fg_rendered=""
+  case "$progress_slot" in home) fg_rendered=$ph_file ;; away) fg_rendered=$pa_file ;; esac
+  for fg_i in "${!fg_files[@]}"; do
+    [ "${fg_files[$fg_i]}" = "$fg_rendered" ] && continue
+    if [ "${fg_tops[$fg_i]}" != "$active_top" ]; then
+      [ -n "$active_common" ] || continue
+      # The repository each document resolved to came back with its tree, in the one rev-parse the
+      # scan already spends on it: the shown tree's own identity is likewise long since known.
+      [ "${fg_commons[$fg_i]}" = "$active_common" ] || continue
+    fi
+    rev_extra=$((rev_extra + 1))
+  done
+fi
 if [ "$progress_slot" = home ]; then
   progress_done=$ph_done; progress_total=$ph_total; progress_tier=$ph_tier
-  progress_max=$ph_max; progress_late=$ph_late
+  progress_max=$ph_max; progress_late=$ph_late; progress_class=$ph_class
   # A run another chat started over this tree is this chat's background news, not its call to
   # action: dim, and not red either, since being late is that chat's problem to see.
   progress_owner=$(review_run_owner "$ph_session" "$ph_pid")
@@ -950,7 +1061,7 @@ if [ "$progress_slot" = home ]; then
   fi
 elif [ "$progress_slot" = away ]; then
   progress_done=$pa_done; progress_total=$pa_total; progress_tier=$pa_tier
-  progress_max=$pa_max; progress_late=$pa_late
+  progress_max=$pa_max; progress_late=$pa_late; progress_class=$pa_class
 fi
 if [ -n "$progress_total" ]; then
   progress_label="rev"
@@ -961,8 +1072,21 @@ if [ -n "$progress_total" ]; then
     progress_label="${progress_label} ${progress_tier}"
     [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
   fi
+  # A run that stopped keeps its counter and gains the mark that says how it stopped: the numbers
+  # are the result the chat has not consumed yet, and blanking them here would hide a review that
+  # ran. Red is the run that was killed under the reader — the one state nothing downstream will
+  # ever report — while a done or failed panel is news that has already happened, hence dim.
+  case "$progress_class" in
+    done) progress_label="${progress_label} ✓" ;;
+    failed|killed) progress_label="${progress_label} ✗" ;;
+  esac
   progress_label="${progress_label} ${progress_done}/${progress_total}"
-  [ -z "$progress_color" ] && [ -n "$progress_late" ] && progress_color="$RED"
+  [ "$progress_class" = wedged ] && progress_label="${progress_label}?"
+  case "$progress_class" in
+    killed) progress_color="$RED" ;;
+    done|failed|wedged) progress_color="$DIM" ;;
+    *) [ -z "$progress_color" ] && [ -n "$progress_late" ] && progress_color="$RED" ;;
+  esac
 fi
 
 dir_foreign=0
@@ -1783,7 +1907,7 @@ if [ -n "$acct" ] && [ "$acct" != main ]; then
   cb_show=1
 fi
 
-worker=""; codex_effort=""; sonnet_effort=""; codex_profile=""; claudeb_profile=""; gemini_profile=""
+worker=""; codex_effort=""; codex_profile=""; claudeb_profile=""; gemini_profile=""
 claudeb_model=""; claudeb_effort=""; gemini_model=""; gemini_effort=""
 grok_profile=""; grok_model=""; grok_effort=""
 worker_file="$HOME/.claude/worker-model"
@@ -1792,7 +1916,6 @@ if [ -f "$worker_file" ]; then
     case "$wkey" in
       worker) worker=$wval ;;
       codex_effort) codex_effort=$wval ;;
-      sonnet_effort) sonnet_effort=$wval ;;
       codex_profile) codex_profile=$wval ;;
       claudeb_profile) claudeb_profile=$wval ;;
       gemini_profile) gemini_profile=$wval ;;
@@ -1806,7 +1929,7 @@ if [ -f "$worker_file" ]; then
     esac
   done < "$worker_file"
 else
-  worker=sonnet
+  worker=auto
 fi
 # Unified short forms for every model and effort this line prints: first letter plus the first
 # consonant after it, uppercased, with the version digits glued on (Fable 5 → FB5, sol → SL). A
@@ -1934,8 +2057,9 @@ case "$worker" in
   claudeb) wvendor=cb; wpin=$claudeb_profile ;;
   gemini) wvendor=gx; wpin=$gemini_profile ;;
   grok) wvendor=gr; wpin=$grok_profile ;;
-  sonnet) wvendor=son ;;
-  auto) wvendor=auto ;;
+  # A `worker=sonnet` line is a toggle value that no longer exists; worker-pick reads it as auto
+  # and the candidate must not disagree with the account the next dispatch will actually use.
+  sonnet|auto) wvendor=auto ;;
   *) wvendor="" ;;
 esac
 
@@ -1944,9 +2068,7 @@ esac
 # (docs/routing-contract.md) — claudeb, then codex, then gemini, then grok. The cache is per own-account
 # because routing excludes the session's own account.
 worker_body=""
-if [ "$wvendor" = son ]; then
-  worker_body=$(worker_candidate "" "$(abbrev_model sonnet)" "" "$sonnet_effort")
-elif [ "$wvendor" = auto ]; then
+if [ "$wvendor" = auto ]; then
   load_worker_pick_prediction
   for wtag in cb cx gx gr; do
     worker_pick_vendor "$wtag"
@@ -2057,7 +2179,7 @@ fi
 # verdict is never taken away — any review over this tree, this chat's or another's, used to blank
 # the debt the reader acts on (Egor, 2026-08-24) — and a style word this build does not know is
 # printed whole, never trimmed.
-if [ -n "$progress_total" ] && [ "${review_style:-}" != loud ]; then
+if { [ -n "$progress_total" ] || [ "$rev_extra" -gt 0 ]; } && [ "${review_style:-}" != loud ]; then
   review_text=${review_text#rev }
 fi
 
@@ -2249,16 +2371,23 @@ fit_branch_part() {
 }
 
 fit_review_part() {
-  local label
+  local label extra=""
   review_part=""
+  # The other chats' runs ride with the rendered one and never take a slot of their own — the
+  # segment is one tree's, and this is how many more reviews of it are still out.
+  [ "$rev_extra" -gt 0 ] && extra=" ${DIM}+${rev_extra}${RESET}"
   if [ -n "$progress_total" ]; then
     label=$progress_label
     [ "$fit_rev_short" = 1 ] && label="r${label#rev }"
     if [ -n "$progress_color" ]; then
-      review_part=" ${sep} ${progress_color}${label}${RESET}"
+      review_part=" ${sep} ${progress_color}${label}${RESET}${extra}"
     else
-      review_part=" ${sep} ${label}"
+      review_part=" ${sep} ${label}${extra}"
     fi
+  elif [ "$rev_extra" -gt 0 ]; then
+    label=rev
+    [ "$fit_rev_short" = 1 ] && label=r
+    review_part=" ${sep} ${DIM}${label} +${rev_extra}${RESET}"
   fi
 }
 

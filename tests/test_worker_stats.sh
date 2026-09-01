@@ -314,13 +314,24 @@ masked_g=wc.mask_worker_names("gemini-worker ran Gemini on the gemini pool")
 check("gemini" not in masked_g.lower(),f"gemini survived masking: {masked_g}")
 stats=wc.recover_sidechain_config([
     {"subagent_type":"grok-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
-    {"subagent_type":"sonnet-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
+    {"subagent_type":"codex-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
     {"subagent_type":"gemini-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
 ], [])
-for vendor in ("grok","sonnet","gemini","codex","claudeb"):
+for vendor in ("grok","gemini","codex","claudeb"):
     check(vendor in stats, f"recovery_stats missing {vendor}")
-check(stats["grok"]["total"]==1 and stats["sonnet"]["total"]==1 and stats["gemini"]["total"]==1,
-      "grok/sonnet/gemini delegations were not counted in their own buckets")
+# The native Sonnet subagent is retired: implementation runs on a relay worker's account only. The
+# corpus still READS its rows — a `--since` reaching back before the cut would otherwise lose that
+# history without saying so — and only stops offering it as something to dispatch to.
+check("sonnet-worker" not in wc.DISPATCH_WORKER_TYPES,"sonnet-worker is still a dispatch target")
+check("sonnet-worker" in wc.WORKER_TYPES,"sonnet-worker rows are no longer read as history")
+check(wc.DISPATCH_WORKER_TYPES < wc.WORKER_TYPES,"the dispatch set is not a subset of the read set")
+check("WORKER" == wc.mask_worker_names("sonnet-worker"),"a retired type survives blind-rater masking")
+sonnet_stats=wc.recover_sidechain_config([
+    {"subagent_type":"sonnet-worker","session_id":"s","brief_text":"x","model":None,"effort":None,"account":None},
+], [])
+check(sonnet_stats["sonnet"]["total"]==1,"a retired worker's historical row was dropped from recovery stats")
+check(stats["grok"]["total"]==1 and stats["codex"]["total"]==1 and stats["gemini"]["total"]==1,
+      "grok/codex/gemini delegations were not counted in their own buckets")
 check(stats["claudeb"]["total"]==0,"non-claudeb workers were folded into claudeb recovery")
 import io
 from contextlib import redirect_stdout
@@ -336,9 +347,10 @@ for junk in ("py_compile","pytest","transcriber.ctl","http.server","3"):
     check(wc.valid_model(junk)is None,f"junk {junk}")
 
 # retry linkage: near-duplicate fresh dispatch after a failed one -> retry_of set
-def dl(tid,brief,outcome="ok",resume=False):
+def dl(tid,brief,outcome="ok",resume=False,attach=False):
     return {"tool_use_id":tid,"session_id":"s","timestamp":tid,"subagent_type":"codex-worker",
-            "is_resume":resume,"brief_text":brief,"outcome":outcome,"retry_of":None}
+            "is_resume":resume,"is_attach":attach,"brief_text":brief,"outcome":outcome,
+            "retry_of":None}
 brief="Fix the login bug in the auth module and add regression tests for it."
 ds=[dl("1",brief,outcome="failed"),
     dl("2",brief+" (again)"),
@@ -350,6 +362,18 @@ check(ds[2]["retry_of"]is None,"dissimilar brief not a retry")
 ds2=[dl("1",brief,outcome="ok"),dl("2",brief+" (again)")]
 wc.link_retries(ds2)
 check(ds2[1]["retry_of"]is None,"ok outcome is not an infra retry source")
+# An ATTACH re-attaches to a run already in flight: it launches nothing, so it is neither a fresh
+# dispatch nor a retry of the run it is waiting on — it is that dispatch's followup.
+ds3=[dl("1",brief,outcome="failed"),
+     dl("2","ATTACH cb-1788280367-68398-037f: keep waiting and report.",attach=True)]
+wc.link_retries(ds3)
+check(ds3[1]["retry_of"]is None,"an ATTACH re-attach was counted as a silent retry")
+for d in ds3:
+    d.setdefault("_reported_sessions",[])
+    d["resumed_session"]=None
+fu=wc.link_followups(ds3)
+check(len(fu)==1 and fu[0]["tool_use_id"]=="2" and fu[0]["parent_tool_use_id"]=="1",
+      f"an ATTACH did not become a followup of the dispatch it re-attaches to: {fu}")
 print("corpus-unit-ok")
 PY
 assert test "$?" -eq 0
@@ -372,4 +396,4 @@ print("ws-unit-ok")
 PY
 assert test "$?" -eq 0
 
-printf 'PASS: %s assertions; leaderboard aggregation (fault/infra/retry/orchP/medDur/medCplx/n<10/sort/killed-excl/outlier/!/dedup), staleness hint, collect (verbatim/complexity/dedupe/fallback/args/infra-unseen/atomic-write/shortquote), worker-corpus outcome+retry+model-shape+timestamp units\n' "$asserts"
+printf 'PASS: %s assertions; leaderboard aggregation (fault/infra/retry/orchP/medDur/medCplx/n<10/sort/killed-excl/outlier/!/dedup), staleness hint, collect (verbatim/complexity/dedupe/fallback/args/infra-unseen/atomic-write/shortquote), worker-corpus outcome+retry+model-shape+timestamp units, a read set that keeps retired workers as history while the dispatch set drops them, and an ATTACH re-attach linked as a followup instead of counted as a fresh dispatch\n' "$asserts"

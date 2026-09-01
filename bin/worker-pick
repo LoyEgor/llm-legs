@@ -120,7 +120,13 @@ codex_model_short_label() {
 }
 
 conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
-worker_mode=$(conf worker); worker_mode=${worker_mode:-sonnet}
+worker_mode=$(conf worker); worker_mode=${worker_mode:-auto}
+# The native Sonnet subagent is gone — implementation always runs on a relay worker's account — so
+# a `worker=sonnet` line left behind in the file is read as `auto` rather than as a fifth vendor.
+if [ "$worker_mode" = sonnet ]; then
+  printf 'worker-pick: worker=sonnet is no longer a worker toggle value; routing as auto\n' >&2
+  worker_mode=auto
+fi
 cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
 cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-high}
 cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-high}

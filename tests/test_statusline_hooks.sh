@@ -91,9 +91,10 @@ SHORT_SHA=$(git -C "$REPO_K" rev-parse --short HEAD)
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 BLUE=$'\033[34m'; CYAN=$'\033[36m'
 STATE_DIR="$HOME/.cache/claude-statusline"
-# The worker segment with no worker-model file at all: the default sonnet candidate, which is what
-# the ordering cases below anchor the end of the line on.
-WORKER_MARK="${MAGENTA}SN${RESET}"
+# The worker segment the ordering cases below anchor the end of the line on. A pinned grok account
+# on the knob's `auto` model is the shortest candidate the segment can render (`@a·hi`), which is
+# what keeps the width-fit fixtures honest now that there is no Sonnet candidate.
+WORKER_MARK="${MAGENTA}@a${RESET}"
 
 workdir_payload() {
   jq -cn --arg event PostToolUse --arg tool "$1" --arg session "$2" --arg cwd "$3" \
@@ -1263,16 +1264,23 @@ assert grep -Fq '⚡' <<< "$fast_output"
 assert test "${with_effort#*⚡}" = "$with_effort"
 
 
+# There is no native Sonnet worker any more, so neither a missing file nor a `worker=sonnet` line
+# left behind in one names a candidate of its own: both route like `auto`, and the account rendered
+# is worker-pick's — never the session's own, which no implementation run may spend.
 worker_file="$HOME/.claude/worker-model"
+mkdir -p "$HOME/.cache"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
 rm -f "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-def)")
-assert grep -Fq "${MAGENTA}SN${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
 # The `w:<name>` label is gone at every width: one candidate needs no vendor caption.
 assert test "${worker_out#*w:}" = "$worker_out"
+assert test "${worker_out#*SN}" = "$worker_out"
 
 printf 'worker=sonnet\nsonnet_effort=high\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-son-eff)")
-assert grep -Fq "${MAGENTA}SN${RESET}${DIM}·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
+assert test "${worker_out#*SN}" = "$worker_out"
 
 printf 'worker=codex\ncodex_effort=medium\ncodex_profile=alt\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex)")
@@ -1462,7 +1470,7 @@ printf 'two\nthree\n' >> "$FIT_REPO/tracked.txt"
 printf 'fresh\n' > "$FIT_REPO/untracked.txt"
 FIT_TOP=$(git -C "$FIT_REPO" rev-parse --show-toplevel)
 FIT_FOREIGN_TOP=$(git -C "$FIT_FOREIGN" rev-parse --show-toplevel)
-printf 'worker=sonnet\nsonnet_effort=high\n' > "$worker_file"
+printf 'worker=grok\ngrok_profile=a\ngrok_effort=high\n' > "$worker_file"
 
 fit_visible() {
   local s="${1%%$'\n'*}"
@@ -1532,7 +1540,7 @@ fit_step8=$(fit_render fit-step8 47)
 assert grep -Fq 'fbp' <<< "$fit_step8"
 assert test "${fit_step8#*fit-benc}" = "$fit_step8"
 fit_step9=$(fit_render fit-step9 42)
-assert test "${fit_step9#*SN}" = "$fit_step9"
+assert test "${fit_step9#*@a·hi}" = "$fit_step9"
 assert grep -Fq 'fbp' <<< "$fit_step9"
 fit_step11=$(fit_render fit-step11 34)
 assert test "${fit_step11#*fbp}" = "$fit_step11"
@@ -3410,6 +3418,76 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "second · flash36
 assert_eq 'second · flash36 · medium' \
   "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini/pending-gemini-worker")"
 
+# image-gen is a relay too, so its row is tagged like the workers': `<account> · image · <vendor>`,
+# vendor from the brief's VENDOR: line (codex by default) and account from the brief, else the
+# account worker-pick would route the image script to.
+image_spawn() { # session prompt [worker-pick]
+  jq -cn --arg session "$1" --arg prompt "$2" '{
+    hook_event_name:"PreToolUse",session_id:$session,
+    tool_input:{subagent_type:"image-gen",description:"Draw the icon",prompt:$prompt}}' |
+    WORKER_SPAWN_WORKER_PICK="${3:-$HOME/.local/bin/worker-pick}" "$SPAWN_HOOK"
+}
+IMAGE_PICK="$WORK/image-worker-pick"
+printf '#!/usr/bin/env bash\n[ "$1" = --account ] || exit 1\ncase "$2" in codex) echo cxroute ;; gemini) echo gmroute ;; *) exit 3 ;; esac\n' \
+  > "$IMAGE_PICK"
+chmod +x "$IMAGE_PICK"
+
+image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
+assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · image · codex: Draw the icon"' \
+  <<< "$image_routed" >/dev/null
+assert_eq 'cxroute · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-routed/pending-image-gen")"
+
+image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · image · gemini: Draw the icon"' \
+  <<< "$image_vendor" >/dev/null
+assert_eq 'gmroute · image · gemini' "$(cat "$HOME/.cache/claude-worker-tags/img-vendor/pending-image-gen")"
+
+# The brief's own ACCOUNT: line is the pin the script will be given, so it outranks the prediction.
+image_acct=$(image_spawn img-acct $'ACCOUNT: pinned\nVENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
+assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · image · grok: Draw the icon"' \
+  <<< "$image_acct" >/dev/null
+assert_eq 'pinned · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-acct/pending-image-gen")"
+
+# Nothing to predict with (no router, no pin): `?` is the honest first segment, never an account
+# the run may never touch — and the tag keeps its shape so the renderer still colours the row.
+image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.')
+assert_eq '? · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-unknown/pending-image-gen")"
+
+# An image brief edits no instruction file, so the MD guard is not injected into it.
+assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' \
+  <<< "$image_unknown" >/dev/null
+
+# In-flight, `--account` on the launch line is the account being spent, whatever the seed guessed.
+image_tag=$(worker_payload image-gen worker/img 'Generate the icon' \
+  'codex-image --dest /tmp/icon.png --prompt "an icon" --account alt')
+image_tag_out=$(printf '%s' "$image_tag" | "$WORKER_HOOK") || fail "image tag hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · image · codex — Generate the icon"' \
+  <<< "$image_tag_out" >/dev/null
+assert_eq 'alt · image · codex' "$(cat "$TAGDIR/workerimg")"
+
+image_grok_tag=$(worker_payload image-gen worker/imggrok 'Generate the icon' \
+  '/usr/local/bin/grok-image --account sg1 --dest /tmp/icon.png --prompt "an icon"')
+image_grok_out=$(printf '%s' "$image_grok_tag" | "$WORKER_HOOK") || fail "grok image tag hook exited nonzero"
+assert_eq 'sg1 · image · grok' "$(cat "$TAGDIR/workerimggrok")"
+
+# The image scripts are called with every argument quoted, so a quoted account is the ORDINARY
+# spelling here, not an edge case — read past the quote as the vendor branches above do.
+for image_quoted in '--account "alt2"' "--account 'alt2'" '--account="alt2"'; do
+  image_quoted_tag=$(worker_payload image-gen worker/imgq 'Generate the icon' \
+    "codex-image ${image_quoted} --dest /tmp/icon.png --prompt \"an icon\"")
+  printf '%s' "$image_quoted_tag" | "$WORKER_HOOK" >/dev/null || fail "quoted image tag hook exited nonzero"
+  assert_eq 'alt2 · image · codex' "$(cat "$TAGDIR/workerimgq")"
+  rm -f "$TAGDIR/workerimgq"
+done
+
+# No `--account`: the script routes itself at run time, so the seed the spawn hook wrote stands.
+printf 'gmroute · image · gemini\n' > "$TAGDIR/pending-image-gen"
+image_seeded=$(worker_payload image-gen worker/imgseed 'Generate the icon' \
+  'gemini-image --dest /tmp/icon.png --prompt "an icon"')
+image_seeded_out=$(printf '%s' "$image_seeded" | "$WORKER_HOOK") || fail "seeded image tag hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · image · gemini — Generate the icon"' \
+  <<< "$image_seeded_out" >/dev/null
+
 # A stored tag carrying regex-special chars is matched literally, so an
 # already-prefixed description never stacks.
 mkdir -p "$TAGDIR"; printf 'com [1m] · high\n' > "$TAGDIR/workerbr"
@@ -3672,7 +3750,7 @@ test -z "$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null)" ||
 GATE_ANSWER='dim rev 3'
 worker_order_file="$HOME/.claude/worker-model"
 worker_order_saved=$(cat "$worker_order_file" 2>/dev/null)
-printf 'worker=sonnet\n' > "$worker_order_file"
+printf 'worker=grok\ngrok_profile=a\n' > "$worker_order_file"
 review_order_line=$(review_render review-order "$REVIEW_DIRTY")
 review_order_line="${review_order_line%%$'\n'*}"
 review_before="${review_order_line%%"$review_rev_delimited"*}"
@@ -3736,7 +3814,7 @@ GATE_ANSWER='dim rev 267'
 GATE_AUTONOMOUS=yes
 GATE_TOTAL=30
 worker_dim_saved=$(cat "$HOME/.claude/worker-model" 2>/dev/null)
-printf 'worker=sonnet\n' > "$HOME/.claude/worker-model"
+printf 'worker=grok\ngrok_profile=a\n' > "$HOME/.claude/worker-model"
 review_dim_auto_out=$(review_session_render review-dim-auto "$REVIEW_DIRTY")
 assert grep -Fq "${review_seg}● ${DIM}267${RESET} ${DIM}|${RESET} 30 ${DIM}│${RESET} " <<< "$review_dim_auto_out"
 assert test "${review_dim_auto_out#*"${DIM}●"}" = "$review_dim_auto_out"
@@ -4006,7 +4084,7 @@ git -C "$AHEAD_REPO" add ahead.txt
 git -C "$AHEAD_REPO" commit -q -m "ahead of the upstream"
 : > "$GATE_LOG"
 worker_order_saved=$(cat "$worker_order_file" 2>/dev/null)
-printf 'worker=sonnet\n' > "$worker_order_file"
+printf 'worker=grok\ngrok_profile=a\n' > "$worker_order_file"
 unpushed_ahead_out=$(PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
   unpushed_render unpushed-ahead "$AHEAD_REPO")
 assert grep -Fq "$UNPUSHED_MARK" <<< "$unpushed_ahead_out"
@@ -4429,6 +4507,136 @@ assert grep -Fq " ${DIM}│${RESET} ${RED}rev 7 held for revi…${RESET}" <<< "$
 rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
 GATE_ANSWER=off
 
+# --- review progress: declared state, heartbeat, and other chats' runs -------------------------
+# review-bench no longer unlinks the document when a run ends: it stays until the chat consumes the
+# result, so outliving its process is the normal case now and not the kill -9 leftover it used to
+# mean. What the run looks like on the line is its DECLARED state crossed with what this render can
+# still verify — the pid, and the heartbeat that is the only thing separating a slow cell from a
+# wedge. A document with neither is one an older review-bench wrote and keeps the rule it shipped
+# with, unchanged.
+progress_doc() { # name pid tier done total state heartbeat-age [repo] [session] [started]
+  jq -cn --arg repo "${8:-$REVIEW_CLEAN}" --argjson pid "$2" --arg tier "$3" \
+    --argjson done_cells "$4" --argjson total "$5" --arg state "$6" \
+    --argjson heartbeat "$(progress_started "$7")" --arg session "${9:-}" \
+    --arg started "${10:-2026-07-27T22:00:00+00:00}" '
+    {repo:$repo, pid:$pid, run_id:"progress-state-fixture",
+     tier:(if $tier == "" then null else $tier end), max:false, target:"abc1234",
+     cells:[range($total) | "cell-\(.)"], done:[range($done_cells) | "cell-\(.)"],
+     failed:0, started:$started, ts:$started, state:$state, heartbeat_epoch:$heartbeat}
+    + (if $session == "" then {} else {session:$session} end)
+    + (if $state == "done" or $state == "failed" then {finished_epoch:$heartbeat} else {} end)' \
+    > "$PROGRESS_DIR/${progress_prefix}state-$1.json"
+}
+progress_doc_clear() { rm -f "$PROGRESS_DIR/${progress_prefix}state-"*.json; }
+progress_stale_stamp=$(date -v-3H +%Y%m%d%H%M.%S 2>/dev/null ||
+  date -d '3 hours ago' +%Y%m%d%H%M.%S)
+
+progress_doc running-fresh "$$" T2 3 8 running 0
+progress_state_live_out=$(progress_render state-running-fresh)
+assert grep -Fq " ${DIM}│${RESET} rev T2 3/8" <<< "$progress_state_live_out"
+assert test "${progress_state_live_out#*"${DIM}rev T2"}" = "$progress_state_live_out"
+assert test "${progress_state_live_out#*"${RED}rev"}" = "$progress_state_live_out"
+progress_doc_clear
+
+# A pid that still holds and a run that has not spoken for two minutes: the counter is the last
+# thing the run said, and the mark says nobody should read it as news.
+progress_doc running-wedged "$$" T2 3 8 running 300
+progress_state_wedged_out=$(progress_render state-running-wedged)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 3/8?${RESET}" <<< "$progress_state_wedged_out"
+progress_doc_clear
+
+# Killed under the reader: the one ending nothing downstream will ever report, so it is red and it
+# stays until review-bench takes the document away.
+progress_doc running-killed 99999999 T2 3 8 running 0
+progress_state_killed_out=$(progress_render state-running-killed)
+assert grep -Fq " ${DIM}│${RESET} ${RED}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_killed_out"
+progress_doc_clear
+
+# `dead` is the reaper's own word about a run whose pid is gone, and it outranks a live pid: the
+# document names the run, and a pid handed to something else says nothing about it.
+progress_doc dead "$$" T2 3 8 dead 0
+progress_state_dead_out=$(progress_render state-dead)
+assert grep -Fq " ${DIM}│${RESET} ${RED}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_dead_out"
+progress_doc_clear
+
+progress_doc done "$$" T2 8 8 done 0
+progress_state_done_out=$(progress_render state-done)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✓ 8/8${RESET}" <<< "$progress_state_done_out"
+# The 2h wall is the compatibility path's wedge guard and nothing else: a finished run writes
+# nothing more, and the result it is holding is unconsumed however old the file is.
+touch -t "$progress_stale_stamp" "$PROGRESS_DIR/${progress_prefix}state-done.json"
+progress_state_done_old_out=$(progress_render state-done-old)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✓ 8/8${RESET}" <<< "$progress_state_done_old_out"
+progress_doc_clear
+
+progress_doc failed "$$" T2 5 8 failed 0
+progress_state_failed_out=$(progress_render state-failed)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✗ 5/8${RESET}" <<< "$progress_state_failed_out"
+progress_doc_clear
+
+# The compatibility path, unchanged: a live pid renders bright, and the 2h wall still takes the
+# segment away, since a document with no heartbeat has nothing else to tell a wedge from a run.
+write_progress "$$" T2 2 6 2026-07-27T22:00:00+00:00
+progress_legacy_alive_out=$(progress_render state-legacy-alive)
+assert grep -Fq " ${DIM}│${RESET} rev T2 2/6" <<< "$progress_legacy_alive_out"
+touch -t "$progress_stale_stamp" "$PROGRESS_DIR/$progress_prefix$$.json"
+progress_legacy_stale_out=$(progress_render state-legacy-stale)
+assert review_slot_silent "$progress_legacy_stale_out"
+rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
+
+# Other chats' unconsumed runs over this repository are counted, never named: a run in a sibling
+# worktree is this repository's news without being this tree's, and it is the block's own rule that
+# it can be neither rendered nor moved to. Alone, the count carries the word.
+progress_doc foreign-sibling "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-another-chat
+progress_state_foreign_out=$(progress_render state-foreign-alone)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev +1${RESET}" <<< "$progress_state_foreign_out"
+
+# This chat's own run takes the segment and the others ride behind it as the count.
+progress_doc own-home "$$" T2 3 8 running 0 "" "" 2026-07-27T23:00:00+00:00
+progress_state_own_foreign_out=$(progress_render state-own-plus-foreign)
+assert grep -Fq " ${DIM}│${RESET} rev T2 3/8 ${DIM}+1${RESET}" <<< "$progress_state_own_foreign_out"
+# And it keeps the segment against a stranger's NEWER document over the same tree: a finished
+# foreign run now survives for a day, so the newest-started rule alone handed the one slot to news
+# that is already over and rendered this chat's live run nowhere at all.
+progress_doc foreign-newer "$$" T2 4 4 done 0 "" review-progress-another-chat \
+  2026-07-28T02:00:00+00:00
+progress_state_own_older_out=$(progress_render state-own-older)
+assert grep -Fq " ${DIM}│${RESET} rev T2 3/8 ${DIM}+2${RESET}" <<< "$progress_state_own_older_out"
+progress_doc_clear
+
+# The run that IS rendered is never also counted: another chat's run over this tree is still this
+# tree's news and holds the segment, and adding it to the number beside itself says two runs.
+progress_doc foreign-home "$$" T2 1 4 running 0 "" review-progress-another-chat
+progress_state_foreign_home_out=$(progress_render state-foreign-home)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 1/4${RESET}" <<< "$progress_state_foreign_home_out"
+assert test "${progress_state_foreign_home_out#*+1}" = "$progress_state_foreign_home_out"
+progress_doc_clear
+
+# The render budgets ONE git call per progress document and no more: a document's tree and the
+# repository that tree belongs to come back from the same rev-parse, and the shown tree's own
+# identity is long since known — asking again per counted run put N forks in the hot path for N
+# other chats. Measured as a DELTA so the rest of the render's calls cancel out.
+GIT_SHIM_DIR="$FIXTURES/git-shim"
+mkdir -p "$GIT_SHIM_DIR"
+GIT_CALL_LOG="$WORK/git-calls.log"
+printf '#!/bin/bash\nprintf "x\\n" >> "$GIT_CALL_LOG"\nexec %s "$@"\n' "$(command -v git)" \
+  > "$GIT_SHIM_DIR/git"
+chmod +x "$GIT_SHIM_DIR/git"
+git_calls_for_render() { # payload-name
+  progress_render "$1" >/dev/null
+  : > "$GIT_CALL_LOG"
+  ( export PATH="$GIT_SHIM_DIR:$PATH" GIT_CALL_LOG; progress_render "$1" >/dev/null )
+  grep -c . "$GIT_CALL_LOG" | tr -d '[:space:]'
+}
+progress_doc budget-own "$$" T2 3 8 running 0
+progress_doc budget-1 "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-other-1
+progress_budget_one=$(git_calls_for_render budget)
+progress_doc budget-2 "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-other-2
+progress_doc budget-3 "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-other-3
+progress_budget_three=$(git_calls_for_render budget)
+assert_eq "$((progress_budget_one + 2))" "$progress_budget_three"
+progress_doc_clear
+
 # The block MOVES to the tree a review of this chat's is about, and comes back when that review is
 # answered (Egor, 2026-08-27, superseding the 2026-08-26 rule that it never moves): a folder that
 # stayed put while the numbers beside it were about another place named neither of them. In order:
@@ -4700,6 +4908,11 @@ LAUNCH_GATE_BIN="$ROOT/bin/worker-launch-gate.sh"
 gate_payload() {
   jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:$command}}'
 }
+gate_agent_payload() {
+  jq -cn --arg agent "$1" --arg command "$2" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,tool_input:{command:$command}}'
+}
+gate_decision() { jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null; }
 for gate_denied in \
   'grok -p "do the thing"' \
   'grok --print "do the thing"' \
@@ -4718,9 +4931,14 @@ for gate_denied in \
   assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("worker-run start <claudeb\\|codex\\|gemini\\|grok>")' \
     <<<"$gate_out" >/dev/null
 done
-for gate_allowed in \
+for gate_relayed in \
   'worker-run start grok --brief /tmp/brief --workdir /tmp' \
-  'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief' \
+  'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief'; do
+  gate_out=$(gate_agent_payload grok-worker "$gate_relayed" | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+done
+for gate_allowed in \
   'grokb profile supergrok' \
   'grok models' \
   'grokb list' \
@@ -4731,4 +4949,61 @@ for gate_allowed in \
 done
 
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace"
+# --- worker-launch-gate.sh: a run belongs to a relay agent ------------------------------------
+# `worker-run` is a sanctioned launcher, but only in the hands of the agent whose row shows who is
+# spending quota. Started or awaited from the chat's own Bash the run is owned by a turn: no
+# magenta tagged row, and nothing to wake the chat when it ends.
+for owned_denied in \
+  'worker-run wait cb-20260901-abcdef' \
+  'worker-run wait cb-20260901-abcdef --max 540' \
+  'worker-run start claudeb --brief /tmp/brief --workdir /tmp' \
+  'worker-run start codex --brief /tmp/brief --workdir /tmp' \
+  'nohup worker-run wait cb-20260901-abcdef' \
+  'timeout 540 worker-run wait cb-20260901-abcdef' \
+  'nice -n 5 worker-run wait cb-20260901-abcdef' \
+  'sudo worker-run start codex --brief /tmp/brief --workdir /tmp' \
+  'if worker-run wait cb-20260901-abcdef; then echo ok; fi' \
+  '{ worker-run wait cb-20260901-abcdef; }' \
+  'while worker-run wait cb-20260901-abcdef; do sleep 1; done' \
+  "bash -c 'worker-run wait cb-20260901-abcdef --max 540'"; do
+  gate_out=$(gate_payload "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("ATTACH <run-id>:")' \
+    <<<"$gate_out" >/dev/null
+done
+# Bookkeeping, help, a finished record and the suite that exercises the launcher are not a run: the
+# command WORD is what is judged, never the substring, and a heredoc body is text a command is fed
+# — a brief being written may quote the spelling a run would use.
+for owned_allowed in \
+  'worker-run claim codex alt' \
+  'worker-run' \
+  'worker-run report cb-20260901-abcdef' \
+  'timeout 20 worker-run report cb-20260901-abcdef' \
+  'bash tests/test_worker_run.sh' \
+  'cat > /tmp/brief <<EOF
+worker-run wait cb-20260901-abcdef --max 540
+EOF' \
+  'grep -n "worker-run start" bin/worker-run'; do
+  gate_out=$(gate_payload "$owned_allowed" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+done
+# Inside a relay agent the door is exactly what it was before this rule existed.
+for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
+  for owned_relayed in \
+    'worker-run start claudeb --brief /tmp/brief --workdir /tmp' \
+    'worker-run wait cb-20260901-abcdef --max 540' \
+    'worker-run report cb-20260901-abcdef'; do
+    gate_out=$(gate_agent_payload "$gate_agent" "$owned_relayed" | "$LAUNCH_GATE_BIN") ||
+      fail "launch gate exited nonzero"
+    assert_eq "" "$gate_out"
+  done
+  gate_out=$(gate_agent_payload "$gate_agent" 'claudeb notcom -p go' | "$LAUNCH_GATE_BIN")
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
+gate_out=$(gate_agent_payload image-gen 'codex-image --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
+assert_eq "" "$gate_out"
+# An agent type nobody sanctioned owns no run either.
+gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line or the routed seed, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

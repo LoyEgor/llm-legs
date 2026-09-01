@@ -21,7 +21,7 @@ sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
 # Stop gate fires in that minute; the pid stamp overwrites the claim, which is live for
 # DELEGATED_CLAIM_SECONDS (review-bench) and dead after.
 claim_delegated_triage() {
-  case "$worker" in claudeb-worker|codex-worker|gemini-worker|grok-worker|sonnet-worker) ;; *) return 0 ;; esac
+  case "$worker" in claudeb-worker|codex-worker|gemini-worker|grok-worker) ;; *) return 0 ;; esac
   local claimed_run claim_stamp
   for claimed_run in $(printf '%s' "$brief_text" |
       grep -Eo "review-bench[[:blank:]]+record[[:blank:]]+$run_id_re" | awk '{print $NF}' | sort -u); do
@@ -183,7 +183,7 @@ session_model() {
 }
 
 case "$worker" in
-  claudeb-worker|codex-worker|gemini-worker|grok-worker|sonnet-worker) ;;
+  claudeb-worker|codex-worker|gemini-worker|grok-worker) ;;
   # A fork always inherits the parent model; the override field is ignored for it.
   fork) exit 0 ;;
   *)
@@ -213,7 +213,6 @@ case "$worker" in
   codex-worker) pin_key=codex_profile; vendor=codex; limits_vendor=codex; label=Codex ;;
   gemini-worker) pin_key=gemini_profile; vendor=gemini; limits_vendor=gemini; label=Gemini ;;
   grok-worker) pin_key=grok_profile; vendor=grok; limits_vendor=grok; label=Grok ;;
-  sonnet-worker) pin_key=''; vendor=sonnet; limits_vendor=''; label=Sonnet ;;
 esac
 [ -n "$pin_key" ] && [ -r "$TOGGLE" ] &&
   pin=$(sed -n "s/^${pin_key}=//p" "$TOGGLE" | head -1 | tr -d '[:space:]')
@@ -225,15 +224,24 @@ toggle_note=''
 toggle_worker=''
 [ -r "$TOGGLE" ] && toggle_worker=$(sed -n 's/^worker=//p' "$TOGGLE" | head -1 | tr -d '[:space:]')
 case "$toggle_worker" in
-  sonnet|claudeb|codex|gemini|grok)
+  claudeb|codex|gemini|grok)
     [ "$toggle_worker" = "$vendor" ] ||
       toggle_note="The worker toggle says worker=${toggle_worker}, this spawns ${worker}. Fine if the task called for it; otherwise the toggle is the default and ${toggle_worker}-worker is the one to use."
     ;;
 esac
 
-[ "$worker" = sonnet-worker ] && warn ""
 
 prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
+
+# An `ATTACH <run-id>:` relay opens no window: the run is already in flight on an account it is
+# already spending, and this spawn only waits on it. Priced like a fresh launch it becomes
+# unreachable exactly when a run matters most — the account it is on walls mid-run, every deny
+# below fires, and the launch gate denies the Bash wait that would be the only way back to it.
+attach_run=$(printf '%s\n' "$prompt" | head -n1 |
+  sed -nE 's/^ATTACH[[:space:]]+([a-z0-9][a-z0-9-]*):.*/\1/p')
+[ -z "$attach_run" ] ||
+  warn "Re-attach to run ${attach_run}: no new launch, so no limit verdict is priced on this spawn. Wait on that run id and report; do not start a new one."
+
 brief_account=$(printf '%s\n' "$prompt" |
   sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)
 

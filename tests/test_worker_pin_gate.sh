@@ -79,11 +79,11 @@ assert denied "$(write_event '~/.claude/worker-model')"
 # `/worker` rewrites this same file to move worker=/model/effort, none of which is the account pin;
 # a gate on the path alone blocks the documented toggle and gets itself worked around.
 CURRENT_PINS=$(grep -E '^(claudeb|codex|gemini|grok)_profile=' "$PIN_FILE" 2>/dev/null | sort)
-assert allowed "$(write_event "$PIN_FILE" "$(printf 'worker=sonnet\nclaudeb_effort=high\n%s\n' \
+assert allowed "$(write_event "$PIN_FILE" "$(printf 'worker=codex\nclaudeb_effort=high\n%s\n' \
   "$CURRENT_PINS")")"
-assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=sonnet\ncodex_profile=someone\n')")"
-assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=sonnet\ngrok_profile=someone\n')")"
-assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' 'worker=sonnet')"
+assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=codex\ncodex_profile=someone\n')")"
+assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=codex\ngrok_profile=someone\n')")"
+assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' 'worker=codex')"
 assert denied "$(edit_event "$PIN_FILE" 'worker=auto' 'worker=auto\ncodex_profile=x')"
 assert denied "$(edit_event "$PIN_FILE" 'codex_profile=main' '')"
 assert denied "$(edit_event "$PIN_FILE" 'grok_profile=main' '')"

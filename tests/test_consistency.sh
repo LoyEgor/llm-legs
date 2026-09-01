@@ -305,6 +305,15 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT"; do
   assert grep -Fq 'worker-run start' "$agent"
 done
 assert doc_has 'Worker account resolution'
+# A hit turn cap is the vendor serving, so it may never share a name with the outcomes the routers
+# read as "no capacity here": folded back into GROK_UNAVAILABLE the relay hunts a pool problem that
+# does not exist and reroutes a brief that outruns the same cap wherever it lands.
+assert grep -Fq "printf 'OUTCOME: GROK_MAX_TURNS\\n'" "$WORKER_RUN"
+assert grep -Fq 'grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}' "$WORKER_RUN"
+assert grep -Fq -- '[ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")' "$WORKER_RUN"
+assert grep -Fq -- '[ -z "$turns" ] || command+=(--max-turns "$turns")' "$WORKER_RUN"
+assert doc_has '`OUTCOME: GROK_MAX_TURNS`, never `_UNAVAILABLE` and never `_USAGE_LIMIT`'
+assert doc_has 'only when `WORKER_RUN_GROK_MAX_TURNS` sets one'
 
 # ask_claude.sh seds this stderr literal into its audit account field, so the wording is a
 # three-site contract, not free prose.
@@ -1864,7 +1873,10 @@ for launch_spelling in 'claude -p' 'claudeb … -p' 'codex exec' 'codexb … exe
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/$DOC"
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/docs/routing-contract.md"
 done
-assert eq "$(grep -Fc '${VENDOR_WORD}' "$LAUNCH_GATE")" 6
+# Six vendor launch patterns, counted inside the array alone: the same command-position anchor is
+# reused by the worker-run ownership rule, which is not a vendor.
+assert eq "$(sed -n '/^LAUNCH_RES=(/,/^)/p' "$LAUNCH_GATE" | grep -Fc '${VENDOR_WORD}')" 6
+assert grep -Fq 'OWNED_RUN_RE=' "$LAUNCH_GATE"
 assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0' "$LAUNCH_GATE"
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'

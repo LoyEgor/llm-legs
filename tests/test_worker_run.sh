@@ -194,7 +194,7 @@ clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
   unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
-    STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT
+    STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
@@ -247,7 +247,11 @@ assert test ! -e "$RUN_DIR/exit_code"
 second_wait=$("$RUNNER" wait "$RUN_ID" --max 6)
 assert grep -q '^STATUS: done$' <<<"$second_wait"
 assert grep -q '^SESSION: codex-session$' <<<"$second_wait"
-assert grep -q '^RESULT-TAIL:$' <<<"$second_wait"
+# A terminal wait names the answer and never quotes it: the relay reads `report` next in any case,
+# and a tail here handed the orchestrator the same result twice.
+assert grep -qxF "RESULT: run \`worker-run report $RUN_ID\`" <<<"$second_wait"
+assert test "$(grep -c 'codex result' <<<"$second_wait")" -eq 0
+assert grep -qx 'codex result' <<<"$("$RUNNER" report "$RUN_ID")"
 assert grep -q 'test brief' "$STUB_DIR/codex.stdin"
 assert grep -q 'second line' "$STUB_DIR/codex.stdin"
 unset STUB_SLEEP
@@ -2316,7 +2320,11 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert grep -qx 'SESSION: 01a05811-7788-7d22-a9c9-c028072cbff5' "$WORK/wait.out"
 assert meta_account_is grokacct
 assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = grok-4.6-build
-assert test "$(jq -r '.max_turns' "$RUN_DIR/meta.json")" = 60
+# No turn cap by default: the wall-clock deadline is the runaway guard here as it is for claudeb,
+# codex and gemini, and a cap borrowed from short reviewer cells ends an implementation brief the
+# vendor was still serving.
+assert test "$(jq -r 'has("max_turns")' "$RUN_DIR/meta.json")" = false
+assert test "$(grep -c '^ARG=--max-turns$' "$CALL_LOG")" -eq 0
 assert grep -qx 'GROK_MEMORY=0' "$CALL_LOG"
 assert grep -qx 'ARG=--prompt-file' "$CALL_LOG"
 assert grep -qxF "ARG=$RUN_DIR/brief" "$CALL_LOG"
@@ -2362,6 +2370,14 @@ assert await_done
 assert grep -qx 'ARG=--max-turns' "$CALL_LOG"
 assert grep -qx 'ARG=7' "$CALL_LOG"
 assert test "$(jq -r '.max_turns' "$RUN_DIR/meta.json")" = 7
+# A cap that is not a positive count is no cap at all — silently reading it as some default number
+# would launch the run under a limit nobody asked for.
+clear_stub
+export WORKER_RUN_GROK_MAX_TURNS=nonsense
+start_ok grok
+assert await_done
+assert test "$(grep -c '^ARG=--max-turns$' "$CALL_LOG")" -eq 0
+assert test "$(jq -r 'has("max_turns")' "$RUN_DIR/meta.json")" = false
 unset WORKER_RUN_GROK_MAX_TURNS
 
 clear_stub
@@ -2562,18 +2578,32 @@ assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/wait.out"
 assert grep -qx 'REASON: auth — the account needs a human login (grokb add <account>)' "$WORK/wait.out"
 assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 1
 
-# A run that outran its turn budget answered nothing, but the vendor is fine: read as a plain
-# GROK_UNAVAILABLE the orchestrator reroutes a brief that will outrun the budget again.
+# A run that outran its turn budget answered nothing, but the vendor served every turn it was asked
+# for: folded into GROK_UNAVAILABLE it reads as capacity weather, and the orchestrator reroutes a
+# brief that will outrun the same budget wherever it lands next.
 clear_stub
 set_config 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=grokturns
 : >"$STUB_DIR/grok_max_turns"
+export WORKER_RUN_GROK_MAX_TURNS=5 STUB_GROK_TURNS=5
 start_ok grok
 assert await_done
-assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/wait.out"
-assert grep -qx 'REASON: max-turns — the brief outran --max-turns (60); the vendor answered fine, so relaunching it whole buys nothing' \
+assert grep -qx 'OUTCOME: GROK_MAX_TURNS' "$WORK/wait.out"
+assert test "$(grep -c 'GROK_UNAVAILABLE' "$WORK/wait.out")" -eq 0
+assert grep -qx 'REASON: max-turns — the brief outran --max-turns (5); the vendor answered fine, so relaunching it whole buys nothing' \
   "$WORK/wait.out"
 assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 1
+assert grep -qx 'OUTCOME: GROK_MAX_TURNS' <<<"$("$RUNNER" report "$RUN_ID")"
+unset WORKER_RUN_GROK_MAX_TURNS STUB_GROK_TURNS
+
+# With no cap asked for, the cap that ended the run was the CLI's own, so the REASON names no number
+# of ours — the outcome is still the vendor serving, not an outage.
+clear_stub
+: >"$STUB_DIR/grok_max_turns"
+start_ok grok
+assert await_done
+assert grep -qx 'OUTCOME: GROK_MAX_TURNS' "$WORK/wait.out"
+assert grep -q '^REASON: max-turns — the brief outran --max-turns (?);' "$WORK/wait.out"
 
 # A wall stated mid-run arrives as an `error` event on stdout, where every other vendor puts it on
 # stderr: read on stderr alone this run reports an outage while the plan is actually exhausted.
