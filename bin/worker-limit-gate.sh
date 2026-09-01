@@ -381,14 +381,14 @@ fi
 now=$(date +%s) ||
   deny "${fallback_reason}; local threshold fallback could not read the clock. Do not spawn ${worker}."
 decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$eff_defs"'
-  # Protective fallback, so stricter than worker-pick auth_ok: any status other than
-  # "ok" and any non-object .auth shape is dead. Explicit branches — `.auth.status?`
+  # Protective fallback, so stricter than worker-pick auth_ok: any status outside the live set the
+  # vendor spec names, and any non-object .auth shape, is dead. Explicit branches — `.auth.status?`
   # on a string yields jq empty, which would either vanish the account or default it
   # to authorized depending on the surrounding operator.
-  def auth_ok:
+  def auth_ok($live):
     .auth_needed != true and
     (if .auth == null then true
-     elif (.auth | type) == "object" then ((.auth.status // "ok") == "ok")
+     elif (.auth | type) == "object" then ((.auth.status // "ok") | IN($live[]))
      else false end);
   def specs:
     {
@@ -409,9 +409,12 @@ decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now
       },
       # Weekly is the only bucket grok measures, and its accounts carry an auth status of their own.
       # `available` is judged per account for the same reason as Gemini above: a vendor-level flag
-      # cleared by full exhaustion would read as a silent allow.
+      # cleared by full exhaustion would read as a silent allow. `expired` is live for this vendor
+      # (the CLI refreshes the token itself); dropped here, a roster of expired-but-free accounts
+      # would deny the worker over the one signed-in row worker-pick would have skipped.
       "grok-worker": {
         vendor:"grok", shape:"accounts_or_vendor", buckets:["weekly"], enabled:false, auth:true,
+        auth_live:["ok","expired"],
         available:false, group:null, stale:false, missing:0, empty:"allow"
       }
     }[$worker];
@@ -440,7 +443,7 @@ decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now
           shown:$pressure,
           eligible:(.removed != true and .enabled != false
                     and (($spec.enabled | not) or .enabled == true)
-                    and (($spec.auth | not) or (. | auth_ok))
+                    and (($spec.auth | not) or (. | auth_ok($spec.auth_live // ["ok"])))
                     and ($spec.group == null
                          or (((.group // "") | ascii_downcase | contains($spec.group)))))
         }

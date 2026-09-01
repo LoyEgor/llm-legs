@@ -451,7 +451,9 @@ summary=$(jq -r \
     line:("grok: " +
       (if $gr_pin_lapse != "" then "pin \($gr_pin) \($gr_pin_lapse) → \($target) | " else "" end) +
       (if ($gr_accounts | length) == 0 then
-         (if ($gr.available // false) != true then "unavailable" else "no quota data" end)
+         # No accounts and no snapshot are one state to a reader — and the NEXT line above renders
+         # both as `no quota data`, so a second word here would have the two disagree.
+         "no quota data"
        elif ($gr_accounts | all(.auth_ok | not)) then "login needed"
        else ($gr_accounts | display_sort($sel) | map(
          "\(.name) \(.spend | pct_str)\(if .name == $sel and $gr_pinned != null then " PINNED" else "" end)\(if .walled then " WALLED" else "" end)\(if .auth_ok then "" else " auth!" end)\(if .auth_late then " auth expired" else "" end)\(if .enabled then "" else " off" end) (wk→\(.rw))") | join(" | ")) end))}) as $grok |
@@ -527,7 +529,8 @@ summary=$(jq -r \
    $age,(if $had_pool then "yes" else "no" end),
    pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($gr_accounts),
    pool_empty($cl_accounts),(if $gr_present then "yes" else "no" end),
-   (if ($gr_accounts | any(.measured)) then "yes" else "no" end)] | join("\u001f")
+   (if ($gr_accounts | any(.measured)) then "yes" else "no" end),
+   (if ($cx_accounts | any(.measured)) then "yes" else "no" end)] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
@@ -536,7 +539,7 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse cx
   gr_selected gr_acct gr_pct gr_pinned gr_line gr_pin_lapse gr_budget \
   cl_line cl_acct cl_pinned cl_pin_lapse cl_budget \
   fb_acct fb_fb fb_wk age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
-  cl_pool_empty gr_present gr_measured <<<"$summary"
+  cl_pool_empty gr_present gr_measured cx_measured <<<"$summary"
 
 # A pin that served outranks the switch, so the vendor is not closed at all this run.
 [ "$cl_pinned" != yes ] || cb_role_off=false
@@ -697,6 +700,11 @@ elif [ "$cx_selected" = yes ]; then
 elif [ "$cx_pool_empty" = yes ]; then
   cx_next="codex unavailable · $cx_effort — every account is out of the worker pool"
   cx_mark="✗"
+elif [ "$cx_measured" = no ]; then
+  # Nothing measured here, so there is no wall to report: `WALLED` would send Egor looking for a
+  # limit that does not exist, the same misreport the grok arm below refuses.
+  cx_next="codex unavailable · $cx_effort — no quota data"
+  cx_mark="✗"
 else
   cx_next="codex unavailable · $cx_effort — WALLED"
   cx_mark="✗"
@@ -758,9 +766,9 @@ write_cache "$(printf 'cx%s%s·'"$codex_model"'·%s %s·%s·%s gx%s%s·%s·%s%s'
 
 # The leading segment is the routing answer, so a vendor closed for workers trails the line
 # whatever the mode's usual order is: it is a statement about the switch, not a candidate.
-# `cxw` is the shortened codex segment the walled shapes print, which a closed codex replaces —
-# reading `codex — WALLED` off a vendor with untouched quota is the misreport this whole gate
-# exists to avoid.
+# `cxw` is the shortened codex segment the walled shapes print, which a closed or unmeasured codex
+# replaces — reading `codex — WALLED` off a vendor with untouched quota is the misreport this whole
+# gate exists to avoid.
 print_next() {
   local name text off open="" deferred=""
   for name in "$@"; do
@@ -768,7 +776,9 @@ print_next() {
     case "$name" in
       cb) text=$cb_next; off=$cb_role_off ;;
       cx) text=$cx_next; off=$cx_role_off ;;
-      cxw) if [ "$cx_role_off" = true ]; then text=$cx_next; off=true; else text="codex — WALLED"; fi ;;
+      cxw) if [ "$cx_role_off" = true ]; then text=$cx_next; off=true
+           elif [ "$cx_measured" = no ]; then text=$cx_next
+           else text="codex — WALLED"; fi ;;
       gm) text=$gm_next; off=$gm_role_off ;;
       gr) text=$gr_next; off=$gr_role_off ;;
       allw) text="ALL WALLED, ask Egor" ;;

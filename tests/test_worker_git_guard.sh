@@ -67,7 +67,10 @@ assert_allow() {
 
 assert_deny 'checkout paths' codex-worker 'git checkout -- global/CLAUDE.md'
 assert_deny 'checkout separator-free file' codex-worker 'git checkout CLAUDE.md'
+mkdir -p "$GUARD_CWD/src"
 assert_deny 'checkout separator-free nested' grok-worker 'git checkout src/foo.py'
+assert_allow 'checkout version branch' grok-worker 'git checkout release/2.0.x'
+assert_allow 'checkout dotted branch' codex-worker 'git checkout fix/api.v2'
 assert_deny 'checkout relative path' claudeb-worker 'git checkout ./tracked'
 assert_deny 'checkout two paths' gemini-worker 'git checkout file1 file2'
 assert_deny 'restore in chain' claudeb-worker 'cd /x && git restore file'

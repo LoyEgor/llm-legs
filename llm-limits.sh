@@ -496,6 +496,22 @@ claude_profiles_root="${CLAUDE_PROFILES_DIR:-$HOME/.claude-profiles}"
 codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
 grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 
+# The roster grok-quota.py itself would walk: `main` is the real ~/.grok and counts only once it
+# carries a login, dotted names are grokb's own state, and `main` under the profiles directory is
+# a name nothing can address.
+grok_account_names() {
+  local path name
+  [ -f "$HOME/.grok/auth.json" ] && printf 'main\n'
+  if [ -d "$grok_profiles_dir" ]; then
+    for path in "$grok_profiles_dir"/*; do
+      [ -d "$path" ] || continue
+      name=$(basename "$path")
+      case "$name" in .*|main) continue ;; esac
+      printf '%s\n' "$name"
+    done | LC_ALL=C sort
+  fi
+}
+
 worker_pool_name_in_list() {
   local target="$1" name
   shift
@@ -545,7 +561,7 @@ reconcile_vendor_shields() {
     while IFS= read -r marker; do
       name=${marker##*/}
       worker_pool_valid_name "$name" || continue
-      worker_pool_name_in_list "$name" "${accounts[@]}" && continue
+      worker_pool_name_in_list "$name" ${accounts[@]+"${accounts[@]}"} && continue
       if [ "$kind" = shielded ]; then
         worker_pool_shield_clear "$pool_vendor" "$name" || return 1
       else
@@ -1456,10 +1472,14 @@ refresh_grok_quota() {
       | join("; ")' <<<"$fresh" 2>/dev/null || true)
   fi
   if [ -z "$fresh" ]; then
-    grok_refresh_error='live query failed'
+    # The helper's own last word says which failure this was; without it the cause is the exit
+    # code alone, the way the codex and gemini paths never report it.
+    detail=$(grep -v '^[[:space:]]*$' "$grok_err" 2>/dev/null | tail -n 1 | tr -d '\r')
+    [ -n "$detail" ] || detail="helper exit $rc"
+    grok_refresh_error="live query failed: $detail"
     rm -f "$grok_tmp" "$grok_err"
-    printf 'llm-limits.sh: Grok%s live quota query failed (helper exit %s)\n' \
-      "$([ -n "$target" ] && printf ' account %s' "$target")" "$rc" >&2
+    printf 'llm-limits.sh: Grok%s live quota query failed: %s\n' \
+      "$([ -n "$target" ] && printf ' account %s' "$target")" "$detail" >&2
     return 1
   fi
   old='{"accounts":[]}'
@@ -1484,6 +1504,19 @@ refresh_grok_quota() {
       ([$rows[].account]) as $names |
       {accounts:($rows + [$old_rows[] | select(.account as $n | ($names | index($n)) == null)])}
     end' <<<"$fresh" 2>/dev/null || true)
+  # A leg with no accounts at all read nothing because there was nothing to read: calling that a
+  # failed refresh would leave an empty vendor permanently red on every surface.
+  if [ -n "$merged" ] && [ -z "$detail" ] &&
+     jq -e '(.accounts | length) == 0' <<<"$merged" >/dev/null 2>&1; then
+    if ! printf '%s\n' "$merged" >"$grok_tmp" || ! mv -f "$grok_tmp" "$grok_cache"; then
+      grok_refresh_error='cache replace failed'
+      rm -f "$grok_tmp" "$grok_err"
+      return 1
+    fi
+    rm -f "$grok_err"
+    grok_refresh_error=''
+    return 0
+  fi
   if [ -z "$merged" ] ||
      ! jq -e '[.accounts[] | select((.used_pct | type) == "number" or ((.auth // "ok") != "ok"))]
               | length > 0' <<<"$merged" >/dev/null 2>&1; then
@@ -1510,6 +1543,13 @@ refresh_grok_quota() {
 
 grok_refresh_target=''
 case "$refresh_account" in grok/*) grok_refresh_target=${refresh_account#grok/} ;; esac
+# A name off the roster resolves to a directory with no auth.json, which the helper answers as a
+# definite `needs_login` verdict — and that would write a phantom account into the store and the
+# menu, asking Egor to log into an account that does not exist.
+if [ -n "$grok_refresh_target" ] && ! grep -qxF "$grok_refresh_target" <<<"$(grok_account_names)"; then
+  printf 'llm-limits.sh: unknown Grok account: %s\n' "$grok_refresh_target" >&2
+  exit 2
+fi
 if [ "$refresh" -eq 1 ] &&
    { [ -z "$refresh_account" ] || [ -n "$grok_refresh_target" ] || [ "$refresh_vendor" = grok ]; }; then
   if [ "${LLM_LIMITS_GROK_REFRESH:-1}" != 0 ]; then
@@ -1834,10 +1874,14 @@ for shield_vendor in claude codex gemini grok; do
     gemini) shield_payload=$gemini ;;
     grok) shield_payload=$grok ;;
   esac
-  reconcile_vendor_shields "$shield_vendor" "$shield_payload" || {
-    printf 'llm-limits.sh: failed to reconcile %s worker-pool shield\n' "$shield_vendor" >&2
-    exit 5
-  }
+  # Reconciliation writes and removes pool markers: under --no-write the read must not change
+  # worker-pool membership, and a marker write failure must not kill a read-only table.
+  if [ "$write_cache" -eq 1 ]; then
+    reconcile_vendor_shields "$shield_vendor" "$shield_payload" || {
+      printf 'llm-limits.sh: failed to reconcile %s worker-pool shield\n' "$shield_vendor" >&2
+      exit 5
+    }
+  fi
   shield_payload=$(apply_vendor_shield_state "$shield_vendor" "$shield_payload") || {
     printf 'llm-limits.sh: failed to apply %s worker-pool shield state\n' "$shield_vendor" >&2
     exit 5

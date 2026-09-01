@@ -213,7 +213,7 @@ blocked_accounts_json() {
   stale_rows_json "$1" "$2" 1
 }
 
-# OpenCode is the inverted vendor. The other three refresh by reading a free usage endpoint; the Go
+# OpenCode is the inverted vendor. The other four refresh by reading a free usage endpoint; the Go
 # plan publishes none, so its only probe is a real completion — free while the account is walled,
 # since a 429 costs no quota and re-states the limit, and pure spend once it is not. So: dormant
 # with no wall on record (every real call anyone makes records its own outcome, which is what keeps

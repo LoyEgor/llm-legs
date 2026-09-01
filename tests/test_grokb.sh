@@ -57,7 +57,9 @@ assert_fails bash "$SCRIPT" add Bad >/dev/null 2>&1
 assert_fails bash "$SCRIPT" profile ../escape -p fixture >/dev/null 2>&1
 assert test ! -e "$WORK/escape"
 
-mkdir -p "$GROKB_PROFILES_DIR/beta"
+# The pool state directory sits beside the accounts from the first `disable` on, so the listing is
+# asked about it while it is really there.
+mkdir -p "$GROKB_PROFILES_DIR/beta" "$GROKB_PROFILES_DIR/.grokb"
 cat >"$GROKB_PROFILES_DIR/alpha/auth.json" <<'JSON'
 {"issuer::client":{"email":"alpha@example.com","expires_at":"2026-09-01T12:00:00Z","key":"key-secret-sentinel","refresh_token":"refresh-secret-sentinel"}}
 JSON
@@ -190,6 +192,9 @@ assert_fails bash "$SCRIPT" remove alpha >/dev/null 2>&1
 assert test -d "$GROKB_PROFILES_DIR/alpha"
 printf '{"accounts":[{"account":"alpha","used_pct":61.2},{"account":"beta","used_pct":10}]}\n' \
   >"$LLM_LIMITS_GROK_CACHE"
+# The removals above already wrote the collector's empty line, so the announce this removal owes
+# is only observable against a truncated log.
+: >"$ANNOUNCE_LOG"
 remove_output=$(bash "$SCRIPT" remove alpha --force) || fail "remove alpha failed"
 assert grep -qx 'grokb: removed alpha' <<<"$remove_output"
 assert test ! -e "$GROKB_PROFILES_DIR/alpha"

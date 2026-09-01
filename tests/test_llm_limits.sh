@@ -2623,6 +2623,47 @@ grok_recovered=$(env "${grok_env[@]}" FAKE_GROK_CASE=busy \
 jq -e '.vendors.grok | has("refresh_error") | not' <<<"$grok_recovered" >/dev/null \
   || fail "a successful grok refresh did not clear the standing error"
 
+# The helper's own last word is the cause; without it a hard failure reads as an exit code.
+grok_crash=$(env "${grok_env[@]}" FAKE_GROK_CASE=helper_crash \
+  bash "$SCRIPT" --refresh-account grok --json 2>/dev/null) || fail "grok crash refresh collection failed"
+jq -e '.vendors.grok.refresh_error.cause | test("the helper died before printing")' \
+  <<<"$grok_crash" >/dev/null || fail "the grok helper's stderr never reached the reported cause"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok --json >/dev/null 2>&1
+
+# A name that is on no roster must not be read at all: the helper would answer needs_login for the
+# empty directory it resolves to, and that verdict is written straight into the store and the menu.
+grok_phantom_rc=0
+env "${grok_env[@]}" bash "$SCRIPT" --refresh-account grok/supergrokk --json \
+  >"$WORK/grok-phantom.out" 2>"$WORK/grok-phantom.err" || grok_phantom_rc=$?
+[ "$grok_phantom_rc" -eq 2 ] || fail "an unknown grok account must exit 2, got $grok_phantom_rc"
+grep -q 'unknown Grok account: supergrokk' "$WORK/grok-phantom.err" \
+  || fail "an unknown grok account did not say so: $(cat "$WORK/grok-phantom.err")"
+jq -e 'all(.accounts[]; .account != "supergrokk")' "$GROK_ROSTER_CACHE" >/dev/null \
+  || fail "an unknown grok account was written into the cache"
+grok_named=$(env "${grok_env[@]}" FAKE_GROK_CASE=busy \
+  bash "$SCRIPT" --refresh-account grok/second --json 2>/dev/null) \
+  || fail "a rostered grok account was refused"
+jq -e '[.vendors.grok.accounts[] | select(.account == "second")] | length == 1' <<<"$grok_named" \
+  >/dev/null || fail "a rostered grok account did not refresh"
+
+# A leg with no accounts read nothing because there was nothing to read: an empty vendor may not
+# stand permanently red.
+GROK_EMPTY_PROFILES="$WORK/grok-empty-profiles"
+mkdir -p "$GROK_EMPTY_PROFILES"
+grok_empty_env=("${grok_env[@]}" GROKB_PROFILES_DIR="$GROK_EMPTY_PROFILES"
+  LLM_LIMITS_GROK_CACHE="$WORK/grok-empty.json" LLM_LIMITS_CACHE="$WORK/grok-empty-store.json"
+  FAKE_GROK_CASE=empty_roster)
+grok_empty_rc=0
+grok_empty=$(env "${grok_empty_env[@]}" bash "$SCRIPT" --refresh --json 2>"$WORK/grok-empty.err") \
+  || grok_empty_rc=$?
+# 3 is "no vendor available at all", which this fixture is — nothing but grok is configured under
+# its HOME and grok itself has no accounts. Anything else would be a failure verdict on the read.
+[ "$grok_empty_rc" -eq 0 ] || [ "$grok_empty_rc" -eq 3 ] \
+  || fail "grok empty-roster collection failed ($grok_empty_rc): $(cat "$WORK/grok-empty.err")"
+jq -e '(.vendors.grok | type) == "object" and (.vendors.grok.accounts // []) == [] and
+  (.vendors.grok | has("refresh_error") | not)' \
+  <<<"$grok_empty" >/dev/null || fail "a grok leg with no accounts was reported as a failed refresh"
+
 # needs_login is the one state no automated path can leave; expired is the CLI's own to heal.
 GROK_AUTH_CACHE="$WORK/grok-auth.json"
 grok_auth_env=("${grok_env[@]}")
@@ -2690,6 +2731,14 @@ grok_monthly=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=monthly FAKE_GROK_AS_OF="
 jq -e '.vendors.grok.accounts[0].period == "USAGE_PERIOD_TYPE_MONTHLY" and
   .vendors.grok.accounts[0].weekly.used_pct == 12' <<<"$grok_monthly" >/dev/null \
   || fail "a monthly grok billing period was not carried through verbatim"
+# A window name no surface knows is carried the same way: the reading is still a reading, and the
+# menubar falls back to its `wk` label rather than dropping the row.
+grok_unknown_period=$(env "${grok_age_env[@]}" FAKE_GROK_CASE=bad_period FAKE_GROK_AS_OF="$now" \
+  bash "$SCRIPT" --refresh --json 2>/dev/null) || fail "grok unknown-period collection failed"
+jq -e '.vendors.grok.accounts[0].period == "USAGE_PERIOD_TYPE_UNSPECIFIED" and
+  .vendors.grok.accounts[0].weekly.used_pct == 33 and
+  .vendors.grok.accounts[0].weekly.resets_at == null' <<<"$grok_unknown_period" >/dev/null \
+  || fail "an unrecognized grok billing period was not carried through verbatim"
 
 # The real helper against a dead endpoint: the access token in auth.json may reach neither the
 # store nor a log, however the read fails.

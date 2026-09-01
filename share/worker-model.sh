@@ -176,7 +176,7 @@ worker_model_pin_account() {
   case "$wall_until" in '' | *[!0-9]*) wall_until='' ;; esac
   [ -z "$wall_until" ] || [ "$wall_until" -gt "$(date +%s)" ] || wall_until=''
   case "$key" in claudeb_profile | codex_profile | gemini_profile | grok_profile) ;; *)
-    printf 'worker-model: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
+    printf 'worker-model: unknown pin key: %s\n' "$key" >&2; return 2 ;;
   esac
   file=$(worker_model_file)
   case "$name" in

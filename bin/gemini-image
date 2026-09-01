@@ -12,6 +12,15 @@ normalized_extension() {
   case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
 }
 
+# The answer's NAME says nothing about its bytes, and a file named for the destination's own
+# extension would be copied verbatim however it is encoded. Unreadable bytes fall through to a
+# re-encode. Same reader in codex-image and grok-image.
+actual_format() { # path
+  local value
+  value=$(sips -g format "$1" 2>/dev/null | awk '/format:/ {print $2; exit}')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+
 resolve_root() {
   local source="${BASH_SOURCE[0]}" directory
   while [ -L "$source" ]; do
@@ -211,7 +220,7 @@ fi
 
 if [ "$remove_green" = true ]; then
   chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-elif [ "$extension" != "$(normalized_extension "$generated")" ]; then
+elif [ "$extension" != "$(actual_format "$generated")" ]; then
   magick "$generated" "$dest"
 else
   cp "$generated" "$dest"

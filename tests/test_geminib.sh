@@ -776,7 +776,14 @@ chmod +x "$IMAGE_BIN/magick"
 cat >"$IMAGE_BIN/sips" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$IMAGE_SIPS_CALLS"
-printf '  pixelWidth: 1024\n  pixelHeight: 768\n  format: jpeg\n'
+# Bytes, not names: the default answers for a file that really is what it is called, and
+# IMAGE_SIPS_FORMAT is the mislabelled answer the generator sometimes hands back.
+for target in "$@"; do :; done
+format=${IMAGE_SIPS_FORMAT:-}
+if [ -z "$format" ]; then
+  case "$target" in *.png) format=png ;; *) format=jpeg ;; esac
+fi
+printf '  pixelWidth: 1024\n  pixelHeight: 768\n  format: %s\n' "$format"
 EOF
 chmod +x "$IMAGE_BIN/sips"
 

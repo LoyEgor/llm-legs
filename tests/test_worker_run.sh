@@ -199,7 +199,8 @@ clear_stub() {
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
     "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue" "$STUB_DIR/grok_wall_accounts" \
-    "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied"
+    "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied" \
+    "$STUB_DIR/grok_max_turns"
 }
 
 start_ok() {
@@ -2480,6 +2481,12 @@ assert test "$rc" -eq 4
 assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/grok-pool.out"
 assert grep -q 'benched is out of the worker pool' "$WORK/grok-pool.err"
 assert test ! -s "$CALL_LOG"
+# The vendor pin is the one override, here as for every other vendor: it names an account on
+# purpose, so the pool's consent wall steps aside for it.
+set_config 'grok_profile=benched' 'grok_effort=high'
+start_ok grok --account benched
+assert meta_account_is benched
+assert await_done
 rm -f "$grok_pool/disabled"
 
 # Only the PERSISTENT wording walls an account, and an unpinned run continues on the next one
@@ -2555,6 +2562,19 @@ assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/wait.out"
 assert grep -qx 'REASON: auth — the account needs a human login (grokb add <account>)' "$WORK/wait.out"
 assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 1
 
+# A run that outran its turn budget answered nothing, but the vendor is fine: read as a plain
+# GROK_UNAVAILABLE the orchestrator reroutes a brief that will outrun the budget again.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=grokturns
+: >"$STUB_DIR/grok_max_turns"
+start_ok grok
+assert await_done
+assert grep -qx 'OUTCOME: GROK_UNAVAILABLE' "$WORK/wait.out"
+assert grep -qx 'REASON: max-turns — the brief outran --max-turns (60); the vendor answered fine, so relaunching it whole buys nothing' \
+  "$WORK/wait.out"
+assert test "$(grep -c '^GROK_CALL$' "$CALL_LOG")" -eq 1
+
 # A wall stated mid-run arrives as an `error` event on stdout, where every other vendor puts it on
 # stderr: read on stderr alone this run reports an outage while the plan is actually exhausted.
 clear_stub
@@ -2585,6 +2605,8 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
 assert jq -e '.denied_tools == 1' "$RUN_DIR/meta.json" >/dev/null
 assert grep -qx 'DENIED-TOOLS: 1' <<<"$("$RUNNER" report "$RUN_ID")"
+# `wait` is what a relay worker actually reads back, so the count has to survive that path too.
+assert grep -qx 'DENIED-TOOLS: 1' "$WORK/wait.out"
 
 # The agent quotes the refusal back in its own answer — live-observed, and the whole reason the count
 # is read off the failed tool_call_update: the denial is stated once however often the text repeats it.
@@ -2605,6 +2627,7 @@ start_ok grok
 assert await_done
 assert jq -e 'has("denied_tools") | not' "$RUN_DIR/meta.json" >/dev/null
 assert test "$(grep -c '^DENIED-TOOLS:' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+assert test "$(grep -c '^DENIED-TOOLS:' "$WORK/wait.out")" -eq 0
 
 # grok names the files it wrote in its own session record, filed under the URL-encoded cwd it ran
 # in: an id found by globbing can belong to a session from another directory entirely, so the

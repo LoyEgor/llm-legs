@@ -363,6 +363,15 @@ assert grep -q 'openLoginTerminal("codexb run ' <<<"$codex_login_lua"
 if grep -v '^[[:space:]]*--' <<<"$codex_login_lua" | grep -q -- --device-auth; then
   fail "menu Codex login reverted to device-auth"
 fi
+# The scoped read above cannot see a flag spliced in through a variable defined elsewhere in the
+# module, so the whole file is read too: outside Grok's own login function, where the flag is the
+# only flow there is, no live line may carry it.
+device_auth_outside=$(awk '
+  /^function M\.loginGrok\(/ { in_grok = 1 }
+  in_grok { if ($0 == "end") in_grok = 0; next }
+  /--device-auth/ && $0 !~ /^[[:space:]]*--[^-]/ { print FNR ": " $0 }
+' "$ROOT/hammerspoon/llm-limits.lua")
+[ -z "$device_auth_outside" ] || fail "a live --device-auth outside Grok login: $device_auth_outside"
 
 # The flag itself stays a working manual fallback: codexb passes codex arguments through verbatim.
 : >"$CODEX_CALLS"
@@ -680,7 +689,14 @@ chmod +x "$IMAGE_BIN/magick"
 
 cat >"$IMAGE_BIN/sips" <<'EOF'
 #!/usr/bin/env bash
-printf '  pixelWidth: 1024\n  pixelHeight: 768\n  format: jpeg\n'
+# Bytes, not names: the default answers for a file that really is what it is called, and
+# IMAGE_SIPS_FORMAT is the mislabelled answer the generator sometimes hands back.
+for target in "$@"; do :; done
+format=${IMAGE_SIPS_FORMAT:-}
+if [ -z "$format" ]; then
+  case "$target" in *.png) format=png ;; *) format=jpeg ;; esac
+fi
+printf '  pixelWidth: 1024\n  pixelHeight: 768\n  format: %s\n' "$format"
 EOF
 chmod +x "$IMAGE_BIN/sips"
 
@@ -739,6 +755,15 @@ assert grep -qx 'account=explicit' "$IMAGE_OUT"
 assert image_run --dest "$WORK/image-output/asis.png" --prompt 'simple badge' --account explicit
 assert grep -qx 'generated:explicit' "$WORK/image-output/asis.png"
 assert test ! -s "$IMAGE_MAGICK_CALLS"
+
+# The generator names its answer after the destination, so a JPEG saved as `.png` matches by name
+# and only its bytes say otherwise: copied verbatim it lands as a `.png` that is not one.
+: >"$IMAGE_MAGICK_CALLS"
+IMAGE_SIPS_FORMAT=jpeg
+export IMAGE_SIPS_FORMAT
+assert image_run --dest "$WORK/image-output/mislabelled.png" --prompt 'simple badge' --account explicit
+assert grep -q "$WORK/image-output/mislabelled.png" "$IMAGE_MAGICK_CALLS"
+unset IMAGE_SIPS_FORMAT
 
 : >"$IMAGE_MAGICK_CALLS"
 assert image_run --dest "$WORK/image-output/alpha.png" \

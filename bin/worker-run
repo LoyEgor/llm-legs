@@ -326,8 +326,9 @@ pick_account() {
   # Its quota may be untouched, and this whole system exists so that nothing reports a limit it has
   # no data for (docs/DIAGNOSTICS.md, the 429 taxonomy).
   # worker-pick puts its whole vendor line inside those parens, so the reason arrives prefixed
-  # (`grok: unavailable`) and may carry a pin-lapse clause before it.
-  ! grep -Eq 'no selectable [a-z]+ account \(([a-z]+: )?([^)]*\| )?(unavailable|no( [A-Za-z]+)* quota data|no accounts)\)' "$errors" ||
+  # (`grok: unavailable`), may carry a pin-lapse clause before it, or trails a NEXT-style line
+  # after an em-dash (`codex unavailable · medium — no quota data`).
+  ! grep -Eq 'no selectable [a-z]+ account \(([a-z]+: )?([^)]*[|—] )?(unavailable|no( [A-Za-z]+)* quota data|no accounts)\)' "$errors" ||
     PICKED_NO_DATA=true
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
@@ -520,8 +521,11 @@ reroute_walled() {
   fi
   # started_at is restamped because run_overdue budgets one deadline, and a chain
   # of full-length attempts would otherwise read as a wedged CLI.
+  # Per-attempt facts belong to the attempt that recorded them: carried over, the abandoned run's
+  # served model and refused tools would be reported as the rescue attempt's own.
   meta_update "$directory" \
-    '.walled_accounts = ((.walled_accounts // []) + [.account]) | .account = $next | .started_at = $now' \
+    '.walled_accounts = ((.walled_accounts // []) + [.account]) | .account = $next | .started_at = $now
+     | del(.served_model, .denied_tools)' \
     --arg next "$PICKED_ACCOUNT" --argjson now "$(date +%s)" || return 1
   if IFS= read -r tag <"$directory/tag" 2>/dev/null; then
     printf '%s · %s\n' "$PICKED_ACCOUNT" "${tag#* · }" >"$directory/tag"
@@ -1134,7 +1138,10 @@ grok_error_text() { # directory
 grok_reason_line() { # directory
   local text
   text=$(grok_error_text "$1")
-  if grep -Eiq "$GROK_AUTH_RE" <<<"$text"; then
+  if grep -q 'max_turns_reached' <<<"$text"; then
+    printf 'REASON: max-turns — the brief outran --max-turns (%s); the vendor answered fine, so relaunching it whole buys nothing\n' \
+      "$(jq -r '.max_turns // "?"' "$1/meta.json" 2>/dev/null)"
+  elif grep -Eiq "$GROK_AUTH_RE" <<<"$text"; then
     printf 'REASON: auth — the account needs a human login (grokb add <account>)\n'
   elif grep -Eiq "$GROK_TRANSIENT_RE" <<<"$text"; then
     printf 'REASON: transient — capacity weather, not a wall; the brief may be relaunched\n'
@@ -1710,6 +1717,12 @@ result_tail() {
   fi
 }
 
+denied_tools_line() {
+  local denied
+  denied=$(jq -r '.denied_tools // empty' "$1/meta.json")
+  [ -z "$denied" ] || printf 'DENIED-TOOLS: %s\n' "$denied"
+}
+
 terminal_report() {
   local directory="$1" code vendor status
   code=$(tr -d '[:space:]' <"$directory/exit_code")
@@ -1720,6 +1733,7 @@ terminal_report() {
   reroute_lines "$directory"
   workdir_escape_line "$directory"
   print_outcome "$directory" "$vendor" "$code"
+  denied_tools_line "$directory"
   unnamed_line "$directory"
   result_tail "$directory" "$vendor" 40
   if [ "$code" != 0 ]; then
@@ -1732,6 +1746,7 @@ unknown_report() {
   local directory="$1" vendor
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+  denied_tools_line "$directory"
   result_tail "$directory" "$vendor" 40
   printf 'ERR-TAIL:\n'
   tail -n 40 "$directory/err" 2>/dev/null
@@ -1826,7 +1841,7 @@ wait_run() {
 
 report_run() {
   [ "$#" -eq 1 ] || usage
-  local directory vendor account code status cost s5_rate pid denied
+  local directory vendor account code status cost s5_rate pid
   directory=$(run_path "$1")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   vendor=$(jq -r '.vendor' "$directory/meta.json")
@@ -1853,8 +1868,7 @@ report_run() {
       tail -n 80 "$directory/err" 2>/dev/null
     fi
   fi
-  denied=$(jq -r '.denied_tools // empty' "$directory/meta.json")
-  [ -z "$denied" ] || printf 'DENIED-TOOLS: %s\n' "$denied"
+  denied_tools_line "$directory"
   if [ "$vendor" = claudeb ]; then
     cost=$(jq -r '.total_cost_usd // empty' "$directory/out" 2>/dev/null)
     # The $2/M base permanently defines one Sonnet-5-equivalent token; after the public rate

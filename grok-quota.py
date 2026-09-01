@@ -22,6 +22,7 @@ ENDPOINT = os.environ.get(
 FALLBACK_CLIENT_VERSION = "1.0.13"
 BUILD_PRODUCT = "PRODUCT_GROK_BUILD"
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
+ISO_DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _PERSISTENT_LIMIT_MARKERS = (
     "hit the credit limit for your plan",
     "hit the rate limit for your plan",
@@ -75,9 +76,15 @@ def client_version() -> str:
 # writer is the one real hazard around that file.
 def auth_entry(home: Path) -> dict | None:
     try:
-        data = json.loads((home / "auth.json").read_text())
-    except (OSError, ValueError):
+        raw = (home / "auth.json").read_text()
+    except OSError:
         return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        # Without that lock a read can land mid-rotation and see a truncated document. Calling
+        # that "needs_login" would drop a signed-in account out of the pool over a race.
+        raise RuntimeError("unreadable auth.json") from None
     if not isinstance(data, dict):
         return None
     if isinstance(data.get("key"), str):
@@ -95,7 +102,10 @@ def normalize_iso(value: object) -> str | None:
     try:
         moment = datetime.fromisoformat(text.replace("Z", "+00:00").replace("z", "+00:00"))
     except ValueError:
-        return text
+        # An older interpreter's stricter parser can refuse a real timestamp, so a date-shaped
+        # string is still published; anything else is not a reset instant and saying nothing
+        # beats handing every limits surface a word it will render as a time.
+        return text if ISO_DATE_RE.match(text) else None
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -157,7 +167,12 @@ def fetch(entry: dict, timeout: float) -> dict:
 
 
 def account_row(account: str, entry: dict, body: dict, as_of: int) -> dict:
-    config = body.get("config") if isinstance(body.get("config"), dict) else {}
+    config = body.get("config")
+    if not isinstance(config, dict):
+        # Only a field missing from a well-formed config means zero. A body carrying no config at
+        # all is a shape this reader does not know, and publishing 0% for it would rank a
+        # possibly-exhausted account as the freest one in the pool.
+        raise RuntimeError("unexpected billing payload: no config object")
     period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else {}
     # Absent means zero, not missing data: the endpoint omits the field until the pool is touched.
     used = number_or_none(config.get("creditUsagePercent"))
@@ -185,7 +200,10 @@ def account_row(account: str, entry: dict, body: dict, as_of: int) -> dict:
 
 def collect(account: str, home: Path, timeout: float) -> dict:
     as_of = int(time.time())
-    entry = auth_entry(home)
+    try:
+        entry = auth_entry(home)
+    except RuntimeError as exc:
+        return {"account": account, "error": str(exc), "as_of": as_of}
     if entry is None:
         return {"account": account, "auth": "needs_login", "as_of": as_of}
     try:
@@ -217,11 +235,13 @@ def profiles(profiles_dir: Path) -> list[tuple[str, Path]]:
         found.append(("main", main))
     if profiles_dir.is_dir():
         # `grokb` keeps its pool state in `.grokb` beside the accounts, so dotted names are
-        # reserved: listing them would publish a service directory as an account.
+        # reserved: listing them would publish a service directory as an account. `main` names
+        # ~/.grok everywhere, `grokb add` refuses it, and a hand-made directory under that name
+        # can only render as a second `main` row nothing can address.
         found.extend(
             (path.name, path)
             for path in sorted(profiles_dir.iterdir())
-            if path.is_dir() and not path.name.startswith(".")
+            if path.is_dir() and not path.name.startswith(".") and path.name != "main"
         )
     return found
 

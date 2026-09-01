@@ -1546,7 +1546,7 @@ do
       { account = "gm-two", is_current = false, enabled = false, five_hour = bucket(20) },
     } },
     grok = { available = true, accounts = {
-      { account = "gk-one", is_current = true, enabled = true, seven_day = bucket(10) },
+      { account = "gk-one", is_current = true, enabled = true, weekly = bucket(10) },
     } },
   }}
   local tasks = {}
@@ -1624,13 +1624,7 @@ do
   local tasks, scripts = {}, {}
   local mod = loadModule(grokFixture, captureTasks(tasks), now, nil,
     function(script) table.insert(scripts, script); return true, true, {} end,
-    "grok_profile=supergrok\ngrok_workers=off\ngrok_reviewers=on",
-    function(path, attribute)
-      if path == os.getenv("HOME") .. "/.grok-profiles/relogin" and attribute == "mode" then
-        return "directory"
-      end
-      return nil
-    end)
+    "grok_profile=supergrok\ngrok_workers=off\ngrok_reviewers=on")
   local menu = mod.menuItems()
   assert(mod.refreshState().prefix == "", "Grok entry-only refresh error lit the global warning")
   local grokEntryError = false
@@ -1662,6 +1656,10 @@ do
   assert(superWeekly:find("wk", 1, true) and superWeekly:find("61%", 1, true),
     "Grok weekly usage did not use the shared bucket formatter")
   assert(superWeekly:find("build 47%", 1, true), "distinct Grok build usage did not render")
+  local buildAt = superWeekly:find("  build 47%", 1, true)
+  local expiredWeeklyText = titleText(menu[accountIndex(menu, "expired") + 1])
+  assert(buildAt == #expiredWeeklyText + 1,
+    "the Grok build detail moved the fixed columns a sibling row keeps")
 
   local loginRow = accountItem(menu, "relogin")
   assert(titleText(loginRow):find("login needed", 1, true),

@@ -51,7 +51,14 @@ PREFER = {"subscriptionTier": "SUBSCRIPTION_TIER_SUPERGROK",
 NO_PERIOD = {"subscriptionTier": "SUBSCRIPTION_TIER_SUPERGROK",
              "config": {"creditUsagePercent": 22.5}}
 BAD_PERIOD = {"config": {"creditUsagePercent": 33,
-                         "currentPeriod": {"type": 7, "start": "not-a-date", "end": ""}}}
+                         "currentPeriod": {"type": 7, "start": WEEKLY["start"],
+                                           "end": "not-a-date"}}}
+EMPTY_END = {"config": {"creditUsagePercent": 33,
+                        "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY",
+                                          "start": WEEKLY["start"], "end": ""}}}
+NO_CONFIG = {"subscriptionTier": "SUBSCRIPTION_TIER_SUPERGROK",
+             "creditUsagePercent": 61.2}
+EMPTY_BODY = {}
 PERIOD_NOT_OBJECT = {"config": {"creditUsagePercent": 4,
                                 "currentPeriod": "USAGE_PERIOD_TYPE_WEEKLY"}}
 
@@ -80,8 +87,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.reply(200, NO_PERIOD)
         elif route == "/bad-period":
             self.reply(200, BAD_PERIOD)
+        elif route == "/empty-end":
+            self.reply(200, EMPTY_END)
         elif route == "/period-not-object":
             self.reply(200, PERIOD_NOT_OBJECT)
+        elif route == "/no-config":
+            self.reply(200, NO_CONFIG)
+        elif route == "/empty-body":
+            self.reply(200, EMPTY_BODY)
         elif route == "/unauthorized":
             self.reply(401, {"error": "unauthorized"})
         elif route == "/not-signed-in":
@@ -220,11 +233,14 @@ jq -e '.path == "/busy?format=credits"' <<<"$last_headers" >/dev/null \
   || fail "the credits query string was dropped: $last_headers"
 pass
 
-# 401/403 with a refresh token is the CLI's own to heal; without one only a human login can.
-for route in unauthorized forbidden; do
+# 401/403 with a refresh token is the CLI's own to heal; without one only a human login can. The
+# cause carries the code that came back, so each route is asserted against its own.
+for spec in unauthorized:401 forbidden:403; do
+  route=${spec%:*}
+  code=${spec##*:}
   out=$(run "$route" --account supergrok); rc=$?
   [ "$rc" -eq 2 ] || fail "$route with a refresh token: expected exit 2, got $rc"
-  jq -e '.accounts[0] | .auth == "expired" and (.cause | test("401|403")) and
+  jq -e --arg code "$code" '.accounts[0] | .auth == "expired" and (.cause | test($code)) and
     (has("used_pct") | not)' <<<"$out" >/dev/null \
     || fail "$route with a refresh token was not read as a refreshable token: $out"
   no_secret "$out" "reading a rejected token"
@@ -236,15 +252,40 @@ for route in unauthorized forbidden; do
 done
 pass
 
-# No auth.json at all, and one that is not parseable, are the same state: nobody is logged in.
-mkdir -p "$PROFILES/never-logged-in" "$PROFILES/broken"
-printf 'not json\n' >"$PROFILES/broken/auth.json"
-for account in never-logged-in broken; do
-  out=$(run zero --account "$account"); rc=$?
-  [ "$rc" -eq 2 ] || fail "$account: expected exit 2, got $rc"
-  jq -e '.accounts[0] | .auth == "needs_login" and (has("used_pct") | not)' <<<"$out" >/dev/null \
-    || fail "$account was not read as needs_login: $out"
-done
+# No auth.json at all is the one definite "nobody is logged in".
+mkdir -p "$PROFILES/never-logged-in"
+out=$(run zero --account never-logged-in); rc=$?
+[ "$rc" -eq 2 ] || fail "never-logged-in: expected exit 2, got $rc"
+jq -e '.accounts[0] | .auth == "needs_login" and (has("used_pct") | not)' <<<"$out" >/dev/null \
+  || fail "a profile with no auth.json was not read as needs_login: $out"
+# A file that does not parse is the CLI rewriting it under a lock this reader never takes: a
+# transient error row, because needs_login is a verdict that overwrites the last good reading.
+mkdir -p "$PROFILES/broken"
+printf '{"https://auth.x.ai::b1a0":{"key":"gro\n' >"$PROFILES/broken/auth.json"
+out=$(run zero --account broken); rc=$?
+[ "$rc" -eq 1 ] || fail "unreadable auth.json: expected exit 1, got $rc"
+jq -e '.accounts[0] | (.error | test("auth.json")) and (has("auth") | not) and
+  (has("used_pct") | not)' <<<"$out" >/dev/null \
+  || fail "a truncated auth.json was read as a login verdict: $out"
+no_traceback "reading a truncated auth.json"
+# A well-formed document with no key in it is nobody logged in, not a race.
+printf '{"https://auth.x.ai::b1a0":{"user_id":"u-broken"}}\n' >"$PROFILES/broken/auth.json"
+out=$(run zero --account broken); rc=$?
+[ "$rc" -eq 2 ] || fail "keyless auth.json: expected exit 2, got $rc"
+jq -e '.accounts[0].auth == "needs_login"' <<<"$out" >/dev/null \
+  || fail "a keyless auth.json was not read as needs_login: $out"
+# The flat shape auth_entry also accepts: the token sits at the top level, with no wrapper.
+mkdir -p "$PROFILES/flat"
+printf '{"key":"%s","refresh_token":"%s","user_id":"u-flat"}\n' "$TOKEN" "$REFRESH" \
+  >"$PROFILES/flat/auth.json"
+out=$(run busy --account flat); rc=$?
+[ "$rc" -eq 0 ] || fail "flat auth.json: expected exit 0, got $rc"
+jq -e '.accounts[0] | .account == "flat" and .auth == "ok" and .used_pct == 61.2' <<<"$out" >/dev/null \
+  || fail "a flat auth.json was not read: $out"
+[ "$(jq -r '.headers["x-userid"]' <<<"$(tail -n 1 "$HEADER_LOG")")" = "u-flat" ] \
+  || fail "the flat entry's user id did not reach the request header"
+no_secret "$out" "reading a flat auth.json"
+rm -rf "$PROFILES/flat"
 requests_before=$(wc -l <"$HEADER_LOG")
 run zero --account never-logged-in >/dev/null
 [ "$(wc -l <"$HEADER_LOG")" -eq "$requests_before" ] \
@@ -270,6 +311,19 @@ jq -e '.accounts[0] | (.error | type) == "string" and (has("auth") | not)' <<<"$
 no_secret "$out" "reporting a timeout"
 pass
 
+# A 200 whose shape this reader does not know must stay unstated: reporting 0% would publish a
+# measurement nobody made and rank a possibly-exhausted account as the freest in the pool.
+for route in no-config empty-body; do
+  out=$(run "$route" --account supergrok); rc=$?
+  [ "$rc" -eq 1 ] || fail "$route: expected exit 1, got $rc"
+  jq -e '.accounts[0] | (.error | test("config")) and (has("used_pct") | not) and
+    (has("auth") | not)' <<<"$out" >/dev/null \
+    || fail "$route was published as a measurement instead of an error row: $out"
+  no_secret "$out" "reading a $route response"
+  no_traceback "reading a $route response"
+done
+pass
+
 # Every profile with no --account, main included only once it has a login of its own.
 out=$(run busy); rc=$?
 [ "$rc" -eq 0 ] || fail "roster read: expected exit 0, got $rc"
@@ -281,7 +335,31 @@ out=$(run busy)
   || fail "a logged-in ~/.grok was not listed as main: $out"
 jq -e 'all(.accounts[]; .account != ".grokb")' <<<"$out" >/dev/null \
   || fail "the pool state directory was published as an account: $out"
+# `main` names ~/.grok everywhere and --account main resolves there, so a hand-made profile under
+# that name may not become a second row nothing can address.
+mkdir -p "$PROFILES/main"
+write_auth "$PROFILES/main" "$TOKEN" "$REFRESH"
+out=$(run busy)
+[ "$(jq -r '[.accounts[].account] | join(",")' <<<"$out")" = "main,second,supergrok" ] \
+  || fail "a profile directory named main was published as a second main row: $out"
+out=$(run busy --account main)
+[ "$(jq -r '.accounts[0].email' <<<"$out")" = ".grok@example.com" ] \
+  || fail "--account main did not resolve to ~/.grok: $out"
+rm -rf "$PROFILES/main"
 no_secret "$out" "reading the whole roster"
+pass
+
+# A roster mixing a readable account with an auth verdict is the normal call shape, and a measured
+# row is what decides the exit code there.
+mkdir -p "$PROFILES/no-login-yet"
+out=$(run busy --account supergrok --account no-login-yet); rc=$?
+[ "$rc" -eq 0 ] || fail "mixed roster: a measured row must win the exit code, got $rc"
+jq -e '[.accounts[] | .account] == ["supergrok","no-login-yet"] and
+  .accounts[0].used_pct == 61.2 and .accounts[1].auth == "needs_login"' <<<"$out" >/dev/null \
+  || fail "mixed roster lost a row: $out"
+out=$(run unauthorized --account second --account no-login-yet); rc=$?
+[ "$rc" -eq 2 ] || fail "verdict-only roster: expected exit 2, got $rc"
+rm -rf "$PROFILES/no-login-yet"
 pass
 
 # Stdout is JSON and nothing else, the same contract codex-quota.py and agy-quota.py hold: every
@@ -401,12 +479,20 @@ jq -e '.accounts[0] | .used_pct == 22.5 and .resets_at == null and
   (has("period") | not) and .auth == "ok"' <<<"$out" >/dev/null \
   || fail "missing currentPeriod crashed or dropped the percent: $out"
 no_secret "$out" "reading a body with no currentPeriod"
+# `end` is the field resets_at is taken from: an unparsable one must leave resets_at unstated
+# rather than hand every limits surface a word it will render as a time.
 out=$(run bad-period --account supergrok); rc=$?
-[ "$rc" -eq 0 ] || fail "malformed currentPeriod: expected exit 0, got $rc"
+[ "$rc" -eq 0 ] || fail "malformed period end: expected exit 0, got $rc"
 jq -e '.accounts[0] | .used_pct == 33 and .resets_at == null and
   (has("period") | not) and .auth == "ok"' <<<"$out" >/dev/null \
-  || fail "malformed currentPeriod crashed or dropped the percent: $out"
-no_secret "$out" "reading a malformed currentPeriod"
+  || fail "an unparsable period end was published verbatim or lost the percent: $out"
+no_secret "$out" "reading a malformed period end"
+out=$(run empty-end --account supergrok); rc=$?
+[ "$rc" -eq 0 ] || fail "empty period end: expected exit 0, got $rc"
+jq -e '.accounts[0] | .used_pct == 33 and .resets_at == null and
+  .period == "USAGE_PERIOD_TYPE_WEEKLY" and .auth == "ok"' <<<"$out" >/dev/null \
+  || fail "an empty period end did not leave resets_at unstated: $out"
+no_secret "$out" "reading an empty period end"
 out=$(run period-not-object --account supergrok); rc=$?
 [ "$rc" -eq 0 ] || fail "currentPeriod as a string: expected exit 0, got $rc"
 jq -e '.accounts[0] | .used_pct == 4 and .resets_at == null and

@@ -242,7 +242,7 @@ def count_file_events(transcript_path):
 
 def mask_worker_names(text):
     text = re.sub(r"codex-worker|claudeb-worker|gemini-worker|grok-worker|sonnet-worker", "WORKER", text)
-    text = re.sub(r"\bcodex\b|\bclaudeb\b|\bgemini\b|\bgrok\b|\bsonnet\b", "WORKER", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bcodexb?\b|\bclaudeb\b|\bgeminib?\b|\bgrokb?\b|\bsonnet\b", "WORKER", text, flags=re.IGNORECASE)
     return text
 
 

@@ -541,7 +541,7 @@ assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~
 query_case golden --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
-assert grep -q 'no selectable grok account (grok: unavailable)' "$WORK/query.err"
+assert grep -q 'no selectable grok account (grok: no quota data)' "$WORK/query.err"
 
 grok_case "$GROK_PAIR"
 assert contains "$(head -n1 <<<"$output")" 'grok spare · auto · high — 10%'
@@ -571,7 +571,8 @@ assert before "$next_line" 'gemini main' 'codex main'
 run_filter golden ".vendors.grok = $GROK_PAIR
   | del(.vendors.codex, .vendors.gemini)
   | .vendors.claude.accounts |= map(.enabled = false)"
-assert test "${output%%$'\n'*}" = 'NEXT: grok spare · auto · high — 10%  |  claudeb unavailable — every account is out of the worker pool  |  codex unavailable · high — WALLED  |  gemini unavailable'
+# Nothing measured codex or gemini here, so neither may speak of a wall.
+assert test "${output%%$'\n'*}" = 'NEXT: grok spare · auto · high — 10%  |  claudeb unavailable — every account is out of the worker pool  |  codex unavailable · high — no quota data  |  gemini unavailable'
 # The order follows the numbers, not the vendor: the same store with codex barely touched puts
 # codex at the head and grok behind claudeb.
 run_filter golden ".vendors.grok = $GROK_PAIR
@@ -626,7 +627,9 @@ grok_case '{available:true,accounts:[
   {account:"stale",enabled:true,weekly:{used_pct:10},auth:{status:"expired"}}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok fresh · auto · high — 40%'
 assert contains "$(sed -n '4p' <<<"$output")" 'stale 10% auth expired'
-assert not_contains "$(sed -n '4p' <<<"$output")" 'stale 10% auth expired WALLED'
+# The tags render WALLED before the auth words, so that is the string that says `expired` was not
+# read as a wall.
+assert not_contains "$(sed -n '4p' <<<"$output")" 'stale 10% WALLED'
 assert before "$(sed -n '4p' <<<"$output")" 'fresh 40%' 'stale 10%'
 grok_query '{"available":true,"accounts":[
   {"account":"fresh","enabled":true,"weekly":{"used_pct":40},"auth":{"status":"ok"}},
@@ -668,7 +671,8 @@ assert grep -q 'every grok account is out of the worker pool' "$WORK/query.err"
 grok_case '{available:false}'
 assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — no quota data'
 assert not_contains "$output" 'grok unavailable · auto · high — WALLED'
-assert contains "$(sed -n '4p' <<<"$output")" 'grok: unavailable'
+# Both renders of that one state say the same words, or a reader takes them for two states.
+assert contains "$(sed -n '4p' <<<"$output")" 'grok: no quota data'
 grok_case '{available:true,accounts:[{account:"supergrok",enabled:true}]}'
 assert contains "$(head -n1 <<<"$output")" 'grok unavailable · auto · high — no quota data'
 assert contains "$(sed -n '4p' <<<"$output")" 'grok: supergrok ? (wk→?)'

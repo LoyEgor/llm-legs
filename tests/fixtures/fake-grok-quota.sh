@@ -20,6 +20,17 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$names" ] || names=${FAKE_GROK_ROSTER:-supergrok}
 
+# A leg with no accounts at all, and a helper that dies before writing a payload: both answer
+# nothing on stdout, and only the second is a failure.
+if [ "$case" = empty_roster ]; then
+  printf '{"accounts":[]}\n'
+  exit 1
+fi
+if [ "$case" = helper_crash ]; then
+  printf 'grok-quota.py: RuntimeError: the helper died before printing\n' >&2
+  exit 1
+fi
+
 row() {
   case "$case" in
     # The owner's fresh account: the endpoint omits creditUsagePercent at 0 and names no tier.
@@ -31,7 +42,8 @@ row() {
     walled) printf '{"account":"%s","auth":"ok","used_pct":100,"resets_at":"%s","period":"USAGE_PERIOD_TYPE_WEEKLY","as_of":%s}' "$1" "$reset" "$as_of" ;;
     monthly) printf '{"account":"%s","auth":"ok","used_pct":12,"resets_at":"%s","period":"USAGE_PERIOD_TYPE_MONTHLY","as_of":%s}' "$1" "$reset" "$as_of" ;;
     no_period) printf '{"account":"%s","auth":"ok","used_pct":22.5,"resets_at":null,"email":"owner@example.com","as_of":%s}' "$1" "$as_of" ;;
-    bad_period) printf '{"account":"%s","auth":"ok","used_pct":33,"resets_at":null,"email":"owner@example.com","as_of":%s}' "$1" "$as_of" ;;
+    # A window name no surface knows: the percent still counts, and the period is carried as it came.
+    bad_period) printf '{"account":"%s","auth":"ok","used_pct":33,"resets_at":null,"period":"USAGE_PERIOD_TYPE_UNSPECIFIED","email":"owner@example.com","as_of":%s}' "$1" "$as_of" ;;
     needs_login) printf '{"account":"%s","auth":"needs_login","as_of":%s}' "$1" "$as_of" ;;
     expired) printf '{"account":"%s","auth":"expired","cause":"token rejected: HTTP 401","as_of":%s}' "$1" "$as_of" ;;
     not_signed_in) printf '{"account":"%s","auth":"expired","cause":"token rejected: HTTP 401","as_of":%s}' "$1" "$as_of" ;;

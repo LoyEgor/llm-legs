@@ -254,7 +254,9 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   local reset = columns.reset or formatResetTime(bucket.resets_at)
   local prefix = string.format("%-6s  %-2s  ", account or "", label)
   local bar = usageBar(pct)
-  local suffix = string.format("  %4s%s  %9s", pctText, columns.detail or "", reset)
+  -- The detail trails the fixed columns: set between them it pushes the reset right on the one row
+  -- that carries it, so a single Grok build figure would misalign the whole menu.
+  local suffix = string.format("  %4s  %9s%s", pctText, reset, columns.detail or "")
   if barWarning and not atLimit then
     return infoTitle(prefix, false, dim, false)
       .. infoTitle(bar, true, false, false)

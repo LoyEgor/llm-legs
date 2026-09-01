@@ -89,7 +89,13 @@ is_revert_segment() {
           -*) continue ;;
           .|HEAD|./*|../*|/*) return 0 ;;
           *)
-            if [ -e "$guard_cwd/$arg" ] || looks_like_file "$arg"; then return 0; fi
+            if [ -e "$guard_cwd/$arg" ]; then return 0; fi
+            # A slashed name that anchors to no local directory is a branch (`release/2.0.x`,
+            # `fix/api.v2`), not a file — the dotted last segment alone must not condemn it.
+            case "$arg" in
+              */*) [ -d "$guard_cwd/${arg%%/*}" ] && looks_like_file "$arg" && return 0 ;;
+              *) looks_like_file "$arg" && return 0 ;;
+            esac
             remaining=$((remaining + 1))
             ;;
         esac

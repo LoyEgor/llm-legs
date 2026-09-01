@@ -10,6 +10,23 @@
 
 account=main
 [ "${1:-}" != profile ] || account=${2:-main}
+
+# The real CLI reads the brief off disk instead of stdin, so a lost or empty brief would otherwise
+# produce a perfectly successful run — the same trap the claudeb stub guards for --print.
+prompt_file=''
+argument_previous=''
+for argument in "$@"; do
+  case "$argument" in
+    --prompt-file=*) prompt_file=${argument#*=} ;;
+    *) [ "$argument_previous" != --prompt-file ] || prompt_file=$argument ;;
+  esac
+  argument_previous=$argument
+done
+if [ -n "$prompt_file" ] && [ ! -s "$prompt_file" ]; then
+  printf 'Error: prompt file %s is empty or missing\n' "$prompt_file" >&2
+  exit 1
+fi
+
 session=${STUB_GROK_SESSION:-01a05811-7788-7d22-a9c9-c028072cbff5}
 created=''
 previous=''
@@ -48,6 +65,11 @@ fi
 
 if [ -e "$STUB_DIR/grok_denied" ]; then
   printf '%s\n' '{"type":"tool_call_update","toolCallId":"call-38833a75-42f4-4406-b8ea-1898b58a9f8e-0","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Tool `run_terminal_command` was not executed: Denied by permission policy: deny rule on bash"}}],"rawOutput":null,"locations":[]}'
+fi
+
+if [ -e "$STUB_DIR/grok_max_turns" ]; then
+  printf '{"type":"max_turns_reached","numTurns":%s}\n' "${STUB_GROK_TURNS:-60}"
+  exit 1
 fi
 
 [ -z "${STUB_GROK_ERROR_EVENT:-}" ] || printf '{"type":"error","message":"%s"}\n' "$STUB_GROK_ERROR_EVENT"

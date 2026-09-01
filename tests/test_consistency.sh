@@ -1200,10 +1200,9 @@ assert doc_has "is not bound by this row's retirement rule"
 # and role tokens are spelled once here and every implementation is asked whether it means the same
 # thing; a drifted one leaves the menu showing a switch the routers do not read.
 ROLE_VENDORS="claudeb codex gemini grok"
-# review-bench staffs three of them: grok has no rater side yet, so `grok_reviewers` is written and
-# read by the routers alone. The bench check below is asked about its own three, or a vendor with no
-# side at all would fail as a bench that forgot one.
-ROLE_BENCH_VENDORS="claudeb codex gemini grok"
+# review-bench staffs every one of them — SIDE_POOL_VENDOR maps a side to each — so the bench check
+# below is asked about the same list the routers are.
+ROLE_BENCH_VENDORS="$ROLE_VENDORS"
 ROLE_ROLES="workers reviewers"
 ROLE_WORK=$(mktemp -d)
 ROLE_MODEL="$ROLE_WORK/worker-model"
@@ -1329,8 +1328,8 @@ assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`/`gr⏸off`'
 # --- Row ak: auto-refresh vendor roster --------------------------------------
 # The roster is spelled three times inside one daemon, and a vendor present in the loop but missing
 # from the seed reads as a null rung on every tick while one missing from the validator throws away
-# every state file written before it existed. The fourth vendor is the inverted one: it has no usage
-# endpoint, so anything that would make it poll on the other three's cadence spends the plan.
+# every state file written before it existed. `opencode` is the inverted one: it has no usage
+# endpoint, so anything that would make it poll on the other four's cadence spends the plan.
 LLMREFRESH="$ROOT/bin/llm-refresh"
 REFRESH_VENDORS="claude codex gemini grok opencode"
 refresh_seed=$(grep -n '| map(. as $vendor |' "$LLMREFRESH" | head -n1 | cut -d: -f1)

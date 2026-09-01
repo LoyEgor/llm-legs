@@ -148,15 +148,20 @@ write_store() {
          else {grok:{available:true,accounts:[weekly_row("gr";($gra | tonumber))]}} end))}' >"$path"
 }
 
+# The grok rung is written only when a case names one: left out, the vendor falls to the same
+# default every unseeded vendor gets, and a rung read back from there proves nothing.
 write_state() {
-  local path=$1 claude=$2 codex=$3 gemini=$4 last=$5 clean=$6
+  local path=$1 claude=$2 codex=$3 gemini=$4 last=$5 clean=$6 grok=${7:-}
   jq -cn --argjson claude "$claude" --argjson codex "$codex" --argjson gemini "$gemini" \
-    --argjson last "$last" --argjson clean "$clean" '
+    --argjson last "$last" --argjson clean "$clean" --arg grok "$grok" '
     {vendors:{
       claude:{interval_min:$claude,last_attempt_epoch:$last,clean_since_epoch:$clean,attempts:{}},
       codex:{interval_min:$codex,last_attempt_epoch:$last,clean_since_epoch:$clean,attempts:{}},
       gemini:{interval_min:$gemini,last_attempt_epoch:$last,clean_since_epoch:$clean,attempts:{}}
-    }}' >"$path"
+    }} |
+    if $grok == "" then .
+    else .vendors.grok = {interval_min:($grok | tonumber),last_attempt_epoch:$last,
+      clean_since_epoch:$clean,attempts:{}} end' >"$path"
 }
 
 # Stands in for opencode-go AND for the collect that follows it: the daemon reads the rows
@@ -677,14 +682,17 @@ pass
 case_dir="$WORK/grok-stale"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60 7200
-write_state "$case_dir/state.json" 30 30 30 "$NOW" "$NOW"
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$NOW" 45
+# A seeded rung also decides when the vendor is next due, so its last attempt is one rung back.
+jq -c --argjson due "$((NOW - 45 * 60))" '.vendors.grok.last_attempt_epoch = $due' \
+  "$case_dir/state.json" >"$case_dir/state.tmp" && mv "$case_dir/state.tmp" "$case_dir/state.json"
 run_refresh "$case_dir" "$NOW" || fail 'grok run failed'
 grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
   fail 'a stale grok account was not refreshed'
 jq -eR 'fromjson | select(.vendor == "grok" and .step == 1 and .accounts_tried == ["gr"] and
   .outcome == "refreshed")' "$case_dir/journal.jsonl" >/dev/null || \
   fail 'the grok refresh was not journaled'
-[ "$(jq -r '.grok.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+[ "$(jq -r '.grok.interval_min' "$case_dir/state.json")" -eq 45 ] || \
   fail 'the grok cadence rung was not carried'
 pass
 

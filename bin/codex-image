@@ -12,6 +12,15 @@ normalized_extension() {
   case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
 }
 
+# The answer's NAME says nothing: codex is told to save under the destination's own extension, so a
+# JPEG handed back as `generated.png` matches by name and would be copied verbatim into a `.png`
+# whose bytes are a JPEG. Unreadable bytes answer nothing and fall through to a re-encode.
+actual_format() { # path
+  local value
+  value=$(sips -g format "$1" 2>/dev/null | awk '/format:/ {print $2; exit}')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+
 resolve_root() {
   local source="${BASH_SOURCE[0]}" directory
   while [ -L "$source" ]; do
@@ -265,7 +274,7 @@ fi
 
 if [ "$remove_green" = true ]; then
   chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-elif [ "$extension" != "$(normalized_extension "$generated")" ]; then
+elif [ "$extension" != "$(actual_format "$generated")" ]; then
   magick "$generated" "$dest"
 else
   cp "$generated" "$dest"

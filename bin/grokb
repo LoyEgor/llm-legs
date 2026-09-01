@@ -311,11 +311,11 @@ show_help() {
     'grokb <name> exec [grok args...]     Run Grok headlessly in an existing isolated profile.' \
     'grokb add <name>                     Create a profile and run grok login --device-auth.' \
     'grokb remove <name> [--force]        Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
-    'grokb enable <name>|--all             Return an account (or every account) to worker selection.' \
-    'grokb disable <name>|--all            Exclude an account (or every account) from the worker pool.' \
-    'grokb use <name>|--clear              Pin worker selection to one account; no name prints the pin.' \
-    'grokb list                            List profiles with login state.' \
-    'grokb status                          Per-account login state and quota.'
+    'grokb enable <name>|--all            Return an account (or every account) to worker selection.' \
+    'grokb disable <name>|--all           Exclude an account (or every account) from the worker pool.' \
+    'grokb use <name>|--clear             Pin worker selection to one account; no name prints the pin.' \
+    'grokb list                           List profiles with login state.' \
+    'grokb status                         Per-account login state and quota.'
 }
 
 if [ "${2:-}" = exec ] && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] && account_exists "${1:-}"; then

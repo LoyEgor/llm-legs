@@ -12,6 +12,15 @@ normalized_extension() {
   case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
 }
 
+# The answer's NAME says nothing about its bytes, and a file named for the destination's own
+# extension would be copied verbatim however it is encoded. Unreadable bytes fall through to a
+# re-encode. Same reader in codex-image and gemini-image.
+actual_format() { # path
+  local value
+  value=$(sips -g format "$1" 2>/dev/null | awk '/format:/ {print $2; exit}')
+  case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
+}
+
 resolve_root() {
   local source="${BASH_SOURCE[0]}" directory
   while [ -L "$source" ]; do
@@ -132,6 +141,14 @@ if [ -z "$account" ]; then
   fi
 fi
 
+# `grokb profile` creates what it cannot find, so an unchecked typo here does not fail: it mkdirs a
+# ghost account that then stands in grokb list, the quota scan and the limits menu asking for a login.
+grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
+if [ "$account" != main ] && [ ! -d "$grok_profiles_dir/$account" ]; then
+  printf 'grok-image: account directory does not exist: %s\n' "$grok_profiles_dir/$account" >&2
+  exit 1
+fi
+
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-image.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 work_dir="$tmp_dir/work"
@@ -149,7 +166,10 @@ Aspect ratio: $aspect.
 Requested content: $content"
 tools_arg=image_gen
 if [ "$ref_count" -gt 0 ]; then
-  tools_arg=image_gen,image_edit
+  # image_edit alone, never both: left in the list, image_gen is a tool the model may answer a
+  # reference run with — and on 4:3/3:4 it would spend the generation on the very ratio it does
+  # not take, which is what the gate above refuses to send.
+  tools_arg=image_edit
   instruction+=$'\nUse image_edit with these source paths in its image parameter:'
   for ref in "${refs[@]}"; do
     instruction+=$'\n- '
@@ -194,7 +214,7 @@ fi
 
 if [ "$remove_green" = true ]; then
   chroma_key_to_png "$generated" "$tmp_dir" "$dest"
-elif [ "$extension" != "$(normalized_extension "$generated")" ]; then
+elif [ "$extension" != "$(actual_format "$generated")" ]; then
   magick "$generated" "$dest"
 else
   cp "$generated" "$dest"
