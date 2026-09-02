@@ -72,6 +72,9 @@ cat >"$WORK/bin/claudeb" <<'EOF'
   printf 'CLAUDEB_CALL\n'
   printf 'ARG=%q\n' "$@"
 } >>"$CALL_LOG"
+# Beside the argv, because the launching chat reaches the worker only through the environment:
+# inside the CLI, CLAUDE_CODE_SESSION_ID is the worker's own chat.
+printf '%s\n' "${CLAUDE_LAUNCHER_SESSION-}" >"$STUB_DIR/launcher_env"
 # The real CLI refuses an empty stdin in --print mode; the stub must too, or a
 # lost brief (background stdin defaulting to /dev/null) passes the suite.
 input=$(cat)
@@ -997,6 +1000,11 @@ export CLAUDE_CODE_SESSION_ID=chat-abc
 start_ok claudeb
 assert await_done
 assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
+# And in the launched process's environment, under a name the harness does not overwrite: a report
+# the worker produces is queued for the chat that asked for it, and this is the only thing that
+# names one — inside the CLI, CLAUDE_CODE_SESSION_ID is the worker's own session, so a lost export
+# files the report in the worker's own outbox where nobody ever reads it.
+assert test "$(cat "$STUB_DIR/launcher_env")" = chat-abc
 # The worker's OWN session beside the chat that launched it. A run that edits through the shell
 # alone names no file here, while its own hooks journaled every one of those edits under this id —
 # without the pair on record the launching chat commits its worker's work as nobody's.
@@ -1171,6 +1179,186 @@ assert await_done
 assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
+
+# --- What the run PRODUCED ------------------------------------------------------------------------
+# A listing names paths; a debt reader prices CONTENT. `produced` is the run's own answer in the
+# links that reader walks — `<prev>\t<cur>\t<path>`, with a fourth field `commit` on the transitions
+# the run's own commits made — so ownership follows the BLOB and no longer a path and an epoch.
+clear_stub
+PROD_REPO="$WORK/produced-repo"
+mkdir -p "$PROD_REPO/bin" "$PROD_REPO/tests"
+git -C "$PROD_REPO" init -q .
+printf 'one\n' >"$PROD_REPO/bin/modified"
+printf 'here\n' >"$PROD_REPO/bin/deleted"
+printf 'before\n' >"$PROD_REPO/bin/committed"
+printf 'never moved\n' >"$PROD_REPO/bin/untouched"
+printf 'orig\n' >"$PROD_REPO/bin/co-tenant-open"
+# A filename holding a BACKSLASH, which is a legal name git records verbatim. Handed to awk through
+# `-v` it arrives with its escapes expanded, so the floor lookup matched no row and the link was
+# priced from HEAD's blob instead of from the content the co-tenant left standing.
+PROD_ESC='bin/back\slash'
+printf 'orig\n' >"$PROD_REPO/$PROD_ESC"
+git -C "$PROD_REPO" add -A >/dev/null
+git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+PROD_TOP=$(cd "$PROD_REPO" && pwd -P)
+PROD_BASE=$(git -C "$PROD_REPO" rev-parse HEAD)
+tab=$'\t'
+blob_of() { printf '%s\n' "$1" | git -C "$PROD_REPO" hash-object --stdin; }
+# A co-tenant's live edit, standing before this run was launched: it is what the run's own rewrite is
+# measured against, and the one case HEAD's blob answers wrongly.
+printf 'egor was here\n' >"$PROD_REPO/bin/co-tenant-open"
+printf 'egor was here\n' >"$PROD_REPO/$PROD_ESC"
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Edit file_path "$PROD_TOP/bin/modified"
+  tool_call Write file_path "$PROD_TOP/bin/born"
+  tool_call Edit file_path "$PROD_TOP/bin/deleted"
+  tool_call Edit file_path "$PROD_TOP/bin/untouched"
+  tool_call Edit file_path "$PROD_TOP/bin/co-tenant-open"
+  tool_call Edit file_path "$PROD_TOP/$PROD_ESC"
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+start_ok claudeb --workdir "$PROD_REPO"
+# The commit the tree stood on when the run was launched, written before the CLI takes a token: read
+# at the end instead, every link the run committed would be measured against its own result.
+assert test "$(cat "$RUN_DIR/head-before")" = "$PROD_BASE"
+printf 'two\n' >"$PROD_REPO/bin/modified"
+printf 'born\n' >"$PROD_REPO/bin/born"
+rm -f "$PROD_REPO/bin/deleted"
+printf 'the worker rewrote it\n' >"$PROD_REPO/bin/co-tenant-open"
+printf 'the worker rewrote it\n' >"$PROD_REPO/$PROD_ESC"
+printf 'after\n' >"$PROD_REPO/bin/committed"
+printf 'landed\n' >"$PROD_REPO/bin/committed-born"
+git -C "$PROD_REPO" add bin/committed bin/committed-born >/dev/null
+git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed' >/dev/null
+assert await_done
+assert grep -qxF -- "$(blob_of one)$tab$(blob_of two)${tab}bin/modified" "$RUN_DIR/produced"
+# A file born and a file gone are the same row with `-` on the side holding no content: priced off
+# the path alone, a birth reads as an edit of a file that was never there.
+assert grep -qxF -- "-$tab$(blob_of born)${tab}bin/born" "$RUN_DIR/produced"
+assert grep -qxF -- "$(blob_of here)$tab-${tab}bin/deleted" "$RUN_DIR/produced"
+# Already dirty at launch: the floor's content is the prev, never HEAD's blob. Measured against the
+# commit instead, this row claims a link the co-tenant produced.
+assert grep -qxF -- "$(blob_of 'egor was here')$tab$(blob_of 'the worker rewrote it')${tab}bin/co-tenant-open" \
+  "$RUN_DIR/produced"
+# The same path spelled with a BACKSLASH, which is where the lookup into that floor is either
+# literal or nothing: expanded as an escape, the name matched no row and the prev fell back to
+# HEAD's blob, claiming the co-tenant's line as this run's.
+assert grep -qxF -- "$(blob_of 'egor was here')$tab$(blob_of 'the worker rewrote it')$tab$PROD_ESC" \
+  "$RUN_DIR/produced"
+# Both sides WRITTEN to the object store, not merely named: the reader prices this link by diffing
+# the two blobs there, and a side no store holds prices the whole file. Neither content is in any
+# commit and `blob_of` writes nothing, so the floor's `-w` and the record's are all that can be
+# holding them — the prev from the launch snapshot, the cur from the record written at the end.
+assert git -C "$PROD_REPO" cat-file -e "$(blob_of 'egor was here')"
+assert git -C "$PROD_REPO" cat-file -e "$(blob_of 'the worker rewrote it')"
+# A listed path whose content never moved produced nothing: a row for it owns a link that is not
+# there, and the reader would price the whole file against a base nobody wrote.
+assert_fails grep -q 'bin/untouched' "$RUN_DIR/produced"
+# The commits the run made, in the transitions git prints for them, marked so the reader can apply
+# the first-row-wins rule that a cherry-picked blob needs and an edit does not.
+assert grep -qxF -- "$(blob_of before)$tab$(blob_of after)${tab}bin/committed${tab}commit" "$RUN_DIR/produced"
+assert grep -qxF -- "-$tab$(blob_of landed)${tab}bin/committed-born${tab}commit" "$RUN_DIR/produced"
+# One grammar for both kinds, or the sweep reading these rows splits a path off the wrong field.
+assert test "$(awk -F'\t' 'NF < 3 || NF > 4' "$RUN_DIR/produced" | wc -l | tr -d ' ')" -eq 0
+assert test "$(awk -F'\t' 'NF == 4 && $4 != "commit"' "$RUN_DIR/produced" | wc -l | tr -d ' ')" -eq 0
+assert test "$(awk -F'\t' '$3 == "bin/modified" { print NF }' "$RUN_DIR/produced")" = 3
+
+# A repository CLEAN at launch writes an empty floor, and the rewrite scan that would re-hash the
+# tree at the end is skipped over one — so the RECORD's own `hash-object -w` is the only thing that
+# can put this `cur` in the store the reader diffs it out of. Which is the shape of every fresh
+# worktree a worker is handed, and the case a repository already dirty at launch hides.
+clear_stub
+CLEAN_REPO="$WORK/clean-repo"
+mkdir -p "$CLEAN_REPO/bin"
+git -C "$CLEAN_REPO" init -q .
+printf 'base\n' >"$CLEAN_REPO/bin/edited"
+git -C "$CLEAN_REPO" add -A >/dev/null
+git -C "$CLEAN_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+CLEAN_TOP=$(cd "$CLEAN_REPO" && pwd -P)
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$CLEAN_TOP/bin/edited" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$CLEAN_REPO"
+assert test ! -s "$RUN_DIR/dirty-before-shas"
+printf 'rewritten\n' >"$CLEAN_REPO/bin/edited"
+assert await_done
+assert grep -qxF -- "$(blob_of base)$tab$(blob_of rewritten)${tab}bin/edited" "$RUN_DIR/produced"
+assert git -C "$CLEAN_REPO" cat-file -e "$(blob_of rewritten)"
+
+# A run that answers to a chat and worked in a git tree writes the record even when it holds nothing:
+# its PRESENCE is this run answering for its own content, and its absence is what sends a reader back
+# to the listing and the floor.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Read file_path "$PROD_TOP/bin/untouched" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb --workdir "$PROD_REPO"
+assert await_done
+assert test -e "$RUN_DIR/produced"
+assert test ! -s "$RUN_DIR/produced"
+
+# A run no chat answers for produces nothing anybody owns: rows written here would be content
+# attributed to the empty session, which is what the dirt record already says better.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$PROD_TOP/bin/modified" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+unset CLAUDE_CODE_SESSION_ID
+start_ok claudeb --workdir "$PROD_REPO"
+assert await_done
+assert test ! -e "$RUN_DIR/launcher"
+assert test ! -e "$RUN_DIR/produced"
+export CLAUDE_CODE_SESSION_ID=chat-abc
+
+# A workdir in no repository has no blobs to name, and neither record is invented for it.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$WORK/workdir/bin/somewhere" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+start_ok claudeb
+assert await_done
+assert test ! -e "$RUN_DIR/head-before"
+assert test ! -e "$RUN_DIR/produced"
+
+# The rows are spelled the way the listing is — against the WORKDIR, absolute where they fall outside
+# it — so one reader resolves both records the same way for a run launched a directory in.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Edit file_path "$PROD_TOP/tests/named-here"
+  tool_call Edit file_path "$PROD_TOP/bin/named-from-the-top"
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$PROD_REPO/tests"
+printf 'in the workdir\n' >"$PROD_REPO/tests/named-here"
+printf 'above the workdir\n' >"$PROD_REPO/bin/named-from-the-top"
+assert await_done
+assert grep -qxF -- "-$tab$(blob_of 'in the workdir')${tab}named-here" "$RUN_DIR/produced"
+assert grep -qxF -- "-$tab$(blob_of 'above the workdir')$tab$PROD_TOP/bin/named-from-the-top" \
+  "$RUN_DIR/produced"
+
+# What the launching chat CLAIMS is content this run produced too. Left out of the record, the very
+# paths a claim exists to name are invisible to every reader that takes `produced` over the listing.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-content' \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$PROD_REPO"
+printf 'claimed content\n' >"$PROD_REPO/bin/claimed-content"
+assert await_done
+assert_fails grep -q 'bin/claimed-content' "$RUN_DIR/produced"
+assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-content >/dev/null
+assert grep -qxF -- "-$tab$(blob_of 'claimed content')${tab}bin/claimed-content" "$RUN_DIR/produced"
+# APPENDED, never recomputed: the rows already standing were measured when the run ended, and a
+# fresh pass over the record now dates whatever a co-tenant has done since to this run.
+printf 'a co-tenant moved it on\n' >"$PROD_REPO/bin/claimed-content"
+assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-content >/dev/null
+assert grep -qxF -- "-$tab$(blob_of 'claimed content')${tab}bin/claimed-content" "$RUN_DIR/produced"
+assert test "$(grep -cF 'bin/claimed-content' "$RUN_DIR/produced")" -eq 2
+
 
 # --- Naming what the run could not name -----------------------------------------------------------
 # A run that worked through the shell lists nothing and its work is owned by nobody. The launching
@@ -1415,6 +1603,15 @@ assert_fails grep -q '^LONG-RUN: ' <<<"$working"
 sleep 1
 assert grep -q '^LONG-RUN: 0 min — the orchestrator' \
   <<<"$(WORKER_RUN_LONG_RUN_S=1 "$RUNNER" wait "$RUN_ID" --max 0)"
+# And once per RUN: a relay returns a checkpoint on any LONG-RUN line, so a second round past the
+# same mark saying it again bounced an attached relay back every ~9 minutes. The rest of the
+# running rows are unchanged there.
+said_again=$(WORKER_RUN_LONG_RUN_S=1 "$RUNNER" wait "$RUN_ID" --max 0)
+assert_fails grep -q '^LONG-RUN: ' <<<"$said_again"
+assert grep -qx 'STATUS: running' <<<"$said_again"
+assert test -f "$RUN_DIR/long-run-said"
+# That marker is the whole of what silences it: the threshold and its knob answer as before.
+rm -f "$RUN_DIR/long-run-said"
 jq '.started_at -= 1560' "$RUN_DIR/meta.json" >"$WORK/aged-meta.json"
 mv "$WORK/aged-meta.json" "$RUN_DIR/meta.json"
 long=$("$RUNNER" wait "$RUN_ID" --max 0)

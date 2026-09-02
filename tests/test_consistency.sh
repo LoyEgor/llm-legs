@@ -696,6 +696,13 @@ assert test "$(grep -c 'debt_visible(repo, session' "$RB_DEBT")" -ge 3
 # line and a human reads the other, and a `none`/`split 0 0 0` here is a clean bill nobody gave.
 assert grep -Fq 'print("split unknown")' "$RB_DEBT"
 assert grep -Fq 'print("unknown")' "$RB_DEBT"
+# `--total` is the family answer, one integer over every tree the chat owes a link in, and the gate
+# sums it across repositories. Pinned on both sides plus the doc: a total that came back as a
+# per-tree count, or as a number where a member went unread, is a smaller number saying nothing.
+assert doc_has '`--total` prints ONE integer'
+assert grep -Fq 'total = bool(getattr(args, "total", False))' "$RB_DEBT"
+assert grep -Fq 'print(debt_total(repo, session))' "$RB_DEBT"
+assert grep -Fq 'def debt_total(repo, session):' "$RB_DEBT"
 # The counter is the review target header's, not a second differ: one edit priced two ways is two
 # numbers for one question, and the label is then arguing with the panel's own target line.
 assert grep -Fq 'changes, _ = _scope.diff_numstat(repo, [str(left), str(right)], no_index=True)' "$RB_DEBT"
@@ -738,6 +745,7 @@ if test -r "$FLOW_GATE"; then
   # on PATH, a member repository that failed or answered outside the grammar — because a total short
   # by one repository is a smaller number with nothing in it saying so, and `0` is a clean bill.
   assert grep -Fq 'debt-total) echo unknown; exit 0 ;;' "$FLOW_GATE"
+  assert grep -Fq 'review-bench debt --repo "$dt_repo" --session "$2" --total' "$FLOW_GATE"
   assert test "$(grep -c 'dt_unknown=1' "$FLOW_GATE")" -ge 3
   assert grep -Fq '[ -n "$dt_unknown" ] && { echo unknown; exit 0; }' "$FLOW_GATE"
   # And no cap on the repositories it sums: a cap is that same silent shortfall written into the
@@ -772,16 +780,19 @@ if test -r "$FLOW_GATE"; then
   gate_gitdirs=$(grep -Ec '^[[:space:]]*gitdir=\$\(' "$FLOW_GATE")
   assert test "$gate_gitdirs" -ge 1
   assert eq "$(grep -Ec '^[[:space:]]*gitdir=\$\(rj_journal_dir "' "$FLOW_GATE")" "$gate_gitdirs"
-  # Both writers append through the one carrier, and appending is the invariant: two chats
-  # rewriting this file in the same second lose whichever ownership landed first.
-  assert grep -Fq 'rj_append_owned "$journal" "$session" "$stamp" "$item"' "$FLOW_GATE"
+  # The gate is NOT a writer of this ledger and not a pruner of it: the door that refuses a commit
+  # appending a fresh row for whatever its notice named recorded a second owner for content some row
+  # already names, and a rewriter here is a row leaving a ledger where rows are facts.
+  assert eq "$(grep -c 'rj_append_owned' "$FLOW_GATE")" 0
+  assert eq "$(grep -cE '^(record_debt|prune_debt)\(\)' "$FLOW_GATE")" 0
+  assert eq "$(grep -c 'rj_rename_map' "$FLOW_GATE")" 0
 fi
 # `rj_append_owned` is the ONE debt-ledger writer, and it is what puts the launcher's own row in at
 # WRITE time: folded at read time instead, `worker-run`'s 7-day prune of run records makes the
 # number change by itself and two chats resuming one worker session make the row nobody's.
-assert grep -Fq 'rj_append_owned() { # file session epoch path' "$RJOURNAL"
+assert grep -Fq 'rj_append_owned() { # file session epoch prev cur path' "$RJOURNAL"
 assert grep -Fq 'rj_launch_chain_of "$2"' "$RJOURNAL"
-assert grep -Fq 'rj_append "$1" "$launcher" "$3" "$4"' "$RJOURNAL"
+assert grep -Fq 'rj_append "$1" "$launcher" "$3" "$4" "$5" "$6"' "$RJOURNAL"
 # Resolved OUTSIDE a command substitution, or the memo dies with the subshell and every row
 # rescans every run record; and the WHOLE chain, or a nested worker leaves the top chat on no row.
 assert eq "$(grep -c 'rj_launch_chain_of "$2"' "$RJOURNAL")" 1
@@ -789,7 +800,7 @@ assert test -z "$(grep -n '\$(rj_launcher_of' "$RJOURNAL")"
 assert grep -Fq 'rj_launch_chain_of() { # session -> RJ_LAUNCH_CHAIN' "$RJOURNAL"
 # Each of those chats is written into the per-session repository index too, or `debt-total`
 # enumerates the worker's repositories and drops the tree the chat only reached through it.
-assert grep -Fq 'rj_register_repo "$launcher" "$5"' "$RJOURNAL"
+assert grep -Fq 'rj_register_repo "$launcher"' "$RJOURNAL"
 assert eq "$(grep -o 'rj_append "\$debt"\|rj_append "\$journal"\|rj_append "\$dir' \
   "$CLAUDE_SETUP/hooks/commit-journal.sh" "$CLAUDE_SETUP/hooks/commit-report.sh" "$FLOW_GATE" |
   wc -l | tr -d ' ')" 0
@@ -797,17 +808,23 @@ assert eq "$(grep -o 'rj_append "\$debt"\|rj_append "\$journal"\|rj_append "\$di
 # ledger, so a rewrite that turns out to have been wrong about a row can still be argued with.
 assert grep -Fq 'rj_quarantine() { # file reason record' "$RJOURNAL"
 assert eq "$(grep -c '"\$1.rejected"' "$RJOURNAL")" 1
-# A rename carries the entry rather than reading as a deletion, through one map with two carriers —
-# the uncommitted `git mv` at the gate's rewrite, the landed one at the report's stamp — and both
-# already hold the ledger's lock, so no third writer and no second lock enters for it.
-assert grep -Fq 'rj_rename_map() { # top [pre]' "$RJOURNAL"
-assert grep -Fq 'rj_rename_map "$top_dir"' "$FLOW_GATE"
-assert grep -Fq 'rj_rename_map "$top" "$pre"' "$CLAUDE_SETUP/hooks/commit-report.sh"
 COMMIT_REPORT="$CLAUDE_SETUP/hooks/commit-report.sh"
+# A rename needs no carrier now: it is a `-` birth at the new name beside a deletion at the old, both
+# of which git prints, and the map existed only to move a row rather than let one leave the ledger.
+assert test -z "$(grep -l 'rj_rename_map' "$FLOW_GATE" "$COMMIT_REPORT" \
+  "$CLAUDE_SETUP/hooks/commit-journal.sh" 2>/dev/null)"
 if test -r "$COMMIT_REPORT"; then
   # The third writer: an edit and the commit carrying it inside ONE Bash call are seen by neither
   # of the other two, and the debt that commit landed is then recorded under no chat at all.
-  assert grep -Fq 'rj_append_owned "$debt" "$own" "$now" "$path"' "$COMMIT_REPORT"
+  # The report is no writer of this ledger: a commit's rows are the EDIT hook's, taken off the same
+  # Bash call, so the edits inside a commit and the commit itself reach the journal through one door.
+  assert eq "$(grep -c 'rj_append_owned' "$COMMIT_REPORT")" 0
+  assert grep -Fq 'journal_row() { # journal top owner prev cur relative' \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  assert grep -Fq 'journal_commit_row() { # journal_dir top owner prev cur relative' \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  # And the blob is what first-row-wins is asked about, never the path.
+  assert grep -Fq 'blob_named() { # blob' "$CLAUDE_SETUP/hooks/commit-journal.sh"
   # Every repository the snapshot names, whatever the call's output parsed to: the block this hook
   # renders reads ONE repository, and gated on it a commit in any other took no debt row at all.
   assert grep -Fq '[ -n "$HEAD_SNAPSHOT" ] && snapshot_creates_commits &&' "$COMMIT_REPORT"
@@ -866,6 +883,8 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq "printf '%s/.cache/claude/review-journal/%s.repos' \"\$HOME\" \"\$1\"" \
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq 'CHAT_REPOS_SUFFIX = ".repos"' "$RB_STORE"
+  # And what the sum is made of: one `--total` per repository, never a per-tree count added up here.
+  assert doc_has 'What it sums is `review-bench debt --total` per repository'
   assert grep -Fq 'session + CHAT_REPOS_SUFFIX' "$RB_STORE"
   # Only a plain name, the same alphabet the snapshot path is composed under: this writer composes a
   # filename off the id too. Pinned on the line FOLLOWING this composer's own header, so a
@@ -956,9 +975,6 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'git -C "$top" merge-base --is-ancestor "$full" HEAD' "$COMMIT_REPORT"
   assert grep -Fq 'full=$(git -C "$top" rev-parse --verify --quiet "$sha^{commit}" 2>/dev/null)' \
     "$COMMIT_REPORT"
-  # A co-tenant's journal row alone is that chat's pending work, swept in by `git commit -a`.
-  assert grep -Fq 'case "$foreign" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) return 0 ;; esac' \
-    "$COMMIT_REPORT"
   # And a run whose own listing cannot answer for its files answers with its whole workdir only
   # while it may still be writing, since its own sweep will resolve them. A FINAL record claims
   # nothing beyond what its listing names: no sweep of it will ever name the rest, and a chat
@@ -971,24 +987,12 @@ if test -r "$COMMIT_REPORT"; then
   # `journaled` says the record has been READ, and nothing outranks it here: the retired record is
   # closed to this scan, and what it never named is nobody's rather than the next committer's.
   assert grep -Fq '[ -e "$directory/journaled" ] && continue' "$COMMIT_REPORT"
-  # A commit is claimed only where the debt journal does not already answer for it: a worker that
-  # committed in its own shell went through no hook of this flow, and its sweep's stamp does not
-  # predate that commit — a stamp landing in the commit's own second is that same sweep, and read as
-  # older it handed the worker's file to whoever was committing beside it. Another NAME's row only:
-  # a settled row of OUR own is what this commit's content must not inherit, and a row naming
-  # nobody — what a deferred path no run listing named comes back as — is no sweep of anybody's.
-  assert grep -Fq 'case "$newer" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) return 0 ;; esac' \
-    "$COMMIT_REPORT"
-  # Folded ONCE into `debt_others` and dated in the walk, never an `awk` per commit: the sweep
-  # reads the whole range uncapped, so a subshell per commit is a cost that grows with a rebase
-  # inside a PostToolUse hook. The three conditions are the invariant, wherever they are spelled.
-  assert grep -Fq 'if [ "$owner" = "$own" ]; then' "$COMMIT_REPORT"
-  assert grep -Fq 'elif [ -n "$owner" ]; then' "$COMMIT_REPORT"
-  assert grep -Fq '[ "${row%%"$tab"*}" -ge "$ct" ]' "$COMMIT_REPORT"
-  assert eq "$(awk '/^stamp_repo_debt\(\) \{/,/^\}/' "$COMMIT_REPORT" | grep -c 'awk -F"\$tab" -v c=')" 0
-  # An entry of ours is not a debt row of ours: the append that should have followed it can fail.
-  assert grep -Fq 'case "$debt_mine" in *$'"'"'\n'"'"'"$path"$'"'"'\n'"'"'*) return 0 ;; esac' \
-    "$COMMIT_REPORT"
+  # A commit takes a row only for a `cur` NO row names yet: a merge, a cherry-pick and a rebase land
+  # blobs their author already produced, and the first row wins. No epoch decides it any more —
+  # comparing a stamp against the commit's own `%ct` handed a worker's file to whoever was committing
+  # beside it whenever the two landed in one second.
+  assert doc_has 'It passes over a transition whose `cur` some row already names'
+  assert eq "$(grep -c '\-ge "\$ct"' "$COMMIT_REPORT")" 0
   assert grep -Fq 'claimed=$'"'"'\n'"'"'$(run_claims "$own")' "$COMMIT_REPORT"
   # A path passed over on a DIR claim is left to a sweep that names no path at all for a run ending
   # unable to list its files: written down beside the run record with the committing chat, it is
@@ -998,7 +1002,12 @@ if test -r "$COMMIT_REPORT"; then
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
-  assert grep -Fq "printf '%s\\0' \"\$2\$RJ_TAB\$3\$RJ_TAB\$4\" >>\"\$1\"" "$JOURNAL_LIB"
+  # Five fields, or the reader takes a legacy three-field row — which names a path for the universe
+  # and owns nothing — for a link, and the content this chat produced is owned by nobody.
+  assert grep -Fq "printf '%s\\0' \"\$2\$RJ_TAB\$3\$RJ_TAB\$4\$RJ_TAB\$5\$RJ_TAB\$6\" >>\"\$1\"" \
+    "$JOURNAL_LIB"
+  assert doc_has '`<session-id>\t<epoch>\t<prev>\t<cur>\t<repo-relative-path>`'
+  assert doc_has 'names the path for the debt universe and owns nothing'
   assert grep -Fq 'DEBT_JOURNAL' "$RB_STORE"
   # Appends participate in the rewriters' lock; a busy lock degrades to a raw append, never a
   # dropped record.
@@ -1009,11 +1018,11 @@ if test -r "$JOURNAL_LIB"; then
   # epoch floor that discarded settled-looking records returned `orphaned` over debt whose author
   # the ledger names, which is the ledger and the reader contradicting each other about one path.
   assert eq "$(grep -c floor "$RB_DEBT")" 0
-  # What keeps an idle chat off another chat's later work is the LAST-editor rule instead: of the
-  # records still standing for a path, only the newest-stamped ones name its owners.
-  assert grep -Fq 'newest = max((epoch for epoch, _ in pool if epoch is not None), default=None)' \
-    "$RB_DEBT"
-  assert grep -Fq 'if newest is not None and epoch is not None and epoch < newest:' "$RB_DEBT"
+  # What keeps an idle chat off another chat's later work is that the later LINK carries the later
+  # chat's name: ownership is per blob, the first row naming a `cur` owns it, and no reader re-dates
+  # a row against the others standing for the same path.
+  assert doc_has 'A LINK belongs to the session of the FIRST row naming its `cur`'
+  assert eq "$(grep -c 'newest = max((epoch' "$RB_DEBT")" 0
   # Rewriters may not replace an inode a raw append just landed on: every swap is size-guarded.
   assert grep -Fq 'rj_swap() { # file tmp snap_size' "$JOURNAL_LIB"
   if test -r "$FLOW_GATE"; then
@@ -1679,6 +1688,20 @@ assert eq "$(sed -n '/^def debt_ownership/,/^def /p' "$RB_DEBT" | grep -c 'dirt'
 assert grep -Fq 'named = _store.journal_paths(repo) | set(claims) | set(dirty)' "$RB_DEBT"
 assert doc_has '`<run-dir>/dirty`'
 assert doc_has '`<run-dir>/dirty-before`'
+# The CONTENT half of the record: the commit the tree stood on at launch, and one row per link the
+# run produced against it. Both grammars are pinned — the edit row and the commit row with its
+# fourth field — because a sweep reading a field it did not expect writes a path where a blob goes.
+assert grep -Fq 'mv -f "$directory/head-before.tmp.$$" "$directory/head-before"' "$WORKER_RUN"
+assert grep -Fq 'mv -f "$directory/produced.tmp.$$" "$directory/produced"' "$WORKER_RUN"
+assert grep -Fq "printf '%s\\t%s\\t%s\\n' \"\$prev\" \"\$cur\"" "$WORKER_RUN"
+assert grep -Fq 'printf "%s\t%s\t%s\tcommit\n", prev, cur, path' "$WORKER_RUN"
+assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after"' \
+  "$WORKER_RUN"
+# Only for a run some chat answers for, and never rewritten once it stands: a claim APPENDS.
+assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
+assert grep -Fq '>>"$directory/produced"' "$WORKER_RUN"
+assert doc_has '`<run-dir>/head-before`'
+assert doc_has '`<run-dir>/produced`'
 COMMIT_JOURNAL="$CLAUDE_SETUP/hooks/commit-journal.sh"
 if [ -r "$COMMIT_JOURNAL" ]; then
   # The launching chat is read off the launcher file, and every record is walked: a dead run whose
@@ -1717,6 +1740,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # journals' own spelling for a path in debt that no record answers for (`journal_entries`).
   assert grep -Fq '[ -e "$1/journaled" ] || rj_run_final "$1" || return 0' "$COMMIT_JOURNAL"
   assert grep -Fq 'run_listing_names "$1" "$absolute" && mine=1' "$COMMIT_JOURNAL"
+  # The run's own content answer is taken where it stands: re-derived from `files` and the floor for
+  # a run that already named its links, the sweep prices the same work a second time and can only
+  # disagree with the record about it.
+  assert grep -Fq '"$directory/produced"' "$COMMIT_JOURNAL"
   # The record's own three fields, and the LEDGER they land in: the directory is the resolver's to
   # name (row `bd`), the file name is not — stamped into the commit journal instead, an ownership
   # record is read by nobody pricing debt while the guard that let it through still passes.

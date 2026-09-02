@@ -600,6 +600,7 @@ persist_run_files() {
   # After the listing and never before it: what this reads out of the record is the record this
   # call just wrote, and the paths it must not claim are the ones standing in it.
   record_workdir_dirt "$directory" "$workdir"
+  record_produced "$directory" "$workdir"
   return 0
 }
 
@@ -659,7 +660,7 @@ workdir_dirty_shas() { # workdir
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     sha=-
-    [ -f "$top/$path" ] && sha=$(git -C "$top" hash-object -- "$path" 2>/dev/null) && [ -n "$sha" ] ||
+    [ -f "$top/$path" ] && sha=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) && [ -n "$sha" ] ||
       sha=-
     printf '%s\t%s\n' "$sha" "$path"
   done <<<"$paths"
@@ -671,8 +672,8 @@ workdir_dirty_shas() { # workdir
 workdir_rewritten_paths() { # directory workdir
   local before="$1/dirty-before-shas"
   [ -s "$before" ] || return 0
-  workdir_dirty_shas "$2" 2>/dev/null | awk -F'\t' -v before="$before" '
-    BEGIN { while ((getline line < before) > 0) { split(line, f, "\t"); was[f[2]] = f[1] } }
+  workdir_dirty_shas "$2" 2>/dev/null | AWK_BEFORE=$before awk -F'\t' '
+    BEGIN { while ((getline line < ENVIRON["AWK_BEFORE"]) > 0) { split(line, f, "\t"); was[f[2]] = f[1] } }
     NF == 2 && ($2 in was) && was[$2] != $1 { print $2 }
   '
 }
@@ -698,10 +699,102 @@ listing_top_paths() { # directory top workdir
     *) rel='' ;;
   esac
   grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$1/files" 2>/dev/null |
-    awk -v rel="$rel" -v top="$2/" '
+    AWK_REL=$rel AWK_TOP=$2/ awk '
+      BEGIN { rel = ENVIRON["AWK_REL"]; top = ENVIRON["AWK_TOP"] }
       !NF { next }
       substr($0, 1, 1) == "/" { if (index($0, top) == 1) print substr($0, length(top) + 1); next }
       { print (rel == "" ? $0 : rel "/" $0) }' | sort -u
+}
+
+# Spelled the way the LISTING spells its rows — relative to the workdir, absolute outside it — so
+# one reader resolves both records against the same anchor.
+produced_spelling() { # top rel path
+  [ -n "$2" ] || { printf '%s' "$3"; return 0; }
+  case "$3" in
+    "$2"/*) printf '%s' "${3#"$2"/}" ;;
+    *) printf '%s' "$1/$3" ;;
+  esac
+}
+
+# `<prev>\t<cur>\t<path>` for each top-relative path on stdin whose content moved while the run ran.
+# `prev` is what stood there when the run was LAUNCHED — the floor's sha where the path was already
+# dirty, HEAD's blob then otherwise — never what stands there now: the reader joins these rows to a
+# tree by SHA alone, and a prev read off the current HEAD names a link nothing produced. Both sides
+# are hashed with `-w`: the reader prices a link by diffing the two blobs out of the object store,
+# and one never written there prices the whole file.
+produced_edit_rows() { # directory top rel head-before
+  local before="$1/dirty-before-shas" top="$2" rel="$3" head="$4" path prev cur
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    cur=-
+    [ -f "$top/$path" ] && cur=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) && [ -n "$cur" ] ||
+      cur=-
+    # Through the environment and never `-v`: awk expands escape sequences in a `-v` assignment, so
+    # a filename holding a backslash reaches the program as some other name and matches no row.
+    prev=$(AWK_PATH=$path awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
+      "$before" 2>/dev/null)
+    [ -n "$prev" ] || [ -z "$head" ] ||
+      prev=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
+    [ -n "$prev" ] || prev=-
+    [ "$prev" != "$cur" ] || continue
+    printf '%s\t%s\t%s\n' "$prev" "$cur" "$(produced_spelling "$top" "$rel" "$path")"
+  done
+}
+
+# The same rows for the transitions the run's own commits made, with a fourth field `commit` — the
+# one distinction the reader needs, since a commit's blob may already have been produced by whoever
+# wrote it (a merge, a cherry-pick) and only the first row naming it owns it. An all-zero sha is a
+# side that holds no content, which is this record's `-`.
+produced_commit_rows() { # top rel head-before
+  local top="$1" rel="$2" head="$3" after
+  [ -n "$head" ] || return 0
+  after=$(git -C "$top" rev-parse --verify --quiet HEAD 2>/dev/null) || return 0
+  [ -n "$after" ] && [ "$after" != "$head" ] || return 0
+  git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after" \
+    2>/dev/null | tr '\0' '\n' |
+    AWK_TOP=$top AWK_REL=$rel awk '
+      BEGIN { top = ENVIRON["AWK_TOP"]; rel = ENVIRON["AWK_REL"] }
+      !NF { next }
+      pending != "" {
+        path = $0
+        if (rel != "") {
+          if (index(path, rel "/") == 1) path = substr(path, length(rel) + 2)
+          else path = top "/" path
+        }
+        split(pending, f, " ")
+        prev = f[3]; cur = f[4]
+        if (prev ~ /^0+$/) prev = "-"
+        if (cur ~ /^0+$/) cur = "-"
+        printf "%s\t%s\t%s\tcommit\n", prev, cur, path
+        pending = ""
+        next
+      }
+      /^:/ { pending = $0 }'
+}
+
+# The content this run PRODUCED, which is what a debt reader prices: one row per link, so ownership
+# follows the BLOB and no longer a path and an epoch. Written only for a run that answers to a chat
+# and worked in a git tree — content nobody owns is what `dirty` is for — and written even when it
+# is empty, since its presence is this run answering for its own content and its absence is what
+# sends the sweep back to the listing.
+record_produced() { # directory workdir
+  local directory="$1" workdir="$2" top rel head
+  [ -s "$directory/launcher" ] || return 0
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -n "$top" ] || return 0
+  rel=${workdir%/}
+  case "$rel" in
+    "$top"/*) rel=${rel#"$top"/} ;;
+    *) rel='' ;;
+  esac
+  head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
+  { produced_commit_rows "$top" "$rel" "$head"
+    produced_edit_rows "$directory" "$top" "$rel" "$head" \
+      < <(listing_top_paths "$directory" "$top" "$workdir"); } \
+    >"$directory/produced.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/produced.tmp.$$" "$directory/produced" 2>/dev/null ||
+    rm -f "$directory/produced.tmp.$$" 2>/dev/null
+  return 0
 }
 
 # What this run's repository gained uncommitted content on while it ran, for the readers that price
@@ -1031,9 +1124,16 @@ start_run() {
   # the report says who a worker is, never who asked for it, so ownership read off a report is
   # ownership assigned to whoever happened to read it. A file rather than a meta.json key because
   # the reader is a per-tool-call hook globbing hundreds of runs, and one grep is its whole budget.
+  # And into the worker's own environment, under a name the harness does not overwrite: inside the
+  # launched CLI `CLAUDE_CODE_SESSION_ID` is that process's OWN chat, so a report the worker
+  # produces has no other way to name the chat it belongs to and lands in its own outbox. The
+  # supervisor spawned below inherits this export, and `claudeb` passes the environment through
+  # untouched.
   case "${CLAUDE_CODE_SESSION_ID:-}" in
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
-    *) printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher" ;;
+    *)
+      printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher"
+      export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID" ;;
   esac
   # What was already uncommitted here before this run touched anything. It is the floor the dirt
   # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
@@ -1044,6 +1144,12 @@ start_run() {
   workdir_dirty_shas "$workdir" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||
     rm -f "$directory/dirty-before-shas.tmp.$$" 2>/dev/null
+  # And the commit the tree stood on, which is what a path NOT already dirty is measured against.
+  # Never restamped by a reroute: an attempt's floor is the run's floor, and read off the end of the
+  # run instead every link the run itself committed would be measured against its own result.
+  git -C "$workdir" rev-parse --verify --quiet HEAD >"$directory/head-before.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/head-before.tmp.$$" "$directory/head-before" 2>/dev/null ||
+    rm -f "$directory/head-before.tmp.$$" 2>/dev/null
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do
@@ -1334,8 +1440,9 @@ classify_tool_rows() { # rows workdir
     [ "$inside" -ne 0 ] || [ -z "$outside" ] || RUN_FILES_ESCAPE="$outside"
   fi
   [ -z "$RUN_FILES_REASON" ] || return 0
-  RUN_FILES_LIST=$(awk -v dir="$dir" \
-    '{ if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
+  RUN_FILES_LIST=$(AWK_DIR=$dir awk \
+    'BEGIN { dir = ENVIRON["AWK_DIR"] }
+     { if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
     <<<"$paths" | sort -u)
   # First reason wins, like RUN_FILES_REASON: one PARTIAL line carries the caveat, and the named
   # unresolvable target says more than the generic shell floor beside it.
@@ -1602,7 +1709,9 @@ transcript_files() {
   # A trailing slash makes the prefix double-slashed and silently stops matching; an absent workdir
   # would strip the leading `/` off every absolute path, so it strips nothing at all.
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
-  awk -v dir="$dir" '{ if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
+  AWK_DIR=$dir awk \
+    'BEGIN { dir = ENVIRON["AWK_DIR"] }
+     { if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
     <<<"$paths" | sort -u
 }
 
@@ -1804,8 +1913,14 @@ running_report() {
   out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
   printf 'STATUS: running\nELAPSED: %s\n' "$elapsed"
-  [ "$elapsed" -ge "${WORKER_RUN_LONG_RUN_S:-1500}" ] &&
+  # Once per RUN, not once per round: the relay contract returns a checkpoint on any LONG-RUN line,
+  # so repeating it bounced an attached relay back after a single ~9-minute wait, over and over
+  # (live 2026-09-01). The marker is written where the line is printed, so a `wait` that never got
+  # to print it still owes it.
+  if [ "$elapsed" -ge "${WORKER_RUN_LONG_RUN_S:-1500}" ] && [ ! -e "$directory/long-run-said" ]; then
     printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; hand the remainder back as a split brief unless the brief is multi-agent\n' "$((elapsed / 60))"
+    : >"$directory/long-run-said" 2>/dev/null || :
+  fi
   printf 'OUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$out_bytes" "$err_bytes" "$(session_id "$directory")"
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   age=$(last_edit_age "$directory" "$workdir" "$now") || age=none
@@ -2067,6 +2182,26 @@ claim_run() {
     else
       rm -f "$directory/dirty" 2>/dev/null
     fi
+  fi
+  # A claimed path is content this run produced too, and `produced` was written when the run ended:
+  # left out of it, the very paths a claim exists to name are invisible to every reader that takes
+  # this record over the listing. APPENDED and never recomputed — the rows already standing were
+  # measured at the run's end, and a fresh pass now would date a co-tenant's later edit to this run.
+  if [ -n "$top" ] && [ -f "$directory/produced" ]; then
+    local head rel row
+    head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
+    rel=${workdir%/}
+    case "$rel" in
+      "$top"/*) rel=${rel#"$top"/} ;;
+      *) rel='' ;;
+    esac
+    while IFS= read -r row; do
+      grep -qxF -- "$row" "$directory/produced" 2>/dev/null ||
+        printf '%s\n' "$row" >>"$directory/produced"
+    done < <(produced_edit_rows "$directory" "$top" "$rel" "$head" \
+      < <(for absolute in "${resolved[@]}"; do
+            case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
+          done))
   fi
   printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "${#resolved[@]}" "$run_id"
   head -n 20 "$directory/files" 2>/dev/null
