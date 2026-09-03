@@ -6,6 +6,48 @@ worker_model_file() {
   printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 }
 
+# An implementation worker is dispatched to spend ANOTHER account's quota on real work, and a run
+# that comes back needing redoing costs more than the cheap model saved — so a worker runs the
+# vendor's top model or nothing (Egor, 2026-09-02). This is the ONE list; `worker-run` refuses a
+# launch outside it and `worker-pin-gate.sh` refuses storing one in `~/.claude/worker-model`.
+# Effort is a separate knob and is not touched by any of it.
+#
+# The ids are spelled the way that vendor's leg in `worker-run` passes them to its CLI, so a name
+# that passes here is a name the CLI accepts. Grok's `auto` and `grok-4.6` are two spellings of the
+# same one model — `auto` means whichever model the account defaults to, and the leg omits `-m` for
+# it (shared-invariants row `bk`).
+worker_model_allowed_models() { # vendor → allowed model ids, one per line
+  case "${1-}" in
+    claudeb) printf 'opus\n' ;;
+    codex) printf 'gpt-5.6-sol\n' ;;
+    gemini) printf 'pro\n' ;;
+    grok) printf 'auto\ngrok-4.6\n' ;;
+    *) return 2 ;;
+  esac
+}
+
+worker_model_allows() { # vendor model
+  local allowed
+  allowed=$(worker_model_allowed_models "${1-}") || return 2
+  [ -n "${2-}" ] || return 1
+  grep -qxF -- "${2-}" <<<"$allowed"
+}
+
+# The vendor's allowed ids as one phrase a refusal can quote, so no consumer respells the list.
+worker_model_allowed_list() { # vendor
+  local allowed
+  allowed=$(worker_model_allowed_models "${1-}") || return 2
+  printf '%s' "$(tr '\n' '|' <<<"$allowed" | sed 's/|$//')"
+}
+
+worker_model_allowed_summary() { # every vendor, as one phrase
+  local vendor out=''
+  for vendor in claudeb codex gemini grok; do
+    out="${out:+$out; }$vendor $(worker_model_allowed_list "$vendor")"
+  done
+  printf '%s' "$out"
+}
+
 # Until when the walls standing on <vendor>/<account> run, empty when none stands. Read from the
 # merged store `worker-pick` routes on, so the horizon stored beside a pin and the wall the picker
 # later sees are one reading rather than two that can disagree.

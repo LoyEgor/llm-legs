@@ -67,8 +67,14 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    every signed-in one, while `needs_login` is dead auth like anywhere else.
    `main` is no longer a ranking key on any vendor — the budget decides, and the **main-account
    shield** (below) is what keeps a base account from being spent by workers.
-3. **Wall.** An account is skipped only when walled: effective 100% in the spending
-   bucket or in the five-hour bucket, or dead auth. Below 100% nothing blocks — no
+3. **Wall.** An account is skipped for exactly two reasons, and they are never one word.
+   **Walled** is a USAGE verdict and nothing else: effective 100% in the spending bucket or in
+   the five-hour bucket. **Dead auth** keeps an account out of every answer just as firmly, but
+   it is a login for the owner to fix rather than a window to wait out, so the rows say
+   `login needed` where they say `WALLED` for the other — `WALLED` printed over an account whose
+   quota nobody spent sends the reader hunting a limit that does not exist. Where the selector
+   needs the single fact "cannot serve", it reads the union (`unavailable`), which is what pin
+   acceptance is spelled against: the pin overrides the pool, never capability. Below 100% nothing blocks — no
    floors, no headroom, no reserves — with exactly **two** deliberate softenings, both of
    them rank keys and neither of them a skip: the five-hour deferral and the claim, both in
    rule 2. Each stays soft — a deferred or claimed account is still the answer once nothing
@@ -93,7 +99,8 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
    refuse it (`claudeb … -p`, `codexb <name> exec`, `geminib … --print`, `grokb … -p`), and so do
-   `worker-run` and `codex-image`, which launch a vendor binary directly. review-bench raters
+   `worker-run` and the `codex-image`/`gemini-image`/`grok-image` launchers, which launch a vendor
+   binary directly. review-bench raters
    take their accounts from `worker-pick` and are bound by rule 1; `claudeb warm` is exempt
    because token warming keeps an account loggable-in, it does not spend work quota. The pin is
    the only override, because naming an account there is the deliberate "use this one anyway".
@@ -115,9 +122,11 @@ wall — a claimed account is still the answer when nothing else is selectable.
 is the entire state. A claim nobody renews simply ages out; nothing releases it explicitly.
 
 `--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
-The human table and the statusline prediction **never** claim: they report a decision, they do not
-take one. A query that cannot read the claims directory answers as if there were no claims rather
-than refusing to route.
+`worker-run` is that caller. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
+without `--claim`, validate the profile they would launch, then call `worker_claims_record` themselves
+so a missing account directory does not burn the TTL. The human table and the statusline prediction
+**never** claim: they report a decision, they do not take one. A query that cannot read the claims
+directory answers as if there were no claims rather than refusing to route.
 
 ## The main-account shield
 
@@ -138,10 +147,13 @@ signature and no stall watch, so nothing downstream can tell a worker ran at all
 wrapper is denied beside the bare binary, never instead of it: isolating a profile is not
 recording a run. Every headless run therefore goes through `worker-run` or a tool that owns its
 own launches, and this is the whole list: `worker-run`, `review-bench`,
-`llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `codex-image`,
-`gemini-image`, `grok-image`, `opencode-go`. `bin/worker-launch-gate.sh` is the mechanical half — a PreToolUse
-Bash gate denying a command that spells a bare launch unless the same command names one of those
-launchers. It reads the whole command string, and a vendor name counts only where a
+`llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`, plus the
+OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and `codex-image` /
+`gemini-image` / `grok-image`, which only the `image-gen` agent may: a run or an image started from
+the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
+mechanical half — a PreToolUse Bash gate denying a command that spells a bare launch unless the
+same command names one of those launchers, and denying an owned one outside the agent type that
+owns it. It reads the whole command string, and a vendor name counts only where a
 shell would run it: quoted text collapses into one operand word before the quotes come off, so
 `'claude' -p` and `X="a b" claude -p` are denied while a launch quoted inside an echo or a grep is
 the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /
@@ -177,10 +189,10 @@ therefore never clears a walled pin. It answers for every vendor under those sam
 a caller today, and its machine face is the others': one bare account name on stdout, exit 3 when
 none is selectable.
 
-In the human table — the workers view — a workers-off vendor with no pin serving reads
-`<vendor> — off for workers` in `NEXT:`, trails the ordering and is never auto-selected, while its
-account listing stays intact: a closed role is not a limit, and the menu still shows what those
-accounts hold. `worker-run` refuses a closed vendor for explicit accounts and pin fallbacks alike,
+In the human table — the workers view — a workers-off vendor with no pin serving holds no rank at
+all and states the switch in place of its rows: `<vendor>: off for workers`. A closed role is a
+setting, not a reading, and what those accounts hold is for the vendor's own menu section to show,
+not for the router. `worker-run` refuses a closed vendor for explicit accounts and pin fallbacks alike,
 the vendor pin excepted, and reports it the way it reports an empty pool —
 `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
@@ -217,13 +229,37 @@ vendor that was parked and the section would otherwise stay empty until the next
 directions are Egor's hand only: `share/worker-model.sh` `worker_model_set_paused` refuses a
 session (`CLAUDECODE`) the way the role writer does, so the menubar is the only way in.
 
+## Models
+
+`worker-pick` answers which ACCOUNT; which MODEL is not a question at all. An implementation
+worker runs exactly one model per vendor — claudeb `opus`, codex `gpt-5.6-sol`, gemini `pro`, grok
+`auto` (`grok-4.6`, the one model it has) — and `share/worker-model.sh`
+(`worker_model_allowed_models`) is the one place that list is spelled in code
+(`docs/shared-invariants.md` row `bq`). A worker is dispatched to spend another account's quota on
+real work, and a run that comes back needing redoing costs more than the cheap model saved.
+
+The refusal is a parsed contract and it stands wherever the name came from: a brief's `MODEL:` line
+(relays forward it as `--model`), `worker-run --model` itself, the vendor's own `*_model=` key, the
+default a missing key falls back to, and for codex the model `~/.codex/config.toml` names —
+`--model default` being that file's model under another spelling, not a model of its own.
+`worker-run` prints `OUTCOME: MODEL_REFUSED` and exits `4` BEFORE the account is resolved, so
+nothing is picked, no run directory exists and no quota is spent; the stderr line names the offered
+model and the vendor's allowed list. Nothing is walled and no reroute answers it — the brief asked
+for a model Egor forbade, and the answer is to drop the line or ask him.
+
+Storing one is refused at the file too: `bin/worker-pin-gate.sh` denies any Write/Edit or shell
+write that would leave a disallowed `*_model=` value in `~/.claude/worker-model`, which is how the
+`/worker` toggle is held to the same list. Unlike the account pin, that door takes no grant — a
+cheap default there downgrades every worker after it, silently. Effort (`*_effort=`) is untouched
+by all of it: it is the knob that still varies per task.
+
 ## Deleted with this contract (not configurable, not dormant)
 
 `FLOOR_PCT` / `HEADROOM_PCT`, the night-window relaxation (`awake_until_reset` / `relax`),
 the R1/R2/R3/R8/R9 rungs and their weights, the fable-gap exclusion, the session score, the
 least-burnt fallback, the session reserve, `main` as a ranking key, account tiers as a
-selection input (the `$100`/`$200` label stays display-only), codex reset-credits as a
-selection input (`↻n` stays display-only on every vendor that reports one), and the model/effort
+selection input (the `$100`/`$200` label is gone from this output and stays in the menu), codex
+reset-credits as a selection input (`↻n` is gone from it too, on every vendor), and the model/effort
 recommendation ladder.
 
 The earlier version of this page also forbade score and runway math outright. **That clause is
@@ -233,34 +269,49 @@ in `share/limits-view.sh` and read by every surface, rather than each surface in
 rungs and weights. The old prohibition existed because the math was per-surface and unverifiable;
 what replaces it is verifiable from the menu, since the two inputs are the percentage and the
 reset the menu already shows.
-Model and effort come only from `~/.claude/worker-model` defaults plus per-brief
-overrides — quota state never silently degrades work quality. The multi-paragraph
+Effort comes only from `~/.claude/worker-model` defaults plus per-brief overrides and the model
+comes from the fixed list above — quota state never silently degrades work quality. The multi-paragraph
 `POLICY:` prose block is no longer printed, and `share/worker-policy.md` loses every
 routing-math paragraph the rules above replace.
 
 ## Interface kept stable
 
-- Human output keeps the `NEXT:` / per-vendor lines / `DATA:` / `SESSION:` shapes, and
-  the statusline cache line keeps its format (model·effort sourced from worker-model
-  only). Grok appends a fourth cache field tagged `gr` after `cb`/`cx`/`gx`, and a store
+- Human output is one table, the same one for every vendor: a `NEXT` header, up to five ranked
+  rows `<rank> <budget> <wk> <5h> <vendor>/<account> <model>·<eff> [flags]` ordered by daily budget
+  ACROSS vendors (a usable pin outranks budget), `ACCOUNT: <name>` naming row 1, then one section
+  per vendor carrying that vendor's rows with the exact reset (`↺ Mon 09:30`), then `DATA:`. A run
+  that ranked nothing prints one `NEXT: <reason>` line instead of the table. The session account
+  is marked `*` with a footnote under its vendor — there is no `SESSION:` line, and `--fable` is
+  the query that asks for the fable pick. The statusline cache line keeps its format
+  (model·effort sourced from worker-model only). Grok appends a fourth cache field tagged `gr` after `cb`/`cx`/`gx`, and a store
   carrying no `vendors.grok` at all produces no grok segment, line or field: a vendor this
   machine has not installed is absent from the answer, never walled and never a failed
   lookup.
 - `worker-pick --account <vendor> [--exclude a,b] [--claim]` keeps its contract: bare account
-  name on stdout, exit 3 when no candidate remains. In `auto`, the `NEXT:` line leads with every
+  name on stdout, exit 3 when no candidate remains. In `auto`, the ranking leads with every
   vendor a usable pin answered, then orders vendors by the daily budget of the account each one
   selected, highest first — pinned vendors among themselves the same way; a vendor with nothing
-  selectable, or switched off for workers, takes the tail.
+  selectable, or switched off for workers, holds no row at all.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.
-- The claude account rows keep their `score` and `cap` tokens, which external tooling greps.
-  They are display-only remaining-window readings, not selection inputs.
-- `↻n` renders on every vendor row whose store entry carries `reset_credits`, Codex and grok
-  today, and a `reset_credits_stale` count reads as `↻0` — a number nobody measured recently is
-  not runway a caller may route on. The count never enters the rank vector on any vendor: a reset
-  is spent by Egor from the menubar — both vendors publish `reset_credits_expires_at` and both
-  have a redeem RPC behind that click — so an account holding one has exactly the capacity its
-  percentage states until he does.
+- EVERY vendor's account rows print the one metric that ranked them, as the division it is:
+  `<n>%/d ×<d>d` — the daily budget of rule 2 beside the remaining-days divisor it was paced over
+  (the `0.25`-day floor and the neutral `7`-day window of `docs/shared-invariants.md` row `bl`
+  included, so a row a reader cannot reconcile with the reset beside it does not exist). An
+  unmeasured budget prints `-` and an unmeasured percentage `?`; a vendor with no five-hour window
+  at all prints `–` in that column, which is a different statement from `?`. Models print their
+  short alias (`opus`, `sol`, `pro`, `grok`; `auto` is a knob value and is never displayed) and
+  efforts abbreviate to `low`/`med`/`high`/`xhigh`. The `*` session marker and `off` are unchanged.
+- The `DATA:` line names rows, never the table. It reads `fresh (<n> min old)` when every account
+  behind the answer is fresh, and otherwise `STALE — <vendor>/<account> <age>, …` listing exactly
+  the rows whose newest measured bucket is older than `LIMITS_STALE_ROUTING` (row `a`, no local
+  literal) — so a stale grok account can no longer brand a table of otherwise fresh claude rows.
+  A store written long ago with no account reading behind it at all says so in those words, and a
+  store with no timestamp reads `no timestamp`.
+- Reset credits and the account tier label are absent from this output entirely. Neither enters
+  the rank vector on any vendor, both are rendered by the menubar where the reset is spent (both
+  vendors publish `reset_credits_expires_at` and both have a redeem RPC behind that click), and a
+  number printed beside a row nobody ranks on reads as one that ranked it.
 - review-bench affordability derives from worker-pick's answer under these same rules —
   it keeps no thresholds of its own.

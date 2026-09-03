@@ -8,6 +8,12 @@
 # would deny `git checkout` in the very repositories these files live in. A changed
 # file, on the other hand, is a fact. So this reports rather than guesses.
 #
+# Reports, and inside Egor's autonomy span also PUTS BACK: growth of a guarded file that this
+# session's own tool call produced goes back to the bytes the baseline vouches for, because there
+# the span's rule (reshape these files, do not grow them) is the only arbiter left in the room and
+# the gate ahead of this one can read a command's shape but never its result. Everything else is
+# still reported and never touched — see revert_growth for the three conditions, all required.
+#
 # Hot path cost is one find and one stat process per Bash call: the baseline comparison is
 # shell builtins, and a hash runs only for a file whose fingerprint moved.
 set -u
@@ -94,6 +100,16 @@ keep_revert() {
   # The pid is in the name because two sessions reporting inside the same second would otherwise
   # write the same file, and the second one's copy would replace the first one's.
   stamp="$REVERT_DIR/$(date -u '+%Y%m%dT%H%M%SZ')-$$-$(basename "$src")"
+  cp "$src" "$stamp" 2>/dev/null || return 1
+  printf '%s' "$stamp"
+}
+
+# The bytes about to be overwritten by a revert. Nothing this hook does may be unrecoverable:
+# what it is putting back is the model's own work, and Egor may want to look at it or keep it.
+park_current() {
+  local src=$1 stamp
+  mkdir -p "$REVERT_DIR" 2>/dev/null || return 1
+  stamp="$REVERT_DIR/$(date -u '+%Y%m%dT%H%M%SZ')-$$-grown-$(basename "$src")"
   cp "$src" "$stamp" 2>/dev/null || return 1
   printf '%s' "$stamp"
 }
@@ -233,6 +249,84 @@ offer_restore() {
   restores+=("cp $(shq "$kept") $(shq "${b_real[$i]}")")
 }
 
+# Whether the tool call that just ran is what wrote this file. An Edit or a Write says so in its
+# own file_path; a Bash command says so by leaving its bytes in one of the file's spellings — the
+# absolute path, the tilde form, the name relative to the working directory — which the shared
+# parse the gate ahead of this hook asks the same question of (`instruction_write_targets`). Read
+# on the RAW command, heredoc bodies and quoted runs included, because the whole point of this
+# half is the writes the gate could not see: a heredoc fed to an interpreter names its target
+# inside the body.
+# The answer decides a REVERT, so a row has to be a write by SHAPE. A redirection, a copy verb and
+# a destination verb say so themselves. An interpreter row does not — it is the parse reporting a
+# name it found inside a payload it does not read, and `python3 -c 'open("CLAUDE.md").read()'`
+# produces exactly that row — so the interpreter shapes decide it, from the same shared spelling
+# the gate ahead of this hook denies on (`instruction_interp_write_re`). Rolling back on a mention
+# would put back growth another chat in the same checkout wrote, over a call that only read.
+own_write() {
+  local vis=$1 real=$2 p pr spelling names='' row_kind row_mode mention=''
+  case "$tool" in
+    Edit|Write|NotebookEdit)
+      [ -n "$tool_path" ] || return 1
+      p=$tool_path
+      case "$p" in "~/"*) p="$HOME/${p#\~/}" ;; esac
+      case "$p" in "$vis"|"$real") return 0 ;; esac
+      pr=$(realpath "$p" 2>/dev/null) || return 1
+      case "$pr" in "$vis"|"$real") return 0 ;; esac
+      return 1
+      ;;
+    Bash)
+      [ -n "$tool_cmd" ] || return 1
+      # The BASENAME is what a command is filtered on, not the whole spelling: a copy into a
+      # DIRECTORY never spells the file it lands in, and dropping the spelling here left the
+      # resolved destination with nothing to match.
+      while IFS= read -r spelling; do
+        [ -n "$spelling" ] || continue
+        case "$tool_cmd" in *"${spelling##*/}"*) ;; *) continue ;; esac
+        names="${names:+$names|}$(instruction_ere_escape "$spelling")"
+      done <<SPELL
+$(_instruction_spellings "$vis" "$HOME" "$cwd"
+  [ "$vis" = "$real" ] || _instruction_spellings "$real" "$HOME" "$cwd")
+SPELL
+      [ -n "$names" ] || return 1
+      while IFS=$'\t' read -r row_kind row_mode _; do
+        case "$row_kind" in
+          redirect|copy) return 0 ;;
+          verb) if [ "$row_mode" = unknown ]; then mention=1; else return 0; fi ;;
+        esac
+      done < <(instruction_write_targets "$tool_cmd" "$names")
+      [ -n "$mention" ] || return 1
+      # Flattened, because a heredoc puts the interpreter on one line and the open() on the next.
+      printf '%s' "${tool_cmd//$'\n'/ }" \
+        | grep -Eq "$(instruction_interp_write_re "$names")" || return 1
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+# Growth put back rather than reported. Three conditions, every one of them required:
+#   - the file is one the write gate speaks for (instruction_write_class), which leaves out
+#     settings.json — the harness rewrites that on its own and no gate ever denied it;
+#   - the call that just ran AIMED a write at it. A shared checkout means the writer is as often
+#     another chat or a worker as this session, and a rollback decided on a guess eats that chat's
+#     live work — the standing rule for everything else in this hook;
+#   - Egor's autonomy span stands. Outside it he is here to arbiter, and this hook reports.
+# Only growth, and only against the version this session's own baseline vouches for: a shrink is
+# the cleanup the span exists to allow, and an untrusted file has no good bytes to go back to.
+revert_growth() {
+  local i=$1 delta=$2 vis=${b_vis[$i]} real=${b_real[$i]} src parked
+  [ "${b_trust[$i]}" = 1 ] || return 1
+  [ -n "$(instruction_write_class "$real")" ] || return 1
+  own_write "$vis" "$real" || return 1
+  instruction_autonomous "$sid" "$transcript" || return 1
+  src="$SNAP_DIR/$(snap_key "$vis")-${b_hash[$i]}"
+  [ -f "$src" ] || return 1
+  parked=$(park_current "$real") || return 1
+  cp "$src" "$real" 2>/dev/null || return 1
+  reverted+=("$vis (+$delta bytes; what it wrote is parked at $parked)")
+  report "REVERTED $vis (+$delta bytes)" "$vis"
+}
+
 cmd_check() {
   local baseline=$1 event=$2 sid=$3
   mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
@@ -280,7 +374,7 @@ cmd_check() {
     s_path+=("$n_path"); s_val+=("$n_rest")
   done <<<"$stat_out"
 
-  local -a reports=() restores=()
+  local -a reports=() restores=() reverted=()
   local cur cur_mtime cur_size cur_ino cur_link cur_hash delta moved=0 top_rate=''
   local vis_seen vis_ino
   for i in "${!b_real[@]}"; do
@@ -347,6 +441,9 @@ cmd_check() {
     [ -n "$cur_hash" ] || continue
     if [ "$cur_hash" != "${b_hash[$i]}" ]; then
       delta=$((cur_size - ${b_size[$i]}))
+      if [ "$delta" -gt 0 ] && revert_growth "$i" "$delta"; then
+        continue
+      fi
       [ "$delta" -ge 0 ] && delta="+$delta"
       report "CHANGED $vis ($delta bytes)" "$vis"
       offer_restore "$i"
@@ -373,16 +470,21 @@ cmd_check() {
     exit 0
   fi
 
-  local joined stale='' undo='' cost=''
+  local joined stale='' undo='' undone='' cost=''
   joined=$(printf '%s; ' "${reports[@]}")
   joined=${joined%; }
   if [ "${#restores[@]}" -gt 0 ]; then
     undo=" The bytes from before the change were kept, so this puts them back: $(printf '%s; ' "${restores[@]}")"
     undo=${undo%; }
   fi
+  if [ "${#reverted[@]}" -gt 0 ]; then
+    undone=" Growth this session's own call produced was PUT BACK, because Egor's autonomy span covers reshaping these files and not growing them: $(printf '%s; ' "${reverted[@]}")"
+    undone=${undone%; }
+    undone="$undone. Do not write it again — an instruction file grows when he says so, not while he is away. If the addition is worth its recurring cost, say so in one line and leave it for his next turn."
+  fi
   # The log is the durable half of the audit trail, so it is written before the baseline moves
   # on. Rebuilding first meant a hook killed in between erased the only record of the change.
-  log_line "sid=${sid:-?} $joined${undo:+ | undo: ${restores[*]}}"
+  log_line "sid=${sid:-?} $joined${undo:+ | undo: ${restores[*]}}${undone:+ | reverted: ${reverted[*]}}"
   alert_egor "Instruction file changed: ${reports[0]}"
   # A baseline that cannot be rewritten means this same change is reported again after every
   # later Bash call, so the repetition is named rather than left looking like fresh news.
@@ -391,7 +493,7 @@ cmd_check() {
   # The dearest class in this report, not the global file's rate quoted over a skill that costs
   # a fiftieth of it. A report naming only files this table does not price says nothing at all.
   [ -n "$top_rate" ] && cost=" (up to ~$top_rate full-read equivalents/month)"
-  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undo These files are re-read across sessions$cost, and Egor's standing rule is that they are read-only without his explicit OK in the current turn — no Edit, and equally no shell write. If he approved this change in this turn, nothing to do; this line is the audit trail. If he did not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
+  emit_context "$event" "Instruction-file tripwire: $joined.$stale$undone$undo These files are re-read across sessions$cost, and Egor's standing rule is that they are read-only without his explicit OK in the current turn — no Edit, and equally no shell write. If he approved this change in this turn, nothing to do; this line is the audit trail. If he did not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
   exit 0
 }
 
@@ -400,9 +502,16 @@ payload=""
 # One jq for the whole payload: this runs after every Bash call, and a second interpreter
 # start buys nothing.
 values=$(printf '%s' "$payload" | jq -r '
-  [(.hook_event_name // "PostToolUse"), (.session_id // "")] | join("\u001f")' 2>/dev/null) || values=""
-IFS=$'\x1f' read -r event sid <<<"$values"
-[ -n "${event:-}" ] || event=PostToolUse
+  [(.hook_event_name // "PostToolUse"), (.session_id // ""), (.tool_name // ""),
+   (.transcript_path // ""), (.cwd // ""), (.tool_input.file_path // ""),
+   (.tool_input.command // "")]
+  | join("\u001f")' 2>/dev/null) || values=""
+# NUL-delimited rather than a line read, and the command last: a Bash command is routinely several
+# lines, and a line read would keep only its first one.
+IFS=$'\x1f' read -r -d '' event sid tool transcript cwd tool_path tool_cmd <<<"$values" || :
+# A read that found no field at all leaves the newline the here-string added, and that newline is
+# the event name every emitted record would carry.
+case "${event:-}" in ''|*[!A-Za-z]*) event=PostToolUse ;; esac
 baseline=$(session_baseline "${sid:-}")
 
 case "${1:-check}" in

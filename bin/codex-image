@@ -114,11 +114,13 @@ root=$(resolve_root)
   { printf 'codex-image: share/worker-pool.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
 . "$root/share/worker-model.sh" ||
   { printf 'codex-image: share/worker-model.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
+. "$root/share/worker-claims.sh"
 
+picked=false
 if [ -z "$account" ]; then
   pick_rc=0
   if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account codex --claim 2>/dev/null) || pick_rc=$?
+    account=$(worker-pick --account codex 2>/dev/null) || pick_rc=$?
   else
     pick_rc=127
   fi
@@ -134,6 +136,8 @@ if [ -z "$account" ]; then
       account=main
     fi
     printf 'codex-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  else
+    picked=true
   fi
 fi
 
@@ -150,6 +154,9 @@ else
     exit 1
   fi
   generated_images_dir="$codex_home/generated_images"
+fi
+if [ "$picked" = true ] && ! worker_claims_record codex "$account"; then
+  printf 'codex-image: could not record the claim on %s\n' "$account" >&2
 fi
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/codex-image.XXXXXX")

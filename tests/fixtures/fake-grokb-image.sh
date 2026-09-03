@@ -6,6 +6,9 @@ set -euo pipefail
 : "${FAKE_GROKB_SESSION_ROOT:?}"
 
 printf 'GROK_MEMORY=%s\n' "${GROK_MEMORY-<unset>}" >>"$FAKE_GROKB_CALLS"
+# The launching chat's stamp, which an image relay only ever passes THROUGH: whatever it writes
+# is journaled by the agent that ran it, and a scrubbed environment there is an edit no chat owns.
+printf 'CLAUDE_LAUNCHER_SESSION=%s\n' "${CLAUDE_LAUNCHER_SESSION-<unset>}" >>"$FAKE_GROKB_CALLS"
 previous=''
 for argument in "$@"; do
   printf 'ARG=%s\n' "$argument" >>"$FAKE_GROKB_CALLS"

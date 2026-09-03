@@ -265,6 +265,8 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   return infoTitle(prefix .. bar .. suffix, false, dim, atLimit)
 end
 
+local vendorRefreshErrors, refreshErrorItem, appendRefreshErrorRows
+
 -- Parked is read from worker-model and never from the store: the collector writes no entry for a
 -- parked vendor, so the store cannot tell "paused" from "not installed".
 local function pausedRow(vendorKey, label)
@@ -285,6 +287,7 @@ local function appendOpenCode(menu, limits, paused)
   -- One refresh for the leg, in the section header every other vendor carries its own in. Per
   -- account there is nothing to offer: a check is one real completion, and the leg is refreshed
   -- whole or not at all, never one row at a time.
+  local vendorErrs = vendorRefreshErrors("opencode", vendor)
   table.insert(menu, {
     title = infoTitle("OpenCode Go"),
     menu = {
@@ -292,6 +295,7 @@ local function appendOpenCode(menu, limits, paused)
       { title = "Pause", fn = function() M.setWorkerPaused("opencode", true) end },
     },
   })
+  appendRefreshErrorRows(menu, vendorErrs, "opencode")
   for _, account in ipairs(accounts) do
     local walled = account.walled == true
     local windows = type(account.windows) == "table" and account.windows or {}
@@ -315,6 +319,7 @@ local function appendOpenCode(menu, limits, paused)
         disabled = true,
       })
     end
+    appendRefreshErrorRows(menu, vendorErrs, "opencode", account.account)
   end
 end
 
@@ -533,6 +538,7 @@ end
 -- silently changed nothing cannot keep the menu lying.
 local poolOverrides = {}
 local poolOverrideTtl = 30
+local removalOverrides = {}
 
 local function poolOverrideKey(vendor, account)
   return tostring(vendor) .. "\0" .. tostring(account)
@@ -553,6 +559,22 @@ local function poolStateFor(vendor, account, cached)
   return override.enabled
 end
 
+local function setRemovalOverride(vendor, account, pending)
+  local key = poolOverrideKey(vendor, account)
+  removalOverrides[key] = pending and { at = os.time() } or nil
+end
+
+local function removalPending(vendor, account)
+  local key = poolOverrideKey(vendor, account)
+  local override = removalOverrides[key]
+  if not override then return false end
+  if os.time() - override.at > poolOverrideTtl then
+    removalOverrides[key] = nil
+    return false
+  end
+  return true
+end
+
 local taskRegistry = {}
 local nextTaskId = 0
 local lastCollectEpoch = 0
@@ -560,9 +582,12 @@ local runtimeGlobalError = nil
 
 local function errorState(value)
   if type(value) == "table" and type(value.cause) == "string" then
+    local class = value.class
+    if type(class) ~= "string" or class == "" then class = nil end
     return {
       cause = value.cause,
       at = tonumber(value.at),
+      class = class,
       needsUserEntry = value.needs_user_entry == true,
     }
   end
@@ -717,19 +742,21 @@ function M.refreshState()
     globalError = { cause = readError, at = os.time() }
   end
   local vendorErrors = {}
-  if limits and type(limits.vendors) == "table" then
-    for _, name in ipairs({ "claude", "codex", "gemini", "grok" }) do
-      local vendor = limits.vendors[name]
-      local err = errorState(type(vendor) == "table" and vendor.refresh_error or nil)
-      if err then vendorErrors[name] = err end
-    end
-  end
   local warning = globalError ~= nil
-  if not warning then
-    for _, err in pairs(vendorErrors) do
-      if not err.needsUserEntry then
-        warning = true
-        break
+  if limits and type(limits.vendors) == "table" then
+    for _, name in ipairs({ "claude", "codex", "gemini", "grok", "opencode" }) do
+      local vendor = limits.vendors[name]
+      local entries = vendorRefreshErrors(name, vendor)
+      if #entries > 0 then
+        vendorErrors[name] = entries
+        if not warning then
+          for _, err in ipairs(entries) do
+            if not err.needsUserEntry then
+              warning = true
+              break
+            end
+          end
+        end
       end
     end
   end
@@ -787,7 +814,9 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess, optio
   -- Saying nothing here is what made a repeated click look like a dead menu.
   if taskForKey(key) then
     logAction("already-running", label)
-    hs.alert.show("llm-limits: " .. label .. " is still running")
+    if not options.silentIfRunning then
+      hs.alert.show("llm-limits: " .. label .. " is still running")
+    end
     return
   end
   logAction("launch", label)
@@ -795,6 +824,9 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess, optio
   local task = hs.task.new(launchPath, function(exitCode, stdOut, stdErr)
     local failed = exitCode ~= 0
     if failed then
+      if options.onFailure then
+        options.onFailure(taskCause(stdOut, stdErr, exitCode, failMessage))
+      end
       logAction("failed", string.format("%s exit=%s %s", label, tostring(exitCode),
         tostring((stdErr or stdOut or ""):gsub("%s+", " "):sub(1, 160))))
       -- A leg-wide command can fail on one account after changing another (the leg's Hard refresh
@@ -820,23 +852,25 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess, optio
     startTask(id, reread, "collect could not start")
   end, args)
   if task then task:setEnvironment(options.environment or baseEnvironment()) end
-  startTask(id, task, failMessage)
+  if not startTask(id, task, failMessage) and options.onFailure then
+    options.onFailure(failMessage or "command could not start")
+  end
 end
 
-local function runClaudeb(args, failMessage, onSuccess)
-  runAccountCommand(resolveClaudeb(), args, failMessage, onSuccess)
+local function runClaudeb(args, failMessage, onSuccess, options)
+  runAccountCommand(resolveClaudeb(), args, failMessage, onSuccess, options)
 end
 
-local function runCodexb(args, failMessage, onSuccess)
-  runAccountCommand(resolveCodexb(), args, failMessage, onSuccess)
+local function runCodexb(args, failMessage, onSuccess, options)
+  runAccountCommand(resolveCodexb(), args, failMessage, onSuccess, options)
 end
 
-local function runGeminib(args, failMessage, onSuccess)
-  runAccountCommand(resolveGeminib(), args, failMessage, onSuccess)
+local function runGeminib(args, failMessage, onSuccess, options)
+  runAccountCommand(resolveGeminib(), args, failMessage, onSuccess, options)
 end
 
-local function runGrokb(args, failMessage, onSuccess)
-  runAccountCommand(resolveGrokb(), args, failMessage, onSuccess)
+local function runGrokb(args, failMessage, onSuccess, options)
+  runAccountCommand(resolveGrokb(), args, failMessage, onSuccess, options)
 end
 
 -- The scheduled refresh asks only the accounts the store marks walled, where the answer is free.
@@ -1098,16 +1132,38 @@ end
 -- token STRING is present, so a revoked login (exactly the state this row renders) can never
 -- satisfy them and the unforced remove refuses forever. Remove is offered only on
 -- login-needed rows, so the guard has nothing left to protect.
-function M.removeClaude(name) runClaudeb({ "remove", name, "--force" }, "remove failed") end
-function M.removeCodex(name) runCodexb({ "remove", name, "--force" }, "remove failed") end
+local function removalOptions(vendor, name)
+  setRemovalOverride(vendor, name, true)
+  notifyRefreshState()
+  return {
+    silentIfRunning = true,
+    onFailure = function(cause)
+      setRemovalOverride(vendor, name, false)
+      notifyRefreshState()
+      hs.alert.show("Remove " .. name .. " failed: " .. cause)
+    end,
+  }
+end
+
+function M.removeClaude(name)
+  runClaudeb({ "remove", name, "--force" }, "remove failed", nil,
+    removalOptions("claude", name))
+end
+function M.removeCodex(name)
+  runCodexb({ "remove", name, "--force" }, "remove failed", nil,
+    removalOptions("codex", name))
+end
 function M.removeGemini(name)
   if not name or name == "main" then
     refreshData({ "--gemini-remove" }, "gemini-remove", 360, "gemini-remove")
   else
-    runGeminib({ "remove", name }, "remove failed")
+    runGeminib({ "remove", name }, "remove failed", nil, removalOptions("gemini", name))
   end
 end
-function M.removeGrok(name) runGrokb({ "remove", name, "--force" }, "remove failed") end
+function M.removeGrok(name)
+  runGrokb({ "remove", name, "--force" }, "remove failed", nil,
+    removalOptions("grok", name))
+end
 
 local function shellQuote(value)
   return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
@@ -1190,64 +1246,149 @@ local function refreshErrorAge(at)
   return string.format("%dd", math.floor(seconds / 86400))
 end
 
-local function refreshErrorTitle(err)
-  return truncateText("refresh failed " .. err.cause .. " · " .. refreshErrorAge(err.at), 88)
-end
-
-local function splitCauseEntries(cause)
-  local parts, start, sep = {}, 1, "; "
-  while true do
-    local s, e = cause:find(sep, start, true)
-    if not s then parts[#parts + 1] = cause:sub(start); break end
-    parts[#parts + 1] = cause:sub(start, s - 1)
-    start = e + 1
-  end
-  return parts
-end
-
-local function splitLiteral(text, separator)
-  local parts, start = {}, 1
-  while true do
-    local first, last = text:find(separator, start, true)
-    if not first then
-      parts[#parts + 1] = text:sub(start)
-      return parts
-    end
-    parts[#parts + 1] = text:sub(start, first - 1)
-    start = last + 1
-  end
-end
-
-local function routingDisplayLines(lines)
-  local result = {}
-  for _, line in ipairs(lines) do
-    if line:sub(1, 6) == "NEXT: " then
-      local parts = splitLiteral(line:sub(7), "  |  ")
-      result[#result + 1] = "NEXT:"
-      for _, part in ipairs(parts) do result[#result + 1] = "  " .. part end
-    else
-      local vendor, accounts = line:match("^(%a+): (.*)$")
-      if vendor == "codex" or vendor == "gemini" or vendor == "grok" or vendor == "claude" then
-        local footnote
-        if vendor == "claude" then
-          local marker = "   (* = this session account"
-          local footnoteStart = accounts:find(marker, 1, true)
-          if footnoteStart then
-            footnote = accounts:sub(footnoteStart + 3)
-            accounts = accounts:sub(1, footnoteStart - 1)
-          end
-        end
-        result[#result + 1] = vendor .. ":"
-        for _, account in ipairs(splitLiteral(accounts, " | ")) do
-          result[#result + 1] = "  " .. account
-        end
-        if footnote then result[#result + 1] = "  " .. footnote end
-      else
-        result[#result + 1] = line
+local function rosterSet(vendor)
+  local set = {}
+  if type(vendor) == "table" and type(vendor.accounts) == "table" then
+    for _, row in ipairs(vendor.accounts) do
+      if type(row) == "table" and type(row.account) == "string"
+          and row.account ~= "" and row.removed ~= true then
+        set[row.account] = true
       end
     end
   end
-  return result
+  return set
+end
+
+local function causeLines(cause, width)
+  width = width or 88
+  local raw = tostring(cause or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+  local lines = {}
+  local function push(line)
+    if line == "" then return end
+    local i = 1
+    local n = #line
+    while i <= n do
+      lines[#lines + 1] = line:sub(i, i + width - 1)
+      i = i + width
+    end
+  end
+  if raw:find("\n", 1, true) then
+    for line in (raw .. "\n"):gmatch("(.-)\n") do push(line) end
+  else
+    push(raw)
+  end
+  if #lines == 0 and tostring(cause or "") ~= "" then
+    lines[1] = truncateText(tostring(cause), width)
+  end
+  return lines
+end
+
+local function classifyLegacyAccount(cause, roster)
+  local who = cause:match("^([^:]+): ")
+  if who and roster[who] then return who end
+  who = cause:match("^(.+) auth")
+  if who and roster[who] then return who end
+  return nil
+end
+
+vendorRefreshErrors = function(_, vendor)
+  if type(vendor) ~= "table" then return {} end
+  local roster = rosterSet(vendor)
+  local raw = vendor.refresh_errors
+  if type(raw) ~= "table" then
+    local err = errorState(vendor.refresh_error)
+    if err then
+      raw = {{
+        account = classifyLegacyAccount(err.cause, roster),
+        class = err.class,
+        cause = err.cause,
+        at = err.at,
+        needs_user_entry = err.needsUserEntry,
+      }}
+    else
+      raw = {}
+    end
+  end
+  local out = {}
+  local seen = {}
+  local function add(account, class, cause, at, needsUserEntry)
+    if type(cause) ~= "string" or cause == "" then return end
+    if account ~= nil and not roster[account] then return end
+    if type(class) ~= "string" or class == "" then class = "refresh failed" end
+    local key = tostring(account or "") .. "\0" .. cause
+    if seen[key] then return end
+    seen[key] = true
+    out[#out + 1] = {
+      account = account,
+      class = class,
+      cause = cause,
+      at = at,
+      needsUserEntry = needsUserEntry == true or class == "login needed",
+    }
+  end
+  for _, item in ipairs(raw) do
+    if type(item) == "table" then
+      local account = item.account
+      if type(account) ~= "string" or account == "" then account = nil end
+      add(account, item.class, item.cause, tonumber(item.at), item.needs_user_entry == true)
+    end
+  end
+  if type(vendor.accounts) == "table" then
+    for _, row in ipairs(vendor.accounts) do
+      if type(row) == "table" and row.removed ~= true then
+        local accErr = errorState(row.refresh_error)
+        if accErr then
+          local dup = false
+          for _, e in ipairs(out) do
+            if e.account == row.account and e.cause:find(accErr.cause, 1, true) then
+              dup = true
+              break
+            end
+          end
+          if not dup then
+            add(row.account, accErr.class, accErr.cause, accErr.at, accErr.needsUserEntry)
+          end
+        end
+      end
+    end
+  end
+  return out
+end
+
+refreshErrorItem = function(err, fallbackWho, warning)
+  local who = err.account or fallbackWho
+  local class = err.class or "refresh failed"
+  local title
+  if who and who ~= "" then
+    title = string.format("⚠ %s: %s · %s", who, class, refreshErrorAge(err.at))
+  else
+    title = string.format("⚠ %s · %s", class, refreshErrorAge(err.at))
+  end
+  local sub = {}
+  for _, line in ipairs(causeLines(err.cause, 88)) do
+    sub[#sub + 1] = { title = infoTitle(line, false, true), disabled = true }
+  end
+  local item = {
+    title = infoTitle(title, warning == true, warning ~= true),
+  }
+  if #sub > 0 then
+    item.menu = sub
+  else
+    item.disabled = true
+  end
+  return item
+end
+
+appendRefreshErrorRows = function(menu, entries, fallbackWho, onlyAccount)
+  for _, err in ipairs(entries) do
+    if onlyAccount == nil then
+      if err.account == nil then
+        table.insert(menu, refreshErrorItem(err, fallbackWho))
+      end
+    elseif err.account == onlyAccount then
+      table.insert(menu, refreshErrorItem(err, onlyAccount))
+    end
+  end
 end
 
 local function routingSubmenu()
@@ -1276,7 +1417,9 @@ local function routingSubmenu()
     title = infoTitle("as of " .. os.date("%H:%M", cache.at), false, dim),
     disabled = true,
   }}
-  for _, line in ipairs(routingDisplayLines(lines)) do
+  -- worker-pick already answers in rows: one account per line, columns aligned in the menu font.
+  -- Anything this renderer split or re-laid-out here would be a second layout to keep in step.
+  for _, line in ipairs(lines) do
     table.insert(menu, { title = infoTitle(line, false, dim), disabled = true })
   end
   return menu
@@ -1288,10 +1431,11 @@ function M.menuItems()
   local menu = {}
   local state = M.refreshState()
   if state.globalError then
-    table.insert(menu, {
-      title = infoTitle(refreshErrorTitle(state.globalError), true),
-      disabled = true,
-    })
+    table.insert(menu, refreshErrorItem({
+      class = state.globalError.class or "refresh failed",
+      cause = state.globalError.cause,
+      at = state.globalError.at,
+    }, nil, true))
   end
   local pendingOk, pending = pcall(function()
     return _G.ClaudeChatSwitch and _G.ClaudeChatSwitch.pending
@@ -1367,6 +1511,7 @@ function M.menuItems()
       -- Removing gemini's main empties the roster, and the collector states that emptiness as
       -- `removed` on the vendor: without it a removed Gemini rendered a "no live data" row with a
       -- Refresh submenu, which is the opposite of removed.
+      local vendorErrs = vendorRefreshErrors(entry.key, vendor)
       if type(vendor) == "table" and vendor.removed == true then
         vendor = nil
       elseif type(vendor) ~= "table"
@@ -1400,6 +1545,9 @@ function M.menuItems()
         end
         appendRoleItems(unavailableRow)
         table.insert(menu, unavailableRow)
+        for _, err in ipairs(vendorErrs) do
+          table.insert(menu, refreshErrorItem(err, err.account or entry.key))
+        end
       else
         local blocks = (entry.key == "claude" or entry.key == "codex" or entry.key == "gemini"
           or entry.key == "grok")
@@ -1412,10 +1560,12 @@ function M.menuItems()
           or isGrokAccounts
         renderedAccountRows = isAccountRows
         local hasAccountControls = isClaudeAccounts and vendor.source == "claudeb-store"
-        if isGeminiAccounts then
+        if isAccountRows then
           local visible = {}
           for _, block in ipairs(blocks) do
-            if block.removed ~= true then table.insert(visible, block) end
+            if block.removed ~= true and not removalPending(entry.key, block.account) then
+              table.insert(visible, block)
+            end
           end
           blocks = visible
         end
@@ -1430,6 +1580,7 @@ function M.menuItems()
           table.insert(sectionMenu, { title = "Refresh",
             fn = function() M.refreshVendor(entry.key) end })
           table.insert(menu, { title = infoTitle(entry.label), menu = sectionMenu })
+          appendRefreshErrorRows(menu, vendorErrs, entry.key)
         else
           -- Gemini's pin has to be known before the row is built now that the mark lives inside
           -- the title instead of being appended behind the age.
@@ -1474,6 +1625,9 @@ function M.menuItems()
             appendRoleItems(fallbackRow)
           end
           table.insert(menu, fallbackRow)
+          for _, err in ipairs(vendorErrs) do
+            table.insert(menu, refreshErrorItem(err, err.account or entry.key))
+          end
         end
         for _, block in ipairs(blocks) do
           local fiveHour = type(block.five_hour) == "table" and block.five_hour or nil
@@ -1637,14 +1791,8 @@ function M.menuItems()
               table.insert(menu, { title = tailRow("fb", block.fable, fableWarning), disabled = true })
             end
           end
-          if isGeminiAccounts and not authNeeded then
-            local accountError = errorState(block.refresh_error)
-            if accountError then
-              table.insert(menu, {
-                title = infoTitle(refreshErrorTitle(accountError), false, true),
-                disabled = true,
-              })
-            end
+          if isAccountRows then
+            appendRefreshErrorRows(menu, vendorErrs, entry.key, acct)
           end
         end
       end
@@ -1666,24 +1814,6 @@ function M.menuItems()
       end
       if renderedAccountRows then
         table.insert(menu, { title = "-" })
-      end
-      local refreshError = not hasGeminiAccounts
-        and errorState(type(vendor) == "table" and vendor.refresh_error or nil) or nil
-      if refreshError then
-        local entries = splitCauseEntries(refreshError.cause or "")
-        if #entries > 1 then
-          for _, entry in ipairs(entries) do
-            table.insert(menu, {
-              title = infoTitle(refreshErrorTitle({ cause = entry, at = refreshError.at }), false, true),
-              disabled = true,
-            })
-          end
-        else
-          table.insert(menu, {
-            title = infoTitle(refreshErrorTitle(refreshError), false, true),
-            disabled = true,
-          })
-        end
       end
       end
     end
@@ -1745,7 +1875,7 @@ local function onWorkerModelChanged()
 end
 
 -- A local pathwatcher is garbage-collected and silently stops firing; hold the
--- reference at module scope (same trap as token_upkeep's wakeWatcher). Guarded
+-- reference at module scope so garbage collection cannot stop it. Guarded
 -- so the headless renderer harness (no hs.pathwatcher) still loads.
 if hs.pathwatcher then
   M.storeWatcher = hs.pathwatcher.new(M.cachePath, onStoreChanged)

@@ -18,6 +18,7 @@ claudeb_root=$(resolve_root)
 . "$claudeb_root/share/worker-model.sh"
 . "$claudeb_root/share/account-announce.sh"
 . "$claudeb_root/share/limits-view.sh"
+. "$claudeb_root/share/store-lock.sh"
 
 base_dir="${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}"
 tokens_dir="$base_dir/tokens"
@@ -486,30 +487,18 @@ detect_logged_out() {
 oauth_client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 oauth_token_url="${CLAUDEB_OAUTH_TOKEN_URL:-https://platform.claude.com/v1/oauth/token}"
 oauth_attempts_file="$base_dir/oauth-attempts.json"
-token_freeze_file="$base_dir/token-freeze"
 token_attempts_file="$base_dir/token-attempts.jsonl"
 
-# Token-freeze experiment: while this file exists, every ROBOT path to the OAuth
-# token endpoint is held. An `until` in the past means the freeze lapsed and
-# automation resumes on its own; a missing/garbled `until` holds until the file
-# is removed.
-token_freeze_active() {
-  local until now
-  [ -f "$token_freeze_file" ] || return 1
-  until=$(jq -r '.until // empty' "$token_freeze_file" 2>/dev/null) || until=''
-  if [[ "$until" =~ ^[0-9]+$ ]]; then
-    now=$(date +%s) || return 1
-    [ "$until" -gt "$now" ] || return 1
-  fi
-  return 0
-}
-
+# The direct curl POST to the OAuth token endpoint is vendor-blocked for automation, so
+# only a refresh the user asked for in the menu may still try it; every robot path stops
+# before the endpoint and rotates through `claudeb revive` instead. This is permanent —
+# each guard below reads this predicate, never a switch that could turn robots back on.
 user_refresh_explicit() {
   [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" = true ]
 }
 
 # Append-only evidence of every token-endpoint-relevant event (real attempts and
-# their outcomes, warm outcomes, adoptions, freeze skips). Single-line O_APPEND
+# their outcomes, warm outcomes, adoptions, robot skips). Single-line O_APPEND
 # writes stay atomic under PIPE_BUF, so no lock; a failed write never breaks a
 # refresh path.
 token_journal() {
@@ -709,7 +698,7 @@ oauth_warm_cause() {
 
 warm_class_is_capacity() {
   case "$1" in
-    timeout|warm-429|warm-failed|usage-probe-failed|frozen) return 0 ;;
+    timeout|warm-429|warm-failed|usage-probe-failed|robot-skip) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -718,7 +707,7 @@ warm_cause_from_refresh() {
   local name="$1" refresh_rc="$2"
   case "$refresh_rc" in
     2) printf 'needs-relogin\n' ;;
-    76) printf 'frozen\n' ;;
+    76) printf 'robot-skip\n' ;;
     75)
       if [ "$(oauth_backoff_outcome "$name")" = 429 ]; then printf 'warm-429\n'; else printf 'warm-failed\n'; fi
       ;;
@@ -807,10 +796,10 @@ keychain_write() {
 oauth_refresh() {
   local name="$1" service="$2" prev="$3" body response new_creds readback headers http rc=0 retry='' retry_until=0 weather_http=0 http_num=0 refresh_rc=1
   local prev_rt prev_expires_at current current_rt rlock='' lock_trap glock glock_held spacing
-  # Freeze is weather, not a verdict: journal the skip, write no auth verdict, no
-  # strike, no oauth-attempts change; the distinct rc 76 surfaces as cause `frozen`.
-  if token_freeze_active && ! user_refresh_explicit; then
-    token_journal "$name" curl-refresh frozen-skip
+  # A robot skip is weather, not a verdict: journal it, write no auth verdict, no
+  # strike, no oauth-attempts change; the distinct rc 76 surfaces as `robot-skip`.
+  if ! user_refresh_explicit; then
+    token_journal "$name" curl-refresh robot-skip
     return 76
   fi
   oauth_attempt_begin "$name" "$prev" || return 1
@@ -827,7 +816,7 @@ oauth_refresh() {
     current_rt=$(printf '%s' "$current" | jq -r '.claudeAiOauth.refreshToken // empty' 2>/dev/null) || current_rt=''
     if [ -n "$current" ] && [ -n "$prev_rt" ] && [ "$current_rt" != "$prev_rt" ]; then
       # Adopted a concurrent rotation — no token-endpoint POST happened; journal it
-      # as `adopt`, not `curl-refresh`, so the freeze evidence stays honest.
+      # as `adopt`, not `curl-refresh`, so the endpoint evidence stays honest.
       CLAUDEB_JOURNAL_KIND=adopt oauth_attempt_update "$name" success
       printf '%s' "$current"
       return 0
@@ -1134,14 +1123,14 @@ messages_probe_and_mark() {
 # (expired), and 429/weather/unresolved leaves the auth field untouched.
 heal_refresh_verdict() {
   local name="$1" warm_cause="$2" service credentials refreshed outcome refresh_run_start
-  # Under a freeze oauth_refresh returns 76/empty without touching the endpoint,
-  # so the fall-through below would read a stale PRE-freeze revoked/auth-failed
-  # outcome and stamp a false `expired`. Every caller reaches here only when the
-  # token was already due for refresh, so there is no live fresh-token verdict to
-  # salvage — end as weather, no auth write. (Mirrors heal_one's freeze guard for
-  # the twin callers messages_probe_and_mark / process_probe_result.)
-  if token_freeze_active && ! user_refresh_explicit; then
-    printf 'claudeb: %s: capacity (%s, token endpoint frozen) — no auth verdict\n' "$name" "$warm_cause" >&2
+  # On a robot path oauth_refresh returns 76/empty without touching the endpoint,
+  # so the fall-through below would read an OLDER revoked/auth-failed outcome and
+  # stamp a false `expired`. Every caller reaches here only when the token was
+  # already due for refresh, so there is no live fresh-token verdict to salvage —
+  # end as weather, no auth write. (Mirrors heal_one's guard for the twin callers
+  # messages_probe_and_mark / process_probe_result.)
+  if ! user_refresh_explicit; then
+    printf 'claudeb: %s: capacity (%s, token endpoint not called) — no auth verdict\n' "$name" "$warm_cause" >&2
     return
   fi
   service=$(keychain_service "$name")
@@ -1171,7 +1160,7 @@ heal_refresh_verdict() {
 # path uses the `claude` CLI's own OAuth rotation, not the curl refresh, so a
 # token-endpoint 429/failed record must never gate it (see oauth_heal_backoff_until).
 heal_one() {
-  local dir="$1" name="$2" until_heal now_heal warm_out warm_skip_dir warm_cause cause source rc http until_refresh outcome retry_until run_start warm_gated=false
+  local dir="$1" name="$2" until_heal now_heal warm_out warm_cause cause source rc http until_refresh outcome retry_until run_start warm_gated=false
   local warm_reason='' retry_delay
   run_start=$(date +%s)
   until_heal=$(oauth_heal_backoff_until "$name")
@@ -1183,41 +1172,28 @@ heal_one() {
     warm_gated=false
     warm_cause='warm failed'
   fi
-  warm_skip_dir=$(mktemp -d "${TMPDIR:-/tmp}/claudeb-warm-skip.XXXXXX")
   if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=heal \
-    CLAUDEB_WARM_SKIP_MARKER="$warm_skip_dir/skipped" warm_accounts "$name" 2>/dev/null); then
-    # The marker is written by the skip itself, so a freeze that lifts between the call and
-    # this check cannot turn a warm that never ran into a live account.
-    if [ ! -e "$warm_skip_dir/skipped" ]; then
-      rm -rf "$warm_skip_dir"
+    warm_accounts "$name" 2>/dev/null); then
+    printf 'live\n' > "$dir/$name.display"
+    return
+  fi
+  warm_reason=$(oauth_warm_cause "$name")
+  if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason"; then
+    retry_delay="${CLAUDEB_WARM_RETRY_DELAY:-20}"
+    [[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=20
+    [ "$retry_delay" -le 0 ] || sleep "$retry_delay"
+    # The just-recorded warm-failed outcome would otherwise self-gate this
+    # same-run retry under oauth_heal_backoff_until's 30m window.
+    if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=retry-after warm_accounts "$name" 2>/dev/null); then
       printf 'live\n' > "$dir/$name.display"
       return
     fi
+    warm_reason=$(oauth_warm_cause "$name")
   fi
-  rm -rf "$warm_skip_dir"
-  warm_reason=$(oauth_warm_cause "$name")
-  # Under a freeze a re-warm can only frozen-skip again, so the capacity retry
-  # (a 20s sleep + repeat) is pure dead time, and a pre-freeze capacity-shaped
-  # warm_cause is stale, not this run's evidence. Skip both capacity blocks and
-  # fall through to the probe + freeze verdict below.
-  if user_refresh_explicit || ! token_freeze_active; then
-    if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason"; then
-      retry_delay="${CLAUDEB_WARM_RETRY_DELAY:-20}"
-      [[ "$retry_delay" =~ ^[0-9]+$ ]] || retry_delay=20
-      [ "$retry_delay" -le 0 ] || sleep "$retry_delay"
-      # The just-recorded warm-failed outcome would otherwise self-gate this
-      # same-run retry under oauth_heal_backoff_until's 30m window.
-      if warm_out=$(CLAUDEB_WARM_FREE_ONLY=true CLAUDEB_WARM_BACKOFF_MODE=retry-after warm_accounts "$name" 2>/dev/null); then
-        printf 'live\n' > "$dir/$name.display"
-        return
-      fi
-      warm_reason=$(oauth_warm_cause "$name")
-    fi
-    if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason" && ! token_needs_refresh "$name"; then
-      mark_auth "$name" ok
-      printf 'claudeb: %s: capacity (anthropic overload) — data kept, will retry (warm cause: %s)\n' "$name" "$warm_reason" >&2
-      return
-    fi
+  if [ "$warm_gated" != true ] && warm_class_is_capacity "$warm_reason" && ! token_needs_refresh "$name"; then
+    mark_auth "$name" ok
+    printf 'claudeb: %s: capacity (anthropic overload) — data kept, will retry (warm cause: %s)\n' "$name" "$warm_reason" >&2
+    return
   fi
   probe_one "$name" "$dir" false true
   read -r source rc http < "$dir/$name.result"
@@ -1229,17 +1205,6 @@ heal_one() {
   fi
   if [ "$source" = usage ] && merge_usage "$name" "$dir/$name.usage"; then
     printf 'live\n' > "$dir/$name.display"
-    return
-  fi
-  # Under a freeze the token endpoint never ran this cycle, so a stale backoff or
-  # rejection outcome is pre-freeze, not current-run evidence — end as weather. A
-  # live 4xx on a still-fresh token is endpoint-independent and still counts.
-  if token_freeze_active && ! user_refresh_explicit; then
-    if { [ "$http" = 401 ] || [ "$http" = 403 ]; } && ! token_needs_refresh "$name"; then
-      mark_auth "$name" expired "fresh token rejected ($http)"
-    else
-      printf 'claudeb: %s: capacity (frozen) — token endpoint frozen, no auth verdict\n' "$name" >&2
-    fi
     return
   fi
   now_heal=$(date +%s)
@@ -1353,33 +1318,6 @@ converge_backoff() {
     3) printf '30\n' ;;
     *) printf '60\n' ;;
   esac
-}
-
-# Refresh tokens at/near expiry (disabled accounts included — they may be re-enabled
-# anytime) so the set never expires together overnight and forces a morning burst;
-# weather failures wait for the next upkeep. No probes, no spend.
-token_upkeep() {
-  local name service credentials expires_at now_ms window_ms
-  if token_freeze_active && ! user_refresh_explicit; then
-    token_journal all upkeep frozen-skip
-    return 0
-  fi
-  window_ms=$(( ${CLAUDEB_TOKEN_UPKEEP_WINDOW_S:-2700} * 1000 ))
-  now_ms=$(($(date +%s) * 1000))
-  while IFS= read -r name; do
-    service=$(keychain_service "$name")
-    credentials=$(security find-generic-password -s "$service" -w 2>/dev/null) || continue
-    # A logged-out account has no token to refresh; skip it (item-not-found is
-    # already caught by the read above).
-    if credentials_logged_out "$credentials"; then continue; fi
-    expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || expires_at=0
-    [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
-    [ "$expires_at" -le "$((now_ms + window_ms))" ] || continue
-    if oauth_refresh "$name" "$service" "$credentials" >/dev/null 2>&1; then
-      printf 'claudeb: token-upkeep: refreshed %s\n' "$name" >&2
-    fi
-  done < <(account_names)
-  return 0
 }
 
 # Snapshots move here; the announce keeps the merged cache (menu, statusline, table)
@@ -1671,8 +1609,27 @@ disable_account() {
   printf 'claudeb: disabled %s\n' "$name"
 }
 
+# Every trace of an account outside the stores account_names reads. A name that reaches only these
+# is still known: `remove` is the one broom for all of them, and answering "unknown account" to it
+# would leave leftovers no command can reach — a tiers row, a pool entry, a stale pick cache.
+account_leftovers() {
+  local name=$1
+  is_disabled "$name" && return 0
+  [ -e "$HOME/.cache/worker-pick.line.$name" ] && return 0
+  [ -n "$(find "$base_dir/session-logs" "$base_dir/warm-logs" -maxdepth 1 \
+            -name "$name.*" -print -quit 2>/dev/null)" ] && return 0
+  [ -n "$(find "$limits_dir" -maxdepth 1 -name "$name.json.tmp.*" -print -quit 2>/dev/null)" ] && return 0
+  [ -r "$base_dir/account-tiers" ] &&
+    awk -F= -v n="$name" '{ k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k); if (k == n) found=1 }
+      END { exit !found }' "$base_dir/account-tiers" && return 0
+  [ -r "$oauth_attempts_file" ] &&
+    jq -e --arg n "$name" 'type == "object" and has($n)' "$oauth_attempts_file" >/dev/null 2>&1 && return 0
+  return 1
+}
+
 remove_account() {
-  local name='' force=false arg service creds tmp state sec_rc=0 exists=false alive=false attempts_lock
+  local name='' force=false arg service creds tmp state sec_rc=0 existed=false alive=false attempts_lock
+  local refresh_state refresh_lock cache_file
   local tiers_file="$base_dir/account-tiers"
   local fable_state_file="$base_dir/.claudeb-state-fable"
   for arg in "$@"; do
@@ -1697,19 +1654,15 @@ remove_account() {
   # not read as empty creds, or the alive-guard below fails open on a live account.
   creds=$(security find-generic-password -s "$service" -w 2>/dev/null) || sec_rc=$?
   [ "$sec_rc" -eq 0 ] || creds=''
-  # Existence spans every store, including metadata-only orphans (a stale
-  # oauth-attempts entry, an account-tiers line, or a disabled flag) so they can
-  # still be pruned after the token/profile/keychain are already gone.
-  [ -f "$tokens_dir/$name" ] && exists=true
-  [ -d "$profiles_root/$name" ] && exists=true
-  [ -f "$limits_dir/$name.json" ] && exists=true
-  [ -n "$creds" ] && exists=true
-  if [ "$exists" != true ] && [ -r "$oauth_attempts_file" ] \
-     && jq -e --arg n "$name" 'type == "object" and has($n)' "$oauth_attempts_file" >/dev/null 2>&1; then exists=true; fi
-  if [ "$exists" != true ] && [ -r "$tiers_file" ] \
-     && awk -F= -v n="$name" '{ k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k); if (k == n) f=1 } END { exit !f }' "$tiers_file"; then exists=true; fi
-  if [ "$exists" != true ] && is_disabled "$name"; then exists=true; fi
-  if [ "$exists" != true ]; then
+  [ -f "$tokens_dir/$name" ] && existed=true
+  [ -d "$profiles_root/$name" ] && existed=true
+  [ -f "$limits_dir/$name.json" ] && existed=true
+  [ -n "$creds" ] && existed=true
+  if [ "$existed" != true ] && account_leftovers "$name"; then existed=true; fi
+  # Nothing of the account anywhere is a name Egor mistyped, and codexb, geminib and grokb all
+  # answer that the same way. Everything this command sweeps counts as "something", so the retry
+  # after a partial removal still finds work to do rather than being told the account is unknown.
+  if [ "$existed" != true ]; then
     printf 'claudeb: unknown account: %s\n' "$name" >&2
     exit 2
   fi
@@ -1737,7 +1690,11 @@ remove_account() {
     fi
   fi
 
-  rm -f "$tokens_dir/$name" "$limits_dir/$name.json"
+  # `$name.`* and never `$name`*: the log of an account whose name merely starts with this one
+  # (`alpha.log` for a removal of `alph`) is somebody else's record.
+  rm -f "$tokens_dir/$name" "$limits_dir/$name.json" \
+    "$base_dir/session-logs/$name."* "$base_dir/warm-logs/$name."* \
+    "$limits_dir/$name.json.tmp."*
   security delete-generic-password -s "$service" >/dev/null 2>&1 || true
   rm -rf "$profiles_root/$name"
 
@@ -1773,6 +1730,24 @@ remove_account() {
 
   if is_disabled "$name"; then set_disabled "$name" off; fi
 
+  refresh_state=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
+  refresh_lock="$refresh_state.lock"
+  if [ -r "$refresh_state" ] \
+      && LLM_STORE_LOCK_STALE_SECONDS=1800 store_lock_acquire "$refresh_lock"; then
+    tmp="$refresh_state.tmp.$$"
+    if jq -c --arg name "$name" '
+        if type == "object" then
+          del(.claude.attempts[$name], .vendors.claude.attempts[$name])
+        else . end' "$refresh_state" >"$tmp" 2>/dev/null; then
+      mv "$tmp" "$refresh_state"
+    else
+      rm -f "$tmp"
+    fi
+    store_lock_release "$refresh_lock"
+  fi
+  cache_file="$HOME/.cache/worker-pick.line.$name"
+  rm -f "$cache_file"
+
   if [ -r "$state_file" ]; then
     IFS= read -r state < "$state_file" || state=''
     [ "$state" = "$name" ] && rm -f "$state_file"
@@ -1802,7 +1777,6 @@ show_help() {
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb revive <name>%s                   %sRotate an expired token in a real session (no model tokens), then refresh limits.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb token-fresh <name>%s              %sExit 0 while the keychain token would still carry a request, 1 otherwise.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb token-upkeep%s                    %sRefresh tokens near expiry (no probes/spend); for wake/cron pre-warm.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
   printf '                                          %sPICK marks the account worker-pick would give this chat.%s\n' "$dim" "$reset"
@@ -2036,7 +2010,7 @@ warm_failure() {
 }
 
 warm_accounts() {
-  local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir probe_source probe_rc probe_http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg warm_manual_explicit=false
+  local name dir output session_rc reason failure_cause service credentials expires_at now started probe_dir probe_source probe_rc probe_http asof failed=0 until probe_ok usage_rate_limited backoff_mode explicit=false refresh_rc start_window=false hreset arg
   local CLAUDEB_OAUTH_BYPASS_BACKOFF="${CLAUDEB_OAUTH_BYPASS_BACKOFF:-false}"
   local -a names
   names=()
@@ -2059,25 +2033,9 @@ warm_accounts() {
   fi
   warm_single_explicit=false
   if [ "$explicit" = true ] && [ "${#names[@]}" -eq 1 ]; then warm_single_explicit=true; fi
-  # Every refresh menu click supplies this signal; background callers do not.
-  if user_refresh_explicit; then warm_manual_explicit=true; fi
-  if [ "$warm_manual_explicit" != true ] && token_freeze_active; then
-    for name in "${names[@]}"; do
-      # An account that does not exist is a failure whether or not the freeze is on: skipping
-      # first would report a refresh of a typo as successfully skipped.
-      if ! account_exists "$name"; then
-        warm_failure "$name" unknown-account 'unknown account'
-        failed=1
-        continue
-      fi
-      token_journal "$name" warm frozen-skip
-      printf 'claudeb: %s: warm skipped — token-endpoint auto-refresh frozen (experiment)\n' "$name" >&2
-      # The caller cannot tell a skip from a success by re-reading the freeze, which may lift
-      # between the two reads; this says it happened, once, from inside the skip.
-      [ -n "${CLAUDEB_WARM_SKIP_MARKER:-}" ] && : > "$CLAUDEB_WARM_SKIP_MARKER"
-    done
-    return "$failed"
-  fi
+  # A warm session is the free CLI path and runs for robots too; only the two
+  # oauth_refresh fallbacks below can reach the token endpoint, and those are the
+  # ones the robot guard turns into rc 76 (shared-invariants row f).
   for name in "${names[@]}"; do
     if ! account_exists "$name"; then
       warm_failure "$name" unknown-account 'unknown account'
@@ -2289,11 +2247,10 @@ token_fresh() {
 }
 
 # Rotate an expired token through a real interactive session, then land the full
-# snapshot (five_hour, seven_day AND fable) from the usage endpoint. Deliberately
-# exempt from token_freeze_active — it is the sanctioned replacement for the
-# vendor-blocked curl refresh (docs/EXIT-PLAN.md § Token-freeze experiment) and never
-# POSTs the token endpoint itself: rotation is the session's, and the probe below runs
-# with refresh disabled.
+# snapshot (five_hour, seven_day AND fable) from the usage endpoint. This is the
+# replacement for the vendor-blocked curl refresh, so it is the one rotation a robot
+# path may drive, and it never POSTs the token endpoint itself: rotation is the
+# session's, and the probe below runs with refresh disabled.
 revive_account() {
   local name="${1:-}" driver driver_rc=0 probe_dir started asof failure_cause
   local probe_source probe_rc probe_http needs_token=false
@@ -2408,8 +2365,8 @@ accounts_refresh_start() {
   # down the probe_one children with it — a bare kill orphans them mid-request.
   set -m
   {
-    # A pressed key is a user-explicit refresh by definition — without this the
-    # token-freeze experiment silently skips the OAuth leg and 'r' changes nothing.
+    # A pressed key is a user-explicit refresh by definition — without this the robot
+    # guard silently skips the OAuth leg and 'r' changes nothing.
     export CLAUDEB_WARM_USER_EXPLICIT=true
     # The || true keeps set -e from aborting the subshell before the sentinel is
     # written; a hung probe would otherwise leave the spinner spinning forever.
@@ -2712,8 +2669,8 @@ interactive_accounts() {
       if [ "$rc" -gt 128 ]; then continue; fi
       [ "$rc" -eq 0 ] || return 0
     else
-      # Idle ticks re-read the store so an open TUI mirrors what the statusline,
-      # menu refreshes, and upkeep keep writing — never a frozen open-time snapshot.
+      # Idle ticks re-read the store so an open TUI mirrors what the statusline and
+      # menu refreshes keep writing — never a frozen open-time snapshot.
       rc=0
       IFS= read -rsn1 -t 5 key || rc=$?
       if [ "$rc" -gt 128 ]; then accounts_reselect; continue; fi
@@ -2820,9 +2777,6 @@ case "${1:-}" in
     token_fresh "${1:-}" || token_fresh_rc=$?
     exit "$token_fresh_rc"
     ;;
-  token-upkeep)
-    token_upkeep
-    ;;
   add)
     shift
     add_account "${1:-}"
@@ -2898,7 +2852,7 @@ case "${1:-}" in
     # `stauts` should not cost a second attempt. A near-miss on a mutating one only
     # suggests — autocorrecting into `remove` would eventually delete an account.
     # `|| true`: a failing awk must not take the whole CLI down under `set -e`.
-    typo_target=$(similar_names "${1:-}" status accounts help warm revive token-fresh token-upkeep add enable disable remove use || true)
+    typo_target=$(similar_names "${1:-}" status accounts help warm revive token-fresh add enable disable remove use || true)
     case "$typo_target" in
       '') profile_required ;;
       status|accounts|help)

@@ -57,123 +57,149 @@ command=${command//\\$'\n'/ }
 # `review-debt-ignore` carries no `.md` and is written from inside `.claude/` as a bare name, so
 # neither of the first two patterns sees it and the guarded basename below is never reached.
 case "$command" in
-  *.md*|*.claude/*|*settings.json*|*review-debt-ignore*) ;;
+  *.md*|*.claude/*|*review-debt-ignore*) ;;
   *) exit 0 ;;
 esac
-
-# Full ERE metacharacter set: a skill directory or a home path is free to contain (), + or ?,
-# and an unescaped one silently changes what the pattern means.
-ere_escape() { printf '%s' "$1" | sed 's#[][\.*^$/+?(){}|#]#\\&#g'; }
 
 alternation=''
 while IFS= read -r path; do
   case "$command" in *"$path"*) ;; *) continue ;; esac
-  alternation="${alternation:+$alternation|}$(ere_escape "$path")"
+  alternation="${alternation:+$alternation|}$(instruction_ere_escape "$path")"
 done < <(instruction_all_paths "$HOME" "$cwd")
 
 dir_alternation=''
 while IFS= read -r path; do
   case "$command" in *"$path"/*) ;; *) continue ;; esac
-  dir_alternation="${dir_alternation:+$dir_alternation|}$(ere_escape "$path")"
+  dir_alternation="${dir_alternation:+$dir_alternation|}$(instruction_ere_escape "$path")"
 done < <(instruction_all_dirs "$HOME" "$cwd")
 # Matched by name as well as by path: there is no list of every repository, and a project's
-# own CLAUDE.md or MEMORY.md costs the same per read as the global one. Both ends are bounded,
-# or `CLAUDE.md.backup-20260713` and `dummyCLAUDE.md` are denied as if they were the file
-# itself — and this repository keeps exactly such backups.
-# The backslash belongs in both classes: a path inside an escaped quote, which is how an
-# interpreter one-liner is actually written, has \" pressed against it on both sides.
-# No pipe in the start class. A guarded name pressed against one is a delimiter inside a script
-# far more often than it is a target — `perl -pi -e 's|/x/MEMORY.md|y|' notes.txt` writes to
-# notes.txt — and reading it as a target denied ordinary rewrites.
-NAME_START="(^|[[:space:]>;&(=,\"'/\`\\\\])"
-# The backtick and the closing brace end a name as surely as a space does: without them
-# \`cp a CLAUDE.md\` and `{ cp a CLAUDE.md; }` had no character the name could end on.
-NAME_END="($|[[:space:]>|;&),}\"'\`\\\\])"
+# own CLAUDE.md or MEMORY.md costs the same per read as the global one.
 by_name="([^[:space:];|&'\"]*/)?${INSTRUCTION_GUARDED_BASENAMES}"
 # A file that does not exist yet is a file every later session still pays for, so the guarded
 # directories are matched as well as the guarded files. `> new.md` typed from INSIDE such a
 # directory carries no directory at all and stays the tripwire's job.
 by_dir=''
-[ -n "$dir_alternation" ] && by_dir="(${dir_alternation})/[^[:space:];|&'\"]*\.md|"
+[ -n "$dir_alternation" ] && by_dir="(${dir_alternation})/[^[:space:];|&'\"]*$(instruction_md_ere)|"
 TARGET="(${alternation:+$alternation|}${by_dir}${by_name})"
-BOUNDED="${NAME_START}['\"]?${TARGET}${NAME_END}"
 
-# Three shapes, and only three. Over a measured month of 60372 shell commands 1709 named a
-# guarded file, and of the 113 that wrote to one, 52 did it by redirection, 50 through an
+# Two shapes read off the shell, and only two. Over a measured month of 60372 shell commands 1709
+# named a guarded file, and of the 113 that wrote to one, 52 did it by redirection, 50 through an
 # interpreter and 3 through tee. cp/mv/ln, rm/truncate and sed -i accounted for the remaining
 # handful; ex, ed, patch and dd for none at all. Finding those verbs' destination inside an
 # argument list is what every second defect in this file came from, so they are the tripwire's
-# business now — it reports them however they are typed. What makes these three cheap is that
-# the target stands in a fixed place: after the operator, after the verb, inside the open().
-# Verb boundary: `add` is not `dd`. The slash belongs in the class because `/usr/bin/tee` is the
-# same write typed another way, and the backtick and brace because so are `\`…\`` and `{ …; }`.
-B="(^|[[:space:]|;&({\`/])"
-# One run of arguments. It stops at a pipeline or the next command, and at # as well, because
-# `tee a b # note about CLAUDE.md` names its target in a comment and is not a write to it.
-ARG="[^|;&#]*"
-# The verb's own space is a boundary, but BOUNDED wants to consume one of its own, and with a
-# single space between them there is no character left: `tee CLAUDE.md` needs the form without
-# a leading boundary of its own, `tee log.txt CLAUDE.md` the form with one.
-FIRST="['\"]?${TARGET}${NAME_END}"
-# `>|` is the same write as `>` with noclobber turned off, and it was the one redirection
-# spelling the operator class did not cover.
-redirect=">[>|]?[[:space:]]*['\"]?${TARGET}${NAME_END}"
-# tee takes any number of destinations, so the guarded one may sit anywhere in its arguments.
-tee="${B}g?tee[[:space:]](${FIRST}|${ARG}${BOUNDED})"
-# An interpreter is a write only when the same command also carries a write mode AND names the
-# file, all three within one pipeline stage: `python3 -c "open(other,'w')" | grep CLAUDE.md`
-# satisfies all three across the pipe and is an ordinary read of nothing at all.
-IW="${B}(python[0-9.]*|perl|ruby|node|bun|deno)[[:space:]][^|]*"
-# The open mode is matched in argument position — after a comma, after `mode=`, or as the sole
-# argument of .open() — because a bare 'a' or 'w' anywhere in the command denied
-# `python3 -c "print('a'); print('CLAUDE.md')"`, an ordinary read.
-# Every mode string that can write, letter order free: Python accepts 'bw' and '+rb' as readily
-# as 'wb', so any string over rwaxbt+ counts once it carries a w, a, x or +. `r`, `rb` and their
-# reorderings never reach one of those letters and stay out, which is the whole reason the modes
-# are enumerated rather than matched loosely. Perl's spellings, `+>>` included, stand apart.
-MODE="['\"]([rbt]*[wax+][rwaxbt+]*|>>?|\+[<>]>?)['\"]"
-write_mode="([,=][[:space:]]*${MODE}|mode[[:space:]]*[:=][[:space:]]*${MODE}|\.open\(${MODE}|write_text|write_bytes|writelines|\.write\(|writeFile|appendFile|shutil\.copy|copyfile)"
-# Reading a guarded file and printing it is not writing to it, and `.write(` alone said it was.
-scrubbed=$command
-for stream in sys.stdout sys.stderr process.stdout process.stderr; do
-  scrubbed=${scrubbed//"$stream.write("/}
-done
+# business — it reports them however they are typed, and inside Egor's autonomy span it puts their
+# growth back. What makes a redirection and a tee cheap is that the target stands in a fixed place.
+# Redirection and tee are read off the command with its heredoc bodies dropped and its quoted runs
+# resolved (instruction_shell_scan in the shared module). A guarded name a command merely CARRIES
+# — a scratchpad heredoc quoting a rule, a commit message, a note appended to a log — is data, and
+# reading it as a destination denied ordinary work while saying nothing true about what the command
+# wrote. A shell interpreter in the command line turns that quoted text back into a program, and a
+# command-position word the scan cannot resolve may be one, so both fall back to the raw command.
+scan=$(printf '%s' "$command" | instruction_shell_scan 2>/dev/null) || scan=''
+[ -n "$scan" ] || scan=$command
+if printf '%s' "$scan" | grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE"; then
+  scan=$command
+fi
+
 # grep is line-based, and a heredoc puts the interpreter on one line and the open() on the next.
 # Flattening keeps them in one pipeline stage; the cost is that two unrelated commands on two
 # lines can look like one, which is a denial too many rather than a write too few.
-scrubbed=${scrubbed//$'\n'/ }
-
-interp_write="${IW}${write_mode}[^|]*${BOUNDED}|${IW}${BOUNDED}[^|]*${write_mode}"
+flat=${command//$'\n'/ }
+# The interpreter shapes are the shared module's, asked here and by the tripwire alike
+# (`instruction_interp_write_re`): the parse below can only say an interpreter NAMED the file, and
+# a second spelling of what makes that a write is a one-liner one door denies and the other never
+# rolls back.
+interp_write=$(instruction_interp_write_re "$TARGET")
+interp_trunc=$(instruction_interp_trunc_re "$TARGET")
 
 # The name is taken from inside the construct that matched, not from the whole line: a name that
 # stands elsewhere in the command belongs to the arguments, and reporting it would point Egor at
-# a file the command never wrote and key the retry stamp on it. `where` says which end of the
-# matched text holds the destination.
+# a file the command never wrote and key the retry stamp on it. An interpreter rule ends at its
+# destination, so the first name inside the match is the one written.
 name_in() {
-  local text=$1 pattern=$2 where=$3 m name
+  local text=$1 pattern=$2 m name
   m=$(printf '%s' "$text" | grep -Eo "$pattern" | head -n 1)
   [ -n "$m" ] || return 1
-  if [ "$where" = last ]; then
-    name=$(printf '%s' "$m" | grep -Eo "$TARGET" | tail -n 1)
-  else
-    name=$(printf '%s' "$m" | grep -Eo "$TARGET" | head -n 1)
-  fi
+  name=$(printf '%s' "$m" | grep -Eo "$TARGET" | head -n 1)
   # The extractor runs on the unbounded TARGET, so a quote or a delimiter never rides along.
   printf '%s' "${name%%[\"\'[:space:]]*}"
 }
 
-# One combined pass decides whether anything matched at all; the per-construct extraction below
-# costs a process per rule and runs only once something has. This hook precedes every Bash call.
-hit=''
-if printf '%s' "$command" | grep -Eq "${redirect}|${tee}"; then
-  # Both patterns end at their target, so the name to report is the last one inside the matched
-  # text — an earlier one belongs to the arguments, as in `tee notes.md CLAUDE.md`.
-  hit=$(name_in "$command" "$redirect" last)
-  [ -n "$hit" ] || hit=$(name_in "$command" "$tee" last)
-elif printf '%s' "$scrubbed" | grep -Eq "${interp_write}"; then
-  hit=$(name_in "$scrubbed" "$interp_write" first)
+# Egor's autonomy span, asked at most once and only about a row that could answer to it: the
+# reader sources a 90 KB library and walks the whole transcript.
+autonomous=''
+span_active() {
+  if [ -z "$autonomous" ]; then
+    if instruction_autonomous "$sid" "$transcript"; then autonomous=yes; else autonomous=no; fi
+  fi
+  [ "$autonomous" = yes ]
+}
+
+# Inside Egor's autonomy span the on-demand instruction files may be RESHAPED but not grown: he is
+# away, the model is the only actor, and a write that replaces a doc's bytes is exactly the cleanup
+# he left it — while an append can only add to a file every later session re-reads. What this gate
+# can know before the call is the SHAPE of the write; what the bytes come to is settled afterwards
+# by the tripwire, which puts back growth this session's own call produced. The every-session class
+# and the review-debt list are out of it entirely: both are denied always.
+#
+# Returns 0 for a REFUSED destination and publishes the state the denial is written from. realpath
+# runs here and nowhere else, and only for a name that already matched a guarded spelling.
+hit=''; class=''; span=''; abs=''; abs_real=''
+judge_row() { # name mode
+  local row_abs row_real row_class row_span=''
+  row_abs=$1
+  case "$row_abs" in
+    '~/'*)       row_abs="$HOME/${row_abs#\~/}" ;;
+    '$HOME/'*)   row_abs="$HOME/${row_abs#\$HOME/}" ;;
+    '${HOME}/'*) row_abs="$HOME/${row_abs#\$\{HOME\}/}" ;;
+    /*) ;;
+    *) row_abs="${cwd:-$PWD}/${row_abs#./}" ;;
+  esac
+  row_real=$(realpath "$row_abs" 2>/dev/null)
+  # An empty class is a path no gate speaks for — settings.json above all, which the tripwire
+  # watches and nothing denies.
+  row_class=$(instruction_write_class "${row_real:-$row_abs}")
+  [ -n "$row_class" ] || return 1
+  if [ "$row_class" = span ] && span_active; then
+    row_span=1
+    [ "$2" = trunc ] && return 1
+  fi
+  hit=$1; class=$row_class; span=$row_span; abs=$row_abs; abs_real=$row_real
+  return 0
+}
+
+# Where the command leaves its bytes, from the ONE parse both doors ask
+# (`instruction_write_targets`). Only the rows this gate speaks for: a redirection and a tee, whose
+# destination stands in a fixed place. The copy verbs and the loose interpreter rows the same parse
+# yields are the tripwire's, and an interpreter is judged by the shared shapes above instead,
+# because a name merely CARRIED inside a payload is not a destination.
+# EVERY row is judged, and each against its OWN shape. A class read off the FIRST row while the
+# shrink shape was read off ANY row is how `tee -a ~/.claude/docs/a.md; : > ~/.claude/docs/b.md`
+# passed inside the span: the second row can shrink its file, so the first row grew its own
+# unasked. The first refused row is the one the denial speaks about.
+saw_row=''
+denied=''
+row_sep=$(printf '\t')
+while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
+  [ -n "$row_name" ] || continue
+  case "$row_kind" in
+    redirect) ;;
+    verb) case "$row_verb" in tee|gtee) ;; *) continue ;; esac ;;
+    *) continue ;;
+  esac
+  saw_row=1
+  [ -n "$denied" ] && continue
+  judge_row "$row_name" "$row_mode" && denied=1
+done < <(instruction_write_targets "$scan" "$TARGET")
+if [ -z "$saw_row" ] && printf '%s' "$flat" | grep -Eq "${interp_write}"; then
+  interp_name=$(name_in "$flat" "$interp_write")
+  interp_mode=append
+  printf '%s' "$flat" | grep -Eq "$interp_trunc" && interp_mode=trunc
+  if [ -n "$interp_name" ] && judge_row "$interp_name" "$interp_mode"; then
+    denied=1
+  fi
 fi
-[ -n "$hit" ] || exit 0
+[ -n "$denied" ] || exit 0
 
 # The session is part of the key: a parallel chat spending its own retry must not spend this
 # one's, and a later session must not inherit approval Egor gave in an earlier turn.
@@ -186,34 +212,23 @@ fi
 
 # The number has to be the one THIS file costs. A skill and an agent doc are a factor of thirty
 # apart, and one blanket figure quoted at every class makes the arithmetic the denial asks for
-# wrong before it starts. $hit is the spelling the command used, so it is expanded back to an
-# absolute path first; realpath runs only here, on the denial, never on the hot path.
-abs=$hit
-case "$abs" in
-  '~/'*)       abs="$HOME/${abs#\~/}" ;;
-  '$HOME/'*)   abs="$HOME/${abs#\$HOME/}" ;;
-  '${HOME}/'*) abs="$HOME/${abs#\$\{HOME\}/}" ;;
-  /*) ;;
-  *) abs="${cwd:-$PWD}/${abs#./}" ;;
-esac
+# wrong before it starts.
 reads=$(instruction_read_rate "$abs" "$HOME")
 # The global file answers to the repository path behind its symlink as well, and that spelling
 # prices as an ordinary project file — a fifth of the real cost.
-abs_real=$(realpath "$abs" 2>/dev/null)
 global_real=$(realpath "$HOME/.claude/CLAUDE.md" 2>/dev/null)
 [ -n "$abs_real" ] && [ -n "$global_real" ] && [ "$abs_real" = "$global_real" ] && reads=15682
 # The docs/agents/instructions/skills trees answer to repository spellings too, and those
 # matched no class at all — a denial demanding cost arithmetic while withholding the number.
 if [ -z "$reads" ] && [ -n "$abs_real" ]; then
-  for class_dir in docs agents instructions skills commands; do
-    class_real=$(realpath "$HOME/.claude/$class_dir" 2>/dev/null) && [ -n "$class_real" ] ||
-      continue
+  while IFS= read -r class_dir; do
+    class_real=$(realpath "$class_dir" 2>/dev/null) && [ -n "$class_real" ] || continue
     case "$abs_real" in
       "$class_real"/*)
-        reads=$(instruction_read_rate "$HOME/.claude/$class_dir/${abs_real#"$class_real"/}" "$HOME")
+        reads=$(instruction_read_rate "$class_dir/${abs_real#"$class_real"/}" "$HOME")
         break ;;
     esac
-  done
+  done < <(_instruction_class_dirs "$HOME")
 fi
 # The measured rate outranks the frozen one here for the same reason it does in the bloat gate:
 # two gates quoting different numbers for the same file teach their reader that neither is real.
@@ -265,6 +280,21 @@ if [ -n "$weekly_display" ] && [ -n "$monthly_display" ]; then
   cost=" (re-read ~$(instruction_times "$(instruction_format_count "$weekly_display")") a week, ~$(instruction_times "$(instruction_format_count "$monthly_display")") a month, so every token added here is paid for that many times over${lookup})"
 fi
 
-jq -cn --arg r "Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the weekly token cost with monthly context, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry." \
+case "$class" in
+  debt)
+    # Not a cost at all, so no figure is quoted: the file is two lines long and the reason it is
+    # guarded is what a line in it DOES.
+    reason="Instruction gate: $hit is the review-debt ignore list — the ONE way a path leaves review debt, so a line written into it retires unreviewed work. That is the project's answer and never a model's, inside Egor's autonomy span as much as outside it: settle the debt by review, or put the case for a waiver to him in one line and wait. With his OK the identical command passes on retry."
+    ;;
+  *)
+    if [ -n "$span" ]; then
+      reason="Instruction gate: this command ADDS to $hit rather than replacing it$cost. Egor's autonomy span covers reshaping these files, never growing them: while it stands, a write that leaves the file no larger passes here unasked, and growth of an instruction file waits for him. Rewrite the whole file smaller if the change is a net cut; otherwise keep the addition for his next turn and say so in one line. The tripwire measures the bytes either way and puts back growth this session produced."
+    else
+      reason="Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the weekly token cost with monthly context, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry."
+    fi
+    ;;
+esac
+
+jq -cn --arg r "$reason" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
 exit 0

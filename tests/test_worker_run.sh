@@ -75,6 +75,9 @@ cat >"$WORK/bin/claudeb" <<'EOF'
 # Beside the argv, because the launching chat reaches the worker only through the environment:
 # inside the CLI, CLAUDE_CODE_SESSION_ID is the worker's own chat.
 printf '%s\n' "${CLAUDE_LAUNCHER_SESSION-}" >"$STUB_DIR/launcher_env"
+# What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
+# chat through the environment and through nothing else.
+[ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" "${STUB_SESSION-claude-session}"
 # The real CLI refuses an empty stdin in --print mode; the stub must too, or a
 # lost brief (background stdin defaulting to /dev/null) passes the suite.
 input=$(cat)
@@ -114,6 +117,9 @@ for arg in "$@"; do
   previous="$arg"
 done
 cat >"$STUB_DIR/codex.stdin"
+# What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
+# chat through the environment and through nothing else.
+[ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" codex-session
 codex_account=main
 case "${CODEX_HOME-}" in */*) codex_account=${CODEX_HOME##*/} ;; esac
 if [ -r "$STUB_DIR/wall_accounts" ] && grep -qx "$codex_account" "$STUB_DIR/wall_accounts"; then
@@ -179,6 +185,9 @@ for arg in "$@"; do
   previous="$arg"
 done
 printf 'server.go:1017] Created conversation gemini-conversation\n' >"$log"
+# What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
+# chat through the environment and through nothing else.
+[ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" gemini-conversation
 [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
 [ -z "${STUB_STDOUT:-}" ] || printf '%s\n' "$STUB_STDOUT"
@@ -487,15 +496,8 @@ assert await_done
 start_ok gemini --account main --model pro --effort low
 assert meta_agy_is 'gemini-3.1-pro-low'
 assert await_done
-start_ok gemini --account main --model flash --effort medium
-assert meta_agy_is 'gemini-3.6-flash-medium'
-assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = flash36
-assert await_done
-start_ok gemini --account main --model flash35 --effort low
-assert meta_agy_is 'gemini-3.5-flash-low'
-assert await_done
-start_ok gemini --account main --model flash36 --effort ultra
-assert meta_agy_is 'gemini-3.6-flash-high'
+start_ok gemini --account main --model pro --effort ultra
+assert meta_agy_is 'Gemini 3.1 Pro (High)'
 assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = high
 assert await_done
 rc=0
@@ -570,17 +572,19 @@ touch "$codex_transcript"
 clear_stub
 start_ok codex --account resumeacct --resume codex-cold
 assert test "$(grep -c 'RESUME-COLD:' "$WORK/start.err")" -eq 0
+# A resume with no explicit model keeps the session's own: the config default must not travel.
+assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 assert await_done
 
 # Explicit --model/--effort override a resumed session; config defaults never do.
 clear_stub
 set_config 'codex_effort=high'
-start_ok codex --account resumeacct --resume codex-resume --model gpt-5.6-zenith --effort low
-assert grep -qx 'TAG: resumeacct · zenith · low' "$WORK/start.out"
+start_ok codex --account resumeacct --resume codex-resume --model gpt-5.6-sol --effort low
+assert grep -qx 'TAG: resumeacct · sol · low' "$WORK/start.out"
 assert await_done
 assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=-m$' "$CALL_LOG"
-assert grep -q '^ARG=gpt-5.6-zenith$' "$CALL_LOG"
+assert grep -q '^ARG=gpt-5.6-sol$' "$CALL_LOG"
 assert grep -q '^ARG=model_reasoning_effort=low$' "$CALL_LOG"
 
 # codex resume cannot carry --add-dir; refuse before launching anything.
@@ -630,7 +634,9 @@ assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 # These picks keep naming the one account that walls — a picker that ignores
 # --exclude — so the run has nowhere to reroute and the limit outcome reaches
 # the caller.
-for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhausted:CODEX_USAGE_LIMIT' 'gemini:RESOURCE_EXHAUSTED:GEMINI_USAGE_LIMIT'; do
+# Codex's "out of credits" is the same wall in other words: the plan's window is spent and it
+# offers paid credits to continue — the account is back at the reset, not broken.
+for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhausted:CODEX_USAGE_LIMIT' 'codex:Your workspace is out of credits:CODEX_USAGE_LIMIT' 'gemini:RESOURCE_EXHAUSTED:GEMINI_USAGE_LIMIT'; do
   IFS=: read -r vendor error outcome <<<"$spec"
   clear_stub
   set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=pro' 'gemini_effort=high'
@@ -714,12 +720,12 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model"
-start_ok codex --model gpt-5.6
+start_ok codex --model gpt-5.6-sol
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 1
-assert test "$(grep -c '^ARG=gpt-5.6$' "$CALL_LOG")" -eq 1
+assert test "$(grep -c '^ARG=gpt-5.6-sol$' "$CALL_LOG")" -eq 1
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
 
@@ -727,7 +733,7 @@ assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel STUB_ERROR='note: that model is not supported everywhere'
-start_ok codex --model gpt-5.6
+start_ok codex --model gpt-5.6-sol
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
@@ -739,7 +745,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model_always"
-start_ok codex --model gpt-5.6
+start_ok codex --model gpt-5.6-sol
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
@@ -762,7 +768,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_phrase_deep"
-start_ok codex --model gpt-5.6
+start_ok codex --model gpt-5.6-sol
 assert await_done
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
@@ -796,10 +802,12 @@ export PICK_RC=0 PICK_ACCOUNT=selfedit
 SELF_RUNNER="$WORK/bin/worker-run-selfedit"
 cp "$RUNNER" "$SELF_RUNNER"
 # worker-run sources its share files relative to its own resolved root, so a copy needs the share
-# tree beside it — the pool wall must never be a file the runner can quietly do without, and the
-# agy HOME mapping is not a formula worker-run may fall back to spelling itself.
+# tree beside it — the pool wall must never be a file the runner can quietly do without, the agy
+# HOME mapping is not a formula worker-run may fall back to spelling itself, and the allowed-model
+# list is not one it may guess at either.
 mkdir -p "$WORK/share"
-cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$WORK/share/"
+cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/worker-model.sh" \
+  "$ROOT/share/limits-view.sh" "$WORK/share/"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -978,9 +986,11 @@ assert grep -qx 'RUN-FILES: unknown (no session transcript for codex-session)' \
 # name files says so here too — a reader must not take the silence for an empty list.
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
 assert grep -qx 'UNKNOWN: no session transcript for codex-session' "$RUN_DIR/files"
-# And no worker session is recorded for a vendor whose sessions run none of this machine's journal
-# hooks: an id folded in from one of those could only match a journal entry by accident.
-assert test ! -e "$RUN_DIR/worker-session"
+# And the run's own session is recorded whatever the vendor: grok loads this machine's hooks out of
+# `~/.claude/settings.json` for Claude compatibility and journals under its own id, a codex or agy
+# id reaching a journal is that case one relay deeper, and an id that reaches no journal costs a
+# reader nothing — the pairing is only ever consulted about an id some row already carries.
+assert test "$(cat "$RUN_DIR/worker-session")" = codex-session
 
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
@@ -2551,13 +2561,13 @@ assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 assert grep -qx 'grok result' <<<"$("$RUNNER" report "$RUN_ID")"
 
 clear_stub
-set_config 'grok_model=grok-4.5' 'grok_effort=medium'
+set_config 'grok_model=grok-4.6' 'grok_effort=medium'
 start_ok grok
-assert grep -qx 'TAG: grokacct · grok-4.5 · medium' "$WORK/start.out"
-assert grep -qx 'grokacct · grok-4.5 · medium' "$RUN_DIR/tag"
+assert grep -qx 'TAG: grokacct · grok · medium' "$WORK/start.out"
+assert grep -qx 'grokacct · grok · medium' "$RUN_DIR/tag"
 assert await_done
 assert grep -qx 'ARG=-m' "$CALL_LOG"
-assert grep -qx 'ARG=grok-4.5' "$CALL_LOG"
+assert grep -qx 'ARG=grok-4.6' "$CALL_LOG"
 assert grep -qx 'ARG=--reasoning-effort' "$CALL_LOG"
 assert grep -qx 'ARG=medium' "$CALL_LOG"
 
@@ -3016,4 +3026,228 @@ assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; 
 assert grep -qxF "$WORK/extra/grok-went-elsewhere" "$RUN_DIR/workdir-escape"
 rm -rf "$GROKB_PROFILES_DIR/grokfiles"
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex, agy and grok alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes"
+# A model no implementation worker may run is refused before the account is resolved: an explicit
+# --model, the vendor's own `*_model=` key, and the default a missing key falls back to are three
+# roads to the same list, and none of them may spend a run on a cheap model.
+model_refused() { # vendor expected-offender [flags...]
+  local vendor="$1" offender="$2" runs_before runs_after rc=0
+  shift 2
+  clear_stub
+  runs_before=$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "$WORK/workdir" "$@" \
+    >"$WORK/refuse.out" 2>"$WORK/refuse.err" || rc=$?
+  runs_after=$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+  [ "$rc" -eq 4 ] || { printf 'model_refused %s: exit %s\n' "$vendor" "$rc" >&2; return 1; }
+  grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/refuse.out" || return 1
+  grep -qF -- "$offender" "$WORK/refuse.err" || return 1
+  # Nothing was spent: no pick, no vendor call, no run directory.
+  [ ! -s "$PICK_LOG" ] || return 1
+  [ ! -s "$CALL_LOG" ] || return 1
+  [ "$runs_before" = "$runs_after" ]
+}
+
+set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
+  'gemini_model=pro' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=picked
+printf 'picked\n' >"$STUB_DIR/gemini_profiles"
+for spec in 'claudeb:sonnet' 'claudeb:haiku' 'claudeb:fable' 'codex:gpt-5.6-terra' \
+            'codex:gpt-5.6-luna' 'codex:gpt-5.6' 'gemini:flash' 'gemini:flash36' \
+            'gemini:flash35' 'grok:grok-4.5'; do
+  vendor=${spec%%:*}
+  bad=${spec#*:}
+  assert model_refused "$vendor" "$bad" --model "$bad"
+done
+
+# The same refusal when the toggle file carries it and no brief names a model at all.
+for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-4.5'; do
+  vendor=${spec%%:*}
+  key=${spec#*:}
+  set_config "$key" 'claudeb_effort=high' 'codex_effort=medium' 'gemini_effort=high' 'grok_effort=high'
+  assert model_refused "$vendor" "${key#*=}"
+done
+# Codex has no key of its own: its default is whatever `config.toml` names, so a cheap model
+# written there is refused exactly as one asked for by name.
+set_config 'codex_effort=medium'
+printf 'model = "gpt-5.6-terra"\n' >"$WORKER_RUN_CODEX_CONFIG"
+assert model_refused codex gpt-5.6-terra
+assert model_refused codex gpt-5.6-terra --model default
+# A resume is not that run: `exec resume` keeps the session's own model and nothing sends the
+# config's, so the file cannot refuse a resumed session — only a model the caller names can.
+assert model_refused codex gpt-5.6-terra --account resumeacct --resume codex-resume --model gpt-5.6-terra
+clear_stub
+start_ok codex --account resumeacct --resume codex-resume
+assert await_done
+assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
+printf 'model = "gpt-5.6-sol"\n' >"$WORKER_RUN_CODEX_CONFIG"
+
+# The allowed model of every vendor still launches, from the brief and from the file alike.
+set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
+  'gemini_model=pro' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+clear_stub
+start_ok claudeb --model opus
+assert await_done
+clear_stub
+start_ok codex --model gpt-5.6-sol
+assert await_done
+clear_stub
+start_ok gemini --account main --model pro
+assert meta_agy_is 'Gemini 3.1 Pro (High)'
+assert await_done
+clear_stub
+start_ok grok --model grok-4.6
+assert await_done
+clear_stub
+start_ok grok --model auto
+assert await_done
+
+# --- One stamping point: every relay's rows reach the LAUNCHING chat ------------------------------
+# The launcher is known at `start` and nowhere else: a fresh relay's own session id is not printed
+# until its CLI exits, so the `worker-session` pairing beside the run record arrives AFTER every row
+# the worker journaled while it ran, and each of those rows landed under an id no chat on this
+# machine answers for (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
+# into the launched process's ENVIRONMENT, which every relay inherits whatever the vendor and
+# whatever it goes on to launch — an image script, a pool-run cell, a nested worker-run — and the
+# ledger writer reads it for the first hop of the launch chain.
+#
+# One case per relay type, each end to end: worker-run launches the stubbed CLI under a fake
+# launching chat, a process inside that CLI edits a file in a git fixture and journals it exactly
+# as the relay's own PostToolUse hook would, and the row that reaches the ledger must carry the
+# LAUNCHER's id. Break the stamp for one relay and only that relay's case fails.
+STAMP_HOOK="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/commit-journal.sh"
+STAMP_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh"
+if [ -r "$STAMP_HOOK" ] && [ -r "$STAMP_LIB" ]; then
+  STAMP_REPO="$WORK/stamp-repo"
+  mkdir -p "$STAMP_REPO"
+  git -C "$STAMP_REPO" init -q -b main
+  git -C "$STAMP_REPO" config user.email t@example.test
+  git -C "$STAMP_REPO" config user.name t
+  printf 'base\n' >"$STAMP_REPO/base.txt"
+  git -C "$STAMP_REPO" add base.txt
+  git -C "$STAMP_REPO" commit -q -m base
+  STAMP_LEDGER=$(git -C "$STAMP_REPO" rev-parse --absolute-git-dir)/claude-commit-journal
+  # The hook skips anything under TMPDIR and this suite's fixtures live there: it is pinned to a
+  # directory no fixture sits under, or the paths asserted on here are silenced by where the suite
+  # happens to run.
+  STAMP_HOME="$WORK/stamp-home"
+  mkdir -p "$STAMP_HOME" "$WORK/stamp-tmpdir"
+  # The relay's own hook pair, both halves: the PreToolUse content snapshot the ledger writer
+  # measures a link against, then the PostToolUse payload naming the file the relay just wrote.
+  # `$1` is the worker's OWN session id — the only one a relay's hook ever knows.
+  cat >"$STUB_DIR/relay_hook" <<STAMPEOF
+#!/usr/bin/env bash
+worker=\$1
+tag=\$(cat "$STUB_DIR/relay_tag" 2>/dev/null) || tag=untagged
+path="$STAMP_REPO/relay-\$tag.txt"
+export HOME="$STAMP_HOME" TMPDIR="$WORK/stamp-tmpdir" WORKER_RUN_DIR="$WORKER_RUN_DIR"
+export GIT_CEILING_DIRECTORIES="$WORK"
+. "$STAMP_LIB" || exit 0
+rj_snapshot_content "\$worker" "call-\$tag" "$STAMP_REPO" "" "relay-\$tag.txt"
+printf 'written by %s\n' "\$worker" >"\$path"
+jq -cn --arg s "\$worker" --arg p "\$path" --arg c "$STAMP_REPO" --arg call "call-\$tag" \
+  '{hook_event_name:"PostToolUse",tool_name:"Write",cwd:\$c,session_id:\$s,tool_use_id:\$call,
+    tool_input:{file_path:\$p}}' |
+  bash "$STAMP_HOOK" >"$STUB_DIR/relay_hook_out" 2>"$STUB_DIR/relay_hook_err"
+printf '%s\n' "\$?" >"$STUB_DIR/relay_hook_rc"
+STAMPEOF
+  chmod +x "$STUB_DIR/relay_hook"
+  # Who owns a path in the ledger, one id per line.
+  stamp_owners() { # tag
+    tr '\0' '\n' <"$STAMP_LEDGER" 2>/dev/null |
+      awk -F'\t' -v p="relay-$1.txt" '$NF == p { print $1 }' | sort -u
+  }
+  stamp_relay() { # tag vendor [start-args...]
+    local tag="$1" vendor="$2"
+    shift 2
+    printf '%s\n' "$tag" >"$STUB_DIR/relay_tag"
+    rm -f "$STUB_DIR/relay_hook_rc" "$STUB_DIR/relay_hook_err"
+    clear_stub
+    export CLAUDE_CODE_SESSION_ID="stamp-chat-$tag"
+    start_ok "$vendor" "$@"
+    await_done || fail "the $vendor stamping run never finished"
+    unset CLAUDE_CODE_SESSION_ID
+    assert test "$(cat "$STUB_DIR/relay_hook_rc" 2>/dev/null)" = 0
+    assert grep -qx "stamp-chat-$tag" <<<"$(stamp_owners "$tag")"
+    # The worker's own id stays on its own row beside the launcher's: the gate inside the live
+    # worker asks about the work under that id, and answered `other` it could not settle what it
+    # had just done.
+    assert test "$(stamp_owners "$tag" | grep -c .)" -eq 2
+  }
+  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
+    'gemini_model=pro' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=stampacct
+  stamp_relay claudeb claudeb
+  stamp_relay codex codex
+  stamp_relay gemini gemini --account main
+  stamp_relay grok grok
+  # A RE-ATTACHED run: a `--resume` launch repeats the id the worker session already had, so its
+  # rows carry the launcher from the run's first token rather than from the moment it ends — which
+  # is the whole window the run record could never answer for.
+  export STUB_SESSION=reattached-session
+  stamp_relay reattach claudeb --account stampacct --resume reattached-session
+  assert grep -qx 'reattached-session' "$RUN_DIR/worker-session"
+  unset STUB_SESSION
+  # An IMAGE SCRIPT and a POOL-RUN CELL are processes a relay starts, not relays of their own: they
+  # journal through whoever ran them, so the one thing they must not do is drop the stamp. Stood in
+  # for here by a bare shell — which is what both are to the environment — launched with the
+  # environment worker-run exported.
+  printf '%s\n' image-cell >"$STUB_DIR/relay_tag"
+  rm -f "$STUB_DIR/relay_hook_rc"
+  ( export CLAUDE_LAUNCHER_SESSION=stamp-chat-image-cell CLAUDE_CODE_SESSION_ID=some-worker
+    "$STUB_DIR/relay_hook" nested-image-worker )
+  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
+  assert grep -qx 'stamp-chat-image-cell' <<<"$(stamp_owners image-cell)"
+  # And the stamp is read for the row of the session the process IS and for no other. A hook that
+  # SWEEPS a finished run of another chat writes that run's rows under ITS launcher, and read
+  # against this process's environment instead they would land under the sweeper's own chat — one
+  # chat handed a waiver over a stranger's work.
+  swept=$WORKER_RUN_DIR/claudeb-swept-by-a-worker
+  mkdir -p "$swept"
+  printf 'sweep-other-chat\n' >"$swept/launcher"
+  printf 'written by nobody here\n' >"$STAMP_REPO/relay-swept.txt"
+  printf '%s\n' "WORKDIR: $STAMP_REPO" relay-swept.txt >"$swept/files"
+  printf -- '-\t%s\trelay-swept.txt\n' \
+    "$(git -C "$STAMP_REPO" hash-object -w "$STAMP_REPO/relay-swept.txt")" >"$swept/produced"
+  printf '0\n' >"$swept/exit_code"
+  printf '%s\n' sweeper >"$STUB_DIR/relay_tag"
+  rm -f "$STUB_DIR/relay_hook_rc"
+  ( export CLAUDE_LAUNCHER_SESSION=stamp-chat-sweeper CLAUDEB_WORKER=1
+    "$STUB_DIR/relay_hook" a-sweeping-worker )
+  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
+  assert grep -qx 'sweep-other-chat' <<<"$(stamp_owners swept)"
+  assert_fails grep -qx 'stamp-chat-sweeper' <<<"$(stamp_owners swept)"
+  # Its own row, made in the same call, still reaches its own launcher.
+  assert grep -qx 'stamp-chat-sweeper' <<<"$(stamp_owners sweeper)"
+  rm -rf "$swept"
+  # An orphan a chat launched is impossible and LOUD. A relay worker whose stamp is missing — no
+  # environment, no run record pairing its session with a launcher — writes a row no chat answers
+  # for, and that is the one ledger state nothing downstream repairs: the content is priced as owed
+  # by nobody for as long as it stands. So the hook says it on stderr under a NON-ZERO exit, the one
+  # channel a PostToolUse reaches a model through, on every such call rather than once a session.
+  printf '%s\n' loud >"$STUB_DIR/relay_tag"
+  rm -f "$STUB_DIR/relay_hook_rc"
+  ( unset CLAUDE_LAUNCHER_SESSION
+    export CLAUDEB_WORKER=1
+    "$STUB_DIR/relay_hook" unstamped-worker )
+  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 2
+  assert grep -q 'no chat above it' "$STUB_DIR/relay_hook_err"
+  assert grep -q 'the launcher stamp is missing' "$STUB_DIR/relay_hook_err"
+  # The row is still written — a fact stays a fact, and the fault belongs in front of a model
+  # rather than in a number — under the worker's own id and under no chat.
+  assert grep -qx 'unstamped-worker' <<<"$(stamp_owners loud)"
+  assert test "$(stamp_owners loud | grep -c .)" -eq 1
+  # And a chat's own shell is no relay worker: the same missing stamp there is Egor editing by hand,
+  # which owns its rows outright and is nobody's fault to report.
+  printf '%s\n' quiet >"$STUB_DIR/relay_tag"
+  rm -f "$STUB_DIR/relay_hook_rc"
+  ( unset CLAUDE_LAUNCHER_SESSION CLAUDEB_WORKER GROK_WORKER
+    "$STUB_DIR/relay_hook" a-chat-of-its-own )
+  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
+  assert grep -qx 'a-chat-of-its-own' <<<"$(stamp_owners quiet)"
+  rm -f "$STUB_DIR/relay_hook" "$STUB_DIR/relay_tag"
+  unset PICK_RC PICK_ACCOUNT
+  clear_stub
+else
+  fail "the ledger writer of ../claude-setup is unreadable (set CLAUDE_SETUP_ROOT)"
+fi
+
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex, agy and grok alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes, and refuses every model outside the per-vendor allowed list — from the brief, the toggle file or the codex config alike — with \`OUTCOME: MODEL_REFUSED\` before an account is resolved or a run directory exists"

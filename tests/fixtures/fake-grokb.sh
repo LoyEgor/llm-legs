@@ -36,6 +36,11 @@ for argument in "$@"; do
   previous="$argument"
 done
 
+# What a relay's own journal hook is: grok loads this machine's hooks out of `~/.claude/settings.json`
+# for Claude compatibility, so its hook process reaches the launching chat through the environment
+# worker-run stamped and through nothing else.
+[ ! -x "${STUB_DIR:-}/relay_hook" ] || "$STUB_DIR/relay_hook" "$session"
+
 end_event() { # session
   printf '{"type":"end","stopReason":"end_turn","sessionId":"%s","requestId":"7f6f0635-b3f9-43ea-97ba-61822ae955ca","usage":{"input_tokens":17834,"cache_read_input_tokens":11520,"cache_creation_input_tokens":0,"output_tokens":275,"reasoning_tokens":123,"total_tokens":29629},"num_turns":2,"total_cost_usd":0.00732326,"total_cost_usd_ticks":73232600,"modelUsage":{"%s":{"inputTokens":17834,"outputTokens":275,"cacheReadInputTokens":11520,"cacheCreationInputTokens":0,"modelCalls":2,"costUSD":0.00732326}}}\n' \
     "$1" "${STUB_GROK_MODEL:-grok-4.6-build}"

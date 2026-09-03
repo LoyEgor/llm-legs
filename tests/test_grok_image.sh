@@ -63,9 +63,10 @@ IMAGE_OUT="$WORK/image.out"
 IMAGE_ERR="$WORK/image.err"
 GROK_PROFILES="$WORK/grok-profiles"
 mkdir -p "$GROK_PROFILES/explicit" "$GROK_PROFILES/picked"
+CLAIMS_DIR="$WORK/worker-claims"
 image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" \
-    GROKB_PROFILES_DIR="$GROK_PROFILES" \
+    GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
     GROK_IMAGE_GROKB="$FIXTURE" GROK_IMAGE_WORKER_PICK="$FAKE_BIN/worker-pick" \
     FAKE_GROKB_MODE="${FAKE_GROKB_MODE:-image}" PICK_MODE="${PICK_MODE:-ok}" \
     PICK_ACCOUNT="${PICK_ACCOUNT:-picked}" FAKE_GROKB_IMAGE_FORMAT="${FAKE_GROKB_IMAGE_FORMAT:-jpg}" \
@@ -144,6 +145,19 @@ assert test ! -s "$FAKE_GROKB_CALLS"
 PICK_MODE=ok
 export PICK_MODE
 
+# A claim de-prioritises the account it names for ten minutes, so it is not spent on an account
+# whose profile this run cannot launch at all.
+PICK_ACCOUNT=ghostpick
+export PICK_ACCOUNT
+image_rc=0
+image_run --dest "$OUTPUT_DIR/ghost.png" --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert test ! -e "$CLAIMS_DIR/grok/ghostpick"
+assert test ! -s "$FAKE_GROKB_CALLS"
+PICK_ACCOUNT=picked
+export PICK_ACCOUNT
+
 # 4:3 and 3:4 are image_edit's, never image_gen's: sent without a reference the ratio reaches the
 # images API unvalidated and costs a whole generation to be refused, so it is refused here instead.
 : >"$FAKE_GROKB_CALLS"
@@ -174,7 +188,9 @@ assert cmp "$FAKE_GROKB_SESSION_ROOT/fake-session/images/1.png" "$OUTPUT_DIR/gen
 assert test "$(sips -g format "$OUTPUT_DIR/generated.png" | awk '/format:/ {print $2}')" = png
 assert test "$(sips -g hasAlpha "$OUTPUT_DIR/generated.png" | awk '/hasAlpha:/ {print $2}')" = yes
 assert test ! -s "$MAGICK_CALLS"
-assert grep -qx -- '--account grok --claim' "$PICK_CALLS"
+# The claim is taken after the account has proved usable, not by the pick itself.
+assert grep -qx -- '--account grok' "$PICK_CALLS"
+assert test -e "$CLAIMS_DIR/grok/picked"
 assert grep -qx 'ARG=profile' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=picked' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=--tools' "$FAKE_GROKB_CALLS"
@@ -260,4 +276,17 @@ assert test "$image_rc" -eq 3
 assert grep -qx GROK_USAGE_LIMIT "$IMAGE_ERR"
 assert test ! -s "$FAKE_GROKB_CALLS"
 
-echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, verbatim ImageGen stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, fake session preservation, and temp-cwd cleanup"
+# An image script is not a relay of its own: whatever it writes is journaled by the agent that ran
+# it, so the one thing it owes the review ledger is to pass the launching chat's stamp THROUGH to
+# every process it starts. Scrubbed here, an asset a worker generated is an edit no chat owns.
+FAKE_GROKB_MODE=image
+PICK_MODE=ok
+export FAKE_GROKB_MODE PICK_MODE
+: >"$FAKE_GROKB_CALLS"
+image_rc=0
+CLAUDE_LAUNCHER_SESSION=image-launching-chat \
+  image_run --dest "$OUTPUT_DIR/stamped.jpg" --prompt portrait --account explicit || image_rc=$?
+assert test "$image_rc" -eq 0
+assert grep -qx 'CLAUDE_LAUNCHER_SESSION=image-launching-chat' "$FAKE_GROKB_CALLS"
+
+echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, verbatim ImageGen stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, fake session preservation, temp-cwd cleanup, and the launching chat's stamp passed through to the CLI it starts"

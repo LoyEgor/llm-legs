@@ -1502,6 +1502,18 @@ worker_out=$(run_statusline "$(statusline_payload status-w-grok-live-pin)")
 assert grep -Fq "${MAGENTA}@pausedgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
 rm -f "$HOME/.cache/worker-pick.line.main"
 
+# ABSENCE is the pause, and nothing else is: a field that is PRESENT but unusable — `gr~?` for a
+# walled account, `gr✗?` for one the pick could not read — is a vendor that is still there, and the
+# pin over it still names where the next dispatch lands.
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gr~?\n' >"$HOME/.cache/worker-pick.line.main"
+printf 'worker=grok\ngrok_profile=walledgrok\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-walled-pin)")
+assert grep -Fq "${MAGENTA}@walledgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gr✗?·grok-4.6·hi\n' >"$HOME/.cache/worker-pick.line.main"
+worker_out=$(run_statusline "$(statusline_payload status-w-grok-unreadable-pin)")
+assert grep -Fq "${MAGENTA}@walledgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
+rm -f "$HOME/.cache/worker-pick.line.main"
+
 # A live grok worker's tag wears the same short forms as every other vendor's.
 printf 'worker=auto\n' > "$worker_file"
 mkdir -p "$HOME/.cache/claude-worker-tags/status-w-grok-live"
@@ -3495,8 +3507,9 @@ assert_eq 'second · flash36 · medium' \
   "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini/pending-gemini-worker")"
 
 # image-gen is a relay too, so its row is tagged like the workers': `<account> · image · <vendor>`,
-# vendor from the brief's VENDOR: line (codex by default) and account from the brief, else the
-# account worker-pick would route the image script to.
+# vendor from the brief's VENDOR: line (codex by default) and account ONLY from a pin in the brief
+# — an `ACCOUNT:` line or an `--account` on the launch line. The scripts route themselves a second
+# later on their own state, so any other guess names an account the run may never spend.
 image_spawn() { # session prompt [worker-pick]
   jq -cn --arg session "$1" --arg prompt "$2" '{
     hook_event_name:"PreToolUse",session_id:$session,
@@ -3508,24 +3521,29 @@ printf '#!/usr/bin/env bash\n[ "$1" = --account ] || exit 1\ncase "$2" in codex)
   > "$IMAGE_PICK"
 chmod +x "$IMAGE_PICK"
 
+# Unpinned, router answering or not: `?` is the honest first segment either way, and the tag keeps
+# its shape so the renderer still colours the row. What the script picks is the script's to say.
 image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · image · codex: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "? · image · codex: Draw the icon"' \
   <<< "$image_routed" >/dev/null
-assert_eq 'cxroute · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-routed/pending-image-gen")"
+assert_eq '? · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-routed/pending-image-gen")"
 
 image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · image · gemini: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "? · image · gemini: Draw the icon"' \
   <<< "$image_vendor" >/dev/null
-assert_eq 'gmroute · image · gemini' "$(cat "$HOME/.cache/claude-worker-tags/img-vendor/pending-image-gen")"
+assert_eq '? · image · gemini' "$(cat "$HOME/.cache/claude-worker-tags/img-vendor/pending-image-gen")"
 
-# The brief's own ACCOUNT: line is the pin the script will be given, so it outranks the prediction.
+# The brief's own ACCOUNT: line is the pin the script will be given, so it is the one prediction
+# this hook may make — and `--account` on the launch line spelled in the brief is the same pin.
 image_acct=$(image_spawn img-acct $'ACCOUNT: pinned\nVENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
 assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · image · grok: Draw the icon"' \
   <<< "$image_acct" >/dev/null
 assert_eq 'pinned · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-acct/pending-image-gen")"
 
-# Nothing to predict with (no router, no pin): `?` is the honest first segment, never an account
-# the run may never touch — and the tag keeps its shape so the renderer still colours the row.
+image_flag=$(image_spawn img-flag \
+  $'VENDOR: codex\nRun codex-image --account alt2 --dest /tmp/a.png --prompt "a cat"' "$IMAGE_PICK")
+assert_eq 'alt2 · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-flag/pending-image-gen")"
+
 image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.')
 assert_eq '? · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-unknown/pending-image-gen")"
 
@@ -4038,10 +4056,11 @@ if [ -x "$REAL_GATE" ]; then
   mkdir -p "$GATE_BIN"
   cat > "$GATE_BIN/review-bench" <<'RB'
 #!/bin/bash
-# The verdict asks the split question and nothing else; the classic line is what every other
+# The verdict asks --split; debt-total asks --total. The classic line is what every other
 # caller of this reader gets, and answering it here would hide the gate asking the wrong one.
 for rb_arg in "$@"; do
   [ "$rb_arg" = --split ] && { printf '%s\n' "${SESSION_REVIEW_ANSWER:-split 0 0 0}"; exit 0; }
+  [ "$rb_arg" = --total ] && { printf '%s\n' "${SESSION_REVIEW_TOTAL:-0}"; exit 0; }
 done
 printf 'none\n'
 RB
@@ -4680,6 +4699,33 @@ progress_state_own_older_out=$(progress_render state-own-older)
 assert grep -Fq " ${DIM}│${RESET} rev T2 3/8 ${DIM}+2${RESET}" <<< "$progress_state_own_older_out"
 progress_doc_clear
 
+# And it keeps the segment against its OWN newer leftover: a document is no longer unlinked when
+# the run ends, so `started` alone handed the one slot to a result that is already over while a
+# review of the same tree was still working. Working outranks over; newest only inside a class.
+progress_doc own-live "$$" T2 3 8 running 0 "" "" 2026-07-27T23:00:00+00:00
+progress_doc own-done-newer "$$" T2 9 9 done 0 "" "" 2026-07-28T02:00:00+00:00
+progress_state_class_out=$(progress_render state-class-order)
+assert grep -Fq " ${DIM}│${RESET} rev T2 3/8" <<< "$progress_state_class_out"
+assert test "${progress_state_class_out#*9/9}" = "$progress_state_class_out"
+# A run that stopped speaking still outranks one that stopped altogether.
+progress_doc own-wedged "$$" T2 5 8 running 300 "" "" 2026-07-27T22:00:00+00:00
+rm -f "$PROGRESS_DIR/${progress_prefix}state-own-live.json"
+progress_state_wedged_over_done_out=$(progress_render state-class-wedged)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 5/8?${RESET}" <<< "$progress_state_wedged_over_done_out"
+progress_doc_clear
+
+# Red is this chat's alarm and nobody else's: another chat's run that died under ITS reader is
+# still only background news here, so it keeps the dim a foreign run is given in every other state.
+progress_doc foreign-killed 99999999 T2 3 8 running 0 "" review-progress-another-chat
+progress_state_foreign_killed_out=$(progress_render state-foreign-killed)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_foreign_killed_out"
+assert test "${progress_state_foreign_killed_out#*"${RED}rev"}" = "$progress_state_foreign_killed_out"
+progress_doc_clear
+progress_doc foreign-dead "$$" T2 3 8 dead 0 "" review-progress-another-chat
+progress_state_foreign_dead_out=$(progress_render state-foreign-dead)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_foreign_dead_out"
+progress_doc_clear
+
 # The run that IS rendered is never also counted: another chat's run over this tree is still this
 # tree's news and holds the segment, and adding it to the number beside itself says two runs.
 progress_doc foreign-home "$$" T2 1 4 running 0 "" review-progress-another-chat
@@ -4698,20 +4744,45 @@ GIT_CALL_LOG="$WORK/git-calls.log"
 printf '#!/bin/bash\nprintf "x\\n" >> "$GIT_CALL_LOG"\nexec %s "$@"\n' "$(command -v git)" \
   > "$GIT_SHIM_DIR/git"
 chmod +x "$GIT_SHIM_DIR/git"
+RUN_TREE_CACHE="$HOME/.cache/claude-statusline/run-trees"
 git_calls_for_render() { # payload-name
   progress_render "$1" >/dev/null
   : > "$GIT_CALL_LOG"
   ( export PATH="$GIT_SHIM_DIR:$PATH" GIT_CALL_LOG; progress_render "$1" >/dev/null )
   grep -c . "$GIT_CALL_LOG" | tr -d '[:space:]'
 }
+# The same measurement with nothing remembered: what a first sight of these trees costs.
+git_calls_cold() { # payload-name
+  rm -f "$RUN_TREE_CACHE"
+  : > "$GIT_CALL_LOG"
+  ( export PATH="$GIT_SHIM_DIR:$PATH" GIT_CALL_LOG; progress_render "$1" >/dev/null )
+  grep -c . "$GIT_CALL_LOG" | tr -d '[:space:]'
+}
 progress_doc budget-own "$$" T2 3 8 running 0
 progress_doc budget-1 "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-other-1
-progress_budget_one=$(git_calls_for_render budget)
+progress_budget_cold_two=$(git_calls_cold budget)
 progress_doc budget-2 "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-other-2
 progress_doc budget-3 "$$" T2 1 4 running 0 "$PROGRESS_WT" review-progress-other-3
-progress_budget_three=$(git_calls_for_render budget)
-assert_eq "$((progress_budget_one + 2))" "$progress_budget_three"
+progress_budget_cold_four=$(git_calls_cold budget)
+assert_eq "$progress_budget_cold_two" "$progress_budget_cold_four"
+# Warm, which is every render but the first: the trees are remembered by PATH, so the documents
+# cost no fork at all — and a finished one added to the pile costs nothing either, which is the
+# whole point now that a day of them survives across every repository.
+progress_budget_warm=$(git_calls_for_render budget)
+assert test "$progress_budget_warm" -lt "$progress_budget_cold_four"
+progress_doc budget-4 "$$" T2 4 4 done 0 "$PROGRESS_WT" review-progress-other-4
+progress_budget_warm_more=$(git_calls_for_render budget)
+assert_eq "$progress_budget_warm" "$progress_budget_warm_more"
 progress_doc_clear
+# A remembered tree that is gone is not an answer: the entry is skipped and the path resolved again.
+mkdir -p "$(dirname "$RUN_TREE_CACHE")"
+printf '%s\t%s\t%s\n' "$REVIEW_CLEAN" "$WORK/vanished-top" "$WORK/vanished-common" \
+  >> "$RUN_TREE_CACHE"
+progress_doc stale-cache "$$" T2 3 8 running 0
+progress_stale_cache_out=$(progress_render state-stale-cache)
+assert grep -Fq " ${DIM}│${RESET} rev T2 3/8" <<< "$progress_stale_cache_out"
+progress_doc_clear
+rm -f "$RUN_TREE_CACHE"
 
 # The block MOVES to the tree a review of this chat's is about, and comes back when that review is
 # answered (Egor, 2026-08-27, superseding the 2026-08-26 rule that it never moves): a folder that
@@ -5041,15 +5112,34 @@ for owned_denied in \
   'if worker-run wait cb-20260901-abcdef; then echo ok; fi' \
   '{ worker-run wait cb-20260901-abcdef; }' \
   'while worker-run wait cb-20260901-abcdef; do sleep 1; done' \
-  "bash -c 'worker-run wait cb-20260901-abcdef --max 540'"; do
+  "bash -c 'worker-run wait cb-20260901-abcdef --max 540'" \
+  "/bin/bash -c 'worker-run wait cb-20260901-abcdef'" \
+  'bash <<EOF
+worker-run wait cb-20260901-abcdef --max 540
+EOF' \
+  "sh -s <<'EOF'
+worker-run start codex --brief /tmp/brief --workdir /tmp
+EOF" \
+  "echo '<<X'; worker-run wait cb-20260901-abcdef" \
+  'echo "a\"b <<EOF"
+worker-run wait cb-20260901-abcdef
+EOF' \
+  'cat <<EOF
+$(worker-run wait cb-20260901-abcdef)
+EOF' \
+  'cat <<EOF | bash
+worker-run wait cb-20260901-abcdef
+EOF' \
+  'echo start <<EOF
+worker-run wait cb-20260901-abcdef'; do
   gate_out=$(gate_payload "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
   assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("ATTACH <run-id>:")' \
     <<<"$gate_out" >/dev/null
 done
 # Bookkeeping, help, a finished record and the suite that exercises the launcher are not a run: the
-# command WORD is what is judged, never the substring, and a heredoc body is text a command is fed
-# — a brief being written may quote the spelling a run would use.
+# command WORD is what is judged, never the substring, and a REAL heredoc body — one whose
+# delimiter arrives, fed to something that is not a shell — is text a command is written into.
 for owned_allowed in \
   'worker-run claim codex alt' \
   'worker-run' \
@@ -5059,20 +5149,60 @@ for owned_allowed in \
   'cat > /tmp/brief <<EOF
 worker-run wait cb-20260901-abcdef --max 540
 EOF' \
+  'cat <<EOF > /tmp/brief
+worker-run wait cb-20260901-abcdef --max 540
+EOF' \
+  'ssh host <<EOF
+worker-run wait cb-20260901-abcdef
+EOF' \
+  'grep -rn "<<EOF" bin/' \
   'grep -n "worker-run start" bin/worker-run'; do
   gate_out=$(gate_payload "$owned_allowed" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
-# Inside a relay agent the door is exactly what it was before this rule existed.
+# Inside a relay agent the door is exactly what it was before this rule existed — with one clause
+# of its own: a `wait` polls for `--max` seconds and the Bash call dies at its own timeout, so the
+# harness's 120s default would kill the wait a fifth of the way in and leave the run unwatched.
+gate_timeout_payload() { # agent command timeout-ms|null
+  jq -cn --arg agent "$1" --arg command "$2" --argjson timeout "$3" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,
+      tool_input:({command:$command} + (if $timeout == null then {} else {timeout:$timeout} end))}'
+}
 for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
   for owned_relayed in \
     'worker-run start claudeb --brief /tmp/brief --workdir /tmp' \
-    'worker-run wait cb-20260901-abcdef --max 540' \
     'worker-run report cb-20260901-abcdef'; do
     gate_out=$(gate_agent_payload "$gate_agent" "$owned_relayed" | "$LAUNCH_GATE_BIN") ||
       fail "launch gate exited nonzero"
     assert_eq "" "$gate_out"
   done
+  for gate_timeout_denied in null 120000 400000; do
+    gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 540' \
+      "$gate_timeout_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+    assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+    assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("timeout: 600000")' \
+      <<<"$gate_out" >/dev/null
+  done
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 540' \
+    600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 100' \
+    130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+  # A wait with no `--max` polls worker-run's own default, and a `--max` spelled with a variable
+  # states no duration at all: neither may buy a pass the same poll spelled out would be denied.
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
+    120000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
+    130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max "$secs"' \
+    130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max "$secs"' \
+    570000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
   gate_out=$(gate_agent_payload "$gate_agent" 'claudeb notcom -p go' | "$LAUNCH_GATE_BIN")
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
@@ -5082,4 +5212,4 @@ assert_eq "" "$gate_out"
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line or the routed seed, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line or the routed seed, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

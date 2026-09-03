@@ -54,6 +54,11 @@ wait_announce() {
 
 source "$SCRIPT"
 
+# Only a refresh the user asked for may POST the OAuth token endpoint (shared-invariants
+# row f), so the token mechanics below are exercised with that signal on; every case about
+# the robot guard itself clears it explicitly.
+export CLAUDEB_WARM_USER_EXPLICIT=true
+
 # A bare invocation is now an error and must not launch Claude.
 mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/notcom"
 touch "$CLAUDEB_DIR/tokens/com" "$CLAUDEB_DIR/tokens/notcom" "$CLAUDEB_DIR/tokens/-legacy"
@@ -1272,63 +1277,8 @@ chmod +x "$FAKE_BIN/security" "$FAKE_BIN/claude" "$FAKE_BIN/curl"
   )
 )
 
-# --- token-upkeep: refresh only tokens at/near expiry, silent on weather, no probes ---
-(
-  KC="$WORK/tu-keychain"; mkdir -p "$KC"
-  TOKLOG="$WORK/tu-token.log"
-  kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
-  svc_of() { printf 'Claude Code-credentials-%s' "$(printf '%s' "$HOME/.claude-profiles/$1" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"; }
-  seed_tok() { printf '%s' "$2" >"$KC/$(kc_key "$(svc_of "$1")")"; }
-  security() {
-    local prev='' svc='' a
-    for a in "$@"; do [ "$prev" = -s ] && svc="$a"; prev="$a"; done
-    cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
-  }
-  keychain_write() { printf '%s' "$2" >"$KC/$(kc_key "$1")"; }
-  account_names() { printf 'tufresh\ntusoon\ntuexpired\ntuweather\ntucooling\n'; }
-  curl() {
-    local body rt
-    case "$*" in
-      *'/oauth/token'*)
-        body=$(cat)
-        rt=$(printf '%s' "$body" | sed -n 's/.*"refresh_token":"\([^"]*\)".*/\1/p')
-        printf '%s\n' "$rt" >>"$TOKLOG"
-        if [ "$rt" = rt-weather ]; then printf '{"error":"rate_limited"}\n429'
-        else printf '{"access_token":"at-new-%s","expires_in":3600,"refresh_token":"%s"}\n200' "$rt" "$rt"; fi
-        ;;
-      *) return 97 ;;
-    esac
-  }
-  now_s=$(date +%s); now_ms=$((now_s * 1000))
-  fresh_at=$((now_ms + 3600 * 1000))
-  soon_at=$((now_ms + 600 * 1000))
-  weather_creds='{"claudeAiOauth":{"refreshToken":"rt-weather","accessToken":"at-weather","expiresAt":1,"scopes":["a"]}}'
-  seed_tok tufresh   "$(printf '{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":%s,"scopes":["a"]}}' "$fresh_at")"
-  seed_tok tusoon    "$(printf '{"claudeAiOauth":{"refreshToken":"rt-soon","accessToken":"at-soon","expiresAt":%s,"scopes":["a"]}}' "$soon_at")"
-  seed_tok tuexpired '{"claudeAiOauth":{"refreshToken":"rt-expired","accessToken":"at-expired","expiresAt":1,"scopes":["a"]}}'
-  seed_tok tuweather "$weather_creds"
-  seed_tok tucooling '{"claudeAiOauth":{"refreshToken":"rt-cooling","accessToken":"at-cooling","expiresAt":1,"scopes":["a"]}}'
-  : >"$TOKLOG"
-  printf '{"tucooling":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":2}}\n' "$(date +%s)" >"$oauth_attempts_file"
-  tu_err="$WORK/tu.err"
-  token_upkeep 2>"$tu_err"
-  assert_fails grep -qx rt-fresh "$TOKLOG"
-  assert_fails grep -q tufresh "$tu_err"
-  assert test "$(cat "$KC/$(kc_key "$(svc_of tufresh)")")" = "$(printf '{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":%s,"scopes":["a"]}}' "$fresh_at")"
-  assert grep -qx rt-soon "$TOKLOG"
-  assert grep -qx rt-expired "$TOKLOG"
-  assert grep -q 'refreshed tusoon' "$tu_err"
-  assert grep -q 'refreshed tuexpired' "$tu_err"
-  assert jq -e '.claudeAiOauth.accessToken == "at-new-rt-expired"' "$KC/$(kc_key "$(svc_of tuexpired)")" >/dev/null
-  assert_fails grep -q 'refreshed tuweather' "$tu_err"
-  assert test "$(cat "$KC/$(kc_key "$(svc_of tuweather)")")" = "$weather_creds"
-  assert jq -e '.tuweather.outcome == "429"' "$oauth_attempts_file" >/dev/null
-  assert_fails grep -qx rt-cooling "$TOKLOG"
-  assert jq -e '.tucooling.outcome == "429" and .tucooling.strikes == 2' "$oauth_attempts_file" >/dev/null
-  assert_fails test -e "$limits_dir/tuweather.json"
-)
-
-# --- token-freeze experiment: robots off the token endpoint, journal every attempt ---
+# --- robot curl refresh is off (shared-invariants row f): no robot path POSTs the token
+# endpoint, the user-explicit path still does, and every attempt is journaled ---
 (
   fz_creds='{"claudeAiOauth":{"refreshToken":"rt-fz","accessToken":"at-fz","expiresAt":1,"scopes":["a"]}}'
   fz_fresh_creds=$(printf '{"claudeAiOauth":{"refreshToken":"rt-fresh","accessToken":"at-fresh","expiresAt":%s,"scopes":["a"]}}' "$(((now + 3600) * 1000))")
@@ -1363,43 +1313,44 @@ exit 0
 EOF
   chmod +x "$FAKE_BIN/security" "$FAKE_BIN/curl" "$FAKE_BIN/claude"
 
-  # 1: frozen oauth_refresh — zero curl, frozen-skip journal, no state change, no verdict.
+  # 1: a robot oauth_refresh — zero curl, robot-skip journal, no state change, no verdict.
+  export CLAUDEB_WARM_USER_EXPLICIT=false
   : >"$fz_curl"; : >"$token_attempts_file"
   printf '{"alpha":{"attempted_at":%s,"outcome":"429","retry_after_until":0,"strikes":2}}\n' "$now" >"$oauth_attempts_file"
   printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/alpha.json"
-  printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$token_freeze_file"
   if oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_rc=0; else fz_rc=$?; fi
   assert test "$fz_rc" -eq 76
   assert_fails test -s "$fz_curl"
   assert jq -e '.alpha.outcome == "429" and .alpha.strikes == 2' "$oauth_attempts_file" >/dev/null
   assert jq -e '.auth.status == "ok"' "$limits_dir/alpha.json" >/dev/null
-  assert jq -se 'any(.[]; .kind == "curl-refresh" and .outcome == "frozen-skip" and .account == "alpha")' "$token_attempts_file" >/dev/null
+  assert jq -se 'any(.[]; .kind == "curl-refresh" and .outcome == "robot-skip" and .account == "alpha")' "$token_attempts_file" >/dev/null
   assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
 
-  # 2: frozen token-upkeep exits 0, journals kind upkeep, touches nothing.
+  # 2: the same refresh under the user's own signal DOES POST the endpoint — the rc is then
+  # the endpoint's own verdict (never 76), and the journal marks the attempt as the user's.
   : >"$fz_curl"; : >"$token_attempts_file"
-  fz_tu_rc=0
-  token_upkeep >/dev/null 2>&1 || fz_tu_rc=$?
-  assert test "$fz_tu_rc" -eq 0
-  assert_fails test -s "$fz_curl"
-  assert jq -se 'any(.[]; .kind == "upkeep" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
-  assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
+  printf '{}' >"$oauth_attempts_file"
+  if CLAUDEB_WARM_USER_EXPLICIT=true oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_user_rc=0; else fz_user_rc=$?; fi
+  assert test "$fz_user_rc" -ne 76
+  assert test -s "$fz_curl"
+  assert jq -se 'any(.[]; .kind == "curl-refresh" and .user == true)' "$token_attempts_file" >/dev/null
+  assert_fails jq -se 'any(.[]; .outcome == "robot-skip")' "$token_attempts_file" >/dev/null
 
-  # 3: frozen non-explicit warm skips every account successfully, one journal line each, no session.
+  # 3: a robot warm still runs the free CLI session for every account — the guard is on the
+  # token endpoint, not on warming — and reaches it with no journal skip of its own.
   : >"$fz_claude"; : >"$token_attempts_file"
-  # The accounts have to exist: a freeze skips real accounts, and reporting a typo as skipped
-  # is what the existence check ahead of the skip prevents.
   printf 'tok' >"$tokens_dir/fzA"; printf 'tok' >"$tokens_dir/fzB"
   account_names() { printf 'fzA\nfzB\n'; }
   is_disabled() { return 1; }
-  fz_warm_rc=0
-  warm_accounts >/dev/null 2>"$WORK/fz-warm.err" || fz_warm_rc=$?
-  assert test "$fz_warm_rc" -eq 0
-  assert_fails test -s "$fz_claude"
-  assert jq -se '[.[] | select(.kind == "warm" and .outcome == "frozen-skip")] | length == 2' "$token_attempts_file" >/dev/null
-  assert jq -se 'any(.[]; .kind == "warm" and .account == "fzA")' "$token_attempts_file" >/dev/null
+  warm_accounts >/dev/null 2>"$WORK/fz-warm.err" || true
+  assert test "$(wc -l <"$fz_claude" | tr -d ' ')" -eq 2
+  assert_fails jq -se 'any(.[]; .kind == "warm" and .outcome == "robot-skip")' "$token_attempts_file" >/dev/null
   assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
-  assert grep -q 'warm skipped' "$WORK/fz-warm.err"
+  # An account that does not exist is a failure, never a silent no-op.
+  fz_unknown_rc=0
+  warm_accounts fzGhost >/dev/null 2>"$WORK/fz-warm-unknown.err" || fz_unknown_rc=$?
+  assert test "$fz_unknown_rc" -eq 1
+  assert grep -q 'cause=unknown-account' "$WORK/fz-warm-unknown.err"
 
   : >"$fz_claude"; : >"$token_attempts_file"
   account_names() { printf 'fzM\nfzN\n'; }
@@ -1408,7 +1359,7 @@ EOF
   CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts fzM fzN >/dev/null 2>&1 || fz_manual_rc=$?
   assert test "$fz_manual_rc" -eq 0
   assert test "$(wc -l <"$fz_claude" | tr -d ' ')" -eq 2
-  assert_fails jq -se 'any(.[]; .kind == "warm" and .outcome == "frozen-skip")' "$token_attempts_file" >/dev/null
+  assert_fails jq -se 'any(.[]; .kind == "warm" and .outcome == "robot-skip")' "$token_attempts_file" >/dev/null
   rm -f "$CLAUDEB_DIR/tokens/fzM" "$CLAUDEB_DIR/tokens/fzN"
 
   (
@@ -1437,23 +1388,14 @@ EOF
       printf '%s\n' '{"five_hour":{"utilization":1,"resets_at":null},"seven_day":{"utilization":2,"resets_at":null},"limits":[{"kind":"weekly_scoped","scope":{"model":{"display_name":"Fable"}},"percent":3,"resets_at":null}]}' >"$2/$1.usage"
     }
     CLAUDEB_WARM_USER_EXPLICIT=true warm_accounts "$user_name" >/dev/null 2>"$WORK/fz-user.err" \
-      || fail "user-explicit frozen warm failed: $(cat "$WORK/fz-user.err")"
+      || fail "user-explicit warm failed: $(cat "$WORK/fz-user.err")"
     assert test "$(wc -l <"$user_curl" | tr -d ' ')" -eq 1
-    assert_fails grep -q 'frozen' "$WORK/fz-user.err"
+    assert_fails grep -q 'skipped' "$WORK/fz-user.err"
     assert jq -se 'any(.[]; .account == "fzUser" and .kind == "curl-refresh" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
     assert jq -se 'any(.[]; .account == "fzUser" and .kind == "warm" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
-  ) || fail "user-explicit frozen warm block failed"
+  ) || fail "user-explicit warm block failed"
 
-  # 5: expired `until` behaves unfrozen — curl runs, rc is a real verdict not 76.
-  : >"$fz_curl"; : >"$fz_claude"; : >"$token_attempts_file"
-  printf '{}' >"$oauth_attempts_file"
-  printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$token_freeze_file"
-  if oauth_refresh alpha svc "$fz_creds" >/dev/null 2>&1; then fz_er=0; else fz_er=$?; fi
-  assert test -s "$fz_curl"
-  assert test "$fz_er" -ne 76
-
-  # 6: normal (unfrozen) outcomes journal too — success, 429, adopt, warm; begin markers do not.
-  rm -f "$token_freeze_file"
+  # 5: every outcome journals — success, 429, adopt, warm; begin markers do not.
   : >"$token_attempts_file"
   printf '{}' >"$oauth_attempts_file"
   oauth_attempt_update j1 success
@@ -1476,35 +1418,36 @@ EOF
   assert test "$fz_real_failure_rc" -eq 1
 ) || exit 1
 
-# --- token-freeze: heal writes no verdict from pre-freeze token-endpoint state ---
+# --- a robot heal writes no auth verdict it could only have got from the token endpoint:
+# with no user signal oauth_refresh never POSTs, so a stale-token 401 ends as weather ---
 (
-  printf '{"started_at":%s,"reason":"x"}\n' "$now" >"$token_freeze_file"
+  export CLAUDEB_WARM_USER_EXPLICIT=false
   account_names() { printf 'fzh\n'; }
   is_disabled() { return 1; }
   touch "$CLAUDEB_DIR/tokens/fzh"
-  fzh_fresh='{"claudeAiOauth":{"refreshToken":"rt-h","accessToken":"at-h","expiresAt":9999999999999,"scopes":["a"]}}'
-  cat >"$FAKE_BIN/security" <<EOF
-#!/usr/bin/env bash
-printf '%s' '$fzh_fresh'
-EOF
-  chmod +x "$FAKE_BIN/security"
+  warm_accounts() { return 1; }
+  oauth_warm_cause() { printf 'warm-failed\n'; }
+  oauth_heal_backoff_until() { printf '0\n'; }
+  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
   hd="$WORK/fz-heal"; mkdir -p "$hd"
 
-  # (a) a stale pre-freeze `revoked` + a frozen probe (HTTP 000) writes no verdict.
-  probe_one() { printf 'no-spend 255 000\n' >"$2/$1.result"; }
-  printf '{"fzh":{"attempted_at":%s,"outcome":"revoked","retry_after_until":%s,"credentials_expires_at":1}}\n' "$((now - 100))" "$((now + 21600))" >"$oauth_attempts_file"
+  # (a) the 401 is explained by a token already due for refresh, and no refresh may run.
+  token_needs_refresh() { return 0; }
+  printf '{}' >"$oauth_attempts_file"
   printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/fzh.json"
   heal_one "$hd" fzh 2>"$WORK/fz-heal-a.err"
   assert jq -e '.auth.status == "ok" and (.auth | has("cause") | not)' "$limits_dir/fzh.json" >/dev/null
-  assert grep -q 'frozen' "$WORK/fz-heal-a.err"
+  assert grep -q 'token endpoint not called' "$WORK/fz-heal-a.err"
 
-  # (b) a fresh-token 401 is endpoint-independent live evidence → still affirmative.
-  probe_one() { printf 'no-spend 0 401\n' >"$2/$1.result"; }
+  # (b) a fresh-token 401 is endpoint-independent live evidence → still affirmative, robot
+  # or not. The warm cause must be auth-shaped, or capacity weather owns the verdict first.
+  token_needs_refresh() { return 1; }
+  oauth_warm_cause() { printf 'needs-relogin\n'; }
   printf '{}' >"$oauth_attempts_file"
   printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/fzh.json"
   heal_one "$hd" fzh 2>/dev/null
   assert jq -e '.auth.status == "expired"' "$limits_dir/fzh.json" >/dev/null
-  rm -f "$token_freeze_file" "$CLAUDEB_DIR/tokens/fzh"
+  rm -f "$CLAUDEB_DIR/tokens/fzh"
 ) || exit 1
 
 (
@@ -1514,7 +1457,6 @@ EOF
   heal_dir="$WORK/fz-heal-user"
   mkdir -p "$heal_dir"
   printf '%s' '{"claudeAiOauth":{"refreshToken":"rt-heal","accessToken":"at-heal","expiresAt":1,"scopes":["a"]}}' >"$heal_credentials"
-  printf '{"started_at":%s,"reason":"x"}\n' "$now" >"$token_freeze_file"
   printf '{}' >"$oauth_attempts_file"
   : >"$token_attempts_file"
   : >"$heal_curl"
@@ -1534,7 +1476,6 @@ EOF
   assert test "$(wc -l <"$heal_curl" | tr -d ' ')" -eq 1
   assert jq -e '.auth.status == "ok"' "$limits_dir/$heal_name.json" >/dev/null
   assert jq -se 'any(.[]; .account == "fzHealUser" and .kind == "curl-refresh" and .outcome == "success" and .user == true)' "$token_attempts_file" >/dev/null
-  rm -f "$token_freeze_file"
 ) || exit 1
 
 (
@@ -1542,7 +1483,6 @@ EOF
   heal_dir="$WORK/fz-heal-stale"
   refresh_marker="$WORK/fz-heal-stale-refresh"
   mkdir -p "$heal_dir"
-  printf '{"started_at":%s,"reason":"x"}\n' "$now" >"$token_freeze_file"
   printf '{"fzHealStale":{"attempted_at":%s,"outcome":"revoked","retry_after_until":%s,"credentials_expires_at":1}}\n' \
     "$((now - 600))" "$((now + 21600))" >"$oauth_attempts_file"
   printf '{"auth":{"status":"ok","checked_at":717,"cause":"prior verdict"}}' >"$limits_dir/$heal_name.json"
@@ -1554,7 +1494,6 @@ EOF
   CLAUDEB_WARM_USER_EXPLICIT=true heal_one "$heal_dir" "$heal_name" 2>/dev/null
   assert jq -e '.auth.status == "ok" and .auth.checked_at == 717 and .auth.cause == "prior verdict"' "$limits_dir/$heal_name.json" >/dev/null
   assert_fails test -e "$refresh_marker"
-  rm -f "$token_freeze_file"
 ) || exit 1
 
 touch "$CLAUDEB_DIR/tokens/eta"
@@ -1684,6 +1623,10 @@ printf '{}' >"$oauth_attempts_file"
 )
 
 (
+  # The warm→refresh chain below is the user-explicit path: only a refresh the user asked
+  # for may POST the token endpoint (shared-invariants row f), and the robot counterpart
+  # of these same cases is asserted at the end of the block.
+  export CLAUDEB_WARM_USER_EXPLICIT=true
   profile_command() { prepared_profile_dir="$WORK/zeta-profile"; mkdir -p "$prepared_profile_dir"; return 0; }
   warm_credentials="$WORK/zeta-credentials.json"
   warm_refresh_calls="$WORK/zeta-refresh-calls"
@@ -2120,28 +2063,6 @@ LOEOF
   assert test "$low_s" = no-spend
 ) || exit 1
 
-# token-upkeep skips a logged-out account: no token endpoint call, no oauth-attempt,
-# credentials untouched (empty-token wipe and item-not-found both skipped).
-(
-  KC="$WORK/tul-keychain"; mkdir -p "$KC"
-  kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
-  tul_curl="$WORK/tul-curl.log"; : >"$tul_curl"
-  security() {
-    local prev='' svc='' a
-    for a in "$@"; do [ "$prev" = -s ] && svc="$a"; prev="$a"; done
-    cat "$KC/$(kc_key "$svc")" 2>/dev/null || return 44
-  }
-  curl() { printf 'curl %s\n' "$*" >>"$tul_curl"; exit 97; }
-  account_names() { printf 'tulwipe\ntulmissing\n'; }
-  wipe_creds='{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}'
-  printf '%s' "$wipe_creds" >"$KC/$(kc_key "$(keychain_service tulwipe)")"
-  printf '{}' >"$oauth_attempts_file"
-  token_upkeep 2>/dev/null
-  assert test ! -s "$tul_curl"
-  assert jq -e '. == {}' "$oauth_attempts_file" >/dev/null
-  assert test "$(cat "$KC/$(kc_key "$(keychain_service tulwipe)")")" = "$wipe_creds"
-) || exit 1
-
 # interactive status: account-row selection navigation, Enter launch resolution,
 # highlight scoping, and the non-tty path staying plain (no key loop, no launch).
 ia_result=$(cat <<'EOF'
@@ -2364,6 +2285,13 @@ EOF
   printf 'rmv\n' >"$CLAUDEB_DIR/disabled"
   printf 'rmv\n' >"$CLAUDEB_DIR/.claudeb-state"
   printf 'rmv\n' >"$CLAUDEB_DIR/.claudeb-state-fable"
+  mkdir -p "$CLAUDEB_DIR/session-logs" "$CLAUDEB_DIR/warm-logs" "$HOME/.cache"
+  touch "$CLAUDEB_DIR/session-logs/rmv.log" "$CLAUDEB_DIR/session-logs/keep.log"
+  touch "$CLAUDEB_DIR/warm-logs/rmv.log" "$CLAUDEB_DIR/warm-logs/keep.log"
+  touch "$CLAUDEB_DIR/limits/rmv.json.tmp.123" "$CLAUDEB_DIR/limits/keep.json.tmp.123"
+  printf '%s\n' '{"claude":{"attempts":{"rmv":11,"keep":12}},"vendors":{"claude":{"attempts":{"rmv":21,"keep":22}}}}' \
+    >"$HOME/.llm-limits-refresh.state"
+  touch "$HOME/.cache/worker-pick.line.rmv" "$HOME/.cache/worker-pick.line.keep"
 
   assert "$SCRIPT" remove rmv
   assert test ! -e "$CLAUDEB_DIR/tokens/rmv"
@@ -2377,9 +2305,54 @@ EOF
   assert_fails grep -qx rmv "$CLAUDEB_DIR/disabled"
   assert test ! -e "$CLAUDEB_DIR/.claudeb-state"
   assert test ! -e "$CLAUDEB_DIR/.claudeb-state-fable"
+  assert test ! -e "$CLAUDEB_DIR/session-logs/rmv.log"
+  assert test ! -e "$CLAUDEB_DIR/warm-logs/rmv.log"
+  assert test ! -e "$CLAUDEB_DIR/limits/rmv.json.tmp.123"
+  assert jq -e '.claude.attempts == {"keep":12} and .vendors.claude.attempts == {"keep":22}' \
+    "$HOME/.llm-limits-refresh.state"
+  assert test ! -e "$HOME/.cache/worker-pick.line.rmv"
+  assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
+  assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
+  assert test -e "$CLAUDEB_DIR/limits/keep.json.tmp.123"
+  assert test -e "$HOME/.cache/worker-pick.line.keep"
   # Removal announces a passive collect (no args) so the menu's cached row drops
   # without a manual refresh.
   assert wait_announce ''
+
+  # Leftovers of an account whose four stores are already gone are still that account: a metadata
+  # row is what `remove` exists to sweep, so the retry finds work and reports it like any removal.
+  touch "$CLAUDEB_DIR/session-logs/rmv.retry" "$CLAUDEB_DIR/warm-logs/rmv.retry" \
+    "$CLAUDEB_DIR/limits/rmv.json.tmp.456" "$HOME/.cache/worker-pick.line.rmv"
+  printf '%s\n' '{"claude":{"attempts":{"rmv":31,"keep":32}}}' >"$HOME/.llm-limits-refresh.state"
+  repeat_out=$("$SCRIPT" remove rmv 2>&1)
+  repeat_rc=$?
+  assert test "$repeat_rc" -eq 0
+  assert grep -qx 'claudeb: removed rmv' <<<"$repeat_out"
+  assert test ! -e "$CLAUDEB_DIR/session-logs/rmv.retry"
+  assert test ! -e "$CLAUDEB_DIR/warm-logs/rmv.retry"
+  assert test ! -e "$CLAUDEB_DIR/limits/rmv.json.tmp.456"
+  assert jq -e '.claude.attempts == {"keep":32}' "$HOME/.llm-limits-refresh.state"
+  assert test ! -e "$HOME/.cache/worker-pick.line.rmv"
+  assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
+  assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
+  assert test -e "$HOME/.cache/worker-pick.line.keep"
+  # Nothing of it left anywhere: a mistyped name, answered the way codexb, geminib and grokb
+  # answer it, and no announce for a removal that removed nothing.
+  assert wait_announce ''
+  sleep 0.3
+  announce_count=$(wc -l <"$ANNOUNCE_LOG" | tr -d ' ')
+  gone_rc=0
+  gone_out=$("$SCRIPT" remove rmv 2>&1) || gone_rc=$?
+  assert test "$gone_rc" -eq 2
+  assert grep -qx 'claudeb: unknown account: rmv' <<<"$gone_out"
+  assert test "$(wc -l <"$ANNOUNCE_LOG" | tr -d ' ')" -eq "$announce_count"
+  # A log named for an account this one is a prefix of belongs to that account.
+  : >"$CLAUDEB_DIR/tokens/alph"
+  touch "$CLAUDEB_DIR/session-logs/alpha.log" "$CLAUDEB_DIR/warm-logs/alpha.log"
+  assert "$SCRIPT" remove alph
+  assert test -e "$CLAUDEB_DIR/session-logs/alpha.log"
+  assert test -e "$CLAUDEB_DIR/warm-logs/alpha.log"
+  rm -f "$CLAUDEB_DIR/session-logs/alpha.log" "$CLAUDEB_DIR/warm-logs/alpha.log"
 
   # State pointing at a surviving account is left intact when a different one is removed.
   printf 'tok-other' >"$CLAUDEB_DIR/tokens/other"
@@ -2444,7 +2417,10 @@ EOF
   assert test ! -e "$CLAUDEB_DIR/oauth-attempts.json.bypass.blk"
 
   assert_fails "$SCRIPT" remove main
-  assert_fails "$SCRIPT" remove ghost-account
+  ghost_out=$("$SCRIPT" remove ghost-account 2>&1)
+  ghost_rc=$?
+  assert test "$ghost_rc" -eq 2
+  assert grep -qx 'claudeb: unknown account: ghost-account' <<<"$ghost_out"
 ) || exit 1
 
 # The session-account ledger: a transcript names no account, so the marker directory Claude
@@ -2492,10 +2468,9 @@ EOF
 
 # --- probe/warm announce (shared-invariants row y): any snapshot-rewriting verb fires
 # one passive collect so the merged cache follows; the collector's own child
-# invocations carry the suppress env and stay silent. The freeze keeps the warm
+# invocations carry the suppress env and stay silent. The robot guard keeps this warm
 # offline — the announce lives at the dispatch level and must fire regardless.
 printf 'tok-ann' >"$CLAUDEB_DIR/tokens/annacct"
-printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$(date +%s)" >"$CLAUDEB_DIR/token-freeze"
 ann_before=$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)
 bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
 ann_tries=0
@@ -2508,10 +2483,10 @@ assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_
 LLM_LIMITS_ANNOUNCE_SUPPRESS=1 bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
 sleep 0.5
 assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
-rm -f "$CLAUDEB_DIR/token-freeze" "$CLAUDEB_DIR/tokens/annacct"
+rm -f "$CLAUDEB_DIR/tokens/annacct"
 
-# --- revive: the interactive session is the rotation, and the freeze never gates it
-# (docs/EXIT-PLAN.md § Token-freeze experiment) — the token endpoint stays untouched ---
+# --- revive: the interactive session is the rotation, and it runs on a robot path
+# (shared-invariants row f) — the token endpoint stays untouched ---
 (
   KC="$WORK/rv-keychain"; mkdir -p "$KC"
   kc_key() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
@@ -2554,9 +2529,7 @@ EOF
   rotate() { printf "printf '%%s' '{\"claudeAiOauth\":{\"refreshToken\":\"rt-new\",\"accessToken\":\"at-new\",\"expiresAt\":%s}}' >'%s'" "$rv_fresh_ms" "$KC/$(kc_key "$(svc_of "$1")")"; }
   account_names() { printf 'rvok\nrvoff\nrvauth\nrvauthok\nrvlogin\nrvfail\nrvfresh\nrvstale\nrv401\nrvnodrv\n'; }
   is_disabled() { [ "$1" = rvoff ]; }
-  # The whole block runs under an active freeze: revive must not notice it.
-  printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$token_freeze_file"
-
+  # The whole block runs with no user signal: revive is the one rotation a robot may drive.
   make_driver ':' 0
   rm -f "$RV_DRIVER_LOG"
   : >"$token_attempts_file"
@@ -2688,8 +2661,8 @@ EOF
   assert test "$rv_stale_rc" -eq 5
   assert_fails test -s "$RV_CURL"
   assert jq -se 'any(.[]; .account == "rvstale" and .kind == "session" and .outcome == "no-rotation")' "$token_attempts_file" >/dev/null
-  # Each pre-probe failure has to leave a revive-kind cause behind, or the freeze banner speaks
-  # for a path the freeze does not own.
+  # Each pre-probe failure has to leave a revive-kind cause behind so the robot banner does not
+  # hide the escalating refresh's own verdict.
   assert jq -e '.rvstale.warm_cause == "no-rotation" and .rvstale.warm_kind == "revive"' "$oauth_attempts_file" >/dev/null
 
   # A rotated token whose usage probe fails reports the probe's own cause, and a 401 against a
@@ -2702,12 +2675,10 @@ EOF
   assert test "$rv_401_rc" -eq 4
   assert grep -q 'cause=needs-relogin http=401' "$WORK/rv-401.err"
   assert jq -e '.auth_needed == true and .auth_cause == "needs-relogin"' "$limits_dir/rv401.json" >/dev/null
-  # warm_kind is what keeps the freeze banner off a cause the revive path itself observed.
+  # warm_kind is what keeps the robot banner off a cause the revive path itself observed.
   assert jq -e '.rv401.warm_outcome == "warm-failed" and .rv401.warm_cause == "needs-relogin" and
     .rv401.warm_kind == "revive"' "$oauth_attempts_file" >/dev/null
   assert jq -se 'any(.[]; .account == "rv401" and .kind == "revive" and .outcome == "warm-failed")' "$token_attempts_file" >/dev/null
-
-  rm -f "$token_freeze_file"
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, the wall standing at worker-pick's 100 on both buckets and the all-walled warning naming the reset of a bucket that is actually walling, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), the PICK star naming worker-pick's chat answer rather than the last-used account (selection() names nobody, an unselectable pool or a missing worker-pick leaves every row bare, in the plain table and the interactive one alike), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver while the token freeze holds and never touching the token endpoint, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, the wall standing at worker-pick's 100 on both buckets and the all-walled warning naming the reset of a bucket that is actually walling, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), the PICK star naming worker-pick's chat answer rather than the last-used account (selection() names nobody, an unselectable pool or a missing worker-pick leaves every row bare, in the plain table and the interactive one alike), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver on a robot path and never touching the token endpoint, no robot path POSTing the OAuth token endpoint with no marker file left to gate it while the user-explicit path still refreshes, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"

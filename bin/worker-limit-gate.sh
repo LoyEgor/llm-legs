@@ -237,10 +237,20 @@ prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null)
 # already spending, and this spawn only waits on it. Priced like a fresh launch it becomes
 # unreachable exactly when a run matters most — the account it is on walls mid-run, every deny
 # below fires, and the launch gate denies the Bash wait that would be the only way back to it.
+#
+# Which is why the prefix is CHECKED and not believed: it exits before every pressure verdict
+# below, so a brief that merely opens with those words would be a way past all of them. The run
+# directory worker-run keeps is the proof — it exists while the run does, and gains `exit_code`
+# when the run ends, and a spawn naming neither is a fresh launch spelled as a re-attach and is
+# priced as one.
 attach_run=$(printf '%s\n' "$prompt" | head -n1 |
   sed -nE 's/^ATTACH[[:space:]]+([a-z0-9][a-z0-9-]*):.*/\1/p')
-[ -z "$attach_run" ] ||
-  warn "Re-attach to run ${attach_run}: no new launch, so no limit verdict is priced on this spawn. Wait on that run id and report; do not start a new one."
+if [ -n "$attach_run" ]; then
+  attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
+  if [ -d "$attach_dir" ] && [ ! -e "$attach_dir/exit_code" ]; then
+    warn "Re-attach to run ${attach_run}: no new launch, so no limit verdict is priced on this spawn. Wait on that run id and report; do not start a new one."
+  fi
+fi
 
 brief_account=$(printf '%s\n' "$prompt" |
   sed -nE 's/^ACCOUNT:[[:space:]]*([A-Za-z0-9_.-]+)[[:space:]]*$/\1/p' | head -n1)

@@ -79,11 +79,14 @@ elif [ "$subagent" = image-gen ]; then
   vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
     grep -oE '(codex|gemini|grok)$')
   [ -n "$vendor" ] || vendor=codex
+  # The scripts route themselves, so only a PIN is a prediction: an `ACCOUNT:` line or an
+  # `--account` on the launch line names the account the run must spend, and anything else — a
+  # worker-pick answer, the toggle's profile — is this hook's guess about a choice the script makes
+  # a second later on its own state. A row naming an account the run never touched is worse than
+  # one that says nobody knows yet.
   acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(route_account "$vendor")
-  [ -n "$acct" ] || acct=$(worker_conf "${vendor}_profile")
-  # The scripts route themselves; a seed nobody can predict says so rather than naming an account
-  # the run may never touch.
+  [ -n "$acct" ] || acct=$(printf '%s' "$prompt" |
+    grep -m1 -oE -- '--account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
   [ -n "$acct" ] || acct='?'
   prefix="$acct · image · $vendor"
 else

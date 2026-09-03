@@ -40,13 +40,14 @@ parsed=$(printf '%s' "$input" | jq -r '
   def bash_hit:
     tok as $tok
     | ((.tool_input.command // "") | mask_heredocs | mask_quoted_spans)
-    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+add(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([[:space:]]+(?<sub>[A-Za-z][A-Za-z-]*))?)"; "g")]
+    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+add(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([ \\t]+(?<sub>[A-Za-z][A-Za-z-]*))?([ \\t]+(?<sub2>[A-Za-z][A-Za-z-]*))?)"; "g")]
     | map(
         ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd
         | ([.captures[] | select(.name == "wt_dir" and .string != null) | .string][0] // "") as $wt_dir
         | ([.captures[] | select(.name == "wt_args" and .string != null) | .string][0] // "") as $wt_args
         | ([.captures[] | select(.name == "dir" and .string != null) | .string][0] // "") as $dir
         | ([.captures[] | select(.name == "sub" and .string != null) | .string][0] // "") as $sub
+        | ([.captures[] | select(.name == "sub2" and .string != null) | .string][0] // "") as $sub2
         | (.captures[0].string // "") as $sep
         | if $wt_args != "" then
             ([$wt_args | match($tok; "g").string]
@@ -58,10 +59,19 @@ parsed=$(printf '%s' "$input" | jq -r '
                  else .path = $arg end)
              | {path: .path, sep: "", worktree_add: "1", worktree_base: $wt_dir})
           elif $cd != "" then {path: $cd, sep: $sep, cd_hit: "1", worktree_add: "", worktree_base: ""}
-          elif $dir != "" and (["worktree","checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null) then {path: $dir, sep: "", worktree_add: "", worktree_base: ""}
+          elif $dir != "" and (if $sub == "worktree"
+                               then (["add","remove","move","prune","repair","lock","unlock"] | index($sub2) != null)
+                               else (["checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null)
+                               end) then {path: $dir, sep: "", worktree_add: "", worktree_base: ""}
           else empty end)
     | . as $hits
-    | (last // {path: "", sep: "", worktree_add: "", worktree_base: ""}) as $last
+    # Creating a worktree outranks every cd and mutating `git -C` in the same
+    # command, wherever it sits: the add is followed by a bootstrap subshell
+    # (`(cd $W && pnpm install)`) often enough that reading the last hit lost
+    # the new worktree entirely.
+    | (([$hits[] | select(.worktree_add == "1")] | last)
+       // last
+       // {path: "", sep: "", worktree_add: "", worktree_base: ""}) as $last
     | if $last.worktree_add == "1" and $last.worktree_base == "" then
         $last + {worktree_base: ([$hits[] | select(.cd_hit == "1") | .path] | last // "")}
       else $last end;

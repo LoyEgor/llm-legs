@@ -8,10 +8,9 @@ same for Codex; `hammerspoon/llm-limits.lua` renders it all in the macOS menubar
 **Before debugging anything here, read `docs/DIAGNOSTICS.md`** — it has the system map, a
 symptom→command lookup table, the 429 taxonomy, and the test suites.
 
-**Temporary scaffolding lives in `docs/EXIT-PLAN.md`** — the shadow-trial stack is gone; the
-one piece still temporary is the token-freeze marker `~/.claude-profiles/.claudeb/token-freeze`,
-which exits with the escalating-refresh work that replaces it. Never treat it as permanent
-architecture, and never restore automated curl refreshes around it.
+**Temporary scaffolding is tracked in `docs/EXIT-PLAN.md`; its inventory is currently empty.** Robot
+curl refresh is permanently disabled in code — never restore automated curl refreshes; the
+user-explicit menu refresh stays.
 
 **Any statusline work is bound by `docs/statusline-contract.md`** — keep its segment table
 exhaustive and update `tests/test_statusline_hooks.sh` whenever a segment changes
@@ -35,3 +34,10 @@ Cross-implementation invariants (values duplicated across bash/jq/Lua/prose) are
 `docs/shared-invariants.md` + `bash tests/test_consistency.sh` — run it after touching any
 staleness threshold, the keychain service formula, the worker-pick cache format, or the weather
 HTTP class lists.
+
+## launchd / autostart jobs
+Every LaunchAgent created or modified for Egor must be identifiable in macOS Login Items by a
+meaningful name: ProgramArguments points at a wrapper in `~/.local/libexec/<descriptive-name>`
+(e.g. `llm-refresh-heartbeat`, `memlogd`) that `exec`s the real interpreter+script — never bare
+`python3`/`bash`/`node` as the visible program. Keep repo plists consistent with it. Renaming or
+toggling a Login Item reloads the job (SIGTERM + restart) — harmless service restarts are expected.

@@ -2,7 +2,20 @@
 set -euo pipefail
 
 profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
-grok_bin="${GROKB_GROK_BIN:-grok}"
+
+# The heartbeat runs under launchd, whose PATH has no nvm, and `grok` is an npm global under
+# ~/.nvm — so a bare name there is "command not found", and the token touch it asks for never runs.
+resolve_grok_bin() {
+  local candidate
+  if [ -n "${GROKB_GROK_BIN:-}" ]; then printf '%s\n' "$GROKB_GROK_BIN"; return 0; fi
+  if candidate=$(command -v grok 2>/dev/null); then printf '%s\n' "$candidate"; return 0; fi
+  while IFS= read -r candidate; do
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+  done < <(shopt -s nullglob; printf '%s\n' "$HOME"/.nvm/versions/node/*/bin/grok | sort -Vr
+           printf '%s\n' "$HOME/.local/bin/grok" /opt/homebrew/bin/grok)
+  printf 'grokb: grok CLI not found on PATH or under ~/.nvm (npm i -g @xai-official/grok, or set GROKB_GROK_BIN)\n' >&2
+  return 127
+}
 
 resolve_root() {
   local source="${BASH_SOURCE[0]}" directory
@@ -137,6 +150,7 @@ add_account() {
     exit 2
   fi
   mkdir -p "$directory"
+  grok_bin=$(resolve_grok_bin) || exit 127
   printf 'GROK_HOME=%q %q login --device-auth\n' "$directory" "$grok_bin"
   env -u GROK_WORKER GROK_HOME="$directory" "$grok_bin" login --device-auth || rc=$?
   announce_account_added "$grokb_root" grok "$name"
@@ -285,6 +299,7 @@ run_account() {
   if args_are_headless "$@"; then worker_flag=(GROK_WORKER=1)
   else worker_unset=(-u GROK_WORKER); fi
   if [ "$name" = main ]; then
+    grok_bin=$(resolve_grok_bin) || exit 127
     exec env ${worker_unset[@]+"${worker_unset[@]}"} -u GROK_HOME \
       GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 \
       GROK_DISABLE_AUTOUPDATER=1 ${worker_flag[@]+"${worker_flag[@]}"} "$grok_bin" "$@"
@@ -299,6 +314,7 @@ run_account() {
       "$name" "$directory" >&2
   fi
   [ "$created" != true ] || announce_account_added "$grokb_root" grok "$name"
+  grok_bin=$(resolve_grok_bin) || exit 127
   exec env ${worker_unset[@]+"${worker_unset[@]}"} GROK_HOME="$directory" \
     GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 \
     GROK_DISABLE_AUTOUPDATER=1 ${worker_flag[@]+"${worker_flag[@]}"} "$grok_bin" "$@"

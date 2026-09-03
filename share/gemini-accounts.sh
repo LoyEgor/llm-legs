@@ -17,17 +17,25 @@ gemini_removal_marker() {
 
 gemini_main_removed() { [ -e "$(gemini_removal_marker main)" ]; }
 
+# geminib's rule for a profile name; a directory that fails it is not an account — macOS grows
+# `Library/` under any HOME a process is pointed at, and that once became a "login needed" row.
+gemini_profile_name_valid() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]]; }
+
 gemini_account_names() {
-  local path
+  local path name
   gemini_main_removed || printf 'main\n'
   if [ -d "$gemini_profiles_dir" ]; then
     for path in "$gemini_profiles_dir"/*; do
-      [ -d "$path" ] && basename "$path"
+      [ -d "$path" ] || continue
+      name=$(basename "$path")
+      [ "$name" != main ] && gemini_profile_name_valid "$name" || continue
+      printf '%s\n' "$name"
     done | LC_ALL=C sort
   fi
 }
 
 gemini_account_home() {
+  [ -n "$1" ] || return 1
   if [ "$1" = main ]; then
     printf '%s\n' "$gemini_base_home"
   else
@@ -49,7 +57,8 @@ gemini_account_home() {
 gemini_ensure_keychain() {
   local home="$1" keychains="$1/Library/Keychains" name status
   local security_cmd="${GEMINIB_SECURITY_CMD:-/usr/bin/security}"
-  [ "$home" != "$gemini_base_home" ] || return 0
+  # The profiles root is nobody's HOME: a keychain built there becomes a `Library` account.
+  case "$home" in ''|"$gemini_base_home"|"$gemini_profiles_dir"|"$gemini_profiles_dir"/) return 0 ;; esac
   # A profile removed between listing and probing must stay removed, not be rebuilt as a ghost.
   [ -d "$home" ] || return 0
   name=$(basename "$home")

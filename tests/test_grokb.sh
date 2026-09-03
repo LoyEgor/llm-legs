@@ -225,4 +225,25 @@ assert grep -q "new profile 'fresh' created" <<<"$fresh_output"
 assert wait_announce '--refresh-account grok/fresh'
 assert grep -q "CALL home=$GROKB_PROFILES_DIR/fresh mcps=0 skills=0 updater=1 worker=1" "$GROK_CALLS"
 
-printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, and the fake CLI contract are covered\n' "$asserts"
+# --- the CLI's own location: PATH first, then the newest nvm install (launchd has no nvm PATH) ---
+NVM_HOME="$WORK/nvm-home"
+for version in v9.0.0 v24.14.1; do
+  mkdir -p "$NVM_HOME/.nvm/versions/node/$version/bin"
+  printf '#!/usr/bin/env bash\nprintf "grok-from %%s\\n" "%s" >>"$GROK_CALLS"\n' "$version" \
+    >"$NVM_HOME/.nvm/versions/node/$version/bin/grok"
+  chmod +x "$NVM_HOME/.nvm/versions/node/$version/bin/grok"
+done
+mkdir -p "$WORK/empty-home"
+: >"$GROK_CALLS"
+bare_path="$(dirname "$(command -v jq)"):/usr/bin:/bin"
+(unset GROKB_GROK_BIN; env HOME="$NVM_HOME" PATH="$bare_path" bash "$SCRIPT" fresh exec models) >/dev/null 2>&1 \
+  || fail "grokb could not run the CLI from ~/.nvm when PATH carries none"
+assert grep -qx 'grok-from v24.14.1' "$GROK_CALLS"
+assert_fails grep -q 'grok-from v9.0.0' "$GROK_CALLS"
+missing_rc=0
+missing_out=$( (unset GROKB_GROK_BIN; env HOME="$WORK/empty-home" PATH="$bare_path" bash "$SCRIPT" fresh exec models) 2>&1) \
+  || missing_rc=$?
+assert test "$missing_rc" -eq 127
+assert grep -q 'grok CLI not found' <<<"$missing_out"
+
+printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, CLI resolution without an nvm PATH, and the fake CLI contract are covered\n' "$asserts"

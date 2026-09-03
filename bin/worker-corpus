@@ -31,6 +31,10 @@ USAGE_LIMIT_RE = re.compile(r'(?:CODEX|CLAUDEB|GEMINI|GROK)_USAGE_LIMIT')
 FAILED_RE = re.compile(r'OUTCOME:\s*(?:[❌✗]|FAILED\b|FAIL\b)|Traceback \(most recent call last\):',
                        re.IGNORECASE)
 SESSION_ID_RE = re.compile(r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b')
+# worker-run's own run id, `<vendor>-<epoch>-<pid>-<hex>`: what a relay reports at a checkpoint and
+# what the ATTACH that resumes the wait names back. It is the link between the two, and the only
+# one — brief text says nothing about WHICH run of that worker an attach belongs to.
+RUN_ID_RE = re.compile(r'\b[a-z][a-z0-9]*-\d{9,12}-\d{1,7}-[0-9a-f]{3,8}\b')
 EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
 
 
@@ -234,6 +238,7 @@ def extract_delegations(transcript_path, since_date, until_date, file_event_coun
                         "result_head": None,
                         "_file_event_count": event_count,
                         "_reported_sessions": [],
+                        "_reported_runs": [],
                     })
     except Exception:
         pass
@@ -644,6 +649,7 @@ def enrich_delegations(delegations, all_transcript_paths, notif_index):
         d["worker_tokens"] = notif["worker_tokens"] if notif else None
         result_full = (notif["result_text"] if notif else "") or (sync_text or "")
         d["result_head"] = result_full[:200] if result_full.strip() else None
+        d["_reported_runs"] = RUN_ID_RE.findall(result_full)
 
         dispatch_ts = parse_ts(d["timestamp"])
         arrival_ts = parse_ts(notif["ts"]) if notif else result_event_ts
@@ -711,28 +717,40 @@ def link_followups(delegations):
     # a RESUME of S. A RESUME's true parent is the latest earlier member of that chain,
     # even when it lives in a different (post-compact) orchestrator session.
     belong = defaultdict(list)
+    # The same chain keyed on a RUN id: a relay reports the run it started (and the one it
+    # re-attached to) in its result, so an ATTACH belongs to whoever named that run — not to
+    # whichever same-worker dispatch happens to be nearest, which is a different run whenever the
+    # attach targets an older one.
+    belong_run = defaultdict(list)
     for d in delegations:
         for s in d.get("_reported_sessions", []):
             belong[s].append(d)
         if d["is_resume"] and d["resumed_session"]:
             belong[d["resumed_session"]].append(d)
+        for r in d.get("_reported_runs", []):
+            belong_run[r].append(d)
+        if d.get("is_attach") and d.get("attached_run"):
+            belong_run[d["attached_run"]].append(d)
 
     for i, d in enumerate(delegations):
         # An ATTACH belongs to the run it re-attaches to exactly as a RESUME belongs to its worker
-        # session: it is a followup, never a dispatch of its own. Its run id names no session, so
-        # the chain lookup is skipped and the nearest earlier dispatch below is its parent.
+        # session: it is a followup, never a dispatch of its own.
         if not d["is_resume"] and not d.get("is_attach"):
             continue
 
         parent = None
+        members = []
         if d["is_resume"] and d["resumed_session"]:
-            chain = [e for e in belong[d["resumed_session"]]
-                     if e["tool_use_id"] != d["tool_use_id"] and e["timestamp"] < d["timestamp"]]
-            if chain:
-                parent = max(chain, key=lambda e: e["timestamp"])
+            members = belong[d["resumed_session"]]
+        elif d.get("is_attach") and d.get("attached_run"):
+            members = belong_run[d["attached_run"]]
+        chain = [e for e in members
+                 if e["tool_use_id"] != d["tool_use_id"] and e["timestamp"] < d["timestamp"]]
+        if chain:
+            parent = max(chain, key=lambda e: e["timestamp"])
 
-        # Fallback: nearest earlier dispatch to the same worker (covers resumes whose
-        # session id never surfaced in a notification result).
+        # Fallback: nearest earlier dispatch to the same worker (covers a resume whose session id
+        # or an attach whose run id never surfaced in any notification result).
         if parent is None:
             for j in range(i - 1, -1, -1):
                 if delegations[j]["subagent_type"] != d["subagent_type"]:

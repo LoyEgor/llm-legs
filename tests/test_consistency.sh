@@ -34,20 +34,29 @@ export RBENCH_SHARE="$REVIEW_ROOT/share"
 doc_has() { grep -Fq -- "$1" "$ROOT/$DOC"; }
 
 # --- Row a: staleness/dim thresholds -----------------------------------------
-FIVE=1800; WEEK=21600; FABLE=21600
+FIVE=1800; WEEK=21600; FABLE=21600; ROUTING=7200
 LIMITSVIEW="$ROOT/share/limits-view.sh"
 
 # doc prose carries all three
 assert doc_has '`1800`s'
 assert doc_has '`21600`s'
+assert doc_has '`7200`s'
 
 # the numbers live once, in the shared view module
 lv_five=$(grep -oE '^LIMITS_STALE_FIVE_HOUR=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
 lv_week=$(grep -oE '^LIMITS_STALE_WEEKLY=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
 lv_fable=$(grep -oE '^LIMITS_STALE_FABLE=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
+lv_routing=$(grep -oE '^LIMITS_STALE_ROUTING=[0-9]+' "$LIMITSVIEW" | grep -oE '[0-9]+')
 assert eq "$lv_five" "$FIVE"
 assert eq "$lv_week" "$WEEK"
 assert eq "$lv_fable" "$FABLE"
+assert eq "$lv_routing" "$ROUTING"
+
+# the router names the rows behind its own answer with that same threshold and carries no literal:
+# a second number here would call rows stale the surfaces beside it call fresh.
+assert grep -Fq -- '--argjson stale_thr "$LIMITS_STALE_ROUTING"' "$WORKERPICK"
+assert eq "$(grep -cE '\$stale_thr|LIMITS_STALE_ROUTING' "$WORKERPICK")" 3
+assert eq "$(grep -cE -- '(> |-gt )7200\b' "$WORKERPICK")" 0
 
 # claudeb and the collector consume the shared variables, never a local literal
 assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR"' "$CLAUDEB"
@@ -140,20 +149,24 @@ assert eq "$ll_cap" "$OAUTH_CAP"
 assert doc_has '`900 * 2^(max(1, strikes)-1)`'
 assert doc_has 'capped at `14400`s'
 
-# --- Row f: token-freeze file semantics --------------------------------------
-# Both implementations must gate on file existence, parse `.until // empty`,
-# apply the numeric guard, and treat a past `until` as inactive (`-gt now`).
-cb_fz=$(sed -n '/^token_freeze_active()/,/^}/p' "$CLAUDEB")
-ll_fz=$(sed -n '/^token_freeze_active_at()/,/^}/p' "$LLMLIMITS")
-[ -n "$cb_fz" ] || fail "row f: token_freeze_active not found in $CLAUDEB"
-[ -n "$ll_fz" ] || fail "row f: token_freeze_active_at not found in $LLMLIMITS"
-for probe in '[ -f "$' '.until // empty' '^[0-9]+$' '-gt'; do
-  assert grep -Fq -- "$probe" <<<"$cb_fz"
-  assert grep -Fq -- "$probe" <<<"$ll_fz"
+# --- Row f: robot curl refresh is off, permanently ---------------------------
+# The user signal is the whole predicate: one reader in each implementation, no
+# marker file and no second condition that could hand the endpoint back to robots.
+cb_pred=$(sed -n '/^user_refresh_explicit()/,/^}/p' "$CLAUDEB")
+[ -n "$cb_pred" ] || fail "row f: user_refresh_explicit not found in $CLAUDEB"
+assert grep -Fq -- 'CLAUDEB_WARM_USER_EXPLICIT:-false' <<<"$cb_pred"
+assert grep -Fq -- 'if ! user_refresh_explicit; then' "$CLAUDEB"
+assert grep -Fq -- 'token_journal "$name" curl-refresh robot-skip' "$CLAUDEB"
+assert grep -Fq -- 'return 76' "$CLAUDEB"
+assert eq "$(grep -c 'CLAUDEB_WARM_USER_EXPLICIT' "$LLMLIMITS")" 3
+assert grep -Fq 'claudeb_child=(env LLM_LIMITS_ANNOUNCE_SUPPRESS=1 CLAUDEB_WARM_USER_EXPLICIT=true "$claudeb_cmd")' "$LLMLIMITS"
+assert grep -Fq -- 'robot curl refresh off (manual refresh only) — revive path active' "$LLMLIMITS"
+retired_marker_re='token[-_]'"freeze"
+for site in "$CLAUDEB" "$LLMLIMITS"; do
+  assert eq "$(grep -cE "$retired_marker_re" "$site")" 0
 done
-assert grep -Fq -- 'token-freeze' "$CLAUDEB"
-assert grep -Fq -- 'token-freeze' "$LLMLIMITS"
-assert doc_has 'Token-freeze file semantics'
+assert doc_has 'Robot curl refresh is off, permanently and unconditionally'
+assert doc_has '`robot-skip`'
 
 # --- Row g: worker rank contract and display priority -------------------------
 CODEXB="$ROOT/bin/codexb"
@@ -188,6 +201,7 @@ assert doc_has 'Worker rank contract'
 RB_PKG="$REVIEW_ROOT/share/rbench"
 RB_STORE="$RB_PKG/store.py"
 RB_CATALOG="$RB_PKG/catalog.py"
+RB_RATERS="$RB_PKG/raters.py"
 RB_ACCOUNTS="$RB_PKG/accounts.py"
 RB_SCOPE="$RB_PKG/scope.py"
 RB_PANEL="$RB_PKG/panel.py"
@@ -245,26 +259,45 @@ PATCHPY
 assert eq "$rb_patch_audit" ok
 for mapping in \
   '"agy-pro": "gemini-3.1-pro"' \
+  '"agy-flash38": "gemini-3.8-flash"' \
   '"agy-flash37": "gemini-3.7-flash"' \
-  '"agy-flash36": "gemini-3.6-flash"' \
-  '"agy-flash35": "gemini-3.5-flash"'; do
+  '"agy-flash36": "gemini-3.6-flash"'; do
   assert grep -Fq -- "$mapping" "$RB_CATALOG"
 done
 assert grep -Fq '"agy-pro": ("low", "high")' "$RB_CATALOG"
+assert grep -Fq '"agy-flash38": ("low", "medium", "high")' "$RB_CATALOG"
 assert grep -Fq '"agy-flash37": ("low", "medium", "high")' "$RB_CATALOG"
 assert grep -Fq '"agy-flash36": ("low", "medium", "high")' "$RB_CATALOG"
-assert grep -Fq '"agy-flash35": ("low", "medium", "high")' "$RB_CATALOG"
+# The retired 3.5 Flash family, pinned as ABSENT: the server answers a dropped id
+# `invalid model selection`, so a spelling that creeps back into the roster, the raters' grammar
+# or the tiers is a panel of cells that cannot answer. Prose about the retirement is allowed to
+# name it; a mapping key, a cell spelling and a rater alternative are not.
+assert test "$(grep -Fc '"agy-flash35"' "$RB_CATALOG")" -eq 0
+assert test "$(grep -Fc 'agy-flash35-' "$RB_CATALOG")" -eq 0
+assert test "$(grep -Fc 'agy-flash35' "$RB_RATERS")" -eq 0
+assert test "$(grep -Fc 'agy-flash35' "$REVIEW_ROOT/docs/DIAGNOSTICS.md")" -eq 0
 assert grep -Fq 'agy-pro-<low|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash38-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash37-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash35-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
 assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$RB_LAUNCH"
 assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
 assert doc_has '`agy-pro-high` → `--model "Gemini 3.1 Pro (High)"`'
+assert doc_has '`agy-flash38-<effort>` → `--model gemini-3.8-flash-<effort>`'
 assert doc_has '`agy-flash37-<effort>` → `--model gemini-3.7-flash-<effort>`'
 assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash-<effort>`'
-assert doc_has '`agy-flash35-<effort>` → `--model gemini-3.5-flash-<effort>`'
+assert doc_has 'retired from the roster whole rather than repointed'
+assert doc_has '`agy-flash35`/`gemini-3.5-flash` went that way'
+assert doc_has 'historical rows are keyed `flash35-<effort>`'
+assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
+assert grep -Fq 'return "flash35-" + rater[len(retired_flash):]' "$RB_RATERS"
+assert grep -Fq 'if cell.startswith("flash35-"):' "$REVIEW_ROOT/share/rbench/stats.py"
+# Every live Flash family the bench can launch has a tag arm: a family the statusline cannot name
+# shows the configured default instead of the model the run is actually spending.
+for agy_family in 3.8-flash:flash38 3.7-flash:flash37 3.6-flash:flash36; do
+  assert grep -Fq "*gemini-${agy_family%%:*}*) model=${agy_family##*:}" "$ROOT/bin/worker-tag-hook.sh"
+done
 assert doc_has 'Every cell omits `--effort`'
 assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--effort"')" -eq 0
 assert doc_has 'Antigravity review cell invocation mapping'
@@ -273,6 +306,7 @@ assert doc_has 'Antigravity review cell invocation mapping'
 GEMINI_AGENT="${GEMINI_WORKER_AGENT:-$HOME/.claude/agents/gemini-worker.md}"
 CODEX_AGENT="${CODEX_WORKER_AGENT:-$HOME/.claude/agents/codex-worker.md}"
 CLAUDEB_AGENT="${CLAUDEB_WORKER_AGENT:-$HOME/.claude/agents/claudeb-worker.md}"
+GROK_AGENT="${GROK_WORKER_AGENT:-$HOME/.claude/agents/grok-worker.md}"
 WORKER_COMMAND="${WORKER_COMMAND_FILE:-$HOME/.claude/commands/worker.md}"
 assert test -r "$GEMINI_AGENT"
 assert test -r "$CODEX_AGENT"
@@ -282,17 +316,55 @@ WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
 for arm in \
   "pro:high) agy_model='Gemini 3.1 Pro (High)' ;;" \
-  "pro:low) agy_model='gemini-3.1-pro-low' ;;" \
-  'flash36:high|flash36:medium|flash36:low) agy_model="gemini-3.6-flash-$effort" ;;' \
-  'flash35:high|flash35:medium|flash35:low) agy_model="gemini-3.5-flash-$effort" ;;'; do
+  "pro:low) agy_model='gemini-3.1-pro-low' ;;"; do
   assert test "$(grep -Fc -- "$arm" "$WORKER_RUN")" -eq 1
 done
+# No flash arm survives on the WORKER leg: a flash is a model no worker may run (row bq), and an
+# arm nothing can reach is an arm the next reader takes for a supported pair.
+assert test "$(grep -Ec 'flash3[0-9]*:(high|medium|low)' "$WORKER_RUN")" -eq 0
 assert grep -Fq '`gemini_model=pro`, and `gemini_effort=high`' "$WORKER_COMMAND"
-assert grep -Fq 'Valid combinations are pro high/low, flash36 high/medium/low, and flash35 high/medium/low' "$WORKER_COMMAND"
+assert grep -Fq 'The only valid combination is pro high/low' "$WORKER_COMMAND"
 assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}' "$WORKERPICK"
 assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}' "$WORKERPICK"
 assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
 assert doc_has 'Gemini worker knobs'
+
+# --- Row bq: allowed worker models -------------------------------------------
+# The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
+# after a model `worker-run` will refuse.
+WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
+PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
+assert test -r "$WORKER_MODEL_SH"
+for arm in \
+  "claudeb) printf 'opus\\n' ;;" \
+  "codex) printf 'gpt-5.6-sol\\n' ;;" \
+  "gemini) printf 'pro\\n' ;;" \
+  "grok) printf 'auto\\ngrok-4.6\\n' ;;"; do
+  assert test "$(grep -Fc -- "$arm" "$WORKER_MODEL_SH")" -eq 1
+done
+# Neither refusal spells a model of its own: both read the list through these functions.
+assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN"
+assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
+assert grep -Fq 'OUTCOME: MODEL_REFUSED' "$WORKER_RUN"
+assert grep -Fq 'worker_model_allows "$vendor" "$value"' "$PIN_GATE"
+assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
+assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-9]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
+# Refused BEFORE the account is resolved: a pick already made is quota already claimed.
+assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
+  -lt "$(grep -n 'warn_cold_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
+# Prose sites, each naming the same four allowed models and the refusal by name.
+for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" "$WORKER_COMMAND"; do
+  assert grep -Fq 'gpt-5.6-sol' "$site"
+  assert grep -Fq 'MODEL_REFUSED' "$site"
+done
+# The relay briefs may not offer a cheap model as a per-task MODEL: option.
+for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
+  assert test -r "$agent"
+  # The frontmatter `model:` is the RELAY's own model, not a model it may ask a worker to run.
+  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|fable|flash3[0-9]|gpt-5\.6-(terra|luna))')" -eq 0
+done
+assert doc_has 'Allowed worker models'
+assert doc_has 'claudeb `opus`, codex `gpt-5.6-sol`, gemini `pro`, grok `auto`'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
@@ -459,7 +531,7 @@ reserved_set() {
   sed -nE 's/^[[:space:]]*(main\|)?(\.\*\|\*\/\*\|)?([a-z|._-]*help[a-z|._-]*)\).*/\3/p' "$1" |
     head -n1 | tr '|' '\n' | grep -vE '^(main|\.\*|\*/\*)$' | sort -u | paste -sd' ' -
 }
-assert eq "$(reserved_set "$CLAUDEB")" "$(reserved_set "$REVIEW_ROOT/bin/claude-chat-switch")"
+assert eq "$(reserved_set "$CLAUDEB")" "$(reserved_set "$ROOT/bin/claude-chat-switch")"
 # Compared against the code's own set rather than a third hand-maintained copy, so adding a
 # subcommand cannot leave the invariant's prose behind.
 doc_reserved=$(sed -nE 's/.*`(help[a-z -]*token-upkeep)`.*/\1/p' "$ROOT/$DOC" |
@@ -516,9 +588,13 @@ assert grep -Fq 'cb_pin=$(conf claudeb_profile)' "$WORKERPICK"
 assert grep -Fq 'cx_pin=$(conf codex_profile)' "$WORKERPICK"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
 assert grep -Fq 'gr_pin=$(conf grok_profile)' "$WORKERPICK"
-assert grep -Fq '.name == $cx_pin and (.walled | not)' "$WORKERPICK"
-assert grep -Fq '.name == $gm_pin and (.walled | not)' "$WORKERPICK"
-assert grep -Fq '.name == $gr_pin and (.walled | not)' "$WORKERPICK"
+# `unavailable`, not `walled`: the wall is the usage verdict alone and dead auth is its own state
+# on the rows, so a pin test spelled against the wall would accept an account nobody can log into.
+assert grep -Fq '.unavailable = ((.auth_ok | not) or .walled)' "$WORKERPICK"
+assert grep -Fq '.name == $cx_pin and (.unavailable | not)' "$WORKERPICK"
+assert grep -Fq '.name == $gm_pin and (.unavailable | not)' "$WORKERPICK"
+assert grep -Fq '.name == $gr_pin and (.unavailable | not)' "$WORKERPICK"
+assert doc_has 'a state that is dead auth OR a usage wall'
 assert grep -Fq '(if $pin_account != null and $pin_account.auth_ok and' "$WORKERPICK"
 # The pin is the override ABOVE the pool (routing-contract rules 2 and 4), so its acceptance may
 # read neither the toggle nor the collector verdict that carries the toggle inside it.
@@ -545,10 +621,19 @@ done
 assert grep -Fq 'needs_user_entry:true' "$LLMLIMITS"
 assert grep -Fq 'needs_user_entry == true' "$HAMMER"
 assert grep -Fq 'split("; ")' "$LLMLIMITS"
-assert grep -Fq 'end))] | join("; "))}' "$LLMLIMITS"
-assert grep -Fq 'local parts, start, sep = {}, 1, "; "' "$HAMMER"
+assert grep -Fq 'join("; "))}' "$LLMLIMITS"
+assert grep -Fq 'def classify_cause:' "$LLMLIMITS"
+assert grep -Fq 'deactivated_workspace' "$LLMLIMITS"
+assert grep -Fq '"workspace deactivated"' "$LLMLIMITS"
+assert doc_has 'workspace deactivated'
+assert grep -Fq 'def apply_vendor_errors' "$LLMLIMITS"
+assert grep -Fq '.refresh_errors =' "$LLMLIMITS"
+assert grep -Fq 'appendRefreshErrorRows' "$HAMMER"
+assert eq "$(grep -c 'splitCauseEntries' "$HAMMER")" 0
 assert doc_has 'User-entry refresh classification'
-assert doc_has 'including multiple Claude auth failures, uses `"; "` between entries'
+assert doc_has 'Refresh error list'
+assert doc_has '`refresh_errors`'
+assert doc_has '`classify_cause`'
 
 rb_late_multiplier=$(grep -E '^REVIEW_LATE_MULTIPLIER = [0-9]+$' "$RB_REPORT" | awk '{print $3}')
 rb_late_floor_s=$(grep -E '^REVIEW_LATE_FLOOR_S = [0-9]+$' "$RB_REPORT" | awk '{print $3}')
@@ -631,8 +716,8 @@ assert eq "$(grep -c 'used_percentage' "$HAMMER")" 0
 assert grep -Fq 'announce_limits_probed' "$CLAUDEB"
 assert grep -Fq 'announce_suppressed' "$ROOT/share/account-announce.sh"
 assert grep -Fq 'LLM_LIMITS_ANNOUNCE_SUPPRESS=1' "$LLMLIMITS"
-# a pressed r in the status TUI is a user-explicit refresh — the token-freeze
-# experiment must not silently eat it
+# a pressed r in the status TUI is a user-explicit refresh — the robot-refresh
+# guard (row f) must not silently eat it
 assert grep -Fq 'export CLAUDEB_WARM_USER_EXPLICIT=true' "$CLAUDEB"
 assert doc_has 'One limits view'
 
@@ -678,20 +763,29 @@ assert grep -Fq 'review_text=${review_text#rev }' "$STATUSLINE"
 # The three words the gate switches on, printed nowhere else.
 assert grep -Fq 'print("none")' "$RB_DEBT"
 assert grep -Fq 'print(f"timed-out {hung}")' "$RB_DEBT"
-assert grep -Fq 'print(f"debt {len(debt)} {owner}{share}{left_out}")' "$RB_DEBT"
-assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$RB_DEBT"
+assert grep -Fq 'print(f"debt {len(owed)} {owner}{share}{left_out}")' "$RB_DEBT"
+assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session, closing_round))' \
+  "$RB_DEBT"
 assert doc_has '`debt <n> mine|other|unknown [<owned>] [(+<s> skipped)]`'
 # The share is the debt a `--debt` review leaves out, priced by the one reader that leaves it out:
 # a line quoting a number the scope never skipped is the mismatch the segment exists to end.
-assert grep -Fq 'others = len(debt_skipped_paths(repo, debt, session, buckets=buckets, claims=claims,' "$RB_DEBT"
-assert grep -Fq 'records=records, launchers=launchers))' "$RB_DEBT"
-assert grep -Fq 'others = debt_skipped_paths(repo, debt, session, covering=covering)' "$RB_DEBT"
+assert grep -Fq 'others = len(debt_scope(repo, session, links=links, closing_round=closing_round)[1])' \
+  "$RB_DEBT"
+assert grep -Fq 'return sorted(scope.items()), sorted(left_out - set(scope))' "$RB_DEBT"
 assert doc_has '`split <own> <foreign> <orphaned>`'
-# One number: the commit door (`--list`) and the statusline (`--split`) subtract what an open round
-# already read through ONE helper and with the same session, or a round hides paths from one reader
-# and not the other and the two surfaces disagree about the same repository.
-assert grep -Fq 'def debt_visible(repo, session, paths=None, **kw):' "$RB_DEBT"
-assert test "$(grep -c 'debt_visible(repo, session' "$RB_DEBT")" -ge 3
+# One number: every reader of this tool prices a tree through ONE helper and with the same session,
+# or a round hides paths from one surface and not the other and the two disagree about the same
+# repository. What an OPEN round has read is subtracted by exactly one FLAG — the commit door's
+# `--closing-round`, so that round's own fixing bytes do not wall the commit that closes it — and
+# by no other reader: the statusline, `--list` and the scope a `--debt` review computes all answer
+# what the tree owes, and given that flag they reported a clean repository over three hours of
+# worker output nothing had read (live, 2026-09-02).
+assert grep -Fq 'def tree_links(repo, tree, session="", paths=None, blobs=None, ranges=None, rows=None,' "$RB_DEBT"
+assert grep -Fq 'ranges = reviewed_ranges(repo, session, closing_round=closing_round) \' "$RB_DEBT"
+assert grep -Fq 'if session and closing_round else ()' "$RB_DEBT"
+assert grep -Fq -- '--closing-round' "$FLOW_GATE"
+assert grep -Fq 'if range_holds(link, ranges, reach):' "$RB_DEBT"
+assert test "$(grep -c 'tree_links(repo, tree, session' "$RB_DEBT")" -ge 3
 # An unresolvable repository is not a clean one. Both spellings, because the gate reads the machine
 # line and a human reads the other, and a `none`/`split 0 0 0` here is a clean bill nobody gave.
 assert grep -Fq 'print("split unknown")' "$RB_DEBT"
@@ -701,11 +795,12 @@ assert grep -Fq 'print("unknown")' "$RB_DEBT"
 # per-tree count, or as a number where a member went unread, is a smaller number saying nothing.
 assert doc_has '`--total` prints ONE integer'
 assert grep -Fq 'total = bool(getattr(args, "total", False))' "$RB_DEBT"
-assert grep -Fq 'print(debt_total(repo, session))' "$RB_DEBT"
-assert grep -Fq 'def debt_total(repo, session):' "$RB_DEBT"
+assert grep -Fq 'print(debt_total(repo, session, closing_round))' "$RB_DEBT"
+assert grep -Fq 'def debt_total(repo, session, closing_round=False):' "$RB_DEBT"
 # The counter is the review target header's, not a second differ: one edit priced two ways is two
 # numbers for one question, and the label is then arguing with the panel's own target line.
-assert grep -Fq 'changes, _ = _scope.diff_numstat(repo, [str(left), str(right)], no_index=True)' "$RB_DEBT"
+assert grep -Fq 'changes, _ = _scope.diff_numstat(' "$RB_DEBT"
+assert grep -Fq 'repo, [str(left_file), str(right_file)], no_index=True)' "$RB_DEBT"
 assert grep -Fq 'DEBT_LINE_CACHE_FILE = "debt-lines.json"' "$RB_DEBT"
 assert doc_has '`<state dir>/debt-lines.json`'
 # The owner word is what the gate switches on, so every word review-bench can print is named in
@@ -714,16 +809,16 @@ assert doc_has '`<state dir>/debt-lines.json`'
 # third field positionally would take `(+1` for an ownership word.
 assert grep -Fq 'owner = "mine" if owned else "other"' "$RB_DEBT"
 assert grep -Fq 'word = " unknown" if unowned or not foreign else ""' "$RB_DEBT"
-assert grep -Fq 'print(f"debt {len(debt)}{word}")' "$RB_DEBT"
+assert grep -Fq 'print(f"debt {len(owed)}{word}")' "$RB_DEBT"
 assert doc_has '`debt 2`'
 assert doc_has 'Nothing may parse positionally past the owner word'
 # The count is the whole debt on BOTH branches: the gate reads field two as the number of files it
 # names in its notice, and a line answering `0` over work nobody read is a clean bill nobody gave.
-assert test "$(grep -c 'print(f"debt {len(debt)}' "$RB_DEBT")" -eq 2
+assert test "$(grep -c 'print(f"debt {len(owed)}' "$RB_DEBT")" -eq 2
 # The line ends on the count and the ownership fields, and nothing may append a state word to it:
 # what a ROUND owes is asked of the round (`fork --check`), never read off the repository's count,
 # and a trailing word here is a second answer to that question for every reader of this line.
-assert test "$(grep -Ec 'print\(f"debt \{len\(debt\)\}[^"]*\{(standing|locked|decreed)' "$RB_DEBT")" -eq 0
+assert test "$(grep -Ec 'print\(f"debt \{len\(owed\)\}[^"]*\{(standing|locked|decreed)' "$RB_DEBT")" -eq 0
 assert doc_has 'No state word ever follows it'
 if test -r "$FLOW_GATE"; then
   assert grep -Fq 'if [ "${1:-}" = verdict ]; then' "$FLOW_GATE"
@@ -798,6 +893,32 @@ assert grep -Fq 'rj_append "$1" "$launcher" "$3" "$4" "$5" "$6"' "$RJOURNAL"
 assert eq "$(grep -c 'rj_launch_chain_of "$2"' "$RJOURNAL")" 1
 assert test -z "$(grep -n '\$(rj_launcher_of' "$RJOURNAL")"
 assert grep -Fq 'rj_launch_chain_of() { # session -> RJ_LAUNCH_CHAIN' "$RJOURNAL"
+# The chain's FIRST hop is the environment `worker-run` stamps at launch, and only then the run
+# record: a fresh relay's own session id is not printed until its CLI exits, so the record's
+# pairing lands after every row the worker journaled while it ran (live run
+# claudeb-1788388059-13078-3ffd, 2026-09-03). One stamping point for every relay, since each
+# inherits the export — an image script, a pool-run cell and a nested worker-run included.
+assert grep -Fq 'export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID"' "$WORKER_RUN"
+assert grep -Fq 'rj_env_launcher() { # session' "$RJOURNAL"
+assert grep -Fq 'hop=$(rj_env_launcher "$id") || {' "$RJOURNAL"
+# Read for the session this process IS and for no other: pointed at another run's launcher by the
+# worker sweep, the same environment names the SWEEPER's chat.
+assert grep -Fq '[ -n "$RJ_SELF_SESSION" ] && [ "$1" = "$RJ_SELF_SESSION" ] || return 1' "$RJOURNAL"
+assert grep -Fq 'RJ_SELF_SESSION=$chat_session' "$CLAUDE_SETUP/hooks/commit-journal.sh"
+# And a relay worker's own row that names no chat is LOUD rather than an orphan: stderr under a
+# non-zero exit, which is the one channel a PostToolUse reaches a model through.
+assert grep -Fq 'RJ_UNATTRIBUTED=$6' "$RJOURNAL"
+assert grep -Fq 'rj_in_relay() {' "$RJOURNAL"
+assert grep -Fq 'if [ -n "$RJ_UNATTRIBUTED" ]; then' "$CLAUDE_SETUP/hooks/commit-journal.sh"
+assert eq "$(sed -n '/^if \[ -n "\$RJ_UNATTRIBUTED" \]; then/,/^fi/p' \
+  "$CLAUDE_SETUP/hooks/commit-journal.sh" | grep -c 'exit 2')" 1
+# And the READER answers off those rows rather than off the run records alone, or a chat's own
+# live worker reads as a stranger for the whole window the work is being done in: the record
+# pairing the two ids lands when the run ends.
+assert grep -Fq 'def content_coowners(repo, rows=None):' "$REVIEW_ROOT/share/rbench/debt.py"
+assert grep -Fq 'together = content_coowners(repo)' "$REVIEW_ROOT/share/rbench/debt.py"
+assert grep -Fq 'named = {producer} | together.get((path, link["cur"]), set())' \
+  "$REVIEW_ROOT/share/rbench/debt.py"
 # Each of those chats is written into the per-session repository index too, or `debt-total`
 # enumerates the worker's repositories and drops the tree the chat only reached through it.
 assert grep -Fq 'rj_register_repo "$launcher"' "$RJOURNAL"
@@ -828,7 +949,7 @@ if test -r "$COMMIT_REPORT"; then
   # Every repository the snapshot names, whatever the call's output parsed to: the block this hook
   # renders reads ONE repository, and gated on it a commit in any other took no debt row at all.
   assert grep -Fq '[ -n "$HEAD_SNAPSHOT" ] && snapshot_creates_commits &&' "$COMMIT_REPORT"
-  assert grep -Fq 'stamp_landed_debt "$session" "$HEAD_SNAPSHOT"' "$COMMIT_REPORT"
+  assert grep -Fq 'cover_landed_fixes "$session" "$HEAD_SNAPSHOT"' "$COMMIT_REPORT"
   # Only a call that CREATES commits may have its range stamped, and the gate is what says which
   # kind armed the snapshot: `git pull` moves HEAD over commits other people wrote, and stamped as
   # this call's it puts an upstream author's paths into this chat's review scope.
@@ -842,20 +963,24 @@ if test -r "$COMMIT_REPORT"; then
   # commits a pull brings, and only a commit carrying a second parent was made by the call.
   assert grep -Fq 'if [ "${SNAPSHOT_KIND:-commit}" = merge ]; then' "$COMMIT_REPORT"
   assert grep -Fq 'git -C "$1" rev-list --no-walk --merges --stdin' "$COMMIT_REPORT"
-  # One filter for every reader of this call's commits — the debt stamp and the fix coverage — or a
-  # commit that closes a round is one the debt journal never saw.
+  # One filter for every reader of this call's commits — the fix coverage and the commit block the
+  # outbox queues — or a commit that closes a round is one the block never named.
   assert grep -Fq 'own_landed_commits() { # top pre' "$COMMIT_REPORT"
-  assert eq "$(grep -c 'own_landed_commits "\$top" "\$pre"' "$COMMIT_REPORT")" 2
+  assert eq "$(grep -c 'own_landed_commits "\$top" ' "$COMMIT_REPORT")" 2
   assert grep -Fq '[ "$top" = "$RJ_SNAPSHOT_KIND" ] && continue' "$COMMIT_REPORT"
-  # A merge answers with nothing at all unless the diff is taken against its FIRST parent, so
-  # every path a merge brought to this line went into no debt row. ONE walk for the whole call and
-  # not a `git log` per commit, which is what makes the absence of a cap below cost one process.
-  assert grep -Fq 'git -C "$top" log --no-walk --first-parent --format="%H$tab%ct" --name-status -M -z --stdin' \
-    "$COMMIT_REPORT"
-  # And the debt sweep does not truncate: a cap here is ownership dropped for every commit past it,
+  # ONE walk for the whole call and not a `git log` per commit, which is what makes the absence of
+  # a cap below cost one process. `--raw --no-abbrev` because the row IS the pair of blobs and a
+  # name-status walk knows only that something changed; `-m` because a merge answers an unqualified
+  # diff with nothing at all, and walked against BOTH parents what it merely took from a parent is
+  # already named by the row that produced it while the resolution it wrote is named by no other.
+  assert grep -Fq \
+    'git -C "$1" log --no-walk --raw -m --no-abbrev --no-renames -z --format=%H --stdin' \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  # And the debt walk does not truncate: a cap there is ownership dropped for every commit past it,
   # permanently and silently. The cap survives for `fixes --cover` alone, where the cost is N
   # review-bench subprocesses inside a hook and the loss is a round staying open — the safe way.
-  assert eq "$(awk '/^stamp_landed_debt\(\) \{/,/^\}/' "$COMMIT_REPORT" | grep -c LANDED_CAP)" 0
+  assert eq "$(awk '/^walk_landed\(\) \{/,/^\}/' "$CLAUDE_SETUP/hooks/commit-journal.sh" |
+    grep -cE 'head -n|_CAP')" 0
   assert grep -Fq 'fixes_truncation_note() { # top count' "$COMMIT_REPORT"
   assert eq "$(grep -c 'head -n "\$LANDED_CAP"' "$COMMIT_REPORT")" 1
   # One snapshot per CALL: a chat runs Bash calls concurrently, and one name for all of them let the
@@ -893,19 +1018,26 @@ if test -r "$COMMIT_REPORT"; then
     <(grep -A1 -F 'rj_session_repos() { # session' \
       "$CLAUDE_SETUP/hooks/lib/review-journal.sh")
   assert grep -Fq 'rj_register_repo() { # session top' "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
-  # Every append under an owner registers, or debt born at that site reaches no pool: the chat's own
-  # edits, the worker sweep's deferred rows, the gate's commit-point names, and the debt a commit
-  # inside one Bash call lands.
-  assert grep -Fq 'rj_register_repo "$session" "$top" || :' "$CLAUDE_SETUP/hooks/commit-journal.sh"
-  assert eq "$(grep -c 'rj_register_repo' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 4
-  assert grep -Fq 'rj_register_repo "$session" "$top_dir" || :' "$FLOW_GATE"
-  assert grep -Fq 'rj_register_repo "$own" "$top" || :' "$COMMIT_REPORT"
+  # Registered behind the ONE door every row is written through, or debt born at that site reaches
+  # no pool: the chat's own edits, the commits a call lands and a run record's imported rows all go
+  # through it. Plus the trees a call merely REACHED, which no row of its own may ever name — a
+  # snapshot answers for the repositories a call SPELLED, and this index is what outlives them.
+  # Neither the gate nor the report registers anything: they write no row (block above), and a
+  # reader that indexed a repository would put a chat in the pool over debt it never produced.
+  assert grep -Fq 'rj_register_repo "$3" "$2" || :' "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  assert grep -Fq 'rj_register_repo "$session" "$row_top" || :' \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  assert eq "$(grep -c 'rj_register_repo' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 2
+  assert eq "$(grep -cE '^[[:space:]]*rj_register_repo' "$FLOW_GATE")" 0
+  assert eq "$(grep -cE '^[[:space:]]*rj_register_repo' "$COMMIT_REPORT")" 0
   assert grep -Fq 'snapshot_file=$(rj_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
   # What the call landed is the range between the HEAD the gate wrote down before it and this one,
-  # per repository: git's summary lines are silent for a quiet commit and for a repository the
-  # command never printed, and a clock over a bare HEAD answers for a co-tenant's commit as readily.
-  # One snapshot per call, consumed here — nothing may keep a marker of what it reported instead.
-  assert grep -Fq 'shas=$(landed_commits "$1" "$2")' "$COMMIT_REPORT"
+  # narrowed by the snapshot's mtime: a checkout inside the call can otherwise add an older branch's
+  # whole existing history. Both consumers use the one helper from the shared library.
+  assert grep -Fq 'rj_window_start() { # snapshot-file' "$RJOURNAL"
+  assert eq "$(grep -c 'rj_window_start' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 2
+  assert grep -Fq 'SNAPSHOT_WINDOW_START=$(rj_window_start "$snapshot_file")' "$COMMIT_REPORT"
+  assert grep -Fq 'shas=$(landed_commits "$1" "$2" "${3:-}")' "$COMMIT_REPORT"
   assert grep -Fq 'git -C "$1" log --first-parent --format=%H "$range"' "$COMMIT_REPORT"
   # `--amend` and a rebase REPLACE the commit the snapshot named: required to descend from it, the
   # hook enumerated nothing and the amend that landed was answered for by nobody. Shared history is
@@ -970,35 +1102,25 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'landing=$(rj_git_lands_commit "$cmd") || landing=""' "$FLOW_GATE"
   assert grep -Fq 'git_subcommand commit && kind=commit' "$FLOW_GATE"
   assert grep -Fq 'if [ -z "$verdict_mode" ] && [ "${kind:-}" != commit ]; then' "$FLOW_GATE"
-  # A worktree shares its parent's object store, so resolving a sha there is not evidence its
-  # content ever landed in that tree.
-  assert grep -Fq 'git -C "$top" merge-base --is-ancestor "$full" HEAD' "$COMMIT_REPORT"
-  assert grep -Fq 'full=$(git -C "$top" rev-parse --verify --quiet "$sha^{commit}" 2>/dev/null)' \
-    "$COMMIT_REPORT"
-  # And a run whose own listing cannot answer for its files answers with its whole workdir only
-  # while it may still be writing, since its own sweep will resolve them. A FINAL record claims
-  # nothing beyond what its listing names: no sweep of it will ever name the rest, and a chat
-  # answers for a path only through a record that NAMES it. Inherited off the run's dirt instead,
-  # a workdir that is normally the whole repository took every commit made in that checkout.
-  assert grep -Fq 'scope="DIR: ${directory##*/}"' "$COMMIT_REPORT"
-  assert grep -Fq 'rj_run_final "$directory" && continue' "$COMMIT_REPORT"
+  # And a run record claims nothing beyond what it NAMES: its own `produced` rows, or its listing
+  # where it wrote none. Its DIRT is a whole-checkout difference over a shared tree, so every
+  # co-tenant's edit stands in it too, and its WORKDIR is normally the whole repository — inherited
+  # off either, one listless record took the paths of every commit anybody made in that checkout.
+  assert grep -Fq 'if [ -f "$directory/produced" ]; then' "$CLAUDE_SETUP/hooks/commit-journal.sh"
+  assert eq "$(grep -cE '"\$(directory|1)/dirty"' \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh")" 0
   assert test -z "$(grep -nwE 'heir|HEIR' "$COMMIT_REPORT" \
     "$CLAUDE_SETUP/hooks/commit-journal.sh" 2>/dev/null)"
   # `journaled` says the record has been READ, and nothing outranks it here: the retired record is
   # closed to this scan, and what it never named is nobody's rather than the next committer's.
-  assert grep -Fq '[ -e "$directory/journaled" ] && continue' "$COMMIT_REPORT"
+  assert grep -Fq '[ -e "$directory/journaled" ] && continue' \
+    "$CLAUDE_SETUP/hooks/commit-journal.sh"
   # A commit takes a row only for a `cur` NO row names yet: a merge, a cherry-pick and a rebase land
   # blobs their author already produced, and the first row wins. No epoch decides it any more —
   # comparing a stamp against the commit's own `%ct` handed a worker's file to whoever was committing
   # beside it whenever the two landed in one second.
   assert doc_has 'It passes over a transition whose `cur` some row already names'
-  assert eq "$(grep -c '\-ge "\$ct"' "$COMMIT_REPORT")" 0
-  assert grep -Fq 'claimed=$'"'"'\n'"'"'$(run_claims "$own")' "$COMMIT_REPORT"
-  # A path passed over on a DIR claim is left to a sweep that names no path at all for a run ending
-  # unable to list its files: written down beside the run record with the committing chat, it is
-  # journalled under that chat when the record is swept naming none of it, never under nobody.
-  assert grep -Fq 'defer_path "${dir_ids[index]}" "$top" "$path"' "$COMMIT_REPORT"
-  assert grep -Fq "printf '%s\\t%s\\t%s\\n' \"\$4\" \"\$2\" \"\$3\" >>\"\$dir/deferred-paths\"" "$COMMIT_REPORT"
+  assert eq "$(grep -c '\-ge "\$ct"' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 0
 fi
 JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
@@ -1025,8 +1147,10 @@ if test -r "$JOURNAL_LIB"; then
   assert eq "$(grep -c 'newest = max((epoch' "$RB_DEBT")" 0
   # Rewriters may not replace an inode a raw append just landed on: every swap is size-guarded.
   assert grep -Fq 'rj_swap() { # file tmp snap_size' "$JOURNAL_LIB"
-  if test -r "$FLOW_GATE"; then
-    assert grep -Fq 'rj_swap "$journal" "$scratch" "$snap_size"' "$FLOW_GATE"
+  # The report's own sanitizing rewrite is the one rewriter left outside the library — the gate
+  # writes no row and prunes none, so it swaps nothing.
+  if test -r "$COMMIT_REPORT"; then
+    assert grep -Fq 'rj_swap "$journal" "$tmp" "$snap_size"' "$COMMIT_REPORT"
   fi
 fi
 
@@ -1451,8 +1575,13 @@ assert grep -Fq 'elif $vendor == "gemini" or $vendor == "grok" then empty' "$LLM
 # Grok's expired access token is work a tick can do and Claude's is not; spelling that split in
 # prose alone is what left an expired grok row unrefreshed for hours.
 assert grep -Fq '$status == "failed" or ($status == "expired" and $vendor != "grok")' "$LLMREFRESH"
-assert grep -Fq 'exec models' "$LLMREFRESH"
+# One touch path: the collector's deliberate refresh runs it, so the heartbeat tick and the menu's
+# Hard refresh share it, and the daemon itself never runs the vendor CLI for grok.
+assert grep -Fq 'exec models' "$LLMLIMITS"
+assert eq "$(grep -c 'exec models' "$LLMREFRESH")" 0
+assert grep -Fq 'LLM_LIMITS_GROK_TOUCH_TIMEOUT:-30' "$LLMLIMITS"
 assert doc_has 'grokb <account> exec models'
+assert doc_has '`LLM_LIMITS_GROK_TOUCH_TIMEOUT` (`30`s)'
 assert grep -Fq 'opencode-go' <<<"$(grep -F 'opencode_go=' "$LLMREFRESH")"
 assert grep -Fq 'wall-check' "$LLMREFRESH"
 assert grep -Fq '.vendors.opencode.accounts[]? | select(.walled == true)' "$LLMREFRESH"
@@ -1651,10 +1780,15 @@ assert grep -Fq 'mv -f "$directory/files.tmp.$$" "$directory/files"' "$WORKER_RU
 # repository answers for. One spelling across the writer and both readers, or the launching chat
 # commits its worker's work with no debt on it — which is exactly how it went in live (2026-08-20).
 assert grep -Fq '>>"$directory/worker-session"' "$WORKER_RUN"
-assert grep -Fq '[ "$vendor" = claudeb ] || return 0' "$WORKER_RUN"
+# EVERY vendor's session, not claudeb's alone: grok loads this machine's hooks out of
+# `~/.claude/settings.json` for Claude compatibility and journals under its own id, and gated on
+# claudeb those rows read as a chat nothing here answers for (live 2026-09-03).
+assert eq "$(sed -n '/^record_worker_session()/,/^}/p' "$WORKER_RUN" |
+  grep -c '= claudeb \] || return 0')" 0
+assert grep -Fq 'session=$(session_id "$directory")' "$WORKER_RUN"
 # The third reader: a waiver naming no path must drop the files a co-tenant's worker run claims,
 # which it can only do by looking in the same directory the other two sweep.
-CHATNAMES="$REVIEW_ROOT/share/chat_names.py"
+CHATNAMES="$ROOT/share/chat_names.py"
 rb_run_root=$(sed -n '/^def worker_run_root():/,/^$/p' "$CHATNAMES" |
   sed -n 's|.*Path.home() / "\(.*\)" / "\(.*\)")$|\1/\2|p' | head -1)
 worker_run_root=$(grep -oE 'WORKER_RUN_DIR:-\$HOME/[^}]*' "$WORKER_RUN" | head -1 | sed 's|.*\$HOME/||')
@@ -1684,8 +1818,9 @@ assert rb_all_have 'listing="dirty"' "$RB_STORE" "$RB_ROUND"
 # path `git status` alone knows about hands one chat a waiver over another's work, and answers for
 # a co-tenant's commits on that chat's own statusline (live 2026-08-25).
 assert eq "$(sed -n '/^def run_record_claims/,/^def /p' "$RB_STORE" | grep -c 'dirty')" 0
-assert eq "$(sed -n '/^def debt_ownership/,/^def /p' "$RB_DEBT" | grep -c 'dirt')" 0
-assert grep -Fq 'named = _store.journal_paths(repo) | set(claims) | set(dirty)' "$RB_DEBT"
+assert eq "$(sed -n '/^def tree_links/,/^def /p' "$RB_DEBT" | grep -c 'dirt')" 0
+assert grep -Fq 'named |= set(_store.run_dirty_paths(repo) if dirty is None else dirty)' "$RB_DEBT"
+assert grep -Fq 'owner=producer if status == LINK_OWED else "",' "$RB_DEBT"
 assert doc_has '`<run-dir>/dirty`'
 assert doc_has '`<run-dir>/dirty-before`'
 # The CONTENT half of the record: the commit the tree stood on at launch, and one row per link the
@@ -1715,9 +1850,13 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # What it could NOT record goes to the model too: a PostToolUse stderr on exit 0 reaches nobody
   # who could review, waive or hand on the files it names.
   assert grep -Fq 'emit_terminal_notes' "$COMMIT_JOURNAL"
-  assert grep -Fq 'session=$owner' "$COMMIT_JOURNAL"
+  # The record's owner is what every row it yields is written UNDER, handed to the importer as an
+  # argument: read off the sweeping chat's own session instead, a dead worker's files land in the
+  # ledger of whichever chat happened to take the tool call that swept it.
+  assert grep -Fq 'journal_produced "$directory" "$owner" "$journal_dir"' "$COMMIT_JOURNAL"
+  assert grep -Fq 'journal_listed "$directory" "$owner" "$journal_dir"' "$COMMIT_JOURNAL"
   assert grep -Fq "sed -n 's/^WORKDIR: //p' \"\$listing\"" "$COMMIT_JOURNAL"
-  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'WORKDIR: '*|'') ;;" "$COMMIT_JOURNAL"
+  assert grep -Fq "'UNKNOWN: '*|'PARTIAL: '*|'WORKDIR: '*|'') continue ;;" "$COMMIT_JOURNAL"
   # A record about ANOTHER chat's run is that chat's to act on: whoever sweeps it leaves the
   # sentence in the OWNER's spool, since printed here it reaches a reader who can do nothing with
   # it while the chat whose files are named nowhere never hears of them at all.
@@ -1727,33 +1866,25 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # into a file about to be deleted, and that sentence is the only record that some chat's files are
   # named nowhere.
   assert grep -Fq 'if mv -f "$spool" "$taken" 2>/dev/null; then' "$COMMIT_JOURNAL"
-  # The deferred paths of a run are read on every call, retired record or not: `journaled` closes
-  # the sweep below to it, and a commit deferring a path lands after that marker as readily as
-  # before it. Consumed by the same move-aside, so a report appending mid-read loses nothing.
-  assert grep -Fq 'consume_deferred "$directory" "$owner"' "$COMMIT_JOURNAL"
-  # ...but never before the run can no longer change: the listing that decides who answers for the
-  # path is written at the run's end, and consumed early a path it is about to name is nobody's for
-  # good. And decided by that listing alone — the workdir the commit was passed over on is a
-  # promise that this run's sweep will name the path, never evidence that the run wrote it, and
-  # taken as evidence it made every co-tenant's commit under a repository-wide workdir that chat's
-  # work (live 2026-08-25). What no listing names is stamped with an EMPTY session, which is the
-  # journals' own spelling for a path in debt that no record answers for (`journal_entries`).
-  assert grep -Fq '[ -e "$1/journaled" ] || rj_run_final "$1" || return 0' "$COMMIT_JOURNAL"
-  assert grep -Fq 'run_listing_names "$1" "$absolute" && mine=1' "$COMMIT_JOURNAL"
-  # The run's own content answer is taken where it stands: re-derived from `files` and the floor for
-  # a run that already named its links, the sweep prices the same work a second time and can only
-  # disagree with the record about it.
+  # The run's own content answer is taken where it stands: re-derived from a tree that has moved on
+  # since, the sweep prices the same work a second time and can only disagree with the record.
   assert grep -Fq '"$directory/produced"' "$COMMIT_JOURNAL"
-  # The record's own three fields, and the LEDGER they land in: the directory is the resolver's to
-  # name (row `bd`), the file name is not — stamped into the commit journal instead, an ownership
-  # record is read by nobody pricing debt while the guard that let it through still passes.
-  assert grep -Eq 'rj_append_owned "[^"]*\$RJ_DEBT_JOURNAL" "\$3" "\$now" "\$2"' "$COMMIT_JOURNAL"
-  assert grep -Fq 'stamp_deferred "$1" "$2" ""' "$COMMIT_JOURNAL"
+  # A row with NO owner is refused at the door: the blank owner field is the legacy rows' spelling
+  # for nobody's, and a fresh row wearing it is content the reader prices and can hand to no chat.
+  assert grep -Fq '[ -n "$3" ] || return 1' \
+    <(grep -A1 -F 'journal_row() { # journal top owner prev cur relative' "$COMMIT_JOURNAL")
+  # The record's own fields, and the LEDGER they land in: a transition one of the run's own COMMITS
+  # landed is the debt ledger's, everything else the commit journal's, and a debt row stamped into
+  # the commit journal is read by nobody pricing debt.
+  assert grep -Fq 'journal_row "$1/$RJ_DEBT_JOURNAL" "$2" "$3" "$4" "$5" "$6" || return 1' \
+    "$COMMIT_JOURNAL"
+  assert grep -Fq 'journal_commit_row "$3" "$RUN_TOP" "$2" "$prev" "$cur" "$relative"' \
+    "$COMMIT_JOURNAL"
   # Including the note about a listing no workdir can anchor: keyed and printed under the SWEEPING
   # chat it is spent on a marker the owner never sees and read by a chat that can do nothing about
-  # it, while the one whose files are named nowhere never hears of them.
-  assert eq "$(grep -c '^          "\$owner"$' "$COMMIT_JOURNAL")" 1
-  assert grep -Fq 'mv -f "$file" "$taken" 2>/dev/null || return 0' "$COMMIT_JOURNAL"
+  # it, while the one whose files are named nowhere never hears of them. Every note a record earns
+  # carries it, bar the one whose record names no usable owner to carry.
+  assert eq "$(grep -c '^        "\$owner"$' "$COMMIT_JOURNAL")" 2
   assert grep -Fq 'liveness=$(rj_run_liveness "$1")' "$JOURNAL_LIB"
   # ...with one release from that rule: a record whose liveness stays unknown can never be answered
   # for — no launch stamp to compare, or a `ps` that lists no process at all — so past a couple of
@@ -1762,17 +1893,22 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq '[ "$liveness" = unknown ] || return 1' "$JOURNAL_LIB"
   assert grep -Fq 'RJ_RUN_STALE_AFTER=172800' "$JOURNAL_LIB"
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
-  # A final record that will never gain a listing is retired unread: there is nothing left to
-  # import, and its readers hold the whole workdir as pending while it sits there.
-  assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 3
+  # A final record that will never name a file is retired unread: there is nothing left to import,
+  # and its readers hold the whole workdir as pending while it sits there. One per terminal ground
+  # — no usable owner, no `produced` and no listing, no workdir a repository holds — plus the one
+  # after a sweep that recorded everything it read.
+  assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 4
   # Retired is not resolved, and nothing inherits what the record never named: no heir file is
   # written, and a path the run never listed is nobody's rather than the next committer's or the
   # launcher's (live 2026-08-24, 2026-08-25).
   assert test -z "$(grep -nwE 'heir|HEIR' "$COMMIT_JOURNAL" 2>/dev/null)"
-  # The other writer of the debt journal, and the earlier one: ownership is stamped at the edit,
-  # since a commit that arms no notice would otherwise land debt owed by nobody. Per EDIT, and
-  # through the owned writer, which is what puts the launcher's own row in beside a worker's.
-  assert grep -Eq 'rj_append_owned "[^"]*\$RJ_DEBT_JOURNAL" "\$session" "\$now" "\$relative"' \
+  # The other door of the same writer, and the earlier one: what THIS call produced is recorded off
+  # the content snapshot at the call, under the session that ran it, since a commit that arms no
+  # notice would otherwise land content owed by nobody. Into the COMMIT journal — a call's own edit
+  # becomes debt only where a commit lands it — and through the same one door, which is what puts
+  # the launcher's own row in beside a worker's.
+  assert grep -Fq \
+    'journal_row "$journal_dir/$RJ_COMMIT_JOURNAL" "$top" "$session" "$prev" "$cur" "$path"' \
     "$COMMIT_JOURNAL"
 else
   fail "worker files reach the launching chat: $COMMIT_JOURNAL is unreadable (set CLAUDE_SETUP_ROOT)"
@@ -1796,15 +1932,6 @@ if [ -r "$REVIEW_GATE" ]; then
   assert eq "$(grep -c 'fold_listing' "$REVIEW_GATE")" 3
 else
   fail "the gate reads the same run records: $REVIEW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
-fi
-if [ -r "$COMMIT_REPORT" ]; then
-  # The one sentence a reader gets about a record that has not finished naming its own files, and
-  # the only one: said after the commit, over the paths that commit carried. It carries the
-  # record's own liveness and age, or a run held live by a supervisor still running and one held
-  # live by a `ps` that answered nothing read identically to the chat deciding whether to wait.
-  assert grep -Fq 'liveness=$(rj_run_liveness "$runs/$1")' "$COMMIT_REPORT"
-  assert grep -Fq 'evidence="$liveness${age:+, started $age ago}"' "$COMMIT_REPORT"
-  assert grep -Fq 'has not finished naming its own files' "$COMMIT_REPORT"
 fi
 
 # --- Row an: launching-chat pid walk ------------------------------------------
@@ -1909,9 +2036,11 @@ done <<<"$doctor_ages"
 # A chat is shown under the name Claude Code gave it and under nothing else. Two consumers name
 # chats and a third store (the harness session records) holds a name that looks like one and is
 # not, so a second reading of any of it is how an invented name reaches Egor.
-CHATFIND="$REVIEW_ROOT/bin/chat-find"
+CHATFIND="$ROOT/bin/chat-find"
 assert doc_has 'One resolver names every chat'
-assert doc_has '`../review-bench/share/chat_names.py`'
+assert doc_has 'one implementation, `share/chat_names.py`'
+assert test -f "$ROOT/share/chat_names.py"
+assert test ! -e "$REVIEW_ROOT/share/chat_names.py"
 assert grep -Fq 'from chat_names import' "$CHATFIND"
 assert test -n "$(grep -rlF 'from chat_names import' --include='*.py' "$RB_PKG")"
 # The transcript ROOTS are part of that one reading: every chat here lives under a claudeb profile,
@@ -1922,10 +2051,10 @@ assert test -z "$(grep -rl '"\.claude" / "projects"' --include='*.py' "$RB_PKG")
 # The shell surfaces name a chat through the same resolver, over one entry point rather than a
 # reading of their own: a hook that scanned a transcript for itself is a second answer to the
 # question this row exists to keep single.
-CHATNAME="$REVIEW_ROOT/bin/chat-name"
+CHATNAME="$ROOT/bin/chat-name"
 assert test -x "$CHATNAME"
 assert grep -Fq 'from chat_names import chat_label, chat_name, resolve_session, short_session' "$CHATNAME"
-assert doc_has '`../review-bench/bin/chat-name`'
+assert doc_has '`bin/chat-name`'
 CHAT_NAME_NOTICE="$CLAUDE_SETUP/hooks/stop.d/notice-chat-names.sh"
 if [ -r "$CHAT_NAME_NOTICE" ]; then
   assert eq "$(grep -c 'aiTitle\|customTitle\|nameSource' "$CHAT_NAME_NOTICE")" 0
@@ -1964,11 +2093,21 @@ LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$HOME/.claude/hooks/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
 gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
   grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go)' | sort -u | paste -sd' ' -)
-for launcher in worker-run review-bench llm-limits claude-session-driver codex-image gemini-image grok-image opencode-go; do
+for launcher in worker-run review-bench llm-limits claude-session-driver opencode-go; do
   assert grep -Fq "\`$launcher\`" "$ROOT/$DOC"
   assert grep -Fq "$launcher" "$LAUNCH_GATE"
 done
-assert eq "$gate_sanctioned" 'claude-session-driver codex-image gemini-image grok-image llm-limits opencode-go review-bench worker-run'
+assert eq "$gate_sanctioned" 'claude-session-driver llm-limits opencode-go review-bench worker-run'
+# The OWNED launchers are sanctioned only in the hand that owns them, so each has a regex of its
+# own and NONE of them may reappear in SANCTIONED_RE — named there, an image would be generated
+# from any chat's Bash with nothing rendering the account it spent. The extraction above still
+# reads the `-image` shape, so a re-added one breaks that equality rather than passing unseen.
+for owned in codex-image gemini-image grok-image; do
+  assert grep -Fq "\`$owned\`" "$ROOT/$DOC"
+done
+assert grep -Eq '^OWNED_IMAGE_RE=.*\(codex\|gemini\|grok\)-image' "$LAUNCH_GATE"
+assert grep -Eq '^OWNED_RUN_RE=.*worker-run.*\(start\|wait\)' "$LAUNCH_GATE"
+assert doc_has 'sanctioned only in the hand that owns them'
 # `claudeb revive` and `claudeb warm` are subcommands, not binaries: the gate must not exempt every
 # `claudeb` line, or the bare launch it exists to deny walks straight through.
 assert grep -Fq 'claudeb[[:space:]]+(revive|warm)' "$LAUNCH_GATE"
@@ -2134,7 +2273,7 @@ for grok_knob_hook in "$SPAWN_HOOK" "$GROK_TAG_HOOK"; do
 done
 assert grep -Fq 'wv_model=${grok_model:-auto}; [ "$wv_model" != auto ] || wv_model=""' "$STATUSLINE"
 assert grep -Fq 'wv_effort=${grok_effort:-high}' "$STATUSLINE"
-assert grep -Fq '`grok_model=auto|<model id>` and `grok_effort=low|medium|high|xhigh`' "$WORKER_COMMAND"
+assert grep -Fq '`grok_model=auto` and `grok_effort=low|medium|high|xhigh`' "$WORKER_COMMAND"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
 
@@ -2150,9 +2289,16 @@ assert grep -Fq 'statusline_cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/clau
 assert grep -Fq 'os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/claude-statusline")' "$CHATS"
 assert grep -Fq 'track="$statusline_cache_dir/cache-ttl-track-$session_id"' "$STATUSLINE"
 assert grep -Fq '"cache-ttl-track-" + row["session"]' "$CHATS"
-# The two field positions the reader counts on, and the `?` that is no account.
-assert grep -Fq 'if len(fields) < 7 or fields[0] != "v2" or fields[6] != row.get("uuid") or fields[2] == "?":' "$CHATS"
-assert grep -Fq 'return fields[2]' "$CHATS"
+# The two field positions the reader counts on, named once, and the `?` that is no account. That
+# the positions are the writer's own is pinned printf-to-reader by tests/test_chats.sh.
+assert grep -Fq 'TRACK_TS, TRACK_ACCOUNT = 1, 2' "$CHATS"
+assert grep -Fq 'if len(fields) <= TRACK_ACCOUNT or fields[0] != "v2" or fields[TRACK_ACCOUNT] == "?":' "$CHATS"
+assert grep -Fq 'return fields[TRACK_ACCOUNT]' "$CHATS"
+assert doc_has 'field 2 is the account the STAMPED reply went through'
+# The listing and the statusline stamp different replies, so the reader compares stamps rather
+# than demanding the same uuid — a chat that ended on a tool call has no matching one.
+assert grep -Fq 'if seen + 1 < spoke:' "$CHATS"
+assert grep -Fq 'row["until"] = max(spoke, seen) + ttl' "$CHATS"
 # One spelling of the bucket key per language, and a new bucket must need neither edited.
 assert doc_has '`ephemeral_<n><m\|h>_`'
 assert eq "$(grep -c 'capture("ephemeral_(?<n>\[0-9\]+)(?<u>\[mh\])_")' "$STATUSLINE")" 2
@@ -2161,9 +2307,18 @@ assert grep -Fq 're.match(r"ephemeral_(\d+)([mh])_", key)' "$CHATFIND_LEGS"
 # --- Row bl: the daily budget formula ----------------------------------------
 # The metric that ranks accounts and vendors is defined once. A consumer that re-derives either
 # number ranks on a second formula nothing else shares.
-for view_def in limits_days_remaining limits_daily_budget; do
+for view_def in limits_days_remaining limits_daily_budget limits_budget_days; do
   assert eq "$(grep -c "^def $view_def" "$LIMITSVIEW")" 1
 done
+# The budget divides by the clamped window through that third def rather than inline, because the
+# router PRINTS the divisor beside the rate: spelled twice, the row would state a window the
+# number it stands next to was never paced over.
+assert grep -Fq 'limits_daily_budget($eff_pct; $days):' "$LIMITSVIEW"
+assert grep -Fq '(100 - $p) / limits_budget_days($days)' "$LIMITSVIEW"
+assert grep -Fq 'limits_budget_days(if (.wk | type) == "number" then limits_days_remaining(.wk_reset; $now)' "$WORKERPICK"
+assert grep -Fq '.budget_days = spend_days' "$WORKERPICK"
+assert grep -Fq 'else ((.budget | one_dp) | lpad(4)) + "%/d ×" + (.budget_days | one_dp) + "d" end' "$WORKERPICK"
+assert doc_has '`<n>%/d ×<d>d`'
 # The day floor, and the neutral window a reset this file refuses to print falls back to instead.
 assert grep -Fq 'if ($days | type) != "number" then 7 elif $days < 0.25 then 0.25 else $days end' "$LIMITSVIEW"
 assert doc_has 'floored at `0.25`'
@@ -2190,13 +2345,19 @@ assert eq "$(grep -c 'WORKER_CLAIMS_TTL' "$WORKERPICK")" 0
 assert grep -Fq 'worker-claims.sh' "$WORKERPICK"
 assert grep -Fq 'worker_claims_record "$query_vendor" "$query_answer"' "$WORKERPICK"
 assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
-# Every caller that is about to spend the answer takes the claim through the picker's flag; a
-# launcher asking without it hands the same account to the next caller minutes later.
-for claims_caller in "$ROOT/bin/worker-run" "$ROOT/bin/codex-image" \
-    "$ROOT/bin/gemini-image" "$ROOT/bin/grok-image"; do
-  assert grep -Fq -- '--claim' "$claims_caller"
-  assert eq "$(grep -c 'worker-claims.sh' "$claims_caller")" 0
-done
+# worker-run claims through the picker's flag. Image launchers pick without --claim, validate the
+# profile, then call the same recorder so a ghost account does not burn the TTL.
+assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
+assert eq "$(grep -c 'worker-claims.sh' "$ROOT/bin/worker-run")" 0
+assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-image"
+assert grep -Fq 'worker_claims_record grok "$account"' "$ROOT/bin/grok-image"
+assert grep -Fq 'account=$("$worker_pick_cmd" --account grok 2>/dev/null)' "$ROOT/bin/grok-image"
+assert grep -Fq 'worker-claims.sh' "$ROOT/bin/codex-image"
+assert grep -Fq 'worker_claims_record codex "$account"' "$ROOT/bin/codex-image"
+assert grep -Fq 'account=$(worker-pick --account codex 2>/dev/null)' "$ROOT/bin/codex-image"
+assert grep -Fq 'worker-claims.sh' "$ROOT/bin/gemini-image"
+assert grep -Fq 'worker_claims_record gemini "$account"' "$ROOT/bin/gemini-image"
+assert grep -Fq 'account=$(worker-pick --account gemini 2>/dev/null)' "$ROOT/bin/gemini-image"
 assert test -r "$ROOT/tests/test_worker_claims.sh"
 assert doc_has 'Worker claims ledger'
 
@@ -2210,10 +2371,13 @@ CODEXQUOTA="$ROOT/codex-quota.py"
 REDEEM="$ROOT/bin/llm-reset-redeem"
 assert doc_has 'Reset consumable'
 assert doc_has '`prod_mc_billing.ConsumerUiSvc`'
-for credits_site in "$LLMLIMITS" "$WORKERPICK" "$HAMMER"; do
+for credits_site in "$LLMLIMITS" "$HAMMER"; do
   assert grep -Fq '↻' "$credits_site"
   assert eq "$(grep -c '"codex" and (.reset_credits' "$credits_site")" 0
 done
+# The router prints no count at all: the reset is spent from the menu, and a number beside a row
+# nobody ranks on reads as one that ranked it.
+assert eq "$(grep -c '↻' "$WORKERPICK")" 0
 assert eq "$(grep -c 'if (.reset_credits | type) == "number" then "↻"' "$LLMLIMITS")" 3
 assert eq "$(grep -c '\$key == "codex" then credits' "$LLMLIMITS")" 0
 for credits_field in "$GROKQUOTA" "$CODEXQUOTA"; do
@@ -2270,4 +2434,95 @@ done
 assert test -r "$ROOT/tests/test_worker_pool_shield.sh"
 assert doc_has 'Main-account shield'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, token-freeze semantics, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+# --- Row br: instruction-file classes and the one span ------------------------
+# Two hooks answer for the same files, so the class table and the span are each spelled once and
+# asked for by both. A second copy is a door answering differently from the one beside it.
+INSTR_MOD="$ROOT/share/instruction-files.sh"
+INSTR_GATE="$ROOT/bin/instruction-write-gate.sh"
+INSTR_WATCH="$ROOT/bin/instruction-watch.sh"
+
+assert eq "$(grep -c '^instruction_write_class()' "$INSTR_MOD")" 1
+assert eq "$(grep -c '^_instruction_class_dirs()' "$INSTR_MOD")" 1
+# The four answers, verbatim: three classes and the deliberate silence about settings.json.
+class_arms=$(sed -n '/^instruction_write_class()/,/^}/p' "$INSTR_MOD")
+for arm in 'CLAUDE.md|CLAUDE.local.md) printf always' 'review-debt-ignore) printf debt' \
+           'settings.json) ;;' 'instruction_is_md "${1##*/}"'; do
+  assert grep -Fq -- "$arm" <<<"$class_arms"
+done
+# The markdown extensions are one list, asked by the class table and by the enumerator alike: a
+# second spelling is a file one door speaks for that the other never watches.
+assert eq "$(grep -c "^INSTRUCTION_MD_EXTENSIONS='md markdown'\$" "$INSTR_MOD")" 1
+assert grep -Fq 'for e in $INSTRUCTION_MD_EXTENSIONS' \
+  <<<"$(sed -n '/^_instruction_class_files()/,/^}/p' "$INSTR_MOD")"
+assert eq "$(grep -cF "name '*.md'" "$INSTR_MOD")" 0
+# Every class directory, `commands` included — the one that used to be priced by the bloat gate
+# and ungated by the write gate.
+class_dirs=$(sed -n '/^_instruction_class_dirs()/,/^}/p' "$INSTR_MOD")
+for class_dir in docs agents instructions skills skills-on-demand rules commands; do
+  assert grep -Fq -- "/.claude/$class_dir\"" <<<"$class_dirs"
+done
+
+# One parse of where a command leaves its bytes, called by both doors and spelled in neither: the
+# gate reading a destination strictly while the tripwire re-derived it from a looser expression of
+# its own is what made a `.bak` sibling a write to one half and not the other.
+assert eq "$(grep -c '^instruction_write_targets()' "$INSTR_MOD")" 1
+# The same parse answers two doors outside this pair, and each reaches it rather than growing a
+# matcher of its own: a private copy is what put a heredoc brief and a `--help` in front of a gate
+# that refused them (2026-09-03).
+PIN_GATE_BR="$ROOT/bin/worker-pin-gate.sh"
+assert grep -Fq 'load_share instruction-files.sh instruction_write_targets' "$PIN_GATE_BR"
+assert grep -Fq 'instruction_shell_scan' "$PIN_GATE_BR"
+assert eq "$(grep -cE '>\[>\|\]|g\?tee|\(cp\|mv\|ln\|install\)|--in-place' "$PIN_GATE_BR")" 0
+RFG_BR="$ROOT/../claude-setup/hooks/review-flow-gate.sh"
+if [ -r "$RFG_BR" ]; then
+  assert grep -Fq 'share/instruction-files.sh' "$RFG_BR"
+  assert grep -Fq 'REVIEW_FLOW_SHELL_PARSE' "$RFG_BR"
+  assert grep -Fq 'instruction_shell_scan' "$RFG_BR"
+  # A sibling it cannot read is named in the refusal, never skipped in silence.
+  assert grep -Fq 'rf_parse_note' "$RFG_BR"
+fi
+for instr_hook in "$INSTR_GATE" "$INSTR_WATCH"; do
+  assert grep -Fq 'share/instruction-files.sh' "$instr_hook"
+  assert grep -Fq 'instruction_write_class "' "$instr_hook"
+  assert grep -Fq 'instruction_write_targets "' "$instr_hook"
+  # No redirection, copy-verb or destination-verb matcher of its own.
+  assert eq "$(grep -cE '>\[>\|\]|g\?tee|\(cp\|mv\|ln\|install\)|--in-place' "$instr_hook")" 0
+  # Nor an interpreter write shape of its own. The parse can only report that an interpreter NAMED
+  # a guarded path, so what makes that a write is asked of the module by both doors: a second
+  # spelling is a one-liner one of them denies and the other never puts back.
+  assert eq "$(grep -cE 'write_text|writeFileSync|python\[0-9' "$instr_hook")" 0
+  assert grep -Fq 'instruction_interp_write_re "' "$instr_hook"
+  # No class list of its own: neither a class directory literal nor the guarded basename set.
+  assert eq "$(grep -cE 'skills-on-demand|\.claude/(instructions|rules)([/ ]|$)' "$instr_hook")" 0
+  assert eq "$(grep -c 'CLAUDE\.local\.md' "$instr_hook")" 0
+  # The span is asked for through the module and never re-decided here.
+  assert grep -Fq 'instruction_autonomous "$sid" "$transcript"' "$instr_hook"
+  assert eq "$(grep -cE 'rj_autonomous|RJ_AUTONOMY_PHRASE' "$instr_hook")" 0
+done
+
+# One definition of the span, in the journal library, reached from exactly one place in this
+# repository — the call and the comment naming it. Nothing here re-spells his phrase.
+assert grep -Fq 'rj_autonomous() {' "$RJOURNAL"
+assert grep -q '^RJ_AUTONOMY_PHRASE=' "$RJOURNAL"
+assert grep -Fq 'rj_autonomous "$sid" "$transcript"' "$INSTR_MOD"
+assert eq "$(grep -c 'rj_autonomous' "$INSTR_MOD")" 2
+assert eq "$(grep -rlE 'RJ_AUTONOMY_PHRASE' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d '[:space:]')" 0
+
+# Both halves of the door are registered, and the tripwire on both of its events: a class the
+# gate denies while the tripwire does not watch it is the one hole neither half can report.
+assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[]
+                  | select(.command | test("instruction-write-gate\\.sh"))] | length' \
+                 "$WORKER_GATE_SETTINGS")" 1
+assert eq "$(jq '[.hooks.PostToolUse[] | .hooks[]
+                  | select(.command | test("instruction-watch\\.sh check"))] | length' \
+                 "$WORKER_GATE_SETTINGS")" 1
+assert eq "$(jq '[.hooks.SessionStart[] | .hooks[]
+                  | select(.command | test("instruction-watch\\.sh baseline"))] | length' \
+                 "$WORKER_GATE_SETTINGS")" 1
+# settings.json is the tripwire's alone: watched by name, and gone from the gate's fast path.
+assert grep -Fq '[ -f "$home/.claude/settings.json" ] && _instruction_emit' "$INSTR_MOD"
+assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
+assert test -r "$ROOT/tests/test_instruction_gate.sh"
+assert doc_has 'Instruction-file classes and the one span'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

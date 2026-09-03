@@ -11,7 +11,7 @@ A worker run is not a chat. It surfaces as the chat that LAUNCHED it, off the ru
 here so the two answers cannot diverge. A run whose launcher nothing names stays a bare id: shown
 under a name of its own it would answer a question about a conversation with the errand it sent.
 
-Consumers: `bin/chat-find` (and `bin/chats` through its JSON) and `bin/review-bench`.
+Consumers: `bin/chat-find` (and `bin/chats` through its JSON) and `bin/review-bench` (imports this checkout).
 """
 
 import atexit

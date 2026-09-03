@@ -60,7 +60,7 @@ print(table.concat(out, "\n"))
 
 hs_menu() {
   local out
-  out=$(hs -c "$HS_SERIALIZE" 2>/dev/null)
+  out=$(hs -c "$HS_SERIALIZE" </dev/null 2>/dev/null)
   case "$out" in
     HS_ERR*) fail "live menu read path: ${out#HS_ERR }" ;;
   esac
@@ -89,7 +89,7 @@ for _, item in ipairs(menu or {}) do
   if text == "alona" or text:match("^alona%s") then seen = true end
 end
 return "MISSING"
-' 2>/dev/null
+' </dev/null 2>/dev/null
 }
 
 # The reset consumable is not a Codex feature the other legs borrow: the row renders a count
@@ -424,6 +424,10 @@ local entry = loadModule({ schema = 1, vendors = {
   claude = {
     available = true,
     source = "claudeb-store",
+    refresh_errors = {{
+      account = "alona", class = "login needed", cause = entryCause,
+      at = now - 600, needs_user_entry = true,
+    }},
     refresh_error = { cause = entryCause, at = now - 600, needs_user_entry = true },
     accounts = {{
       account = "alona",
@@ -440,12 +444,12 @@ local entryRow, entryError
 for _, item in ipairs(entry.menuItems()) do
   local text = title(item)
   if text:match("^alona%s") then entryRow = text end
-  if text:find("refresh failed", 1, true) then entryError = text end
+  if text:find("⚠ alona: login needed", 1, true) then entryError = text end
 end
 if not entryRow or not entryRow:find("10m", 1, true) or not entryRow:find("!", 1, true) then
   error("entry-only account row lacks age-adjacent ! marker: " .. tostring(entryRow))
 end
-if not entryError or not entryError:find("needs-relogin", 1, true) then
+if not entryError then
   error("entry-only error text disappeared")
 end
 local fallbackState = { starts = {}, alerts = {} }
@@ -626,11 +630,21 @@ for _, name in ipairs({ "evyoxqy", "served", "-" }) do
   end
 end
 local legHeader = wallMenu[openCodeAt]
-if type(legHeader.menu) ~= "table" or #legHeader.menu ~= 1
-    or title(legHeader.menu[1]) ~= "Hard refresh" or type(legHeader.menu[1].fn) ~= "function" then
+-- ONE refresh for the whole leg, and it lives in the section header rather than on any account
+-- row. Located by TITLE and counted by title too: the header carries the vendor switches every
+-- other section does (Pause), so a position or a length is for the header to change, while a
+-- second Hard refresh would be the per-account offer this section may not make.
+local legRefresh, legRefreshCount = nil, 0
+for _, item in ipairs(type(legHeader.menu) == "table" and legHeader.menu or {}) do
+  if title(item) == "Hard refresh" then
+    legRefresh = item
+    legRefreshCount = legRefreshCount + 1
+  end
+end
+if legRefreshCount ~= 1 or type(legRefresh.fn) ~= "function" then
   error("the OpenCode section header does not carry one Hard refresh for the leg")
 end
-legHeader.menu[1].fn()
+legRefresh.fn()
 local wallCheck = wallState.starts[#wallState.starts]
 if not wallCheck or wallCheck.command ~= "/fixture-home/.local/bin/opencode-go"
     or wallCheck.args[1] ~= "wall-check" or wallCheck.args[2] ~= "--all"
@@ -651,13 +665,13 @@ if #wallState.starts ~= startsBefore + 1
   error("a failed leg refresh did not recollect")
 end
 return "OK open-guard running=1->1 exited=1->2"
-' 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"
+' </dev/null 2>/dev/null) || fail "isolated Hammerspoon contract checks threw"
   [ "$output" = "OK open-guard running=1->1 exited=1->2" ] \
     || fail "isolated Hammerspoon contract checks: $output"
 }
 
 # 1. hs CLI reachable and Hammerspoon responding.
-[ "$(hs -c 'return "ok"' 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
+[ "$(hs -c 'return "ok"' </dev/null 2>/dev/null)" = "ok" ] || fail "Hammerspoon not responding to hs -c"
 pass "hs CLI reachable, Hammerspoon responding"
 assert_isolated_menu_contracts
 pass "isolated menu contracts: open-collect guard running 1->1, exited 1->2; completion re-rendered"
@@ -687,7 +701,7 @@ AVAIL=$(jq -r '.vendors | to_entries[] | select(.value.available == true) | .key
 [ -n "$AVAIL" ] || fail "no available vendor in store; cannot assert menu rows"
 # A refresh-failure row legitimately joins cause and age with the same separator, so it is
 # excluded rather than widening the ban to any middot.
-grep -v 'refresh failed' <<<"$MENU_TXT" | grep -v 'Redeem usage reset' | grep -q ' · ' \
+grep -v 'refresh failed' <<<"$MENU_TXT" | grep -v '^⚠ ' | grep -v 'Redeem usage reset' | grep -q ' · ' \
   && fail "banned aggregate vendor age line is still present"
 grep -q '5h' <<<"$MENU_TXT" || fail "menu has no five-hour vendor rows"
 grep -Fxq 'Refresh' <<<"$MENU_TXT" || fail "menu missing 'Refresh' action item"
@@ -854,7 +868,7 @@ if jq -e '.vendors | has("grok")' <<<"$AFTER" >/dev/null; then
   fi
 fi
 assert_account_ages "$MENU2" "$AFTER"
-grep -v 'refresh failed' <<<"$MENU2" | grep -v 'Redeem usage reset' | grep -q ' · ' \
+grep -v 'refresh failed' <<<"$MENU2" | grep -v '^⚠ ' | grep -v 'Redeem usage reset' | grep -q ' · ' \
   && fail "aggregate vendor age line reappeared after refresh"
 if [ -n "$visible_failures" ]; then
   pass "free refresh: fetched_at advanced, no invisible failures; visible refresh_error(s):$visible_failures"

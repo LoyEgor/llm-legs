@@ -16,6 +16,15 @@ today=${EXPERIMENTS_TODAY_OVERRIDE:-$(date '+%Y-%m-%d')}
 [ -r "$REGISTRY" ] || fail "EXPERIMENTS.json is missing: every experiment must be registered"
 jq -e 'type == "array"' "$REGISTRY" >/dev/null || fail "EXPERIMENTS.json must be a JSON array"
 
+# `[]` is the documented empty shape — no experiment is running, and the file stays so the
+# next trial has somewhere to be registered. It must announce nothing on any surface.
+. "$ROOT/share/experiments.sh"
+empty_registry="${TMPDIR:-/tmp}/experiments-empty.$$.json"
+trap 'rm -f "$empty_registry"' EXIT
+printf '[]\n' >"$empty_registry"
+assert test -z "$(experiments_active_lines "$empty_registry")"
+assert test -z "$(EXPERIMENTS_TODAY_OVERRIDE=2099-01-01 experiments_active_lines "$empty_registry")"
+
 # An experiment is either code (a TEMP-<NAME>(<scope>) tag on every touched block) or
 # state (a marker file that switches behavior); both need an executable exit.
 schema_errors=$(jq -r '
@@ -97,4 +106,4 @@ if [ -n "$overdue" ]; then
 fi
 asserts=$((asserts + 1))
 
-printf 'PASS: %s asserts; experiment registry (schema, real calendar dates, code tags round-trip, visible surfaces, opt-in analysis, review deadlines)\n' "$asserts"
+printf 'PASS: %s asserts; experiment registry (empty shape announces nothing, schema, real calendar dates, code tags round-trip, visible surfaces, opt-in analysis, review deadlines)\n' "$asserts"

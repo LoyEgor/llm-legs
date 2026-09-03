@@ -126,6 +126,86 @@ for reading in \
 do
   assert allowed "$(bash_event "$reading")"
 done
+# A read whose OUTPUT is redirected writes the file it names, and that file is not the pin: the door
+# takes a destination off the shared parse now (`instruction_write_targets`) instead of reading any
+# `>` in a command that names the pin as a write to it.
+assert allowed "$(bash_event 'cat ~/.claude/worker-model > /tmp/out.txt')"
+assert allowed "$(bash_event 'cat ~/.claude/worker-model | tee /tmp/copy.txt')"
+
+# A read chained to a write of something ELSE is still a read: the pre-delegation chain sits in one
+# Bash beside worktree setup, temp cleanup and test runs, and a write verb anywhere in the command
+# denied the whole thing (live 2026-09-02). The write has to share the simple command with the name.
+for read_beside_write in \
+  'cat ~/.claude/worker-model; rm -rf "$W"' \
+  'grep -E "^worker=" ~/.claude/worker-model; git worktree add "$W" main >/dev/null 2>&1; cp a b' \
+  'cat ~/.claude/worker-model 2>/dev/null | head -3 && sed -i "" "s/x/y/" other.txt' \
+  'python3 fix.py && grep profile ~/.claude/worker-model' \
+  'mv a b
+cat ~/.claude/worker-model'
+do
+  assert allowed "$(bash_event "$read_beside_write")"
+done
+# …and the split never lets a write reach the pin through a name that travelled out of its segment:
+# a variable, a substitution, a loop — or a write standing in the file's own segment.
+for still_written in \
+  'echo x; printf "codex_profile=x\n" > ~/.claude/worker-model' \
+  'cat ~/.claude/worker-model | tee ~/.claude/worker-model' \
+  'p="$(readlink -f ~/.claude/worker-model)"; printf "codex_profile=x\n" > "$p"' \
+  'for f in ~/.claude/worker-model; do printf "codex_profile=x\n" > "$f"; done' \
+  'cp /tmp/x $(dirname ~/.claude/worker-model)/worker-model'
+do
+  assert denied "$(bash_event "$still_written")"
+done
+
+# A BRIEF is data. Written into a scratch file, it names the pin, quotes `*_profile=`, spells a
+# write verb in prose and carries Egor's rules in Russian with apostrophes and «» — and a door that
+# read a heredoc body as syntax refused all of it as a pin move (live 2026-09-02/03).
+for brief in \
+  'cat > /tmp/brief <<EOF
+ACCOUNT: alpha
+read ~/.claude/worker-model before delegating
+EOF' \
+  'cat > /tmp/brief <<EOF
+cp of the pin in ~/.claude/worker-model is out of scope
+EOF' \
+  'cat > /tmp/brief <<EOF
+never sed -i the ~/.claude/worker-model file
+EOF' \
+  "cat > /tmp/brief <<EOF
+Egor's rule for worker-model: the *_profile= lines stay
+EOF" \
+  'cat > /tmp/brief <<EOF
+проверь ~/.claude/worker-model и не трогай «пин»
+EOF' \
+  'cat >> /tmp/notes.md <<EOF
+worker-model holds the *_profile= lines
+EOF'
+do
+  assert allowed "$(bash_event "$brief")"
+done
+# …and a heredoc pointed AT the file is the write it looks like.
+assert denied "$(bash_event 'cat > ~/.claude/worker-model <<EOF
+worker=auto
+claudeb_profile=beta
+EOF')"
+assert denied "$(bash_event "tee ~/.claude/worker-model <<EOF
+claudeb_profile=beta
+EOF")"
+
+# The pre-delegation read sits in one Bash beside whatever else the turn needs, and a loop or a
+# one-liner in that command is not a hand on the pin: the write has to reach the pin's own name,
+# not merely stand somewhere in a command that mentions it (live 2026-09-03).
+for beside in \
+  'cat ~/.claude/worker-model >/dev/null; worker-pick | head -1' \
+  'cat ~/.claude/worker-model >/dev/null; worker-pick | head -1; for f in a b; do echo x > /tmp/$f; done' \
+  'for r in one two; do git -C /tmp/$r status --short > /tmp/$r.txt; done; cat ~/.claude/worker-model' \
+  'cat ~/.claude/worker-model >/dev/null; python3 -c "print(1)"; worker-pick' \
+  'cat ~/.claude/worker-model; python3 -c "open(\"/tmp/o\",\"w\").write(\"x\")"'
+do
+  assert allowed "$(bash_event "$beside")"
+done
+# A runtime that opens the PIN is still a pin move, however the payload is quoted.
+assert denied "$(bash_event 'python3 -c "open(\"$HOME/.claude/worker-model\",\"w\").write(\"codex_profile=x\")"')"
 
 # Quoted text is carried, not executed: a command whose ARGUMENT happens to spell a redirect or an
 # editor's name writes nothing, and denying it gated a read — live-caught on a compact focus prompt
@@ -337,4 +417,39 @@ assert allowed "$(jq -cn --arg p "$PIN_FILE" \
   '{hook_event_name: "PreToolUse", tool_name: "Write", tool_input: {file_path: $p}}' \
   | "$GATE" nonsense)"
 
-printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — his words grant it for a window and an ordinary mention of an account does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched\n' "$asserts"
+# The same door refuses storing a model no implementation worker may run. Unlike the pin this one
+# takes no grant: a cheap default here silently downgrades every worker after it.
+rm -f "$GRANT"
+for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 grok_model=grok-4.5 codex_model=gpt-5.6-terra; do
+  assert denied "$(write_event "$PIN_FILE" "worker=auto
+$bad
+")"
+  assert denied "$(edit_event "$PIN_FILE" 'worker=auto' "$bad")"
+  assert denied "$(bash_event "printf '$bad\n' >> $PIN_FILE")"
+done
+# The deny names the offender and the allowed list, and says nothing about the pin.
+model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
+assert contains "$model_deny" 'claudeb=sonnet'
+assert contains "$model_deny" 'claudeb opus; codex gpt-5.6-sol; gemini pro; grok auto|grok-4.6'
+assert lacks "$model_deny" 'is Egor'
+# A grant unblocks the pin and never the model.
+mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
+assert denied "$(write_event "$PIN_FILE" 'claudeb_profile=beta
+claudeb_model=sonnet
+')"
+rm -f "$GRANT"
+# The allowed models pass, and so does an edit that REMOVES a cheap one: an Edit is judged on what
+# it would leave behind.
+printf 'worker=auto\nclaudeb_model=opus\n' >"$PIN_FILE"
+assert allowed "$(write_event "$PIN_FILE" 'worker=auto
+claudeb_model=opus
+claudeb_effort=high
+gemini_model=pro
+grok_model=auto
+')"
+assert allowed "$(edit_event "$PIN_FILE" 'claudeb_model=sonnet' 'claudeb_model=opus')"
+# Effort is untouched by any of it, and reading a cheap model's name is not writing one.
+assert allowed "$(edit_event "$PIN_FILE" 'claudeb_effort=high' 'claudeb_effort=medium')"
+assert allowed "$(bash_event "grep claudeb_model=sonnet $PIN_FILE")"
+
+printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — his words grant it for a window and an ordinary mention of an account does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run, and no grant unlocks that one\n' "$asserts"

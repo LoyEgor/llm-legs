@@ -21,18 +21,29 @@ import time
 import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
+from chat_ask import awaiting_answer  # noqa: E402
+
 PROFILES = os.path.expanduser("~/.claude-profiles")
 STATE = os.path.join(PROFILES, ".claudeb", ".claudeb-state")
 TRACKS = os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/claude-statusline")
+# Fields of the statusline's track line the picker counts on, the version word being 0
+# (invariant row `bj`).
+TRACK_TS, TRACK_ACCOUNT = 1, 2
 # A week covers what he is usually looking for; the rest loads when he scrolls
 # past it, so opening the picker never pays for a corpus he will not read.
 WINDOWS = (7, 30, 120, 0)
 # project, model, context — capped so a deep worktree name cannot push the
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
+# The row mark for a chat that stopped on a question to him: one column, ahead of everything
+# else on the line, because it is the only field that says the chat needs him rather than
+# describing what it was.
+ASK_MARK = "?"
 USAGE = ("usage: chats [--days N | --all] [--print]\n"
          "  ↑↓ chat · ←→ claudeb account · type to filter · enter opens it here\n"
          "  the account follows the chat's live cache, else the optimal one\n"
+         "  " + ASK_MARK + " marks a chat waiting on your answer\n"
          "  scrolling past the last row loads more history")
 
 
@@ -52,9 +63,34 @@ def load_chats(days):
     except subprocess.CalledProcessError as error:
         die("chat-find failed: %s" % (error.stderr or "").strip())
     try:
-        return json.loads(out)
+        rows = json.loads(out)
     except ValueError:
         die("chat-find returned no usable listing")
+    for row in rows:
+        row["asking"] = bool(row.get("path")) and asking(row["path"])
+    return rows
+
+
+_ASKED = {}
+
+
+def asking(path):
+    """Whether this transcript stopped on a question, answered once per version of it.
+
+    Scrolling past the last row reloads the WHOLE listing a window wider, and this reads the tail
+    of every transcript in it — a month of history re-read the answer it already had.
+    """
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return False
+    version = (stat.st_mtime_ns, stat.st_size)
+    cached = _ASKED.get(path)
+    if cached and cached[0] == version:
+        return cached[1]
+    verdict = awaiting_answer(path, stat.st_size)
+    _ASKED[path] = (version, verdict)
+    return verdict
 
 
 def limits():
@@ -96,9 +132,9 @@ def warm_account(row):
     """The claudeb account whose prompt cache still holds this chat, or None.
 
     A transcript never says which account a reply went through; the statusline
-    learns that while the chat is open and leaves it in its track file, keyed to
-    the reply's uuid. The verdict is the statusline's own: the newest reply's
-    cache bucket, counted from that reply. `until` is when it expires.
+    learns that while the chat is open and leaves it in its track file, stamped
+    with the reply it attributed. The bucket the cache lives in is the
+    transcript's own reading; `until` is when it expires.
     """
     row["until"] = None
     spoke, ttl = row.get("spoke"), row.get("ttl")
@@ -110,10 +146,18 @@ def warm_account(row):
             fields = handle.readline().split()
     except OSError:
         return None
-    if len(fields) < 7 or fields[0] != "v2" or fields[6] != row.get("uuid") or fields[2] == "?":
+    if len(fields) <= TRACK_ACCOUNT or fields[0] != "v2" or fields[TRACK_ACCOUNT] == "?":
         return None
-    row["until"] = spoke + ttl
-    return fields[2]
+    seen = fields[TRACK_TS]
+    seen = int(seen) if seen.isdigit() else 0
+    # The statusline stamps the newest reply of ANY kind, this row the newest one that SPOKE, so
+    # the two name the same reply only until a chat ends on a tool call. A track that has moved
+    # PAST this row is later knowledge of the same chat and refreshed the cache with it; one that
+    # stands behind it proves nothing about whatever account answered since.
+    if seen + 1 < spoke:
+        return None
+    row["until"] = max(spoke, seen) + ttl
+    return fields[TRACK_ACCOUNT]
 
 
 def annotate(chats):
@@ -189,12 +233,15 @@ def label(level, windows):
 
 
 def when_label(at, now):
-    minutes = max(0, (now - at) / 60)
-    if minutes < 90:
-        return "%dm" % minutes
-    if minutes < 60 * 36:
-        return "%dh" % (minutes / 60)
-    return "%dd" % (minutes / 1440)
+    """One column for when it was last spoken in: the clock for today, the date before it.
+
+    The two never both matter — a chat from today is placed by its hour, an older one by its
+    day — and the year never does, since the list spans days.
+    """
+    spoken = datetime.datetime.fromtimestamp(at).astimezone()
+    midnight = datetime.datetime.fromtimestamp(now).astimezone().replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return spoken.strftime("%H:%M") if spoken >= midnight else spoken.strftime("%d.%m")
 
 
 def width(text):
@@ -236,7 +283,6 @@ def model_label(row):
 
 def columns(row, now):
     """One chat as the fields it is recognised by, each its own column."""
-    stamp = datetime.datetime.fromtimestamp(row["at"]).astimezone()
     said = " ".join((row.get("text") or "").split())
     if said:
         # Who spoke last says whether the chat is finished or waiting on him.
@@ -244,12 +290,16 @@ def columns(row, now):
     # A tab or newline inside a title moves the cursor as surely as an overlong
     # write does, so the name is collapsed exactly like the quote already is.
     name = " ".join((row.get("name") or "").split())
-    return ["%s %4s" % (stamp.strftime("%d.%m %H:%M"), when_label(row["at"], now)),
+    return ["%5s" % when_label(row["at"], now),
             os.path.basename(row.get("cwd") or "") or "?",
             model_label(row),
             warm_name(row, now) or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""),
             name or said or "—",
             said if name else ""]
+
+
+def ask_mark(row):
+    return ASK_MARK if row.get("asking") else " "
 
 
 def matches(row, needle):
@@ -304,7 +354,7 @@ def paint(screen, rows, view, names, profile, needle, used, note):
             break
         cells = columns(rows[index], view["now"])
         chosen = index == view["cursor"]
-        fields = ["▸ " if chosen else "  ", cells[0]]
+        fields = ["▸ " if chosen else "  ", ask_mark(rows[index]) + " ", cells[0]]
         for cell, size in zip(cells[1:3], sizes[:2]):
             fields.append(pad(cell, size))
         fields.append(pad(cells[3], sizes[2], right=True))
@@ -335,7 +385,8 @@ def paint(screen, rows, view, names, profile, needle, used, note):
         label = clip(label, span - 1 - column)
         screen.addstr(height - 1, column, label, attribute)
         column += width(label)
-    hint = "   ↵ open · ^C quit · esc clear · account: chat's cache, else optimal"
+    hint = ("   ↵ open · %s waits on you · ^C quit · esc clear · "
+            "account: chat's cache, else optimal" % ASK_MARK)
     if column < span - 1:
         screen.addstr(height - 1, column, clip(hint, span - 1 - column))
     screen.refresh()

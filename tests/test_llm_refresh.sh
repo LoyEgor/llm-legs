@@ -131,29 +131,6 @@ esac
 EOF
 chmod +x "$CB_STUB"
 
-# Stands in for the Grok CLI: it rotates the token as a side effect of an authenticated
-# subcommand while printing "You are not authenticated." and exiting non-zero, so this stub heals
-# the store and fails at the same time — a tick that read its status would learn the opposite of
-# what happened.
-GB_STUB="$WORK/grokb"
-cat >"$GB_STUB" <<'EOF'
-#!/usr/bin/env bash
-set -u
-printf 'grokb %s\n' "$*" >>"$STUB_LOG"
-printf 'You are not authenticated.\n' >&2
-case "${GB_RESULT:-ok}" in
-  ok)
-    tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
-    jq --arg account "${1:-}" '.vendors.grok.accounts |= map(
-      if .account == $account then .auth={status:"ok"} else . end)' "$LLM_LIMITS_CACHE" >"$tmp" && \
-      mv -f "$tmp" "$LLM_LIMITS_CACHE"
-    ;;
-  hang) sleep 30 ;;
-esac
-exit "${GB_EXIT:-1}"
-EOF
-chmod +x "$GB_STUB"
-
 write_store() {
   local path=$1 now=$2 claude_age=$3 codex_age=$4 gemini_age=$5 grok_age=${6:-}
   jq -cn --argjson now "$now" --argjson ca "$claude_age" --argjson coa "$codex_age" \
@@ -226,6 +203,17 @@ esac
 EOF
 chmod +x "$OC_STUB"
 
+# PATH grokb so a daemon that shells out to `grokb <name> exec models` lands in calls.log.
+GROK_BIN="$WORK/bin"
+mkdir -p "$GROK_BIN"
+cat >"$GROK_BIN/grokb" <<'EOF'
+#!/usr/bin/env bash
+set -u
+printf 'grokb %s\n' "$*" >>"$STUB_LOG"
+exit 0
+EOF
+chmod +x "$GROK_BIN/grokb"
+
 seed_opencode_wall() {
   local path=$1 profile=$2 reset=$3 tmp
   tmp=$(mktemp "${path}.tmp.XXXXXX") || return 1
@@ -251,14 +239,12 @@ run_refresh() {
     CB_RESULT="${CB_RESULT:-ok}" CB_STEAL_PID="${CB_STEAL_PID:-$$}" \
     CB_TOKEN_FRESH="${CB_TOKEN_FRESH:-}" CB_SNAPSHOT="${CB_SNAPSHOT:-$dir/cb-snapshot.log}" \
     CB_LOGIN_ACCOUNTS="${CB_LOGIN_ACCOUNTS:-}" \
-    LLM_LIMITS_REFRESH_GROKB="${GB_BIN:-$GB_STUB}" GB_RESULT="${GB_RESULT:-ok}" \
-    GB_EXIT="${GB_EXIT:-1}" \
-    LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT="${LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT:-30}" \
     LLM_LIMITS_REFRESH_REVIVE_TIMEOUT="${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}" \
     LLM_LIMITS_REFRESH_PROBE_TIMEOUT="${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
+    PATH="$GROK_BIN:$PATH" \
     bash "$SCRIPT"
 }
 
@@ -749,73 +735,60 @@ seed_grok_case() { # <dir> <grok age> <auth status>
     "$dir/state.json" >"$dir/state.tmp" && mv "$dir/state.tmp" "$dir/state.json"
 }
 
-# An expired grok access token is not a dead end: the vendor CLI rotates it on any authenticated
-# subcommand, so the tick touches the profile once and lets the re-poll say what the auth now is.
-# The stub heals the store AND exits non-zero, the way the real CLI does.
+# An expired grok access token is not a dead end: the collector's targeted refresh rotates it
+# through the vendor CLI before polling (row ak), so the tick's whole job is to ask for that
+# re-poll — once — instead of filing the account as unrefreshable.
 case_dir="$WORK/grok-expired"
 seed_grok_case "$case_dir" 7200 expired
 run_refresh "$case_dir" "$NOW" || fail 'grok expired-token run failed'
-[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
-  fail "the expired grok account was not touched exactly once: $(cat "$case_dir/calls.log")"
-[ "$(grep -E '^grokb |^--refresh-account grok/' "$case_dir/calls.log" | tr '\n' ' ')" = \
-  'grokb gr exec models --refresh-account grok/gr ' ] || \
-  fail "the token touch did not precede the re-poll: $(cat "$case_dir/calls.log")"
+[ "$(grep -c -- '^--refresh-account grok/gr$' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "the expired grok account was not re-polled exactly once: $(cat "$case_dir/calls.log")"
+grep -q 'exec models' "$case_dir/calls.log" && \
+  fail "the daemon ran the vendor CLI itself; the collector owns the touch: $(cat "$case_dir/calls.log")"
 jq -eR 'fromjson | select(.vendor == "grok" and .step == 1 and .accounts_tried == ["gr"] and
-  .outcome == "refreshed" and (.detail | test("token touch: gr") and
-  (test("unrefreshable") | not)))' "$case_dir/journal.jsonl" >/dev/null || \
-  fail "the grok token touch was not journaled as the refresh it was: $(cat "$case_dir/journal.jsonl")"
+  .outcome == "refreshed" and (.detail | test("unrefreshable") | not))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "the grok re-poll was not journaled as the refresh it was: $(cat "$case_dir/journal.jsonl")"
 # Grok takes no attempt stamp: the claude revive rotates over accounts and reads the stamps to do
-# it, while every stale grok account is touched in the tick it comes up. A stamp nobody reads is
+# it, while every stale grok account is re-polled in the tick it comes up. A stamp nobody reads is
 # state that drifts.
 jq -e '.grok.attempts == {}' "$case_dir/state.json" >/dev/null || \
-  fail "the touch left a stamp nothing reads: $(jq -c '.grok.attempts' "$case_dir/state.json")"
+  fail "the re-poll left a stamp nothing reads: $(jq -c '.grok.attempts' "$case_dir/state.json")"
 jq -e --argjson now "$NOW" '.grok.last_attempt_epoch == $now' "$case_dir/state.json" >/dev/null || \
-  fail 'the vendor rung, which is what gates the next touch, did not advance'
+  fail 'the vendor rung, which is what gates the next attempt, did not advance'
 pass
 
-# A touch that rotates nothing must not turn into a retry storm: one attempt per account per tick,
+# A re-poll that heals nothing must not turn into a retry storm: one attempt per account per tick,
 # and the account waits for the next tick like any other stale one.
-case_dir="$WORK/grok-touch-failed"
+case_dir="$WORK/grok-repoll-failed"
 seed_grok_case "$case_dir" 7200 expired
-GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || \
-  fail 'grok failed-touch run failed'
-[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
-  fail "a failing touch was retried inside one tick: $(cat "$case_dir/calls.log")"
+STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || fail 'grok failed re-poll run failed'
+[ "$(grep -c -- '^--refresh-account grok/gr$' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "a failing re-poll was retried inside one tick: $(cat "$case_dir/calls.log")"
 jq -eR 'fromjson | select(.vendor == "grok" and .outcome == "error" and
-  (.detail | test("token touch: gr") and test("accounts remain stale")))' \
-  "$case_dir/journal.jsonl" >/dev/null || \
-  fail "a touch that did not heal the account was not journaled as such: $(cat "$case_dir/journal.jsonl")"
-GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 3600))" || \
-  fail 'second failed-touch run failed'
-[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 2 ] || \
+  (.detail | test("accounts remain stale")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "a re-poll that did not heal the account was not journaled as such: $(cat "$case_dir/journal.jsonl")"
+STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 3600))" || fail 'second failed re-poll run failed'
+[ "$(grep -c -- '^--refresh-account grok/gr$' "$case_dir/calls.log")" -eq 2 ] || \
   fail "the next tick did not take exactly one more attempt: $(cat "$case_dir/calls.log")"
 jq -e '.grok.attempts == {}' "$case_dir/state.json" >/dev/null || \
-  fail 'a repeated touch started stamping state nothing reads'
+  fail 'a repeated re-poll started stamping state nothing reads'
 pass
 
-# What bounds the touch is the vendor's rung, not a per-account stamp: a token the CLI cannot
+# What bounds the attempts is the vendor's rung, not a per-account stamp: a token the CLI cannot
 # rotate leaves the account with no `as_of` and therefore stale on every heartbeat, so a heartbeat
-# inside the rung must not reach the CLI at all.
-case_dir="$WORK/grok-touch-backoff"
+# inside the rung must not reach the collector at all.
+case_dir="$WORK/grok-rung-backoff"
 seed_grok_case "$case_dir" 7200 expired
-GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || \
-  fail 'grok backoff first run failed'
-[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
-  fail "the first tick did not touch once: $(cat "$case_dir/calls.log")"
-GB_RESULT=fail STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 60))" || \
-  fail 'grok backoff second run failed'
-[ "$(grep -c '^grokb ' "$case_dir/calls.log")" -eq 1 ] || \
-  fail "a heartbeat inside the rung touched again: $(cat "$case_dir/calls.log")"
+STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || fail 'grok backoff first run failed'
+STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 60))" || fail 'grok backoff second run failed'
 [ "$(grep -c -- '--refresh-account grok/gr' "$case_dir/calls.log")" -eq 1 ] || \
-  fail "a heartbeat inside the rung re-polled anyway: $(cat "$case_dir/calls.log")"
+  fail "a heartbeat inside the rung re-polled again: $(cat "$case_dir/calls.log")"
 pass
 
-# Only an expired token earns a CLI touch; a signed-in account is a plain usage re-poll.
+# A signed-in account is the same plain usage re-poll.
 case_dir="$WORK/grok-token-ok"
 seed_grok_case "$case_dir" 7200 ok
 run_refresh "$case_dir" "$NOW" || fail 'grok signed-in run failed'
-grep -q '^grokb ' "$case_dir/calls.log" && \
-  fail 'a signed-in grok account was driven through the CLI'
 grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
   fail 'the signed-in account was not re-polled'
 jq -e '.grok.attempts == {}' "$case_dir/state.json" >/dev/null || \
@@ -831,17 +804,6 @@ grep -q 'grok' "$case_dir/calls.log" && fail 'a fresh grok reading was refreshed
 jq -eR 'fromjson | select(.vendor == "grok" and .step == 0 and
   (.detail | test("unrefreshable") | not))' "$case_dir/journal.jsonl" >/dev/null || \
   fail "an expired grok token was reported as beyond refreshing: $(cat "$case_dir/journal.jsonl")"
-pass
-
-# The touch is a live CLI launch: a wedged one must never hold the heartbeat.
-case_dir="$WORK/grok-touch-hangs"
-seed_grok_case "$case_dir" 7200 expired
-touch_started=$SECONDS
-GB_RESULT=hang LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT=1 run_refresh "$case_dir" "$NOW" || \
-  fail 'hung-touch run failed'
-[ "$((SECONDS - touch_started))" -lt 20 ] || fail 'a hung token touch stalled the tick'
-grep -qx -- '--refresh-account grok/gr' "$case_dir/calls.log" || \
-  fail 'a hung touch cost the account its re-poll'
 pass
 
 # Claude is the opposite contract: only an interactive session rotates its token, so an expired one
@@ -1007,8 +969,7 @@ ceiling=$(HOME="$WORK/functions-home" bash -c '. "$1"; ladder_loosen 60' _ "$SCR
 pass
 
 # A PAUSED vendor is parked for months and must not exist for this daemon: no tick, no state
-# entry, no journal line — and so none of the per-account paths, grok's token touch included, is
-# ever reached for it. The switch lives in worker-pick's own file; the store cannot answer it,
+# entry, no journal line — and so none of the per-account paths is ever reached for it. The switch lives in worker-pick's own file; the store cannot answer it,
 # because the collector deliberately writes no entry for a parked vendor.
 case_dir="$WORK/paused"
 mkdir -p "$case_dir/home/.claude"
@@ -1021,7 +982,6 @@ jq -e '(keys | sort) == ["claude","gemini"]' "$case_dir/state.json" >/dev/null |
 grep -Eq '(codex|grok|opencode)/' "$case_dir/calls.log" && \
   fail 'a paused vendor was refreshed'
 [ ! -e "$case_dir/opencode.log" ] || fail 'a paused opencode was still probed'
-[ ! -e "$case_dir/grokb.log" ] || fail 'a paused grok still had its token touched'
 jq -eRn '[inputs | fromjson | .vendor] | any(. == "codex" or . == "grok" or . == "opencode") | not' \
   "$case_dir/journal.jsonl" >/dev/null || fail 'a paused vendor was journaled'
 jq -eRn '[inputs | fromjson | .vendor] | (index("claude") != null) and (index("gemini") != null)' \
@@ -1048,6 +1008,42 @@ paused_rc=$?
 [ "$paused_rc" -eq 2 ] || fail "paused --refresh-account exit status: $paused_rc"
 [ "$paused_err" = 'grok is paused (grok_paused=on in ~/.claude/worker-model)' ] || \
   fail "paused --refresh-account refusal wording: $paused_err"
+pass
+
+# The vendor-wide `refresh_error` is the OLD contract, and it joins the cause of every account
+# into one string: read beside a per-account list it answers for accounts this call never asked
+# about, so a 429 that belongs to another account of the same vendor loosened the cadence for one
+# whose own recorded cause is a login screen. Only where the list has nothing to say is it read.
+case_dir="$WORK/legacy-error-not-a-peer"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 7200 60
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$((NOW - 1000))"
+jq --argjson now "$NOW" '
+  .vendors.codex.refresh_errors=[{account:"beta",cause:"needs a human login",at:$now}] |
+  .vendors.codex.refresh_error={cause:"beta: needs a human login; other: HTTP 429 rate limit",
+                                at:$now} |
+  .vendors.codex.last_attempt_epoch=0' "$case_dir/store.json" >"$case_dir/store.tmp" && \
+  mv "$case_dir/store.tmp" "$case_dir/store.json"
+jq '.vendors.codex.last_attempt_epoch=0' "$case_dir/state.json" >"$case_dir/state.tmp" && \
+  mv "$case_dir/state.tmp" "$case_dir/state.json"
+STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || fail 'legacy-error run failed'
+[ "$(jq -r '.codex.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+  fail 'another account 429, joined into the legacy vendor error, loosened this one cadence'
+jq -eR 'fromjson | select(.vendor == "codex" and .outcome == "pushback")' \
+  "$case_dir/journal.jsonl" >/dev/null && \
+  fail 'the legacy vendor error was read as this account pushback'
+pass
+
+# A docstring belongs to the function it heads: one that outlived its own now explains the next
+# function down, and a comment that lost its wrap is read by nobody.
+grep -q 'grok_token_expired' "$SCRIPT" && fail 'a docstring survived the function it described'
+docstrings=$(sed -n '/^# A paused vendor is parked/,/^vendor_paused()/p
+                     /^# Every attempt stamps/,/^stamp_attempt()/p' "$SCRIPT")
+[ -n "$docstrings" ] || fail 'the docstrings under test are not where this check looks'
+[ -z "$(awk 'length > 100' <<<"$docstrings")" ] || fail 'a docstring runs past 100 columns'
+case "$docstrings" in
+  *'refresh_token beside'*) fail 'the token-expiry docstring still heads stamp_attempt' ;;
+esac
 pass
 
 for journal in "$WORK"/*/journal.jsonl; do

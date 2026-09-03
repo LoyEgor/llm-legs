@@ -347,10 +347,10 @@ for junk in ("py_compile","pytest","transcriber.ctl","http.server","3"):
     check(wc.valid_model(junk)is None,f"junk {junk}")
 
 # retry linkage: near-duplicate fresh dispatch after a failed one -> retry_of set
-def dl(tid,brief,outcome="ok",resume=False,attach=False):
+def dl(tid,brief,outcome="ok",resume=False,attach=False,attached_run=None,reported_runs=()):
     return {"tool_use_id":tid,"session_id":"s","timestamp":tid,"subagent_type":"codex-worker",
             "is_resume":resume,"is_attach":attach,"brief_text":brief,"outcome":outcome,
-            "retry_of":None}
+            "retry_of":None,"attached_run":attached_run,"_reported_runs":list(reported_runs)}
 brief="Fix the login bug in the auth module and add regression tests for it."
 ds=[dl("1",brief,outcome="failed"),
     dl("2",brief+" (again)"),
@@ -374,6 +374,31 @@ for d in ds3:
 fu=wc.link_followups(ds3)
 check(len(fu)==1 and fu[0]["tool_use_id"]=="2" and fu[0]["parent_tool_use_id"]=="1",
       f"an ATTACH did not become a followup of the dispatch it re-attaches to: {fu}")
+# And it belongs to the run it NAMES, not to whichever dispatch happens to be nearest: a relay
+# reports its run id, so an attach reaching back past a newer run of the same worker still lands on
+# the dispatch that started the one it is waiting on.
+old_run="cb-1788280367-68398-037f"
+new_run="cb-1788280999-68398-0a0a"
+check(wc.RUN_ID_RE.findall(f"STATUS: running RUN: {old_run} ELAPSED: 9m")==[old_run],
+      "RUN_ID_RE did not read a run id out of a relay's own status report")
+ds4=[dl("1",brief,reported_runs=[old_run]),
+     dl("2","Another task entirely.",reported_runs=[new_run]),
+     dl("3",f"ATTACH {old_run}: keep waiting and report.",attach=True,attached_run=old_run)]
+for d in ds4:
+    d.setdefault("_reported_sessions",[])
+    d["resumed_session"]=None
+fu4=wc.link_followups(ds4)
+check(len(fu4)==1 and fu4[0]["parent_tool_use_id"]=="1",
+      f"an ATTACH was attributed to the nearest dispatch instead of the run it names: {fu4}")
+# Nothing reported that run id: the nearest earlier dispatch is still the best answer there is.
+ds5=[dl("1",brief),
+     dl("2",f"ATTACH {old_run}: keep waiting and report.",attach=True,attached_run=old_run)]
+for d in ds5:
+    d.setdefault("_reported_sessions",[])
+    d["resumed_session"]=None
+fu5=wc.link_followups(ds5)
+check(len(fu5)==1 and fu5[0]["parent_tool_use_id"]=="1",
+      f"an unreported run id lost the nearest-dispatch fallback: {fu5}")
 print("corpus-unit-ok")
 PY
 assert test "$?" -eq 0
@@ -396,4 +421,4 @@ print("ws-unit-ok")
 PY
 assert test "$?" -eq 0
 
-printf 'PASS: %s assertions; leaderboard aggregation (fault/infra/retry/orchP/medDur/medCplx/n<10/sort/killed-excl/outlier/!/dedup), staleness hint, collect (verbatim/complexity/dedupe/fallback/args/infra-unseen/atomic-write/shortquote), worker-corpus outcome+retry+model-shape+timestamp units, a read set that keeps retired workers as history while the dispatch set drops them, and an ATTACH re-attach linked as a followup instead of counted as a fresh dispatch\n' "$asserts"
+printf 'PASS: %s assertions; leaderboard aggregation (fault/infra/retry/orchP/medDur/medCplx/n<10/sort/killed-excl/outlier/!/dedup), staleness hint, collect (verbatim/complexity/dedupe/fallback/args/infra-unseen/atomic-write/shortquote), worker-corpus outcome+retry+model-shape+timestamp units, a read set that keeps retired workers as history while the dispatch set drops them, and an ATTACH re-attach linked as a followup of the dispatch that started the RUN IT NAMES — nearest-dispatch only where nothing reported that run id — instead of counted as a fresh dispatch\n' "$asserts"

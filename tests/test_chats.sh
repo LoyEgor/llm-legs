@@ -1,27 +1,41 @@
 #!/usr/bin/env bash
 # Tests for the parts of bin/chats that are not curses: the row a chat becomes,
-# the column widths, the filter, and argument handling. The picker's drawing is
-# left to a terminal; what breaks silently is the data underneath it.
+# the column widths, the filter, the one-column ask mark, and argument handling.
+# The picker's drawing is left to a terminal; what breaks silently is the data
+# underneath it — including the track line it shares with the statusline.
 set -u
 export TZ=UTC
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/chats"
+STATUSLINE="$ROOT/bin/statusline.sh"
 
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
-# The statusline's track file is what names the account a reply went through.
-TRACKS="$(mktemp -d)"
-trap 'rm -rf "$TRACKS"' EXIT
-printf 'v2 1785996400 alona 0 3600 claude-haiku-4-5 reply-1 262144 1785996400 alona\n' \
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# The statusline's track file is what names the account a reply went through. The stamp is the
+# reply the statusline attributed, which is the row's own reply here. The line carries a SECOND
+# account — the one that session was running under when it last looked — deliberately different
+# from the attributed one, so a reader counting to the wrong field is caught here.
+TRACKS="$WORK/tracks"
+mkdir -p "$TRACKS"
+printf 'v2 1785996700 alona 0 3600 claude-haiku-4-5 reply-1 262144 1785996700 com\n' \
   > "$TRACKS/cache-ttl-track-abc123"
-printf 'v2 1785996400 ? 0 3600 claude-haiku-4-5 reply-9 262144 1785996400 com\n' \
+# A chat left open: the statusline went on to a reply this listing has not seen.
+printf 'v2 1785996760 alona 0 3600 claude-haiku-4-5 reply-2 262144 1785996760 alona\n' \
+  > "$TRACKS/cache-ttl-track-ahead"
+# A track that stopped before this row's reply: whatever answered since is unproven.
+printf 'v2 1785996640 alona 0 3600 claude-haiku-4-5 reply-0 262144 1785996640 alona\n' \
+  > "$TRACKS/cache-ttl-track-behind"
+printf 'v2 1785996700 ? 0 3600 claude-haiku-4-5 reply-9 262144 1785996700 com\n' \
   > "$TRACKS/cache-ttl-track-unknown"
 
-OUT=$(STATUSLINE_CACHE_DIR="$TRACKS" python3 - "$SCRIPT" <<'PY'
-import importlib.machinery, importlib.util, sys
+OUT=$(STATUSLINE_CACHE_DIR="$TRACKS" python3 - "$SCRIPT" "$STATUSLINE" <<'PY'
+import importlib.machinery, importlib.util, re, sys
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
 spec = importlib.util.spec_from_loader("chats", loader)
@@ -51,9 +65,13 @@ print("account-absent:", chats.account_for(row, now, ["com", "beta"], 1))
 # the cache expiring under a resting cursor hands it back; an override stands.
 print("refollow:", chats.refollow(row, "abc123", 0, 0), chats.refollow(row, "abc123", 1, 0),
       chats.refollow(row, "other", 1, 0))
-# The statusline saw a different reply last, so the account is unproven.
-drift = dict(row, uuid="reply-2"); chats.annotate([drift])
-print("drift:", chats.columns(drift, now)[3])
+# The statusline stamps the newest reply of any kind and this listing the newest one that SPOKE,
+# so a chat ending on a tool call leaves the two naming different replies. A track AHEAD of the
+# row is later knowledge and counts the lifetime from its own stamp; one behind it proves nothing.
+ahead = dict(row, session="ahead"); chats.annotate([ahead])
+behind = dict(row, session="behind"); chats.annotate([behind])
+print("ahead:", chats.columns(ahead, now)[3], chats.warm_name(ahead, now + 330))
+print("behind:", chats.columns(behind, now)[3])
 # A reply that cached nothing, and a track the statusline could not attribute.
 none = dict(row, ttl=0); chats.annotate([none])
 lost = dict(row, session="unknown", uuid="reply-9"); chats.annotate([lost])
@@ -61,8 +79,11 @@ print("cold:", chats.columns(none, now)[3], chats.columns(lost, now)[3])
 print("project:", cells[1])
 print("name:", cells[4])
 print("quote:", cells[5])
-print("ago:", chats.when_label(row["at"], now))
-# A clock that ran backwards must not print a negative age.
+# One time column: a chat spoken in today is placed by its clock, anything older by its date,
+# both five columns wide. Midnight belongs to today; a clock that ran backwards prints no age.
+print("today:", repr(cells[0]))
+print("midnight:", chats.when_label(1785974400.0, now), chats.when_label(1785974399.0, now))
+print("older:", chats.when_label(now - 86400, now))
 print("future:", chats.when_label(now + 600, now))
 
 nameless = dict(row, name=None)
@@ -92,6 +113,22 @@ print("blank-name:", chats.columns(dict(row, name="  \n "), now)[4:])
 print("label0:", chats.label(0, chats.WINDOWS))
 print("label-last:", chats.label(len(chats.WINDOWS) - 1, chats.WINDOWS))
 print("label-pinned:", chats.label(0, (7,)))
+
+# The mark is one column wide whether it is there or not: a row that widens when a chat
+# starts waiting would move every field to its right.
+print("mark-asking:", repr(chats.ask_mark(dict(row, asking=True))))
+print("mark-plain:", repr(chats.ask_mark(row)))
+
+# --- the track line is ONE format, written there and read here ---------------
+# The reader counts fields by position, so reordering that printf keeps every suite green while
+# the picker names the wrong account. Pin the two to each other rather than to a literal line.
+writer = re.search(r"printf 'v2((?: %s)+)\\n'((?:[^\n]*\\\n)*[^\n]*)",
+                   open(sys.argv[2], encoding="utf-8").read())
+# The arg list ends where the redirect begins; a `>` never appears inside it.
+args = re.findall(r'"\$\{?([a-z_]+)', writer.group(2).split(">")[0])
+print("writer-fields:", writer.group(1).count("%s") == len(args), len(args))
+print("pinned-ts:", args[chats.TRACK_TS - 1])
+print("pinned-account:", args[chats.TRACK_ACCOUNT - 1])
 PY
 ) || fail "module probe failed"
 
@@ -102,14 +139,18 @@ assert grep -qx 'account-warm: 0' <<<"$OUT"
 assert grep -qx 'account-cold: 1' <<<"$OUT"
 assert grep -qx 'account-absent: 1' <<<"$OUT"
 assert grep -qx 'refollow: True False True' <<<"$OUT"
-assert grep -qx 'drift: 42k' <<<"$OUT"
+# The minute past this row's own expiry is still warm on the track's later stamp.
+assert grep -qx 'ahead: alona alona' <<<"$OUT"
+assert grep -qx 'behind: 42k' <<<"$OUT"
 assert grep -qx 'cold: 42k 42k' <<<"$OUT"
 assert grep -qx 'project: llm-legs' <<<"$OUT"
 assert grep -qx 'name: Header and shadows' <<<"$OUT"
 # Who spoke last is what says whether a chat is finished or waiting on him.
 assert grep -qx 'quote: claude: done, the header holds' <<<"$OUT"
-assert grep -qx 'ago: 60m' <<<"$OUT"
-assert grep -qx 'future: 0m' <<<"$OUT"
+assert grep -qx "today: '06:06'" <<<"$OUT"
+assert grep -qx 'midnight: 00:00 05.08' <<<"$OUT"
+assert grep -qx 'older: 05.08' <<<"$OUT"
+assert grep -qx 'future: 07:16' <<<"$OUT"
 # With no name of its own, the last message stands in for one and is not repeated.
 assert grep -qx 'nameless: claude: done, the header holds' <<<"$OUT"
 assert grep -qx "nameless-quote: ''" <<<"$OUT"
@@ -133,11 +174,16 @@ assert grep -qx "blank-name: \['claude: done, the header holds', ''\]" <<<"$OUT"
 assert grep -q 'label0: last 7d · ↓ for more' <<<"$OUT"
 assert test -z "$(grep -o 'label-last:.*more' <<<"$OUT")"
 assert grep -qx 'label-pinned: last 7d' <<<"$OUT"
+assert grep -qx "mark-asking: '?'" <<<"$OUT"
+assert grep -qx "mark-plain: ' '" <<<"$OUT"
+assert grep -qx 'writer-fields: True 9' <<<"$OUT"
+assert grep -qx 'pinned-ts: rec_ts' <<<"$OUT"
+assert grep -qx 'pinned-account: rec_acct' <<<"$OUT"
 
 # --- the account the picker opens on ----------------------------------------
 # worker-pick owns the choice; llm-limits' current account and .claudeb-state are
 # only what is left when it can staff nobody.
-STUB="$TRACKS/stub-bin"
+STUB="$WORK/stub-bin"
 mkdir -p "$STUB"
 cat >"$STUB/worker-pick" <<'EOF'
 #!/usr/bin/env bash
@@ -146,9 +192,9 @@ cat >"$STUB/worker-pick" <<'EOF'
 printf '%s\n' "$PICK_ANSWER"
 EOF
 chmod +x "$STUB/worker-pick"
-printf 'beta\n' >"$TRACKS/claudeb-state"
+printf 'beta\n' >"$WORK/claudeb-state"
 
-OUT=$(CLAUDEB_WORKER_PICK="$STUB/worker-pick" python3 - "$SCRIPT" "$TRACKS/claudeb-state" <<'PY'
+OUT=$(CLAUDEB_WORKER_PICK="$STUB/worker-pick" python3 - "$SCRIPT" "$WORK/claudeb-state" <<'PY'
 import importlib.machinery, importlib.util, os, sys
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
@@ -192,6 +238,7 @@ run() { OUT=$("$SCRIPT" "$@" </dev/null 2>&1); RC=$?; }
 run --help
 assert test "$RC" -eq 0
 assert grep -q 'usage: chats' <<<"$OUT"
+assert grep -q '? marks a chat waiting' <<<"$OUT"
 
 run --days abc
 assert test "$RC" -ne 0
@@ -210,5 +257,177 @@ assert test "$RC" -ne 0
 run --days 7
 assert test "$RC" -ne 0
 assert grep -q 'full-screen picker' <<<"$OUT"
+
+# --- share/chat_ask.py: the chat that stopped on a question to him -----------
+# Read backwards from the end, so what must not be mistaken for his answer is everything the
+# harness writes under the user's role — a tool result, a system reminder — and everything said
+# in a conversation of its own: a subagent's turn. What must not be mistaken for a question is
+# everything a REPORT ends on: the same verbs in the past tense, a `?` in code he was handed or
+# in a quoted hook line, and an ask a screen above the conclusion.
+ASK=$(python3 - "$ROOT/share/chat_ask.py" "$WORK" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+
+loader = importlib.machinery.SourceFileLoader("chat_ask", sys.argv[1])
+spec = importlib.util.spec_from_loader("chat_ask", loader)
+ask = importlib.util.module_from_spec(spec)
+loader.exec_module(ask)
+work = sys.argv[2]
+
+
+def transcript(name, *entries):
+    path = os.path.join(work, name + ".jsonl")
+    with open(path, "w", encoding="utf-8") as handle:
+        for entry in entries:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return path
+
+
+def said(role, text, **extra):
+    content = text if role == "user" else [{"type": "text", "text": text}]
+    return dict({"type": role, "message": {"role": role, "content": content}}, **extra)
+
+
+def tool_result(text):
+    return {"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "content": text}]}}
+
+
+ASKED = "Патчи готовы, дерево чистое. Скажи, коммитить?"
+REPORTED = "Патчи в дереве, тесты зелёные."
+cases = [
+    ("ask", transcript("ask", said("user", "почини гейт"), said("assistant", ASKED))),
+    # His word came in: the chat is answered whatever it was asked.
+    ("answered", transcript("answered", said("user", "почини гейт"), said("assistant", ASKED),
+                            said("user", "ок, го"))),
+    # A tool result is the middle of the assistant's own turn, so the question still stands.
+    ("under-tool-result", transcript("under-tool-result", said("user", "почини гейт"),
+                                     said("assistant", ASKED), tool_result("дай ок"))),
+    # ...and its CONTENT is not a message: a file the chat read that asks for an ok says
+    # nothing about whether this chat is waiting.
+    ("tool-result-only-ask", transcript("tool-result-only-ask", said("user", "почини гейт"),
+                                        said("assistant", REPORTED),
+                                        tool_result("скажи «го» — жду подтверждения"))),
+    # A reminder arrives under his role and would otherwise read as an answer.
+    ("under-reminder", transcript("under-reminder", said("user", "почини гейт"),
+                                  said("assistant", ASKED),
+                                  said("user", "<system-reminder>гейт</system-reminder>"))),
+    # A subagent asks its own supervisor, never Egor.
+    ("sidechain", transcript("sidechain", said("user", "почини гейт"),
+                             said("assistant", REPORTED),
+                             said("assistant", "Скажи, продолжать?", isSidechain=True))),
+    # A message of tool calls alone has not ended the turn it belongs to.
+    ("under-tool-call", transcript("under-tool-call", said("user", "почини гейт"),
+                                   said("assistant", ASKED),
+                                   {"type": "assistant", "message": {"role": "assistant",
+                                    "content": [{"type": "tool_use", "name": "Bash",
+                                                 "input": {}}]}})),
+    # The stub an API error leaves behind says nothing about who spoke last.
+    ("under-synthetic", transcript("under-synthetic", said("user", "почини гейт"),
+                                   said("assistant", ASKED),
+                                   {"type": "assistant", "message": {
+                                       "role": "assistant", "model": "<synthetic>",
+                                       "content": [{"type": "text", "text": "API Error"}]}})),
+    # A word for his word, with no question mark anywhere near it.
+    ("word", transcript("word", said("user", "почини гейт"),
+                        said("assistant", "Тесты зелёные.\n\nКоммит нужен твоим словом."))),
+    # The ask is what the CLOSING paragraph says: an ask a screen above the end has been
+    # answered by everything written after it.
+    ("ask-then-report", transcript("ask-then-report", said("user", "почини гейт"),
+                                   said("assistant", "Скажи, коммитить?\n\n" + REPORTED))),
+    # The verbs of a report are the verbs of a request in the past tense.
+    ("report", transcript("report", said("user", "закоммить"),
+                          said("assistant", "Закоммитил и запушил (`4e9ae8c`). "
+                                            "Действий не требуется."))),
+    # A subordinate clause is not an ask: nothing is expected of him now.
+    ("later", transcript("later", said("user", "почини гейт"),
+                         said("assistant", "Правку можно влить мелким PR, когда скажешь."))),
+    # A `?` inside a command he was handed, and one inside a quoted hook line.
+    ("code-question", transcript("code-question", said("user", "почини гейт"),
+                                 said("assistant", REPORTED + "\n\n```\ngit log -1 --format=%h?\n```"))),
+    ("quoted-question", transcript("quoted-question", said("user", "почини гейт"),
+                                   said("assistant", REPORTED + "\n\n> Гейт спросил: продолжать?"))),
+    # A `?` that ends no sentence is a glob, not a question.
+    ("glob", transcript("glob", said("user", "почини гейт"),
+                        said("assistant", "Файлы a?.txt на месте, дерево чистое."))),
+    # The ask is what a message ENDS on: a chat that merely quoted the word once, a screen
+    # above its own conclusion, is not waiting on anybody.
+    ("quoted-far-above", transcript("quoted-far-above", said("user", "почини гейт"),
+                                    said("assistant", "Скажи. " + "И дальше по делу. " * 200))),
+    # A tail window that holds nothing but one huge tool result widens instead of answering.
+    ("wide-window", transcript("wide-window", said("user", "почини гейт"),
+                               said("assistant", ASKED),
+                               tool_result("x" * (400 * 1024)))),
+    ("missing", os.path.join(work, "nobody.jsonl")),
+]
+for label, path in cases:
+    print("%s: %s" % (label, ask.awaiting_answer(path)))
+PY
+) || fail "chat_ask probe failed"
+
+assert grep -qx 'ask: True' <<<"$ASK"
+assert grep -qx 'answered: False' <<<"$ASK"
+assert grep -qx 'under-tool-result: True' <<<"$ASK"
+assert grep -qx 'tool-result-only-ask: False' <<<"$ASK"
+assert grep -qx 'under-reminder: True' <<<"$ASK"
+assert grep -qx 'sidechain: False' <<<"$ASK"
+assert grep -qx 'under-tool-call: True' <<<"$ASK"
+assert grep -qx 'under-synthetic: True' <<<"$ASK"
+assert grep -qx 'word: True' <<<"$ASK"
+assert grep -qx 'ask-then-report: False' <<<"$ASK"
+assert grep -qx 'report: False' <<<"$ASK"
+assert grep -qx 'later: False' <<<"$ASK"
+assert grep -qx 'code-question: False' <<<"$ASK"
+assert grep -qx 'quoted-question: False' <<<"$ASK"
+assert grep -qx 'glob: False' <<<"$ASK"
+assert grep -qx 'quoted-far-above: False' <<<"$ASK"
+assert grep -qx 'wide-window: True' <<<"$ASK"
+assert grep -qx 'missing: False' <<<"$ASK"
+
+# --- the ask column is answered once per version of a transcript -------------
+# Scrolling past the last row reloads the WHOLE listing a window wider, and this column reads the
+# tail of every transcript in it: a month of history paid those seconds again for an answer it
+# already had.
+CACHE=$(python3 - "$SCRIPT" "$WORK" <<'PY'
+import importlib.machinery, importlib.util, json, os, sys
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+work = sys.argv[2]
+path = os.path.join(work, "cached.jsonl")
+
+
+def rewrite(text):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "user", "message": {
+            "role": "user", "content": "почини гейт"}}, ensure_ascii=False) + "\n")
+        handle.write(json.dumps({"type": "assistant", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": text}]}},
+            ensure_ascii=False) + "\n")
+
+
+reads = []
+tail = chats.awaiting_answer
+chats.awaiting_answer = lambda p, size=None: (reads.append(p), tail(p, size))[1]
+
+rewrite("Патчи готовы. Скажи, коммитить?")
+print("first:", chats.asking(path), len(reads))
+print("again:", chats.asking(path), len(reads))
+os.utime(path, (0, 0))
+print("touched:", chats.asking(path), len(reads))
+rewrite("Патчи в дереве, тесты зелёные.")
+print("rewritten:", chats.asking(path), len(reads))
+print("missing:", chats.asking(os.path.join(work, "nobody.jsonl")), len(reads))
+PY
+) || fail "ask cache probe failed"
+
+assert grep -qx 'first: True 1' <<<"$CACHE"
+assert grep -qx 'again: True 1' <<<"$CACHE"
+# The version is the file's own mtime and size: a transcript that moved is read again.
+assert grep -qx 'touched: True 2' <<<"$CACHE"
+assert grep -qx 'rewritten: False 3' <<<"$CACHE"
+# A path that cannot be stat-ed answers without a read at all.
+assert grep -qx 'missing: False 3' <<<"$CACHE"
 
 echo "PASS: chats ($asserts assertions)"

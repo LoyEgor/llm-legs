@@ -790,10 +790,13 @@ chmod +x "$IMAGE_BIN/sips"
 IMAGE_PATH="$IMAGE_BIN:/usr/bin:/bin"
 IMAGE_OUT="$WORK/image.out"
 IMAGE_ERR="$WORK/image.err"
+IMAGE_CLAIMS="$WORK/image-claims"
+mkdir -p "$IMAGE_CLAIMS"
 image_run() {
   env PATH="$IMAGE_PATH" IMAGE_MODE="${IMAGE_MODE:-reply}" \
     IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
     IMAGE_RESCUE_FILE="${IMAGE_RESCUE_FILE:-}" WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
+    WORKER_CLAIMS_DIR="$IMAGE_CLAIMS" \
     bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
 
@@ -823,6 +826,20 @@ assert test "$image_rc" -eq 1
 assert grep -q 'unknown account: ghostacct' "$IMAGE_ERR"
 assert test ! -d "$HOME/.gemini-profiles/ghostacct"
 assert test ! -s "$IMAGE_CALLS"
+assert test ! -e "$IMAGE_CLAIMS/gemini/ghostacct"
+
+IMAGE_PICK_ACCOUNT=ghostpick
+export IMAGE_PICK_ACCOUNT
+: >"$IMAGE_CALLS"
+: >"$IMAGE_PICK_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/ghostpick.jpg" --prompt badge || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'unknown account: ghostpick' "$IMAGE_ERR"
+assert test ! -e "$IMAGE_CLAIMS/gemini/ghostpick"
+assert test ! -s "$IMAGE_CALLS"
+IMAGE_PICK_ACCOUNT=picked
+export IMAGE_PICK_ACCOUNT
 
 # A generation is billed the moment it is sent, so everything the destination alone can refuse is
 # refused before it goes out.
@@ -890,7 +907,9 @@ IMAGE_PICK_ACCOUNT=poolacct
 export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
 assert grep -qx 'account=poolacct' "$IMAGE_OUT"
-assert grep -qx -- '--account gemini --claim' "$IMAGE_PICK_CALLS"
+assert grep -qx -- '--account gemini' "$IMAGE_PICK_CALLS"
+assert_fails grep -q -- '--claim' "$IMAGE_PICK_CALLS"
+assert test -e "$IMAGE_CLAIMS/gemini/poolacct"
 assert grep -qx 'generated:poolacct' "$WORK/image-output/picked.jpg"
 assert test ! -s "$IMAGE_MAGICK_CALLS"
 

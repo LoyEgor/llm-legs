@@ -7,9 +7,11 @@
 # command path — `claudeb use|codexb use|geminib use|grokb use` — is refused inside worker_model_pin_account itself,
 # the one chokepoint every spelling of that command reaches.
 #
-# What is denied is the PIN, not the file: the same file carries `worker=`, `*_model=` and
-# `*_effort=`, which `/worker` rewrites directly, so a write that leaves every `*_profile=` line as
-# it found it passes ungated. Reading is never gated at all.
+# Two things are denied, not the file: the PIN, and a `*_model=` value no implementation worker may
+# run (shared-invariants row `bq`) — that second one takes NO grant, since a cheap default here
+# downgrades every worker after it. `worker=` and `*_effort=`, which `/worker` rewrites directly,
+# are ungated, so a write leaving every `*_profile=` line as it found it and naming an allowed model
+# passes. Reading is never gated at all.
 #
 # A grant only UNBLOCKS. It buys no action on its own, so none of the bookkeeping a one-shot
 # permission would need has to exist. Fail-open on any error: a broken gate must never block work.
@@ -28,6 +30,49 @@ GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
 # The `_wall` companion is part of the pin, not a separate knob: writing one by hand extends a pin
 # the same way moving it does.
 PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile(_wall)?='
+
+# `~/.claude/hooks/worker-pin-gate.sh` is a symlink into the repository, so a shared module — the
+# ONE allowed-model list (`share/worker-model.sh`), the ONE command splitter
+# (`share/instruction-files.sh`) — is reached through the link rather than from beside the caller.
+# Loaded only once a write to the pin file is already established: sourcing on every tool call
+# would cost every Bash call file reads for a check almost none of them need. Unreadable → the
+# check that needed it simply does not run, the same fail-open side the rest of this door takes.
+load_share() { # module-file probe-function
+  command -v "$2" >/dev/null 2>&1 && return 0
+  local path=${BASH_SOURCE[0]} dir
+  while [ -L "$path" ]; do
+    dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+    path=$(readlink "$path")
+    [[ "$path" = /* ]] || path="$dir/$path"
+  done
+  dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+  . "$dir/../share/$1" 2>/dev/null || return 1
+  command -v "$2" >/dev/null 2>&1
+}
+
+load_model_list() { load_share worker-model.sh worker_model_allows; }
+
+# The `*_model=` spellings in a text that name a model no implementation worker may run, one
+# `<vendor>=<model>` per line. One reader for both doors: a Write's content carries them a line at
+# a time and a shell command carries them inside quotes, so the pairs are matched wherever they
+# stand instead of anchored to a line.
+disallowed_models() { # text
+  local pair vendor value
+  load_model_list || return 0
+  while IFS= read -r pair; do
+    vendor=${pair%%_model=*}
+    value=${pair#*_model=}
+    worker_model_allows "$vendor" "$value" || printf '%s=%s\n' "$vendor" "$value"
+  done < <(grep -Eo '(claudeb|codex|gemini|grok)_model=[A-Za-z0-9._-]+' <<<"$1" | sort -u)
+}
+
+# Unlike the pin, this one takes no grant: a cheap default here silently downgrades every worker
+# after it, and no wording in a chat message makes an implementation run on a cheap model right.
+deny_model() { # offending pairs
+  # The list was loaded inside a command substitution, whose functions did not survive it.
+  load_model_list || :
+  deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. Implementation workers never run a cheap model — the allowed models are $(worker_model_allowed_summary) — and \`worker-run\` refuses anything else with \`OUTCOME: MODEL_REFUSED\` before an account is spent, so storing one here only breaks the next delegation. No grant unlocks this: leave the \`*_model=\` lines as they are, and if a task really wants another model, ask Egor in one line. Effort (\`*_effort=\`) is ungated."
+}
 
 grant_path() {
   local state="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
@@ -56,67 +101,23 @@ is_pin_file() { [ "$(canonical_path "$1")" = "$(pin_file)" ]; }
 
 current_pins() { grep -E "$PIN_KEY_RE" "$(pin_file)" 2>/dev/null | sort; }
 
-# Quoted text a command carries is DATA, not shell syntax: a `>` or an editor's name inside quotes
-# is prose being passed along — a focus prompt reading "ladder pin > roles > pool … worker-model"
-# was denied outright, and this door never gates reading. Each quoted run collapses to one
-# placeholder character instead of vanishing, so a redirect whose TARGET is quoted
-# (`> "$HOME/.claude/worker-model"`) still reads as a redirect. Escaped characters collapse the same
-# way: `\>` is a literal, and honouring the backslash also keeps an escaped quote from opening a run
-# that swallows the rest of the command.
-#
-# The whole command is scanned as ONE string, read in by hand rather than record by record: quotes
-# span newlines, and a per-record scan reset the quote state at every blank line — prose after one
-# read as syntax, and a `bash` after one glued to the previous record's last word.
-#
-# A DOUBLE-quoted run holding `$(…)` or a backtick is not data at all: the shell runs it. There the
-# strip answers with nothing and the caller falls back to the raw command — the same conservative
-# side the interpreter names take, and the pre-strip gate's behaviour for it.
-strip_quoted() {
-  awk -v sq="'" -v dq='"' '
-    BEGIN {
-      cmd = ""
-      while ((getline line) > 0) cmd = cmd (read_any++ ? "\n" : "") line
-      quote = ""; out = ""
-      for (i = 1; i <= length(cmd); i++) {
-        c = substr(cmd, i, 1)
-        if (quote != "") {
-          if (quote == dq && c == "\\") { i++; continue }
-          if (quote == dq && (c == "`" || (c == "$" && substr(cmd, i + 1, 1) == "("))) exit 2
-          if (c == quote) quote = ""
-          continue
-        }
-        if (c == "\\") { i++; out = out "Q"; continue }
-        if (c == sq || c == dq) { quote = c; out = out "Q"; continue }
-        out = out c
-      }
-      printf "%s", out
-    }' <<<"$1"
-}
+# The pin file as the shared write parse names it: any word whose last component is the config
+# file. Coarse on purpose, as this door has always been — a session has no reason to write a
+# `worker-model` anywhere, and the alternative is resolving a destination that is routinely a
+# variable. A word merely ENDING in it is not it: the parse matches a destination WHOLE, which is
+# what keeps `worker-model.bak` and `share/worker-model.sh` out.
+PIN_NAME_RE='[^[:space:]]*worker-model'
 
-# An interpreter is handed its program as an ARGUMENT, and that argument is quoted: every syntactic
-# mark of `bash -c 'printf x > ~/.claude/worker-model'` sits inside quotes, so once one of these
-# names stands outside the quotes the whole command reads as syntax again. Ambiguity denies. The
-# optional path prefix is the point of the class before the names: `/bin/bash -c` and
-# `/usr/bin/env sh -c` are the same interpreter as `bash`, and matching bare names only left that
-# hole open. Only names that hand quoted TEXT to a parser belong here — `env`, `nohup`, `setsid`
-# execute argv directly and un-quote nothing, and the standalone `.` matched `git commit .` and
-# `find .`, forcing the raw scan over ordinary commands whose quoted prose then read as a write.
-INTERPRETER_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(bash|sh|zsh|ksh|dash|eval|xargs|ssh|osascript|ruby|node|php)([[:space:]]|$)'
-WRITE_RE='>[[:space:]]*[^&[:space:]]|(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(tee|sed|perl|awk|python[0-9.]*|cp|mv|rm|ln|install|truncate|dd|chmod|patch|ed|ex)([[:space:]]|$)'
+# Deleting the file removes the pin, and deletion is the one write shape `instruction_write_targets`
+# does not model — it reports where bytes LAND, and these leave none.
+DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred)([[:space:]]|$)'
 
-# The interpreter names are matched on the STRIPPED command, so a name the quotes hide is a name
-# this door cannot read: `"bash" -c '… > pin'` collapses to a placeholder and leaves neither an
-# interpreter nor a redirect to match, and a variable standing there (`$SHELL -c`, `${SH} -c`,
-# `$(which bash) -c`) names an interpreter this gate cannot resolve at all. A word in COMMAND
-# position is an executable rather than text, so an unreadable one there means the raw command
-# decides — the same conservative side ambiguity takes everywhere in this door. Command position is
-# the start of a line (a newline separates commands too) or just after `;`, `|`, `&`, `(`, which is
-# what keeps a placeholder among ARGUMENTS — `arm claude-opus-5 'ladder pin > pool'` — data. A
-# variable followed by `/` is a path PREFIX, not the whole name (`$HOME/.claude/hooks/x.sh` is
-# ordinary work, and `$HOME/bin/bash -c` already matches INTERPRETER_RE through its `/`). Residual,
-# deliberately not chased: an assignment prefix moves the word out of the position matched here
-# (`FOO=1 "bash" -c …`).
-CMD_POSITION_RE='(^|[;|&(])[[:space:]]*(Q|\$\(|\$\{?[A-Za-z_][A-Za-z_0-9]*\}?([[:space:]]|$))'
+# A language runtime hands its payload to a parser of its own, exactly as a shell does, so with the
+# quoted runs resolved the payload is gone and its names go with it. The shell names are the shared
+# module's (`INSTRUCTION_INTERPRETER_RE`), which stops short of these on purpose — the write gate
+# reads a runtime through the interpreter SHAPES instead. This door finds its file by name and has
+# to see the text, so a runtime standing in the command sends it back to the raw command too.
+PIN_LANG_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(python[0-9.]*|perl|ruby|node|bun|deno|php)([[:space:]]|$)'
 
 deny() {
   jq -cn --arg r "$1" \
@@ -160,8 +161,16 @@ case "$MODE" in
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty') || exit 0
     [ -n "$path" ] || exit 0
     is_pin_file "$path" || exit 0
-    fresh && exit 0
     tool=$(printf '%s' "$input" | jq -r '.tool_name') || exit 0
+    # The model keys before the pin, and before the grant: an Edit is judged on what it would
+    # LEAVE behind, so `old_string` naming the cheap model being removed is not the offence.
+    if [ "$tool" = Write ]; then
+      offending=$(disallowed_models "$(printf '%s' "$input" | jq -r '.tool_input.content // ""')")
+    else
+      offending=$(disallowed_models "$(printf '%s' "$input" | jq -r '.tool_input.new_string // ""')")
+    fi
+    [ -z "$offending" ] || deny_model "$offending"
+    fresh && exit 0
     if [ "$tool" = Write ]; then
       # The pin lines this write would leave behind, against the ones there now.
       pending=$(printf '%s' "$input" | jq -r '.tool_input.content // ""' | grep -E "$PIN_KEY_RE" | sort)
@@ -177,31 +186,83 @@ case "$MODE" in
       >/dev/null 2>&1 || exit 0
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty') || exit 0
     # The pin file, not every name starting with it: `share/worker-model.sh` is a source file, and
-    # gating commands that merely name it made ordinary work argue with this door.
+    # gating commands that merely name it made ordinary work argue with this door. Cheap and on the
+    # raw text, so the shared module is read only for a command that could be about the pin at all;
+    # unreadable, the check that needed it does not run and the two tool doors still stand.
     grep -Eq 'worker-model([^.[:alnum:]]|$)' <<<"$cmd" || exit 0
-    # Reading it is never gated, so the deny needs the command to actually write: ANY output
-    # redirection in a command that names the file, or an in-place editor / copier. The redirect is
-    # matched wherever it stands rather than beside the name, because the target is routinely a
-    # variable — `f=~/.claude/worker-model; printf 'codex_profile=x\n' >"$f"` names the file and
-    # redirects at a word this gate cannot resolve, and matching only the literal target let it
-    # straight through. The cost is a read whose OUTPUT is redirected being refused too; that is the
-    # side to err on, and the reader can drop the redirect. Two things are not writes and must not
-    # read as any: input redirection (`< file`, `<(...)`) feeds a reader, and `2>&1` duplicates a
-    # descriptor — matching it refused every ordinary command that keeps its stderr.
-    # The match runs over the command with its quoted runs collapsed — a `>` the command merely
-    # carries as text writes nothing — unless an interpreter stands there to execute that text, and
-    # a strip that answers with nothing falls back to the raw command rather than to a pass.
-    scan=$(strip_quoted "$cmd") || scan=''
+    load_share instruction-files.sh instruction_write_targets || exit 0
+    row_sep=$(printf '\t')
+
+    # WHAT THE COMMAND IS, with its data taken out: heredoc bodies dropped and quoted runs resolved
+    # by the shared parse (`instruction_shell_scan`), the one the instruction write gate reads a
+    # command with. A brief written into a scratch file names the pin, quotes `*_profile=` and
+    # spells Egor's rules with apostrophes and Russian, and every one of those was refused as a pin
+    # move (live 2026-09-02/03) by a door that read carried text as syntax.
+    #
+    # It goes back to being syntax where something would EXECUTE it: a shell interpreter, a language
+    # runtime, or a command-position word this parse cannot resolve (`$SHELL -c`, `"bash" -c`).
+    # There the raw command decides, which is this door's conservative side.
+    scan=$(printf '%s' "$cmd" | instruction_shell_scan 2>/dev/null) || scan=''
     [ -n "$scan" ] || scan="$cmd"
-    ! grep -Eq "$INTERPRETER_RE" <<<"$scan" || scan="$cmd"
-    ! grep -Eq "$CMD_POSITION_RE" <<<"$scan" || scan="$cmd"
-    # A redirect aimed at /dev/null writes nothing anywhere, least of all the pin — and it rides
-    # the exact command this gate must wave through: `cat worker-model && worker-pick 2>/dev/null`.
-    # Erased before the write scan; every other redirect target still reads as a write. The target
-    # must END at /dev/null — `> /dev/null.txt` is a real file and keeps its redirect — and the
-    # `&>`/`>&` both-stream forms are the same discard.
-    scan=$(sed -E 's,(&>>?|[0-9]*>>?&?)[[:space:]]*/dev/null([[:space:];&|)]|$),\2,g' <<<"$scan")
-    grep -Eq "$WRITE_RE" <<<"$scan" || exit 0
+    ambiguous=''
+    if grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE|$PIN_LANG_RE" <<<"$scan"; then
+      scan="$cmd"
+      ambiguous=1
+    fi
+
+    # A write whose destination the shared parse can NAME, judged against the pin alone: `cat pin >
+    # /tmp/out` and `worker-pick > /tmp/pick.txt` leave their bytes elsewhere, and refusing them
+    # gated the read CLAUDE.md prescribes before every delegation. Every row kind counts, unlike the
+    # instruction gate's redirect-and-tee subset — a copy over the pin and a runtime that opens it
+    # are pin moves too.
+    targeted() { # text → 0 when a write in it lands in the pin file
+      local kind mode verb name
+      while IFS="$row_sep" read -r kind mode verb name; do
+        [ -n "$name" ] && return 0
+      done < <(instruction_write_targets "$1" "$PIN_NAME_RE")
+      return 1
+    }
+    # Deletion, per simple command: the verb has to stand in the same command as the name, or
+    # `cat pin; rm -rf "$tmp"` reads one file and removes another.
+    deletes() { # text → 0 when a simple command in it removes the pin file
+      local segment
+      while IFS= read -r -d '' segment; do
+        grep -Eq "(^|[[:space:]])$PIN_NAME_RE([[:space:]]|\$)" <<<"$segment" || continue
+        grep -Eq "$DELETE_RE" <<<"$segment" && return 0
+      done < <(instruction_split_commands "$1")
+      return 1
+    }
+    # ANY write at all, wherever it lands: the answer for a command whose destination cannot be
+    # named — the pin's path captured into a variable, or a raw command something in it executes.
+    # A `/dev/null` row writes nothing anywhere, least of all the pin, and it rides the exact
+    # command this gate must wave through (`cat worker-model >/dev/null; worker-pick`). A loose
+    # runtime row is not a destination at all — the shared parse emits one for every name standing
+    # near a `python3 -c`, and reading those as writes refused a pin read with a one-liner beside it.
+    any_write() { # text → 0 when it carries a write of its own
+      local kind mode verb name
+      while IFS="$row_sep" read -r kind mode verb name; do
+        [ "$mode" = unknown ] && continue
+        case "$name" in ''|/dev/null) continue ;; esac
+        return 0
+      done < <(instruction_write_targets "$1" '[^[:space:]]+')
+      grep -Eq "$DELETE_RE" <<<"$1"
+    }
+    # The name travels out of its own command in three shapes and only these: captured into a
+    # variable (`f=~/.claude/worker-model`), computed in a substitution
+    # (`p="$(readlink -f …worker-model)"`, `cp x $(dirname …worker-model)/worker-model`), or bound
+    # by a loop or a `read`. A loop naming something ELSE is not one of them: a `for` anywhere in
+    # the command used to send the whole thing to the raw scan, and a walk over two repositories
+    # beside the pin read was refused for a redirect of its own (live 2026-09-03).
+    travels() { # text → 0 when the pin's name may reach a write in another command
+      grep -Eq "[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*worker-model|\\\$\\([^)]*worker-model|(^|[;&|(])[[:space:]]*(for|while|read)[[:space:]][^;&|]*worker-model" <<<"$1"
+    }
+
+    if targeted "$scan" || deletes "$scan"; then :
+    elif { [ -n "$ambiguous" ] || travels "$scan"; } && any_write "$scan"; then :
+    else exit 0
+    fi
+    offending=$(disallowed_models "$cmd")
+    [ -z "$offending" ] || deny_model "$offending"
     fresh && exit 0
     deny "$DENY_REASON"
     ;;

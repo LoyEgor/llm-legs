@@ -121,20 +121,8 @@ format_reset_time() {
   fi
 }
 
-token_freeze_active_at() {
-  local dir=$1 f until now
-  f="$dir/token-freeze"
-  [ -f "$f" ] || return 1
-  until=$(jq -r '.until // empty' "$f" 2>/dev/null) || until=''
-  if [[ "$until" =~ ^[0-9]+$ ]]; then
-    now=${now_epoch:-$(date +%s)}
-    [ "$until" -gt "$now" ] || return 1
-  fi
-  return 0
-}
-
 claude_stale_cause() {
-  local attempts_file=$1 name=$2 auth=${3:-ok} raw kind value revive=false
+  local attempts_file=$1 name=$2 auth=${3:-ok} raw kind value cli_evidence=false
   raw=$(jq -r --arg n "$name" --arg auth "$auth" '
     (.[$n] // null) as $e |
     if $e == null then ["cause", (if $auth == "failed" then "stale data kept" else "usage weather" end)] | @tsv
@@ -146,7 +134,9 @@ claude_stale_cause() {
        then $outcome_at
        else 0 end) as $warm_at |
       (($e.warm_outcome // "") == "warm-failed" or ($e.outcome // "") == "warm-failed") as $has_warm |
-      (if ($e.warm_kind // "") == "revive" then "revive-cause" else "cause" end) as $warm_kind |
+      (if ($e.warm_kind // "") == "revive" then "revive-cause"
+       elif ($e.warm_cause // "") == "robot-skip" then "cause"
+       else "warm-cause" end) as $warm_kind |
       (($e.outcome // "") == "429" or ($e.outcome // "") == "weather" or
        (($e.outcome // "") == "failed" and (($e.http_status // 0) > 0))) as $has_outcome |
     if $has_warm and ($e.warm_cause // "") != "" and
@@ -168,11 +158,11 @@ claude_stale_cause() {
     elif $has_warm and ($e.warm_cause // "") != "" then [$warm_kind, $e.warm_cause] | @tsv
     else ["cause", "stale data kept"] | @tsv end end' "$attempts_file" 2>/dev/null) || raw=$'cause\tstale data kept'
   IFS=$'\t' read -r kind value <<<"$raw"
-  # The revive path is the sanctioned replacement for the frozen curl refresh, so its own
-  # failure cause is live evidence and must not be painted over by the freeze banner.
-  case "$kind" in revive-cause) kind=cause; revive=true ;; esac
-  # An auth-shaped cause (logged out / needs re-login) is actionable and must
-  # surface even under a freeze — the account is genuinely dead, not just paused.
+  # Warm and revive run the free CLI path, which robots do reach, so their failure causes are
+  # live evidence; only causes that could have come from the curl POST get the robot banner.
+  case "$kind" in revive-cause|warm-cause) kind=cause; cli_evidence=true ;; esac
+  # An auth-shaped cause (logged out / needs re-login) is actionable and must surface
+  # even on a robot run — the account is genuinely dead, not just left unrefreshed.
   case "$value" in
     *relogin*|*re-login*|*"log in"*|*"logged out"*|*"login needed"*)
       printf '%s' "$value"; return ;;
@@ -182,13 +172,12 @@ claude_stale_cause() {
     timeout) value='warm timeout' ;;
     warm-failed) value='warm session failed' ;;
     warm-429) value='warm HTTP 429' ;;
-    frozen) value='refresh produced no current outcome' ;;
+    robot-skip) value='robot refresh skipped' ;;
   esac
-  if [ "$revive" != true ] && [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" != true ] \
-      && token_freeze_active_at "$(dirname "$attempts_file")"; then
-    # Freeze outranks a stale pre-freeze 429 (or generic weather/stale) cause:
-    # the endpoint is frozen this run, so nothing is really "rate-limited".
-    printf 'curl refresh frozen (experiment) — revive path active'
+  if [ "$cli_evidence" != true ] && [ "${CLAUDEB_WARM_USER_EXPLICIT:-false}" != true ]; then
+    # A robot run never POSTs the token endpoint, so an older 429 (or generic
+    # weather/stale) cause would claim a rate limit nothing hit this run.
+    printf 'robot curl refresh off (manual refresh only) — revive path active'
   elif [ "$kind" = 429 ]; then
     if [ "$value" -le "${now_epoch:-$(date +%s)}" ] 2>/dev/null; then
       printf 'token rate-limited, retrying'
@@ -541,6 +530,50 @@ grok_account_names() {
   fi
 }
 
+if [ -n "${LLM_LIMITS_GROKB:-}" ]; then
+  grokb_cmd=$LLM_LIMITS_GROKB
+else
+  grokb_cmd=$script_dir/bin/grokb
+  [ -x "$grokb_cmd" ] || grokb_cmd=$(command -v grokb 2>/dev/null || printf '%s' "$grokb_cmd")
+fi
+grok_touch_timeout=${LLM_LIMITS_GROK_TOUCH_TIMEOUT:-30}
+case "$grok_touch_timeout" in ''|*[!0-9]*|0) grok_touch_timeout=30 ;; esac
+
+# A token past its own expiry, or one the last poll saw rejected, is rotated by the vendor CLI as a
+# side effect of any authenticated subcommand — never minted here. The CLI prints "You are not
+# authenticated." while rotating, so its words and exit status decide nothing; the poll that
+# follows writes the verdict (shared-invariants row ak).
+grok_token_expired() {
+  local auth
+  case "$1" in main) auth=$HOME/.grok/auth.json ;; *) auth=$grok_profiles_dir/$1/auth.json ;; esac
+  if [ -r "$auth" ] && jq -e --argjson now "$now_epoch" '
+      def entry: if type != "object" then empty
+        elif (.key | type) == "string" then .
+        else first(.[]? | select(type == "object" and (.key | type) == "string")) end;
+      ((entry // null) | .expires_at? // null) as $exp |
+      ($exp | type) == "string" and
+      ((($exp | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) // ($now + 1)) <= $now)
+    ' "$auth" >/dev/null 2>&1; then
+    return 0
+  fi
+  [ -r "$grok_cache" ] && jq -e --arg account "$1" \
+    '.accounts[]? | select(.account == $account) | .auth == "expired"' "$grok_cache" >/dev/null 2>&1
+}
+
+grok_touch_expired() { # <account>...
+  local account
+  for account in "$@"; do
+    grok_token_expired "$account" || continue
+    if [ ! -x "$grokb_cmd" ]; then
+      printf 'llm-limits.sh: Grok account %s: token expired and no grokb at %s to rotate it\n' \
+        "$account" "$grokb_cmd" >&2
+      continue
+    fi
+    printf 'llm-limits.sh: Grok account %s: token touch\n' "$account" >&2
+    run_bounded "$grok_touch_timeout" "$grokb_cmd" "$account" exec models || true
+  done
+}
+
 worker_pool_name_in_list() {
   local target="$1" name
   shift
@@ -833,16 +866,18 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused gemini &&
   if [ "${LLM_LIMITS_GEMINI_REFRESH:-1}" != 0 ]; then
     gemini_refresh_pids=()
     while IFS= read -r gemini_account; do
+      [ -n "$gemini_account" ] || continue
       [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
       new_gemini_refresh_result
       refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" &
       gemini_refresh_pids[${#gemini_refresh_pids[@]}]=$!
     done <<<"$gemini_refresh_accounts_list"
-    for gemini_refresh_pid in "${gemini_refresh_pids[@]}"; do
+    for gemini_refresh_pid in ${gemini_refresh_pids[@]+"${gemini_refresh_pids[@]}"}; do
       wait "$gemini_refresh_pid" || true
     done
   elif [ -n "$gemini_refresh_target" ] || [ "$refresh_vendor" = gemini ]; then
     while IFS= read -r gemini_account; do
+      [ -n "$gemini_account" ] || continue
       [ -z "$gemini_refresh_target" ] || [ "$gemini_account" = "$gemini_refresh_target" ] || continue
       new_gemini_refresh_result
       record_gemini_refresh "$gemini_refresh_result_file" "$gemini_account" true false 'refresh disabled'
@@ -855,6 +890,7 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
     echo "llm-limits.sh: gemini window start skipped (LLM_LIMITS_GEMINI_REFRESH=0)" >&2
   else
     while IFS= read -r gemini_account; do
+      [ -n "$gemini_account" ] || continue
       gemini_cache=$(gemini_account_cache "$gemini_account")
       gemini_home=$(gemini_account_home "$gemini_account")
       gemini_ensure_keychain "$gemini_home"
@@ -1486,7 +1522,7 @@ grok_refresh_error=''
 grok_refresh_attempted=0
 refresh_grok_quota() {
   local target=${1:-} grok_quota_cmd=${LLM_LIMITS_GROK_QUOTA:-$script_dir/grok-quota.py}
-  local grok_tmp grok_err fresh old merged detail rc
+  local grok_tmp grok_err fresh old merged detail rc account touch_names
   local -a helper_args=(--profiles-dir "$grok_profiles_dir"
     --timeout "${LLM_LIMITS_GROK_QUOTA_TIMEOUT:-10}")
   if [ ! -x "$grok_quota_cmd" ]; then
@@ -1499,6 +1535,15 @@ refresh_grok_quota() {
     return 1
   fi
   [ -z "$target" ] || helper_args+=(--account "$target")
+  # A deliberate ask — one account, or the vendor row's Hard refresh — earns the touch; the passive
+  # all-vendor collection stays a plain read.
+  if [ -n "$target" ]; then
+    grok_touch_expired "$target"
+  elif [ "$refresh_vendor" = grok ]; then
+    touch_names=()
+    while IFS= read -r account; do [ -z "$account" ] || touch_names+=("$account"); done < <(grok_account_names)
+    [ "${#touch_names[@]}" -eq 0 ] || grok_touch_expired "${touch_names[@]}"
+  fi
   grok_tmp=$(mktemp "${grok_cache}.tmp.XXXXXX") || { grok_refresh_error='cache temp failed'; return 1; }
   grok_err=$(mktemp "${grok_cache}.err.XXXXXX") || { rm -f "$grok_tmp"; grok_refresh_error='cache temp failed'; return 1; }
   rc=0
@@ -1957,6 +2002,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --arg global_error "$global_refresh_error" \
   --arg claude_error "$claude_refresh_error" --arg codex_error "$codex_refresh_error" \
   --arg gemini_error "$gemini_refresh_error" --arg grok_error "$grok_refresh_error" \
+  --arg claude_target "$claude_refresh_target" --arg codex_target "$codex_refresh_target" \
+  --arg gemini_target "$gemini_refresh_target" --arg grok_target "$grok_refresh_target" \
   --argjson alarm "$LIMITS_AGE_ALARM" --argjson paused "$paused_vendors_json" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
@@ -2036,84 +2083,146 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     elif ($value | type) == "string" and $value != ""
     then {cause:$value,at:(($previous.fetched_at | iso2epoch) // $now)}
     else null end;
-  def outcome_error($old; $attempted; $cause):
-    if $attempted == 1 then
-      if $cause == "" then null else {cause:$cause,at:$now} end
-    else old_error($old) end;
   def user_entry_cause:
     . == "needs-relogin" or . == "needs re-login" or
-    startswith("login needed");
-  def user_entry_error:
-    if (.cause | type) != "string" then false
+    startswith("login needed") or test("needs-?relogin") or test("needs.?login");
+  def classify_cause:
+    if test("helper not executable|claudeb not found|helper missing") then "helper missing"
+    elif test("refresh disabled") then "refresh disabled"
+    elif test("timed? ?out|timeout") then "timeout"
+    elif test("login needed|needs-?relogin|needs re-login|needs.?login|not signed in|auth_needed") then "login needed"
+    elif test("deactivated_workspace") then "workspace deactivated"
+    elif test("402|Payment Required|payment required") then "402 payment required"
+    elif test("(^|[^0-9])40[13]([^0-9]|$)|unauthorized|forbidden") then "401/403 auth"
+    elif test("(^|[^0-9])429([^0-9]|$)|rate[- ]?limit|too many requests") then "429 rate limit"
+    elif test("(^|[^0-9])5[0-9]{2}([^0-9]|$)|server error|internal server") then "5xx server error"
+    elif test("not refreshed \\(") then
+      "not refreshed (" + ((capture("not refreshed \\((?<w>.*)\\)$") // {w:"?"}) | .w) + ")"
+    elif test("not refreshed") then "not refreshed"
+    else "refresh failed"
+    end;
+  # A leading word is an ATTRIBUTION only when the roster of this vendor holds that account. A
+  # leading `curl: `, `jq: ` or `error: ` is the shape of a cause, and read as a name it invented an
+  # account nobody has — which drop_unknown then discarded along with the cause it was carrying. An
+  # empty roster is no evidence either way, so there the prefix is read as before.
+  def account_prefix($roster):
+    (if test("^[a-z0-9][a-z0-9-]*: ") then capture("^(?<a>[a-z0-9][a-z0-9-]*): ").a
+     elif test("^[a-z0-9][a-z0-9-]* auth(?: \\(.*\\))?$") then capture("^(?<a>[a-z0-9][a-z0-9-]*) auth").a
+     else null end) as $a |
+    if $a == null or ($roster | length) == 0 then $a
+    elif ($roster | index($a)) != null then $a
+    else null end;
+  # "; " starts a new error when the next fragment is an account prefix; free prose with ": "
+  # ("agy exited during startup: broken pipe") and HTTP bodies must stay one cause.
+  def split_legacy_cause($roster):
+    if type != "string" or . == "" then []
     else
-      [.cause | split("; ")[] |
-       if test("^[^:]+: not refreshed \\(.*\\)$") then
-         capture("^[^:]+: not refreshed \\((?<detail>.*)\\)$").detail | user_entry_cause
-       elif test("^[^:]+: login needed(?: \\(.*\\))?$") then
-         capture("^[^:]+: (?<detail>.*)$").detail | user_entry_cause
-       elif test("^.+ auth(?: \\(.*\\))?$") then true
-       else user_entry_cause
-       end] as $classes |
-      ($classes | length) > 0 and all($classes[]; .)
+      split("; ") as $parts |
+      reduce $parts[] as $part (
+        {chunks: [], cur: ""};
+        if .cur == "" then .cur = $part
+        elif ($part | account_prefix($roster)) != null then .chunks += [.cur] | .cur = $part
+        else .cur = (.cur + "; " + $part)
+        end
+      ) | .chunks + (if .cur == "" then [] else [.cur] end)
     end;
-  def classify_error:
-    if (. | type) == "object" and user_entry_error
-    then . + {needs_user_entry:true}
-    elif (. | type) == "object" then del(.needs_user_entry)
-    else .
+  def entry_account($roster; $target):
+    account_prefix($roster) as $a |
+    if $a != null then $a
+    elif $target != "" then $target
+    else null end;
+  def parse_entries($cause; $at; $roster; $target):
+    if ($cause | type) != "string" or $cause == "" then []
+    else
+      [$cause | split_legacy_cause($roster)[] |
+        {account:(entry_account($roster; $target)), cause:., at:$at}]
     end;
-  def mark_user_entry_accounts($vendor):
+  def classify_entry:
+    if (.cause | type) != "string" then .
+    else
+      .class = (.cause | classify_cause) |
+      if (.class == "login needed") or (.class == "workspace deactivated") or
+         (.cause | user_entry_cause) or (.cause | test(" auth(?: \\(.*\\))?$"))
+      then .needs_user_entry = true else del(.needs_user_entry) end
+    end;
+  def roster_names:
+    if (.accounts | type) == "array" then [.accounts[] | select(.removed != true) | .account]
+    else [] end;
+  def account_error_entries:
+    if (.accounts | type) != "array" then []
+    else
+      [.accounts[] | select((.refresh_error.cause | type) == "string") |
+        {account, cause:.refresh_error.cause, at:((.refresh_error.at // $now))}]
+    end;
+  def drop_unknown($roster):
+    if ($roster | length) == 0 then .
+    else map(select(.account == null or (.account as $a | ($roster | index($a)) != null)))
+    end;
+  def heal_entries($accounts):
+    map(. as $e |
+      if ($e.account == null) or (($e.cause | test("^[^:]+: not refreshed \\(")) | not) then $e
+      else
+        (first($accounts[]? | select(.account == $e.account) | .five_hour.as_of)) as $asof |
+        if ($asof | type) == "number" and $asof > $e.at then empty else $e end
+      end);
+  def previous_entries($old; $roster):
+    if ($old.refresh_errors | type) == "array" then
+      [($old.refresh_errors[]? |
+        parse_entries(.cause; (.at // $now); $roster; (.account // ""))[])]
+    else parse_entries(($old.refresh_error.cause // ""); ($old.refresh_error.at // $now); $roster; "")
+    end;
+  def absorb_account_errs($acct):
+    . as $base |
+    $base + [$acct[] | . as $e |
+      select(all($base[];
+        (.account != $e.account) or ((.cause != $e.cause) and ((.cause | contains($e.cause)) | not))))];
+  def to_legacy($entries):
+    if ($entries | length) == 0 then null
+    else
+      {cause:($entries | map(.cause) | join("; ")), at:($entries | map(.at) | min)} |
+      if ($entries | all(.needs_user_entry == true)) then .needs_user_entry = true else . end
+    end;
+  def apply_vendor_errors($key; $attempted; $cause; $target):
+    . as $vendor |
+    ($vendor | roster_names) as $roster |
+    previous_entries($previous.vendors[$key] // {}; $roster) as $prev |
+    parse_entries($cause; $now; $roster; $target) as $incoming |
+    ($vendor | account_error_entries) as $acct |
+    (if $attempted != 1 then $prev
+     elif $key == "gemini" or $target == "" then $incoming
+     else [$prev[] | select(.account != $target)] + $incoming
+     end | absorb_account_errs($acct)
+         | unique_by([.account // "", .cause])
+         | drop_unknown($roster)
+         | heal_entries($vendor.accounts // [])
+         | map(classify_entry));
+  def mark_user_entry_accounts:
+    ([.refresh_errors[]? | select(.needs_user_entry == true) | .account // empty]) as $named |
+    ([.refresh_errors[]? | select(.class == "workspace deactivated") | .account // empty]) as $dead |
     if (.accounts | type) != "array" then
-      if .auth_needed == true or (.refresh_error.needs_user_entry // false)
+      if .auth_needed == true or (.refresh_error.needs_user_entry // false) or
+         ((.refresh_errors | type) == "array" and (.refresh_errors | length) > 0 and
+          all(.refresh_errors[]; .needs_user_entry == true))
       then . + {needs_user_entry:true}
       else del(.needs_user_entry) end
-    elif $vendor == "claude" then
-      ([.refresh_error.cause // "" | split("; ")[] |
-        if test("^[^:]+: not refreshed \\(.*\\)$") then
-          capture("^(?<account>[^:]+): not refreshed \\((?<detail>.*)\\)$") |
-          select(.detail | user_entry_cause) | .account
-        elif test("^.+ auth(?: \\(.*\\))?$") then
-          capture("^(?<account>.+) auth(?: \\(.*\\))?$").account
-        else empty
-        end]) as $accounts |
-      .accounts |= map(.account as $account |
-        if .auth_needed == true or ($accounts | index($account))
-        then . + {needs_user_entry:true}
-        else del(.needs_user_entry) end)
-    elif $vendor == "gemini" then
+    else
       .accounts |= map(
+        (if (.account as $a | $dead | index($a)) != null
+         then . + {auth_needed:true, status:"login needed"} else . end) |
         if (.refresh_error | type) == "object" then
-          (.refresh_error |= classify_error) |
+          (.refresh_error |= classify_entry) |
           if .auth_needed == true
           then . + {needs_user_entry:true} | .refresh_error.needs_user_entry = true
           elif .refresh_error.needs_user_entry == true
           then . + {needs_user_entry:true}
+          elif ((.account as $a | $named | index($a)) != null)
+          then . + {needs_user_entry:true}
           else del(.needs_user_entry) end
-        elif .auth_needed == true then . + {needs_user_entry:true}
+        elif .auth_needed == true or ((.account as $a | $named | index($a)) != null)
+        then . + {needs_user_entry:true}
         else del(.needs_user_entry)
         end)
-    else
-      .accounts |= map(
-        if .auth_needed == true then . + {needs_user_entry:true}
-        else del(.needs_user_entry) end)
     end;
-  # A "<name>: not refreshed (...)" entry self-clears once its snapshot as_of moves past the failed run; other shapes are unprovable-healed, carried verbatim.
-  def heal_claude_error($err; $accounts):
-    if ($err | type) != "object" or ($err.cause | type) != "string" or ($err.at | type) != "number" then $err
-    else
-      [ $err.cause | split("; ")[] |
-        if test("^[^:]+: not refreshed \\(.*\\)$") | not then .
-        else
-          (capture("^(?<a>[^:]+): not refreshed \\(") | .a) as $acct |
-          (first($accounts[]? | select(.account == $acct) | .five_hour.as_of)) as $asof |
-          if ($asof | type) == "number" and $asof > $err.at then empty else . end
-        end
-      ] as $kept |
-      if ($kept | length) == 0 then null else {cause:($kept | join("; ")),at:$err.at} end
-    end;
-  # Our vendor objects were built from data read before the lock, so a collector that
-  # committed meanwhile would be overwritten wholesale. Keep its row per account when it
-  # is strictly newer; removals and accounts absent from this build always win.
   def row_as_of:
     [.five_hour?.as_of, .weekly?.as_of, .fable?.as_of, .as_of, .as_of_epoch] |
     map(if type == "number" then . elif type == "string" then iso2epoch else null end) |
@@ -2153,14 +2262,15 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error),
     grok:vendor_data("grok"; $grok; $grok_attempted; $grok_error)}}
   | .vendors |= with_entries(.key as $key | .value |= newest_accounts($key))
-  | heal_claude_error(outcome_error($previous.vendors.claude.refresh_error; $claude_attempted; $claude_error); .vendors.claude.accounts) as $claude_outcome
-  | outcome_error($previous.vendors.codex.refresh_error; $codex_attempted; $codex_error) as $codex_outcome
-  | outcome_error($previous.vendors.gemini.refresh_error; $gemini_attempted; $gemini_error) as $gemini_outcome
-  | outcome_error($previous.vendors.grok.refresh_error; $grok_attempted; $grok_error) as $grok_outcome
-  | if $claude_outcome == null then . else .vendors.claude.refresh_error = $claude_outcome end
-  | if $codex_outcome == null then . else .vendors.codex.refresh_error = $codex_outcome end
-  | if $gemini_outcome == null then . else .vendors.gemini.refresh_error = $gemini_outcome end
-  | if $grok_outcome == null then . else .vendors.grok.refresh_error = $grok_outcome end
+  | .vendors.claude.refresh_errors = (.vendors.claude | apply_vendor_errors("claude"; $claude_attempted; $claude_error; $claude_target))
+  | .vendors.codex.refresh_errors = (.vendors.codex | apply_vendor_errors("codex"; $codex_attempted; $codex_error; $codex_target))
+  | .vendors.gemini.refresh_errors = (.vendors.gemini | apply_vendor_errors("gemini"; $gemini_attempted; $gemini_error; $gemini_target))
+  | .vendors.grok.refresh_errors = (.vendors.grok | apply_vendor_errors("grok"; $grok_attempted; $grok_error; $grok_target))
+  | .vendors |= with_entries(
+      (.value.refresh_errors) as $ents |
+      if ($ents | type) != "array" or ($ents | length) == 0
+      then .value |= del(.refresh_error, .refresh_errors)
+      else .value.refresh_error = to_legacy($ents) end)
   # A removed vendor has nothing a refresh could have been for, so a cause still attached to one is
   # a verdict about an account that no longer exists. `removed` is the whole test: the status word
   # is not, because the multi-account branch spells `no quota snapshot` whenever nothing is
@@ -2170,15 +2280,12 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # 2026-08-26). Removal itself is what `geminib remove main` writes, and the empty-roster branch
   # above states it.
   | if .vendors.gemini.removed == true
-    then .vendors.gemini |= del(.refresh_error) else . end
+    then .vendors.gemini |= del(.refresh_error, .refresh_errors) else . end
   | .vendors |= with_entries(
       .value |= (
         if (.accounts | type) == "array" then .accounts |= map(set_data_age) else . end
         | set_data_age))
-  | .vendors |= with_entries(
-      (if (.value.refresh_error | type) == "object"
-       then .value.refresh_error |= classify_error else . end) |
-      .key as $key | .value |= mark_user_entry_accounts($key))
+  | .vendors |= with_entries(.value |= mark_user_entry_accounts)
   | .vendors |= with_entries(if .value.available == true then .value += {stale: (.value | vendor_stale)} else . end)
   | walk(mark)
   | .vendors |= with_entries(.key as $key | .value.usable_now = (.value | vendor_usable($key)))

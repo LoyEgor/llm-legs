@@ -50,7 +50,7 @@ worker_pool_refuse_headless() {
   fi
   worker_pool_is_disabled "$dir" "$account" || return 0
   [ -n "$pin" ] && [ "$pin" = "$account" ] && return 0
-  printf '%s: %s is out of the worker pool, so no headless run may use it. Turn "In worker pool" back on for it, or pin it in ~/.claude/worker-model.\n' \
+  printf '%s: %s is out of the worker pool, so no headless run may use it. Turn "In pool" back on for it, or pin it in ~/.claude/worker-model.\n' \
     "$vendor" "$account" >&2
   return 1
 }

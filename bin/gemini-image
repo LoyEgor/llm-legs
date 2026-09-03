@@ -112,11 +112,13 @@ root=$(resolve_root)
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
 . "$root/share/gemini-accounts.sh"
+. "$root/share/worker-claims.sh"
 
+picked=false
 if [ -z "$account" ]; then
   pick_rc=0
   if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account gemini --claim 2>/dev/null) || pick_rc=$?
+    account=$(worker-pick --account gemini 2>/dev/null) || pick_rc=$?
   else
     pick_rc=127
   fi
@@ -132,6 +134,8 @@ if [ -z "$account" ]; then
       account=main
     fi
     printf 'gemini-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  else
+    picked=true
   fi
 fi
 
@@ -140,6 +144,9 @@ fi
 if ! grep -Fqx -- "$account" <<<"$(gemini_account_names)"; then
   printf 'gemini-image: unknown account: %s\n' "$account" >&2
   exit 1
+fi
+if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
+  printf 'gemini-image: could not record the claim on %s\n' "$account" >&2
 fi
 
 profile_home=$(gemini_account_home "$account")

@@ -125,12 +125,14 @@ command -v jq >/dev/null 2>&1 || {
 
 root=$(resolve_root)
 . "$root/share/image-chroma.sh"
+. "$root/share/worker-claims.sh"
 worker_pick_cmd="${GROK_IMAGE_WORKER_PICK:-worker-pick}"
 grokb_cmd="${GROK_IMAGE_GROKB:-grokb}"
 
+picked=false
 if [ -z "$account" ]; then
   pick_rc=0
-  account=$("$worker_pick_cmd" --account grok --claim 2>/dev/null) || pick_rc=$?
+  account=$("$worker_pick_cmd" --account grok 2>/dev/null) || pick_rc=$?
   if [ "$pick_rc" -eq 3 ]; then
     printf 'GROK_USAGE_LIMIT\n' >&2
     exit 3
@@ -139,6 +141,7 @@ if [ -z "$account" ]; then
     printf 'grok-image: worker-pick failed\n' >&2
     exit 1
   fi
+  picked=true
 fi
 
 # `grokb profile` creates what it cannot find, so an unchecked typo here does not fail: it mkdirs a
@@ -147,6 +150,12 @@ grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
 if [ "$account" != main ] && [ ! -d "$grok_profiles_dir/$account" ]; then
   printf 'grok-image: account directory does not exist: %s\n' "$grok_profiles_dir/$account" >&2
   exit 1
+fi
+# The claim is recorded once the account is known to be usable, which is why the pick above does
+# not take it: a claim spent on a profile this run cannot launch de-prioritises that account for
+# the next ten minutes and buys nothing. Same recorder worker-pick uses, so there is one format.
+if [ "$picked" = true ] && ! worker_claims_record grok "$account"; then
+  printf 'grok-image: could not record the claim on %s\n' "$account" >&2
 fi
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-image.XXXXXX")

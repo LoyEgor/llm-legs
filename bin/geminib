@@ -309,7 +309,7 @@ format_reset_time() {
 
 add_account() {
   local name="${1:-}" directory status
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ "$name" = main ] || reserved_name "$name"; then
+  if [ -z "$name" ] || ! gemini_profile_name_valid "$name" || [ "$name" = main ] || reserved_name "$name"; then
     printf 'usage: geminib add <name> (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens; not reserved words or "main")\n' >&2
     exit 2
   fi
@@ -328,7 +328,7 @@ add_account() {
 
 remove_account() {
   local name="${1:-}" directory marker
-  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  if [ -z "$name" ] || ! gemini_profile_name_valid "$name"; then
     printf 'usage: geminib remove <name>\n' >&2
     exit 2
   fi
@@ -441,7 +441,7 @@ run_account() {
     printf 'usage: geminib profile <name> [agy args...]\n' >&2
     exit 2
   fi
-  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  if ! gemini_profile_name_valid "$name"; then
     printf "geminib: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
     exit 2
   fi
@@ -472,7 +472,7 @@ run_account() {
       printf "geminib: invalid profile name '%s'\n" "$name" >&2
       exit 2
     fi
-    if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    if ! gemini_profile_name_valid "$name"; then
       printf "geminib: invalid profile name '%s' (must start with a lowercase letter or number; use only lowercase letters, numbers, and hyphens)\n" "$name" >&2
       exit 2
     fi
@@ -499,7 +499,7 @@ show_help() {
 }
 
 if [ "${2:-}" = exec ] && [ "${1:-}" != main ] \
-   && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+   && gemini_profile_name_valid "${1:-}" \
    && [ -d "$profiles_dir/${1:-}" ]; then
   name="$1"
   shift 2

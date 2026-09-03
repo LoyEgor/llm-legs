@@ -109,8 +109,9 @@ elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
   [ -n "$acct" ] || acct=main
   agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)(-(high|medium|low))?')
   case "$agy_model" in
+    *gemini-3.8-flash*) model=flash38 ;;
+    *gemini-3.7-flash*) model=flash37 ;;
     *gemini-3.6-flash*) model=flash36 ;;
-    *gemini-3.5-flash*) model=flash35 ;;
     *-pro*) model=pro ;;
     *) model='' ;;
   esac

@@ -621,7 +621,8 @@ IMAGE_PICK_CALLS="$WORK/image-pick-calls"
 IMAGE_MAGICK_CALLS="$WORK/image-magick-calls"
 export IMAGE_CALLS IMAGE_PROMPT IMAGE_PICK_CALLS IMAGE_MAGICK_CALLS
 IMAGE_TMPDIR="$WORK/image-tmp"
-mkdir -p "$IMAGE_BIN" "$WORK/image-output" "$WORK/image-profiles" "$IMAGE_TMPDIR" "$HOME/.claude"
+IMAGE_CLAIMS="$WORK/image-claims"
+mkdir -p "$IMAGE_BIN" "$WORK/image-output" "$WORK/image-profiles" "$IMAGE_TMPDIR" "$HOME/.claude" "$IMAGE_CLAIMS"
 for image_account in explicit picked pinacct rescue; do
   mkdir -p "$WORK/image-profiles/$image_account"
 done
@@ -712,7 +713,7 @@ image_run() {
   env PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR" CODEX_IMAGE_CODEX="$IMAGE_BIN/codex" \
     CODEX_PROFILES_DIR="$WORK/image-profiles" IMAGE_MODE="${IMAGE_MODE:-reply}" \
     IMAGE_PICK_MODE="${IMAGE_PICK_MODE:-ok}" IMAGE_PICK_ACCOUNT="${IMAGE_PICK_ACCOUNT:-picked}" \
-    WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" \
+    WORKER_PICK_CONFIG_FILE="$HOME/.claude/worker-model" WORKER_CLAIMS_DIR="$IMAGE_CLAIMS" \
     bash "$IMAGE_SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
 
@@ -782,12 +783,27 @@ assert grep -q -- "-alpha extract -morphology EdgeIn Octagon:2 .*/edge.png" "$IM
 assert grep -qF -- "-channel G -fx min(g,max(r,b)) +channel" "$IMAGE_MAGICK_CALLS"
 assert grep -q -- "despilled.png .*/edge.png -composite PNG:$WORK/image-output/alpha.png" "$IMAGE_MAGICK_CALLS"
 
+IMAGE_PICK_MODE=ok
+IMAGE_PICK_ACCOUNT=ghostpick
+export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 : >"$IMAGE_CALLS"
+: >"$IMAGE_PICK_CALLS"
+image_rc=0
+image_run --dest "$WORK/image-output/ghost.jpg" --prompt landscape || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'account directory does not exist' "$IMAGE_ERR"
+assert test ! -e "$IMAGE_CLAIMS/codex/ghostpick"
+assert test ! -s "$IMAGE_CALLS"
+
+: >"$IMAGE_CALLS"
+: >"$IMAGE_PICK_CALLS"
 IMAGE_PICK_MODE=ok
 IMAGE_PICK_ACCOUNT=picked
 export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
-assert grep -qx -- '--account codex --claim' "$IMAGE_PICK_CALLS"
+assert grep -qx -- '--account codex' "$IMAGE_PICK_CALLS"
+assert_fails grep -q -- '--claim' "$IMAGE_PICK_CALLS"
+assert test -e "$IMAGE_CLAIMS/codex/picked"
 assert grep -qx "account=picked home=$WORK/image-profiles/picked" "$IMAGE_CALLS"
 assert grep -q 'Use low quality' "$IMAGE_PROMPT"
 

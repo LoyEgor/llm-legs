@@ -2,11 +2,10 @@
 #
 # Liveness comes from the marker file, never from the review date. A live experiment
 # inside its review window stays OFF the banner (the owner reads these surfaces daily and
-# an "until" line he cannot act on is noise; the affected sites announce themselves, e.g.
-# the frozen stale-cause) — the banner's job is the OVERDUE line that forces a decision.
-# An experiment with no review date cannot ever become overdue, so it keeps announcing.
-# A marker whose numeric `until` has passed is spent — the experiment self-resumed and
-# stops advertising itself (invariant f semantics).
+# an "until" line he cannot act on is noise; the affected sites announce themselves) — the
+# banner's job is the OVERDUE line that forces a decision. An experiment with no review
+# date cannot ever become overdue, so it keeps announcing. A marker whose numeric `until`
+# has passed is spent — the experiment self-resumed and stops advertising itself.
 
 experiments_registry_path() {
   printf '%s\n' "${EXPERIMENTS_REGISTRY:-$1/EXPERIMENTS.json}"
@@ -41,7 +40,7 @@ experiments_active_lines() {
 
 # Liveness is decided by jq, not by a digit pattern: `-1` and `1.5` are numbers too, and a
 # bash digit test would treat both as "no deadline" and keep announcing a spent experiment.
-# A marker with no numeric `until` at all is live while the file exists (invariant f).
+# A marker with no numeric `until` at all is live while the file exists.
 experiments_marker_live() {
   local marker="$1"
   [ -e "$marker" ] || return 1

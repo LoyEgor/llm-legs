@@ -9,6 +9,9 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
+strip_ansi() { sed $'s/\033\[[0-9;]*m//g'; }
+unset CLICOLOR_FORCE
+unset NO_COLOR
 # Unit fixtures must never discover and launch the developer's real agy binary.
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
@@ -297,6 +300,23 @@ jq -e '.vendors.gemini.available == true and .vendors.gemini.current_account == 
   [.vendors.gemini.accounts[] | select(.account == "work")][0].weekly.used_pct == 50' \
   <<<"$multi_gemini" >/dev/null || fail "Gemini profile snapshots were not isolated or selected-account buckets were not hoisted"
 [ -s "$GEMINI_ACCOUNTS_CACHE/work.json" ] || fail "Gemini profile cache was not created"
+# macOS grows `Library/` under any HOME a process is pointed at; a directory in the profiles root
+# that geminib could not have named is not an account, gets no probe and no keychain.
+mkdir -p "$GEMINI_PROFILES/Library/Keychains"
+: >"$GEMINI_MULTI_LOG"
+stray_gemini=$(GEMINI_MULTI_LOG="$GEMINI_MULTI_LOG" GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MULTI_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  GEMINIB_SECURITY_CMD="$GEMINI_SECURITY_STUB" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json) \
+  || fail "vendor-wide Gemini refresh with a stray directory failed"
+jq -e '[.vendors.gemini.accounts[].account] | index("Library") == null' <<<"$stray_gemini" >/dev/null \
+  || fail "a stray Library directory became a Gemini account: $(jq -c '[.vendors.gemini.accounts[].account]' <<<"$stray_gemini")"
+grep -q "$GEMINI_PROFILES/Library" "$GEMINI_MULTI_LOG" && fail "a stray Library directory was probed as a profile HOME"
+[ ! -e "$GEMINI_PROFILES/Library/.keychain-password" ] || fail "a keychain was built for the stray directory"
+[ ! -e "$GEMINI_PROFILES/.keychain-password" ] || fail "a keychain was built in the profiles root"
+rm -rf "$GEMINI_PROFILES/Library"
 
 # Worker-pool membership is the user's own "don't burn this one", and the collector is where
 # every consumer reads it from — a hardcoded enabled:true would make the toggle decorative.
@@ -751,6 +771,7 @@ fallback=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json)
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_pct == 53 and (.vendors.claude | has("session_model") | not) and .vendors.claude.source == "statusline-cache"' <<<"$fallback" >/dev/null || fail "Claude cache fallback mismatch"
 
 plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain collection failed"
+plain=$(strip_ansi <<<"$plain")
 grep -q 'claude/main\*: 5h 19% @ .* | wk 53% @ .* | fb - @ -' <<<"$plain" || fail "plain Claude values missing"
 grep -q 'codex: 5h 74%~ @ .* | wk 31%~ @ .* | fb - @ -' <<<"$plain" || fail "plain Codex values or stale markers missing"
 grep 'codex:' <<<"$plain" | grep -q '| age ' || fail "plain age field missing"
@@ -833,21 +854,32 @@ chmod +x "$WORK/claudeb-noop"
 STALE_CACHE="$WORK/stale-cache.json"
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '
+  (.vendors.claude.refresh_error.cause | test("alona: not refreshed")) and
+  (.vendors.claude.refresh_error.cause | contains("robot curl refresh off (manual refresh only) — revive path active")) and
+  (.vendors.claude.refresh_error.cause | contains("token rate-limited") | not)' "$STALE_CACHE" >/dev/null \
+  || fail "residual stale enabled account not surfaced as claude refresh_error"
+jq -e '(.vendors.claude.refresh_error.cause | test("bree")) | not' "$STALE_CACHE" >/dev/null \
+  || fail "disabled stale account must not trigger a refresh_error"
+# The user-explicit surfaces do reach the endpoint, so for them the recorded 429 is live
+# evidence and keeps its ETA (shared-invariants row f).
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" LLM_LIMITS_CACHE="$STALE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e --arg retry "$(date -r "$((now + 1800))" '+%H:%M' 2>/dev/null || date -d "@$((now + 1800))" '+%H:%M')" '
   (.vendors.claude.refresh_error.cause | test("alona: not refreshed")) and
   (.vendors.claude.refresh_error.cause | contains("token rate-limited, retry ~" + $retry)) and
   (.vendors.claude.refresh_error.cause | contains("token endpoint 429") | not)' "$STALE_CACHE" >/dev/null \
-  || fail "residual stale enabled account not surfaced as claude refresh_error"
-jq -e '(.vendors.claude.refresh_error.cause | test("bree")) | not' "$STALE_CACHE" >/dev/null \
-  || fail "disabled stale account must not trigger a refresh_error"
+  || fail "a user-explicit refresh lost the residual 429 ETA"
 cat >"$WORK/claudeb-target-fail" <<'EOF'
 #!/usr/bin/env bash
 exit 1
 EOF
 chmod +x "$WORK/claudeb-target-fail"
 printf '{"alona":{"attempted_at":%s,"outcome":"429","retry_after_until":0}}\n' "$now" >"$STALE_STORE/oauth-attempts.json"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-target-fail" \
-  LLM_LIMITS_CACHE="$STALE_CACHE" /bin/bash "$SCRIPT" --refresh-account claude/alona >/dev/null 2>&1 || true
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STALE_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-target-fail" LLM_LIMITS_CACHE="$STALE_CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account claude/alona >/dev/null 2>&1 || true
 jq -e --arg retry "$(date -r "$((now + 900))" '+%H:%M' 2>/dev/null || date -d "@$((now + 900))" '+%H:%M')" '
   .vendors.claude.refresh_error.cause == ("alona: not refreshed (token rate-limited, retry ~" + $retry + ")") and
   (.vendors.claude.refresh_error.cause | contains("probe failed") | not)' "$STALE_CACHE" >/dev/null \
@@ -915,32 +947,31 @@ printf '{"network":{"attempted_at":%s,"outcome":"weather","retry_after_until":0}
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$AUTH_CLASS_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
   LLM_LIMITS_CACHE="$AUTH_CLASS_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause |
-    contains("alpha auth (needs re-login); beta auth; network: not refreshed (network weather)")) and
+    contains("alpha auth (needs re-login); beta auth; network: not refreshed (robot curl refresh off (manual refresh only) — revive path active)")) and
   (.vendors.claude.refresh_error | has("needs_user_entry") | not) and
   ([.vendors.claude.accounts[] |
     select((.account == "alpha" or .account == "beta") and .needs_user_entry == true)] | length) == 2 and
   ([.vendors.claude.accounts[] | select(.account == "network")][0].needs_user_entry // false) == false' \
   "$AUTH_CLASS_CACHE" >/dev/null || fail "mixed Claude entry/fault cause was globally misclassified"
 
-# token-freeze experiment: a dark (stale) account renders the honest frozen cause,
-# never a generic "probe failed"; an expired `until` reverts to the normal cause.
-FREEZE_STORE="$WORK/claudeb-freeze-store"
-mkdir -p "$FREEZE_STORE/limits" "$FREEZE_STORE/tokens"
-: >"$FREEZE_STORE/tokens/frz"
-printf 'frz\n' >"$FREEZE_STORE/.claudeb-state"
-printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$((now - 3600))" >"$FREEZE_STORE/limits/frz.json"
-printf '{}' >"$FREEZE_STORE/oauth-attempts.json"
-printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$FREEZE_STORE/token-freeze"
-FREEZE_CACHE="$WORK/freeze-cache.json"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
-  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+# robot curl refresh off (shared-invariants row f): a dark (stale) account renders the honest
+# robot cause, never a generic "probe failed"; the user-explicit path names the failing step.
+ROBOT_STORE="$WORK/claudeb-robot-store"
+mkdir -p "$ROBOT_STORE/limits" "$ROBOT_STORE/tokens"
+: >"$ROBOT_STORE/tokens/frz"
+printf 'frz\n' >"$ROBOT_STORE/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' "$((now + 5000))" "$((now - 3600))" >"$ROBOT_STORE/limits/frz.json"
+printf '{}' >"$ROBOT_STORE/oauth-attempts.json"
+ROBOT_CACHE="$WORK/robot-cache.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$ROBOT_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '.vendors.claude.refresh_error.cause |
-  contains("curl refresh frozen (experiment) — revive path active")' "$FREEZE_CACHE" >/dev/null \
-  || fail "frozen dark account not surfaced with the honest freeze cause"
+  contains("robot curl refresh off (manual refresh only) — revive path active")' "$ROBOT_CACHE" >/dev/null \
+  || fail "dark account under a robot refresh not surfaced with the honest cause"
 jq -e '(.vendors.claude.refresh_error.needs_user_entry // false) == false and
   (([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry // false) == false) and
-  (.vendors.claude.refresh_error.cause | contains("; ") | not)' "$FREEZE_CACHE" >/dev/null \
-  || fail "frozen stale cause asked for a manual entry or contained the join separator"
+  (.vendors.claude.refresh_error.cause | contains("; ") | not)' "$ROBOT_CACHE" >/dev/null \
+  || fail "robot stale cause asked for a manual entry or contained the join separator"
 
 USER_CHILD_LOG="$WORK/user-claudeb-child.log"
 cat >"$WORK/user-signal-claudeb" <<'EOF'
@@ -956,17 +987,17 @@ EOF
 chmod +x "$WORK/user-signal-claudeb"
 export USER_CHILD_LOG
 : >"$USER_CHILD_LOG"
-CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
-  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$ROBOT_CACHE" \
   /bin/bash "$SCRIPT" --refresh-account claude/frz --start-windows >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause | contains("usage probe failed")) and
-  (.vendors.claude.refresh_error.cause | contains("curl refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
-  || fail "user-explicit hard refresh surfaced the robot freeze cause instead of the failing step"
-CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
-  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
+  (.vendors.claude.refresh_error.cause | contains("robot curl refresh off") | not)' "$ROBOT_CACHE" >/dev/null \
+  || fail "user-explicit hard refresh surfaced the robot cause instead of the failing step"
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$ROBOT_CACHE" \
   /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" \
-  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$FREEZE_CACHE" \
+CLAUDEB_WARM_USER_EXPLICIT=true HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" \
+  LLM_LIMITS_CLAUDEB_CMD="$WORK/user-signal-claudeb" LLM_LIMITS_CACHE="$ROBOT_CACHE" \
   /bin/bash "$SCRIPT" --refresh --start-windows >/dev/null 2>&1 || true
 awk -F'|' '$1 != "true" { bad = 1 } END { exit bad }' "$USER_CHILD_LOG" \
   || fail "a user-explicit collector spawned claudeb without the signal"
@@ -977,55 +1008,45 @@ grep -Fqx 'true|accounts --no-spend --heal' "$USER_CHILD_LOG" \
 grep -Fqx 'true|--refresh --start-windows --heal' "$USER_CHILD_LOG" \
   || fail "Refresh + Start Windows lost the user signal"
 
-printf '{"started_at":%s,"until":%s,"reason":"x"}\n' "$((now - 7200))" "$((now - 3600))" >"$FREEZE_STORE/token-freeze"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
-  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '(.vendors.claude.refresh_error.cause // "" | contains("curl refresh frozen")) | not' "$FREEZE_CACHE" >/dev/null \
-  || fail "expired token-freeze until must render as unfrozen"
-jq -e '(.vendors.claude.refresh_error.needs_user_entry // false) == false and
-       ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry // false) == false' \
-  "$FREEZE_CACHE" >/dev/null || fail "expired token-freeze retained the user-entry classification"
+# Regression: an OLD 429 entry must not mask the robot cause — this run never POSTed the
+# endpoint, so "token rate-limited" would be a lie. (This is the exact live incident the
+# battery previously failed to catch.)
+printf '{"frz":{"attempted_at":%s,"outcome":"429","retry_after_until":%s,"strikes":6}}\n' "$((now - 10800))" "$((now + 3600))" >"$ROBOT_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$ROBOT_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '(.vendors.claude.refresh_error.cause | contains("robot curl refresh off"))
+       and (.vendors.claude.refresh_error.cause | contains("token rate-limited") | not)' "$ROBOT_CACHE" >/dev/null \
+  || fail "an old 429 masked the robot refresh cause"
 
-# Regression: a STALE pre-freeze 429 entry must not mask the active freeze — the
-# endpoint is frozen this run, so "token rate-limited" would be a lie. (This is the
-# exact live incident the battery previously failed to catch.)
-printf '{"started_at":%s,"reason":"token-freeze experiment"}\n' "$now" >"$FREEZE_STORE/token-freeze"
-printf '{"frz":{"attempted_at":%s,"outcome":"429","retry_after_until":%s,"strikes":6}}\n' "$((now - 10800))" "$((now + 3600))" >"$FREEZE_STORE/oauth-attempts.json"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
-  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '(.vendors.claude.refresh_error.cause | contains("curl refresh frozen (experiment)"))
-       and (.vendors.claude.refresh_error.cause | contains("token rate-limited") | not)' "$FREEZE_CACHE" >/dev/null \
-  || fail "stale pre-freeze 429 masked the active freeze cause"
-
-# Auth-shaped cause (needs re-login) is actionable and must surface even under a
-# freeze — a genuinely logged-out account must not hide behind the frozen message.
-printf '{"frz":{"outcome":"warm-failed","warm_outcome":"warm-failed","warm_cause":"needs re-login"}}\n' >"$FREEZE_STORE/oauth-attempts.json"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
-  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+# Auth-shaped cause (needs re-login) is actionable and must surface on a robot run too —
+# a genuinely logged-out account must not hide behind the robot message.
+printf '{"frz":{"outcome":"warm-failed","warm_outcome":"warm-failed","warm_cause":"needs re-login"}}\n' >"$ROBOT_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$ROBOT_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause | contains("needs re-login"))
-       and (.vendors.claude.refresh_error.cause | contains("curl refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
-  || fail "auth-shaped cause hidden by the frozen message"
+       and (.vendors.claude.refresh_error.cause | contains("robot curl refresh off") | not)' "$ROBOT_CACHE" >/dev/null \
+  || fail "auth-shaped cause hidden by the robot message"
 jq -e '.vendors.claude.refresh_error.needs_user_entry == true and
   ([.vendors.claude.accounts[] | select(.account == "frz")][0].needs_user_entry == true)' \
-  "$FREEZE_CACHE" >/dev/null \
+  "$ROBOT_CACHE" >/dev/null \
   || fail "needs-relogin cause was not classed for account entry"
 
-# The freeze covers the curl path only; the revive path is the sanctioned replacement, so its
+# The robot guard covers the curl path only; revive is the sanctioned replacement, so its
 # own failure cause is live evidence and the banner must not paint over it.
 printf '{"frz":{"warm_outcome":"warm-failed","warm_cause":"warm-429","warm_kind":"revive","warm_attempted_at":%s}}\n' \
-  "$((now - 120))" >"$FREEZE_STORE/oauth-attempts.json"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
-  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+  "$((now - 120))" >"$ROBOT_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$ROBOT_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
 jq -e '(.vendors.claude.refresh_error.cause | contains("warm HTTP 429"))
-       and (.vendors.claude.refresh_error.cause | contains("curl refresh frozen") | not)' "$FREEZE_CACHE" >/dev/null \
-  || fail "a revive-recorded cause was masked by the frozen banner"
-# A warm-kind cause of the same shape still belongs to the frozen curl era.
+       and (.vendors.claude.refresh_error.cause | contains("robot curl refresh off") | not)' "$ROBOT_CACHE" >/dev/null \
+  || fail "a revive-recorded cause was masked by the robot banner"
+# A warm-kind cause is current evidence from the free CLI session and stays visible.
 printf '{"frz":{"warm_outcome":"warm-failed","warm_cause":"warm-429","warm_kind":"warm","warm_attempted_at":%s}}\n' \
-  "$((now - 120))" >"$FREEZE_STORE/oauth-attempts.json"
-HOME="$HOME_FIXTURE" CLAUDEB_DIR="$FREEZE_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
-  LLM_LIMITS_CACHE="$FREEZE_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
-jq -e '.vendors.claude.refresh_error.cause | contains("curl refresh frozen (experiment) — revive path active")' \
-  "$FREEZE_CACHE" >/dev/null || fail "a non-revive cause escaped the frozen banner"
+  "$((now - 120))" >"$ROBOT_STORE/oauth-attempts.json"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ROBOT_STORE" LLM_LIMITS_CLAUDEB_CMD="$WORK/claudeb-noop" \
+  LLM_LIMITS_CACHE="$ROBOT_CACHE" /bin/bash "$SCRIPT" --refresh >/dev/null 2>&1 || true
+jq -e '.vendors.claude.refresh_error.cause | contains("warm HTTP 429")' \
+  "$ROBOT_CACHE" >/dev/null || fail "a CLI warm cause was hidden by the robot banner"
 
 # Per-account staleness causes self-clear on passive collects; other shapes never drop.
 PASSIVE_STORE="$WORK/claudeb-passive-store"
@@ -1279,11 +1300,13 @@ done
 
 printf 'aged\n' >"$CLAUDEB_FRESH/.claudeb-state"
 fresh_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "rounding table collection failed"
+fresh_table=$(strip_ansi <<<"$fresh_table")
 grep -Eq '^claude/aged\* +7%~ +57% ' <<<"$fresh_table" || fail "table percentages must round to integers"
 # Unmeasured buckets render a bare dash (row y): markers qualify numbers only.
 grep -Eq '^claude/authonly +- +- +- ' <<<"$fresh_table" || fail "auth-only account missing from table"
 grep '^claude/authonly ' <<<"$fresh_table" | grep -q 'login needed$' || fail "Claude non-ok auth table status missing"
 fresh_plain=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "rounding plain collection failed"
+fresh_plain=$(strip_ansi <<<"$fresh_plain")
 grep -q 'claude/aged\*: 5h 7%~ @ .* | wk 57% @ ' <<<"$fresh_plain" || fail "plain percentages must round to integers"
 grep -q 'claude/authonly: 5h - @ - | wk - @ - | fb - @ -' <<<"$fresh_plain" || fail "auth-only account missing from plain output"
 grep '^claude/authonly:' <<<"$fresh_plain" | grep -q '| status login needed$' || fail "Claude non-ok auth plain status missing"
@@ -1401,7 +1424,7 @@ if HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" bash "$CLAUDEB_BIN" add warm </
 fi
 
 rm -f "$OAUTH_STORE/oauth-attempts.json" "$OAUTH_SENTINEL"
-OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" \
+OAUTH_SENTINEL="$OAUTH_SENTINEL" OAUTH_CLAUDE_SENTINEL="$OAUTH_CLAUDE_SENTINEL" PATH="$OAUTH_BIN:$PATH" HOME="$OAUTH_HOME" CLAUDEB_DIR="$OAUTH_STORE" CLAUDEB_WARM_USER_EXPLICIT=true \
   bash "$CLAUDEB_BIN" --refresh --start-windows >/dev/null 2>/dev/null || fail "start-windows auth fallback fixture failed"
 grep -q 'api.anthropic.com/v1/messages' "$OAUTH_SENTINEL" || fail "start-windows did not use the messages fallback after auth failure"
 
@@ -1523,6 +1546,7 @@ jq -e '.vendors.codex.available == true and .vendors.codex.five_hour.used_pct ==
   || fail "weekly-only codex payload was not normalized as an available vendor"
 weekly_only_table=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" bash "$SCRIPT" --table 2>/dev/null) || fail "weekly-only codex table failed"
+weekly_only_table=$(strip_ansi <<<"$weekly_only_table")
 awk '$1 == "codex" {print}' <<<"$weekly_only_table" | grep -Eq '^codex +- +0%' \
   || fail "weekly-only codex table did not render unknown 5h and weekly percentage"
 codex_restored=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
@@ -1739,6 +1763,7 @@ jq -e '.vendors.codex.available == true and .vendors.codex.current_account == "w
   <<<"$codex_auth_needed" >/dev/null || fail "Codex auth-needed account normalization mismatch"
 codex_auth_table=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "Codex auth-needed table failed"
+codex_auth_table=$(strip_ansi <<<"$codex_auth_table")
 codex_auth_plain=$(HOME="$CODEX_ACCOUNTS_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ACCOUNTS_CACHE" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --plain) || fail "Codex auth-needed plain failed"
 grep -Eq '^codex/work\* +- +- +- +- +- +- +never +- +- +login needed$' <<<"$codex_auth_table" \
@@ -2530,7 +2555,22 @@ GROK_PROFILES="$WORK/grok-profiles"
 GROK_ROSTER_CACHE="$WORK/grok-roster.json"
 GROK_SENTINEL="$WORK/grok-quota-called"
 mkdir -p "$GROK_HOME" "$GROK_PROFILES/supergrok" "$GROK_PROFILES/second" "$GROK_PROFILES/.grokb"
-grok_env=(HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES"
+# grokb as the collector's token touch sees it: logs the call into the same sentinel the quota
+# fixture writes (so order is one file), says the CLI's misleading line, and rotates the profile's
+# token to a future expiry the way the real CLI does — while exiting non-zero like it, too.
+GROK_TOUCH_STUB="$WORK/fake-grokb"
+cat >"$GROK_TOUCH_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -u
+[ -z "${GROK_QUOTA_SENTINEL:-}" ] || printf 'touch %s\n' "$*" >>"$GROK_QUOTA_SENTINEL"
+printf 'You are not authenticated.\n' >&2
+[ "${GROK_TOUCH_HANG:-0}" = 0 ] || sleep 30
+auth="${GROKB_PROFILES_DIR:?}/${1:?}/auth.json"
+[ ! -f "$auth" ] || printf '{"key":"k","refresh_token":"r","expires_at":"2099-01-01T00:00:00Z"}\n' >"$auth"
+exit 1
+EOF
+chmod +x "$GROK_TOUCH_STUB"
+grok_env=(HOME="$GROK_HOME" GROKB_PROFILES_DIR="$GROK_PROFILES" LLM_LIMITS_GROKB="$GROK_TOUCH_STUB"
   LLM_LIMITS_GROK_QUOTA="$ROOT/tests/fixtures/fake-grok-quota.sh"
   LLM_LIMITS_GROK_CACHE="$GROK_ROSTER_CACHE" LLM_LIMITS_GROK_REFRESH=1
   LLM_LIMITS_CACHE="$GROK_STORE" GROK_QUOTA_SENTINEL="$GROK_SENTINEL"
@@ -2665,6 +2705,68 @@ grok_empty=$(env "${grok_empty_env[@]}" bash "$SCRIPT" --refresh --json 2>"$WORK
 jq -e '(.vendors.grok | type) == "object" and (.vendors.grok.accounts // []) == [] and
   (.vendors.grok | has("refresh_error") | not)' \
   <<<"$grok_empty" >/dev/null || fail "a grok leg with no accounts was reported as a failed refresh"
+
+# --- Grok: the token touch lives in the collector, so the heartbeat's targeted re-poll and the
+# menu's Hard refresh share one path. A token past its own `expires_at` earns one
+# `grokb <account> exec models` before the poll; the poll alone writes the verdict.
+GROK_SECOND_AUTH="$GROK_PROFILES/second/auth.json"
+expired_auth() {
+  printf '{"key":"k","refresh_token":"r","expires_at":"%s"}\n' \
+    "$(date -u -r "$((now - 60))" '+%Y-%m-%dT%H:%M:%S.123456Z')" >"$GROK_SECOND_AUTH"
+}
+expired_auth
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json \
+  >/dev/null 2>"$WORK/grok-touch.err" || fail "grok targeted refresh over an expired token failed: $(cat "$WORK/grok-touch.err")"
+[ "$(sed -n 1p "$GROK_SENTINEL")" = 'touch second exec models' ] \
+  || fail "the token touch did not precede the poll: $(cat "$GROK_SENTINEL")"
+[ "$(grep -c '^touch ' "$GROK_SENTINEL")" -eq 1 ] || fail "the expired token was not touched exactly once: $(cat "$GROK_SENTINEL")"
+grep -q -- '--account second' "$GROK_SENTINEL" || fail "the touch cost the account its poll: $(cat "$GROK_SENTINEL")"
+grep -q 'Grok account second: token touch' "$WORK/grok-touch.err" \
+  || fail "the touch left no trace on stderr: $(cat "$WORK/grok-touch.err")"
+# The stub rotated the token: the same ask is now a plain poll.
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 \
+  || fail "grok targeted refresh over a fresh token failed"
+grep -q '^touch ' "$GROK_SENTINEL" && fail "a signed-in grok account was driven through the CLI: $(cat "$GROK_SENTINEL")"
+# The last poll's 401 is the other reason: the cache says expired while auth.json looks fine.
+jq -c '.accounts |= map(if .account == "second" then .auth = "expired" else . end)' "$GROK_ROSTER_CACHE" \
+  >"$WORK/grok-roster.tmp" && mv "$WORK/grok-roster.tmp" "$GROK_ROSTER_CACHE"
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 \
+  || fail "grok targeted refresh over a rejected token failed"
+[ "$(grep -c '^touch second exec models$' "$GROK_SENTINEL")" -eq 1 ] \
+  || fail "a token the last poll rejected was not touched: $(cat "$GROK_SENTINEL")"
+# The vendor row's Hard refresh touches every expired account and no other.
+expired_auth
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok --json >/dev/null 2>&1 \
+  || fail "grok vendor-wide refresh failed"
+[ "$(grep '^touch ' "$GROK_SENTINEL")" = 'touch second exec models' ] \
+  || fail "the vendor-wide refresh touched the wrong set: $(cat "$GROK_SENTINEL")"
+# The passive all-vendor collection is a plain read: no CLI, whatever the token says.
+expired_auth
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh --json >/dev/null 2>&1 \
+  || fail "grok passive collection failed"
+grep -q '^touch ' "$GROK_SENTINEL" && fail "the passive collection ran the CLI: $(cat "$GROK_SENTINEL")"
+# The touch is a live CLI launch: a wedged one is cut off and the poll still happens.
+expired_auth
+: >"$GROK_SENTINEL"
+touch_started=$SECONDS
+env "${grok_env[@]}" FAKE_GROK_CASE=busy GROK_TOUCH_HANG=1 LLM_LIMITS_GROK_TOUCH_TIMEOUT=1 \
+  bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 || fail "grok refresh with a hung touch failed"
+[ "$((SECONDS - touch_started))" -lt 20 ] || fail "a hung token touch stalled the refresh"
+grep -q -- '--account second' "$GROK_SENTINEL" || fail "a hung touch cost the account its poll: $(cat "$GROK_SENTINEL")"
+# No grokb at all: say so, and poll anyway.
+expired_auth
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy LLM_LIMITS_GROKB="$WORK/no-such-grokb" \
+  bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>"$WORK/grok-touch.err" \
+  || fail "grok refresh without grokb failed"
+grep -q 'no grokb at' "$WORK/grok-touch.err" || fail "a missing grokb went unreported: $(cat "$WORK/grok-touch.err")"
+grep -q -- '--account second' "$GROK_SENTINEL" || fail "a missing grokb cost the account its poll"
+rm -f "$GROK_SECOND_AUTH"
 
 # needs_login is the one state no automated path can leave; expired is the CLI's own to heal.
 GROK_AUTH_CACHE="$WORK/grok-auth.json"
@@ -2999,13 +3101,156 @@ jq -e '(.vendors | keys) == ["claude","codex","grok","opencode"]' \
   || fail "WORKER_PICK_CONFIG_FILE was not honoured by the pause reader"
 rm -f "$PAUSE_HOME/.claude/worker-model"
 
+
+# Structured refresh_errors: classification at write, roster-drop, one cause per HTTP blob.
+blob='rateLimits/read failed: {'"'"'code'"'"': -32603, '"'"'message'"'"': '"'"'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 402 Payment Required; content-type=text/plain; body={
+  "error": {
+    "message": "Payment Required",
+    "type": null,
+    "code": "deactivated_workspace"
+  },
+  "status": 402
+}'"'"'}'
+CLASS_CACHE="$WORK/refresh-errors-cache.json"
+jq --arg cause "$blob" --argjson at "$now" \
+  '.vendors.codex.refresh_error = {cause:$cause,at:$at} | del(.vendors.codex.refresh_errors)'   "$CACHE" >"$CLASS_CACHE"
+class_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+  /bin/bash "$SCRIPT" --json --no-write) || fail "refresh_errors migration collect failed"
+jq -e --arg cause "$blob" '
+  (.vendors.codex.refresh_errors | length) == 1 and
+  .vendors.codex.refresh_errors[0].account == null and
+  .vendors.codex.refresh_errors[0].class == "workspace deactivated" and
+  .vendors.codex.refresh_errors[0].cause == $cause and
+  (.vendors.codex.refresh_error.cause | contains("; content-type="))
+' <<<"$class_out" >/dev/null \
+  || fail "deactivated_workspace blob did not stay one vendor-wide refresh_errors entry: $(jq -c '.vendors.codex | {refresh_errors,refresh_error}' <<<"$class_out")"
+jq --arg cause "$blob" --argjson at "$now" \
+  '.vendors.codex.refresh_errors = [
+     {account:"nexerod",class:"402 payment required",cause:$cause,at:$at}
+   ] | del(.vendors.codex.refresh_error)' "$CACHE" >"$CLASS_CACHE"
+drop_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+  /bin/bash "$SCRIPT" --json --no-write) || fail "roster-drop collect failed"
+jq -e '(.vendors.codex.refresh_errors | type) != "array" or (.vendors.codex.refresh_errors | length) == 0'   <<<"$drop_out" >/dev/null \
+  || fail "deleted-account nexerod error was not dropped: $(jq -c '.vendors.codex.refresh_errors' <<<"$drop_out")"
+
+class_case() {
+  local cause=$1 class=$2
+  jq --arg cause "$cause" --argjson at "$now" \
+    '.vendors.codex.refresh_error = {cause:$cause,at:$at} | del(.vendors.codex.refresh_errors)' \
+    "$CACHE" >"$CLASS_CACHE"
+  local got
+  got=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+    /bin/bash "$SCRIPT" --json --no-write) || fail "class collect failed for $class"
+  jq -e --arg class "$class" --arg cause "$cause" '
+    .vendors.codex.refresh_errors[0].class == $class and
+    .vendors.codex.refresh_errors[0].cause == $cause and
+    .vendors.codex.refresh_error.cause == $cause
+  ' <<<"$got" >/dev/null \
+    || fail "class $class from $(jq -c '.vendors.codex.refresh_errors' <<<"$got")"
+}
+class_case "helper not executable" "helper missing"
+class_case "refresh disabled" "refresh disabled"
+class_case "timed out during free refresh + heal (1s)" "timeout"
+class_case "login needed (not signed in)" "login needed"
+class_case "HTTP 429 rate limit" "429 rate limit"
+class_case "token refresh HTTP 500" "5xx server error"
+class_case "garbled upstream blob {{{" "refresh failed"
+class_case "HTTP 402 Payment Required" "402 payment required"
+class_case 'HTTP 402 {"error":{"code":"deactivated_workspace","message":"Payment Required"}}' "workspace deactivated"
+
+dead_cause='main: failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 402 Payment Required; body={"error":{"code":"deactivated_workspace","message":"Payment Required"}}'
+jq --arg cause "$dead_cause" --argjson at "$now"   '.vendors.codex.refresh_error = {cause:$cause,at:$at} | del(.vendors.codex.refresh_errors)'   "$CACHE" >"$CLASS_CACHE"
+dead_out=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CLASS_CACHE" LLM_LIMITS_WALLS_LOG="$WALLS"   /bin/bash "$SCRIPT" --json --no-write) || fail "deactivated_workspace collect failed"
+jq -e --arg cause "$dead_cause" '
+  any(.vendors.codex.refresh_errors[];
+    .account == "main" and .class == "workspace deactivated" and .cause == $cause) and
+  any(.vendors.codex.accounts[]; .account == "main" and .auth_needed == true) and
+  (.vendors.codex.refresh_error.needs_user_entry == true)
+' <<<"$dead_out" >/dev/null   || fail "deactivated workspace was not dead auth: $(jq -c '.vendors.codex | {refresh_errors,accounts:[.accounts[]|{account,auth_needed}]}' <<<"$dead_out")"
+
+CLAUDE_ERR_STORE="$WORK/claude-refresh-errors-store"
+mkdir -p "$CLAUDE_ERR_STORE/limits" "$CLAUDE_ERR_STORE/tokens"
+: >"$CLAUDE_ERR_STORE/tokens/olx"
+: >"$CLAUDE_ERR_STORE/tokens/notcom"
+printf 'olx\n' >"$CLAUDE_ERR_STORE/.claudeb-state"
+err_at=$(date +%s)
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' \
+  "$((now + 5000))" "$err_at" >"$CLAUDE_ERR_STORE/limits/olx.json"
+printf '{"five_hour":{"used_percentage":8,"resets_at":%s,"as_of":%s,"origin":"usage"}}\n' \
+  "$((now + 5000))" "$err_at" >"$CLAUDE_ERR_STORE/limits/notcom.json"
+jq --arg cause "olx: not refreshed (usage weather); notcom: not refreshed (token endpoint 429)" \
+  --argjson at "$err_at" \
+  '.vendors.claude.refresh_error = {cause:$cause,at:$at} | del(.vendors.claude.refresh_errors)' \
+  "$CACHE" >"$CLASS_CACHE"
+claude_err=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
+  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  || fail "claude split collect failed"
+jq -e '
+  (.vendors.claude.refresh_errors | length) == 2 and
+  any(.vendors.claude.refresh_errors[]; .account == "olx" and .class == "not refreshed (usage weather)") and
+  any(.vendors.claude.refresh_errors[]; .account == "notcom" and .class == "429 rate limit") and
+  (.vendors.claude.refresh_error.cause | test("olx: not refreshed")) and
+  (.vendors.claude.refresh_error.cause | test("notcom: not refreshed"))
+' <<<"$claude_err" >/dev/null \
+  || fail "claude joined causes did not become two attributed refresh_errors: $(jq -c '.vendors.claude.refresh_errors' <<<"$claude_err")"
+
+jq --arg cause "olx: not refreshed (usage weather); notcom: not refreshed (token endpoint 429)" \
+  --argjson at "$err_at" \
+  '.vendors.claude.refresh_errors = [
+     {account:"olx",class:"not refreshed (usage weather)",cause:$cause,at:$at}
+   ] | del(.vendors.claude.refresh_error)' \
+  "$CACHE" >"$CLASS_CACHE"
+claude_arr=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
+  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  || fail "claude array re-split collect failed"
+jq -e '
+  (.vendors.claude.refresh_errors | length) == 2 and
+  any(.vendors.claude.refresh_errors[]; .account == "olx" and .class == "not refreshed (usage weather)") and
+  any(.vendors.claude.refresh_errors[]; .account == "notcom" and .class == "429 rate limit")
+' <<<"$claude_arr" >/dev/null \
+  || fail "stored joined refresh_errors were not re-split: $(jq -c '.vendors.claude.refresh_errors' <<<"$claude_arr")"
+
+# A leading word is an account only when the roster holds it: `curl:` and `jq:` are the shape of a
+# cause, and read as a name they invented an account the roster-drop then discarded the cause with.
+jq --arg cause "curl: (7) failed to connect to host" --argjson at "$err_at" \
+  '.vendors.claude.refresh_error = {cause:$cause,at:$at} | del(.vendors.claude.refresh_errors)' \
+  "$CACHE" >"$CLASS_CACHE"
+unattributed=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
+  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  || fail "unattributed cause collect failed"
+jq -e --arg cause "curl: (7) failed to connect to host" '
+  (.vendors.claude.refresh_errors | length) == 1 and
+  .vendors.claude.refresh_errors[0].account == null and
+  .vendors.claude.refresh_errors[0].cause == $cause
+' <<<"$unattributed" >/dev/null \
+  || fail "a curl: prefix was read as an account: $(jq -c '.vendors.claude.refresh_errors' <<<"$unattributed")"
+
+jq --arg cause "notcom: curl: (7) failed to connect to host" --argjson at "$err_at" \
+  '.vendors.claude.refresh_error = {cause:$cause,at:$at} | del(.vendors.claude.refresh_errors)' \
+  "$CACHE" >"$CLASS_CACHE"
+attributed=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDE_ERR_STORE" LLM_LIMITS_CACHE="$CLASS_CACHE" \
+  LLM_LIMITS_WALLS_LOG="$WALLS" /bin/bash "$SCRIPT" --json --no-write) \
+  || fail "attributed cause collect failed"
+jq -e --arg cause "notcom: curl: (7) failed to connect to host" '
+  (.vendors.claude.refresh_errors | length) == 1 and
+  .vendors.claude.refresh_errors[0].account == "notcom" and
+  .vendors.claude.refresh_errors[0].cause == $cause
+' <<<"$attributed" >/dev/null \
+  || fail "a roster account prefix was not read as one: $(jq -c '.vendors.claude.refresh_errors' <<<"$attributed")"
+
 hs_bounded() {
   python3 - "$@" <<'PY'
 import subprocess
 import sys
 
 try:
-    result = subprocess.run(["hs", *sys.argv[1:]], capture_output=True, text=True, timeout=3)
+    result = subprocess.run(
+        ["hs", *sys.argv[1:]],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
 sys.stdout.write(result.stdout)

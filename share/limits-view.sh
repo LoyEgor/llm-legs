@@ -11,6 +11,10 @@ LIMITS_STALE_FABLE=21600
 # A reading a day old and a row carrying no reading at all are one verdict — nothing here is
 # worth trusting — so every surface paints both the same red instead of inventing its own alert.
 LIMITS_AGE_ALARM=86400
+# How old the newest reading behind a routing decision may be before the surface naming that
+# decision calls the rows behind it stale. Coarser than the per-bucket thresholds above on
+# purpose: a router reads whatever the last collector pass merged, not one live bucket.
+LIMITS_STALE_ROUTING=7200
 
 # Reset epochs below one year are placeholder zeros, never real times.
 LIMITS_VIEW_JQ='
@@ -35,12 +39,15 @@ def limits_days_remaining($reset_epoch; $now):
      or limits_reset_ancient($now; $reset_epoch) then null
   else ((($reset_epoch - $now) / 86400) as $d | if $d < 0 then 0 else $d end)
   end;
+# The window a budget is actually paced over, so a surface printing the two halves of the
+# division prints the divisor this one used rather than the raw remainder.
+def limits_budget_days($days):
+  (if ($days | type) != "number" then 7 elif $days < 0.25 then 0.25 else $days end);
 def limits_daily_budget($eff_pct; $days):
   if ($eff_pct | type) != "number" then null
   else
     ((if $eff_pct < 0 then 0 elif $eff_pct > 100 then 100 else $eff_pct end) as $p |
-     (if ($days | type) != "number" then 7 elif $days < 0.25 then 0.25 else $days end) as $d |
-     (100 - $p) / $d)
+     (100 - $p) / limits_budget_days($days))
   end;
 def limits_reset_text($epoch; $now):
   if $epoch == null or $epoch < limits_reset_epoch_floor

@@ -20,6 +20,7 @@ assert_contains() {
   case "$2" in *"$1"*) ;; *) fail "assert $asserts failed: '$1' not in '$2'" ;; esac
 }
 
+REAL_HOME=$HOME
 HOME="$WORK/home"
 TMPDIR="$WORK/tmp"
 export HOME TMPDIR
@@ -31,7 +32,8 @@ INSTRUCTION_WRITE_GATE_STAMPS="$HOME/.cache/write-gate"
 WRITE_TRANSCRIPT="$WORK/write-transcript.jsonl"
 export INSTRUCTION_WATCH_ALERT INSTRUCTION_WATCH_STATE INSTRUCTION_WATCH_LOG \
        INSTRUCTION_WRITE_GATE_STAMPS
-mkdir -p "$HOME/.claude/docs" "$HOME/.claude/agents" "$HOME/.claude/skills/demo" "$TMPDIR"
+mkdir -p "$HOME/.claude/docs" "$HOME/.claude/agents" "$HOME/.claude/skills/demo" \
+         "$HOME/.claude/commands" "$HOME/.claude/hooks/lib" "$TMPDIR"
 : > "$WRITE_TRANSCRIPT"
 
 # The live layout: ~/.claude/CLAUDE.md is a symlink into a config repository, so a writer
@@ -44,14 +46,42 @@ printf '{"hooks":{}}\n' > "$HOME/.claude/settings.json"
 printf 'tier doc\n' > "$HOME/.claude/docs/review-tiers.md"
 printf 'worker agent\n' > "$HOME/.claude/agents/codex-worker.md"
 printf 'skill body\n' > "$HOME/.claude/skills/demo/SKILL.md"
+printf 'command doc\n' > "$HOME/.claude/commands/worker.md"
 printf 'ordinary code\n' > "$WORK/unrelated.py"
+
+# The autonomy span has ONE definition, and this suite exercises that one: the hooks reach
+# `rj_autonomous` at its deployed path, so the fixture HOME carries the real library rather than a
+# copy of what it decides.
+JOURNAL_LIB=''
+for cand in "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh" \
+            "$REAL_HOME/.claude/hooks/lib/review-journal.sh"; do
+  [ -r "$cand" ] && { JOURNAL_LIB=$cand; break; }
+done
+[ -n "$JOURNAL_LIB" ] || fail "review-journal.sh not readable (set CLAUDE_SETUP_ROOT)"
+ln -s "$JOURNAL_LIB" "$HOME/.claude/hooks/lib/review-journal.sh"
+
+# Two transcripts: one whose last turn of Egor's arms the span, one whose does not. The phrase is
+# his own trigger wording, quoted verbatim, which is the only reason a file here carries Cyrillic.
+SPAN_T="$WORK/span-transcript.jsonl"
+NOSPAN_T="$WORK/nospan-transcript.jsonl"
+span_turn() {
+  jq -cn --arg t "$(date -u -r "$(( $(date +%s) - 600 ))" +%Y-%m-%dT%H:%M:%SZ)" --arg c "$1" \
+    '{type:"user",timestamp:$t,message:{role:"user",content:$c}}'
+}
+span_turn 'tidy the instruction docs, «максимально автономно»' > "$SPAN_T"
+span_turn 'tidy the instruction docs' > "$NOSPAN_T"
+
+# A transcript belongs to a session, so each span state answers under its own id — which is also
+# what keeps one state's denial from handing the other the retry the gate grants on a repeat.
+in_span() { GATE_SID=matrix-span GATE_TRANSCRIPT="$SPAN_T" "$@"; }
+out_span() { GATE_SID=matrix-plain GATE_TRANSCRIPT="$NOSPAN_T" "$@"; }
 
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 REAL_MD="$REPO/global/CLAUDE.md"
 
 bash_payload() {
   jq -cn --arg c "$1" --arg s "${GATE_SID:-session-one}" --arg d "${GATE_CWD:-}" \
-    --arg t "$WRITE_TRANSCRIPT" \
+    --arg t "${GATE_TRANSCRIPT:-$WRITE_TRANSCRIPT}" \
     '{tool_name:"Bash",session_id:$s,cwd:$d,transcript_path:$t,tool_input:{command:$c}}'
 }
 
@@ -130,7 +160,6 @@ assert_eq deny "$(decision 'python3 -c "open(\"~/.claude/CLAUDE.md\",\"w\").writ
 assert_eq pass "$(decision 'grep rules ~/.claude/CLAUDE.md')"
 
 echo "== write gate: every protected class"
-assert_eq deny "$(decision "echo x > $HOME/.claude/settings.json")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/docs/review-tiers.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/agents/codex-worker.md")"
 assert_eq deny "$(decision "echo x > $HOME/.claude/skills/demo/SKILL.md")"
@@ -266,7 +295,6 @@ assert_contains "writes to $CLAUDE_MD" "$out"
 
 echo "== write gate: standing inside .claude is not an escape"
 assert_eq deny "$(GATE_CWD="$HOME/.claude/skills/demo" decision 'echo x > SKILL.md')"
-assert_eq deny "$(GATE_CWD="$HOME/.claude" decision 'echo x > settings.json')"
 
 echo "== write gate: another project's .claude is not the global one"
 assert_eq pass "$(GATE_CWD="$WORK/elsewhere" decision 'echo x > ./.claude/notes.txt')"
@@ -1322,15 +1350,23 @@ printf 'topic rules\n' > "$HOME/.claude/instructions/topic.md"
 printf 'local rules\n' > "$HOME/.claude/CLAUDE.local.md"
 mkdir -p "$REPO/global/docs/deep/deeper"
 printf 'buried\n' > "$REPO/global/docs/deep/deeper/note.md"
+# The class table answers `span` for a `.markdown` too, and a file one door speaks for while the
+# other never enumerates it is the one hole neither half can report.
+printf 'long extension\n' > "$HOME/.claude/docs/long.markdown"
 watch baseline sid-wide >/dev/null
 assert_eq "" "$(watch check sid-wide)"
 printf 'topic rules changed\n' > "$HOME/.claude/instructions/topic.md"
 printf 'local rules changed\n' > "$HOME/.claude/CLAUDE.local.md"
 printf 'buried deeper\n' > "$REPO/global/docs/deep/deeper/note.md"
+printf 'long extension changed\n' > "$HOME/.claude/docs/long.markdown"
 out=$(watch check sid-wide | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "topic.md" "$out"
 assert_contains "CLAUDE.local.md" "$out"
 assert_contains "note.md" "$out"
+assert_contains "long.markdown" "$out"
+# And the door in front of it: one extension list, or the gate speaks for a file the tripwire
+# never watched.
+assert_eq deny "$(decision "echo x > $HOME/.claude/docs/long.markdown")"
 
 echo "== tripwire: the price quoted is the dearest class in the report, not one blanket number"
 # A skill costs a fiftieth of the global file; quoting the global rate over it made every
@@ -1414,6 +1450,324 @@ assert [ -f "$SWEEP/agents/keep.md" ]
 assert [ -f "$SWEEP/abcdef0123456789" ]
 # An aged stamp is still what the sweep is for.
 assert [ ! -d "$SWEEP/0123456789abcdef" ]
+
+
+echo "== gate matrix: settings.json is out of the deny gate entirely"
+# Not an instruction file — nothing re-reads it into a context window — and the harness rewrites
+# it on every model or permission-mode switch, so a denial here cost Egor a tactical "ok" and
+# caught nothing. The tripwire still watches it, which is the half that can put its bytes back.
+assert_eq pass "$(decision "echo x > $HOME/.claude/settings.json")"
+assert_eq pass "$(GATE_CWD="$HOME/.claude" decision 'echo x > settings.json')"
+assert_eq pass "$(decision "printf x | tee $HOME/.claude/settings.json")"
+assert_eq pass "$(in_span decision "echo y >> $HOME/.claude/settings.json")"
+assert_eq pass "$(decision "python3 -c \"open('$HOME/.claude/settings.json','w').write('{}')\"")"
+
+echo "== gate matrix: the every-session class is denied in the span as much as out of it"
+# The global file, a project file, the local override. Growing or shrinking, span or no span:
+# these ride in the prefix of every session, and no cleanup of them is a model's own call.
+printf 'project rules\n' > "$REPO/CLAUDE.md"
+printf 'local rules\n' > "$HOME/.claude/CLAUDE.local.md"
+for state in in_span out_span; do
+  assert_eq deny "$($state decision "printf tiny > $CLAUDE_MD")"
+  assert_eq deny "$($state decision "echo more >> $CLAUDE_MD")"
+  assert_eq deny "$($state decision "printf tiny > $REAL_MD")"
+  assert_eq deny "$($state decision "printf tiny > $REPO/CLAUDE.md")"
+  assert_eq deny "$($state decision "printf tiny > $HOME/.claude/CLAUDE.local.md")"
+  assert_eq deny "$($state decision "printf tiny | tee $CLAUDE_MD")"
+  assert_eq deny "$($state decision "python3 -c \"open('$CLAUDE_MD','w').write('x')\"")"
+done
+
+echo "== gate matrix: the span reshapes the on-demand instruction files but never grows them"
+# Egor is away and the model is the only actor, so a write that REPLACES a doc's bytes is the
+# cleanup he left it; an append can only add to a file every later session re-reads. Out of the
+# span nothing moved: both shapes are still denied.
+for f in "$HOME/.claude/docs/review-tiers.md" "$HOME/.claude/agents/codex-worker.md" \
+         "$HOME/.claude/skills/demo/SKILL.md" "$HOME/.claude/commands/worker.md"; do
+  assert_eq pass "$(in_span decision "printf shorter > $f")"
+  assert_eq deny "$(in_span decision "echo more >> $f")"
+  assert_eq deny "$(out_span decision "printf shorter > $f")"
+  assert_eq deny "$(out_span decision "echo more >> $f")"
+done
+
+echo "== gate matrix: every write shape the gate reads is judged on whether it can shrink"
+DOC="$HOME/.claude/docs/review-tiers.md"
+assert_eq pass "$(in_span decision "printf x >| $DOC")"
+assert_eq pass "$(in_span decision "printf x | tee $DOC")"
+assert_eq deny "$(in_span decision "printf x | tee -a $DOC")"
+assert_eq pass "$(in_span decision "python3 -c \"open('$DOC','w').write('x')\"")"
+assert_eq deny "$(in_span decision "python3 -c \"open('$DOC','a').write('x')\"")"
+# `r+` and `a+` write past what is already there, so neither is a replacement.
+assert_eq deny "$(in_span decision "python3 -c \"open('$DOC','r+').write('x')\"")"
+assert_eq pass "$(in_span decision "python3 -c \"Path('$DOC').write_text('x')\"")"
+assert_eq pass "$(in_span decision "node -e \"fs.writeFileSync('$DOC','x')\"")"
+assert_eq deny "$(in_span decision "node -e \"fs.appendFileSync('$DOC','x')\"")"
+assert_eq pass "$(in_span decision "perl -e \"open(my \$f, '>', '$DOC')\"")"
+assert_eq deny "$(in_span decision "perl -e \"open(my \$f, '>>', '$DOC')\"")"
+# A doc that does not exist yet: the shape still says replacement, and what the bytes come to is
+# the tripwire's to measure.
+assert_eq pass "$(in_span decision "printf x > $HOME/.claude/docs/new-in-span.md")"
+assert_eq deny "$(out_span decision "printf x > $HOME/.claude/docs/new-in-span.md")"
+
+echo "== gate matrix: a compound is judged row by row, never one row's class against another's shape"
+# The class used to come off the FIRST destination and the shrink shape off ANY of them, so a
+# command whose later row could shrink a doc carried an earlier row that only grew one.
+AGENT_DOC="$HOME/.claude/agents/codex-worker.md"
+assert_eq deny "$(in_span decision "true; : > $CLAUDE_MD")"
+assert_eq deny "$(out_span decision "true; : > $CLAUDE_MD")"
+assert_eq deny "$(in_span decision "echo more >> $DOC; printf shorter > $AGENT_DOC")"
+assert_eq deny "$(in_span decision "printf shorter > $DOC; echo more >> $CLAUDE_MD")"
+# The denial has to name the row it refused, not the one that stood first.
+msg=$(in_span gate "printf shorter > $DOC; echo more >> $CLAUDE_MD" \
+  | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "$CLAUDE_MD" "$msg"
+case "$msg" in *"$DOC"*) fail "the denial named a destination it let through" ;; esac
+# A row the span covers is still covered when it stands beside one no gate speaks for.
+assert_eq pass "$(in_span decision "printf shorter > $DOC; grep -c . $CLAUDE_MD")"
+assert_eq pass "$(in_span decision "printf shorter > $DOC; printf x > $HOME/.claude/settings.json")"
+
+echo "== gate matrix: the in-span denial names growth, the standing one names Egor's rule"
+msg=$(in_span gate "echo grow-a >> $DOC" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "ADDS to" "$msg"
+assert_contains "waits for him" "$msg"
+msg=$(out_span gate "echo grow-b >> $DOC" | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "read-only without his explicit OK" "$msg"
+case "$msg" in *"autonomy span"*) fail "the standing denial talks about a span that is not standing" ;; esac
+
+echo "== gate matrix: the review-debt ignore list is denied always, with its own reason"
+for state in in_span out_span; do
+  assert_eq deny "$($state decision "echo path >> $HOME/.claude/review-debt-ignore")"
+  assert_eq deny "$($state decision "printf path > $HOME/.claude/review-debt-ignore")"
+  assert_eq deny "$($state decision 'echo path >> review-debt-ignore')"
+done
+msg=$(in_span gate "echo one-path >> $HOME/.claude/review-debt-ignore" \
+      | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "review debt" "$msg"
+assert_contains "never a model's" "$msg"
+case "$msg" in *"re-read across sessions"*) fail "the debt list was priced like an always-on file" ;; esac
+
+echo "== gate matrix: ~/.claude/commands is guarded like every other class directory"
+assert_eq deny "$(decision "echo x > $HOME/.claude/commands/worker.md")"
+assert_eq deny "$(decision "echo x > $HOME/.claude/commands/brand-new.md")"
+assert_eq deny "$(GATE_CWD="$HOME/.claude/commands" decision 'echo x >> worker.md')"
+assert_eq deny "$(GATE_CWD="$HOME/.claude" decision 'echo x > commands/brand-new.md')"
+
+echo "== gate matrix: a command is judged by its write TARGET, never by a name it carries"
+# A guarded name inside a heredoc body or a quoted run is data being passed along. Reading it as a
+# destination denied ordinary work — a scratchpad note quoting a rule, a commit message — while
+# saying nothing true about what the command wrote.
+mkdir -p "$WORK/scratch"
+assert_eq pass "$(decision "cat > $WORK/scratch/notes.md <<'EOF'
+CLAUDE.md says to keep instruction files short
+EOF")"
+assert_eq pass "$(decision "cat >> $WORK/scratch/notes.md <<'EOF'
+the shape to avoid is a redirect into CLAUDE.md
+EOF")"
+assert_eq pass "$(decision "cat >> $WORK/scratch/notes.md <<'EOF'
+echo x > CLAUDE.md
+EOF")"
+assert_eq pass "$(decision "printf x | tee $WORK/scratch/notes.md <<'EOF'
+CLAUDE.md
+EOF")"
+assert_eq pass "$(decision "echo 'the note mentions CLAUDE.md' >> $WORK/scratch/notes.md")"
+assert_eq pass "$(decision "python3 -c \"open('$WORK/scratch/notes.md','w').write('see CLAUDE.md for rules')\"")"
+# An indented heredoc terminator is the same body.
+assert_eq pass "$(decision "cat > $WORK/scratch/notes.md <<-'IND'
+	CLAUDE.md
+	IND")"
+# A herestring declares no body, so nothing after it may be swallowed.
+assert_eq deny "$(decision "grep -f - $WORK/unrelated.py <<<'pattern' > $CLAUDE_MD")"
+# The target itself is still the target, however it is spelled.
+assert_eq deny "$(decision "cat > $HOME/.claude/docs/heredoc-target.md <<'EOF'
+a new doc nobody asked for
+EOF")"
+assert_eq deny "$(decision "echo x > \"$CLAUDE_MD\"")"
+assert_eq deny "$(decision "echo x > '$CLAUDE_MD'")"
+# An interpreter handed a quoted program is handed a program: there the quoted runs are syntax
+# again, so the scan falls back to the raw command.
+assert_eq deny "$(decision "bash -c 'echo x > $CLAUDE_MD'")"
+assert_eq deny "$(decision "sh -c \"printf x > $CLAUDE_MD\"")"
+# An interpreter writes a guarded file when it NAMES it in the call that writes, and not when the
+# name is merely an argument somewhere in the same payload.
+assert_eq pass "$(decision "python3 -c \"open('$WORK/scratch/o.md','w').write('$CLAUDE_MD')\"")"
+assert_eq pass "$(decision "node -e \"fs.writeFileSync('$WORK/scratch/o.md', 'see $CLAUDE_MD')\"")"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','w').write('$WORK/scratch/o.md')\"")"
+
+echo "== tripwire: growth this session's own call produced is put back inside the span"
+# The gate ahead of this one can read a command's shape but never its result, so the bytes are
+# this hook's to measure. Inside the span growth goes back rather than being reported: Egor is
+# away, and the span's rule is the only arbiter left in the room.
+span_check() { # sid tool key value transcript
+  jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "$5" --arg c "$WORK" \
+    '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
+      tool_input:{($k):$v}}' | bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
+}
+span_base() { jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" baseline; }
+printf 'tier doc\n' > "$DOC"
+span_base sid-revert >/dev/null
+printf 'a line no human asked for\n' >> "$DOC"
+ctx=$(span_check sid-revert Bash command "echo a line no human asked for >> $DOC" "$SPAN_T")
+assert_contains "REVERTED" "$ctx"
+assert_contains "PUT BACK" "$ctx"
+assert_eq "tier doc" "$(cat "$DOC")"
+# Nothing this hook does may be unrecoverable: what it overwrote is parked, and the report says
+# where.
+parked=$(printf '%s' "$ctx" | sed -n 's/.*parked at \([^ )]*\).*/\1/p')
+assert [ -s "$parked" ]
+assert_contains "no human asked for" "$(cat "$parked")"
+# One report, and the baseline moved on with it.
+assert_eq "" "$(span_check sid-revert Bash command "echo x >> $DOC" "$SPAN_T")"
+
+echo "== tripwire: an Edit says which file it wrote in its own payload"
+AGENT_MD="$HOME/.claude/agents/codex-worker.md"
+span_base sid-revert-edit >/dev/null
+before=$(cat "$AGENT_MD")
+printf 'a brief nobody approved\n' >> "$AGENT_MD"
+ctx=$(span_check sid-revert-edit Edit file_path "$AGENT_MD" "$SPAN_T")
+assert_contains "REVERTED" "$ctx"
+assert_eq "$before" "$(cat "$AGENT_MD")"
+
+echo "== tripwire: outside the span nothing is rolled back"
+# Egor is here to arbiter, and the writer may be another chat sharing the checkout.
+span_base sid-nospan >/dev/null
+printf 'grown out of the span\n' >> "$DOC"
+ctx=$(span_check sid-nospan Bash command "echo grown out of the span >> $DOC" "$NOSPAN_T")
+assert_contains "CHANGED" "$ctx"
+assert_contains "puts them back" "$ctx"
+case "$ctx" in *REVERTED*) fail "the tripwire rolled back a change with Egor in the room" ;; esac
+assert_contains "grown out of the span" "$(cat "$DOC")"
+printf 'tier doc\n' > "$DOC"
+
+echo "== tripwire: a call that only NAMES the file claims nothing"
+# In a shared checkout the writer is as often another chat as this session, and a rollback decided
+# on a guess eats that chat's live work.
+span_base sid-foreign >/dev/null
+printf 'grown by somebody else\n' >> "$DOC"
+ctx=$(span_check sid-foreign Bash command "grep -c . $DOC" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+case "$ctx" in *REVERTED*) fail "the tripwire rolled back a change it could not attribute" ;; esac
+assert_contains "grown by somebody else" "$(cat "$DOC")"
+printf 'tier doc\n' > "$DOC"
+
+echo "== tripwire: a write verb aimed elsewhere is not this call's write"
+# The bytes have to LAND in the file: `sed -n` reads it, and a redirect names the file it writes.
+# Blaming either for growth another chat in the same checkout produced puts that chat's work back.
+# An interpreter row is the parse reporting a name it found inside a payload it cannot read, so it
+# is evidence of a mention and never of a write: reading a file must not roll back the growth
+# another chat in the same checkout produced.
+aimed_case=0
+for read_cmd in "sed -n '1,5p' $DOC" "cat $DOC > $WORK/scratch/copy.md" \
+                "python3 -c 'open(\"$DOC\").read()'" \
+                "node -e 'fs.readFileSync(\"$DOC\")'"; do
+  aimed_case=$((aimed_case + 1))
+  span_base "sid-aimed-$aimed_case" >/dev/null
+  printf 'grown by somebody else\n' >> "$DOC"
+  ctx=$(span_check "sid-aimed-$aimed_case" Bash command "$read_cmd" "$SPAN_T")
+  assert_contains "CHANGED" "$ctx"
+  case "$ctx" in *REVERTED*) fail "a command that only read the file was blamed for its growth: $read_cmd" ;; esac
+  assert_contains "grown by somebody else" "$(cat "$DOC")"
+  printf 'tier doc\n' > "$DOC"
+done
+
+echo "== tripwire: an interpreter READING the every-session file is not a write to it"
+span_base sid-read-always >/dev/null
+printf 'a line no human asked for\n' >> "$CLAUDE_MD"
+ctx=$(span_check sid-read-always Bash command "python3 -c 'open(\"$CLAUDE_MD\").read()'" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+case "$ctx" in *REVERTED*) fail "a python read of the global file was blamed for its growth" ;; esac
+assert_contains "no human asked for" "$(cat "$CLAUDE_MD")"
+printf 'global rules\n' > "$CLAUDE_MD"
+
+echo "== one parse: both doors read the same destinations off a command"
+# Two parses of one line was the defect these hooks were built with: the gate located a
+# destination strictly while the tripwire re-derived it from a looser expression of its own, so a
+# `.bak` sibling of a guarded name was a write to one half and not to the other, and a `mv` whose
+# segment ended in whitespace was attributed to nobody. Four shapes, asked of the ONE parse both
+# doors now call.
+mkdir -p "$WORK/stage"
+share_call() { # snippet arg... → the shared module, sourced, answering
+  bash -c '. "$1" || exit 1; shift; eval "$1"' _ "$ROOT/share/instruction-files.sh" "$@"
+}
+targets() { # command names-alternation → the destination names the parse finds
+  share_call 'instruction_write_targets "$2" "$3" | cut -f4' "$1" "$2"
+}
+DOC_ERE=$(share_call 'instruction_ere_escape "$2"' "$DOC")
+# A name a destination merely ENDS with is not that name.
+assert_eq "" "$(targets "echo x > $DOC.bak" "$DOC_ERE")"
+# The destination of a copy verb is its last operand, whatever stands after the command.
+assert_eq "$DOC" "$(targets "mv $WORK/stage/tmp.md $DOC && true" "$DOC_ERE")"
+# What a `<` names is what the command READS.
+assert_eq "" "$(targets "cat < $DOC" "$DOC_ERE")"
+# A copy into a DIRECTORY leaves its bytes in a file the operand never spells.
+assert_eq "$DOC" "$(targets "cp $WORK/stage/review-tiers.md $HOME/.claude/docs" "$DOC_ERE")"
+assert_contains "./review-tiers.md" \
+  "$(targets 'cp /tmp/stage/review-tiers.md .' 'review-tiers\.md|\./review-tiers\.md')"
+
+echo "== one parse: the tripwire attributes exactly what that parse finds"
+parse_case=0
+while IFS='|' read -r owns cmd; do
+  [ -n "$cmd" ] || continue
+  parse_case=$((parse_case + 1))
+  printf 'tier doc\n' > "$DOC"
+  printf 'staged\n' > "$WORK/stage/review-tiers.md"
+  span_base "sid-parse-$parse_case" >/dev/null
+  printf 'a line no human asked for\n' >> "$DOC"
+  ctx=$(span_check "sid-parse-$parse_case" Bash command "$cmd" "$SPAN_T")
+  if [ "$owns" = yes ]; then
+    assert_contains "REVERTED" "$ctx"
+    assert_eq "tier doc" "$(cat "$DOC")"
+  else
+    assert_contains "CHANGED" "$ctx"
+    case "$ctx" in *REVERTED*) fail "a command that wrote elsewhere was blamed for the growth: $cmd" ;; esac
+  fi
+  # Neither shape is the gate's: a derived name and a read are not writes at all, and locating a
+  # copy verb's destination in an argument list is the tripwire's job by design.
+  assert_eq pass "$(decision "$cmd")"
+done <<CASES
+no|echo x > $DOC.bak
+yes|mv $WORK/stage/tmp.md $DOC && true
+no|cat < $DOC
+yes|cp $WORK/stage/review-tiers.md home/.claude/docs
+CASES
+printf 'tier doc\n' > "$DOC"
+
+echo "== tripwire: a write that SHRANK the file is what the span exists for"
+span_base sid-shrink >/dev/null
+printf 'tiny\n' > "$DOC"
+ctx=$(span_check sid-shrink Bash command "printf tiny > $DOC" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+case "$ctx" in *REVERTED*) fail "the tripwire put back a shrink the span exists to allow" ;; esac
+assert_eq "tiny" "$(cat "$DOC")"
+printf 'tier doc\n' > "$DOC"
+# The shape the bug arrived in: an Edit that cut 129 bytes out of ~/.claude/commands/worker.md
+# inside the span, rolled back by a hook that measured that a file had changed and not which way.
+CMD_MD="$HOME/.claude/commands/worker.md"
+printf '%129s\n' | tr ' ' x > "$CMD_MD"
+span_base sid-shrink-edit >/dev/null
+printf 'x\n' > "$CMD_MD"
+ctx=$(span_check sid-shrink-edit Edit file_path "$CMD_MD" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+case "$ctx" in *REVERTED*) fail "an in-span Edit that CUT bytes was put back" ;; esac
+assert_eq "x" "$(cat "$CMD_MD")"
+printf 'command doc\n' > "$CMD_MD"
+
+echo "== tripwire: settings.json is watched and never reverted"
+# No gate speaks for it, in the span or out of it.
+span_base sid-set-span >/dev/null
+printf '{"model":"opus","hooks":{"Stop":[],"PreToolUse":[]}}\n' > "$HOME/.claude/settings.json"
+ctx=$(span_check sid-set-span Bash command "echo x > $HOME/.claude/settings.json" "$SPAN_T")
+assert_contains "settings.json" "$ctx"
+case "$ctx" in *REVERTED*) fail "the tripwire rolled back settings.json, which no gate speaks for" ;; esac
+
+echo "== tripwire: growth through a path the gate cannot see is still put back"
+# A heredoc fed to an interpreter, which is why the attribution reads the RAW command: the target
+# is named inside the body the gate drops.
+span_base sid-heredoc >/dev/null
+printf 'a line through a heredoc\n' >> "$DOC"
+ctx=$(span_check sid-heredoc Bash command "python3 - <<'EOF'
+open('$DOC','a').write('a line through a heredoc')
+EOF" "$SPAN_T")
+assert_contains "REVERTED" "$ctx"
+assert_eq "tier doc" "$(cat "$DOC")"
 
 # A headless worker can start with a PATH that misses Homebrew, and stock /bin/bash is 3.2:
 # there `local -A` is not an error but a silent downgrade to an indexed array, where every

@@ -75,6 +75,50 @@ run_tree_dirs() { # path -> RUN_TOP, RUN_COMMON
   [ -n "$RUN_COMMON" ] && [ -n "$RUN_TOP" ] || return 1
 }
 
+# The same answer, remembered by PATH. A finished document is no longer unlinked, so a day's worth
+# of them across every repository reaches the resolver, and one fork each is a render's whole
+# budget spent on runs that are already over. What a path resolves to only changes when the tree
+# itself moves, which the two -d probes catch, so a hit costs one in-memory scan and no process.
+# The file is a log — the LAST line for a path wins, hence the reverse scan — and is dropped whole
+# once it outgrows the number of checkouts anyone has, rather than rewritten on the hot path.
+run_tree_cache="$statusline_cache_dir/run-trees"
+run_tree_keys=()
+run_tree_vals=()
+run_tree_loaded=0
+run_tree_load() {
+  [ "$run_tree_loaded" = 1 ] && return 0
+  run_tree_loaded=1
+  [ -r "$run_tree_cache" ] || return 0
+  local path rest lines=0
+  while IFS=$'\t' read -r path rest; do
+    [ -n "$path" ] && [ -n "$rest" ] || continue
+    lines=$((lines + 1))
+    run_tree_keys+=("$path")
+    run_tree_vals+=("$rest")
+  done < "$run_tree_cache"
+  [ "$lines" -le 300 ] || rm -f "$run_tree_cache" 2>/dev/null
+  return 0
+}
+
+run_tree_dirs_cached() { # path -> RUN_TOP, RUN_COMMON
+  run_tree_load
+  local path="$1" i
+  for ((i = ${#run_tree_keys[@]} - 1; i >= 0; i--)); do
+    [ "${run_tree_keys[$i]}" = "$path" ] || continue
+    RUN_TOP=${run_tree_vals[$i]%%$'\t'*}
+    RUN_COMMON=${run_tree_vals[$i]#*$'\t'}
+    [ -n "$RUN_TOP" ] && [ -n "$RUN_COMMON" ] &&
+      [ -d "$RUN_TOP" ] && [ -d "$RUN_COMMON" ] && return 0
+    break
+  done
+  run_tree_dirs "$path" || return 1
+  run_tree_keys+=("$path")
+  run_tree_vals+=("$RUN_TOP"$'\t'"$RUN_COMMON")
+  mkdir -p "$statusline_cache_dir" 2>/dev/null &&
+    printf '%s\t%s\t%s\n' "$path" "$RUN_TOP" "$RUN_COMMON" >> "$run_tree_cache" 2>/dev/null
+  return 0
+}
+
 # One git call per directory for everything the render needs about its repository:
 # REPO_TOP (this working tree), REPO_COMMON (identity — shared by all worktrees of
 # a repo), REPO_ROOT (the main checkout), REPO_NAME, REPO_IS_WT (this directory is
@@ -815,9 +859,9 @@ home_probe() {
 # started it, or it is THIS session's run somewhere else — the away tree the block may move to. A
 # run that is neither is another chat's business elsewhere and stays invisible.
 ph_started=""; ph_done=""; ph_total=""; ph_tier=""; ph_max=""; ph_late=""
-ph_session=""; ph_pid=""; ph_class=""; ph_file=""; ph_foreign=0
+ph_session=""; ph_pid=""; ph_class=""; ph_file=""; ph_foreign=0; ph_rank=3
 pa_started=""; pa_done=""; pa_total=""; pa_tier=""; pa_max=""; pa_late=""; pa_top=""
-pa_class=""; pa_file=""
+pa_class=""; pa_file=""; pa_rank=3
 # Every run another chat left unconsumed over this repository, kept for the count that stands
 # beside the rendered one: the block shows ONE run, and the rest would otherwise be reviews this
 # statusline never mentions until their results arrive.
@@ -924,7 +968,7 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
     # The tree the run is over, and a subdirectory it was started from still resolves to it. A
     # recorded repository that no longer resolves leaves the run with no tree at all — and the
     # block being one tree's rendering, there is nothing left to show such a run with.
-    run_tree_dirs "$progress_repo" 2>/dev/null || continue
+    run_tree_dirs_cached "$progress_repo" 2>/dev/null || continue
     progress_run_top=$RUN_TOP
     progress_run_common=$RUN_COMMON
     case "$progress_run_tier" in
@@ -943,15 +987,28 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
       fg_tops+=("$progress_run_top")
       fg_commons+=("$progress_run_common")
     fi
+    # WORKING outranks OVER, and a run still speaking outranks one that stopped speaking: with
+    # finished documents surviving for a day, `started` alone handed the one slot to a `rev ✓ 12/12`
+    # from this morning while a review of the same tree was mid-flight. Newest wins inside a class,
+    # never across one.
+    case "$progress_run_class" in
+      live) progress_run_rank=0 ;;
+      wedged) progress_run_rank=1 ;;
+      *) progress_run_rank=2 ;;
+    esac
     if [ -n "$home_top" ] && [ "$progress_run_top" = "$home_top" ]; then
       # This chat's own run holds the slot against any other chat's, however much newer that one
       # is: a stranger's finished document now survives for a day, and the newest-started rule
       # alone let it take the one slot from a run of this chat's still working — which then
       # rendered nowhere, a foreign run being only ever the dim `+N` beside it.
       if [ -z "$ph_started" ] ||
-        { [ "$ph_foreign" = "$progress_run_foreign" ] && [[ "$progress_started" > "$ph_started" ]]; } ||
-        { [ "$ph_foreign" = 1 ] && [ "$progress_run_foreign" = 0 ]; }; then
+        { [ "$ph_foreign" = 1 ] && [ "$progress_run_foreign" = 0 ]; } ||
+        { [ "$ph_foreign" = "$progress_run_foreign" ] &&
+          { [ "$progress_run_rank" -lt "$ph_rank" ] ||
+            { [ "$progress_run_rank" = "$ph_rank" ] &&
+              [[ "$progress_started" > "$ph_started" ]]; }; }; }; then
         ph_foreign=$progress_run_foreign
+        ph_rank=$progress_run_rank
         ph_started=$progress_started
         ph_done=$progress_run_done
         ph_total=$progress_run_total
@@ -966,7 +1023,9 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
     else
       [ -n "$session_id" ] || continue
       [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
-      if [ -z "$pa_started" ] || [[ "$progress_started" > "$pa_started" ]]; then
+      if [ -z "$pa_started" ] || [ "$progress_run_rank" -lt "$pa_rank" ] ||
+        { [ "$progress_run_rank" = "$pa_rank" ] && [[ "$progress_started" > "$pa_started" ]]; }; then
+        pa_rank=$progress_run_rank
         pa_started=$progress_started
         pa_done=$progress_run_done
         pa_total=$progress_run_total
@@ -1031,6 +1090,7 @@ progress_late=""
 progress_label=""
 progress_color=""
 progress_class=""
+progress_foreign=0
 # Every other chat's unconsumed run over the SHOWN tree's repository, counted and never named: the
 # block renders one tree and one run, so a second name here is the answer the move exists to
 # remove — but a review nobody here can see is a review whose result arrives unannounced. Sibling
@@ -1057,6 +1117,7 @@ if [ "$progress_slot" = home ]; then
   # action: dim, and not red either, since being late is that chat's problem to see.
   progress_owner=$(review_run_owner "$ph_session" "$ph_pid")
   if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
+    progress_foreign=1
     progress_color="$DIM"
   fi
 elif [ "$progress_slot" = away ]; then
@@ -1082,8 +1143,10 @@ if [ -n "$progress_total" ]; then
   esac
   progress_label="${progress_label} ${progress_done}/${progress_total}"
   [ "$progress_class" = wedged ] && progress_label="${progress_label}?"
+  # Red is this chat's alarm and nobody else's: a foreign run keeps the dim it was given above in
+  # EVERY state, a run killed under another reader included — it is not this chat's to answer.
   case "$progress_class" in
-    killed) progress_color="$RED" ;;
+    killed) [ "$progress_foreign" = 1 ] || progress_color="$RED" ;;
     done|failed|wedged) progress_color="$DIM" ;;
     *) [ -z "$progress_color" ] && [ -n "$progress_late" ] && progress_color="$RED" ;;
   esac
@@ -1975,6 +2038,7 @@ codex_model_short_label() {
 
 worker_pick_fresh=0
 wp_line_loaded=no
+wp_present=0
 load_worker_pick_prediction() {
   local pick_acct=$acct pick_cache pick_mtime
   { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
@@ -2002,9 +2066,14 @@ load_worker_pick_prediction() {
 # before the account itself, which would otherwise take the literal `off` for a prediction. Marks
 # are matched as whole literals: cutting one leading character off a multibyte mark would depend on
 # the render's locale.
+#
+# `wp_present` answers a different question from `wp_state`: whether the line carried a field for
+# this vendor AT ALL. Absence is how a paused vendor is spelled (row `bp`), while `gr~?` is a
+# vendor that is present and merely unusable — reading `wp_state=no` as the pause would hide a pin
+# over any walled vendor.
 worker_pick_vendor() {
   local tag=$1 field acct name_ok
-  wp_acct=""; wp_state=no; wp_pinned=0
+  wp_acct=""; wp_state=no; wp_pinned=0; wp_present=0
   [ "$worker_pick_fresh" = 1 ] || return
   # claudeb profiles may hold underscores, dots and capitals (claudeb's own add rule); codexb and
   # geminib only ever create lowercase-and-hyphen names, so anything else in their field is a
@@ -2019,6 +2088,7 @@ worker_pick_vendor() {
   set +f
   for field in "$@"; do
     case "$field" in "$tag"*) ;; *) continue ;; esac
+    wp_present=1
     case "$field" in
       "$tag"⏸*) wp_state=off; return ;;
       "$tag"✓*) acct=${field#"$tag"✓} ;;
@@ -2092,9 +2162,11 @@ elif [ -n "$wvendor" ]; then
   if [ -n "$wpin" ]; then
     # A loaded line with no field at all for this vendor means the vendor is PAUSED — worker-pick
     # omits a paused vendor entirely, where a role switched off still emits `⏸off` — so no dispatch
-    # can land on the pin and it names nothing. No line loaded is not that evidence, only worker-pick
-    # not having written yet, and a legitimate pin must not vanish for it.
-    if [ "$wp_line_loaded" != yes ] || [ "$wp_state" != no ]; then
+    # can land on the pin and it names nothing. Absence is the whole test: a field that is present
+    # but unusable (`gr~?`, a walled or corrupt account) is a vendor a pin still routes to, and
+    # reading it as a pause would blank a legitimate pin. No line loaded is not that evidence
+    # either, only worker-pick not having written yet.
+    if [ "$wp_line_loaded" != yes ] || [ "$wp_present" = 1 ]; then
       worker_body=$(worker_candidate "@" "$wpin" "$wv_model" "$wv_effort")
     fi
   elif [ "$wp_state" = off ]; then

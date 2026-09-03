@@ -411,13 +411,15 @@ assert(accountMarkerIsLabel(excludedHonouredMenu, "pinned"),
 
 local routingNow = 200000
 local routingText = table.concat({
-  "NEXT: claudeb alpha · opus · high  |  codex beta · high — FRESH PINNED  |  gemini gamma · pro · high",
-  "codex: beta  · exact spacing | main 5h 10%",
-  "gemini: gamma | main",
-  "claude: alpha | session*   (* = this session account, excluded from worker routing)",
-  "POLICY: preserve this text verbatim",
+  "NEXT   budget          wk    5h    vendor/account       model·eff",
+  " 1     23.6%/d ×2.7d   37%   0%    claude/alpha*        opus·high",
+  " 2      7.8%/d ×3.1d   76%   –     grok/gamma           grok·high",
+  "ACCOUNT: alpha",
+  "codex:   off for workers",
+  "grok:     7.8%/d ×3.1d   76%   –     gamma            grok·high   ↺ Sun 17:50",
+  "claude:  23.6%/d ×2.7d   37%   0%    alpha*           opus·high   ↺ Sun 08:00",
+  "         * = this session account",
   "DATA: 4 min old",
-  "SESSION: main — fb 12%, wk 34%",
   "",
   "# Worker routing policy",
   "This must never render.",
@@ -430,24 +432,18 @@ local routingFixture = { schema = 1, vendors = {
 local freshRouting = loadModule(routingFixture, nil, routingNow)
 freshRouting.routingCache = { text = routingText, at = routingNow }
 local freshRoutingMenu = routingItem(freshRouting.menuItems()).menu
+-- worker-pick answers in aligned rows, so the submenu is those rows: one menu item per line,
+-- byte for byte, with no second layout on this side to keep in step with the producer.
 local expectedRouting = {
-  "NEXT:",
-  "  claudeb alpha · opus · high",
-  "  codex beta · high — FRESH PINNED",
-  "  gemini gamma · pro · high",
-  "codex:",
-  "  beta  · exact spacing",
-  "  main 5h 10%",
-  "gemini:",
-  "  gamma",
-  "  main",
-  "claude:",
-  "  alpha",
-  "  session*",
-  "  (* = this session account, excluded from worker routing)",
-  "POLICY: preserve this text verbatim",
+  "NEXT   budget          wk    5h    vendor/account       model·eff",
+  " 1     23.6%/d ×2.7d   37%   0%    claude/alpha*        opus·high",
+  " 2      7.8%/d ×3.1d   76%   –     grok/gamma           grok·high",
+  "ACCOUNT: alpha",
+  "codex:   off for workers",
+  "grok:     7.8%/d ×3.1d   76%   –     gamma            grok·high   ↺ Sun 17:50",
+  "claude:  23.6%/d ×2.7d   37%   0%    alpha*           opus·high   ↺ Sun 08:00",
+  "         * = this session account",
   "DATA: 4 min old",
-  "SESSION: main — fb 12%, wk 34%",
 }
 assert(titleText(freshRoutingMenu[1]) == "as of " .. os.date("%H:%M", routingNow),
   "routing cache caption changed")
@@ -527,21 +523,31 @@ for _, item in ipairs(runningMenu) do
 end
 assert(passiveModule.refreshState().prefix == "", "passive collect changed the title state")
 
+do
+local function errorItems(menu)
+  local rows = {}
+  for _, item in ipairs(menu) do
+    if titleText(item):find("^⚠ ") then rows[#rows + 1] = item end
+  end
+  return rows
+end
+
 local deadFixture = { schema = 1, vendors = {
-  claude = { available = false, refresh_error = { cause = "fixture failure", at = os.time() - 120 } },
+  claude = { available = false, refresh_errors = {{
+    account = nil, class = "refresh failed", cause = "fixture failure", at = os.time() - 120,
+  }}, refresh_error = { cause = "fixture failure", at = os.time() - 120 } },
   codex = { available = false },
   gemini = { available = false },
 }}
 local errorModule = loadModule(deadFixture)
 local deadMenu = errorModule.menuItems()
-local deadErrorSeen = false
-for _, item in ipairs(deadMenu) do
-  if titleText(item):find("refresh failed fixture failure · 2m", 1, true) then
-    deadErrorSeen = true
-    assert(isDimmed(item.title.attributes), "vendor refresh error was not dim")
-  end
-end
-assert(deadErrorSeen, "structured vendor refresh error did not render")
+local deadRows = errorItems(deadMenu)
+assert(#deadRows == 1, "structured vendor refresh error did not render one row")
+assert(titleText(deadRows[1]):find("⚠ claude: refresh failed · 2m", 1, true),
+  "vendor-wide error row text: " .. titleText(deadRows[1]))
+assert(isDimmed(deadRows[1].title.attributes), "vendor refresh error was not dim")
+assert(type(deadRows[1].menu) == "table" and titleText(deadRows[1].menu[1]):find("fixture failure", 1, true),
+  "vendor error submenu lost the raw cause")
 assert(errorModule.refreshState().prefix == "⚠ ", "vendor error did not warn in the title state")
 
 local entryCause = "alona: not refreshed (needs-relogin)"
@@ -549,6 +555,10 @@ local entryFixture = { schema = 1, vendors = {
   claude = {
     available = true,
     source = "claudeb-store",
+    refresh_errors = {{
+      account = "alona", class = "login needed", cause = entryCause,
+      at = os.time() - 600, needs_user_entry = true,
+    }},
     refresh_error = { cause = entryCause, at = os.time() - 600, needs_user_entry = true },
     accounts = {{
       account = "alona",
@@ -582,24 +592,38 @@ for _, run in ipairs(darkEntryRow.title.runs or {}) do
     assert(isDimmed(run.attributes, 1), "age or ! marker stayed black in the dark appearance")
   end
 end
-local entryErrorSeen = false
-for _, item in ipairs(entryMenu) do
-  if titleText(item):find("refresh failed", 1, true)
-      and titleText(item):find("needs-relogin", 1, true) then
-    entryErrorSeen = true
-  end
+local entryErrors = errorItems(entryMenu)
+assert(#entryErrors == 1, "entry-only error did not render one row")
+assert(titleText(entryErrors[1]):find("⚠ alona: login needed · 10m", 1, true),
+  "entry-only error row: " .. titleText(entryErrors[1]))
+assert(type(entryErrors[1].menu) == "table"
+    and titleText(entryErrors[1].menu[1]):find("needs-relogin", 1, true),
+  "entry-only error submenu lost the raw cause")
+local alonaAt = accountIndex(entryMenu, "alona")
+local entryErrAt
+for i, item in ipairs(entryMenu) do
+  if item == entryErrors[1] then entryErrAt = i end
 end
-assert(entryErrorSeen, "entry-only error text disappeared from the vendor section")
+assert(entryErrAt and entryErrAt > alonaAt, "account error rendered above its account")
 
 local mixedFixture = { schema = 1, vendors = {
   claude = {
     available = true,
     source = "claudeb-store",
+    refresh_errors = {
+      { account = "alona", class = "login needed", cause = entryCause,
+        at = os.time() - 600, needs_user_entry = true },
+      { account = "bree", class = "not refreshed (network weather)",
+        cause = "bree: not refreshed (network weather)", at = os.time() - 600 },
+    },
     refresh_error = {
       cause = entryCause .. "; bree: not refreshed (network weather)",
       at = os.time() - 600,
     },
-    accounts = entryFixture.vendors.claude.accounts,
+    accounts = {
+      entryFixture.vendors.claude.accounts[1],
+      { account = "bree", enabled = true, five_hour = bucket(20, true) },
+    },
   },
   codex = { available = false },
   gemini = { available = false },
@@ -610,40 +634,146 @@ assert(loadModule(mixedFixture).refreshState().prefix == "⚠ ",
 local clearModule = loadModule(fixture)
 assert(clearModule.refreshState().prefix == "", "successful cache retained a warning title")
 for _, item in ipairs(clearModule.menuItems()) do
-  assert(not titleText(item):find("refresh failed", 1, true),
+  assert(not titleText(item):find("^⚠ "),
     "successful cache retained a vendor error row")
 end
 
-local multiCause = "olx: not refreshed (usage weather); notcom: not refreshed (token endpoint 429)"
+local nowErr = os.time()
+local function acct(name)
+  return { account = name, enabled = true, five_hour = bucket(10), weekly = bucket(20) }
+end
 local multiFixture = { schema = 1, vendors = {
-  claude = { available = false, refresh_error = { cause = multiCause, at = os.time() - 120 } },
+  claude = {
+    available = true, source = "claudeb-store",
+    refresh_errors = {
+      { account = "olx", class = "not refreshed (usage weather)",
+        cause = "olx: not refreshed (usage weather)", at = nowErr - 120 },
+      { account = "notcom", class = "429 rate limit",
+        cause = "notcom: not refreshed (token endpoint 429)", at = nowErr - 120 },
+    },
+    accounts = { acct("olx"), acct("notcom") },
+  },
   codex = { available = false },
   gemini = { available = false },
 }}
 local multiMenu = loadModule(multiFixture).menuItems()
-local multiRows = {}
-for _, item in ipairs(multiMenu) do
-  local text = titleText(item)
-  if text:find("not refreshed", 1, true) then
-    table.insert(multiRows, text)
-    assert(not text:find("; ", 1, true), "per-account refresh error row still joined by \"; \"")
-  end
-end
+local multiRows = errorItems(multiMenu)
 assert(#multiRows == 2, "multi-account cause did not render one row per entry")
-assert(multiRows[1]:find("olx", 1, true), "first per-account row missing its account name")
-assert(multiRows[2]:find("notcom", 1, true), "second per-account row missing its account name")
+assert(titleText(multiRows[1]):find("⚠ olx: not refreshed (usage weather)", 1, true),
+  "first per-account row: " .. titleText(multiRows[1]))
+assert(titleText(multiRows[2]):find("⚠ notcom: 429 rate limit", 1, true),
+  "second per-account row: " .. titleText(multiRows[2]))
+local olxAt = accountIndex(multiMenu, "olx")
+local notcomAt = accountIndex(multiMenu, "notcom")
+local function idxOf(item)
+  for i, it in ipairs(multiMenu) do if it == item then return i end end
+end
+assert(idxOf(multiRows[1]) > olxAt and idxOf(multiRows[1]) < notcomAt,
+  "olx error was not under the olx account")
+assert(idxOf(multiRows[2]) > notcomAt, "notcom error was not under the notcom account")
 
 local singleFixture = { schema = 1, vendors = {
-  claude = { available = false,
-    refresh_error = { cause = "olx: not refreshed (usage weather)", at = os.time() - 120 } },
+  claude = {
+    available = true, source = "claudeb-store",
+    refresh_errors = {{ account = "olx", class = "not refreshed (usage weather)",
+      cause = "olx: not refreshed (usage weather)", at = nowErr - 120 }},
+    accounts = { acct("olx") },
+  },
   codex = { available = false },
   gemini = { available = false },
 }}
-local singleRows = 0
-for _, item in ipairs(loadModule(singleFixture).menuItems()) do
-  if titleText(item):find("not refreshed", 1, true) then singleRows = singleRows + 1 end
+assert(#errorItems(loadModule(singleFixture).menuItems()) == 1,
+  "single per-account cause did not render exactly one row")
+
+-- Class fixtures, placement, submenu, roster-drop. One shared renderer for every vendor.
+local classCases = {
+  { class = "402 payment required", cause = "rateLimits/read failed: 402 Payment Required; content-type=text/plain; body={\"error\":\"Payment Required\"}" },
+  { class = "workspace deactivated", cause = "HTTP 402 {\"error\":{\"code\":\"deactivated_workspace\",\"message\":\"Payment Required\"}}" },
+  { class = "429 rate limit", cause = "HTTP 429 rate limit" },
+  { class = "timeout", cause = "timed out during free refresh + heal (1s)" },
+  { class = "login needed", cause = "login needed (not signed in)" },
+  { class = "refresh failed", cause = "garbled upstream blob {{{" },
+}
+for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
+  local label = ({ claude = "Claude", codex = "Codex", gemini = "Gemini", grok = "Grok" })[vendorKey]
+  for _, case in ipairs(classCases) do
+    local vendors = { claude = { available = false }, codex = { available = false },
+      gemini = { available = false }, grok = { available = false } }
+    vendors[vendorKey] = {
+      available = true, source = vendorKey == "claude" and "claudeb-store" or nil,
+      refresh_errors = {{
+        account = "acct", class = case.class, cause = case.cause, at = nowErr - 60,
+      }},
+      accounts = { acct("acct") },
+    }
+    if vendorKey == "grok" then
+      vendors[vendorKey].accounts[1].five_hour = nil
+    end
+    local menu = loadModule({ schema = 1, vendors = vendors }, nil, nowErr).menuItems()
+    local rows = errorItems(menu)
+    assert(#rows == 1, vendorKey .. " " .. case.class .. " row count " .. #rows)
+    local expected = "⚠ acct: " .. case.class .. " · 1m"
+    assert(titleText(rows[1]) == expected, vendorKey .. " row: " .. titleText(rows[1]))
+    assert(type(rows[1].menu) == "table" and #rows[1].menu >= 1,
+      vendorKey .. " " .. case.class .. " missing submenu")
+    local joined = {}
+    for _, sub in ipairs(rows[1].menu) do joined[#joined + 1] = titleText(sub) end
+    assert(table.concat(joined):find(case.cause:sub(1, 20), 1, true),
+      vendorKey .. " submenu lost cause")
+    local headerAt
+    for i, item in ipairs(menu) do
+      if titleText(item) == label then headerAt = i break end
+    end
+    local accAt = accountIndex(menu, "acct")
+    local errAt = idxOf and nil
+    for i, item in ipairs(menu) do if item == rows[1] then errAt = i end end
+    assert(headerAt and accAt and errAt and headerAt < accAt and accAt < errAt,
+      vendorKey .. " error was not under its account")
+    for i = errAt + 1, #menu do
+      local t = titleText(menu[i])
+      if t == "-" or t == "Grok" or t == "Gemini" or t == "Claude" or t == "Codex" then break end
+      assert(not t:find("^⚠ "), vendorKey .. " extra error after the account")
+    end
+  end
+  local gone = { claude = { available = false }, codex = { available = false },
+    gemini = { available = false }, grok = { available = false } }
+  gone[vendorKey] = {
+    available = true,
+    refresh_errors = {{
+      account = "nexerod", class = "402 payment required",
+      cause = "402 Payment Required", at = nowErr - 60,
+    }},
+    accounts = { acct("main") },
+  }
+  assert(#errorItems(loadModule({ schema = 1, vendors = gone }, nil, nowErr).menuItems()) == 0,
+    vendorKey .. " rendered an error for an account off the roster")
 end
-assert(singleRows == 1, "single per-account cause did not render exactly one row")
+
+local blob = "rateLimits/read failed: {'code': -32603, 'message': 'failed to fetch c'}; content-type=text/plain; body={\n  \"error\": {\n    \"message\": \"Payment Required\"\n  }\n}"
+local legacyBlob = { schema = 1, vendors = {
+  claude = { available = false },
+  gemini = { available = false },
+  grok = { available = false },
+  codex = {
+    available = true,
+    refresh_error = { cause = blob, at = nowErr - 2700 },
+    accounts = { acct("main"), acct("work4") },
+  },
+}}
+local blobMenu = loadModule(legacyBlob, nil, nowErr).menuItems()
+local blobRows = errorItems(blobMenu)
+assert(#blobRows == 1, "legacy 402 blob split into " .. #blobRows .. " top-level rows")
+assert(titleText(blobRows[1]):find("⚠ codex: refresh failed · 45m", 1, true),
+  "legacy blob row: " .. titleText(blobRows[1]))
+local blobJoined = {}
+for _, sub in ipairs(blobRows[1].menu or {}) do blobJoined[#blobJoined + 1] = titleText(sub) end
+assert(table.concat(blobJoined, ""):find("Payment Required", 1, true),
+  "legacy blob submenu lost the raw body")
+for _, item in ipairs(blobMenu) do
+  local t = titleText(item)
+  assert(not t:find("content-type=", 1, true), "raw content-type leaked to a top-level row")
+end
+end
 
 local geminiAuthFixture = { schema = 1, vendors = {
   claude = { available = false },
@@ -1049,6 +1179,44 @@ for _, case in ipairs(loginCases) do
   end
 end
 
+do
+  local fixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "gone", auth_needed = true, auth = { status = "expired" } },
+    }},
+  }}
+  local function rowIfPresent(module)
+    local ok, row = pcall(accountItem, module.menuItems(), "gone")
+    return ok and row or nil
+  end
+
+  local tasks = {}
+  local alerts = {}
+  local mod = loadModule(fixture, driveTasks(tasks), nil,
+    function(message) table.insert(alerts, message) end)
+  local row = rowIfPresent(mod)
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(row, "Remove gone").fn()
+  assert(rowIfPresent(mod) == nil, "remove click did not hide the account optimistically")
+  tasks[1].callback(1, "", "profile busy\n")
+  assert(rowIfPresent(mod) ~= nil, "failed remove did not restore the account row")
+  assert(#alerts == 1 and alerts[1]:find("profile busy", 1, true),
+    "actionable remove failure did not alert with its cause")
+
+  tasks = {}
+  alerts = {}
+  mod = loadModule(fixture, driveTasks(tasks), nil,
+    function(message) table.insert(alerts, message) end)
+  row = rowIfPresent(mod)
+  while #tasks > 0 do table.remove(tasks) end
+  submenuItem(row, "Remove gone").fn()
+  local removeTask = tasks[1]
+  assert(rowIfPresent(mod) == nil, "successful remove was visible before its callback")
+  removeTask.callback(0, "", "")
+  assert(#alerts == 0, "successful remove raised an alert")
+  assert(rowIfPresent(mod) == nil, "successful remove lost its optimistic hide before collect")
+end
+
 -- grokb refuses `remove main` (the real ~/.grok), so its logged-out row must omit Remove
 -- the same way Codex does.
 local grokMainLoginFixture = { schema = 1, vendors = {
@@ -1404,63 +1572,6 @@ assert(crossMidRow:find(dayText(crossMid), 1, true), "within-24h cross-midnight 
 local farWeekRow = titleText(xmidMenu[accountIndex(xmidMenu, "farweek") + 1])
 assert(farWeekRow:find(dayText(farWeek), 1, true), ">24h reset tier changed")
 
--- token_upkeep pre-warm: the module parses, arms a wake watcher and a cold-boot
--- schedule, and its throttle guard suppresses runs within 10 minutes of the last.
-local upkeepClock = { now = 100000 }
-local upkeepScheduled = {}
-local upkeepPeriodic = {}
-local upkeepTasks = {}
-local upkeepWatcherStarted = false
-local upkeepHs = {
-  caffeinate = { watcher = {
-    systemDidWake = "systemDidWake",
-    new = function(fn)
-      return { start = function() upkeepWatcherStarted = true end, _fn = fn }
-    end,
-  } },
-  timer = {
-    doAfter = function(_, fn) table.insert(upkeepScheduled, fn); return {} end,
-    doEvery = function(interval, fn) table.insert(upkeepPeriodic, { interval = interval, fn = fn }); return {} end,
-  },
-  task = { new = function(path, _, args)
-    table.insert(upkeepTasks, { path = path, args = args })
-    return { setEnvironment = function() end, start = function() return true end }
-  end },
-}
-local upkeepEnv = setmetatable({
-  hs = upkeepHs,
-  os = setmetatable({ time = function() return upkeepClock.now end }, { __index = os }),
-}, { __index = _G })
-upkeepEnv._G = upkeepEnv
-local upkeepChunk, upkeepError = loadfile(
-  root .. "/hammerspoon/config/token_upkeep.lua", "t", upkeepEnv)
-assert(upkeepChunk, upkeepError)
-local upkeep = upkeepChunk()
-assert(upkeepWatcherStarted, "wake watcher was not started")
-assert(#upkeepScheduled == 1, "cold-boot pre-warm was not scheduled on load")
-assert(upkeep.shouldRun(1000, 0) == true, "first run should not be throttled")
-assert(upkeep.shouldRun(1000, 600) == false, "run 400s after last must be throttled")
-assert(upkeep.shouldRun(1000, 400) == true, "run exactly 600s after last must fire")
-assert(upkeep.shouldRun(1000, 401) == false, "run 599s after last must be throttled")
-assert(upkeep.shouldRun("x", 0) == false, "non-numeric clock must not fire a run")
-upkeepScheduled[1]()
-assert(#upkeepTasks == 1, "cold-boot schedule did not launch token-upkeep")
-assert(upkeepTasks[1].args[1] == "token-upkeep", "wrong claudeb subcommand launched")
-upkeepScheduled[1]()
-assert(#upkeepTasks == 1, "second run within the throttle window was not suppressed")
-upkeepClock.now = upkeepClock.now + 601
-upkeepScheduled[1]()
-assert(#upkeepTasks == 2, "run past the throttle window did not fire")
-
-assert(#upkeepPeriodic == 1, "periodic upkeep timer was not armed on load")
-assert(upkeepPeriodic[1].interval == 1800, "periodic upkeep interval changed")
-assert(upkeep.periodicTimer ~= nil, "periodic timer must be module-scoped so it is not GC'd")
-upkeepPeriodic[1].fn()
-assert(#upkeepTasks == 2, "periodic run within the throttle window was not suppressed")
-upkeepClock.now = upkeepClock.now + 601
-upkeepPeriodic[1].fn()
-assert(#upkeepTasks == 3, "periodic run past the throttle window did not fire")
-
 -- store pathwatcher: a module-scoped watcher on the store re-renders the title
 -- (never a collector — that writes the store and would loop), throttled so a
 -- burst of atomic rewrites collapses to few re-renders.
@@ -1610,6 +1721,11 @@ do
     grok = {
       available = true,
       current_account = "supergrok",
+      refresh_errors = {{
+        account = "relogin", class = "login needed",
+        cause = "relogin: not refreshed (needs login)", at = now - 600,
+        needs_user_entry = true,
+      }},
       refresh_error = { cause = "relogin: not refreshed (needs login)", at = now - 600,
         needs_user_entry = true },
       accounts = {
@@ -1639,7 +1755,7 @@ do
   assert(mod.refreshState().prefix == "", "Grok entry-only refresh error lit the global warning")
   local grokEntryError = false
   for _, item in ipairs(menu) do
-    if titleText(item):find("refresh failed relogin: not refreshed (needs login)", 1, true) then
+    if titleText(item):find("⚠ relogin: login needed", 1, true) then
       grokEntryError = true
     end
   end
@@ -1768,13 +1884,13 @@ end
 
 local experimentFixture = {
   schema = 1,
-  experiments = { "EXPERIMENT token-freeze until 2026-08-03 — temporary, see EXPERIMENTS.json" },
+  experiments = { "EXPERIMENT sample-trial until 2026-08-03 — temporary, see EXPERIMENTS.json" },
   vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
 }
 local experimentMenu = loadModule(experimentFixture).menuItems()
 local announcedRow
 for _, item in ipairs(experimentMenu) do
-  if titleText(item):match("EXPERIMENT token%-freeze until 2026%-08%-03") then announcedRow = item end
+  if titleText(item):match("EXPERIMENT sample%-trial until 2026%-08%-03") then announcedRow = item end
 end
 assert(announcedRow, "an active experiment is not announced in the menu")
 assert(announcedRow.disabled == true, "the experiment announcement must not be clickable")

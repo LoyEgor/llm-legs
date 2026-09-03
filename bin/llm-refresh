@@ -95,14 +95,6 @@ else
   claudeb_bin=$repo_root/bin/claudeb
   [ -x "$claudeb_bin" ] || claudeb_bin=$(command -v claudeb 2>/dev/null || printf '%s' "$claudeb_bin")
 fi
-if [ -n "${LLM_LIMITS_REFRESH_GROKB:-}" ]; then
-  grokb_bin=$LLM_LIMITS_REFRESH_GROKB
-else
-  grokb_bin=$repo_root/bin/grokb
-  [ -x "$grokb_bin" ] || grokb_bin=$(command -v grokb 2>/dev/null || printf '%s' "$grokb_bin")
-fi
-grok_touch_timeout=${LLM_LIMITS_REFRESH_GROK_TOUCH_TIMEOUT:-30}
-case "$grok_touch_timeout" in ''|*[!0-9]*|0) grok_touch_timeout=30 ;; esac
 revive_timeout=${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}
 case "$revive_timeout" in ''|*[!0-9]*|0) revive_timeout=240 ;; esac
 probe_timeout=${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}
@@ -119,10 +111,10 @@ tick_tmp=''
 worker_model_config=${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}
 
 # A paused vendor is parked for months and must not exist for this daemon: no tick, no state entry,
-# no journal line, and so none of the per-account paths below — including grok's token touch — is
-# ever reached for it. Read off worker-pick's own file the way every other reader of it resolves a
-# key: first line wins, and only the literal `on` vetoes. The store cannot answer this, since the
-# collector deliberately writes no entry for a parked vendor.
+# no journal line, and so none of the per-account paths below is ever reached for it. Read off
+# worker-pick's own file the way every other reader of it resolves a key: first line wins, and only
+# the literal `on` vetoes. The store cannot answer this, since the collector deliberately writes no
+# entry for a parked vendor.
 vendor_paused() {
   local key
   case "$1" in claude) key=claudeb_paused ;; *) key="$1_paused" ;; esac
@@ -233,16 +225,6 @@ next_revive_account() {
     fi
   done < <(account_rows "$vendor")
   printf '%s\n' "$best"
-}
-
-# The poller answers `expired` only for a token it saw a refresh_token beside — without one it
-# says `needs_login` instead — so the store's verdict already carries both halves of the
-# condition, and re-reading auth.json here would only race the rotation this is about to start.
-grok_token_expired() {
-  [ -r "$store" ] || return 1
-  jq -e --arg account "$1" '
-    .vendors.grok.accounts[]? | select(.account == $account) |
-    .auth_needed != true and (.auth.status? == "expired")' "$store" >/dev/null 2>&1
 }
 
 # Every attempt stamps, success or not; an account that has left the store loses its stamp.
@@ -358,10 +340,21 @@ recorded_errors() {
   [ -r "$store" ] || return 0
   jq -r --arg vendor "$vendor" --arg account "$account" --argjson since "$since" '
     .vendors[$vendor] // {} |
-    [(.refresh_error // empty),
-     (.accounts[]? | select(.account == $account) | .refresh_error // empty)][] |
-    select((.cause | type) == "string") |
-    select((.at | type) != "number" or .at >= $since) | .cause
+    ([(.refresh_errors // [])[]
+      | select($account == "" or .account == $account or .account == null)]) as $listed |
+    (
+      $listed
+      # The vendor-wide `refresh_error` is the old contract: one string joining the cause of
+      # EVERY account, so beside a per-account list it answers for accounts this call never asked
+      # about. Only where that list has nothing to say is it the best answer available.
+      + (if ($listed | length) == 0
+         then [(if (.refresh_error | type) == "object" then .refresh_error else empty end)]
+         else [] end)
+      + [(.accounts[]? | select(.account == $account) | .refresh_error | select(type == "object"))]
+    )[] |
+    select((.cause | type) == "string" or (.class | type) == "string") |
+    select((.at | type) != "number" or .at >= $since) |
+    (.cause // .class)
   ' "$store" 2>/dev/null
 }
 
@@ -432,7 +425,7 @@ run_tick() {
   local stale tried outcome detail step target_rc errors post_stale refreshed_count claude_note
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]'
-  local direct expired probed session_account claude_touched grok_touched grok_note
+  local direct expired probed session_account claude_touched
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -489,8 +482,6 @@ run_tick() {
     fi
     tried='[]'
     probed='[]'
-    grok_touched='[]'
-    grok_note=''
     session_account=''
     outcome=fresh-passive
     detail='passive collect made all accounts fresh'
@@ -542,7 +533,7 @@ run_tick() {
             tick_tmp=''
           done < <(jq -r '.[]' <<<"$direct")
           # Claude rotates an expired token only through a real interactive session
-          # (docs/EXIT-PLAN.md § Token-freeze experiment), so a heartbeat tick opens exactly
+          # (shared-invariants row f), so a heartbeat tick opens exactly
           # one — the account that waited longest for its turn — and the rest wait for the
           # next tick.
           account=$(next_revive_account "$vendor" "$expired" \
@@ -604,21 +595,8 @@ run_tick() {
           refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
           tick_tmp=$refresh_log
           rc=0
-          if [ "$vendor" = grok ] && grok_token_expired "$account"; then
-            if [ ! -x "$grokb_bin" ]; then
-              grok_note="no grokb to revive with: $grokb_bin"
-            else
-              grok_touched=$(jq -c --arg account "$account" '. + [$account]' <<<"$grok_touched")
-              # No attempt stamp here: unlike claude's revive, which rotates over accounts and
-              # reads the stamps to do it, every stale grok account is touched in the tick it
-              # comes up, and the vendor's own rung is what says when that tick happens again.
-              # The Grok CLI rotates the token as a side effect of any authenticated subcommand,
-              # and prints "You are not authenticated." while doing it — so its own exit status
-              # says nothing, and only the re-poll below decides what this account's auth is.
-              timeout_command "$grok_touch_timeout" "$grokb_bin" "$account" exec models \
-                >/dev/null 2>>"$refresh_log" || true
-            fi
-          fi
+          # An expired grok token is refreshable work: the collector's targeted refresh rotates it
+          # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
           "$collector" --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
           errors=$(recorded_errors "$vendor" "$account" "$now")
           if { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
@@ -669,10 +647,6 @@ run_tick() {
         if [ -z "$claude_note" ] && [ "$(jq 'length' <<<"$post_stale")" -gt 0 ]; then
           detail="$detail; one session per tick, the rest wait for the next tick"
         fi
-      elif [ "$vendor" = grok ]; then
-        [ "$(jq 'length' <<<"$grok_touched")" -eq 0 ] || \
-          detail="token touch: $(jq -r 'join(",")' <<<"$grok_touched"); $detail"
-        [ -z "$grok_note" ] || detail="${detail:+$detail; }$grok_note"
       fi
     elif [ "$passive_rc" -ne 0 ]; then
       if store_readable; then

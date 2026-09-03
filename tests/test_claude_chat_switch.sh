@@ -15,9 +15,17 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 # Resolved before the stub `hs` goes on PATH; the wall harness needs the real one.
 REAL_HS="$(command -v hs || true)"
-# The wall harness drives THIS checkout's module, never the installed symlink: in a worktree or a
-# sealed clone that symlink is somebody else's copy, and a broken branch edit would pass on it.
-# The override is for the day the Lua moves out of this repo.
+# The wall harness drives a CHECKOUT's module wherever the Lua lives — this repository first, then
+# the hammerspoon repository beside it — and the install under ~/.hammerspoon only when neither is
+# there: in a worktree or a sealed clone the installed copy is somebody else's, and a broken branch
+# edit would pass on it.
+if [ -z "${CHAT_SWITCH_LUA:-}" ]; then
+  for lua_home in "$ROOT/hammerspoon/config" "$ROOT/../hammerspoon" "$HOME/.hammerspoon"; do
+    [ -r "$lua_home/claude_chat_switch.lua" ] || continue
+    CHAT_SWITCH_LUA="$lua_home/claude_chat_switch.lua"
+    break
+  done
+fi
 CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$ROOT/hammerspoon/config/claude_chat_switch.lua}"
 
 asserts=0

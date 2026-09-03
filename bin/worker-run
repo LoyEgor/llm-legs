@@ -42,6 +42,14 @@ umask 077
 command -v worker_pool_refuse_headless >/dev/null ||
   fail 'share/worker-pool.sh defines no worker_pool_refuse_headless: refusing to launch unchecked'
 
+# The one per-vendor allowed-model list (shared-invariants row `bq`). Sourced, not optional: a
+# launcher that cannot tell an allowed model from a cheap one must refuse every launch rather than
+# spend an account on a model Egor forbade.
+. "$SCRIPT_DIRECTORY/../share/worker-model.sh" ||
+  fail 'share/worker-model.sh is missing: worker-run cannot tell an allowed model from a cheap one'
+command -v worker_model_allows >/dev/null ||
+  fail 'share/worker-model.sh defines no worker_model_allows: refusing to launch unchecked'
+
 # The main→base-HOME, named→<profiles-dir>/<name> mapping (shared-invariants row m) lives in one
 # place for every reader of an agy profile; respelled here, a worker's transcript would be looked
 # for under a directory geminib does not use.
@@ -151,6 +159,38 @@ vendor_name() {
     gemini) printf 'GEMINI' ;;
     grok) printf 'GROK' ;;
   esac
+}
+
+codex_config_model() {
+  local value
+  value=$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG" 2>/dev/null | head -n1)
+  printf '%s' "${value:-gpt-5.6-sol}"
+}
+
+# Refused BEFORE the account is resolved and long before a CLI is launched, because the run is what
+# would be wasted, and the name reaches here by three roads that all end at the same list: the
+# brief's `MODEL:` line (relays forward it as `--model`), `--model` itself, and the vendor's own
+# `*_model=` key in the toggle file — including the default a missing key falls back to.
+refuse_cheap_model() { # vendor offered-model [resume-id]
+  local vendor="$1" offered="$2" resume="${3:-}" effective
+  case "$vendor" in
+    claudeb) effective=${offered:-$(config_value claudeb_model)}; effective=${effective:-opus} ;;
+    codex)
+      # `exec resume` re-runs the session's own model and config.toml's never travels with it
+      # (start_run sends `-m` only for an explicit one), so a Terra sitting in that file refuses
+      # nothing here — the resumed session is not the run it names.
+      [ -z "$resume" ] || [ -n "$offered" ] || return 0
+      # `default` names the config's own model rather than a model, so a Terra written there is
+      # the same cheap run as one asked for by name.
+      effective=$offered
+      [ -n "$effective" ] && [ "$effective" != default ] || effective=$(codex_config_model)
+      ;;
+    gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-pro} ;;
+    grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-auto} ;;
+  esac
+  worker_model_allows "$vendor" "$effective" && return 0
+  printf 'OUTCOME: MODEL_REFUSED\n'
+  fail "$vendor workers run $(worker_model_allowed_list "$vendor") only and $effective is not one of them: an implementation worker never runs a cheap model. Nothing was launched and no account was spent — drop the MODEL: line, or ask Egor."
 }
 
 failure_outcome() {
@@ -326,9 +366,8 @@ pick_account() {
   # A vendor the picker cannot read at all — no accounts, no usage snapshot — is not a walled one.
   # Its quota may be untouched, and this whole system exists so that nothing reports a limit it has
   # no data for (docs/DIAGNOSTICS.md, the 429 taxonomy).
-  # worker-pick puts its whole vendor line inside those parens, so the reason arrives prefixed
-  # (`grok: unavailable`), may carry a pin-lapse clause before it, or trails a NEXT-style line
-  # after an em-dash (`codex unavailable · medium — no quota data`).
+  # worker-pick puts its whole vendor line inside those parens, so the reason may carry a
+  # pin-lapse clause before it and, on older builds, a vendor prefix (`grok: unavailable`).
   ! grep -Eq 'no selectable [a-z]+ account \(([a-z]+: )?([^)]*[|—] )?(unavailable|no( [A-Za-z]+)* quota data|no accounts)\)' "$errors" ||
     PICKED_NO_DATA=true
   rm -f "$errors"
@@ -842,11 +881,13 @@ record_worker_session() {
   # chat commits its worker's work with no debt on it (live case 2026-08-20). Unioned across attempts
   # like the file list: rerouting takes a new session, and the walled attempt journaled under the old
   # one. A resumed run repeats the id the session already had, which is what its entries carry too.
-  local directory="$1" vendor session
-  vendor=$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)
-  # Only the vendor whose sessions run this machine's journal hooks. A codex or agy id names no chat
-  # any journal here was ever written under, and one folded in could only match by accident.
-  [ "$vendor" = claudeb ] || return 0
+  local directory="$1" session
+  # Every vendor, not claudeb alone. grok loads this machine's hooks out of `~/.claude/settings.json`
+  # for Claude compatibility and journals under its OWN session id, which read without this pairing
+  # is a chat nothing on the machine answers for (live: grok sessions 01a0641b…/01a0647f… against
+  # chat 35c155ac…, 2026-09-03). A codex or agy id reaching a journal is the same case one level
+  # down — a nested relay, a review-bench call — and one that never reaches one costs a reader
+  # nothing: this mapping is only ever consulted about an id some row already carries.
   session=$(session_id "$directory")
   # A resumed run's id is known before its first token — the session keeps the id it already had,
   # and every entry it journals while the run is LIVE carries that one. Read only where the run
@@ -912,6 +953,7 @@ start_run() {
       [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
       ;;
   esac
+  refuse_cheap_model "$vendor" "$model" "$resume"
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
   # relative arguments valid here would dangle there — pin them to the caller's cwd.
@@ -995,8 +1037,7 @@ start_run() {
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
       ;;
     codex)
-      config_model=$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG" 2>/dev/null | head -n1)
-      config_model=${config_model:-gpt-5.6-sol}
+      config_model=$(codex_config_model)
       explicit_model=$model
       explicit_effort=$effort
       model=${model:-$config_model}
@@ -1026,13 +1067,10 @@ start_run() {
     gemini)
       model=${model:-$(config_value gemini_model)}; model=${model:-pro}
       effort=${effort:-$(config_value gemini_effort)}; effort=${effort:-high}
-      [ "$model" != flash ] || model=flash36
       case "$effort" in xhigh|max|ultra) effort=high ;; esac
       case "$model:$effort" in
         pro:high) agy_model='Gemini 3.1 Pro (High)' ;;
         pro:low) agy_model='gemini-3.1-pro-low' ;;
-        flash36:high|flash36:medium|flash36:low) agy_model="gemini-3.6-flash-$effort" ;;
-        flash35:high|flash35:medium|flash35:low) agy_model="gemini-3.5-flash-$effort" ;;
         *) printf 'OUTCOME: GEMINI_UNAVAILABLE\n'; exit 4 ;;
       esac
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
@@ -1279,7 +1317,7 @@ has_limit_signature() {
     # "usage_limit" and "CODEX_USAGE_LIMIT" (live-caught misverdicts), so bare
     # tokens cannot count and the scan sees only the tail, where the CLI's own
     # fatal error is.
-    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests'; scan=("$directory/err"); tail_lines=40 ;;
+    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests|out of credits'; scan=("$directory/err"); tail_lines=40 ;;
     claudeb) pattern='usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
     # grok states a failure in two places — stderr and the stream's own error events — so its text
