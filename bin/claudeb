@@ -698,7 +698,7 @@ oauth_warm_cause() {
 
 warm_class_is_capacity() {
   case "$1" in
-    timeout|warm-429|warm-failed|usage-probe-failed|robot-skip) return 0 ;;
+    timeout|warm-429|warm-failed|usage-probe-failed) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1127,8 +1127,7 @@ heal_refresh_verdict() {
   # so the fall-through below would read an OLDER revoked/auth-failed outcome and
   # stamp a false `expired`. Every caller reaches here only when the token was
   # already due for refresh, so there is no live fresh-token verdict to salvage —
-  # end as weather, no auth write. (Mirrors heal_one's guard for the twin callers
-  # messages_probe_and_mark / process_probe_result.)
+  # end as weather, no auth write.
   if ! user_refresh_explicit; then
     printf 'claudeb: %s: capacity (%s, token endpoint not called) — no auth verdict\n' "$name" "$warm_cause" >&2
     return
@@ -1615,10 +1614,12 @@ disable_account() {
 account_leftovers() {
   local name=$1
   is_disabled "$name" && return 0
-  [ -e "$HOME/.cache/worker-pick.line.$name" ] && return 0
+  [ -e "${WORKER_PICK_CACHE_DIR:-$HOME/.cache}/worker-pick.line.$name" ] && return 0
   [ -n "$(find "$base_dir/session-logs" "$base_dir/warm-logs" -maxdepth 1 \
-            -name "$name.*" -print -quit 2>/dev/null)" ] && return 0
-  [ -n "$(find "$limits_dir" -maxdepth 1 -name "$name.json.tmp.*" -print -quit 2>/dev/null)" ] && return 0
+            \( -name "$name.*" -o -name ".$name.log.*" \) -print -quit 2>/dev/null)" ] && return 0
+  [ -n "$(find "$limits_dir" -maxdepth 1 \
+            \( -name "$name.json.tmp.*" -o -name ".$name.json.*" -o -name "$name.json.lock" \) \
+            -print -quit 2>/dev/null)" ] && return 0
   [ -r "$base_dir/account-tiers" ] &&
     awk -F= -v n="$name" '{ k=$1; gsub(/^[ \t]+|[ \t]+$/, "", k); if (k == n) found=1 }
       END { exit !found }' "$base_dir/account-tiers" && return 0
@@ -1692,9 +1693,14 @@ remove_account() {
 
   # `$name.`* and never `$name`*: the log of an account whose name merely starts with this one
   # (`alpha.log` for a removal of `alph`) is somebody else's record.
+  # claudeb writes its own temporaries dot-prefixed (`.$name.json.*`, `.$name.log.*`), so the
+  # undotted patterns above sweep only what other writers leave.
   rm -f "$tokens_dir/$name" "$limits_dir/$name.json" \
     "$base_dir/session-logs/$name."* "$base_dir/warm-logs/$name."* \
-    "$limits_dir/$name.json.tmp."*
+    "$base_dir/session-logs/.$name.log."* "$base_dir/warm-logs/.$name.log."* \
+    "$limits_dir/$name.json.tmp."* "$limits_dir/.$name.json."*
+  # The snapshot lock is a directory, like the bypass lock below.
+  rm -rf "$limits_dir/$name.json.lock"
   security delete-generic-password -s "$service" >/dev/null 2>&1 || true
   rm -rf "$profiles_root/$name"
 
@@ -1745,7 +1751,7 @@ remove_account() {
     fi
     store_lock_release "$refresh_lock"
   fi
-  cache_file="$HOME/.cache/worker-pick.line.$name"
+  cache_file="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}/worker-pick.line.$name"
   rm -f "$cache_file"
 
   if [ -r "$state_file" ]; then
@@ -2275,8 +2281,8 @@ revive_account() {
     driver=$(session_driver_cmd) || driver=''
     if [ -z "$driver" ] || [ ! -x "$driver" ]; then
       token_journal "$name" session no-driver
-      # Every revive verdict has to reach oauth-attempts.json: a cause the freeze banner would
-      # otherwise mask is exactly what the stale-cause line must show (docs/DIAGNOSTICS.md).
+      # Every revive verdict has to reach oauth-attempts.json: a missing driver is exactly the
+      # cause the stale-cause line must show, not silence (docs/DIAGNOSTICS.md).
       CLAUDEB_JOURNAL_KIND=revive oauth_attempt_update "$name" warm-failed 0 0 no-driver
       printf 'claudeb: revive: claude-session-driver not found\n' >&2
       return 5

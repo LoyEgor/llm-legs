@@ -68,28 +68,73 @@ def load_chats(days):
         die("chat-find returned no usable listing")
     for row in rows:
         row["asking"] = bool(row.get("path")) and asking(row["path"])
+    # Rows of chats that are gone stay until a listing no longer lists them: the picker widens as
+    # he scrolls, and a cache holding only the last window would re-read what it just discarded.
+    save_ask_cache()
     return rows
 
 
-_ASKED = {}
+# One answer per version of a transcript, kept ACROSS launches like chat-find keeps its own
+# measurements: the mark costs a tail read of every listed transcript, and the last window has no
+# horizon at all, so an in-process cache alone would re-read the whole corpus on every launch.
+ASK_CACHE = os.environ.get("CHATS_ASK_CACHE") or os.path.join(
+    PROFILES, ".claudeb", "chat-ask-cache.json")
+ASK_CACHE_VERSION = 1
+_ASKED = None
+_ASKED_DIRTY = False
+
+
+def load_ask_cache():
+    global _ASKED
+    if _ASKED is not None:
+        return _ASKED
+    _ASKED = {}
+    try:
+        with open(ASK_CACHE, encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return _ASKED
+    if isinstance(data, dict) and data.get("version") == ASK_CACHE_VERSION:
+        rows = data.get("rows")
+        if isinstance(rows, dict):
+            _ASKED = rows
+    return _ASKED
+
+
+def save_ask_cache():
+    """Best effort: a listing that cannot write its cache is slow, never wrong."""
+    global _ASKED_DIRTY
+    if not _ASKED_DIRTY or _ASKED is None:
+        return
+    _ASKED_DIRTY = False
+    tmp = "%s.tmp.%d" % (ASK_CACHE, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(ASK_CACHE) or ".", exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump({"version": ASK_CACHE_VERSION, "rows": _ASKED}, handle)
+        os.replace(tmp, ASK_CACHE)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
 
 
 def asking(path):
-    """Whether this transcript stopped on a question, answered once per version of it.
-
-    Scrolling past the last row reloads the WHOLE listing a window wider, and this reads the tail
-    of every transcript in it — a month of history re-read the answer it already had.
-    """
+    """Whether this transcript stopped on a question, answered once per version of it."""
+    global _ASKED_DIRTY
     try:
         stat = os.stat(path)
     except OSError:
         return False
-    version = (stat.st_mtime_ns, stat.st_size)
-    cached = _ASKED.get(path)
-    if cached and cached[0] == version:
-        return cached[1]
+    version = "%d:%r" % (stat.st_size, stat.st_mtime)
+    cache = load_ask_cache()
+    cached = cache.get(path)
+    if isinstance(cached, list) and cached[0] == version:
+        return bool(cached[1])
     verdict = awaiting_answer(path, stat.st_size)
-    _ASKED[path] = (version, verdict)
+    cache[path] = [version, verdict]
+    _ASKED_DIRTY = True
     return verdict
 
 
@@ -232,16 +277,19 @@ def label(level, windows):
     return "last %gd · ↓ for more" % days if level + 1 < len(windows) else "last %gd" % days
 
 
-def when_label(at, now):
+def when_label(at, now, dated=False):
     """One column for when it was last spoken in: the clock for today, the date before it.
 
     The two never both matter — a chat from today is placed by its hour, an older one by its
-    day — and the year never does, since the list spans days.
+    day. The year matters in the last window alone, which has no horizon: there two chats a year
+    apart both read `07.04` and nothing on the row tells them apart.
     """
     spoken = datetime.datetime.fromtimestamp(at).astimezone()
     midnight = datetime.datetime.fromtimestamp(now).astimezone().replace(
         hour=0, minute=0, second=0, microsecond=0)
-    return spoken.strftime("%H:%M") if spoken >= midnight else spoken.strftime("%d.%m")
+    if spoken >= midnight:
+        return spoken.strftime("%H:%M")
+    return spoken.strftime("%d.%m.%y") if dated else spoken.strftime("%d.%m")
 
 
 def width(text):
@@ -281,7 +329,7 @@ def model_label(row):
     return re.sub(r"-20\d{6}$", "", (row.get("model") or "").replace("claude-", ""))
 
 
-def columns(row, now):
+def columns(row, now, dated=False):
     """One chat as the fields it is recognised by, each its own column."""
     said = " ".join((row.get("text") or "").split())
     if said:
@@ -290,7 +338,7 @@ def columns(row, now):
     # A tab or newline inside a title moves the cursor as surely as an overlong
     # write does, so the name is collapsed exactly like the quote already is.
     name = " ".join((row.get("name") or "").split())
-    return ["%5s" % when_label(row["at"], now),
+    return ["%*s" % (8 if dated else 5, when_label(row["at"], now, dated)),
             os.path.basename(row.get("cwd") or "") or "?",
             model_label(row),
             warm_name(row, now) or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""),
@@ -352,7 +400,7 @@ def paint(screen, rows, view, names, profile, needle, used, note):
         index = view["top"] + line
         if index >= len(rows):
             break
-        cells = columns(rows[index], view["now"])
+        cells = columns(rows[index], view["now"], view.get("dated", False))
         chosen = index == view["cursor"]
         fields = ["▸ " if chosen else "  ", ask_mark(rows[index]) + " ", cells[0]]
         for cell, size in zip(cells[1:3], sizes[:2]):
@@ -405,7 +453,8 @@ def run(screen, chats, names, used, profile, level, windows):
         curses.use_default_colors()
     except curses.error:
         pass
-    view = {"cursor": 0, "top": 0, "now": time.time(), "window": label(level, windows)}
+    view = {"cursor": 0, "top": 0, "now": time.time(), "window": label(level, windows),
+            "dated": not windows[level]}
     needle, note, scrolled, landed, default, held = "", "", False, None, profile, profile
     while True:
         view["now"] = time.time()
@@ -419,6 +468,7 @@ def run(screen, chats, names, used, profile, level, windows):
             level += 1
             chats = annotate(load_chats(windows[level]))
             view["window"] = label(level, windows)
+            view["dated"] = not windows[level]
             scrolled = False
             continue
         view["cursor"] = max(0, min(view["cursor"], len(rows) - 1))

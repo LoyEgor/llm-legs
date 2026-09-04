@@ -11,7 +11,6 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 strip_ansi() { sed $'s/\033\[[0-9;]*m//g'; }
 unset CLICOLOR_FORCE
-unset NO_COLOR
 # Unit fixtures must never discover and launch the developer's real agy binary.
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
@@ -317,6 +316,28 @@ grep -q "$GEMINI_PROFILES/Library" "$GEMINI_MULTI_LOG" && fail "a stray Library 
 [ ! -e "$GEMINI_PROFILES/Library/.keychain-password" ] || fail "a keychain was built for the stray directory"
 [ ! -e "$GEMINI_PROFILES/.keychain-password" ] || fail "a keychain was built in the profiles root"
 rm -rf "$GEMINI_PROFILES/Library"
+
+# One failing gemini account named `main` is reported as a bare cause with no `main: ` prefix, so
+# the vendor entry it becomes carries no account while the account row carries the same text. Both
+# describe one failure, and the legacy cause joins whatever survives, so only one may.
+GEMINI_MAIN_FAIL_HELPER="$WORK/fake-agy-main-fails"
+cat >"$GEMINI_MAIN_FAIL_HELPER" <<EOF
+#!/usr/bin/env bash
+[ "\$HOME" != "$HOME_FIXTURE" ] || exit 1
+printf '%s\n' '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.5,"resetTime":"2099-01-01T00:00:00Z"},{"window":"5h","remainingFraction":0.6,"resetTime":"2099-01-01T00:00:00Z"}]}]}'
+EOF
+chmod +x "$GEMINI_MAIN_FAIL_HELPER"
+main_fail=$(GEMINIB_PROFILES_DIR="$GEMINI_PROFILES" \
+  LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_ACCOUNTS_CACHE" LLM_LIMITS_GEMINI_REFRESH=1 \
+  LLM_LIMITS_GEMINI_CMD="$GEMINI_MAIN_FAIL_HELPER" LLM_LIMITS_GEMINI_CACHE="$GEMINI_CACHE" \
+  GEMINIB_SECURITY_CMD="$GEMINI_SECURITY_STUB" \
+  HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
+  /bin/bash "$SCRIPT" --refresh-account gemini --json) \
+  || fail "vendor-wide Gemini refresh with a failing main exited nonzero"
+jq -e '(.vendors.gemini.refresh_errors | length) == 1 and
+  .vendors.gemini.refresh_error.cause == .vendors.gemini.refresh_errors[0].cause' \
+  <<<"$main_fail" >/dev/null \
+  || fail "one failing Gemini main was reported twice: $(jq -c '.vendors.gemini | {refresh_error,refresh_errors}' <<<"$main_fail")"
 
 # Worker-pool membership is the user's own "don't burn this one", and the collector is where
 # every consumer reads it from — a hardcoded enabled:true would make the toggle decorative.
@@ -770,8 +791,15 @@ rm "$HOME_FIXTURE/.claude/statusline-last.json"
 fallback=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "Claude fallback collection failed"
 jq -e '.vendors.claude.five_hour.used_pct == 19 and .vendors.claude.weekly.used_pct == 53 and (.vendors.claude | has("session_model") | not) and .vendors.claude.source == "statusline-cache"' <<<"$fallback" >/dev/null || fail "Claude cache fallback mismatch"
 
-plain=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain collection failed"
-plain=$(strip_ansi <<<"$plain")
+plain_raw=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain collection failed"
+# CLICOLOR_FORCE is the whole color decision (nothing captured here is a tty), which is what
+# makes strip_ansi elsewhere in this file a no-op rather than a guard against unread escapes.
+grep -q $'\033\[' <<<"$plain_raw" && fail "uncolored capture carried escapes"
+colored=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" LLM_LIMITS_WALLS_LOG="$WALLS" \
+  CLICOLOR_FORCE=1 bash "$SCRIPT" --plain) || fail "colored plain collection failed"
+grep -q $'\033\[' <<<"$colored" || fail "CLICOLOR_FORCE produced no color"
+grep -q $'\033\[' <<<"$(strip_ansi <<<"$colored")" && fail "strip_ansi left color behind"
+plain=$(strip_ansi <<<"$plain_raw")
 grep -q 'claude/main\*: 5h 19% @ .* | wk 53% @ .* | fb - @ -' <<<"$plain" || fail "plain Claude values missing"
 grep -q 'codex: 5h 74%~ @ .* | wk 31%~ @ .* | fb - @ -' <<<"$plain" || fail "plain Codex values or stale markers missing"
 grep 'codex:' <<<"$plain" | grep -q '| age ' || fail "plain age field missing"
@@ -791,7 +819,7 @@ grep -q '^gemini: .* | status no quota snapshot | last wall 2026-07-11T08:00:00Z
 # A vendor with no data at all is the loudest age alarm there is; the plain row must not be the
 # one surface that renders it as an ordinary reading.
 plain_color=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" \
-  LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain colour collection failed"
+  LLM_LIMITS_WALLS_LOG="$WALLS" bash "$SCRIPT" --plain) || fail "plain color collection failed"
 grep '^gemini:' <<<"$plain_color" | grep -q "| age "$'\033\[31m' \
   || fail "an unavailable vendor rendered its age unalarmed in plain"
 fallback_table=$(HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --table) || fail "fallback table collection failed"
@@ -2155,17 +2183,17 @@ awk '$1 == "claude/nodata" {print $(NF-3)}' <<<"$alarm_table" | grep -qx never \
   || fail "an account with no dated window must render AGE as never: $alarm_table"
 awk '$1 == "claude/twodays" {print $(NF-3)}' <<<"$alarm_table" | grep -qx 2d \
   || fail "a two-day age lost its span: $alarm_table"
-printf '%s' "$alarm_table" | grep -q $'\033' && fail "the redirected table emitted colour escapes"
+printf '%s' "$alarm_table" | grep -q $'\033' && fail "the redirected table emitted color escapes"
 alarm_color=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
   LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --table) \
-  || fail "age-alarm colour table collection failed"
+  || fail "age-alarm color table collection failed"
 grep -q $'\033\[31mnever' <<<"$alarm_color" || fail "the never age did not render red"
 grep -q $'\033\[31m2d' <<<"$alarm_color" || fail "a day-old age did not render red"
 grep '^claude/recent' <<<"$alarm_color" | grep -q $'\033\[31m' \
   && fail "a fresh age rendered red"
 alarm_plain=$(CLICOLOR_FORCE=1 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
   LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --plain) \
-  || fail "age-alarm colour plain collection failed"
+  || fail "age-alarm color plain collection failed"
 grep '^claude/nodata:' <<<"$alarm_plain" | grep -q "| age "$'\033\[31m'"never" \
   || fail "the never age did not render red in plain"
 grep '^claude/twodays:' <<<"$alarm_plain" | grep -q "| age "$'\033\[31m'"2d" \
@@ -2174,7 +2202,7 @@ grep '^claude/recent' <<<"$alarm_plain" | grep -q $'\033\[31m' \
   && fail "a fresh age rendered red in plain"
 alarm_plain_piped=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$ALARM_STORE" \
   LLM_LIMITS_CACHE="$ALARM_CACHE" bash "$SCRIPT" --plain) || fail "age-alarm plain collection failed"
-printf '%s' "$alarm_plain_piped" | grep -q $'\033' && fail "the redirected plain output emitted colour escapes"
+printf '%s' "$alarm_plain_piped" | grep -q $'\033' && fail "the redirected plain output emitted color escapes"
 
 USABLE_STORE="$WORK/usable-store"
 USABLE_HOME="$WORK/usable-home"
@@ -2729,6 +2757,15 @@ grep -q 'Grok account second: token touch' "$WORK/grok-touch.err" \
 env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 \
   || fail "grok targeted refresh over a fresh token failed"
 grep -q '^touch ' "$GROK_SENTINEL" && fail "a signed-in grok account was driven through the CLI: $(cat "$GROK_SENTINEL")"
+# The CLI writes `expires_at` as a number as readily as an ISO string, and a numeric expiry in
+# the past is as expired as a spelled-out one.
+printf '{"https://auth.x.ai::b1a00492-073a-47ea-816f-4c329264a828":{"key":"k","refresh_token":"r","expires_at":%s}}\n' \
+  "$((now - 60))" >"$GROK_SECOND_AUTH"
+: >"$GROK_SENTINEL"
+env "${grok_env[@]}" FAKE_GROK_CASE=busy bash "$SCRIPT" --refresh-account grok/second --json >/dev/null 2>&1 \
+  || fail "grok targeted refresh over a numeric expiry failed"
+[ "$(grep -c '^touch second exec models$' "$GROK_SENTINEL")" -eq 1 ] \
+  || fail "a numeric expires_at in the past was not read as expired: $(cat "$GROK_SENTINEL")"
 # The last poll's 401 is the other reason: the cache says expired while auth.json looks fine.
 jq -c '.accounts |= map(if .account == "second" then .auth = "expired" else . end)' "$GROK_ROSTER_CACHE" \
   >"$WORK/grok-roster.tmp" && mv "$WORK/grok-roster.tmp" "$GROK_ROSTER_CACHE"

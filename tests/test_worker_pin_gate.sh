@@ -437,6 +437,14 @@ mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
 assert denied "$(write_event "$PIN_FILE" 'claudeb_profile=beta
 claudeb_model=sonnet
 ')"
+# The Bash door's own model refusal, proved on an OPEN door: with no grant the pin rule denies
+# every write here, so the shell cases above stay green even if the model check never ran.
+assert allowed "$(bash_event "printf 'claudeb_profile=beta\n' >> $PIN_FILE")"
+for bad in claudeb_model=sonnet gemini_model=flash35; do
+  bash_model_deny=$(bash_event "printf '$bad\n' >> $PIN_FILE")
+  assert denied "$bash_model_deny"
+  assert contains "$bash_model_deny" "${bad/_model=/=}"
+done
 rm -f "$GRANT"
 # The allowed models pass, and so does an edit that REMOVES a cheap one: an Edit is judged on what
 # it would leave behind.

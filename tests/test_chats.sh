@@ -80,11 +80,16 @@ print("project:", cells[1])
 print("name:", cells[4])
 print("quote:", cells[5])
 # One time column: a chat spoken in today is placed by its clock, anything older by its date,
-# both five columns wide. Midnight belongs to today; a clock that ran backwards prints no age.
+# both five columns wide. Everything at or after today's midnight is placed by its clock, so a
+# stamp from a skewed clock reads as an hour of today however far ahead of now it sits.
 print("today:", repr(cells[0]))
 print("midnight:", chats.when_label(1785974400.0, now), chats.when_label(1785974399.0, now))
 print("older:", chats.when_label(now - 86400, now))
+# The last window has no horizon, so two 07.04s in it can be a year apart.
+print("dated:", chats.when_label(now - 86400, now, True), chats.when_label(now, now, True))
+print("dated-cell:", repr(chats.columns(dict(row, at=now - 86400), now, True)[0]))
 print("future:", chats.when_label(now + 600, now))
+print("future-day:", chats.when_label(now + 86400, now))
 
 nameless = dict(row, name=None)
 print("nameless:", chats.columns(nameless, now)[4])
@@ -150,7 +155,12 @@ assert grep -qx 'quote: claude: done, the header holds' <<<"$OUT"
 assert grep -qx "today: '06:06'" <<<"$OUT"
 assert grep -qx 'midnight: 00:00 05.08' <<<"$OUT"
 assert grep -qx 'older: 05.08' <<<"$OUT"
+# The last window has no horizon, so the year is the only thing telling two 05.08s apart; the
+# cell widens with it, once, for every row of that view rather than for the old ones alone.
+assert grep -qx 'dated: 05.08.26 07:06' <<<"$OUT"
+assert grep -qx "dated-cell: '05.08.26'" <<<"$OUT"
 assert grep -qx 'future: 07:16' <<<"$OUT"
+assert grep -qx 'future-day: 07:06' <<<"$OUT"
 # With no name of its own, the last message stands in for one and is not repeated.
 assert grep -qx 'nameless: claude: done, the header holds' <<<"$OUT"
 assert grep -qx "nameless-quote: ''" <<<"$OUT"
@@ -349,6 +359,12 @@ cases = [
     # A `?` that ends no sentence is a glob, not a question.
     ("glob", transcript("glob", said("user", "почини гейт"),
                         said("assistant", "Файлы a?.txt на месте, дерево чистое."))),
+    # A closing `?` is still one under whatever punctuation trails it: an interrobang, a
+    # typographic quote. The listing marks by the mark, not by the character after it.
+    ("bang-question", transcript("bang-question", said("user", "почини гейт"),
+                                 said("assistant", "Тесты зелёные. Мне продолжать?!"))),
+    ("curly-question", transcript("curly-question", said("user", "почини гейт"),
+                                  said("assistant", "Тесты зелёные. Он спросил: \u201cпродолжать?\u201d"))),
     # The ask is what a message ENDS on: a chat that merely quoted the word once, a screen
     # above its own conclusion, is not waiting on anybody.
     ("quoted-far-above", transcript("quoted-far-above", said("user", "почини гейт"),
@@ -379,6 +395,8 @@ assert grep -qx 'later: False' <<<"$ASK"
 assert grep -qx 'code-question: False' <<<"$ASK"
 assert grep -qx 'quoted-question: False' <<<"$ASK"
 assert grep -qx 'glob: False' <<<"$ASK"
+assert grep -qx 'bang-question: True' <<<"$ASK"
+assert grep -qx 'curly-question: True' <<<"$ASK"
 assert grep -qx 'quoted-far-above: False' <<<"$ASK"
 assert grep -qx 'wide-window: True' <<<"$ASK"
 assert grep -qx 'missing: False' <<<"$ASK"
@@ -387,13 +405,20 @@ assert grep -qx 'missing: False' <<<"$ASK"
 # Scrolling past the last row reloads the WHOLE listing a window wider, and this column reads the
 # tail of every transcript in it: a month of history paid those seconds again for an answer it
 # already had.
-CACHE=$(python3 - "$SCRIPT" "$WORK" <<'PY'
+CACHE=$(CHATS_ASK_CACHE="$WORK/ask-cache.json" python3 - "$SCRIPT" "$WORK" <<'PY'
 import importlib.machinery, importlib.util, json, os, sys
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
 spec = importlib.util.spec_from_loader("chats", loader)
-chats = importlib.util.module_from_spec(spec)
-loader.exec_module(chats)
+
+
+def fresh():
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+chats = fresh()
 work = sys.argv[2]
 path = os.path.join(work, "cached.jsonl")
 
@@ -419,6 +444,14 @@ print("touched:", chats.asking(path), len(reads))
 rewrite("Патчи в дереве, тесты зелёные.")
 print("rewritten:", chats.asking(path), len(reads))
 print("missing:", chats.asking(os.path.join(work, "nobody.jsonl")), len(reads))
+chats.save_ask_cache()
+# A second launch is where the mark costs the most: with nothing on disk it re-reads the tail of
+# every transcript the listing names, and the last window names all of them.
+later = fresh()
+later_reads = []
+later_tail = later.awaiting_answer
+later.awaiting_answer = lambda p, size=None: (later_reads.append(p), later_tail(p, size))[1]
+print("relaunched:", later.asking(path), len(later_reads))
 PY
 ) || fail "ask cache probe failed"
 
@@ -429,5 +462,8 @@ assert grep -qx 'touched: True 2' <<<"$CACHE"
 assert grep -qx 'rewritten: False 3' <<<"$CACHE"
 # A path that cannot be stat-ed answers without a read at all.
 assert grep -qx 'missing: False 3' <<<"$CACHE"
+# The answer survives the process that produced it.
+assert grep -qx 'relaunched: False 0' <<<"$CACHE"
+assert test -s "$WORK/ask-cache.json"
 
 echo "PASS: chats ($asserts assertions)"

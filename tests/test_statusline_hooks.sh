@@ -429,6 +429,18 @@ run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_AFTER_CD" rev-parse --show-toplevel)" \
   "$(cat "$STATE_DIR/workdir-session-wt-add-after-cd")"
 
+# The bootstrap subshell a worktree add is followed by cds INTO the new worktree: read as the
+# add's base, it resolves the relative path inside the tree that was just created.
+WT_ADD_BOOTSTRAP="$REPO_A/.claude/worktrees/hook-wt-bootstrap"
+git -C "$REPO_A" branch hook-wt-bootstrap
+git -C "$REPO_A" worktree add -q ".claude/worktrees/hook-wt-bootstrap" hook-wt-bootstrap
+printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-session-wt-add-bootstrap"
+payload=$(workdir_payload Bash session-wt-add-bootstrap "$REPO_D" \
+  "cd '$REPO_A' && git worktree add .claude/worktrees/hook-wt-bootstrap hook-wt-bootstrap && (cd .claude/worktrees/hook-wt-bootstrap && git status)")
+run_workdir_hook "$payload"
+assert_eq "$(git -C "$WT_ADD_BOOTSTRAP" rev-parse --show-toplevel)" \
+  "$(cat "$STATE_DIR/workdir-session-wt-add-bootstrap")"
+
 WT_ADD_FAILED="$FIXTURES/wt-add-failed"
 if git -C "$REPO_A" worktree add "$WT_ADD_FAILED" no-such-worktree-ref >/dev/null 2>&1; then
   fail "failed worktree-add fixture unexpectedly succeeded"
@@ -5191,11 +5203,39 @@ for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
   assert_eq "" "$gate_out"
   # A wait with no `--max` polls worker-run's own default, and a `--max` spelled with a variable
   # states no duration at all: neither may buy a pass the same poll spelled out would be denied.
+  # The default is READ OUT of worker-run, so the fixture states one of its own: with the gate
+  # falling back to its hardcoded number instead, a default that moved in bin/worker-run would
+  # change production denials with this case still green.
+  mkdir -p "$HOME/.local/bin"
+  printf '%s\n' '#!/usr/bin/env bash' 'wait_run() { local run_id="$1" max=200 tries; }' \
+    >"$HOME/.local/bin/worker-run"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
+    220000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
+    230000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+  rm -f "$HOME/.local/bin/worker-run"
   gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
     120000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
   gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
     130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+  # An `--max` no timeout the harness allows could cover is refused for the duration itself: an
+  # answer of "pass a bigger timeout" would be an instruction nobody can carry out.
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 600' \
+    600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("--max 540")' \
+    <<<"$gate_out" >/dev/null
+  # A leading zero is a decimal number to everyone but the shell that reads it as octal: read as
+  # octal the arithmetic dies and the door falls open on the poll it was there to judge.
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 08' \
+    1000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max 08' \
+    40000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
   gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef --max "$secs"' \
     130000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
@@ -5208,8 +5248,13 @@ for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
 done
 gate_out=$(gate_agent_payload image-gen 'codex-image --dest /tmp/a.png --prompt cat' | "$LAUNCH_GATE_BIN")
 assert_eq "" "$gate_out"
+# image-gen owns runs of its own, so the timeout guard covers its waits too: a poll the harness
+# kills leaves the same unwatched run whichever agent type started it.
+gate_out=$(gate_timeout_payload image-gen 'worker-run wait cb-20260901-abcdef --max 540' \
+  5000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 # An agent type nobody sanctioned owns no run either.
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line or the routed seed, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, both debt sides in one two-toned segment and red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

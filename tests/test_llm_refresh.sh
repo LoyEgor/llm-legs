@@ -780,6 +780,10 @@ pass
 case_dir="$WORK/grok-rung-backoff"
 seed_grok_case "$case_dir" 7200 expired
 STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || fail 'grok backoff first run failed'
+# Counted per tick, not once at the end: a total of one is also what a daemon that skipped the
+# tick at NOW and polled inside the rung instead would leave behind.
+[ "$(grep -c -- '--refresh-account grok/gr' "$case_dir/calls.log")" -eq 1 ] || \
+  fail "the tick that opened the rung did not poll exactly once: $(cat "$case_dir/calls.log")"
 STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$((NOW + 60))" || fail 'grok backoff second run failed'
 [ "$(grep -c -- '--refresh-account grok/gr' "$case_dir/calls.log")" -eq 1 ] || \
   fail "a heartbeat inside the rung re-polled again: $(cat "$case_dir/calls.log")"
@@ -969,8 +973,9 @@ ceiling=$(HOME="$WORK/functions-home" bash -c '. "$1"; ladder_loosen 60' _ "$SCR
 pass
 
 # A PAUSED vendor is parked for months and must not exist for this daemon: no tick, no state
-# entry, no journal line — and so none of the per-account paths is ever reached for it. The switch lives in worker-pick's own file; the store cannot answer it,
-# because the collector deliberately writes no entry for a parked vendor.
+# entry, no journal line — and so none of the per-account paths is ever reached for it. The
+# switch lives in worker-pick's own file; the store cannot answer it, because the collector
+# deliberately writes no entry for a parked vendor.
 case_dir="$WORK/paused"
 mkdir -p "$case_dir/home/.claude"
 write_store "$case_dir/store.json" "$NOW" 7200 7200 7200 7200
@@ -1037,13 +1042,17 @@ pass
 # A docstring belongs to the function it heads: one that outlived its own now explains the next
 # function down, and a comment that lost its wrap is read by nobody.
 grep -q 'grok_token_expired' "$SCRIPT" && fail 'a docstring survived the function it described'
-docstrings=$(sed -n '/^# A paused vendor is parked/,/^vendor_paused()/p
-                     /^# Every attempt stamps/,/^stamp_attempt()/p' "$SCRIPT")
-[ -n "$docstrings" ] || fail 'the docstrings under test are not where this check looks'
-[ -z "$(awk 'length > 100' <<<"$docstrings")" ] || fail 'a docstring runs past 100 columns'
-case "$docstrings" in
-  *'refresh_token beside'*) fail 'the token-expiry docstring still heads stamp_attempt' ;;
-esac
+# One range at a time: joined, a renamed anchor whose range comes back empty is still covered
+# by the other one and half this check goes silently missing.
+for docstring_range in '/^# A paused vendor is parked/,/^vendor_paused()/p' \
+                       '/^# Every attempt stamps/,/^stamp_attempt()/p'; do
+  docstring=$(sed -n "$docstring_range" "$SCRIPT")
+  [ -n "$docstring" ] || fail "no docstring where this check looks: $docstring_range"
+  [ -z "$(awk 'length > 100' <<<"$docstring")" ] || fail 'a docstring runs past 100 columns'
+  case "$docstring" in
+    *'refresh_token beside'*) fail 'the token-expiry docstring still heads stamp_attempt' ;;
+  esac
+done
 pass
 
 for journal in "$WORK"/*/journal.jsonl; do

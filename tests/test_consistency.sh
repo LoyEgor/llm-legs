@@ -33,6 +33,12 @@ export RBENCH_SHARE="$REVIEW_ROOT/share"
 # doc is caught too.
 doc_has() { grep -Fq -- "$1" "$ROOT/$DOC"; }
 
+# Every row is `| id | invariant | canonical value | implementation sites |`, and a row that lost
+# a separator renders its sites as part of the value — invisible to a reader looking for the file.
+short_rows=$(awk '/^\| [0-9a-z]+ \|/ { line = $0; gsub(/\\\|/, "", line)
+  n = gsub(/\|/, "|", line); if (n < 5) print substr($0, 1, 30) }' "$ROOT/$DOC")
+assert test -z "$short_rows"
+
 # --- Row a: staleness/dim thresholds -----------------------------------------
 FIVE=1800; WEEK=21600; FABLE=21600; ROUTING=7200
 LIMITSVIEW="$ROOT/share/limits-view.sh"
@@ -114,6 +120,9 @@ assert grep -Fq 'case "$field" in "$tag"*) ;; *) continue ;; esac' "$STATUSLINE"
 assert doc_has 'cx%s%s·%s·%s'
 assert doc_has 'gr%s%s·%s·%s'
 assert doc_has 'EVERY field is optional and the order never moves'
+# Prose that respells the order is prose that can respell it wrong: the contract names the tags in
+# the order the line writes them.
+assert grep -Fq '`cx`/`cb`/`gx`' "$ROOT/docs/routing-contract.md"
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -274,7 +283,9 @@ assert grep -Fq '"agy-flash36": ("low", "medium", "high")' "$RB_CATALOG"
 # name it; a mapping key, a cell spelling and a rater alternative are not.
 assert test "$(grep -Fc '"agy-flash35"' "$RB_CATALOG")" -eq 0
 assert test "$(grep -Fc 'agy-flash35-' "$RB_CATALOG")" -eq 0
-assert test "$(grep -Fc 'agy-flash35' "$RB_RATERS")" -eq 0
+# The two lines of the legacy normalizer below spell the family on purpose, split so this pin
+# stays a flat grep; a rater alternative reintroduced the same way is what it must still catch.
+assert test "$(grep -v 'retired_flash' "$RB_RATERS" | grep -Fc 'flash35')" -eq 0
 assert test "$(grep -Fc 'agy-flash35' "$REVIEW_ROOT/docs/DIAGNOSTICS.md")" -eq 0
 assert grep -Fq 'agy-pro-<low|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash38-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
@@ -353,9 +364,15 @@ assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-9]|gpt-5\.6-(terra|luna))'
 assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
   -lt "$(grep -n 'warn_cold_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
 # Prose sites, each naming the same four allowed models and the refusal by name.
-for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" "$WORKER_COMMAND"; do
+for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
+  "$ROOT/docs/DIAGNOSTICS.md" "$WORKER_COMMAND"; do
   assert grep -Fq 'gpt-5.6-sol' "$site"
   assert grep -Fq 'MODEL_REFUSED' "$site"
+done
+# grok is the one vendor with two spellings, and a site naming only `auto` reads as a shorter list.
+for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
+  "$ROOT/docs/DIAGNOSTICS.md"; do
+  assert grep -Fq 'grok-4.6' "$site"
 done
 # The relay briefs may not offer a cheap model as a per-task MODEL: option.
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
@@ -1028,8 +1045,10 @@ if test -r "$COMMIT_REPORT"; then
   assert grep -Fq 'rj_register_repo "$session" "$row_top" || :' \
     "$CLAUDE_SETUP/hooks/commit-journal.sh"
   assert eq "$(grep -c 'rj_register_repo' "$CLAUDE_SETUP/hooks/commit-journal.sh")" 2
-  assert eq "$(grep -cE '^[[:space:]]*rj_register_repo' "$FLOW_GATE")" 0
-  assert eq "$(grep -cE '^[[:space:]]*rj_register_repo' "$COMMIT_REPORT")" 0
+  # Every line but a whole-line comment: a call re-added inside a compound command or a
+  # substitution is still a call, and anchoring the name to the start of a line missed it.
+  assert eq "$(grep -v '^[[:space:]]*#' "$FLOW_GATE" | grep -c 'rj_register_repo')" 0
+  assert eq "$(grep -v '^[[:space:]]*#' "$COMMIT_REPORT" | grep -c 'rj_register_repo')" 0
   assert grep -Fq 'snapshot_file=$(rj_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
   # What the call landed is the range between the HEAD the gate wrote down before it and this one,
   # narrowed by the snapshot's mtime: a checkout inside the call can otherwise add an older branch's
@@ -2473,13 +2492,14 @@ PIN_GATE_BR="$ROOT/bin/worker-pin-gate.sh"
 assert grep -Fq 'load_share instruction-files.sh instruction_write_targets' "$PIN_GATE_BR"
 assert grep -Fq 'instruction_shell_scan' "$PIN_GATE_BR"
 assert eq "$(grep -cE '>\[>\|\]|g\?tee|\(cp\|mv\|ln\|install\)|--in-place' "$PIN_GATE_BR")" 0
-RFG_BR="$ROOT/../claude-setup/hooks/review-flow-gate.sh"
-if [ -r "$RFG_BR" ]; then
-  assert grep -Fq 'share/instruction-files.sh' "$RFG_BR"
-  assert grep -Fq 'REVIEW_FLOW_SHELL_PARSE' "$RFG_BR"
-  assert grep -Fq 'instruction_shell_scan' "$RFG_BR"
+if [ -r "$FLOW_GATE" ]; then
+  assert grep -Fq 'share/instruction-files.sh' "$FLOW_GATE"
+  assert grep -Fq 'REVIEW_FLOW_SHELL_PARSE' "$FLOW_GATE"
+  assert grep -Fq 'instruction_shell_scan' "$FLOW_GATE"
   # A sibling it cannot read is named in the refusal, never skipped in silence.
-  assert grep -Fq 'rf_parse_note' "$RFG_BR"
+  assert grep -Fq 'rf_parse_note' "$FLOW_GATE"
+else
+  fail "shared command parse across claude-setup: $FLOW_GATE is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 for instr_hook in "$INSTR_GATE" "$INSTR_WATCH"; do
   assert grep -Fq 'share/instruction-files.sh' "$instr_hook"

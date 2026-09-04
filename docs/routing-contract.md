@@ -283,7 +283,7 @@ routing-math paragraph the rules above replace.
   that ranked nothing prints one `NEXT: <reason>` line instead of the table. The session account
   is marked `*` with a footnote under its vendor — there is no `SESSION:` line, and `--fable` is
   the query that asks for the fable pick. The statusline cache line keeps its format
-  (model·effort sourced from worker-model only). Grok appends a fourth cache field tagged `gr` after `cb`/`cx`/`gx`, and a store
+  (model·effort sourced from worker-model only). Grok appends a fourth cache field tagged `gr` after `cx`/`cb`/`gx`, and a store
   carrying no `vendors.grok` at all produces no grok segment, line or field: a vendor this
   machine has not installed is absent from the answer, never walled and never a failed
   lookup.

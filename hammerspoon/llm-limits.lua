@@ -282,12 +282,15 @@ local function appendOpenCode(menu, limits, paused)
     return
   end
   local vendor = limits and type(limits.vendors) == "table" and limits.vendors.opencode
-  local accounts = type(vendor) == "table" and vendor.accounts
-  if type(accounts) ~= "table" or #accounts == 0 then return end
+  local accounts = (type(vendor) == "table" and type(vendor.accounts) == "table")
+    and vendor.accounts or {}
   -- One refresh for the leg, in the section header every other vendor carries its own in. Per
   -- account there is nothing to offer: a check is one real completion, and the leg is refreshed
   -- whole or not at all, never one row at a time.
   local vendorErrs = vendorRefreshErrors("opencode", vendor)
+  -- An empty roster is still a section when the leg reported an error: opencode lights the ⚠ in
+  -- the title, and a warning with no row under it explaining it is unreachable.
+  if #accounts == 0 and #vendorErrs == 0 then return end
   table.insert(menu, {
     title = infoTitle("OpenCode Go"),
     menu = {
@@ -295,7 +298,9 @@ local function appendOpenCode(menu, limits, paused)
       { title = "Pause", fn = function() M.setWorkerPaused("opencode", true) end },
     },
   })
-  appendRefreshErrorRows(menu, vendorErrs, "opencode")
+  local rostered = {}
+  for _, account in ipairs(accounts) do rostered[account.account] = true end
+  appendRefreshErrorRows(menu, vendorErrs, "opencode", nil, rostered)
   for _, account in ipairs(accounts) do
     local walled = account.walled == true
     local windows = type(account.windows) == "table" and account.windows or {}
@@ -743,9 +748,13 @@ function M.refreshState()
   end
   local vendorErrors = {}
   local warning = globalError ~= nil
+  -- A parked vendor renders one row and no errors under it, so counting its errors here lights a
+  -- warning nothing in the menu can explain. Parked is out of play, and its state is not news.
+  local pausedVendors = select(3, readWorkerModel())
   if limits and type(limits.vendors) == "table" then
     for _, name in ipairs({ "claude", "codex", "gemini", "grok", "opencode" }) do
       local vendor = limits.vendors[name]
+      if pausedVendors[name] then vendor = nil end
       local entries = vendorRefreshErrors(name, vendor)
       if #entries > 0 then
         vendorErrors[name] = entries
@@ -1268,8 +1277,17 @@ local function causeLines(cause, width)
     local i = 1
     local n = #line
     while i <= n do
-      lines[#lines + 1] = line:sub(i, i + width - 1)
-      i = i + width
+      -- A cause carries the middot, curly quotes and whatever the vendor wrote: cut on the byte
+      -- and a UTF-8 sequence splits, so the wrap backs off to the last byte that starts one.
+      local stop = math.min(i + width - 1, n)
+      local cut = stop
+      while cut > i and line:byte(cut + 1) and line:byte(cut + 1) >= 0x80
+          and line:byte(cut + 1) < 0xC0 do
+        cut = cut - 1
+      end
+      if cut > i then stop = cut end
+      lines[#lines + 1] = line:sub(i, stop)
+      i = stop + 1
     end
   end
   if raw:find("\n", 1, true) then
@@ -1291,9 +1309,13 @@ local function classifyLegacyAccount(cause, roster)
   return nil
 end
 
-vendorRefreshErrors = function(_, vendor)
+vendorRefreshErrors = function(vendorKey, vendor)
   if type(vendor) ~= "table" then return {} end
   local roster = rosterSet(vendor)
+  -- No roster is not an empty roster: a vendor that publishes no `accounts` (a sole-account leg,
+  -- opencode before its first collector run) has nothing to check an error against, and checking
+  -- anyway drops every error it reports. An empty roster keeps its errors for the same reason.
+  local hasRoster = next(roster) ~= nil
   local raw = vendor.refresh_errors
   if type(raw) ~= "table" then
     local err = errorState(vendor.refresh_error)
@@ -1313,7 +1335,10 @@ vendorRefreshErrors = function(_, vendor)
   local seen = {}
   local function add(account, class, cause, at, needsUserEntry)
     if type(cause) ~= "string" or cause == "" then return end
-    if account ~= nil and not roster[account] then return end
+    if account ~= nil and hasRoster and not roster[account] then return end
+    -- A row a pending removal hides has nowhere to carry its errors: counted anyway they light
+    -- the warning in the title with nothing under it until the override expires.
+    if account ~= nil and vendorKey and removalPending(vendorKey, account) then return end
     if type(class) ~= "string" or class == "" then class = "refresh failed" end
     local key = tostring(account or "") .. "\0" .. cause
     if seen[key] then return end
@@ -1379,10 +1404,13 @@ refreshErrorItem = function(err, fallbackWho, warning)
   return item
 end
 
-appendRefreshErrorRows = function(menu, entries, fallbackWho, onlyAccount)
+-- `rendered` names the accounts that get a row of their own below; an error belonging to any
+-- other account has nowhere else to go and is rendered here, or it warns from the title with
+-- nothing in the menu naming it.
+appendRefreshErrorRows = function(menu, entries, fallbackWho, onlyAccount, rendered)
   for _, err in ipairs(entries) do
     if onlyAccount == nil then
-      if err.account == nil then
+      if err.account == nil or (rendered ~= nil and not rendered[err.account]) then
         table.insert(menu, refreshErrorItem(err, fallbackWho))
       end
     elseif err.account == onlyAccount then
@@ -1508,10 +1536,10 @@ function M.menuItems()
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
       local hasGrokAccounts = entry.key == "grok" and type(vendor) == "table"
         and type(vendor.accounts) == "table" and #vendor.accounts > 0
+      local vendorErrs = vendorRefreshErrors(entry.key, vendor)
       -- Removing gemini's main empties the roster, and the collector states that emptiness as
       -- `removed` on the vendor: without it a removed Gemini rendered a "no live data" row with a
       -- Refresh submenu, which is the opposite of removed.
-      local vendorErrs = vendorRefreshErrors(entry.key, vendor)
       if type(vendor) == "table" and vendor.removed == true then
         vendor = nil
       elseif type(vendor) ~= "table"

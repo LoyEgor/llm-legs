@@ -1524,6 +1524,19 @@ case "$msg" in *"$DOC"*) fail "the denial named a destination it let through" ;;
 # A row the span covers is still covered when it stands beside one no gate speaks for.
 assert_eq pass "$(in_span decision "printf shorter > $DOC; grep -c . $CLAUDE_MD")"
 assert_eq pass "$(in_span decision "printf shorter > $DOC; printf x > $HOME/.claude/settings.json")"
+# An interpreter row is judged the same way, and a permitted redirection beside it never buys it
+# a pass: the redirect rows and the interpreter constructs are two lists of one command.
+assert_eq deny "$(in_span decision "printf shorter > $DOC; python3 -c \"open('$CLAUDE_MD','a').write('x')\"")"
+# EVERY construct, each against its own shape: the second write is not judged by the first's
+# mode, and its own name is the one refused.
+assert_eq deny "$(in_span decision "python3 -c \"open('$DOC','w')\"; python3 -c \"open('$CLAUDE_MD','a')\"")"
+msg=$(in_span gate "python3 -c \"open('$DOC','w')\"; python3 -c \"open('$AGENT_DOC','a')\"" \
+  | jq -r '.hookSpecificOutput.permissionDecisionReason')
+assert_contains "$AGENT_DOC" "$msg"
+# A copy verb inside an interpreter writes its DESTINATION: reading the source instead denies a
+# read out of a guarded file and lets the write into one through.
+assert_eq deny "$(in_span decision "python3 -c \"import shutil; shutil.copy('/tmp/x.md','$CLAUDE_MD')\"")"
+assert_eq pass "$(in_span decision "python3 -c \"import shutil; shutil.copy('$CLAUDE_MD','/tmp/x.md')\"")"
 
 echo "== gate matrix: the in-span denial names growth, the standing one names Egor's rule"
 msg=$(in_span gate "echo grow-a >> $DOC" | jq -r '.hookSpecificOutput.permissionDecisionReason')
@@ -1693,6 +1706,27 @@ targets() { # command names-alternation → the destination names the parse find
 DOC_ERE=$(share_call 'instruction_ere_escape "$2"' "$DOC")
 # A name a destination merely ENDS with is not that name.
 assert_eq "" "$(targets "echo x > $DOC.bak" "$DOC_ERE")"
+# Nor is it that name to the interpreter shapes: every branch closes the quote after the path, or
+# a `.bak` sibling reads as the guarded file itself and the tripwire reverts a write it never made.
+interp_writes() { # command → how many interpreter write constructs the shared shapes find
+  share_call 'printf "%s" "$2" | grep -Eo "$(instruction_interp_write_re "$3")" | wc -l | tr -d " "' "$1" "$DOC_ERE"
+}
+for sibling in \
+  "perl -e \"open(FH, '>', '$DOC.bak')\"" \
+  "node -e \"fs.writeFileSync('$DOC.bak','x')\"" \
+  "ruby -e \"File.write('$DOC.bak','x')\"" \
+  "python3 -c \"import shutil; shutil.copy('/tmp/x','$DOC.bak')\"" \
+  "python3 -c \"open('$DOC.bak','w')\""; do
+  assert_eq 0 "$(interp_writes "$sibling")"
+done
+for real in \
+  "perl -e \"open(FH, '>', '$DOC')\"" \
+  "node -e \"fs.writeFileSync('$DOC','x')\"" \
+  "ruby -e \"File.write('$DOC','x')\"" \
+  "python3 -c \"import shutil; shutil.copy('/tmp/x','$DOC')\"" \
+  "python3 -c \"open('$DOC','w')\""; do
+  assert_eq 1 "$(interp_writes "$real")"
+done
 # The destination of a copy verb is its last operand, whatever stands after the command.
 assert_eq "$DOC" "$(targets "mv $WORK/stage/tmp.md $DOC && true" "$DOC_ERE")"
 # What a `<` names is what the command READS.
@@ -1701,6 +1735,30 @@ assert_eq "" "$(targets "cat < $DOC" "$DOC_ERE")"
 assert_eq "$DOC" "$(targets "cp $WORK/stage/review-tiers.md $HOME/.claude/docs" "$DOC_ERE")"
 assert_contains "./review-tiers.md" \
   "$(targets 'cp /tmp/stage/review-tiers.md .' 'review-tiers\.md|\./review-tiers\.md')"
+# A continuation is one command to the shell, and the tripwire hands over the RAW command: the
+# join belongs to the parse, not to whichever caller remembers it.
+assert_eq "$DOC" "$(targets "$(printf 'cp %s/stage/tmp.md \\\n%s\n' "$WORK" "$DOC")" "$DOC_ERE")"
+# An in-place editor writes the file it is pointed at however the flag is spelled, GNU included.
+assert_eq "$DOC" "$(targets "sed --in-place=.bak s/x/y/ $DOC" "$DOC_ERE")"
+assert_eq "$DOC" "$(targets "gsed -i s/x/y/ $DOC" "$DOC_ERE")"
+# `dd` names its destination in an operand of its own, and the by-name spelling the gate matches
+# with is what makes the difference visible: emitted verbatim, `of=<path>` matches whole and the
+# denial names a file that does not exist, while `if=` reports what dd READS as a write.
+BY_NAME_ERE="([^[:space:];|&'\"]*/)?review-tiers\.md"
+assert_eq "$DOC" "$(targets "dd if=$WORK/stage/tmp.md of=$DOC" "$BY_NAME_ERE")"
+assert_eq "" "$(targets "dd if=$DOC of=$WORK/stage/tmp.md" "$BY_NAME_ERE")"
+# `<<\EOF` quotes a heredoc the way `<<"EOF"` does: unrecognised, the body it holds is read as
+# commands, and a rule it merely quotes reads as a write to the file the rule is about — a false
+# denial at this door and, at the tripwire, a rollback of somebody else's growth.
+assert_eq "" "$(targets "$(printf 'cat > %s/stage/scratch <<\\EOF\nsee > %s for the rule\nEOF\n' "$WORK" "$DOC")" "$DOC_ERE")"
+assert_eq pass "$(in_span decision "$(printf 'cat > %s/stage/scratch <<\\EOF\nsee > %s for the rule\nEOF\n' "$WORK" "$DOC")")"
+# Asked of the scan too, which is the pass that exists to take a body out: the raw fallback beside
+# it can hide a body the scan kept, and then only one of the two doors reads that command right.
+assert_eq 0 "$(share_call 'printf "%s" "$2" | instruction_shell_scan | grep -c review-tiers' \
+  "$(printf 'cat > %s/stage/scratch <<\\EOF\nsee > %s for the rule\nEOF\n' "$WORK" "$DOC")")"
+# `<<-` strips tabs and no spaces, so a space-indented word is not the terminator and the body
+# after it is still the body.
+assert_eq "" "$(targets "$(printf 'cat > %s/stage/scratch <<-EOF\n  EOF\nsee > %s for the rule\nEOF\n' "$WORK" "$DOC")" "$DOC_ERE")"
 
 echo "== one parse: the tripwire attributes exactly what that parse finds"
 parse_case=0

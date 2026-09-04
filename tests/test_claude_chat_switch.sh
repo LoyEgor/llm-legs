@@ -19,8 +19,15 @@ REAL_HS="$(command -v hs || true)"
 # the hammerspoon repository beside it — and the install under ~/.hammerspoon only when neither is
 # there: in a worktree or a sealed clone the installed copy is somebody else's, and a broken branch
 # edit would pass on it.
+# In an in-repo worktree `$ROOT/..` is the worktrees directory, so the sibling checkout is looked
+# up from the MAIN one — otherwise the search lands on the install and verifies somebody else's file.
+MAIN_ROOT=$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || MAIN_ROOT=''
+if [ -n "$MAIN_ROOT" ]; then
+  MAIN_ROOT=$(cd "${MAIN_ROOT%/.git}" 2>/dev/null && pwd) || MAIN_ROOT=''
+fi
+[ -n "$MAIN_ROOT" ] || MAIN_ROOT="$ROOT"
 if [ -z "${CHAT_SWITCH_LUA:-}" ]; then
-  for lua_home in "$ROOT/hammerspoon/config" "$ROOT/../hammerspoon" "$HOME/.hammerspoon"; do
+  for lua_home in "$ROOT/hammerspoon/config" "$MAIN_ROOT/../hammerspoon" "$HOME/.hammerspoon"; do
     [ -r "$lua_home/claude_chat_switch.lua" ] || continue
     CHAT_SWITCH_LUA="$lua_home/claude_chat_switch.lua"
     break
@@ -31,6 +38,13 @@ CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$ROOT/hammerspoon/config/claude_chat_switch.
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+
+# HOME is still the real one here, which is what makes the install recognisable.
+case "$CHAT_SWITCH_LUA" in
+  "$HOME"/.hammerspoon/*)
+    [ ! -r "$MAIN_ROOT/../hammerspoon/claude_chat_switch.lua" ] ||
+      fail "the wall harness took the installed module while a checkout copy exists" ;;
+esac
 
 HOME="$WORK/home"
 FAKE_BIN="$WORK/bin"

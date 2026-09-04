@@ -52,6 +52,18 @@ wait_announce() {
   return 1
 }
 
+# A passive collect is a BLANK line, so a second one is only visible as GROWTH: matched by text it
+# finds the previous removal's own entry and says nothing about the announce under test.
+wait_announce_grew() {
+  local before="$1" tries=0
+  while [ "$tries" -lt 50 ]; do
+    [ "$(wc -l <"$ANNOUNCE_LOG" 2>/dev/null | tr -d ' ')" -gt "$before" ] && return 0
+    tries=$((tries + 1))
+    sleep 0.1
+  done
+  return 1
+}
+
 source "$SCRIPT"
 
 # Only a refresh the user asked for may POST the OAuth token endpoint (shared-invariants
@@ -1346,6 +1358,10 @@ EOF
   assert test "$(wc -l <"$fz_claude" | tr -d ' ')" -eq 2
   assert_fails jq -se 'any(.[]; .kind == "warm" and .outcome == "robot-skip")' "$token_attempts_file" >/dev/null
   assert jq -se 'all(.[]; has("user") | not)' "$token_attempts_file" >/dev/null
+
+  # 4: a robot skip is the freeze answering, not the vendor running out of room. Classed as
+  # capacity it would earn the retry sleep, then the identical skip, on every robot account.
+  assert_fails warm_class_is_capacity robot-skip
   # An account that does not exist is a failure, never a silent no-op.
   fz_unknown_rc=0
   warm_accounts fzGhost >/dev/null 2>"$WORK/fz-warm-unknown.err" || fz_unknown_rc=$?
@@ -1752,6 +1768,28 @@ printf '{}' >"$oauth_attempts_file"
   # The CLI-only warm success journals kind warm (the real curl refresh on this
   # path journals its own curl-refresh line separately).
   assert jq -se 'any(.[]; .account == "zeta" and .kind == "warm" and .outcome == "success")' "$token_attempts_file" >/dev/null
+
+  # The robot counterpart of the same chain: with no user signal the identical expired
+  # credentials never reach the token endpoint, the journal records the skip, and no auth
+  # verdict is written off a refresh that never happened.
+  (
+    export CLAUDEB_WARM_USER_EXPLICIT=false
+    printf '%s' "$expired_warm_creds" >"$warm_credentials"
+    : >"$warm_refresh_calls"
+    : >"$warm_probe_calls"
+    : >"$token_attempts_file"
+    printf '{}' >"$oauth_attempts_file"
+    printf '{"auth":{"status":"ok","checked_at":1}}' >"$limits_dir/zeta.json"
+    refresh_body='{"error":"invalid_grant"}'
+    refresh_http=400
+    run_warm_session() { printf 'Please run /login\n' >"$3"; return 7; }
+    if warm_accounts zeta >/dev/null 2>"$WORK/warm-robot.err"; then fail "robot warm unexpectedly succeeded"; fi
+    assert_fails test -s "$warm_refresh_calls"
+    assert_fails grep -q 'cause=needs-relogin' "$WORK/warm-robot.err"
+    assert jq -e '.auth.status == "ok"' "$limits_dir/zeta.json" >/dev/null
+    assert jq -se 'any(.[]; .account == "zeta" and .kind == "curl-refresh" and .outcome == "robot-skip")' \
+      "$token_attempts_file" >/dev/null
+  )
 )
 
 assert test -f "$WORK/regression-prior-revoked-generic"
@@ -2289,9 +2327,19 @@ EOF
   touch "$CLAUDEB_DIR/session-logs/rmv.log" "$CLAUDEB_DIR/session-logs/keep.log"
   touch "$CLAUDEB_DIR/warm-logs/rmv.log" "$CLAUDEB_DIR/warm-logs/keep.log"
   touch "$CLAUDEB_DIR/limits/rmv.json.tmp.123" "$CLAUDEB_DIR/limits/keep.json.tmp.123"
+  # claudeb's own temporaries and its snapshot lock are dot-prefixed or a directory, so the
+  # undotted patterns never reach them and a crashed write outlives the account it belonged to.
+  touch "$CLAUDEB_DIR/limits/.rmv.json.999" "$CLAUDEB_DIR/limits/.rmv.json.auth.999" \
+    "$CLAUDEB_DIR/limits/.keep.json.999" \
+    "$CLAUDEB_DIR/warm-logs/.rmv.log.abc123" "$CLAUDEB_DIR/warm-logs/.keep.log.abc123"
+  mkdir -p "$CLAUDEB_DIR/limits/rmv.json.lock" "$CLAUDEB_DIR/limits/keep.json.lock"
   printf '%s\n' '{"claude":{"attempts":{"rmv":11,"keep":12}},"vendors":{"claude":{"attempts":{"rmv":21,"keep":22}}}}' \
     >"$HOME/.llm-limits-refresh.state"
-  touch "$HOME/.cache/worker-pick.line.rmv" "$HOME/.cache/worker-pick.line.keep"
+  # The prediction cache lives where WORKER_PICK_CACHE_DIR says, and a sweep that reads only
+  # ~/.cache leaves a removed account predicting in every surface that reads the line.
+  export WORKER_PICK_CACHE_DIR="$HOME/.my-cache"
+  mkdir -p "$WORKER_PICK_CACHE_DIR"
+  touch "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv" "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
 
   assert "$SCRIPT" remove rmv
   assert test ! -e "$CLAUDEB_DIR/tokens/rmv"
@@ -2308,13 +2356,20 @@ EOF
   assert test ! -e "$CLAUDEB_DIR/session-logs/rmv.log"
   assert test ! -e "$CLAUDEB_DIR/warm-logs/rmv.log"
   assert test ! -e "$CLAUDEB_DIR/limits/rmv.json.tmp.123"
+  assert test ! -e "$CLAUDEB_DIR/limits/.rmv.json.999"
+  assert test ! -e "$CLAUDEB_DIR/limits/.rmv.json.auth.999"
+  assert test ! -e "$CLAUDEB_DIR/warm-logs/.rmv.log.abc123"
+  assert test ! -e "$CLAUDEB_DIR/limits/rmv.json.lock"
+  assert test -e "$CLAUDEB_DIR/limits/.keep.json.999"
+  assert test -e "$CLAUDEB_DIR/warm-logs/.keep.log.abc123"
+  assert test -e "$CLAUDEB_DIR/limits/keep.json.lock"
   assert jq -e '.claude.attempts == {"keep":12} and .vendors.claude.attempts == {"keep":22}' \
     "$HOME/.llm-limits-refresh.state"
-  assert test ! -e "$HOME/.cache/worker-pick.line.rmv"
+  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
   assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/limits/keep.json.tmp.123"
-  assert test -e "$HOME/.cache/worker-pick.line.keep"
+  assert test -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
   # Removal announces a passive collect (no args) so the menu's cached row drops
   # without a manual refresh.
   assert wait_announce ''
@@ -2322,7 +2377,8 @@ EOF
   # Leftovers of an account whose four stores are already gone are still that account: a metadata
   # row is what `remove` exists to sweep, so the retry finds work and reports it like any removal.
   touch "$CLAUDEB_DIR/session-logs/rmv.retry" "$CLAUDEB_DIR/warm-logs/rmv.retry" \
-    "$CLAUDEB_DIR/limits/rmv.json.tmp.456" "$HOME/.cache/worker-pick.line.rmv"
+    "$CLAUDEB_DIR/limits/rmv.json.tmp.456" "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
+  retry_announce_before=$(wc -l <"$ANNOUNCE_LOG" 2>/dev/null | tr -d ' ')
   printf '%s\n' '{"claude":{"attempts":{"rmv":31,"keep":32}}}' >"$HOME/.llm-limits-refresh.state"
   repeat_out=$("$SCRIPT" remove rmv 2>&1)
   repeat_rc=$?
@@ -2332,13 +2388,13 @@ EOF
   assert test ! -e "$CLAUDEB_DIR/warm-logs/rmv.retry"
   assert test ! -e "$CLAUDEB_DIR/limits/rmv.json.tmp.456"
   assert jq -e '.claude.attempts == {"keep":32}' "$HOME/.llm-limits-refresh.state"
-  assert test ! -e "$HOME/.cache/worker-pick.line.rmv"
+  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
   assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
-  assert test -e "$HOME/.cache/worker-pick.line.keep"
+  assert test -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
+  assert wait_announce_grew "$retry_announce_before"
   # Nothing of it left anywhere: a mistyped name, answered the way codexb, geminib and grokb
   # answer it, and no announce for a removal that removed nothing.
-  assert wait_announce ''
   sleep 0.3
   announce_count=$(wc -l <"$ANNOUNCE_LOG" | tr -d ' ')
   gone_rc=0
@@ -2346,6 +2402,14 @@ EOF
   assert test "$gone_rc" -eq 2
   assert grep -qx 'claudeb: unknown account: rmv' <<<"$gone_out"
   assert test "$(wc -l <"$ANNOUNCE_LOG" | tr -d ' ')" -eq "$announce_count"
+  # Each leftover on its own is still the account: a prediction line under the configured cache
+  # dir, and a dot-prefixed temporary of claudeb's own, each answer `remove` rather than "unknown".
+  touch "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
+  assert "$SCRIPT" remove rmv
+  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
+  touch "$CLAUDEB_DIR/limits/.rmv.json.777"
+  assert "$SCRIPT" remove rmv
+  assert test ! -e "$CLAUDEB_DIR/limits/.rmv.json.777"
   # A log named for an account this one is a prefix of belongs to that account.
   : >"$CLAUDEB_DIR/tokens/alph"
   touch "$CLAUDEB_DIR/session-logs/alpha.log" "$CLAUDEB_DIR/warm-logs/alpha.log"
@@ -2472,7 +2536,7 @@ EOF
 # offline — the announce lives at the dispatch level and must fire regardless.
 printf 'tok-ann' >"$CLAUDEB_DIR/tokens/annacct"
 ann_before=$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)
-bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
+CLAUDEB_WARM_USER_EXPLICIT=false bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
 ann_tries=0
 while [ "$ann_tries" -lt 50 ]; do
   [ "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -gt "$ann_before" ] && break
@@ -2480,7 +2544,7 @@ while [ "$ann_tries" -lt 50 ]; do
   sleep 0.1
 done
 assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
-LLM_LIMITS_ANNOUNCE_SUPPRESS=1 bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
+LLM_LIMITS_ANNOUNCE_SUPPRESS=1 CLAUDEB_WARM_USER_EXPLICIT=false bash "$SCRIPT" warm annacct >/dev/null 2>&1 || true
 sleep 0.5
 assert test "$(grep -c '' "$ANNOUNCE_LOG" 2>/dev/null || printf 0)" -eq "$((ann_before + 1))"
 rm -f "$CLAUDEB_DIR/tokens/annacct"
@@ -2530,6 +2594,7 @@ EOF
   account_names() { printf 'rvok\nrvoff\nrvauth\nrvauthok\nrvlogin\nrvfail\nrvfresh\nrvstale\nrv401\nrvnodrv\n'; }
   is_disabled() { [ "$1" = rvoff ]; }
   # The whole block runs with no user signal: revive is the one rotation a robot may drive.
+  export CLAUDEB_WARM_USER_EXPLICIT=false
   make_driver ':' 0
   rm -f "$RV_DRIVER_LOG"
   : >"$token_attempts_file"

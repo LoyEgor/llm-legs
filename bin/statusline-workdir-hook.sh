@@ -49,6 +49,7 @@ parsed=$(printf '%s' "$input" | jq -r '
         | ([.captures[] | select(.name == "sub" and .string != null) | .string][0] // "") as $sub
         | ([.captures[] | select(.name == "sub2" and .string != null) | .string][0] // "") as $sub2
         | (.captures[0].string // "") as $sep
+        | .offset as $at
         | if $wt_args != "" then
             ([$wt_args | match($tok; "g").string]
              | reduce .[] as $arg ({path: "", option_arg: false};
@@ -57,12 +58,12 @@ parsed=$(printf '%s' "$input" | jq -r '
                  elif (["-b", "-B", "--reason"] | index($arg) != null) then .option_arg = true
                  elif ($arg | startswith("-")) then .
                  else .path = $arg end)
-             | {path: .path, sep: "", worktree_add: "1", worktree_base: $wt_dir})
-          elif $cd != "" then {path: $cd, sep: $sep, cd_hit: "1", worktree_add: "", worktree_base: ""}
+             | {path: .path, sep: "", worktree_add: "1", worktree_base: $wt_dir, at: $at})
+          elif $cd != "" then {path: $cd, sep: $sep, cd_hit: "1", worktree_add: "", worktree_base: "", at: $at}
           elif $dir != "" and (if $sub == "worktree"
                                then (["add","remove","move","prune","repair","lock","unlock"] | index($sub2) != null)
                                else (["checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null)
-                               end) then {path: $dir, sep: "", worktree_add: "", worktree_base: ""}
+                               end) then {path: $dir, sep: "", worktree_add: "", worktree_base: "", at: $at}
           else empty end)
     | . as $hits
     # Creating a worktree outranks every cd and mutating `git -C` in the same
@@ -72,8 +73,11 @@ parsed=$(printf '%s' "$input" | jq -r '
     | (([$hits[] | select(.worktree_add == "1")] | last)
        // last
        // {path: "", sep: "", worktree_add: "", worktree_base: ""}) as $last
+    # Only a cd BEFORE the add: the bootstrap subshell that follows it cds into
+    # the new worktree itself, and taking that one resolves a relative worktree
+    # path inside the worktree that was just created.
     | if $last.worktree_add == "1" and $last.worktree_base == "" then
-        $last + {worktree_base: ([$hits[] | select(.cd_hit == "1") | .path] | last // "")}
+        $last + {worktree_base: ([$hits[] | select(.cd_hit == "1" and .at < $last.at) | .path] | last // "")}
       else $last end;
   def read_tools: ["cd","pushd","popd","cat","head","tail","less","ls","wc","grep","rg","find","stat","file","du","df","jq","awk","cut","sort","uniq","tr","basename","dirname","realpath","pwd","echo","printf","test","[","which","type","date","diff","cmp","tree","nl","column","git"];
   def read_git_subs: ["log","show","status","diff","blame","shortlog","describe","rev-parse","rev-list","ls-files","ls-tree","grep","reflog","cat-file"];

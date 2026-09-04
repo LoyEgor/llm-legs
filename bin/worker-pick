@@ -421,20 +421,22 @@ summary=$(jq -r \
      flags: flag_text($selected; $pinned)};
   def table_row:
     ((.budget | rpad(16)) + (.wk | rpad(6)) + (.h5 | rpad(6)) + (.name | rpad(17)) +
-     (.display | rpad(12)) + (.reset | rpad(13)) + .flags | sub(" +$"; ""));
+     (.display | rpad(13)) + (.reset | rpad(13)) + .flags | sub(" +$"; ""));
   def next_row($vendor):
     ((.budget | rpad(16)) + (.wk | rpad(6)) + (.h5 | rpad(6)) +
-     (($vendor + "/" + .name) | rpad(21)) + (.display | rpad(12)) + .flags | sub(" +$"; ""));
+     (($vendor + "/" + .name) | rpad(21)) + (.display | rpad(13)) + .flags | sub(" +$"; ""));
   def compact_row:
     (.name + " " + .wk + (if .h5 == "–" then "" else " 5h " + .h5 end) + " " +
      (.budget | sub("^ +"; "")) + (if .flags == "" then "" else " " + .flags end));
   # A vendor section is either its account rows or ONE line saying why there are none. A role the
   # owner closed is that one line too: nothing is routed there, and what those accounts hold is
   # for the vendor menu section to show, not for this router.
+  # The switch is read first, exactly as `vendor_reason` reads it: a closed role with no rows left
+  # in the store would otherwise blame the data for what the owner turned off.
   def vendor_state($accounts; $off; $pinned; $empty_text):
-    if ($accounts | length) == 0 then $empty_text
+    if $off == "true" and $pinned == null then "off for workers"
+    elif ($accounts | length) == 0 then $empty_text
     elif ($accounts | all(.auth_ok | not)) then "login needed"
-    elif $off == "true" and $pinned == null then "off for workers"
     else "" end;
   # A pin that could not serve is announced above the rows it did not choose: routing elsewhere in
   # silence reads as the pin having been honoured.
@@ -455,7 +457,6 @@ summary=$(jq -r \
   # separate here and on the rows: `WALLED` over an account whose quota nobody spent sends the
   # reader hunting for a limit that does not exist.
   def usage_walled($spend): (($spend // -1) >= 100) or ((.h5 // -1) >= 100);
-  def unavailable_at($spend): (.auth_ok | not) or usage_walled($spend);
   # Unlike the tiebreak below, an absent five-hour reading must NOT coalesce high here: nobody
   # measured that window, which is no evidence of a wall to defer for.
   def deferring: (.h5 | type) == "number" and .h5 >= $defer5h;
@@ -684,18 +685,18 @@ summary=$(jq -r \
     (if $cb_par == "true" or ($cb_off == "true" and $pin_rec == null) then [] else $cl_accounts end)
     | map(select(.in_pool and .measured)) | length) > 0) as $had_pool |
 
-  [(if $codex.selected then "yes" else "no" end),$codex.acct,($codex.pct | tostring),
+  [(if $codex.selected then "yes" else "no" end),$codex.acct,
    (if $codex.pinned then "yes" else "no" end),$codex.line,$cx_pin_lapse,
    ($codex.budget | tostring),
    (if $gemini.selected then "yes" else "no" end),$gemini.acct,
    (if $gemini.pinned then "yes" else "no" end),$gemini.line,$gm_pin_lapse,
    ($gemini.budget | tostring),
-   (if $grok.selected then "yes" else "no" end),$grok.acct,($grok.pct | tostring),
+   (if $grok.selected then "yes" else "no" end),$grok.acct,
    (if $grok.pinned then "yes" else "no" end),$grok.line,$gr_pin_lapse,
    ($grok.budget | tostring),
    $claude.line,($cl_best.name // ""),(if $pin_rec != null then "yes" else "no" end),
    $pin_lapse,(($cl_best.budget // 0) | tostring),
-   ($fb_best.name // ""),(($fb_best.fb // 0) | round | tostring),(($fb_best.wk // 0) | round | tostring),
+   ($fb_best.name // ""),
    $age,(if $had_pool then "yes" else "no" end),
    pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($gr_accounts),
    pool_empty($cl_accounts),(if $gr_present then "yes" else "no" end),
@@ -711,11 +712,11 @@ summary=$(jq -r \
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
-IFS=$'\x1f' read -r cx_selected cx_acct cx_pct cx_pinned cx_line cx_pin_lapse cx_budget \
+IFS=$'\x1f' read -r cx_selected cx_acct cx_pinned cx_line cx_pin_lapse cx_budget \
   gm_selected gm_acct gm_pinned gm_line gm_pin_lapse gm_budget \
-  gr_selected gr_acct gr_pct gr_pinned gr_line gr_pin_lapse gr_budget \
+  gr_selected gr_acct gr_pinned gr_line gr_pin_lapse gr_budget \
   cl_line cl_acct cl_pinned cl_pin_lapse cl_budget \
-  fb_acct fb_fb fb_wk age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
+  fb_acct age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
   cl_pool_empty gr_present gr_measured cx_measured gm_measured cl_measured \
   cx_present gm_present cl_present \
   cx_rows cx_nextrow cx_state gm_rows gm_nextrow gm_state \

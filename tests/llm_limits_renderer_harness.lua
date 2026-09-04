@@ -725,7 +725,7 @@ for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
       if titleText(item) == label then headerAt = i break end
     end
     local accAt = accountIndex(menu, "acct")
-    local errAt = idxOf and nil
+    local errAt
     for i, item in ipairs(menu) do if item == rows[1] then errAt = i end end
     assert(headerAt and accAt and errAt and headerAt < accAt and accAt < errAt,
       vendorKey .. " error was not under its account")
@@ -747,6 +747,15 @@ for _, vendorKey in ipairs({ "claude", "codex", "gemini", "grok" }) do
   }
   assert(#errorItems(loadModule({ schema = 1, vendors = gone }, nil, nowErr).menuItems()) == 0,
     vendorKey .. " rendered an error for an account off the roster")
+  local noRoster = { claude = { available = false }, codex = { available = false }, gemini = { available = false }, grok = { available = false } }
+  noRoster[vendorKey] = {
+    available = true,
+    refresh_errors = {{
+      account = "nexerod", class = "402 payment required",
+      cause = "402 Payment Required", at = nowErr - 60,
+    }},
+  }
+  assert(#errorItems(loadModule({ schema = 1, vendors = noRoster }, nil, nowErr).menuItems()) == 1, vendorKey .. " dropped an error because it has no roster tracking")
 end
 
 local blob = "rateLimits/read failed: {'code': -32603, 'message': 'failed to fetch c'}; content-type=text/plain; body={\n  \"error\": {\n    \"message\": \"Payment Required\"\n  }\n}"
@@ -773,6 +782,43 @@ for _, item in ipairs(blobMenu) do
   local t = titleText(item)
   assert(not t:find("content-type=", 1, true), "raw content-type leaked to a top-level row")
 end
+
+-- Legacy `refresh_error` is one vendor-wide string, so the only thing that can put it under an
+-- account is the name it opens with, matched against the roster; a name that is on no roster
+-- leaves it the vendor's own row, above every account.
+local function legacyFixture(cause)
+  return { schema = 1, vendors = {
+    claude = { available = false },
+    gemini = { available = false },
+    grok = { available = false },
+    codex = {
+      available = true,
+      refresh_error = { cause = cause, at = nowErr - 60 },
+      accounts = { acct("main"), acct("alona") },
+    },
+  }}
+end
+local function rowIndex(menu, row)
+  for index, item in ipairs(menu) do if item == row then return index end end
+  return nil
+end
+local namedMenu = loadModule(legacyFixture("alona: 402 Payment Required"), nil, nowErr).menuItems()
+local namedRows = errorItems(namedMenu)
+assert(#namedRows == 1, "legacy named error rendered " .. #namedRows .. " rows")
+local namedAt = rowIndex(namedMenu, namedRows[1])
+local alonaAt = accountIndex(namedMenu, "alona")
+assert(namedAt and namedAt > alonaAt, "legacy named error did not land under its own account")
+for i = alonaAt + 1, namedAt - 1 do
+  assert(titleText(namedMenu[i]):find("^%s"),
+    "a row of another account came between alona and its error")
+end
+local wideMenu = loadModule(legacyFixture("ghost: 402 Payment Required"), nil, nowErr).menuItems()
+local wideRows = errorItems(wideMenu)
+assert(#wideRows == 1, "legacy unattributed error rendered " .. #wideRows .. " rows")
+assert(rowIndex(wideMenu, wideRows[1]) < accountIndex(wideMenu, "main"),
+  "an error attributable to no account was filed under one")
+assert(titleText(wideRows[1]):find("⚠ codex: ", 1, true) == 1,
+  "an unattributed error lost the vendor it belongs to: " .. titleText(wideRows[1]))
 end
 
 local geminiAuthFixture = { schema = 1, vendors = {
@@ -844,6 +890,67 @@ local function captureTasks(sink)
     function task:isRunning() return false end
     return task
   end
+end
+
+do
+  local pendingNow = os.time()
+  local function warnRows(menu)
+    local n = 0
+    for _, item in ipairs(menu) do
+      if titleText(item):find("^\u{26a0} ") then n = n + 1 end
+    end
+    return n
+  end
+  local function pendingAcct(name)
+    return { account = name, enabled = true,
+      five_hour = { used_pct = 10, effective_pct = 10, resets_at = pendingNow + 3600 } }
+  end
+  local pendingFixture = { schema = 1, vendors = {
+    codex = { available = false }, gemini = { available = false }, grok = { available = false },
+    claude = {
+      available = true, source = "claudeb-store",
+      refresh_errors = {{
+        account = "gone", class = "402 payment required",
+        cause = "402 Payment Required", at = pendingNow - 60,
+      }},
+      accounts = { pendingAcct("main"), pendingAcct("gone") },
+    },
+  } }
+  local tasks = {}
+  local mod = loadModule(pendingFixture, captureTasks(tasks), pendingNow)
+  assert(warnRows(mod.menuItems()) == 1, "the account still on the roster lost its error row")
+  assert(mod.refreshState().prefix == "\u{26a0} ", "a live refresh error left the title clean")
+  mod.removeClaude("gone")
+  assert(warnRows(mod.menuItems()) == 0,
+    "a removal in flight left a row for the account it hides")
+  assert(mod.refreshState().prefix == "", "a removal in flight kept a warning nothing can explain")
+end
+
+do
+  local wrapNow = os.time()
+  local wide = string.rep("x", 87) .. "\u{00b7} tail \u{201c}quoted\u{201d} " .. string.rep("y", 120)
+  local wrapFixture = { schema = 1, vendors = {
+    codex = { available = false }, gemini = { available = false }, grok = { available = false },
+    claude = {
+      available = true, source = "claudeb-store",
+      refresh_errors = {{ account = "one", class = "402 payment required",
+        cause = wide, at = wrapNow - 60 }},
+      accounts = {{ account = "one", enabled = true,
+        five_hour = { used_pct = 10, effective_pct = 10, resets_at = wrapNow + 3600 } }},
+    },
+  } }
+  local wrapRow
+  for _, item in ipairs(loadModule(wrapFixture, nil, wrapNow).menuItems()) do
+    if titleText(item):find("^\u{26a0} ") then wrapRow = item end
+  end
+  assert(wrapRow and type(wrapRow.menu) == "table", "the wrapped cause lost its submenu")
+  local sawWrap = false
+  for _, sub in ipairs(wrapRow.menu) do
+    local line = titleText(sub)
+    assert(utf8.len(line) ~= nil, "a submenu line was cut mid-character: " .. line)
+    if #line > 60 then sawWrap = true end
+  end
+  assert(sawWrap, "the cause was not long enough to reach the wrap")
 end
 
 -- A toggle that succeeded has to show in the very next menu, not only after the collect lands:
@@ -2456,6 +2563,23 @@ do
       case.label .. " parked and the reset counts did not follow the vendor that published them")
   end
 
+  -- A parked vendor renders one row and no errors under it, so its errors must not light the
+  -- warning either: a lit title with nothing in the menu explaining it is unreachable.
+  for _, case in ipairs({
+    { key = "codex", config = "codex_paused=on" },
+    { key = "opencode", config = "opencode_paused=on" },
+  }) do
+    local withErr = { schema = 1, vendors = {} }
+    for key, vendor in pairs(pausedFixture.vendors) do withErr.vendors[key] = vendor end
+    withErr.vendors[case.key] = { available = true, refresh_errors = {{
+      class = "402 payment required", cause = "Payment Required", at = os.time() - 60 }} }
+    local mod = loadModule(withErr, nil, nil, nil, nil, case.config)
+    assert(mod.refreshState().prefix == "",
+      case.key .. " parked and its refresh error still lit the warning in the title")
+    assert(rowCount(mod.menuItems(), "Payment Required") == 0,
+      case.key .. " parked and rendered an error row anyway")
+  end
+
   -- Reading the STORE instead of worker-model would report "not installed" here, because the two
   -- states are one absence; only the switch tells them apart.
   local absent = { schema = 1, vendors = { claude = pausedFixture.vendors.claude } }
@@ -2534,6 +2658,22 @@ do
     assert(parked[#parked][1] == case.key and parked[#parked][2] == true,
       case.label .. " Pause asked to park the wrong vendor")
   end
+
+  -- The leg lights the warning like every other vendor, and its accounts arrive only from a
+  -- collector run: an error with an empty roster still needs the section it hangs under.
+  local ocErr = { schema = 1, vendors = { opencode = { source = "opencode-go", accounts = {},
+    refresh_errors = {{ account = "oc-one", class = "402 payment required",
+      cause = "Payment Required", at = os.time() - 60 }} } } }
+  local ocMod = loadModule(ocErr)
+  assert(ocMod.refreshState().prefix == "\u{26a0} ",
+    "an OpenCode refresh error did not light the warning")
+  local ocMenu = ocMod.menuItems()
+  assert(headerRow(ocMenu, "OpenCode Go"), "an OpenCode error rendered no section to explain it")
+  local explained = false
+  for _, item in ipairs(ocMenu) do
+    if titleText(item):find("oc-one: 402 payment required", 1, true) then explained = true end
+  end
+  assert(explained, "an OpenCode refresh error warned with no row anywhere naming it")
 end
 
 return "PASS: Hammerspoon projection contract"

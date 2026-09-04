@@ -3156,11 +3156,14 @@ STAMPEOF
       awk -F'\t' -v p="relay-$1.txt" '$NF == p { print $1 }' | sort -u
   }
   stamp_relay() { # tag vendor [start-args...]
-    local tag="$1" vendor="$2"
+    local tag="$1" vendor="$2" keep_session="${STUB_SESSION-}"
     shift 2
     printf '%s\n' "$tag" >"$STUB_DIR/relay_tag"
     rm -f "$STUB_DIR/relay_hook_rc" "$STUB_DIR/relay_hook_err"
+    # `clear_stub` unsets STUB_SESSION, and the re-attach case is exactly the one that sets it:
+    # cleared, the run records the stub default and the case proves nothing about a resumed id.
     clear_stub
+    [ -z "$keep_session" ] || export STUB_SESSION="$keep_session"
     export CLAUDE_CODE_SESSION_ID="stamp-chat-$tag"
     start_ok "$vendor" "$@"
     await_done || fail "the $vendor stamping run never finished"
@@ -3185,6 +3188,9 @@ STAMPEOF
   export STUB_SESSION=reattached-session
   stamp_relay reattach claudeb --account stampacct --resume reattached-session
   assert grep -qx 'reattached-session' "$RUN_DIR/worker-session"
+  # The stamp the LIVE worker writes carries the resumed id, not the id a fresh launch would have
+  # minted: this is the only case where the two differ, and the ledger is read by that id.
+  assert grep -qx 'reattached-session' <<<"$(stamp_owners reattach)"
   unset STUB_SESSION
   # An IMAGE SCRIPT and a POOL-RUN CELL are processes a relay starts, not relays of their own: they
   # journal through whoever ran them, so the one thing they must not do is drop the stamp. Stood in

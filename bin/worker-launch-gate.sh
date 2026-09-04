@@ -258,12 +258,13 @@ esac
 # one spelling of a poll and wave the identical other one through. 540 is the largest `--max` the
 # harness's own 600000ms ceiling can cover, so an unreadable value has to be taken for that.
 WAIT_CEILING=540
+HARNESS_TIMEOUT_MAX=600000
 wait_default=$(grep -m1 -Eo 'run_id="\$1" max=[0-9]+' \
   "$HOME/.local/bin/worker-run" 2>/dev/null | grep -Eo '[0-9]+$')
 [[ "$wait_default" =~ ^[0-9]+$ ]] || wait_default=100
 
 case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker)
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | image-gen)
     wait_lines=$(grep -E "${VENDOR_WORD}worker-run[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null)
     if [ -n "$wait_lines" ]; then
       wait_max=$(grep -Eo -- '--max[[:space:]]+[0-9]+' <<<"$wait_lines" 2>/dev/null |
@@ -281,7 +282,11 @@ case "$agent_type" in
       else
         wait_says="\`worker-run wait … --max ${wait_max}\` polls for up to ${wait_max}s"
       fi
-      wait_needed=$(((wait_max + 30) * 1000))
+      wait_needed=$(((10#$wait_max + 30) * 1000))
+      # Above the ceiling no timeout the harness accepts can cover the poll, so asking for one
+      # would be an instruction nobody can carry out: the only answer left is a shorter `--max`.
+      [ "$wait_needed" -le "$HARNESS_TIMEOUT_MAX" ] ||
+        deny "Blocked: ${wait_says}, and no Bash timeout can cover it — the harness caps \`timeout\` at ${HARNESS_TIMEOUT_MAX}ms, which is ${WAIT_CEILING}s of polling plus its margin. Retry with \`--max ${WAIT_CEILING}\` or lower and \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
       call_timeout=$(printf '%s' "$input" | jq -r '.tool_input.timeout // empty' 2>/dev/null)
       [[ "$call_timeout" =~ ^[0-9]+$ ]] || call_timeout=0
       [ "$call_timeout" -ge "$wait_needed" ] ||

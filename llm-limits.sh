@@ -551,8 +551,11 @@ grok_token_expired() {
         elif (.key | type) == "string" then .
         else first(.[]? | select(type == "object" and (.key | type) == "string")) end;
       ((entry // null) | .expires_at? // null) as $exp |
-      ($exp | type) == "string" and
-      ((($exp | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null) // ($now + 1)) <= $now)
+      (if ($exp | type) == "number" then $exp
+       elif ($exp | type) == "string" then
+         ($exp | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null)
+       else null end) as $epoch |
+      $epoch != null and $epoch <= $now
     ' "$auth" >/dev/null 2>&1; then
     return 0
   fi
@@ -2171,11 +2174,14 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
         parse_entries(.cause; (.at // $now); $roster; (.account // ""))[])]
     else parse_entries(($old.refresh_error.cause // ""); ($old.refresh_error.at // $now); $roster; "")
     end;
+  # A vendor cause with no account (a sole failing account is reported unprefixed) describes the
+  # same failure as the account row that produced it, so it absorbs it like a same-account entry.
   def absorb_account_errs($acct):
     . as $base |
     $base + [$acct[] | . as $e |
       select(all($base[];
-        (.account != $e.account) or ((.cause != $e.cause) and ((.cause | contains($e.cause)) | not))))];
+        ((.account != null) and (.account != $e.account)) or
+        ((.cause != $e.cause) and ((.cause | contains($e.cause)) | not))))];
   def to_legacy($entries):
     if ($entries | length) == 0 then null
     else

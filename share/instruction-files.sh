@@ -154,7 +154,9 @@ instruction_shell_scan() {
   awk -v sq="'" -v dq='"' '
     { cmd = cmd (nread++ ? "\n" : "") $0 }
     END {
-      hdre = "<<-?[ \t]*(" dq "[^" dq "]*" dq "|" sq "[^" sq "]*" sq "|[A-Za-z_][A-Za-z_0-9]*)"
+      # `<<\EOF` is the backslash spelling of a literal heredoc, as ordinary as the quoted one:
+      # unrecognised, its body is never dropped and the rules it quotes read as commands.
+      hdre = "<<-?[ \t]*\\\\?(" dq "[^" dq "]*" dq "|" sq "[^" sq "]*" sq "|[A-Za-z_][A-Za-z_0-9]*)"
       nl = split(cmd, L, "\n")
       text = ""
       i = 1
@@ -171,6 +173,7 @@ instruction_shell_scan() {
           strip = (tok ~ /^<<-/)
           d = tok
           sub(/^<<-?[ \t]*/, "", d)
+          sub(/^\\/, "", d)
           sub("^[" dq sq "]", "", d)
           sub("[" dq sq "]$", "", d)
           if (d == "") continue
@@ -183,7 +186,9 @@ instruction_shell_scan() {
           while (i <= nl) {
             b = L[i]
             i++
-            if (STRIP[k]) sub(/^[ \t]+/, "", b)
+            # `<<-` strips TABS and no spaces: a space-indented word is not the terminator, and
+            # stopping on it leaves the rest of the body read as commands.
+            if (STRIP[k]) sub(/^\t+/, "", b)
             if (b == DEL[k]) break
           }
         }
@@ -269,8 +274,17 @@ _INSTRUCTION_TRUNC_MODE="${_INSTRUCTION_Q}([rbt]*[wx][rwxbt+]*|>|\+>)${_INSTRUCT
 # The names arrive as a bare alternation, so they are parenthesised HERE: pasted raw, the first
 # `|` in them ends the whole pattern and everything after it matches on its own.
 _instruction_interp_rule() { # names-alternation mode-pattern node-verb
+  printf '%s%s' "$_INSTRUCTION_IW" "$(_instruction_interp_construct "$1" "$2" "$3")"
+}
+
+# The construct ALONE, with no interpreter prefix: the prefix ends in `[^|]*`, so one match of
+# the full rule spans from the interpreter to the LAST construct on the line and a caller that
+# has to judge each write separately cannot cut it apart. Whoever uses this must first establish
+# that an interpreter stands in the command (the full rule above), or a name inside ordinary
+# prose reads as a write.
+_instruction_interp_construct() { # names-alternation mode-pattern node-verb
   set -- "($1)" "$2" "$3"
-  printf '%s' "${_INSTRUCTION_IW}(open\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*,[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?$2|open\([^()]*,[[:space:]]*$2[[:space:]]*,[[:space:]]*${_INSTRUCTION_Q}${1}|Path\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*\)[[:space:]]*\.(write_text|write_bytes|open\([[:space:]]*$2)|$3\([[:space:]]*${_INSTRUCTION_Q}${1}|(shutil\.copy[a-z_0-9]*|copyfile)\([^()]*,[[:space:]]*${_INSTRUCTION_Q}${1}|File\.write\([[:space:]]*${_INSTRUCTION_Q}${1})"
+  printf '%s' "(open\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*,[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?$2|open\([^()]*,[[:space:]]*$2[[:space:]]*,[[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|Path\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*\)[[:space:]]*\.(write_text|write_bytes|open\([[:space:]]*$2)|$3\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|(shutil\.copy[a-z_0-9]*|copyfile)\([^()]*,[[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|File\.write\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q})"
 }
 
 instruction_interp_write_re() { # names-alternation → ERE matching a write to one of them
@@ -279,6 +293,14 @@ instruction_interp_write_re() { # names-alternation → ERE matching a write to 
 
 instruction_interp_trunc_re() { # names-alternation → ERE matching a write that can shrink one
   _instruction_interp_rule "$1" "$_INSTRUCTION_TRUNC_MODE" "writeFile(Sync)?"
+}
+
+instruction_interp_write_construct_re() { # names-alternation → ERE matching ONE write construct
+  _instruction_interp_construct "$1" "$_INSTRUCTION_MODE" "(write|append)File(Sync)?"
+}
+
+instruction_interp_trunc_construct_re() { # names-alternation → ERE matching one shrinking one
+  _instruction_interp_construct "$1" "$_INSTRUCTION_TRUNC_MODE" "writeFile(Sync)?"
 }
 
 # WHERE A COMMAND LEAVES ITS BYTES: the one parse both doors on these files ask. Two parses of one
@@ -310,6 +332,11 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
     function addword() {
       if (word != "") { W[++nw] = word; word = "" }
     }
+    function trailing_bs(s,   i, c) {
+      i = length(s); c = 0
+      while (i > 0 && substr(s, i, 1) == "\\") { c++; i-- }
+      return c
+    }
     # One word from position p, quotes dropped and escapes taken literally, stopping where the
     # shell would: at blank, at a separator, at the next redirection.
     function readword(code,   w, c) {
@@ -335,6 +362,9 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
     function flagged(from, letter, long,   j) {
       for (j = from + 1; j <= nw; j++) {
         if (W[j] == long) return 1
+        # GNU spells the suffix onto the flag (`--in-place=.bak`), which the letter rule below
+        # cannot see either: a `--` word never matches `^-[A-Za-z]*`.
+        if (index(W[j], long "=") == 1) return 1
         if (W[j] ~ "^-[A-Za-z]*" letter) return 1
       }
       return 0
@@ -368,20 +398,25 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
         if (base ~ /^g?tee$/) vkind = "tee"
         else if (base ~ /^(perl|python[0-9.]*|ruby|node|bun|deno)$/) vkind = "loose"
         else if (base ~ /^(truncate|dd|patch|ed|ex)$/) vkind = "dest"
-        else if (base == "sed" && flagged(j, "i", "--in-place")) vkind = "dest"
+        else if (base ~ /^g?sed$/ && flagged(j, "i", "--in-place")) vkind = "dest"
         else if (base ~ /^(cp|mv|ln|install)$/) vkind = "copy"
       }
       if (vkind == "tee" || vkind == "dest") {
         mode = (vkind == "tee" && flagged(vi, "a", "--append")) ? "append" : "trunc"
         for (j = vi + 1; j <= nw; j++) {
           if (W[j] ~ /^-/) continue
-          emit("verb", mode, verb, W[j], 1)
-          # dd names its destination in an operand of its own.
-          if (W[j] ~ /^of=/) {
+          # dd names its destination in an operand of its own, and every other `key=value`
+          # operand is not a path at all: emitted verbatim, `of=<path>` matches the by-name
+          # prefix whole, so the denial names a file that does not exist, and `if=` reports
+          # what dd READS as a write.
+          if (W[j] ~ /^[A-Za-z_][A-Za-z_0-9]*=/) {
+            if (W[j] !~ /^of=/) continue
             dest = W[j]
             sub(/^of=/, "", dest)
             emit("verb", mode, verb, dest, 1)
+            continue
           }
+          emit("verb", mode, verb, W[j], 1)
         }
       } else if (vkind == "copy") {
         nopt = 0
@@ -469,7 +504,17 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       bounded = ENVIRON["IWT_NAME_START"] "(" target ")" ENVIRON["IWT_NAME_END"]
       blank = "[ \t]"
       nl = 0
-      while ((getline line) > 0) L[++nl] = line
+      # A continuation is one command to the shell and two lines to everything here, and the
+      # tripwire hands over the raw command: unjoined, `cp src \` + newline + a guarded path is
+      # a write nobody attributes. An even run of trailing backslashes is a literal one.
+      while ((getline line) > 0) {
+        if (nl > 0 && trailing_bs(L[nl]) % 2) {
+          sub(/\\$/, "", L[nl])
+          L[nl] = L[nl] line
+          continue
+        }
+        L[++nl] = line
+      }
       i = 1
       while (i <= nl) {
         code = L[i]
@@ -485,6 +530,9 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           if (tok ~ /^<<</) continue
           d = tok
           sub(/^<<-?[ \t]*/, "", d)
+          # `<<\EOF` quotes the body the way `<<"EOF"` does; kept, the terminator is never found
+          # and the body reads as commands.
+          sub(/^\\/, "", d)
           gsub("[\"" sq "]", "", d)
           if (d == "") continue
           ndel++
@@ -496,7 +544,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           stop = 0
           for (j = i; j <= nl; j++) {
             b = L[j]
-            if (STRIP[k]) sub(/^[ \t]+/, "", b)
+            if (STRIP[k]) sub(/^\t+/, "", b)
             if (b == DEL[k]) { stop = j; break }
           }
           # A terminator that is not in the text means the body was already dropped by the caller

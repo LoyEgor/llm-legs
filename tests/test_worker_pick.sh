@@ -30,7 +30,7 @@ squeeze() { sed 's/  */ /g; s/^ *//; s/ *$//'; }
 nrow() { grep -m1 -- "^ $1  " <<<"$output" | sed "s/^ $1  *//" | squeeze; }
 acct_line() { grep -m1 -- '^ACCOUNT: ' <<<"$output"; }
 # Every ranked row in order, for a case about the ORDER rather than about one row.
-next_block() { grep -- '^ [0-9]  ' <<<"$output" | squeeze; }
+next_block() { grep -E -- '^ [0-9]+  ' <<<"$output" | squeeze; }
 # The vendor labels in the order their sections print.
 section_order() { grep -o -- '^[a-z]*:' <<<"$output" | tr -d ':' | tr '\n' ' ' | squeeze; }
 # The one-line NEXT of a run that picked nothing: no ranking rows, only the reason.
@@ -952,6 +952,11 @@ run_case golden
 assert test "$(vsection gemini)" = 'off for workers'
 assert not_contains "$output" 'ACCOUNT: main'
 assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx⏸off·pro·hi'
+# The switch is the answer even when the store has nothing left to rank: blaming the data for it
+# would send the owner hunting a reading that no longer decides anything.
+write_config 'codex_workers=off'
+run_filter golden '.vendors.codex.accounts = []'
+assert test "$(vsection codex)" = 'off for workers'
 # A closed vendor is never the routing answer: it holds no rank at all, whatever the mode's usual
 # vendor order.
 write_config 'claudeb_workers=off'
@@ -1072,8 +1077,8 @@ assert contains "$(vsection claude)" '50% 10% later opus·high'
 # 0.25-day floor the budget divided by (one decimal, `×0.3d`) rather than the raw remainder
 # nobody paced on.
 reset_row=$(vsection claude)
-assert contains "$reset_row" '200.0%/d ×0.3d 50% 10% soon opus·high'
-assert contains "$reset_row" '10.0%/d ×5.0d 50% 10% later opus·high'
+assert contains "$reset_row" '200.0%/d ×0.3d 50% 10% soon opus·high ↺ 06:33'
+assert contains "$reset_row" '10.0%/d ×5.0d 50% 10% later opus·high ↺ Mon 03:33'
 # No decorative numbers beside it: a token that is neither input nor output of the ranking reads
 # as one, so the rows carry the metric and nothing that looks like it.
 assert not_contains "$output" ' score '
@@ -1150,6 +1155,19 @@ assert grep -Fq 'worker=sonnet is no longer a worker toggle value' "$WORK/note.e
 write_config
 run_case golden
 assert test "$sonnet_next" = "$(next_block)"
+
+# `sonnet·xhigh` is twelve characters of legal toggle values, and the column it sits in is the
+# widest thing either row builder pads: with no gap left the reset and the flags glue onto it and
+# the row reads as one token.
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=sonnet' 'claudeb_effort=xhigh' \
+  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+run_case reset
+assert contains "$(vsection claude)" 'sonnet·xhigh ↺'
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=sonnet' 'claudeb_effort=xhigh' \
+  'gemini_model=pro' 'gemini_effort=high' 'claudeb_profile=off' >"$CONFIG"
+run_case claude_pool
+assert contains "$(nrow 1)" 'sonnet·xhigh PINNED'
+write_config
 
 # The golden output is the whole contract in one store: line order, the session-account footnote,
 # the statusline cache line, and no POLICY prose anywhere.

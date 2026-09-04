@@ -110,17 +110,16 @@ flat=${command//$'\n'/ }
 # a second spelling of what makes that a write is a one-liner one door denies and the other never
 # rolls back.
 interp_write=$(instruction_interp_write_re "$TARGET")
-interp_trunc=$(instruction_interp_trunc_re "$TARGET")
 
 # The name is taken from inside the construct that matched, not from the whole line: a name that
 # stands elsewhere in the command belongs to the arguments, and reporting it would point Egor at
-# a file the command never wrote and key the retry stamp on it. An interpreter rule ends at its
-# destination, so the first name inside the match is the one written.
+# a file the command never wrote and key the retry stamp on it. An interpreter construct ENDS at
+# its destination, so the LAST name inside it is the one written — `shutil.copy(src, dst)` names
+# a guarded file twice and only the second is a write.
 name_in() {
-  local text=$1 pattern=$2 m name
-  m=$(printf '%s' "$text" | grep -Eo "$pattern" | head -n 1)
-  [ -n "$m" ] || return 1
-  name=$(printf '%s' "$m" | grep -Eo "$TARGET" | head -n 1)
+  local name
+  name=$(printf '%s' "$1" | grep -Eo "$TARGET" | tail -n 1)
+  [ -n "$name" ] || return 1
   # The extractor runs on the unbounded TARGET, so a quote or a delimiter never rides along.
   printf '%s' "${name%%[\"\'[:space:]]*}"
 }
@@ -177,7 +176,6 @@ judge_row() { # name mode
 # shrink shape was read off ANY row is how `tee -a ~/.claude/docs/a.md; : > ~/.claude/docs/b.md`
 # passed inside the span: the second row can shrink its file, so the first row grew its own
 # unasked. The first refused row is the one the denial speaks about.
-saw_row=''
 denied=''
 row_sep=$(printf '\t')
 while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
@@ -187,17 +185,27 @@ while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
     verb) case "$row_verb" in tee|gtee) ;; *) continue ;; esac ;;
     *) continue ;;
   esac
-  saw_row=1
   [ -n "$denied" ] && continue
   judge_row "$row_name" "$row_mode" && denied=1
 done < <(instruction_write_targets "$scan" "$TARGET")
-if [ -z "$saw_row" ] && printf '%s' "$flat" | grep -Eq "${interp_write}"; then
-  interp_name=$(name_in "$flat" "$interp_write")
-  interp_mode=append
-  printf '%s' "$flat" | grep -Eq "$interp_trunc" && interp_mode=trunc
-  if [ -n "$interp_name" ] && judge_row "$interp_name" "$interp_mode"; then
-    denied=1
-  fi
+# The interpreter rows the same way: EVERY construct, each against its own shape. One match of
+# the whole rule reaches from the interpreter to the last construct on the line, so a mode read
+# off it and a name taken from its front belong to two different writes — that is how in-span
+# `python3 -c "open(<doc>,'w')"; python3 -c "open(CLAUDE.md,'a')"` passed, the append judged as
+# the truncation before it.
+if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eq "${interp_write}"; then
+  interp_cons=$(instruction_interp_write_construct_re "$TARGET")
+  interp_cons_trunc=$(instruction_interp_trunc_construct_re "$TARGET")
+  while IFS= read -r construct; do
+    [ -n "$construct" ] || continue
+    interp_name=$(name_in "$construct") || continue
+    interp_mode=append
+    printf '%s' "$construct" | grep -Eq "$interp_cons_trunc" && interp_mode=trunc
+    if judge_row "$interp_name" "$interp_mode"; then
+      denied=1
+      break
+    fi
+  done < <(printf '%s' "$flat" | grep -Eo "$interp_cons")
 fi
 [ -n "$denied" ] || exit 0
 

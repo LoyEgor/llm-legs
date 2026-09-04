@@ -26,7 +26,7 @@ ASK = re.compile(
     re.IGNORECASE,
 )
 # A question mark that ends a sentence, not one inside a glob or a query string.
-QUESTION = re.compile(r"\?[\"'»)\]]*(?:\s|$)")
+QUESTION = re.compile(r"\?[!\"'»”’)\]]*(?:\s|$)")
 # What a `?` must never be counted in: a command he was handed to run, a quoted tool or hook
 # line, a reminder the harness wrote. Tags go first, since their body can hold fences of its own.
 TAGGED = re.compile(r"<([a-zA-Z][\w-]*)(?:\s[^>]*)?>[\s\S]*?</\1>")

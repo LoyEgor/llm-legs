@@ -247,7 +247,7 @@ attach_run=$(printf '%s\n' "$prompt" | head -n1 |
   sed -nE 's/^ATTACH[[:space:]]+([a-z0-9][a-z0-9-]*):.*/\1/p')
 if [ -n "$attach_run" ]; then
   attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
-  if [ -d "$attach_dir" ] && [ ! -e "$attach_dir/exit_code" ]; then
+  if [ -d "$attach_dir" ]; then
     warn "Re-attach to run ${attach_run}: no new launch, so no limit verdict is priced on this spawn. Wait on that run id and report; do not start a new one."
   fi
 fi

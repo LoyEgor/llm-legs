@@ -13,6 +13,13 @@ back on. Rotation for automation is `claudeb revive` (`bin/claude-session-driver
 `bin/llm-refresh` heartbeat escalates to; the menu's explicit refresh path still POSTs the token
 endpoint when the user asks for it.
 
+**Still open, and not scaffolding — staleness threshold recalibration.** The thresholds
+(five_hour `1800`s, weekly/fable `21600`s — `docs/shared-invariants.md` row `a`, spelled in
+`share/limits-view.sh`) were written for the auto-refresh era and were deferred to executing this
+exit; the exit is executed and they are unchanged. Under the refresh cadence that replaced it,
+3h-old fable data renders unmarked and `worker-pick` ranks on it. Recalibrate them against the
+`bin/llm-refresh` heartbeat's real cadence, or re-affirm them once and delete this paragraph.
+
 Whatever lands here next follows the same contract: an entry in `EXPERIMENTS.json` with a
 review date the registry suite enforces, the surfaces it is visible on, and a `how_to_remove`
 that ends with nothing left behind.
