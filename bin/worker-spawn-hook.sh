@@ -96,7 +96,7 @@ else
   [ -n "$acct" ] || acct=main
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf gemini_model)
-  [ -n "$model" ] || model=pro
+  [ -n "$model" ] || model=flash38
   [ "$model" = flash ] && model=flash36
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)

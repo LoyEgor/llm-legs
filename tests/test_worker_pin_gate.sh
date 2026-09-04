@@ -107,6 +107,7 @@ for writing in \
   "tee ~/.claude/worker-model <<<'codex_profile=x'" \
   "cp /tmp/model ~/.claude/worker-model" \
   "rm ~/.claude/worker-model" \
+  "chmod 000 ~/.claude/worker-model" \
   "model=\$HOME/.claude/worker-model; printf 'codex_profile=x\\n' > \"\$model\"" \
   "f=~/.claude/worker-model
 printf 'codex_profile=x\\n' >>\"\$f\""
@@ -155,6 +156,51 @@ for still_written in \
   'cp /tmp/x $(dirname ~/.claude/worker-model)/worker-model'
 do
   assert denied "$(bash_event "$still_written")"
+done
+
+# A copy is judged by its DESTINATION, and the pin standing in a SOURCE is a read: the shared parse
+# also emits the name a copy INTO a directory would land in, and that guess read a backup of the pin
+# as a write over it — including a `cp` of some other `worker-model` between two scratch paths.
+mkdir -p "$WORK/backupdir"
+for copy_out in \
+  "cp $PIN_FILE $WORK/backup" \
+  "cp $PIN_FILE $WORK/backupdir/" \
+  "cp $PIN_FILE $WORK/backupdir" \
+  'cp ~/.claude/worker-model "$BACKUP"' \
+  "cp $WORK/worker-model $WORK/other" \
+  'cp /tmp/model ~/.claude/'
+do
+  assert allowed "$(bash_event "$copy_out")"
+done
+# …and a destination that IS the pin is denied however it is spelled: the file itself, a directory
+# taking the source's own name, or a spelling this door cannot resolve. A `mv` needs no destination
+# of ours at all — the pin it takes away is a pin removed.
+for copy_in in \
+  "cp $WORK/model ~/.claude/worker-model" \
+  "cp $WORK/worker-model $HOME/.claude/" \
+  'cp /tmp/model "$HOME/.claude/worker-model"' \
+  'install -m 644 /tmp/x ~/.claude/worker-model' \
+  'ln -sf /tmp/x ~/.claude/worker-model' \
+  'mv ~/.claude/worker-model /tmp/aside' \
+  'cp /tmp/m ~/.claude/worker-model >/dev/null' \
+  'cp /tmp/m ~/.claude/worker-model 2>&1' \
+  'cp /tmp/m ~/.claude/worker-model > /tmp/log' \
+  'cp /tmp/m ~/.claude/worker-model -f' \
+  'mv /tmp/m ~/.claude/worker-model --force' \
+  'install /tmp/m ~/.claude/worker-model -m 600' \
+  'cp -t ~/.claude/worker-model /tmp/m' \
+  'cp --target-directory=~/.claude/worker-model /tmp/m'
+do
+  assert denied "$(bash_event "$copy_in")"
+done
+# Trailing options/redirections are not the destination; a copy whose last *operand* is elsewhere
+# still is not a pin write, even with the same tails that hid a pin dest above.
+for copy_out_tail in \
+  'cp /tmp/m /tmp/elsewhere >/dev/null' \
+  'cp /tmp/m /tmp/elsewhere -f' \
+  'cp -t /tmp/elsewhere /tmp/m'
+do
+  assert allowed "$(bash_event "$copy_out_tail")"
 done
 
 # A BRIEF is data. Written into a scratch file, it names the pin, quotes `*_profile=`, spells a
@@ -420,7 +466,7 @@ assert allowed "$(jq -cn --arg p "$PIN_FILE" \
 # The same door refuses storing a model no implementation worker may run. Unlike the pin this one
 # takes no grant: a cheap default here silently downgrades every worker after it.
 rm -f "$GRANT"
-for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 grok_model=grok-4.5 codex_model=gpt-5.6-terra; do
+for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 gemini_model=pro grok_model=grok-4.5 codex_model=gpt-5.6-terra; do
   assert denied "$(write_event "$PIN_FILE" "worker=auto
 $bad
 ")"
@@ -430,7 +476,7 @@ done
 # The deny names the offender and the allowed list, and says nothing about the pin.
 model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
-assert contains "$model_deny" 'claudeb opus; codex gpt-5.6-sol; gemini pro; grok auto|grok-4.6'
+assert contains "$model_deny" 'claudeb opus; codex gpt-5.6-sol; gemini flash38; grok auto|grok-4.6'
 assert lacks "$model_deny" 'is Egor'
 # A grant unblocks the pin and never the model.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
@@ -440,7 +486,7 @@ claudeb_model=sonnet
 # The Bash door's own model refusal, proved on an OPEN door: with no grant the pin rule denies
 # every write here, so the shell cases above stay green even if the model check never ran.
 assert allowed "$(bash_event "printf 'claudeb_profile=beta\n' >> $PIN_FILE")"
-for bad in claudeb_model=sonnet gemini_model=flash35; do
+for bad in claudeb_model=sonnet gemini_model=pro; do
   bash_model_deny=$(bash_event "printf '$bad\n' >> $PIN_FILE")
   assert denied "$bash_model_deny"
   assert contains "$bash_model_deny" "${bad/_model=/=}"
@@ -452,12 +498,26 @@ printf 'worker=auto\nclaudeb_model=opus\n' >"$PIN_FILE"
 assert allowed "$(write_event "$PIN_FILE" 'worker=auto
 claudeb_model=opus
 claudeb_effort=high
-gemini_model=pro
+gemini_model=flash38
 grok_model=auto
 ')"
 assert allowed "$(edit_event "$PIN_FILE" 'claudeb_model=sonnet' 'claudeb_model=opus')"
 # Effort is untouched by any of it, and reading a cheap model's name is not writing one.
 assert allowed "$(edit_event "$PIN_FILE" 'claudeb_effort=high' 'claudeb_effort=medium')"
 assert allowed "$(bash_event "grep claudeb_model=sonnet $PIN_FILE")"
+
+# A substitution NAMES the value it replaces, and that value is the one leaving the file: the shell
+# door judged the presence of the text and refused a command storing an allowed model. Proved on an
+# OPEN pin door, since with no grant the pin rule denies every write here whatever it carries.
+mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
+assert allowed "$(bash_event "sed -i '' 's/gemini_model=pro/gemini_model=flash38/' $PIN_FILE")"
+sed_model_deny=$(bash_event "sed -i '' 's/gemini_model=flash38/gemini_model=pro/' $PIN_FILE")
+assert denied "$sed_model_deny"
+assert contains "$sed_model_deny" 'gemini=pro'
+# The pin lines stay the pin's: the same shape over a `*_profile=` line is refused by its own rule.
+rm -f "$GRANT"
+profile_sed_deny=$(bash_event "sed -i '' 's/claudeb_profile=alpha/claudeb_profile=beta/' $PIN_FILE")
+assert denied "$profile_sed_deny"
+assert contains "$profile_sed_deny" "is Egor's to move"
 
 printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — his words grant it for a window and an ordinary mention of an account does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run, and no grant unlocks that one\n' "$asserts"

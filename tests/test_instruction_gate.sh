@@ -21,6 +21,11 @@ assert_contains() {
 }
 
 REAL_HOME=$HOME
+# Both doors now ask whether the process is a relay worker, and this suite is routinely RUN by one
+# — the markers arrive in the environment of every headless run. Inherited, they would flip every
+# assertion below into the worker refusal, so the fixture session is nobody's worker and the relay
+# cases put one marker back, one command at a time.
+unset CLAUDEB_WORKER GROK_WORKER CLAUDE_LAUNCHER_SESSION
 HOME="$WORK/home"
 TMPDIR="$WORK/tmp"
 export HOME TMPDIR
@@ -61,14 +66,17 @@ done
 ln -s "$JOURNAL_LIB" "$HOME/.claude/hooks/lib/review-journal.sh"
 
 # Two transcripts: one whose last turn of Egor's arms the span, one whose does not. The phrase is
-# his own trigger wording, quoted verbatim, which is the only reason a file here carries Cyrillic.
+# his own trigger wording, which is the only reason a file here carries Cyrillic — and it stands
+# UNQUOTED, because the reader strips «…» before looking for it: a span is an order of his, and a
+# turn that merely quotes the phrase arms nothing. Wrapped in the guillemets it armed no span at
+# all, which left every in-span row of the matrix below asserting the out-span answer.
 SPAN_T="$WORK/span-transcript.jsonl"
 NOSPAN_T="$WORK/nospan-transcript.jsonl"
 span_turn() {
   jq -cn --arg t "$(date -u -r "$(( $(date +%s) - 600 ))" +%Y-%m-%dT%H:%M:%SZ)" --arg c "$1" \
     '{type:"user",timestamp:$t,message:{role:"user",content:$c}}'
 }
-span_turn 'tidy the instruction docs, «максимально автономно»' > "$SPAN_T"
+span_turn 'tidy the instruction docs, максимально автономно' > "$SPAN_T"
 span_turn 'tidy the instruction docs' > "$NOSPAN_T"
 
 # A transcript belongs to a session, so each span state answers under its own id — which is also
@@ -1303,6 +1311,42 @@ assert_contains '\\' "$(cat "$ALERT_LOG")"
 rm "$nasty"
 watch baseline sid-d >/dev/null
 
+echo "== tripwire: one alert per change, whichever session notices it first"
+# This hook runs in every live session at once — the chat, its workers, every other window — and
+# each keeps its own baseline, so one edit used to flash Egor's screen once per session that
+# happened to run a tool call after it.
+: > "$ALERT_LOG"
+alerts() { wc -l <"$ALERT_LOG" | tr -d '[:space:]'; }
+# The alert is fired detached so a wedged Hammerspoon cannot hold the hook, so a count is only
+# trustworthy after it has had time to land — and a count that must STAY put needs the same wait.
+alert_settle() { local n=$1 _; for _ in 1 2 3 4 5 6 7 8 9 10; do [ "$(alerts)" -ge "$n" ] && break; sleep 0.2; done; sleep 0.4; }
+watch baseline alert-one >/dev/null
+watch baseline alert-two >/dev/null
+printf 'one change, two sessions\n' > "$HOME/.claude/docs/review-tiers.md"
+watch check alert-one >/dev/null
+alert_settle 1
+assert_eq 1 "$(alerts)"
+# The second session still tells its own model — the context is per session — and says nothing to
+# Egor, who has already been shown this change.
+ctx=$(watch check alert-two | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED" "$ctx"
+alert_settle 1
+assert_eq 1 "$(alerts)"
+# A DIFFERENT change to the same file is news again.
+printf 'a second change\n' > "$HOME/.claude/docs/review-tiers.md"
+watch check alert-one >/dev/null
+alert_settle 2
+assert_eq 2 "$(alerts)"
+# And the same bytes reported later by a session that had not caught up are not: the marker is
+# named for the file and what it now holds, never for a delta each baseline measures differently.
+ctx=$(watch check alert-two | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED" "$ctx"
+alert_settle 2
+assert_eq 2 "$(alerts)"
+printf 'tier doc\n' > "$HOME/.claude/docs/review-tiers.md"
+watch baseline alert-one >/dev/null
+watch baseline alert-two >/dev/null
+
 echo "== tripwire: an unusable alert channel never breaks the hook"
 printf x >> "$REAL_MD"
 out=$(INSTRUCTION_WATCH_ALERT="$WORK/does-not-exist" watch check sid-c \
@@ -1825,6 +1869,130 @@ ctx=$(span_check sid-heredoc Bash command "python3 - <<'EOF'
 open('$DOC','a').write('a line through a heredoc')
 EOF" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
+assert_eq "tier doc" "$(cat "$DOC")"
+
+echo "== relay worker: an instruction file is the orchestrator's to edit, never a worker's"
+# Egor's rule: these files are edited by the model he negotiated with, after that model's audit —
+# a worker proposes. The audit-then-retry protocol is honour-based, and a relay worker walked
+# through it twice in one day by re-reading the file and asking again, with nobody looking for the
+# cuts that would pay for the growth. So a worker is refused outright: exit 2, one message, no
+# stamp to spend.
+REFUSAL="Instruction files are the orchestrator's to edit (Egor's rule): do not write"
+relay_rc=0
+relay_err=''
+relay_edit() { # path [env-assignment]
+  relay_err=$(jq -cn --arg p "$1" --arg n "$big" \
+    '{tool_name:"Edit",cwd:"/tmp",session_id:"relay-one",tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
+    | env "${2:-CLAUDEB_WORKER=1}" bash "$BLOAT" 2>&1 >/dev/null)
+  relay_rc=$?
+}
+for guarded in "$CLAUDE_MD" "$REAL_MD" "$HOME/.claude/agents/codex-worker.md" \
+               "$HOME/.claude/commands/worker.md" "$HOME/.claude/docs/review-tiers.md" \
+               "$HOME/.claude/skills/demo/SKILL.md"; do
+  relay_edit "$guarded"
+  assert_eq 2 "$relay_rc"
+  assert_contains "$REFUSAL $guarded;" "$relay_err"
+  assert_contains "under MD-PROPOSAL in your RETURN" "$relay_err"
+done
+# Either marker answers: `claudeb` sets the first for every headless run, `worker-run` exports the
+# second into the run and into nothing else.
+relay_edit "$CLAUDE_MD" "GROK_WORKER=1"
+assert_eq 2 "$relay_rc"
+relay_edit "$CLAUDE_MD" "CLAUDE_LAUNCHER_SESSION=some-chat"
+assert_eq 2 "$relay_rc"
+# Asking twice is not an audit, and there is no stamp here to spend.
+relay_edit "$CLAUDE_MD"; assert_eq 2 "$relay_rc"
+relay_edit "$CLAUDE_MD"; assert_eq 2 "$relay_rc"
+
+echo "== relay worker: ordinary repository markdown and the memory files are no part of that rule"
+# The rule is about what every later session re-reads. A repository's own contract docs are read
+# on demand, and appending a pointer line to a project's memory index is the workflow every agent
+# is told to follow: refusing those stops a worker doing the job it was sent for.
+mkdir -p "$WORK/project/docs" "$HOME/.claude-profiles/com/projects/thing/memory"
+printf 'a contract doc\n' > "$WORK/project/docs/DIAGNOSTICS.md"
+printf 'a memory\n' > "$HOME/.claude-profiles/com/projects/thing/memory/note.md"
+printf 'index\n' > "$HOME/.claude-profiles/com/projects/thing/memory/MEMORY.md"
+for open_path in "$WORK/project/docs/DIAGNOSTICS.md" \
+                 "$HOME/.claude-profiles/com/projects/thing/memory/note.md" \
+                 "$HOME/.claude-profiles/com/projects/thing/memory/MEMORY.md" \
+                 "$WORK/unrelated.py"; do
+  relay_edit "$open_path"
+  assert_eq 0 "$relay_rc"
+  assert_eq "" "$relay_err"
+done
+
+echo "== relay worker: the chat Egor negotiated with keeps the audit protocol"
+# Nothing about the ordinary session moved: it is still priced, still denied on stdout, and still
+# offered the retry the audit earns.
+relay_edit "$CLAUDE_MD" "INSTRUCTION_BLOAT_GATE_STAMPS=$BLOAT_STAMPS"
+assert_eq 0 "$relay_rc"
+assert_eq "" "$relay_err"
+assert_eq deny "$(bloat_decision "$HOME/.claude/agents/codex-worker.md")"
+
+echo "== relay worker: the shell door refuses the same writes, with no retry to spend"
+relay_gate() { # command
+  relay_err=$(bash_payload "$1" | env CLAUDEB_WORKER=1 bash "$WRITE_GATE" 2>&1 >/dev/null)
+  relay_rc=$?
+}
+relay_gate "echo more >> $CLAUDE_MD"
+assert_eq 2 "$relay_rc"
+assert_contains "$REFUSAL $CLAUDE_MD;" "$relay_err"
+assert_contains "under MD-PROPOSAL in your RETURN" "$relay_err"
+relay_gate "printf x > $HOME/.claude/docs/review-tiers.md"
+assert_eq 2 "$relay_rc"
+# The one-shot retry belongs to the chat Egor negotiated with, in this turn or the next.
+relay_gate "echo more >> $CLAUDE_MD"; assert_eq 2 "$relay_rc"
+append_write_user
+relay_gate "echo more >> $CLAUDE_MD"; assert_eq 2 "$relay_rc"
+# And a destination no gate speaks for is as silent for a worker as for anyone.
+relay_gate "echo hi > $WORK/scratch/notes.txt"
+assert_eq 0 "$relay_rc"
+assert_eq "" "$relay_err"
+
+echo "== tripwire: inside a relay a worker's growth is put back with Egor in the room"
+# The gates ahead of this one read a command's SHAPE and never its result, so the bytes are this
+# hook's. A worker's write is refused whether or not the span stands, which is why the condition
+# here is the relay and not only the span.
+relay_check() { # sid tool key value [transcript]
+  jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "${5:-$NOSPAN_T}" --arg c "$WORK" \
+    '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
+      tool_input:{($k):$v}}' \
+    | env CLAUDEB_WORKER=1 bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
+}
+printf 'tier doc\n' > "$DOC"
+span_base sid-relay-revert >/dev/null
+printf 'a line no worker was asked for\n' >> "$DOC"
+ctx=$(relay_check sid-relay-revert Bash command "sed -i '' -e 's/x/y/' $DOC")
+assert_contains "REVERTED" "$ctx"
+assert_contains "orchestrator's to edit" "$ctx"
+assert_contains "under MD-PROPOSAL in your RETURN" "$ctx"
+assert_eq "tier doc" "$(cat "$DOC")"
+# A shrink is not growth, here as much as inside the span.
+span_base sid-relay-shrink >/dev/null
+printf 'tiny\n' > "$DOC"
+ctx=$(relay_check sid-relay-shrink Bash command "printf tiny > $DOC")
+assert_contains "CHANGED" "$ctx"
+case "$ctx" in *REVERTED*) fail "a relay worker's shrink was put back" ;; esac
+assert_eq "tiny" "$(cat "$DOC")"
+printf 'tier doc\n' > "$DOC"
+# settings.json is watched and no gate speaks for it, so no worker rule reaches it either.
+span_base sid-relay-settings >/dev/null
+printf '{"model":"opus","hooks":{"Stop":[],"PostToolUse":[]}}\n' > "$HOME/.claude/settings.json"
+ctx=$(relay_check sid-relay-settings Bash command "echo x > $HOME/.claude/settings.json")
+assert_contains "settings.json" "$ctx"
+case "$ctx" in *REVERTED*) fail "a relay rule reached settings.json, which no gate speaks for" ;; esac
+# A span of Egor's is not permission for a WORKER to grow the file: the rollback is the same, and
+# the wording it comes back with is the worker's protocol. Told instead to leave the addition for
+# his next turn, the worker is handed an instruction meant for a human — it has no next turn, and
+# the proposal Egor would price never reaches him.
+printf 'tier doc\n' > "$DOC"
+span_base sid-relay-in-span >/dev/null
+printf 'a line no worker was asked for\n' >> "$DOC"
+ctx=$(relay_check sid-relay-in-span Bash command "sed -i '' -e 's/x/y/' $DOC" "$SPAN_T")
+assert_contains "REVERTED" "$ctx"
+assert_contains "orchestrator's to edit" "$ctx"
+assert_contains "under MD-PROPOSAL in your RETURN" "$ctx"
+case "$ctx" in *'leave it for his next turn'*) fail "a relay worker in the span was answered as if it were Egor" ;; esac
 assert_eq "tier doc" "$(cat "$DOC")"
 
 # A headless worker can start with a PATH that misses Homebrew, and stock /bin/bash is 3.2:

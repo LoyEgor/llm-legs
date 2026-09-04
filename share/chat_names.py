@@ -11,7 +11,8 @@ A worker run is not a chat. It surfaces as the chat that LAUNCHED it, off the ru
 here so the two answers cannot diverge. A run whose launcher nothing names stays a bare id: shown
 under a name of its own it would answer a question about a conversation with the errand it sent.
 
-Consumers: `bin/chat-find` (and `bin/chats` through its JSON) and `bin/review-bench` (imports this checkout).
+Consumers: `bin/chat-find` (and `bin/chats`, which also takes its project column from here) and
+`bin/review-bench` (imports this checkout).
 """
 
 import atexit
@@ -45,6 +46,22 @@ CACHE_VERSION = 1
 FOLD_HOPS = 4
 
 _UNSET = object()
+# His worktrees always live at `<repo>/.claude/worktrees/<branch>` (global rule), so the repo a
+# worktree cwd belongs to is the prefix before it.
+WORKTREES = os.sep + os.path.join(".claude", "worktrees") + os.sep
+
+
+def project_label(cwd):
+    """The project folder a cwd belongs to — the MAIN checkout even inside a worktree.
+
+    A `git` call per row would be paid on every keystroke of the picker's filter, and the
+    branch a worktree is named after is already in the chat's title.
+    """
+    path = cwd or ""
+    cut = path.find(WORKTREES)
+    if cut > 0:
+        path = path[:cut]
+    return os.path.basename(path.rstrip(os.sep)) or "?"
 
 
 def worker_run_root():

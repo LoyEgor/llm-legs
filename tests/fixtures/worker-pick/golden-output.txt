@@ -1,10 +1,11 @@
 NEXT   budget          wk    5h    vendor/account       model·eff
  1     11.4%/d ×7.0d   20%   20%   claude/session*      opus·high
- 2     10.7%/d ×7.0d   25%   12%   gemini/main          pro·high
- 3      7.4%/d ×7.0d   48%   48%   codex/main           sol·high
+ 2     10.7%/d ×7.0d   25%   12%   gemini/main          f38·high
+ 3      8.6%/d ×7.0d   40%   30%   claude/worker        opus·high
+ 4      7.4%/d ×7.0d   48%   48%   codex/main           sol·high
 ACCOUNT: session
 codex:    7.4%/d ×7.0d   48%   48%   main             sol·high
-gemini:  10.7%/d ×7.0d   25%   12%   main             pro·high
+gemini:  10.7%/d ×7.0d   25%   12%   main             f38·high
 claude:  11.4%/d ×7.0d   20%   20%   session*         opus·high
           8.6%/d ×7.0d   40%   30%   worker           opus·high
          * = this session account

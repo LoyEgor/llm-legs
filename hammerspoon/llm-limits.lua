@@ -38,6 +38,50 @@ local function dimColor()
   return { red = level, green = level, blue = level, alpha = 0.55 }
 end
 
+-- One glyph per appearance for the whole menu: every dim check is the same picture, and drawing a
+-- canvas per account row on every open would pay for it once per row instead of once per theme.
+local dimCheckImages = {}
+
+-- The state column takes no colour, so a check that has to read as dim cannot be the system one:
+-- it is drawn here and hung on the row as an image, with `checked` false so the row never carries
+-- both. hs.canvas is absent from the isolated loaders the surface tests build; with nothing to
+-- draw with, the caller keeps the solid system check rather than losing the pool state to a
+-- render that throws.
+local function dimCheckImage()
+  local canvas = hs.canvas
+  if type(canvas) ~= "table" or type(canvas.new) ~= "function" then return nil end
+  local color = dimColor()
+  local key = color.red > 0.5 and "dark" or "light"
+  if dimCheckImages[key] then return dimCheckImages[key] end
+  local sheet = canvas.new({ x = 0, y = 0, w = 14, h = 14 })
+  if not sheet then return nil end
+  sheet[1] = {
+    type = "text",
+    text = "✓",
+    textFont = menuFont.name,
+    textSize = 12,
+    textColor = color,
+    textAlignment = "center",
+  }
+  local image = sheet:imageFromCanvas()
+  sheet:delete()
+  dimCheckImages[key] = image
+  return image
+end
+
+-- The pool mark of an account row, which is what the list itself says about that account: a solid
+-- check for one the routers may spend, the dim one while a role of its vendor is switched off, and
+-- nothing at all for an account out of the pool. Exactly one of the two marks is ever set.
+local function applyPoolMark(row, inPool, roleOff)
+  if not inPool then
+    row.checked = false
+    return
+  end
+  local image = roleOff and dimCheckImage() or nil
+  row.checked = image == nil
+  row.image = image
+end
+
 -- Everything trailing an account name that is not the pin: age, "!", "login needed".
 local function metaTitle(text, alarm, dim)
   local color = dimColor()
@@ -1512,6 +1556,24 @@ function M.menuItems()
       })
       return items
     end
+    -- With a role off the list row already shows it; the submenu item stays plain and its click
+    -- restores the off roles instead of dropping an account out of a pool nobody closed.
+    local function poolItem(vendorKey, checked, toggleFn)
+      local off = {}
+      for _, role in ipairs(WORKER_ROLES) do
+        if not roles[vendorKey][role] then table.insert(off, role) end
+      end
+      if #off == 0 then
+        return { title = "In pool", checked = checked, fn = toggleFn }
+      end
+      return {
+        title = "In pool",
+        checked = checked,
+        fn = function()
+          for _, role in ipairs(off) do M.setWorkerRole(vendorKey, role, true) end
+        end,
+      }
+    end
     for _, entry in ipairs(MENU_VENDORS) do
       local vendor = limits.vendors[entry.key]
       -- Absent from the store means the leg is not installed: every vendor skips,
@@ -1522,6 +1584,7 @@ function M.menuItems()
       local pinnedAccount = pins[entry.key]
       -- A vendor no role may use is still fully operable; its rows only stop claiming attention.
       local unused = not roles[entry.key].workers and not roles[entry.key].reviewers
+      local roleOff = not roles[entry.key].workers or not roles[entry.key].reviewers
       local renderedPin = false
       local renderedAccountRows = false
       -- A sole-account vendor has no section header to carry the role switches, so its own row
@@ -1639,10 +1702,10 @@ function M.menuItems()
             -- legitimate state (it says no worker may run), so nothing here is immutable.
             local soleEnabled = poolStateFor("gemini", "main", vendor.enabled ~= false)
             fallbackRow.disabled = nil
-            fallbackRow.checked = soleEnabled
+            applyPoolMark(fallbackRow, soleEnabled, roleOff)
             fallbackRow.menu = {
-              { title = "In pool", checked = soleEnabled,
-                fn = function() M.toggleGeminiAccount("main", soleEnabled) end },
+              poolItem("gemini", soleEnabled,
+                function() M.toggleGeminiAccount("main", soleEnabled) end),
               {
                 title = "Pin for workers",
                 checked = pinExists,
@@ -1726,10 +1789,9 @@ function M.menuItems()
               }
               if hasAccountControls then
                 accountRow.disabled = nil
-                accountRow.checked = enabled
+                applyPoolMark(accountRow, enabled, roleOff)
                 accountRow.menu = {
-                  { title = "In pool", checked = enabled,
-                    fn = function() M.toggleAccount(acct, enabled) end },
+                  poolItem(entry.key, enabled, function() M.toggleAccount(acct, enabled) end),
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshClaude(acct) end },
                 }
@@ -1742,28 +1804,28 @@ function M.menuItems()
                 end
               elseif isCodexAccounts then
                 accountRow.disabled = nil
-                accountRow.checked = enabled
+                applyPoolMark(accountRow, enabled, roleOff)
                 accountRow.menu = {
-                  { title = "In pool", checked = enabled,
-                    fn = function() M.toggleCodexAccount(acct, enabled) end },
+                  poolItem(entry.key, enabled,
+                    function() M.toggleCodexAccount(acct, enabled) end),
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshCodex(acct) end },
                 }
               elseif isGeminiAccounts then
                 accountRow.disabled = nil
-                accountRow.checked = enabled
+                applyPoolMark(accountRow, enabled, roleOff)
                 accountRow.menu = {
-                  { title = "In pool", checked = enabled,
-                    fn = function() M.toggleGeminiAccount(acct, enabled) end },
+                  poolItem(entry.key, enabled,
+                    function() M.toggleGeminiAccount(acct, enabled) end),
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGemini(acct) end },
                 }
               elseif isGrokAccounts then
                 accountRow.disabled = nil
-                accountRow.checked = enabled
+                applyPoolMark(accountRow, enabled, roleOff)
                 accountRow.menu = {
-                  { title = "In pool", checked = enabled,
-                    fn = function() M.toggleGrokAccount(acct, enabled) end },
+                  poolItem(entry.key, enabled,
+                    function() M.toggleGrokAccount(acct, enabled) end),
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshGrok(acct) end },
                 }

@@ -11,6 +11,13 @@ WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/work
 
 STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 
+# The native agent types a Fable session may still spawn (shared-invariants row `bt`). Pure lookup
+# and design only: everything that edits, reviews, verifies or scans is a relay worker. The second
+# list is the half whose deliverable is locations and excerpts, so nothing in it needs the session's
+# model — those are rewritten to sonnet unless the call names a model itself.
+NATIVE_ALLOWLIST='Explore Plan claude-code-guide statusline-setup'
+NATIVE_CHEAP='Explore claude-code-guide'
+
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
@@ -184,15 +191,47 @@ session_model() {
 
 case "$worker" in
   claudeb-worker|codex-worker|gemini-worker|grok-worker) ;;
-  # A fork always inherits the parent model; the override field is ignored for it.
-  fork) exit 0 ;;
   *)
-    # A plain agent with a model override runs on the SESSION account. On a Fable session
-    # that is exactly what the worker pool exists to prevent, and it is the one spawn shape
-    # no other gate sees. Everywhere else it is ordinary work, so this stays silent.
-    model_override=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || exit 0
-    [ -n "$model_override" ] || exit 0
+    # Workers are unified: every run that edits, reviews, verifies or scans is a relay worker, and a
+    # NATIVE agent type — general-purpose, claude, fork, anything custom — runs on the session's own
+    # model instead. On Fable that is the one quota the whole relay design exists to spare, and it
+    # is the spawn shape no other gate sees (live: four read-only general-purpose checks, 35-45k
+    # tokens each, on a Fable chat). A fork is judged here too: it always inherits the parent model,
+    # which is exactly the problem rather than an exemption.
+    native=${worker:-general-purpose}
     current_session_model=$(session_model)
+    explicit_model=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || explicit_model=''
+    if [ "$native" != image-gen ]; then
+      case "$current_session_model" in
+        claude-fable-*)
+          case " $NATIVE_ALLOWLIST " in
+            *" $native "*)
+              # An explicit model is Egor's own call and stands as written. Otherwise a pure lookup
+              # is dropped to sonnet — the deliverable is locations and excerpts, verifiable at a
+              # glance — while a design agent keeps the session model, because that IS Fable's work.
+              [ -z "$explicit_model" ] || exit 0
+              case " $NATIVE_CHEAP " in
+                *" $native "*)
+                  printf '%s' "$input" | jq -c '{hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      permissionDecision: "allow",
+                      updatedInput: (.tool_input | .model = "sonnet")}}' 2>/dev/null || true
+                  ;;
+              esac
+              exit 0
+              ;;
+          esac
+          deny "native $native runs on Fable's quota: every run that edits, reviews, verifies or scans is a relay worker via worker-run (see ~/.claude/CLAUDE.md, Model routing); read-only lookups use Explore/Plan."
+          ;;
+      esac
+    fi
+    # A fork ignores the override field entirely, so off Fable there is nothing left to price.
+    [ "$native" != fork ] || exit 0
+    # Only image-gen reaches here now, and only on Fable — every other native type was answered
+    # above. A model override still runs it on the SESSION account, which is what the pool exists
+    # to prevent; the one-shot retry below is the escape this older rule keeps.
+    model_override=$explicit_model
+    [ -n "$model_override" ] || exit 0
     case "$current_session_model" in claude-fable-*) ;; *) exit 0 ;; esac
     tool_fingerprint=$(printf '%s' "$input" | jq -cS '.tool_input' 2>/dev/null) ||
       warn "The session-account gate could not fingerprint this Agent call, so it is letting the spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for."
@@ -247,7 +286,7 @@ attach_run=$(printf '%s\n' "$prompt" | head -n1 |
   sed -nE 's/^ATTACH[[:space:]]+([a-z0-9][a-z0-9-]*):.*/\1/p')
 if [ -n "$attach_run" ]; then
   attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
-  if [ -d "$attach_dir" ]; then
+  if [ -d "$attach_dir" ] && [ ! -e "$attach_dir/exit_code" ]; then
     warn "Re-attach to run ${attach_run}: no new launch, so no limit verdict is priced on this spawn. Wait on that run id and report; do not start a new one."
   fi
 fi

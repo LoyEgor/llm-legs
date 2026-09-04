@@ -66,6 +66,17 @@ disallowed_models() { # text
   done < <(grep -Eo '(claudeb|codex|gemini|grok)_model=[A-Za-z0-9._-]+' <<<"$1" | sort -u)
 }
 
+# The SEARCH side of a substitution names the value being REPLACED, so the pairs left after this
+# are the ones a command would STORE: `sed -i s/gemini_model=pro/gemini_model=flash38/` writes the
+# allowed model and was refused for spelling the cheap one it removes (live 2026-09-04). The same
+# reading the Edit door already takes on `old_string` — a write is judged by what it leaves behind.
+# Only the `/` delimiter, which is the one a substitution over this file is typed with and the only
+# one that reaches here: with the quotes already resolved, a `|` delimiter cuts the command into
+# simple commands before any door reads it, and the pin's name lands in a segment with no verb.
+drop_replaced() { # text → the text with each substitution's pattern emptied
+  sed -E 's#(^|[^[:alnum:]_])s/[^/]*/#\1s//#g' <<<"$1"
+}
+
 # Unlike the pin, this one takes no grant: a cheap default here silently downgrades every worker
 # after it, and no wording in a chat message makes an implementation run on a cheap model right.
 deny_model() { # offending pairs
@@ -109,8 +120,9 @@ current_pins() { grep -E "$PIN_KEY_RE" "$(pin_file)" 2>/dev/null | sort; }
 PIN_NAME_RE='[^[:space:]]*worker-model'
 
 # Deleting the file removes the pin, and deletion is the one write shape `instruction_write_targets`
-# does not model — it reports where bytes LAND, and these leave none.
-DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred)([[:space:]]|$)'
+# does not model — it reports where bytes LAND, and these leave none. `chmod` and `chown` are here
+# for the same reason: a pin `worker-pick` can no longer read is a pin gone, whatever its bytes say.
+DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown)([[:space:]]|$)'
 
 # A language runtime hands its payload to a parser of its own, exactly as a shell does, so with the
 # quoted runs resolved the payload is gone and its names go with it. The shell names are the shared
@@ -218,8 +230,115 @@ case "$MODE" in
     targeted() { # text → 0 when a write in it lands in the pin file
       local kind mode verb name
       while IFS="$row_sep" read -r kind mode verb name; do
-        [ -n "$name" ] && return 0
+        [ -n "$name" ] || continue
+        # A copy row is a guess about the destination, decided below instead.
+        [ "$kind" = copy ] && continue
+        return 0
       done < <(instruction_write_targets "$1" "$PIN_NAME_RE")
+      copies_onto_pin "$1"
+    }
+    # `cp/mv/ln/install` name their DESTINATION last, and the shared parse cannot say which operand
+    # it read: for `cp <pin> /tmp/backup` it also emits `/tmp/backup/worker-model`, where a copy
+    # INTO a directory would land, and this door read a BACKUP of the pin as a write over it. So the
+    # copy verbs are decided from the last operand, resolved the way the shell would resolve it: a
+    # `~` expanded, a destination that IS a directory taking each source's own name. A destination
+    # this cannot name — a variable, a substitution — falls back to the by-name rule above, which is
+    # the conservative side and the one `cp x $(dirname …)/worker-model` is caught by. `-t DIR` /
+    # `--target-directory=DIR` is that destination when present; trailing options and redirections
+    # are not.
+    copies_onto_pin() { # text → 0 when a copy verb in it writes over or removes the pin
+      local segment words nw vi i verb dest src nops tdest w skip saw_dd
+      local -a operands srcs
+      while IFS= read -r -d '' segment; do
+        [ -n "${segment//[[:space:]]/}" ] || continue
+        words=()
+        read -ra words <<<"$segment"
+        nw=${#words[@]}
+        [ "$nw" -ge 3 ] || continue
+        verb='' vi=0
+        for ((i = 0; i < nw; i++)); do
+          case "${words[i]##*/}" in
+            cp|mv|ln|install) verb=${words[i]##*/} vi=$i; break ;;
+          esac
+        done
+        [ -n "$verb" ] || continue
+        operands=()
+        tdest=''
+        saw_dd=0
+        for ((i = vi + 1; i < nw; i++)); do
+          w=${words[i]}
+          skip=0
+          case "$w" in
+            '>'|'>>'|'>|'|'<'|'<<'|'<<-'|'<<<'|'<>'|'>&'|'<&'|'&>'|'&>>') skip=2 ;;
+          esac
+          if [ "$skip" -eq 0 ] && [[ "$w" =~ ^[0-9]+(>>?|>\||<<-?|<>|&[<>]|[<>]&|[<>])$ ]]; then
+            skip=2
+          fi
+          if [ "$skip" -eq 0 ] && [[ "$w" =~ ^([0-9]+|&)?(>>?|>\||<<-?|<>|&[<>]|[<>]&|[<>]).+ ]]; then
+            skip=1
+          fi
+          if [ "$skip" -gt 0 ]; then
+            [ "$skip" -eq 2 ] && [ $((i + 1)) -lt "$nw" ] && i=$((i + 1))
+            continue
+          fi
+          if [ "$saw_dd" -eq 1 ]; then
+            operands+=("$w")
+            continue
+          fi
+          case "$w" in
+            --) saw_dd=1; continue ;;
+            -) operands+=("$w"); continue ;;
+            -t|--target-directory)
+              [ $((i + 1)) -lt "$nw" ] || continue
+              i=$((i + 1))
+              tdest=${words[i]}
+              continue
+              ;;
+            --target-directory=*)
+              tdest=${w#--target-directory=}
+              continue
+              ;;
+            -m|--mode|-g|--group|-o|--owner|-S|--suffix)
+              [ $((i + 1)) -lt "$nw" ] && i=$((i + 1))
+              continue
+              ;;
+            --mode=*|--group=*|--owner=*|--suffix=*) continue ;;
+            -*) continue ;;
+          esac
+          operands+=("$w")
+        done
+        nops=${#operands[@]}
+        srcs=()
+        if [ -n "$tdest" ]; then
+          [ "$nops" -ge 1 ] || continue
+          dest=$tdest
+          srcs=("${operands[@]}")
+        else
+          [ "$nops" -ge 2 ] || continue
+          # Last operand, not last word: `>/dev/null` or `-f` as dest lets the copy through.
+          dest=${operands[nops - 1]}
+          for ((i = 0; i < nops - 1; i++)); do
+            srcs+=("${operands[i]}")
+          done
+        fi
+        case "$dest" in
+          *'$'* | *'`'*) [[ "$dest" =~ ^${PIN_NAME_RE}$ ]] && return 0; continue ;;
+        esac
+        if [ "${dest%/}" != "$dest" ] || [ -d "$(canonical_path "${dest%/}")" ]; then
+          for ((i = 0; i < ${#srcs[@]}; i++)); do
+            src=${srcs[i]##*/}
+            [ -n "$src" ] && is_pin_file "${dest%/}/$src" && return 0
+          done
+        else
+          is_pin_file "$dest" && return 0
+        fi
+        # A `mv` takes the pin AWAY, and a pin that left the file is a pin removed.
+        if [ "$verb" = mv ]; then
+          for ((i = 0; i < ${#srcs[@]}; i++)); do
+            is_pin_file "${srcs[i]}" && return 0
+          done
+        fi
+      done < <(instruction_split_commands "$1")
       return 1
     }
     # Deletion, per simple command: the verb has to stand in the same command as the name, or
@@ -261,7 +380,9 @@ case "$MODE" in
     elif { [ -n "$ambiguous" ] || travels "$scan"; } && any_write "$scan"; then :
     else exit 0
     fi
-    offending=$(disallowed_models "$cmd")
+    # The scan, not the raw command: a `*_model=` pair the command CARRIES — quoted in a brief, or
+    # standing on the search side of a substitution — is not one it stores.
+    offending=$(disallowed_models "$(drop_replaced "$scan")")
     [ -z "$offending" ] || deny_model "$offending"
     fresh && exit 0
     deny "$DENY_REASON"

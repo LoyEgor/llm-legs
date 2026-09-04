@@ -23,6 +23,7 @@ import unicodedata
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
 from chat_ask import awaiting_answer  # noqa: E402
+from chat_names import project_label  # noqa: E402
 
 PROFILES = os.path.expanduser("~/.claude-profiles")
 STATE = os.path.join(PROFILES, ".claudeb", ".claudeb-state")
@@ -339,7 +340,7 @@ def columns(row, now, dated=False):
     # write does, so the name is collapsed exactly like the quote already is.
     name = " ".join((row.get("name") or "").split())
     return ["%*s" % (8 if dated else 5, when_label(row["at"], now, dated)),
-            os.path.basename(row.get("cwd") or "") or "?",
+            project_label(row.get("cwd")),
             model_label(row),
             warm_name(row, now) or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""),
             name or said or "—",
@@ -367,7 +368,7 @@ def plan(rows):
     """
     sizes = [0] * len(CAPS)
     for row in rows:
-        cells = (os.path.basename(row.get("cwd") or "") or "?",
+        cells = (project_label(row.get("cwd")),
                  model_label(row),
                  row.get("warm") or ("%dk" % (row["ctx"] // 1000) if row.get("ctx") else ""))
         sizes = [max(size, width(cell)) for size, cell in zip(sizes, cells)]
@@ -521,6 +522,8 @@ def run(screen, chats, names, used, profile, level, windows):
             if not rows:
                 continue
             chosen = rows[view["cursor"]]
+            # The chat's own directory, worktree and all: the project column shows the main
+            # checkout, but the transcript slugs to where the chat was actually started.
             cwd = chosen.get("cwd")
             # claude resolves --resume against the project slug of the directory
             # it starts in, so a chat opened from anywhere else silently finds

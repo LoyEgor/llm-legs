@@ -6,7 +6,7 @@ RUNNER="$ROOT/bin/worker-run"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 assert_fails() {
   asserts=$((asserts + 1))
@@ -16,6 +16,14 @@ assert_fails() {
     status=$?
     [ "$status" -ne 127 ] || fail "assert $asserts command not found: $*"
   fi
+}
+
+# What the vendor is handed is the brief plus worker-run's standing preamble; what the record keeps
+# is the brief the caller wrote, byte for byte, because report/RESUME/ATTACH quote that one back.
+assert_launched_brief() { # capture-of-what-the-CLI-read
+  assert grep -qF 'TEST LOOP: while iterating run a one-off probe' "$1"
+  assert cmp -s "$WORK/brief" <(head -n "$(wc -l <"$WORK/brief")" "$1")
+  assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 }
 
 export HOME="$WORK/home"
@@ -85,14 +93,32 @@ if [ -z "$input" ]; then
   printf 'Error: Input must be provided either through stdin or as a prompt argument\n' >&2
   exit 1
 fi
+# The real CLI names a transcript after the session and fills it from the first turn, long before
+# `out` exists; a run killed mid-work has nothing else to report a SESSION: from.
+if [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
+  transcript_dir="$CLAUDEB_PROFILES_ROOT/${STUB_TRANSCRIPT_ACCOUNT:-picked}/projects/fixture"
+  mkdir -p "$transcript_dir"
+  # A file per LAUNCH, named after the attempt the brief carries, because the real CLI opens a new
+  # session for every launch: a stub that reuses one name cannot show which attempt's transcript a
+  # relaunched run adopts. Attempt 1 keeps the plain name every other case here asserts on.
+  transcript_name=$STUB_TRANSCRIPT_SESSION
+  attempt=${input##*-a}
+  case "$attempt" in ''|*[!0-9]*) attempt=1 ;; esac
+  [ "$attempt" = 1 ] || transcript_name="$STUB_TRANSCRIPT_SESSION-$attempt"
+  jq -cn --arg t "$input" '{type:"user",message:{role:"user",content:$t}}' \
+    >"$transcript_dir/$transcript_name.jsonl"
+fi
+[ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 has_effort=false
 for arg in "$@"; do [ "$arg" != --effort ] || has_effort=true; done
+# After the sleep, so a dropped-effort attempt can be given a lifetime: discovery runs on the
+# watchdog's tick, and an attempt that exits before the first tick is never looked for at all.
 if [ -e "$STUB_DIR/claudeb_drop_effort" ] && [ "$has_effort" = true ]; then
   printf 'unknown option --effort\n' >&2
   exit 2
 fi
-[ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
+[ -z "${STUB_STDOUT:-}" ] || printf '%s\n' "$STUB_STDOUT"
 if [ "${STUB_CODE:-0}" -eq 0 ]; then
   printf '{"result":"claudeb result","session_id":"%s","total_cost_usd":1.25}\n' "${STUB_SESSION-claude-session}"
 fi
@@ -117,6 +143,14 @@ for arg in "$@"; do
   previous="$arg"
 done
 cat >"$STUB_DIR/codex.stdin"
+# A worker that is working writes: STUB_HEARTBEAT seconds of stderr, which the supervisor
+# redirects into the run's `err`, is what the idle watchdog must read as activity.
+beats=${STUB_HEARTBEAT:-0}
+while [ "$beats" -gt 0 ]; do
+  printf 'working\n' >&2
+  sleep 1
+  beats=$((beats - 1))
+done
 # What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
 # chat through the environment and through nothing else.
 [ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" codex-session
@@ -158,7 +192,15 @@ if [ -e "$STUB_DIR/codex_noise_deep" ]; then
   printf 'the docs even spell out "quota exhausted" verbatim\n' >&2
   seq 1 60 | sed 's/^/transcript line /' >&2
 fi
-[ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
+if [ -n "${STUB_SLEEP:-}" ]; then
+  # Backgrounded and waited on, with both pids on disk: a signal that reaches only this wrapper
+  # leaves the sleep orphaned and running, which is the shape of a supervisor killed out from
+  # under a live CLI.
+  printf '%s\n' "$$" >"$STUB_DIR/codex.pid"
+  sleep "$STUB_SLEEP" &
+  printf '%s\n' "$!" >"$STUB_DIR/codex.child.pid"
+  wait $!
+fi
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
 if [ "${STUB_CODE:-0}" -eq 0 ]; then
   printf 'session id: codex-session\n' >&2
@@ -205,20 +247,21 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
+  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT \
+    STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
     "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue" "$STUB_DIR/grok_wall_accounts" \
     "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied" \
-    "$STUB_DIR/grok_max_turns"
+    "$STUB_DIR/grok_max_turns" "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
 }
 
 start_ok() {
   local vendor="$1"
   shift
-  "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "$WORK/workdir" "$@" >"$WORK/start.out" 2>"$WORK/start.err" || fail "start $vendor failed: $(<"$WORK/start.err")"
+  "$RUNNER" start "$vendor" --brief "$WORK/brief" --workdir "${WORKER_TEST_WORKDIR:-$WORK/workdir}" "$@" >"$WORK/start.out" 2>"$WORK/start.err" || fail "start $vendor failed: $(<"$WORK/start.err")"
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
   RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
 }
@@ -279,7 +322,7 @@ assert await_done
 # A running run whose vendor has already surfaced its id reports it mid-flight,
 # so a budget-spent relay can still hand back a resumable session.
 clear_stub
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 printf 'fast\n' >"$STUB_DIR/gemini_profiles"
 export PICK_ACCOUNT=fast PICK_RC=0 STUB_SLEEP=2
 start_ok gemini
@@ -294,7 +337,7 @@ unset STUB_SLEEP
 
 for vendor in claudeb codex gemini; do
   clear_stub
-  set_config "${vendor}_profile=pinned" 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=pro' 'gemini_effort=high'
+  set_config "${vendor}_profile=pinned" 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=flash38' 'gemini_effort=high'
   printf 'explicit\npicked\npinned\n' >"$STUB_DIR/gemini_profiles"
   export PICK_ACCOUNT=picked PICK_RC=0
   start_ok "$vendor" --account explicit
@@ -334,7 +377,7 @@ unset PICK_STDERR
 
 for vendor in codex gemini; do
   clear_stub
-  set_config 'codex_effort=medium' 'gemini_model=pro' 'gemini_effort=high'
+  set_config 'codex_effort=medium' 'gemini_model=flash38' 'gemini_effort=high'
   export PICK_RC=2 PICK_ACCOUNT=ignored
   start_ok "$vendor"
   assert meta_account_is main
@@ -488,20 +531,25 @@ assert test "$rc" -eq 4
 assert grep -q 'needs an explicit account' "$WORK/no-pin.err"
 
 clear_stub
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 export PICK_RC=2
 start_ok gemini --account main
-assert meta_agy_is 'Gemini 3.1 Pro (High)'
+assert meta_agy_is 'gemini-3.8-flash-high'
 assert await_done
-start_ok gemini --account main --model pro --effort low
-assert meta_agy_is 'gemini-3.1-pro-low'
+start_ok gemini --account main --model flash38 --effort low
+assert meta_agy_is 'gemini-3.8-flash-low'
 assert await_done
-start_ok gemini --account main --model pro --effort ultra
-assert meta_agy_is 'Gemini 3.1 Pro (High)'
+# Unlike the Pro this leg used to run, 3.8 Flash serves `medium` too, so it is a launch and not
+# the refusal the pair used to be.
+start_ok gemini --account main --model flash38 --effort medium
+assert meta_agy_is 'gemini-3.8-flash-medium'
+assert await_done
+start_ok gemini --account main --model flash38 --effort ultra
+assert meta_agy_is 'gemini-3.8-flash-high'
 assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = high
 assert await_done
 rc=0
-"$RUNNER" start gemini --brief "$WORK/brief" --account main --model pro --effort medium >"$WORK/reject.out" 2>&1 || rc=$?
+"$RUNNER" start gemini --brief "$WORK/brief" --account main --model flash38 --effort tiny >"$WORK/reject.out" 2>&1 || rc=$?
 assert test "$rc" -eq 4
 assert grep -qx 'OUTCOME: GEMINI_UNAVAILABLE' "$WORK/reject.out"
 printf 'known\n' >"$STUB_DIR/gemini_profiles"
@@ -607,7 +655,9 @@ assert grep -qxF "ARG=$HOME/.claude" "$CALL_LOG"
 assert grep -q '^ARG=--conversation$' "$CALL_LOG"
 assert grep -q '^ARG=gemini-resume$' "$CALL_LOG"
 assert test "$(tail -n2 "$CALL_LOG" | head -n1)" = 'ARG=--print'
-assert test "$(tail -n1 "$CALL_LOG")" = "ARG=\$'test brief\\nsecond line'"
+assert grep -q "^ARG=\$'test brief" <<<"$(tail -n1 "$CALL_LOG")"
+assert grep -qF 'TEST LOOP: while iterating run a one-off probe' <<<"$(tail -n1 "$CALL_LOG")"
+assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 
 clear_stub
 set_config 'codex_effort=high'
@@ -616,7 +666,7 @@ assert await_done
 assert grep -q '^ARG=--add-dir$' "$CALL_LOG"
 assert grep -q '^ARG=-i$' "$CALL_LOG"
 assert grep -q '^ARG=web_search=live$' "$CALL_LOG"
-assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
+assert_launched_brief "$STUB_DIR/codex.stdin"
 
 # Relative --image/--add-dir are pinned to the caller's cwd: the detached
 # supervisor cds to workdir before the CLI resolves them.
@@ -639,7 +689,7 @@ assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhausted:CODEX_USAGE_LIMIT' 'codex:Your workspace is out of credits:CODEX_USAGE_LIMIT' 'gemini:RESOURCE_EXHAUSTED:GEMINI_USAGE_LIMIT'; do
   IFS=: read -r vendor error outcome <<<"$spec"
   clear_stub
-  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=pro' 'gemini_effort=high'
+  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=flash38' 'gemini_effort=high'
   export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9 STUB_ERROR="$error"
   printf 'limitacct\n' >"$STUB_DIR/gemini_profiles"
   start_ok "$vendor"
@@ -649,9 +699,98 @@ for spec in 'claudeb:usage limit reached:CLAUDEB_USAGE_LIMIT' 'codex:quota exhau
   assert grep -qx 'WALL: pool exhausted (walled: limitacct)' "$WORK/wait.out"
 done
 
+clear_stub
+set_config 'codex_effort=medium'
+export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9
+export STUB_ERROR='ERROR: unexpected status 402 Payment Required: Payment Required, url: https://chatgpt.com/backend-api/codex/responses, cf-ray: a34f7001de413244-VIE, auth error: 402, auth error code: deactivated_workspace'
+start_ok codex
+assert await_done
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=limitacct STUB_CODE=9
+export STUB_STDOUT="{\"result\":\"You've hit your session limit · resets 10:40pm (Europe/Kiev)\",\"is_error\":true}"
+start_ok claudeb
+assert await_done
+assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
+
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=ordinary STUB_CODE=9
+export STUB_STDOUT='{"result":"ordinary failure","is_error":true}'
+start_ok claudeb
+assert await_done
+assert grep -qx 'OUTCOME: CLAUDEB_FAILED' "$WORK/wait.out"
+
+readonly_runs="$WORK/readonly-runs"
+readonly_workdir="$WORK/readonly-workdir"
+mkdir -p "$readonly_runs" "$readonly_workdir"
+git -C "$readonly_workdir" init -q
+readonly_workdir=$(cd "$readonly_workdir" && pwd -P)
+export WORKER_RUN_DIR="$readonly_runs" WORKER_TEST_WORKDIR="$readonly_workdir"
+printf 'test brief\nsecond line\n' >"$WORK/brief"
+
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=readonly-one STUB_TRANSCRIPT_SESSION=readonly-one STUB_SESSION=readonly-one
+export STUB_TRANSCRIPT_ACCOUNT=readonly-one
+start_ok claudeb
+assert await_done
+assert test -f "$RUN_DIR/dirty-before"
+assert test -f "$RUN_DIR/dirty-before-shas"
+assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$readonly_workdir" && pwd -P)"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a native Explore/research helper (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 1' <<<"$report"
+assert test -f "$RUN_DIR/report-readonly"
+
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=readonly-two STUB_TRANSCRIPT_SESSION=readonly-two STUB_SESSION=readonly-two
+export STUB_TRANSCRIPT_ACCOUNT=readonly-two
+start_ok claudeb
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a native Explore/research helper (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 2' <<<"$report"
+assert test -f "$RUN_DIR/report-readonly"
+
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=readonly-changed STUB_TRANSCRIPT_SESSION=readonly-changed STUB_SESSION=readonly-changed
+export STUB_TRANSCRIPT_ACCOUNT=readonly-changed
+start_ok claudeb
+assert await_done
+printf 'changed\n' >"$readonly_workdir/changed.txt"
+report=$("$RUNNER" report "$RUN_ID")
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+rm -f "$readonly_workdir/changed.txt"
+assert test -z "$(git -C "$readonly_workdir" status --porcelain -uall)"
+
+declared_workdir="$WORK/declared-readonly-workdir"
+mkdir -p "$declared_workdir"
+git -C "$declared_workdir" init -q
+declared_workdir=$(cd "$declared_workdir" && pwd -P)
+export WORKER_TEST_WORKDIR="$declared_workdir"
+printf 'READ-ONLY: deliberate relay lookup\n' >"$WORK/brief"
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=readonly-declared STUB_TRANSCRIPT_SESSION=readonly-declared STUB_SESSION=readonly-declared
+export STUB_TRANSCRIPT_ACCOUNT=readonly-declared
+start_ok claudeb
+assert await_done
+assert test -f "$RUN_DIR/dirty-before"
+assert test -f "$RUN_DIR/dirty-before-shas"
+assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$declared_workdir" && pwd -P)"
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' <<<"$report"
+assert test -z "$(git -C "$declared_workdir" status --porcelain -uall)"
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+
+export WORKER_RUN_DIR="$WORK/runs"
+unset WORKER_TEST_WORKDIR
+printf 'test brief\nsecond line\n' >"$WORK/brief"
+
 # A clean exit whose text merely mentions quotas is not a limit: no OUTCOME line.
 clear_stub
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=chatty STUB_CODE=0 STUB_ERROR='discussed quota and 429 handling'
 printf 'chatty\n' >"$STUB_DIR/gemini_profiles"
 start_ok gemini
@@ -662,7 +801,7 @@ assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
 # A failed run whose ANSWER (stdout) mentions quotas is a plain failure, not a
 # limit: only stderr carries vendor limit signatures.
 clear_stub
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=chatty STUB_CODE=5 STUB_STDOUT='the task discussed quota and 429 handling'
 printf 'chatty\n' >"$STUB_DIR/gemini_profiles"
 start_ok gemini
@@ -672,7 +811,7 @@ assert grep -qx 'OUTCOME: GEMINI_UNAVAILABLE' "$WORK/wait.out"
 for spec in 'claudeb:CLAUDEB_FAILED' 'codex:CODEX_UNAVAILABLE' 'gemini:GEMINI_UNAVAILABLE'; do
   IFS=: read -r vendor outcome <<<"$spec"
   clear_stub
-  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=pro' 'gemini_effort=high'
+  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' 'gemini_model=flash38' 'gemini_effort=high'
   export PICK_RC=0 PICK_ACCOUNT=failedacct STUB_CODE=7 STUB_ERROR='ordinary failure'
   printf 'failedacct\n' >"$STUB_DIR/gemini_profiles"
   start_ok "$vendor"
@@ -727,7 +866,7 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 1
 assert test "$(grep -c '^ARG=gpt-5.6-sol$' "$CALL_LOG")" -eq 1
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
-assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
+assert_launched_brief "$STUB_DIR/codex.stdin"
 
 # A clean exit whose stderr mentions the phrase is not rerun.
 clear_stub
@@ -1586,7 +1725,10 @@ clear_stub
 printf 'delete me\n' >"$DIRT_REPO/bin/deletion-is-work"
 git -C "$DIRT_REPO" add bin/deletion-is-work
 git -C "$DIRT_REPO" -c user.email=t@t -c user.name=t commit -qm 'track deletion liveness'
-export STUB_SLEEP=4
+# Every probe below has to land while the run is still going, and there are a dozen of them: at 4s
+# the block failed under a parallel suite wave (2026-09-04) purely on machine load, while
+# `await_done` at the end of it budgets ~20s.
+export STUB_SLEEP=12
 start_ok claudeb --workdir "$DIRT_REPO"
 idle=$("$RUNNER" wait "$RUN_ID" --max 0)
 assert grep -qx 'STATUS: running' <<<"$idle"
@@ -1642,7 +1784,7 @@ unset CLAUDE_CODE_SESSION_ID
 # action named its target.
 clear_stub
 unset CLAUDE_CODE_SESSION_ID
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 printf 'gemfiles\n' >"$STUB_DIR/gemini_profiles"
 agy_iso() { date -u -r "$1" +%Y-%m-%dT%H:%M:%SZ; }
 agy_row_status() { # created_at status name args-json
@@ -2383,6 +2525,228 @@ unset STUB_SLEEP WORKER_RUN_DEADLINE
 deadline_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
 assert grep -q '^STATUS: failed$' <<<"$deadline_wait"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$deadline_wait"
+# And says which watchdog did it: a bare 143 sends the reader hunting a vendor fault.
+assert grep -q '^KILLED: deadline — the 1s ceiling' <<<"$deadline_wait"
+
+# A worker that keeps writing is working, however long it takes: the idle watchdog reads the run's
+# own files, and a suite that runs for minutes returns through them.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=busy STUB_HEARTBEAT=8 WORKER_RUN_IDLE_S=3 WORKER_RUN_DEADLINE=600
+start_ok codex
+unset STUB_HEARTBEAT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+busy_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: done$' <<<"$busy_wait"
+
+# A worker that writes nothing at all is wedged, and the ceiling is hours away.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=wedged STUB_SLEEP=60 WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=600
+start_ok codex
+unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+idle_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: failed$' <<<"$idle_wait"
+assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$idle_wait"
+assert grep -q '^KILLED: idle watchdog — nothing this run writes changed for 2s' <<<"$idle_wait"
+assert grep -q '^KILLED: idle watchdog' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# WORKER_RUN_IDLE_S=0 disarms the idle half alone: the same silent stub runs to its own end.
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=patient STUB_SLEEP=3 WORKER_RUN_IDLE_S=0 WORKER_RUN_DEADLINE=600
+start_ok codex
+unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+assert grep -q '^STATUS: done$' <<<"$("$RUNNER" wait "$RUN_ID" --max 60)"
+
+# A claudeb run killed before it could write `out` still names its session: the transcript carries
+# the id from the first turn, and without it three hours of work cannot be resumed.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=60 STUB_TRANSCRIPT_SESSION=live-session-id \
+  STUB_TRANSCRIPT_ACCOUNT=picked WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+killed_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: failed$' <<<"$killed_wait"
+# A located transcript IS an observable source, so its silence is evidence and the kill lands.
+assert grep -q '^KILLED: idle watchdog — nothing this run writes changed for 2s' <<<"$killed_wait"
+assert grep -qx 'SESSION: live-session-id' <<<"$killed_wait"
+assert grep -qx 'SESSION: live-session-id' <<<"$("$RUNNER" report "$RUN_ID")"
+# And the pairing the review hooks price a live run by is written while the run lives, not after.
+assert grep -qxF 'live-session-id' "$RUN_DIR/worker-session"
+# Matched on the brief this run was launched with, so a co-tenant run in the same profile tree
+# cannot be adopted as this one. Recorded PHYSICALLY, which is the one spelling of a tree every
+# profile reaches through a symlink of its own.
+assert grep -qxF "$(cd "$CLAUDEB_PROFILES_ROOT/picked/projects" && pwd -P)/fixture/live-session-id.jsonl" \
+  "$RUN_DIR/session-file"
+
+# And a profile whose `projects` IS that symlink answers at all: `find` handed a symlinked directory
+# as its own argument walks nothing, so every real profile here — each of them a link into the one
+# shared tree — resolved no session for any live run until the root was resolved physically (live
+# 2026-09-04: a 23-minute run reported `SESSION: -` and could not be resumed).
+clear_stub
+set_config 'claudeb_profile=pinned'
+SHARED_TREE="$WORK/shared-transcripts"
+mkdir -p "$SHARED_TREE" "$CLAUDEB_PROFILES_ROOT/linkedacct"
+ln -sfn "$SHARED_TREE" "$CLAUDEB_PROFILES_ROOT/linkedacct/projects"
+export PICK_RC=0 PICK_ACCOUNT=linkedacct STUB_SLEEP=60 STUB_TRANSCRIPT_SESSION=linked-session-id \
+  STUB_TRANSCRIPT_ACCOUNT=linkedacct WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+linked_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -qx 'SESSION: linked-session-id' <<<"$linked_wait"
+assert grep -qxF "$(cd "$SHARED_TREE" && pwd -P)/fixture/linked-session-id.jsonl" \
+  "$RUN_DIR/session-file"
+assert grep -qxF 'linked-session-id' "$RUN_DIR/worker-session"
+
+# Through a SYMLINK, because that is the only shape a real profile has: `<profile>/projects` points
+# at `~/.claude/projects`, and a walk that does not follow one answers an empty tree — so discovery
+# never succeeded for any live claudeb run on this machine, the launcher pairing was never written
+# while the run lived, and the watchdog was left with nothing to watch (live 2026-09-04).
+clear_stub
+set_config 'claudeb_profile=pinned'
+mkdir -p "$CLAUDEB_PROFILES_ROOT/shared-corpus" "$CLAUDEB_PROFILES_ROOT/symacct"
+ln -sfn ../shared-corpus "$CLAUDEB_PROFILES_ROOT/symacct/projects"
+export PICK_RC=0 PICK_ACCOUNT=symacct STUB_SLEEP=60 STUB_TRANSCRIPT_SESSION=through-a-symlink \
+  STUB_TRANSCRIPT_ACCOUNT=symacct WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+symlinked_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -qx 'SESSION: through-a-symlink' <<<"$symlinked_wait"
+assert grep -qxF 'through-a-symlink' "$RUN_DIR/worker-session"
+
+# A transcript belonging to another task is not this run's session, whatever else the tree holds.
+clear_stub
+set_config 'claudeb_profile=pinned'
+foreign_dir="$CLAUDEB_PROFILES_ROOT/picked/projects/fixture"
+mkdir -p "$foreign_dir"
+rm -f "$foreign_dir"/*.jsonl
+# The ceiling ends this one, not the idle half: with no transcript of its own and no workdir edit
+# to read, the run is unobservable, and only the deadline may end a run nobody can watch.
+export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=60 WORKER_RUN_IDLE_S=2 WORKER_RUN_DEADLINE=8
+start_ok claudeb
+jq -cn '{type:"user",message:{role:"user",content:"a different task entirely"}}' \
+  >"$foreign_dir/foreign-session.jsonl"
+unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+foreign_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: failed$' <<<"$foreign_wait"
+assert grep -qx 'SESSION: -' <<<"$foreign_wait"
+assert grep -q '^KILLED: deadline — the 8s ceiling' <<<"$foreign_wait"
+rm -f "$foreign_dir/foreign-session.jsonl"
+
+# A blind run is not an idle run. claudeb writes `out` once, at exit, so a claudeb run whose
+# transcript was never located and whose workdir is no repository emits nothing the watchdog can
+# read — and killing it for that silence killed a healthy 23-minute run whose worker was editing
+# files at the time (live 2026-09-04, exit 143). It now lives to its own end.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=16 WORKER_RUN_IDLE_S=5 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+blind_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: done$' <<<"$blind_wait"
+assert_fails grep -q '^KILLED: ' <<<"$blind_wait"
+
+# And a run whose EDITS are the only thing moving is working: the transcript is written once and
+# never grows, `out` lands at exit, and the files under the workdir are what LAST-EDIT reads — so
+# the watchdog reads them too, or a worker mid-edit dies at the idle window.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=14 STUB_TRANSCRIPT_SESSION=frozen-transcript \
+  STUB_TRANSCRIPT_ACCOUNT=picked WORKER_RUN_IDLE_S=3 WORKER_RUN_DEADLINE=600
+start_ok claudeb --workdir "$DIRT_REPO"
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+for editing in 1 2 3 4 5 6; do
+  sleep 2
+  printf 'edit %s\n' "$editing" >"$DIRT_REPO/bin/the-worker-is-mid-edit"
+done
+editing_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: done$' <<<"$editing_wait"
+assert_fails grep -q '^KILLED: ' <<<"$editing_wait"
+rm -f "$DIRT_REPO/bin/the-worker-is-mid-edit"
+
+# A run's SECOND attempt is a second session. Brief text cannot tell the two apart — the retry
+# hands the CLI the same words — so a run that relaunches adopts the transcript its abandoned
+# attempt left in the tree, and reports and RESUMEs a session holding none of its work. The token
+# each launch carries is what settles it, and the attempt's own launch is the floor: anything
+# written before it belongs to an attempt that is over.
+clear_stub
+set_config 'claudeb_profile=pinned'
+retry_tree="$CLAUDEB_PROFILES_ROOT/picked/projects/fixture"
+mkdir -p "$retry_tree"
+rm -f "$retry_tree"/*.jsonl
+: >"$STUB_DIR/claudeb_drop_effort"
+export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=3 STUB_TRANSCRIPT_SESSION=attempt \
+  STUB_TRANSCRIPT_ACCOUNT=picked WORKER_RUN_IDLE_S=8 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+retry_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: done$' <<<"$retry_wait"
+assert test -f "$retry_tree/attempt.jsonl"
+assert test -f "$retry_tree/attempt-2.jsonl"
+assert grep -qxF "$(cd "$retry_tree" && pwd -P)/attempt-2.jsonl" "$RUN_DIR/session-file"
+assert grep -qx 'attempt-2' "$RUN_DIR/session"
+rm -f "$STUB_DIR/claudeb_drop_effort" "$retry_tree"/*.jsonl
+
+# And a co-tenant run of the SAME brief, on the same account, is not this run: every profile writes
+# into the one transcript tree, so identity is the token and not the words both briefs carry. This
+# run writes no transcript of its own, and the only candidate in the tree is that co-tenant's —
+# adopted, it hands the launcher another chat's session to read and to RESUME.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=6 WORKER_RUN_IDLE_S=8 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+# Written after this run's own launch, so it is inside the window and newest-first offers it first.
+jq -cn --arg t "$(sed 's/^RUN-TOKEN: .*/RUN-TOKEN: claudeb-1-1-ffff-a1/' "$RUN_DIR/brief.launch")" \
+  '{type:"user",message:{role:"user",content:$t}}' >"$retry_tree/a-co-tenant.jsonl"
+cotenant_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -q '^STATUS: done$' <<<"$cotenant_wait"
+assert test ! -s "$RUN_DIR/session-file"
+assert_fails grep -q 'a-co-tenant' "$RUN_DIR/worker-session"
+rm -f "$retry_tree"/*.jsonl
+
+# Killing the supervisor kills the run. A TERM that stops the supervisor and leaves the vendor CLI
+# writing is a worker nobody watches, a record that never gets an exit code, and edits landing in
+# the workdir after the launcher was told the run had ended (live 2026-09-04: run
+# claudeb-1788518882-986-6f32, TERMed at 41s, whose worker went on to finish its task).
+clear_stub
+set_config 'codex_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=signalled STUB_SLEEP=60 WORKER_RUN_IDLE_S=0 WORKER_RUN_DEADLINE=600
+start_ok codex
+unset STUB_SLEEP WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+for waiting in $(seq 1 200); do [ -s "$STUB_DIR/codex.child.pid" ] && break; sleep 0.05; done
+assert test -s "$STUB_DIR/codex.child.pid"
+stub_pid=$(cat "$STUB_DIR/codex.pid")
+stub_child=$(cat "$STUB_DIR/codex.child.pid")
+kill -TERM "$(jq -r '.pid' "$RUN_DIR/meta.json")"
+signal_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
+assert grep -q '^STATUS: failed$' <<<"$signal_wait"
+assert grep -q '^KILLED: signal TERM' <<<"$signal_wait"
+assert grep -q '^KILLED: signal TERM' <<<"$("$RUNNER" report "$RUN_ID")"
+assert_fails kill -0 "$stub_pid"
+# Not the wrapper alone: the CLI's own children go with its group, or the `sleep` here — a worker
+# mid-edit in the real thing — outlives the run that was reported over.
+for waiting in $(seq 1 60); do kill -0 "$stub_child" 2>/dev/null || break; sleep 0.1; done
+assert_fails kill -0 "$stub_child"
+
+# A brief with no first line cannot identify its run: RESUME/ATTACH are read off the top of it, and
+# a discovery prefix taken from a blank line matches every transcript in the tree at once.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=picked
+printf '\nthe ask is on line two\n' >"$WORK/blank-first-brief"
+printf '   \nthe ask is on line two\n' >"$WORK/spaces-first-brief"
+: >"$WORK/empty-brief"
+for bad_brief in blank-first-brief spaces-first-brief empty-brief; do
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/$bad_brief" --workdir "$WORK/workdir" \
+    >"$WORK/blank.out" 2>"$WORK/blank.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -q 'brief starts with a blank line' "$WORK/blank.err"
+  assert_fails grep -q '^RUN: ' "$WORK/blank.out"
+done
+unset PICK_RC PICK_ACCOUNT
 
 # A garbage deadline falls back to the default instead of disarming the watchdog.
 clear_stub
@@ -2395,7 +2759,7 @@ assert grep -q '^STATUS: done$' "$WORK/wait.out"
 
 # The gemini brief travels on argv: oversized briefs are refused up front.
 clear_stub
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=main
 head -c 200000 /dev/zero | tr '\0' 'x' >"$WORK/huge-brief"
 rc=0
@@ -2427,7 +2791,7 @@ assert grep -q '^CODEX_HOME=.*/\.codex-profiles/rescue1$' "$CALL_LOG"
 assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' "$WORK/wait.out"
 assert grep -qx 'rescue1 · sol · high' "$RUN_DIR/tag"
 # The relaunch starts the brief fresh on the new account.
-assert cmp -s "$WORK/brief" "$STUB_DIR/codex.stdin"
+assert_launched_brief "$STUB_DIR/codex.stdin"
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'ACCOUNT: rescue1 (codex)' <<<"$report"
 assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' <<<"$report"
@@ -2468,7 +2832,7 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 # start_run applies: an unlisted answer ends the run instead of relaunching
 # into a CLI error.
 clear_stub
-set_config 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
 printf 'walledg\n' >"$STUB_DIR/gemini_profiles"
 export STUB_CODE=9 STUB_ERROR='RESOURCE_EXHAUSTED'
 printf '%s\n' '0 walledg' '0 unlisted' >"$STUB_DIR/pick_queue"
@@ -2549,7 +2913,8 @@ assert test "$(jq -r 'has("max_turns")' "$RUN_DIR/meta.json")" = false
 assert test "$(grep -c '^ARG=--max-turns$' "$CALL_LOG")" -eq 0
 assert grep -qx 'GROK_MEMORY=0' "$CALL_LOG"
 assert grep -qx 'ARG=--prompt-file' "$CALL_LOG"
-assert grep -qxF "ARG=$RUN_DIR/brief" "$CALL_LOG"
+assert grep -qxF "ARG=$RUN_DIR/brief.launch" "$CALL_LOG"
+assert_launched_brief "$RUN_DIR/brief.launch"
 assert grep -qx 'ARG=streaming-json' "$CALL_LOG"
 assert grep -qx 'ARG=--always-approve' "$CALL_LOG"
 assert grep -qx 'ARG=--no-subagents' "$CALL_LOG"
@@ -2689,7 +3054,7 @@ unset PICK_STDERR
 # A vendor switched off for workers is a decision, not a wall: the sentence handed back must be the
 # one every other vendor gives, vendor word apart, or a relay reads a closed role as an outage.
 clear_stub
-set_config 'gemini_workers=off' 'gemini_model=pro' 'gemini_effort=high'
+set_config 'gemini_workers=off' 'gemini_model=flash38' 'gemini_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=picked
 printf 'picked\n' >"$STUB_DIR/gemini_profiles"
 "$RUNNER" start gemini --brief "$WORK/brief" --account picked \
@@ -2771,6 +3136,8 @@ assert test ! -s "$CALL_LOG"
 for grok_spec in 'You have hit the rate limit for your plan:GROK_USAGE_LIMIT' \
   'error: subscription:free-usage-exhausted:GROK_USAGE_LIMIT' \
   'Your team has run out of credits:GROK_USAGE_LIMIT' \
+  "You've reached your free Grok Build usage limit for now:GROK_USAGE_LIMIT" \
+  'You’ve reached your free Grok Build usage limit for now:GROK_USAGE_LIMIT' \
   'request failed with status 402 Payment Required:GROK_USAGE_LIMIT' \
   'request failed with status 429 Too Many Requests:GROK_UNAVAILABLE' \
   'upstream returned status 503:GROK_UNAVAILABLE' \
@@ -3047,19 +3414,19 @@ model_refused() { # vendor expected-offender [flags...]
 }
 
 set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
-  'gemini_model=pro' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+  'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=picked
 printf 'picked\n' >"$STUB_DIR/gemini_profiles"
 for spec in 'claudeb:sonnet' 'claudeb:haiku' 'claudeb:fable' 'codex:gpt-5.6-terra' \
             'codex:gpt-5.6-luna' 'codex:gpt-5.6' 'gemini:flash' 'gemini:flash36' \
-            'gemini:flash35' 'grok:grok-4.5'; do
+            'gemini:flash35' 'gemini:flash37' 'gemini:pro' 'grok:grok-4.5'; do
   vendor=${spec%%:*}
   bad=${spec#*:}
   assert model_refused "$vendor" "$bad" --model "$bad"
 done
 
 # The same refusal when the toggle file carries it and no brief names a model at all.
-for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-4.5'; do
+for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=pro' 'grok:grok_model=grok-4.5'; do
   vendor=${spec%%:*}
   key=${spec#*:}
   set_config "$key" 'claudeb_effort=high' 'codex_effort=medium' 'gemini_effort=high' 'grok_effort=high'
@@ -3082,7 +3449,7 @@ printf 'model = "gpt-5.6-sol"\n' >"$WORKER_RUN_CODEX_CONFIG"
 
 # The allowed model of every vendor still launches, from the brief and from the file alike.
 set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
-  'gemini_model=pro' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+  'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
 clear_stub
 start_ok claudeb --model opus
 assert await_done
@@ -3090,8 +3457,8 @@ clear_stub
 start_ok codex --model gpt-5.6-sol
 assert await_done
 clear_stub
-start_ok gemini --account main --model pro
-assert meta_agy_is 'Gemini 3.1 Pro (High)'
+start_ok gemini --account main --model flash38
+assert meta_agy_is 'gemini-3.8-flash-high'
 assert await_done
 clear_stub
 start_ok grok --model grok-4.6
@@ -3176,7 +3543,7 @@ STAMPEOF
     assert test "$(stamp_owners "$tag" | grep -c .)" -eq 2
   }
   set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
-    'gemini_model=pro' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
+    'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
   export PICK_RC=0 PICK_ACCOUNT=stampacct
   stamp_relay claudeb claudeb
   stamp_relay codex codex

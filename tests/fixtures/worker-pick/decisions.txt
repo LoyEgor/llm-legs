@@ -3,12 +3,12 @@ all_walled	claudeb	3	-
 all_walled	codex	3	-
 all_walled	gemini	3	-
 all_walled	grok	3	-
-claude_pool	NEXT	1 14.3%/d ×7.0d 0% 0% claude/session* opus·high
+claude_pool	NEXT	1 14.3%/d ×7.0d 0% 0% claude/session* opus·high;2 13.6%/d ×7.0d 5% 20% claude/dry opus·high;3 11.4%/d ×7.0d 20% 30% claude/tie-a opus·high;4 11.4%/d ×7.0d 20% 10% claude/tie-b opus·high
 claude_pool	claudeb	0	session
 claude_pool	codex	3	-
 claude_pool	gemini	3	-
 claude_pool	grok	3	-
-codex_credit	NEXT	1 7.4%/d ×7.0d 48% 48% codex/plain sol·high
+codex_credit	NEXT	1 7.4%/d ×7.0d 48% 48% codex/plain sol·high;2 7.4%/d ×7.0d 48% 48% codex/with-credit sol·high
 codex_credit	claudeb	3	-
 codex_credit	codex	0	plain
 codex_credit	gemini	3	-
@@ -18,22 +18,22 @@ codex_plain	claudeb	3	-
 codex_plain	codex	0	plain
 codex_plain	gemini	3	-
 codex_plain	grok	3	-
-expired	NEXT	1 12.9%/d ×7.0d 10% 0% claude/expired opus·high
+expired	NEXT	1 12.9%/d ×7.0d 10% 0% claude/expired opus·high;2 11.4%/d ×7.0d 20% 20% claude/live opus·high
 expired	claudeb	0	expired
 expired	codex	3	-
 expired	gemini	3	-
 expired	grok	3	-
-gemini_fresh	NEXT	1 9.3%/d ×7.0d 35% 15% gemini/main pro·high
+gemini_fresh	NEXT	1 9.3%/d ×7.0d 35% 15% gemini/main f38·high
 gemini_fresh	claudeb	3	-
 gemini_fresh	codex	3	-
 gemini_fresh	gemini	0	main
 gemini_fresh	grok	3	-
-gemini_high	NEXT	1 8.6%/d ×7.0d 40% 91% gemini/main pro·high 5h!
+gemini_high	NEXT	1 8.6%/d ×7.0d 40% 91% gemini/main f38·high 5h!
 gemini_high	claudeb	3	-
 gemini_high	codex	3	-
 gemini_high	gemini	0	main
 gemini_high	grok	3	-
-gemini_stale	NEXT	1 10.0%/d ×7.0d 30% 20% gemini/main pro·high
+gemini_stale	NEXT	1 10.0%/d ×7.0d 30% 20% gemini/main f38·high
 gemini_stale	claudeb	3	-
 gemini_stale	codex	3	-
 gemini_stale	gemini	0	main
@@ -43,7 +43,7 @@ gemini_wrong_group	claudeb	3	-
 gemini_wrong_group	codex	3	-
 gemini_wrong_group	gemini	3	-
 gemini_wrong_group	grok	3	-
-golden	NEXT	1 11.4%/d ×7.0d 20% 20% claude/session* opus·high;2 10.7%/d ×7.0d 25% 12% gemini/main pro·high;3 7.4%/d ×7.0d 48% 48% codex/main sol·high
+golden	NEXT	1 11.4%/d ×7.0d 20% 20% claude/session* opus·high;2 10.7%/d ×7.0d 25% 12% gemini/main f38·high;3 8.6%/d ×7.0d 40% 30% claude/worker opus·high;4 7.4%/d ×7.0d 48% 48% codex/main sol·high
 golden	claudeb	0	session
 golden	codex	0	main
 golden	gemini	0	main
@@ -53,12 +53,12 @@ reserve_only	claudeb	0	session
 reserve_only	codex	3	-
 reserve_only	gemini	3	-
 reserve_only	grok	3	-
-reset	NEXT	1 200.0%/d ×0.3d 50% 10% claude/soon opus·high
+reset	NEXT	1 200.0%/d ×0.3d 50% 10% claude/soon opus·high;2 10.0%/d ×5.0d 50% 10% claude/later opus·high
 reset	claudeb	0	soon
 reset	codex	3	-
 reset	gemini	3	-
 reset	grok	3	-
-stale	NEXT	1 11.4%/d ×7.0d 20% 20% claude/effective opus·high
+stale	NEXT	1 11.4%/d ×7.0d 20% 20% claude/effective opus·high;2 10.0%/d ×7.0d 30% 30% claude/raw opus·high
 stale	claudeb	0	effective
 stale	codex	3	-
 stale	gemini	3	-

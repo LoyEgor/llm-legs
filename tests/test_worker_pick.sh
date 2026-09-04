@@ -65,7 +65,7 @@ printf '%s\n' 'session=100' 'worker=20' 'tie-a=100' 'tie-b=100' 'dry=100' 'walle
 # writes the same defaults back.
 write_config() {
   printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-    'gemini_model=pro' 'gemini_effort=high' "$@" >"$CONFIG"
+    'gemini_model=flash38' 'gemini_effort=high' "$@" >"$CONFIG"
 }
 write_config
 
@@ -103,10 +103,10 @@ query_case() {
 
 # Unusable data has no fail-safe answer for a caller, and a human-facing run says why.
 printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=pro' 'gemini_effort=high' 'gemini_profile=work' >"$CONFIG"
+  'gemini_model=flash38' 'gemini_effort=high' 'gemini_profile=work' >"$CONFIG"
 printf 'not-json\n' >"$STORE"
 run_store malformed
-assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini work · pro · high — unavailable (limits parse failed)'
+assert contains "$(head -n1 <<<"$output")" 'NEXT: gemini work · flash38 · high — unavailable (limits parse failed)'
 # The fable pick was a line of its own; `--fable` is the query that asks for it now.
 assert not_contains "$output" 'SESSION:'
 query --account claudeb
@@ -462,12 +462,12 @@ write_config
 
 # Rule 3 on the vendor that reports one bucket: 91% is not a wall, so it still routes.
 run_case gemini_high
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: main'
-assert contains "$(vsection gemini)" '40% 91% main pro·high 5h!'
+assert contains "$(vsection gemini)" '40% 91% main f38·high 5h!'
 assert not_contains "$(vsection gemini)" WALLED
 run_filter gemini_high '.vendors.gemini.five_hour.used_pct = 100'
-assert contains "$(vsection gemini)" '40% 100% main pro·high WALLED'
+assert contains "$(vsection gemini)" '40% 100% main f38·high WALLED'
 assert not_contains "$output" 'ACCOUNT: main'
 # Gemini is the only pool member here, so its wall is the whole pool's wall.
 assert test "$(next_fail)" = 'NEXT: ALL WALLED, ask Egor'
@@ -478,10 +478,10 @@ run_case gemini_wrong_group
 assert test "$(vsection gemini)" = 'no Gemini Models quota data'
 assert not_contains "$output" 'ACCOUNT: main'
 run_filter gemini_fresh '.vendors.gemini.group = "Google GEMINI quota"'
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: main'
 run_filter gemini_fresh '.vendors.gemini.enabled = false'
-assert contains "$(vsection gemini)" '35% 15% main pro·high off'
+assert contains "$(vsection gemini)" '35% 15% main f38·high off'
 assert not_contains "$output" 'ACCOUNT: main'
 run_filter gemini_fresh '.vendors.gemini = {
   available:false,auth_needed:true,status:"login needed",source:"agy-local-rpc"}'
@@ -489,31 +489,31 @@ assert test "$(vsection gemini)" = 'login needed'
 run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: main'
 # `main` is no longer a ranking key on any vendor, so equal budgets order by name alone.
 run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}},
   {account:"work",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: main'
 # ... and a nearer weekly reset outranks the name, because the budget it feeds is larger.
 run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",weekly:{used_pct:10,resets_at:2000432000}},
   {account:"work",group:"Gemini Models",weekly:{used_pct:10,resets_at:2000010800}}]}'
-assert contains "$(nrow 1)" 'gemini/work pro·high'
+assert contains "$(nrow 1)" 'gemini/work f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: work'
 # The base profile is deletable, so a roster without it routes on the accounts it does have and
 # never falls back to the name that is gone.
 run_filter gemini_fresh '.vendors.gemini = {available:true,current_account:"com",accounts:[
   {account:"com",group:"Gemini Models",is_current:true,five_hour:{used_pct:40},weekly:{used_pct:40}},
   {account:"work",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
-assert contains "$(nrow 1)" 'gemini/work pro·high'
+assert contains "$(nrow 1)" 'gemini/work f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: work'
 assert not_contains "$(vsection gemini)" main
 run_filter gemini_fresh '.vendors.gemini = {available:true,current_account:"com",accounts:[
   {account:"com",group:"Gemini Models",is_current:true,five_hour:{used_pct:100},weekly:{used_pct:40}}]}'
-assert contains "$(vsection gemini)" '40% 100% com pro·high WALLED'
+assert contains "$(vsection gemini)" '40% 100% com f38·high WALLED'
 assert not_contains "$output" 'ACCOUNT: main'
 write_config 'gemini_profile=work'
 run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
@@ -591,8 +591,8 @@ GROK_PAIR_JSON='{"available":true,"accounts":[
 # vendor is simply absent from the render, never a wall and never a failed lookup.
 run_case golden
 assert not_contains "$output" grok
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 11
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi'
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 12
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
 query_case golden --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -603,25 +603,32 @@ assert contains "$(nrow 1)" 'grok/spare grok·high'
 assert contains "$(vsection grok)" '10% – spare grok·high'
 assert contains "$(vsection grok)" '40% – supergrok grok·high'
 assert contains "$(section_order)" 'grok claude'
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 14
+# Six candidates over four vendors, and the table stops at NEXT_MAX_ROWS: codex/main, the smallest
+# budget of the six, is the one left to its own section.
+assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 5
+assert not_contains "$(next_block)" 'codex/main'
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 15
 # The cache line keeps its field order and gains a fourth field; `grok_model=auto` is a knob value,
 # not a missing one, so it is printed as it stands and resolved by worker-run.
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr✓spare·auto·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·auto·hi'
 write_config 'grok_model=grok-4.5' 'grok_effort=medium'
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·med'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr✓spare·grok-4.5·med'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·grok-4.5·med'
 write_config 'grok_model=grok-4.6' 'grok_effort=xhigh'
 grok_case "$GROK_PAIR"
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr✓spare·grok-4.6·xh'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·grok-4.6·xh'
 write_config
-# Auto orders vendors by the daily budget of the account each one selected, so grok leads here on
-# its 10% week and codex trails on its 48% one — the old fixed claudeb→codex→gemini→grok order is
-# gone, and no vendor has a promotion rule of its own.
+# Auto orders ACCOUNTS by daily budget across the vendors, so grok/spare leads here on its 10% week
+# and codex, the smallest budget of the six, is what the five-row cap drops — the old fixed
+# claudeb→codex→gemini→grok order is gone, and no vendor has a promotion rule of its own.
+# Equal budgets across vendors break on the name, exactly as they do inside one pool.
 next_line=$(next_block)
 assert before "$next_line" 'grok/spare' 'claude/session'
 assert before "$next_line" 'claude/session' 'gemini/main'
-assert before "$next_line" 'gemini/main' 'codex/main'
+assert before "$next_line" 'gemini/main' 'grok/supergrok'
+assert before "$next_line" 'grok/supergrok' 'claude/worker'
+assert not_contains "$next_line" 'codex/main'
 # A vendor with nothing selectable has no budget to compare and takes the tail.
 run_filter golden ".vendors.grok = $GROK_PAIR
   | .vendors.codex = {available:true,accounts:[{account:\"main\"}]}
@@ -629,12 +636,17 @@ run_filter golden ".vendors.grok = $GROK_PAIR
   | .vendors.claude.accounts |= map(.enabled = false)"
 # Nothing measured codex or gemini here, so neither may speak of a wall.
 assert contains "$(next_block)" 'grok/spare grok·high'
-assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 1
+# Grok is the only vendor answering, and both of its accounts are candidates: the rows count
+# accounts, so the one vendor left standing fills the table on its own.
+assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 2
+assert not_contains "$(next_block)" 'claude/'
+assert not_contains "$(next_block)" 'codex/'
+assert not_contains "$(next_block)" 'gemini/'
 # A vendor that answers nothing says so in its own section, never as a row of the ranking: an
 # emptied pool is per-account, so its rows stay and carry the switch.
 assert contains "$(vsection claude)" '20% 20% session* opus·high off'
 assert test "$(vsection codex)" = '- ? ? main sol·high'
-assert test "$(vsection gemini)" = '- ? ? main pro·high'
+assert test "$(vsection gemini)" = '- ? ? main f38·high'
 # The order follows the numbers, not the vendor: the same store with codex barely touched puts
 # codex at the head and grok behind claudeb.
 run_filter golden ".vendors.grok = $GROK_PAIR
@@ -649,7 +661,7 @@ assert before "$next_line" 'gemini/main' 'grok/spare'
 run_filter golden ".vendors.grok = $GROK_PAIR
   | .vendors.gemini.weekly.resets_at = 2000010800"
 next_line=$(next_block)
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert test "$(acct_line)" = 'ACCOUNT: main'
 assert before "$next_line" 'gemini/main' 'grok/spare'
 # The pin is the top override of worker routing, so in auto the vendor a usable pin answered leads
@@ -696,11 +708,87 @@ assert test "$query_out" = session
 write_config
 # `worker=grok` is a mode arm like `worker=gemini`: the vendor leads the line whatever the pool says.
 printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·high'
 assert before "$(next_block)" 'grok/spare' 'claude/session'
+# Siblings of the armed vendor fall back into the vector: supergrok is not glued under spare.
+assert before "$(next_block)" 'claude/session' 'grok/supergrok'
+printf '%s\n' 'worker=codex' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
+run_case golden
+assert contains "$(nrow 1)" 'codex/main sol·high'
+assert test "$(acct_line)" = 'ACCOUNT: main'
+assert before "$(next_block)" 'codex/main' 'claude/session'
 write_config
+
+# The table lists ACCOUNTS, not one nominee per vendor: two usable claude accounts beside two
+# usable grok ones are four rows in budget order, interleaved, and a vendor may hold several of
+# them. Egor reads this block to see where the next runs go, and a leg whose second account is the
+# best remaining answer was invisible while each vendor could spend only one row.
+TWO_BY_TWO=".vendors.grok = $GROK_PAIR | del(.vendors.codex) | del(.vendors.gemini)"
+run_filter golden "$TWO_BY_TWO"
+assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 4
+assert contains "$(nrow 1)" '12.9%/d ×7.0d 10% – grok/spare grok·high'
+assert contains "$(nrow 2)" '11.4%/d ×7.0d 20% 20% claude/session* opus·high'
+assert contains "$(nrow 3)" '8.6%/d ×7.0d 40% – grok/supergrok grok·high'
+assert contains "$(nrow 4)" '8.6%/d ×7.0d 40% 30% claude/worker opus·high'
+assert test "$(acct_line)" = 'ACCOUNT: spare'
+# A wall is still a skip, not a low rank: an account at 100% has no row however many the table has
+# room for.
+run_filter golden "$TWO_BY_TWO
+  | .vendors.claude.accounts += [{account:\"walled-wk\",enabled:true,auth:\"ok\",
+      five_hour:{used_pct:0},weekly:{used_pct:100}}]"
+assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 4
+assert not_contains "$(next_block)" 'walled-wk'
+assert contains "$(vsection claude)" 'walled-wk opus·high WALLED'
+# The pin outranks budget at the ACCOUNT level too: `worker` leads over the freer `session` beside
+# it and over the freer grok account above it, and its vendor mates rank on budget as ever.
+write_config 'claudeb_profile=worker'
+run_filter golden "$TWO_BY_TWO"
+assert contains "$(nrow 1)" 'claude/worker opus·high PINNED'
+assert test "$(acct_line)" = 'ACCOUNT: worker'
+next_line=$(next_block)
+assert before "$next_line" 'claude/worker' 'grok/spare'
+assert before "$next_line" 'grok/spare' 'claude/session'
+assert before "$next_line" 'claude/session' 'grok/supergrok'
+# A second pin proves the key rather than the mode: pins rank above unpinned accounts, then share
+# the same vector. Grok's larger-budget pin leads until a fresh claim pushes it behind Claude's.
+write_config 'claudeb_profile=worker' 'grok_profile=spare'
+run_filter golden "$TWO_BY_TWO"
+next_line=$(next_block)
+assert before "$next_line" 'grok/spare' 'claude/worker'
+assert before "$next_line" 'claude/worker' 'claude/session'
+assert before "$next_line" 'claude/session' 'grok/supergrok'
+mkdir -p "$CLAIMS/grok"
+touch "$CLAIMS/grok/spare"
+run_filter golden "$TWO_BY_TWO"
+assert contains "$(nrow 1)" 'claude/worker opus·high PINNED'
+assert test "$(acct_line)" = 'ACCOUNT: worker'
+assert before "$(next_block)" 'claude/worker' 'grok/spare'
+clear_claims
+write_config
+
+# The merge uses the same vector as row 1: a five-hour deferral outranks budget across vendors.
+# session's weekly is the cheapest here, but 85% five-hour parks it behind every non-deferred row.
+run_filter golden "$TWO_BY_TWO
+  | .vendors.claude.accounts |= map(
+      if .account == \"session\" then .weekly.used_pct = 0 | .five_hour.used_pct = 85 else . end)"
+assert contains "$(nrow 1)" 'grok/spare grok·high'
+assert before "$(next_block)" 'grok/spare' 'claude/session'
+assert contains "$(next_block)" 'session* opus·high 5h!'
+# Walled, off, and dead-auth stay skips even when the table has room.
+run_case claude_pool
+assert not_contains "$(next_block)" 'claude/off'
+assert not_contains "$(next_block)" 'claude/dead'
+assert not_contains "$(next_block)" 'walled-wk'
+assert not_contains "$(next_block)" 'walled-5h'
+# Late auth is the same key across vendors: a cheaper expired grok ranks behind a signed-in claude.
+grok_case '{available:true,accounts:[
+  {account:"stale",enabled:true,weekly:{used_pct:10},auth:{status:"expired"}}]}'
+assert contains "$(nrow 1)" 'claude/session* opus·high'
+assert before "$(next_block)" 'claude/session' 'grok/stale'
+assert contains "$(next_block)" 'grok/stale grok·high auth expired'
 
 # Rule 2 for a vendor with one bucket: largest weekly budget, then name — and `--exclude` walks
 # that same order until nothing is left.
@@ -801,7 +889,7 @@ grok_case '{available:true,accounts:[
   {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
 assert contains "$(nrow 1)" 'grok/supergrok grok·high PINNED'
 assert contains "$(vsection grok)" '40% – supergrok grok·high PINNED off'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr✓supergrok·auto·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓supergrok·auto·hi'
 write_config 'grok_profile=ghost'
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·high'
@@ -830,7 +918,7 @@ grok_case "$GROK_PAIR"
 assert test "$(vsection grok)" = 'off for workers'
 assert not_contains "$output" 'grok unavailable'
 assert not_contains "$(next_block)" 'grok/'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi gr⏸off·auto·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr⏸off·auto·hi'
 grok_query "$GROK_PAIR_JSON" --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -941,17 +1029,21 @@ assert test "$(vsection claude)" = 'off for workers'
 assert not_contains "$output" 'ACCOUNT: worker'
 assert not_contains "$(next_block)" 'claude/'
 # A parked vendor is not an unpredictable one: the statusline reads `~?` as a lookup that failed.
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb⏸off·opus·hi gx✓main·pro·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb⏸off·opus·hi gx✓main·flash38·hi'
 write_config 'codex_workers=off'
 run_case golden
 assert test "$(vsection codex)" = 'off for workers'
 assert not_contains "$(next_block)" 'codex/'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx⏸off·sol·hi cb~session·opus·hi gx✓main·pro·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx⏸off·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
 write_config 'gemini_workers=off'
 run_case golden
 assert test "$(vsection gemini)" = 'off for workers'
 assert not_contains "$output" 'ACCOUNT: main'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx⏸off·pro·hi'
+# The vendor LINE stating the switch is not the same claim as the vendor holding no rank: gemini
+# outranks codex in this store, so a redesign that kept ranking it would still print this line
+# while handing gemini out as the answer.
+assert not_contains "$(next_block)" 'gemini/'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx⏸off·flash38·hi'
 # The switch is the answer even when the store has nothing left to rank: blaming the data for it
 # would send the owner hunting a reading that no longer decides anything.
 write_config 'codex_workers=off'
@@ -961,7 +1053,7 @@ assert test "$(vsection codex)" = 'off for workers'
 # vendor order.
 write_config 'claudeb_workers=off'
 run_case golden
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert contains "$(next_block)" 'codex/main sol·high'
 assert not_contains "$(next_block)" 'claude/'
 assert test "$(vsection claude)" = 'off for workers'
@@ -969,7 +1061,7 @@ assert test "$(vsection claude)" = 'off for workers'
 # 48% of its week left.
 write_config 'claudeb_workers=off' 'codex_workers=off'
 run_case golden
-assert contains "$(nrow 1)" 'gemini/main pro·high'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert test "$(vsection codex)" = 'off for workers'
 assert not_contains "$output" WALLED
 assert test "$(vsection claude)" = 'off for workers'
@@ -1089,7 +1181,7 @@ run_filter claude_pool '.vendors.claude.accounts = [
   {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
 assert contains "$(vsection claude)" '- ? ? blank opus·high'
 run_case gemini_stale
-assert contains "$(vsection gemini)" '30% 20% main pro·high'
+assert contains "$(vsection gemini)" '30% 20% main f38·high'
 # The row is NAMED, never a verdict over the table: one old account beside four fresh ones sent
 # Egor looking for a collector that had in fact answered for everything he was routing on.
 assert contains "$output" 'DATA: STALE — gemini/main 2h46m'
@@ -1144,11 +1236,20 @@ printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_
 run_case gemini_fresh
 assert contains "$(nrow 1)" 'gemini/main flash·med'
 assert test "$(acct_line)" = 'ACCOUNT: main'
+# The one model the gemini worker runs is the one knob value the column shortens, and only in the
+# column: spelled out it costs the padded field four characters every vendor row pays for, while
+# the statusline cache carries the knob itself so a reader of the line sees the family.
+printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
+  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
+run_case gemini_fresh
+assert contains "$(nrow 1)" 'gemini/main f38·high'
+assert not_contains "$output" flash38
+assert contains "$(cat "$CACHE/worker-pick.line.session")" 'gx✓main·flash38·hi'
 # `worker=sonnet` is a toggle value that no longer exists — every implementation run belongs to a
 # relay worker on another account — so the reader routes it as `auto` and says so once, instead of
 # falling through to a mode nobody defines.
 printf '%s\n' 'worker=sonnet' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
 run_case golden
 sonnet_next=$(next_block)
 assert grep -Fq 'worker=sonnet is no longer a worker toggle value' "$WORK/note.err"
@@ -1160,11 +1261,11 @@ assert test "$sonnet_next" = "$(next_block)"
 # widest thing either row builder pads: with no gap left the reset and the flags glue onto it and
 # the row reads as one token.
 printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=sonnet' 'claudeb_effort=xhigh' \
-  'gemini_model=pro' 'gemini_effort=high' >"$CONFIG"
+  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
 run_case reset
 assert contains "$(vsection claude)" 'sonnet·xhigh ↺'
 printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=sonnet' 'claudeb_effort=xhigh' \
-  'gemini_model=pro' 'gemini_effort=high' 'claudeb_profile=off' >"$CONFIG"
+  'gemini_model=flash38' 'gemini_effort=high' 'claudeb_profile=off' >"$CONFIG"
 run_case claude_pool
 assert contains "$(nrow 1)" 'sonnet·xhigh PINNED'
 write_config
@@ -1173,16 +1274,19 @@ write_config
 # the statusline cache line, and no POLICY prose anywhere.
 run_case golden
 assert test "$(acct_line)" = 'ACCOUNT: session'
-assert not_contains "$(next_block)" 'claude/worker'
+# The table ranks ACCOUNTS, so a vendor holding two candidates spends two rows on them, each at the
+# budget it earned: claude/worker sits BELOW gemini/main here rather than under its own vendor.
+assert before "$(next_block)" 'gemini/main' 'claude/worker'
+assert before "$(next_block)" 'claude/worker' 'codex/main'
 assert contains "$output" 'session*'
 assert contains "$(vsection claude)" '* = this session account'
 assert not_contains "$output" 'RESERVE'
 assert test "$(sed -n '1p' <<<"$output" | cut -c1-4)" = NEXT
 assert test "$(section_order)" = 'codex gemini claude'
 assert test "$(grep -c -- '^DATA: ' <<<"$output")" -eq 1
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 11
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 12
 assert not_contains "$output" '# Worker routing policy'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
 assert test -z "$(find "$CACHE" -name '*.tmp.*' -print -quit)"
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
 # Display bands are render-only: an unreachable account stays visible, below the candidates.
@@ -1204,7 +1308,7 @@ run_case golden
 assert test ! -e "$CACHE/worker-pick.line.gone"
 assert test -e "$CACHE/worker-pick.line.live"
 assert test -e "$CACHE/statusline-cache-rl"
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·pro·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
 rm -f "$CACHE/worker-pick.line.live" "$CACHE/statusline-cache-rl"
 
 # A paused vendor is parked for months and must leave no trace: the collector drops its
@@ -1214,7 +1318,7 @@ write_config 'gemini_paused=on'
 run_filter golden 'del(.vendors.gemini)'
 assert not_contains "$output" gemini
 assert not_contains "$output" paused
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 9
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 10
 assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi'
 # Read off the switch as well as off the store: the collector only drops the vendor on its next
 # run, and a snapshot written before the switch must not keep the parked vendor on screen.
@@ -1225,12 +1329,12 @@ assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~
 write_config 'codex_paused=on'
 run_case golden
 assert not_contains "$output" codex
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cb~session·opus·hi gx✓main·pro·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cb~session·opus·hi gx✓main·flash38·hi'
 write_config 'claudeb_paused=on'
 run_case golden
 assert not_contains "$output" claude
-assert contains "$(nrow 1)" 'gemini/main pro·high'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi gx✓main·pro·hi'
+assert contains "$(nrow 1)" 'gemini/main f38·high'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi gx✓main·flash38·hi'
 # A named vendor is refused rather than quietly rerouted: a caller that spelled it out would read
 # another vendor's account as the one it asked for.
 write_config 'grok_paused=on'
@@ -1256,7 +1360,7 @@ write_config 'grok_paused=on'
 grok_case "$GROK_PAIR"
 paused_auto_next=$(next_block)
 printf '%s\n' 'worker=grok' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=pro' 'gemini_effort=high' 'grok_paused=on' >"$CONFIG"
+  'gemini_model=flash38' 'gemini_effort=high' 'grok_paused=on' >"$CONFIG"
 grok_case "$GROK_PAIR"
 assert not_contains "$output" grok
 assert test "$(next_block)" = "$paused_auto_next"
@@ -1425,4 +1529,4 @@ decisions_now() {
 }
 assert diff -u "$DECISIONS" <(decisions_now)
 
-printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the three roles including a chat that sees no pin, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, auto vendor order following the selected accounts budgets rather than a fixed vendor list, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, and the output/cache/decision golden contract with no routing prose\n' "$asserts"
+printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the three roles including a chat that sees no pin, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, and the output/cache/decision golden contract with no routing prose\n' "$asserts"

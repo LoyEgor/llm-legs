@@ -178,6 +178,28 @@ process_start_epoch() {
   printf '%s' "$((now - (10#$days * 86400 + 10#$hours * 3600 + 10#$mins * 60 + 10#$secs)))"
 }
 
+# Whether a worker run record still has a supervisor behind it, by the one rule every reader of
+# these records uses (docs/shared-invariants.md row `ar`): the age of the pid the record stamped
+# against the `pid_started_at` it stamped beside it, within SL_PID_SLACK — never `kill -0`, which
+# reads a foreign-owned live process as dead through EPERM, and never the restampable `started_at`.
+# Pid 0 is the placeholder worker-run writes before the supervisor exists, and `ps -p 0` answers
+# nothing. Unlike the hooks, this reader needs no dead/unknown distinction: both mean no tag, and
+# nothing here is destructive, so a `ps` that cannot answer costs a fallback and not a verdict.
+SL_PID_SLACK=30
+run_supervisor_live() { # run-directory now ; sets run_started_at
+  local meta="$1/meta.json" pid begin drift
+  run_started_at=0
+  pid=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$meta" 2>/dev/null | head -n1)
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] || return 1
+  run_started_at=$(sed -n 's/.*"pid_started_at"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$meta" 2>/dev/null | head -n1)
+  [[ "$run_started_at" =~ ^[0-9]+$ ]] && [ "$run_started_at" -gt 0 ] || { run_started_at=0; return 1; }
+  begin=$(process_start_epoch "$pid" "$2") || return 1
+  drift=$((begin - run_started_at))
+  [ "$drift" -ge 0 ] || drift=$((-drift))
+  [ "$drift" -le "$SL_PID_SLACK" ]
+}
+
 # The chat that launched a review run: its own registry entry, or the nearest ancestor's — a run
 # is a grandchild of the chat that asked for it, several execs down. A launcher that cannot be
 # named leaves the run bright, since hiding a review this chat may well have started is the worse
@@ -2111,7 +2133,7 @@ worker_vendor_knobs() {
   case "$1" in
     cx) wv_model=$(codex_model_short_label); wv_effort=${codex_effort:-high} ;;
     cb) wv_model=${claudeb_model:-opus}; wv_effort=${claudeb_effort:-high} ;;
-    gx) wv_model=${gemini_model:-pro}; wv_effort=${gemini_effort:-high} ;;
+    gx) wv_model=${gemini_model:-flash38}; wv_effort=${gemini_effort:-high} ;;
     # `auto` names no model: it means whichever one the account defaults to, so the candidate
     # carries the effort alone rather than a version nobody chose.
     gr) wv_model=${grok_model:-auto}; [ "$wv_model" != auto ] || wv_model=""
@@ -2177,16 +2199,43 @@ elif [ -n "$wvendor" ]; then
   fi
 fi
 
-# A live tag (seeded by worker-tag-hook from the actual launch command) beats
-# the static config guess while a worker is running in THIS session.
+# A live worker of THIS chat beats the static config guess, and it says so for as long as it RUNS:
+# the run records are the source, never the age of a tag file — a 30-minute run (every run today)
+# used to leave the strip after ten minutes and the segment fell back to the grey candidate while
+# the account was still spending (Egor, 2026-09-04). review-bench has its own `rev` segment.
 live_tag=""
+live_runs=0
 if [ -n "$session_id" ]; then
-  tags_dir="$HOME/.cache/claude-worker-tags/$session_id"
-  newest=$(ls -t "$tags_dir" 2>/dev/null | head -n1)
-  if [ -n "$newest" ]; then
-    tag_mtime=$(file_mtime "$tags_dir/$newest")
-    if [[ "$tag_mtime" =~ ^[0-9]+$ ]] && [ "$((now - tag_mtime))" -le 600 ]; then
-      IFS= read -r live_tag < "$tags_dir/$newest" 2>/dev/null || live_tag=""
+  # `launcher` is the chat a run answers to, written at launch by worker-run — one read per record
+  # and no fork, so the scan stays inside the render budget.
+  live_newest=-1
+  for run_launcher_file in "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"/*/launcher; do
+    [ -s "$run_launcher_file" ] || continue
+    IFS= read -r run_launcher < "$run_launcher_file" 2>/dev/null || continue
+    [ "$run_launcher" = "$session_id" ] || continue
+    run_directory=${run_launcher_file%/launcher}
+    # An exit code is the run stating it is over; anything else defers to the supervisor.
+    [ -f "$run_directory/exit_code" ] && continue
+    run_supervisor_live "$run_directory" "$now" || continue
+    live_runs=$((live_runs + 1))
+    [ "$run_started_at" -ge "$live_newest" ] || continue
+    if IFS= read -r run_tag < "$run_directory/tag" 2>/dev/null && [ -n "$run_tag" ]; then
+      live_newest="$run_started_at"; live_tag="$run_tag"
+    fi
+  done
+  # The tag file covers only the gap the records cannot: a launch in its first seconds, and an
+  # image-gen run, which goes straight at its vendor and writes no record at all. 60s, because that
+  # gap is one tool call wide — a long run outliving its window is exactly what the scan above is.
+  if [ -z "$live_tag" ]; then
+    # The count belongs to the records; a tag read off the file names one worker and counts it.
+    live_runs=0
+    tags_dir="$HOME/.cache/claude-worker-tags/$session_id"
+    newest=$(ls -t "$tags_dir" 2>/dev/null | head -n1)
+    if [ -n "$newest" ]; then
+      tag_mtime=$(file_mtime "$tags_dir/$newest")
+      if [[ "$tag_mtime" =~ ^[0-9]+$ ]] && [ "$((now - tag_mtime))" -le 60 ]; then
+        IFS= read -r live_tag < "$tags_dir/$newest" 2>/dev/null || live_tag=""
+      fi
     fi
   fi
 fi
@@ -2203,11 +2252,20 @@ if [ -n "$live_tag" ]; then
   else
     worker_body="${MAGENTA}▶${live_tag}${RESET}"
   fi
+  # Several live runs: the newest-started one is named and the rest are a count. Naming them all
+  # would push the strip past its width on the one occasion Egor is running three workers.
+  [ "$live_runs" -gt 1 ] && worker_body="${worker_body}${DIM}×${live_runs}${RESET}"
 fi
 
 # Too slow for the render path: read the cache, fire the probe in the background
 # when it's >15s stale, and hide the segment once it's >60s stale (probe presumed dead).
-# Home's tree, not the shown one: these are the servers the session itself is running.
+# The probe collects every tree of the session's own project and writes the tree beside each port;
+# the COLOUR is what says whose tree it is, since a caption beside each one would widen the strip
+# (Egor, 2026-09-04). The segment sits inside the atomic middle block, so it answers for the SHOWN
+# tree: a worktree shows its own ports and nothing else, while the main checkout shows the whole
+# project — its own ports bright, every worktree's dim, so the root is where everything that is up
+# can be seen. A port no tree of the project holds (`-`) is one this session parents itself and has
+# no tree to disagree with, so it stays bright in every view.
 ports_part=""
 if [ -n "$session_id" ]; then
   probe_self="$0"
@@ -2220,18 +2278,31 @@ if [ -n "$session_id" ]; then
     ( "$probe_bin" "$session_id" "$PPID" "$home_top" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
-    # `read` still sets the var on a newline-less EOF; ignore the nonzero return.
-    ports_line=""
-    IFS= read -r ports_line < "$ports_cache" 2>/dev/null || :
-    if [ -n "$ports_line" ]; then
-      ports_render=""; ports_count=0
-      for p in $ports_line; do
-        [ "$ports_count" -ge 3 ] && break
-        ports_render="${ports_render} ${GREEN}:${p}${RESET}"
-        ports_count=$((ports_count + 1))
-      done
-      [ -n "$ports_render" ] && ports_part=" ${DIM}⇢${RESET}${ports_render}"
-    fi
+    ports_own=""; ports_away=""
+    # `read` still sets the vars on a newline-less EOF, so the last record counts on that return.
+    while IFS=$'\t' read -r ports_port ports_tree || [ -n "$ports_port" ]; do
+      [[ "$ports_port" =~ ^[0-9]+$ ]] || continue
+      [ "$active_common" = "$project_common" ] || continue
+      if [ -z "$ports_tree" ] || [ "$ports_tree" = - ] || [ "$ports_tree" = "$active_top" ]; then
+        ports_own="${ports_own} ${ports_port}"
+      elif [ "$active_is_wt" != 1 ]; then
+        ports_away="${ports_away} ${ports_port}"
+      fi
+    done < "$ports_cache" 2>/dev/null
+    ports_render=""; ports_count=0
+    # Own tree first, so the three-port cap can never spend itself on siblings and hide the one
+    # port Egor is here to open.
+    for p in $ports_own; do
+      [ "$ports_count" -ge 3 ] && break
+      ports_render="${ports_render} ${GREEN}:${p}${RESET}"
+      ports_count=$((ports_count + 1))
+    done
+    for p in $ports_away; do
+      [ "$ports_count" -ge 3 ] && break
+      ports_render="${ports_render} ${DIM}:${p}${RESET}"
+      ports_count=$((ports_count + 1))
+    done
+    [ -n "$ports_render" ] && ports_part=" ${DIM}⇢${RESET}${ports_render}"
   fi
 fi
 

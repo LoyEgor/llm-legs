@@ -32,8 +32,22 @@ function Styled.__concat(left, right)
   return result
 end
 
+-- hs.canvas is what the dim pool check is drawn with, and a loader that leaves it out is the
+-- fallback path the renderer has to survive — so it is opt-in per loader, like the appearance.
+local function fakeCanvas(sheets)
+  return { new = function(frame)
+    local sheet = { frame = frame }
+    function sheet:imageFromCanvas()
+      return { kind = "image", frame = frame, element = self[1] }
+    end
+    function sheet:delete() sheet.deleted = true end
+    table.insert(sheets, sheet)
+    return sheet
+  end }
+end
+
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
-    workerModel, fsAttributes, interfaceStyle, doctorSnapshot)
+    workerModel, fsAttributes, interfaceStyle, doctorSnapshot, canvasSheets)
   local mock = {
     alert = { show = alertFn or function() end },
     dialog = { blockAlert = function(...)
@@ -53,6 +67,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },
   }
+  if canvasSheets then mock.canvas = fakeCanvas(canvasSheets) end
   -- Writes stay in the harness: the module appends to its action log through this, and a test
   -- reading the real ~/.hammerspoon log would both miss the lines and dirty a live file.
   local writes = {}
@@ -414,9 +429,11 @@ local routingText = table.concat({
   "NEXT   budget          wk    5h    vendor/account       model·eff",
   " 1     23.6%/d ×2.7d   37%   0%    claude/alpha*        opus·high",
   " 2      7.8%/d ×3.1d   76%   –     grok/gamma           grok·high",
+  " 3     10.7%/d ×7.0d   25%   12%   gemini/main          f38·high",
   "ACCOUNT: alpha",
   "codex:   off for workers",
   "grok:     7.8%/d ×3.1d   76%   –     gamma            grok·high   ↺ Sun 17:50",
+  "gemini:  10.7%/d ×7.0d   25%   12%   main             f38·high    ↺ Sun 11:20",
   "claude:  23.6%/d ×2.7d   37%   0%    alpha*           opus·high   ↺ Sun 08:00",
   "         * = this session account",
   "DATA: 4 min old",
@@ -438,9 +455,11 @@ local expectedRouting = {
   "NEXT   budget          wk    5h    vendor/account       model·eff",
   " 1     23.6%/d ×2.7d   37%   0%    claude/alpha*        opus·high",
   " 2      7.8%/d ×3.1d   76%   –     grok/gamma           grok·high",
+  " 3     10.7%/d ×7.0d   25%   12%   gemini/main          f38·high",
   "ACCOUNT: alpha",
   "codex:   off for workers",
   "grok:     7.8%/d ×3.1d   76%   –     gamma            grok·high   ↺ Sun 17:50",
+  "gemini:  10.7%/d ×7.0d   25%   12%   main             f38·high    ↺ Sun 11:20",
   "claude:  23.6%/d ×2.7d   37%   0%    alpha*           opus·high   ↺ Sun 08:00",
   "         * = this session account",
   "DATA: 4 min old",
@@ -1950,9 +1969,16 @@ do
   assert(tasks[1] and tasks[1].args[2] == "grok/supergrok",
     "Grok account Hard refresh did not target the account")
   while #tasks > 0 do table.remove(tasks) end
-  submenuItem(parkedRow, "In pool").fn()
-  assert(tasks[1] and tasks[1].path:find("grokb", 1, true)
-      and tasks[1].args[1] == "enable" and tasks[1].args[2] == "parked",
+  -- The module above parks workers, and there an In pool click restores the role instead of
+  -- touching membership; the grokb path is the both-roles-on meaning of the same item.
+  local openTasks = {}
+  local openMod = loadModule(grokFixture, captureTasks(openTasks), now, nil,
+    function() return true, true, {} end, "grok_profile=supergrok")
+  local openPool = submenuItem(accountItem(openMod.menuItems(), "parked"), "In pool")
+  while #openTasks > 0 do table.remove(openTasks) end
+  openPool.fn()
+  assert(openTasks[1] and openTasks[1].path:find("grokb", 1, true)
+      and openTasks[1].args[1] == "enable" and openTasks[1].args[2] == "parked",
     "Grok pool checkbox did not use grokb enable")
   while #tasks > 0 do table.remove(tasks) end
   submenuItem(superRow, "Pin for workers").fn()
@@ -2239,6 +2265,201 @@ do
     "cl-one").title.runs[1].attributes
   assert(isDimmed(light, 0), "an unused vendor's title was not dim black in the light appearance")
   assert(isDimmed(dark, 1), "an unused vendor's title stayed black in the dark appearance")
+end
+
+-- The off-role signal lives on the list rows only (Egor, 2026-09-04): nothing inside an account
+-- submenu is coloured, and clicking "In pool" there restores the roles instead of touching a pool
+-- membership nobody closed.
+do
+  local poolRoleFixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "cl-one", enabled = true, five_hour = bucket(10) },
+      { account = "cl-two", enabled = false, five_hour = bucket(20) },
+    } },
+    codex = { available = true, accounts = {
+      { account = "cx-one", enabled = true, five_hour = bucket(10) },
+    } },
+    grok = { available = true, accounts = {
+      { account = "gk-one", enabled = true, five_hour = bucket(10) },
+    } },
+    gemini = { available = true, accounts = {
+      { account = "gm-one", enabled = true, five_hour = bucket(10) },
+    } },
+  }}
+  local function poolOf(menu, account)
+    local row = accountItem(menu, account)
+    local pool = submenuItem(row, "In pool")
+    assert(pool, "account row lost its pool toggle: " .. account)
+    return pool, row
+  end
+  local function dimTitle(item)
+    return type(item.title) == "table" and isDimmed(item.title.attributes) or false
+  end
+
+  local halfMenu = loadModule(poolRoleFixture, nil, nil, nil, nil,
+    "claudeb_workers=off").menuItems()
+  for _, case in ipairs({ { account = "cl-one", checked = true },
+      { account = "cl-two", checked = false } }) do
+    local pool, row = poolOf(halfMenu, case.account)
+    assert(not dimTitle(pool), case.account .. " coloured its submenu In pool for an off role")
+    assert(pool.checked == case.checked and row.checked == case.checked,
+      case.account .. " pool membership moved when a role went off")
+    assert(not isDimmed(row.title.runs[1].attributes),
+      case.account .. " name dimmed for a vendor still open to reviewers")
+  end
+  for _, account in ipairs({ "cx-one", "gk-one", "gm-one" }) do
+    assert(not dimTitle((poolOf(halfMenu, account))),
+      account .. " In pool dimmed for another vendor's role switch")
+  end
+
+  local bothMenu = loadModule(poolRoleFixture, nil, nil, nil, nil,
+    "claudeb_workers=off\nclaudeb_reviewers=off").menuItems()
+  local bothPool, bothRow = poolOf(bothMenu, "cl-one")
+  assert(not dimTitle(bothPool), "the submenu In pool was coloured with both roles off")
+  assert(isDimmed(bothRow.title.runs[1].attributes),
+    "the account name stayed full-strength for a vendor no role may use")
+  assert(bothPool.checked == true and bothRow.checked == true,
+    "a vendor no role may use lost its pool membership")
+  for _, account in ipairs({ "cx-one", "gk-one", "gm-one" }) do
+    assert(not dimTitle((poolOf(bothMenu, account))),
+      account .. " In pool dimmed for a vendor parked out of both roles")
+  end
+
+  local onMenu = loadModule(poolRoleFixture).menuItems()
+  for _, account in ipairs({ "cl-one", "cx-one", "gk-one", "gm-one" }) do
+    local pool, row = poolOf(onMenu, account)
+    assert(not dimTitle(pool), account .. " In pool dimmed with both roles on")
+    assert(not isDimmed(row.title.runs[1].attributes),
+      account .. " name dimmed with both roles on")
+  end
+
+  local function clickPool(config, account)
+    local mod = loadModule(poolRoleFixture, nil, nil, nil, nil, config)
+    local roleCalls, poolCalls = {}, {}
+    mod.setWorkerRole = function(vendor, role, enable)
+      table.insert(roleCalls, { vendor = vendor, role = role, enable = enable })
+    end
+    for _, name in ipairs({ "toggleAccount", "toggleCodexAccount", "toggleGeminiAccount",
+        "toggleGrokAccount" }) do
+      mod[name] = function(...) table.insert(poolCalls, { name, ... }) end
+    end
+    submenuItem(accountItem(mod.menuItems(), account), "In pool").fn()
+    return roleCalls, poolCalls
+  end
+
+  local bothOnRoles, bothOnPool = clickPool(nil, "cl-one")
+  assert(#bothOnRoles == 0 and #bothOnPool == 1 and bothOnPool[1][1] == "toggleAccount"
+    and bothOnPool[1][2] == "cl-one" and bothOnPool[1][3] == true,
+    "In pool stopped toggling membership with both roles on")
+
+  local halfRoles, halfPool = clickPool("claudeb_workers=off", "cl-one")
+  assert(#halfPool == 0, "clicking In pool with a role off changed pool membership as well")
+  assert(#halfRoles == 1 and halfRoles[1].vendor == "claude"
+    and halfRoles[1].role == "workers" and halfRoles[1].enable == true,
+    "clicking In pool with a role off did not restore the one off role")
+
+  local bothRoles, bothPoolCalls = clickPool("claudeb_workers=off\nclaudeb_reviewers=off", "cl-one")
+  assert(#bothPoolCalls == 0, "restoring both roles also toggled pool membership")
+  local restored = {}
+  for _, call in ipairs(bothRoles) do
+    assert(call.vendor == "claude" and call.enable == true,
+      "the pool click asked for the wrong role write")
+    restored[call.role] = true
+  end
+  assert(#bothRoles == 2 and restored.workers and restored.reviewers,
+    "clicking In pool with both roles off did not restore both")
+
+  -- The sole-account Gemini row carries the pool toggle, so it carries the rule too.
+  local soleFixture = { schema = 1, vendors = {
+    claude = { available = false },
+    codex = { available = false },
+    gemini = { available = true, five_hour = bucket(10), weekly = bucket(20) },
+  }}
+  local soleMod = loadModule(soleFixture, nil, nil, nil, nil, "gemini_workers=off")
+  local soleRoles = {}
+  soleMod.setWorkerRole = function(vendor, role, enable)
+    table.insert(soleRoles, { vendor = vendor, role = role, enable = enable })
+  end
+  soleMod.toggleGeminiAccount = function() error("sole pool click toggled membership") end
+  local solePoolItem = submenuItem(accountItem(soleMod.menuItems(), "Gemini"), "In pool")
+  assert(not dimTitle(solePoolItem), "the sole Gemini row coloured its submenu In pool")
+  solePoolItem.fn()
+  assert(#soleRoles == 1 and soleRoles[1].vendor == "gemini"
+    and soleRoles[1].role == "workers" and soleRoles[1].enable == true,
+    "the sole Gemini row's pool click did not restore its off role")
+end
+
+-- What Egor reads is the list itself, and a solid system check there says "the routers spend this
+-- account". While a role of the vendor is off the mark is ours instead — the same glyph at
+-- dimColor() — so the state is visible without opening a submenu, and the two marks are never
+-- both set on one row.
+do
+  local markFixture = { schema = 1, vendors = {
+    claude = { available = true, source = "claudeb-store", accounts = {
+      { account = "cl-one", enabled = true, five_hour = bucket(10) },
+    } },
+    codex = { available = false },
+    grok = { available = false },
+    gemini = { available = true, accounts = {
+      { account = "gm-in", enabled = true, five_hour = bucket(10) },
+      -- A second in-pool row is what makes the draw count a cache assertion and not a tautology.
+      { account = "gm-two", enabled = true, five_hour = bucket(30) },
+      { account = "gm-out", enabled = false, five_hour = bucket(20) },
+    } },
+  }}
+  local function markMenu(config, sheets)
+    return loadModule(markFixture, nil, nil, nil, nil, config, nil, nil, nil,
+      sheets or {}).menuItems()
+  end
+
+  local sheets = {}
+  local halfMenu = markMenu("gemini_workers=off", sheets)
+  for _, account in ipairs({ "gm-in", "gm-two" }) do
+    local row = accountItem(halfMenu, account)
+    assert(row.checked == false and row.image ~= nil,
+      account .. " kept the solid system check with a role of its vendor switched off")
+    assert(not isDimmed(row.title.runs[1].attributes),
+      account .. " name dimmed with one role still open")
+  end
+  local outPool = accountItem(halfMenu, "gm-out")
+  assert(outPool.checked == false and outPool.image == nil,
+    "an out-of-pool row grew a mark of its own")
+  local other = accountItem(halfMenu, "cl-one")
+  assert(other.checked == true and other.image == nil,
+    "another vendor's row lost the system check to Gemini's role switch")
+  assert(#sheets == 1, "the dim check was drawn per row instead of once per appearance")
+  assert(sheets[1].frame.w == 14 and sheets[1].frame.h == 14
+      and sheets[1][1].type == "text" and sheets[1][1].text == "✓"
+      and isDimmed({ color = sheets[1][1].textColor }) and sheets[1].deleted == true,
+    "the dim check is not a dimColor() glyph on a released canvas")
+
+  local bothSheets = {}
+  local bothMenu = markMenu("gemini_workers=off\ngemini_reviewers=off", bothSheets)
+  local bothRow = accountItem(bothMenu, "gm-in")
+  assert(bothRow.checked == false and bothRow.image ~= nil,
+    "a vendor no role may use kept the solid system check")
+  assert(isDimmed(bothRow.title.runs[1].attributes),
+    "both roles off left the account name at full strength")
+
+  local onMenu = markMenu(nil, {})
+  for _, account in ipairs({ "gm-in", "cl-one" }) do
+    local row = accountItem(onMenu, account)
+    assert(row.checked == true and row.image == nil,
+      account .. " carried a drawn mark with every role on")
+  end
+
+  -- No hs.canvas is the isolated-loader case: the pool state has to survive it, so the row keeps
+  -- the solid check rather than dropping the mark or throwing mid-render.
+  local blindMenu = loadModule(markFixture, nil, nil, nil, nil, "gemini_workers=off").menuItems()
+  local blindRow = accountItem(blindMenu, "gm-in")
+  assert(blindRow.checked == true and blindRow.image == nil,
+    "a loader without hs.canvas lost the pool mark instead of falling back")
+
+  local darkSheets = {}
+  loadModule(markFixture, nil, nil, nil, nil, "gemini_workers=off", nil, "Dark", nil,
+    darkSheets).menuItems()
+  assert(#darkSheets == 1 and isDimmed({ color = darkSheets[1][1].textColor }, 1),
+    "the dark appearance drew its check in the light tone")
 end
 
 -- A duplicated key is read the way every shell reader reads it — first line wins (conf() pipes

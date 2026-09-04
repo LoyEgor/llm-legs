@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
 from chat_names import (  # noqa: E402
     HEADLESS_VIA, NAME_LINE_MAX, NAME_PATTERNS, chat_name, names_by_path, note_name,
-    searcher, split_hit, store_names, worker_run_launchers,
+    project_label, searcher, split_hit, store_names, worker_run_launchers,
 )
 
 HIS_CORPUS = os.path.expanduser("~/.claude/projects")
@@ -526,7 +526,7 @@ def report_recent(args):
         when = datetime.fromtimestamp(row["at"]).astimezone()
         print("%s (%s)  %s%s  %s %s  %s" % (
             when.strftime("%Y-%m-%d %H:%M"), ago(when, now),
-            os.path.basename(row.get("cwd") or "?"),
+            project_label(row.get("cwd")),
             (" ⎇ " + row["branch"]) if row.get("branch") else "",
             short_model(row.get("model")),
             ("%dk" % (row["ctx"] // 1000)) if row.get("ctx") else "-",

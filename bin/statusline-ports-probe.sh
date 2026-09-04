@@ -3,10 +3,10 @@ set -u
 
 session_id="${1:-}"
 start_pid="${2:-$PPID}"
-# The active repository root. A server backgrounded from a tool call outlives the shell that
+# A tree of the project being shown. A server backgrounded from a tool call outlives the shell that
 # started it and is reparented to launchd the moment that call returns, so process ancestry alone
 # loses almost every dev server a session ever starts; an orphan is claimed back by its own
-# working directory sitting inside the repository the statusline is showing.
+# working directory sitting inside one of the project's working trees.
 project_top="${3:-}"
 session_id=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9_-')
 [ -n "$session_id" ] || exit 0
@@ -81,10 +81,22 @@ if [ -n "$cwd_chunk" ]; then
 $("$LSOF_CMD" -a -d cwd -Fn -p "$cwd_chunk" 2>/dev/null)"
 fi
 
+# Every working tree of the project, main checkout first (`worktree list` orders it so). A port is
+# attributed to the tree its process working directory sits in, and only this list can tell a
+# sibling worktree's server from this tree's own: Egor's worktrees live INSIDE the repository, at
+# `<repo>/.claude/worktrees/<branch>`, so a root-prefix test alone reads all of them as the root's.
+# git resolves the paths it prints, which is how they compare against the render's `pwd -P` tops.
+trees=""
+if [ -n "$project_top" ]; then
+  trees=$(git -C "$project_top" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+  # Not a repository (or no git): the one tree given is the whole project, as before.
+  [ -n "$trees" ] || trees="$project_top"
+fi
+
 # Passed as files, not awk -v: -v rejects the newlines a multi-line lsof dump would carry. Each
 # input is prefixed with one throwaway line so that an empty dump still counts as a file — the
-# reader tells the three apart by their order, and a silent lsof would otherwise shift them.
-ports=$(awk -v root="$root" -v top="$project_top" '
+# reader tells the four apart by their order, and a silent lsof would otherwise shift them.
+ports=$(awk -v root="$root" '
   # Anchored at argv[0] and matched on its last path segment: a bare substring would read
   # "legacy" as agy, and letting the match float would classify a dev server by its own
   # arguments — `node serve.js --dir /tmp/codex` is not codex. The cost of the anchor is a tool
@@ -110,11 +122,17 @@ ports=$(awk -v root="$root" -v top="$project_top" '
     }
     return saw_claude ? "other" : "orphan"
   }
-  # Prefix match on the directory boundary, so a sibling checkout named after this one is not read
-  # as being inside it. Both paths come from git and lsof unresolved, so a repository reached
-  # through a symlink is a blind spot here, the same one the receipt readers have.
-  function within(path) {
-    return (path != "" && top != "" && (path == top || index(path, top "/") == 1))
+  # Which tree of the project a working directory sits in, "" for none. Prefix match on the
+  # directory boundary, so a sibling checkout named after one of them is not read as being inside
+  # it, and the LONGEST match wins — a worktree at `<root>/.claude/worktrees/x` is inside the root
+  # too, and the root answering first would hand every port under a worktree to the main checkout.
+  function tree_of(path,   i, best) {
+    best = ""
+    if (path == "") return ""
+    for (i = 1; i <= tn; i++)
+      if (path == tree[i] || index(path, tree[i] "/") == 1)
+        if (length(tree[i]) > length(best)) best = tree[i]
+    return best
   }
   # The segment answers "where do I go to look at the work", so a port earns a place only if a
   # human can open it. The LLM tools a session drives each listen on localhost for their own RPC
@@ -142,6 +160,8 @@ ports=$(awk -v root="$root" -v top="$project_top" '
     else if (/^n/ && cwd_pid != "") cwd[cwd_pid]=substr($0, 2)
     next
   }
+  # $0 and not $1: a tree path may carry spaces.
+  file == 3 { if (FNR > 1 && $0 != "") tree[++tn]=$0; next }
   {
     # The pid scan starts at field 2 because an all-numeric command name is not a pid.
     if ($0 == "") next
@@ -155,21 +175,23 @@ ports=$(awk -v root="$root" -v top="$project_top" '
     if (tool_owned(pid, port)) next
     who=owner(pid)
     if (who == "other") next
+    t=tree_of(cwd[pid])
     # A directory is weaker evidence than a parent: every language server, debug adapter and editor
     # RPC socket launched from the repository has its cwd there too, and three of those fill the
     # whole segment and push the dev server out of it. So the ephemeral range is dropped here for
     # the same reason it is dropped under a tool — no dev server binds above 49152, every RPC one
     # does — while a port a human could actually type is kept.
-    if (who == "orphan" && (!within(cwd[pid]) || port + 0 >= 49152)) next
-    if (!(port in seen)) { seen[port]=1; order[++k]=port }
+    if (who == "orphan" && (t == "" || port + 0 >= 49152)) next
+    if (!(port in seen)) { seen[port]=1; order[++k]=port; at[port]=t }
   }
+  # One record per port: the port, a tab, and the tree it belongs to — `-` where no tree of the
+  # project holds its working directory, which only a server this session PARENTS can be (an orphan
+  # without one was dropped above). A tab because a tree path may carry spaces and the port cannot.
   END {
-    out=""
-    for (i=1;i<=k;i++) out=(out=="" ? order[i] : out " " order[i])
-    print out
+    for (i=1;i<=k;i++) printf "%s\t%s\n", order[i], (at[order[i]] == "" ? "-" : at[order[i]])
   }
 ' <(printf 'x\n%s\n' "$snapshot") <(printf 'x\n%s\n' "$cwds") \
-   <(printf 'x\n%s\n' "$lsof_out"))
+   <(printf 'x\n%s\n' "$trees") <(printf 'x\n%s\n' "$lsof_out"))
 
 write_cache "$ports"
 

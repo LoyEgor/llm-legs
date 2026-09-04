@@ -30,7 +30,7 @@ mkdir -p "$FIXTURE/bin" "$FIXTURE/tests" "$FAKE_BIN"
 cp "$ROOT/bin/llm-selfcheck" "$FIXTURE/bin/llm-selfcheck"
 chmod +x "$FIXTURE/bin/llm-selfcheck"
 
-for suite in e2e_surfaces.sh test_llm_limits.sh test_claudeb.sh test_codexb.sh test_geminib.sh; do
+for suite in e2e_surfaces.sh test_llm_limits.sh test_claudeb.sh test_codexb.sh test_geminib.sh test_grokb.sh test_llm_reset_redeem.sh; do
   cat >"$FIXTURE/tests/$suite" <<'EOF'
 #!/usr/bin/env bash
 name=$(basename "$0")
@@ -93,7 +93,7 @@ mkdir -p "$TRIPWIRE_DIR"
 printf 'safe\n' >"$TRIPWIRE_DIR/worker.md"
 write_caches
 bash "$SCRIPT" || fail "successful run failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert grep -Eq '^timestamp=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4} status=PASS failed_step=-$' "$LOG"
 assert grep -q 'status=PASS step=config-tripwire detail=baseline' "$LOG"
 assert test -s "$LLM_SELFCHECK_TRIPWIRE_STATE"
@@ -155,14 +155,14 @@ assert test "$(cat "$LOG")" = "$FRESH_LOG_CONTENT"
 printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 22 * 3600)))" >"$LOG"
 : >"$CALLS"
 bash "$SCRIPT" || fail "catch-up bare invocation failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert test ! -s "$ALERTS"
 
 printf 'timestamp=%s status=PASS failed_step=-\n' "$(iso_from_epoch $((NOW - 30 * 3600)))" >"$LOG"
 : >"$CALLS"
 : >"$ALERTS"
 bash "$SCRIPT" || fail "stale bare invocation failed"
-assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh"
+assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_claudeb.sh,test_codexb.sh,test_geminib.sh,test_grokb.sh,test_llm_reset_redeem.sh"
 assert grep -q 'stale since' "$ALERTS"
 
 rm -f "$HOME/.claude-profiles/.claudeb/selfcheck.state"

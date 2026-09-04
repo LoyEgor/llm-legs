@@ -58,35 +58,276 @@ command -v worker_model_allows >/dev/null ||
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 
-# Wall-clock ceiling per vendor invocation (matches gemini's --print-timeout 170m).
-# Not a work cap — the longest observed real run is minutes — but a wedged CLI
-# (stalled stream, hung auth) must eventually write an exit_code or every wait
-# reports "running" forever with no supported way to reclaim the run.
-DEADLINE=${WORKER_RUN_DEADLINE:-10200}
-[[ "$DEADLINE" =~ ^[0-9]+$ ]] && [ "$DEADLINE" -gt 0 ] || DEADLINE=10200
+# Every launched brief carries this, so the loop rule cannot depend on an orchestrator remembering
+# to type it: serial full-suite reruns were 54-75% of the wall clock of every run that passed an
+# hour, and two of them died on the ceiling below with the work unfinished. Appended rather than
+# prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
+# both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
+# edit 60 belongs where it read last.
+BRIEF_PREAMBLE='TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint.'
+
+# Wall-clock ceiling per vendor invocation, and only the last resort: a wedged CLI is normally
+# reclaimed by the idle watchdog below in half an hour, and the ceiling is what catches one that
+# wedges while still writing (a retry loop, a stuck stream). Six hours because the old 170-minute
+# one is not a runaway guard but a work cap — it killed two real runs mid-edit, and a killed run
+# hands nothing back.
+DEADLINE=${WORKER_RUN_DEADLINE:-21600}
+[[ "$DEADLINE" =~ ^[0-9]+$ ]] && [ "$DEADLINE" -gt 0 ] || DEADLINE=21600
+
+# No growth in anything the worker writes for this long ends the run. A worker counts as active the
+# moment a tool RETURNS, so this only has to clear the longest single tool call a brief can
+# legitimately make: the slowest suite measured in this checkout runs ~10 min, so 30 min is three
+# times the worst case and still far under the ceiling. 0 disables the idle half entirely.
+IDLE=${WORKER_RUN_IDLE_S:-1800}
+[[ "$IDLE" =~ ^[0-9]+$ ]] || IDLE=1800
+
+# The run record the watchdog watches, set by `supervise` before any vendor is launched.
+RUN_DIRECTORY=''
+
+# The first user message of a Claude transcript, whole. Read with `first(inputs)` rather than
+# `head -n1`, which would cut a multi-line brief down to its first line and match any run of the
+# same task.
+first_user_text() { # transcript
+  jq -nRr 'first(inputs | fromjson? | select(type == "object" and .type == "user")
+           | .message | objects | .content
+           | if type == "string" then . else ([.[]? | select(.type? == "text") | .text] | join("")) end
+           | select(. != ""))' "$1" 2>/dev/null
+}
+
+# The brief as this ATTEMPT hands it to the vendor: the caller's text, worker-run's standing
+# preamble, and a token unique to the attempt. Brief text is no identity — every profile writes
+# into one transcript tree, a co-tenant run may carry the same brief word for word, and this run
+# itself launches again on an effort-flag retry or a walled reroute — so the token is what
+# discovery matches on. Rewriting the file also restamps it, and its mtime is the floor `find`
+# uses: a transcript older than this attempt belongs to an attempt that was abandoned.
+launch_attempt() { # directory
+  local directory="$1" attempt token
+  attempt=$(head -n1 "$directory/attempt" 2>/dev/null)
+  [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=0
+  attempt=$((attempt + 1))
+  token="$(basename "$directory")-a$attempt"
+  { cat "$directory/brief" && printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
+    >"$directory/brief.launch.tmp.$$" &&
+    mv -f "$directory/brief.launch.tmp.$$" "$directory/brief.launch" || return 1
+  printf '%s\n' "$attempt" >"$directory/attempt" 2>/dev/null || :
+  printf '%s\n' "$token" >"$directory/launch-token" 2>/dev/null || :
+  # The session this run answers by is the session of the attempt now starting; kept, the previous
+  # attempt's id would be reported and resumed as if it held this attempt's work.
+  rm -f "$directory/session" "$directory/session-file" 2>/dev/null || :
+  return 0
+}
+
+# This run's claudeb session, resolved off the profile's transcript tree while the run is still
+# alive. Claude names the file after the session and fills it from the first turn, so the id exists
+# long before `out` does; matched on the token of the attempt now running, since a co-tenant run on
+# the same account writes into the same tree. Called once per watchdog tick until it answers.
+claudeb_discover_session() { # directory
+  local directory="$1" account resume root candidate launched first_line text token started fallback=''
+  [ ! -s "$directory/session-file" ] || return 0
+  # A transcript that has not appeared within ten minutes never will — Claude names the file on the
+  # first turn — and searching on would walk a profile tree of thousands of files every tick for the
+  # rest of a six-hour run.
+  started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
+  [[ "$started" =~ ^[0-9]+$ ]] || started=0
+  [ "$started" -eq 0 ] || [ $(($(date +%s) - started)) -le 600 ] || return 1
+  account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
+  [ -n "$account" ] || return 1
+  # PHYSICALLY, because every real profile reaches the shared transcript tree through a SYMLINK
+  # (`~/.claude-profiles/<account>/projects` -> `~/.claude/projects`) and `find` handed a symlinked
+  # directory as its own argument walks nothing at all: discovery answered for no live claudeb run
+  # on this machine until 2026-09-04, and `test -d` cannot see the difference.
+  root=$(cd "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account/projects" 2>/dev/null && pwd -P) ||
+    return 1
+  resume=$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)
+  if [ -n "$resume" ]; then
+    # A resumed session keeps the id it already had and APPENDS to a transcript whose first user
+    # record is the original brief, so nothing here is matched: the id is known, only its file is
+    # being located.
+    case "$resume" in .|..|*/*) return 1 ;; esac
+    for candidate in "$root"/*/"$resume.jsonl"; do
+      [ -f "$candidate" ] || continue
+      record_session_file "$directory" "$resume" "$candidate"
+      return 0
+    done
+    return 1
+  fi
+  token=$(head -n1 "$directory/launch-token" 2>/dev/null)
+  launched=$(<"$directory/brief.launch")
+  first_line=${launched%%$'\n'*}
+  while IFS= read -r candidate; do
+    [ -f "$candidate" ] || continue
+    text=$(first_user_text "$candidate")
+    if [ -n "$token" ]; then
+      case "$text" in *"RUN-TOKEN: $token"*) record_session_file "$directory" "$(basename "${candidate%.jsonl}")" "$candidate"; return 0 ;; esac
+      continue
+    fi
+    # A run launched before the token existed has nothing but its brief text to be found by.
+    case "$text" in
+      "$launched") record_session_file "$directory" "$(basename "${candidate%.jsonl}")" "$candidate"; return 0 ;;
+    esac
+    # Newest-first, so the first prefix match is the freshest: the CLI may reflow or annotate the
+    # prompt it stores, and an exact match is then unreachable while the run is still this run. An
+    # EMPTY first line makes that prefix `*`, which adopts the newest transcript of any run at all.
+    if [ -z "$fallback" ] && [ -n "$first_line" ]; then
+      case "$text" in "$first_line"*) fallback=$candidate ;; esac
+    fi
+  # -H, because every claudeb profile reaches the transcripts through a SYMLINK
+  # (`<profile>/projects` -> `~/.claude/projects`): handed one as its starting point, find without
+  # it walks nothing at all and answers an empty tree, so discovery never once succeeded for a live
+  # claudeb run — which left the watchdog blind and the launcher-to-worker pairing unwritten
+  # (live 2026-09-04: 0 candidates over a tree of 6239 transcripts).
+  # -newer brief.launch, which this ATTEMPT wrote: a transcript predating the launch cannot be its
+  # own, and after a reroute the abandoned attempt's transcript is exactly that.
+  done < <(find -H "$root" -type f -name '*.jsonl' -newer "$directory/brief.launch" -print0 2>/dev/null |
+    xargs -0 ls -t 2>/dev/null)
+  [ -n "$fallback" ] || return 1
+  record_session_file "$directory" "$(basename "${fallback%.jsonl}")" "$fallback"
+}
+
+record_session_file() { # directory session transcript
+  local directory="$1"
+  case "$2" in ''|-|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s\n' "$2" >"$directory/session.tmp.$$" &&
+    mv -f "$directory/session.tmp.$$" "$directory/session" || return 1
+  printf '%s\n' "$3" >"$directory/session-file.tmp.$$" &&
+    mv -f "$directory/session-file.tmp.$$" "$directory/session-file" || return 1
+  # The launcher-to-worker mapping the review hooks price a LIVE run by, which until now could not
+  # be written before the run ended.
+  record_worker_session "$directory"
+}
+
+# Size and mtime of every source a live reading can come from: this run's own output files, the
+# session transcript, and the newest edit under its workdir — the same reading LAST-EDIT prints, so
+# a worker the status row calls active cannot be idle here. Compared tick to tick by the watchdog:
+# any change is work.
+#
+# Prefixed `y~`/`n~` by whether this run can be observed AT ALL. Every vendor but claudeb streams
+# into `out` while it works, so silence there is evidence; claudeb writes `out` once, at exit, so a
+# claudeb run whose transcript was never located and which has touched no file yet emits no live
+# signal at all, and its silence is evidence of nothing (live 2026-09-04: a run mid-edit, LAST-EDIT
+# 59s, SIGTERMed at thirty minutes on exactly that blindness).
+activity_fingerprint() { # directory vendor workdir
+  local directory="$1" vendor="$2" workdir="$3" path stamp observed=y fingerprint=''
+  if [ "$vendor" = claudeb ]; then
+    claudeb_discover_session "$directory"
+    observed=n
+    [ ! -s "$directory/session-file" ] || observed=y
+  fi
+  for path in "$directory/out" "$directory/err" "$directory/log" \
+      "$(cat "$directory/session-file" 2>/dev/null)"; do
+    [ -n "$path" ] && [ -e "$path" ] || continue
+    fingerprint+="$(stat -f '%N %z %m' "$path" 2>/dev/null || stat -c '%n %s %Y' "$path" 2>/dev/null)|"
+  done
+  if stamp=$(workdir_activity_stamp "$directory" "$workdir"); then
+    observed=y
+    fingerprint+="edit $stamp|"
+  fi
+  printf '%s~%s\n' "$observed" "$fingerprint"
+}
+
+# The vendor CLI in a process group of its own, so one signal takes the whole tree it built: every
+# vendor here is reached through a wrapper (`claudeb`, `codexb`, `agy`), and a TERM delivered to
+# the wrapper alone leaves the CLI it launched editing the workdir with nobody supervising it.
+# perl and not setsid(1), which is absent on stock macOS and forks when the caller already leads a
+# group — `wait` would then reap the wrapper and report a run that is still going.
+CHILD_GROUP_PREFIX=()
+if command -v perl >/dev/null 2>&1 && perl -MPOSIX -e 'exit 0' 2>/dev/null; then
+  # `or exit 127`: a failed exec leaves perl running the rest of the script, and a missing CLI
+  # would exit 0 and report the run as a success that produced nothing.
+  CHILD_GROUP_PREFIX=(perl -MPOSIX -e 'POSIX::setsid(); exec {$ARGV[0]} @ARGV or exit 127' --)
+fi
+
+# The group where the child leads one, the child alone otherwise. Asked NOW and never at launch:
+# the wrapper has not reached setsid() when the pid first appears, and a group kill aimed at a pid
+# that leads no group would hit whatever group does wear that number.
+end_child() { # pid signal
+  [ -n "$1" ] || return 0
+  [ "$(ps -o pgid= -p "$1" 2>/dev/null | tr -d '[:space:]')" != "$1" ] || kill -"$2" "-$1" 2>/dev/null || :
+  kill -"$2" "$1" 2>/dev/null || :
+}
 
 run_with_deadline() {
-  local child watchdog rc
+  local child watchdog='' rc rc_reaped signalled=''
+  # Per ATTEMPT, so a reroute's fresh launch cannot inherit the previous one's verdict.
+  [ -z "$RUN_DIRECTORY" ] || rm -f "$RUN_DIRECTORY/killed" 2>/dev/null || :
   # <&0 is load-bearing: without an explicit stdin redirect, a background
   # command in a non-interactive shell gets /dev/null instead of the brief
   # the caller redirected in (live-caught: claudeb saw an empty stdin).
-  "$@" <&0 &
+  ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$@" <&0 &
   child=$!
+  # A signal aimed at this supervisor is aimed at its run: the child goes with it, or the run keeps
+  # writing to a workdir whose supervisor is gone and its record never gets an exit code (live
+  # 2026-09-04: claudeb-1788518882-986-6f32, TERMed at 41s, worker landed edits afterwards).
+  trap 'signalled=TERM; stop_run TERM' TERM
+  trap 'signalled=INT; stop_run INT' INT
   # The watchdog sleeps in short hops: killing the subshell strands its in-flight
   # sleep, and a single sleep $DEADLINE would linger for hours after every run.
   (
+    directory=$RUN_DIRECTORY
+    vendor='' workdir=''
+    if [ -n "$directory" ]; then
+      vendor=$(jq -r '.vendor // empty' "$directory/meta.json" 2>/dev/null)
+      workdir=$(jq -r '.workdir // empty' "$directory/meta.json" 2>/dev/null)
+    fi
+    # A tenth of the TIGHTER of the two windows, so both are measured to a fraction of themselves,
+    # clamped: a tick reads the work tree, and thirty seconds is fine enough for a six-hour ceiling.
+    window=$DEADLINE
+    [ "$IDLE" -eq 0 ] || [ "$IDLE" -ge "$window" ] || window=$IDLE
+    hop=$((window / 10))
+    [ "$hop" -ge 1 ] || hop=1
+    [ "$hop" -le 30 ] || hop=30
     end=$(($(date +%s) + DEADLINE))
-    while [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
-    kill -TERM "$child" 2>/dev/null
+    idle_since=$(date +%s)
+    reason=''
+    # Seeded before the first sleep, not left empty: an empty seed differs from every real reading,
+    # so the first tick would always read as progress and no idle kill could land on its own hop.
+    seen=$(activity_fingerprint "$directory" "$vendor" "$workdir")
+    while [ "$(date +%s)" -lt "$end" ]; do
+      sleep "$hop"
+      [ -n "$directory" ] && [ "$IDLE" -gt 0 ] || continue
+      current=$(activity_fingerprint "$directory" "$vendor" "$workdir")
+      if [ "$current" != "$seen" ]; then
+        seen=$current
+        idle_since=$(date +%s)
+      # An idle kill needs POSITIVE evidence that the worker stopped. A run none of the sources
+      # above can see offers none, so it is left to the ceiling below instead of being killed for
+      # being unobservable — a killed run hands nothing back.
+      elif [ "${current%%~*}" = y ] && [ $(($(date +%s) - idle_since)) -ge "$IDLE" ]; then
+        reason="idle $IDLE"
+        break
+      fi
+    done
+    [ -n "$reason" ] || reason="deadline $DEADLINE"
+    [ -z "$directory" ] || printf '%s\n' "$reason" >"$directory/killed" 2>/dev/null || :
+    end_child "$child" TERM
     sleep 10
-    kill -KILL "$child" 2>/dev/null
+    end_child "$child" KILL
   ) &
   watchdog=$!
   wait "$child"
   rc=$?
+  # `wait` interrupted by a trapped signal returns 128+n with the child not yet reaped; the second
+  # one is what carries the status the child actually died of. 127 is "already reaped" and answers
+  # for nothing.
+  if [ -n "$signalled" ] && [ "$rc" -gt 128 ]; then
+    wait "$child" 2>/dev/null
+    rc_reaped=$?
+    [ "$rc_reaped" -eq 127 ] || rc=$rc_reaped
+  fi
+  trap - TERM INT
   kill "$watchdog" 2>/dev/null
   wait "$watchdog" 2>/dev/null
   return "$rc"
+}
+
+# What the traps above do, in the scope that holds the pids: the watchdog first, so the reason this
+# run ends is the signal and not a deadline it races, then the child's whole group, then a KILL
+# escalation for a CLI that ignores TERM — detached, because this supervisor is on its way out.
+stop_run() { # signal
+  [ -z "$RUN_DIRECTORY" ] || printf 'signal %s\n' "$1" >"$RUN_DIRECTORY/killed" 2>/dev/null || :
+  [ -z "$watchdog" ] || kill "$watchdog" 2>/dev/null || :
+  end_child "$child" TERM
+  ( sleep 5; end_child "$child" KILL ) >/dev/null 2>&1 &
 }
 
 run_overdue() {
@@ -185,7 +426,7 @@ refuse_cheap_model() { # vendor offered-model [resume-id]
       effective=$offered
       [ -n "$effective" ] && [ "$effective" != default ] || effective=$(codex_config_model)
       ;;
-    gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-pro} ;;
+    gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-flash38} ;;
     grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-auto} ;;
   esac
   worker_model_allows "$vendor" "$effective" && return 0
@@ -391,7 +632,7 @@ supervise_claudeb() {
   cli=$(jq -r '.cli' "$meta")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
   [ -z "$resume" ] || command+=(--resume "$resume")
-  run_with_deadline "${command[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
+  run_with_deadline "${command[@]}" <"$directory/brief.launch" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "$rc" -ne 0 ] && grep -Eiq -- '((unknown|unrecognized|invalid|unexpected|unsupported|not supported).{0,80}--effort|--effort.{0,80}(unknown|unrecognized|invalid|unexpected|unsupported|not supported))' "$directory/err"; then
     retry=("$cli" profile "$account" -p --model "$model" --output-format json --dangerously-skip-permissions)
@@ -399,7 +640,10 @@ supervise_claudeb() {
     meta_update "$directory" '.effort_flag_dropped = true' || return 4
     : >"$directory/out"
     : >"$directory/err"
-    run_with_deadline "${retry[@]}" <"$directory/brief" >"$directory/out" 2>"$directory/err"
+    # A second launch is a second session: without a token of its own this attempt adopts the
+    # transcript the first one left in the tree, and reports a session that holds none of its work.
+    launch_attempt "$directory" || return 4
+    run_with_deadline "${retry[@]}" <"$directory/brief.launch" >"$directory/out" 2>"$directory/err"
     rc=$?
   fi
   return "$rc"
@@ -409,10 +653,10 @@ codex_attempt() {
   local directory="$1" account="$2" rc
   shift 2
   if [ "$account" = main ]; then
-    (unset CODEX_HOME; run_with_deadline "$@" <"$directory/brief" >/dev/null 2>"$directory/err")
+    (unset CODEX_HOME; run_with_deadline "$@" <"$directory/brief.launch" >/dev/null 2>"$directory/err")
     rc=$?
   else
-    CODEX_HOME="$(codex_home "$account")" run_with_deadline "$@" <"$directory/brief" >/dev/null 2>"$directory/err"
+    CODEX_HOME="$(codex_home "$account")" run_with_deadline "$@" <"$directory/brief.launch" >/dev/null 2>"$directory/err"
     rc=$?
   fi
   return "$rc"
@@ -482,13 +726,13 @@ supervise_gemini() {
   agy_model=$(jq -r '.agy_model' "$meta")
   resume=$(jq -r '.resume' "$meta")
   cli=$(jq -r '.cli' "$meta")
-  prompt=$(<"$directory/brief")
+  prompt=$(<"$directory/brief.launch")
   command=("$cli" profile "$account" --model "$agy_model" --add-dir "$HOME/.claude")
   REPLY_ARRAY=()
   read_json_array '.add_dirs[]' "$meta"
   add_dirs=("${REPLY_ARRAY[@]}")
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
-  command+=(--print-timeout 170m --dangerously-skip-permissions --log-file "$directory/log")
+  command+=(--print-timeout 360m --dangerously-skip-permissions --log-file "$directory/log")
   [ -z "$resume" ] || command+=(--conversation "$resume")
   command+=(--print "$prompt")
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
@@ -507,7 +751,7 @@ supervise_grok() {
   turns=$(jq -r '.max_turns // empty' "$meta")
   # GROK_MEMORY=0 rather than a flag: `--no-memory` was dropped in 1.0.13, and a worker inheriting
   # the profile's memory would carry another task's notes into this brief.
-  command=(env GROK_MEMORY=0 "$cli" profile "$account" --prompt-file "$directory/brief"
+  command=(env GROK_MEMORY=0 "$cli" profile "$account" --prompt-file "$directory/brief.launch"
     --output-format streaming-json --always-approve --cwd "$(jq -r '.workdir' "$meta")"
     --no-subagents --reasoning-effort "$effort")
   [ -z "$turns" ] || command+=(--max-turns "$turns")
@@ -581,6 +825,7 @@ supervise() {
   [ -r "$directory/meta.json" ] || return 4
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   workdir=$(jq -r '.workdir' "$directory/meta.json")
+  RUN_DIRECTORY=$directory
   # Even the run that never started answers for itself: absent, its record is indistinguishable from
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
@@ -599,7 +844,13 @@ supervise() {
     # same way; the record is a union across attempts.
     persist_run_files "$directory"
     [ "$rc" -eq 0 ] && return 0
+    # A run somebody signalled is over: rerouting it would answer an operator's kill by launching
+    # the same brief again on another account.
+    case "$(head -n1 "$directory/killed" 2>/dev/null)" in 'signal '*) return "$rc" ;; esac
     reroute_walled "$directory" "$vendor" || return "$rc"
+    # The rescue attempt is a session of its own on another account, and the walled attempt's
+    # transcript is still the newest one in the tree it shares.
+    launch_attempt "$directory" || return "$rc"
   done
 }
 
@@ -904,7 +1155,7 @@ record_worker_session() {
 
 start_run() {
   [ "$#" -ge 1 ] || usage
-  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume=''
+  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line=''
   local account pin_fallback=false pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
@@ -932,6 +1183,16 @@ start_run() {
   done
   [ -n "$brief" ] || usage
   [ -r "$brief" ] || fail "brief is not readable: $brief"
+  # The first line is the run's handle: the spawn gate and the relay agents read `RESUME <id>:` and
+  # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
+  # matches nothing useful with a blank one.
+  # `|| :` and not `|| first_line=''`: a file with no trailing newline fails the read and still
+  # assigns every byte of its one line.
+  IFS= read -r first_line <"$brief" || :
+  case "$first_line" in
+    *[![:space:]]*) ;;
+    *) fail "brief starts with a blank line: $brief — the first line is the run's handle (RESUME/ATTACH) and what a reader identifies it by" ;;
+  esac
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
   case "$vendor" in
@@ -945,7 +1206,8 @@ start_run() {
       [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'gemini does not support --image or --web-search flags'
       # agy has no stdin mode — the brief travels on argv, and past the kernel's
       # per-argument ceiling execve fails with a bare E2BIG long after start.
-      [ "$(wc -c <"$brief" | tr -d '[:space:]')" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
+      # 128 for the RUN-TOKEN line launch_attempt appends, whose run id is not known yet.
+      [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
     grok)
       # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), and it takes no
@@ -1065,12 +1327,12 @@ start_run() {
       if [ "$account" = main ]; then command_meta=("${command[@]}"); else command_meta=(env "CODEX_HOME=$(codex_home "$account")" "${command[@]}"); fi
       ;;
     gemini)
-      model=${model:-$(config_value gemini_model)}; model=${model:-pro}
+      model=${model:-$(config_value gemini_model)}; model=${model:-flash38}
       effort=${effort:-$(config_value gemini_effort)}; effort=${effort:-high}
       case "$effort" in xhigh|max|ultra) effort=high ;; esac
+      # The effort rides in the agy slug and never in an `--effort` flag (shared-invariants row h).
       case "$model:$effort" in
-        pro:high) agy_model='Gemini 3.1 Pro (High)' ;;
-        pro:low) agy_model='gemini-3.1-pro-low' ;;
+        flash38:high | flash38:medium | flash38:low) agy_model="gemini-3.8-flash-$effort" ;;
         *) printf 'OUTCOME: GEMINI_UNAVAILABLE\n'; exit 4 ;;
       esac
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
@@ -1084,9 +1346,9 @@ start_run() {
       fi
       command_meta=("$cli" profile "$account" --model "$agy_model" --add-dir "$HOME/.claude")
       for value in "${add_dirs[@]}"; do command_meta+=(--add-dir "$value"); done
-      command_meta+=(--print-timeout 170m --dangerously-skip-permissions --log-file LOG)
+      command_meta+=(--print-timeout 360m --dangerously-skip-permissions --log-file LOG)
       [ -z "$resume" ] || command_meta+=(--conversation "$resume")
-      command_meta+=(--print "$(<"$brief")")
+      command_meta+=(--print BRIEF_TEXT)
       ;;
     grok)
       model=${model:-$(config_value grok_model)}; model=${model:-auto}
@@ -1132,6 +1394,10 @@ start_run() {
     [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
   done
   cp "$brief" "$directory/brief" || fail 'could not copy brief'
+  # The recorded brief is the input, byte for byte — `worker-run report`, RESUME and ATTACH all
+  # quote it back, and a preamble growing on every hop would be a brief nobody wrote. What the
+  # vendor is handed is this second file, and only ever this one.
+  launch_attempt "$directory" || fail 'could not compose the launched brief'
   : >"$directory/out"
   : >"$directory/err"
   [ "$vendor" != gemini ] || : >"$directory/log"
@@ -1139,7 +1405,8 @@ start_run() {
     case "${command_meta[$value]}" in
       OUT) command_meta[$value]="$directory/out" ;;
       LOG) command_meta[$value]="$directory/log" ;;
-      BRIEF) command_meta[$value]="$directory/brief" ;;
+      BRIEF) command_meta[$value]="$directory/brief.launch" ;;
+      BRIEF_TEXT) command_meta[$value]=$(<"$directory/brief.launch") ;;
     esac
   done
   printf '%s · %s · %s\n' "$account" "${model_label:-$model}" "$effort" >"$directory/tag"
@@ -1200,8 +1467,19 @@ while [ ! -e "$2/.ready" ]; do
   sleep 0.01
 done
 rm -f "$2/.ready"
-"$1" _supervise "$2"
+# Backgrounded and waited on, with the signal passed down: run in the foreground, this shell dies
+# on a TERM without ever reaching the lines below, and the run it was supervising is left with no
+# exit code and a vendor CLI still writing.
+"$1" _supervise "$2" &
+supervised=$!
+trap "kill -TERM $supervised 2>/dev/null" TERM INT
+wait "$supervised"
 rc=$?
+if [ "$rc" -gt 128 ]; then
+  wait "$supervised" 2>/dev/null
+  reaped=$?
+  [ "$reaped" -eq 127 ] || rc=$reaped
+fi
 printf "%s\n" "$rc" >"$2/exit_code.tmp.$$"
 mv -f "$2/exit_code.tmp.$$" "$2/exit_code"
 exit "$rc"'
@@ -1250,7 +1528,13 @@ session_id() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   session=''
   case "$vendor" in
-    claudeb) session=$(jq -r '.session_id // empty' "$directory/out" 2>/dev/null) ;;
+    claudeb)
+      session=$(jq -r '.session_id // empty' "$directory/out" 2>/dev/null)
+      # `out` exists only once the CLI exits, so a run the watchdog killed has none: without the
+      # id the watchdog resolved while the run was alive, hours of work end with no SESSION: line
+      # and nothing to RESUME (live: two runs killed on the old ceiling, 2026-09-02 and 09-04).
+      [ -n "$session" ] || session=$(head -n1 "$directory/session" 2>/dev/null)
+      ;;
     codex)
       # Live codex exec prints 'session id: <uuid>' to stderr, not stdout.
       session=$(grep -Ehio 'session[_ -]?id[[:space:]:=]+[A-Za-z0-9._-]+' "$directory/err" "$directory/out" 2>/dev/null | head -n1 | sed -E 's/.*[[:space:]:=]+//')
@@ -1269,7 +1553,7 @@ session_id() {
 # Grok's PERSISTENT wall wording, and nothing else. The CLI folds capacity weather (429, 5xx,
 # Retry-After) into the same internal `rate_limit` class as a real wall, so a bare "rate limit" here
 # would report an exhausted plan every time xAI has a bad minute.
-GROK_LIMIT_RE='hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits|(status|http)[^0-9]{0,12}402([^0-9]|$)|402 payment required'
+GROK_LIMIT_RE="hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits|you['’]ve reached your free Grok Build usage limit for now|(status|http)[^0-9]{0,12}402([^0-9]|$)|402 payment required"
 GROK_AUTH_RE='not signed in|credentials were rejected|session has expired'
 GROK_TRANSIENT_RE='(status|http)[^0-9]{0,12}(429|5[0-9][0-9])([^0-9]|$)|too many requests|gateway timeout|retry-after|service unavailable|overloaded'
 
@@ -1317,8 +1601,8 @@ has_limit_signature() {
     # "usage_limit" and "CODEX_USAGE_LIMIT" (live-caught misverdicts), so bare
     # tokens cannot count and the scan sees only the tail, where the CLI's own
     # fatal error is.
-    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests|out of credits'; scan=("$directory/err"); tail_lines=40 ;;
-    claudeb) pattern='usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
+    codex) pattern='hit your usage limit|usage limit (reached|exceeded)|usage_limit_reached|quota (exhausted|exceeded|reached)|rate limit (exceeded|reached)|too many requests|out of credits|402 Payment Required|deactivated_workspace'; scan=("$directory/err"); tail_lines=40 ;;
+    claudeb) pattern='hit your session limit|hit your usage limit|usage limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/out" "$directory/err") ;;
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
     # grok states a failure in two places — stderr and the stream's own error events — so its text
     # is assembled rather than read from a file list.
@@ -1340,11 +1624,27 @@ reroute_lines() {
     "$1/meta.json" 2>/dev/null
 }
 
+# Which watchdog ended a run, where one did: a bare exit 143 reads as a vendor failure, and the two
+# answers differ — an idle kill means the worker stopped writing and whatever it finished is on
+# disk, the ceiling means it was still being served when the clock ran out. Signal exits only, so
+# the marker a watchdog writes as it races a run finishing on its own cannot mislabel that run.
+killed_line() { # directory code
+  local reason
+  case "$2" in 143|137) ;; *) return 0 ;; esac
+  reason=$(head -n1 "$1/killed" 2>/dev/null) || return 0
+  case "$reason" in
+    'idle '*) printf 'KILLED: idle watchdog — nothing this run writes changed for %ss (WORKER_RUN_IDLE_S)\n' "${reason#idle }" ;;
+    'deadline '*) printf 'KILLED: deadline — the %ss ceiling ended a run still being served (WORKER_RUN_DEADLINE)\n' "${reason#deadline }" ;;
+    'signal '*) printf 'KILLED: signal %s — the supervisor was signalled and stopped the vendor child with it\n' "${reason#signal }" ;;
+  esac
+}
+
 print_outcome() {
   local directory="$1" vendor="$2" code="$3" reset
   # Signature scan only on failure: results in this ecosystem routinely DISCUSS
   # quotas and 429s, so a clean exit whose text mentions them is not a limit.
   [ "$code" != 0 ] || return 0
+  killed_line "$directory" "$code"
   if has_limit_signature "$directory" "$vendor"; then
     printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
     # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose:
@@ -1857,6 +2157,32 @@ run_files() {
   [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
 }
 
+readonly_report_hint() {
+  local directory="$1" workdir gained marker root month started marker_month count=0
+  [ -f "$directory/exit_code" ] || return 0
+  head -n1 "$directory/brief" 2>/dev/null | grep -Eiq '(^|[[:space:]])(READ-ONLY|RESEARCH):' && return 0
+  compute_run_files "$directory"
+  [ -z "$RUN_FILES_REASON" ] && [ -z "$RUN_FILES_LIST" ] || return 0
+  [ -f "$directory/dirty-before" ] || return 0
+  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
+  workdir_dirty_paths "$workdir" >/dev/null 2>&1 || return 0
+  workdir_dirty_shas "$workdir" >/dev/null 2>&1 || return 0
+  gained=$(workdir_gained_paths "$directory" "$workdir")
+  [ -z "$gained" ] || return 0
+  marker="$directory/report-readonly"
+  [ -e "$marker" ] || : >"$marker"
+  root=${directory%/*}
+  month=$(date +%Y-%m)
+  for marker in "$root"/*/report-readonly; do
+    [ -e "$marker" ] || continue
+    started=$(jq -r '.started_at // empty' "${marker%/*}/meta.json" 2>/dev/null)
+    [[ "$started" =~ ^[0-9]+$ ]] || continue
+    marker_month=$(date -r "$started" +%Y-%m 2>/dev/null || date -d "@$started" +%Y-%m 2>/dev/null) || continue
+    [ "$marker_month" != "$month" ] || count=$((count + 1))
+  done
+  printf 'HINT: this run edited nothing — a read-only lookup is cheaper as a native Explore/research helper (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: %s\n' "$count"
+}
+
 # The agent's answer, reassembled out of the stream: `text` events carry it in chunks, and a raw
 # NDJSON tail is the one shape no reader of a report can use. The raw tail stands in where not one
 # chunk parsed, so a stream that broke early is still visible.
@@ -1913,7 +2239,19 @@ unknown_report() {
 # 52-minute run stalled one minute before it finished (live 2026-08-24). Newest mtime among the
 # paths the dirt tracker already calls this run's own; nonzero where nothing has changed yet.
 last_edit_age() { # directory workdir now
-  local directory="$1" workdir="$2" now="$3" top path target mtime newest='' age
+  local now="$3" newest age
+  newest=$(workdir_activity_stamp "$1" "$2") || return 1
+  age=$((now - newest)); [ "$age" -ge 0 ] || age=0
+  printf '%s\n' "$age"
+}
+
+# The instant behind that age, and the run's one live signal while its vendor has written nothing:
+# newest mtime among the paths the dirt tracker already calls this run's own. A gained path that is
+# GONE answers with the nearest directory still standing, so a deletion counts as the work it is.
+# Read by the status row and by the idle watchdog, from here alone — two definitions of "this run
+# touched something" is a status row calling a run active while the watchdog kills it.
+workdir_activity_stamp() { # directory workdir
+  local directory="$1" workdir="$2" top path target mtime newest=''
   [ -f "$directory/dirty-before" ] || return 1
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 1
   [ -n "$top" ] || return 1
@@ -1929,8 +2267,7 @@ last_edit_age() { # directory workdir now
     [ -n "$newest" ] && [ "$mtime" -le "$newest" ] || newest=$mtime
   done < <(workdir_gained_paths "$directory" "$workdir")
   [ -n "$newest" ] || return 1
-  age=$((now - newest)); [ "$age" -ge 0 ] || age=0
-  printf '%s\n' "$age"
+  printf '%s\n' "$newest"
 }
 
 # CPU the run has burned, summed over the whole process group: the supervisor is `setsid`'d, so its
@@ -2016,6 +2353,7 @@ report_run() {
     if [ "$code" = 0 ]; then status=done; else status=failed; fi
     printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
     print_outcome "$directory" "$vendor" "$code"
+    readonly_report_hint "$directory"
     if [ "$code" != 0 ]; then
       printf 'ERR-TAIL:\n'
       tail -n 80 "$directory/err" 2>/dev/null

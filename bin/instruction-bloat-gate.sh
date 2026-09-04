@@ -66,6 +66,15 @@ case "$file_path" in
     ;;
 esac
 
+# A relay worker never edits one of these files, and this stands ahead of every price and every
+# stamp below: the audit-then-retry protocol is honour-based, and a worker that re-reads the file
+# and asks again walks straight through it. Ordinary repository markdown and the memory files are
+# no part of this — `instruction_always_loaded` answers for the always-on classes alone.
+if instruction_in_relay && instruction_always_loaded "$file_path" "$HOME" >/dev/null; then
+  instruction_relay_refusal "$file_path" >&2
+  exit 2
+fi
+
 # Full-price read equivalents per month, measured over the 31 days to 2026-07-31
 # (1954 sessions, 132386 requests). The numbers look large because content in the
 # cached system prefix is re-read on EVERY request at 0.1x, not once per session:
@@ -119,16 +128,7 @@ fi
 if [ -z "$class_reads" ]; then
   case "$file_path" in
     *.md)
-      # A Write creates the file, and may be creating its directory too, so the walk goes up to
-      # the nearest ancestor that exists: a new subdirectory of docs/ is still under docs/.
-      # CDPATH makes cd print where it landed, which would ride along in the captured path.
-      probe=$(dirname "$file_path")
-      file_dir=''
-      while [ -n "$probe" ] && [ "$probe" != / ] && [ "$probe" != . ]; do
-        file_dir=$(CDPATH= cd -- "$probe" 2>/dev/null && pwd -P) && [ -n "$file_dir" ] && break
-        file_dir=''
-        probe=$(dirname "$probe")
-      done
+      file_dir=$(instruction_resolved_dir "$file_path") || file_dir=''
       if [ -n "$file_dir" ]; then
         for pair in docs:160 agents:2500 instructions:160 skills:90 commands:90; do
           guarded=$(CDPATH= cd -- "$HOME/.claude/${pair%%:*}" 2>/dev/null && pwd -P) || continue

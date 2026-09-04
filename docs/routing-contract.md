@@ -41,12 +41,14 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    worker dispatch, review-bench, the chat picker, anything else that asks.
 2. **Selection.** The vendor pin wins when usable — usable here being auth alive, a numeric
    budget and no wall, and nothing else: a pin overrides the pool toggle (rule 4), so pool
-   membership is no part of that test. It is the top override of worker routing, so it decides
-   the account inside its vendor and, in `auto`, carries that vendor to the front of the vendor
-   order whatever budget an unpinned vendor holds. It lapses loudly with a reason when it cannot
-   serve, and a lapsed pin leaves an ordinary pool pick ranked on budget like any other.
+   membership is no part of that test. It is the top override of worker routing, so a usable
+   pin's account leads the ranked NEXT rows (and is the `--account` answer for that vendor)
+   whatever budget an unpinned account holds; pins among themselves share the same vector,
+   and an unpinned mate of a pinned account ranks on the vector like everyone else. It lapses
+   loudly with a reason when it cannot serve, and a lapsed pin leaves an ordinary pool pick
+   ranked on the vector like any other.
    Otherwise the candidates are ranked on one key vector, ascending, identical for all four
-   vendors:
+   vendors, and the NEXT table applies it across vendors:
 
    `[five-hour deferral, fresh claim, late auth, −budget, name]`
 
@@ -159,6 +161,20 @@ shell would run it: quoted text collapses into one operand word before the quote
 the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /
 `--prompt`, no `exec`, no `run` — are the user, not a worker, and are never gated.
 
+The other half of the same rule is the Agent tool, and the gate there is
+`bin/worker-limit-gate.sh`. Workers are unified: every run that edits, reviews, verifies or scans
+is a relay worker through `worker-run`, so on a **Fable** session a NATIVE agent type —
+`general-purpose`, `claude`, `fork`, anything custom — is refused outright, because it runs on the
+session's own model, which is the one quota the whole relay design exists to spare. Four
+`general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
+closes. The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`
+(shared-invariants row `bt`): `Explore` and `claude-code-guide` are pure lookup — the deliverable
+is locations and excerpts, verifiable at a glance — and are rewritten to `model: sonnet` unless the
+call names a model itself, while `Plan` and `statusline-setup` keep the session model, since design
+is Fable's own work. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
+and a session whose model cannot be read fails open. The refusal carries no retry: a stamped
+one-shot deny is a rule a model walks through by calling twice.
+
 ## Roles
 
 A vendor serves three roles — `workers` (implementation), `reviewers` (review-bench raters) and
@@ -232,7 +248,8 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 ## Models
 
 `worker-pick` answers which ACCOUNT; which MODEL is not a question at all. An implementation
-worker runs exactly one model per vendor — claudeb `opus`, codex `gpt-5.6-sol`, gemini `pro`, grok
+worker runs exactly one model per vendor — claudeb `opus`, codex `gpt-5.6-sol`, gemini `flash38`
+(Gemini 3.8 Flash; the review cells keep Pro, the worker does not), grok
 `auto` (`grok-4.6`, the one model it has) — and `share/worker-model.sh`
 (`worker_model_allowed_models`) is the one place that list is spelled in code
 (`docs/shared-invariants.md` row `bq`). A worker is dispatched to spend another account's quota on
@@ -276,9 +293,12 @@ routing-math paragraph the rules above replace.
 
 ## Interface kept stable
 
-- Human output is one table, the same one for every vendor: a `NEXT` header, up to five ranked
-  rows `<rank> <budget> <wk> <5h> <vendor>/<account> <model>·<eff> [flags]` ordered by daily budget
-  ACROSS vendors (a usable pin outranks budget), `ACCOUNT: <name>` naming row 1, then one section
+- Human output is one table, the same one for every vendor: a `NEXT` header, the top five usable
+  ACCOUNTS across vendors — several per vendor allowed, since the block answers where the next runs
+  go rather than nominating one account per leg — as ranked rows
+  `<rank> <budget> <wk> <5h> <vendor>/<account> <model>·<eff> [flags]`. The ordering rule is:
+  usable pin first, then `[five-hour deferral, fresh claim, late auth, −budget, name]`; apply it
+  across vendors and cap the result at five rows. `ACCOUNT: <name>` names row 1, then one section
   per vendor carrying that vendor's rows with the exact reset (`↺ Mon 09:30`), then `DATA:`. A run
   that ranked nothing prints one `NEXT: <reason>` line instead of the table. The session account
   is marked `*` with a footnote under its vendor — there is no `SESSION:` line, and `--fable` is
@@ -289,9 +309,11 @@ routing-math paragraph the rules above replace.
   lookup.
 - `worker-pick --account <vendor> [--exclude a,b] [--claim]` keeps its contract: bare account
   name on stdout, exit 3 when no candidate remains. In `auto`, the ranking leads with every
-  vendor a usable pin answered, then orders vendors by the daily budget of the account each one
-  selected, highest first — pinned vendors among themselves the same way; a vendor with nothing
-  selectable, or switched off for workers, holds no row at all.
+  pinned account, then applies the rest of rule 2's vector to all rows — pins among themselves the
+  same way; a vendor with nothing selectable, or switched off for workers, holds no row at all. A
+  MODE (`worker=gemini`, `worker=grok`) is the one thing above the metric: the vendor it names
+  keeps row 1 with the account it selected, and every other account, its own siblings included,
+  falls back into the budget order below.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.
@@ -301,7 +323,7 @@ routing-math paragraph the rules above replace.
   included, so a row a reader cannot reconcile with the reset beside it does not exist). An
   unmeasured budget prints `-` and an unmeasured percentage `?`; a vendor with no five-hour window
   at all prints `–` in that column, which is a different statement from `?`. Models print their
-  short alias (`opus`, `sol`, `pro`, `grok`; `auto` is a knob value and is never displayed) and
+  short alias (`opus`, `sol`, `f38`, `grok`; `auto` is a knob value and is never displayed) and
   efforts abbreviate to `low`/`med`/`high`/`xhigh`. The `*` session marker and `off` are unchanged.
 - The `DATA:` line names rows, never the table. It reads `fresh (<n> min old)` when every account
   behind the answer is fresh, and otherwise `STALE — <vendor>/<account> <age>, …` listing exactly

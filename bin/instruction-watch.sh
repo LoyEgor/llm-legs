@@ -81,7 +81,10 @@ shq() {
 # name a session asks for is proof of what it will get back.
 SNAP_DIR="$STATE_DIR/snapshot"
 REVERT_DIR="$STATE_DIR/reverts"
+ALERT_DIR="$STATE_DIR/alerts"
 SNAP_MAX_BYTES=1048576
+_watch_nl='
+'
 
 snap_key() {
   printf '%s-%s' "$(basename "$1")" "$(printf '%s' "$1" | shasum -a 256 | cut -c1-8)"
@@ -213,6 +216,21 @@ alert_egor() {
   return 0
 }
 
+# One alert per change, machine-wide. This hook runs in EVERY live session — the chat Egor is
+# typing in, its relay workers, every other window — and each keeps its own baseline, so a single
+# edit flashed his screen once per session that happened to run a tool call after it. The marker is
+# named for the FILE and the bytes it now holds, never for the report text: a session with an older
+# baseline measures a different delta for the same change, and a key carrying one would alert again
+# for what he has already been told. Only the session that wins the atomic claim speaks; every
+# other one still rewrites its baseline and still reports the change to its own model, which is
+# per-session context and stays.
+alert_once() { # path content-key message
+  local key
+  key=$(printf '%s\n%s\n' "$1" "$2" | shasum -a 256 | cut -c1-16)
+  instruction_mark_once "$ALERT_DIR" "$key" || return 0
+  alert_egor "$3"
+}
+
 cmd_baseline() {
   mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
   # The per-session baselines age out at a week. Snapshots outlive them by far, because the
@@ -229,9 +247,13 @@ cmd_baseline() {
 # Both of these write into cmd_check's locals, which is what a function called from it sees.
 # A report carries the price of the file it names, so the summary can quote the dearest one
 # instead of the global file's rate for a skill that costs a fiftieth of it.
+# $3 is what the file now HOLDS — its content hash, or the state that replaced one — and it exists
+# for the alert alone: two sessions noticing the same change must key on the same string, and the
+# report text is not that, since each measures the delta against its own baseline.
 report() {
   local rate
   reports+=("$1")
+  keys+=("$2$_watch_nl${3:-}")
   moved=1
   rate=$(instruction_read_rate "$2" "$HOME")
   [ -n "$rate" ] || return 0
@@ -310,7 +332,11 @@ SPELL
 #   - the call that just ran AIMED a write at it. A shared checkout means the writer is as often
 #     another chat or a worker as this session, and a rollback decided on a guess eats that chat's
 #     live work — the standing rule for everything else in this hook;
-#   - Egor's autonomy span stands. Outside it he is here to arbiter, and this hook reports.
+#   - Egor's autonomy span stands, OR the writer is a relay worker. In the first case he is away;
+#     in the second he never negotiated with the writer at all — an instruction file is the
+#     orchestrating model's to edit, after its audit, and a worker proposes. Both leave growth of a
+#     file every later session re-reads with no arbiter in the room. Outside either, he is here to
+#     arbiter and this hook reports.
 # Only growth, and only against the version this session's own baseline vouches for: a shrink is
 # the cleanup the span exists to allow, and an untrusted file has no good bytes to go back to.
 revert_growth() {
@@ -318,13 +344,21 @@ revert_growth() {
   [ "${b_trust[$i]}" = 1 ] || return 1
   [ -n "$(instruction_write_class "$real")" ] || return 1
   own_write "$vis" "$real" || return 1
-  instruction_autonomous "$sid" "$transcript" || return 1
+  # Asked of every rollback and not only of the ones the span did not already authorise: WHO wrote
+  # decides the wording, and a worker inside a span told to leave the addition for Egor's next turn
+  # is a worker handed a human's instruction instead of the MD-PROPOSAL protocol it answers by.
+  ! instruction_in_relay || relay_revert=1
+  if ! instruction_autonomous "$sid" "$transcript"; then
+    # A worker's own class check, narrower than the span's: the review-debt list and anything else
+    # a class speaks for but no session re-reads is not what the orchestrator's rule is about.
+    [ -n "$relay_revert" ] && instruction_always_loaded "$vis" "$HOME" >/dev/null || return 1
+  fi
   src="$SNAP_DIR/$(snap_key "$vis")-${b_hash[$i]}"
   [ -f "$src" ] || return 1
   parked=$(park_current "$real") || return 1
   cp "$src" "$real" 2>/dev/null || return 1
   reverted+=("$vis (+$delta bytes; what it wrote is parked at $parked)")
-  report "REVERTED $vis (+$delta bytes)" "$vis"
+  report "REVERTED $vis (+$delta bytes)" "$vis" "${b_hash[$i]}"
 }
 
 cmd_check() {
@@ -374,8 +408,9 @@ cmd_check() {
     s_path+=("$n_path"); s_val+=("$n_rest")
   done <<<"$stat_out"
 
-  local -a reports=() restores=() reverted=()
+  local -a reports=() keys=() restores=() reverted=()
   local cur cur_mtime cur_size cur_ino cur_link cur_hash delta moved=0 top_rate=''
+  local relay_revert=''
   local vis_seen vis_ino
   for i in "${!b_real[@]}"; do
     real=${b_real[$i]}; vis=${b_vis[$i]}
@@ -396,10 +431,10 @@ cmd_check() {
       # A recorded target that is gone under a name that still resolves is a retarget, not a
       # deletion: bytes restored at a path the name no longer means would restore nothing.
       if [ "$vis" != "$real" ] && [ -n "$vis_seen" ]; then
-        report "RETARGETED $vis (its recorded target is gone)" "$vis"
+        report "RETARGETED $vis (its recorded target is gone)" "$vis" gone
         continue
       fi
-      report "DELETED $vis" "$vis"
+      report "DELETED $vis" "$vis" absent
       offer_restore "$i"
       continue
     fi
@@ -408,12 +443,12 @@ cmd_check() {
       # name sits there untouched, reporting nothing. Restoring bytes would answer a question
       # nobody asked, so both of these report and neither offers an undo.
       if [ -z "$vis_seen" ]; then
-        report "DELETED $vis" "$vis"
+        report "DELETED $vis" "$vis" absent
         continue
       fi
       # stat prints nothing for a name that is not a symlink, which is the baseline's `-`.
       if [ "${cur_link:--}" != "${b_link[$i]}" ]; then
-        report "RETARGETED $vis -> ${cur_link:-not a symlink any more}" "$vis"
+        report "RETARGETED $vis -> ${cur_link:-not a symlink any more}" "$vis" "${cur_link:--}"
         continue
       fi
     fi
@@ -423,7 +458,7 @@ cmd_check() {
     # target disagreeing on inode is the one trace that leaves.
     if [ "$vis" != "$real" ] && [ "${b_link[$i]}" = '-' ] && [ -n "$vis_ino" ] &&
        [ "$vis_ino" != "$cur_ino" ]; then
-      report "RETARGETED $vis (the name resolves to a different file)" "$vis"
+      report "RETARGETED $vis (the name resolves to a different file)" "$vis" "$vis_ino"
       continue
     fi
     # Fractional mtime and the inode, not whole seconds and a size: a same-size rewrite landing
@@ -445,7 +480,7 @@ cmd_check() {
         continue
       fi
       [ "$delta" -ge 0 ] && delta="+$delta"
-      report "CHANGED $vis ($delta bytes)" "$vis"
+      report "CHANGED $vis ($delta bytes)" "$vis" "$cur_hash"
       offer_restore "$i"
     fi
   done
@@ -458,7 +493,7 @@ cmd_check() {
     for j in "${!b_vis[@]}"; do
       [ "${b_vis[$j]}" = "$vis" ] && { known=1; break; }
     done
-    [ -n "$known" ] || report "ADDED $vis" "$vis"
+    [ -n "$known" ] || report "ADDED $vis" "$vis" "$(hash_of "$vis" "$vis")"
   done < <(visible_paths)
 
   # Rebuilding the baseline costs a hash per protected file, so it happens only when
@@ -478,14 +513,24 @@ cmd_check() {
     undo=${undo%; }
   fi
   if [ "${#reverted[@]}" -gt 0 ]; then
-    undone=" Growth this session's own call produced was PUT BACK, because Egor's autonomy span covers reshaping these files and not growing them: $(printf '%s; ' "${reverted[@]}")"
+    local why tail
+    if [ -n "$relay_revert" ]; then
+      why="instruction files are the orchestrator's to edit (Egor's rule) and a relay worker proposes rather than writes"
+      tail="Do not write it again — put the exact proposed text and its byte delta under MD-PROPOSAL in your RETURN, with the cut you suggest to pay for it."
+    else
+      why="Egor's autonomy span covers reshaping these files and not growing them"
+      tail="Do not write it again — an instruction file grows when he says so, not while he is away. If the addition is worth its recurring cost, say so in one line and leave it for his next turn."
+    fi
+    undone=" Growth this session's own call produced was PUT BACK, because $why: $(printf '%s; ' "${reverted[@]}")"
     undone=${undone%; }
-    undone="$undone. Do not write it again — an instruction file grows when he says so, not while he is away. If the addition is worth its recurring cost, say so in one line and leave it for his next turn."
+    undone="$undone. $tail"
   fi
   # The log is the durable half of the audit trail, so it is written before the baseline moves
   # on. Rebuilding first meant a hook killed in between erased the only record of the change.
   log_line "sid=${sid:-?} $joined${undo:+ | undo: ${restores[*]}}${undone:+ | reverted: ${reverted[*]}}"
-  alert_egor "Instruction file changed: ${reports[0]}"
+  # Keyed on the report the alert NAMES, which is the first one: what Egor reads is that line.
+  alert_once "${keys[0]%%"$_watch_nl"*}" "${keys[0]#*"$_watch_nl"}" \
+    "Instruction file changed: ${reports[0]}"
   # A baseline that cannot be rewritten means this same change is reported again after every
   # later Bash call, so the repetition is named rather than left looking like fresh news.
   write_baseline "$baseline" "$baseline.$$" "$baseline" ||

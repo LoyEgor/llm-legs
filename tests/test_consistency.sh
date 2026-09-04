@@ -203,8 +203,9 @@ done
 assert grep -Fq '`main` is no longer a ranking key on any vendor' "$CONTRACT"
 # codexb ranks its own profiles by the same budget, largest first, name breaking the tie.
 assert grep -Fq 'sort -t $'\''\t'\'' -k2,2nr -k1,1' "$CODEXB"
-assert grep -Fq 'a vendor a usable workers pin answered leads, then the vendors are ordered by the daily' "$POLICY"
-assert grep -Fq 'budget of the account each one selected' "$POLICY"
+assert grep -Fq 'a usable workers pin leads, then `[five-hour deferral, fresh claim, late auth, −budget, name]` across all vendors' "$POLICY"
+assert grep -Fq 'usable pin first, then `[five-hour deferral, fresh claim, late auth, −budget, name]`' "$CONTRACT"
+assert grep -Fq 'NEXT_MAX_ROWS=5' "$WORKERPICK"
 assert doc_has 'Worker rank contract'
 
 RB_PKG="$REVIEW_ROOT/share/rbench"
@@ -325,17 +326,17 @@ assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
-for arm in \
-  "pro:high) agy_model='Gemini 3.1 Pro (High)' ;;" \
-  "pro:low) agy_model='gemini-3.1-pro-low' ;;"; do
-  assert test "$(grep -Fc -- "$arm" "$WORKER_RUN")" -eq 1
-done
-# No flash arm survives on the WORKER leg: a flash is a model no worker may run (row bq), and an
-# arm nothing can reach is an arm the next reader takes for a supported pair.
-assert test "$(grep -Ec 'flash3[0-9]*:(high|medium|low)' "$WORKER_RUN")" -eq 0
-assert grep -Fq '`gemini_model=pro`, and `gemini_effort=high`' "$WORKER_COMMAND"
-assert grep -Fq 'The only valid combination is pro high/low' "$WORKER_COMMAND"
-assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}' "$WORKERPICK"
+assert test "$(grep -Fc -- "flash38:high | flash38:medium | flash38:low) agy_model=\"gemini-3.8-flash-\$effort\" ;;" "$WORKER_RUN")" -eq 1
+# No `pro` arm survives on the WORKER leg: since 2026-09-04 Pro is a model no worker may run
+# (row bq), and an arm nothing can reach is an arm the next reader takes for a supported pair.
+# The `Gemini 3.1 Pro (High)` label workaround belongs to the review cells alone.
+assert test "$(grep -Ec 'pro:(high|medium|low)|Gemini 3\.1 Pro' "$WORKER_RUN")" -eq 0
+# Nor any OTHER flash family: `agy models` serves 3.6 and 3.7 too, and an arm for one of them
+# would launch a model the allowed list refuses upstream of this case.
+assert test "$(grep -Ec 'flash3[0-79]:(high|medium|low)' "$WORKER_RUN")" -eq 0
+assert grep -Fq '`gemini_model=flash38`, and `gemini_effort=high`' "$WORKER_COMMAND"
+assert grep -Fq 'The only valid combinations are flash38 low/medium/high' "$WORKER_COMMAND"
+assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-flash38}' "$WORKERPICK"
 assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}' "$WORKERPICK"
 assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
 assert doc_has 'Gemini worker knobs'
@@ -349,7 +350,7 @@ assert test -r "$WORKER_MODEL_SH"
 for arm in \
   "claudeb) printf 'opus\\n' ;;" \
   "codex) printf 'gpt-5.6-sol\\n' ;;" \
-  "gemini) printf 'pro\\n' ;;" \
+  "gemini) printf 'flash38\\n' ;;" \
   "grok) printf 'auto\\ngrok-4.6\\n' ;;"; do
   assert test "$(grep -Fc -- "$arm" "$WORKER_MODEL_SH")" -eq 1
 done
@@ -359,7 +360,9 @@ assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
 assert grep -Fq 'OUTCOME: MODEL_REFUSED' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allows "$vendor" "$value"' "$PIN_GATE"
 assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
-assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-9]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
+# `flash3[0-79]` and not `flash3[0-9]`: 38 is the one flash family a worker may run, so a site
+# naming it is naming the allowed model, not smuggling a cheap one past the list.
+assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-79]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
 # Refused BEFORE the account is resolved: a pick already made is quota already claimed.
 assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
   -lt "$(grep -n 'warn_cold_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
@@ -378,10 +381,10 @@ done
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test -r "$agent"
   # The frontmatter `model:` is the RELAY's own model, not a model it may ask a worker to run.
-  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|fable|flash3[0-9]|gpt-5\.6-(terra|luna))')" -eq 0
+  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|fable|flash3[0-79]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `gpt-5.6-sol`, gemini `pro`, grok `auto`'
+assert doc_has 'claudeb `opus`, codex `gpt-5.6-sol`, gemini `flash38`, grok `auto`'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
@@ -544,6 +547,51 @@ assert grep -Fq '`95`% is the protective block only when worker-pick is unavaila
 assert grep -Fq 'hard `100`% wall' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
+# --- Row bt: native agent types on a Fable session ---------------------------
+# The two lists live once in the gate; the doc and routing-contract prose repeat them in words,
+# and a list that grows in one place and not the others is a rule nobody can read off any of them.
+ROUTING_DOC="$ROOT/docs/routing-contract.md"
+native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$WORKER_GATE" | head -n1; }
+assert eq "$(native_list NATIVE_ALLOWLIST)" 'Explore Plan claude-code-guide statusline-setup'
+assert eq "$(native_list NATIVE_CHEAP)" 'Explore claude-code-guide'
+for native in $(native_list NATIVE_ALLOWLIST); do
+  assert grep -Fq "\`$native\`" "$ROOT/$DOC"
+  assert grep -Fq "\`$native\`" "$ROUTING_DOC"
+done
+for cheap in $(native_list NATIVE_CHEAP); do
+  assert grep -Fq "\`$cheap\`" "$ROOT/$DOC"
+done
+# The rewrite target and the refusal are the row's other two halves.
+assert grep -Fq '.model = "sonnet"' "$WORKER_GATE"
+assert grep -Fq "native \$native runs on Fable's quota" "$WORKER_GATE"
+assert grep -Fq 'model: sonnet' "$ROUTING_DOC"
+assert doc_has 'Native agent types on a Fable session'
+
+# --- Rows bu/bv: worker-run deadlines and the launched brief -----------------
+WORKER_RUN="$ROOT/bin/worker-run"
+assert eq "$(sed -nE 's/^IDLE=\$\{WORKER_RUN_IDLE_S:-([0-9]+)\}$/\1/p' "$WORKER_RUN")" 1800
+assert eq "$(sed -nE 's/^DEADLINE=\$\{WORKER_RUN_DEADLINE:-([0-9]+)\}$/\1/p' "$WORKER_RUN")" 21600
+assert grep -Fq '`1800`s' "$ROOT/$DOC"
+assert grep -Fq '`21600`s' "$ROOT/$DOC"
+# gemini's own timeout follows the ceiling instead of standing on a number of its own.
+assert eq "$(grep -c -- '--print-timeout 360m' "$WORKER_RUN")" 2
+assert grep -Fq -- '--print-timeout 360m' "$ROOT/$DOC"
+# The liveness reading is ONE definition: the status row and the watchdog disagreeing about whether
+# a run has touched anything is a healthy worker killed while its own LAST-EDIT reads seconds.
+assert eq "$(grep -c 'workdir_activity_stamp' "$WORKER_RUN")" 3
+assert grep -Fq 'workdir_activity_stamp' "$ROOT/$DOC"
+# An idle kill needs positive evidence, and either watchdog names itself.
+assert grep -Fq '= y ] && [ $(($(date +%s) - idle_since))' "$WORKER_RUN"
+assert grep -Fq 'KILLED: idle watchdog' "$WORKER_RUN"
+assert grep -Fq 'KILLED: deadline' "$WORKER_RUN"
+assert grep -Fq 'KILLED: idle watchdog' "$ROOT/$DOC"
+assert doc_has 'Worker run deadlines'
+# The launched brief is a second file; the record stays the input.
+assert eq "$(grep -c "^BRIEF_PREAMBLE='" "$WORKER_RUN")" 1
+assert eq "$(grep -c '"\$directory/brief" >/dev/null 2>"\$directory/err"' "$WORKER_RUN")" 0
+assert grep -Fq 'brief.launch' "$ROOT/$DOC"
+assert doc_has 'Launched brief vs recorded brief'
+
 reserved_set() {
   sed -nE 's/^[[:space:]]*(main\|)?(\.\*\|\*\/\*\|)?([a-z|._-]*help[a-z|._-]*)\).*/\3/p' "$1" |
     head -n1 | tr '|' '\n' | grep -vE '^(main|\.\*|\*/\*)$' | sort -u | paste -sd' ' -
@@ -643,6 +691,31 @@ assert grep -Fq 'def classify_cause:' "$LLMLIMITS"
 assert grep -Fq 'deactivated_workspace' "$LLMLIMITS"
 assert grep -Fq '"workspace deactivated"' "$LLMLIMITS"
 assert doc_has 'workspace deactivated'
+for codex_wall_wording in 'Payment Required' 'deactivated_workspace'; do
+  assert grep -Fq "$codex_wall_wording" "$WORKER_RUN"
+  assert grep -Fq "$codex_wall_wording" "$LLMLIMITS"
+  assert doc_has "$codex_wall_wording"
+done
+
+# --- Rows bx/by: grok persistent wall and Codex out-of-credits agree with the bench
+assert grep -Fq "you['’]ve reached your free Grok Build usage limit for now" "$WORKER_RUN"
+assert grep -Fq "you['’]ve reached your free Grok Build usage limit for now" "$RB_ACCOUNTS"
+assert doc_has "you['’]ve reached your free Grok Build usage limit for now"
+for grok_wall_wording in \
+  'hit the rate limit for your plan' \
+  'hit the credit limit for your plan' \
+  'subscription:free-usage-exhausted' \
+  'run out of credits'; do
+  assert grep -Fq "$grok_wall_wording" "$WORKER_RUN"
+  assert grep -Fq "$grok_wall_wording" "$RB_ACCOUNTS"
+  assert doc_has "$grok_wall_wording"
+done
+assert grep -E 'codex\) pattern=.*out of credits' "$WORKER_RUN"
+assert grep -Fqi 'out of credits' <<<"$(sed -n '/^def codex_usage_wall(/,/^def is_429_error(/p' "$RB_ACCOUNTS")"
+assert doc_has 'out of credits'
+assert doc_has 'A spent SuperGrok plan is one wording in both repositories'
+assert doc_has 'Codex out-of-credits wall wording agrees across relay and bench'
+
 assert grep -Fq 'def apply_vendor_errors' "$LLMLIMITS"
 assert grep -Fq '.refresh_errors =' "$LLMLIMITS"
 assert grep -Fq 'appendRefreshErrorRows' "$HAMMER"
@@ -1205,6 +1278,15 @@ fi
 # where a run is still going, or waits for ever on one that is gone.
 assert grep -Fq 'return _round.pid_still_running(*stamp)' "$RB_CLI"
 assert eq "$(grep -c 'def pid_still_running(' "$RB_ROUND")" 1
+# The statusline is the fourth reader: the live worker tag stands for as long as a run of this chat
+# runs, so a slack of its own would show a magenta account the hooks have already retired.
+STATUSLINE_SH="$ROOT/bin/statusline.sh"
+assert grep -Fq 'SL_PID_SLACK=30' "$STATUSLINE_SH"
+assert grep -Fq '"pid_started_at"' "$STATUSLINE_SH"
+assert grep -Fq '[ "$pid" -gt 0 ] || return 1' "$STATUSLINE_SH"
+# Through the render's own `ps -o etime=` parser, never `kill -0`: a supervisor owned by another
+# account answers EPERM to the probe and would read dead while it spends quota.
+assert grep -Fq 'begin=$(process_start_epoch "$pid" "$2")' "$STATUSLINE_SH"
 
 # --- Row ae: account pin ownership -------------------------------------------
 # Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
@@ -2545,4 +2627,4 @@ assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
 assert test -r "$ROOT/tests/test_instruction_gate.sh"
 assert doc_has 'Instruction-file classes and the one span'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn and the two of them a lookup is dropped to sonnet for, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

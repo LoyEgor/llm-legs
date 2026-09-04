@@ -120,7 +120,7 @@ elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
   [ -n "$effort" ] || effort=$(printf '%s' "$agy_model" | grep -oE '(high|medium|low)$')
   [ -n "$model" ] || model=$(worker_conf gemini_model)
   [ "$model" = flash ] && model=flash36
-  [ -n "$model" ] || model=pro
+  [ -n "$model" ] || model=flash38
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
   [ -n "$effort" ] || effort=high
   tag="$acct · $model · $effort"

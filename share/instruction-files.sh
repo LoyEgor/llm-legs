@@ -134,6 +134,68 @@ instruction_autonomous() {
   ( . "$lib" || exit 1; rj_autonomous "$sid" "$transcript" ) >/dev/null 2>&1
 }
 
+# Whether this process is a relay worker rather than the chat Egor negotiated with. His rule: an
+# instruction file is edited by the orchestrating model, after that model's audit — a worker
+# proposes and never writes. The audit-then-retry protocol both gates run on is honour-based and a
+# worker spends it by simply asking twice, which is how the global CLAUDE.md grew twice in one day
+# with nobody looking for the cuts that would pay for it.
+# CLAUDEB_WORKER is the load-bearing member: `claudeb` sets it for every HEADLESS run, which is the
+# only shape in which these hooks execute inside a worker at all, and it holds whoever launched
+# that run. GROK_WORKER is its twin, set by `grokb` for the same reason — the same pair
+# `rj_in_relay` reads. CLAUDE_LAUNCHER_SESSION rides along because `worker-run` exports it into the
+# run and into nothing else: a relay CLI launched some other way still carries it, and no
+# interactive chat of Egor's ever does, since the export dies with the process that made it.
+instruction_in_relay() {
+  [ "${CLAUDEB_WORKER:-}" = 1 ] || [ "${GROK_WORKER:-}" = 1 ] ||
+    [ -n "${CLAUDE_LAUNCHER_SESSION:-}" ]
+}
+
+# What every door tells a relay worker, spelled once: two doors refusing the same write in two
+# wordings teach their reader that one of them is negotiable.
+instruction_relay_refusal() { # path
+  printf "Instruction files are the orchestrator's to edit (Egor's rule): do not write %s; put the exact proposed text and its byte delta under MD-PROPOSAL in your RETURN, with the cut you suggest to pay for it.\n" "$1"
+}
+
+# The nearest ancestor of a path that exists, resolved through every symlink in it. A Write creates
+# the file and may be creating its directory too, so the walk goes up: a new subdirectory of docs/
+# is still under docs/. CDPATH makes cd print where it landed, which would ride along in the
+# captured path.
+instruction_resolved_dir() { # path
+  local probe out=''
+  probe=$(dirname "$1")
+  while [ -n "$probe" ] && [ "$probe" != / ] && [ "$probe" != . ]; do
+    out=$(CDPATH= cd -- "$probe" 2>/dev/null && pwd -P) && [ -n "$out" ] && break
+    out=''
+    probe=$(dirname "$probe")
+  done
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# Whether a path is one of the always-loaded instruction files, asked of an ARBITRARY path rather
+# than of a name already matched against the guarded set: the Edit/Write door has no spelling match
+# to lean on. The basename settles the every-session class; past it the name says only "markdown"
+# and the resolved DIRECTORY decides, because the class directories are symlinks into the config
+# repository and the repository spelling is the one anybody editing that repo actually types.
+# A memory file answers no, and deliberately: appending a pointer line to a project's memory index
+# is the workflow every agent is told to follow, and a memory is not always-on content. So does the
+# review-debt list, which keeps its own refusal — what it guards is a review, not a context window.
+instruction_always_loaded() { # path [home] -> prints always|span
+  local path=$1 home=${2:-$HOME} dir probe guarded
+  case "$(instruction_write_class "$path")" in
+    always) printf always; return 0 ;;
+    span) ;;
+    *) return 1 ;;
+  esac
+  dir=$(instruction_resolved_dir "$path") || return 1
+  while IFS= read -r probe; do
+    guarded=$(CDPATH= cd -- "$probe" 2>/dev/null && pwd -P) || continue
+    [ -n "$guarded" ] || continue
+    case "$dir" in "$guarded"|"$guarded"/*) printf span; return 0 ;; esac
+  done < <(_instruction_class_dirs "$home")
+  return 1
+}
+
 # A shell command with its DATA taken out, so what is left can be read as syntax. Two passes,
 # both about the same distinction:
 #   - a heredoc BODY is data handed to a command, so a redirection or a guarded name inside one is

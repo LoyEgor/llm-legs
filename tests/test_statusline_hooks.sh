@@ -1331,7 +1331,7 @@ assert test "${with_effort#*⚡}" = "$with_effort"
 # is worker-pick's — never the session's own, which no implementation run may spend.
 worker_file="$HOME/.claude/worker-model"
 mkdir -p "$HOME/.cache"
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 rm -f "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-def)")
 assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
@@ -1386,25 +1386,25 @@ worker_out=$(run_statusline "$(statusline_payload status-w-gemini-pin)")
 assert grep -Fq "${MAGENTA}@work${RESET}${DIM}·FL·med${RESET}" <<< "$worker_out"
 
 # Auto renders ONE candidate — worker-pick's own order, claudeb first — never the three-vendor line.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
-printf 'worker=auto\nclaudeb_model=fable\nclaudeb_effort=high\ngemini_model=pro\ngemini_effort=high\n' > "$worker_file"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'worker=auto\nclaudeb_model=fable\nclaudeb_effort=high\ngemini_model=flash38\ngemini_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto)" main)
 assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·FB·hi${RESET}" <<< "$worker_out"
 assert test "${worker_out#*gx}" = "$worker_out"
 assert test "${worker_out#*alt}" = "$worker_out"
 
 # Claudeb walled: the next vendor in that order carries the candidate, with ITS model and effort.
-printf 'cx✓alt·sol·med cb~? gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb~? gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-cx)" main)
 assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·hi${RESET}" <<< "$worker_out"
 
 # A vendor switched off for workers is skipped in auto, and gemini answers instead.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-off)" main)
-assert grep -Fq "${MAGENTA}main${RESET}${DIM}·PR·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_out"
 
 # Every vendor unusable: no candidate at all rather than a guess.
-printf 'cx✗·? cb~? gx✗?·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✗·? cb~? gx✗?·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-walled)" main)
 assert test "${worker_out#*·PR}" = "$worker_out"
 assert test "${worker_out#*·SL}" = "$worker_out"
@@ -1421,7 +1421,7 @@ assert test "${worker_out#*·FB}" = "$worker_out"
 assert test "${worker_out#*·SL}" = "$worker_out"
 
 # A fixed vendor switched off keeps saying so — a parked switch is not a walled account.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\nclaudeb_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-off)")
 assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
@@ -1432,7 +1432,7 @@ assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_o
 
 # A prediction older than 10 minutes: worker-pick has stopped answering and the account it names is
 # no longer evidence of anything.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 pick_stale_stamp=$(date -v-15M +%Y%m%d%H%M.%S 2>/dev/null || date -d '15 minutes ago' +%Y%m%d%H%M.%S)
 touch -t "$pick_stale_stamp" "$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\nclaudeb_model=opus\nclaudeb_effort=high\n' > "$worker_file"
@@ -1463,21 +1463,21 @@ worker_out=$(run_statusline "$(statusline_payload status-w-grok-pin)")
 assert grep -Fq "${MAGENTA}@pinnedgrok${RESET}${DIM}·GR4.6·xhi${RESET}" <<< "$worker_out"
 
 # grok is last in worker-pick's order: it answers in auto only once every vendor above it is out.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·pro·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr)" main)
 assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·pro·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=auto\ngemini_model=pro\ngemini_effort=high\ngrok_model=grok-4.6\ngrok_effort=high\n' \
+printf 'worker=auto\ngemini_model=flash38\ngemini_effort=high\ngrok_model=grok-4.6\ngrok_effort=high\n' \
   > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr-order)" main)
-assert grep -Fq "${MAGENTA}main${RESET}${DIM}·PR·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_out"
 assert test "${worker_out#*supergrok}" = "$worker_out"
 
 # The field is optional: a prediction written before grok existed renders exactly as it did.
-printf 'cx✓alt·sol·med cb⏸off·opus·hi gx⏸off·pro·hi\n' >"$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' >"$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-nogr)" main)
 assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·hi${RESET}" <<< "$worker_out"
 
@@ -1543,6 +1543,82 @@ printf 'notcom · sonnet · xhigh\n' > "$HOME/.cache/claude-worker-tags/status-w
 worker_out=$(run_statusline "$(statusline_payload status-w-live)")
 assert grep -Fq "${MAGENTA}▶notcom${RESET}${DIM}·SN·xhi${RESET}" <<< "$worker_out"
 rm -rf "$HOME/.cache/claude-worker-tags/status-w-live"
+rm -f "$worker_file"
+
+# --- the live tag stands on the RUN RECORDS, not on the age of a tag file ------------------
+RUNS_DIR="$HOME/.cache/claude-worker-runs"
+tag_now=$(date +%s)
+# A real live supervisor: the pid, and beside it the instant that pid started, which is the pair
+# every reader of these records judges liveness by (docs/shared-invariants.md row `ar`).
+sleep 600 & live_pid=$!
+sleep 600 & live_pid_two=$!
+live_stamp=$(date +%s)
+make_run() { # run-id launcher pid pid_started_at tag
+  local d="$RUNS_DIR/$1"
+  mkdir -p "$d"
+  printf '%s\n' "$2" > "$d/launcher"
+  printf '{"pid":%s,"pid_started_at":%s,"started_at":%s}\n' "$3" "$4" "$4" > "$d/meta.json"
+  printf '%s\n' "$5" > "$d/tag"
+}
+tag_file_aged() { # session-id age-seconds tag
+  mkdir -p "$HOME/.cache/claude-worker-tags/$1"
+  printf '%s\n' "$3" > "$HOME/.cache/claude-worker-tags/$1/1"
+  touch -t "$(date -r $((tag_now - $2)) +%Y%m%d%H%M.%S)" "$HOME/.cache/claude-worker-tags/$1/1"
+}
+printf 'worker=auto\n' > "$worker_file"
+
+# The failure this replaces: a 30-minute run — every run today — left the strip after ten minutes,
+# because the tag file was the source and its mtime was ignored past 600s. The record answers for as
+# long as the supervisor lives, and the run dir's own tag is the text, not the file's.
+make_run claudeb-live-1 status-w-run "$live_pid" "$live_stamp" 'notcom · opus · high'
+tag_file_aged status-w-run 3000 'stale · sonnet · low'
+worker_out=$(run_statusline "$(statusline_payload status-w-run)")
+assert grep -Fq "${MAGENTA}▶notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
+
+# An exit code is the run stating it is over, and the strip lets go of it on the next render.
+printf '0\n' > "$RUNS_DIR/claudeb-live-1/exit_code"
+worker_out=$(run_statusline "$(statusline_payload status-w-run)")
+assert test "${worker_out#*▶}" = "$worker_out"
+rm -f "$RUNS_DIR/claudeb-live-1/exit_code"
+
+# Two live runs: the newest-started is named and the rest are a count, because naming all of them
+# is what pushes the strip past its width on the one day Egor runs three workers.
+make_run claudeb-live-2 status-w-run "$live_pid_two" "$live_stamp" 'alt · sonnet · low'
+worker_out=$(run_statusline "$(statusline_payload status-w-run)")
+assert grep -Fq "${MAGENTA}▶alt${RESET}${DIM}·SN·low${RESET}${DIM}×2${RESET}" <<< "$worker_out"
+
+# A run of another chat is never this chat's, however live it is.
+make_run claudeb-foreign-1 somebody-else "$live_pid" "$live_stamp" 'foreign · opus · high'
+worker_out=$(run_statusline "$(statusline_payload status-w-run-foreign)")
+assert test "${worker_out#*▶}" = "$worker_out"
+
+# A stale record is not live: the pid is real, but its own age disagrees with the stamp beside it,
+# which means the number was recycled and this supervisor is gone.
+make_run claudeb-gone-1 status-w-run-gone "$live_pid" $((live_stamp - 600)) 'gone · opus · high'
+worker_out=$(run_statusline "$(statusline_payload status-w-run-gone)")
+assert test "${worker_out#*▶}" = "$worker_out"
+
+# Pid 0 is the placeholder worker-run stamps before the supervisor exists: `ps -p 0` answers
+# nothing, so read as a pid it would report a run that has not started as gone.
+make_run claudeb-pending-1 status-w-run-pending 0 "$live_stamp" 'pending · opus · high'
+worker_out=$(run_statusline "$(statusline_payload status-w-run-pending)")
+assert test "${worker_out#*▶}" = "$worker_out"
+
+# The tag file now covers only the gap no record can: a launch in its first seconds, and an
+# image-gen run, which goes straight at its vendor and writes no record at all.
+tag_file_aged status-w-run-gap 30 'imgacct · image · codex'
+worker_out=$(run_statusline "$(statusline_payload status-w-run-gap)")
+assert grep -Fq "${MAGENTA}▶imgacct${RESET}" <<< "$worker_out"
+
+# Past that 60s window, with no record to stand on, the segment is the config candidate again.
+tag_file_aged status-w-run-gap 120 'imgacct · image · codex'
+worker_out=$(run_statusline "$(statusline_payload status-w-run-gap)")
+assert test "${worker_out#*▶}" = "$worker_out"
+
+kill "$live_pid" "$live_pid_two" 2>/dev/null
+wait "$live_pid" "$live_pid_two" 2>/dev/null
+rm -rf "$RUNS_DIR" "$HOME/.cache/claude-worker-tags/status-w-run" \
+  "$HOME/.cache/claude-worker-tags/status-w-run-gap"
 rm -f "$worker_file"
 
 # --- Progressive width fit ----------------------------------------------------------------
@@ -1827,7 +1903,7 @@ bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 # .claudeb-state (the last profile launched): the two are seeded to different accounts
 # here so a regression back to the state file fails instead of silently going stale.
 printf 'acctgen\n' > "$CLAUDEB_FIX/.claudeb-state"
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-pick '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
 assert grep -Fq "${MAGENTA}acctpick${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
@@ -1836,16 +1912,16 @@ assert test "${worker_out#*acctfab}" = "$worker_out"
 
 # Profile names may hold underscores, dots and capitals (claudeb's own add rule), so the
 # extractor must not be narrower than the names it can receive.
-printf 'cx✓alt·sol·med cb~My_acct.2·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb~My_acct.2·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-oddname '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
 assert grep -Fq "${MAGENTA}My_acct.2${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
 
 # No parsable cache → no candidate, never a stale account from the state file.
-printf 'cx✓alt·sol·med gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-nocache '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
 assert test "${worker_out#*·OP}" = "$worker_out"
 assert test "${worker_out#*acctgen}" = "$worker_out"
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-pick)" main)
@@ -1853,26 +1929,26 @@ assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
 
 # codexb only ever creates lowercase-and-hyphen names, so a line carrying anything else is a
 # corrupt cache and must read as unknown rather than as a confident prediction.
-printf 'cx✓My_acct.2·sol·med cb~acctpick·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓My_acct.2·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-oddname)" main)
 assert test "${worker_out#*·SL}" = "$worker_out"
 assert test "${worker_out#*My_acct}" = "$worker_out"
 
-printf 'cx✗·? cb~? gx✗?·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✗·? cb~? gx✗?·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-nocache)" main)
 assert test "${worker_out#*·SL}" = "$worker_out"
 
 # A vendor switched off for workers is parked, not spent: it arrives in the cache as its own
 # `⏸off` shape and must not render as a walled vendor Egor would go chasing limits over, nor as
 # an account literally named `off`.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-roleoff)" main)
 assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
 assert test "${worker_out#*off·}" = "$worker_out"
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff)" main)
 assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
-printf 'worker=gemini\ngemini_model=pro\ngemini_effort=high\n' > "$worker_file"
+printf 'worker=gemini\ngemini_model=flash38\ngemini_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-gem-roleoff)" main)
 assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
 # The pin outranks the switch (routing-contract Roles), so a pinned vendor still names its account.
@@ -1880,7 +1956,7 @@ printf 'worker=claudeb\nclaudeb_profile=notcom\ncodex_effort=high\n' > "$worker_
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff-pin)" main)
 assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
 # One vendor parked leaves the others predicted as usual.
-printf 'cx✓alt·sol·med cb⏸off·opus·hi gx✓main·pro·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·sol·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-beside-roleoff)" main)
 assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
@@ -1888,7 +1964,7 @@ assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 # Every vendor is present in the line the rest of the suite inherits: a missing field now means a
 # paused vendor, and later cases pin grok expecting it to render.
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·pro·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
   > "$HOME/.cache/worker-pick.line.main"
 rm -f "$WORK/limits.json" "$worker_file"
 
@@ -3132,6 +3208,13 @@ chmod +x "$FAKE_LSOF_EMPTY"
 run_probe() {
   STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF" "$PORTS_PROBE" "$1" "$2" "${3:-}"
 }
+# The cache carries one record per line, `<port>\t<tree>`, and `-` is the tree of a port that no
+# working tree of the project holds — which is every port of a probe given no root at all.
+ports_records() {
+  local p out=""
+  for p in "$@"; do out="${out}${p}"$'\t'"-"$'\n'; done
+  printf '%s' "$out"
+}
 run_probe pp-parse 1001
 # 61609 and 61610 are an LLM tool talking to itself, an agy process and a node it spawned. The
 # two that stay are what the segment exists for: 5174 is a dev server a codex worker started,
@@ -3142,7 +3225,7 @@ run_probe pp-parse 1001
 # name is all digits, which the pid scan must not mistake for the pid column, and 4700 to one whose
 # name merely starts with the header word. A real process exactly named COMMAND also survives
 # because the listener filter makes the header check redundant.
-assert_eq '5173 8123 5174 8080 4500 4600 4700 4800' "$(cat "$STATE_DIR/ports-pp-parse")"
+assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800)" "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # A server backgrounded from a tool call is reparented to launchd as soon as that call returns —
 # the case the ancestry walk alone could never see, and the one every dev server actually hits.
@@ -3150,14 +3233,17 @@ assert_eq '5173 8123 5174 8080 4500 4600 4700 4800' "$(cat "$STATE_DIR/ports-pp-
 # elsewhere is not, and neither is /projx, whose name merely starts with the repository's. 62150 has
 # the right directory and the wrong port: a directory is weaker evidence than a parent, and every
 # editor RPC socket started from the repository would otherwise fill the segment.
+# /proj is no repository, so the one root given is the whole project and 4254 is attributed to it;
+# every other port here is one this session parents, and its own directory places none of them.
 run_probe pp-orphan 1001 /proj
-assert_eq '5173 8123 5174 8080 4254 4500 4600 4700 4800' "$(cat "$STATE_DIR/ports-pp-orphan")"
+assert_eq "$(printf '5173\t-\n8123\t-\n5174\t-\n8080\t-\n4254\t/proj\n4500\t-\n4600\t-\n4700\t-\n4800\t-')" \
+  "$(cat "$STATE_DIR/ports-pp-orphan")"
 
 # The repository places an orphan, never someone else's session: 1001-1009 hang off the other
 # claude, and a repository argument must not turn them into this session's servers. 4500 sits under
 # a worker of that other session and is just as much theirs.
 run_probe pp-orphan-other 9999 /proj
-assert_eq '4254' "$(cat "$STATE_DIR/ports-pp-orphan-other")"
+assert_eq "$(printf '4254\t/proj')" "$(cat "$STATE_DIR/ports-pp-orphan-other")"
 
 # 4-digit PID alignment test: ps right-aligns columns, causing leading spaces.
 # Verify the regex handles leading whitespace correctly.
@@ -3185,7 +3271,7 @@ run_probe_4dig() {
   STATUSLINE_PS="$FAKE_PS_4DIG" STATUSLINE_LSOF="$FAKE_LSOF_4DIG" "$PORTS_PROBE" "$1" "$2"
 }
 run_probe_4dig pp-4dig 2001
-assert_eq '8127' "$(cat "$STATE_DIR/ports-pp-4dig")"
+assert_eq "$(ports_records 8127)" "$(cat "$STATE_DIR/ports-pp-4dig")"
 
 # The LLM-tool list is the contract's, and grok is on it again as a worker vendor: its own RPC
 # socket leads nowhere a human would go, while a dev server one of its runs started IS the work.
@@ -3214,8 +3300,62 @@ OUT
 LSEOFT
 chmod +x "$FAKE_LSOF_TOOLS"
 STATUSLINE_PS="$FAKE_PS_TOOLS" STATUSLINE_LSOF="$FAKE_LSOF_TOOLS" "$PORTS_PROBE" pp-tools 1000
-assert_eq '4321' "$(cat "$STATE_DIR/ports-pp-tools")"
+assert_eq "$(ports_records 4321)" "$(cat "$STATE_DIR/ports-pp-tools")"
 
+
+# Each port is attributed to the WORKING TREE its process directory sits in, and the worktrees live
+# INSIDE the repository, so the root cannot claim them: the render's whole colour rule rests on
+# this. A sibling checkout whose name merely starts with a tree's is not inside it.
+SIB_A="$FIXTURES/repo a-extra"
+mkdir -p "$SIB_A"
+FAKE_PS_TREES="$FIXTURES/ports-ps-trees"
+cat > "$FAKE_PS_TREES" <<'PSEOFW'
+#!/usr/bin/env bash
+cat <<'SNAP'
+1000 1 claude
+1001 1000 node /path/to/vite
+1010 1 node /main/server.js
+1011 1 node /wt/server.js
+1012 1 node /sibling/server.js
+SNAP
+PSEOFW
+chmod +x "$FAKE_PS_TREES"
+FAKE_LSOF_TREES="$FIXTURES/ports-lsof-trees"
+cat > "$FAKE_LSOF_TREES" <<LSEOFW
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  [ "\$arg" = cwd ] || continue
+  cat <<CWD
+p1001
+n$TOP_A
+p1010
+n$TOP_A
+p1011
+n$TOP_E/deep/inside
+p1012
+n$SIB_A
+CWD
+  exit 0
+done
+cat <<'OUT'
+COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+node     1001 u   20u  IPv4  0t0      TCP *:5173 (LISTEN)
+node     1010 u   30u  IPv4  0t0      TCP *:4001 (LISTEN)
+node     1011 u   31u  IPv4  0t0      TCP *:4002 (LISTEN)
+node     1012 u   32u  IPv4  0t0      TCP *:4003 (LISTEN)
+OUT
+LSEOFW
+chmod +x "$FAKE_LSOF_TREES"
+run_probe_trees() {
+  STATUSLINE_PS="$FAKE_PS_TREES" STATUSLINE_LSOF="$FAKE_LSOF_TREES" "$PORTS_PROBE" "$1" 1001 "$2"
+}
+trees_expected=$(printf '5173\t%s\n4001\t%s\n4002\t%s' "$TOP_A" "$TOP_A" "$TOP_E")
+run_probe_trees pp-trees "$TOP_A"
+assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees")"
+# The tree list is the whole project whichever of its trees the probe was given, so the records do
+# not change when the session sits in a worktree — only the render's reading of them does.
+run_probe_trees pp-trees-wt "$TOP_E"
+assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees-wt")"
 
 run_probe pp-selfroot 9999
 assert test -f "$STATE_DIR/ports-pp-selfroot"
@@ -3229,13 +3369,15 @@ STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" "$PORTS_PROBE" pp-de
 assert_eq "" "$(cat "$STATE_DIR/ports-pp-death")"
 
 # --- render of the two new segments ---
-printf '5173 8080\n' > "$STATE_DIR/ports-r-ports"
+# One record per line now, so these two fixtures carry the tab format; `-` is a port this session
+# parents whose directory no tree of the project holds, and it is bright wherever the block sits.
+ports_records 5173 8080 > "$STATE_DIR/ports-r-ports"
 rports_out=$(run_statusline "$(statusline_payload r-ports)")
 assert grep -Fq "${GREEN}:5173${RESET}" <<< "$rports_out"
 assert grep -Fq "${GREEN}:8080${RESET}" <<< "$rports_out"
 assert grep -Fq '⇢' <<< "$rports_out"
 
-printf '1 2 3 4 5\n' > "$STATE_DIR/ports-r-cap"
+ports_records 1 2 3 4 5 > "$STATE_DIR/ports-r-cap"
 rcap_out=$(run_statusline "$(statusline_payload r-cap)")
 assert grep -Fq "${GREEN}:3${RESET}" <<< "$rcap_out"
 assert test "${rcap_out#*"${GREEN}:4"}" = "$rcap_out"
@@ -3264,6 +3406,39 @@ assert grep -Fq "${GREEN}:8123${RESET}" <<< "$e2e_out"
 printf '5173' > "$STATE_DIR/ports-r-nonl"
 rnonl_out=$(run_statusline "$(statusline_payload r-nonl)")
 assert grep -Fq "${GREEN}:5173${RESET}" <<< "$rnonl_out"
+
+# The colour says whose tree a port is, and the SHOWN tree decides (Egor, 2026-09-04). From the
+# main checkout everything the project has up is on the strip: its own ports bright, every
+# worktree's dim — and own-tree ports come first, so the three-port cap cannot spend itself on
+# siblings and hide the one Egor is here to open.
+# The tops and not `$REPO_A`/`$REPO_E`: a case above rebinds `REPO_E` to another fixture.
+tree_cache=$(printf '4002\t%s\n5173\t%s\n6001\t-\n' "$TOP_E" "$TOP_A")
+printf '%s' "$tree_cache" > "$STATE_DIR/ports-r-tree-main"
+rtmain_out=$(run_statusline "$(statusline_payload r-tree-main '' "$TOP_A")")
+assert grep -Fq "${DIM}⇢${RESET} ${GREEN}:5173${RESET} ${GREEN}:6001${RESET} ${DIM}:4002${RESET}" \
+  <<< "$rtmain_out"
+
+# Shown a worktree, only that worktree's ports are on the strip at all — a sibling tree's are not
+# dimmed, they are absent, because from here they are somebody else's work.
+printf '%s' "$tree_cache" > "$STATE_DIR/ports-r-tree-wt"
+rtwt_out=$(run_statusline "$(statusline_payload r-tree-wt '' "$TOP_E")")
+assert grep -Fq "${DIM}⇢${RESET} ${GREEN}:4002${RESET} ${GREEN}:6001${RESET}" <<< "$rtwt_out"
+assert test "${rtwt_out#*:5173}" = "$rtwt_out"
+
+# End-to-end over the real probe: the same records read one way from the root and another from the
+# worktree, which is the whole point of writing the tree into the cache.
+run_probe_trees r-tree-e2e "$TOP_A"
+rte2e_out=$(run_statusline "$(statusline_payload r-tree-e2e '' "$TOP_A")")
+assert grep -Fq "${GREEN}:5173${RESET} ${GREEN}:4001${RESET} ${DIM}:4002${RESET}" <<< "$rte2e_out"
+cp "$STATE_DIR/ports-r-tree-e2e" "$STATE_DIR/ports-r-tree-e2e-wt"
+rte2ewt_out=$(run_statusline "$(statusline_payload r-tree-e2e-wt '' "$TOP_E")")
+assert grep -Fq "${DIM}⇢${RESET} ${GREEN}:4002${RESET}" <<< "$rte2ewt_out"
+assert test "${rte2ewt_out#*:4001}" = "$rte2ewt_out"
+
+printf '%s' "$tree_cache" > "$STATE_DIR/ports-r-tree-foreign"
+printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-r-tree-foreign"
+rtforeign_out=$(run_statusline "$(statusline_payload r-tree-foreign '' "$TOP_A")")
+assert test "${rtforeign_out#*⇢}" = "$rtforeign_out"
 
 worker_payload() {
   jq -cn --arg type "$1" --arg id "$2" --arg description "$3" --arg command "$4" --arg session "${5:-wt}" '
@@ -3507,7 +3682,7 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok
 assert_eq 'supergrok · grok · high' \
   "$(cat "$HOME/.cache/claude-worker-tags/spawn-grok-auto/pending-grok-worker")"
 
-printf 'gemini_model=pro\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
+printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 spawn_payload=$(jq -cn '{
   hook_event_name:"PreToolUse",session_id:"spawn-gemini",
   tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
@@ -5152,6 +5327,11 @@ done
 # Bookkeeping, help, a finished record and the suite that exercises the launcher are not a run: the
 # command WORD is what is judged, never the substring, and a REAL heredoc body — one whose
 # delimiter arrives, fed to something that is not a shell — is text a command is written into.
+# `ssh host <<EOF` is neither, and it stands here so its verdict is on record rather than assumed:
+# that body DOES reach a shell, the remote one, and this door reads it as text anyway because
+# nothing in it runs on THIS machine — no local quota is spent, no row could show the run, and an
+# `ATTACH` would have nothing to attach to. The local shapes are the rule; this one is the exception
+# that names itself.
 for owned_allowed in \
   'worker-run claim codex alt' \
   'worker-run' \

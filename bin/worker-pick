@@ -158,7 +158,7 @@ esac
 cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
 cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-high}
 cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-high}
-gm_model=$(conf gemini_model); gm_model=${gm_model:-pro}
+gm_model=$(conf gemini_model); gm_model=${gm_model:-flash38}
 gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}
 # `auto` is a real value here, not a missing one: resolving it to a model id is worker-run's job,
 # and this line only reports the knob.
@@ -188,9 +188,12 @@ case "$gm_effort" in medium) gm_eff_abbr=med ;; high) gm_eff_abbr=hi ;; *) gm_ef
 codex_model=$(codex_model_short_label)
 eff_display() { case "$1" in medium) printf med ;; *) printf '%s' "$1" ;; esac; }
 case "$gr_model" in auto | grok-*) gr_model_display=grok ;; *) gr_model_display=$gr_model ;; esac
+# The column is padded to a fixed width, and the family name spelled out costs it four characters
+# every vendor row pays for; `f38` keeps it exactly as wide as the `pro` it replaced.
+case "$gm_model" in flash38) gm_model_display=f38 ;; *) gm_model_display=$gm_model ;; esac
 cb_display="${cb_model}·$(eff_display "$cb_effort")"
 cx_display="${codex_model}·$(eff_display "$cx_effort")"
-gm_display="${gm_model}·$(eff_display "$gm_effort")"
+gm_display="${gm_model_display}·$(eff_display "$gm_effort")"
 gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
 
 # The ladder is pin > roles > pool: a role toggle walls the vendor for everything the pool would
@@ -445,9 +448,24 @@ summary=$(jq -r \
   # Rows travel to the shell as one field; the record separator is what a `read` cannot split on.
   def section($rows; $state; $note):
     $note + (if $state != "" then [$state] else ($rows | map(table_row)) end) | join("\u001e");
-  def next_cell($rows; $selected; $best; $vendor):
+  # The NEXT table ranks ACCOUNTS across the vendors, so a vendor contributes every candidate it
+  # holds and not only the one it would answer with. Each row travels with the keys that ordered it
+  # inside its vendor — the rank vector of rule 2, plus whether the pin is what chose it — so the
+  # shell merges four such lists under the same rule instead of re-deriving any of it. The selected
+  # account leads its list, because a pin outside the pool is a candidate no ranking carries.
+  def next_cells($cells; $best; $pinned; $order; $vendor):
     if $best == null then ""
-    else ($rows | map(select(.key == $selected)) | .[0] | next_row($vendor)) end;
+    else ([$best] + ($order | map(select(.name != $best.name)))) |
+      map(. as $a |
+        [(if $pinned != null and $a.name == $pinned.name then "0" else "1" end),
+         (if $a.defer5h then "1" else "0" end),
+         (if $a.claimed then "1" else "0" end),
+         (if $a.auth_late then "1" else "0" end),
+         ((0 - ($a.budget // 0)) | tostring),
+         $a.name, $vendor,
+         ($cells | map(select(.key == $a.name)) | .[0] | next_row($vendor))] | join("\u001d")) |
+      join("\u001e")
+    end;
   # The one-line face of the same rows, for the stderr of a query that could not answer.
   def reason($rows; $state; $note):
     ($note | map(. + " | ") | join("")) +
@@ -560,7 +578,7 @@ summary=$(jq -r \
    {selected:($cx_best != null),acct:$sel,pct:(($cx_best.spend // 0) | round),
     pinned:($cx_pinned != null),budget:(($cx_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cell($rows; $sel; $cx_best; "codex"),
+    next:next_cells($rows; $cx_best; $cx_pinned; $cx_eligible; "codex"),
     line:reason($rows; $state; $note)}) as $codex |
 
   ([$gm_source[] | select(.removed != true and gemini_group) |
@@ -589,7 +607,7 @@ summary=$(jq -r \
    {selected:($gm_best != null),acct:$sel,pinned:($gm_pinned != null),
     budget:(($gm_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cell($rows; $sel; $gm_best; "gemini"),
+    next:next_cells($rows; $gm_best; $gm_pinned; $gm_eligible; "gemini"),
     line:reason($rows; $state; $note)}) as $gemini |
 
   # Weekly is the only bucket grok measures, so `spending` finds no five-hour reading to fall back
@@ -620,7 +638,7 @@ summary=$(jq -r \
    {selected:($gr_best != null),acct:$sel,pct:(($gr_best.spend // 0) | round),
     pinned:($gr_pinned != null),budget:(($gr_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cell($rows; $sel; $gr_best; "grok"),
+    next:next_cells($rows; $gr_best; $gr_pinned; $gr_eligible; "grok"),
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
@@ -670,7 +688,7 @@ summary=$(jq -r \
    (section($rows; $state; $note) as $body |
     if $state == "" and ($rows | any(.name | endswith("*")))
     then $body + "\u001e* = this session account" else $body end) as $cl_rows |
-   {rows:$cl_rows,state:$state,next:next_cell($rows; $sel; $cl_best; "claude"),
+   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $pin_rec; $cl_eligible; "claude"),
     line:reason($rows; $state; $note)}) as $claude |
 
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
@@ -719,18 +737,18 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pinned cx_line cx_pin_lapse cx_budget
   fb_acct age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
   cl_pool_empty gr_present gr_measured cx_measured gm_measured cl_measured \
   cx_present gm_present cl_present \
-  cx_rows cx_nextrow cx_state gm_rows gm_nextrow gm_state \
-  gr_rows gr_nextrow gr_state cl_rows cl_nextrow cl_state <<<"$summary"
+  cx_rows cx_nextrows cx_state gm_rows gm_nextrows gm_state \
+  gr_rows gr_nextrows gr_state cl_rows cl_nextrows cl_state <<<"$summary"
 
 # A pin that served outranks the switch, so the vendor is not closed at all this run.
 [ "$cl_pinned" != yes ] || cb_role_off=false
 [ "$cx_pinned" != yes ] || cx_role_off=false
 [ "$gm_pinned" != yes ] || gm_role_off=false
 [ "$gr_pinned" != yes ] || gr_role_off=false
-if [ "$cb_role_off" = true ]; then cl_acct=""; cl_pinned=no; cl_pin_lapse=""; cl_nextrow=""; fi
-if [ "$cx_role_off" = true ]; then cx_selected=no; cx_acct=""; cx_pin_lapse=""; cx_nextrow=""; fi
-if [ "$gm_role_off" = true ]; then gm_selected=no; gm_acct=""; gm_pin_lapse=""; gm_nextrow=""; fi
-if [ "$gr_role_off" = true ]; then gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrow=""; fi
+if [ "$cb_role_off" = true ]; then cl_acct=""; cl_pinned=no; cl_pin_lapse=""; cl_nextrows=""; fi
+if [ "$cx_role_off" = true ]; then cx_selected=no; cx_acct=""; cx_pin_lapse=""; cx_nextrows=""; fi
+if [ "$gm_role_off" = true ]; then gm_selected=no; gm_acct=""; gm_pin_lapse=""; gm_nextrows=""; fi
+if [ "$gr_role_off" = true ]; then gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrows=""; fi
 
 # A vendor the store carries no row for is not installed here, so the render leaves it out entirely
 # rather than reporting a wall or a failed lookup. The switch, the mode and the pin are statements
@@ -748,10 +766,10 @@ cb_known=false; cx_known=false; gm_known=false; gr_known=false
 ! vendor_known "$gr_present" "$gr_role_off" grok "$gr_pin" "$gr_paused" || gr_known=true
 # A vendor that is not here selected nothing, whatever a snapshot older than the pause still says;
 # left standing, its account would keep the ALL WALLED verdict from ever being reached.
-[ "$cb_known" = true ] || { cl_acct=""; cl_pinned=no; cl_pin_lapse=""; cl_nextrow=""; }
-[ "$cx_known" = true ] || { cx_selected=no; cx_acct=""; cx_pin_lapse=""; cx_nextrow=""; }
-[ "$gm_known" = true ] || { gm_selected=no; gm_acct=""; gm_pin_lapse=""; gm_nextrow=""; }
-[ "$gr_known" = true ] || { gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrow=""; }
+[ "$cb_known" = true ] || { cl_acct=""; cl_pinned=no; cl_pin_lapse=""; cl_nextrows=""; }
+[ "$cx_known" = true ] || { cx_selected=no; cx_acct=""; cx_pin_lapse=""; cx_nextrows=""; }
+[ "$gm_known" = true ] || { gm_selected=no; gm_acct=""; gm_pin_lapse=""; gm_nextrows=""; }
+[ "$gr_known" = true ] || { gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrows=""; }
 
 # A pin the account has spent is over: `exhausted` is the usage wall alone, and the other lapses
 # are conditions that pass (a login to fix, a toggle to flip, a reading yet to arrive), so they
@@ -899,11 +917,15 @@ for cache_field in "$cx_cache" "$cb_cache" "$gm_cache" "$gr_cache"; do
 done
 write_cache "$cache_line"
 
-# The table is one flat ranking across the vendors, in the order the mode spells, and row 1 IS
-# the answer: `ACCOUNT:` under it is the same value printed a second time for a brief to copy, so
-# the two can never disagree. A vendor answering nothing has no row — what it is doing instead is
-# its own section below, and the reason reaches this block only when NOTHING answers.
+# The table is one flat ranking of ACCOUNTS across the vendors — several rows of one vendor are
+# ordinary, since what a reader needs is where the next runs go, not one nominee per leg — and row
+# 1 IS the answer: `ACCOUNT:` under it is the same value printed a second time for a brief to copy,
+# so the two can never disagree. A vendor answering nothing has no row — what it is doing instead
+# is its own section below, and the reason reaches this block only when NOTHING answers.
 NEXT_MAX_ROWS=5
+# The two separators jq packs a candidate row with: keys inside a row, rows inside a vendor's blob.
+NEXT_KEY_SEP=$'\x1d'
+NEXT_ROW_SEP=$'\x1e'
 vendor_label() {
   case "$1" in cb) printf claude ;; cx) printf codex ;; gm) printf gemini ;; gr) printf grok ;; esac
 }
@@ -930,25 +952,44 @@ vendor_reason() {
   fi
 }
 print_next() {
-  local name row acct text rank=0 pick="" reason=""
+  local force_lead=$1
+  shift
+  local name blob acct text line rank=0 pick="" reason="" lead="" stream="" merged=""
   local -a ranked=()
   for name in "$@"; do
     case "$name" in
-      cb) row=$cl_nextrow; acct=$cl_acct ;;
-      cx) row=$cx_nextrow; acct=$cx_acct ;;
-      gm) row=$gm_nextrow; acct=$gm_acct ;;
-      gr) row=$gr_nextrow; acct=$gr_acct ;;
+      cb) blob=$cl_nextrows; acct=$cl_acct ;;
+      cx) blob=$cx_nextrows; acct=$cx_acct ;;
+      gm) blob=$gm_nextrows; acct=$gm_acct ;;
+      gr) blob=$gr_nextrows; acct=$gr_acct ;;
     esac
-    if [ -z "$row" ]; then
+    if [ -z "$blob" ]; then
       text=$(vendor_reason "$name")
       [ -z "$text" ] || reason="${reason:+$reason  |  }$(vendor_label "$name") $text"
       continue
     fi
-    [ "${#ranked[@]}" -lt "$NEXT_MAX_ROWS" ] || continue
-    rank=$((rank + 1))
-    ranked+=("$(printf '%-7s%s' " $rank" "$row")")
-    [ "$rank" -ne 1 ] || pick=$acct
+    # Row 1 belongs to the vendor the MODE named, whose sequence put it first: `worker=grok` is an
+    # order and not a budget, and `ACCOUNT:` under the table has to name what that vendor answered.
+    # In `auto` the sequence is itself the pin-then-budget ranking, so this key changes nothing.
+    if [ "$force_lead" = true ] && [ -z "$lead" ]; then
+      lead="$acct$NEXT_KEY_SEP$(vendor_label "$name")"
+    fi
+    stream="${stream:+$stream$NEXT_ROW_SEP}$blob"
   done
+  if [ -n "$stream" ]; then
+    merged=$(printf '%s\n' "$stream" | tr "$NEXT_ROW_SEP" '\n' |
+      awk -F"$NEXT_KEY_SEP" -v OFS="$NEXT_KEY_SEP" -v lead="$lead" \
+        '{ print (($6 OFS $7) == lead ? 0 : 1), $0 }' |
+      LC_ALL=C sort -t "$NEXT_KEY_SEP" -k1,1n -k2,2n -k3,3n -k4,4n -k5,5n -k6,6g -k7,7 -k8,8 |
+      cut -d "$NEXT_KEY_SEP" -f7,9)
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      [ "$rank" -lt "$NEXT_MAX_ROWS" ] || break
+      rank=$((rank + 1))
+      ranked+=("$(printf '%-7s%s' " $rank" "${line#*"$NEXT_KEY_SEP"}")")
+      [ "$rank" -ne 1 ] || pick="${line%%"$NEXT_KEY_SEP"*}"
+    done <<<"$merged"
+  fi
   if [ "${#ranked[@]}" -gt 0 ]; then
     printf '%-7s%-16s%-6s%-6s%-21s%s\n' NEXT budget wk 5h vendor/account 'model·eff'
     printf '%s\n' "${ranked[@]}"
@@ -963,31 +1004,15 @@ print_next() {
 }
 
 if [ "$worker_mode" = gemini ]; then
-  print_next gm cb cx gr
+  print_next true gm cb cx gr
 elif [ "$worker_mode" = grok ]; then
-  print_next gr cb cx gm
+  print_next true gr cb cx gm
+elif [ "$worker_mode" = codex ]; then
+  print_next true cx cb gm gr
 elif [ "$worker_mode" = auto ]; then
-  # Auto ranks vendors by the same metric that ranks accounts inside one: the daily budget of the
-  # account each vendor selected. A vendor with nothing selectable has no budget to compare and
-  # takes the tail in the vendor order the tokens spell, which is also how equal budgets break.
-  # The pin outranks budget: a vendor a usable pin answered leads whatever an unpinned vendor
-  # holds, while a lapsed pin left an ordinary pool pick that ranks by budget like any other.
-  auto_rank() { [ "$1" = yes ] && printf 0 || printf 1; }
-  auto_seq=""
-  for vendor in $(
-    { [ -z "$cl_acct" ] || printf '%s\t%s\tcb\n' "$(auto_rank "$cl_pinned")" "$cl_budget"
-      [ "$cx_selected" != yes ] || printf '%s\t%s\tcx\n' "$(auto_rank "$cx_pinned")" "$cx_budget"
-      [ "$gm_selected" != yes ] || printf '%s\t%s\tgm\n' "$(auto_rank "$gm_pinned")" "$gm_budget"
-      [ "$gr_selected" != yes ] || printf '%s\t%s\tgr\n' "$(auto_rank "$gr_pinned")" "$gr_budget"
-    } | sort -t $'\t' -k1,1n -k2,2gr -k3,3 | cut -f3); do
-    auto_seq="$auto_seq $vendor"
-  done
-  for vendor in cb cx gm gr; do
-    case " $auto_seq " in *" $vendor "*) ;; *) auto_seq="$auto_seq $vendor" ;; esac
-  done
-  print_next $auto_seq
+  print_next false cb cx gm gr
 else
-  print_next cb cx
+  print_next true cb cx gm gr
 fi
 
 # One line per account, under the vendor that holds it: the columns are the NEXT block's, two

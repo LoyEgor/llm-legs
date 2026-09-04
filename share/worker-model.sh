@@ -7,20 +7,23 @@ worker_model_file() {
 }
 
 # An implementation worker is dispatched to spend ANOTHER account's quota on real work, and a run
-# that comes back needing redoing costs more than the cheap model saved — so a worker runs the
-# vendor's top model or nothing (Egor, 2026-09-02). This is the ONE list; `worker-run` refuses a
-# launch outside it and `worker-pin-gate.sh` refuses storing one in `~/.claude/worker-model`.
-# Effort is a separate knob and is not touched by any of it.
+# that comes back needing redoing costs more than the cheap model saved — so each vendor runs the
+# ONE model Egor named for it and nothing else. That is his call per vendor, not a rule that the
+# top model always wins: gemini's worker moved off 3.1 Pro to 3.8 Flash on 2026-09-04, while the
+# review cells keep Pro. This is the ONE list; `worker-run` refuses a launch outside it and
+# `worker-pin-gate.sh` refuses storing one in `~/.claude/worker-model`. Effort is a separate knob
+# and is not touched by any of it.
 #
-# The ids are spelled the way that vendor's leg in `worker-run` passes them to its CLI, so a name
-# that passes here is a name the CLI accepts. Grok's `auto` and `grok-4.6` are two spellings of the
+# The ids are the ones each vendor's leg in `worker-run` resolves to a CLI model, so a name that
+# passes here is a name that leg can launch. Grok's `auto` and `grok-4.6` are two spellings of the
 # same one model — `auto` means whichever model the account defaults to, and the leg omits `-m` for
-# it (shared-invariants row `bk`).
+# it (shared-invariants row `bk`). Gemini's `flash38` names the FAMILY: the effort rides in the
+# agy slug, so the leg spells the model as `gemini-3.8-flash-<effort>` (row `h`).
 worker_model_allowed_models() { # vendor → allowed model ids, one per line
   case "${1-}" in
     claudeb) printf 'opus\n' ;;
     codex) printf 'gpt-5.6-sol\n' ;;
-    gemini) printf 'pro\n' ;;
+    gemini) printf 'flash38\n' ;;
     grok) printf 'auto\ngrok-4.6\n' ;;
     *) return 2 ;;
   esac

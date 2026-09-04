@@ -35,7 +35,7 @@ printf 'v2 1785996700 ? 0 3600 claude-haiku-4-5 reply-9 262144 1785996700 com\n'
   > "$TRACKS/cache-ttl-track-unknown"
 
 OUT=$(STATUSLINE_CACHE_DIR="$TRACKS" python3 - "$SCRIPT" "$STATUSLINE" <<'PY'
-import importlib.machinery, importlib.util, re, sys
+import importlib.machinery, importlib.util, inspect, re, sys
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
 spec = importlib.util.spec_from_loader("chats", loader)
@@ -94,6 +94,19 @@ print("future-day:", chats.when_label(now + 86400, now))
 nameless = dict(row, name=None)
 print("nameless:", chats.columns(nameless, now)[4])
 print("nameless-quote:", repr(chats.columns(nameless, now)[5]))
+
+# A worktree lives inside its repository, so the column names the PROJECT it belongs to and
+# leaves the branch to the title — while the resume path keeps the worktree itself, or claude
+# slugs --resume against the wrong project and finds no transcript.
+tree = "/w/proj/.claude/worktrees/WUT-1_x"
+worktree_row = dict(row, cwd=tree)
+print("wt-project:", chats.columns(worktree_row, now)[1])
+print("wt-deep:", chats.columns(dict(row, cwd=tree + "/src/app"), now)[1])
+print("wt-plain:", chats.columns(dict(row, cwd="/w/other"), now)[1])
+print("wt-cwd-kept:", worktree_row["cwd"] == tree)
+print("wt-resume-raw:", "project_label" not in inspect.getsource(chats.main))
+# The cap holds on a project reached through a worktree exactly as on a plain one.
+print("wt-plan:", chats.plan([dict(row, cwd="/w/" + "d" * 40 + "/.claude/worktrees/b")]))
 
 # Widths come from the rows, capped, and never from the timestamps.
 print("plan:", chats.plan([row, dict(row, cwd="/x/" + "d" * 40)]))
@@ -164,6 +177,12 @@ assert grep -qx 'future-day: 07:06' <<<"$OUT"
 # With no name of its own, the last message stands in for one and is not repeated.
 assert grep -qx 'nameless: claude: done, the header holds' <<<"$OUT"
 assert grep -qx "nameless-quote: ''" <<<"$OUT"
+assert grep -qx 'wt-project: proj' <<<"$OUT"
+assert grep -qx 'wt-deep: proj' <<<"$OUT"
+assert grep -qx 'wt-plain: other' <<<"$OUT"
+assert grep -qx 'wt-cwd-kept: True' <<<"$OUT"
+assert grep -qx 'wt-resume-raw: True' <<<"$OUT"
+assert grep -qx 'wt-plan: \[22, 9, 5\]' <<<"$OUT"
 assert grep -qx 'plan: \[22, 9, 5\]' <<<"$OUT"
 assert grep -qx 'filter-name: True' <<<"$OUT"
 assert grep -qx 'filter-branch: True' <<<"$OUT"
@@ -465,5 +484,41 @@ assert grep -qx 'missing: False 3' <<<"$CACHE"
 # The answer survives the process that produced it.
 assert grep -qx 'relaunched: False 0' <<<"$CACHE"
 assert test -s "$WORK/ask-cache.json"
+
+# --- a worker session's launcher comes off the run record --------------------
+# The env stamp `worker-run` exports into a worker is one of two sides, and the one a sub-shell, a
+# resumed session or a CLI that scrubs its environment loses. The other is the run record on disk:
+# `worker-session` beside `launcher`, written while the run is still alive. Read here and by
+# `review-bench debt` off this same module, so a row the journal filed under a worker id still
+# prices as the chat that asked for it.
+RUNS="$WORK/worker-runs"
+mkdir -p "$RUNS/claudeb-1-1-aaaa" "$RUNS/claudeb-2-2-bbbb" "$RUNS/claudeb-3-3-cccc" \
+  "$RUNS/claudeb-4-4-dddd"
+printf 'chat-one\n' >"$RUNS/claudeb-1-1-aaaa/launcher"
+printf 'worker-paired\n' >"$RUNS/claudeb-1-1-aaaa/worker-session"
+# One worker id two CHATS resumed divides between neither of them.
+printf 'chat-one\n' >"$RUNS/claudeb-2-2-bbbb/launcher"
+printf 'worker-shared\n' >"$RUNS/claudeb-2-2-bbbb/worker-session"
+printf 'chat-two\n' >"$RUNS/claudeb-3-3-cccc/launcher"
+printf 'worker-shared\n' >"$RUNS/claudeb-3-3-cccc/worker-session"
+# A record naming no launcher maps nothing; the worker session stays the only author there is.
+printf 'worker-orphan\n' >"$RUNS/claudeb-4-4-dddd/worker-session"
+LAUNCHERS=$(WORKER_RUN_DIR="$RUNS" python3 - "$ROOT/share/chat_names.py" <<'MAP'
+import importlib.machinery, importlib.util, sys
+
+loader = importlib.machinery.SourceFileLoader("chat_names", sys.argv[1])
+spec = importlib.util.spec_from_loader("chat_names", loader)
+chat_names = importlib.util.module_from_spec(spec)
+loader.exec_module(chat_names)
+
+mapping = chat_names.worker_session_launchers()
+for worker in ("worker-paired", "worker-shared", "worker-orphan"):
+    print(f"{worker}: {mapping.get(worker, '-')}")
+MAP
+) || fail "launcher mapping probe failed"
+
+assert grep -qx 'worker-paired: chat-one' <<<"$LAUNCHERS"
+assert grep -qx 'worker-shared: -' <<<"$LAUNCHERS"
+assert grep -qx 'worker-orphan: -' <<<"$LAUNCHERS"
 
 echo "PASS: chats ($asserts assertions)"

@@ -209,6 +209,13 @@ if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eq "${interp_write}"; then
 fi
 [ -n "$denied" ] || exit 0
 
+# A relay worker gets no stamp and no honour path: the retry both doors grant is for the chat Egor
+# negotiated with, and a worker spends it by asking twice. The review-debt list keeps its own
+# reason below — what a line in it retires is a review, not a context window.
+case "$class" in
+  always|span) instruction_in_relay && { instruction_relay_refusal "$hit" >&2; exit 2; } ;;
+esac
+
 # The session is part of the key: a parallel chat spending its own retry must not spend this
 # one's, and a later session must not inherit approval Egor gave in an earlier turn.
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$hit" "$command" | shasum -a 256 | cut -c1-16)

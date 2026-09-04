@@ -14,6 +14,11 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# What this asks is the PRICE a growing file meets, and the gate answers a relay worker something
+# else entirely — a refusal with no decision and no rate in it, because an instruction file is the
+# orchestrator's to edit. Run by a worker, which is how these suites usually run, every priced row
+# below would read as a gate that found no price at all: the one failure this file exists to catch.
+unset CLAUDEB_WORKER GROK_WORKER CLAUDE_LAUNCHER_SESSION
 . "$ROOT/share/instruction-files.sh"
 
 RATES=${TOKENMAP_RATES:-$HOME/.local/share/tokenmap/read-rates.json}

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Every suite of this repository, in parallel, one table. `tests/run-all --help` for the options.
+set -u
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 4
+exec bash "$repo/share/run-suites.sh" --repo "$repo" "$@"
