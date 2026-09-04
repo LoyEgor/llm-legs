@@ -124,7 +124,7 @@ wall — a claimed account is still the answer when nothing else is selectable.
 is the entire state. A claim nobody renews simply ages out; nothing releases it explicitly.
 
 `--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
-`worker-run` is that caller. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
+`worker-run` and `gemini-research` are those callers. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
 without `--claim`, validate the profile they would launch, then call `worker_claims_record` themselves
 so a missing account directory does not burn the TTL. The human table and the statusline prediction
 **never** claim: they report a decision, they do not take one. A query that cannot read the claims
@@ -149,7 +149,8 @@ signature and no stall watch, so nothing downstream can tell a worker ran at all
 wrapper is denied beside the bare binary, never instead of it: isolating a profile is not
 recording a run. Every headless run therefore goes through `worker-run` or a tool that owns its
 own launches, and this is the whole list: `worker-run`, `review-bench`,
-`llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`, plus the
+`llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`,
+`gemini-research`, plus the
 OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and `codex-image` /
 `gemini-image` / `grok-image`, which only the `image-gen` agent may: a run or an image started from
 the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
@@ -167,24 +168,31 @@ is a relay worker through `worker-run`, so on a **Fable** session a NATIVE agent
 `general-purpose`, `claude`, `fork`, anything custom — is refused outright, because it runs on the
 session's own model, which is the one quota the whole relay design exists to spare. Four
 `general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`
-(shared-invariants row `bt`): `Explore` and `claude-code-guide` are pure lookup — the deliverable
-is locations and excerpts, verifiable at a glance — and are rewritten to `model: sonnet` unless the
-call names a model itself, while `Plan` and `statusline-setup` keep the session model, since design
-is Fable's own work. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
+closes. The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`, `gemini-research`
+(shared-invariants row `bt`): `Explore`, `claude-code-guide` and the thin `gemini-research` relay are
+pure lookup, so they are rewritten to `model: sonnet` unless the call names a model itself; the
+research pass itself runs on Gemini 3.8 Flash. `Plan` and `statusline-setup` keep the session model,
+since design is Fable's own work. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
 and a session whose model cannot be read fails open. The refusal carries no retry: a stamped
 one-shot deny is a rule a model walks through by calling twice.
 
 ## Roles
 
-A vendor serves three roles — `workers` (implementation), `reviewers` (review-bench raters) and
-`chat` (where Egor's own session should move next) — and `<vendor>_workers` /
+A vendor serves four roles — `workers` (implementation), `reviewers` (review-bench raters),
+`chat` (where Egor's own session should move next) and `research` (read-only Gemini research) — and `<vendor>_workers` /
 `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered over the pool: the
 literal value `off` closes that vendor for that role, an absent key or any other value leaves it
-open. There is no `<vendor>_chat` key and none is to be invented — the pool toggle is the whole
-gate for a chat. The default role is `workers`, so every existing caller keeps its meaning; a
+open. There is no `<vendor>_chat` or `<vendor>_research` key and none is to be invented — the pool
+toggle is the whole gate for either role. The default role is `workers`, so every existing caller keeps its meaning; a
 rater asks with `worker-pick --account <vendor> --role reviewers`, the chat picker with
-`--role chat`.
+`--role chat`, and the research launcher with `--role research`.
+
+`gemini-research` maps a picker refusal containing `WALLED` to exit 3 / `GEMINI_USAGE_LIMIT`;
+paused, switched-off, empty-pool and missing-data refusals are availability failures at exit 4.
+After a Gemini run hits a quota wall, automatic selection re-queries with every tried account in
+`--exclude` and claims the next answer. Once that retry query has no account left, the observed
+runtime walls make the launch a usage-limit exit even though exclusion can make the picker's line
+say the pool is empty. An explicit `--account` never rotates.
 
 The ladder is **pin > roles > pool**. A closed role walls everything the pool would choose:
 without a usable pin the query answers exit 3 / `<vendor> is switched off for <role>`, and the
@@ -192,7 +200,7 @@ pool's own candidate is never handed over instead. The pin overrides it the same
 pool exclusion — a usable pin answers the workers query and the workers table even while
 `<vendor>_workers=off`, and rule 3 still ends it at its wall, unchanged.
 
-The pin is **workers-only**. A reviewers or chat query never sees it: it is neither an override
+The pin is **workers-only**. A reviewers, chat or research query never sees it: it is neither an override
 nor a forced choice there, and the pinned account stands in those answers as an ordinary
 candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is therefore final
 — no pin opens it.

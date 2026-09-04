@@ -254,6 +254,10 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
   profile and launches agy for its one-time login, `add <name>` creates without launching,
   `remove <name>` forgets any named profile but never `main`, and `list`/`status` report every
   profile.
+- `bin/gemini-research` → `~/.local/bin/gemini-research` — read-only multi-repository research on
+  Gemini 3.8 Flash with account selection through role `research`, automatic rotation after a quota
+  wall, and before/after repository checks. Its terminal exits are 3 for usage limit, 4 for
+  unavailable, 5 for a read-only violation, and 124 for timeout.
 
 Adding an account: `geminib profile work` opens an isolated, logged-out Antigravity profile and
 prompts for Google login. Then run `geminib status` and

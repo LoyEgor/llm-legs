@@ -1,0 +1,300 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  printf 'usage: gemini-research --prompt-file <f> --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 40m]\n' >&2
+  exit 2
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+prompt_file=''
+out=''
+account=''
+timeout_value='40m'
+repos=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --prompt-file) [ "$#" -ge 2 ] || usage; prompt_file=$2; shift 2 ;;
+    --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
+    --repo) [ "$#" -ge 2 ] || usage; repos+=("$2"); shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --timeout) [ "$#" -ge 2 ] || usage; timeout_value=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[ -r "$prompt_file" ] && [ -n "$out" ] && [ "${#repos[@]}" -gt 0 ] && [ -n "$timeout_value" ] || usage
+[ -d "$(dirname "$out")" ] || usage
+out_dir=$(cd "$(dirname "$out")" && pwd -P) || usage
+out="$out_dir/${out##*/}"
+if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; fi
+
+resolved_repos=()
+for repo in "${repos[@]}"; do
+  [[ "$repo" = /* ]] && [ -d "$repo" ] || usage
+  resolved=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || {
+    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+    printf 'gemini-research: not a git repository: %s\n' "$repo"
+    exit 4
+  }
+  resolved=$(cd "$resolved" && pwd -P) || exit 4
+  duplicate=false
+  for known in "${resolved_repos[@]:-}"; do [ "$known" != "$resolved" ] || duplicate=true; done
+  [ "$duplicate" = true ] || resolved_repos+=("$resolved")
+done
+for repo in "${resolved_repos[@]}"; do
+  case "$out" in "$repo"|"$repo"/*) usage ;; esac
+done
+
+geminib_bin=$(command -v geminib 2>/dev/null) || {
+  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+  printf 'gemini-research: geminib is missing\n'
+  exit 4
+}
+root=$(resolve_root)
+gemini_base_home=$HOME
+gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
+. "$root/share/gemini-accounts.sh"
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-research.XXXXXX") || exit 4
+trap 'rm -rf "$tmp_dir"' EXIT
+
+explicit_account=false
+if [ -n "$account" ]; then
+  explicit_account=true
+else
+  picker=$(command -v worker-pick 2>/dev/null) || {
+    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+    printf 'gemini-research: worker-pick is missing\n'
+    exit 4
+  }
+fi
+
+pick_account() {
+  local exclude=${1:-} error_file="$tmp_dir/pick.err"
+  local -a args
+  args=(--account gemini --role research)
+  [ -z "$exclude" ] || args+=(--exclude "$exclude")
+  args+=(--claim)
+  PICK_RC=0
+  PICK_ACCOUNT=$("$picker" "${args[@]}" 2>"$error_file") || PICK_RC=$?
+  PICK_LINE=$(sed -n '1p' "$error_file")
+}
+
+picker_line_is_wall() { printf '%s\n' "$1" | grep -Eq '(^|[^[:alnum:]_])WALLED([^[:alnum:]_]|$)|ALL WALLED'; }
+account_known() { grep -Fqx -- "$1" <<<"$(gemini_account_names)"; }
+
+if [ "$explicit_account" = false ]; then
+  pick_account
+  if [ "$PICK_RC" -eq 3 ]; then
+    if picker_line_is_wall "$PICK_LINE"; then outcome=GEMINI_USAGE_LIMIT; code=3
+    else outcome=GEMINI_UNAVAILABLE; code=4
+    fi
+    printf 'OUTCOME: %s\n' "$outcome"
+    printf '%s\n' "$PICK_LINE"
+    exit "$code"
+  fi
+  if [ "$PICK_RC" -ne 0 ] || ! [[ "$PICK_ACCOUNT" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+    printf '%s\n' "$PICK_LINE"
+    exit 4
+  fi
+  account=$PICK_ACCOUNT
+fi
+if ! account_known "$account"; then
+  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+  printf 'gemini-research: unknown account: %s\n' "$account"
+  exit 4
+fi
+
+snapshot_path() {
+  local repo=$1 target=$2 code=$3 directory=$4 id state fingerprint full
+  id=$(printf '%s' "$target" | shasum -a 256 | awk '{print $1}') || return 1
+  full="$repo/$target"
+  if [ -L "$full" ]; then
+    fingerprint="link:$(readlink "$full" | shasum -a 256 | awk '{print $1}')"
+  elif [ -f "$full" ]; then
+    fingerprint="file:$(shasum -a 256 "$full" | awk '{print $1}')"
+  elif [ -d "$full" ]; then
+    fingerprint="dir:$({
+      git -C "$full" rev-parse --verify --quiet HEAD 2>/dev/null || printf 'unborn\n'
+      git -C "$full" submodule status --recursive 2>/dev/null || :
+      git -C "$full" status --porcelain=v1 --untracked-files=all 2>/dev/null || :
+      git -C "$full" diff --binary 2>/dev/null || :
+      git -C "$full" diff --cached --binary 2>/dev/null || :
+    } | shasum -a 256 | awk '{print $1}')"
+  else
+    fingerprint=missing
+  fi
+  state="$directory/$id.state"
+  printf '%s\n%s\n' "$code" "$fingerprint" >"$state"
+  printf '%s' "$target" >"$directory/$id.path"
+}
+
+# Match review-journal's cap: ignored build trees can contain thousands of files.
+IGNORED_HASH_CAP=500
+snapshot_repo() {
+  local repo=$1 directory=$2 record code target source ignored_count=0
+  mkdir -p "$directory/records" || return 1
+  : >"$directory/head"
+  git -C "$repo" rev-parse --verify --quiet HEAD >>"$directory/head" 2>/dev/null || :
+  git -C "$repo" status --porcelain=v1 -z --untracked-files=all >"$directory/status" || return 1
+  while IFS= read -r -d '' record; do
+    code=${record:0:2}
+    target=${record:3}
+    snapshot_path "$repo" "$target" "$code" "$directory/records" || return 1
+    case "$code" in
+      R*|C*|?R|?C)
+        IFS= read -r -d '' source || return 1
+        snapshot_path "$repo" "$source" "source:$code" "$directory/records" || return 1
+        ;;
+      esac
+  done <"$directory/status"
+  while IFS= read -r -d '' target; do
+    ignored_count=$((ignored_count + 1))
+    [ "$ignored_count" -le "$IGNORED_HASH_CAP" ] || break
+    snapshot_path "$repo" "$target" '!!' "$directory/records" || return 1
+  done < <(git -C "$repo" ls-files -o --ignored --exclude-standard -z 2>/dev/null)
+}
+
+for index in "${!resolved_repos[@]}"; do
+  snapshot_repo "${resolved_repos[$index]}" "$tmp_dir/before-$index" || {
+    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+    printf 'gemini-research: could not snapshot %s\n' "${resolved_repos[$index]}"
+    exit 4
+  }
+done
+
+cache_dir="$HOME/.cache/gemini-research"
+mkdir -p "$cache_dir" || {
+  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+  printf 'gemini-research: could not create %s\n' "$cache_dir"
+  exit 4
+}
+timestamp=$(date +%Y%m%dT%H%M%S)-$$
+started=$(date +%s)
+attempt=0
+tried=''
+result_code=0
+result_outcome=''
+result_line=''
+log=''
+error_file=''
+quota_pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota[[:space:]_-]*(exhausted|exceeded|reached)|rate.?limit|rateLimiter|HTTP[[:space:]]+429|(^|[^[:alnum:]_.])429([^[:alnum:]_.]|$)'
+
+while :; do
+  attempt=$((attempt + 1))
+  log="$cache_dir/$timestamp-$account.log"
+  error_file="$tmp_dir/geminib-$attempt.err"
+  command=("$geminib_bin" profile "$account" --model gemini-3.8-flash-high)
+  for repo in "${resolved_repos[@]}"; do command+=(--add-dir "$repo"); done
+  command+=(--print-timeout "$timeout_value" --dangerously-skip-permissions --log-file "$log" --print "$(<"$prompt_file")")
+  run_rc=0
+  (cd "$tmp_dir" && "${command[@]}" >"$out" 2>"$error_file") || run_rc=$?
+
+  quota_line=''
+  if [ "$run_rc" -ne 0 ] || [ ! -s "$out" ]; then
+    quota_line=$(grep -Eih "$quota_pattern" "$log" "$out" "$error_file" 2>/dev/null | head -n 1) || :
+  fi
+  if [ -n "$quota_line" ]; then
+    result_line=$quota_line
+    if [ "$explicit_account" = true ]; then
+      result_code=3
+      result_outcome=GEMINI_USAGE_LIMIT
+      break
+    fi
+    if [ -n "$tried" ]; then tried="$tried,$account"; else tried=$account; fi
+    pick_account "$tried"
+    if [ "$PICK_RC" -eq 0 ] && [[ "$PICK_ACCOUNT" =~ ^[a-z0-9][a-z0-9-]*$ ]] && \
+        account_known "$PICK_ACCOUNT" && ! [[ ",$tried," = *",$PICK_ACCOUNT,"* ]]; then
+      account=$PICK_ACCOUNT
+      continue
+    fi
+    if [ "$PICK_RC" -eq 3 ]; then
+      result_line=$PICK_LINE
+      result_code=3
+      result_outcome=GEMINI_USAGE_LIMIT
+    else
+      result_line=$PICK_LINE
+      [ -n "$result_line" ] || result_line='gemini-research: worker-pick returned no usable account'
+      result_code=4
+      result_outcome=GEMINI_UNAVAILABLE
+    fi
+    break
+  fi
+  if [ "$run_rc" -eq 0 ] && [ -s "$out" ]; then break; fi
+  result_outcome=GEMINI_UNAVAILABLE
+  if [ "$run_rc" -eq 124 ]; then
+    result_code=124
+    result_line='gemini-research: Gemini research timed out'
+  else
+    result_code=4
+    result_line=$(sed -n '1p' "$error_file")
+    [ -n "$result_line" ] || result_line='gemini-research: Gemini returned an empty answer'
+  fi
+  break
+done
+ended=$(date +%s)
+
+violations="$tmp_dir/violations"
+: >"$violations"
+for index in "${!resolved_repos[@]}"; do
+  repo=${resolved_repos[$index]}
+  before="$tmp_dir/before-$index"
+  after="$tmp_dir/after-$index"
+  snapshot_repo "$repo" "$after" || {
+    printf '%s\n' "$repo (snapshot unavailable after run)" >>"$violations"
+    continue
+  }
+  if ! cmp -s "$before/head" "$after/head"; then
+    old_head=$(<"$before/head")
+    new_head=$(<"$after/head")
+    changed_heads=''
+    if [ -n "$old_head" ] && [ -n "$new_head" ]; then
+      changed_heads=$(git -C "$repo" diff-tree --no-commit-id --name-only -r "$old_head" "$new_head" 2>/dev/null)
+    fi
+    if [ -n "$changed_heads" ]; then
+      while IFS= read -r target; do printf '%s/%s\n' "$repo" "$target" >>"$violations"; done <<<"$changed_heads"
+    else
+      printf '%s/.git/HEAD\n' "$repo" >>"$violations"
+    fi
+  fi
+  while IFS= read -r state; do
+    id=${state##*/}; id=${id%.state}
+    if ! cmp -s "$before/records/$id.state" "$after/records/$id.state"; then
+      path_file="$after/records/$id.path"
+      [ -f "$path_file" ] || path_file="$before/records/$id.path"
+      printf '%s/%s\n' "$repo" "$(<"$path_file")" >>"$violations"
+    fi
+  done < <(find "$before/records" "$after/records" -type f -name '*.state' -print | sed 's#.*/##' | sort -u)
+done
+
+printf 'ACCOUNT: %s (gemini)\n' "$account"
+printf 'ANSWER: %s\n' "$out"
+printf 'LOG: %s\n' "$log"
+printf 'ELAPSED: %s\n' "$((ended - started))"
+for error_file in "$tmp_dir"/geminib-*.err; do
+  [ ! -s "$error_file" ] || sed -n '1,40p' "$error_file" >&2
+done
+
+if [ -n "$result_outcome" ]; then
+  printf 'OUTCOME: %s\n' "$result_outcome"
+  [ -z "$result_line" ] || printf '%s\n' "$result_line"
+fi
+
+if [ -s "$violations" ]; then
+  printf 'READ-ONLY VIOLATION: repository paths changed during the run; verify by author before trusting the answer\n'
+  sort -u "$violations"
+  exit 5
+fi
+exit "$result_code"

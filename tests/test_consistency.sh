@@ -552,8 +552,8 @@ assert doc_has 'Worker spawn pressure gate'
 # and a list that grows in one place and not the others is a rule nobody can read off any of them.
 ROUTING_DOC="$ROOT/docs/routing-contract.md"
 native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$WORKER_GATE" | head -n1; }
-assert eq "$(native_list NATIVE_ALLOWLIST)" 'Explore Plan claude-code-guide statusline-setup'
-assert eq "$(native_list NATIVE_CHEAP)" 'Explore claude-code-guide'
+assert eq "$(native_list NATIVE_ALLOWLIST)" 'Explore Plan claude-code-guide statusline-setup gemini-research'
+assert eq "$(native_list NATIVE_CHEAP)" 'Explore claude-code-guide gemini-research'
 for native in $(native_list NATIVE_ALLOWLIST); do
   assert grep -Fq "\`$native\`" "$ROOT/$DOC"
   assert grep -Fq "\`$native\`" "$ROUTING_DOC"
@@ -1005,8 +1005,8 @@ assert eq "$(sed -n '/^if \[ -n "\$RJ_UNATTRIBUTED" \]; then/,/^fi/p' \
 # And the READER answers off those rows rather than off the run records alone, or a chat's own
 # live worker reads as a stranger for the whole window the work is being done in: the record
 # pairing the two ids lands when the run ends.
-assert grep -Fq 'def content_coowners(repo, rows=None):' "$REVIEW_ROOT/share/rbench/debt.py"
-assert grep -Fq 'together = content_coowners(repo)' "$REVIEW_ROOT/share/rbench/debt.py"
+assert grep -Fq 'def content_coowners(repo, rows=None, launchers=None):' "$REVIEW_ROOT/share/rbench/debt.py"
+assert grep -Fq 'together = content_coowners(repo, launchers=launchers) if together is None else together' "$REVIEW_ROOT/share/rbench/debt.py"
 assert grep -Fq 'named = {producer} | together.get((path, link["cur"]), set())' \
   "$REVIEW_ROOT/share/rbench/debt.py"
 # Each of those chats is written into the per-session repository index too, or `debt-total`
@@ -2193,12 +2193,12 @@ assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
 LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$HOME/.claude/hooks/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
 gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
-  grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go)' | sort -u | paste -sd' ' -)
-for launcher in worker-run review-bench llm-limits claude-session-driver opencode-go; do
+  grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go|research)' | sort -u | paste -sd' ' -)
+for launcher in worker-run review-bench llm-limits claude-session-driver opencode-go gemini-research; do
   assert grep -Fq "\`$launcher\`" "$ROOT/$DOC"
   assert grep -Fq "$launcher" "$LAUNCH_GATE"
 done
-assert eq "$gate_sanctioned" 'claude-session-driver llm-limits opencode-go review-bench worker-run'
+assert eq "$gate_sanctioned" 'claude-session-driver gemini-research llm-limits opencode-go review-bench worker-run'
 # The OWNED launchers are sanctioned only in the hand that owns them, so each has a regex of its
 # own and NONE of them may reappear in SANCTIONED_RE — named there, an image would be generated
 # from any chat's Bash with nothing rendering the account it spent. The extraction above still
@@ -2446,10 +2446,13 @@ assert eq "$(grep -c 'WORKER_CLAIMS_TTL' "$WORKERPICK")" 0
 assert grep -Fq 'worker-claims.sh' "$WORKERPICK"
 assert grep -Fq 'worker_claims_record "$query_vendor" "$query_answer"' "$WORKERPICK"
 assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
-# worker-run claims through the picker's flag. Image launchers pick without --claim, validate the
-# profile, then call the same recorder so a ghost account does not burn the TTL.
+# Launchers with a ready-to-run profile claim through the picker's flag. Image launchers pick
+# without --claim, validate the profile, then call the same recorder so a ghost account does not burn the TTL.
 assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
 assert eq "$(grep -c 'worker-claims.sh' "$ROOT/bin/worker-run")" 0
+assert grep -Fq 'command -v worker-pick' "$ROOT/bin/gemini-research"
+assert grep -Fq -- 'args=(--account gemini --role research)' "$ROOT/bin/gemini-research"
+assert grep -Fq -- 'args+=(--claim)' "$ROOT/bin/gemini-research"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-image"
 assert grep -Fq 'worker_claims_record grok "$account"' "$ROOT/bin/grok-image"
 assert grep -Fq 'account=$("$worker_pick_cmd" --account grok 2>/dev/null)' "$ROOT/bin/grok-image"

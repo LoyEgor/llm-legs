@@ -21,7 +21,7 @@ query_role_given=false
 query_fable=false
 query_claim=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat] [--fable] [--claim]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research] [--fable] [--claim]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -46,7 +46,7 @@ while [ "$#" -gt 0 ]; do
       query_role="$2"
       query_role_given=true
       case "$query_role" in
-        workers|reviewers|chat) ;;
+        workers|reviewers|chat|research) ;;
         *) printf 'worker-pick: unknown role %s\n' "$query_role" >&2; usage ;;
       esac
       shift 2
@@ -201,9 +201,10 @@ gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
 # workers wall cannot be decided here — whether the pin serves is only known once selection ran.
 role_off() { [ "$(conf "$1_$2")" = off ]; }
 query_role_wall=false
-# `chat` has no role wall of its own — the pool toggle is the only gate — so no `<vendor>_chat`
-# key is ever read, and a workers/reviewers closure says nothing about it.
-if [ -n "$query_vendor" ] && [ "$query_role" != chat ] && role_off "$query_vendor" "$query_role"; then
+# `chat` and `research` have no role wall of their own — the pool toggle is the only gate — so no
+# corresponding key is ever read, and a workers/reviewers closure says nothing about either role.
+if [ -n "$query_vendor" ] && [ "$query_role" != chat ] && [ "$query_role" != research ] &&
+   role_off "$query_vendor" "$query_role"; then
   if [ "$query_role" = workers ]; then
     query_role_wall=true
   else
@@ -214,7 +215,7 @@ fi
 # The pin is Egor's override for workers only. A rater or a chat handed it would spend an account
 # he aimed at implementation, so those queries are answered by the pool alone and the pinned
 # account stands in them as an ordinary candidate.
-case "$query_role" in reviewers|chat) cb_pin=""; cx_pin=""; gm_pin=""; gr_pin="" ;; esac
+case "$query_role" in reviewers|chat|research) cb_pin=""; cx_pin=""; gm_pin=""; gr_pin="" ;; esac
 # The table is the workers view, and a vendor closed for that role is not a candidate in it: the
 # flags are read here so selection, ordering and the ALL WALLED verdict are all decided without
 # it, the way a deliberately empty pool is.

@@ -13,10 +13,10 @@ STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 
 # The native agent types a Fable session may still spawn (shared-invariants row `bt`). Pure lookup
 # and design only: everything that edits, reviews, verifies or scans is a relay worker. The second
-# list is the half whose deliverable is locations and excerpts, so nothing in it needs the session's
-# model — those are rewritten to sonnet unless the call names a model itself.
-NATIVE_ALLOWLIST='Explore Plan claude-code-guide statusline-setup'
-NATIVE_CHEAP='Explore claude-code-guide'
+# list is the half that needs no session-model reasoning — lookup agents return excerpts and the
+# research agent delegates its pass — so those are rewritten to sonnet unless the call names a model.
+NATIVE_ALLOWLIST='Explore Plan claude-code-guide statusline-setup gemini-research'
+NATIVE_CHEAP='Explore claude-code-guide gemini-research'
 
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
@@ -206,9 +206,8 @@ case "$worker" in
         claude-fable-*)
           case " $NATIVE_ALLOWLIST " in
             *" $native "*)
-              # An explicit model is Egor's own call and stands as written. Otherwise a pure lookup
-              # is dropped to sonnet — the deliverable is locations and excerpts, verifiable at a
-              # glance — while a design agent keeps the session model, because that IS Fable's work.
+              # An explicit model is Egor's own call and stands as written. Otherwise lookup relays
+              # are dropped to sonnet while a design agent keeps the session model: that IS Fable's work.
               [ -z "$explicit_model" ] || exit 0
               case " $NATIVE_CHEAP " in
                 *" $native "*)
