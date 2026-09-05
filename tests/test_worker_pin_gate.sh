@@ -61,6 +61,31 @@ prompt_event() {
 
 PIN_FILE="$HOME/.claude/worker-model"
 
+literal_failures=0
+literal_case() {
+  local name=$1 expected=$2 command=$3
+  asserts=$((asserts + 1))
+  if ! "$expected" "$(bash_event "$command")"; then
+    printf 'FAIL: literal %s (%s)\n' "$name" "$expected" >&2
+    literal_failures=$((literal_failures + 1))
+  fi
+}
+for literal_path in '~/.claude/worker-model' '$HOME/.claude/worker-model' "$PIN_FILE"; do
+  literal_case "inplace-$literal_path" allowed "sed -i '' 's/^worker=.*/worker=codex/' $literal_path"
+  literal_case "temporary-$literal_path" allowed "config_2=$literal_path; sed 's/^grok_effort=.*/grok_effort=high/' \"\$config_2\" > \"\$config_2.tmp.\$\$\" && mv -f \"\$config_2.tmp.\$\$\" \"\$config_2\""
+done
+literal_safe="sed -i '' 's/^worker=.*/worker=codex/' $PIN_FILE"
+literal_case append denied "f=$PIN_FILE; sed 's/^worker=.*/worker=codex/' \"\$f\" >>\"\$f.tmp.\$\$\" && mv -f \"\$f.tmp.\$\$\" \"\$f\""
+literal_case suppress denied "sed -i '' -n 's/^worker=.*/worker=codex/p' $PIN_FILE"
+literal_case statement denied "$literal_safe; echo done"
+literal_case attached denied "sed -i '' -f/tmp/script 's/^worker=.*/worker=codex/' $PIN_FILE"
+literal_case suffix denied "f=/tmp/worker-model; sed 's/^worker=.*/worker=codex/' \"\$f\" > \"\$f.tmp.\$\$\" && mv -f \"\$f.tmp.\$\$\" $PIN_FILE"
+literal_case expression denied "sed -i '' -e 's/^worker=.*/worker=codex/' $PIN_FILE"
+literal_case second-expression denied "sed -i '' -e's/^worker=.*/worker=codex/' -e'd' $PIN_FILE"
+literal_case profile denied "sed -i '' 's/^codex_profile=.*/codex_profile=alt/' $PIN_FILE"
+literal_case model denied "sed -i '' 's/^codex_model=.*/codex_model=gpt-6-astra/' $PIN_FILE"
+[ "$literal_failures" -eq 0 ] || exit 1
+
 # --- The file itself: denied unnamed, and nothing else is ---------------------------------------
 rm -f "$GRANT"
 assert denied "$(write_event "$PIN_FILE")"
@@ -103,7 +128,7 @@ assert allowed "$(jq -cn --arg p "$PIN_FILE" \
 for writing in \
   "printf 'codex_profile=x\\n' >> ~/.claude/worker-model" \
   "printf 'codex_profile=x\\n' > $HOME/.claude/worker-model" \
-  "sed -i '' 's/^worker=.*/worker=codex/' ~/.claude/worker-model" \
+  "sed -i '' 's/^codex_profile=.*/codex_profile=x/' ~/.claude/worker-model" \
   "tee ~/.claude/worker-model <<<'codex_profile=x'" \
   "cp /tmp/model ~/.claude/worker-model" \
   "rm ~/.claude/worker-model" \
@@ -476,7 +501,7 @@ done
 # The deny names the offender and the allowed list, and says nothing about the pin.
 model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
-assert contains "$model_deny" 'claudeb opus; codex gpt-5.6-sol; gemini flash38; grok auto|grok-4.6'
+assert contains "$model_deny" 'claudeb opus; codex gpt-6-astra; gemini flash38; grok auto|grok-4.6'
 assert lacks "$model_deny" 'is Egor'
 # A grant unblocks the pin and never the model.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
@@ -519,5 +544,28 @@ rm -f "$GRANT"
 profile_sed_deny=$(bash_event "sed -i '' 's/claudeb_profile=alpha/claudeb_profile=beta/' $PIN_FILE")
 assert denied "$profile_sed_deny"
 assert contains "$profile_sed_deny" "is Egor's to move"
+
+# An ungated key rewritten in place leaves every `*_profile=` line exactly as it found it, which is
+# what this door judges — and both spellings of that write were refused live on 2026-09-05, with no
+# grant standing. The temp-file spelling is the same write: the `mv` takes back what this very
+# command just produced out of the pin itself.
+assert allowed "$(bash_event "sed -i '' 's/^codex_effort=.*/codex_effort=low/' $PIN_FILE")"
+assert allowed "$(bash_event "f=$PIN_FILE; sed 's/^codex_effort=.*/codex_effort=low/' \"\$f\" > \"\$f.tmp.\$\$\" && mv -f \"\$f.tmp.\$\$\" \"\$f\"")"
+assert denied "$(bash_event "sed -i '' -e 's/^worker=.*/worker=codex/' $PIN_FILE")"
+# Every shape that could leave a DIFFERENT pin behind stays refused. A `d` script and an unanchored
+# pattern reach the pin lines; a replacement may not spell one; a redirect onto the file truncates
+# it before sed reads a byte; and a `mv` of anything this command did not itself produce out of the
+# pin — a foreign file, or a sed over one — is a pin of unknown content.
+for pin_move in \
+  "sed -i '' 's/^codex_profile=.*/codex_profile=alt/' $PIN_FILE" \
+  "sed -i '' '/^codex_profile=/d' $PIN_FILE" \
+  "sed -i '' 's/.*/worker=codex/' $PIN_FILE" \
+  "sed -i '' 's/^codex_effort=.*/codex_profile=alt/' $PIN_FILE" \
+  "sed 's/^codex_effort=.*/codex_effort=low/' $PIN_FILE > $PIN_FILE" \
+  "sed 's/^codex_effort=.*/codex_effort=low/' other > $WORK/t && mv $WORK/t $PIN_FILE" \
+  "mv $WORK/other $PIN_FILE" \
+  "cp $WORK/other $PIN_FILE"; do
+  assert denied "$(bash_event "$pin_move")"
+done
 
 printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — his words grant it for a window and an ordinary mention of an account does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run, and no grant unlocks that one\n' "$asserts"

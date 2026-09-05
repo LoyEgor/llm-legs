@@ -1331,7 +1331,7 @@ assert test "${with_effort#*⚡}" = "$with_effort"
 # is worker-pick's — never the session's own, which no implementation run may spend.
 worker_file="$HOME/.claude/worker-model"
 mkdir -p "$HOME/.cache"
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 rm -f "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-def)")
 assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
@@ -1346,13 +1346,13 @@ assert test "${worker_out#*SN}" = "$worker_out"
 
 printf 'worker=codex\ncodex_effort=medium\ncodex_profile=alt\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex)")
-assert grep -Fq "${MAGENTA}@alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}@alt${RESET}${DIM}·AS·med${RESET}" <<< "$worker_out"
 
 # No prediction to read: one candidate or none — never a `?` standing in for an account.
 rm -f "$HOME/.cache/worker-pick.line.main"
 printf 'worker=codex\ncodex_effort=xhigh\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-unres)")
-assert test "${worker_out#*·SL}" = "$worker_out"
+assert test "${worker_out#*·AS}" = "$worker_out"
 worker_line1="${worker_out%%$'\n'*}"
 assert test "${worker_line1#*'?'}" = "$worker_line1"
 
@@ -1362,20 +1362,20 @@ assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_o
 
 printf 'worker=claudeb\ncodex_effort=high\nclaudeb_model=haiku\nclaudeb_effort=xhigh\n' > "$worker_file"
 mkdir -p "$HOME/.cache"
-printf 'cx✓alt·sol·med cb~notcom·hai·xh gx✓work·flash·med\n' \
+printf 'cx✓alt·astra·med cb~notcom·hai·xh gx✓work·flash·med\n' \
   >"$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-model)")
 assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·HK·xhi${RESET}" <<< "$worker_out"
 
 # `cb~?` names no account, so claudeb has no candidate — and the vendor beside it is not promoted:
 # a fixed vendor answers for itself alone.
-printf 'cx✓alt·sol·med cb~? gx✓work·flash·med\n' >"$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~? gx✓work·flash·med\n' >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-unres)")
 assert test "${worker_out#*·OP}" = "$worker_out"
 assert test "${worker_out#*alt}" = "$worker_out"
 
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med\n' \
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=gemini\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-gemini)")
@@ -1386,7 +1386,7 @@ worker_out=$(run_statusline "$(statusline_payload status-w-gemini-pin)")
 assert grep -Fq "${MAGENTA}@work${RESET}${DIM}·FL·med${RESET}" <<< "$worker_out"
 
 # Auto renders ONE candidate — worker-pick's own order, claudeb first — never the three-vendor line.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\nclaudeb_model=fable\nclaudeb_effort=high\ngemini_model=flash38\ngemini_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto)" main)
 assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·FB·hi${RESET}" <<< "$worker_out"
@@ -1394,12 +1394,12 @@ assert test "${worker_out#*gx}" = "$worker_out"
 assert test "${worker_out#*alt}" = "$worker_out"
 
 # Claudeb walled: the next vendor in that order carries the candidate, with ITS model and effort.
-printf 'cx✓alt·sol·med cb~? gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~? gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-cx)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·hi${RESET}" <<< "$worker_out"
 
 # A vendor switched off for workers is skipped in auto, and gemini answers instead.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx⏸off·astra·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-off)" main)
 assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_out"
 
@@ -1407,7 +1407,7 @@ assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_ou
 printf 'cx✗·? cb~? gx✗?·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-walled)" main)
 assert test "${worker_out#*·PR}" = "$worker_out"
-assert test "${worker_out#*·SL}" = "$worker_out"
+assert test "${worker_out#*·AS}" = "$worker_out"
 
 # The unusable fields carry `?`, so splitting the prediction must not glob against the CWD the
 # render happens to run in — a file there would be read as the account of a walled vendor.
@@ -1418,10 +1418,10 @@ mkdir -p "$glob_bait"
 worker_out=$(cd "$glob_bait" && run_statusline "$(statusline_payload status-w-auto-glob)" main)
 assert test "${worker_out#*"${MAGENTA}z"}" = "$worker_out"
 assert test "${worker_out#*·FB}" = "$worker_out"
-assert test "${worker_out#*·SL}" = "$worker_out"
+assert test "${worker_out#*·AS}" = "$worker_out"
 
 # A fixed vendor switched off keeps saying so — a parked switch is not a walled account.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx⏸off·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\nclaudeb_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-off)")
 assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
@@ -1432,7 +1432,7 @@ assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_o
 
 # A prediction older than 10 minutes: worker-pick has stopped answering and the account it names is
 # no longer evidence of anything.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 pick_stale_stamp=$(date -v-15M +%Y%m%d%H%M.%S 2>/dev/null || date -d '15 minutes ago' +%Y%m%d%H%M.%S)
 touch -t "$pick_stale_stamp" "$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\nclaudeb_model=opus\nclaudeb_effort=high\n' > "$worker_file"
@@ -1445,7 +1445,7 @@ worker_out=$(run_statusline "$(statusline_payload status-w-bad)")
 assert test "${worker_out#*@alt}" = "$worker_out"
 
 # grok reads its own knobs off the same file, and `gr` is its field of worker-pick's line.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med gr✓supergrok·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=grok\ngrok_model=grok-4.5\ngrok_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-grok)")
@@ -1463,12 +1463,12 @@ worker_out=$(run_statusline "$(statusline_payload status-w-grok-pin)")
 assert grep -Fq "${MAGENTA}@pinnedgrok${RESET}${DIM}·GR4.6·xhi${RESET}" <<< "$worker_out"
 
 # grok is last in worker-pick's order: it answers in auto only once every vendor above it is out.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx⏸off·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr)" main)
 assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx⏸off·astra·med cb⏸off·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=auto\ngemini_model=flash38\ngemini_effort=high\ngrok_model=grok-4.6\ngrok_effort=high\n' \
   > "$worker_file"
@@ -1477,12 +1477,12 @@ assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_ou
 assert test "${worker_out#*supergrok}" = "$worker_out"
 
 # The field is optional: a prediction written before grok existed renders exactly as it did.
-printf 'cx✓alt·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' >"$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' >"$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-nogr)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·hi${RESET}" <<< "$worker_out"
 
 # A role switched off is a parked switch, not a walled account, for grok as for everyone.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med gr⏸off·grok-4.6·hi\n' \
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med gr⏸off·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=grok\ngrok_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-grok-off)")
@@ -1493,7 +1493,7 @@ rm -f "$HOME/.cache/worker-pick.line.main"
 
 # A PAUSED vendor is absent from worker-pick's line altogether (no `gr` field at all, unlike the
 # `⏸off` role switch), so a pin over it names an account no dispatch can reach.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gx✓work·flash·med\n' \
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=grok\ngrok_profile=pausedgrok\ngrok_paused=on\ngrok_model=grok-4.6\ngrok_effort=high\n' \
   > "$worker_file"
@@ -1507,7 +1507,7 @@ worker_out=$(run_statusline "$(statusline_payload status-w-grok-paused-pin-nolin
 assert grep -Fq "${MAGENTA}@pausedgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
 
 # A vendor that is present in the line keeps its pin.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gr✓supergrok·grok-4.6·hi\n' \
   >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=grok\ngrok_profile=pausedgrok\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-grok-live-pin)")
@@ -1517,109 +1517,28 @@ rm -f "$HOME/.cache/worker-pick.line.main"
 # ABSENCE is the pause, and nothing else is: a field that is PRESENT but unusable — `gr~?` for a
 # walled account, `gr✗?` for one the pick could not read — is a vendor that is still there, and the
 # pin over it still names where the next dispatch lands.
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gr~?\n' >"$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gr~?\n' >"$HOME/.cache/worker-pick.line.main"
 printf 'worker=grok\ngrok_profile=walledgrok\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-grok-walled-pin)")
 assert grep -Fq "${MAGENTA}@walledgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-printf 'cx✓alt·sol·med cb~notcom·opus·hi gr✗?·grok-4.6·hi\n' >"$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~notcom·opus·hi gr✗?·grok-4.6·hi\n' >"$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-grok-unreadable-pin)")
 assert grep -Fq "${MAGENTA}@walledgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
 rm -f "$HOME/.cache/worker-pick.line.main"
 
-# A live grok worker's tag wears the same short forms as every other vendor's.
 printf 'worker=auto\n' > "$worker_file"
-mkdir -p "$HOME/.cache/claude-worker-tags/status-w-grok-live"
-# The vendor word is what a tag carries: worker-tag-hook.sh and worker-run both collapse
-# `auto`/`grok-4.6` to `grok` before writing one.
-printf 'supergrok · grok · xhigh\n' > "$HOME/.cache/claude-worker-tags/status-w-grok-live/1"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-live)")
-assert grep -Fq "${MAGENTA}▶supergrok${RESET}${DIM}·GR·xhi${RESET}" <<< "$worker_out"
-rm -rf "$HOME/.cache/claude-worker-tags/status-w-grok-live"
-
-# The live tag beats the config candidate and wears the same short forms.
-printf 'worker=auto\n' > "$worker_file"
-mkdir -p "$HOME/.cache/claude-worker-tags/status-w-live"
-printf 'notcom · sonnet · xhigh\n' > "$HOME/.cache/claude-worker-tags/status-w-live/1"
-worker_out=$(run_statusline "$(statusline_payload status-w-live)")
-assert grep -Fq "${MAGENTA}▶notcom${RESET}${DIM}·SN·xhi${RESET}" <<< "$worker_out"
-rm -rf "$HOME/.cache/claude-worker-tags/status-w-live"
-rm -f "$worker_file"
-
-# --- the live tag stands on the RUN RECORDS, not on the age of a tag file ------------------
-RUNS_DIR="$HOME/.cache/claude-worker-runs"
-tag_now=$(date +%s)
-# A real live supervisor: the pid, and beside it the instant that pid started, which is the pair
-# every reader of these records judges liveness by (docs/shared-invariants.md row `ar`).
-sleep 600 & live_pid=$!
-sleep 600 & live_pid_two=$!
-live_stamp=$(date +%s)
-make_run() { # run-id launcher pid pid_started_at tag
-  local d="$RUNS_DIR/$1"
-  mkdir -p "$d"
-  printf '%s\n' "$2" > "$d/launcher"
-  printf '{"pid":%s,"pid_started_at":%s,"started_at":%s}\n' "$3" "$4" "$4" > "$d/meta.json"
-  printf '%s\n' "$5" > "$d/tag"
-}
-tag_file_aged() { # session-id age-seconds tag
-  mkdir -p "$HOME/.cache/claude-worker-tags/$1"
-  printf '%s\n' "$3" > "$HOME/.cache/claude-worker-tags/$1/1"
-  touch -t "$(date -r $((tag_now - $2)) +%Y%m%d%H%M.%S)" "$HOME/.cache/claude-worker-tags/$1/1"
-}
-printf 'worker=auto\n' > "$worker_file"
-
-# The failure this replaces: a 30-minute run — every run today — left the strip after ten minutes,
-# because the tag file was the source and its mtime was ignored past 600s. The record answers for as
-# long as the supervisor lives, and the run dir's own tag is the text, not the file's.
-make_run claudeb-live-1 status-w-run "$live_pid" "$live_stamp" 'notcom · opus · high'
-tag_file_aged status-w-run 3000 'stale · sonnet · low'
-worker_out=$(run_statusline "$(statusline_payload status-w-run)")
-assert grep -Fq "${MAGENTA}▶notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-
-# An exit code is the run stating it is over, and the strip lets go of it on the next render.
-printf '0\n' > "$RUNS_DIR/claudeb-live-1/exit_code"
-worker_out=$(run_statusline "$(statusline_payload status-w-run)")
+printf 'cx✓candidate·astra·med cb~?\n' > "$HOME/.cache/worker-pick.line.main"
+run_dir="$HOME/.cache/claude-worker-runs/candidate-only"
+mkdir -p "$run_dir" "$HOME/.cache/claude-worker-tags/status-candidate-only"
+printf 'status-candidate-only\n' > "$run_dir/launcher"
+printf '{"pid":%s,"pid_started_at":%s}\n' "$$" "$(date +%s)" > "$run_dir/meta.json"
+printf 'running · opus · high\n' > "$run_dir/tag"
+printf 'running · opus · high\n' > "$HOME/.cache/claude-worker-tags/status-candidate-only/1"
+worker_out=$(run_statusline "$(statusline_payload status-candidate-only)")
+assert grep -Fq 'candidate' <<< "$worker_out"
 assert test "${worker_out#*▶}" = "$worker_out"
-rm -f "$RUNS_DIR/claudeb-live-1/exit_code"
-
-# Two live runs: the newest-started is named and the rest are a count, because naming all of them
-# is what pushes the strip past its width on the one day Egor runs three workers.
-make_run claudeb-live-2 status-w-run "$live_pid_two" "$live_stamp" 'alt · sonnet · low'
-worker_out=$(run_statusline "$(statusline_payload status-w-run)")
-assert grep -Fq "${MAGENTA}▶alt${RESET}${DIM}·SN·low${RESET}${DIM}×2${RESET}" <<< "$worker_out"
-
-# A run of another chat is never this chat's, however live it is.
-make_run claudeb-foreign-1 somebody-else "$live_pid" "$live_stamp" 'foreign · opus · high'
-worker_out=$(run_statusline "$(statusline_payload status-w-run-foreign)")
-assert test "${worker_out#*▶}" = "$worker_out"
-
-# A stale record is not live: the pid is real, but its own age disagrees with the stamp beside it,
-# which means the number was recycled and this supervisor is gone.
-make_run claudeb-gone-1 status-w-run-gone "$live_pid" $((live_stamp - 600)) 'gone · opus · high'
-worker_out=$(run_statusline "$(statusline_payload status-w-run-gone)")
-assert test "${worker_out#*▶}" = "$worker_out"
-
-# Pid 0 is the placeholder worker-run stamps before the supervisor exists: `ps -p 0` answers
-# nothing, so read as a pid it would report a run that has not started as gone.
-make_run claudeb-pending-1 status-w-run-pending 0 "$live_stamp" 'pending · opus · high'
-worker_out=$(run_statusline "$(statusline_payload status-w-run-pending)")
-assert test "${worker_out#*▶}" = "$worker_out"
-
-# The tag file now covers only the gap no record can: a launch in its first seconds, and an
-# image-gen run, which goes straight at its vendor and writes no record at all.
-tag_file_aged status-w-run-gap 30 'imgacct · image · codex'
-worker_out=$(run_statusline "$(statusline_payload status-w-run-gap)")
-assert grep -Fq "${MAGENTA}▶imgacct${RESET}" <<< "$worker_out"
-
-# Past that 60s window, with no record to stand on, the segment is the config candidate again.
-tag_file_aged status-w-run-gap 120 'imgacct · image · codex'
-worker_out=$(run_statusline "$(statusline_payload status-w-run-gap)")
-assert test "${worker_out#*▶}" = "$worker_out"
-
-kill "$live_pid" "$live_pid_two" 2>/dev/null
-wait "$live_pid" "$live_pid_two" 2>/dev/null
-rm -rf "$RUNS_DIR" "$HOME/.cache/claude-worker-tags/status-w-run" \
-  "$HOME/.cache/claude-worker-tags/status-w-run-gap"
-rm -f "$worker_file"
+assert test "${worker_out#*running}" = "$worker_out"
+rm -f "$worker_file" "$HOME/.cache/worker-pick.line.main"
 
 # --- Progressive width fit ----------------------------------------------------------------
 # Line 1 is built to $COLUMNS by shrinking segments in a fixed order; every step is exercised on
@@ -1903,7 +1822,7 @@ bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 # .claudeb-state (the last profile launched): the two are seeded to different accounts
 # here so a regression back to the state file fails instead of silently going stale.
 printf 'acctgen\n' > "$CLAUDEB_FIX/.claudeb-state"
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-pick '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
 assert grep -Fq "${MAGENTA}acctpick${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
@@ -1912,36 +1831,36 @@ assert test "${worker_out#*acctfab}" = "$worker_out"
 
 # Profile names may hold underscores, dots and capitals (claudeb's own add rule), so the
 # extractor must not be narrower than the names it can receive.
-printf 'cx✓alt·sol·med cb~My_acct.2·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~My_acct.2·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-oddname '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
 assert grep -Fq "${MAGENTA}My_acct.2${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
 
 # No parsable cache → no candidate, never a stale account from the state file.
-printf 'cx✓alt·sol·med gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-nocache '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
 assert test "${worker_out#*·OP}" = "$worker_out"
 assert test "${worker_out#*acctgen}" = "$worker_out"
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-pick)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·med${RESET}" <<< "$worker_out"
 
 # codexb only ever creates lowercase-and-hyphen names, so a line carrying anything else is a
 # corrupt cache and must read as unknown rather than as a confident prediction.
-printf 'cx✓My_acct.2·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓My_acct.2·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-oddname)" main)
-assert test "${worker_out#*·SL}" = "$worker_out"
+assert test "${worker_out#*·AS}" = "$worker_out"
 assert test "${worker_out#*My_acct}" = "$worker_out"
 
 printf 'cx✗·? cb~? gx✗?·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-nocache)" main)
-assert test "${worker_out#*·SL}" = "$worker_out"
+assert test "${worker_out#*·AS}" = "$worker_out"
 
 # A vendor switched off for workers is parked, not spent: it arrives in the cache as its own
 # `⏸off` shape and must not render as a walled vendor Egor would go chasing limits over, nor as
 # an account literally named `off`.
-printf 'cx⏸off·sol·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx⏸off·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-roleoff)" main)
 assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
 assert test "${worker_out#*off·}" = "$worker_out"
@@ -1956,15 +1875,15 @@ printf 'worker=claudeb\nclaudeb_profile=notcom\ncodex_effort=high\n' > "$worker_
 worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff-pin)" main)
 assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
 # One vendor parked leaves the others predicted as usual.
-printf 'cx✓alt·sol·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
+printf 'cx✓alt·astra·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-codex-beside-roleoff)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·SL·med${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·med${RESET}" <<< "$worker_out"
 
 printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
 # Every vendor is present in the line the rest of the suite inherits: a missing field now means a
 # paused vendor, and later cases pin grok expecting it to render.
-printf 'cx✓alt·sol·med cb~acctpick·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
+printf 'cx✓alt·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
   > "$HOME/.cache/worker-pick.line.main"
 rm -f "$WORK/limits.json" "$worker_file"
 
@@ -3450,20 +3369,20 @@ TAGDIR="$HOME/.cache/claude-worker-tags/wt"
 # A codex launch command derives the tag (main, high), stores it, and prefixes.
 seed=$(worker_payload codex-worker worker/one 'Investigate the suite' "codex exec -c model_reasoning_effort=high 'go'")
 seed_output=$(printf '%s' "$seed" | "$WORKER_HOOK") || fail "worker seed exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "main · sol · high — Investigate the suite"' <<< "$seed_output" >/dev/null
-assert_eq 'main · sol · high' "$(cat "$TAGDIR/workerone")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · high — Investigate the suite"' <<< "$seed_output" >/dev/null
+assert_eq 'main · astra · high' "$(cat "$TAGDIR/workerone")"
 
 # A later non-launch command reuses the stored tag to prefix its description.
 later=$(worker_payload codex-worker worker/one 'Run focused tests' 'bash tests/focused.sh')
 later_output=$(printf '%s' "$later" | "$WORKER_HOOK") || fail "worker rewrite exited nonzero"
 assert jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and
   .hookSpecificOutput.permissionDecision == "allow" and
-  .hookSpecificOutput.updatedInput.description == "main · sol · high — Run focused tests" and
+  .hookSpecificOutput.updatedInput.description == "main · astra · high — Run focused tests" and
   .hookSpecificOutput.updatedInput.command == "bash tests/focused.sh" and
   .hookSpecificOutput.updatedInput.timeout == 42' <<< "$later_output" >/dev/null
 
 # An already-prefixed description is left untouched (no stacking).
-prefixed=$(worker_payload codex-worker worker/one 'main · sol · high — Run focused tests' true)
+prefixed=$(worker_payload codex-worker worker/one 'main · astra · high — Run focused tests' true)
 prefixed_output=$(printf '%s' "$prefixed" | "$WORKER_HOOK") || fail "prefixed worker call exited nonzero"
 assert_eq "" "$prefixed_output"
 
@@ -3480,21 +3399,21 @@ rm -f "$HOME/.codex/config.toml"
 # the spawn-time seed predicted).
 WRDIR="$HOME/.cache/claude-worker-runs/codex-1-2-abcd"
 mkdir -p "$WRDIR"
-printf 'work6 · sol · high\n' > "$WRDIR/tag"
+printf 'work6 · astra · high\n' > "$WRDIR/tag"
 wr_wait=$(worker_payload codex-worker worker/wrun 'Wait for the run' 'worker-run wait codex-1-2-abcd --max 500')
 wr_out=$(printf '%s' "$wr_wait" | "$WORKER_HOOK") || fail "worker-run wait exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work6 · sol · high — Wait for the run"' <<< "$wr_out" >/dev/null
-assert_eq 'work6 · sol · high' "$(cat "$TAGDIR/workerwrun")"
-printf 'work3 · sol · high\n' > "$WRDIR/tag"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work6 · astra · high — Wait for the run"' <<< "$wr_out" >/dev/null
+assert_eq 'work6 · astra · high' "$(cat "$TAGDIR/workerwrun")"
+printf 'work3 · astra · high\n' > "$WRDIR/tag"
 wr_report=$(worker_payload codex-worker worker/wrun 'Collect the report' 'worker-run report codex-1-2-abcd')
 wr_report_out=$(printf '%s' "$wr_report" | "$WORKER_HOOK") || fail "worker-run report exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · sol · high — Collect the report"' <<< "$wr_report_out" >/dev/null
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Collect the report"' <<< "$wr_report_out" >/dev/null
 
 # A run id hidden behind a shell variable is unresolvable from command text; the
 # hook must degrade to the previously stored tag, not crash or mis-tag.
 wr_var=$(worker_payload codex-worker worker/wrun 'Keep waiting' 'worker-run wait "$RUN_ID" --max 100')
 wr_var_out=$(printf '%s' "$wr_var" | "$WORKER_HOOK") || fail "worker-run variable-id wait exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · sol · high — Keep waiting"' <<< "$wr_var_out" >/dev/null
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Keep waiting"' <<< "$wr_var_out" >/dev/null
 
 # `worker-run start claudeb ...` names a vendor as an argument, not a launch:
 # with no run dir, no stored tag and no pending seed the hook stays silent.
@@ -3535,7 +3454,7 @@ done
 codex_env=$(worker_payload codex-worker worker/cenv 'Ship it' \
   'cd /x && env timeout 600 CODEX_HOME="$HOME/.codex-profiles/alt" codex exec -c model_reasoning_effort=low go')
 printf '%s' "$codex_env" | "$WORKER_HOOK" >/dev/null || fail "codex env-prefixed launch exited nonzero"
-assert_eq 'alt · sol · low' "$(cat "$TAGDIR/workercenv")"
+assert_eq 'alt · astra · low' "$(cat "$TAGDIR/workercenv")"
 
 # A profile name never starts with a hyphen: a malformed launch must fall back to
 # the configured account, not tag the flag that followed.
@@ -3642,7 +3561,7 @@ for grok_launch in \
     <<<"$grok_form_output" >/dev/null
 done
 
-# `auto` never reaches a tag: the vendor word stands in, like codex's `sol`.
+# `auto` never reaches a tag: the vendor word stands in, like codex's `astra`.
 printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
 grok_auto_form=$(worker_payload grok-worker worker/grok 'Resume it' 'grokb profile routed --prompt-file /tmp/brief')
 grok_auto_form_output=$(printf '%s' "$grok_auto_form" | "$WORKER_HOOK") || fail "grok auto tag exited nonzero"
@@ -3692,6 +3611,88 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "second · flash36
   <<< "$spawn_output" >/dev/null
 assert_eq 'second · flash36 · medium' \
   "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini/pending-gemini-worker")"
+
+# gemini-research is not a worker: `flash38 · high` are the launcher's own hardcoded
+# `--model gemini-3.8-flash-high` and never the worker-model knobs. The account IS predicted — a
+# pin first, then the router under `--role research`, the role this leg spends under, so a gemini
+# parked for workers alone still answers — and `?` only where nothing answers at all.
+research_spawn() { # session prompt [worker-pick]
+  jq -cn --arg session "$1" --arg prompt "$2" '{
+    hook_event_name:"PreToolUse",session_id:$session,
+    tool_input:{subagent_type:"gemini-research",description:"Map the hooks",prompt:$prompt}}' |
+    WORKER_SPAWN_WORKER_PICK="${3:-$HOME/.local/bin/worker-pick}" "$SPAWN_HOOK"
+}
+RESEARCH_PICK="$WORK/research-worker-pick"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\necho routedaccount\n' \
+  "$WORK/research-pick.log" > "$RESEARCH_PICK"
+chmod +x "$RESEARCH_PICK"
+: > "$WORK/research-pick.log"
+# A knob that must not reach this row: worker-model says flash36/medium, the launcher says otherwise.
+printf 'gemini_model=flash36\ngemini_effort=medium\n' > "$HOME/.claude/worker-model"
+research_routed=$(research_spawn spawn-research 'Where is the tag written?' "$RESEARCH_PICK")
+assert jq -e '.hookSpecificOutput.updatedInput.description == "routedaccount · flash38 · high: Map the hooks"' \
+  <<< "$research_routed" >/dev/null
+assert_eq 'routedaccount · flash38 · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research/pending-gemini-research")"
+# The role travels with the query: the plain `--account gemini` reads the workers switch and
+# answers `off` for a vendor open to research.
+assert_eq '--account gemini --role research' "$(cat "$WORK/research-pick.log")"
+
+: > "$WORK/research-pick.log"
+research_pinned=$(research_spawn spawn-research-pin $'ACCOUNT: pinned\nWhere is the tag written?' "$RESEARCH_PICK")
+assert_eq 'pinned · flash38 · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-pin/pending-gemini-research")"
+
+# An `--account` the brief spells on the launch line is the same pin by another spelling.
+research_flag=$(research_spawn spawn-research-flag \
+  $'Run gemini-research --account flagged --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' "$RESEARCH_PICK")
+assert_eq 'flagged · flash38 · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-flag/pending-gemini-research")"
+
+quoted_failures=0
+for quoted_account in '"quoted"' "'quoted'"; do
+  research_quoted=$(research_spawn spawn-research-quoted \
+    "Run gemini-research --account $quoted_account --prompt-file /tmp/q" "$RESEARCH_PICK")
+  asserts=$((asserts + 1))
+  if [ "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-quoted/pending-gemini-research")" != 'quoted · flash38 · high' ]; then
+    printf 'FAIL: quoted research account %s\n' "$quoted_account" >&2
+    quoted_failures=$((quoted_failures + 1))
+  fi
+done
+[ "$quoted_failures" -eq 0 ] || exit 1
+
+# A pin outranks the router, which is not asked at all where the brief already named the account.
+assert test ! -s "$WORK/research-pick.log"
+
+# `?` is the answer to silence alone: a picker that names nobody leaves the row saying so.
+SILENT_PICK="$WORK/silent-worker-pick"
+printf '#!/usr/bin/env bash\nexit 3\n' > "$SILENT_PICK"
+chmod +x "$SILENT_PICK"
+research_silent=$(research_spawn spawn-research-none 'Where is the tag written?' "$SILENT_PICK")
+assert_eq '? · flash38 · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-none/pending-gemini-research")"
+printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
+
+# In flight, `--account` on the launch line is the account being spent.
+research_tag=$(worker_payload gemini-research worker/research 'Search the tree' \
+  'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r --account rawilimo')
+research_tag_out=$(printf '%s' "$research_tag" | "$WORKER_HOOK") || fail "research tag hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash38 · high — Search the tree"' \
+  <<< "$research_tag_out" >/dev/null
+assert_eq 'rawilimo · flash38 · high' "$(cat "$TAGDIR/workerresearch")"
+# A relay worker already bypasses permissions, so `allow` there only spares it a second prompt;
+# gemini-research runs INSIDE this session, where the same word would grant a call nobody granted.
+assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<< "$research_tag_out" >/dev/null
+assert jq -e '.hookSpecificOutput.permissionDecision == "allow"' <<< "$seed_output" >/dev/null
+
+# Without one the script asks worker-pick at run time, so the spawn seed is the better answer.
+printf 'seeded · flash38 · high\n' > "$TAGDIR/pending-gemini-research"
+research_seeded=$(worker_payload gemini-research worker/researchseed 'Search the tree' \
+  'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r')
+research_seeded_out=$(printf '%s' "$research_seeded" | "$WORKER_HOOK") \
+  || fail "seeded research tag hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38 · high — Search the tree"' \
+  <<< "$research_seeded_out" >/dev/null
 
 # image-gen is a relay too, so its row is tagged like the workers': `<account> · image · <vendor>`,
 # vendor from the brief's VENDOR: line (codex by default) and account ONLY from a pin in the brief

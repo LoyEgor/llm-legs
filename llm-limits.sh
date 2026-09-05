@@ -1290,7 +1290,8 @@ refresh_codex_quota() {
 
 select_codex_event() {
   codex_event=$(collect_codex_event)
-  codex_origin=headers
+  codex_origin=usage
+  codex_source=session-rollout
   [ -r "$codex_cache" ] || return 0
   local cache_mtime rollout_epoch cache_event merged
   cache_mtime=$(int_or_empty "$(file_mtime "$codex_cache" 2>/dev/null || true)")
@@ -1334,6 +1335,7 @@ select_codex_event() {
   if [ -z "$rollout_epoch" ] || [ "$cache_mtime" -ge "$rollout_epoch" ]; then
     codex_event=$cache_event
     codex_origin=usage
+    codex_source=codex-app-server
     return 0
   fi
   # The cache is the only account roster: a fresher rollout tail comes from the main codex
@@ -1347,8 +1349,8 @@ select_codex_event() {
     [$accounts[] |
       if (.account // "main") == "main" then
         del(.auth_needed, .cause) +
-        {five_hour:{used_pct:$r.primary.used_percent,resets_at:$r.primary.resets_at,origin:"headers"},
-         weekly:{used_pct:$r.secondary.used_percent,resets_at:$r.secondary.resets_at,origin:"headers"},
+        {five_hour:{used_pct:$r.primary.used_percent,resets_at:$r.primary.resets_at,origin:"usage"},
+         weekly:{used_pct:$r.secondary.used_percent,resets_at:$r.secondary.resets_at,origin:"usage"},
          reset_credits_as_of:(.reset_credits_as_of // .as_of),as_of:$as_of}
       else
         . + {five_hour:((.five_hour // {}) + {origin:"usage"}),
@@ -1365,7 +1367,8 @@ select_codex_event() {
   [ -n "$merged" ] || return 0
   codex_event=$merged
   codex_origin=usage
-  [ "$(jq -r '.payload.rate_limits.current_account // "main"' <<<"$merged")" != main ] || codex_origin=headers
+  codex_source=codex-app-server
+  [ "$(jq -r '.payload.rate_limits.current_account // "main"' <<<"$merged")" != main ] || codex_source=session-rollout
 }
 
 codex_refresh_target=''
@@ -1441,8 +1444,6 @@ if [ -n "$codex_event" ]; then
       if type == "number" then . elif type == "string" then iso2epoch // empty else empty end' <<<"$codex_event")")
     five_reset=''; [ -z "$primary_reset" ] || five_reset=$(epoch_iso "$primary_reset")
     week_reset=''; [ -z "$secondary_reset" ] || week_reset=$(epoch_iso "$secondary_reset")
-    codex_source=session-rollout
-    [ "$codex_origin" != usage ] || codex_source=codex-app-server
     codex_order=$(jq -r '[.payload.rate_limits.accounts[]?.account // "main"] | .[]' <<<"$codex_event" \
       | account_order_json codex)
     codex=$(jq -cn --argjson e "$codex_event" --argjson wall "$codex_wall" --argjson now "$now_epoch" \

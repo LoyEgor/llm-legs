@@ -91,12 +91,16 @@ printf 'researched answer\n'
 EOF
 chmod +x "$BIN/worker-pick" "$BIN/geminib"
 
+RESEARCH_RUNS="$WORK/research-runs"
+WORKER_RUNS="$WORK/worker-runs"
 run_research() {
   rc=0
   : >"$WORK/stdout"
   : >"$WORK/stderr"
   env HOME="$HOME_FIXTURE" PATH="$BIN:/usr/bin:/bin" FAKE_PICK_LOG="$WORK/pick.log" \
-    FAKE_GEMINI_LOG="$WORK/gemini.log" "$@" >"$WORK/stdout" 2>"$WORK/stderr" || rc=$?
+    FAKE_GEMINI_LOG="$WORK/gemini.log" RESEARCH_RUN_DIR="$RESEARCH_RUNS" \
+    WORKER_RUN_DIR="$WORKER_RUNS" CLAUDE_CODE_SESSION_ID= \
+    "$@" >"$WORK/stdout" 2>"$WORK/stderr" || rc=$?
 }
 
 : >"$WORK/pick.log"
@@ -274,4 +278,11 @@ assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/stdout"
 assert grep -q 'geminib is missing' "$WORK/stdout"
 
-printf 'PASS: %s assertions; normalized and deduplicated repositories, silent-log quota detection, account rotation, unborn HEAD, classified violations, ignored files, output refusal, dirty submodules, picker refusal semantics, explicit-account bypass, and unavailable Gemini\n' "$asserts"
+run_research env CLAUDE_CODE_SESSION_ID=chat-research "$SCRIPT" --prompt-file "$WORK/prompt" \
+  --out "$WORK/answer-no-record" --repo "$REPO" --account explicit
+assert test "$rc" -eq 0
+assert test ! -e "$RESEARCH_RUNS"
+assert test ! -e "$WORKER_RUNS"
+assert_not_grep '^RUN: ' "$WORK/stdout"
+
+printf 'PASS: %s assertions; normalized and deduplicated repositories, silent-log quota detection, account rotation, unborn HEAD, classified violations, ignored files, output refusal, dirty submodules, picker refusal semantics, explicit-account bypass, unavailable Gemini, and absence of liveness records\n' "$asserts"

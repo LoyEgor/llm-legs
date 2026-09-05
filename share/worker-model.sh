@@ -1,6 +1,7 @@
 # The pin carries a reading of the limits store (the wall standing when it was placed), so the
 # bucket semantics come from their one home rather than a second copy here.
 . "${BASH_SOURCE[0]%/*}/limits-view.sh"
+. "${BASH_SOURCE[0]%/*}/worker-pool.sh"
 
 worker_model_file() {
   printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
@@ -22,7 +23,7 @@ worker_model_file() {
 worker_model_allowed_models() { # vendor → allowed model ids, one per line
   case "${1-}" in
     claudeb) printf 'opus\n' ;;
-    codex) printf 'gpt-5.6-sol\n' ;;
+    codex) printf 'gpt-6-astra\n' ;;
     gemini) printf 'flash38\n' ;;
     grok) printf 'auto\ngrok-4.6\n' ;;
     *) return 2 ;;
@@ -169,6 +170,7 @@ worker_model_clear_walled_pin() {
     trap 'rm -f "$tmp"' EXIT
     grep -Ev "^${key}(_wall)?=" "$file" >"$tmp" || true
     mv "$tmp" "$file" || return 2
+    worker_pool_invalidate_cache
     trap - EXIT
   ) 9>"$file.lock"
 }
@@ -209,6 +211,7 @@ worker_model_set_role() {
       [ "$state" = on ] || printf '%s=off\n' "$key"
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
+    worker_pool_invalidate_cache
     trap - EXIT
   ) 9>"$file.lock"
 }
@@ -247,6 +250,7 @@ worker_model_set_paused() {
       [ "$state" = off ] || printf '%s=on\n' "$key"
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
+    worker_pool_invalidate_cache
     trap - EXIT
   ) 9>"$file.lock"
 }
@@ -324,6 +328,7 @@ worker_model_pin_account() {
       fi
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
+    worker_pool_invalidate_cache
     trap - EXIT
     if [ "$name" = --clear ]; then
       printf '%s: cleared the pin — workers follow worker-pick again\n' "$vendor"

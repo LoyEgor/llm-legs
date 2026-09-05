@@ -33,7 +33,7 @@ cat >"$STUB_BIN/codexb" <<'EOF'
 printf 'codexb' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
-printf 'model: gpt-5.6-sol\n' >&2
+printf 'model: gpt-6-astra\n' >&2
 printf 'codex answer\n'
 EOF
 
@@ -73,7 +73,7 @@ cat >"$BARE_BIN/codex" <<'EOF'
 printf 'codex' >>"$CALL_LOG"
 printf '\t%s' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
-printf 'model: gpt-5.6-sol\n' >&2
+printf 'model: gpt-6-astra\n' >&2
 printf 'codex answer\n'
 EOF
 

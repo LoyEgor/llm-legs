@@ -15,7 +15,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 subagent=$(field '.tool_input.subagent_type')
 case "$subagent" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research) ;;
   *) exit 0 ;;
 esac
 
@@ -24,17 +24,27 @@ prompt=$(field '.tool_input.prompt')
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
 brief_line() { printf '%s' "$prompt" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//"; }
+flag_account() {
+  local token pattern
+  pattern="--account[= ]+(\"[a-z0-9][a-z0-9-]*\"|'[a-z0-9][a-z0-9-]*'|[a-z0-9][a-z0-9-]*)"
+  token=$(printf '%s' "$prompt" | grep -m1 -oE -- "$pattern" | sed -E 's/^--account[= ]+//')
+  case "$token" in
+    \"*\") token=${token#\"}; token=${token%\"} ;;
+    \'*\') token=${token#\'}; token=${token%\'} ;;
+  esac
+  printf '%s' "$token"
+}
 route_account() {
   [ -x "$WORKER_PICK" ] || return 0
-  "$WORKER_PICK" --account "$1" 2>/dev/null || true
+  "$WORKER_PICK" --account "$@" 2>/dev/null || true
 }
 
-# Derive codex model short label: from ~/.codex/config.toml model id last dash-segment, fallback 'sol'.
+# Derive codex model short label: from ~/.codex/config.toml model id last dash-segment, fallback 'astra'.
 codex_model_short_label() {
   local toml="${1:-$HOME/.codex/config.toml}" label=""
   [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
     | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
   printf '%s' "$label"
 }
 
@@ -85,10 +95,20 @@ elif [ "$subagent" = image-gen ]; then
   # a second later on its own state. A row naming an account the run never touched is worse than
   # one that says nobody knows yet.
   acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(printf '%s' "$prompt" |
-    grep -m1 -oE -- '--account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
+  [ -n "$acct" ] || acct=$(flag_account)
   [ -n "$acct" ] || acct='?'
   prefix="$acct · image · $vendor"
+elif [ "$subagent" = gemini-research ]; then
+  # The launcher hardcodes `--model gemini-3.8-flash-high`: model and effort are fixed words here,
+  # never the worker-model knobs. A pin answers first, then the router — with `--role research`,
+  # which is the role this leg spends under: the plain query reads the workers switch and would
+  # answer `off` for a vendor parked for workers alone, and a row saying nobody knows tells Egor
+  # less than the account the run is about to land on.
+  acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || acct=$(flag_account)
+  [ -n "$acct" ] || acct=$(route_account gemini --role research)
+  [ -n "$acct" ] || acct='?'
+  prefix="$acct · flash38 · high"
 else
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account gemini)

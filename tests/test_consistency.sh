@@ -17,6 +17,10 @@ HAMMER="$ROOT/hammerspoon/llm-limits.lua"
 WORKER_GATE="${WORKER_LIMIT_GATE:-$HOME/.claude/hooks/worker-limit-gate.sh}"
 WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 
+CONSISTENCY_CACHE=$(mktemp -d)
+trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
+export WORKER_PICK_CACHE_DIR="$CONSISTENCY_CACHE"
+
 asserts=0
 fail() { printf 'FAIL: %s\n  (canonical values live in %s)\n' "$*" "$DOC" >&2; exit 1; }
 assert() {
@@ -349,7 +353,7 @@ PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
 for arm in \
   "claudeb) printf 'opus\\n' ;;" \
-  "codex) printf 'gpt-5.6-sol\\n' ;;" \
+  "codex) printf 'gpt-6-astra\\n' ;;" \
   "gemini) printf 'flash38\\n' ;;" \
   "grok) printf 'auto\\ngrok-4.6\\n' ;;"; do
   assert test "$(grep -Fc -- "$arm" "$WORKER_MODEL_SH")" -eq 1
@@ -369,7 +373,7 @@ assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | c
 # Prose sites, each naming the same four allowed models and the refusal by name.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   "$ROOT/docs/DIAGNOSTICS.md" "$WORKER_COMMAND"; do
-  assert grep -Fq 'gpt-5.6-sol' "$site"
+  assert grep -Fq 'gpt-6-astra' "$site"
   assert grep -Fq 'MODEL_REFUSED' "$site"
 done
 # grok is the one vendor with two spellings, and a site naming only `auto` reads as a shorter list.
@@ -384,7 +388,7 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|fable|flash3[0-79]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `gpt-5.6-sol`, gemini `flash38`, grok `auto`'
+assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini `flash38`, grok `auto`'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'gm_pin=$(conf gemini_profile)' "$WORKERPICK"
@@ -441,6 +445,11 @@ assert grep -Fq 'printf '\''%s\n'\'' "$gemini_base_home"' "$GEMINI_ACCOUNTS"
 assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNTS"
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
+# Review keeps Sol; implementation runs Astra independently (Egor, 2026-09-05).
+assert grep -Fq '"-m", "gpt-5.6-sol"' "$ROOT/../review-bench/share/rbench/launch.py"
+assert eq "$(bash -c ' . "$1"; worker_model_allowed_models codex' _ "$WORKER_MODEL_SH")" 'gpt-6-astra'
+assert eq "$(grep -c worker_model_allowed_models "$ROOT/../review-bench/share/rbench/launch.py")" 0
+
 # --- Row n: weekly bucket provenance ----------------------------------------
 STATUSLINE="$ROOT/bin/statusline.sh"
 # No writer may mint a weekly percentage from headers: the header-learn paths must
@@ -453,6 +462,9 @@ assert grep -Fq '.seven_day.origin? == "headers"' "$LLMLIMITS"
 assert grep -Fq '[ "$wk_origin" = headers ]' "$STATUSLINE"
 assert grep -Fq 'if (.seven_day.origin? == "headers") then del(.seven_day) else . end) as $old' "$STATUSLINE"
 assert grep -Fq 'walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end)' "$WORKERPICK"
+assert grep -Fq 'if .vendors.claude then .vendors.claude |=' "$WORKERPICK"
+assert eq "$(sed -n '/^select_codex_event()/,/^codex_refresh_target=/p' "$LLMLIMITS" | grep -c headers)" 0
+assert test "$(sed -n '/^select_codex_event()/,/^codex_refresh_target=/p' "$LLMLIMITS" | grep -c 'origin:"usage"')" -eq 4
 assert doc_has 'Weekly bucket provenance'
 assert doc_has 'no writer may stamp `origin: "headers"` on `seven_day`'
 
@@ -511,7 +523,7 @@ EDGE_MODEL="$EDGE_WORK/worker-model"
 printf '%s' "$EDGE_JSON" >"$EDGE_PICK"
 printf 'worker=auto\n' >"$EDGE_MODEL"
 edge_pick() {
-  env HOME="$EDGE_HOME" LLM_LIMITS_FILE="$EDGE_PICK" WORKER_PICK_CONFIG_FILE="$EDGE_MODEL" \
+  env HOME="$EDGE_HOME" CLAUDEB_DIR="$EDGE_STORE" LLM_LIMITS_FILE="$EDGE_PICK" WORKER_PICK_CONFIG_FILE="$EDGE_MODEL" \
     WORKER_PICK_CACHE_DIR="$EDGE_WORK/cache" WORKER_CLAIMS_DIR="$EDGE_WORK/claims" \
     CLAUDE_LIMITS_ACCOUNT=missing-five "$WORKERPICK" --account claudeb 2>/dev/null
 }
@@ -1278,15 +1290,7 @@ fi
 # where a run is still going, or waits for ever on one that is gone.
 assert grep -Fq 'return _round.pid_still_running(*stamp)' "$RB_CLI"
 assert eq "$(grep -c 'def pid_still_running(' "$RB_ROUND")" 1
-# The statusline is the fourth reader: the live worker tag stands for as long as a run of this chat
-# runs, so a slack of its own would show a magenta account the hooks have already retired.
-STATUSLINE_SH="$ROOT/bin/statusline.sh"
-assert grep -Fq 'SL_PID_SLACK=30' "$STATUSLINE_SH"
-assert grep -Fq '"pid_started_at"' "$STATUSLINE_SH"
-assert grep -Fq '[ "$pid" -gt 0 ] || return 1' "$STATUSLINE_SH"
-# Through the render's own `ps -o etime=` parser, never `kill -0`: a supervisor owned by another
-# account answers EPERM to the probe and would read dead while it spends quota.
-assert grep -Fq 'begin=$(process_start_epoch "$pid" "$2")' "$STATUSLINE_SH"
+
 
 # --- Row ae: account pin ownership -------------------------------------------
 # Three doors, one marker, one TTL. A door silently removed, or two of them disagreeing on where
@@ -1460,7 +1464,7 @@ ROLE_WORK=$(mktemp -d)
 ROLE_MODEL="$ROLE_WORK/worker-model"
 # The writer refuses a session outright, and this suite usually runs inside one.
 set_role() {
-  env -u CLAUDECODE WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
+  env -u CLAUDECODE WORKER_PICK_CACHE_DIR="$ROLE_WORK/cache" WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
     bash -c '. "$1"; worker_model_set_role "$2" "$3" "$4"' _ "$WORKER_MODEL_SH" "$1" "$2" "$3"
 }
 # The writer, asked for every pair the readers know.
@@ -1477,7 +1481,7 @@ done
 # a closed role is refused before any account is looked at.
 printf '{}\n' >"$ROLE_WORK/limits.json"
 role_pick() {
-  env LLM_LIMITS_FILE="$ROLE_WORK/limits.json" WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
+  env HOME="$ROLE_WORK/home" LLM_LIMITS_FILE="$ROLE_WORK/limits.json" WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
     WORKER_PICK_TIERS_FILE="$ROLE_WORK/tiers" WORKER_PICK_CACHE_DIR="$ROLE_WORK/cache" \
     WORKER_PICK_NOW=1000000 CLAUDEB_DIR="$ROLE_WORK/claudeb" \
     "$WORKERPICK" --account "$1" --role "$2" 2>&1 >/dev/null
@@ -1589,11 +1593,11 @@ PAUSE_MODEL="$PAUSE_WORK/worker-model"
 # an absent key is the running state on every reader, so an `=off` spelling would be a second one.
 for vendor in $PAUSE_VENDORS; do
   rm -f "$PAUSE_MODEL"
-  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  env -u CLAUDECODE "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
     bash -c '. "$1"; worker_model_set_paused "$2" on' _ "$WORKER_MODEL_SH" "$vendor" ||
     fail "row bp: share/worker-model.sh refuses ${vendor}, a vendor llm-limits.sh and bin/llm-refresh both key on"
   assert eq "$(cat "$PAUSE_MODEL")" "${vendor}_paused=on"
-  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  env -u CLAUDECODE "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
     bash -c '. "$1"; worker_model_set_paused "$2" off' _ "$WORKER_MODEL_SH" "$vendor"
   assert eq "$(cat "$PAUSE_MODEL")" ""
 done
@@ -1602,7 +1606,7 @@ done
 # against the bench's own note rather than restated here.
 printf '{}\n' >"$PAUSE_WORK/limits.json"
 pause_pick() {
-  env "LLM_LIMITS_FILE=$PAUSE_WORK/limits.json" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  env "HOME=$PAUSE_WORK/home" "LLM_LIMITS_FILE=$PAUSE_WORK/limits.json" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
     "WORKER_PICK_TIERS_FILE=$PAUSE_WORK/tiers" "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" \
     WORKER_PICK_NOW=1000000 "CLAUDEB_DIR=$PAUSE_WORK/claudeb" \
     "$WORKERPICK" --account "$1" 2>&1 >/dev/null

@@ -56,6 +56,7 @@ CONFIG="$WORK/worker-model"
 TIERS="$WORK/account-tiers"
 CACHE="$WORK/cache"
 CLAIMS="$WORK/claims"
+export WORKER_PICK_CACHE_DIR="$CACHE"
 mkdir -p "$HOME_FIXTURE" "$CACHE" "$CLAIMS"
 printf '%s\n' 'session=100' 'worker=20' 'tie-a=100' 'tie-b=100' 'dry=100' 'walled-wk=100' \
   'walled-5h=100' 'off=100' 'dead=100' 'spent=100' 'spent5h=100' 'effective=100' 'raw=100' \
@@ -71,11 +72,28 @@ write_config
 
 run_env=(TZ=UTC "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
   "WORKER_PICK_TIERS_FILE=$TIERS" "WORKER_PICK_CACHE_DIR=$CACHE" WORKER_PICK_NOW=2000000000
+  "CLAUDEB_DIR=$HOME_FIXTURE/.claude-profiles/.claudeb"
+  "CODEXB_PROFILES_DIR=$HOME_FIXTURE/.codex-profiles"
+  "GEMINIB_PROFILES_DIR=$HOME_FIXTURE/.gemini-profiles"
+  "GROKB_PROFILES_DIR=$HOME_FIXTURE/.grok-profiles"
   CLAUDE_LIMITS_ACCOUNT=session "WORKER_CLAIMS_DIR=$CLAIMS")
 # Claims are per-run state, and a marker left behind would silently demote an account in every
 # later case, so each case that is not about claims starts from an empty store.
 clear_claims() { rm -rf "$CLAIMS"; mkdir -p "$CLAIMS"; }
+sync_fixture_pool() {
+  local vendor dir
+  for vendor in claude codex gemini grok; do
+    case "$vendor" in
+      claude) dir="$HOME_FIXTURE/.claude-profiles/.claudeb" ;;
+      *) dir="$HOME_FIXTURE/.$vendor-profiles/.${vendor}b" ;;
+    esac
+    mkdir -p "$dir"
+    jq -r --arg vendor "$vendor" '.vendors[$vendor] | (.accounts // [.])[]? |
+      select(.enabled == false) | .account // "main"' "$STORE" > "$dir/disabled" 2>/dev/null
+  done
+}
 run_store() {
+  sync_fixture_pool
   # Stderr to a file rather than the terminal: a human-facing run carries its notes there, and a
   # suite that let them scroll past could not tell a note that fired from one that did not.
   output=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/note.err") ||
@@ -92,6 +110,7 @@ run_filter() {
 }
 # `--account` answers a caller: stdout is one bare name, stderr carries anything else.
 query() {
+  [ "${live_pool_test:-false}" = true ] || sync_fixture_pool
   query_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" "$@" 2>"$WORK/query.err")
   query_rc=$?
 }
@@ -100,6 +119,25 @@ query_case() {
   shift
   query "$@"
 }
+
+write_config
+run_case golden
+if [ "${WORKER_PICK_UPDATE_GOLDEN:-0}" = 1 ]; then
+  printf '%s\n' "$output" > "$GOLDEN"
+  exit 0
+fi
+model_column() {
+  awk -v prefix="$2" '$0 ~ prefix {print index($0, "opus·high"); exit}' <<<"$1"
+}
+assert test "$(model_column "$output" '^ [0-9]+ .*claude/session')" -eq \
+  "$(model_column "$output" '^claude:')"
+assert test "$(model_column "$(cat "$GOLDEN")" '^ [0-9]+ .*claude/session')" -eq \
+  "$(model_column "$(cat "$GOLDEN")" '^claude:')"
+run_filter codex_plain '.vendors.codex.accounts |= map(.weekly = {used_pct:35,resets_at:2000259200,as_of:2000000000,origin:"usage"})'
+assert contains "$(vsection codex)" '35%'
+run_filter codex_plain '.vendors.codex.accounts |= map(.weekly = {used_pct:35,resets_at:2000259200,as_of:2000000000,origin:"headers"})'
+assert contains "$(vsection codex)" '35%'
+
 
 # Unusable data has no fail-safe answer for a caller, and a human-facing run says why.
 printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
@@ -285,8 +323,8 @@ assert not_contains "$output" '5h!'
 run_filter codex_plain '.vendors.codex.accounts = [
   {account:"hot",five_hour:{used_pct:85},weekly:{used_pct:20}},
   {account:"cool",five_hour:{used_pct:10},weekly:{used_pct:50}}]'
-assert contains "$(nrow 1)" 'codex/cool sol·high'
-assert contains "$(vsection codex)" '11.4%/d ×7.0d 20% 85% hot sol·high 5h!'
+assert contains "$(nrow 1)" 'codex/cool astra·high'
+assert contains "$(vsection codex)" '11.4%/d ×7.0d 20% 85% hot astra·high 5h!'
 assert before "$(vsection codex)" ' cool ' ' hot '
 run_case claude_pool
 
@@ -525,9 +563,9 @@ write_config
 # Codex candidacy: budget-first ranking, credits and tiers display-only,
 # the pool toggle, and login parity with Gemini.
 run_case codex_credit
-assert contains "$(nrow 1)" 'codex/plain sol·high'
-assert contains "$(vsection codex)" '48% 48% plain sol·high'
-assert contains "$(vsection codex)" '48% 48% with-credit sol·high'
+assert contains "$(nrow 1)" 'codex/plain astra·high'
+assert contains "$(vsection codex)" '48% 48% plain astra·high'
+assert contains "$(vsection codex)" '48% 48% with-credit astra·high'
 # The reset consumable is the menu action that spends it, not a routing input: no row carries it.
 assert not_contains "$output" '↻'
 query_case codex_credit --account codex
@@ -540,7 +578,7 @@ assert grep -q 'no selectable codex account' "$WORK/query.err"
 run_filter codex_plain '.vendors.codex.accounts = [
   {account:"main",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"zeta",five_hour:{used_pct:20},weekly:{used_pct:20}}]'
-assert contains "$(nrow 1)" 'codex/main sol·high'
+assert contains "$(nrow 1)" 'codex/main astra·high'
 assert before "$(vsection codex)" ' main ' ' zeta '
 # An emptied pool is a switch Egor flipped, never a limit (rule 4), so the line says which of the
 # two it is — and `worker-run` reads that same wording to report UNAVAILABLE over a usage limit.
@@ -550,19 +588,19 @@ assert not_contains "$output" WALLED
 query --account codex
 assert test "$query_rc" -eq 3
 assert grep -q 'every codex account is out of the worker pool' "$WORK/query.err"
-assert contains "$(vsection codex)" '48% 48% plain sol·high off'
+assert contains "$(vsection codex)" '48% 48% plain astra·high off'
 run_filter codex_plain '.vendors.codex = {available:true,accounts:[
   {account:"main",auth_needed:true,status:"login needed"}]}'
 assert test "$(vsection codex)" = 'login needed'
 assert not_contains "$output" 'no authenticated quota data'
 run_filter codex_plain '.vendors.codex = {available:true,five_hour:{used_pct:12},weekly:{used_pct:34}}'
-assert contains "$(vsection codex)" '34% 12% main sol·high'
+assert contains "$(vsection codex)" '34% 12% main astra·high'
 write_config 'codex_profile=main'
 run_filter codex_plain '.vendors.codex.accounts = [
   {account:"plain",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"main",enabled:false,five_hour:{used_pct:40},weekly:{used_pct:40}}]'
-assert contains "$(nrow 1)" 'codex/main sol·high PINNED'
-assert contains "$(vsection codex)" '40% 40% main sol·high PINNED off'
+assert contains "$(nrow 1)" 'codex/main astra·high PINNED'
+assert contains "$(vsection codex)" '40% 40% main astra·high PINNED off'
 run_filter codex_plain '.vendors.codex.accounts = [
   {account:"plain",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"main",five_hour:{used_pct:100},weekly:{used_pct:20}}]'
@@ -576,6 +614,7 @@ grok_case() {
   run_filter golden ".vendors.grok = $1"
 }
 grok_query() {
+  [ "${live_pool_test:-false}" = true ] || sync_fixture_pool
   jq -c --arg name golden --argjson grok "$1" '.[$name] | .vendors.grok = $grok' "$FIXTURES" \
     >"$STORE" || fail 'grok fixture transform failed'
   shift
@@ -592,7 +631,7 @@ GROK_PAIR_JSON='{"available":true,"accounts":[
 run_case golden
 assert not_contains "$output" grok
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 12
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi'
 query_case golden --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -610,14 +649,14 @@ assert not_contains "$(next_block)" 'codex/main'
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 15
 # The cache line keeps its field order and gains a fourth field; `grok_model=auto` is a knob value,
 # not a missing one, so it is printed as it stands and resolved by worker-run.
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·auto·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·auto·hi'
 write_config 'grok_model=grok-4.5' 'grok_effort=medium'
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·med'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·grok-4.5·med'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·grok-4.5·med'
 write_config 'grok_model=grok-4.6' 'grok_effort=xhigh'
 grok_case "$GROK_PAIR"
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·grok-4.6·xh'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi gr✓spare·grok-4.6·xh'
 write_config
 # Auto orders ACCOUNTS by daily budget across the vendors, so grok/spare leads here on its 10% week
 # and codex, the smallest budget of the six, is what the five-row cap drops — the old fixed
@@ -645,7 +684,7 @@ assert not_contains "$(next_block)" 'gemini/'
 # A vendor that answers nothing says so in its own section, never as a row of the ranking: an
 # emptied pool is per-account, so its rows stay and carry the switch.
 assert contains "$(vsection claude)" '20% 20% session* opus·high off'
-assert test "$(vsection codex)" = '- ? ? main sol·high'
+assert test "$(vsection codex)" = '- ? ? main astra·high'
 assert test "$(vsection gemini)" = '- ? ? main f38·high'
 # The order follows the numbers, not the vendor: the same store with codex barely touched puts
 # codex at the head and grok behind claudeb.
@@ -653,7 +692,7 @@ run_filter golden ".vendors.grok = $GROK_PAIR
   | .vendors.codex.accounts = [{account:\"main\",five_hour:{used_pct:2},weekly:{used_pct:2}}]
   | .vendors.grok.accounts = [{account:\"spare\",enabled:true,weekly:{used_pct:30}}]"
 next_line=$(next_block)
-assert contains "$(nrow 1)" 'codex/main sol·high'
+assert contains "$(nrow 1)" 'codex/main astra·high'
 assert before "$next_line" 'codex/main' 'claude/session'
 assert before "$next_line" 'claude/session' 'gemini/main'
 assert before "$next_line" 'gemini/main' 'grok/spare'
@@ -717,7 +756,7 @@ assert before "$(next_block)" 'claude/session' 'grok/supergrok'
 printf '%s\n' 'worker=codex' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
 run_case golden
-assert contains "$(nrow 1)" 'codex/main sol·high'
+assert contains "$(nrow 1)" 'codex/main astra·high'
 assert test "$(acct_line)" = 'ACCOUNT: main'
 assert before "$(next_block)" 'codex/main' 'claude/session'
 write_config
@@ -889,7 +928,7 @@ grok_case '{available:true,accounts:[
   {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
 assert contains "$(nrow 1)" 'grok/supergrok grok·high PINNED'
 assert contains "$(vsection grok)" '40% – supergrok grok·high PINNED off'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr✓supergrok·auto·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi gr✓supergrok·auto·hi'
 write_config 'grok_profile=ghost'
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·high'
@@ -918,7 +957,7 @@ grok_case "$GROK_PAIR"
 assert test "$(vsection grok)" = 'off for workers'
 assert not_contains "$output" 'grok unavailable'
 assert not_contains "$(next_block)" 'grok/'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi gr⏸off·auto·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi gr⏸off·auto·hi'
 grok_query "$GROK_PAIR_JSON" --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -1048,12 +1087,12 @@ assert test "$(vsection claude)" = 'off for workers'
 assert not_contains "$output" 'ACCOUNT: worker'
 assert not_contains "$(next_block)" 'claude/'
 # A parked vendor is not an unpredictable one: the statusline reads `~?` as a lookup that failed.
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb⏸off·opus·hi gx✓main·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb⏸off·opus·hi gx✓main·flash38·hi'
 write_config 'codex_workers=off'
 run_case golden
 assert test "$(vsection codex)" = 'off for workers'
 assert not_contains "$(next_block)" 'codex/'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx⏸off·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx⏸off·astra·hi cb~session·opus·hi gx✓main·flash38·hi'
 write_config 'gemini_workers=off'
 run_case golden
 assert test "$(vsection gemini)" = 'off for workers'
@@ -1062,7 +1101,7 @@ assert not_contains "$output" 'ACCOUNT: main'
 # outranks codex in this store, so a redesign that kept ranking it would still print this line
 # while handing gemini out as the answer.
 assert not_contains "$(next_block)" 'gemini/'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx⏸off·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx⏸off·flash38·hi'
 # The switch is the answer even when the store has nothing left to rank: blaming the data for it
 # would send the owner hunting a reading that no longer decides anything.
 write_config 'codex_workers=off'
@@ -1073,7 +1112,7 @@ assert test "$(vsection codex)" = 'off for workers'
 write_config 'claudeb_workers=off'
 run_case golden
 assert contains "$(nrow 1)" 'gemini/main f38·high'
-assert contains "$(next_block)" 'codex/main sol·high'
+assert contains "$(next_block)" 'codex/main astra·high'
 assert not_contains "$(next_block)" 'claude/'
 assert test "$(vsection claude)" = 'off for workers'
 # A closed vendor never speaks for a wall either: `WALLED` is quota talking, and codex here has
@@ -1215,7 +1254,7 @@ run_filter gemini_fresh '.vendors.claude.accounts = [{account:"dormant",enabled:
 assert contains "$output" 'DATA: STALE — claude/dormant 11d13h'
 run_filter gemini_fresh '.vendors.claude.accounts = [{account:"dormant",auth:"ok",
   five_hour:{used_pct:5,as_of:1999000000},weekly:{used_pct:5,as_of:1999000000}}]'
-assert contains "$output" 'DATA: fresh (0 min old)'
+assert contains "$output" 'DATA: STALE — claude/dormant 11d13h'
 run_filter gemini_fresh '.vendors.gemini.enabled = false
   | .vendors.claude.accounts = [{account:"dormant",enabled:false,auth:"ok",
     five_hour:{used_pct:5,as_of:1999000000},weekly:{used_pct:5,as_of:1999000000}}]'
@@ -1249,7 +1288,7 @@ printf '%s\n' 'worker=auto' 'codex_effort=medium' 'claudeb_model=sonnet' 'claude
 run_case claude_pool
 assert contains "$(nrow 1)" 'claude/session* sonnet·med'
 run_case golden
-assert contains "$(vsection codex)" 'main sol·med'
+assert contains "$(vsection codex)" 'main astra·med'
 printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
   'gemini_model=flash' 'gemini_effort=medium' >"$CONFIG"
 run_case gemini_fresh
@@ -1305,7 +1344,7 @@ assert test "$(section_order)" = 'codex gemini claude'
 assert test "$(grep -c -- '^DATA: ' <<<"$output")" -eq 1
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 12
 assert not_contains "$output" '# Worker routing policy'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi'
 assert test -z "$(find "$CACHE" -name '*.tmp.*' -print -quit)"
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
 # Display bands are render-only: an unreachable account stays visible, below the candidates.
@@ -1327,7 +1366,7 @@ run_case golden
 assert test ! -e "$CACHE/worker-pick.line.gone"
 assert test -e "$CACHE/worker-pick.line.live"
 assert test -e "$CACHE/statusline-cache-rl"
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi gx✓main·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi gx✓main·flash38·hi'
 rm -f "$CACHE/worker-pick.line.live" "$CACHE/statusline-cache-rl"
 
 # A paused vendor is parked for months and must leave no trace: the collector drops its
@@ -1338,12 +1377,12 @@ run_filter golden 'del(.vendors.gemini)'
 assert not_contains "$output" gemini
 assert not_contains "$output" paused
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 10
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi'
 # Read off the switch as well as off the store: the collector only drops the vendor on its next
 # run, and a snapshot written before the switch must not keep the parked vendor on screen.
 run_case golden
 assert not_contains "$output" gemini
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi cb~session·opus·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi cb~session·opus·hi'
 # Every vendor reads the same rule, claudeb and codex included.
 write_config 'codex_paused=on'
 run_case golden
@@ -1353,7 +1392,7 @@ write_config 'claudeb_paused=on'
 run_case golden
 assert not_contains "$output" claude
 assert contains "$(nrow 1)" 'gemini/main f38·high'
-assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·sol·hi gx✓main·flash38·hi'
+assert test "$(cat "$CACHE/worker-pick.line.session")" = 'cx✓main·astra·hi gx✓main·flash38·hi'
 # A named vendor is refused rather than quietly rerouted: a caller that spelled it out would read
 # another vendor's account as the one it asked for.
 write_config 'grok_paused=on'
@@ -1464,7 +1503,7 @@ write_config
 # an `=off`, and neither touches the role lines beside it.
 PAUSE_MODEL="$WORK/pause-model"
 set_paused() {
-  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  env -u CLAUDECODE "HOME=$HOME_FIXTURE" "WORKER_PICK_CACHE_DIR=$CACHE" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
     bash -c '. "$1"; worker_model_set_paused "$2" "$3"' _ "$ROOT/share/worker-model.sh" "$1" "$2"
 }
 printf '%s\n' 'grok_workers=off' 'grok_profile=supergrok' >"$PAUSE_MODEL"
@@ -1547,5 +1586,46 @@ decisions_now() {
   done
 }
 assert diff -u "$DECISIONS" <(decisions_now)
+
+
+write_config
+run_case codex_plain
+live_pool_test=true
+. "$ROOT/share/worker-pool.sh"
+pool_fixture="$HOME_FIXTURE/.codex-profiles/.codexb"
+printf 'cached\n' > "$CACHE/worker-pick.line.fixture"
+HOME="$HOME_FIXTURE" WORKER_PICK_CACHE_DIR="$CACHE" worker_pool_set_disabled "$pool_fixture" plain on
+assert test ! -e "$CACHE/worker-pick.line.fixture"
+query --account codex
+assert test "$query_rc" -eq 3
+HOME="$HOME_FIXTURE" WORKER_PICK_CACHE_DIR="$CACHE" worker_pool_set_disabled "$pool_fixture" plain off
+jq '.vendors.codex.accounts[].enabled = false' "$STORE" > "$WORK/pool-store"
+cp "$WORK/pool-store" "$STORE"
+query --account codex
+assert test "$query_out" = plain
+rm "$pool_fixture/disabled"
+query --account codex
+assert test "$query_out" = plain
+mkdir "$pool_fixture/disabled"
+query --account codex
+assert test "$query_rc" -eq 3
+jq '.vendors.codex.accounts[].enabled = true' "$STORE" > "$WORK/pool-store"
+cp "$WORK/pool-store" "$STORE"
+query --account codex
+assert test "$query_rc" -eq 3
+rmdir "$pool_fixture/disabled"
+for pause_state in on off; do
+  printf 'cached\n' > "$CACHE/worker-pick.line.fixture"
+  assert set_paused grok "$pause_state"
+  assert test ! -e "$CACHE/worker-pick.line.fixture"
+done
+for role_state in off on; do
+  printf 'cached\n' > "$CACHE/worker-pick.line.fixture"
+  env -u CLAUDECODE "HOME=$HOME_FIXTURE" "WORKER_PICK_CACHE_DIR=$CACHE" \
+    "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" bash -c \
+    '. "$1"; worker_model_set_role grok workers "$2"' _ "$ROOT/share/worker-model.sh" "$role_state"
+  assert test ! -e "$CACHE/worker-pick.line.fixture"
+done
+live_pool_test=false
 
 printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the four roles including chat and research without pins or role keys, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, and the output/cache/decision golden contract with no routing prose\n' "$asserts"

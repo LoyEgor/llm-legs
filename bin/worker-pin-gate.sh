@@ -138,7 +138,7 @@ deny() {
   exit 0
 }
 
-DENY_REASON="Blocked: the account pin (claudeb_profile / codex_profile / gemini_profile / grok_profile) in ~/.claude/worker-model is Egor's to move, and he has not named it here. This gate is the rule, not a suggestion — do not reach the file another way; \`claudeb use|codexb use|geminib use|grokb use\` is refused at the same door. A per-task account belongs in the brief's ACCOUNT: line, which needs no pin. Everything else in this file — worker=, *_model=, *_effort= — is ungated, so leave the *_profile= lines exactly as they are and this same write passes. If the pin itself should move, ask him in one line and wait."
+DENY_REASON="Blocked: the account pin (claudeb_profile / codex_profile / gemini_profile / grok_profile) in ~/.claude/worker-model is Egor's to move, and he has not named it here. This gate is the rule, not a suggestion — do not reach the file another way; \`claudeb use|codexb use|geminib use|grokb use\` is refused at the same door. A per-task account belongs in the brief's ACCOUNT: line, which needs no pin. Edit/Write may change non-pin fields while preserving every pin line. Bash permits only the two literal worker/effort substitutions documented in shared-invariants row ae; other shell writes, including model replacements, require a pin grant. If the pin itself should move, ask him in one line and wait."
 
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat) || exit 0
@@ -376,6 +376,26 @@ case "$MODE" in
       grep -Eq "[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*worker-model|\\\$\\([^)]*worker-model|(^|[;&|(])[[:space:]]*(for|while|read)[[:space:]][^;&|]*worker-model" <<<"$1"
     }
 
+    pin_untouched_write() {
+      local home_re path_re key_re inplace_re temporary_re
+      home_re=$(printf '%s' "$HOME" | sed 's/[][\\.^$*+?(){}|]/\\&/g')
+      path_re="(~|\\\$HOME|$home_re)/\\.claude/worker-model"
+      key_re='(worker|codex_effort|claudeb_effort|gemini_effort|grok_effort)'
+      inplace_re="^sed -i '' 's/\^${key_re}=\.\*/${key_re}=[a-z0-9]+/' ${path_re}$"
+      temporary_re="^([A-Za-z_][A-Za-z0-9_]*)=${path_re}; sed 's/\^${key_re}=\.\*/${key_re}=[a-z0-9]+/' \"\\\$([A-Za-z_][A-Za-z0-9_]*)\" > \"\\\$([A-Za-z_][A-Za-z0-9_]*)\.tmp\.\\\$\\\$\" && mv -f \"\\\$([A-Za-z_][A-Za-z0-9_]*)\.tmp\.\\\$\\\$\" \"\\\$([A-Za-z_][A-Za-z0-9_]*)\"$"
+      if [[ "$1" =~ $inplace_re ]]; then
+        [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ]
+      elif [[ "$1" =~ $temporary_re ]]; then
+        [ "${BASH_REMATCH[3]}" = "${BASH_REMATCH[4]}" ] &&
+          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[5]}" ] &&
+          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[6]}" ] &&
+          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[7]}" ] &&
+          [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[8]}" ]
+      else
+        return 1
+      fi
+    }
+
     if targeted "$scan" || deletes "$scan"; then :
     elif { [ -n "$ambiguous" ] || travels "$scan"; } && any_write "$scan"; then :
     else exit 0
@@ -384,6 +404,9 @@ case "$MODE" in
     # standing on the search side of a substitution — is not one it stores.
     offending=$(disallowed_models "$(drop_replaced "$scan")")
     [ -z "$offending" ] || deny_model "$offending"
+    # The raw command, and only while nothing in it is a runtime: matched around one, the shape is
+    # a guess, and a guess is exactly what may not open this door.
+    if [ -z "$ambiguous" ] && pin_untouched_write "$cmd"; then exit 0; fi
     fresh && exit 0
     deny "$DENY_REASON"
     ;;

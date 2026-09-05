@@ -7,6 +7,11 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+export HOME="$WORK/home"
+export WORKER_PICK_CACHE_DIR="$WORK/cache"
+mkdir -p "$HOME/.cache" "$WORKER_PICK_CACHE_DIR"
+printf 'keep\n' > "$HOME/.cache/worker-pick.line.keep"
+printf 'stale\n' > "$WORKER_PICK_CACHE_DIR/worker-pick.line.stale"
 
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
@@ -35,6 +40,8 @@ export WORKER_PICK_CONFIG_FILE="$MODEL"
 BASE=$'worker=auto\nclaudeb_profile=alpha\neffort=high'
 printf '%s\n' "$BASE" >"$MODEL"
 assert worker_model_set_role claudeb workers off
+assert test -f "$HOME/.cache/worker-pick.line.keep"
+assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.stale"
 assert_file "$BASE"$'\nclaudeb_workers=off'
 assert worker_model_set_role claudeb workers off
 assert_file "$BASE"$'\nclaudeb_workers=off'

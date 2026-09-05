@@ -11,10 +11,51 @@ local DOCTOR_CONTENTS = "<doctor-snapshot>"
 local dialogAnswer = nil
 local dialogCalls = {}
 
+-- What AppKit resolves {System, tertiaryLabelColor} to, the tone the renderer dims with. The two
+-- levels are the two appearances: black on a light menu, white on a dark one.
+local SYSTEM_DIM_ALPHA = 0.258824
+
+local function dimTone(level)
+  return { red = level, green = level, blue = level, alpha = SYSTEM_DIM_ALPHA }
+end
+
+local function colorKey(color)
+  return string.format("%.6f/%.6f/%.6f/%.6f",
+    color.red or -1, color.green or -1, color.blue or -1, color.alpha or 1)
+end
+
+-- The whole palette the menu may ever paint with: one dim, one red, one dim red. A second gray is
+-- exactly what Egor cannot tell apart from the system's, so it may not reach a row at all.
+local KNOWN_COLORS = {}
+for _, color in ipairs({
+  dimTone(0), dimTone(1),
+  { red = 0.9, green = 0.25, blue = 0.2 },
+  { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 },
+}) do
+  KNOWN_COLORS[colorKey(color)] = true
+end
+
+local function describeColor(color)
+  if type(color) ~= "table" then return tostring(color) end
+  if color.list or color.name then
+    return string.format("{%s, %s}", tostring(color.list), tostring(color.name))
+  end
+  return colorKey(color)
+end
+
 local Styled = {}
 Styled.__index = Styled
 
 local function styled(text, attributes)
+  local color = type(attributes) == "table" and attributes.color or nil
+  -- Caught where the run is built rather than where it is read: every colour in the menu passes
+  -- through here, submenus and concatenated runs included, so a fourth tone cannot be introduced
+  -- anywhere without this failing.
+  if color ~= nil then
+    assert(type(color) == "table" and KNOWN_COLORS[colorKey(color)],
+      "a colour outside the one dim, red and dim red reached the menu: "
+        .. describeColor(color) .. " on " .. string.format("%q", tostring(text)))
+  end
   return setmetatable({
     text = text,
     attributes = attributes,
@@ -40,9 +81,17 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       table.insert(dialogCalls, { ... })
       return dialogAnswer
     end },
+    -- The renderer asks AppKit for the dim tone per render, which is how it follows the
+    -- appearance; the fake answers the same way so the light/dark assertions still measure that.
+    drawing = { color = { asRGB = function(spec)
+      assert(type(spec) == "table" and spec.list == "System"
+        and spec.name == "tertiaryLabelColor",
+        "the renderer resolved a system colour that is not the menu's own dim: "
+          .. describeColor(spec))
+      return dimTone(interfaceStyle == "Dark" and 1 or 0)
+    end } },
     execute = function() return true end,
     fs = { attributes = fsAttributes or function() return nil end },
-    host = { interfaceStyle = function() return interfaceStyle end },
     -- The doctor snapshot is a second document read through the same decoder, so the fixture is
     -- chosen by what the fake io.open handed back rather than by call order.
     json = { decode = function(text)
@@ -176,12 +225,12 @@ local function hasDimRed(title)
   return false
 end
 
--- The dim tone is the menu's own text colour at 55%, so it flips with the appearance; anything
--- pinned to one appearance would be invisible in the other. Nothing in this menu is a fixed gray,
--- and tests/test_llm_limits.sh fails if one comes back.
+-- The dim tone is the system's own tertiaryLabelColor, the colour macOS paints the disabled
+-- percentage rows with, resolved per render so it flips with the appearance. Any literal alpha of
+-- ours would read as a second gray beside those rows; tests/test_llm_limits.sh fails on one.
 local function isDimmed(attributes, level)
   local color = attributes and attributes.color
-  if type(color) ~= "table" or color.alpha ~= 0.55 then return false end
+  if type(color) ~= "table" or color.alpha ~= SYSTEM_DIM_ALPHA then return false end
   if level and color.red ~= level then return false end
   return color.red == color.green and color.green == color.blue
 end
@@ -459,6 +508,34 @@ for index, expected in ipairs(expectedRouting) do
   assert(freshRoutingMenu[index + 1].disabled == true, "routing line is clickable")
 end
 
+do
+  for _, action in ipairs({
+    { "toggleAccount", "fixture", true }, { "toggleCodexAccount", "fixture", true },
+    { "toggleGeminiAccount", "fixture", true }, { "toggleGrokAccount", "fixture", true },
+    { "pinClaude", "fixture", true }, { "pinCodex", "fixture", true },
+    { "pinGemini", "fixture", true }, { "pinGrok", "fixture", true },
+    { "setWorkerRole", "claude", "workers", false },
+    { "setWorkerPaused", "claude", true }, { "setWorkerPaused", "claude", false },
+  }) do
+    local tasks = {}
+    local mod = loadModule(routingFixture, function(path, callback, args)
+      tasks[#tasks + 1] = { path = path, callback = callback, args = args }
+      return { start = function() return true end, setEnvironment = function() end,
+        isRunning = function() return true end }
+    end, routingNow)
+    local refreshed = 0
+    mod.routingCache = { text = routingText, at = routingNow }
+    mod.refreshRouting = function()
+      assert(mod.routingCache == nil, action[1] .. " retained stale routing")
+      refreshed = refreshed + 1
+    end
+    mod[action[1]](table.unpack(action, 2))
+    assert(#tasks == 1, action[1] .. " did not start its writer")
+    tasks[1].callback(0, "", "")
+    assert(refreshed == 1, action[1] .. " did not refresh routing after success")
+  end
+end
+
 local staleRouting = loadModule(routingFixture, nil, routingNow, nil, nil, nil,
   function(path)
     if path:match("%.llm%-limits%.json$") then return { modification = routingNow } end
@@ -582,8 +659,8 @@ local entryMenu = entryModule.menuItems()
 local entryRow = accountItem(entryMenu, "alona")
 assert(titleText(entryRow):find("10m", 1, true) and titleText(entryRow):find("!", 1, true),
   "entry-only account row lacks its age-adjacent ! marker")
--- The age and the marks beside it follow the menu's own secondary label colour: the fixed gray
--- they used to carry washed out against the menu instead of reading as the rest of the row.
+-- The age and the marks beside it carry the menu's own dim, the tone macOS paints the disabled
+-- percentage rows with: a gray of ours washed out beside them instead of reading as one menu.
 for _, run in ipairs(entryRow.title.runs or {}) do
   if run.text:find("10m", 1, true) or run.text:find("!", 1, true) then
     assert(isDimmed(run.attributes, 0), "age or ! marker was not dim black in the light appearance")
@@ -992,7 +1069,8 @@ do
   local after = poolItemFor(mod, "spare")
   assert(after and after.checked == true,
     "a successful toggle did not show in the next menu build")
-  local collect = tasks[2]
+  assert(tasks[2] and tasks[2].path == mod.workerPickPath, "pool toggle did not refresh Routing")
+  local collect = tasks[3]
   assert(collect and collect.path:find("llm%-limits", 1, false),
     "a successful vendor command did not start the follow-up collect")
   collect.callback(0, "", "")
@@ -2242,8 +2320,8 @@ do
   local halfMenu = loadModule(roleFixture, nil, nil, nil, nil, "claudeb_workers=off").menuItems()
   assert(isDimmed(accountItem(halfMenu, "cl-one").title.runs[1].attributes),
     "a vendor with one role switched off was not dimmed")
-  -- Dimmed is the menu's own label colour at 55%, so the tone follows the appearance the row is
-  -- drawn in; a fixed gray would be the unreadable one in whichever appearance it was not picked for.
+  -- Dimmed is the system's tertiaryLabelColor, so the tone follows the appearance the row is drawn
+  -- in; a fixed gray would be the unreadable one in whichever appearance it was not picked for.
   local light = accountItem(menu, "cl-one").title.runs[1].attributes
   local dark = accountItem(loadModule(roleFixture, nil, nil, nil, nil,
     "claudeb_workers=off\nclaudeb_reviewers=off", nil, "Dark").menuItems(),
@@ -2823,6 +2901,36 @@ do
     if titleText(item):find("oc-one: 402 payment required", 1, true) then explained = true end
   end
   assert(explained, "an OpenCode refresh error warned with no row anywhere naming it")
+end
+
+-- Egor reads ONE gray in this menu: the system's, the one the disabled percentage rows already
+-- have. The construction gate above catches a new tone as a run is built; this walks what a render
+-- actually hands macOS — every item, every submenu, every run — so a colour that reached a row by
+-- any other route is named with the row it sits on.
+do
+  local function walkColors(items, trail)
+    for _, item in ipairs(items) do
+      local where = (trail or "") .. titleText(item)
+      if type(item.title) == "table" then
+        for _, run in ipairs(item.title.runs or { { attributes = item.title.attributes } }) do
+          local color = run.attributes and run.attributes.color
+          if color ~= nil then
+            assert(type(color) == "table" and KNOWN_COLORS[colorKey(color)],
+              "a second gray is in the menu: " .. describeColor(color) .. " on row " .. where)
+          end
+        end
+      end
+      if type(item.menu) == "table" then walkColors(item.menu, where .. " \u{203a} ") end
+    end
+  end
+
+  local roleOff = "claudeb_workers=off\nclaudeb_reviewers=off"
+  for _, style in ipairs({ "Light", "Dark" }) do
+    walkColors(loadModule(fixture, nil, nil, nil, nil, nil, nil, style).menuItems())
+    walkColors(loadModule(deadFixture, nil, nil, nil, nil, nil, nil, style).menuItems())
+    walkColors(loadModule(roleFixture, nil, nil, nil, nil, roleOff, nil, style).menuItems())
+    walkColors(loadModule(routingFixture, nil, routingNow, nil, nil, nil, nil, style).menuItems())
+  end
 end
 
 return "PASS: Hammerspoon projection contract"

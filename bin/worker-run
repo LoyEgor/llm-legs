@@ -413,7 +413,7 @@ vendor_name() {
 codex_config_model() {
   local value
   value=$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG" 2>/dev/null | head -n1)
-  printf '%s' "${value:-gpt-5.6-sol}"
+  printf '%s' "${value:-gpt-6-astra}"
 }
 
 # Refused BEFORE the account is resolved and long before a CLI is launched, because the run is what
@@ -1322,7 +1322,7 @@ start_run() {
       else
         model_label=${model##*-}
       fi
-      [[ "$model_label" =~ ^[A-Za-z0-9]+$ ]] || model_label=sol
+      [[ "$model_label" =~ ^[A-Za-z0-9]+$ ]] || model_label=astra
       cli="${WORKER_RUN_CODEX:-codex}"
       if [ -n "$resume" ]; then
         # `exec resume` keeps the session's own model unless told otherwise, so

@@ -50,7 +50,7 @@ jq -e '.vendors.claude.five_hour.effective_pct == .vendors.claude.five_hour.used
   .vendors.claude.usable_now == true and .vendors.codex.usable_now == true and
   .vendors.gemini.usable_now == false' <<<"$out" >/dev/null || fail "live effective percentages or usable state mismatch"
 jq -e '(.vendors.claude.five_hour.as_of | type) == "number" and .vendors.claude.five_hour.stale == false and .vendors.claude.stale == false' <<<"$out" >/dev/null || fail "Claude bucket freshness fields missing"
-jq -e '.vendors.codex.five_hour.origin == "headers" and (.vendors.codex.five_hour.as_of | type) == "number" and .vendors.codex.five_hour.stale == true and .vendors.codex.stale == true' <<<"$out" >/dev/null || fail "Codex rollout freshness fields mismatch"
+jq -e '.vendors.codex.five_hour.origin == "usage" and (.vendors.codex.five_hour.as_of | type) == "number" and .vendors.codex.five_hour.stale == true and .vendors.codex.stale == true' <<<"$out" >/dev/null || fail "Codex rollout freshness fields mismatch"
 jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
@@ -1855,7 +1855,7 @@ jq -e '.vendors.codex.available == true and .vendors.codex.source == "codex-app-
 # Rollout events newer than the cached RPC snapshot must win (fixture rollout is 2026-07-11T10:00Z).
 touch -t 202607110500 "$CODEX_CACHE"
 rollout_wins=$(LLM_LIMITS_CODEX_CACHE="$CODEX_CACHE" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT") || fail "rollout-preference collection failed"
-jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.five_hour.origin == "headers" and .vendors.codex.source == "session-rollout"' <<<"$rollout_wins" >/dev/null \
+jq -e '.vendors.codex.five_hour.used_pct == 74 and .vendors.codex.five_hour.origin == "usage" and .vendors.codex.source == "session-rollout"' <<<"$rollout_wins" >/dev/null \
   || fail "newer rollout event did not outrank an older quota cache"
 rm -f "$CODEX_CACHE"
 
@@ -1876,7 +1876,7 @@ jq -e --argjson asof "$roster_asof" '
   ([.vendors.codex.accounts[].account] == ["main","alpha","beta","gamma"]) and
   ([.vendors.codex.accounts[] | select(.account == "main")][0] |
     .five_hour.used_pct == 74 and .weekly.used_pct == 31 and
-    .five_hour.origin == "headers") and
+    .five_hour.origin == "usage" and .weekly.origin == "usage") and
   .vendors.codex.five_hour.used_pct == 74 and
   ([.vendors.codex.accounts[] | select(.account != "main")] |
     ([.[].five_hour.used_pct] == [20,30,40]) and ([.[].weekly.used_pct] == [21,31,41]) and
@@ -3030,18 +3030,24 @@ jq -e '.refresh_error.cause == "no vendor data available" and
   (.refresh_error.at | type) == "number"' <<<"$missing_json" >/dev/null \
   || fail "all-missing case lacked a structured global error"
 
-# An opaque gray is legible in exactly one appearance, and the menu is drawn in both: every dim in
-# the renderer must come from dimColor(), which derives the tone per render. Runs whether or not
-# Hammerspoon is available — the evidence is the source text.
+# Egor reads ONE gray in this menu: the system's own, the tone macOS already paints the disabled
+# percentage rows with. A gray spelled out here is a second one beside them whatever its numbers
+# say, so the renderer may hold no gray literal at all and no alpha of its own outside the alarm
+# tone — the dim comes from dimColor(), which resolves the system colour per render. Runs whether
+# or not Hammerspoon is available: the evidence is the source text.
 gray_hits=$(awk '
   /grayColor/ { printf "line %d: %s\n", NR, $0 }
-  /red *=/ && /green *=/ && /blue *=/ && !/alpha/ {
+  /red *=/ && /green *=/ && /blue *=/ {
     r = $0; sub(/.*red *= */, "", r); sub(/[ ,}].*/, "", r)
     g = $0; sub(/.*green *= */, "", g); sub(/[ ,}].*/, "", g)
     b = $0; sub(/.*blue *= */, "", b); sub(/[ ,}].*/, "", b)
     if (r == g && g == b) printf "line %d: %s\n", NR, $0
   }' "$ROOT/hammerspoon/llm-limits.lua")
-[ -z "$gray_hits" ] || fail "opaque gray is unreadable in one appearance — style dim text with dimColor() instead: $gray_hits"
+[ -z "$gray_hits" ] || fail "a gray of our own is a second tone beside the system-dimmed percentage rows — style dim text with dimColor() instead: $gray_hits"
+
+alpha_hits=$(awk '/alpha *=/ && !/dimRedColor/ { printf "line %d: %s\n", NR, $0 }' \
+  "$ROOT/hammerspoon/llm-limits.lua")
+[ -z "$alpha_hits" ] || fail "only the alarm tone dimRedColor may carry a literal alpha; every other dim is the system colour dimColor() resolves: $alpha_hits"
 
 # A PAUSED vendor is parked for months and must not exist for the infrastructure: no helper is
 # run for it, and the store carries no entry at all — the same absence a leg this machine never
@@ -3305,5 +3311,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, no opaque gray in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
 exit 0

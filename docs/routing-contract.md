@@ -256,7 +256,7 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 ## Models
 
 `worker-pick` answers which ACCOUNT; which MODEL is not a question at all. An implementation
-worker runs exactly one model per vendor — claudeb `opus`, codex `gpt-5.6-sol`, gemini `flash38`
+worker runs exactly one model per vendor — claudeb `opus`, codex `gpt-6-astra`, gemini `flash38`
 (Gemini 3.8 Flash; the review cells keep Pro, the worker does not), grok
 `auto` (`grok-4.6`, the one model it has) — and `share/worker-model.sh`
 (`worker_model_allowed_models`) is the one place that list is spelled in code
@@ -331,7 +331,7 @@ routing-math paragraph the rules above replace.
   included, so a row a reader cannot reconcile with the reset beside it does not exist). An
   unmeasured budget prints `-` and an unmeasured percentage `?`; a vendor with no five-hour window
   at all prints `–` in that column, which is a different statement from `?`. Models print their
-  short alias (`opus`, `sol`, `f38`, `grok`; `auto` is a knob value and is never displayed) and
+  short alias (`opus`, `astra`, `f38`, `grok`; `auto` is a knob value and is never displayed) and
   efforts abbreviate to `low`/`med`/`high`/`xhigh`. The `*` session marker and `off` are unchanged.
 - The `DATA:` line names rows, never the table. It reads `fresh (<n> min old)` when every account
   behind the answer is fresh, and otherwise `STALE — <vendor>/<account> <age>, …` listing exactly
@@ -345,3 +345,5 @@ routing-math paragraph the rules above replace.
   number printed beside a row nobody ranks on reads as one that ranked it.
 - review-bench affordability derives from worker-pick's answer under these same rules —
   it keeps no thresholds of its own.
+
+Pool membership is read from the live vendor pool files on every pick; snapshot `.enabled` is the fallback only when the live pool cannot be read. Pool, role, pause and pin writes invalidate the statusline candidate cache, and successful menu toggles refresh Routing immediately.

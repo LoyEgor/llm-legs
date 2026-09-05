@@ -178,28 +178,6 @@ process_start_epoch() {
   printf '%s' "$((now - (10#$days * 86400 + 10#$hours * 3600 + 10#$mins * 60 + 10#$secs)))"
 }
 
-# Whether a worker run record still has a supervisor behind it, by the one rule every reader of
-# these records uses (docs/shared-invariants.md row `ar`): the age of the pid the record stamped
-# against the `pid_started_at` it stamped beside it, within SL_PID_SLACK — never `kill -0`, which
-# reads a foreign-owned live process as dead through EPERM, and never the restampable `started_at`.
-# Pid 0 is the placeholder worker-run writes before the supervisor exists, and `ps -p 0` answers
-# nothing. Unlike the hooks, this reader needs no dead/unknown distinction: both mean no tag, and
-# nothing here is destructive, so a `ps` that cannot answer costs a fallback and not a verdict.
-SL_PID_SLACK=30
-run_supervisor_live() { # run-directory now ; sets run_started_at
-  local meta="$1/meta.json" pid begin drift
-  run_started_at=0
-  pid=$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$meta" 2>/dev/null | head -n1)
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] || return 1
-  run_started_at=$(sed -n 's/.*"pid_started_at"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
-    "$meta" 2>/dev/null | head -n1)
-  [[ "$run_started_at" =~ ^[0-9]+$ ]] && [ "$run_started_at" -gt 0 ] || { run_started_at=0; return 1; }
-  begin=$(process_start_epoch "$pid" "$2") || return 1
-  drift=$((begin - run_started_at))
-  [ "$drift" -ge 0 ] || drift=$((-drift))
-  [ "$drift" -le "$SL_PID_SLACK" ]
-}
-
 # The chat that launched a review run: its own registry entry, or the nearest ancestor's — a run
 # is a grandchild of the chat that asked for it, several execs down. A launcher that cannot be
 # named leaves the run bright, since hiding a review this chat may well have started is the worse
@@ -2017,7 +1995,7 @@ else
   worker=auto
 fi
 # Unified short forms for every model and effort this line prints: first letter plus the first
-# consonant after it, uppercased, with the version digits glued on (Fable 5 → FB5, sol → SL). A
+# consonant after it, uppercased, with the version digits glued on (Fable 5 → FB5, astra → AS). A
 # name with no consonant to take has no short form and is printed whole.
 abbrev_effort() {
   case "$1" in
@@ -2049,12 +2027,12 @@ abbrev_model() {
   printf '%s%s' "$(printf '%s%s' "$first" "$second" | tr '[:lower:]' '[:upper:]')" "$version"
 }
 
-# Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
+# Derive codex model short label from ~/.codex/config.toml; fallback "astra" defined here.
 codex_model_short_label() {
   local toml="${1:-$HOME/.codex/config.toml}" label=""
   [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
     | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
   printf '%s' "$label"
 }
 
@@ -2197,64 +2175,6 @@ elif [ -n "$wvendor" ]; then
   elif [ "$wp_state" = ok ]; then
     worker_body=$(worker_candidate "" "$wp_acct" "$wv_model" "$wv_effort")
   fi
-fi
-
-# A live worker of THIS chat beats the static config guess, and it says so for as long as it RUNS:
-# the run records are the source, never the age of a tag file — a 30-minute run (every run today)
-# used to leave the strip after ten minutes and the segment fell back to the grey candidate while
-# the account was still spending (Egor, 2026-09-04). review-bench has its own `rev` segment.
-live_tag=""
-live_runs=0
-if [ -n "$session_id" ]; then
-  # `launcher` is the chat a run answers to, written at launch by worker-run — one read per record
-  # and no fork, so the scan stays inside the render budget.
-  live_newest=-1
-  for run_launcher_file in "${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"/*/launcher; do
-    [ -s "$run_launcher_file" ] || continue
-    IFS= read -r run_launcher < "$run_launcher_file" 2>/dev/null || continue
-    [ "$run_launcher" = "$session_id" ] || continue
-    run_directory=${run_launcher_file%/launcher}
-    # An exit code is the run stating it is over; anything else defers to the supervisor.
-    [ -f "$run_directory/exit_code" ] && continue
-    run_supervisor_live "$run_directory" "$now" || continue
-    live_runs=$((live_runs + 1))
-    [ "$run_started_at" -ge "$live_newest" ] || continue
-    if IFS= read -r run_tag < "$run_directory/tag" 2>/dev/null && [ -n "$run_tag" ]; then
-      live_newest="$run_started_at"; live_tag="$run_tag"
-    fi
-  done
-  # The tag file covers only the gap the records cannot: a launch in its first seconds, and an
-  # image-gen run, which goes straight at its vendor and writes no record at all. 60s, because that
-  # gap is one tool call wide — a long run outliving its window is exactly what the scan above is.
-  if [ -z "$live_tag" ]; then
-    # The count belongs to the records; a tag read off the file names one worker and counts it.
-    live_runs=0
-    tags_dir="$HOME/.cache/claude-worker-tags/$session_id"
-    newest=$(ls -t "$tags_dir" 2>/dev/null | head -n1)
-    if [ -n "$newest" ]; then
-      tag_mtime=$(file_mtime "$tags_dir/$newest")
-      if [[ "$tag_mtime" =~ ^[0-9]+$ ]] && [ "$((now - tag_mtime))" -le 60 ]; then
-        IFS= read -r live_tag < "$tags_dir/$newest" 2>/dev/null || live_tag=""
-      fi
-    fi
-  fi
-fi
-if [ -n "$live_tag" ]; then
-  # The hook writes `[account · ]model · effort`, so the two trailing fields are the ones to
-  # abbreviate whether or not the launch text named an account.
-  tag_effort=${live_tag##* · }
-  tag_head=${live_tag% · *}
-  if [ "$tag_head" != "$live_tag" ]; then
-    tag_model=${tag_head##* · }
-    tag_acct=${tag_head% · *}
-    [ "$tag_acct" != "$tag_head" ] || tag_acct=""
-    worker_body=$(worker_candidate "▶" "$tag_acct" "$tag_model" "$tag_effort")
-  else
-    worker_body="${MAGENTA}▶${live_tag}${RESET}"
-  fi
-  # Several live runs: the newest-started one is named and the rest are a count. Naming them all
-  # would push the strip past its width on the one occasion Egor is running three workers.
-  [ "$live_runs" -gt 1 ] && worker_body="${worker_body}${DIM}×${live_runs}${RESET}"
 fi
 
 # Too slow for the render path: read the cache, fire the probe in the background

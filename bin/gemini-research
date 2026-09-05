@@ -66,8 +66,13 @@ gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 . "$root/share/gemini-accounts.sh"
 
+research_exit() {
+  [ -z "$tmp_dir" ] || rm -rf "$tmp_dir"
+}
+
+tmp_dir=''
+trap research_exit EXIT
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-research.XXXXXX") || exit 4
-trap 'rm -rf "$tmp_dir"' EXIT
 
 explicit_account=false
 if [ -n "$account" ]; then

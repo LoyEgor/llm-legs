@@ -2369,7 +2369,7 @@ EOF
   assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/limits/keep.json.tmp.123"
-  assert test -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
+  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
   # Removal announces a passive collect (no args) so the menu's cached row drops
   # without a manual refresh.
   assert wait_announce ''
@@ -2391,7 +2391,7 @@ EOF
   assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
   assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
-  assert test -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
+  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
   assert wait_announce_grew "$retry_announce_before"
   # Nothing of it left anywhere: a mistyped name, answered the way codexb, geminib and grokb
   # answer it, and no announce for a removal that removed nothing.

@@ -4,7 +4,7 @@
 # CLI arguments), never from the model's description discipline,
 # then prefixes the tag onto every Bash description so the UI activity line
 # always names who is spending quota. Tag files are session-scoped so the
-# statusline can surface the live tag. Fail-open everywhere.
+# subagent rows can surface the tag. Fail-open everywhere.
 set -u
 
 input=$(cat) || exit 0
@@ -14,7 +14,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research) ;;
   *) exit 0 ;;
 esac
 agent_id=$(field '.agent_id' | tr -cd 'A-Za-z0-9_-')
@@ -52,12 +52,12 @@ is_geminib_launch() {
     "${cmd_word}"'geminib[[:space:]]+((profile|p|run)[[:space:]]+["'\'']*[a-z0-9][a-z0-9-]*|["'\'']*[a-z0-9][a-z0-9-]*["'\'']*[[:space:]]+exec)'
 }
 
-# Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
+# Derive codex model short label from ~/.codex/config.toml; fallback "astra" defined here.
 codex_model_short_label() {
   local toml="${1:-$HOME/.codex/config.toml}" label=""
   [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
     | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
   printf '%s' "$label"
 }
 
@@ -138,6 +138,11 @@ elif is_grokb_launch &&
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=high
   if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
+elif printf '%s' "$launch" | grep -qE "${cmd_word}"'gemini-research([[:space:]]|$)'; then
+  # `flash38 · high` is the launcher's own hardcoded `--model gemini-3.8-flash-high` and never a
+  # knob; `--account` is read for the reason the image branch below reads it.
+  acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
+  [ -z "$acct" ] || tag="$acct · flash38 · high"
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'(codex|gemini|grok)-image([[:space:]]|$)'; then
   # `--account` is the only account this text can vouch for: without it the script asks worker-pick
   # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.
@@ -193,13 +198,16 @@ if [ -n "$description" ]; then
 else
   updated_description=$tag
 fi
-# Worker sessions already bypass permissions; allow avoids a redundant prompt.
-printf '%s' "$input" | jq -c --arg description "$updated_description" '
-  {hookSpecificOutput: {
+# Worker sessions already bypass permissions; allow avoids a redundant prompt. gemini-research does
+# NOT: it is a native in-session agent, so an `allow` here would grant a call nobody granted it —
+# the tag is a rewrite and never a permission.
+decision=allow
+[ "$agent_type" != gemini-research ] || decision=''
+printf '%s' "$input" | jq -c --arg description "$updated_description" --arg decision "$decision" '
+  {hookSpecificOutput: ({
     hookEventName: "PreToolUse",
-    permissionDecision: "allow",
     updatedInput: (.tool_input | .description = $description)
-  }}
+  } + (if $decision == "" then {} else {permissionDecision: $decision} end))}
 ' 2>/dev/null
 
 prune

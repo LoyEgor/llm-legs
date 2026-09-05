@@ -109,12 +109,12 @@ WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 CACHE_DIR="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}"
 now="${WORKER_PICK_NOW:-$(date +%s)}"
 
-# Derive codex model short label from ~/.codex/config.toml; fallback "sol" defined here.
+# Derive codex model short label from ~/.codex/config.toml; fallback "astra" defined here.
 codex_model_short_label() {
   local toml="${1:-$HOME/.codex/config.toml}" label=""
   [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
     | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=sol
+  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
   printf '%s' "$label"
 }
 
@@ -311,7 +311,24 @@ fail_safe() {
 
 [ -r "$LIMITS_FILE" ] || fail_safe "no limits data"
 
+live_pools='{}'
+for pool_vendor in claudeb codex gemini grok; do
+  pool_dir=$(worker_pool_dir "$pool_vendor")
+  [ -e "$pool_dir" ] || [ -L "$pool_dir" ] || continue
+  if [ -d "$pool_dir" ] && [ -r "$pool_dir" ] && [ -x "$pool_dir" ]; then
+    pool_out=$(worker_pool_disabled_json "$pool_dir")
+  else
+    pool_out=null
+  fi
+  pool_out=$(printf '%s' "$pool_out" | jq -ce 'if type == "array" and all(.[]; type == "string") then . else null end' 2>/dev/null) || pool_out=null
+  pool_key=$pool_vendor
+  [ "$pool_key" != claudeb ] || pool_key=claude
+  live_pools=$(jq -cn --argjson pools "$live_pools" --arg key "$pool_key" \
+    --argjson out "$pool_out" '$pools + {($key):$out}')
+done
+
 summary=$(jq -r \
+  --argjson live_pools "$live_pools" \
   --argjson now "$now" --arg own "$own" --arg pin "$cb_pin" \
   --arg cb_disp "$cb_display" --arg cx_disp "$cx_display" \
   --arg gm_disp "$gm_display" --arg gr_disp "$gr_display" \
@@ -424,11 +441,11 @@ summary=$(jq -r \
      reset: (if .rs == "-" then "" else "↺ " + .rs end),
      flags: flag_text($selected; $pinned)};
   def table_row:
-    ((.budget | rpad(16)) + (.wk | rpad(6)) + (.h5 | rpad(6)) + (.name | rpad(17)) +
+    ((.budget | rpad(16)) + (.wk | rpad(6)) + (.h5 | rpad(6)) + (.name | rpad(21)) +
      (.display | rpad(13)) + (.reset | rpad(13)) + .flags | sub(" +$"; ""));
   def next_row($vendor):
     ((.budget | rpad(16)) + (.wk | rpad(6)) + (.h5 | rpad(6)) +
-     (($vendor + "/" + .name) | rpad(21)) + (.display | rpad(13)) + .flags | sub(" +$"; ""));
+     (($vendor + "/" + .name) | rpad(21)) + (.display | rpad(13)) + ("" | rpad(13)) + .flags | sub(" +$"; ""));
   def compact_row:
     (.name + " " + .wk + (if .h5 == "–" then "" else " 5h " + .h5 end) + " " +
      (.budget | sub("^ +"; "")) + (if .flags == "" then "" else " " + .flags end));
@@ -496,10 +513,22 @@ summary=$(jq -r \
     elif $row.walled then "exhausted"
     else "unavailable" end;
 
-  # A weekly bucket stamped origin `headers` was never measured (shared-invariants n). The
-  # collector no longer emits one, but a cache written before that rule can still be on
-  # disk, and routing on a synthetic 100 walls an account that is actually free.
-  walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end) |
+  # Only Claude header weeklies were synthetic; Codex rate-limit headers are measured.
+  if .vendors.claude then .vendors.claude |=
+    walk(if type == "object" and (.weekly.origin? == "headers") then del(.weekly) else . end)
+  else . end |
+  .vendors |= (if type == "object" then with_entries(
+    .key as $vendor |
+    if ($live_pools[$vendor] | type) == "array" then
+      .value |= (if (.accounts | type) == "array" then
+        .accounts |= map(.account as $account |
+          .enabled = (($live_pools[$vendor] | index($account // "main")) == null))
+      else .enabled = (($live_pools[$vendor] | index("main")) == null) end)
+    elif ($live_pools | has($vendor)) then
+      .value |= (if (.accounts | type) == "array" then
+        .accounts |= map(.enabled = false)
+      else .enabled = false end)
+    else . end) else . end) |
   (.fetched_at | epoch) as $fetched |
   (.vendors.codex // {}) as $cx |
   (.vendors.gemini // {}) as $gm |
@@ -511,14 +540,14 @@ summary=$(jq -r \
   ((.vendors.gemini | type) == "object") as $gm_present |
   ((.vendors.claude | type) == "object") as $cl_present |
   (if $cx.available == true and (($cx.accounts | type) == "array") then $cx.accounts
-   elif $cx.available == true then [{account:"main",five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
+   elif $cx.available == true then [{account:"main",enabled:$cx.enabled,five_hour:($cx.five_hour // {}),weekly:($cx.weekly // {})}]
    else [] end) as $cx_source |
   (if ($gm.accounts | type) == "array" then $gm.accounts
    elif $gm.auth_needed == true or $gm.removed == true or ($gm | gemini_group) then
      [$gm + {account:"main",is_current:true,enabled:($gm.enabled != false)}]
    else [] end) as $gm_source |
   (if $gr.available == true and (($gr.accounts | type) == "array") then $gr.accounts
-   elif $gr.available == true then [{account:"main",weekly:($gr.weekly // {})}]
+   elif $gr.available == true then [{account:"main",enabled:$gr.enabled,weekly:($gr.weekly // {})}]
    else [] end) as $gr_source |
   # Disabled accounts are not polled by the collector, so their frozen as_of would
   # brand the whole DATA line STALE while every routable account is fresh. Routable
@@ -987,12 +1016,12 @@ print_next() {
       [ -n "$line" ] || continue
       [ "$rank" -lt "$NEXT_MAX_ROWS" ] || break
       rank=$((rank + 1))
-      ranked+=("$(printf '%-7s%s' " $rank" "${line#*"$NEXT_KEY_SEP"}")")
+      ranked+=("$(printf '%-9s%s' " $rank" "${line#*"$NEXT_KEY_SEP"}")")
       [ "$rank" -ne 1 ] || pick="${line%%"$NEXT_KEY_SEP"*}"
     done <<<"$merged"
   fi
   if [ "${#ranked[@]}" -gt 0 ]; then
-    printf '%-7s%-16s%-6s%-6s%-21s%s\n' NEXT budget wk 5h vendor/account 'model·eff'
+    printf '%-9s%-16s%-6s%-6s%-21s%s\n' NEXT budget wk 5h vendor/account 'model·eff'
     printf '%s\n' "${ranked[@]}"
     printf 'ACCOUNT: %s\n' "$pick"
     return 0
@@ -1016,8 +1045,6 @@ else
   print_next true cb cx gm gr
 fi
 
-# One line per account, under the vendor that holds it: the columns are the NEXT block's, two
-# characters further in, and the reset the budget was paced over closes the row.
 print_section() {
   local label=$1 blob=$2 first=yes row
   [ -n "$blob" ] || return 0

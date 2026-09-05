@@ -23,19 +23,22 @@ local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
 local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
 local menuFont = { name = "Menlo", size = 13 }
 
--- A fixed 0.55 gray washed out against the menu, and NSColor's own secondaryLabelColor is worse
--- here: hs.styledtext resolves it once, and it came back as dark-mode white while the system was
--- light, which would paint the age white on a light menu. So the dim tone is the menu's own text
--- colour at 55%, derived per render from the appearance the menu is about to be drawn in. This is
--- the ONLY dim in this file — tests/test_llm_limits.sh fails on any opaque gray coming back.
+local dimColorName = { list = "System", name = "tertiaryLabelColor" }
+
+-- Measured off a real popup menu: macOS paints a disabled row's text at tertiaryLabelColor, and
+-- every percentage row here is a disabled row, so that colour IS the menu's own dim. Any literal
+-- alpha of ours is a second, darker gray sitting right beside it — a flat 0.55 black measured
+-- 112/255 against the system's 184/255. Resolving the system colour per render also follows the
+-- appearance for free; hs.drawing is absent from the isolated loaders the surface tests build, so
+-- the name itself is the fallback, the same tone resolved by AppKit rather than here.
 local function dimColor()
-  -- hs.host is absent from the isolated loaders the surface tests build, and a menu that throws
-  -- while rendering a row is worse than one rendered for the light appearance.
-  local host = hs.host
-  local dark = type(host) == "table" and type(host.interfaceStyle) == "function"
-    and host.interfaceStyle() == "Dark"
-  local level = dark and 1 or 0
-  return { red = level, green = level, blue = level, alpha = 0.55 }
+  local drawing = hs.drawing
+  local palette = type(drawing) == "table" and drawing.color
+  local asRGB = type(palette) == "table" and palette.asRGB
+  if type(asRGB) ~= "function" then return dimColorName end
+  local ok, resolved = pcall(asRGB, dimColorName)
+  if ok and type(resolved) == "table" then return resolved end
+  return dimColorName
 end
 
 -- The pool mark of an account row: the check is derived from the pool membership and the vendor's
@@ -855,6 +858,10 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess, optio
     else
       logAction("done", label .. " exit=0")
       if onSuccess then onSuccess() end
+      if args[1] == "enable" or args[1] == "disable" or args[1] == "use" then
+        M.routingCache = nil
+        M.refreshRouting()
+      end
     end
     local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
       logAction("collect", label .. " collect_exit=" .. tostring(collectExit))
@@ -1083,6 +1090,8 @@ function M.setWorkerPaused(vendor, pause, onDone)
       hs.alert.show("llm-limits: " .. label .. " failed")
     else
       logAction("done", label .. " exit=0")
+      M.routingCache = nil
+      M.refreshRouting()
       if onDone then onDone() end
     end
     finishTask(id, exitCode, stdOut, stdErr, "pause toggle failed")
@@ -1128,6 +1137,8 @@ function M.setWorkerRole(vendor, role, enable)
       hs.alert.show("llm-limits: " .. label .. " failed")
     else
       logAction("done", label .. " exit=0")
+      M.routingCache = nil
+      M.refreshRouting()
     end
     finishTask(id, exitCode, stdOut, stdErr, "role toggle failed")
   end, { "-c", WORKER_ROLE_SCRIPT })
@@ -1227,29 +1238,6 @@ local function refreshItems(menu)
       userRefreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows")
     end,
   })
-end
-
-local function reportItem(menu)
-  local project = "/Volumes/Work/Projects/usage-ai-report"
-  local item
-  local lock = hs.fs.attributes(project .. "/.run-report.lock")
-  if hs.fs.attributes(project, "mode") ~= "directory" then
-    item = { title = "Report: volume not mounted", disabled = true }
-  -- 10800s matches run_report.sh's stale-lock rule; a crashed run must not pin this item forever
-  elseif lock and os.time() - (lock.modification or 0) <= 10800 then
-    item = { title = "Report: running…", disabled = true }
-  else
-    local report = project .. "/repo/LoyEgor/" .. os.date("%Y-%m-%d") .. ".md"
-    item = {
-      title = hs.fs.attributes(report) and "Update today's report" or "Create today's report",
-      fn = function()
-        hs.task.new("/bin/bash", nil, { "-c", "REPORT_INTERACTIVE=1 exec bash '" .. project .. "/run_report.sh' --today" }):start()
-        hs.alert.show("Report started")
-      end,
-    }
-  end
-  table.insert(menu, { title = "-" })
-  table.insert(menu, item)
 end
 
 local function refreshErrorAge(at)
@@ -1873,7 +1861,6 @@ function M.menuItems()
     appendOpenCode(menu, limits, paused)
     table.insert(menu, { title = "-" })
     refreshItems(menu)
-    reportItem(menu)
   else
     table.insert(menu, {
       title = infoTitle("no data — press Refresh"),
@@ -1893,7 +1880,6 @@ function M.menuItems()
     end
     appendOpenCode(menu, limits, pausedVendors)
     refreshItems(menu)
-    reportItem(menu)
   end
 
   return menu

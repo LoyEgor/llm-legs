@@ -8,12 +8,12 @@ claude_pool	claudeb	0	session
 claude_pool	codex	3	-
 claude_pool	gemini	3	-
 claude_pool	grok	3	-
-codex_credit	NEXT	1 7.4%/d ×7.0d 48% 48% codex/plain sol·high;2 7.4%/d ×7.0d 48% 48% codex/with-credit sol·high
+codex_credit	NEXT	1 7.4%/d ×7.0d 48% 48% codex/plain astra·high;2 7.4%/d ×7.0d 48% 48% codex/with-credit astra·high
 codex_credit	claudeb	3	-
 codex_credit	codex	0	plain
 codex_credit	gemini	3	-
 codex_credit	grok	3	-
-codex_plain	NEXT	1 7.4%/d ×7.0d 48% 48% codex/plain sol·high
+codex_plain	NEXT	1 7.4%/d ×7.0d 48% 48% codex/plain astra·high
 codex_plain	claudeb	3	-
 codex_plain	codex	0	plain
 codex_plain	gemini	3	-
@@ -43,7 +43,7 @@ gemini_wrong_group	claudeb	3	-
 gemini_wrong_group	codex	3	-
 gemini_wrong_group	gemini	3	-
 gemini_wrong_group	grok	3	-
-golden	NEXT	1 11.4%/d ×7.0d 20% 20% claude/session* opus·high;2 10.7%/d ×7.0d 25% 12% gemini/main f38·high;3 8.6%/d ×7.0d 40% 30% claude/worker opus·high;4 7.4%/d ×7.0d 48% 48% codex/main sol·high
+golden	NEXT	1 11.4%/d ×7.0d 20% 20% claude/session* opus·high;2 10.7%/d ×7.0d 25% 12% gemini/main f38·high;3 8.6%/d ×7.0d 40% 30% claude/worker opus·high;4 7.4%/d ×7.0d 48% 48% codex/main astra·high
 golden	claudeb	0	session
 golden	codex	0	main
 golden	gemini	0	main

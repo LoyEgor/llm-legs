@@ -154,7 +154,7 @@ for i,x in enumerate(a):
     if x=="--out": out=a[i+1]
 def deleg(tid):
     return {"type":"delegation","tool_use_id":tid,"timestamp":"2026-07-15T01:00:00Z",
-            "subagent_type":"codex-worker","model":"gpt-5.6-sol","effort":"high","is_resume":False,
+            "subagent_type":"codex-worker","model":"gpt-6-astra","effort":"high","is_resume":False,
             "outcome":"ok","duration_ms":1000,"retry_of":None,"worker_tokens":10,"orchestrator_patch":False,
             "prompt_head":"build the thing","result_head":"OUTCOME: done"}
 def fu(tid,pid,brief):
@@ -202,8 +202,8 @@ assert contains "$preview" 'paid by claudeb rotation'
 assert test "$(wc -l <"$CSD/ledger.jsonl")" -eq 2
 first=$(head -n1 "$CSD/ledger.jsonl")
 assert contains "$first" '"class": "A"'
-assert contains "$first" '"model": null'          # VERBATIM followup field, not parent gpt-5.6-sol
-assert not_contains "$first" 'gpt-5.6-sol'
+assert contains "$first" '"model": null'          # VERBATIM followup field, not parent gpt-6-astra
+assert not_contains "$first" 'gpt-6-astra'
 assert contains "$first" '"complexity": 3'
 assert test -f "$CSD/delegations.jsonl"
 assert test "$(wc -l <"$CSD/delegations.jsonl")" -eq 2
@@ -299,7 +299,7 @@ check(wc.classify_outcome(None,"OUTCOME: CLAUDEB_USAGE_LIMIT")=="usage_limit","s
 check(wc.classify_outcome(None,"plain sync ok")=="ok","sync ok")
 
 # model-shape validation
-check(wc.valid_model("gpt-5.6-sol")=="gpt-5.6-sol","gpt ok")
+check(wc.valid_model("gpt-6-astra")=="gpt-6-astra","gpt ok")
 check(wc.valid_model("opus")=="opus","opus ok")
 check(wc.valid_model("sonnet")=="sonnet","sonnet ok")
 # grok's served model is the id its `end` event reports, which is not the id the launch asked for.

@@ -52,4 +52,16 @@ assert_fails worker_pool_override_current claudeb ../escape "$epoch"
 assert worker_pool_is_disabled "$CLAUDEB_DIR" ../escape
 assert test ! -e "$WORK/escape"
 
+# Clearing a marker that is not there is a no-op for the candidate cache: the collector clears every
+# account on every write, and each of those would otherwise wipe the statusline candidate.
+CACHE_PROBE="$WORK/pick-cache"; mkdir -p "$CACHE_PROBE"; : >"$CACHE_PROBE/worker-pick.line.probe"
+WORKER_PICK_CACHE_DIR="$CACHE_PROBE"
+assert worker_pool_shield_clear claudeb never-set
+assert test -e "$CACHE_PROBE/worker-pick.line.probe"
+assert worker_pool_shield_set claudeb probe "$epoch"
+: >"$CACHE_PROBE/worker-pick.line.probe"
+assert worker_pool_shield_clear claudeb probe
+assert test ! -e "$CACHE_PROBE/worker-pick.line.probe"
+unset WORKER_PICK_CACHE_DIR
+
 echo "PASS: $asserts asserts; shield marker roundtrips, pool exclusion, enable override, epoch matching, and name rejection"
