@@ -32,22 +32,8 @@ function Styled.__concat(left, right)
   return result
 end
 
--- hs.canvas is what the dim pool check is drawn with, and a loader that leaves it out is the
--- fallback path the renderer has to survive — so it is opt-in per loader, like the appearance.
-local function fakeCanvas(sheets)
-  return { new = function(frame)
-    local sheet = { frame = frame }
-    function sheet:imageFromCanvas()
-      return { kind = "image", frame = frame, element = self[1] }
-    end
-    function sheet:delete() sheet.deleted = true end
-    table.insert(sheets, sheet)
-    return sheet
-  end }
-end
-
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
-    workerModel, fsAttributes, interfaceStyle, doctorSnapshot, canvasSheets)
+    workerModel, fsAttributes, interfaceStyle, doctorSnapshot)
   local mock = {
     alert = { show = alertFn or function() end },
     dialog = { blockAlert = function(...)
@@ -67,7 +53,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },
   }
-  if canvasSheets then mock.canvas = fakeCanvas(canvasSheets) end
   -- Writes stay in the harness: the module appends to its action log through this, and a test
   -- reading the real ~/.hammerspoon log would both miss the lines and dirty a live file.
   local writes = {}
@@ -2236,8 +2221,8 @@ do
   end
 end
 
--- A vendor no role may use keeps every control it had; only its account titles stop competing
--- for attention with the vendors the routers actually pick from.
+-- A vendor no role may use keeps every control it had; its account titles stop competing for
+-- attention with the vendors the routers actually pick from, and the list drops their check.
 do
   local menu = loadModule(roleFixture, nil, nil, nil, nil,
     "claudeb_workers=off\nclaudeb_reviewers=off").menuItems()
@@ -2248,15 +2233,15 @@ do
     assert(type(row.menu) == "table" and row.disabled ~= true,
       account .. " lost its actions when the vendor went unused")
   end
-  assert(accountItem(menu, "cl-one").checked == true,
-    "an unused vendor's account lost its pool checkmark")
+  assert(accountItem(menu, "cl-one").checked == false,
+    "an unused vendor's account kept the pool check the list must not show")
   for _, account in ipairs({ "cx-one", "gm-one" }) do
     assert(not isDimmed(accountItem(menu, account).title.runs[1].attributes),
       account .. " was dimmed by another vendor's role switches")
   end
   local halfMenu = loadModule(roleFixture, nil, nil, nil, nil, "claudeb_workers=off").menuItems()
-  assert(not isDimmed(accountItem(halfMenu, "cl-one").title.runs[1].attributes),
-    "a vendor still open to reviewers was dimmed")
+  assert(isDimmed(accountItem(halfMenu, "cl-one").title.runs[1].attributes),
+    "a vendor with one role switched off was not dimmed")
   -- Dimmed is the menu's own label colour at 55%, so the tone follows the appearance the row is
   -- drawn in; a fixed gray would be the unreadable one in whichever appearance it was not picked for.
   local light = accountItem(menu, "cl-one").title.runs[1].attributes
@@ -2304,25 +2289,41 @@ do
     assert(not dimTitle(pool), case.account .. " coloured its submenu In pool for an off role")
     assert(pool.checked == case.checked and row.checked == case.checked,
       case.account .. " pool membership moved when a role went off")
-    assert(not isDimmed(row.title.runs[1].attributes),
-      case.account .. " name dimmed for a vendor still open to reviewers")
+    assert(isDimmed(row.title.runs[1].attributes),
+      case.account .. " name stayed full-strength with a role of its vendor off")
   end
   for _, account in ipairs({ "cx-one", "gk-one", "gm-one" }) do
-    assert(not dimTitle((poolOf(halfMenu, account))),
-      account .. " In pool dimmed for another vendor's role switch")
+    local pool, row = poolOf(halfMenu, account)
+    assert(not dimTitle(pool), account .. " In pool dimmed for another vendor's role switch")
+    assert(row.checked == true and not isDimmed(row.title.runs[1].attributes),
+      account .. " followed another vendor's role switch")
   end
 
   local bothMenu = loadModule(poolRoleFixture, nil, nil, nil, nil,
     "claudeb_workers=off\nclaudeb_reviewers=off").menuItems()
-  local bothPool, bothRow = poolOf(bothMenu, "cl-one")
-  assert(not dimTitle(bothPool), "the submenu In pool was coloured with both roles off")
-  assert(isDimmed(bothRow.title.runs[1].attributes),
-    "the account name stayed full-strength for a vendor no role may use")
-  assert(bothPool.checked == true and bothRow.checked == true,
-    "a vendor no role may use lost its pool membership")
+  for _, account in ipairs({ "cl-one", "cl-two" }) do
+    local pool, row = poolOf(bothMenu, account)
+    assert(not dimTitle(pool), account .. " coloured its submenu In pool with both roles off")
+    assert(isDimmed(row.title.runs[1].attributes),
+      account .. " name stayed full-strength for a vendor no role may use")
+    assert(row.checked == false and pool.checked == false,
+      account .. " kept a pool check for a vendor no role may use")
+  end
   for _, account in ipairs({ "cx-one", "gk-one", "gm-one" }) do
-    assert(not dimTitle((poolOf(bothMenu, account))),
-      account .. " In pool dimmed for a vendor parked out of both roles")
+    local pool, row = poolOf(bothMenu, account)
+    assert(not dimTitle(pool), account .. " In pool dimmed for a vendor parked out of both roles")
+    assert(row.checked == true and pool.checked == true,
+      account .. " lost its pool check to another vendor's role switches")
+  end
+
+  for _, menu in ipairs({ halfMenu, bothMenu, loadModule(poolRoleFixture).menuItems() }) do
+    local function walk(items)
+      for _, item in ipairs(items) do
+        assert(item.image == nil, "a menu item carried a drawn mark instead of the system check")
+        if type(item.menu) == "table" then walk(item.menu) end
+      end
+    end
+    walk(menu)
   end
 
   local onMenu = loadModule(poolRoleFixture).menuItems()
@@ -2387,79 +2388,6 @@ do
   assert(#soleRoles == 1 and soleRoles[1].vendor == "gemini"
     and soleRoles[1].role == "workers" and soleRoles[1].enable == true,
     "the sole Gemini row's pool click did not restore its off role")
-end
-
--- What Egor reads is the list itself, and a solid system check there says "the routers spend this
--- account". While a role of the vendor is off the mark is ours instead — the same glyph at
--- dimColor() — so the state is visible without opening a submenu, and the two marks are never
--- both set on one row.
-do
-  local markFixture = { schema = 1, vendors = {
-    claude = { available = true, source = "claudeb-store", accounts = {
-      { account = "cl-one", enabled = true, five_hour = bucket(10) },
-    } },
-    codex = { available = false },
-    grok = { available = false },
-    gemini = { available = true, accounts = {
-      { account = "gm-in", enabled = true, five_hour = bucket(10) },
-      -- A second in-pool row is what makes the draw count a cache assertion and not a tautology.
-      { account = "gm-two", enabled = true, five_hour = bucket(30) },
-      { account = "gm-out", enabled = false, five_hour = bucket(20) },
-    } },
-  }}
-  local function markMenu(config, sheets)
-    return loadModule(markFixture, nil, nil, nil, nil, config, nil, nil, nil,
-      sheets or {}).menuItems()
-  end
-
-  local sheets = {}
-  local halfMenu = markMenu("gemini_workers=off", sheets)
-  for _, account in ipairs({ "gm-in", "gm-two" }) do
-    local row = accountItem(halfMenu, account)
-    assert(row.checked == false and row.image ~= nil,
-      account .. " kept the solid system check with a role of its vendor switched off")
-    assert(not isDimmed(row.title.runs[1].attributes),
-      account .. " name dimmed with one role still open")
-  end
-  local outPool = accountItem(halfMenu, "gm-out")
-  assert(outPool.checked == false and outPool.image == nil,
-    "an out-of-pool row grew a mark of its own")
-  local other = accountItem(halfMenu, "cl-one")
-  assert(other.checked == true and other.image == nil,
-    "another vendor's row lost the system check to Gemini's role switch")
-  assert(#sheets == 1, "the dim check was drawn per row instead of once per appearance")
-  assert(sheets[1].frame.w == 14 and sheets[1].frame.h == 14
-      and sheets[1][1].type == "text" and sheets[1][1].text == "✓"
-      and isDimmed({ color = sheets[1][1].textColor }) and sheets[1].deleted == true,
-    "the dim check is not a dimColor() glyph on a released canvas")
-
-  local bothSheets = {}
-  local bothMenu = markMenu("gemini_workers=off\ngemini_reviewers=off", bothSheets)
-  local bothRow = accountItem(bothMenu, "gm-in")
-  assert(bothRow.checked == false and bothRow.image ~= nil,
-    "a vendor no role may use kept the solid system check")
-  assert(isDimmed(bothRow.title.runs[1].attributes),
-    "both roles off left the account name at full strength")
-
-  local onMenu = markMenu(nil, {})
-  for _, account in ipairs({ "gm-in", "cl-one" }) do
-    local row = accountItem(onMenu, account)
-    assert(row.checked == true and row.image == nil,
-      account .. " carried a drawn mark with every role on")
-  end
-
-  -- No hs.canvas is the isolated-loader case: the pool state has to survive it, so the row keeps
-  -- the solid check rather than dropping the mark or throwing mid-render.
-  local blindMenu = loadModule(markFixture, nil, nil, nil, nil, "gemini_workers=off").menuItems()
-  local blindRow = accountItem(blindMenu, "gm-in")
-  assert(blindRow.checked == true and blindRow.image == nil,
-    "a loader without hs.canvas lost the pool mark instead of falling back")
-
-  local darkSheets = {}
-  loadModule(markFixture, nil, nil, nil, nil, "gemini_workers=off", nil, "Dark", nil,
-    darkSheets).menuItems()
-  assert(#darkSheets == 1 and isDimmed({ color = darkSheets[1][1].textColor }, 1),
-    "the dark appearance drew its check in the light tone")
 end
 
 -- A duplicated key is read the way every shell reader reads it — first line wins (conf() pipes
