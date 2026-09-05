@@ -22,6 +22,10 @@ assert_fails() {
 # is the brief the caller wrote, byte for byte, because report/RESUME/ATTACH quote that one back.
 assert_launched_brief() { # capture-of-what-the-CLI-read
   assert grep -qF 'TEST LOOP: while iterating run a one-off probe' "$1"
+  # The memory guard's own sentence: a worker whose command is SIGKILLed by it sees exit 137 and
+  # nothing else, and the obvious next move — rerun the command that just took the machine down —
+  # is the one the preamble has to answer before it happens.
+  assert grep -qF 'ended by signal 9 (exit 137) was killed by the machine' "$1"
   assert cmp -s "$WORK/brief" <(head -n "$(wc -l <"$WORK/brief")" "$1")
   assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 }
@@ -43,7 +47,7 @@ export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
 mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
-printf 'model = "gpt-5.6-sol"\n' >"$WORKER_RUN_CODEX_CONFIG"
+printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 printf 'image\n' >"$WORK/image.png"
 
@@ -290,7 +294,7 @@ start_ok codex
 assert test "$SECONDS" -lt 2
 assert test "$(wc -l <"$WORK/start.out" | tr -d ' ')" -eq 3
 assert grep -Eq '^RUN: codex-[0-9]+-[0-9]+-[0-9a-f]{4}$' "$WORK/start.out"
-assert grep -qx 'TAG: fast · sol · high' "$WORK/start.out"
+assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
 assert grep -qx "DIR: $RUN_DIR" "$WORK/start.out"
 pid=$(jq -r '.pid' "$RUN_DIR/meta.json")
 assert kill -0 "$pid"
@@ -315,8 +319,8 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_ACCOUNT=fast PICK_RC=0
 start_ok codex --model default
-assert grep -qx 'TAG: fast · sol · high' "$WORK/start.out"
-assert grep -qx 'fast · sol · high' "$RUN_DIR/tag"
+assert grep -qx 'TAG: fast · astra · high' "$WORK/start.out"
+assert grep -qx 'fast · astra · high' "$RUN_DIR/tag"
 assert await_done
 
 # A running run whose vendor has already surfaced its id reports it mid-flight,
@@ -627,12 +631,12 @@ assert await_done
 # Explicit --model/--effort override a resumed session; config defaults never do.
 clear_stub
 set_config 'codex_effort=high'
-start_ok codex --account resumeacct --resume codex-resume --model gpt-5.6-sol --effort low
-assert grep -qx 'TAG: resumeacct · sol · low' "$WORK/start.out"
+start_ok codex --account resumeacct --resume codex-resume --model gpt-6-astra --effort low
+assert grep -qx 'TAG: resumeacct · astra · low' "$WORK/start.out"
 assert await_done
 assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=-m$' "$CALL_LOG"
-assert grep -q '^ARG=gpt-5.6-sol$' "$CALL_LOG"
+assert grep -q '^ARG=gpt-6-astra$' "$CALL_LOG"
 assert grep -q '^ARG=model_reasoning_effort=low$' "$CALL_LOG"
 
 # codex resume cannot carry --add-dir; refuse before launching anything.
@@ -657,6 +661,7 @@ assert grep -q '^ARG=gemini-resume$' "$CALL_LOG"
 assert test "$(tail -n2 "$CALL_LOG" | head -n1)" = 'ARG=--print'
 assert grep -q "^ARG=\$'test brief" <<<"$(tail -n1 "$CALL_LOG")"
 assert grep -qF 'TEST LOOP: while iterating run a one-off probe' <<<"$(tail -n1 "$CALL_LOG")"
+assert grep -qF 'ended by signal 9 (exit 137) was killed by the machine' <<<"$(tail -n1 "$CALL_LOG")"
 assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
 
 clear_stub
@@ -859,12 +864,12 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model"
-start_ok codex --model gpt-5.6-sol
+start_ok codex --model gpt-6-astra
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 1
-assert test "$(grep -c '^ARG=gpt-5.6-sol$' "$CALL_LOG")" -eq 1
+assert test "$(grep -c '^ARG=gpt-6-astra$' "$CALL_LOG")" -eq 1
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert_launched_brief "$STUB_DIR/codex.stdin"
 
@@ -872,7 +877,7 @@ assert_launched_brief "$STUB_DIR/codex.stdin"
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel STUB_ERROR='note: that model is not supported everywhere'
-start_ok codex --model gpt-5.6-sol
+start_ok codex --model gpt-6-astra
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
@@ -884,7 +889,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model_always"
-start_ok codex --model gpt-5.6-sol
+start_ok codex --model gpt-6-astra
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
@@ -907,7 +912,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_phrase_deep"
-start_ok codex --model gpt-5.6-sol
+start_ok codex --model gpt-6-astra
 assert await_done
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
@@ -2719,6 +2724,23 @@ for waiting in $(seq 1 200); do [ -s "$STUB_DIR/codex.child.pid" ] && break; sle
 assert test -s "$STUB_DIR/codex.child.pid"
 stub_pid=$(cat "$STUB_DIR/codex.pid")
 stub_child=$(cat "$STUB_DIR/codex.child.pid")
+# The live CLI's own pid on the record, beside the supervisor's and never equal to it: memlogd's
+# memory guard kills the DESCENDANTS of the pid a run registers, so with only .pid there the CLI is
+# a descendant and the agent dies with the hog it spawned instead of reporting it.
+for waiting in $(seq 1 200); do
+  [ -n "$(jq -r '.cli_pid // empty' "$RUN_DIR/meta.json" 2>/dev/null)" ] && break
+  sleep 0.05
+done
+assert test "$(jq -r '.cli_pid // empty' "$RUN_DIR/meta.json")" = "$stub_pid"
+assert jq -e '.cli_pid != .pid' "$RUN_DIR/meta.json" >/dev/null
+# And the launch instant beside the number, because that is what makes the number checkable: pids
+# are reused within the day, and memlogd's guard verifies a registered root by comparing the
+# process's own start against this stamp, skipping what it cannot verify rather than killing it.
+# Asserted against the CLI's REAL elapsed time — a stamp taken at some other moment fails here.
+cli_began=$(jq -r '.cli_pid_started_at // empty' "$RUN_DIR/meta.json")
+assert test -n "$cli_began"
+cli_start=$(( $(date +%s) - $(ps -p "$stub_pid" -o etime= | awk -F: '{ print $(NF-1) * 60 + $NF }') ))
+assert test "$(( cli_start > cli_began ? cli_start - cli_began : cli_began - cli_start ))" -le 5
 kill -TERM "$(jq -r '.pid' "$RUN_DIR/meta.json")"
 signal_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
 assert grep -q '^STATUS: failed$' <<<"$signal_wait"
@@ -2789,7 +2811,7 @@ assert grep -qx -- '--account codex --claim --exclude walled1' "$PICK_LOG"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert grep -q '^CODEX_HOME=.*/\.codex-profiles/rescue1$' "$CALL_LOG"
 assert grep -qx 'REROUTE: walled on walled1 → continued on rescue1' "$WORK/wait.out"
-assert grep -qx 'rescue1 · sol · high' "$RUN_DIR/tag"
+assert grep -qx 'rescue1 · astra · high' "$RUN_DIR/tag"
 # The relaunch starts the brief fresh on the new account.
 assert_launched_brief "$STUB_DIR/codex.stdin"
 report=$("$RUNNER" report "$RUN_ID")
@@ -3445,7 +3467,7 @@ clear_stub
 start_ok codex --account resumeacct --resume codex-resume
 assert await_done
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
-printf 'model = "gpt-5.6-sol"\n' >"$WORKER_RUN_CODEX_CONFIG"
+printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 
 # The allowed model of every vendor still launches, from the brief and from the file alike.
 set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
@@ -3454,7 +3476,7 @@ clear_stub
 start_ok claudeb --model opus
 assert await_done
 clear_stub
-start_ok codex --model gpt-5.6-sol
+start_ok codex --model gpt-6-astra
 assert await_done
 clear_stub
 start_ok gemini --account main --model flash38
@@ -3623,4 +3645,4 @@ else
   fail "the ledger writer of ../claude-setup is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex, agy and grok alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes, and refuses every model outside the per-vendor allowed list — from the brief, the toggle file or the codex config alike — with \`OUTCOME: MODEL_REFUSED\` before an account is resolved or a run directory exists"
+echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex, agy and grok alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, records the live vendor CLI's own pid beside the supervisor's for the memory guard to root its kill at, hands every launch the preamble's answer to an exit 137, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes, and refuses every model outside the per-vendor allowed list — from the brief, the toggle file or the codex config alike — with \`OUTCOME: MODEL_REFUSED\` before an account is resolved or a run directory exists"

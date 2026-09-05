@@ -64,7 +64,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
 # both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
-BRIEF_PREAMBLE='TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint.'
+BRIEF_PREAMBLE='TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work.'
 
 # Wall-clock ceiling per vendor invocation, and only the last resort: a wedged CLI is normally
 # reclaimed by the idle watchdog below in half an hour, and the ceiling is what catches one that
@@ -255,6 +255,14 @@ run_with_deadline() {
   # the caller redirected in (live-caught: claudeb saw an empty stdin).
   ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$@" <&0 &
   child=$!
+  # The CLI's own pid, for memlogd's memory guard: that guard kills the DESCENDANTS of the pid a
+  # run registers, and with only the supervisor's pid on record the CLI is a descendant and dies
+  # with the hog (live 2026-09-05: run claudeb-1788615828-30933-684d, EXIT 137). The agent has to
+  # outlive the kill to see its command die by signal 9 and read the preamble's answer to it.
+  # The launch instant stands beside the number: pids are reused within the day, and the guard skips
+  # a root whose process did not start when its registration says it did.
+  [ -z "$RUN_DIRECTORY" ] || meta_update "$RUN_DIRECTORY" '.cli_pid = $pid | .cli_pid_started_at = $began' \
+    --argjson pid "$child" --argjson began "$(date +%s)" || :
   # A signal aimed at this supervisor is aimed at its run: the child goes with it, or the run keeps
   # writing to a workdir whose supervisor is gone and its record never gets an exit code (live
   # 2026-09-04: claudeb-1788518882-986-6f32, TERMed at 41s, worker landed edits afterwards).
@@ -826,6 +834,11 @@ supervise() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   workdir=$(jq -r '.workdir' "$directory/meta.json")
   RUN_DIRECTORY=$directory
+  # Into THIS run's tree and nowhere else: the supervisor is setsid'd, so every vendor child and
+  # everything it spawns inherits these and nothing on the machine outside the run does. A serial,
+  # daemonless nx is what keeps one agent's fan-out from being the tree memlogd's memory guard has
+  # to cut down (docs/memory-guard.md).
+  export NX_PARALLEL=1 NX_DAEMON=false
   # Even the run that never started answers for itself: absent, its record is indistinguishable from
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
@@ -2199,6 +2212,26 @@ result_pointer() { # directory
   printf 'RESULT: run `worker-run report %s`\n' "${1##*/}"
 }
 
+# What memlogd's memory guard did to this run, off the record it left in the run dir. A worker whose
+# children were SIGKILLed under memory pressure comes back with a torn transcript and a vendor error
+# that names nothing, and the supervisor survived precisely so this line can be printed: without it
+# the run reports a failure whose cause is only in a daemon log nobody reads. One line per kill,
+# since a long run can be cut more than once.
+memguard_lines() { # directory
+  [ -s "$1/memguard" ] || return 0
+  awk '$1 == "MEMGUARD" {
+    avail = tree = pids = ""
+    for (i = 2; i <= NF; i++) {
+      if ($i ~ /^avail_mb=/) avail = substr($i, 10)
+      else if ($i ~ /^tree_rss_mb=/) tree = substr($i, 13)
+      else if ($i ~ /^killed=/) pids = substr($i, 8)
+    }
+    n = (pids == "" ? 0 : split(pids, list, ","))
+    printf "MEMGUARD: %d descendant%s SIGKILLed under memory pressure (avail %s MB, tree %s MB); the run'"'"'s own root was spared\n", \
+      n, (n == 1 ? "" : "s"), avail, tree
+  }' "$1/memguard"
+}
+
 denied_tools_line() {
   local denied
   denied=$(jq -r '.denied_tools // empty' "$1/meta.json")
@@ -2214,6 +2247,7 @@ terminal_report() {
   printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
   reroute_lines "$directory"
   workdir_escape_line "$directory"
+  memguard_lines "$directory"
   print_outcome "$directory" "$vendor" "$code"
   denied_tools_line "$directory"
   unnamed_line "$directory"
@@ -2228,6 +2262,7 @@ unknown_report() {
   local directory="$1" vendor
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+  memguard_lines "$directory"
   denied_tools_line "$directory"
   result_pointer "$directory"
   printf 'ERR-TAIL:\n'
@@ -2300,6 +2335,7 @@ running_report() {
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   age=$(last_edit_age "$directory" "$workdir" "$now") || age=none
   printf 'LAST-EDIT: %s\n' "$age"
+  memguard_lines "$directory"
   cpu=$(pid_group_cpu_seconds "$(jq -r '.pid' "$directory/meta.json" 2>/dev/null)") &&
     printf 'CPU-SECONDS: %s\n' "$cpu"
   return 0
@@ -2352,6 +2388,7 @@ report_run() {
     [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
     if [ "$code" = 0 ]; then status=done; else status=failed; fi
     printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
+    memguard_lines "$directory"
     print_outcome "$directory" "$vendor" "$code"
     readonly_report_hint "$directory"
     if [ "$code" != 0 ]; then
@@ -2364,6 +2401,7 @@ report_run() {
       running_report "$directory"
     else
       printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+      memguard_lines "$directory"
       printf 'ERR-TAIL:\n'
       tail -n 80 "$directory/err" 2>/dev/null
     fi
