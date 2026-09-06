@@ -17,6 +17,37 @@ STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 # research agent delegates its pass — so those are rewritten to sonnet unless the call names a model.
 NATIVE_ALLOWLIST='Explore Plan claude-code-guide statusline-setup gemini-research'
 NATIVE_CHEAP='Explore claude-code-guide gemini-research'
+# The read-only fan-out types a Fable session spawns instead of the research leg, and the one line
+# that buys a native Explore back when every Gemini account is walled.
+NATIVE_RESEARCH='Explore general-purpose'
+NATIVE_EXPLORE_ESCAPE='NATIVE_EXPLORE: gemini walled'
+
+# `gemini-research` runs outside the session and is told which trees to read, so the rewritten
+# prompt has to name them: the spawn's cwd, then every absolute directory the caller already
+# pointed at. A prompt path whose last segment carries a dot is read as a file and contributes its
+# directory; the cwd is taken verbatim, since a repository may well be named `foo.bar`.
+research_repos() {
+  local cwd=$1 prompt=$2 list='' seen='' token
+  cwd=${cwd%/}
+  if [ -n "$cwd" ]; then list=$cwd; seen=$cwd; fi
+  while IFS= read -r token; do
+    token=${token%/}
+    while : ; do
+      case "$token" in *.|*-|*+|*_) token=${token%?} ;; *) break ;; esac
+    done
+    [ -n "$token" ] || continue
+    if [ ! -d "$token" ]; then
+      case "$token" in */*.*) token=${token%/*} ;; esac
+      [ -f "$token" ] && token=${token%/*}
+    fi
+    case "$token" in /*/*) ;; *) continue ;; esac
+    printf '%s\n' "$seen" | grep -Fxq "$token" && continue
+    seen="$seen
+$token"
+    list="${list:+$list, }$token"
+  done < <(printf '%s' "$prompt" | grep -oE "(/Volumes|$HOME)/[A-Za-z0-9._/@+-]+" 2>/dev/null)
+  printf '%s\n' "$list"
+}
 
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
@@ -204,6 +235,38 @@ case "$worker" in
     if [ "$native" != image-gen ]; then
       case "$current_session_model" in
         claude-fable-*)
+          # Read-only fan-out is the research leg's work, and prose asking for it lost every time
+          # to `Explore` being the harness's own type: the spawn is rewritten here instead.
+          case " $NATIVE_RESEARCH " in
+            *" $native "*)
+              research_prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null) ||
+                research_prompt=''
+              case "$research_prompt" in
+                "$NATIVE_EXPLORE_ESCAPE"*)
+                  native=Explore
+                  ;;
+                *)
+                  if [ -z "$explicit_model" ]; then
+                    research_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || research_cwd=''
+                    [ -n "$research_cwd" ] || research_cwd=$PWD
+                    printf '%s' "$input" | jq -c \
+                      --arg p "$(printf 'Repositories: %s\n%s' \
+                        "$(research_repos "$research_cwd" "$research_prompt")" "$research_prompt")" \
+                      --arg r "Read-only research on a Fable session belongs on the Gemini leg, so this native $native spawn was rewritten to gemini-research with the same prompt, prefixed by the repositories it may read. If every Gemini account is walled — the run answers OUTCOME: GEMINI_USAGE_LIMIT or GEMINI_UNAVAILABLE — spawn Explore again with \`$NATIVE_EXPLORE_ESCAPE\` as the first line of the prompt: that one passes as a native Explore." \
+                      '{hookSpecificOutput: {
+                          hookEventName: "PreToolUse",
+                          permissionDecision: "allow",
+                          permissionDecisionReason: $r,
+                          additionalContext: $r,
+                          updatedInput: (.tool_input
+                            | .subagent_type = "gemini-research"
+                            | .prompt = $p)}}' 2>/dev/null || true
+                    exit 0
+                  fi
+                  ;;
+              esac
+              ;;
+          esac
           case " $NATIVE_ALLOWLIST " in
             *" $native "*)
               # An explicit model is Egor's own call and stands as written. Otherwise lookup relays

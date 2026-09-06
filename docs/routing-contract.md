@@ -171,7 +171,13 @@ session's own model, which is the one quota the whole relay design exists to spa
 closes. The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`, `gemini-research`
 (shared-invariants row `bt`): `Explore`, `claude-code-guide` and the thin `gemini-research` relay are
 pure lookup, so they are rewritten to `model: sonnet` unless the call names a model itself; the
-research pass itself runs on Gemini 3.8 Flash. `Plan` and `statusline-setup` keep the session model,
+research pass itself runs on Gemini 3.8 Flash. Read-only fan-out does not stay native at all: an
+`Explore`, a `general-purpose` or a typeless spawn with no model of its own is rewritten in place to
+`gemini-research`, its prompt prefixed by one `Repositories:` line naming the spawn's cwd and every
+absolute path the prompt already pointed at, because prose asking for the research leg loses every
+time to `Explore` being the harness's own type. A prompt whose first line is
+`NATIVE_EXPLORE: gemini walled` is the way back to a native `Explore` when every Gemini account is
+walled, and the rewrite's own reason says so. `Plan` and `statusline-setup` keep the session model,
 since design is Fable's own work. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
 and a session whose model cannot be read fails open. The refusal carries no retry: a stamped
 one-shot deny is a rule a model walks through by calling twice.
