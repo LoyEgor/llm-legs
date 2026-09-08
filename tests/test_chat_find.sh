@@ -138,6 +138,14 @@ emit "$LONERUN" "{'type':'user','cwd':'/tmp/proj','timestamp':'2026-01-28T11:00:
 emit "$LONERUN" "{'type':'ai-title','aiTitle':'Errand: чужая пересборка','sessionId':'ffffffff-ffff-ffff-ffff-ffffffffffff'}"
 emit "$LONERUN" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'sdk-cli','timestamp':'2026-01-28T11:01:00.000Z','message':{'role':'assistant','content':[{'type':'text','text':'готово'}]}}"
 
+# A chat opened through claudegpt: the transcript names an OpenAI model and nothing else
+# about the launch, and the account comes from the stamp that launcher writes per session.
+GATEWAY="$CORPUS/99999999-9999-9999-9999-999999999999.jsonl"
+emit "$GATEWAY" "{'type':'user','cwd':'/tmp/proj','entrypoint':'cli','timestamp':'2026-01-31T08:00:00.000Z','message':{'role':'user','content':'шлюзовой канал разговора'}}"
+emit "$GATEWAY" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'cli','timestamp':'2026-01-31T08:01:00.000Z','uuid':'reply-g','message':{'role':'assistant','model':'anthropic.ccr.astra','usage':{'input_tokens':10},'content':[{'type':'text','text':'шлюз отвечает'}]}}"
+mkdir -p "$HOME/.local/share/claudegpt/sessions"
+printf 'v1 work4 astra\n' > "$HOME/.local/share/claudegpt/sessions/99999999-9999-9999-9999-999999999999"
+
 run() { OUT=$("$SCRIPT" --account acct --root "$WORK/projects" "$@" 2>&1); RC=$?; }
 
 # --- the spoken match wins and carries its real date ------------------------
@@ -282,6 +290,13 @@ emit "$ODD" "{'type':'assistant','cwd':'/tmp/proj','entrypoint':'cli','timestamp
 STUB="$CORPUS/cccccccc-cccc-cccc-cccc-cccccccccccc.jsonl"
 said "$STUB" 2026-01-30T10:00:00.000Z user '<command-name>/clear</command-name>'
 
+# --- a gateway chat reopens with its own launcher ---------------------------
+# `claudeb profile acct --resume` would open this transcript on a Claude account and a
+# Claude model, which is the one answer that looks right and is not.
+run шлюзовой
+assert test "$RC" -eq 0
+assert grep -q "resume:      cd '/tmp/proj' && claudegpt p work4 --model astra --resume 99999999-9999-9999-9999-999999999999" <<<"$OUT"
+
 recent() { OUT=$("$SCRIPT" --root "$WORK/projects" --cache "$WORK/cache.json" --recent "$@" 2>&1); RC=$?; }
 
 recent
@@ -294,6 +309,8 @@ assert grep -q '^  77777777-7777-7777-7777-777777777777  Оверлей: фин�
 assert grep -q 'оверлей и тени хедера$' <<<"$OUT"
 DATES=$(grep -o '^2026-[0-9-]* [0-9:]*' <<<"$OUT")
 assert test "$DATES" = "$(sort -r <<<"$DATES")"
+# the model column names the gateway alias the way every other surface does
+assert grep -q 'Astra' <<<"$OUT"
 # the false visit still cannot pass for a fresh conversation
 assert test -z "$(grep -o "^$(date +%Y-%m-%d)" <<<"$OUT")"
 # a /clear stub never held a message, so it is not a chat

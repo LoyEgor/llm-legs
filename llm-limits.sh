@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME|grok/NAME|claude|codex|gemini|grok] [--gemini-remove]" >&2
+  echo "Usage: $0 [--json|--plain|--table] [--sort 5h|weekly|reset] [--no-write] [--refresh [--start-windows] | --refresh-account claude/NAME [--start-windows]|codex/NAME|gemini/NAME|grok/NAME|claude|codex|gemini|grok] [--gemini-remove] [--codex-remove]" >&2
 }
 
 format=''
@@ -13,6 +13,7 @@ refresh=0
 refresh_account=''
 start_windows=0
 gemini_remove=0
+codex_remove=0
 sort_key=''
 sort_given=0
 while [ $# -gt 0 ]; do
@@ -27,6 +28,7 @@ while [ $# -gt 0 ]; do
     --refresh-account) shift; [ $# -gt 0 ] || { usage; exit 2; }; refresh=1; refresh_account=$1 ;;
     --start-windows) start_windows=1 ;;
     --gemini-remove) gemini_remove=1 ;;
+    --codex-remove) codex_remove=1 ;;
     *) usage; exit 2 ;;
   esac
   shift
@@ -476,6 +478,8 @@ gemini_main_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
 gemini_legacy_removed=$(gemini_removal_marker main)
+. "$script_dir/share/codex-accounts.sh"
+codex_legacy_removed=$(codex_removal_marker main)
 . "$script_dir/share/worker-pool.sh"
 . "$script_dir/share/experiments.sh"
 . "$script_dir/share/limits-view.sh"
@@ -663,9 +667,9 @@ apply_vendor_shield_state() {
 account_priority_names() {
   case "$1" in
     claude) printf 'notcom\ncom\n' ;;
-    codex) printf 'main\n' ;;
-    gemini) printf 'main\ncom\n' ;;
-    grok) printf 'supergrok\n' ;;
+    codex) printf 'notcom\ncom\nmain\n' ;;
+    gemini) printf 'com\nmain\n' ;;
+    grok) printf 'notcom\ncom\nsupergrok\n' ;;
   esac
 }
 
@@ -724,6 +728,16 @@ if [ "$gemini_remove" -eq 1 ]; then
   # A swallowed write turns removal into a silent no-op; surface it and fail.
   if ! : > "$gemini_legacy_removed" 2>/dev/null; then
     echo "llm-limits.sh: failed to write gemini removed-marker: $gemini_legacy_removed" >&2
+    exit 1
+  fi
+fi
+# The codex half of the same rule, and written at the same point in the run: `--codex-remove` is
+# the menubar's spelling of `codexb remove main`, and both write and read the one marker
+# `codex_removal_marker main` names.
+if [ "$codex_remove" -eq 1 ]; then
+  mkdir -p "$(dirname "$codex_legacy_removed")" 2>/dev/null || true
+  if ! : > "$codex_legacy_removed" 2>/dev/null; then
+    echo "llm-limits.sh: failed to write codex removed-marker: $codex_legacy_removed" >&2
     exit 1
   fi
 fi
@@ -1289,7 +1303,10 @@ refresh_codex_quota() {
 }
 
 select_codex_event() {
-  codex_event=$(collect_codex_event)
+  # The rollout tail is written under the real ~/.codex, so it is main's reading and nobody
+  # else's: once main is removed there is no account it could describe.
+  codex_event=''
+  codex_main_removed || codex_event=$(collect_codex_event)
   codex_origin=usage
   codex_source=session-rollout
   [ -r "$codex_cache" ] || return 0
@@ -1387,6 +1404,24 @@ if [ "$refresh" -eq 1 ] && ! vendor_paused codex &&
 fi
 codex_event=''
 vendor_paused codex || select_codex_event
+# `codexb remove main` / `--codex-remove` take the base identity out of the roster for good, so the
+# cache row it left behind names an account that no enumerator lists. Dropping it here — before
+# every reader below — is what makes the fallback identity the first NAMED account instead of main.
+if codex_main_removed && [ -n "$codex_event" ]; then
+  codex_event=$(jq -c '
+    ((.payload.rate_limits.accounts // []) | map(select((.account // "main") != "main"))) as $rows |
+    if ($rows | length) == 0 then empty
+    else
+      (.payload.rate_limits.current_account // "") as $requested |
+      ((first($rows[] | select(.account == $requested)) // $rows[0])) as $selected |
+      .payload.rate_limits.accounts = $rows |
+      .payload.rate_limits.current_account = $selected.account |
+      .payload.rate_limits.primary = {used_percent:($selected.five_hour.used_pct // null),
+                                      resets_at:($selected.five_hour.resets_at // null)} |
+      .payload.rate_limits.secondary = {used_percent:($selected.weekly.used_pct // null),
+                                        resets_at:($selected.weekly.resets_at // null)}
+    end' <<<"$codex_event" 2>/dev/null || true)
+fi
 
 if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused codex; then
   if [ "${LLM_LIMITS_CODEX_REFRESH:-1}" = 0 ]; then
@@ -1513,6 +1548,12 @@ if [ -n "$codex_event" ]; then
     codex=$(jq -cn --argjson wall "$codex_wall" \
       '{available:false,status:"unparsable session timestamp",source:"session-rollout",last_wall:$wall}')
   fi
+elif codex_main_removed; then
+  # main removed and no named profile beside it: the vendor states its REMOVAL, the one thing that
+  # tells a store Egor emptied on purpose from one whose accounts have simply never been refreshed.
+  # The menubar skips a removed vendor whole (the same branch gemini's removal already uses).
+  codex=$(jq -cn --argjson wall "$codex_wall" \
+    '{available:false,removed:true,status:"removed",source:"codex-app-server",last_wall:$wall}')
 else
   codex=$(jq -cn --argjson wall "$codex_wall" \
     '{available:false,status:"no rate-limit event",source:"session-rollout",last_wall:$wall}')
@@ -2009,6 +2050,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   --arg claude_target "$claude_refresh_target" --arg codex_target "$codex_refresh_target" \
   --arg gemini_target "$gemini_refresh_target" --arg grok_target "$grok_refresh_target" \
   --argjson alarm "$LIMITS_AGE_ALARM" --argjson paused "$paused_vendors_json" \
+  --argjson codex_removed "$(if codex_main_removed; then printf true; else printf false; fi)" \
   "$iso_def$LIMITS_VIEW_JQ"'
   def normalize_reset:
     . as $value |
@@ -2098,7 +2140,16 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     elif test("deactivated_workspace") then "workspace deactivated"
     elif test("402|Payment Required|payment required") then "402 payment required"
     elif test("(^|[^0-9])40[13]([^0-9]|$)|unauthorized|forbidden") then "401/403 auth"
-    elif test("(^|[^0-9])429([^0-9]|$)|rate[- ]?limit|too many requests") then "429 rate limit"
+    # A spent window is state the account itself is in, and an endpoint saying so is not an
+    # endpoint pushing back — the two must not share a class, or `bin/llm-refresh` loosens a
+    # whole vendor cadence over a wall (shared-invariants row bs).
+    elif test("usage[ _-]?limit|quota[ _-]?(exceeded|exhausted|reached)|out of credits|credits?[ _-]?depleted")
+      then "usage limit reached"
+    # The signal has to be a VERDICT, not the name of the thing being read: every codex usage-RPC
+    # failure is worded `failed to fetch codex rate limits: <real cause>`, and a bare `rate limit`
+    # here classed a 5xx or a timeout inside that wrapper as a rate limit.
+    elif test("(^|[^0-9])429([^0-9]|$)|too many requests|rate[ _-]?limit(s|ed)?[ _-]*(exceeded|hit)|rate[ _-]?limited")
+      then "429 rate limit"
     elif test("(^|[^0-9])5[0-9]{2}([^0-9]|$)|server error|internal server") then "5xx server error"
     elif test("not refreshed \\(") then
       "not refreshed (" + ((capture("not refreshed \\((?<w>.*)\\)$") // {w:"?"}) | .w) + ")"
@@ -2256,6 +2307,27 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
           else $new end
         end)
     end;
+  # The last door on codex main: the roster is already built without it, but a failed refresh
+  # falls back to the PREVIOUS snapshot below, and that one still holds the row main left. A
+  # removal is for good, so no path may hand it back.
+  def codex_without_main:
+    if (.accounts | type) != "array" then .
+    else (.accounts | map(select(.account != "main"))) as $rows |
+      if ($rows | length) == 0 then
+        {available:false,removed:true,status:"removed",
+         source:(.source // "codex-app-server")} +
+        (if has("last_wall") then {last_wall:.last_wall} else {} end)
+      else
+        (first($rows[] | select(.is_current == true)) // $rows[0]) as $selected |
+        .accounts = ($rows | map(.is_current = (.account == $selected.account))) |
+        .current_account = $selected.account |
+        (if ($selected.five_hour | type) == "object" then .five_hour = $selected.five_hour else del(.five_hour) end) |
+        (if ($selected.weekly | type) == "object" then .weekly = $selected.weekly else del(.weekly) end) |
+        (if ($selected.as_of | type) == "string" then .as_of = $selected.as_of else del(.as_of) end) |
+        (if ($selected.stale_seconds | type) == "number" then .stale_seconds = $selected.stale_seconds else del(.stale_seconds) end) |
+        (if ($selected.plan_type | type) == "string" then .plan_type = $selected.plan_type else del(.plan_type) end)
+      end
+    end;
   # A failed refresh keeps the last good buckets, but an auth-needed verdict is a definite
   # state (not a transient failure) and must never be overwritten by stale prior data.
   def vendor_data($key; $current; $attempted; $cause):
@@ -2269,6 +2341,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     gemini:vendor_data("gemini"; $gemini; $gemini_attempted; $gemini_error),
     grok:vendor_data("grok"; $grok; $grok_attempted; $grok_error)}}
   | .vendors |= with_entries(.key as $key | .value |= newest_accounts($key))
+  | if $codex_removed and (.vendors.codex | type) == "object"
+    then .vendors.codex |= codex_without_main else . end
   | .vendors.claude.refresh_errors = (.vendors.claude | apply_vendor_errors("claude"; $claude_attempted; $claude_error; $claude_target))
   | .vendors.codex.refresh_errors = (.vendors.codex | apply_vendor_errors("codex"; $codex_attempted; $codex_error; $codex_target))
   | .vendors.gemini.refresh_errors = (.vendors.gemini | apply_vendor_errors("gemini"; $gemini_attempted; $gemini_error; $gemini_target))
@@ -2288,6 +2362,8 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
   # above states it.
   | if .vendors.gemini.removed == true
     then .vendors.gemini |= del(.refresh_error, .refresh_errors) else . end
+  | if .vendors.codex.removed == true
+    then .vendors.codex |= del(.refresh_error, .refresh_errors) else . end
   | .vendors |= with_entries(
       .value |= (
         if (.accounts | type) == "array" then .accounts |= map(set_data_age) else . end

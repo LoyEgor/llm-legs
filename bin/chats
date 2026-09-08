@@ -24,6 +24,7 @@ HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
 from chat_ask import awaiting_answer  # noqa: E402
 from chat_names import project_label  # noqa: E402
+import chat_resume  # noqa: E402
 
 PROFILES = os.path.expanduser("~/.claude-profiles")
 STATE = os.path.join(PROFILES, ".claudeb", ".claudeb-state")
@@ -141,37 +142,54 @@ def asking(path):
 
 def limits():
     """Per-account usage, purely to label the profile row. Zero-token: this reads
-    the cached table and never refreshes it."""
+    the cached table and never refreshes it.
+
+    A gateway account spends the Codex subscription behind it, so its share comes from
+    that vendor's block — the same store the statusline reads for a `claudegpt` chat.
+    """
     try:
         out = subprocess.run(["llm-limits", "--json", "--no-write"],
                              capture_output=True, text=True, timeout=10).stdout
-        claude = json.loads(out)["vendors"]["claude"]
+        vendors = json.loads(out)["vendors"]
     except Exception:
         return {}, None
     used = {}
-    for row in claude.get("accounts", []):
-        name = row.get("account")
-        if not name:
-            continue
-        week = (row.get("weekly") or {}).get("effective_pct")
-        usable = isinstance(week, (int, float)) and not isinstance(week, bool)
-        used[name] = int(round(week)) if usable else None
-    return used, claude.get("current_account")
+    for vendor, block in (("claudeb", vendors.get("claude")), ("gpt", vendors.get("codex"))):
+        for row in (block or {}).get("accounts", []):
+            name = row.get("account")
+            if not name:
+                continue
+            week = (row.get("weekly") or {}).get("effective_pct")
+            usable = isinstance(week, (int, float)) and not isinstance(week, bool)
+            used[(vendor, name)] = int(round(week)) if usable else None
+    return used, (vendors.get("claude") or {}).get("current_account")
 
 
 def profiles():
+    """Every account a chat can be reopened under, as (launcher, name).
+
+    Two stores, and one name can be in both — `com` is a claudeb profile AND a gateway
+    login — so the launcher travels with the name instead of being re-derived later.
+    """
     try:
         entries = os.listdir(PROFILES)
     except OSError:
         entries = []
     # "main" is not a claudeb profile — it names ~/.claude itself, and claudeb
     # refuses it, so offering it would only ever produce a failed launch.
-    names = sorted(entry for entry in entries
-                   if not entry.startswith(".") and entry != "main"
-                   and os.path.isdir(os.path.join(PROFILES, entry)))
+    names = [("claudeb", entry) for entry in sorted(entries)
+             if not entry.startswith(".") and entry != "main"
+             and os.path.isdir(os.path.join(PROFILES, entry))]
+    names += [("gpt", name) for name in chat_resume.gateway_accounts()]
     if not names:
-        die("no claudeb profiles under " + PROFILES)
+        die("no claudeb profiles under %s and no claudegpt account" % PROFILES)
     return names
+
+
+def account_label(entry):
+    """`gpt:` marks the gateway store, since the same name lives in both."""
+    vendor, name = entry
+    return name if vendor == "claudeb" else "gpt:" + name
 
 
 def warm_account(row):
@@ -245,16 +263,15 @@ def chat_account():
 
 def current_profile(names, announced):
     chosen = chat_account()
-    if chosen in names:
-        return names.index(chosen)
-    if announced in names:
-        return names.index(announced)
     try:
         with open(STATE, encoding="utf-8") as handle:
             state = handle.readline().strip()
     except OSError:
         state = ""
-    return names.index(state) if state in names else 0
+    for name in (chosen, announced, state):
+        if ("claudeb", name) in names:
+            return names.index(("claudeb", name))
+    return 0
 
 
 def refollow(row, landed, profile, held):
@@ -266,9 +283,15 @@ def refollow(row, landed, profile, held):
 
 def account_for(row, now, names, default):
     """The account a landed row implies: the one whose cache still holds this
-    chat, else back to the account the picker opened on."""
+    chat, else the account it was launched under, else back to the account the
+    picker opened on."""
+    vendor = "gpt" if chat_resume.gateway_alias(row.get("model")) else "claudeb"
     warm = warm_name(row, now)
-    return names.index(warm) if warm in names else default
+    stamp = chat_resume.read_stamp(row.get("session") or "") or {}
+    for entry in ((vendor, warm), ("gpt", stamp.get("account"))):
+        if entry[1] and entry in names:
+            return names.index(entry)
+    return default
 
 
 def label(level, windows):
@@ -327,7 +350,8 @@ def pad(text, size, right=False):
 def model_label(row):
     # The release date in a model id ("claude-haiku-4-5-20251001") is width the
     # column pays for one model and nobody reads.
-    return re.sub(r"-20\d{6}$", "", (row.get("model") or "").replace("claude-", ""))
+    return chat_resume.model_label(row.get("model")) \
+        or re.sub(r"-20\d{6}$", "", (row.get("model") or "").replace("claude-", ""))
 
 
 def columns(row, now, dated=False):
@@ -422,9 +446,10 @@ def paint(screen, rows, view, names, profile, needle, used, note):
                           curses.A_DIM)
 
     tail = []
-    for position, name in enumerate(names):
-        percent = used.get(name)
-        label = " %s %d%% " % (name, percent) if percent is not None else " %s " % name
+    for position, entry in enumerate(names):
+        percent = used.get(entry)
+        shown = account_label(entry)
+        label = " %s %d%% " % (shown, percent) if percent is not None else " %s " % shown
         tail.append((label, curses.A_REVERSE if position == profile else curses.A_DIM))
     screen.addstr(height - 1, 0, " " * (span - 1))
     column = 0
@@ -531,7 +556,7 @@ def run(screen, chats, names, used, profile, level, windows):
             if not cwd or not os.path.isdir(cwd):
                 note = "no such directory: %s" % (cwd or "?")
                 continue
-            return names[profile], chosen["session"], cwd
+            return names[profile], chosen, cwd
         elif isinstance(key, str) and key.isprintable():
             needle += key
         # Deliberately not clamped here: a cursor past the last row is the signal
@@ -578,19 +603,20 @@ def main():
     chosen = curses.wrapper(run, annotate(chats), names, used, profile, level, windows)
     if not chosen:
         return
-    profile, session, cwd = chosen
+    (vendor, account), row, cwd = chosen
     # Pinned explicitly because a resumed session restores the mode it was left
     # in, not settings.json's defaultMode — one chat that ever drifted into auto
     # (the 2026-08-14 rollout flipped a batch) would reopen in auto forever.
-    command = ["claudeb", "profile", profile, "--resume", session,
-               "--permission-mode", "bypassPermissions"]
+    command = chat_resume.switch_argv(row["session"], account, model_id=row.get("model"),
+                                      gateway=vendor == "gpt") \
+        + ["--permission-mode", "bypassPermissions"]
     launch = "cd %s && %s" % (shlex.quote(cwd), shlex.join(command))
     if show:
         print(launch)
         return
     try:
         os.chdir(cwd)
-        os.execvp("claudeb", command)
+        os.execvp(command[0], command)
     except OSError as error:
         die("cannot open the chat (%s); it is: %s" % (error, launch))
 

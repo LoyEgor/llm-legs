@@ -36,7 +36,7 @@ cadence_due() {
 }
 
 clean_window_elapsed() {
-  [ "$1" -gt 0 ] && [ $(( $2 - $1 )) -ge 259200 ]
+  [ "$1" -gt 0 ] && [ $(( $2 - $1 )) -ge 86400 ]
 }
 
 # The gateway states a reset to the day, so the horizon it gives is approximate: the cadence
@@ -358,8 +358,36 @@ recorded_errors() {
   ' "$store" 2>/dev/null
 }
 
-is_pushback_detail() {
-  grep -Eiq '(^|[^0-9])429([^0-9]|$)|rate[- ]?limit|too many requests|resource[_ -]?exhausted|quota[^[:cntrl:]]*exceed'
+# The ACCOUNT's own window being full is bucket state, never endpoint pushback: a spent plan is
+# exactly what the usage endpoint is supposed to answer, and loosening the whole vendor's cadence
+# for it slows the refresh precisely when the numbers matter most. Same wall wording as
+# `codex_usage_wall` in ../review-bench (shared-invariants row bs).
+REFRESH_WALL_RE='usage[ _-]?limit|quota[ _-]?(exceeded|exhausted|reached)|out of credits|credits?[ _-]?depleted|rate_limit_reached|rateLimitReached'
+# Pushback is a VERDICT about this read, never the NAME of the thing being read. The codex usage
+# RPC calls itself `rateLimits/read` and its failures are worded `failed to fetch codex rate
+# limits: …`, so a bare `rate limit` here read every codex probe failure — an auth-dead account, a
+# 402 workspace, a timeout — as a rate limit and loosened the vendor a rung each time (2026-09-02:
+# 30→45→60 while `nexerod` was auth-dead).
+REFRESH_PUSHBACK_RE='(^|[^0-9])429([^0-9]|$)|too many requests|rate[ _-]?limit(s|ed)?[ _-]*(exceeded|hit)|rate[ _-]?limited|resource[_ -]?exhausted'
+
+# Journal-safe: printable ASCII only (invalid UTF-8 would fail the `jq` that writes the line and
+# take the whole tick down), nothing secret-shaped, one bounded line.
+detail_excerpt() {
+  LC_ALL=C tr -cd '\11\40-\176' |
+    sed -E -e 's/(([Bb]earer|[Tt]oken|[Aa]uthorization|[Aa]pi[_-]?[Kk]ey|(access|refresh|id)_token)["'"'"':= ]+)[^ "'"'"',;)]+/\1<redacted>/g' \
+           -e 's/[A-Za-z0-9_-]{40,}/<redacted>/g' \
+           -e 's/[[:space:]]+/ /g' -e 's/^ //' -e 's/ $//' |
+    cut -c1-"${LLM_LIMITS_REFRESH_EXCERPT_MAX:-320}"
+}
+
+# Both print the matching line rather than a verdict: the journal keeps it, so a loosened rung
+# carries the text that loosened it instead of leaving the next reader to guess.
+pushback_hit() {
+  grep -Ei "$REFRESH_PUSHBACK_RE" | grep -Eiv "$REFRESH_WALL_RE" | head -n1 | detail_excerpt
+}
+
+wall_hit() {
+  grep -Ei "$REFRESH_WALL_RE" | head -n1 | detail_excerpt
 }
 
 journal_has_pushback_since() {
@@ -426,6 +454,7 @@ run_tick() {
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]'
   local direct expired probed session_account claude_touched
+  local pushback_note wall_note stderr_hit signals
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -490,6 +519,8 @@ run_tick() {
     target_rc=0
     claude_note=''
     probe_verdicts=''
+    pushback_note=''
+    wall_note=''
 
     if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
       if [ "$vendor" = claude ]; then
@@ -523,10 +554,13 @@ run_tick() {
               timeout_command "$probe_timeout" "$claudeb_bin" revive "$account" ) \
               >/dev/null 2>"$refresh_log" || rc=$?
             # revive only reaches the store through the collector run below, so what it did is
-            # remembered here and judged once the store can answer for it.
+            # remembered here and judged once the store can answer for it. The excerpt travels
+            # with the verdict because the log is gone by then.
+            stderr_hit=$(pushback_hit <"$refresh_log")
             stderr_pushback=0
-            ! is_pushback_detail <"$refresh_log" || stderr_pushback=1
-            probe_verdicts="$probe_verdicts$account	$rc	$stderr_pushback
+            [ -z "$stderr_hit" ] || stderr_pushback=1
+            [ -n "$wall_note" ] || wall_note=$(wall_hit <"$refresh_log")
+            probe_verdicts="$probe_verdicts$account	$rc	$stderr_pushback	$stderr_hit
 "
             [ "$rc" -eq 0 ] || target_rc=$rc
             rm -f "$refresh_log"
@@ -562,9 +596,11 @@ run_tick() {
             else
               lock_lost=1
             fi
+            stderr_hit=$(pushback_hit <"$refresh_log")
             stderr_pushback=0
-            ! is_pushback_detail <"$refresh_log" || stderr_pushback=1
-            probe_verdicts="$probe_verdicts$account	$rc	$stderr_pushback
+            [ -z "$stderr_hit" ] || stderr_pushback=1
+            [ -n "$wall_note" ] || wall_note=$(wall_hit <"$refresh_log")
+            probe_verdicts="$probe_verdicts$account	$rc	$stderr_pushback	$stderr_hit
 "
             [ "$rc" -eq 0 ] || target_rc=$rc
             rm -f "$refresh_log"
@@ -578,13 +614,17 @@ run_tick() {
             "$collector" >/dev/null 2>&1 || true
             blocked=$(blocked_accounts_json "$vendor" "$interval")
           fi
-          while IFS="$(printf '\t')" read -r account rc stderr_pushback; do
+          while IFS="$(printf '\t')" read -r account rc stderr_pushback stderr_hit; do
             [ -n "$account" ] || continue
             if [ "$rc" -eq 4 ]; then
               claude_note="$account needs a human login; no automated path can refresh it"
-            elif [ "$rc" -ne 0 ] && { [ "$stderr_pushback" -eq 1 ] ||
-                 recorded_errors "$vendor" "$account" "$now" | is_pushback_detail; }; then
-              pushback=1
+            elif [ "$rc" -ne 0 ]; then
+              [ "$stderr_pushback" -eq 1 ] || \
+                stderr_hit=$(recorded_errors "$vendor" "$account" "$now" | pushback_hit)
+              if [ -n "$stderr_hit" ]; then
+                pushback=1
+                [ -n "$pushback_note" ] || pushback_note=$stderr_hit
+              fi
             fi
           done <<<"$probe_verdicts"
         fi
@@ -599,8 +639,13 @@ run_tick() {
           # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
           "$collector" --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
           errors=$(recorded_errors "$vendor" "$account" "$now")
-          if { cat "$refresh_log"; printf '%s\n' "$errors"; } | is_pushback_detail; then
+          signals=$({ cat "$refresh_log"; printf '%s\n' "$errors"; })
+          stderr_hit=$(pushback_hit <<<"$signals")
+          if [ -n "$stderr_hit" ]; then
             pushback=1
+            [ -n "$pushback_note" ] || pushback_note=$stderr_hit
+          elif [ -z "$wall_note" ]; then
+            wall_note=$(wall_hit <<<"$signals")
           fi
           if [ "$rc" -ne 0 ]; then target_rc=$rc; fi
           rm -f "$refresh_log"
@@ -617,6 +662,8 @@ run_tick() {
         # needs a human must not hide another account being rate-limited on the same tick.
         outcome=pushback
         detail='refresh path reported a 429 or rate-limit signal'
+        # The text that loosened the rung: the refresh log is truncated every run.
+        [ -z "$pushback_note" ] || detail="$detail: $pushback_note"
         [ -z "$claude_note" ] || detail="$detail; $claude_note"
       elif [ -n "$claude_note" ]; then
         # A login-needed account leaves the stale list by becoming unrefreshable, which the
@@ -637,6 +684,10 @@ run_tick() {
           detail='refresh path completed but accounts remain stale'
         fi
       fi
+      # Named, not silently dropped: a wall wording in the refresh path is the state this ladder
+      # must NOT react to, so the journal says it was seen and read as bucket state.
+      [ "$pushback" -eq 1 ] || [ -z "$wall_note" ] || \
+        detail="$detail; usage wall, not endpoint pushback: $wall_note"
       if [ "$vendor" = claude ]; then
         claude_touched=''
         [ "$(jq 'length' <<<"$probed")" -eq 0 ] || \
@@ -697,6 +748,38 @@ run_tick() {
   refresh_lock_release
 }
 
+# A rung climbed on a misread signal is not evidence of anything, and the ladder has no fast way
+# down — it tightens once per 24 clean hours — so a spuriously loosened vendor would keep its
+# cadence for weeks. This is the supported way back to the base rung; hand-editing the state file
+# races the tick that holds its lock.
+reset_cadence() {
+  local lock_dir="${state_file}.lock" state vendor requested='[]'
+  for vendor in "$@"; do
+    case "$vendor" in
+      claude|codex|gemini|grok|opencode) ;;
+      *) printf 'llm-refresh: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
+    esac
+    requested=$(jq -c --arg vendor "$vendor" '. + [$vendor]' <<<"$requested")
+  done
+  [ "$(jq 'length' <<<"$requested")" -gt 0 ] || \
+    requested=$(live_vendors | jq -Rsc 'split("\n") | map(select(length > 0))')
+  mkdir -p "$(dirname "$state_file")"
+  if ! refresh_lock_acquire "$lock_dir"; then
+    echo 'llm-refresh: a tick holds the state lock; try again in a minute' >&2
+    return 4
+  fi
+  # `null` rather than a second copy of the base rung: `normalized_state` coerces an out-of-ladder
+  # value to it, so this verb cannot drift from the ladder it resets to.
+  state=$(state_read | jq -c --argjson vendors "$requested" \
+    'reduce $vendors[] as $vendor (.; if has($vendor) then .[$vendor].interval_min = null else . end)')
+  state=$(normalized_state "$state") || return 5
+  state_persist "$state" || return 5
+  refresh_lock_release
+  jq -r --argjson vendors "$requested" \
+    'to_entries[] | select(.key | IN($vendors[])) |
+     "\(.key): interval_min \(.value.interval_min)"' <<<"$state"
+}
+
 install_agent() {
   local wrapper_tmp
   mkdir -p "$(dirname "$wrapper")" "$(dirname "$agent_plist")"
@@ -723,7 +806,7 @@ uninstall_agent() {
 }
 
 usage() {
-  printf 'usage: llm-refresh [run|install-agent|uninstall-agent]\n' >&2
+  printf 'usage: llm-refresh [run|reset-cadence [vendor ...]|install-agent|uninstall-agent]\n' >&2
   exit 2
 }
 
@@ -734,6 +817,12 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       trap 'exit 129' HUP INT TERM
       trap '[ -z "$tick_tmp" ] || rm -f "$tick_tmp"; refresh_lock_release' EXIT
       run_tick
+      ;;
+    reset-cadence)
+      shift
+      trap 'exit 129' HUP INT TERM
+      trap '[ -z "$tick_tmp" ] || rm -f "$tick_tmp"; refresh_lock_release' EXIT
+      reset_cadence "$@"
       ;;
     install-agent) [ "$#" -eq 1 ] || usage; install_agent ;;
     uninstall-agent) [ "$#" -eq 1 ] || usage; uninstall_agent ;;

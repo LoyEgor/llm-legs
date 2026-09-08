@@ -11,13 +11,13 @@ WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/work
 
 STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 
-# The native agent types a Fable session may still spawn (shared-invariants row `bt`). Pure lookup
+# The native agent types an orchestrator session may still spawn (shared-invariants row `bt`). Pure lookup
 # and design only: everything that edits, reviews, verifies or scans is a relay worker. The second
 # list is the half that needs no session-model reasoning — lookup agents return excerpts and the
 # research agent delegates its pass — so those are rewritten to sonnet unless the call names a model.
 NATIVE_ALLOWLIST='Explore Plan claude-code-guide statusline-setup gemini-research'
 NATIVE_CHEAP='Explore claude-code-guide gemini-research'
-# The read-only fan-out types a Fable session spawns instead of the research leg, and the one line
+# The read-only fan-out types an orchestrator session spawns instead of the research leg, and the one line
 # that buys a native Explore back when every Gemini account is walled.
 NATIVE_RESEARCH='Explore general-purpose'
 NATIVE_EXPLORE_ESCAPE='NATIVE_EXPLORE: gemini walled'
@@ -207,6 +207,17 @@ claim_once() {
   return 2
 }
 
+# The session models the orchestrator doctrine binds: Fable, and the `claudegpt` gateway aliases
+# (`anthropic.ccr.sol` / `anthropic.ccr.astra`), which are Claude Code on an OpenAI subscription —
+# the same one scarce session quota a native agent would spend, so the same rule (docs/claudegpt.md,
+# docs/routing-contract.md). The shape lives here and nowhere else.
+orchestrator_model() {
+  case "$1" in
+    claude-fable-*|anthropic.ccr.*) return 0 ;;
+  esac
+  return 1
+}
+
 # Every assistant record carries the model, so the tail only has to reach the last one; 200
 # lines clears the longest stretch of tool traffic. Unreadable or model-less transcripts read
 # as empty and the caller stays silent — a gate that cannot tell must not block ordinary work.
@@ -225,86 +236,87 @@ case "$worker" in
   *)
     # Workers are unified: every run that edits, reviews, verifies or scans is a relay worker, and a
     # NATIVE agent type — general-purpose, claude, fork, anything custom — runs on the session's own
-    # model instead. On Fable that is the one quota the whole relay design exists to spare, and it
-    # is the spawn shape no other gate sees (live: four read-only general-purpose checks, 35-45k
-    # tokens each, on a Fable chat). A fork is judged here too: it always inherits the parent model,
-    # which is exactly the problem rather than an exemption.
+    # model instead. On an orchestrator session that is the one quota the relay design exists to
+    # spare, and it is the spawn shape no other gate sees (live: four read-only general-purpose checks, 35-45k
+    # tokens each, on a Fable chat), and a gateway chat spends its OpenAI subscription the same
+    # way. A fork is judged here too: it always inherits the parent model, which is exactly the
+    # problem rather than an exemption.
     native=${worker:-general-purpose}
     current_session_model=$(session_model)
     explicit_model=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || explicit_model=''
     if [ "$native" != image-gen ]; then
-      case "$current_session_model" in
-        claude-fable-*)
-          # Read-only fan-out is the research leg's work, and prose asking for it lost every time
-          # to `Explore` being the harness's own type: the spawn is rewritten here instead.
-          case " $NATIVE_RESEARCH " in
-            *" $native "*)
-              research_prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null) ||
-                research_prompt=''
-              case "$research_prompt" in
-                "$NATIVE_EXPLORE_ESCAPE"*)
-                  native=Explore
-                  ;;
-                *)
-                  if [ -z "$explicit_model" ]; then
-                    research_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || research_cwd=''
-                    [ -n "$research_cwd" ] || research_cwd=$PWD
-                    printf '%s' "$input" | jq -c \
-                      --arg p "$(printf 'Repositories: %s\n%s' \
-                        "$(research_repos "$research_cwd" "$research_prompt")" "$research_prompt")" \
-                      --arg r "Read-only research on a Fable session belongs on the Gemini leg, so this native $native spawn was rewritten to gemini-research with the same prompt, prefixed by the repositories it may read. If every Gemini account is walled — the run answers OUTCOME: GEMINI_USAGE_LIMIT or GEMINI_UNAVAILABLE — spawn Explore again with \`$NATIVE_EXPLORE_ESCAPE\` as the first line of the prompt: that one passes as a native Explore." \
-                      '{hookSpecificOutput: {
-                          hookEventName: "PreToolUse",
-                          permissionDecision: "allow",
-                          permissionDecisionReason: $r,
-                          additionalContext: $r,
-                          updatedInput: (.tool_input
-                            | .subagent_type = "gemini-research"
-                            | .prompt = $p)}}' 2>/dev/null || true
-                    exit 0
-                  fi
-                  ;;
-              esac
-              ;;
-          esac
-          case " $NATIVE_ALLOWLIST " in
-            *" $native "*)
-              # An explicit model is Egor's own call and stands as written. Otherwise lookup relays
-              # are dropped to sonnet while a design agent keeps the session model: that IS Fable's work.
-              [ -z "$explicit_model" ] || exit 0
-              case " $NATIVE_CHEAP " in
-                *" $native "*)
-                  printf '%s' "$input" | jq -c '{hookSpecificOutput: {
-                      hookEventName: "PreToolUse",
-                      permissionDecision: "allow",
-                      updatedInput: (.tool_input | .model = "sonnet")}}' 2>/dev/null || true
-                  ;;
-              esac
-              exit 0
-              ;;
-          esac
-          deny "native $native runs on Fable's quota: every run that edits, reviews, verifies or scans is a relay worker via worker-run (see ~/.claude/CLAUDE.md, Model routing); read-only lookups use Explore/Plan."
-          ;;
-      esac
+      if orchestrator_model "$current_session_model"; then
+        # Read-only fan-out is the research leg's work, and prose asking for it lost every time
+        # to `Explore` being the harness's own type: the spawn is rewritten here instead.
+        case " $NATIVE_RESEARCH " in
+          *" $native "*)
+            research_prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null) ||
+              research_prompt=''
+            case "$research_prompt" in
+              "$NATIVE_EXPLORE_ESCAPE"*)
+                native=Explore
+                ;;
+              *)
+                if [ -z "$explicit_model" ]; then
+                  research_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || research_cwd=''
+                  [ -n "$research_cwd" ] || research_cwd=$PWD
+                  printf '%s' "$input" | jq -c \
+                    --arg p "$(printf 'Repositories: %s\n%s' \
+                      "$(research_repos "$research_cwd" "$research_prompt")" "$research_prompt")" \
+                    --arg r "Read-only research on an orchestrator session belongs on the Gemini leg, so this native $native spawn was rewritten to gemini-research with the same prompt, prefixed by the repositories it may read. If every Gemini account is walled — the run answers OUTCOME: GEMINI_USAGE_LIMIT or GEMINI_UNAVAILABLE — spawn Explore again with \`$NATIVE_EXPLORE_ESCAPE\` as the first line of the prompt: that one passes as a native Explore." \
+                    '{hookSpecificOutput: {
+                        hookEventName: "PreToolUse",
+                        permissionDecision: "allow",
+                        permissionDecisionReason: $r,
+                        additionalContext: $r,
+                        updatedInput: (.tool_input
+                          | .subagent_type = "gemini-research"
+                          | .prompt = $p)}}' 2>/dev/null || true
+                  exit 0
+                fi
+                ;;
+            esac
+            ;;
+        esac
+        case " $NATIVE_ALLOWLIST " in
+          *" $native "*)
+            # An explicit model is Egor's own call and stands as written. Otherwise lookup relays
+            # are dropped to sonnet while a design agent keeps the session model: that IS the
+            # orchestrator session's own work.
+            [ -z "$explicit_model" ] || exit 0
+            case " $NATIVE_CHEAP " in
+              *" $native "*)
+                printf '%s' "$input" | jq -c '{hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: "allow",
+                    updatedInput: (.tool_input | .model = "sonnet")}}' 2>/dev/null || true
+                ;;
+            esac
+            exit 0
+            ;;
+        esac
+        deny "native $native runs on this session's own quota: every run that edits, reviews, verifies or scans is a relay worker via worker-run (see ~/.claude/CLAUDE.md, Model routing); read-only lookups use Explore/Plan."
+      fi
     fi
-    # A fork ignores the override field entirely, so off Fable there is nothing left to price.
+    # A fork ignores the override field entirely, so off an orchestrator session there is nothing
+    # left to price.
     [ "$native" != fork ] || exit 0
-    # Only image-gen reaches here now, and only on Fable — every other native type was answered
-    # above. A model override still runs it on the SESSION account, which is what the pool exists
-    # to prevent; the one-shot retry below is the escape this older rule keeps.
+    # Only image-gen reaches here now, and only on an orchestrator session — every other native type
+    # was answered above. A model override still runs it on the SESSION account, which is what the
+    # pool exists to prevent; the one-shot retry below is the escape this older rule keeps.
     model_override=$explicit_model
     [ -n "$model_override" ] || exit 0
-    case "$current_session_model" in claude-fable-*) ;; *) exit 0 ;; esac
+    orchestrator_model "$current_session_model" || exit 0
     tool_fingerprint=$(printf '%s' "$input" | jq -cS '.tool_input' 2>/dev/null) ||
       warn "The session-account gate could not fingerprint this Agent call, so it is letting the spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for."
     # The session model belongs in the key: a stamp lives a day, and a chat that moved to Opus
-    # and back must not find its earlier Fable deny already spent.
+    # and back must not find its earlier deny already spent.
     claim_once "session-account:$current_session_model:$tool_fingerprint"
     case $? in
       1) exit 0 ;;
       2) warn "The session-account gate could not use its stamp cache at ${STAMP_DIR}, so it is letting this spawn through unjudged. ${worker:-This agent} with model=${model_override} runs on the SESSION account — check that is what Egor asked for." ;;
     esac
-    deny "This spawns ${worker:-an agent} with model=${model_override} — a plain agent runs on the SESSION account, the one this Fable chat is living on. Route implementation through the worker the toggle selects (claudeb-, codex-, gemini- or grok-worker on an account from worker-pick). If Egor asked for this spawn on purpose, retry the identical call — it passes once."
+    deny "This spawns ${worker:-an agent} with model=${model_override} — a plain agent runs on the SESSION account, the one this chat is living on. Route implementation through the worker the toggle selects (claudeb-, codex-, gemini- or grok-worker on an account from worker-pick). If Egor asked for this spawn on purpose, retry the identical call — it passes once."
     ;;
 esac
 

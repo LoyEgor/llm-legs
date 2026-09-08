@@ -541,7 +541,8 @@ printf 'no\n' >"$HOME/auth-main"
 printf 'no\n' >"$HOME/auth-alpha"
 printf 'no\n' >"$HOME/auth-beta"
 
-# remove: forgets the profile dir and prunes the codex cache entry; main is refused.
+# remove: forgets the profile dir and prunes the codex cache entry. main is removable too, by
+# marker rather than by deletion, and has its own section further down.
 bash "$SCRIPT" add gone >/dev/null || fail "add gone failed"
 assert test -d "$HOME/.codex-profiles/gone"
 printf '{"current":"gone","accounts":[{"account":"gone"},{"account":"main"}]}\n' >"$CACHE"
@@ -549,7 +550,6 @@ assert bash "$SCRIPT" remove gone
 assert test ! -e "$HOME/.codex-profiles/gone"
 assert jq -e '([.accounts[].account] | index("gone") == null) and
   ([.accounts[].account] | index("main") != null) and .current == "main"' "$CACHE"
-assert_fails bash "$SCRIPT" remove main
 assert_fails bash "$SCRIPT" remove never-existed
 
 # Path traversal: a name escaping the profiles dir is rejected before any rm -rf.
@@ -572,6 +572,51 @@ bash "$SCRIPT" add deadcx >/dev/null || fail "add deadcx failed"
 printf '{"tokens":{"access_token":"","refresh_token":""}}\n' >"$HOME/.codex-profiles/deadcx/auth.json"
 assert bash "$SCRIPT" remove deadcx
 assert test ! -e "$HOME/.codex-profiles/deadcx"
+
+# main has no profile directory to delete, so `remove` hides it by marker alone: the real ~/.codex
+# keeps its Codex login, and every enumerator must behave as though main never existed. The marker
+# path is llm-limits.sh's — the menubar's `--codex-remove` writes exactly this file, and a spelling
+# of codexb's own would make the two tools disagree about whether main is there.
+MAIN_MARKER="$HOME/.llm-limits-codex.json.removed"
+assert test ! -e "$MAIN_MARKER"
+printf '{"current":"main","accounts":[{"account":"main"},{"account":"keeper"}]}\n' >"$CACHE"
+: >"$CODEX_CALLS"
+: >"$ANNOUNCE_LOG"
+remove_main_output=$(bash "$SCRIPT" remove main) || fail "remove main failed"
+assert grep -qx 'codexb: removed main' <<<"$remove_main_output"
+assert grep -qF "$MAIN_MARKER" <<<"$remove_main_output"
+assert test -e "$MAIN_MARKER"
+assert test -f "$HOME/.codex/config.toml"
+assert test -f "$HOME/.codex/AGENTS.md"
+assert wait_announce ''
+# The roster is what `.current` falls back to, so removing the account it named must land on the
+# first one still there — never on a name no enumerator lists.
+assert jq -e '([.accounts[].account] | index("main")) == null and .current == "keeper"' "$CACHE"
+assert_fails bash "$SCRIPT" run main
+assert_fails bash "$SCRIPT" profile main
+assert_fails bash "$SCRIPT" main exec
+assert test ! -s "$CODEX_CALLS"
+assert_fails bash "$SCRIPT" remove main
+assert_fails bash "$SCRIPT" add main
+assert_fails bash "$SCRIPT" enable main
+assert_fails bash "$SCRIPT" disable main
+main_list=$(bash "$SCRIPT" list) || fail "list after remove main failed"
+assert_fails grep -q '^main:' <<<"$main_list"
+main_status=$(bash "$SCRIPT" status) || fail "status after remove main failed"
+assert_fails grep -q '^main:' <<<"$main_status"
+main_names=$(codex_base_home="$HOME" \
+  bash -c '. "'"$ROOT"'/share/codex-accounts.sh" && codex_main_removed')
+assert test -z "$main_names"
+# `pick` answered main as the last resort; a removed main is no resort at all.
+assert_fails bash "$SCRIPT" pick
+REMOVED_PIN_CONFIG="$WORK/worker-model-removed-main"
+printf 'worker=auto\n' >"$REMOVED_PIN_CONFIG"
+assert_fails env WORKER_PICK_CONFIG_FILE="$REMOVED_PIN_CONFIG" bash "$SCRIPT" use main
+assert_fails grep -q '^codex_profile=' "$REMOVED_PIN_CONFIG"
+# Deleting the marker is the whole undo.
+rm -f "$MAIN_MARKER"
+assert grep -qx 'main: Not logged in' <<<"$(bash "$SCRIPT" list)"
+assert test "$(bash "$SCRIPT" pick)" = main
 
 PIN_CONFIG="$WORK/worker-model-use"
 printf 'worker=auto\nclaudeb_profile=claude-a\ngemini_profile=gemini-a\n' >"$PIN_CONFIG"
@@ -926,4 +971,4 @@ assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR
   --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 assert grep -qx 'account=main' "$IMAGE_OUT"
 
-echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry (main refused), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"
+echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

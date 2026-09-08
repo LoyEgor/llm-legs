@@ -71,17 +71,66 @@ EOF
 }
 write_limits_other
 
-out=$(run_timer env -u CLAUDE_LIMITS_ACCOUNT "$SCRIPT" terminal 0) || fail "default-account run failed"
+# Nothing in the environment naming the chat is the one case that still falls back to notcom, so
+# the config dir has to be unset too — a claudeb chat is named by it (share/chat-account.sh).
+out=$(run_timer env -u CLAUDE_LIMITS_ACCOUNT -u CLAUDE_CONFIG_DIR -u CLAUDEGPT_ACCOUNT \
+  "$SCRIPT" terminal 0) || fail "default-account run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "20" ] || fail "no CLAUDE_LIMITS_ACCOUNT should default to notcom (expected 20, got $minutes): $out"
+
+# A profile config dir names the chat where the variable does not, exactly as worker-pick and the
+# statusline read it.
+out=$(run_timer env -u CLAUDE_LIMITS_ACCOUNT -u CLAUDEGPT_ACCOUNT \
+  CLAUDE_CONFIG_DIR="$FIXTURE_HOME/.claude-profiles/alona" "$SCRIPT" terminal 0) ||
+  fail "config-dir account run failed"
+minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
+[ "$minutes" = "150" ] || fail "CLAUDE_CONFIG_DIR should name the account (expected 150, got $minutes): $out"
 
 out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=alona "$SCRIPT" terminal 0) || fail "explicit-account run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "150" ] || fail "CLAUDE_LIMITS_ACCOUNT=alona should use alona's resets_at (expected 150, got $minutes): $out"
 
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=- "$SCRIPT" terminal 0) || fail "'-' sentinel run failed"
+out=$(run_timer env -u CLAUDE_CONFIG_DIR -u CLAUDEGPT_ACCOUNT CLAUDE_LIMITS_ACCOUNT=- \
+  "$SCRIPT" terminal 0) || fail "'-' sentinel run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "20" ] || fail "CLAUDE_LIMITS_ACCOUNT=- should fall back to notcom like unset (expected 20, got $minutes): $out"
+
+# A `claudegpt` chat spends an OpenAI account in `vendors.codex` and carries no Claude environment
+# at all, so arming it off a Claude row is a timer for a window this chat never spent. The same
+# name in both stores is the case that proves the vendor, not just the account, is resolved
+# (share/chat-account.sh).
+write_limits_gateway() {
+  cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
+{"vendors":{
+  "claude":{"accounts":[
+    {"account":"notcom","five_hour":{"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}},
+    {"account":"work4","five_hour":{"resets_at":"$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]},
+  "codex":{"accounts":[
+    {"account":"work4","five_hour":{"resets_at":"$(date -u -r "$((now + 9000 + 30))" +%Y-%m-%dT%H:%M:%SZ)"}}]}}}
+EOF
+}
+write_limits_gateway
+
+out=$(run_timer env -u CLAUDE_LIMITS_ACCOUNT -u CLAUDE_CONFIG_DIR CLAUDEGPT_ACCOUNT=work4 \
+  "$SCRIPT" terminal 0) || fail "gateway run failed"
+minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
+[ "$minutes" = "150" ] ||
+  fail "CLAUDEGPT_ACCOUNT should time off the codex row (expected 150, got $minutes): $out"
+
+# The gateway account outranks a Claude one the same chat also names: only the launcher decides.
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom CLAUDEGPT_ACCOUNT=work4 "$SCRIPT" terminal 0) ||
+  fail "gateway-over-claude run failed"
+minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
+[ "$minutes" = "150" ] ||
+  fail "a gateway chat must not time off CLAUDE_LIMITS_ACCOUNT (expected 150, got $minutes): $out"
+
+# A gateway account with no row anywhere falls back by name AND vendor, and says which it read.
+out=$(run_timer env -u CLAUDE_LIMITS_ACCOUNT -u CLAUDE_CONFIG_DIR CLAUDEGPT_ACCOUNT=nosuch \
+  "$SCRIPT" terminal 0) || fail "unknown gateway account run failed"
+echo "$out" | grep -q "codex/nosuch" ||
+  fail "the fallback reason should name the vendor and account it could not read: $out"
+
+write_limits_other
 
 # --- expired / missing window fallback ---
 

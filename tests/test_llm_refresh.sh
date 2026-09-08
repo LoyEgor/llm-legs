@@ -39,6 +39,9 @@ if [ "${STUB_PUSHBACK_TARGET:-}" = "$target" ]; then
     "$LLM_LIMITS_CACHE" >"$tmp" && mv -f "$tmp" "$LLM_LIMITS_CACHE"
   exit 0
 fi
+if [ "${STUB_STDERR_TARGET:-}" = "$target" ]; then
+  printf '%s\n' "${STUB_STDERR_TEXT:-}" >&2
+fi
 if [ "${STUB_REFRESH_SUCCEED:-1}" = 1 ]; then
   tmp=$(mktemp "${LLM_LIMITS_CACHE}.tmp.XXXXXX") || exit 5
   jq --arg vendor "$vendor" --arg account "$account" --argjson now "$LLM_REFRESH_NOW" '
@@ -229,7 +232,10 @@ standing_opencode_walls() {
 
 run_refresh() {
   local dir=$1 now=$2
-  env HOME="$dir/home" LLM_REFRESH_COLLECTOR="$STUB" LLM_LIMITS_CACHE="$dir/store.json" \
+  # The pause reader honours WORKER_PICK_CONFIG_FILE over HOME, and an inherited one points at the
+  # real ~/.claude/worker-model: a vendor Egor has parked there would drop out of every case here.
+  env HOME="$dir/home" WORKER_PICK_CONFIG_FILE="$dir/home/.claude/worker-model" \
+    LLM_REFRESH_COLLECTOR="$STUB" LLM_LIMITS_CACHE="$dir/store.json" \
     LLM_REFRESH_STATE="$dir/state.json" LLM_REFRESH_JOURNAL="$dir/journal.jsonl" \
     LLM_REFRESH_NOW="$now" STUB_LOG="$dir/calls.log" \
     LLM_LIMITS_REFRESH_OPENCODE_GO="$OC_STUB" OC_LOG="$dir/opencode.log" \
@@ -243,6 +249,7 @@ run_refresh() {
     LLM_LIMITS_REFRESH_PROBE_TIMEOUT="${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}" \
     LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS="${LLM_LIMITS_REFRESH_LOCK_STALE_SECONDS:-1800}" \
     STUB_PUSHBACK_TARGET="${STUB_PUSHBACK_TARGET:-}" STUB_REFRESH_SUCCEED="${STUB_REFRESH_SUCCEED:-1}" \
+    STUB_STDERR_TARGET="${STUB_STDERR_TARGET:-}" STUB_STDERR_TEXT="${STUB_STDERR_TEXT:-}" \
     STUB_PASSIVE_RC="${STUB_PASSIVE_RC:-0}" \
     PATH="$GROK_BIN:$PATH" \
     bash "$SCRIPT"
@@ -630,15 +637,100 @@ jq -eR 'fromjson | select(.vendor == "codex" and .outcome == "pushback" and
   fail 'pushback journal entry missing'
 pass
 
+# Seeds a due codex vendor at the base rung with one stale account.
+due_codex_case() {
+  local dir=$1
+  mkdir -p "$dir/home"
+  write_store "$dir/store.json" "$NOW" 60 7200 60
+  write_state "$dir/state.json" 30 30 30 "$NOW" "$((NOW - 1000))"
+  jq '.vendors.codex.last_attempt_epoch=0' "$dir/state.json" >"$dir/state.tmp" && \
+    mv "$dir/state.tmp" "$dir/state.json"
+}
+
+# The codex usage RPC names itself in every one of its failures — `codex usage read failed:`, and
+# the vendor wording `failed to fetch codex rate limits: <real cause>`. Read as a rate-limit
+# signal, the NAME of the thing being read made an auth-dead account and a dead workspace loosen
+# the whole vendor a rung per tick (2026-09-02: codex walked 30→45→60 that way).
+case_dir="$WORK/rpc-name-not-pushback"
+due_codex_case "$case_dir"
+STUB_STDERR_TARGET=codex/beta STUB_REFRESH_SUCCEED=0 \
+STUB_STDERR_TEXT="llm-limits.sh: Codex account beta live quota query failed: codex usage read failed: {'code': -32603, 'message': 'failed to fetch codex rate limits: GET https://chatgpt.com/backend-api/wham/usage failed: 402 Payment Required'}" \
+  run_refresh "$case_dir" "$NOW" || fail 'usage-RPC-name run failed'
+[ "$(jq -r '.codex.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+  fail 'the usage RPC naming itself was read as pushback and loosened the cadence'
+jq -eRn '[inputs | fromjson | select(.vendor == "codex")] |
+  length == 1 and .[0].outcome == "error"' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "a 402 inside the usage-RPC wrapper was not journaled as an error: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# A real refusal still loosens, and the journal keeps the text that did it: the refresh log is
+# truncated every run, so a rung with nothing but "a 429 or rate-limit signal" behind it is a rung
+# nobody can ever audit.
+case_dir="$WORK/pushback-excerpt"
+due_codex_case "$case_dir"
+STUB_STDERR_TARGET=codex/beta STUB_REFRESH_SUCCEED=0 \
+STUB_STDERR_TEXT='llm-limits.sh: Codex account beta live quota query failed: codex usage read failed: 429 Too Many Requests; Retry-After: 60' \
+  run_refresh "$case_dir" "$NOW" || fail 'genuine-429 run failed'
+[ "$(jq -r '.codex.interval_min' "$case_dir/state.json")" -eq 45 ] || \
+  fail 'a genuine 429 no longer loosens the cadence'
+jq -eR 'fromjson | select(.vendor == "codex" and .outcome == "pushback" and
+  (.detail | contains("429 Too Many Requests")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "the pushback detail carries no excerpt of the matched text: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# A 429 whose body restates a spent plan is the wall answering, not the endpoint pushing back, and
+# the wall must not slow the vendor down — but it is named, never silently dropped.
+case_dir="$WORK/wall-not-pushback"
+due_codex_case "$case_dir"
+STUB_STDERR_TARGET=codex/beta STUB_REFRESH_SUCCEED=0 \
+STUB_STDERR_TEXT='codex usage read failed: 429 Too Many Requests; body={"detail":"You have hit your usage limit."}' \
+  run_refresh "$case_dir" "$NOW" || fail 'usage-wall run failed'
+[ "$(jq -r '.codex.interval_min' "$case_dir/state.json")" -eq 30 ] || \
+  fail 'a usage wall loosened the cadence'
+jq -eR 'fromjson | select(.vendor == "codex" and .outcome != "pushback" and
+  (.detail | contains("usage wall, not endpoint pushback")))' "$case_dir/journal.jsonl" >/dev/null || \
+  fail "the usage wall was not named in the journal: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# The excerpt is a journal field, so it carries no token and no unbounded blob.
+case_dir="$WORK/excerpt-bounds"
+due_codex_case "$case_dir"
+STUB_STDERR_TARGET=codex/beta STUB_REFRESH_SUCCEED=0 \
+STUB_STDERR_TEXT="codex usage read failed: 429 Too Many Requests; access_token=\"eyJhbGciOiJIUzI1NiJ9.$(printf 'A%.0s' $(seq 80))\"; body=$(printf 'x%.0s' $(seq 400))" \
+  run_refresh "$case_dir" "$NOW" || fail 'excerpt-bounds run failed'
+jq -eR 'fromjson | select(.vendor == "codex" and .outcome == "pushback") |
+  select((.detail | test("eyJhbGci")) or (.detail | length) > 400 | not)' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail "the pushback excerpt leaked a token or ran unbounded: $(cat "$case_dir/journal.jsonl")"
+pass
+
+# A rung climbed on a misread signal has no other way down: the ladder tightens once per 24 clean
+# hours, so without this verb a spurious 60 stands for weeks.
+case_dir="$WORK/reset-cadence"
+mkdir -p "$case_dir/home"
+write_state "$case_dir/state.json" 60 60 15 "$NOW" "$((NOW - 1000))"
+env HOME="$case_dir/home" WORKER_PICK_CONFIG_FILE="$case_dir/home/.claude/worker-model" \
+  LLM_REFRESH_STATE="$case_dir/state.json" bash "$SCRIPT" reset-cadence codex >"$case_dir/reset.out" || fail 'reset-cadence run failed'
+jq -e '.codex.interval_min == 30 and .claude.interval_min == 60 and .gemini.interval_min == 15' \
+  "$case_dir/state.json" >/dev/null || \
+  fail "reset-cadence did not return codex alone to the base rung: $(jq -c . "$case_dir/state.json")"
+grep -q 'codex: interval_min 30' "$case_dir/reset.out" || \
+  fail 'reset-cadence did not state what it changed'
+[ ! -d "$case_dir/state.json.lock" ] || fail 'reset-cadence kept the state lock'
+env HOME="$case_dir/home" WORKER_PICK_CONFIG_FILE="$case_dir/home/.claude/worker-model" \
+  LLM_REFRESH_STATE="$case_dir/state.json" bash "$SCRIPT" reset-cadence nosuchvendor >/dev/null 2>&1 && \
+  fail 'reset-cadence accepted a vendor that does not exist'
+pass
+
 case_dir="$WORK/tighten"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
-write_state "$case_dir/state.json" 30 30 30 "$NOW" "$((NOW - 259201))"
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$((NOW - 86401))"
 jq '.vendors.codex.last_attempt_epoch=0' "$case_dir/state.json" >"$case_dir/state.tmp" && \
   mv "$case_dir/state.tmp" "$case_dir/state.json"
 run_refresh "$case_dir" "$NOW" || fail 'clean-window run failed'
 [ "$(jq -r '.codex.interval_min' "$case_dir/state.json")" -eq 22 ] || \
-  fail '72-hour clean window did not tighten cadence'
+  fail '24-hour clean window did not tighten cadence'
 [ "$(jq -r '.codex.clean_since_epoch' "$case_dir/state.json")" -eq "$NOW" ] || \
   fail 'tightened rung did not restart its clean window'
 pass
@@ -646,7 +738,7 @@ pass
 case_dir="$WORK/journal-block"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
-write_state "$case_dir/state.json" 30 30 30 "$NOW" "$((NOW - 259201))"
+write_state "$case_dir/state.json" 30 30 30 "$NOW" "$((NOW - 86401))"
 jq '.vendors.codex.last_attempt_epoch=0' "$case_dir/state.json" >"$case_dir/state.tmp" && \
   mv "$case_dir/state.tmp" "$case_dir/state.json"
 jq -cn --argjson ts "$((NOW - 60))" \

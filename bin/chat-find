@@ -19,6 +19,7 @@ from functools import lru_cache
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
+import chat_resume  # noqa: E402
 from chat_names import (  # noqa: E402
     HEADLESS_VIA, NAME_LINE_MAX, NAME_PATTERNS, chat_name, names_by_path, note_name,
     project_label, searcher, split_hit, store_names, worker_run_launchers,
@@ -499,7 +500,8 @@ def scan_recent(root, days, cache_path, agents=False):
 def short_model(name):
     # The release date in a model id ("claude-haiku-4-5-20251001") is width the
     # column pays for one model and nobody reads.
-    return re.sub(r"-20\d{6}$", "", (name or "").replace("claude-", "")) or "-"
+    return chat_resume.model_label(name) \
+        or re.sub(r"-20\d{6}$", "", (name or "").replace("claude-", "")) or "-"
 
 
 def report_recent(args):
@@ -607,6 +609,7 @@ def main():
         if not args.agents and via == HEADLESS_VIA:
             headless += 1
             continue
+        state["model"] = (facts or {}).get("model")
         rows.append((when, path, state))
     # Newest last-real-message first (never file mtime), relevance to break ties:
     # the date is what he recognises a chat by, so the list reads as a timeline.
@@ -622,8 +625,8 @@ def main():
     for when, path, state in shown:
         cwd, title = head_facts(path)
         session = os.path.basename(path)[: -len(".jsonl")]
-        launcher = ("claudeb profile %s --resume %s" % (profile, session)) if profile \
-            else ("claude --resume %s" % session)
+        launcher = " ".join(chat_resume.resume_argv(
+            session, profile, model_id=state.get("model")))
         tally = "name match" if not state["hits"] else "%d%s hit%s" % (
             state["hits"], "+" if state["capped"] else "", "" if state["hits"] == 1 else "s")
         print("LAST %s (%s) · %s · %s" % (

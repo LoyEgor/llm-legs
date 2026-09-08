@@ -19,6 +19,17 @@ assert_eq() {
   [ "$1" = "$2" ] || fail "assert $asserts failed: expected '$1', got '$2'"
 }
 
+cg_identity() (
+  eval "$(sed -n '/^fit_cb_part() {/,/^}/p' "$STATUSLINE")"
+  acct=work4; cb_show=1; fit_acct_max=0; MAGENTA=''; RESET=''
+  CLAUDEGPT_ACCOUNT=$1
+  fit_cb_part
+  printf '%s' "$cb_part"
+)
+assert_eq ' main' "$(cg_identity main)"
+assert_eq ' work4' "$(cg_identity work4)"
+assert_eq ' work4' "$(cg_identity '')"
+
 [ -x "$BENCH_CMD" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
 
 HOME="$WORK/home"
@@ -1217,14 +1228,70 @@ run_statusline() {
   # snapshot -> empty cache) so renders stay hermetic and deterministic. The
   # store merge-kick would otherwise spawn the real llm-limits.sh collector;
   # point it at a no-op (overridden per-case below where the kick is exercised).
+  # The Codex quota kick fires on every CLAUDEGPT_ACCOUNT render and would otherwise
+  # run a real --refresh-account against the user's own store — same neutralization.
   # COLUMNS is passed explicitly and empty by default: the fit loop reads it, and a value inherited
   # from whatever terminal runs the suite would shrink lines every other case measures at full width.
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
     COLUMNS="${FIT_COLUMNS:-}" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
+    STATUSLINE_CODEX_REFRESH_CMD="${CODEX_REFRESH_CMD:-/usr/bin/true}" \
     STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" STATUSLINE_REVIEW_BENCH="${BENCH_CMD:-}" "$STATUSLINE"
 }
+
+
+cg_now=$(date +%s)
+jq -cn --argjson now "$cg_now" '{vendors:{codex:{accounts:[
+  {account:"work4",five_hour:{used_pct:36,effective_pct:36,as_of:$now,resets_at:($now+3600)},
+   weekly:{used_pct:22,effective_pct:22,as_of:$now,resets_at:($now+86400)}},
+  {account:"main",five_hour:{used_pct:9,effective_pct:9,as_of:$now,resets_at:($now+3600)}}
+]}}}' > "$WORK/limits.json"
+cg_usage=$(jq -cn '{
+  context_window:{context_window_size:872000,current_usage:{input_tokens:72000,cache_read_input_tokens:200000}},
+  rate_limits:{five_hour:{used_percentage:99},seven_day:{used_percentage:99}}}')
+cg_payload=$(statusline_payload cg-limits "$(jq -cn --argjson extra "$cg_usage" '{model:{id:"anthropic.ccr.sol",display_name:"Sol"}} * $extra')")
+cg_before=$(cat "$HOME/.claude/statusline-cache-rl" 2>/dev/null || :)
+cg_out=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert grep -Fq "${CYAN}Sol high${RESET}" <<< "$cg_out"
+assert grep -Fq "ctx ${DIM}31%${RESET} ${YELLOW}? 272k${RESET}" <<< "$cg_out"
+assert test "${cg_out#*cached}" = "$cg_out"
+assert test "${cg_out#*272k/872k}" = "$cg_out"
+assert grep -Fq '36%' <<< "$cg_out"
+assert grep -Fq '22%' <<< "$cg_out"
+assert test "${cg_out#*OpenAI/}" = "$cg_out"
+assert test "${cg_out#*fb }" = "$cg_out"
+assert_eq "$cg_before" "$(cat "$HOME/.claude/statusline-cache-rl" 2>/dev/null || :)"
+assert test ! -e "$CLAUDEB_FIX/limits/work4.json"
+cg_astra=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$(statusline_payload cg-astra "$(jq -cn --argjson extra "$cg_usage" '{model:{id:"anthropic.ccr.astra",display_name:"Sol"}} * $extra')")")
+assert grep -Fq "${CYAN}Astra high${RESET}" <<< "$cg_astra"
+assert test "${cg_astra#*Sol}" = "$cg_astra"
+assert grep -Fq "ctx ${DIM}31%${RESET} ${YELLOW}? 272k${RESET}" <<< "$cg_astra"
+claude_same=$(run_statusline "$(statusline_payload cg-claude "$(jq -cn '{model:{id:"claude-fable-5",display_name:"Fable 5"},context_window:{context_window_size:872000,current_usage:{input_tokens:72000,cache_read_input_tokens:200000}}}')")")
+assert grep -Fq "${CYAN}Fable 5 high${RESET}" <<< "$claude_same"
+assert grep -Fq "ctx ${DIM}31%${RESET} ${YELLOW}? 272k${RESET}" <<< "$claude_same"
+cg_nocache=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$(statusline_payload cg-nocache "$(jq -cn '{model:{id:"anthropic.ccr.astra",display_name:"Sol"},context_window:{context_window_size:872000,current_usage:{input_tokens:46000}}}')")")
+assert grep -Fq "${CYAN}Astra high${RESET}" <<< "$cg_nocache"
+assert test "${cg_nocache#*cached}" = "$cg_nocache"
+assert test "${cg_nocache#*0k}" = "$cg_nocache"
+cg_nousage=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$(statusline_payload cg-nousage "$(jq -cn '{model:{id:"anthropic.ccr.astra",display_name:"Astra"},context_window:{used_percentage:5,context_window_size:872000,current_usage:null}}')")")
+assert grep -Fq "ctx ${DIM}5%${RESET} ${DIM}?${RESET}" <<< "$cg_nousage"
+assert test "${cg_nousage#*0k}" = "$cg_nousage"
+assert test "${cg_nousage#*cached}" = "$cg_nousage"
+cg_main=$(CLAUDEGPT_ACCOUNT=main run_statusline "$cg_payload")
+assert grep -Fq '9%' <<< "$cg_main"
+cg_missing=$(CLAUDEGPT_ACCOUNT=missing run_statusline "$cg_payload")
+assert test "${cg_missing#*36%}" = "$cg_missing"
+assert test "${cg_missing#*99%}" = "$cg_missing"
+assert grep -Fq '?' <<< "$cg_missing"
+jq --argjson now "$cg_now" '.vendors.codex.accounts[0].five_hour.resets_at = ($now-1)
+  | .vendors.codex.accounts[0].weekly.as_of = ($now-22000)' "$WORK/limits.json" > "$WORK/cg-limits.json"
+mv "$WORK/cg-limits.json" "$WORK/limits.json"
+cg_expired=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert grep -Fq '0%' <<< "$cg_expired"
+assert test "${cg_expired#*36%}" = "$cg_expired"
+assert grep -Fq $'\033[2m' <<< "$cg_expired"
+printf '{}' > "$WORK/limits.json"
 
 status_payload=$(statusline_payload status-override)
 control_one=$(run_statusline "$status_payload") || fail "statusline control failed"
@@ -1338,6 +1405,15 @@ assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_ou
 # The `w:<name>` label is gone at every width: one candidate needs no vendor caption.
 assert test "${worker_out#*w:}" = "$worker_out"
 assert test "${worker_out#*SN}" = "$worker_out"
+
+# A gateway chat spends a CODEX account, so the prediction it reads is the file worker-pick wrote
+# for that vendor; `worker-pick.line.main` above belongs to the Claude profile of that name and
+# would render a candidate this chat never asked for (shared-invariants row `c`).
+printf 'cx✓gwcodex·astra·med cb~gateway·opus·hi\n' >"$HOME/.cache/worker-pick.line.codex@work4"
+gw_worker_out=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$(statusline_payload status-w-gateway)")
+assert grep -Fq "${MAGENTA}gateway${RESET}${DIM}·OP·hi${RESET}" <<< "$gw_worker_out"
+assert test "${gw_worker_out#*notcom}" = "$gw_worker_out"
+rm -f "$HOME/.cache/worker-pick.line.codex@work4"
 
 printf 'worker=sonnet\nsonnet_effort=high\ncodex_effort=medium\n' > "$worker_file"
 worker_out=$(run_statusline "$(statusline_payload status-w-son-eff)")
@@ -2927,6 +3003,127 @@ kick_start=$(date +%s)
 STORE_MERGE_CMD="$SLOW_COLLECTOR" run_statusline "$kick_payload" kickacct >/dev/null \
   || fail "statusline kick with slow collector exited nonzero"
 assert test "$(( $(date +%s) - kick_start ))" -lt 2
+
+# --- Codex quota kick (bin/statusline.sh) ---
+CQ_ARGS="$WORK/codex-kick-args"
+CQ_REFRESHER="$FIXTURES/codex-refresher"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$CQ_ARGS" > "$CQ_REFRESHER"
+chmod +x "$CQ_REFRESHER"
+CQ_FAIL="$FIXTURES/codex-refresher-fail"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf boom >&2\nexit 3\n' "$CQ_ARGS" > "$CQ_FAIL"
+chmod +x "$CQ_FAIL"
+CQ_SLOW="$FIXTURES/codex-refresher-slow"
+printf '#!/usr/bin/env bash\nsleep 3\nprintf "%%s\\n" "$*" >> "%s"\n' "$CQ_ARGS" > "$CQ_SLOW"
+chmod +x "$CQ_SLOW"
+cq_stamp() { printf '%s' "$STATE_DIR/codex-quota-kick-$1"; }
+cq_reset() {
+  # Earlier claudegpt render cases leave stamps of their own accounts behind, and the
+  # "nothing was stamped" assertions below read the whole directory.
+  rmdir "$STATE_DIR"/codex-quota-kick-*.lock 2>/dev/null || true
+  rm -f "$CQ_ARGS" "$STATE_DIR"/codex-quota-kick-* 2>/dev/null || true
+}
+cq_wait_args() { local i; for i in $(seq 1 60); do [ -s "$CQ_ARGS" ] && return 0; sleep 0.05; done; return 1; }
+
+# The kick refuses an account with no Codex home, so the fixture needs the profile it probes.
+mkdir -p "$HOME/.codex-profiles/work4"
+cq_now=$(date +%s)
+jq -cn --argjson now "$cq_now" '{vendors:{codex:{accounts:[
+  {account:"work4",five_hour:{used_pct:36,effective_pct:36,as_of:$now,resets_at:($now+3600)},
+   weekly:{used_pct:22,effective_pct:22,as_of:$now,resets_at:($now+86400)}}
+]}}}' > "$WORK/limits.json"
+cq_payload=$(statusline_payload cq-kick "$(jq -cn '{model:{id:"anthropic.ccr.sol",display_name:"Sol"}}')")
+
+# A: no stamp -> the existing per-account verb runs and the next-probe deadline is stamped.
+cq_reset
+cq_start=$(date +%s)
+cq_out=$(CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload") \
+  || fail "claudegpt quota-kick render failed"
+assert grep -Fq '36%' <<< "$cq_out"
+assert cq_wait_args
+assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
+cq_deadline=$(cat "$(cq_stamp work4)")
+assert test "$cq_deadline" -ge "$((cq_start + 600))"
+assert test "$cq_deadline" -le "$(( $(date +%s) + 600 ))"
+
+# B: a deadline in the future debounces every session on that account, stamp untouched.
+printf '%s\n' "$(( $(date +%s) + 600 ))" > "$(cq_stamp work4)"
+rm -f "$CQ_ARGS"
+cq_before=$(cat "$(cq_stamp work4)")
+CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload" >/dev/null \
+  || fail "claudegpt debounced render failed"
+sleep 0.2
+assert test ! -s "$CQ_ARGS"
+assert_eq "$cq_before" "$(cat "$(cq_stamp work4)")"
+
+# C: an elapsed deadline probes again.
+printf '%s\n' "$(( $(date +%s) - 1 ))" > "$(cq_stamp work4)"
+rm -f "$CQ_ARGS"
+CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload" >/dev/null \
+  || fail "claudegpt elapsed-deadline render failed"
+assert cq_wait_args
+assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
+
+# D: pushback thins the cadence — a refuser pushes its own deadline out to the backoff, and its
+# stderr never reaches the render.
+cq_reset
+cq_err="$WORK/codex-kick-stderr"
+cq_start=$(date +%s)
+cq_fail_out=$(CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_FAIL" run_statusline "$cq_payload" 2>"$cq_err") \
+  || fail "claudegpt kick with failing refresher exited nonzero"
+assert grep -Fq '36%' <<< "$cq_fail_out"
+assert test "${cq_fail_out#*boom}" = "$cq_fail_out"
+assert_eq "" "$(cat "$cq_err")"
+assert cq_wait_args
+cq_backoff=""
+for _ in $(seq 1 60); do
+  cq_backoff=$(cat "$(cq_stamp work4)" 2>/dev/null)
+  [ "${cq_backoff:-0}" -ge "$((cq_start + 1800))" ] && break
+  sleep 0.05
+done
+assert test "${cq_backoff:-0}" -ge "$((cq_start + 1800))"
+
+# E: a slow refresher never blocks the render.
+cq_reset
+cq_start=$(date +%s)
+CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_SLOW" run_statusline "$cq_payload" >/dev/null \
+  || fail "claudegpt kick with slow refresher exited nonzero"
+assert test "$(( $(date +%s) - cq_start ))" -lt 2
+
+# F: the account label is an environment variable this process does not own — a name that is not
+# a launcher account name probes nothing and writes no stamp anywhere.
+cq_reset
+CLAUDEGPT_ACCOUNT='../escape' CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload" >/dev/null \
+  || fail "claudegpt kick with a rejected account name exited nonzero"
+sleep 0.2
+assert test ! -s "$CQ_ARGS"
+assert test -z "$(find "$STATE_DIR" -name 'codex-quota-kick-*' 2>/dev/null)"
+assert test ! -e "$HOME/.cache/codex-quota-kick-escape"
+
+# G: an Anthropic-model render never probes Codex quota.
+cq_reset
+CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$(statusline_payload cq-claude)" >/dev/null \
+  || fail "claude render with the codex refresher configured failed"
+sleep 0.2
+assert test ! -s "$CQ_ARGS"
+assert test -z "$(find "$STATE_DIR" -name 'codex-quota-kick-*' 2>/dev/null)"
+
+# H: a gateway label naming no Codex profile probes nothing and stamps nothing — the collector
+# warns about a missing home and still exits 0, so a fired deadline would never back off.
+cq_reset
+assert test ! -d "$HOME/.codex-profiles/nocodexhome"
+CLAUDEGPT_ACCOUNT=nocodexhome CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload" >/dev/null \
+  || fail "claudegpt render for an account with no codex profile failed"
+sleep 0.2
+assert test ! -s "$CQ_ARGS"
+assert test -z "$(find "$STATE_DIR" -name 'codex-quota-kick-*' 2>/dev/null)"
+mkdir -p "$HOME/.codex-profiles/nocodexhome"
+CLAUDEGPT_ACCOUNT=nocodexhome CODEX_REFRESH_CMD="$CQ_REFRESHER" run_statusline "$cq_payload" >/dev/null \
+  || fail "claudegpt render after creating the codex profile failed"
+assert cq_wait_args
+assert_eq "--refresh-account codex/nocodexhome" "$(cat "$CQ_ARGS")"
+rmdir "$HOME/.codex-profiles/nocodexhome"
+cq_reset
+printf '{}' > "$WORK/limits.json"
 
 # --- statusline-freshness-gate.sh ---
 FRESH_GATE="$ROOT/bin/statusline-freshness-gate.sh"

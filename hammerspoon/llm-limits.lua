@@ -93,7 +93,7 @@ local function loginNeededRow(label, loginFn, hardRefreshFn, removeFn, clearPinF
   if clearPinFn then
     table.insert(menu, { title = "Pin for workers", checked = true, fn = clearPinFn })
   end
-  -- A non-removable account (e.g. codex `main`, whose `remove` always refuses)
+  -- A non-removable account (e.g. grok `main`, whose `remove` always refuses)
   -- passes removeFn=nil so the row never offers a dead Remove action.
   if removeFn then
     table.insert(menu, { title = "Remove " .. label, fn = removeFn })
@@ -484,7 +484,12 @@ local function readWorkerModel()
         end
         for vendor, prefix in pairs(WORKER_MODEL_PREFIX) do
           if key == prefix .. "_profile" then
-            pins[vendor] = value
+            local set = {}
+            for name in string.gmatch(value, "[^,]+") do
+              name = name:match("^%s*(.-)%s*$")
+              if name ~= "" then set[name] = true end
+            end
+            pins[vendor] = set
           else
             for _, role in ipairs(WORKER_ROLES) do
               -- Only the literal "off" is a veto, which is what worker-pick and review-bench read.
@@ -908,7 +913,10 @@ end
 
 -- Arms a Hammerspoon one-shot for the chat in the frontmost Terminal tab; the
 -- arm itself is silent — claude_chat_switch.lua alerts on the outcome later.
-function M.switchChatTo(name)
+-- `gateway` says the name came from a Codex row, so it is a claudegpt account and
+-- not the claudeb profile that may carry the same name.
+function M.switchChatTo(name, gateway)
+  local arguments = gateway and { "--front", "--gateway", name } or { "--front", name }
   local ok = pcall(function()
     local task = hs.task.new(os.getenv("HOME") .. "/.local/bin/claude-chat-switch",
       function(exitCode, stdOut, stdErr)
@@ -918,7 +926,7 @@ function M.switchChatTo(name)
             or ("exit " .. tostring(exitCode))
           hs.alert.show("Chat switch failed: " .. line)
         end
-      end, { "--front", name })
+      end, arguments)
     if task then
       task:setEnvironment(baseEnvironment())
     end
@@ -959,19 +967,35 @@ function M.toggleGrokAccount(name, currentlyEnabled)
 end
 
 function M.pinClaude(name, currentlyPinned)
-  runClaudeb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+  if currentlyPinned then
+    runClaudeb({ "use", "--clear" }, "pin failed")
+  else
+    runClaudeb({ "use", name }, "pin failed")
+  end
 end
 
 function M.pinCodex(name, currentlyPinned)
-  runCodexb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+  if currentlyPinned then
+    runCodexb({ "use", "--clear" }, "pin failed")
+  else
+    runCodexb({ "use", name }, "pin failed")
+  end
 end
 
 function M.pinGemini(name, currentlyPinned)
-  runGeminib({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+  if currentlyPinned then
+    runGeminib({ "use", "--clear" }, "pin failed")
+  else
+    runGeminib({ "use", name }, "pin failed")
+  end
 end
 
 function M.pinGrok(name, currentlyPinned)
-  runGrokb({ "use", currentlyPinned and "--clear" or name }, "pin failed")
+  if currentlyPinned then
+    runGrokb({ "use", "--clear" }, "pin failed")
+  else
+    runGrokb({ "use", name }, "pin failed")
+  end
 end
 
 local function refreshData(args, kind, budget, key, envExtra)
@@ -1176,8 +1200,12 @@ function M.removeClaude(name)
     removalOptions("claude", name))
 end
 function M.removeCodex(name)
-  runCodexb({ "remove", name, "--force" }, "remove failed", nil,
-    removalOptions("codex", name))
+  if not name or name == "main" then
+    refreshData({ "--codex-remove" }, "codex-remove", 360, "codex-remove")
+  else
+    runCodexb({ "remove", name, "--force" }, "remove failed", nil,
+      removalOptions("codex", name))
+  end
 end
 function M.removeGemini(name)
   if not name or name == "main" then
@@ -1531,11 +1559,11 @@ function M.menuItems()
       if paused[entry.key] then
         table.insert(menu, pausedRow(entry.key, entry.label))
       elseif vendor ~= nil then
-      local pinnedAccount = pins[entry.key]
+      local pinSet = pins[entry.key] or {}
       -- A vendor no role may use is still fully operable; its rows only stop claiming attention.
       local unused = not roles[entry.key].workers and not roles[entry.key].reviewers
       local roleOff = not roles[entry.key].workers or not roles[entry.key].reviewers
-      local renderedPin = false
+      local renderedPins = {}
       local renderedAccountRows = false
       -- A sole-account vendor has no section header to carry the role switches, so its own row
       -- does — logged out included, which is when parking the vendor is the point.
@@ -1560,10 +1588,10 @@ function M.menuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
-          unavailableRow = geminiLoginNeededRow(entry.label, "main", pinnedAccount == "main",
+          unavailableRow = geminiLoginNeededRow(entry.label, "main", pinSet["main"] == true,
             formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, roleOff,
             vendor.age_alarm == true)
-          renderedPin = pinnedAccount == "main"
+          if pinSet["main"] then renderedPins["main"] = true end
         else
           unavailableRow = {
             title = authNeeded and loginNeededTitle(entry.label, false,
@@ -1625,7 +1653,7 @@ function M.menuItems()
         else
           -- Gemini's pin has to be known before the row is built now that the mark lives inside
           -- the title instead of being appended behind the age.
-          local geminiPinned = entry.key == "gemini" and pinnedAccount == "main"
+          local geminiPinned = entry.key == "gemini" and pinSet["main"] == true
           local fallbackRow = {
             title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
               vendor.needs_user_entry == true, geminiPinned, nil, roleOff,
@@ -1647,7 +1675,7 @@ function M.menuItems()
           end
           if entry.key == "gemini" then
             local pinExists = geminiPinned
-            if pinExists then renderedPin = true end
+            if pinExists then renderedPins["main"] = true end
             -- The sole account carries the pool checkbox like every other row: an empty pool is a
             -- legitimate state (it says no worker may run), so nothing here is immutable.
             local soleEnabled = poolStateFor("gemini", "main", vendor.enabled ~= false)
@@ -1685,7 +1713,7 @@ function M.menuItems()
           local accountAgeAlarm = block.age_alarm == true
             and not (entry.key == "grok" and authStatus == "expired")
           local generalAtLimit = bucketAtLimit(fiveHour) or bucketAtLimit(weekly)
-          local pinExists = pins[entry.key] == acct
+          local pinExists = pinSet[acct] == true
           local pinFn
           if entry.key == "claude" then
             pinFn = function(pinned) M.pinClaude(acct, pinned) end
@@ -1697,7 +1725,7 @@ function M.menuItems()
             pinFn = function(pinned) M.pinGrok(acct, pinned) end
           end
           if isAccountRows then
-            if pinExists then renderedPin = true end
+            if pinExists then renderedPins[acct] = true end
             local resetCredits = tonumber(block.reset_credits)
             -- The row carries the count and nothing else; the expiry only matters when the user is
             -- about to spend the reset, so it lives on the action instead of crowding out the age.
@@ -1713,8 +1741,7 @@ function M.menuItems()
               elseif entry.key == "codex" then
                 loginFn = function() M.loginCodex(acct) end
                 hardRefreshFn = function() M.hardRefreshCodex(acct) end
-                -- codexb refuses to remove `main` (the real ~/.codex); no Remove item.
-                if acct ~= "main" then removeFn = function() M.removeCodex(acct) end end
+                removeFn = function() M.removeCodex(acct) end
               elseif entry.key == "gemini" then
                 accountRow = geminiLoginNeededRow(acct, acct, pinExists,
                   accountAge, block.needs_user_entry == true, roleOff, accountAgeAlarm)
@@ -1760,6 +1787,10 @@ function M.menuItems()
                     function() M.toggleCodexAccount(acct, enabled) end),
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshCodex(acct) end },
+                  -- The same item the Claude rows carry: a Codex account name is also a
+                  -- claudegpt gateway login, and the chat reopens through that launcher.
+                  { title = "Switch chat to this",
+                    fn = function() M.switchChatTo(acct, true) end },
                 }
               elseif isGeminiAccounts then
                 accountRow.disabled = nil
@@ -1836,19 +1867,25 @@ function M.menuItems()
           end
         end
       end
-      if type(pinnedAccount) == "string" and pinnedAccount ~= "" and not renderedPin then
+      local leftover = {}
+      for name in pairs(pinSet) do
+        if not renderedPins[name] then table.insert(leftover, name) end
+      end
+      table.sort(leftover)
+      for _, leftoverName in ipairs(leftover) do
+        local name = leftoverName
         local clearPin
         if entry.key == "claude" then
-          clearPin = function() M.pinClaude(pinnedAccount, true) end
+          clearPin = function() M.pinClaude(name, true) end
         elseif entry.key == "codex" then
-          clearPin = function() M.pinCodex(pinnedAccount, true) end
+          clearPin = function() M.pinCodex(name, true) end
         elseif entry.key == "gemini" then
-          clearPin = function() M.pinGemini(pinnedAccount, true) end
+          clearPin = function() M.pinGemini(name, true) end
         else
-          clearPin = function() M.pinGrok(pinnedAccount, true) end
+          clearPin = function() M.pinGrok(name, true) end
         end
         table.insert(menu, {
-          title = metaTitle(pinnedAccount) .. pinTitle(),
+          title = metaTitle(name) .. pinTitle(),
           menu = {{ title = "Pin for workers", checked = true, fn = clearPin }},
         })
       end

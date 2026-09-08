@@ -111,6 +111,26 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    `every <vendor> account is out of the worker pool`
    and reported by `worker-run` as `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
+## Whose account is this chat?
+
+Every surface that reads a usage row for the session it runs in asks one resolver,
+`share/chat-account.sh`, and none re-derives it: `CLAUDEGPT_ACCOUNT` names a **codex** account (a
+`claudegpt` chat is Claude Code on an OpenAI subscription — `docs/claudegpt.md`), else
+`CLAUDE_LIMITS_ACCOUNT`, else the profile `CLAUDE_CONFIG_DIR` points at, and otherwise nothing:
+the shared `~/.claude` names no account, and what stands in there is the caller's own business —
+`main` for `worker-pick`, `notcom` for `claude-resume-timer`, an openly-labelled `.claudeb-state`
+guess for `workflow-burn-gate.sh`. The answer is a vendor AND an account, because the same name
+lives in both stores (`com` is a claudeb profile and a gateway login), and it decides which
+`.vendors.<vendor>.accounts[]` row a surface reads: `bin/worker-pick` (the `*` own-row marker and
+its prediction file), `bin/claude-resume-timer`, `bin/workflow-burn-gate.sh` and the
+`resume-timer-nudge` hook.
+
+`worker-pick`'s prediction file follows that answer: `worker-pick.line.<account>` for a Claude
+chat, `worker-pick.line.codex@<account>` for a gateway one — `@` is the one character no account
+name in either store admits, and the Claude form is the name `bin/claudeb` prunes when a profile is
+removed. `bin/statusline.sh` builds the same two names from the same fact, so a gateway chat reads
+the prediction it owns and nothing writes into a Claude account's file (shared-invariants row `c`).
+
 ## Claims
 
 Usage data lags a run by minutes, so two callers asking in that window would both be handed the
@@ -143,7 +163,9 @@ with no rule of its own.
 
 Reachability is only half of visibility. A vendor launched as a bare headless CLI call from a
 chat's Bash — `claude -p`, `claudeb … -p`, `codex exec`, `codexb … exec`, `gemini -p`,
-`geminib … --print`, `agy … --print`, `opencode run`, `grok … -p`, `grokb … --prompt-file` —
+`geminib … --print`, `agy … --print`, `opencode run`, `grok … -p`, `grokb … --prompt-file`,
+`claudegpt p <acct> -p` (Claude Code print run on a Codex account — the interactive
+`claudegpt p <acct>` is the human, like `claudeb profile x`) —
 leaves no `worker-run` record, no statusline tag, no journal ownership, no pool refusal, no limit
 signature and no stall watch, so nothing downstream can tell a worker ran at all. The per-account
 wrapper is denied beside the bare binary, never instead of it: isolating a profile is not
@@ -164,11 +186,14 @@ the operand it is. It fails open on its own errors. Interactive launches — no 
 
 The other half of the same rule is the Agent tool, and the gate there is
 `bin/worker-limit-gate.sh`. Workers are unified: every run that edits, reviews, verifies or scans
-is a relay worker through `worker-run`, so on a **Fable** session a NATIVE agent type —
+is a relay worker through `worker-run`, so on an **orchestrator** session a NATIVE agent type —
 `general-purpose`, `claude`, `fork`, anything custom — is refused outright, because it runs on the
 session's own model, which is the one quota the whole relay design exists to spare. Four
 `general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`, `gemini-research`
+closes. An orchestrator session is Fable **or** a `claudegpt` gateway chat (`anthropic.ccr.sol` /
+`anthropic.ccr.astra`) — Claude Code on an OpenAI subscription, spending the one session quota the
+relay design exists to spare, so it is the same rule and not a second one. The shape of that model
+list lives in `orchestrator_model` in the gate and nowhere else (shared-invariants row `bt`). The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`, `gemini-research`
 (shared-invariants row `bt`): `Explore`, `claude-code-guide` and the thin `gemini-research` relay are
 pure lookup, so they are rewritten to `model: sonnet` unless the call names a model itself; the
 research pass itself runs on Gemini 3.8 Flash. Read-only fan-out does not stay native at all: an

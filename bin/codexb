@@ -15,6 +15,7 @@ resolve_root() {
 }
 
 codexb_root=$(resolve_root)
+. "$codexb_root/share/codex-accounts.sh"
 . "$codexb_root/share/worker-pool.sh"
 . "$codexb_root/share/worker-model.sh"
 . "$codexb_root/share/account-announce.sh"
@@ -38,7 +39,7 @@ auth_marker() {
 
 account_names() {
   local path
-  printf 'main\n'
+  codex_main_removed || printf 'main\n'
   if [ -d "$profiles_dir" ]; then
     for path in "$profiles_dir"/*; do
       [ -d "$path" ] && basename "$path"
@@ -161,7 +162,7 @@ codex_credentials_alive() {
 }
 
 remove_account() {
-  local name='' force=false arg directory codex_cache tmp
+  local name='' force=false arg directory codex_cache tmp marker fallback
   for arg in "$@"; do
     case "$arg" in
       --force) force=true ;;
@@ -174,31 +175,51 @@ remove_account() {
   # Charset (not reserved_name): rejects path traversal (`../x`, leading dot,
   # slashes) while still allowing removal of an account whose name became a
   # reserved word only after it was created (creation is gated separately).
-  if [ -z "$name" ] || [ "$name" = main ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    printf 'usage: codexb remove <name> [--force] (not "main"; lowercase letters, numbers, hyphens)\n' >&2
+  if [ -z "$name" ] || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: codexb remove <name> [--force] (lowercase letters, numbers, hyphens)\n' >&2
     exit 2
   fi
-  directory="$profiles_dir/$name"
-  if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
-    printf 'codexb: unknown account: %s\n' "$name" >&2
-    exit 2
+  marker=''
+  if [ "$name" = main ]; then
+    # main's home is the real ~/.codex, which this tool never deletes: the marker alone is what
+    # takes it out of every enumerator, so removing it twice is removing an account that is gone.
+    if codex_main_removed; then
+      printf 'codexb: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
+    marker=$(codex_removal_marker main)
+  else
+    directory="$profiles_dir/$name"
+    if [ ! -e "$directory" ] && [ ! -L "$directory" ]; then
+      printf 'codexb: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
+    if [ "$force" != true ] && codex_credentials_alive "$directory"; then
+      printf 'codexb: refusing to remove %s: it is still logged in; run codex logout first or pass --force\n' "$name" >&2
+      exit 1
+    fi
+    rm -rf "$directory"
   fi
-  if [ "$force" != true ] && codex_credentials_alive "$directory"; then
-    printf 'codexb: refusing to remove %s: it is still logged in; run codex logout first or pass --force\n' "$name" >&2
-    exit 1
-  fi
-  rm -rf "$directory"
   # A pool entry outliving its account keeps the last-member guard counting a ghost, and the
   # name silently re-excludes a future account created under it.
   if is_disabled "$name"; then set_disabled "$name" off; fi
+  if [ -n "$marker" ]; then
+    mkdir -p "$(dirname "$marker")"
+    : >"$marker"
+  fi
+  fallback=main
+  if codex_main_removed; then fallback=''; fi
   codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
   if [ -r "$codex_cache" ]; then
     tmp="$codex_cache.tmp.$$"
-    if jq -c --arg name "$name" '
+    if jq -c --arg name "$name" --arg fallback "$fallback" '
         if type == "object" then
           (if (.accounts | type) == "array"
            then .accounts |= map(select(.account != $name)) else . end)
-          | (if .current == $name then .current = "main" else . end)
+          | (if .current == $name then
+               ((first(.accounts[]?.account) // $fallback) as $next |
+                if $next == "" then del(.current) else .current = $next end)
+             else . end)
         else . end' "$codex_cache" > "$tmp" 2>/dev/null; then
       mv "$tmp" "$codex_cache"
     else
@@ -207,6 +228,9 @@ remove_account() {
   fi
   announce_account_removed "$codexb_root"
   printf 'codexb: removed %s\n' "$name"
+  if [ -n "$marker" ]; then
+    printf 'codexb: main stays hidden while %s exists; delete that file to bring it back.\n' "$marker"
+  fi
 }
 
 list_accounts() {
@@ -241,7 +265,9 @@ show_status() {
   done < <(account_names)
 }
 
-account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
+account_exists() {
+  if [ "$1" = main ]; then ! codex_main_removed; else [ -d "$profiles_dir/$1" ]; fi
+}
 
 pin_account() {
   worker_model_pin_account codex_profile codexb account_names is_disabled "${1:-}" \
@@ -351,6 +377,10 @@ run_account() {
     worker_pool_refuse_headless codex "$name" "$(worker_model_pinned_account codex_profile)" || exit 2
   fi
   if [ "$name" = main ]; then
+    if codex_main_removed; then
+      printf 'codexb: unknown account: %s\n' "$name" >&2
+      exit 2
+    fi
     exec env -u CODEX_HOME codex "$@"
   fi
   directory="$profiles_dir/$name"
@@ -384,7 +414,7 @@ show_help() {
     'codexb profile <name> login            Browser OAuth login for that account (menu Codex login uses this).' \
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
-    'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
+    'codexb remove <name> [--force]         Forget a profile and prune its cached quota; --force overrides the logged-in guard. main leaves only a marker.' \
     'codexb enable <name>|--all             Return an account (or every account) to worker selection.' \
     'codexb disable <name>|--all            Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'codexb use <name>|--clear              Pin worker selection to one account; no name prints the pin.' \
@@ -436,9 +466,10 @@ case "${1:-}" in
     [ "$#" -eq 1 ] || { printf 'usage: codexb pick\n' >&2; exit 2; }
     selection=$(pick_account)
     # `main` is the last-resort answer when nothing else qualifies — but not when the user
-    # excluded it, which would make `pick` hand back the one account it was told to spare.
+    # excluded it, which would make `pick` hand back the one account it was told to spare, and not
+    # when it has been removed, which would name an account no enumerator lists.
     if [ -z "$selection" ]; then
-      if is_disabled main; then
+      if codex_main_removed || is_disabled main; then
         printf 'codexb: no account in the worker pool is usable\n' >&2
         exit 3
       fi

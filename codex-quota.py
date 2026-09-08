@@ -19,7 +19,11 @@ READ_METHOD = "account/rateLimits/read"
 
 
 def fetch(codex_home: str | None, timeout: float) -> dict:
-    result = codex_appserver.call(codex_home, READ_METHOD, {}, timeout, "rateLimits/read")
+    # This label prefixes every failure of the RPC and travels into the store's refresh causes and
+    # the refresh journal, where `rateLimits` read as a rate-limit signal: an auth-dead account or
+    # a 402 workspace loosened the whole vendor's refresh cadence. READ_METHOD keeps the method
+    # name; what reaches prose says what was being read.
+    result = codex_appserver.call(codex_home, READ_METHOD, {}, timeout, "codex usage read")
     snapshot = result.get("rateLimits")
     buckets = [snapshot.get("primary"), snapshot.get("secondary")] if isinstance(snapshot, dict) else []
     if not any(isinstance(bucket, dict) and isinstance(bucket.get("usedPercent"), (int, float)) for bucket in buckets):

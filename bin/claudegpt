@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+import argparse
+import fcntl
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))
+import chat_resume  # noqa: E402
+
+
+MODELS = {"sol": "gpt-5.6-sol", "astra": "gpt-6-astra"}
+CONTEXT_WINDOW = 872000
+CONTEXT_ENV = {
+    "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(CONTEXT_WINDOW),
+    "CLAUDE_CODE_AUTO_COMPACT_WINDOW": str(CONTEXT_WINDOW),
+}
+HOME = Path.home()
+STATE = Path(os.environ.get("CLAUDEGPT_HOME", HOME / ".local/share/claudegpt"))
+BIN = Path(os.environ.get("CLAUDEGPT_BIN", HOME / ".local/lib/claudegpt/bin"))
+
+
+def menu_settings():
+    return {"modelPicker": {"replaceBuiltInOptions": True, "options": [
+        {"model": "anthropic.ccr.sol", "label": "Sol", "description": "OpenAI"},
+        {"model": "anthropic.ccr.astra", "label": "Astra", "description": "OpenAI"},
+    ]}}
+
+
+def fail(message):
+    raise SystemExit("claudegpt: " + message)
+
+
+def account_dir(name):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", name):
+        fail("invalid account name")
+    return STATE / "accounts" / name
+
+
+def clean_env():
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith(("ANTHROPIC_", "CCR_", "CLAUDEGPT_"))}
+    for key in ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_LIMITS_ACCOUNT", "CLAUDEB_WORKER"):
+        env.pop(key, None)
+    return env
+
+
+def free_port():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def config(auth, port):
+    return {
+        "host": "127.0.0.1", "port": port, "auth-dir": str(auth),
+        "remote-management": {"allow-remote": False, "secret-key": "",
+                              "disable-control-panel": True},
+        "plugins": {"enabled": False}, "debug": False,
+        "logging-to-file": False, "usage-statistics-enabled": False,
+        "request-retry": 0, "max-retry-credentials": 1,
+        "quota-exceeded": {"switch-project": False, "switch-preview-model": False},
+        "routing": {"strategy": "fill-first", "session-affinity": True},
+        "codex": {"disable-codex-cloaking": True, "identity-confuse": False},
+        "disable-image-generation": True,
+    }
+
+
+def run_setup(db, args, env):
+    result = subprocess.run([str(BIN / "ccr"), "--db", str(db), *args],
+                            env=env, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, timeout=20)
+    if result.returncode:
+        fail("router setup failed at " + " ".join(args[:2]))
+
+
+def relay_agents(directory):
+    agents = {}
+    for path in sorted((directory / "agents").glob("*-worker.md")):
+        parts = path.read_text().split("---", 2)
+        if len(parts) != 3:
+            fail("invalid worker definition: " + path.name)
+        description = re.search(r"^description: (.+)$", parts[1], re.M)
+        tools = re.search(r"^tools: (.+)$", parts[1], re.M)
+        if not description or not tools:
+            fail("unsupported worker definition: " + path.name)
+        agents[path.stem] = {
+            "description": description.group(1), "prompt": parts[2].strip(),
+            "tools": [tool.strip() for tool in tools.group(1).split(",")],
+            "model": "inherit",
+        }
+    return agents
+
+
+def forwarded_value(forwarded, *flags):
+    """The value handed to one of `flags`, `--flag=value` included."""
+    for index, argument in enumerate(forwarded):
+        for flag in flags:
+            if argument.startswith(flag + "="):
+                return argument[len(flag) + 1:]
+            if argument == flag and index + 1 < len(forwarded) \
+                    and not forwarded[index + 1].startswith("-"):
+                return forwarded[index + 1]
+    return None
+
+
+def launch_session(forwarded):
+    """The conversation this launch will write to, and the argument that pins it.
+
+    Every reopen path is keyed by the conversation id, and the stamp has to carry one
+    before Claude Code starts — so a fresh launch is NAMED here rather than left to name
+    itself. A launch handed an id keeps it; one that picks or forks its conversation at
+    runtime (`--continue`, the bare `--resume` picker, `--fork-session`) cannot be known
+    in advance and is stamped from the transcript it wrote once it exits.
+    """
+    if "--fork-session" in forwarded:
+        return None, []
+    given = forwarded_value(forwarded, "--session-id") \
+        or forwarded_value(forwarded, "--resume", "-r")
+    if given:
+        return given, []
+    picks = ("--resume", "-r", "--continue", "-c")
+    if any(argument in picks or argument.startswith(("--resume=", "--continue="))
+           for argument in forwarded):
+        return None, []
+    fresh = str(uuid.uuid4())
+    return fresh, ["--session-id", fresh]
+
+
+def project_transcripts(corpus, cwd):
+    """Claude Code's transcript directory for `cwd` — its realpath, non-alphanumerics hyphened."""
+    real = os.path.realpath(cwd)
+    return Path(corpus) / re.sub(r"[^A-Za-z0-9]", "-", real)
+
+
+def written_session(corpus, cwd, since):
+    """The conversation a launch that named none turned out to write to.
+
+    Scoped to the launch directory's own transcripts, since another chat writing
+    elsewhere at the same moment is a newer file that was never this launch.
+    """
+    newest, chosen = since, None
+    try:
+        entries = list(os.scandir(project_transcripts(corpus, cwd)))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.endswith(".jsonl"):
+            continue
+        try:
+            when = entry.stat().st_mtime
+        except OSError:
+            continue
+        if when >= newest:
+            newest, chosen = when, entry.name[: -len(".jsonl")]
+    return chosen
+
+
+def stop(process):
+    if process and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Claude Code with an explicit OpenAI account")
+    parser.add_argument("action", choices=["p", "profile", "login", "list"])
+    parser.add_argument("account", nargs="?")
+    parser.add_argument("--model", choices=MODELS, default="sol")
+    args, forwarded = parser.parse_known_args()
+    if forwarded[:1] == ["--"]:
+        forwarded = forwarded[1:]
+    if args.action == "list":
+        for path in sorted((STATE / "accounts").glob("*")):
+            if path.is_dir():
+                status = "ready" if list((path / "auth").glob("*.json")) else "login needed"
+                print(f"{path.name}: {status}")
+        return 0
+    if not args.account:
+        fail("an account name is required")
+    account = account_dir(args.account)
+    auth = account / "auth"
+    logins = list(auth.glob("*.json"))
+    if args.action == "login" and logins:
+        fail("this profile already has a gateway login; use another name for a new login")
+    if args.action != "login" and not logins and any(arg in ("-p", "--print") for arg in forwarded):
+        fail(f"run claudegpt login {args.account} first")
+    if len(logins) > 1:
+        fail("each profile must contain exactly one gateway login")
+    for executable in ("ccr", "cli-proxy-api"):
+        if not os.access(BIN / executable, os.X_OK):
+            fail("missing executable: " + str(BIN / executable))
+    auth.mkdir(parents=True, mode=0o700, exist_ok=True)
+    account.chmod(0o700)
+    auth.chmod(0o700)
+    lock = None
+    if args.action == "login" or not logins:
+        lock = (account / "active.lock").open("a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            fail("this account already has an active claudegpt launch; close it first")
+    env = clean_env()
+    env["CLAUDEGPT_ACCOUNT"] = args.account
+    env.update(CONTEXT_ENV)
+    with tempfile.TemporaryDirectory(prefix="claudegpt-") as temporary:
+        temp = Path(temporary)
+        port = free_port()
+        settings = temp / "proxy.yaml"
+        settings.write_text(json.dumps(config(auth, port)))
+        proxy_command = [str(BIN / "cli-proxy-api"), "-config", str(settings)]
+        if args.action == "login" or not logins:
+            print(f"claudegpt: sign in to OpenAI for {args.account} using the link below.", file=sys.stderr)
+            try:
+                result = subprocess.call([*proxy_command, "-codex-login", "-no-browser"], env=env)
+            finally:
+                for path in auth.glob("*.json"):
+                    path.chmod(0o600)
+            if result:
+                if lock:
+                    lock.close()
+                return result
+            if len(list(auth.glob("*.json"))) != 1:
+                fail("login did not save exactly one account; Claude Code was not started")
+            if args.action == "login":
+                if lock:
+                    lock.close()
+                return 0
+            if lock:
+                lock.close()
+                lock = None
+        proxy = None
+        try:
+            proxy = subprocess.Popen([*proxy_command, "-local-model"], env=env,
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            endpoint = f"http://127.0.0.1:{port}"
+            for _ in range(80):
+                if proxy.poll() is not None:
+                    fail("OpenAI bridge exited before startup")
+                try:
+                    with urllib.request.urlopen(endpoint + "/v1/models", timeout=1) as response:
+                        available = {m["id"] for m in json.load(response).get("data", [])}
+                    if MODELS[args.model] in available:
+                        break
+                except (OSError, ValueError):
+                    pass
+                time.sleep(0.1)
+            else:
+                fail("selected model is unavailable; check this account's login")
+            db = temp / "router.db"
+            run_setup(db, ["init"], env)
+            run_setup(db, ["provider", "add", "openai", "--type", "anthropic-compatible",
+                           "--base-url", endpoint, "--no-api-key"], env)
+            for alias, model in MODELS.items():
+                run_setup(db, ["model", "add", alias, "--provider", "openai", "--model", model], env)
+                run_setup(db, ["model", "update", alias, "--tools", "true", "--tool-choice", "true",
+                               "--streaming", "true", "--system-messages", "true", "--thinking", "true",
+                               "--context-window", str(CONTEXT_WINDOW)], env)
+            directory = Path(env.get("CLAUDE_CONFIG_DIR", str(HOME / ".claude")))
+            env["CLAUDE_CONFIG_DIR"] = str(directory)
+            agents = relay_agents(directory)
+            worker_run = shutil.which("worker-run", path=env.get("PATH"))
+            real_claude = shutil.which("claude", path=env.get("PATH"))
+            if not real_claude:
+                fail("Claude Code is not installed")
+            wrappers = temp / "bin"
+            wrappers.mkdir()
+            claude_wrapper = wrappers / "claude"
+            claude_wrapper.write_text(
+                "#!" + sys.executable + "\nimport json, os, sys\nfrom pathlib import Path\n"
+                "args = sys.argv[1:]\n"
+                "if '--settings' in args:\n"
+                "    index = args.index('--settings') + 1\n"
+                "    path = Path(args[index])\n"
+                "    settings = json.loads(path.read_text())\n"
+                "    settings.update(" + repr(menu_settings()) + ")\n"
+                "    path.write_text(json.dumps(settings))\n"
+                "os.execv(" + repr(real_claude) + ", [" + repr(real_claude) + ", *args])\n")
+            claude_wrapper.chmod(0o700)
+            if worker_run:
+                wrapper = wrappers / "worker-run"
+                wrapper.write_text("#!/bin/sh\nexec env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN "
+                                   "-u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN "
+                                   "-u ANTHROPIC_CUSTOM_HEADERS -u CLAUDEGPT_ACCOUNT "
+                                   "-u CLAUDE_CODE_MAX_CONTEXT_TOKENS -u CLAUDE_CODE_AUTO_COMPACT_WINDOW "
+                                   + shlex.quote(worker_run) + ' "$@"\n')
+                wrapper.chmod(0o700)
+            env["PATH"] = str(wrappers) + os.pathsep + env.get("PATH", "")
+            command = [str(BIN / "ccr"), "--db", str(db), "launch", "--model", args.model,
+                       "--auth-mode", "provider-only", "--no-history", "--no-lifecycle", "--no-statusline"]
+            if "-p" in forwarded or "--print" in forwarded:
+                command.append("-p")
+                forwarded = [arg for arg in forwarded if arg not in ("-p", "--print")]
+            command += ["--"]
+            if agents:
+                command += ["--agents", json.dumps(agents), "--append-system-prompt",
+                            "For implementation work, act as the orchestrator: run worker-pick and delegate "
+                            "through its selected existing relay worker. Relay agents inherit this chat's model; "
+                            "do not override their model. Existing worker pool, account and permission rules apply."]
+            session, pin = launch_session(forwarded)
+            command += forwarded + pin
+            corpus = str(directory / "projects")
+            if session:
+                chat_resume.write_stamp(session, args.account, args.model, home=str(STATE))
+            print(f"claudegpt: account={args.account} model={args.model}; /model selects Sol or Astra. "
+                  "Claude models require claudeb. Resume with another account using --continue or --resume.",
+                  file=sys.stderr)
+            started = time.time()
+            code = subprocess.call(command, env=env)
+            if not session:
+                session = written_session(corpus, os.getcwd(), started)
+                if session:
+                    chat_resume.write_stamp(session, args.account, args.model, home=str(STATE))
+            chat_resume.sweep_stamps(corpus, home=str(STATE))
+            return code
+        finally:
+            stop(proxy)
+            if lock:
+                lock.close()
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

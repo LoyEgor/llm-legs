@@ -950,8 +950,8 @@ cp "$RUNNER" "$SELF_RUNNER"
 # HOME mapping is not a formula worker-run may fall back to spelling itself, and the allowed-model
 # list is not one it may guess at either.
 mkdir -p "$WORK/share"
-cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/worker-model.sh" \
-  "$ROOT/share/limits-view.sh" "$WORK/share/"
+cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
+  "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$WORK/share/"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")

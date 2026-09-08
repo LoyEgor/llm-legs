@@ -25,7 +25,20 @@ past=$((now - 1))
 run_hook() {
   local fixture=$1 suffix=$2
   printf '{"session_id":"resume-nudge-test-%s-%s"}\n' "$$" "$suffix" |
-    HOME="$WORK/home" LLM_LIMITS_FILE="$fixture" CLAUDE_LIMITS_ACCOUNT=fixture \
+    env -u CLAUDEGPT_ACCOUNT -u CLAUDE_CONFIG_DIR \
+      HOME="$WORK/home" LLM_LIMITS_FILE="$fixture" CLAUDE_LIMITS_ACCOUNT=fixture \
+      RESUME_NUDGE_CHAT_ACCOUNT="$ROOT/share/chat-account.sh" \
+      RESUME_NUDGE_PCT=95 bash "$HOOK"
+}
+
+# The same hook for a `claudegpt` chat: the account is the gateway launcher's, in `vendors.codex`.
+run_gateway_hook() {
+  local fixture=$1 suffix=$2 account=${3:-fixture}
+  printf '{"session_id":"resume-nudge-test-%s-%s"}\n' "$$" "$suffix" |
+    env -u CLAUDE_CONFIG_DIR \
+      HOME="$WORK/home" LLM_LIMITS_FILE="$fixture" CLAUDE_LIMITS_ACCOUNT=fixture \
+      CLAUDEGPT_ACCOUNT="$account" \
+      RESUME_NUDGE_CHAT_ACCOUNT="$ROOT/share/chat-account.sh" \
       RESUME_NUDGE_PCT=95 bash "$HOOK"
 }
 
@@ -117,4 +130,29 @@ under="$WORK/under.json"
 write_fixture "$under" 60 60 94 "$future" null
 [ -z "$(run_hook "$under" under)" ] || fail "under-threshold bucket nudged"
 
-echo "PASS: resume nudge mtime helper, stale/fresh locks, offset resets, freshness, segment, age, rollover, threshold, and confirm-first contract"
+# A gateway chat is nudged about the quota it actually spends, and never about the Claude account
+# of the same name: `vendors.codex` is where its 5h window lives (llm-legs share/chat-account.sh).
+gateway_fixture="$WORK/gateway.json"
+jq -n --argjson now "$now" --argjson future "$future" '
+  {fetched_at:"2099-01-01T00:00:00Z",vendors:{
+    claude:{accounts:[{account:"fixture",as_of:($now - 60),stale_seconds:60,
+      five_hour:{used_pct:10,effective_pct:10,resets_at:$future,as_of:($now - 60),stale:false}}]},
+    codex:{accounts:[{account:"fixture",as_of:($now - 60),stale_seconds:60,
+      five_hour:{used_pct:99,effective_pct:99,resets_at:$future,as_of:($now - 60),stale:false}}]}}}' \
+  >"$gateway_fixture"
+output=$(run_gateway_hook "$gateway_fixture" gateway) || fail "gateway fixture invocation failed"
+jq -e '.hookSpecificOutput.additionalContext |
+  contains("Limit account codex/fixture 5h segment is at 99%")' <<<"$output" >/dev/null \
+  || fail "a gateway chat was not nudged about its own codex account: $output"
+# The Claude row alone must not speak in a gateway chat: the reverse fixture is silent.
+jq -n --argjson now "$now" --argjson future "$future" '
+  {fetched_at:"2099-01-01T00:00:00Z",vendors:{
+    claude:{accounts:[{account:"fixture",as_of:($now - 60),stale_seconds:60,
+      five_hour:{used_pct:99,effective_pct:99,resets_at:$future,as_of:($now - 60),stale:false}}]},
+    codex:{accounts:[{account:"fixture",as_of:($now - 60),stale_seconds:60,
+      five_hour:{used_pct:10,effective_pct:10,resets_at:$future,as_of:($now - 60),stale:false}}]}}}' \
+  >"$gateway_fixture"
+[ -z "$(run_gateway_hook "$gateway_fixture" gateway-quiet)" ] ||
+  fail "a gateway chat was nudged about a Claude account it never spends"
+
+echo "PASS: resume nudge mtime helper, stale/fresh locks, offset resets, freshness, segment, age, rollover, threshold, the gateway chat's own codex account, and confirm-first contract"

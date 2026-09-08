@@ -49,6 +49,8 @@ command -v worker_pool_refuse_headless >/dev/null ||
   fail 'share/worker-model.sh is missing: worker-run cannot tell an allowed model from a cheap one'
 command -v worker_model_allows >/dev/null ||
   fail 'share/worker-model.sh defines no worker_model_allows: refusing to launch unchecked'
+. "$SCRIPT_DIRECTORY/../share/codex-accounts.sh" ||
+  fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
 
 # The main→base-HOME, named→<profiles-dir>/<name> mapping (shared-invariants row m) lives in one
 # place for every reader of an agy profile; respelled here, a worker's transcript would be looked
@@ -1296,6 +1298,7 @@ start_run() {
     exit 4
   fi
   case "$vendor:$account" in
+    codex:main) ! codex_main_removed || fail 'codex account main has been removed' ;;
     gemini:main) ! gemini_main_removed || fail 'gemini account main has been removed' ;;
     gemini:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid gemini account: $account" ;;
     grok:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid grok account: $account" ;;

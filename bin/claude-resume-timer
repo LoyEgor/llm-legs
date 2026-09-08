@@ -112,8 +112,6 @@ detect_controlling_tty() {
   return 1
 }
 
-account=${CLAUDE_LIMITS_ACCOUNT:-notcom}
-[ "$account" = "-" ] && account=notcom
 cache="$HOME/.llm-limits.json"
 
 resolve_root() {
@@ -126,6 +124,20 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 legs_root=$(resolve_root) || legs_root=""
+
+# WHICH quota this chat is waiting on, from the one resolver every surface asks (share/chat-account.sh):
+# a `claudegpt` chat spends `vendors.codex` under CLAUDEGPT_ACCOUNT, and timing it off a Claude
+# account nobody spent arms the resume for a window that was never the one that walled. A timer is
+# the wrong thing to guess at all — it types into a live chat — so an unreadable resolver refuses.
+if [ -z "$legs_root" ] || [ ! -r "$legs_root/share/chat-account.sh" ]; then
+  echo "claude-resume-timer: cannot read share/chat-account.sh; refusing to guess this chat's account" >&2
+  exit 1
+fi
+. "$legs_root/share/chat-account.sh"
+chat_account_resolve
+vendor=$CHAT_ACCOUNT_VENDOR
+account=${CHAT_ACCOUNT_NAME:-notcom}
+
 # The staleness threshold OF the five_hour bucket (not a five-hour one), from the one place it
 # is written down (docs/shared-invariants.md row a) — never a literal of this script's own.
 stale_after=""
@@ -144,8 +156,8 @@ fi
 # blind 15 minutes off a row the collector already zeroed.
 fresh_five_hour_as_of() {
   [ -f "$cache" ] || return 1
-  jq -r --arg acct "$account" '
-    (.vendors.claude.accounts[]? | select(.account == $acct) | .five_hour)
+  jq -r --arg acct "$account" --arg vendor "$vendor" '
+    (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour)
     | select(type == "object" and .stale == false and (.expired // false) == false)
     | .as_of | if type == "number" then . else empty end
   ' "$cache" 2>/dev/null | head -n1
@@ -177,8 +189,8 @@ iso_def='def iso2epoch:
 
 resets_epoch=""
 if [ -f "$cache" ]; then
-  resets_epoch=$(jq -r --arg acct "$account" "$iso_def"'
-    (.vendors.claude.accounts[]? | select(.account == $acct) | .five_hour.resets_at) as $resets
+  resets_epoch=$(jq -r --arg acct "$account" --arg vendor "$vendor" "$iso_def"'
+    (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour.resets_at) as $resets
     | if $resets == null then "" else (($resets | iso2epoch) // "") end
   ' "$cache" 2>/dev/null)
 fi
@@ -187,11 +199,11 @@ now=$(date +%s)
 fallback_reason=""
 
 if [ -z "$resets_epoch" ]; then
-  fallback_reason="no five_hour.resets_at for account '$account'"
+  fallback_reason="no five_hour.resets_at for account '$vendor/$account'"
 elif ! is_int "$resets_epoch"; then
-  fallback_reason="unparseable resets_at for account '$account'"
+  fallback_reason="unparseable resets_at for account '$vendor/$account'"
 elif [ "$resets_epoch" -le "$now" ]; then
-  fallback_reason="5h window for account '$account' already reset"
+  fallback_reason="5h window for account '$vendor/$account' already reset"
 fi
 
 if [ -n "$fallback_reason" ]; then

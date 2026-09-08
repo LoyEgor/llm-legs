@@ -50,6 +50,9 @@ GROK_PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt(-f
 
 LAUNCH_RES=(
   "${VENDOR_WORD}claudeb?${PRINT_FLAG}"
+  # `claudeb?` cannot reach it: the `gpt` sits where that alternation expects a separator, and a
+  # `claudegpt p <acct> -p` run is a print run spending a Codex account like any other.
+  "${VENDOR_WORD}claudegpt${PRINT_FLAG}"
   "${VENDOR_WORD}codexb?${SUBCOMMAND}exec${EDGE}"
   "${VENDOR_WORD}geminib?${PRINT_FLAG}"
   "${VENDOR_WORD}agy${PRINT_FLAG}"

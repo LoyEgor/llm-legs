@@ -28,6 +28,7 @@ gate() {
   jq -cn '{hook_event_name:"PreToolUse",tool_name:"Workflow",tool_input:{}}' |
     env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" \
       CLAUDE_LIMITS_ACCOUNT="${ACCOUNT_ENV-}" CLAUDE_CONFIG_DIR="${CONFIG_DIR_ENV-}" \
+      CLAUDEGPT_ACCOUNT="${GATEWAY_ENV-}" \
       bash "$GATE"
 }
 
@@ -92,8 +93,34 @@ assert contains "$out" 'SESSION'
 assert contains "$out" 'llm-limits --table --no-write'
 assert lacks "$out" '"permissionDecision"'
 
+# --- A gateway chat spends its OpenAI account, and the pressure that matters is that one -------
+# `claudegpt` runs Claude Code on an OpenAI subscription: the fan-out bills `vendors.codex` under
+# CLAUDEGPT_ACCOUNT, so a Claude row of the same name is a number this session never spends
+# (share/chat-account.sh).
+jq -nc '{vendors:{
+  claude:{accounts:[{account:"work4",five_hour:{used_pct:10}}]},
+  codex:{accounts:[{account:"work4",five_hour:{used_pct:97}}]}}}' >"$WORK/limits.json"
+ACCOUNT_ENV=
+CONFIG_DIR_ENV="$HOME_DIR/.claude"
+GATEWAY_ENV=work4
+out=$(gate)
+assert denied "$out"
+assert contains "$out" 'codex/work4'
+# The gateway account outranks every Claude fact the same environment carries.
+ACCOUNT_ENV=work4
+CONFIG_DIR_ENV="$HOME_DIR/.claude-profiles/work4"
+assert denied "$(gate)"
+# And a quiet codex account is quiet, whatever the Claude row of that name reads.
+jq -nc '{vendors:{
+  claude:{accounts:[{account:"work4",five_hour:{used_pct:97}}]},
+  codex:{accounts:[{account:"work4",five_hour:{used_pct:10}}]}}}' >"$WORK/limits.json"
+assert lacks "$(gate)" 'additionalContext'
+GATEWAY_ENV=
+ACCOUNT_ENV=
+CONFIG_DIR_ENV="$HOME_DIR/.claude"
+
 # --- Everything else passes through untouched ---------------------------------------------------
 assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"

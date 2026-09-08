@@ -103,6 +103,7 @@ worker_pick_share="$(worker_pick_root)/share"
 . "$worker_pick_share/worker-model.sh"
 . "$worker_pick_share/limits-view.sh"
 . "$worker_pick_share/worker-claims.sh"
+. "$worker_pick_share/chat-account.sh"
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
@@ -227,15 +228,18 @@ if [ -z "$query_vendor" ]; then
   ! role_off grok workers || gr_role_off=true
 fi
 
-own="${CLAUDE_LIMITS_ACCOUNT:-}"
-if [ -z "$own" ] || [ "$own" = "-" ]; then
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
-    own=$(basename "$CLAUDE_CONFIG_DIR")
-  else
-    own=main
-  fi
+chat_account_resolve
+own_vendor=$CHAT_ACCOUNT_VENDOR
+own=${CHAT_ACCOUNT_NAME:-main}
+# A gateway chat spends a CODEX account under a name that may also be a claudeb profile
+# (`com` is both), and `claudeb remove <name>` deletes this file by that bare name — so the
+# vendor is part of it, in the one character neither store admits inside an account name.
+# The Claude name is unchanged: `bin/statusline.sh` reads it and `bin/claudeb` prunes it.
+if [ "$own_vendor" = claude ]; then
+  cache_file="$CACHE_DIR/worker-pick.line.$own"
+else
+  cache_file="$CACHE_DIR/worker-pick.line.$own_vendor@$own"
 fi
-cache_file="$CACHE_DIR/worker-pick.line.$own"
 mkdir -p "$CACHE_DIR" 2>/dev/null || true
 
 # The contract's first soft rule: an account this deep into its five-hour window walls after the
@@ -257,14 +261,18 @@ cx_claims=$(claims_json codex)
 gm_claims=$(claims_json gemini)
 gr_claims=$(claims_json grok)
 
+write_cache_file() {
+  # The statusline polls this file concurrently and must never observe a torn prediction.
+  tmp="$1.tmp.$$"
+  printf '%s\n' "$2" >"$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+}
+
 write_cache() {
   # A query answers a caller; it does not announce a routing decision, so it leaves the
   # statusline's prediction to the real invocation that owns that file.
   [ -z "$query_vendor" ] || return 0
-  # The statusline polls this file concurrently and must never observe a torn prediction.
-  tmp="$cache_file.tmp.$$"
-  printf '%s\n' "$1" >"$tmp" 2>/dev/null && mv -f "$tmp" "$cache_file" 2>/dev/null
-  rm -f "$tmp" 2>/dev/null
+  write_cache_file "$cache_file" "$1"
   # These files are predictions, not records: only their producer runs, so a sibling nobody has
   # rewritten for a day belongs to an account that was renamed or removed. The name exclusion is
   # for a clock that jumped backwards, which would age the line just written.
@@ -329,7 +337,7 @@ done
 
 summary=$(jq -r \
   --argjson live_pools "$live_pools" \
-  --argjson now "$now" --arg own "$own" --arg pin "$cb_pin" \
+  --argjson now "$now" --arg own "$own" --arg own_vendor "$own_vendor" --arg pin "$cb_pin" \
   --arg cb_disp "$cb_display" --arg cx_disp "$cx_display" \
   --arg gm_disp "$gm_display" --arg gr_disp "$gr_display" \
   --argjson defer5h "$FIVE_HOUR_DEFER_PCT" --argjson stale_thr "$LIMITS_STALE_ROUTING" \
@@ -586,6 +594,7 @@ summary=$(jq -r \
 
   ([$cx_source[] |
     {name:(.account // "main"),
+     own:($own_vendor == "codex" and (.account // "main") == $own),
      enabled:(.enabled != false),auth_ok:auth_ok,
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
      rs:reset_str(.weekly)} |
@@ -672,7 +681,7 @@ summary=$(jq -r \
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
-    {name:.account,own:(.account == $own),
+    {name:.account,own:($own_vendor == "claude" and .account == $own),
      enabled:(.enabled == true),auth_ok:auth_ok,
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),

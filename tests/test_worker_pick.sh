@@ -1628,4 +1628,39 @@ for role_state in off on; do
 done
 live_pool_test=false
 
-printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the four roles including chat and research without pins or role keys, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, and the output/cache/decision golden contract with no routing prose\n' "$asserts"
+# A `claudegpt` chat spends a CODEX account (CLAUDEGPT_ACCOUNT) with no Claude environment at all,
+# so the row it owns and the file it caches its prediction in follow that vendor — sharing
+# `worker-pick.line.<name>` with a claudeb profile of the same name is what `claudeb remove` prunes
+# by name (share/chat-account.sh, docs/routing-contract.md).
+GATEWAY_CACHE="$WORK/gateway-cache"
+mkdir -p "$GATEWAY_CACHE"
+gateway_env=("WORKER_PICK_CACHE_DIR=$GATEWAY_CACHE")
+for gateway_var in "${run_env[@]}"; do
+  case "$gateway_var" in
+    CLAUDE_LIMITS_ACCOUNT=*|WORKER_PICK_CACHE_DIR=*) continue ;;
+  esac
+  gateway_env+=("$gateway_var")
+done
+jq -c '.golden' "$FIXTURES" >"$STORE" || fail 'golden fixture missing'
+sync_fixture_pool
+gateway_output=$(env -u CLAUDE_CONFIG_DIR "${gateway_env[@]}" CLAUDEGPT_ACCOUNT=main \
+  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/gateway.err") ||
+  fail "gateway run failed: $(cat "$WORK/gateway.err")"
+assert contains "$(awk -v head='^codex:' '$0 ~ head {sub(head, ""); print}' <<<"$gateway_output")" 'main*'
+assert not_contains "$gateway_output" 'session*'
+assert test -e "$GATEWAY_CACHE/worker-pick.line.codex@main"
+assert test ! -e "$GATEWAY_CACHE/worker-pick.line.session"
+# The Claude account of the same name is not written at all: `bin/statusline.sh` asks for the
+# vendor-qualified name in a gateway chat, and a copy would overwrite the real `main` prediction.
+assert test ! -e "$GATEWAY_CACHE/worker-pick.line.main"
+# The Claude chat is unchanged, own row and cache name alike.
+rm -f "$GATEWAY_CACHE"/worker-pick.line.*
+claude_output=$(env "${gateway_env[@]}" CLAUDE_LIMITS_ACCOUNT=session \
+  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" 2>"$WORK/gateway.err") ||
+  fail "claude run failed: $(cat "$WORK/gateway.err")"
+assert contains "$(awk -v head='^claude:' '$0 ~ head {sub(head, ""); print}' <<<"$claude_output")" 'session*'
+assert not_contains "$claude_output" 'main*'
+assert test -e "$GATEWAY_CACHE/worker-pick.line.session"
+assert test ! -e "$GATEWAY_CACHE/worker-pick.line.main"
+
+printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the four roles including chat and research without pins or role keys, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/cache/decision golden contract with no routing prose\n' "$asserts"

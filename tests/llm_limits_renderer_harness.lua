@@ -591,6 +591,42 @@ for _, row in ipairs(poolRows) do
     "worker-pool toggle disagreed with enabled for " .. row.name)
 end
 
+-- "Switch chat to this" is the item Egor reaches for constantly, and a Codex account is
+-- also a claudegpt gateway login — so the Codex rows carry it exactly like the Claude
+-- ones, and it has to name the GATEWAY store or the switch would look for a claudeb
+-- profile of the same name.
+local switchFixture = { schema = 1, vendors = {
+  claude = { available = true, accounts = {
+    { account = "main", is_current = true, five_hour = bucket(10) },
+    { account = "com", is_current = false, five_hour = bucket(20) },
+  } },
+  codex = { available = true, accounts = {
+    { account = "alpha", is_current = true, five_hour = bucket(10) },
+    { account = "work4", is_current = false, five_hour = bucket(20) },
+  } },
+  gemini = { available = false },
+}}
+local switchArgs = nil
+local switchModule = loadModule(switchFixture, function(_, _, arguments)
+  switchArgs = arguments
+  return { start = function() return true end, setEnvironment = function() end }
+end)
+local switchMenu = switchModule.menuItems()
+for _, name in ipairs({ "alpha", "work4" }) do
+  assert(submenuItem(accountItem(switchMenu, name), "Switch chat to this"),
+    "Codex account row " .. name .. " has no chat switch")
+end
+-- Claude's own "main" is ~/.claude and not a profile, so that row still carries none.
+assert(not submenuItem(accountItem(switchMenu, "main"), "Switch chat to this"),
+  "the reserved Claude main row grew a chat switch")
+switchModule.switchChatTo("work4", true)
+assert(switchArgs and switchArgs[1] == "--front" and switchArgs[2] == "--gateway"
+  and switchArgs[3] == "work4", "a Codex row's switch did not name the gateway store")
+switchArgs = nil
+switchModule.switchChatTo("com")
+assert(switchArgs and switchArgs[1] == "--front" and switchArgs[2] == "com",
+  "a Claude row's switch stopped being a plain claudeb switch")
+
 local runningTask = {
   isRunning = function() return true end,
   start = function() return true end,
@@ -1082,15 +1118,28 @@ do
 end
 
 do
+  local multiTasks = {}
+  local multiMenu = loadModule(pinFixture, captureTasks(multiTasks), nil, nil, nil,
+    "claudeb_profile=claude-pin,claude-current").menuItems()
+  assert(accountHasMarker(multiMenu, "claude-pin"), "multi-pin missed ● on claude-pin")
+  assert(accountHasMarker(multiMenu, "claude-current"), "multi-pin missed ● on claude-current")
+  while #multiTasks > 0 do table.remove(multiTasks) end
+  submenuItem(accountItem(multiMenu, "claude-pin"), "Pin for workers").fn()
+  assert(multiTasks[1] and multiTasks[1].args[1] == "use"
+      and multiTasks[1].args[2] == "--clear" and multiTasks[1].args[3] == nil,
+    "multi-pin toggle did not unpin one name")
+end
+
+do
   local tasks = {}
   local mod = loadModule(pinFixture, captureTasks(tasks), nil, nil, nil, pinConfig)
   local menu = mod.menuItems()
   local cases = {
-    { account = "claude-pin", command = "claudeb", arg = "--clear" },
+    { account = "claude-pin", command = "claudeb", unpin = true },
     { account = "claude-current", command = "claudeb", arg = "claude-current" },
-    { account = "codex-pin", command = "codexb", arg = "--clear" },
+    { account = "codex-pin", command = "codexb", unpin = true },
     { account = "codex-current", command = "codexb", arg = "codex-current" },
-    { account = "gemini-pin", command = "geminib", arg = "--clear" },
+    { account = "gemini-pin", command = "geminib", unpin = true },
     { account = "gemini-current", command = "geminib", arg = "gemini-current" },
   }
   for _, case in ipairs(cases) do
@@ -1099,8 +1148,14 @@ do
     local launched = tasks[1]
     assert(launched and launched.path:find(case.command, 1, true),
       case.account .. " pin toggle launched the wrong command")
-    assert(launched.args[1] == "use" and launched.args[2] == case.arg,
-      case.account .. " pin toggle launched the wrong use action")
+    if case.unpin then
+      assert(launched.args[1] == "use" and launched.args[2] == "--clear"
+          and launched.args[3] == nil,
+        case.account .. " pin toggle launched the wrong use action")
+    else
+      assert(launched.args[1] == "use" and launched.args[2] == case.arg,
+        case.account .. " pin toggle launched the wrong use action")
+    end
   end
 end
 
@@ -1131,7 +1186,7 @@ do
   while #tasks > 0 do table.remove(tasks) end
   pinnedToggle.fn()
   assert(tasks[1] and tasks[1].path:find("geminib", 1, true)
-      and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear",
+      and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear" and tasks[1].args[3] == nil,
     "single-account Gemini pin clear launched the wrong action")
 
   tasks = {}
@@ -1182,7 +1237,7 @@ do
     while #tasks > 0 do table.remove(tasks) end
     pin.fn()
     assert(tasks[1] and tasks[1].path:find(case.command, 1, true)
-        and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear",
+        and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear" and tasks[1].args[3] == nil,
       case.account .. " orphaned pin clear launched the wrong action")
   end
 end
@@ -1269,7 +1324,7 @@ do
     local launched = tasks[1]
     assert(launched and launched.path:find(case.command, 1, true),
       case.vendor .. " logged-out pin clear launched the wrong command")
-    assert(launched.args[1] == "use" and launched.args[2] == "--clear",
+    assert(launched.args[1] == "use" and launched.args[2] == "--clear" and launched.args[3] == nil,
       case.vendor .. " logged-out pin action was not clear-only")
     local unpinnedMenu = loadModule(case.fixture, nil, nil, nil, nil, "").menuItems()
     assert(submenuItem(accountItem(unpinnedMenu, case.account), "Pin for workers") == nil,
@@ -1283,6 +1338,16 @@ end
 -- and — where the vendor has no section header — the vendor's role switches after them) while
 -- still proving its own Log in… fires the right login mechanism and Remove the right remove
 -- command. A future change that splits one vendor's row away from the shared shape fails this loop.
+-- codex `main` is the real ~/.codex, so `codexb remove main` deletes nothing and writes a marker
+-- instead; the menubar performs the same removal through the collector flag that writes that one
+-- file. Its logged-out row therefore carries the SAME Remove item every other vendor's does.
+local codexMainLoginFixture = { schema = 1, vendors = {
+  claude = { available = false },
+  codex = { available = true, accounts = {
+    { account = "main", is_current = true, auth_needed = true },
+  }},
+  gemini = { available = false },
+}}
 local loginCases = {
   { vendor = "claude", fixture = claudeLoginFixture, needle = "loggedout", label = "loggedout",
     scriptContains = { "claudeb profile", "loggedout" },
@@ -1304,6 +1369,9 @@ local loginCases = {
     scriptContains = { "geminib profile", "work" },
     refreshArgs = { "--refresh-account", "gemini/work" },
     removePath = "geminib", removeArgs = { "remove", "work" } },
+  { vendor = "codex main", fixture = codexMainLoginFixture, needle = "main", label = "main",
+    scriptContains = { "codexb run", "main", "login" },
+    removePath = "llm-limits.sh", removeArgs = { "--codex-remove" } },
   { vendor = "grok", fixture = grokLoginFixture, needle = "grokout", label = "grokout",
     scriptContains = { "grokb profile", "grokout", "login" },
     refreshArgs = { "--refresh-account", "grok/grokout" },
@@ -1437,27 +1505,6 @@ do
   for _, item in ipairs(menu) do
     assert(not titleText(item):find("Grok", 1, true),
       "a store without vendors.grok still rendered a Grok section")
-  end
-end
-
--- codex `main` is not removable (codexb refuses it), so its logged-out row must omit
--- the Remove… item — a login-needed row of exactly {Log in…, Hard refresh}, no dead action.
-local codexMainLoginFixture = { schema = 1, vendors = {
-  claude = { available = false },
-  codex = { available = true, accounts = {
-    { account = "main", is_current = true, auth_needed = true },
-  }},
-  gemini = { available = false },
-}}
-do
-  local menu = loadModule(codexMainLoginFixture).menuItems()
-  local row = rowContaining(menu, "main")
-  assert(row and titleText(row):find("login needed", 1, true),
-    "codex main did not render a login-needed row")
-  assert(#row.menu == 2,
-    "codex main login row must omit Remove… (expected exactly {Log in…, Hard refresh})")
-  for _, sub in ipairs(row.menu) do
-    assert(titleText(sub) ~= "Remove…", "codex main offered a dead Remove… action")
   end
 end
 
@@ -2046,7 +2093,7 @@ do
   while #tasks > 0 do table.remove(tasks) end
   submenuItem(superRow, "Pin for workers").fn()
   assert(tasks[1] and tasks[1].path:find("grokb", 1, true)
-      and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear",
+      and tasks[1].args[1] == "use" and tasks[1].args[2] == "--clear" and tasks[1].args[3] == nil,
     "Grok pin checkbox did not use the shared pin path")
   local fault = { schema = 1, vendors = {
     claude = { available = false }, codex = { available = false },

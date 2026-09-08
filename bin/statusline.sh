@@ -29,6 +29,7 @@ limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
 statusline_dir=$(dirname "$statusline_self")
 . "$statusline_dir/../share/limits-view.sh"
+. "$statusline_dir/../share/codex-accounts.sh"
 
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -542,6 +543,60 @@ store_merge_kick() {
   ) & ) >/dev/null 2>&1
 }
 
+# A gateway launch gets no `rate_limits` ride-along in the render payload, so nothing else keeps
+# the Codex `5h`/`wk` cells inside their dim thresholds between heartbeat ticks; this fires the
+# existing zero-spend per-account verb off the render path, silently, and never for an Anthropic
+# session. Full contract: docs/statusline-contract.md "Codex quota kick".
+codex_quota_kick() { # account now
+  local account="$1" now_ts="$2" refresher codex_home stamp deadline tmp
+  local ok_after=600 fail_after=1800
+  # The name reaches a cache filename and a `codex/<name>` argument from an environment
+  # variable this process does not own, so it is held to the launcher's own account pattern
+  # instead of being trusted: a `/` in it would write outside the cache directory.
+  [[ "$account" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || return 0
+  [[ "$now_ts" =~ ^[0-9]+$ ]] || return 0
+  refresher="${STATUSLINE_CODEX_REFRESH_CMD:-$statusline_dir/../llm-limits.sh}"
+  [ -x "$refresher" ] || return 0
+  # A gateway label need not name a Codex profile, and the collector only WARNS about a missing
+  # one — it still exits 0, so the failure backoff below cannot see it. Such an account is
+  # refused here or every deadline would spend an app-server launch that dies immediately.
+  if [ "$account" = main ]; then
+    # A removed main is not an account any more, and ~/.codex still being on disk is exactly why
+    # the directory test below cannot see that.
+    if codex_main_removed; then return 0; fi
+    codex_home="$HOME/.codex"
+  else
+    codex_home="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/$account"
+  fi
+  [ -d "$codex_home" ] || return 0
+  stamp="$statusline_cache_dir/codex-quota-kick-$account"
+  # The stamp holds the epoch the next probe may fire at, not the last one's time: a refresher
+  # that failed extends its own deadline, so pushback thins the cadence without a second file.
+  deadline=""
+  [ -r "$stamp" ] && read -r deadline < "$stamp" 2>/dev/null
+  [[ "$deadline" =~ ^[0-9]+$ ]] && [ "$now_ts" -lt "$deadline" ] && return 0
+  mkdir -p "$statusline_cache_dir" 2>/dev/null || return 0
+  snapshot_lock_acquire "$stamp.lock" || return 0
+  deadline=""
+  [ -r "$stamp" ] && read -r deadline < "$stamp" 2>/dev/null
+  if [[ "$deadline" =~ ^[0-9]+$ ]] && [ "$now_ts" -lt "$deadline" ]; then
+    rmdir "$stamp.lock" 2>/dev/null
+    return 0
+  fi
+  # Written in the foreground under the lock, so a near-simultaneous render on the same account
+  # sees the deadline and skips rather than opening a second probe.
+  printf '%s\n' "$((now_ts + ok_after))" > "$stamp" 2>/dev/null
+  ( (
+    if ! PATH="/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:/usr/sbin" \
+      "$refresher" --refresh-account "codex/$account" >/dev/null 2>&1; then
+      tmp="$stamp.tmp.${BASHPID:-$$}"
+      printf '%s\n' "$((now_ts + fail_after))" > "$tmp" 2>/dev/null &&
+        mv -f "$tmp" "$stamp" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+    fi
+    rmdir "$stamp.lock" 2>/dev/null
+  ) & ) >/dev/null 2>&1
+}
+
 CYAN=$'\033[36m'; BLUE=$'\033[34m'; DIM=$'\033[2m'
 GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 
@@ -585,6 +640,11 @@ IFS=$'\x1f' read -r model model_id effort fast_mode ctx_size dir_path current_di
 # returned, so warmth attribution must compare the stripped form or every
 # 1M session reads permanently cold.
 case "$model_id" in *\[*\]) model_id="${model_id%\[*}" ;; esac
+# CCR keeps the launch alias's display_name after /model changes .id.
+case "$model_id" in
+  anthropic.ccr.sol) model=Sol ;;
+  anthropic.ccr.astra) model=Astra ;;
+esac
 
 # The harness's used_percentage is denominator-blind on >200k windows (a 1m
 # session at 248k reports 100%); raw usage over window size is the truth.
@@ -672,7 +732,9 @@ if [ -n "$session_id" ]; then
   [ -r "$rl_cost_file" ] && read -r rl_cost_prev < "$rl_cost_file" 2>/dev/null
   rl_cost_now="$cost_raw"
 fi
-if [ -n "$rl_json" ]; then
+if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
+  rl_json=""
+elif [ -n "$rl_json" ]; then
   rl_target="$cache_rl"
   if [ "$acct" != main ]; then
     # main is not a claudeb account: never create limits/main.json.
@@ -759,6 +821,31 @@ if [ -n "$rl_json" ]; then
     [ "$h5_stale" = true ] && h5_dim=1
     [ "$wk_stale" = true ] && wk_dim=1
   fi
+fi
+
+
+if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
+  limits_mtime=$(file_mtime "$limits_file")
+  [[ "$limits_mtime" =~ ^[0-9]+$ ]] || limits_mtime=0
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim < <(jq -r \
+    --arg account "$CLAUDEGPT_ACCOUNT" --argjson now "$now" --argjson mtime "$limits_mtime" \
+    --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
+    [.vendors.codex.accounts[]? | select(.account == $account)][0] as $a
+    | def bucket($b; $thr):
+        if ($b | type) != "object" then ["", "", ""] else
+          ($b.resets_at | limits_store_epoch) as $reset
+          | limits_bucket_expired($now; $reset) as $expired
+          | [ (limits_store_eff($b; $now) | if type == "number" then (round | tostring) else "" end),
+              (if $reset == null or $reset < limits_reset_epoch_floor
+                  or limits_reset_ancient($now; $reset) then "" else ($reset | tostring) end),
+              (if $b.stale == true or $b.expired == true or $expired
+                  or limits_bucket_stale($now; $thr; ($a.auth.status == "expired");
+                       ($b.origin // ""); ($b.as_of // $mtime))
+                  or ($now - $mtime) > $thr then "1" else "" end) ]
+        end;
+    bucket($a.five_hour; $thr5) + bucket($a.weekly; $thrw) | join("\u001f")
+  ' "$limits_file" 2>/dev/null)
+  codex_quota_kick "$CLAUDEGPT_ACCOUNT" "$now"
 fi
 
 dir=$(basename "$dir_path")
@@ -1309,7 +1396,7 @@ sep="${DIM}│${RESET}"
 
 fable_part=""
 fable_account="$acct"
-if [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
+if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
   # The collector's own `effective_pct`/`stale`/`expired` fields, as the menubar renders them.
   IFS='|' read -r fable_found fable_pct fable_reset fable_dim < <(jq -r --arg name "$fable_account" '
     .vendors.claude.accounts[]?
@@ -1872,7 +1959,7 @@ if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
    && [ -n "$track_acct" ] && [ "$track_acct" != "?" ] && [ "$track_acct" = "$warm_acct" ]; then
   learn_event=1
 fi
-if [ -n "$learn_event" ] || [ -n "$bounds_need_decay" ]; then
+if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && { [ -n "$learn_event" ] || [ -n "$bounds_need_decay" ]; }; then
   mkdir -p "$(dirname "$learned_file")" 2>/dev/null
   lock_tries=0
   while ! snapshot_lock_acquire "$shared_bounds_lock"; do
@@ -1965,6 +2052,7 @@ elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -ge 0 ] 2>/dev/null; then
 elif [ "$cache_state" = unknown ]; then
   ctx_tokens_part=" ${DIM}?${RESET}"
 fi
+
 cb_show=0
 if [ -n "$acct" ] && [ "$acct" != main ]; then
   cb_show=1
@@ -2042,6 +2130,9 @@ wp_present=0
 load_worker_pick_prediction() {
   local pick_acct=$acct pick_cache pick_mtime
   { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
+  # A gateway chat spends a CODEX account, so its prediction lives under worker-pick's
+  # vendor-qualified name and never under a Claude profile's (share/chat-account.sh).
+  [ -z "${CLAUDEGPT_ACCOUNT:-}" ] || pick_acct="codex@$CLAUDEGPT_ACCOUNT"
   pick_cache="$HOME/.cache/worker-pick.line.$pick_acct"
   pick_mtime=$(file_mtime "$pick_cache" 2>/dev/null)
   if ! [[ "$pick_mtime" =~ ^[0-9]+$ ]] || [ "$((now - pick_mtime))" -gt 90 ]; then
@@ -2368,7 +2459,11 @@ fit_head_part() {
 fit_cb_part() {
   local name=$acct
   cb_part=""
-  [ "$cb_show" = 1 ] || return
+  if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
+    name=$CLAUDEGPT_ACCOUNT
+  else
+    [ "$cb_show" = 1 ] || return
+  fi
   if [ "$fit_acct_max" -gt 0 ]; then
     fit_trunc "$name" "$fit_acct_max"
     name=$fit_out
@@ -2594,7 +2689,8 @@ if [ -n "$fit_cols" ]; then
       10) fit_dir_active_only=1 ;;
       11) fit_dir_off=1 ;;
       12) # The floor is four characters: below that an account name stops identifying anything.
-        fit_acct_max=${#acct}
+        fit_acct_name=${CLAUDEGPT_ACCOUNT:-$acct}
+        fit_acct_max=${#fit_acct_name}
         while [ "$fit_acct_max" -gt 4 ]; do
           fit_acct_max=$((fit_acct_max - 1))
           fit_compose

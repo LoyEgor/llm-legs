@@ -10,14 +10,19 @@
 set -u
 
 PROFILES_DIR="$HOME/.claude-profiles"
+GATEWAY_DIR="${CLAUDEGPT_HOME:-$HOME/.local/share/claudegpt}/accounts"
+# The one place a reopen command is built (bin/chats, bin/chat-find and the chat-link
+# hooks read the same module), so a claudegpt chat cannot be handed a claudeb line here.
+CHAT_RESUME="$(dirname "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")")/share/chat_resume.py"
 
 die() { printf 'claude-chat-switch: %s\n' "$*" >&2; exit 1; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: claude-chat-switch [--front|--self] [--cwd <dir>] <profile> [session-id]
+usage: claude-chat-switch [--front|--self] [--gateway] [--cwd <dir>] <profile> [session-id]
 
-  <profile>     an existing account under ~/.claude-profiles (NOT "main")
+  <profile>     an existing account under ~/.claude-profiles (NOT "main"), or with
+                --gateway an OpenAI account under the claudegpt store
   [session-id]  optional; defaults to $CLAUDE_CODE_SESSION_ID, else the newest
                 transcript for the current directory's project
   --front       target the chat in the frontmost Terminal tab instead of the
@@ -26,6 +31,9 @@ usage: claude-chat-switch [--front|--self] [--cwd <dir>] <profile> [session-id]
   --self        same hands-free switch, but targeted at the CALLING chat's own
                 tab, so it works without Terminal being frontmost (the path a
                 chat uses to hand its tab to another conversation)
+  --gateway     <profile> names a claudegpt (OpenAI) account, so the chat reopens
+                with `claudegpt p <account>`; the same name in ~/.claude-profiles
+                is a different account and is not what this means
   --cwd <dir>   directory to cd into before resuming — the project the target
                 session belongs to, when that is not the chat's own; without it
                 the chat's own directory travels with the switch
@@ -43,6 +51,31 @@ list_profiles() {
     [ -d "$d" ] || continue
     printf '  %s\n' "$(basename "$d")"
   done
+}
+
+list_gateway_accounts() {
+  local d
+  for d in "$GATEWAY_DIR"/*/; do
+    [ -d "$d" ] || continue
+    printf '  %s\n' "$(basename "$d")"
+  done
+}
+
+# The launcher line for one chat under one account, built by the shared resolver. An
+# empty session is a chat with no transcript, which reopens as a fresh conversation.
+reopen_command() {
+  local session=$1 account=$2 out
+  if [ "$gateway_mode" -eq 1 ]; then
+    out=$(python3 "$CHAT_RESUME" switch "$session" --account "$account" --gateway 2>/dev/null)
+  else
+    out=$(python3 "$CHAT_RESUME" switch "$session" --account "$account" 2>/dev/null)
+  fi
+  # A resolver that cannot answer must not silently downgrade a gateway chat to claudeb.
+  if [ -z "$out" ]; then
+    [ "$gateway_mode" -eq 1 ] && die "cannot build the reopen command (missing $CHAT_RESUME)."
+    out="claudeb profile $account${session:+ --resume $session}"
+  fi
+  printf '%s' "$out"
 }
 
 # claudeb's own reserved words (bin/claudeb reserved_name) plus "main", which is
@@ -198,9 +231,11 @@ find_claude_pid() {
 
 front_mode=0
 self_mode=0
+gateway_mode=0
 cwd_arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --gateway) gateway_mode=1; shift ;;
     --front) front_mode=1; shift ;;
     --self)  self_mode=1; shift ;;
     --cwd)   [ $# -ge 2 ] || usage; cwd_arg="$2"; shift 2 ;;
@@ -227,11 +262,20 @@ if [ -n "$cwd_arg" ]; then
   case "$cwd_arg" in *[$'\n\r']*) die "--cwd: path contains a newline" ;; esac
 fi
 
-is_reserved "$profile" && die "'$profile' is not a valid profile name (reserved; \"main\" is not a claudeb profile)."
-if [ ! -d "$PROFILES_DIR/$profile" ]; then
-  { printf "claude-chat-switch: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
-    printf 'existing profiles:\n'; list_profiles; } >&2
-  exit 1
+if [ "$gateway_mode" -eq 1 ]; then
+  # "main" is a real gateway login (its own OpenAI account), unlike claudeb's "main".
+  if [ ! -d "$GATEWAY_DIR/$profile" ]; then
+    { printf "claude-chat-switch: no claudegpt account '%s' under %s\n" "$profile" "$GATEWAY_DIR"
+      printf 'existing claudegpt accounts:\n'; list_gateway_accounts; } >&2
+    exit 1
+  fi
+else
+  is_reserved "$profile" && die "'$profile' is not a valid profile name (reserved; \"main\" is not a claudeb profile)."
+  if [ ! -d "$PROFILES_DIR/$profile" ]; then
+    { printf "claude-chat-switch: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
+      printf 'existing profiles:\n'; list_profiles; } >&2
+    exit 1
+  fi
 fi
 
 command -v hs >/dev/null 2>&1 || die "'hs' (Hammerspoon CLI) not on PATH; is Hammerspoon running?"
@@ -347,7 +391,15 @@ case "$resume_cwd" in *[$'\n\r']*) resume_cwd="" ;; esac
 cd_target="$cwd_arg"
 [ -n "$cd_target" ] || cd_target="$resume_cwd"
 
-opts="{cwd=$(lua_str "$cd_target"), registry=$(lua_str "${registry:-}"), freshReason=$(lua_str "$fresh_reason"), note=$(lua_str "$notes")}"
+if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
+  armed_id="$resume_id"
+else
+  armed_id="$session_id"
+fi
+# Hammerspoon types what is resolved here rather than assembling a launcher of its own:
+# the account's store decides which launcher reopens the chat, and only this side reads it.
+launcher=$(reopen_command "$armed_id" "$profile")
+opts="{cwd=$(lua_str "$cd_target"), registry=$(lua_str "${registry:-}"), freshReason=$(lua_str "$fresh_reason"), note=$(lua_str "$notes"), launcher=$(lua_str "$launcher")}"
 if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
   call="ClaudeChatSwitch.switchChat(\"$profile\", \"$resume_id\", $claude_pid, \"$tty_dev\", $opts)"
 else
@@ -363,7 +415,7 @@ if [ "$hs_rc" -ne 0 ] || [ "$hs_last" != "armed" ]; then
   die "could not arm Hammerspoon: ${hs_out:-unknown error}"
 fi
 
-resume_cmd="claudeb profile $profile --resume $session_id"
+resume_cmd=$(reopen_command "$session_id" "$profile")
 # Same quoting Hammerspoon types, so what he reads is what lands in the shell.
 [ -n "$cd_target" ] && resume_cmd="cd '${cd_target//\'/\'\\\'\'}' && $resume_cmd"
 
@@ -372,8 +424,8 @@ if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
     printf 'claude-chat-switch: armed (auto). Hammerspoon will wait for the chat on %s to go idle, /exit it, and open session %s: %s\n' \
       "$tty_dev" "$session_id" "$resume_cmd"
   else
-    printf 'claude-chat-switch: armed (auto). %s; Hammerspoon will /exit the chat on %s and open a FRESH chat: claudeb profile %s\n' \
-      "$fresh_reason" "$tty_dev" "$profile"
+    printf 'claude-chat-switch: armed (auto). %s; Hammerspoon will /exit the chat on %s and open a FRESH chat: %s\n' \
+      "$fresh_reason" "$tty_dev" "$(reopen_command "" "$profile")"
   fi
 else
   printf 'claude-chat-switch: armed. Exit this chat (Ctrl+C twice or /exit) and session %s reopens under profile "%s", resumed by: %s\n' \

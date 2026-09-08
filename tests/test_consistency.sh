@@ -79,8 +79,89 @@ assert grep -Fq -- '--argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LI
 assert grep -Fq -- '-gt "$LIMITS_STALE_FABLE"' "$STATUSLINE"
 assert eq "$(grep -cE -- '-gt (1800|21600)\b' "$STATUSLINE")" 0
 
+# --- Row cb: Codex quota kick cadence ----------------------------------------
+# Deliberately NOT row a's thresholds: this is how often a gateway chat probes, and the
+# backoff matching the heartbeat's base cadence is a coincidence, not a dependency.
+CQ_OK=600; CQ_FAIL=1800
+cq_cadence=$(grep -oE 'local ok_after=[0-9]+ fail_after=[0-9]+' "$STATUSLINE" | grep -oE '[0-9]+')
+assert eq "$(printf '%s' "$cq_cadence" | head -1)" "$CQ_OK"
+assert eq "$(printf '%s' "$cq_cadence" | tail -1)" "$CQ_FAIL"
+assert doc_has '`600`s after a probe that ran'
+assert doc_has '`1800`s after one that failed'
+assert grep -Fq -- '+600s' "$ROOT/docs/statusline-contract.md"
+assert grep -Fq -- '+1800s' "$ROOT/docs/statusline-contract.md"
+assert grep -Fq -- '600s ahead' "$ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq -- 'backed off to 1800s' "$ROOT/docs/DIAGNOSTICS.md"
+
 # hammerspoon must stay stale-flag-driven, not hardcode one of these thresholds
 assert grep -q 'bucket.stale == true' "$HAMMER"
+
+# --- Row cc: gateway model aliases and their labels --------------------------
+# Two independent readers of the same two ids: the statusline reads them off the harness
+# payload, the chat surfaces off a transcript. A label that drifts on one side names the
+# same chat two different models in two columns Egor reads side by side.
+CHAT_RESUME="$ROOT/share/chat_resume.py"
+for alias in sol astra; do
+  label=$(python3 -c 'import sys; print(sys.argv[1].capitalize())' "$alias")
+  assert grep -Fq "anthropic.ccr.$alias) model=$label ;;" "$STATUSLINE"
+  assert grep -Fq "\"$alias\": \"$label\"" "$CHAT_RESUME"
+  assert grep -Fq "\"$alias\": \"gpt-" "$ROOT/bin/claudegpt"
+  assert doc_has "\`anthropic.ccr.$alias\`"
+done
+# The prefix is spelled once on the reader side; a second literal is a second answer.
+assert eq "$(grep -c 'anthropic\.ccr\.' "$ROOT/bin/chats" "$ROOT/bin/chat-find" | grep -c ':0$')" 2
+assert grep -Fq 'GATEWAY_PREFIX = "anthropic.ccr."' "$CHAT_RESUME"
+assert grep -Fq 'Sol' "$ROOT/docs/claudegpt.md"
+
+# --- Row cf: the anthropic.ccr. prefix and its five sites --------------------
+# Each reads a different carrier — session model, transcript, /model return id, harness payload,
+# and the picker the launcher writes — so a prefix that changes has to change in all five.
+CLAUDEGPT="$ROOT/bin/claudegpt"
+HS_COMPACT="${HS_ROOT:-$HOME/.hammerspoon}/claude_compact.lua"
+assert test -r "$HS_COMPACT"
+assert grep -Fq 'anthropic.ccr.sol' "$CLAUDEGPT"
+assert grep -Fq 'anthropic.ccr.astra' "$CLAUDEGPT"
+assert grep -q 'anthropic%.ccr%.' "$HS_COMPACT"
+assert doc_has 'The `anthropic.ccr.` model-id prefix'
+# The launcher's own aliases stay bare: prefixing them would send the router a model it has no
+# provider for.
+assert grep -Fq 'MODELS = {"sol": "gpt-' "$CLAUDEGPT"
+
+# --- Row ce: gateway context window and its derived cuts ---------------------
+# The nudge ceiling and Claude Code's autocompact trigger are the SAME number by construction: a
+# window raised in the launcher alone would leave the nudge speaking 33000 tokens off the cut.
+CG_DOC="$ROOT/docs/claudegpt.md"
+CG_NUDGE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/context-nudge.sh"
+assert test -r "$CG_NUDGE"
+CG_WINDOW=$(grep -oE '^CONTEXT_WINDOW = [0-9]+' "$CLAUDEGPT" | grep -oE '[0-9]+')
+assert eq "$CG_WINDOW" 872000
+assert doc_has "\`$CG_WINDOW\`"
+assert grep -Fq "$CG_WINDOW" "$CG_DOC"
+# The launcher spells the window ONCE and hands it on; both variables and the router argument read
+# that name rather than a number of their own.
+assert eq "$(grep -cE '\b872000\b' "$CLAUDEGPT")" 1
+assert grep -Fq 'str(CONTEXT_WINDOW)' "$CLAUDEGPT"
+assert grep -Fq '"--context-window", str(CONTEXT_WINDOW)' "$CLAUDEGPT"
+# The nudge derives its ceiling from the environment and never learns the window itself.
+CG_RESERVE=$(grep -oE 'RESERVE:-[0-9]+' "$CG_NUDGE" | grep -oE '[0-9]+')
+assert eq "$CG_RESERVE" 33000
+assert grep -Fq 'CLAUDE_CODE_AUTO_COMPACT_WINDOW' "$CG_NUDGE"
+# The doc's two halves of that reserve must add up to it, and its cut must be the subtraction.
+read -r cg_output_reserve cg_summary_reserve <<<"$(sed -nE \
+  's/.*subtracts up to ([0-9,]+) output tokens and ([0-9,]+) summary tokens.*/\1 \2/p' "$CG_DOC" |
+  head -1 | tr -d ',')"
+assert eq "$((cg_output_reserve + cg_summary_reserve))" "$CG_RESERVE"
+CG_CUT=$((CG_WINDOW - CG_RESERVE))
+assert eq "$CG_CUT" 839000
+assert grep -Fq "$(sed -E 's/([0-9])([0-9]{3})$/\1,\2/' <<<"$CG_CUT")" "$CG_DOC"
+# Derived means derived: no site holds either number in CODE. The nudge's own comment cites both,
+# which is the one place they may be written down outside this doc and the launcher.
+for cg_site in "$CLAUDEGPT" "$STATUSLINE" "$CG_NUDGE"; do
+  cg_code=$(grep -vE '^[[:space:]]*#' "$cg_site")
+  assert eq "$(grep -cE "\\b${CG_CUT}\\b" <<<"$cg_code")" 0
+  [ "$cg_site" = "$CLAUDEGPT" ] ||
+    assert eq "$(grep -cE "\\b${CG_WINDOW}\\b" <<<"$cg_code")" 0
+done
 
 # --- Row b: keychain service formula -----------------------------------------
 # Both sites: shasum -a 256, first 8 chars, "Claude Code-credentials-" prefix.
@@ -586,9 +667,16 @@ assert grep -Fq '.subagent_type = "gemini-research"' "$WORKER_GATE"
 
 # The rewrite target and the refusal are the row's other two halves.
 assert grep -Fq '.model = "sonnet"' "$WORKER_GATE"
-assert grep -Fq "native \$native runs on Fable's quota" "$WORKER_GATE"
+assert grep -Fq "native \$native runs on this session's own quota" "$WORKER_GATE"
+# The doctrine binds one class of session models, and the shape lives in the gate alone: Fable and
+# the claudegpt gateway aliases, both spelled in row bt and in the routing contract.
+assert grep -Fq 'claude-fable-*|anthropic.ccr.*) return 0 ;;' "$WORKER_GATE"
+assert eq "$(grep -c 'claude-fable-\*' "$WORKER_GATE")" 1
+for model_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
+  assert grep -Fq 'anthropic.ccr.' "$model_doc"
+done
 assert grep -Fq 'model: sonnet' "$ROUTING_DOC"
-assert doc_has 'Native agent types on a Fable session'
+assert doc_has 'Native agent types on an orchestrator session'
 
 # --- Rows bu/bv: worker-run deadlines and the launched brief -----------------
 WORKER_RUN="$ROOT/bin/worker-run"
@@ -711,6 +799,23 @@ assert grep -Fq 'needs_user_entry == true' "$HAMMER"
 assert grep -Fq 'split("; ")' "$LLMLIMITS"
 assert grep -Fq 'join("; "))}' "$LLMLIMITS"
 assert grep -Fq 'def classify_cause:' "$LLMLIMITS"
+# Row bs: a spent window and an endpoint refusing the read are different classes, because the
+# refresh ladder loosens off the second one alone. Two implementations, one spelling.
+assert grep -Fq '"usage limit reached"' "$LLMLIMITS"
+assert doc_has 'usage limit reached'
+assert grep -Fq 'REFRESH_WALL_RE=' "$ROOT/bin/llm-refresh"
+assert grep -Fq 'REFRESH_PUSHBACK_RE=' "$ROOT/bin/llm-refresh"
+assert grep -Fq 'usage wall, not endpoint pushback' "$ROOT/bin/llm-refresh"
+assert doc_has 'usage wall, not endpoint pushback'
+for wall_wording in 'usage[ _-]?limit' 'quota[ _-]?(exceeded|exhausted|reached)' 'out of credits'; do
+  assert grep -Fq "$wall_wording" "$ROOT/bin/llm-refresh"
+  assert grep -Fq "$wall_wording" "$LLMLIMITS"
+done
+# A bare `rate limit` is what the codex usage RPC calls itself, so the signal has to be a verdict.
+for pushback_verdict in 'rate[ _-]?limit(s|ed)?[ _-]*(exceeded|hit)' 'too many requests'; do
+  assert grep -Fq "$pushback_verdict" "$ROOT/bin/llm-refresh"
+  assert grep -Fq "$pushback_verdict" "$LLMLIMITS"
+done
 assert grep -Fq 'deactivated_workspace' "$LLMLIMITS"
 assert grep -Fq '"workspace deactivated"' "$LLMLIMITS"
 assert doc_has 'workspace deactivated'
@@ -2229,13 +2334,13 @@ assert doc_has 'sanctioned only in the hand that owns them'
 assert grep -Fq 'claudeb[[:space:]]+(revive|warm)' "$LAUNCH_GATE"
 assert doc_has '`claudeb revive`, `claudeb warm`'
 # Every bare-launch spelling the contract names has a pattern, and every pattern a spelling.
-for launch_spelling in 'claude -p' 'claudeb … -p' 'codex exec' 'codexb … exec' 'gemini -p' 'geminib … --print' 'agy … --print' 'opencode run' 'grok … -p' 'grokb … --prompt-file'; do
+for launch_spelling in 'claude -p' 'claudeb … -p' 'claudegpt p <acct> -p' 'codex exec' 'codexb … exec' 'gemini -p' 'geminib … --print' 'agy … --print' 'opencode run' 'grok … -p' 'grokb … --prompt-file'; do
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/$DOC"
   assert grep -Fq "\`$launch_spelling\`" "$ROOT/docs/routing-contract.md"
 done
-# Six vendor launch patterns, counted inside the array alone: the same command-position anchor is
+# Seven vendor launch patterns, counted inside the array alone: the same command-position anchor is
 # reused by the worker-run ownership rule, which is not a vendor.
-assert eq "$(sed -n '/^LAUNCH_RES=(/,/^)/p' "$LAUNCH_GATE" | grep -Fc '${VENDOR_WORD}')" 6
+assert eq "$(sed -n '/^LAUNCH_RES=(/,/^)/p' "$LAUNCH_GATE" | grep -Fc '${VENDOR_WORD}')" 7
 assert grep -Fq 'OWNED_RUN_RE=' "$LAUNCH_GATE"
 assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0' "$LAUNCH_GATE"
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
@@ -2264,6 +2369,42 @@ for gemini_marker_reader in "$LLMLIMITS" "$GEMINIB"; do
     fail "row bc: $(basename "$gemini_marker_reader") spells main's marker instead of resolving it"
   fi
 done
+
+# --- Row cd: codex main's removal marker -------------------------------------
+# The gemini rule, one to one: two spellings of this path is a removal one tool performs and the
+# other never sees. Named codex accounts are deleted outright, so the resolver answers for main
+# alone and a caller asking about a named one gets a failure rather than an invented path.
+CODEX_ACCOUNTS="$ROOT/share/codex-accounts.sh"
+assert doc_has "Codex main's removal marker"
+assert doc_has '`~/.llm-limits-codex.json.removed`'
+codex_main_marker=$(codex_base_home=/fixture-home \
+  /bin/bash -c '. "'"$CODEX_ACCOUNTS"'" && codex_removal_marker main')
+assert eq "$codex_main_marker" '/fixture-home/.llm-limits-codex.json.removed'
+codex_cache_marker=$(LLM_LIMITS_CODEX_CACHE=/fixture-cache/codex.json \
+  /bin/bash -c '. "'"$CODEX_ACCOUNTS"'" && codex_removal_marker main')
+assert eq "$codex_cache_marker" '/fixture-cache/codex.json.removed'
+codex_override_marker=$(LLM_LIMITS_CODEX_REMOVED=/fixture-cache/gone \
+  /bin/bash -c '. "'"$CODEX_ACCOUNTS"'" && codex_removal_marker main')
+assert eq "$codex_override_marker" '/fixture-cache/gone'
+codex_named_rc=0
+codex_base_home=/fixture-home \
+  /bin/bash -c '. "'"$CODEX_ACCOUNTS"'" && codex_removal_marker work' >/dev/null 2>&1 || codex_named_rc=$?
+assert test "$codex_named_rc" -ne 0
+# Every reader reaches it through the shared resolver rather than spelling it.
+assert grep -Fq 'codex_legacy_removed=$(codex_removal_marker main)' "$LLMLIMITS"
+assert grep -Fq 'codex_main_removed() { [ -e "$(codex_removal_marker main)" ]; }' "$CODEX_ACCOUNTS"
+assert grep -Fq 'marker=$(codex_removal_marker main)' "$CODEXB"
+assert grep -Fq 'share/codex-accounts.sh' "$WORKER_RUN"
+assert grep -Fq 'share/codex-accounts.sh' "$STATUSLINE"
+for codex_marker_reader in "$LLMLIMITS" "$CODEXB" "$WORKER_RUN" "$STATUSLINE" "$ROOT/hammerspoon/llm-limits.lua"; do
+  if grep -Fq '.llm-limits-codex.json.removed' "$codex_marker_reader"; then
+    fail "row cd: $(basename "$codex_marker_reader") spells main's marker instead of resolving it"
+  fi
+done
+# The menubar performs the removal through the collector flag, never a codexb call that main
+# would refuse — the same wiring `--gemini-remove` has.
+assert grep -Fq '"--codex-remove"' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq -- '--codex-remove) codex_remove=1 ;;' "$LLMLIMITS"
 
 # --- Row bd: one journal ledger per git family ---------------------------------
 # Per-worktree git dirs gave one project two ledgers: a waiver from the main checkout cleared 33
@@ -2645,4 +2786,4 @@ assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
 assert test -r "$ROOT/tests/test_instruction_gate.sh"
 assert doc_has 'Instruction-file classes and the one span'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose five class names are the menubar'"'"'s whole vocabulary, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

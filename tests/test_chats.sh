@@ -33,6 +33,13 @@ printf 'v2 1785996640 alona 0 3600 claude-haiku-4-5 reply-0 262144 1785996640 al
   > "$TRACKS/cache-ttl-track-behind"
 printf 'v2 1785996700 ? 0 3600 claude-haiku-4-5 reply-9 262144 1785996700 com\n' \
   > "$TRACKS/cache-ttl-track-unknown"
+# A gateway chat's track: the statusline stamps CLAUDEGPT_ACCOUNT there, a bare name that
+# names an account in the OTHER store.
+printf 'v2 1785996700 alona 0 3600 anthropic.ccr.astra reply-1 872000 1785996700 alona\n' \
+  > "$TRACKS/cache-ttl-track-gw1"
+# Never his real gateway store: the picker reads stamps out of it.
+export CLAUDEGPT_HOME="$WORK/claudegpt"
+mkdir -p "$CLAUDEGPT_HOME/accounts"
 
 OUT=$(STATUSLINE_CACHE_DIR="$TRACKS" python3 - "$SCRIPT" "$STATUSLINE" <<'PY'
 import importlib.machinery, importlib.util, inspect, re, sys
@@ -58,9 +65,23 @@ print("ctx:", cells[3])
 print("warm:", chats.warm_name(row, now), chats.warm_name(row, now + 600))
 # Landing on a row: its live cache decides, and a row without one hands the
 # account back to the default the picker opened on — never to the previous row's.
-print("account-warm:", chats.account_for(row, now, ["alona", "com"], 1))
-print("account-cold:", chats.account_for(row, now + 600, ["alona", "com"], 1))
-print("account-absent:", chats.account_for(row, now, ["com", "beta"], 1))
+claudeb = [("claudeb", "alona"), ("claudeb", "com")]
+print("account-warm:", chats.account_for(row, now, claudeb, 1))
+print("account-cold:", chats.account_for(row, now + 600, claudeb, 1))
+print("account-absent:", chats.account_for(row, now, [("claudeb", "com"), ("claudeb", "beta")], 1))
+# A gateway chat: the model id says which store its account is in, so the warm name
+# picked up from the track is the GATEWAY `notcom` and never the claudeb profile of
+# the same name, and Enter reopens it through claudegpt rather than claudeb.
+gateway = dict(row, session="gw1", model="anthropic.ccr.astra")
+chats.annotate([gateway])
+both = [("claudeb", "alona"), ("gpt", "alona"), ("claudeb", "com")]
+print("gateway-model:", chats.columns(gateway, now)[2])
+print("gateway-account:", chats.account_for(gateway, now, both, 2))
+print("gateway-label:", chats.account_label(("gpt", "notcom")), chats.account_label(("claudeb", "notcom")))
+print("gateway-open:", chats.chat_resume.switch_argv(
+    "gw1", "notcom", model_id=gateway["model"], gateway=True))
+print("claudeb-open:", chats.chat_resume.switch_argv(
+    "abc123", "com", model_id=row["model"], gateway=False))
 # A row already landed on is asked again while ←→ has not moved the account, so
 # the cache expiring under a resting cursor hands it back; an override stands.
 print("refollow:", chats.refollow(row, "abc123", 0, 0), chats.refollow(row, "abc123", 1, 0),
@@ -156,6 +177,11 @@ assert grep -qx 'warm: alona None' <<<"$OUT"
 assert grep -qx 'account-warm: 0' <<<"$OUT"
 assert grep -qx 'account-cold: 1' <<<"$OUT"
 assert grep -qx 'account-absent: 1' <<<"$OUT"
+assert grep -qx 'gateway-model: Astra' <<<"$OUT"
+assert grep -qx 'gateway-account: 1' <<<"$OUT"
+assert grep -qx 'gateway-label: gpt:notcom notcom' <<<"$OUT"
+assert grep -qx "gateway-open: \['claudegpt', 'p', 'notcom', '--model', 'astra', '--resume', 'gw1'\]" <<<"$OUT"
+assert grep -qx "claudeb-open: \['claudeb', 'profile', 'com', '--resume', 'abc123'\]" <<<"$OUT"
 assert grep -qx 'refollow: True False True' <<<"$OUT"
 # The minute past this row's own expiry is still warm on the track's later stamp.
 assert grep -qx 'ahead: alona alona' <<<"$OUT"
@@ -232,7 +258,10 @@ chats = importlib.util.module_from_spec(spec)
 loader.exec_module(chats)
 chats.STATE = sys.argv[2]
 
-names = ["alpha", "beta", "gamma"]
+# The bar carries both stores; only a claudeb name can be what worker-pick, the
+# announced account or .claudeb-state answered.
+names = [("claudeb", "alpha"), ("claudeb", "beta"), ("claudeb", "gamma"),
+         ("gpt", "gamma")]
 os.environ["PICK_ANSWER"] = "gamma"
 print("pick:", chats.current_profile(names, None))
 print("pick-over-announced:", chats.current_profile(names, "beta"))
@@ -245,6 +274,9 @@ chats.STATE = sys.argv[2] + "-absent"
 print("none-nothing:", chats.current_profile(names, None))
 # The selector is the one beside this script, so a checkout answers with its own
 # halves; the override is what a test — and an install that split them — has.
+# A gateway account of the same name never answers for a claudeb one.
+os.environ["PICK_ANSWER"] = "gamma"
+print("pick-not-gateway:", chats.current_profile([("gpt", "gamma"), ("claudeb", "gamma")], None))
 print("pick-binary:", chats.worker_pick())
 del os.environ["CLAUDEB_WORKER_PICK"]
 print("pick-sibling:", chats.worker_pick() == os.path.join(chats.HERE, "worker-pick"))
@@ -252,6 +284,7 @@ PY
 ) || fail "account probe failed"
 
 assert grep -qx 'pick: 2' <<<"$OUT"
+assert grep -qx 'pick-not-gateway: 1' <<<"$OUT"
 assert grep -qx 'pick-over-announced: 2' <<<"$OUT"
 # An answer no profile here carries is no answer at all.
 assert grep -qx 'pick-unknown: 1' <<<"$OUT"

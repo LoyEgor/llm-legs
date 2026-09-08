@@ -1753,6 +1753,73 @@ codex_null_expected=$(( ($(date +%s) - (now - 600)) / 60 ))
   [ "$codex_null_minutes" -ge "$((codex_null_expected - 1))" ] &&
   [ "$codex_null_minutes" -le "$codex_null_expected" ] \
   || fail "Codex AGE included a null window: $codex_null_table"
+# `codexb remove main` writes its marker beside main's legacy cache file — the one path the
+# menubar's `--codex-remove` writes too. main is the real ~/.codex and mirrors whatever account the
+# Codex app is signed into, so its removal is permanent: it leaves the store entirely — no row at
+# all, not even a removed one — and the first NAMED account carries the vendor from then on.
+CODEX_NO_MAIN_CACHE="$WORK/codex-no-main.json"
+CODEX_NO_MAIN_MARKER="$CODEX_NO_MAIN_CACHE.removed"
+CODEX_NO_MAIN_STORE="$WORK/codex-no-main-store.json"
+CODEX_NO_MAIN_HOME="$WORK/codex-no-main-home"
+mkdir -p "$CODEX_NO_MAIN_HOME"
+cat >"$CODEX_NO_MAIN_CACHE" <<EOF
+{"accounts":[{"account":"main","plan_type":"plus","five_hour":{"used_pct":71,"resets_at":$five_reset_epoch},"weekly":{"used_pct":72,"resets_at":$week_reset_epoch},"as_of":$now},{"account":"com","plan_type":"plus","five_hour":{"used_pct":11,"resets_at":$five_reset_epoch},"weekly":{"used_pct":12,"resets_at":$week_reset_epoch},"as_of":$now},{"account":"work3","plan_type":"plus","five_hour":{"used_pct":31,"resets_at":$five_reset_epoch},"weekly":{"used_pct":32,"resets_at":$week_reset_epoch},"as_of":$now}],"current":"main"}
+EOF
+codex_no_main() {
+  HOME="$CODEX_NO_MAIN_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_NO_MAIN_CACHE" \
+    LLM_LIMITS_CACHE="$CODEX_NO_MAIN_STORE" bash "$SCRIPT" "$@"
+}
+codex_with_main=$(codex_no_main --json) || fail "Codex roster with main failed"
+jq -e '.vendors.codex.current_account == "main" and
+  ([.vendors.codex.accounts[] | select(.account == "main")] | length) == 1' \
+  <<<"$codex_with_main" >/dev/null || fail "the codex no-main fixture never had main to remove"
+# The path codexb itself would write, resolved by the module both tools source — a marker spelled
+# anywhere else is one codexb writes and llm-limits.sh never sees.
+codex_no_main_marker_shared=$(LLM_LIMITS_CODEX_CACHE="$CODEX_NO_MAIN_CACHE" \
+  /bin/bash -c '. "'"$ROOT"'/share/codex-accounts.sh" && codex_removal_marker main')
+[ "$codex_no_main_marker_shared" = "$CODEX_NO_MAIN_MARKER" ] \
+  || fail "the shared resolver names $codex_no_main_marker_shared, the collector reads $CODEX_NO_MAIN_MARKER"
+codex_removed=$(codex_no_main --codex-remove --json) || fail "--codex-remove failed"
+jq -e '.vendors.codex.available == true and .vendors.codex.current_account == "com" and
+  ([.vendors.codex.accounts[] | select(.account == "main")] | length) == 0 and
+  .vendors.codex.accounts[0].account == "com" and .vendors.codex.accounts[0].is_current == true and
+  .vendors.codex.accounts[1].account == "work3" and .vendors.codex.accounts[1].is_current == false and
+  .vendors.codex.five_hour.used_pct == 11 and .vendors.codex.weekly.used_pct == 12' \
+  <<<"$codex_removed" >/dev/null \
+  || fail "codex-remove did not take main out of its own run or hoist the first named account"
+[ -e "$CODEX_NO_MAIN_MARKER" ] || fail "codex-remove did not persist the removed marker"
+codex_still=$(codex_no_main --json) || fail "passive collect after codex-remove failed"
+jq -e '([.vendors.codex.accounts[]? | select(.account == "main")] | length) == 0 and
+  .vendors.codex.current_account == "com"' <<<"$codex_still" >/dev/null \
+  || fail "removed codex main came back on a passive collect"
+[ -e "$CODEX_NO_MAIN_MARKER" ] || fail "a passive collect cleared the codex main removal marker"
+codex_no_main_table=$(codex_no_main --table) || fail "codex no-main table failed"
+grep -q '^codex/main' <<<"$codex_no_main_table" && fail "removed Codex main still rendered a table row"
+grep -q '^codex/com\*' <<<"$codex_no_main_table" || fail "Codex current account lost its table mark"
+grep -q '^codex/work3 ' <<<"$codex_no_main_table" || fail "remaining Codex account missing from the table"
+codex_no_main_plain=$(codex_no_main --plain) || fail "codex no-main plain failed"
+grep -q '^codex/main' <<<"$codex_no_main_plain" && fail "removed Codex main still rendered a plain row"
+grep -q '^codex/com\*:' <<<"$codex_no_main_plain" || fail "Codex current account lost its plain mark"
+# Deleting the marker is the whole undo.
+rm -f "$CODEX_NO_MAIN_MARKER"
+codex_back=$(codex_no_main --json) || fail "codex collect after deleting the marker failed"
+jq -e '.vendors.codex.current_account == "main" and
+  ([.vendors.codex.accounts[] | select(.account == "main")] | length) == 1' \
+  <<<"$codex_back" >/dev/null || fail "deleting the marker did not bring codex main back"
+# main removed with no named profile beside it: the vendor states its REMOVAL rather than a missing
+# snapshot, which is what makes the menubar drop the section instead of rendering "no live data".
+CODEX_ONLY_MAIN_CACHE="$WORK/codex-only-main.json"
+cat >"$CODEX_ONLY_MAIN_CACHE" <<EOF
+{"accounts":[{"account":"main","plan_type":"plus","five_hour":{"used_pct":71,"resets_at":$five_reset_epoch},"weekly":{"used_pct":72,"resets_at":$week_reset_epoch},"as_of":$now}],"current":"main"}
+EOF
+codex_empty=$(HOME="$CODEX_NO_MAIN_HOME" LLM_LIMITS_CODEX_CACHE="$CODEX_ONLY_MAIN_CACHE" \
+  LLM_LIMITS_CACHE="$WORK/codex-only-main-store.json" bash "$SCRIPT" --codex-remove --json) || true
+jq -e '.vendors.codex.available == false and .vendors.codex.removed == true and
+  (.vendors.codex.accounts | type) != "array" and
+  (.vendors.codex | has("refresh_error") | not)' <<<"$codex_empty" >/dev/null \
+  || fail "codex with main removed and no named profile did not state its removal"
+[ -e "$CODEX_ONLY_MAIN_CACHE.removed" ] || fail "codex-remove left no marker on the empty roster"
+
 CODEX_TARGET_SENTINEL="$WORK/codex-target-called"
 cat >"$WORK/fake-codex-target" <<EOF
 #!/usr/bin/env bash
@@ -2462,7 +2529,7 @@ order_gemini=$(GEMINIB_PROFILES_DIR="$ORDER_GEMINI_PROFILES" \
   LLM_LIMITS_GEMINI_CACHE="$WORK/order-gemini-main.json" \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) \
   || fail "gemini account-order collection failed"
-jq -e '[.vendors.gemini.accounts[].account] == ["main","com","zed","abe"]' <<<"$order_gemini" >/dev/null \
+jq -e '[.vendors.gemini.accounts[].account] == ["com","main","zed","abe"]' <<<"$order_gemini" >/dev/null \
   || fail "gemini accounts are not ordered priority-first, then by profile birth time"
 
 # The final merge sees vendor data read before the store lock, so a racing writer's newer row has
@@ -3311,5 +3378,5 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
-echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
+echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
 exit 0

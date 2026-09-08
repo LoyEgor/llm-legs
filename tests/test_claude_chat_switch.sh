@@ -196,6 +196,44 @@ assert test "$RC" -eq 1
 assert grep -q "no transcript under" <<<"$OUT"
 assert test -z "$PAYLOAD"
 
+# --- --gateway: a claudegpt account, its own store and its own launcher ----
+# The gateway store is the OTHER place an account can live, and `claudeb profile` on a
+# claudegpt chat opens the same transcript on a Claude account and a Claude model.
+GW_HOME="$HOME/.local/share/claudegpt"
+mkdir -p "$GW_HOME/accounts/work4" "$GW_HOME/accounts/main" "$GW_HOME/sessions"
+GWSID="cccccccc-dddd-eeee-ffff-000000000000"
+
+run_switch -- --gateway nope "$GWSID"
+assert test "$RC" -eq 1
+assert grep -q "no claudegpt account 'nope'" <<<"$OUT"
+assert grep -q "existing claudegpt accounts:" <<<"$OUT"
+
+run_switch -- --gateway work4 "$GWSID"
+assert test "$RC" -eq 0
+assert grep -q "launcher=\"claudegpt p work4 --resume $GWSID\"" <<<"$PAYLOAD"
+assert grep -q "claudegpt p work4 --resume $GWSID" <<<"$OUT"
+assert test -z "$(grep -o 'claudeb profile work4' <<<"$OUT")"
+
+# "main" is a claudeb reserved word and a real gateway login at the same time.
+run_switch -- --gateway main "$GWSID"
+assert test "$RC" -eq 0
+assert grep -q "launcher=\"claudegpt p main --resume $GWSID\"" <<<"$PAYLOAD"
+run_switch -- main "$GWSID"
+assert test "$RC" -eq 1
+
+# The launch stamp carries the model alias the chat was opened with.
+printf 'v1 work4 astra\n' > "$GW_HOME/sessions/$GWSID"
+run_switch -- --gateway work4 "$GWSID"
+assert test "$RC" -eq 0
+assert grep -q "launcher=\"claudegpt p work4 --model astra --resume $GWSID\"" <<<"$PAYLOAD"
+
+# A stamped chat switched to a CLAUDEB account is that switch, not a gateway one: the
+# account he picked names the store, and `olx` is only ever a claudeb profile.
+run_switch -- olx "$GWSID"
+assert test "$RC" -eq 0
+assert grep -q "launcher=\"claudeb profile olx --resume $GWSID\"" <<<"$PAYLOAD"
+assert grep -q "claudeb profile olx --resume $GWSID" <<<"$OUT"
+
 # --- flag validation -------------------------------------------------------
 run_switch -- --front --self olx "$FSID"
 assert test "$RC" -eq 1
