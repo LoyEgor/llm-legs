@@ -3,7 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/gemini-research"
-WORK="$(mktemp -d)"
+WORK="$(mktemp -d "$HOME/.gemini-research-test.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() {
@@ -18,8 +18,11 @@ assert_not_grep() { asserts=$((asserts + 1)); ! grep -q "$1" "$2" || fail "asser
 HOME_FIXTURE="$WORK/home"
 BIN="$WORK/bin"
 REPO="$WORK/repo"
-mkdir -p "$HOME_FIXTURE/.gemini-profiles/researcher" "$HOME_FIXTURE/.gemini-profiles/explicit" \
-  "$BIN" "$REPO/subdir" "$REPO/.research-cache"
+mkdir -p "$HOME_FIXTURE/.gemini-profiles/researcher" \
+  "$BIN" "$REPO/subdir" "$REPO/.research-cache" "$WORK/tmp" "$HOME_FIXTURE/.gemini" "$HOME_FIXTURE/.claude"
+PROFILE_REAL="$WORK/profile \"quoted\""
+mkdir -p "$PROFILE_REAL"
+ln -s "$PROFILE_REAL" "$HOME_FIXTURE/.gemini-profiles/explicit"
 printf 'original\n' >"$REPO/tracked.txt"
 printf '.research-cache/\n' >"$REPO/.gitignore"
 printf 'ignored-before\n' >"$REPO/.research-cache/ignored.txt"
@@ -66,7 +69,27 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = --log-file ]; then log=$2; shift 2; else shift; fi
 done
 [ -z "${FAKE_GEMINI_EDIT:-}" ] || printf '%s\n' "${FAKE_GEMINI_EDIT_VALUE:-mutated}" >"$FAKE_GEMINI_EDIT"
+if [ "${FAKE_GEMINI_MODE:-}" = peer ]; then
+  touch "$TMPDIR/ready"
+  for ((i=0; i<200; i++)); do
+    [ ! -e "$TMPDIR/release" ] || break
+    sleep 0.05
+  done
+  [ -e "$TMPDIR/release" ] || exit 8
+fi
 case "${FAKE_GEMINI_MODE:-answer}" in
+  housekeeping)
+    printf 'profile-ok\n' >"$HOME/.gemini-profiles/$account/housekeeping" || exit 9
+    printf 'temp-ok\n' >"$TMPDIR/housekeeping" || exit 9
+    printf 'base-ok\n' >"$HOME/.gemini/housekeeping" || exit 9
+    ;;
+  conversation)
+    printf 'Operation not permitted: sandbox deny discussed in research\n' >"$log"
+    printf 'Operation not permitted\n'
+    ;;
+  denial-log)
+    printf 'Sandbox: agy(123) deny(1) file-write-create %s\n' "$FAKE_DENIED_PATH" >&2
+    ;;
   quota)
     printf 'RESOURCE_EXHAUSTED: rateLimiter HTTP 429\n' >"$log"
     exit "${FAKE_GEMINI_RC:-0}"
@@ -98,13 +121,14 @@ run_research() {
   : >"$WORK/stdout"
   : >"$WORK/stderr"
   env HOME="$HOME_FIXTURE" PATH="$BIN:/usr/bin:/bin" FAKE_PICK_LOG="$WORK/pick.log" \
-    FAKE_GEMINI_LOG="$WORK/gemini.log" RESEARCH_RUN_DIR="$RESEARCH_RUNS" \
+    FAKE_GEMINI_LOG="$WORK/tmp/gemini.log" TMPDIR="$WORK/tmp" \
+    GEMINIB_PROFILES_DIR="$HOME_FIXTURE/.gemini-profiles" WORKER_RUN_IDLE_S=0 RESEARCH_RUN_DIR="$RESEARCH_RUNS" \
     WORKER_RUN_DIR="$WORKER_RUNS" CLAUDE_CODE_SESSION_ID= \
     "$@" >"$WORK/stdout" 2>"$WORK/stderr" || rc=$?
 }
 
 : >"$WORK/pick.log"
-: >"$WORK/gemini.log"
+: >"$WORK/tmp/gemini.log"
 before=$(git -C "$REPO" status --porcelain)
 run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer" --repo "$REPO"
 assert test "$rc" -eq 0
@@ -115,35 +139,42 @@ assert grep -q '^ANSWER: .*/answer$' "$WORK/stdout"
 assert grep -q '^LOG: .*researcher\.log$' "$WORK/stdout"
 assert grep -q '^ELAPSED: [0-9][0-9]*$' "$WORK/stdout"
 assert grep -q '^--account gemini --role research --claim$' "$WORK/pick.log"
-assert grep -q '^ARG=gemini-3.8-flash-high$' "$WORK/gemini.log"
-assert grep -q '^ARG=--add-dir$' "$WORK/gemini.log"
-assert grep -q "^ARG=$REPO_REAL$" "$WORK/gemini.log"
-assert grep -q '^ARG=--print-timeout$' "$WORK/gemini.log"
-assert grep -q '^ARG=40m$' "$WORK/gemini.log"
-assert test "$(grep -c "^CWD=$REPO_REAL$" "$WORK/gemini.log")" -eq 0
+assert grep -q '^ARG=gemini-3.8-flash-high$' "$WORK/tmp/gemini.log"
+assert grep -q '^ARG=--add-dir$' "$WORK/tmp/gemini.log"
+assert grep -q "^ARG=$REPO_REAL$" "$WORK/tmp/gemini.log"
+assert grep -q '^ARG=--print-timeout$' "$WORK/tmp/gemini.log"
+assert grep -q '^ARG=40m$' "$WORK/tmp/gemini.log"
+assert test "$(grep -c "^CWD=$REPO_REAL$" "$WORK/tmp/gemini.log")" -eq 0
 
-: >"$WORK/gemini.log"
+: >"$WORK/tmp/gemini.log"
 run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer-dedupe" \
   --repo "$REPO/subdir" --repo "$REPO"
 assert test "$rc" -eq 0
-assert test "$(grep -c '^ARG=--add-dir$' "$WORK/gemini.log")" -eq 1
-assert grep -q "^ARG=$REPO_REAL$" "$WORK/gemini.log"
+assert test "$(grep -c '^ARG=--add-dir$' "$WORK/tmp/gemini.log")" -eq 1
+assert grep -q "^ARG=$REPO_REAL$" "$WORK/tmp/gemini.log"
+
+run_research env FAKE_GEMINI_EDIT="$REPO/new.txt" "$SCRIPT" --prompt-file "$WORK/prompt" \
+  --out "$WORK/answer-new" --repo "$REPO" --account explicit
+assert test ! -e "$REPO/new.txt"
+assert test "$rc" -eq 5
+assert grep -q '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
+assert test "$(<"$WORK/answer-new")" = 'researched answer'
 
 run_research env FAKE_GEMINI_EDIT="$REPO/tracked.txt" "$SCRIPT" --prompt-file "$WORK/prompt" \
   --out "$WORK/answer-subdir" --repo "$REPO/subdir" --account researcher
 assert test "$rc" -eq 5
-assert grep -q '^READ-ONLY VIOLATION:' "$WORK/stdout"
+assert grep -q '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
 assert grep -q "$REPO_REAL/tracked.txt" "$WORK/stdout"
-assert test "$(<"$REPO/tracked.txt")" = mutated
-printf 'original\n' >"$REPO/tracked.txt"
+assert test "$(<"$REPO/tracked.txt")" = original
+assert test "$(<"$WORK/answer-subdir")" = 'researched answer'
 
-: >"$WORK/gemini.log"
+: >"$WORK/tmp/gemini.log"
 mkdir "$WORK/not-repo"
 run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer-not-repo" --repo "$WORK/not-repo"
 assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/stdout"
 assert grep -q 'not a git repository' "$WORK/stdout"
-assert test ! -s "$WORK/gemini.log"
+assert test ! -s "$WORK/tmp/gemini.log"
 
 picker_cases=(
   '3|worker-pick: no selectable gemini account (100% main f38·high WALLED)|3|GEMINI_USAGE_LIMIT'
@@ -173,14 +204,14 @@ assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/stdout"
 assert_not_grep '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/stdout"
 
 : >"$WORK/pick.log"
-: >"$WORK/gemini.log"
+: >"$WORK/tmp/gemini.log"
 run_research env FAKE_PICK_MODE=rotate FAKE_GEMINI_MODE=rotate "$SCRIPT" \
   --prompt-file "$WORK/prompt" --out "$WORK/answer-rotate" --repo "$REPO"
 assert test "$rc" -eq 0
 assert test "$(<"$WORK/answer-rotate")" = 'researched answer'
 assert grep -q '^ACCOUNT: explicit (gemini)$' "$WORK/stdout"
 assert grep -q '^--account gemini --role research --exclude researcher --claim$' "$WORK/pick.log"
-assert test "$(grep -c '^ACCOUNT=' "$WORK/gemini.log")" -eq 2
+assert test "$(grep -c '^ACCOUNT=' "$WORK/tmp/gemini.log")" -eq 2
 
 run_research env FAKE_PICK_MODE=rotate-exhaust FAKE_GEMINI_MODE=quota "$SCRIPT" \
   --prompt-file "$WORK/prompt" --out "$WORK/answer-pool-wall" --repo "$REPO"
@@ -189,12 +220,12 @@ assert grep -q '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/stdout"
 assert grep -q 'out of the worker pool' "$WORK/stdout"
 
 : >"$WORK/pick.log"
-: >"$WORK/gemini.log"
+: >"$WORK/tmp/gemini.log"
 run_research env FAKE_GEMINI_MODE=quota "$SCRIPT" --prompt-file "$WORK/prompt" \
   --out "$WORK/answer-explicit-quota" --repo "$REPO" --account explicit
 assert test "$rc" -eq 3
 assert test ! -s "$WORK/pick.log"
-assert test "$(grep -c '^ACCOUNT=' "$WORK/gemini.log")" -eq 1
+assert test "$(grep -c '^ACCOUNT=' "$WORK/tmp/gemini.log")" -eq 1
 
 UNBORN="$WORK/unborn"
 mkdir "$UNBORN"
@@ -206,29 +237,97 @@ assert test "$rc" -eq 0
 assert test "$(<"$WORK/answer-unborn")" = 'researched answer'
 assert test "$(<"$UNBORN/only.txt")" = uncommitted
 
-run_research env FAKE_GEMINI_EDIT="$REPO/tracked.txt" FAKE_GEMINI_RC=7 \
-  FAKE_GEMINI_ERROR='geminib: account needs login' "$SCRIPT" --prompt-file "$WORK/prompt" \
-  --out "$WORK/answer-error-edit" --repo "$REPO" --account explicit
-assert test "$rc" -eq 5
-assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/stdout"
-assert grep -q '^READ-ONLY VIOLATION:' "$WORK/stdout"
-outcome_line=$(grep -n '^OUTCOME:' "$WORK/stdout" | cut -d: -f1)
-violation_line=$(grep -n '^READ-ONLY VIOLATION:' "$WORK/stdout" | cut -d: -f1)
-assert test "$outcome_line" -lt "$violation_line"
-printf 'original\n' >"$REPO/tracked.txt"
-
 run_research env FAKE_GEMINI_EDIT="$REPO/.research-cache/ignored.txt" "$SCRIPT" \
   --prompt-file "$WORK/prompt" --out "$WORK/answer-ignored" --repo "$REPO" --account explicit
 assert test "$rc" -eq 5
-assert grep -q '^READ-ONLY VIOLATION:' "$WORK/stdout"
+assert grep -q '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
 assert grep -q "$REPO_REAL/.research-cache/ignored.txt" "$WORK/stdout"
 
-: >"$WORK/gemini.log"
+assert test "$(<"$REPO/.research-cache/ignored.txt")" = ignored-before
+assert test "$(<"$WORK/answer-ignored")" = 'researched answer'
+
+TEMP_REPO="$WORK/tmp/repo"
+mkdir "$TEMP_REPO"
+git -C "$TEMP_REPO" init -q
+run_research env FAKE_GEMINI_EDIT="$TEMP_REPO/new.txt" "$SCRIPT" --prompt-file "$WORK/prompt" \
+  --out "$WORK/answer-temp-repo" --repo "$TEMP_REPO" --account explicit
+assert test ! -e "$TEMP_REPO/new.txt"
+assert test "$rc" -eq 5
+assert grep -q '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
+assert test "$(<"$WORK/answer-temp-repo")" = 'researched answer'
+
+for denied in "$HOME_FIXTURE/.claude/new.txt" "$HOME_FIXTURE/.gemini-profiles/researcher/other-account.txt"; do
+  run_research env FAKE_GEMINI_EDIT="$denied" "$SCRIPT" --prompt-file "$WORK/prompt" \
+    --out "$WORK/answer-denied" --repo "$REPO" --account explicit
+  assert test "$rc" -eq 5
+  assert grep -q '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
+  assert grep -Fq "$denied" "$WORK/stdout"
+  assert test ! -e "$denied"
+  assert test "$(<"$WORK/answer-denied")" = 'researched answer'
+done
+
+run_research env FAKE_GEMINI_MODE=housekeeping "$SCRIPT" --prompt-file "$WORK/prompt" \
+  --out "$WORK/answer-housekeeping" --repo "$REPO" --account explicit
+assert test "$rc" -eq 0
+assert test "$(<"$HOME_FIXTURE/.gemini-profiles/explicit/housekeeping")" = profile-ok
+assert test "$(<"$WORK/tmp/housekeeping")" = temp-ok
+assert test "$(<"$HOME_FIXTURE/.gemini/housekeeping")" = base-ok
+assert_not_grep '^OUTCOME:' "$WORK/stdout"
+log=$(sed -n 's/^LOG: //p' "$WORK/stdout")
+assert grep -q '^SANDBOX PROFILE:$' "$log"
+assert grep -Fq '(deny file-write*)' "$log"
+profile_escaped=${PROFILE_REAL//\"/\\\"}
+assert grep -Fq "$profile_escaped" "$log"
+
+run_research env FAKE_GEMINI_MODE=denial-log FAKE_DENIED_PATH="$REPO/denied-in-log" "$SCRIPT" \
+  --prompt-file "$WORK/prompt" --out "$WORK/answer-log-denial" --repo "$REPO" --account explicit
+assert test "$rc" -eq 5
+assert grep -q '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
+assert grep -Fq "$REPO/denied-in-log" "$WORK/stdout"
+assert test "$(<"$WORK/answer-log-denial")" = 'researched answer'
+
+head_before=$(git -C "$REPO" rev-parse HEAD)
+(
+  run_research env FAKE_GEMINI_MODE=peer "$SCRIPT" --prompt-file "$WORK/prompt" \
+    --out "$WORK/answer-peer" --repo "$REPO" --account explicit
+  printf '%s\n' "$rc" >"$WORK/peer.rc"
+) &
+peer_pid=$!
+for ((i=0; i<200; i++)); do
+  [ ! -e "$WORK/tmp/ready" ] || break
+  sleep 0.05
+done
+assert test -e "$WORK/tmp/ready"
+printf 'peer-commit\n' >"$REPO/peer-committed.txt"
+git -C "$REPO" add peer-committed.txt
+git -C "$REPO" -c user.name=Fixture -c user.email=fixture@example.test commit -qm peer
+printf 'peer-edit\n' >"$REPO/tracked.txt"
+touch "$WORK/tmp/release"
+wait "$peer_pid"
+assert test "$(<"$WORK/peer.rc")" -eq 0
+assert test "$head_before" != "$(git -C "$REPO" rev-parse HEAD)"
+assert test "$(<"$REPO/tracked.txt")" = peer-edit
+assert test "$(<"$WORK/answer-peer")" = 'researched answer'
+assert_not_grep 'VIOLATION\|^NOTE:\|^OUTCOME:' "$WORK/stdout"
+
+for sandbox in /nonexistent "$BIN/refuse-sandbox"; do
+  printf '#!/bin/sh\necho "sandbox-exec: invalid profile" >&2\nexit 65\n' >"$BIN/refuse-sandbox"
+  chmod +x "$BIN/refuse-sandbox"
+  : >"$WORK/tmp/gemini.log"
+  run_research env GEMINI_RESEARCH_SANDBOX_EXEC="$sandbox" "$SCRIPT" --prompt-file "$WORK/prompt" \
+    --out "$WORK/answer-no-sandbox" --repo "$REPO" --account explicit
+  assert test "$rc" -eq 4
+  assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/stdout"
+  assert grep -q 'sandbox-exec' "$WORK/stdout"
+  assert test ! -s "$WORK/tmp/gemini.log"
+done
+
+: >"$WORK/tmp/gemini.log"
 run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$REPO/research-answer" \
   --repo "$REPO" --account explicit
 assert test "$rc" -eq 2
 assert grep -q '^usage: gemini-research ' "$WORK/stderr"
-assert test ! -s "$WORK/gemini.log"
+assert test ! -s "$WORK/tmp/gemini.log"
 
 SUBSOURCE="$WORK/sub-source"
 SUBPARENT="$WORK/sub-parent"
@@ -250,8 +349,8 @@ run_research env FAKE_GEMINI_EDIT="$SUBPARENT/module/module.txt" FAKE_GEMINI_EDI
   --repo "$SUBPARENT" --account explicit
 assert test "$rc" -eq 5
 assert test "$(git -C "$SUBPARENT" status --porcelain)" = "$submodule_status_before"
-assert grep -q '/module$' "$WORK/stdout"
-assert test "$(<"$SUBPARENT/module/module.txt")" = dirty-after
+assert grep -q '/module/module.txt' "$WORK/stdout"
+assert test "$(<"$SUBPARENT/module/module.txt")" = dirty-before
 
 : >"$WORK/pick.log"
 run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer-explicit" \
@@ -259,13 +358,13 @@ run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer-explicit
 assert test "$rc" -eq 0
 assert test ! -s "$WORK/pick.log"
 
-: >"$WORK/gemini.log"
+: >"$WORK/tmp/gemini.log"
 run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer-unknown" \
   --repo "$REPO" --account unknown
 assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/stdout"
 assert grep -q '^gemini-research: unknown account: unknown$' "$WORK/stdout"
-assert test ! -s "$WORK/gemini.log"
+assert test ! -s "$WORK/tmp/gemini.log"
 
 MISSING_BIN="$WORK/missing-bin"
 mkdir -p "$MISSING_BIN"
@@ -285,4 +384,21 @@ assert test ! -e "$RESEARCH_RUNS"
 assert test ! -e "$WORKER_RUNS"
 assert_not_grep '^RUN: ' "$WORK/stdout"
 
-printf 'PASS: %s assertions; normalized and deduplicated repositories, silent-log quota detection, account rotation, unborn HEAD, classified violations, ignored files, output refusal, dirty submodules, picker refusal semantics, explicit-account bypass, unavailable Gemini, and absence of liveness records\n' "$asserts"
+
+run_research env FAKE_GEMINI_MODE=conversation "$SCRIPT" --prompt-file "$WORK/prompt" \
+  --out "$WORK/answer-conversation" --repo "$REPO" --account explicit
+assert test "$rc" -eq 0
+assert_not_grep '^OUTCOME: GEMINI_RESEARCH_WRITE_DENIED$' "$WORK/stdout"
+mv "$HOME_FIXTURE/.gemini" "$HOME_FIXTURE/.gemini.saved"
+mv "$HOME_FIXTURE/.claude" "$HOME_FIXTURE/.claude.saved"
+cat >"$BIN/readlink" <<'READLINK'
+#!/bin/sh
+[ -e "$2" ] || exit 1
+exec /usr/bin/readlink "$@"
+READLINK
+chmod +x "$BIN/readlink"
+run_research "$SCRIPT" --prompt-file "$WORK/prompt" --out "$WORK/answer-missing-home" \
+  --repo "$REPO" --account explicit
+assert test "$rc" -eq 0
+
+printf 'PASS: %s assertions; OS write denial with intact answers, allowed housekeeping, peer commit and edit, sandbox unavailable/refused, repository normalization, quota rotation, unborn HEAD, ignored files, output refusal, dirty submodules, picker semantics, explicit accounts, no liveness records\n' "$asserts"

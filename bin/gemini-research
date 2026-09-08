@@ -122,63 +122,44 @@ if ! account_known "$account"; then
   exit 4
 fi
 
-snapshot_path() {
-  local repo=$1 target=$2 code=$3 directory=$4 id state fingerprint full
-  id=$(printf '%s' "$target" | shasum -a 256 | awk '{print $1}') || return 1
-  full="$repo/$target"
-  if [ -L "$full" ]; then
-    fingerprint="link:$(readlink "$full" | shasum -a 256 | awk '{print $1}')"
-  elif [ -f "$full" ]; then
-    fingerprint="file:$(shasum -a 256 "$full" | awk '{print $1}')"
-  elif [ -d "$full" ]; then
-    fingerprint="dir:$({
-      git -C "$full" rev-parse --verify --quiet HEAD 2>/dev/null || printf 'unborn\n'
-      git -C "$full" submodule status --recursive 2>/dev/null || :
-      git -C "$full" status --porcelain=v1 --untracked-files=all 2>/dev/null || :
-      git -C "$full" diff --binary 2>/dev/null || :
-      git -C "$full" diff --cached --binary 2>/dev/null || :
-    } | shasum -a 256 | awk '{print $1}')"
-  else
-    fingerprint=missing
+resolve_path() {
+  if [ -e "$1" ]; then readlink -f "$1"; else printf '%s\n' "$1"; fi
+}
+
+sandbox_profile() {
+  local path resolved escaped profile_home
+  local -a writable
+  writable=()
+  if [ "$account" != main ]; then
+    profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
+    writable+=("$profile_home")
   fi
-  state="$directory/$id.state"
-  printf '%s\n%s\n' "$code" "$fingerprint" >"$state"
-  printf '%s' "$target" >"$directory/$id.path"
+  writable+=("$HOME/.gemini" "${TMPDIR:-/tmp}" /private/tmp
+    "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$log_dir")
+  printf '(version 1)\n(allow default)\n(deny file-write*)\n'
+  for path in "${writable[@]}"; do
+    [ -n "$path" ] || return 1
+    resolved=$(resolve_path "$path") || return 1
+    escaped=${resolved//\\/\\\\}; escaped=${escaped//\"/\\\"}
+    escaped=${escaped//$'\n'/\\n}; escaped=${escaped//$'\r'/\\r}
+    printf '(allow file-write* (subpath "%s"))\n' "$escaped"
+  done
+  printf '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/stdin") (literal "/dev/stdout") (literal "/dev/stderr"))\n'
+  # A checkout inside an allowed temp root must still be read-only.
+  for path in "${resolved_repos[@]}" "$HOME/.claude"; do
+    resolved=$(resolve_path "$path") || return 1
+    escaped=${resolved//\\/\\\\}; escaped=${escaped//\"/\\\"}
+    escaped=${escaped//$'\n'/\\n}; escaped=${escaped//$'\r'/\\r}
+    printf '(deny file-write* (subpath "%s"))\n' "$escaped"
+  done
 }
 
-# Match review-journal's cap: ignored build trees can contain thousands of files.
-IGNORED_HASH_CAP=500
-snapshot_repo() {
-  local repo=$1 directory=$2 record code target source ignored_count=0
-  mkdir -p "$directory/records" || return 1
-  : >"$directory/head"
-  git -C "$repo" rev-parse --verify --quiet HEAD >>"$directory/head" 2>/dev/null || :
-  git -C "$repo" status --porcelain=v1 -z --untracked-files=all >"$directory/status" || return 1
-  while IFS= read -r -d '' record; do
-    code=${record:0:2}
-    target=${record:3}
-    snapshot_path "$repo" "$target" "$code" "$directory/records" || return 1
-    case "$code" in
-      R*|C*|?R|?C)
-        IFS= read -r -d '' source || return 1
-        snapshot_path "$repo" "$source" "source:$code" "$directory/records" || return 1
-        ;;
-      esac
-  done <"$directory/status"
-  while IFS= read -r -d '' target; do
-    ignored_count=$((ignored_count + 1))
-    [ "$ignored_count" -le "$IGNORED_HASH_CAP" ] || break
-    snapshot_path "$repo" "$target" '!!' "$directory/records" || return 1
-  done < <(git -C "$repo" ls-files -o --ignored --exclude-standard -z 2>/dev/null)
-}
-
-for index in "${!resolved_repos[@]}"; do
-  snapshot_repo "${resolved_repos[$index]}" "$tmp_dir/before-$index" || {
-    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-    printf 'gemini-research: could not snapshot %s\n' "${resolved_repos[$index]}"
-    exit 4
-  }
-done
+sandbox_exec=${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}
+if [ ! -x "$sandbox_exec" ]; then
+  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+  printf 'gemini-research: sandbox-exec is missing or not executable: %s\n' "$sandbox_exec"
+  exit 4
+fi
 
 cache_dir="$HOME/.cache/gemini-research"
 mkdir -p "$cache_dir" || {
@@ -199,17 +180,48 @@ quota_pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota[[:s
 
 while :; do
   attempt=$((attempt + 1))
-  log="$cache_dir/$timestamp-$account.log"
+  log_dir="$cache_dir/$timestamp-$attempt"
+  mkdir -p "$log_dir" || exit 4
+  log="$log_dir/$account.log"
+  cli_log="$log_dir/cli.log"
+  profile=$(sandbox_profile) || {
+    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+    printf 'gemini-research: could not resolve sandbox write paths\n'
+    exit 4
+  }
+  printf 'SANDBOX PROFILE:\n%s\nEND SANDBOX PROFILE\n' "$profile" >"$log"
   error_file="$tmp_dir/geminib-$attempt.err"
   command=("$geminib_bin" profile "$account" --model gemini-3.8-flash-high)
   for repo in "${resolved_repos[@]}"; do command+=(--add-dir "$repo"); done
-  command+=(--print-timeout "$timeout_value" --dangerously-skip-permissions --log-file "$log" --print "$(<"$prompt_file")")
+  command+=(--print-timeout "$timeout_value" --dangerously-skip-permissions --log-file "$cli_log" --print "$(<"$prompt_file")")
   run_rc=0
-  (cd "$tmp_dir" && "${command[@]}" >"$out" 2>"$error_file") || run_rc=$?
+  if ! "$sandbox_exec" -p "$profile" /usr/bin/true 2>"$error_file"; then
+    cat "$error_file" >>"$log"
+    result_code=4
+    result_outcome=GEMINI_UNAVAILABLE
+    result_line="gemini-research: sandbox-exec refused the profile: $(sed -n '1p' "$error_file")"
+    break
+  fi
+  (cd "$tmp_dir" && "$sandbox_exec" -p "$profile" "${command[@]}" >"$out" 2>"$error_file") || run_rc=$?
+  [ ! -f "$cli_log" ] || cat "$cli_log" >>"$log"
+  cat "$error_file" >>"$log"
+  if grep -Eq '^sandbox-exec:' "$error_file"; then
+    result_code=4
+    result_outcome=GEMINI_UNAVAILABLE
+    result_line=$(sed -n '1p' "$error_file")
+    break
+  fi
+  denied_lines=$(grep -Eih 'Operation not permitted|sandbox[^[:cntrl:]]*deny' "$error_file" 2>/dev/null) || :
+  if [ -n "$denied_lines" ]; then
+    result_code=5
+    result_outcome=GEMINI_RESEARCH_WRITE_DENIED
+    result_line=$denied_lines
+    break
+  fi
 
   quota_line=''
   if [ "$run_rc" -ne 0 ] || [ ! -s "$out" ]; then
-    quota_line=$(grep -Eih "$quota_pattern" "$log" "$out" "$error_file" 2>/dev/null | head -n 1) || :
+    quota_line=$(grep -Eih "$quota_pattern" "$cli_log" "$out" "$error_file" 2>/dev/null | head -n 1) || :
   fi
   if [ -n "$quota_line" ]; then
     result_line=$quota_line
@@ -251,39 +263,6 @@ while :; do
 done
 ended=$(date +%s)
 
-violations="$tmp_dir/violations"
-: >"$violations"
-for index in "${!resolved_repos[@]}"; do
-  repo=${resolved_repos[$index]}
-  before="$tmp_dir/before-$index"
-  after="$tmp_dir/after-$index"
-  snapshot_repo "$repo" "$after" || {
-    printf '%s\n' "$repo (snapshot unavailable after run)" >>"$violations"
-    continue
-  }
-  if ! cmp -s "$before/head" "$after/head"; then
-    old_head=$(<"$before/head")
-    new_head=$(<"$after/head")
-    changed_heads=''
-    if [ -n "$old_head" ] && [ -n "$new_head" ]; then
-      changed_heads=$(git -C "$repo" diff-tree --no-commit-id --name-only -r "$old_head" "$new_head" 2>/dev/null)
-    fi
-    if [ -n "$changed_heads" ]; then
-      while IFS= read -r target; do printf '%s/%s\n' "$repo" "$target" >>"$violations"; done <<<"$changed_heads"
-    else
-      printf '%s/.git/HEAD\n' "$repo" >>"$violations"
-    fi
-  fi
-  while IFS= read -r state; do
-    id=${state##*/}; id=${id%.state}
-    if ! cmp -s "$before/records/$id.state" "$after/records/$id.state"; then
-      path_file="$after/records/$id.path"
-      [ -f "$path_file" ] || path_file="$before/records/$id.path"
-      printf '%s/%s\n' "$repo" "$(<"$path_file")" >>"$violations"
-    fi
-  done < <(find "$before/records" "$after/records" -type f -name '*.state' -print | sed 's#.*/##' | sort -u)
-done
-
 printf 'ACCOUNT: %s (gemini)\n' "$account"
 printf 'ANSWER: %s\n' "$out"
 printf 'LOG: %s\n' "$log"
@@ -297,9 +276,4 @@ if [ -n "$result_outcome" ]; then
   [ -z "$result_line" ] || printf '%s\n' "$result_line"
 fi
 
-if [ -s "$violations" ]; then
-  printf 'READ-ONLY VIOLATION: repository paths changed during the run; verify by author before trusting the answer\n'
-  sort -u "$violations"
-  exit 5
-fi
 exit "$result_code"

@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+set -u
+umask 077
+ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"
+CAP=16000
+locked=false
+tmp=''
+usage() { printf 'report-bus: invalid arguments (post | emit | flush | list | doctor); emit exits 3 on a duplicate\n' >&2; exit 2; }
+valid_name() { case "$1" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
+# shellcheck disable=SC2329
+cleanup() {
+  [ -z "$tmp" ] || rm -f "$tmp"
+  if [ "$locked" = true ] && [ "$(cat "$ROOT/.lock/pid" 2>/dev/null)" = "$$" ]; then rm -f "$ROOT/.lock/pid"; rmdir "$ROOT/.lock" 2>/dev/null || :; fi
+}
+trap 'cleanup' EXIT
+trap 'exit 0' HUP INT TERM
+problem() {
+  printf 'report-bus: %s\n' "$1" >&2
+  if ! { printf '%s\n' "${body:-}" >>"$ROOT/lost.log"; } 2>/dev/null; then
+    printf 'report-bus: lost.log is unwritable; body follows\n%s\n' "${body:-}" >&2
+  fi
+  exit 0
+}
+lock_store() {
+  local tries=0 owner age
+  mkdir -p "$ROOT" 2>/dev/null || return 1
+  while ! mkdir "$ROOT/.lock" 2>/dev/null; do
+    owner=$(cat "$ROOT/.lock/pid" 2>/dev/null) || owner=''
+    age=$(( $(date +%s) - $(mtime "$ROOT/.lock" || date +%s) ))
+    if [ "$age" -gt 60 ] || { [[ "$owner" =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; }; then
+      rm -f "$ROOT/.lock/pid"
+      rmdir "$ROOT/.lock" 2>/dev/null || :
+      continue
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -lt 100 ] && [ -w "$ROOT" ] || return 1
+    sleep 0.05
+  done
+  locked=true
+  printf '%s\n' "$$" >"$ROOT/.lock/pid"
+}
+resolve_session() {
+  local current='' next owner entry runroot seen='|' pid hop registry
+  [ -z "$session" ] || return 0
+  runroot="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+  if [ -n "${WORKER_RUN_DIR:-}" ] && [ -r "$WORKER_RUN_DIR/launcher" ]; then
+    current=$(cat "$WORKER_RUN_DIR/launcher")
+    runroot=${WORKER_RUN_DIR%/*}
+  fi
+  valid_name "$current" || current=${CLAUDE_LAUNCHER_SESSION:-}
+  valid_name "$current" || current=${CLAUDE_CODE_SESSION_ID:-}
+  if ! valid_name "$current"; then
+    current=''
+    pid=$$
+    registry="${REVIEW_BENCH_SESSION_DIR:-$HOME/.claude/sessions}"
+    for ((hop=0; hop<15; hop++)); do
+      [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] || break
+      next=$(jq -r '.sessionId // empty' "$registry/$pid.json" 2>/dev/null) || next=''
+      if valid_name "$next"; then current=$next; break; fi
+      pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    done
+  fi
+  if ! valid_name "$current"; then session=_orphan; return; fi
+  while :; do
+    seen="$seen$current|"
+    next=''
+    for entry in "$runroot"/*/worker-session; do
+      [ -f "$entry" ] || continue
+      grep -qxF -- "$current" "$entry" || continue
+      owner=$(cat "${entry%/worker-session}/launcher" 2>/dev/null) || owner=''
+      valid_name "$owner" || continue
+      if [ -n "$next" ] && [ "$next" != "$owner" ]; then next=''; break; fi
+      next=$owner
+    done
+    valid_name "$next" || break
+    case "$seen" in *"|$next|"*) break ;; esac
+    current=$next
+  done
+  session=$current
+}
+skip_flush() {
+  [ "${CLAUDEB_WORKER:-}" = 1 ] && return 0
+  [ -z "$agent" ] || return 0
+  case "$transcript" in */subagents/*) return 0 ;; esac
+  case "$agent_type" in
+    codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research) return 0 ;;
+  esac
+  return 1
+}
+render() {
+  jq -er '
+    if type != "object" or (.body | type) != "string" or
+       (.kind | type) != "string" or (.clock | type) != "string" or
+       (.repo | type) != "string" or (.title | type) != "string"
+    then error("invalid report") else
+      "▌ " + .kind + (if .repo == "" then "" else " · " + .repo end) +
+      " · " + .clock + (if .title == "" then "" else " · " + .title end) + "\n" +
+      (if .session == "_orphan" then "chat: unknown\n" else "" end) +
+      (.body | sub("\\s+$"; ""))
+    end' "$1"
+}
+duplicate() {
+  local entry
+  for entry in "$ROOT/$session/pending/"*"__${kind}__${id}.txt" "$ROOT/$session/delivered/"*"__${kind}__${id}.txt" "$ROOT/_orphan/pending/"*"__${kind}__${id}.txt" "$ROOT/_orphan/delivered/"*"__${kind}__${id}.txt"; do
+    [ ! -f "$entry" ] || return 0
+  done
+  [ -f "$ROOT/history.log" ] || return 1
+  jq -se --arg s "$session" --arg k "$kind" --arg i "$id" \
+    'any(.[]; (.session == $s or .source_session == $s or .source_session == "_orphan" or $s == "_orphan") and .kind == $k and .id == $i)' \
+    "$ROOT/history.log" >/dev/null 2>&1
+}
+history_row() {
+  jq -c --arg s "$session" --arg event "$event" --arg text "$2" \
+    '{epoch:now|floor, session:$s, kind, id, bytes:($text|utf8bytelength), event:$event,
+      source_session:.session, text:$text}' "$1"
+}
+mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+pending_files() {
+  local entry base
+  for base in "$ROOT/$session/pending" "$ROOT/_orphan/pending"; do
+    for entry in "$base"/*.txt; do
+      [ -f "$entry" ] || continue
+      printf '%s\t%s\n' "$(mtime "$entry")" "$entry"
+    done
+    [ "$session" != _orphan ] || break
+  done | LC_ALL=C sort -n -k1,1 -k2 | cut -f2-
+}
+prune() {
+  local entry n=0
+  while IFS= read -r entry; do
+    n=$((n + 1))
+    [ "$n" -le 200 ] || rm -f "$entry"
+  done < <(for entry in "$ROOT/$session/delivered"/*.txt; do
+    [ -f "$entry" ] || continue
+    printf '%s\t%s\n' "$(mtime "$entry")" "$entry"
+  done | LC_ALL=C sort -rn -k1,1 -k2 | cut -f2-)
+}
+verb=${1:-}; [ "$#" -gt 0 ] || usage; shift
+kind='' id='' session='' repo='' title='' file='' event='' context='' last=10
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --kind|--id|--session|--repo|--title|--event|--context|--last)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+      case "$verb:$1" in
+        post:--kind|emit:--kind) kind=$2 ;;
+        post:--id|emit:--id) id=$2 ;;
+        post:--session|flush:--session|list:--session) session=$2; valid_name "$session" || usage ;;
+        post:--repo|emit:--repo) repo=${2%/}; repo=${repo##*/} ;;
+        post:--title|emit:--title) title=$2 ;;
+        flush:--event|emit:--event) event=$2 ;;
+        emit:--context) context=$2 ;;
+        list:--last) last=$2; [[ "$last" =~ ^[0-9]+$ ]] || usage ;;
+        *) usage ;;
+      esac
+      shift 2 ;;
+    -*) usage ;;
+    *) case "$verb" in post|emit) [ -z "$file" ] || usage; file=$1; shift ;; *) usage ;; esac ;;
+  esac
+done
+case "$verb" in
+  post|emit)
+    case "$kind" in review|commit|push|pool-run|worker|notice) ;; *) usage ;; esac
+    id=$(printf '%s' "$id" | LC_ALL=C tr -c 'A-Za-z0-9._-\n' '-' | tr '\n' '-')
+    case "$id" in .|..) id="report-$id" ;; esac
+    body=$(if [ -n "$file" ]; then cat "$file"; else cat; fi; rc=$?; printf '\001'; exit "$rc") || problem 'cannot read body'
+    body=${body%$'\001'}
+    resolve_session
+    [ -n "$id" ] || id=$(printf '%s' "$body" | shasum -a 256 | cut -c1-12)
+    valid_name "$id" || problem 'cannot hash body'
+    lock_store || problem 'cannot write queue root or acquire lock'
+    if duplicate; then case "$verb" in emit) exit 3 ;; *) exit 0 ;; esac; fi
+    mkdir -p "$ROOT/$session/pending" "$ROOT/$session/delivered" 2>/dev/null || problem 'cannot create queue'
+    tmp=$(mktemp "$ROOT/.post.XXXXXX") || problem 'cannot create temporary report'
+    printf '%s' "$body" | jq -Rs --arg kind "$kind" --arg id "$id" --arg session "$session" \
+      --arg repo "$repo" --arg title "$title" --arg clock "$(date +%H:%M)" \
+      '{kind:$kind,id:$id,session:$session,repo:$repo,title:$title,clock:$clock,body:.,epoch:now}' \
+      >"$tmp" 2>/dev/null || problem 'cannot encode report'
+    if [ "$verb" = post ]; then
+      stamp=$(jq -r '.epoch * 1000000000 | floor' "$tmp") || problem 'cannot timestamp report'
+      mv "$tmp" "$ROOT/$session/pending/${stamp}__${kind}__${id}.txt" 2>/dev/null || problem 'cannot write report'
+      tmp=''
+    else
+      block=$(render "$tmp" 2>/dev/null) || problem 'cannot render report'
+      output=$(jq -cn --arg m "$block" --arg c "$context" --arg e "${event:-PostToolUse}" \
+        '{systemMessage:("\n" + $m)} + (if $c == "" then {} else
+          {hookSpecificOutput:{hookEventName:$e,additionalContext:$c}} end)') || problem 'cannot encode hook output'
+      event=emit
+      row=$(history_row "$tmp" "$block") || problem 'cannot encode history'
+      printf '%s\n' "$row" >>"$ROOT/history.log" || problem 'cannot append history'
+      printf '%s\n' "$output"
+    fi ;;
+  flush)
+    case "$event" in PostToolUse|SubagentStop|Stop|UserPromptSubmit) ;; *) usage ;; esac
+    agent='' transcript='' agent_type=''
+    if [ -z "$session" ]; then
+      payload=$(cat)
+      fields=$(printf '%s' "$payload" | jq -er '[.session_id // "", .agent_id // "", .transcript_path // "", .agent_type // ""] | .[]' 2>/dev/null) || exit 0
+      { IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; IFS= read -r agent_type; } <<<"$fields"
+    fi
+    skip_flush && exit 0
+    [ -n "$session" ] || resolve_session
+    valid_name "$session" || exit 0
+    [ -d "$ROOT" ] || exit 0
+    lock_store || { printf 'report-bus: cannot acquire flush lock\n' >&2; exit 0; }
+    blocks='' files=() selected=() rows=() total=0 remaining=0
+    while IFS= read -r entry; do
+      files[total]=$entry
+      total=$((total + 1))
+    done < <(pending_files)
+    reserve=0
+    if [ "$event" = Stop ]; then
+      warning="report-bus: $total report(s) undelivered — $ROOT/$session/pending"
+      reserve=$(printf '\n\n%s' "$warning" | wc -c | tr -d ' ')
+    fi
+    mkdir -p "$ROOT/$session/delivered" 2>/dev/null || exit 0
+    for entry in ${files[@]+"${files[@]}"}; do
+      block=$(render "$entry" 2>/dev/null) || continue
+      candidate="$blocks${blocks:+$'\n\n'}$block"
+      bytes=$(printf '%s' "$candidate" | wc -c | tr -d ' ')
+      [ "$((bytes + reserve))" -le "$CAP" ] || [ "${#selected[@]}" -eq 0 ] || break
+      row=$(history_row "$entry" "$block" 2>/dev/null) || continue
+      selected+=("$entry"); rows+=("$row")
+      blocks=$candidate
+      [ "$bytes" -le "$CAP" ] || break
+    done
+    remaining=$((total - ${#selected[@]}))
+    if [ "$event" = Stop ] && [ "$remaining" -gt 0 ]; then
+      blocks="$blocks${blocks:+$'\n\n'}report-bus: $remaining report(s) undelivered — $ROOT/$session/pending"
+    fi
+    if [ -n "$blocks" ]; then
+      output=$(jq -cn --arg m "$blocks" '{systemMessage:$m}') || exit 0
+      printf '%s\n' "$output" || exit 0
+      for ((index=0; index<${#selected[@]}; index++)); do
+        entry=${selected[index]}
+        printf '%s\n' "${rows[index]}" >>"$ROOT/history.log" || continue
+        mv "$entry" "$ROOT/$session/delivered/${entry##*/}" || continue
+      done
+    fi
+    prune ;;
+  list)
+    resolve_session
+    [ -f "$ROOT/history.log" ] || exit 0
+    jq -rs --arg s "$session" --argjson n "$last" \
+      '[.[] | select(.session == $s)] | if $n == 0 then [] else .[-$n:] end | map(.text) | join("\n\n")' "$ROOT/history.log" ;;
+  doctor)
+    now=$(date +%s)
+    for directory in "$ROOT"/*/pending; do
+      [ -d "$directory" ] || continue
+      stale=0
+      for entry in "$directory"/*.txt; do
+        [ -f "$entry" ] || continue
+        age=$((now - $(mtime "$entry")))
+        [ "$age" -le 600 ] || stale=$((stale + 1))
+      done
+      [ "$stale" -eq 0 ] || printf '%s: %s pending older than 10 min — %s\n' "$(basename "${directory%/pending}")" "$stale" "$directory"
+    done
+    size=0; [ ! -f "$ROOT/lost.log" ] || size=$(wc -c <"$ROOT/lost.log" | tr -d ' ')
+    orphan=0
+    for entry in "$ROOT/_orphan/pending"/*.txt; do [ ! -f "$entry" ] || orphan=$((orphan + 1)); done
+    printf 'lost.log: %s bytes\norphans: %s\n' "$size" "$orphan" ;;
+  *) usage ;;
+esac
+exit 0

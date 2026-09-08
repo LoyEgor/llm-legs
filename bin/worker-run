@@ -301,21 +301,26 @@ run_with_deadline() {
         reason=wall
         break
       fi
-      if [ -n "$directory" ] && [ "$SILENT" -gt 0 ] &&
+      [ -n "$directory" ] && { [ "$SILENT" -gt 0 ] || [ "$IDLE" -gt 0 ]; } || continue
+      # claudeb prints its JSON result only at the end, so empty out/err alone is not silence: the
+      # transcript and workdir stamps in the fingerprint are what tell a working run from a hung one.
+      current=$(activity_fingerprint "$directory" "$vendor" "$workdir")
+      if [ "$current" != "$seen" ]; then
+        seen=$current
+        idle_since=$(date +%s)
+        silent_since=$idle_since
+      fi
+      if [ "$SILENT" -gt 0 ] &&
          [ ! -s "$directory/out" ] && [ ! -s "$directory/err" ] &&
          [ $(($(date +%s) - silent_since)) -ge "$SILENT" ]; then
         reason="silent $SILENT"
         break
       fi
-      [ -n "$directory" ] && [ "$IDLE" -gt 0 ] || continue
-      current=$(activity_fingerprint "$directory" "$vendor" "$workdir")
-      if [ "$current" != "$seen" ]; then
-        seen=$current
-        idle_since=$(date +%s)
+      [ "$IDLE" -gt 0 ] || continue
       # An idle kill needs POSITIVE evidence that the worker stopped. A run none of the sources
       # above can see offers none, so it is left to the ceiling below instead of being killed for
       # being unobservable — a killed run hands nothing back.
-      elif [ "${current%%~*}" = y ] && [ $(($(date +%s) - idle_since)) -ge "$IDLE" ]; then
+      if [ "${current%%~*}" = y ] && [ $(($(date +%s) - idle_since)) -ge "$IDLE" ]; then
         reason="idle $IDLE"
         break
       fi
@@ -434,6 +439,56 @@ codex_config_model() {
   printf '%s' "${value:-gpt-6-astra}"
 }
 
+# Every terminal outcome leaves worker-run through this one line, so a report reaches Egor from
+# every exit — including the early ones that never made a run directory. The bus is optional:
+# a machine without `report-bus` on PATH still prints the outcome and posts nothing. A refusal
+# reports under the id its own launch would have had and never under the id of the live run it
+# names, which would dedup that run's completion away; it stays unprinted, because a `RUN:` line
+# on stdout is what tells a relay a run directory exists to wait on.
+outcome_line() (
+  local outcome="$1" report_directory="${2:-}" report_id="${run_id:-}" launcher
+  local details files=unknown elapsed=0 began now marker='' marker_pid marker_age
+  local posting_pid=${BASHPID:-$(sh -c 'echo "$PPID"')}
+  printf 'OUTCOME: %s\n' "$outcome"
+  command -v report-bus >/dev/null 2>&1 || return 0
+  launcher=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-_orphan}}
+  details="${vendor:-unknown}/${account:-${explicit_account:-unknown}}/${model:-${effective:-unknown}}/${effort:-unknown}"
+  if [ -n "$report_directory" ]; then
+    report_id=${report_directory##*/}
+    [ ! -f "$report_directory/report-posted" ] || return 0
+    marker="$report_directory/.report-posting"
+    if ! mkdir "$marker" 2>/dev/null; then
+      marker_pid=$(cat "$marker/pid" 2>/dev/null) || marker_pid=''
+      marker_age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || date +%s) ))
+      if [ "$marker_age" -gt 60 ] || { [[ "$marker_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$marker_pid" 2>/dev/null; }; then
+        rm -f "$marker/pid"
+        rmdir "$marker" 2>/dev/null || return 0
+        mkdir "$marker" 2>/dev/null || return 0
+      else
+        return 0
+      fi
+    fi
+    printf '%s\n' "$posting_pid" >"$marker/pid"
+    trap '[ "$(cat "$marker/pid" 2>/dev/null)" != "$posting_pid" ] || { rm -f "$marker/pid"; rmdir "$marker" 2>/dev/null || :; }' EXIT
+    trap 'exit 0' HUP INT TERM
+    launcher=$(cat "$report_directory/launcher" 2>/dev/null) || launcher=_orphan
+    details=$(jq -r '[.vendor,.account,.model,.effort] | join("/")' "$report_directory/meta.json" 2>/dev/null)
+    began=$(jq -r '.pid_started_at // .started_at // 0' "$report_directory/meta.json" 2>/dev/null)
+    now=$(date +%s)
+    [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] && elapsed=$((now - began))
+    if [ -f "$report_directory/files" ]; then
+      files=$(awk '!/^WORKDIR: |^UNKNOWN: |^PARTIAL: / && NF {n++} END {print n+0}' "$report_directory/files")
+      if grep -q '^UNKNOWN: \|^PARTIAL: ' "$report_directory/files"; then files="$files (incomplete)"; fi
+    fi
+  fi
+  [ -n "$report_id" ] || report_id="${vendor:-worker}-$(date +%s)-$$-$RANDOM"
+  if printf 'OUTCOME: %s\n%s · wall-clock: %ss\nfiles: %s\n' "$outcome" "$details" "$elapsed" "$files" |
+    report-bus post --kind worker --id "$report_id" --session "${launcher:-_orphan}" >/dev/null; then
+    [ -z "$marker" ] || : >"$report_directory/report-posted"
+  fi
+  return 0
+)
+
 # Refused BEFORE the account is resolved and long before a CLI is launched, because the run is what
 # would be wasted, and the name reaches here by three roads that all end at the same list: the
 # brief's `MODEL:` line (relays forward it as `--model`), `--model` itself, and the vendor's own
@@ -456,7 +511,7 @@ refuse_cheap_model() { # vendor offered-model [resume-id]
     grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-auto} ;;
   esac
   worker_model_allows "$vendor" "$effective" && return 0
-  printf 'OUTCOME: MODEL_REFUSED\n'
+  outcome_line MODEL_REFUSED
   fail "$vendor workers run $(worker_model_allowed_list "$vendor") only and $effective is not one of them: an implementation worker never runs a cheap model. Nothing was launched and no account was spent — drop the MODEL: line, or ask Egor."
 }
 
@@ -1213,7 +1268,8 @@ refuse_live_run() { # brief resume
       [ ! -e "$directory/exit_code" ] || continue
       pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
       supervisor_running "$directory" "$pid" || continue
-      printf 'OUTCOME: RESUME_BUSY %s\nATTACH %s\n' "${directory##*/}" "${directory##*/}"
+      outcome_line "RESUME_BUSY ${directory##*/}"
+      printf 'ATTACH %s\n' "${directory##*/}"
       exit 4
     done
   fi
@@ -1233,7 +1289,8 @@ refuse_live_run() { # brief resume
     supervisor_running "$directory" "$pid" || continue
     other_sha=$(shasum -a 256 "$directory/brief" 2>/dev/null | awk '{print $1}')
     [ "$sha" = "$other_sha" ] || continue
-    printf 'OUTCOME: DUPLICATE_RUN %s\nATTACH %s\n' "${directory##*/}" "${directory##*/}"
+    outcome_line "DUPLICATE_RUN ${directory##*/}"
+    printf 'ATTACH %s\n' "${directory##*/}"
     exit 4
   done
   return 0
@@ -1301,6 +1358,9 @@ start_run() {
       [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
       ;;
   esac
+  epoch=$(date +%s)
+  printf -v suffix '%04x' "$RANDOM"
+  run_id="$vendor-$epoch-$$-$suffix"
   refuse_cheap_model "$vendor" "$model" "$resume"
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
@@ -1322,18 +1382,18 @@ start_run() {
       account="$PICKED_ACCOUNT"
     elif [ "$PICKED_RC" -eq 3 ]; then
       if [ "$PICKED_POOL_EMPTY" = true ]; then
-        printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+        outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
         fail "every $vendor account is out of the worker pool; ask Egor to put one back in or pin one"
       fi
       if [ "$PICKED_ROLE_OFF" = true ]; then
-        printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+        outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
         fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
       fi
       if [ "$PICKED_NO_DATA" = true ]; then
-        printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+        outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
         fail "worker-pick has no usage data for $vendor, so it can route to no account; name one with --account"
       fi
-      printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
+      outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"
       exit 3
     else
       pin=$(worker_model_pin_first "$vendor")
@@ -1344,7 +1404,7 @@ start_run() {
       elif [ "$vendor" = grok ]; then
         # `main` is the real ~/.grok and carries no login, so falling back to it would launch a run
         # that can only fail at authentication.
-        printf 'OUTCOME: GROK_UNAVAILABLE\n'
+        outcome_line GROK_UNAVAILABLE
         fail 'grok has no account to fall back on: name one with --account, pin grok_profile, or bring worker-pick back'
       else
         account=main
@@ -1356,14 +1416,14 @@ start_run() {
   # the one override, because naming it there is the deliberate "use this one anyway".
   if [ "$(config_value "${vendor}_workers")" = off ] &&
      ! worker_model_pin_has "$vendor" "$account"; then
-    printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+    outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
   fi
   # The pool is a wall, not advice to the picker: an account Egor took out cannot carry a worker
   # even when the brief names it outright — only the vendor pin overrides. A picked account is
   # already in the pool, so this only ever fires on --account.
   if ! worker_pool_refuse_headless "$vendor" "$account" "$(worker_model_pin_csv < <(worker_model_pins "$vendor"))"; then
-    printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
+    outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     exit 4
   fi
   case "$vendor:$account" in
@@ -1419,14 +1479,14 @@ start_run() {
       # The effort rides in the agy slug and never in an `--effort` flag (shared-invariants row h).
       case "$model:$effort" in
         flash38:high | flash38:medium | flash38:low) agy_model="gemini-3.8-flash-$effort" ;;
-        *) printf 'OUTCOME: GEMINI_UNAVAILABLE\n'; exit 4 ;;
+        *) outcome_line GEMINI_UNAVAILABLE; exit 4 ;;
       esac
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
       if [ "$account" != main ]; then
         list_output=$("$cli" list 2>/dev/null)
         list_rc=$?
         if [ "$list_rc" -ne 0 ] || ! grep -Eq "^${account}:" <<<"$list_output"; then
-          printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
+          outcome_line GEMINI_UNAVAILABLE
           exit 4
         fi
       fi
@@ -1444,7 +1504,7 @@ start_run() {
       # here would spend the run at an effort the brief did not ask for.
       case "$effort" in
         low|medium|high|xhigh) ;;
-        *) printf 'OUTCOME: GROK_UNAVAILABLE\n'; fail "grok effort must be low, medium, high or xhigh (got: $effort)" ;;
+        *) outcome_line GROK_UNAVAILABLE; fail "grok effort must be low, medium, high or xhigh (got: $effort)" ;;
       esac
       # No turn cap unless one is asked for: an implementation brief is bounded by the wall-clock
       # deadline like every other vendor's, and a cap ends a run the vendor was still serving.
@@ -1472,11 +1532,11 @@ start_run() {
   epoch=$(date +%s)
   local attempts=0
   while :; do
-    printf -v suffix '%04x' "$RANDOM"
-    run_id="$vendor-$epoch-$$-$suffix"
     directory="$root/$run_id"
     mkdir "$directory" 2>/dev/null && break
     attempts=$((attempts + 1))
+    printf -v suffix '%04x' "$RANDOM"
+    run_id="$vendor-$epoch-$$-$suffix"
     [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
   done
   cp "$brief" "$directory/brief" || fail 'could not copy brief'
@@ -1545,6 +1605,7 @@ start_run() {
 while [ ! -e "$2/.ready" ]; do
   ticks=$((ticks + 1))
   if [ "$ticks" -ge 6000 ]; then
+    "$1" _deliver "$2" 4 >/dev/null 2>&1
     printf "4\n" >"$2/exit_code.tmp.$$"
     mv -f "$2/exit_code.tmp.$$" "$2/exit_code"
     exit 4
@@ -1565,6 +1626,7 @@ if [ "$rc" -gt 128 ]; then
   reaped=$?
   [ "$reaped" -eq 127 ] || rc=$reaped
 fi
+"$1" _deliver "$2" "$rc" >/dev/null 2>&1
 printf "%s\n" "$rc" >"$2/exit_code.tmp.$$"
 mv -f "$2/exit_code.tmp.$$" "$2/exit_code"
 exit "$rc"'
@@ -1663,6 +1725,23 @@ grok_max_turns_hit() { # directory
   grok_error_text "$1" | grep -q 'max_turns_reached'
 }
 
+# Grok refuses a NEW session under load by ending it before its first turn: the handshake events,
+# then `end` with `stopReason: cancelled`, exit 0 and an empty stderr. Exit 0 alone reads as a
+# finished run, so the orchestrator was handed an empty result as `STATUS: done` (live 2026-09-08,
+# five runs across two accounts while their older sessions kept streaming). It is weather like a
+# 503: no wall is recorded, no pin lapses, and the relay pauses and relaunches once. The FIRST
+# event that is a turn or the end decides — a cancel after real work is an ordinary ending.
+grok_cancelled_start() { # directory
+  local first
+  first=$(jq -rR 'fromjson? | select(type == "object") |
+    if .type == "end" then "end:" + ((.stopReason // "") | ascii_downcase)
+    elif .type == "text" or .type == "thought" or .type == "assistant" or
+         ((.type // "") | startswith("tool_call")) then "turn"
+    else empty end' "$1/out" 2>/dev/null | head -n1)
+  case "$first" in end:cancelled | end:canceled) return 0 ;; esac
+  return 1
+}
+
 # Which kind of not-a-wall a grok failure was, said where the relay reads its outcome: an expired
 # login needs a human, capacity weather needs nothing but another attempt.
 grok_reason_line() { # directory
@@ -1753,10 +1832,15 @@ print_outcome() {
   local directory="$1" vendor="$2" code="$3" reset
   # Signature scan only on failure: results in this ecosystem routinely DISCUSS
   # quotas and 429s, so a clean exit whose text mentions them is not a limit.
-  [ "$code" != 0 ] || return 0
+  if [ "$vendor" = grok ] && grok_cancelled_start "$directory"; then
+    outcome_line "GROK_CANCELLED ${directory##*/}" "$directory"
+    printf 'REASON: cancelled — grok ended the session before its first turn; capacity weather, not a wall: pause and relaunch once\n'
+    return 0
+  fi
+  if [ "$code" = 0 ]; then outcome_line DONE "$directory" >/dev/null; return 0; fi
   killed_line "$directory" "$code"
   if has_limit_signature "$directory" "$vendor"; then
-    printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
+    outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT" "$directory"
     # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose.
     # A resumed session is the one run that never left its account; every other USAGE_LIMIT is the
     # pool exhausted.
@@ -1770,10 +1854,10 @@ print_outcome() {
     reset=$(worker_walls_extract_reset "$directory/out" "$directory/err")
     [ -z "$reset" ] || printf 'RESET: %s\n' "$reset"
   elif [ "$vendor" = grok ] && grok_max_turns_hit "$directory"; then
-    printf 'OUTCOME: GROK_MAX_TURNS\n'
+    outcome_line GROK_MAX_TURNS "$directory"
     grok_reason_line "$directory"
   else
-    printf 'OUTCOME: %s\n' "$(failure_outcome "$vendor")"
+    outcome_line "$(failure_outcome "$vendor")" "$directory"
     case "$vendor" in grok) grok_reason_line "$directory" ;; esac
   fi
 }
@@ -2335,12 +2419,21 @@ denied_tools_line() {
   [ -z "$denied" ] || printf 'DENIED-TOOLS: %s\n' "$denied"
 }
 
+# `done` is a run that finished its work, which exit 0 alone does not prove: a grok session the
+# vendor cancelled before its first turn exits 0 with nothing in it. Both terminal reports read the
+# status here so `wait` and `report` can never disagree about the same run.
+terminal_status() { # directory vendor code
+  [ "$3" = 0 ] || { printf 'failed\n'; return 0; }
+  if [ "$2" = grok ] && grok_cancelled_start "$1"; then printf 'failed\n'; return 0; fi
+  printf 'done\n'
+}
+
 terminal_report() {
   local directory="$1" code vendor status
   code=$(tr -d '[:space:]' <"$directory/exit_code")
   [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
   vendor=$(jq -r '.vendor' "$directory/meta.json")
-  if [ "$code" = 0 ]; then status=done; else status=failed; fi
+  status=$(terminal_status "$directory" "$vendor" "$code")
   printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
   reroute_lines "$directory"
   workdir_escape_line "$directory"
@@ -2358,7 +2451,8 @@ terminal_report() {
 unknown_report() {
   local directory="$1" vendor
   vendor=$(jq -r '.vendor' "$directory/meta.json")
-  printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+  printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\n' "$(session_id "$directory")"
+  outcome_line "$(failure_outcome "$vendor")" "$directory"
   memguard_lines "$directory"
   denied_tools_line "$directory"
   result_pointer "$directory"
@@ -2498,7 +2592,7 @@ report_run() {
   if [ -f "$directory/exit_code" ]; then
     code=$(tr -d '[:space:]' <"$directory/exit_code")
     [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
-    if [ "$code" = 0 ]; then status=done; else status=failed; fi
+    status=$(terminal_status "$directory" "$vendor" "$code")
     printf 'STATUS: %s\nEXIT: %s\nSESSION: %s\n' "$status" "$code" "$(session_id "$directory")"
     memguard_lines "$directory"
     print_outcome "$directory" "$vendor" "$code"
@@ -2512,7 +2606,8 @@ report_run() {
     if supervisor_running "$directory" "$pid" && ! run_overdue "$directory"; then
       running_report "$directory"
     else
-      printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\nOUTCOME: %s\n' "$(session_id "$directory")" "$(failure_outcome "$vendor")"
+      printf 'STATUS: failed\nEXIT: unknown\nSESSION: %s\n' "$(session_id "$directory")"
+      outcome_line "$(failure_outcome "$vendor")" "$directory"
       memguard_lines "$directory"
       printf 'ERR-TAIL:\n'
       tail -n 80 "$directory/err" 2>/dev/null
@@ -2746,6 +2841,7 @@ case "${1:-}" in
   wait) shift; wait_run "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;
+  _deliver) print_outcome "$2" "$(jq -r .vendor "$2/meta.json")" "$3"; exit 0 ;;
   _supervise) shift; supervise "$@"; exit $? ;;
   *) usage ;;
 esac

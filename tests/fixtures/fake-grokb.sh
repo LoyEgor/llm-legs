@@ -72,6 +72,17 @@ if [ -e "$STUB_DIR/grok_denied" ]; then
   printf '%s\n' '{"type":"tool_call_update","toolCallId":"call-38833a75-42f4-4406-b8ea-1898b58a9f8e-0","status":"failed","content":[{"type":"content","content":{"type":"text","text":"Tool `run_terminal_command` was not executed: Denied by permission policy: deny rule on bash"}}],"rawOutput":null,"locations":[]}'
 fi
 
+# The vendor refusing a NEW session under load: the handshake, then a cancelled end and exit 0.
+# `grok_cancelled_worked` puts one tool call in front of it, which is an ordinary cancelled run.
+if [ -e "$STUB_DIR/grok_cancelled" ]; then
+  printf '%s\n' '{"type":"available_commands","commands":["read_file","run_terminal_command"]}'
+  printf '%s\n' '{"type":"available_commands","commands":["read_file","run_terminal_command"]}'
+  [ ! -e "$STUB_DIR/grok_cancelled_worked" ] ||
+    printf '%s\n' '{"type":"tool_call","toolCallId":"call-1","toolName":"read_file"}'
+  printf '{"type":"end","stopReason":"cancelled","sessionId":"%s","num_turns":0}\n' "$session"
+  exit 0
+fi
+
 if [ -e "$STUB_DIR/grok_max_turns" ]; then
   printf '{"type":"max_turns_reached","numTurns":%s}\n' "${STUB_GROK_TURNS:-60}"
   exit 1

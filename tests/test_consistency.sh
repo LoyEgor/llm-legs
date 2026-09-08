@@ -20,6 +20,7 @@ WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 CONSISTENCY_CACHE=$(mktemp -d)
 trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
 export WORKER_PICK_CACHE_DIR="$CONSISTENCY_CACHE"
+export WORKER_PICK_CONFIG_FILE="$CONSISTENCY_CACHE/worker-model"
 
 asserts=0
 fail() { printf 'FAIL: %s\n  (canonical values live in %s)\n' "$*" "$DOC" >&2; exit 1; }
@@ -42,6 +43,33 @@ doc_has() { grep -Fq -- "$1" "$ROOT/$DOC"; }
 short_rows=$(awk '/^\| [0-9a-z]+ \|/ { line = $0; gsub(/\\\|/, "", line)
   n = gsub(/\|/, "|", line); if (n < 5) print substr($0, 1, 30) }' "$ROOT/$DOC")
 assert test -z "$short_rows"
+
+REPORT_BUS="$ROOT/bin/report-bus"
+REPORT_DOC="$ROOT/docs/report-bus.md"
+REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/stop.d/notice-run-consume.sh"
+REPORT_TAG="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/worker-tag-hook.sh"
+assert grep -Fq 'ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"' "$REPORT_BUS"
+for site in "$REPORT_DOC" "$ROOT/docs/DIAGNOSTICS.md"; do
+  assert grep -Fq '${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports' "$site"
+done
+assert doc_has '${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports'
+for site in "$REPORT_BUS" "$REPORT_NOTICE"; do
+  assert grep -Fq '[ "${CLAUDEB_WORKER:-}" = 1 ]' "$site"
+  assert grep -Fq '[ -z "$agent" ] ||' "$site"
+  assert grep -Fq '*/subagents/*)' "$site"
+done
+report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research'
+for site in "$REPORT_BUS" "$REPORT_TAG"; do assert grep -Fq "$report_types)" "$site"; done
+for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker image-gen gemini-research; do
+  assert doc_has "$marker"
+  assert grep -Fq "$marker" "$REPORT_DOC"
+done
+assert grep -Fq '"▌ " + .kind + (if .repo == "" then "" else " · " + .repo end) +' "$REPORT_BUS"
+assert grep -Fq '" · " + .clock + (if .title == "" then "" else " · " + .title end) + "\n" +' "$REPORT_BUS"
+assert grep -Fq -- '--arg clock "$(date +%H:%M)"' "$REPORT_BUS"
+assert grep -Fq 'repo=${2%/}; repo=${repo##*/}' "$REPORT_BUS"
+assert doc_has '▌ <kind> · <repo or account> · HH:MM[ · <title>]'
+assert grep -Fq '▌ <kind> · <repo or account> · HH:MM[ · <title>]' "$REPORT_DOC"
 
 # --- Row a: staleness/dim thresholds -----------------------------------------
 FIVE=1800; WEEK=21600; FABLE=21600; ROUTING=7200
@@ -442,7 +470,10 @@ done
 # Neither refusal spells a model of its own: both read the list through these functions.
 assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
-assert grep -Fq 'OUTCOME: MODEL_REFUSED' "$WORKER_RUN"
+# One printer for every outcome (`outcome_line`, which also posts the worker report), so the
+# literal is its format string and each site names only the outcome.
+assert grep -Fq "printf 'OUTCOME: %s\\n' \"\$outcome\"" "$WORKER_RUN"
+assert grep -Fq 'outcome_line MODEL_REFUSED' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allows "$vendor" "$value"' "$PIN_GATE"
 assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
 # `flash3[0-79]` and not `flash3[0-9]`: 38 is the one flash family a worker may run, so a site
@@ -482,7 +513,7 @@ assert grep -Fq '[ -n "$acct" ] || acct=main' "$SPAWN_HOOK"
 assert grep -Fq '`gemini_profile=<name>`' "$WORKER_COMMAND"
 assert grep -Fq -- '--account) [ "$#" -ge 2 ] || usage; explicit_account="$2"; shift 2 ;;' "$WORKER_RUN"
 assert grep -Fq '"$picker" --account "$vendor"' "$WORKER_RUN"
-assert grep -Fq 'OUTCOME: %s_USAGE_LIMIT' "$WORKER_RUN"
+assert grep -Fq 'outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT"' "$WORKER_RUN"
 assert grep -Fq 'pin=$(worker_model_pin_first "$vendor")' "$WORKER_RUN"
 assert grep -Fq 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable' "$WORKER_RUN"
 assert grep -Fq 'account=main' "$WORKER_RUN"
@@ -494,12 +525,17 @@ assert doc_has 'Worker account resolution'
 # A hit turn cap is the vendor serving, so it may never share a name with the outcomes the routers
 # read as "no capacity here": folded back into GROK_UNAVAILABLE the relay hunts a pool problem that
 # does not exist and reroutes a brief that outruns the same cap wherever it lands.
-assert grep -Fq "printf 'OUTCOME: GROK_MAX_TURNS\\n'" "$WORKER_RUN"
+assert grep -Fq 'outcome_line GROK_MAX_TURNS "$directory"' "$WORKER_RUN"
 assert grep -Fq 'grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}' "$WORKER_RUN"
 assert grep -Fq -- '[ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")' "$WORKER_RUN"
 assert grep -Fq -- '[ -z "$turns" ] || command+=(--max-turns "$turns")' "$WORKER_RUN"
 assert doc_has '`OUTCOME: GROK_MAX_TURNS`, never `_UNAVAILABLE` and never `_USAGE_LIMIT`'
 assert doc_has 'only when `WORKER_RUN_GROK_MAX_TURNS` sets one'
+# A session cancelled before its first turn is not a finished run: exit 0 alone said `done`.
+assert grep -Fq 'outcome_line "GROK_CANCELLED ${directory##*/}" "$directory"' "$WORKER_RUN"
+assert grep -Fq 'grok_cancelled_start "$1"' "$WORKER_RUN"
+assert doc_has '`OUTCOME: GROK_CANCELLED <run-id>` with `STATUS: failed`'
+assert grep -Fq 'OUTCOME: GROK_CANCELLED <run-id>' "$ROOT/docs/DIAGNOSTICS.md"
 
 # ask_claude.sh seds this stderr literal into its audit account field, so the wording is a
 # three-site contract, not free prose.
@@ -2145,9 +2181,12 @@ assert doc_has '`chat_display`'
 assert doc_has '`chat_suffix`'
 assert grep -Fq 'def chat_display(session, launchers=None, store=None):' "$RB_STORE"
 assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STORE"
-# `debt` prices this chat's own lines and nobody else's, so it names no chat at all — and least of
-# all through a resolver call of its own.
-assert test -z "$(grep -E 'chat_label|chat_display' "$RB_DEBT")"
+# `debt` prices this chat's own lines and nobody else's, so pricing names no chat; the one chat the
+# module prints is the doctor's round-overflow row, and it goes through `chat_display`, never a
+# resolver call of its own.
+assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 1
+assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
 # Both foreign-chat refusals name the chat: they exist to send a reader to another conversation.
 assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
 

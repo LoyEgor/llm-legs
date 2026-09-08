@@ -53,6 +53,15 @@ export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
 mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$WORKER_WALLS_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
+export PATH="$WORK/bin:$PATH"
+export REPORT_BUS_LOG="$WORK/report-posts.jsonl"
+: >"$REPORT_BUS_LOG"
+cat >"$WORK/bin/report-bus" <<'REPORTBUS'
+#!/usr/bin/env bash
+body=$(cat)
+jq -cn --arg body "$body" --args '{argv:$ARGS.positional,body:$body}' -- "$@" >>"$REPORT_BUS_LOG"
+REPORTBUS
+chmod +x "$WORK/bin/report-bus"
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 printf 'image\n' >"$WORK/image.png"
@@ -123,7 +132,20 @@ if [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
       >>"$transcript_dir/$transcript_name.jsonl"
   fi
 fi
-[ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
+if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
+  # A working claudeb writes NOTHING to stdout until its very last line; the transcript growing is
+  # the whole evidence that the run is alive.
+  grown=0
+  while [ "$grown" -lt "${STUB_SLEEP:-0}" ]; do
+    sleep 1
+    grown=$((grown + 1))
+    jq -cn --arg n "$grown" \
+      '{type:"assistant",message:{content:[{type:"text",text:("turn " + $n)}]}}' \
+      >>"$transcript_dir/$transcript_name.jsonl"
+  done
+else
+  [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
+fi
 has_effort=false
 for arg in "$@"; do [ "$arg" != --effort ] || has_effort=true; done
 # After the sleep, so a dropped-effort attempt can be given a lifetime: discovery runs on the
@@ -274,7 +296,8 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_EDIT_PATH STUB_PICK_WALL \
+  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW \
+    STUB_EDIT_PATH STUB_PICK_WALL \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
@@ -282,7 +305,8 @@ clear_stub() {
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
     "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue" "$STUB_DIR/grok_wall_accounts" \
     "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied" \
-    "$STUB_DIR/grok_max_turns" "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
+    "$STUB_DIR/grok_max_turns" "$STUB_DIR/grok_cancelled" "$STUB_DIR/grok_cancelled_worked" \
+    "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
   rm -f "$WORKER_WALLS_DIR"/*
 }
 
@@ -620,6 +644,87 @@ EOF
   fi
   clear_stub
 }
+report_bus_tests() {
+  local CLAUDE_CODE_SESSION_ID=report-launcher CLAUDE_LAUNCHER_SESSION=report-launcher
+  local WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_DEADLINE=600
+  local PICK_RC=0 PICK_ACCOUNT=reportacct rc early_id old_id old_dir
+  export CLAUDE_CODE_SESSION_ID CLAUDE_LAUNCHER_SESSION WORKER_RUN_IDLE_S WORKER_RUN_SILENT_S WORKER_RUN_DEADLINE PICK_RC PICK_ACCOUNT
+  set_config 'codex_effort=high'
+  clear_stub
+  start_ok codex --account reportacct
+  assert await_done
+  "$RUNNER" report "$RUN_ID" >/dev/null
+  "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
+  assert_worker_post "$RUN_ID" DONE
+
+  clear_stub
+  STUB_SLEEP=60 start_ok codex --account reportacct
+  sleep 0.3
+  kill -TERM "$(jq -r .pid "$RUN_DIR/meta.json")"
+  assert await_done
+  "$RUNNER" report "$RUN_ID" >/dev/null
+  assert_worker_post "$RUN_ID" CODEX_UNAVAILABLE
+
+  clear_stub
+  rc=0
+  PICK_RC=3 "$RUNNER" start codex --brief "$WORK/brief" >"$WORK/report-limit.out" 2>"$WORK/report-limit.err" || rc=$?
+  assert test "$rc" = 3
+  assert test -z "$(sed -n 's/^RUN: //p' "$WORK/report-limit.out")"
+  early_id=$(posted_id CODEX_USAGE_LIMIT)
+  assert test -n "$early_id"
+  assert_worker_post "$early_id" CODEX_USAGE_LIMIT
+
+  clear_stub
+  STUB_SLEEP=60 start_ok codex --account reportacct
+  old_id=$RUN_ID old_dir=$RUN_DIR
+  rc=0
+  WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --account reportacct --brief "$WORK/brief" >"$WORK/report-duplicate.out" 2>&1 || rc=$?
+  assert test "$rc" = 4
+  assert test -z "$(sed -n 's/^RUN: //p' "$WORK/report-duplicate.out")"
+  early_id=$(posted_id "DUPLICATE_RUN $old_id")
+  assert test -n "$early_id"
+  assert test "$early_id" != "$old_id"
+  assert_worker_post "$early_id" "DUPLICATE_RUN $old_id"
+  kill -TERM "$(jq -r .pid "$old_dir/meta.json")"
+  assert await_done
+  assert_worker_post "$old_id" CODEX_UNAVAILABLE
+  clear_stub
+}
+# A refusal that never made a run directory prints no `RUN:` line — that line means a run exists to
+# wait on — so its report id is read back off the bus.
+posted_id() { # outcome
+  jq -rs --arg o "OUTCOME: $1" \
+    '[.[] | select(.body | startswith($o))] | last | .argv[4] // ""' "$REPORT_BUS_LOG"
+}
+assert_worker_post() {
+  local id="$1" outcome="$2" rows
+  rows=$(jq -s --arg id "$id" '[.[] | select(.argv[4] == $id)]' "$REPORT_BUS_LOG")
+  assert test "$(jq length <<<"$rows")" = 1
+  assert jq -e --arg id "$id" '.[0].argv == ["post","--kind","worker","--id",$id,"--session","report-launcher"]' <<<"$rows" >/dev/null
+  assert test "$(jq -r '.[0].body' <<<"$rows" | head -n1)" = "OUTCOME: $outcome"
+  assert test "$(jq -r '.[0].body' <<<"$rows" | wc -l | tr -d ' ')" = 3
+  assert grep -q 'wall-clock: [0-9]*s' <<<"$(jq -r '.[0].body' <<<"$rows")"
+  assert grep -q '^files: ' <<<"$(jq -r '.[0].body' <<<"$rows")"
+}
+report_bus_tests
+
+for marker_state in dead aged; do
+  marker_run="$WORKER_RUN_DIR/codex-stale-$marker_state"
+  mkdir -p "$marker_run/.report-posting"
+  printf '{"vendor":"codex","account":"main","model":"gpt-6-astra","effort":"medium","started_at":1}\n' >"$marker_run/meta.json"
+  printf 'report-launcher\n' >"$marker_run/launcher"
+  printf '0\n' >"$marker_run/exit_code"
+  if [ "$marker_state" = dead ]; then printf '99999999\n' >"$marker_run/.report-posting/pid"
+  else printf '%s\n' "$$" >"$marker_run/.report-posting/pid"; touch -t 202001010001 "$marker_run/.report-posting"; fi
+  "$RUNNER" report "${marker_run##*/}" >"$WORK/stale-report.out"
+  assert test -f "$marker_run/report-posted"
+  assert test ! -e "$marker_run/.report-posting"
+done
+
+if [ "${WORKER_RUN_TEST_REPORTS_ONLY:-0}" = 1 ]; then
+  printf 'PASS: %s report producer asserts\n' "$asserts"
+  exit 0
+fi
 reliability_tests
 if [ "${WORKER_RUN_TEST_RELIABILITY_ONLY:-0}" = 1 ]; then
   printf 'PASS: %s reliability asserts\n' "$asserts"
@@ -2945,6 +3050,39 @@ assert grep -qxF "$(cd "$SHARED_TREE" && pwd -P)/fixture/linked-session-id.jsonl
   "$RUN_DIR/session-file"
 assert grep -qxF 'linked-session-id' "$RUN_DIR/worker-session"
 
+# Silence is nothing happening ANYWHERE, not an empty `out`: claudeb in `--output-format json`
+# writes its one line at the very end, so out/err stay empty for the whole run while the transcript
+# grows — read as silence that killed a working run at ten minutes (live 2026-09-08,
+# claudeb-1788874421-31215-0684). The silent verdict needs the fingerprint frozen too.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=growing STUB_SLEEP=6 STUB_TRANSCRIPT_SESSION=growing-session \
+  STUB_TRANSCRIPT_ACCOUNT=growing STUB_TRANSCRIPT_GROW=1 \
+  WORKER_RUN_SILENT_S=2 WORKER_RUN_IDLE_S=0 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW \
+  WORKER_RUN_SILENT_S WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+growing_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -qx 'STATUS: done' <<<"$growing_wait"
+assert test "$(grep -c 'KILLED: silent' <<<"$growing_wait")" -eq 0
+assert test ! -e "$RUN_DIR/killed"
+# The run really did stay mute for longer than the window that would have killed it.
+assert test "$(wc -l <"$CLAUDEB_PROFILES_ROOT/growing/projects/fixture/growing-session.jsonl")" -ge 3
+
+# And the same empty out/err with a transcript that never moves is still silence: killed.
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=frozen STUB_SLEEP=6 STUB_TRANSCRIPT_SESSION=frozen-session \
+  STUB_TRANSCRIPT_ACCOUNT=frozen WORKER_RUN_SILENT_S=2 WORKER_RUN_IDLE_S=0 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT \
+  WORKER_RUN_SILENT_S WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+frozen_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -qx 'KILLED: silent — no output in 2s' <<<"$frozen_wait"
+assert grep -qx 'silent 2' "$RUN_DIR/killed"
+assert test ! -s "$RUN_DIR/out"
+assert test ! -s "$RUN_DIR/err"
+
 # Through a SYMLINK, because that is the only shape a real profile has: `<profile>/projects` points
 # at `~/.claude/projects`, and a walk that does not follow one answers an empty tree — so discovery
 # never succeeded for any live claudeb run on this machine, the launcher pairing was never written
@@ -3657,6 +3795,36 @@ start_ok grok
 assert await_done
 assert grep -qx 'OUTCOME: GROK_MAX_TURNS' "$WORK/wait.out"
 assert grep -q '^REASON: max-turns — the brief outran --max-turns (?);' "$WORK/wait.out"
+
+# The vendor refusing a NEW session: two handshake events, a cancelled end, exit 0 and an empty
+# stderr. Exit 0 alone reported it as a finished run and handed the orchestrator an empty result
+# (live 2026-09-08). It is weather, so no wall is recorded and the pin stays honorable.
+clear_stub
+set_config 'grok_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=grokcancel STUB_CODE=0
+: >"$STUB_DIR/grok_cancelled"
+start_ok grok
+assert await_done
+assert grep -qx 'STATUS: failed' "$WORK/wait.out"
+assert grep -qx "OUTCOME: GROK_CANCELLED $RUN_ID" "$WORK/wait.out"
+assert grep -qx 'REASON: cancelled — grok ended the session before its first turn; capacity weather, not a wall: pause and relaunch once' \
+  "$WORK/wait.out"
+assert test "$(grep -c 'GROK_UNAVAILABLE\|GROK_USAGE_LIMIT' "$WORK/wait.out")" -eq 0
+assert test ! -e "$WORKER_WALLS_DIR/grok-grokcancel"
+assert grep -qx "OUTCOME: GROK_CANCELLED $RUN_ID" <<<"$("$RUNNER" report "$RUN_ID")"
+assert grep -qx 'STATUS: failed' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# One tool call in front of the same cancelled end is an ordinary run that ended: the classifier
+# reads the FIRST turn-or-end event, never the stop reason alone.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=grokcancel STUB_CODE=0
+: >"$STUB_DIR/grok_cancelled"
+: >"$STUB_DIR/grok_cancelled_worked"
+start_ok grok
+assert await_done
+assert grep -qx 'STATUS: done' "$WORK/wait.out"
+assert test "$(grep -c '^OUTCOME: ' "$WORK/wait.out")" -eq 0
+clear_stub
 
 # A wall stated mid-run arrives as an `error` event on stdout, where every other vendor puts it on
 # stderr: read on stderr alone this run reports an outage while the plan is actually exhausted.
