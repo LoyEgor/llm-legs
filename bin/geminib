@@ -35,8 +35,10 @@ account_exists() {
 }
 
 pin_account() {
-  worker_model_pin_account gemini_profile geminib gemini_account_names is_disabled "${1:-}" \
-    "$(worker_model_pin_wall_until gemini "${1:-}")"
+  case "${1:-}" in
+    --unpin) worker_model_pin_account gemini_profile geminib gemini_account_names is_disabled --unpin "${2:-}" ;;
+    *) worker_model_pin_account gemini_profile geminib gemini_account_names is_disabled "${1:-}" ;;
+  esac
 }
 
 set_all_pool() { worker_pool_set_all "$pool_dir" geminib gemini_account_names "$1"; }
@@ -493,7 +495,7 @@ show_help() {
     'geminib remove <name>                 Forget a profile and prune its cached quota; main leaves only a marker.' \
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
-    'geminib use <name>|--clear            Pin worker selection to one account; no name prints the pin.' \
+    'geminib use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.'
 }
@@ -526,7 +528,7 @@ case "${1:-}" in
     ;;
   use)
     shift
-    pin_account "${1:-}"
+    pin_account "$@"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: geminib list\n' >&2; exit 2; }

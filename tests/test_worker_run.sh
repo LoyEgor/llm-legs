@@ -31,8 +31,14 @@ assert_launched_brief() { # capture-of-what-the-CLI-read
 }
 
 export HOME="$WORK/home"
+export XDG_CACHE_HOME="$WORK/cache"
+export WORKER_RUN_ALLOW_DUPLICATE=1
 export WORKER_RUN_DIR="$WORK/runs"
+export WORKER_WALLS_DIR="$WORK/walls"
 export WORKER_RUN_CONFIG_FILE="$WORK/worker-model"
+# A worker harness exports WORKER_PICK_CONFIG_FILE at Egor's real toggle, and worker-run reads the
+# pin through it: inherited, every case here would be judged on whatever he has pinned today.
+unset WORKER_PICK_CONFIG_FILE
 export WORKER_RUN_CODEX_CONFIG="$WORK/config.toml"
 export WORKER_RUN_WORKER_PICK="$WORK/bin/worker-pick"
 export WORKER_RUN_CLAUDEB="$WORK/bin/claudeb"
@@ -46,7 +52,7 @@ export GROKB_PROFILES_DIR="$HOME/.grok-profiles"
 export STUB_DIR="$WORK/stub-state"
 export CALL_LOG="$WORK/calls"
 export PICK_LOG="$WORK/picks"
-mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
+mkdir -p "$HOME" "$WORK/bin" "$WORKER_RUN_DIR" "$WORKER_WALLS_DIR" "$STUB_DIR" "$WORK/workdir" "$WORK/extra"
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 printf 'image\n' >"$WORK/image.png"
@@ -111,6 +117,11 @@ if [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
   [ "$attempt" = 1 ] || transcript_name="$STUB_TRANSCRIPT_SESSION-$attempt"
   jq -cn --arg t "$input" '{type:"user",message:{role:"user",content:$t}}' \
     >"$transcript_dir/$transcript_name.jsonl"
+  if [ -n "${STUB_EDIT_PATH:-}" ]; then
+    jq -cn --arg path "$STUB_EDIT_PATH" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{timestamp:$timestamp,type:"assistant",message:{content:[{type:"tool_use",name:"Edit",input:{file_path:$path}}]}}' \
+      >>"$transcript_dir/$transcript_name.jsonl"
+  fi
 fi
 [ -z "${STUB_SLEEP:-}" ] || sleep "$STUB_SLEEP"
 has_effort=false
@@ -161,7 +172,18 @@ done
 codex_account=main
 case "${CODEX_HOME-}" in */*) codex_account=${CODEX_HOME##*/} ;; esac
 if [ -r "$STUB_DIR/wall_accounts" ] && grep -qx "$codex_account" "$STUB_DIR/wall_accounts"; then
-  printf 'ERROR: You have hit your usage limit.\n' >&2
+  printf '%s\n' "${STUB_WALL_TEXT:-ERROR: You have hit your usage limit.}" >&2
+  if [ -n "${STUB_WALL_ECHO:-}" ]; then
+    for _ in $(seq "$STUB_WALL_ECHO"); do sleep 1; printf 'still reading files\n' >&2; done
+    printf '{"type":"item.completed","item":{"type":"agent_message","text":"done"}}\n'
+    exit 0
+  fi
+  if [ -n "${STUB_WALL_SLEEP:-}" ]; then
+    printf '%s\n' "$$" >"$STUB_DIR/wall.pid"
+    sleep "$STUB_WALL_SLEEP" &
+    printf '%s\n' "$!" >"$STUB_DIR/wall.child.pid"
+    wait $!
+  fi
   exit 9
 fi
 # Real codex mutated the running worker-run mid-session and killed a successful
@@ -175,6 +197,7 @@ bad_model=false
 [ ! -e "$STUB_DIR/codex_bad_model" ] || [ "$has_model" = false ] || bad_model=true
 [ ! -e "$STUB_DIR/codex_bad_model_always" ] || bad_model=true
 if [ "$bad_model" = true ]; then
+  [ -z "${STUB_PICK_WALL:-}" ] || printf '%s\n' 'worker-pick: no selectable codex account (main WALLED)' >&2
   # codex echoes the brief and every file the worker reads onto stderr; those
   # lines named CODEX_USAGE_LIMIT and quotas in the live incident.
   printf 'RETURN (max 120 words): OUTCOME first (DONE/FAILED/CODEX_USAGE_LIMIT)\n' >&2
@@ -251,7 +274,7 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT \
+  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_EDIT_PATH STUB_PICK_WALL \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
@@ -260,6 +283,7 @@ clear_stub() {
     "$STUB_DIR/wall_accounts" "$STUB_DIR/pick_queue" "$STUB_DIR/grok_wall_accounts" \
     "$STUB_DIR/grok_auth" "$STUB_DIR/grok_transient" "$STUB_DIR/grok_denied" \
     "$STUB_DIR/grok_max_turns" "$STUB_DIR/codex.pid" "$STUB_DIR/codex.child.pid"
+  rm -f "$WORKER_WALLS_DIR"/*
 }
 
 start_ok() {
@@ -285,6 +309,322 @@ await_done() {
 
 meta_account_is() { [ "$(jq -r '.account' "$RUN_DIR/meta.json")" = "$1" ]; }
 meta_agy_is() { [ "$(jq -r '.agy_model' "$RUN_DIR/meta.json")" = "$1" ]; }
+
+reliability_cleanup() {
+  local meta pid
+  for meta in "$WORK/reliability-runs"/*/meta.json; do
+    [ -f "$meta" ] && [ ! -e "${meta%/meta.json}/exit_code" ] || continue
+    while IFS= read -r pid; do
+      [ "$pid" -gt 1 ] || continue
+      if [ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')" = "$pid" ]; then
+        kill -TERM -- "-$pid" 2>/dev/null || :
+      fi
+      kill -TERM "$pid" 2>/dev/null || :
+    done < <(jq -r '.cli_pid // 0, .pid // 0' "$meta")
+  done
+}
+trap 'reliability_cleanup; rm -rf "$WORK"' EXIT
+
+reliability_case() { [ -z "${WORKER_RUN_TEST_CASE:-}" ] || [ "$WORKER_RUN_TEST_CASE" = "$1" ]; }
+reliability_tests() {
+  local WORKER_RUN_DIR="$WORK/reliability-runs" WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_WALL_SETTLE_S=0
+  local WORKER_RUN_DEADLINE=10 CLAUDE_CODE_SESSION_ID=reliability-launcher
+  local PICK_RC=0 PICK_ACCOUNT=rescue STUB_WALL_SLEEP=8 STUB_WALL_TEXT
+  local old_id old_dir result rc started cli_pid child_pid fixture live_pid
+  export WORKER_RUN_DIR WORKER_RUN_IDLE_S WORKER_RUN_SILENT_S WORKER_RUN_DEADLINE WORKER_RUN_WALL_SETTLE_S
+  export CLAUDE_CODE_SESSION_ID PICK_RC PICK_ACCOUNT STUB_WALL_SLEEP
+  mkdir -p "$WORKER_RUN_DIR"
+  set_config 'codex_effort=high'
+
+  if reliability_case R1; then
+    clear_stub
+    fixture="$WORK/live-edits"
+    mkdir -p "$fixture"
+    STUB_SLEEP=7 STUB_SESSION=live-edits STUB_TRANSCRIPT_SESSION=live-edits STUB_TRANSCRIPT_ACCOUNT=edits \
+      STUB_EDIT_PATH=owned WORKER_RUN_IDLE_S=3 start_ok claudeb --account edits --workdir "$fixture"
+    for started in 1 2 3 4 5 6; do
+      printf '%s\n' "$started" >"$fixture/owned"
+      assert test ! -e "$RUN_DIR/files"
+      sleep 1
+    done
+    result=$("$RUNNER" wait "$RUN_ID" --max 10)
+    assert grep -qx 'STATUS: done' <<<"$result"
+    assert test ! -e "$RUN_DIR/killed"
+    assert grep -qx owned "$RUN_DIR/files"
+  fi
+
+  if reliability_case R2; then
+    (
+      eval "$(sed -n '/^record_run_wall() {/,/^}/p' "$RUNNER")"
+      . "$ROOT/share/worker-walls.sh"
+      worker_model_clear_walled_pin() { :; }
+      date() { printf '%s\n' "$(cat "$WORK/wall-clock")"; }
+      fixture="$WORK/wall-epoch"
+      mkdir -p "$fixture"
+      printf '{"account":"epoch"}\n' >"$fixture/meta.json"
+      printf '1\n' >"$fixture/attempt"
+      : >"$fixture/out"
+      for text in 'resets in 2 hours' ''; do
+        printf '%s\n' "$text" >"$fixture/err"
+        printf '1000000\n' >"$WORK/wall-clock"
+        record_run_wall "$fixture" codex
+        epoch=$(cat "$WORKER_WALLS_DIR/codex-epoch")
+        printf '1000120\n' >"$WORK/wall-clock"
+        record_run_wall "$fixture" codex
+        [ "$(cat "$WORKER_WALLS_DIR/codex-epoch")" = "$epoch" ] || exit 1
+        printf '%s\n' "$(( $(cat "$fixture/attempt") + 1 ))" >"$fixture/attempt"
+        record_run_wall "$fixture" codex
+        [ "$(cat "$WORKER_WALLS_DIR/codex-epoch")" -gt "$epoch" ] || exit 1
+        printf '%s\n' "$(( $(cat "$fixture/attempt") + 1 ))" >"$fixture/attempt"
+      done
+    )
+    assert test "$?" -eq 0
+  fi
+
+  if reliability_case R3; then
+    clear_stub
+    : >"$STUB_DIR/codex_bad_model_always"
+    STUB_PICK_WALL=1 start_ok codex --account model
+    result=$("$RUNNER" wait "$RUN_ID" --max 10)
+    assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' <<<"$result"
+    assert_fails grep -q 'REROUTE\|KILLED: wall' <<<"$result"
+    assert test ! -s "$PICK_LOG"
+    assert test ! -e "$WORKER_WALLS_DIR/codex-model"
+  fi
+
+  if reliability_case R3-default; then
+    for resume in '' default-session; do
+      clear_stub
+      start_ok codex --account model --model default --resume "$resume"
+      assert await_done
+      assert grep -qx 'ARG=gpt-6-astra' "$CALL_LOG"
+      assert_fails grep -qx 'ARG=default' "$CALL_LOG"
+    done
+  fi
+
+  if reliability_case R3-retry; then
+    clear_stub
+    : >"$STUB_DIR/codex_bad_model"
+    start_ok codex --account model
+    assert await_done
+    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+    clear_stub
+    : >"$STUB_DIR/codex_bad_model"
+    printf 'model = "gpt-5.6-terra"\n' >"$WORKER_RUN_CODEX_CONFIG"
+    start_ok codex --account model --model gpt-6-astra
+    assert await_done
+    assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
+    assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
+    printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
+  fi
+
+  if reliability_case A-mtime; then
+    (
+      eval "$(sed -n '/^newest_mtime() {/,/^}/p' "$RUNNER")"
+      stat() {
+        [ "$1" != -f ] || { printf 'filesystem info\n'; return 1; }
+        case "$3" in out) printf '100\n' ;; err) printf '200\n' ;; *) return 1 ;; esac
+      }
+      [ "$(newest_mtime out err missing)" = 200 ]
+    )
+    assert test "$?" -eq 0
+  fi
+
+  if reliability_case A-heartbeat; then
+    clear_stub
+    cat >"$WORK/bin/heartbeat-grokb" <<'EOF'
+#!/usr/bin/env bash
+if [ "$2" = wall ]; then
+  printf '%s\n' '{"type":"error","message":"You have hit the credit limit for your plan."}'
+  while :; do printf 'heartbeat\n' >&2; sleep 0.2; done
+fi
+printf '%s\n' '{"type":"end","sessionId":"heartbeat-rescue","stopReason":"end_turn"}'
+EOF
+    chmod +x "$WORK/bin/heartbeat-grokb"
+    WORKER_RUN_GROKB="$WORK/bin/heartbeat-grokb" WORKER_RUN_WALL_SETTLE_S=60 start_ok grok --account wall
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
+    assert grep -qx 'STATUS: done' <<<"$result"
+    assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
+    assert test "$(cat "$WORKER_WALLS_DIR/grok-wall")" -gt "$(date +%s)"
+  fi
+
+  if reliability_case A; then
+    clear_stub
+    printf 'wall\n' >"$STUB_DIR/wall_accounts"
+    start_ok codex --account wall
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
+    assert grep -qx 'STATUS: done' <<<"$result"
+    assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
+    assert test "$(cat "$WORKER_WALLS_DIR/codex-wall")" -gt "$(date +%s)"
+    assert test "$(cat "$RUN_DIR/attempt")" = 2
+    assert_fails kill -0 "$(cat "$STUB_DIR/wall.pid")"
+    assert_fails kill -0 "$(cat "$STUB_DIR/wall.child.pid")"
+  fi
+
+  if reliability_case A-echo; then
+    clear_stub
+    printf 'wall\n' >"$STUB_DIR/wall_accounts"
+    STUB_WALL_ECHO=5 WORKER_RUN_WALL_SETTLE_S=3 start_ok codex --account wall
+    result=$("$RUNNER" wait "$RUN_ID" --max 10)
+    assert grep -qx 'STATUS: done' <<<"$result"
+    assert_fails grep -q 'REROUTE\|KILLED' <<<"$result"
+    assert test ! -e "$RUN_DIR/killed"
+    assert test ! -e "$WORKER_WALLS_DIR/codex-wall"
+    unset STUB_WALL_ECHO
+  fi
+
+  if reliability_case A-resume; then
+    clear_stub
+    printf 'wall\n' >"$STUB_DIR/wall_accounts"
+    start_ok codex --account wall --resume wall-session
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
+    assert grep -qx 'KILLED: wall — vendor usage limit detected' <<<"$result"
+    assert grep -qx 'WALL: resumed session stays on wall' <<<"$result"
+    assert grep -qx wall "$RUN_DIR/killed"
+    assert test ! -s "$PICK_LOG"
+  fi
+
+  if reliability_case B; then
+    clear_stub
+    export STUB_SLEEP=8
+    WORKER_RUN_SILENT_S=2 start_ok codex --account silent
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
+    assert grep -qx 'KILLED: silent — no output in 2s' <<<"$result"
+    assert grep -qx 'silent 2' "$RUN_DIR/killed"
+    assert test ! -s "$RUN_DIR/out"
+    assert test ! -s "$RUN_DIR/err"
+    assert test ! -e "$WORKER_WALLS_DIR/codex-silent"
+    unset STUB_SLEEP
+    start_ok codex --account silent --resume silent-session
+    assert await_done
+    assert grep -qx 'STATUS: done' "$WORK/wait.out"
+    export STUB_SLEEP=3
+    WORKER_RUN_SILENT_S=0 start_ok codex --account silent
+    assert await_done
+    assert grep -qx 'STATUS: done' "$WORK/wait.out"
+    unset STUB_SLEEP
+  fi
+
+  if reliability_case C; then
+    clear_stub
+    export STUB_SLEEP=8
+    start_ok codex --account busy --resume busy-session
+    old_id=$RUN_ID old_dir=$RUN_DIR
+    assert grep -qx busy-session "$old_dir/worker-session"
+    rc=0
+    "$RUNNER" start codex --brief "$WORK/brief" --account busy --resume busy-session >"$WORK/busy.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qx "OUTCOME: RESUME_BUSY $old_id" "$WORK/busy.out"
+    assert grep -qx "ATTACH $old_id" "$WORK/busy.out"
+    kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
+    "$RUNNER" wait "$old_id" --max 6 >/dev/null
+    unset STUB_SLEEP
+    start_ok codex --account busy --resume busy-session
+    assert await_done
+    assert grep -qx 'STATUS: done' "$WORK/wait.out"
+  fi
+
+  if reliability_case D; then
+    clear_stub
+    export STUB_SLEEP=8
+    start_ok codex --account duplicate
+    old_id=$RUN_ID old_dir=$RUN_DIR
+    rc=0
+    WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/duplicate.out"
+    assert grep -qx "ATTACH $old_id" "$WORK/duplicate.out"
+    unset STUB_SLEEP
+    WORKER_RUN_ALLOW_DUPLICATE=1 start_ok codex --account duplicate
+    assert await_done
+    assert grep -qx 'STATUS: done' "$WORK/wait.out"
+    CLAUDE_CODE_SESSION_ID=another-launcher WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
+    assert await_done
+    printf 'different brief\n' >"$WORK/different-brief"
+    WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate --brief "$WORK/different-brief"
+    assert await_done
+    kill -TERM "$(jq -r '.pid' "$old_dir/meta.json")"
+    "$RUNNER" wait "$old_id" --max 6 >/dev/null
+    WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
+    assert await_done
+    fixture="$WORKER_RUN_DIR/old-live"
+    mkdir -p "$fixture"
+    sleep 30 & live_pid=$!
+    cp "$WORK/brief" "$fixture/brief"
+    printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$fixture/launcher"
+    jq -cn --argjson pid "$live_pid" --argjson start "$(($(date +%s) - 1800))" '{pid:$pid,started_at:$start}' >"$fixture/meta.json"
+    WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
+    assert await_done
+    kill "$live_pid"
+    wait "$live_pid" 2>/dev/null || :
+    WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
+    assert await_done
+    printf '0\n' >"$fixture/exit_code"
+  fi
+
+  if reliability_case E1; then
+    clear_stub
+    printf 'main\n' >"$STUB_DIR/wall_accounts"
+    printf '2\n0 rescue\n' >"$STUB_DIR/pick_queue"
+    export STUB_WALL_TEXT='worker-pick: no selectable codex account (main 0%/d ×7d WALLED)'
+    start_ok codex
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
+    assert grep -qx 'STATUS: done' <<<"$result"
+    assert grep -qx 'REROUTE: walled on main → continued on rescue' <<<"$result"
+    unset STUB_WALL_TEXT
+  fi
+
+  if reliability_case E2; then
+    clear_stub
+    fixture="$WORK/reliability-repo"
+    mkdir -p "$fixture"
+    git -C "$fixture" init -q
+    export STUB_SLEEP=8
+    WORKER_RUN_IDLE_S=2 start_ok codex --account wedged --workdir "$fixture"
+    for started in 1 2 3 4; do
+      printf '%s\n' "$started" >"$fixture/cotenant-edit"
+      sleep 1
+    done
+    result=$("$RUNNER" wait "$RUN_ID" --max 0)
+    assert grep -q '^KILLED: idle watchdog' <<<"$result"
+    unset STUB_SLEEP
+  fi
+
+  if reliability_case E3; then
+    clear_stub
+    export STUB_SLEEP=8
+    start_ok codex --account main
+    for started in $(seq 1 100); do [ -s "$STUB_DIR/codex.child.pid" ] && break; sleep 0.05; done
+    cli_pid=$(cat "$STUB_DIR/codex.pid")
+    child_pid=$(cat "$STUB_DIR/codex.child.pid")
+    kill -TERM "$(jq -r '.pid' "$RUN_DIR/meta.json")"
+    result=$("$RUNNER" wait "$RUN_ID" --max 6)
+    assert grep -qx term "$RUN_DIR/killed"
+    assert grep -q '^KILLED: signal TERM' <<<"$result"
+    assert_fails kill -0 "$cli_pid"
+    assert_fails kill -0 "$child_pid"
+    unset STUB_SLEEP
+  fi
+
+  if reliability_case E4; then
+    . "$ROOT/share/worker-pool.sh"
+    fixture="$WORK/reliability-pool"
+    mkdir -p "$fixture/shielded"
+    : >"$fixture/shielded/main"
+    reliability_names() { printf 'main\nother\n'; }
+    worker_pool_set_all "$fixture" fixture reliability_names on >/dev/null
+    assert grep -qx main "$fixture/disabled"
+    assert grep -qx other "$fixture/disabled"
+    rm "$fixture/shielded/main"
+    assert worker_pool_is_disabled "$fixture" main
+  fi
+  clear_stub
+}
+reliability_tests
+if [ "${WORKER_RUN_TEST_RELIABILITY_ONLY:-0}" = 1 ]; then
+  printf 'PASS: %s reliability asserts\n' "$asserts"
+  exit 0
+fi
 
 clear_stub
 set_config 'codex_effort=high'
@@ -356,14 +696,14 @@ for vendor in claudeb codex gemini; do
   # Claims own cross-run spreading, so every automatic launch makes one claimed query and does
   # not derive a second exclusion layer from worker-run's live-run registry.
   assert grep -qx -- "--account $vendor --claim" "$PICK_LOG"
-  assert jq -e '.pinned == false' "$RUN_DIR/meta.json" >/dev/null
+  assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
   assert await_done
 
   clear_stub
   export PICK_ACCOUNT=ignored PICK_RC=2
   start_ok "$vendor"
   assert meta_account_is pinned
-  assert jq -e '.pinned == true' "$RUN_DIR/meta.json" >/dev/null
+  assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
   assert await_done
 done
 
@@ -951,7 +1291,7 @@ cp "$RUNNER" "$SELF_RUNNER"
 # list is not one it may guess at either.
 mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
-  "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$WORK/share/"
+  "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" "$WORK/share/"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -2438,16 +2778,17 @@ start_ok claudeb
 assert await_done
 assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
 
-# A pinned run never consulted the pool, and its WALL line says so: worker agents relay these
-# lines verbatim in place of describing routing themselves.
+# A resumed session stays on its account: the session lives there, so the WALL line says so
+# rather than sending the orchestrator hunting a pool that was never consulted.
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export STUB_CODE=9 STUB_ERROR='usage limit reached'
-start_ok claudeb --account pinacct
+start_ok claudeb --account pinacct --resume resumed-session
 assert await_done
 assert grep -qx 'OUTCOME: CLAUDEB_USAGE_LIMIT' "$WORK/wait.out"
-assert grep -qx 'WALL: pinned account pinacct — pool not consulted' "$WORK/wait.out"
+assert grep -qx 'WALL: resumed session stays on pinacct' "$WORK/wait.out"
 assert test "$(grep -c '^REROUTE:' "$WORK/wait.out")" -eq 0
+assert test ! -s "$PICK_LOG"
 
 # A pid that outlives its run (reboot reuse, supervisor killed before writing
 # exit_code) must not report "running" forever once the deadline is long past.
@@ -2658,9 +2999,11 @@ assert_fails grep -q '^KILLED: ' <<<"$blind_wait"
 clear_stub
 set_config 'claudeb_profile=pinned'
 export PICK_RC=0 PICK_ACCOUNT=picked STUB_SLEEP=14 STUB_TRANSCRIPT_SESSION=frozen-transcript \
-  STUB_TRANSCRIPT_ACCOUNT=picked WORKER_RUN_IDLE_S=3 WORKER_RUN_DEADLINE=600
+  STUB_TRANSCRIPT_ACCOUNT=picked STUB_EDIT_PATH=bin/the-worker-is-mid-edit WORKER_RUN_IDLE_S=3 WORKER_RUN_DEADLINE=600
 start_ok claudeb --workdir "$DIRT_REPO"
 unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+unset STUB_EDIT_PATH
+assert test ! -e "$RUN_DIR/files"
 for editing in 1 2 3 4 5 6; do
   sleep 2
   printf 'edit %s\n' "$editing" >"$DIRT_REPO/bin/the-worker-is-mid-edit"
@@ -2745,6 +3088,7 @@ kill -TERM "$(jq -r '.pid' "$RUN_DIR/meta.json")"
 signal_wait=$("$RUNNER" wait "$RUN_ID" --max 30)
 assert grep -q '^STATUS: failed$' <<<"$signal_wait"
 assert grep -q '^KILLED: signal TERM' <<<"$signal_wait"
+assert grep -qx term "$RUN_DIR/killed"
 assert grep -q '^KILLED: signal TERM' <<<"$("$RUNNER" report "$RUN_ID")"
 assert_fails kill -0 "$stub_pid"
 # Not the wrapper alone: the CLI's own children go with its group, or the `sleep` here — a worker
@@ -2864,21 +3208,119 @@ assert grep -qx 'OUTCOME: GEMINI_USAGE_LIMIT' "$WORK/wait.out"
 assert meta_account_is walledg
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
 
-# An explicit --account is the caller's decision: a pinned run reports the wall
-# instead of spending someone else's quota on it.
+# An explicit --account is spent first, then the pool: a wall moves the same brief on.
 clear_stub
 set_config 'codex_effort=high'
 printf 'pinnedacct\n' >"$STUB_DIR/wall_accounts"
 printf '%s\n' '0 rescue3' >"$STUB_DIR/pick_queue"
 start_ok codex --account pinnedacct
 assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
+assert meta_account_is rescue3
+assert jq -e '.walled_accounts == ["pinnedacct"]' "$RUN_DIR/meta.json" >/dev/null
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
+assert grep -qx -- '--account codex --claim --exclude pinnedacct' "$PICK_LOG"
+assert grep -qx 'REROUTE: walled on pinnedacct → continued on rescue3' "$WORK/wait.out"
+assert test -f "$WORKER_WALLS_DIR/codex-pinnedacct"
+wall_epoch=$(tr -d '[:space:]' <"$WORKER_WALLS_DIR/codex-pinnedacct")
+now=$(date +%s)
+assert test "$wall_epoch" -ge $((now + 3600 - 30))
+assert test "$wall_epoch" -le $((now + 3600 + 30))
+
+# Pin fallback is the same rule: spent first, then the pool.
+clear_stub
+set_config 'codex_effort=high' 'codex_profile=pinacct'
+printf 'pinacct\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '2' '0 rescue4' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert meta_account_is rescue4
+assert jq -e '.walled_accounts == ["pinacct"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'REROUTE: walled on pinacct → continued on rescue4' "$WORK/wait.out"
+assert test -f "$WORKER_WALLS_DIR/codex-pinacct"
+assert_fails grep -q '^codex_profile=' "$WORKER_RUN_CONFIG_FILE"
+
+# (iii) a met wall drops only that pinned name; the run lands on the other pin.
+clear_stub
+set_config 'codex_effort=high' 'codex_profile=hot,cool'
+printf 'hot\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '2' '0 cool' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+assert meta_account_is cool
+assert jq -e '.walled_accounts == ["hot"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'codex_profile=cool' "$WORKER_RUN_CONFIG_FILE"
+assert test -f "$WORKER_WALLS_DIR/codex-hot"
+assert_fails test -f "$WORKER_WALLS_DIR/codex-cool"
+
+# (iv) last pin removed → key deleted.
+clear_stub
+set_config 'codex_effort=high' 'codex_profile=lastpin'
+printf 'lastpin\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '2' '0 leftover' >"$STUB_DIR/pick_queue"
+start_ok codex
+assert await_done
+assert meta_account_is leftover
+assert_fails grep -q '^codex_profile=' "$WORKER_RUN_CONFIG_FILE"
+
+# (h) limits at 100% without a run-observed wall still launch on the pin first.
+clear_stub
+now=$(date +%s)
+set_config 'claudeb_model=opus' 'claudeb_effort=high' 'claudeb_profile=hot'
+jq -cn --argjson now "$now" '{schema:1,fetched_at:$now,vendors:{claude:{available:true,accounts:[
+  {account:"hot",enabled:true,auth:{status:"ok"},
+   five_hour:{used_pct:10,as_of:$now},weekly:{used_pct:100,as_of:$now},
+   rotation:{usable:{general:true,fable:true}}},
+  {account:"cool",enabled:true,auth:{status:"ok"},
+   five_hour:{used_pct:0,as_of:$now},weekly:{used_pct:0,as_of:$now},
+   rotation:{usable:{general:true,fable:true}}}]}}}' >"$WORK/h-limits.json"
+mkdir -p "$HOME/.claude-profiles/.claudeb"
+: >"$HOME/.claude-profiles/.claudeb/disabled"
+export WORKER_RUN_WORKER_PICK="$ROOT/bin/worker-pick"
+export LLM_LIMITS_FILE="$WORK/h-limits.json"
+export WORKER_PICK_CONFIG_FILE="$WORKER_RUN_CONFIG_FILE"
+export WORKER_PICK_NOW="$now"
+export CLAUDEB_DIR="$HOME/.claude-profiles/.claudeb"
+export PICK_RC=0 PICK_ACCOUNT=should-not-use-stub
+start_ok claudeb
+assert meta_account_is hot
+assert await_done
+assert grep -q '^STATUS: done$' "$WORK/wait.out"
+export WORKER_RUN_WORKER_PICK="$WORK/bin/worker-pick"
+unset LLM_LIMITS_FILE WORKER_PICK_CONFIG_FILE WORKER_PICK_NOW
+
+# --resume is the one run that stays: the session lives on that account.
+clear_stub
+set_config 'codex_effort=high'
+printf 'resacct\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 rescue5' >"$STUB_DIR/pick_queue"
+start_ok codex --account resacct --resume sess-stay
+assert await_done
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
-assert meta_account_is pinnedacct
+assert grep -qx 'WALL: resumed session stays on resacct' "$WORK/wait.out"
+assert meta_account_is resacct
 assert jq -e 'has("walled_accounts") | not' "$RUN_DIR/meta.json" >/dev/null
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
-assert test ! -s "$PICK_LOG"
-assert grep -qx '0 rescue3' "$STUB_DIR/pick_queue"
 assert test "$(grep -c '^REROUTE: ' "$WORK/wait.out")" -eq 0
+assert grep -qx '0 rescue5' "$STUB_DIR/pick_queue"
+assert test -f "$WORKER_WALLS_DIR/codex-resacct"
+
+# A named account that walls, then every remaining pick walls: pool exhausted.
+clear_stub
+set_config 'codex_effort=high'
+printf 'walled1\nwalled2\n' >"$STUB_DIR/wall_accounts"
+printf '%s\n' '0 walled2' '3' >"$STUB_DIR/pick_queue"
+start_ok codex --account walled1
+assert await_done
+assert grep -q '^STATUS: failed$' "$WORK/wait.out"
+assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
+assert grep -qx 'WALL: pool exhausted (walled: walled1, walled2)' "$WORK/wait.out"
+assert meta_account_is walled2
+assert jq -e '.walled_accounts == ["walled1"]' "$RUN_DIR/meta.json" >/dev/null
+assert grep -qx 'REROUTE: walled on walled1 → continued on walled2' "$WORK/wait.out"
 
 # A brief carrying a bench run's own `record` command is that run's triage, delegated: the bench is
 # stamped with the supervisor's pid, which is what tells the Stop gate somebody is writing the
@@ -3039,7 +3481,7 @@ clear_stub
 set_config 'grok_effort=high' 'grok_profile=grokpin'
 start_ok grok
 assert meta_account_is grokpin
-assert jq -e '.pinned == true' "$RUN_DIR/meta.json" >/dev/null
+assert jq -e 'has("pinned") | not' "$RUN_DIR/meta.json" >/dev/null
 assert await_done
 
 # A vendor the picker can read NOTHING about — no accounts, no usage snapshot — is not a walled one:

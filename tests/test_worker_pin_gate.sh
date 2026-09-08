@@ -426,7 +426,7 @@ assert contains "$(worker_model_pin_account claudeb_profile claudeb accounts nev
 mkdir -p "$(dirname "$GRANT")"
 touch "$GRANT"
 assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
-assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=beta'
+assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=alpha,beta'
 assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled --clear
 assert lacks "$(cat "$REAL_PIN")" 'claudeb_profile='
 
@@ -459,26 +459,14 @@ export CLAUDECODE=1
 export WORKER_PICK_CONFIG_FILE="$WORK/fixture-model"
 assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
 assert contains "$(cat "$WORK/fixture-model")" 'claudeb_profile=beta'
+assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled alpha
+assert contains "$(cat "$WORK/fixture-model")" 'claudeb_profile=beta,alpha'
+assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled --unpin beta
+assert contains "$(cat "$WORK/fixture-model")" 'claudeb_profile=alpha'
+assert lacks "$(cat "$WORK/fixture-model")" 'claudeb_profile=beta'
 assert worker_model_pin_account grok_profile grokb accounts never_disabled alpha
 assert contains "$(cat "$WORK/fixture-model")" 'grok_profile=alpha'
 assert_fails worker_model_pin_account unknown_profile unknown accounts never_disabled alpha
-
-# --- The one clear that is not a session's: the account walled itself ----------------------------
-# The wall ends the pin, and that clear needs no grant — nobody chose it, the quota ran out. It
-# still names the account it measured, so a pin Egor moved between that reading and this write
-# survives: the wall belonged to the account he took the pin off.
-export CLAUDECODE=1
-export WORKER_PICK_CONFIG_FILE="$REAL_PIN"
-rm -f "$GRANT"
-printf 'worker=auto\nclaudeb_profile=alpha\n' >"$REAL_PIN"
-assert_fails worker_model_clear_walled_pin claudeb_profile beta
-assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=alpha'
-assert worker_model_clear_walled_pin claudeb_profile alpha
-assert lacks "$(cat "$REAL_PIN")" 'claudeb_profile'
-# The rest of his file is not collateral: only the pin line goes.
-assert contains "$(cat "$REAL_PIN")" 'worker=auto'
-# Nothing to clear is not a failure to report twice — a second run answers the same way.
-assert_fails worker_model_clear_walled_pin claudeb_profile alpha
 
 # --- Fail-open ----------------------------------------------------------------------------------
 # A malformed event, another event kind and an unknown mode pass through rather than blocking work.
@@ -567,5 +555,11 @@ for pin_move in \
   "cp $WORK/other $PIN_FILE"; do
   assert denied "$(bash_event "$pin_move")"
 done
+
+# (vi) list-shaped pin lines are pin lines: preserving them is allowed; a model value is still denied.
+printf 'worker=auto\ncodex_profile=alpha,beta\nclaudeb_model=opus\n' >"$PIN_FILE"
+assert allowed "$(write_event "$PIN_FILE" "$(printf 'worker=codex\ncodex_profile=alpha,beta\nclaudeb_model=opus\n')")"
+assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=auto\ncodex_profile=alpha,beta\nclaudeb_model=sonnet\n')")"
+assert denied "$(edit_event "$PIN_FILE" 'codex_profile=alpha,beta' 'codex_profile=opus')"
 
 printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — his words grant it for a window and an ordinary mention of an account does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run, and no grant unlocks that one\n' "$asserts"

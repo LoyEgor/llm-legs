@@ -112,6 +112,7 @@ root=$(resolve_root)
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
 . "$root/share/gemini-accounts.sh"
+. "$root/share/worker-model.sh"
 . "$root/share/worker-claims.sh"
 
 picked=false
@@ -127,8 +128,7 @@ if [ -z "$account" ]; then
     exit 3
   fi
   if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    worker_file="${WORKER_PICK_CONFIG_FILE:-$base_home/.claude/worker-model}"
-    account=$(sed -n 's/^gemini_profile=//p' "$worker_file" 2>/dev/null | head -n1) || account=''
+    account=$(worker_model_pin_first gemini 2>/dev/null || true)
     account=${account:-main}
     if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
       account=main

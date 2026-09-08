@@ -34,6 +34,19 @@ cache_dir="$cache_root/$session_id"
 tag_file="$cache_dir/$agent_id"
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
+
+_load_worker_model() {
+  command -v worker_model_pin_first >/dev/null 2>&1 && return 0
+  local path=${BASH_SOURCE[0]} dir
+  while [ -L "$path" ]; do
+    dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+    path=$(readlink "$path")
+    [[ "$path" = /* ]] || path="$dir/$path"
+  done
+  dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+  . "$dir/../share/worker-model.sh" 2>/dev/null
+}
+_load_worker_model || true
 grab() { printf '%s' "$launch" | grep -oE -e "$1" 2>/dev/null | head -n1; }
 
 # A launcher name counts only where a command word can stand: line start or
@@ -91,7 +104,7 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'claudeb["'\'']?([[:space:]]|
   # `claudeb profile --resume …` becomes the tagged account.
   acct=$(grab "${cmd_word}"'claudeb["'\'' ]+profile["'\'' ]+[A-Za-z0-9][A-Za-z0-9_.-]*' |
     grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*$')
-  [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
+  [ -n "$acct" ] || acct=$(worker_model_pin_first claudeb 2>/dev/null || true)
   model=$(grab '\-\-model[= ]+[A-Za-z0-9][A-Za-z0-9_.-]*' | grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*$')
   [ -n "$model" ] || model=$(worker_conf claudeb_model)
   [ -n "$model" ] || model=opus

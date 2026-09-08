@@ -230,8 +230,10 @@ pinned_account() {
 }
 
 pin_account() {
-  worker_model_pin_account claudeb_profile claudeb account_names is_disabled "${1:-}" \
-    "$(worker_model_pin_wall_until claude "${1:-}")"
+  case "${1:-}" in
+    --unpin) worker_model_pin_account claudeb_profile claudeb account_names is_disabled --unpin "${2:-}" ;;
+    *) worker_model_pin_account claudeb_profile claudeb account_names is_disabled "${1:-}" ;;
+  esac
 }
 
 selection() {
@@ -1788,7 +1790,7 @@ show_help() {
   printf '                                          %sPICK marks the account worker-pick would give this chat.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb enable <name>|--all%s             %sReturn an account (or every account) to worker selection.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb disable <name>|--all%s            %sExclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
-  printf '  %s%sclaudeb use <name>|--clear%s              %sPin worker selection to one account; no name prints the pin.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb use <name>|--unpin [<name>]|--clear%s  %sAdd/remove a workers pin; no name prints the list.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb add <name>%s                      %sValidate and save a setup-token.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb remove <name> [--force]%s          %sForget an account everywhere; --force overrides a live-creds guard.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s↑/↓%s select  %s⏎%s launch profile  %s←/→%s sort  %sr%s refresh (async)  %sq/Esc%s exit interactive status\n\n' "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset" "$yellow" "$reset"
@@ -2797,7 +2799,7 @@ case "${1:-}" in
     ;;
   use)
     shift
-    pin_account "${1:-}"
+    pin_account "$@"
     ;;
   remove)
     shift

@@ -297,7 +297,7 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
         case "$answer" in
           ''|off) answer=off ;;
           unknown) ;;
-          "dim "*|"bright "*|"split "*) ;;
+          "bright "*) ;;
           *) answer="loud $answer" ;;
         esac
         tmp="$cache.tmp.${BASHPID:-$$}"
@@ -321,18 +321,13 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
   fi
 }
 
-# The gate's two answers about the CHAT rather than a tree: whether it runs autonomously, and the
-# unreviewed diff lines it owes summed over every repository it touched. Printed as `<yes|no>|<total>`
-# and cached per session alone — a key on the shown tree would void a session-wide answer at every cd
-# — behind the same off-render-path discipline as the verdict beside it. A gate that does not know
-# the verbs answers nothing, and the segment then renders exactly as it did before them.
 review_session_line() { # session now [rendered toplevel]
-  local sid="$1" now="$2" top="${3:-}"
+  local sid="$1" now="$2"
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
-  local cache="$statusline_cache_dir/review-session-$sid"
+  local cache="$statusline_cache_dir/review-autonomy-$sid"
   local lock="$cache.lock"
   local cached cache_mtime lock_mtime timeout_bin
-  [ -n "$sid" ] && [ -x "$gate" ] || { printf '%s' 'no|'; return 0; }
+  [ -n "$sid" ] && [ -x "$gate" ] || { printf '%s' 'no'; return 0; }
   cache_mtime=$(file_mtime "$cache" 2>/dev/null)
   cached=""
   [[ "$cache_mtime" =~ ^[0-9]+$ ]] && IFS= read -r cached < "$cache" 2>/dev/null
@@ -349,22 +344,14 @@ review_session_line() { # session now [rendered toplevel]
         snapshot_lock_acquire "$lock" || exit 0
         trap 'rmdir "$lock" 2>/dev/null' EXIT
         timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-        # The rendered tree goes with the question: the gate counts it whether or not this chat's
-        # repository list names it, and a chat older than that list would otherwise total 0 beside a
-        # repository row that is not.
         if [ -n "$timeout_bin" ]; then
           auto=$("$timeout_bin" 10 "$gate" autonomous "$sid" 2>/dev/null | head -1)
-          total=$("$timeout_bin" 10 "$gate" debt-total "$sid" "$top" 2>/dev/null | head -1)
         else
           auto=$("$gate" autonomous "$sid" 2>/dev/null | head -1)
-          total=$("$gate" debt-total "$sid" "$top" 2>/dev/null | head -1)
         fi
         [ "$auto" = yes ] || auto=no
-        # The gate prints a number or its own `unknown`, so anything else — an empty answer, a
-        # `timeout` kill, a word — is nobody having answered: neither the old empty string nor `0`.
-        [[ "$total" =~ ^[0-9]+$ ]] || total='?'
         tmp="$cache.tmp.${BASHPID:-$$}"
-        printf '%s|%s' "$auto" "$total" > "$tmp" 2>/dev/null &&
+        printf '%s' "$auto" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
       ) >/dev/null 2>&1 &
     fi
@@ -373,9 +360,9 @@ review_session_line() { # session now [rendered toplevel]
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf '%s' "$cached"
   elif [ -n "$cached" ]; then
-    printf '%s' 'no|?'
+    printf '%s' 'no'
   else
-    printf '%s' 'no|'
+    printf '%s' 'no'
   fi
 }
 
@@ -2347,15 +2334,9 @@ if { [ -n "$progress_total" ] || [ "$rev_extra" -gt 0 ]; } && [ "${review_style:
   review_text=${review_text#rev }
 fi
 
-# What the same gate says about the CHAT rather than the shown tree, so neither moves when the
-# block does: the autonomous marker that replaces the word `rev`, and the debt this chat owes
-# across every repository it touched.
 review_autonomous=no
-review_total=""
 if [ -n "$session_id" ]; then
-  review_session=$(review_session_line "$session_id" "$now" "$active_top")
-  review_autonomous=${review_session%%|*}
-  review_total=${review_session#*|}
+  review_autonomous=$(review_session_line "$session_id" "$now")
 fi
 
 # Never dimmed: a commit of this chat that its upstream does not contain is this chat's own to act
@@ -2563,70 +2544,27 @@ fit_review_part() {
 # sentence gets neither marker nor total: a word this build cannot classify reaches the reader
 # exactly as the gate said it, and decorating it would be this render speaking over the gate.
 fit_verdict_part() {
-  # The bar carries the separator's own grey and closes it: it divides two numbers exactly as `│`
-  # divides two segments, and the style's colouring reaches the numbers only.
-  local sp=" " bar=" ${DIM}|${RESET} " word=rev text dot="" body="" own
+  local sp=" " word=rev text dot="" body=""
   verdict_part=""
   if [ "${review_style:-}" = loud ]; then
     verdict_part=" ${sep} ${RED}${review_text}${RESET}"
     return
   fi
-  [ "$fit_rev_short" = 1 ] && { sp=""; bar="${DIM}|${RESET}"; word=r; }
-  text=$review_text
-  # `off` is the gate answering "nothing owed"; `rev ?` is nobody having answered — a stale cache, a
-  # timeout, the gate's own `unknown`. Rendering the second as the first is how an outage reaches
-  # Egor as a clean bill, and rendering it as no segment at all is the same lie said quieter.
-  if [ "${review_style:-}" = unknown ] ||
-    { [ "$review_total" = '?' ] && [ -z "$text" ]; }; then
+  [ "$fit_rev_short" = 1 ] && { sp=""; word=r; }
+  if [ "${review_style:-}" = unknown ]; then
     if [ "$review_autonomous" = yes ]; then dot="●${sp}"; else body="${word}${sp}"; fi
     verdict_part=" ${sep} ${dot}${DIM}${body}?${RESET}"
     return
   fi
-  case "${review_style:-}" in
-    dim|bright|split)
-      # The counter beside it may already have taken the word away; the dot is not that word and
-      # stands either way. Only the dot sits outside the style's colour — the word is the gate's
-      # text and carries the gate's weight with the numbers.
-      if [ "$review_autonomous" = yes ]; then
-        dot="●${sp}"
-        text=${text#rev }
-      elif [ "$fit_rev_short" = 1 ]; then
-        case "$text" in "rev "*) text="${word}${sp}${text#rev }" ;; esac
-      fi
-      case "$review_style" in
-        dim) body="${DIM}${text}${RESET}" ;;
-        split)
-          # Truncation can eat the slash, and then the whole text stands at the near weight rather
-          # than being printed twice.
-          if [ "$text" != "${text#*/}" ]; then body="${text%%/*}${DIM}/${text#*/}${RESET}"
-          else body="$text"; fi ;;
-        *) body="$text" ;;
-      esac
-      ;;
-    *)
-      # Nothing owed here, but the chat owes elsewhere: the word alone carries the total.
-      [ -n "$review_total" ] && [ "$review_total" != 0 ] || return
-      if [ "$review_autonomous" = yes ]; then dot="●"; else body="$word"; fi
-      ;;
-  esac
-  # The total is news only where it exceeds what this chat owes HERE — then, and only then, does it
-  # say "and lines in other repositories too". Own-here is the chat's own share of the rendered
-  # repository, which a one-sided `dim` verdict has none of: its number is somebody else's, and
-  # comparing against it printed `rev 60 | 0`.
-  own=0
-  case "${review_style:-}" in
-    bright|split)
-      own=${review_text#rev }
-      own=${own%%/*}
-      [[ "$own" =~ ^[0-9]+$ ]] || own=0
-      ;;
-  esac
-  if [ "$review_total" = '?' ]; then
-    body="${body}${bar}?"
-  elif [ -n "$review_total" ] && [ "$review_total" -gt "$own" ]; then
-    body="${body}${bar}${review_total}"
+  [ "${review_style:-}" = bright ] || return
+  text=$review_text
+  if [ "$review_autonomous" = yes ]; then
+    dot="●${sp}"
+    text=${text#rev }
+  elif [ "$fit_rev_short" = 1 ]; then
+    case "$text" in "rev "*) text="${word}${sp}${text#rev }" ;; esac
   fi
-  verdict_part=" ${sep} ${dot}${body}"
+  verdict_part=" ${sep} ${dot}${text}"
 }
 
 fit_unpushed_part() {

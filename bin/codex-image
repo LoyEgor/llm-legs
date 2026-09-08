@@ -129,8 +129,7 @@ if [ -z "$account" ]; then
     exit 3
   fi
   if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    worker_file="${WORKER_PICK_CONFIG_FILE:-$base_home/.claude/worker-model}"
-    account=$(sed -n 's/^codex_profile=//p' "$worker_file" 2>/dev/null | head -n1) || account=''
+    account=$(worker_model_pin_first codex 2>/dev/null || true)
     account=${account:-main}
     if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
       account=main
@@ -141,7 +140,7 @@ if [ -z "$account" ]; then
   fi
 fi
 
-worker_pool_refuse_headless codex "$account" "$(worker_model_pinned_account codex_profile)" || exit 4
+worker_pool_refuse_headless codex "$account" "$(worker_model_pin_csv < <(worker_model_pins codex))" || exit 4
 
 profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 if [ "$account" = main ]; then

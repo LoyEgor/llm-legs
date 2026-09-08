@@ -138,10 +138,16 @@ if [ -z "$account" ]; then
     exit 3
   fi
   if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    printf 'grok-image: worker-pick failed\n' >&2
-    exit 1
+    . "$root/share/worker-model.sh"
+    account=$(worker_model_pin_first grok 2>/dev/null || true)
+    if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      printf 'grok-image: worker-pick failed\n' >&2
+      exit 1
+    fi
+    printf 'grok-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
+  else
+    picked=true
   fi
-  picked=true
 fi
 
 # `grokb profile` creates what it cannot find, so an unchecked typo here does not fail: it mkdirs a

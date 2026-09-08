@@ -23,6 +23,19 @@ description=$(field '.tool_input.description')
 prompt=$(field '.tool_input.prompt')
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
+
+_load_worker_model() {
+  command -v worker_model_pin_first >/dev/null 2>&1 && return 0
+  local path=${BASH_SOURCE[0]} dir
+  while [ -L "$path" ]; do
+    dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+    path=$(readlink "$path")
+    [[ "$path" = /* ]] || path="$dir/$path"
+  done
+  dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+  . "$dir/../share/worker-model.sh" 2>/dev/null
+}
+_load_worker_model || true
 brief_line() { printf '%s' "$prompt" | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//"; }
 flag_account() {
   local token pattern
@@ -51,7 +64,7 @@ codex_model_short_label() {
 if [ "$subagent" = claudeb-worker ]; then
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account claudeb)
-  [ -n "$acct" ] || acct=$(worker_conf claudeb_profile)
+  [ -n "$acct" ] || acct=$(worker_model_pin_first claudeb 2>/dev/null || true)
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf claudeb_model)
   [ -n "$model" ] || model=opus
@@ -62,7 +75,7 @@ if [ "$subagent" = claudeb-worker ]; then
 elif [ "$subagent" = codex-worker ]; then
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account codex)
-  [ -n "$acct" ] || acct=$(worker_conf codex_profile)
+  [ -n "$acct" ] || acct=$(worker_model_pin_first codex 2>/dev/null || true)
   [ -n "$acct" ] || acct=main
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf codex_effort)
@@ -72,7 +85,7 @@ elif [ "$subagent" = codex-worker ]; then
 elif [ "$subagent" = grok-worker ]; then
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account grok)
-  [ -n "$acct" ] || acct=$(worker_conf grok_profile)
+  [ -n "$acct" ] || acct=$(worker_model_pin_first grok 2>/dev/null || true)
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf grok_model)
   [ -n "$model" ] || model=auto
@@ -112,7 +125,7 @@ elif [ "$subagent" = gemini-research ]; then
 else
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account gemini)
-  [ -n "$acct" ] || acct=$(worker_conf gemini_profile)
+  [ -n "$acct" ] || acct=$(worker_model_pin_first gemini 2>/dev/null || true)
   [ -n "$acct" ] || acct=main
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf gemini_model)

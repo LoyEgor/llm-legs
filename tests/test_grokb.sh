@@ -165,6 +165,10 @@ assert run_grokb disable alpha
 : >"$GROK_CALLS"
 assert bash "$SCRIPT" profile alpha -p pinned
 assert grep -q "CALL home=$GROKB_PROFILES_DIR/alpha" "$GROK_CALLS"
+assert bash "$SCRIPT" use beta
+assert grep -qx 'grok_profile=alpha,beta' "$WORKER_PICK_CONFIG_FILE"
+assert bash "$SCRIPT" use --unpin alpha
+assert grep -qx 'grok_profile=beta' "$WORKER_PICK_CONFIG_FILE"
 assert bash "$SCRIPT" use --clear
 assert_fails grep -q '^grok_profile=' "$WORKER_PICK_CONFIG_FILE"
 assert_fails bash "$SCRIPT" use missing >/dev/null 2>&1

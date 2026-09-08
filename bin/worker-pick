@@ -103,6 +103,7 @@ worker_pick_share="$(worker_pick_root)/share"
 . "$worker_pick_share/worker-model.sh"
 . "$worker_pick_share/limits-view.sh"
 . "$worker_pick_share/worker-claims.sh"
+. "$worker_pick_share/worker-walls.sh"
 . "$worker_pick_share/chat-account.sh"
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
@@ -165,22 +166,6 @@ gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}
 # and this line only reports the knob.
 gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
 gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-high}
-cb_pin=$(conf claudeb_profile)
-cx_pin=$(conf codex_profile)
-gm_pin=$(conf gemini_profile)
-gr_pin=$(conf grok_profile)
-# Read past, never cleared: a pause is meant to be lifted, and the pin Egor placed has to be there
-# when it is.
-[ "$cb_paused" = false ] || cb_pin=""
-[ "$cx_paused" = false ] || cx_pin=""
-[ "$gm_paused" = false ] || gm_pin=""
-[ "$gr_paused" = false ] || gr_pin=""
-# How far the wall already standing when the pin was placed runs (share/worker-model.sh writes it).
-# Absent for a pin placed on a free account, and for one written by hand.
-cb_pin_wall=$(conf claudeb_profile_wall)
-cx_pin_wall=$(conf codex_profile_wall)
-gm_pin_wall=$(conf gemini_profile_wall)
-gr_pin_wall=$(conf grok_profile_wall)
 case "$gm_effort" in medium) gm_eff_abbr=med ;; high) gm_eff_abbr=hi ;; *) gm_eff_abbr=$gm_effort ;; esac
 
 # What the `model·eff` column says a dispatch would launch. The model is the short alias of the one
@@ -216,7 +201,6 @@ fi
 # The pin is Egor's override for workers only. A rater or a chat handed it would spend an account
 # he aimed at implementation, so those queries are answered by the pool alone and the pinned
 # account stands in them as an ordinary candidate.
-case "$query_role" in reviewers|chat|research) cb_pin=""; cx_pin=""; gm_pin=""; gr_pin="" ;; esac
 # The table is the workers view, and a vendor closed for that role is not a candidate in it: the
 # flags are read here so selection, ordering and the ALL WALLED verdict are all decided without
 # it, the way a deliberately empty pool is.
@@ -260,6 +244,60 @@ cb_claims=$(claims_json claudeb)
 cx_claims=$(claims_json codex)
 gm_claims=$(claims_json gemini)
 gr_claims=$(claims_json grok)
+
+# A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled.
+walls_json() {
+  local list
+  list=$(worker_walls_fresh "$1" "$now" 2>/dev/null |
+    jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
+  printf '%s' "${list:-[]}"
+}
+cb_walls=$(walls_json claudeb)
+cx_walls=$(walls_json codex)
+gm_walls=$(walls_json gemini)
+gr_walls=$(walls_json grok)
+
+# A met wall drops the pin once. Limits at 100% never do.
+clear_observed_pins() {
+  local vendor="$1" walls acct
+  walls=$(worker_walls_fresh "$vendor" "$now" 2>/dev/null) || return 0
+  [ -n "$walls" ] || return 0
+  while IFS= read -r acct; do
+    [ -n "$acct" ] || continue
+    printf '%s\n' "$walls" | grep -qxF -- "$acct" || continue
+    worker_model_clear_walled_pin "$vendor" "$acct" || true
+  done < <(worker_model_pins "$vendor" 2>/dev/null)
+}
+# The pin is workers-only, so only a workers query may spend one on a wall: a chat, research or
+# reviewers reading decides nothing about workers and must leave the file as it found it.
+if [ "$query_role" = workers ]; then
+  clear_observed_pins claudeb
+  clear_observed_pins codex
+  clear_observed_pins gemini
+  clear_observed_pins grok
+fi
+
+pins_json() {
+  local list
+  list=$(worker_model_pins "$1" 2>/dev/null |
+    jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
+  printf '%s' "${list:-[]}"
+}
+cb_pins=$(pins_json claudeb)
+cx_pins=$(pins_json codex)
+gm_pins=$(pins_json gemini)
+gr_pins=$(pins_json grok)
+[ "$cb_paused" = false ] || cb_pins='[]'
+[ "$cx_paused" = false ] || cx_pins='[]'
+[ "$gm_paused" = false ] || gm_pins='[]'
+[ "$gr_paused" = false ] || gr_pins='[]'
+case "$query_role" in
+  reviewers|chat|research) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
+esac
+cb_pin=$(jq -r '.[0] // empty' <<<"$cb_pins")
+cx_pin=$(jq -r '.[0] // empty' <<<"$cx_pins")
+gm_pin=$(jq -r '.[0] // empty' <<<"$gm_pins")
+gr_pin=$(jq -r '.[0] // empty' <<<"$gr_pins")
 
 write_cache_file() {
   # The statusline polls this file concurrently and must never observe a torn prediction.
@@ -342,12 +380,16 @@ summary=$(jq -r \
   --arg gm_disp "$gm_display" --arg gr_disp "$gr_display" \
   --argjson defer5h "$FIVE_HOUR_DEFER_PCT" --argjson stale_thr "$LIMITS_STALE_ROUTING" \
   --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" --arg gr_pin "$gr_pin" \
+  --argjson cb_pins "$cb_pins" --argjson cx_pins "$cx_pins" \
+  --argjson gm_pins "$gm_pins" --argjson gr_pins "$gr_pins" \
   --arg cb_off "$cb_role_off" --arg cx_off "$cx_role_off" --arg gm_off "$gm_role_off" \
   --arg gr_off "$gr_role_off" \
   --arg cb_par "$cb_paused" --arg cx_par "$cx_paused" --arg gm_par "$gm_paused" \
   --arg gr_par "$gr_paused" \
   --argjson cb_claims "$cb_claims" --argjson cx_claims "$cx_claims" \
   --argjson gm_claims "$gm_claims" --argjson gr_claims "$gr_claims" \
+  --argjson cb_walls "$cb_walls" --argjson cx_walls "$cx_walls" \
+  --argjson gm_walls "$gm_walls" --argjson gr_walls "$gr_walls" \
   --argjson qx "$query_exclude_json" "$LIMITS_VIEW_JQ"'
   # Local names for the store-reading defs of share/limits-view.sh, which the pin writes its wall
   # record from as well; never a second copy of them.
@@ -431,8 +473,8 @@ summary=$(jq -r \
     else ((.budget | one_dp) | lpad(4)) + "%/d ×" + (.budget_days | one_dp) + "d" end;
   # Every state a row can be in that is not a number, in one place so the four vendors cannot
   # spell them differently. `5h!` is the deferral of rule 2, visible where the answer is read.
-  def flag_text($selected; $pinned):
-    [(if .name == $selected and $pinned then "PINNED" else empty end),
+  def flag_text($pins):
+    [(if (.name | IN($pins[])) then "PINNED" else empty end),
      (if .walled then "WALLED" else empty end),
      (if .defer5h then "5h!" else empty end),
      (if .auth_ok then empty else "login needed" end),
@@ -443,11 +485,11 @@ summary=$(jq -r \
   # one-line reason a refused query carries. Two renderers over one set, never two row builders.
   # `$five_hour` is passed rather than read, because a vendor with no such window at all (grok)
   # must print `–` where a vendor whose window nobody measured prints `?`.
-  def cells($selected; $pinned; $five_hour; $display):
+  def cells($selected; $pins; $five_hour; $display):
     {key: .name, budget: budget_cell, wk: pct_cell(.wk), h5: $five_hour,
      name: (.name + (if .own then "*" else "" end)), display: $display,
      reset: (if .rs == "-" then "" else "↺ " + .rs end),
-     flags: flag_text($selected; $pinned)};
+     flags: flag_text($pins)};
   def table_row:
     ((.budget | rpad(16)) + (.wk | rpad(6)) + (.h5 | rpad(6)) + (.name | rpad(21)) +
      (.display | rpad(13)) + (.reset | rpad(13)) + .flags | sub(" +$"; ""));
@@ -469,8 +511,8 @@ summary=$(jq -r \
     else "" end;
   # A pin that could not serve is announced above the rows it did not choose: routing elsewhere in
   # silence reads as the pin having been honoured.
-  def pin_note($pin; $lapse; $target):
-    if $lapse == "" then [] else ["pin \($pin) \($lapse) → \($target)"] end;
+  def pin_note($lapses; $target):
+    $lapses | map("pin \(.pin) \(.lapse) → \($target)");
   # Rows travel to the shell as one field; the record separator is what a `read` cannot split on.
   def section($rows; $state; $note):
     $note + (if $state != "" then [$state] else ($rows | map(table_row)) end) | join("\u001e");
@@ -479,11 +521,11 @@ summary=$(jq -r \
   # inside its vendor — the rank vector of rule 2, plus whether the pin is what chose it — so the
   # shell merges four such lists under the same rule instead of re-deriving any of it. The selected
   # account leads its list, because a pin outside the pool is a candidate no ranking carries.
-  def next_cells($cells; $best; $pinned; $order; $vendor):
+  def next_cells($cells; $best; $pin_tier; $order; $vendor):
     if $best == null then ""
-    else ([$best] + ($order | map(select(.name != $best.name)))) |
+    else (($pin_tier) + ($order | map(select(.name as $n | ($pin_tier | map(.name) | index($n)) == null)))) |
       map(. as $a |
-        [(if $pinned != null and $a.name == $pinned.name then "0" else "1" end),
+        [(if ($pin_tier | map(.name) | index($a.name)) != null then "0" else "1" end),
          (if $a.defer5h then "1" else "0" end),
          (if $a.claimed then "1" else "0" end),
          (if $a.auth_late then "1" else "0" end),
@@ -510,6 +552,9 @@ summary=$(jq -r \
     .unavailable = ((.auth_ok | not) or .walled) |
     .eligible = (.enabled and .auth_ok and .measured and (.walled | not) and (excluded | not)) |
     .in_pool = (.enabled and (excluded | not));
+  def serving_pins($accounts; $pins):
+    $accounts | map(select((.name | IN($pins[])) and .auth_ok and .measured and
+                           (.observed | not) and (excluded | not))) | rank;
   def pin_lapse($pin; $row; $selected):
     if $pin == "" or $selected != null then ""
     elif ($pin | IN($qx[])) then "excluded"
@@ -518,8 +563,16 @@ summary=$(jq -r \
     # the toggle (contract rules 2 and 4).
     elif ($row.auth_ok | not) then "auth unavailable"
     elif ($row.measured | not) then "no quota data"
-    elif $row.walled then "exhausted"
+    elif $row.observed then "exhausted"
     else "unavailable" end;
+  # Every pin answers for its OWN row: a reason read off the row of a DIFFERENT pin would send the
+  # reader at an account that is fine.
+  def pin_lapses($pins; $accounts; $selected):
+    if $selected != null then []
+    else [$pins[] as $p |
+          {pin:$p,
+           lapse:pin_lapse($p; (first($accounts[] | select(.name == $p)) // null); null)}]
+    end;
 
   # Only Claude header weeklies were synthetic; Codex rate-limit headers are measured.
   if .vendors.claude then .vendors.claude |=
@@ -569,13 +622,13 @@ summary=$(jq -r \
   (if $gm_par == "true" then [] else $gm_source end) as $gm_aged |
   (if $gr_par == "true" then [] else $gr_source end) as $gr_aged |
   (if $cb_par == "true" then [] else [.vendors.claude.accounts[]?] end) as $cl_aged |
-  ([($cx_aged[] | select(.enabled != false or (.account // "main") == $cx_pin) |
+  ([($cx_aged[] | select(.enabled != false or (.account // "main" | IN($cx_pins[]))) |
      aged_row("codex")),
-    ($gm_aged[] | select(.enabled != false or (.account // "main") == $gm_pin) |
+    ($gm_aged[] | select(.enabled != false or (.account // "main" | IN($gm_pins[]))) |
      aged_row("gemini")),
-    ($gr_aged[] | select(.enabled != false or (.account // "main") == $gr_pin) |
+    ($gr_aged[] | select(.enabled != false or (.account // "main" | IN($gr_pins[]))) |
      aged_row("grok")),
-    ($cl_aged[] | select(.enabled == true or (.account // "main") == $pin) |
+    ($cl_aged[] | select(.enabled == true or (.account // "main" | IN($cb_pins[]))) |
      aged_row("claude"))]) as $routable_rows |
   (if ($routable_rows | length) > 0 then $routable_rows
    else [($cx_aged[] | aged_row("codex")), ($gm_aged[] | aged_row("gemini")),
@@ -600,24 +653,25 @@ summary=$(jq -r \
      rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($cx_claims) |
-    .walled = usage_walled(.spend) | eligibility]) as $cx_accounts |
+    .observed = (.name | IN($cx_walls[])) |
+    .walled = (usage_walled(.spend) or .observed) | eligibility]) as $cx_accounts |
   ($cx_accounts | map(select(.eligible)) | rank) as $cx_eligible |
-  (first($cx_accounts[] | select(.name == $cx_pin)) // null) as $cx_pin_row |
-  ($cx_accounts | map(select(.name == $cx_pin and (.unavailable | not) and .measured and
-                            (excluded | not))) | .[0] // null) as $cx_pinned |
-  pin_lapse($cx_pin; $cx_pin_row; $cx_pinned) as $cx_pin_lapse |
+  serving_pins($cx_accounts; $cx_pins) as $cx_pin_tier |
+  ($cx_pin_tier[0] // null) as $cx_pinned |
+  pin_lapses($cx_pins; $cx_accounts; $cx_pinned) as $cx_pin_lapses |
+  (($cx_pin_lapses[0].lapse) // "") as $cx_pin_lapse |
   ($cx_pinned // $cx_eligible[0] // null) as $cx_best |
   (($cx_best.name // "") as $sel |
    (if $cx_best == null then "no selectable account" else $sel end) as $target |
    ($cx_accounts | display_sort($sel) |
-     map(cells($sel; $cx_pinned != null; pct_cell(.h5); $cx_disp))) as $rows |
+     map(cells($sel; $cx_pins; pct_cell(.h5); $cx_disp))) as $rows |
    vendor_state($cx_accounts; $cx_off; $cx_pinned;
      (if ($cx.available // false) != true then "unavailable" else "no quota data" end)) as $state |
-   pin_note($cx_pin; $cx_pin_lapse; $target) as $note |
+   pin_note($cx_pin_lapses; $target) as $note |
    {selected:($cx_best != null),acct:$sel,pct:(($cx_best.spend // 0) | round),
     pinned:($cx_pinned != null),budget:(($cx_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $cx_best; $cx_pinned; $cx_eligible; "codex"),
+    next:next_cells($rows; $cx_best; $cx_pin_tier; $cx_eligible; "codex"),
     line:reason($rows; $state; $note)}) as $codex |
 
   ([$gm_source[] | select(.removed != true and gemini_group) |
@@ -627,26 +681,27 @@ summary=$(jq -r \
      rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gm_claims) |
-    .walled = usage_walled(.spend) | eligibility]) as $gm_accounts |
+    .observed = (.name | IN($gm_walls[])) |
+    .walled = (usage_walled(.spend) or .observed) | eligibility]) as $gm_accounts |
   ($gm_accounts | map(select(.eligible)) | rank) as $gm_eligible |
-  (first($gm_accounts[] | select(.name == $gm_pin)) // null) as $gm_pin_row |
-  ($gm_accounts | map(select(.name == $gm_pin and (.unavailable | not) and .measured and
-                            (excluded | not))) | .[0] // null) as $gm_pinned |
-  pin_lapse($gm_pin; $gm_pin_row; $gm_pinned) as $gm_pin_lapse |
+  serving_pins($gm_accounts; $gm_pins) as $gm_pin_tier |
+  ($gm_pin_tier[0] // null) as $gm_pinned |
+  pin_lapses($gm_pins; $gm_accounts; $gm_pinned) as $gm_pin_lapses |
+  (($gm_pin_lapses[0].lapse) // "") as $gm_pin_lapse |
   ($gm_pinned // $gm_eligible[0] // null) as $gm_best |
   (($gm_best.name // "") as $sel |
    (if $gm_best == null then "no selectable account" else $sel end) as $target |
    ($gm_accounts | display_sort($sel) |
-     map(cells($sel; $gm_pinned != null; pct_cell(.h5); $gm_disp))) as $rows |
+     map(cells($sel; $gm_pins; pct_cell(.h5); $gm_disp))) as $rows |
    vendor_state($gm_accounts; $gm_off; $gm_pinned;
      (if any($gm_source[]; .auth_needed == true) then "login needed"
       elif ($gm_source | length) > 0 or $gm.available == true then "no Gemini Models quota data"
       else "unavailable" end)) as $state |
-   pin_note($gm_pin; $gm_pin_lapse; $target) as $note |
+   pin_note($gm_pin_lapses; $target) as $note |
    {selected:($gm_best != null),acct:$sel,pinned:($gm_pinned != null),
     budget:(($gm_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $gm_best; $gm_pinned; $gm_eligible; "gemini"),
+    next:next_cells($rows; $gm_best; $gm_pin_tier; $gm_eligible; "gemini"),
     line:reason($rows; $state; $note)}) as $gemini |
 
   # Weekly is the only bucket grok measures, so `spending` finds no five-hour reading to fall back
@@ -658,26 +713,24 @@ summary=$(jq -r \
      wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($gr_claims) |
-    .walled = usage_walled(.spend) | eligibility]) as $gr_accounts |
+    .observed = (.name | IN($gr_walls[])) |
+    .walled = (usage_walled(.spend) or .observed) | eligibility]) as $gr_accounts |
   ($gr_accounts | map(select(.eligible)) | rank) as $gr_eligible |
-  (first($gr_accounts[] | select(.name == $gr_pin)) // null) as $gr_pin_row |
-  ($gr_accounts | map(select(.name == $gr_pin and (.unavailable | not) and .measured and
-                            (excluded | not))) | .[0] // null) as $gr_pinned |
-  pin_lapse($gr_pin; $gr_pin_row; $gr_pinned) as $gr_pin_lapse |
+  serving_pins($gr_accounts; $gr_pins) as $gr_pin_tier |
+  ($gr_pin_tier[0] // null) as $gr_pinned |
+  pin_lapses($gr_pins; $gr_accounts; $gr_pinned) as $gr_pin_lapses |
+  (($gr_pin_lapses[0].lapse) // "") as $gr_pin_lapse |
   ($gr_pinned // $gr_eligible[0] // null) as $gr_best |
   (($gr_best.name // "") as $sel |
    (if $gr_best == null then "no selectable account" else $sel end) as $target |
-   # `–`, not `?`: grok has no five-hour window at all, and an unmeasured reading is a different
-   # answer from a window that does not exist.
    ($gr_accounts | display_sort($sel) |
-     map(cells($sel; $gr_pinned != null; "–"; $gr_disp))) as $rows |
-   # No accounts and no snapshot are one state to a reader, so both read `no quota data`.
+     map(cells($sel; $gr_pins; "–"; $gr_disp))) as $rows |
    vendor_state($gr_accounts; $gr_off; $gr_pinned; "no quota data") as $state |
-   pin_note($gr_pin; $gr_pin_lapse; $target) as $note |
+   pin_note($gr_pin_lapses; $target) as $note |
    {selected:($gr_best != null),acct:$sel,pct:(($gr_best.spend // 0) | round),
     pinned:($gr_pinned != null),budget:(($gr_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $gr_best; $gr_pinned; $gr_eligible; "grok"),
+    next:next_cells($rows; $gr_best; $gr_pin_tier; $gr_eligible; "grok"),
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
@@ -692,7 +745,8 @@ summary=$(jq -r \
     .blocked = (.general_usable | not) |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
     .claimed = claimed_in($cb_claims) |
-    .walled = usage_walled(.spend) | eligibility |
+    .observed = (.name | IN($cb_walls[])) |
+    .walled = (usage_walled(.spend) or .observed) | eligibility |
     .eligible = (.eligible and (.blocked | not)) |
     # Fable exhaustion never disqualifies ordinary work, so the fable bucket carries its own
     # candidacy: the account must be able to run Fable at all and have a measured fable window.
@@ -700,34 +754,29 @@ summary=$(jq -r \
                        (usage_walled(.fb) | not) and (excluded | not)) |
     .fable_ok = (.enabled and .fable_pinnable)]) as $cl_accounts |
   ($cl_accounts | map(select(.eligible)) | rank) as $cl_eligible |
-  (first($cl_accounts[] | select(.name == $pin)) // null) as $pin_account |
-  # Usable FOR A PIN is auth alive, a reading, and no wall. Not the pool toggle — the pin is the one
-  # override above it (rule 4) — and so not `blocked` either, which carries that toggle inside it.
-  (if $pin_account != null and $pin_account.auth_ok and
-      ($pin_account.walled | not) and $pin_account.measured and
-      (($pin_account | excluded) | not)
-   then $pin_account else null end) as $pin_rec |
-  pin_lapse($pin; $pin_account; $pin_rec) as $pin_lapse |
+  serving_pins($cl_accounts; $cb_pins) as $cb_pin_tier |
+  ($cb_pin_tier[0] // null) as $pin_rec |
+  pin_lapses($cb_pins; $cl_accounts; $pin_rec) as $cb_pin_lapses |
+  (($cb_pin_lapses[0].lapse) // "") as $pin_lapse |
   ($pin_rec // $cl_eligible[0] // null) as $cl_best |
-  # The same rules read against the fable bucket, paced by the reset that bucket carries.
   ($cl_accounts | map(select(.fable_ok) |
     .budget = limits_daily_budget(.fb; limits_days_remaining(.fb_reset; $now))) | rank)
     as $fb_eligible |
-  (first($cl_accounts[] | select(.name == $pin and .fable_pinnable) |
-    .budget = limits_daily_budget(.fb; limits_days_remaining(.fb_reset; $now))) // null)
-    as $fb_pinned |
+  ($cl_accounts | map(select((.name | IN($cb_pins[])) and .fable_pinnable) |
+    .budget = limits_daily_budget(.fb; limits_days_remaining(.fb_reset; $now))) | rank)
+    as $fb_pin_tier |
+  ($fb_pin_tier[0] // null) as $fb_pinned |
   ($fb_pinned // $fb_eligible[0] // null) as $fb_best |
   (($cl_best.name // "") as $sel |
    (if $cl_best == null then "no selectable account" else $sel end) as $target |
    ($cl_accounts | display_sort($sel) |
-     map(cells($sel; $pin_rec != null; pct_cell(.h5); $cb_disp))) as $rows |
+     map(cells($sel; $cb_pins; pct_cell(.h5); $cb_disp))) as $rows |
    vendor_state($cl_accounts; $cb_off; $pin_rec; "no accounts") as $state |
-   pin_note($pin; $pin_lapse; $target) as $note |
-   # The `*` replaces a line of its own: what a reader needs from it is which row is this chat.
+   pin_note($cb_pin_lapses; $target) as $note |
    (section($rows; $state; $note) as $body |
     if $state == "" and ($rows | any(.name | endswith("*")))
     then $body + "\u001e* = this session account" else $body end) as $cl_rows |
-   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $pin_rec; $cl_eligible; "claude"),
+   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $cb_pin_tier; $cl_eligible; "claude"),
     line:reason($rows; $state; $note)}) as $claude |
 
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
@@ -810,27 +859,6 @@ cb_known=false; cx_known=false; gm_known=false; gr_known=false
 [ "$gm_known" = true ] || { gm_selected=no; gm_acct=""; gm_pin_lapse=""; gm_nextrows=""; }
 [ "$gr_known" = true ] || { gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrows=""; }
 
-# A pin the account has spent is over: `exhausted` is the usage wall alone, and the other lapses
-# are conditions that pass (a login to fix, a toggle to flip, a reading yet to arrive), so they
-# leave the pin where Egor put it. Stale data clears nothing — the wall it reports may already
-# have reset.
-clear_walled_pin() {
-  [ "$3" = exhausted ] || return 0
-  # A wall that was ALREADY standing when the pin was placed is not the pin being spent — the point
-  # of such a pin is the window after it. Only a wall outliving the recorded horizon ends the pin.
-  if [[ "$5" =~ ^[0-9]+$ ]] && [ "$now" -le "$5" ]; then return 0; fi
-  worker_model_clear_walled_pin "$1" "$2" || return 0
-  printf 'worker-pick: %s pin %s hit its wall — cleared, workers follow the pool again\n' \
-    "$4" "$2" >&2
-}
-case "$age" in
-  fresh*)
-    clear_walled_pin claudeb_profile "$cb_pin" "$cl_pin_lapse" claudeb "$cb_pin_wall"
-    clear_walled_pin codex_profile "$cx_pin" "$cx_pin_lapse" codex "$cx_pin_wall"
-    clear_walled_pin gemini_profile "$gm_pin" "$gm_pin_lapse" gemini "$gm_pin_wall"
-    clear_walled_pin grok_profile "$gr_pin" "$gr_pin_lapse" grok "$gr_pin_wall"
-    ;;
-esac
 
 if [ "$query_fable" = true ]; then
   cl_acct=$fb_acct
@@ -850,9 +878,10 @@ if [ "$had_pool" = yes ] && [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] &&
 fi
 
 if [ -n "$query_vendor" ]; then
+  query_pins='[]'
   case "$query_vendor" in
     claudeb)
-      query_pin="$cb_pin"; query_pinned="$cl_pinned"
+      query_pin="$cb_pin"; query_pinned="$cl_pinned"; query_pins="$cb_pins"
       query_answer="$cl_acct"
       # The ordinary-work line can name a perfectly selectable account, which reads as a
       # contradiction when what ran out was the fable bucket.
@@ -863,28 +892,33 @@ if [ -n "$query_vendor" ]; then
       fi
       ;;
     codex)
-      query_pin="$cx_pin"; query_pinned="$cx_pinned"
+      query_pin="$cx_pin"; query_pinned="$cx_pinned"; query_pins="$cx_pins"
       query_answer=""
       [ "$cx_selected" = yes ] && query_answer="$cx_acct"
       query_reason="$cx_line"
       ;;
     gemini)
-      query_pin="$gm_pin"; query_pinned="$gm_pinned"
+      query_pin="$gm_pin"; query_pinned="$gm_pinned"; query_pins="$gm_pins"
       query_answer=""
       [ "$gm_selected" = yes ] && query_answer="$gm_acct"
       query_reason="$gm_line"
       ;;
     grok)
-      query_pin="$gr_pin"; query_pinned="$gr_pinned"
+      query_pin="$gr_pin"; query_pinned="$gr_pinned"; query_pins="$gr_pins"
       query_answer=""
       [ "$gr_selected" = yes ] && query_answer="$gr_acct"
       query_reason="$gr_line"
       ;;
   esac
   # Under a workers wall the pin is the only thing left that can answer, so the pool's own
-  # candidate is refused here rather than handed over as if the switch were advice.
+  # candidate is refused here rather than handed over as if the switch were advice. The whole tier
+  # answers, not its first name: with the vendor closed, the pin that served is the one that opens it.
+  answer_is_pinned() {
+    [ -n "$query_answer" ] || return 1
+    jq -e --arg a "$query_answer" 'index($a) != null' >/dev/null 2>&1 <<<"$query_pins"
+  }
   if [ "$query_role_wall" = true ] &&
-     { [ "$query_pinned" != yes ] || [ "$query_answer" != "$query_pin" ]; }; then
+     { [ "$query_pinned" != yes ] || ! answer_is_pinned; }; then
     printf 'worker-pick: %s is switched off for workers\n' "$query_vendor" >&2
     exit 3
   fi

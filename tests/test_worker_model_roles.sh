@@ -150,6 +150,33 @@ assert_fails env CLAUDECODE=1 WORKER_PICK_CONFIG_FILE="$WORK/other-model" \
   "$ROOT/share/worker-model.sh"
 assert [ ! -e "$WORK/other-model" ]
 
+# --- Two concurrent pin writers, one critical section ---------------------------------------------
+# The list is read INSIDE the lock: read before taking it, two adds racing each write back a list
+# missing the name the other had just added. The wrapper holds the lock for a beat so the loser
+# would have to have read stale.
+rm -f "$MODEL" "$MODEL.lock"
+printf 'worker=auto\n' >"$MODEL"
+cat >"$WORK/slow-lockf" <<'SH'
+#!/usr/bin/env bash
+/usr/bin/lockf -s 9 || exit $?
+sleep 0.4
+SH
+chmod +x "$WORK/slow-lockf"
+WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_add claudeb one &
+first=$!
+WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_add claudeb two &
+second=$!
+wait "$first" "$second"
+assert test "$(worker_model_pins claudeb | sort | tr '\n' ' ')" = 'one two '
+# A remove racing an add keeps the name it did not touch.
+WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_add claudeb three &
+first=$!
+WORKER_MODEL_LOCKF="$WORK/slow-lockf" worker_model_pin_remove claudeb one &
+second=$!
+wait "$first" "$second"
+assert test "$(worker_model_pins claudeb | sort | tr '\n' ' ')" = 'three two '
+printf 'worker=auto\n' >"$MODEL"
+
 # --- The real file is never a target -------------------------------------------------------------
 # The helper writes exactly what WORKER_PICK_CONFIG_FILE names, so a suite pointing it at a fixture
 # cannot reach ~/.claude/worker-model by accident.

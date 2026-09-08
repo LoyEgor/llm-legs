@@ -676,21 +676,23 @@ assert grep -qx 'claudeb_model=opus' "$PIN_FILE"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use gamma >/dev/null 2>&1
 assert test "$(grep -c '^claudeb_profile=' "$PIN_FILE")" = 1
-assert grep -qx 'claudeb_profile=gamma' "$PIN_FILE"
+assert grep -qx 'claudeb_profile=routed,gamma' "$PIN_FILE"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use gamma >"$WORK/pin-disabled.out" 2>&1
 assert grep -q 'out of the worker pool' "$WORK/pin-disabled.out"
 assert grep -q 'the pin is the one override, so workers will still run on it' "$WORK/pin-disabled.out"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use >"$WORK/pin-show.out" 2>&1
-assert grep -q 'pinned to gamma' "$WORK/pin-show.out"
+assert grep -q 'pinned to routed,gamma' "$WORK/pin-show.out"
+assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
+  bash "$SCRIPT" use --unpin routed >/dev/null 2>&1
+assert grep -qx 'claudeb_profile=gamma' "$PIN_FILE"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use --clear >"$WORK/pin-clear.out" 2>&1
 assert grep -q 'cleared the pin' "$WORK/pin-clear.out"
 assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
 assert grep -qx 'worker=auto' "$PIN_FILE"
-# Pinning an account whose wall is ALREADY standing records how far that wall runs, so worker-pick
-# can tell it from a wall that arrives after the pin and ends it (routing-contract rule 3).
+# A wall never writes a pin companion; pinning a 100% account records the pin alone.
 WALL_STORE="$WORK/limits-wall.json"
 WALL_AT=$(( $(date +%s) + 7200 ))
 jq -cn --argjson wall "$WALL_AT" '{vendors:{claude:{accounts:[
@@ -699,18 +701,11 @@ jq -cn --argjson wall "$WALL_AT" '{vendors:{claude:{accounts:[
    weekly:{used_pct:20,effective_pct:20,resets_at:(($wall + 86400)|todate)}}]}}}' >"$WALL_STORE"
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   LLM_LIMITS_FILE="$WALL_STORE" bash "$SCRIPT" use routed >/dev/null 2>&1
-assert grep -qx "claudeb_profile_wall=$WALL_AT" "$PIN_FILE"
-# An account with nothing standing over it records nothing, and re-pinning never leaves behind a
-# horizon belonging to the account before it.
-assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
-  LLM_LIMITS_FILE="$WALL_STORE" bash "$SCRIPT" use gamma >/dev/null 2>&1
+assert grep -qx 'claudeb_profile=routed' "$PIN_FILE"
 assert_fails grep -q '^claudeb_profile_wall=' "$PIN_FILE"
-assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
-  LLM_LIMITS_FILE="$WALL_STORE" bash "$SCRIPT" use routed >/dev/null 2>&1
 assert env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use --clear >/dev/null 2>&1
-assert_fails grep -q '^claudeb_profile_wall=' "$PIN_FILE"
-assert grep -qx 'worker=auto' "$PIN_FILE"
+assert_fails grep -q '^claudeb_profile=' "$PIN_FILE"
 # Pinning a name that cannot be routed to is refused, not silently recorded.
 assert_fails env HOME="$HOME" CLAUDEB_DIR="$CLAUDEB_DIR" PATH="$PATH" WORKER_PICK_CONFIG_FILE="$PIN_FILE" \
   bash "$SCRIPT" use gamm >"$WORK/pin-unknown.out" 2>&1

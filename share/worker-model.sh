@@ -1,6 +1,3 @@
-# The pin carries a reading of the limits store (the wall standing when it was placed), so the
-# bucket semantics come from their one home rather than a second copy here.
-. "${BASH_SOURCE[0]%/*}/limits-view.sh"
 . "${BASH_SOURCE[0]%/*}/worker-pool.sh"
 
 worker_model_file() {
@@ -52,27 +49,6 @@ worker_model_allowed_summary() { # every vendor, as one phrase
   printf '%s' "$out"
 }
 
-# Until when the walls standing on <vendor>/<account> run, empty when none stands. Read from the
-# merged store `worker-pick` routes on, so the horizon stored beside a pin and the wall the picker
-# later sees are one reading rather than two that can disagree.
-worker_model_pin_wall_until() {
-  local vendor="$1" account="${2:-}" store now out
-  store="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-  case "$account" in '' | --*) return 0 ;; esac
-  [ -r "$store" ] || return 0
-  now=$(date +%s) || return 0
-  out=$(jq -r --arg vendor "$vendor" --arg account "$account" --argjson now "$now" \
-    "$LIMITS_VIEW_JQ"'
-    (.vendors[$vendor] // {}) as $v |
-    (if ($v.accounts | type) == "array"
-     then (first($v.accounts[] | select((.account // "main") == $account)) // null)
-     elif $account == "main" then $v else null end) as $row |
-    if $row == null then empty else (limits_store_wall_until($row; $now) // empty) end
-  ' "$store" 2>/dev/null) || return 0
-  [[ "$out" =~ ^[0-9]+$ ]] || return 0
-  printf '%s' "$out"
-}
-
 # The pin is the ONE override above the pool, and a session that sets or clears it silently
 # redirects every worker after it — including the ones Egor never watches. So it is his hands only,
 # and both of them stay open: the menubar shells out from Hammerspoon, which carries no CLAUDECODE,
@@ -116,6 +92,113 @@ worker_model_pinned_account() {
     "$file" 2>/dev/null
 }
 
+worker_model_pin_key() {
+  case "${1-}" in
+    claudeb|claude) printf 'claudeb_profile' ;;
+    codex) printf 'codex_profile' ;;
+    gemini) printf 'gemini_profile' ;;
+    grok) printf 'grok_profile' ;;
+    *) return 2 ;;
+  esac
+}
+
+worker_model_pins() {
+  local key val name rest
+  key=$(worker_model_pin_key "${1-}") || return 2
+  val=$(worker_model_pinned_account "$key") || return 1
+  [ -n "$val" ] || return 0
+  rest=$val
+  while [ -n "$rest" ]; do
+    name=${rest%%,*}
+    if [ "$name" = "$rest" ]; then rest=
+    else rest=${rest#*,}
+    fi
+    name=${name#"${name%%[![:space:]]*}"}
+    name=${name%"${name##*[![:space:]]}"}
+    [ -n "$name" ] || continue
+    printf '%s\n' "$name"
+  done
+}
+
+worker_model_pin_first() {
+  worker_model_pins "${1-}" | head -n1
+}
+
+worker_model_pin_has() {
+  local want="${2-}" got
+  while IFS= read -r got; do
+    [ "$got" = "$want" ] && return 0
+  done < <(worker_model_pins "${1-}")
+  return 1
+}
+
+worker_model_pin_csv() {
+  local out='' name
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    out="${out:+$out,}$name"
+  done
+  printf '%s' "$out"
+}
+
+# The list is read and rewritten inside ONE critical section: a read outside the lock lets two
+# concurrent adds each write a list missing the other's name.
+worker_model_pin_write() { # vendor key op(set|add|remove) argument
+  local vendor="$1" key="$2" op="$3" arg="$4" file
+  file=$(worker_model_file)
+  mkdir -p "$(dirname "$file")" || return 2
+  (
+    local csv tmp
+    if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then return 2; fi
+    case "$op" in
+      set) csv="$arg" ;;
+      add) csv=$( { worker_model_pins "$vendor"
+                    printf '%s\n' "$arg"
+                  } | awk 'NF && !seen[$0]++' | worker_model_pin_csv ) ;;
+      remove) csv=$( worker_model_pins "$vendor" |
+                     awk -v drop="$arg" 'NF && $0 != drop' | worker_model_pin_csv ) ;;
+      *) return 2 ;;
+    esac
+    tmp="$file.tmp.$$"
+    trap 'rm -f "$tmp"' EXIT
+    {
+      if [ -r "$file" ]; then grep -Ev "^${key}(_wall)?=" "$file" || true; fi
+      [ -z "$csv" ] || printf '%s=%s\n' "$key" "$csv"
+    } >"$tmp" || return 2
+    mv "$tmp" "$file" || return 2
+    worker_pool_invalidate_cache
+    trap - EXIT
+  ) 9>"$file.lock"
+}
+
+# Ungated rewrite of one vendor pin key. Callers that need a grant check first.
+worker_model_pin_store() {
+  worker_model_pin_write '' "$1" set "$2"
+}
+
+worker_model_pin_add() {
+  local vendor="${1-}" name="${2-}" key
+  key=$(worker_model_pin_key "$vendor") || return 2
+  [ -n "$name" ] || return 2
+  worker_model_pin_write "$vendor" "$key" add "$name"
+}
+
+worker_model_pin_remove() {
+  local vendor="${1-}" name="${2-}" key
+  key=$(worker_model_pin_key "$vendor") || return 2
+  [ -n "$name" ] || return 2
+  worker_model_pin_write "$vendor" "$key" remove "$name"
+}
+
+# A met wall drops one name. No grant: the account spent itself. Empty list deletes the key.
+worker_model_clear_walled_pin() {
+  local vendor="${1-}" name="${2-}"
+  [ -n "$vendor" ] && [ -n "$name" ] || return 2
+  worker_model_pin_has "$vendor" "$name" || return 1
+  worker_model_pin_remove "$vendor" "$name" || return 1
+  printf 'pin %s hit its wall — cleared\n' "$name" >&2
+}
+
 worker_model_edit_distance() {
   WM_A="$1" WM_B="$2" awk 'BEGIN {
     a = ENVIRON["WM_A"]; b = ENVIRON["WM_B"]
@@ -150,29 +233,6 @@ worker_model_account_exists() {
     [ "$name" != "$target" ] || return 0
   done < <("$list_fn")
   return 1
-}
-
-# A wall ends a pin instead of pausing it: Egor pins an account to spend it, and once it is spent
-# he does not want it back — the pin sitting in the file until he notices it is the surprise
-# (Egor, 2026-08-09). This is the account's own doing, not a session helping itself, so it is the
-# one clear that needs no grant; it removes only the exact name the caller measured, so a pin moved
-# between that reading and this write survives. Exit 1 means nothing was cleared.
-worker_model_clear_walled_pin() {
-  local key="$1" name="$2" file current tmp
-  [ -n "$key" ] && [ -n "$name" ] || return 2
-  file=$(worker_model_file)
-  [ -r "$file" ] || return 1
-  (
-    if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then return 2; fi
-    current=$(worker_model_pinned_account "$key") || return 2
-    [ "$current" = "$name" ] || return 1
-    tmp="$file.tmp.$$"
-    trap 'rm -f "$tmp"' EXIT
-    grep -Ev "^${key}(_wall)?=" "$file" >"$tmp" || true
-    mv "$tmp" "$file" || return 2
-    worker_pool_invalidate_cache
-    trap - EXIT
-  ) 9>"$file.lock"
 }
 
 # A role is a per-vendor wall over the pool, and an ABSENT key is what every reader takes as open,
@@ -256,16 +316,19 @@ worker_model_set_paused() {
 }
 
 worker_model_pin_account() {
-  local key="$1" vendor="$2" list_fn="$3" disabled_fn="$4" name="${5:-}" wall_until="${6:-}"
-  local file current near
-  # A horizon already past says nothing about the pin being placed now; worker-pick reads a missing
-  # companion as "no wall was standing", which is also the right answer for a hand-written pin.
-  case "$wall_until" in '' | *[!0-9]*) wall_until='' ;; esac
-  [ -z "$wall_until" ] || [ "$wall_until" -gt "$(date +%s)" ] || wall_until=''
+  local key="$1" vendor="$2" list_fn="$3" disabled_fn="$4" name="${5:-}" drop="${6:-}"
+  local file current near pin_vendor action
   case "$key" in claudeb_profile | codex_profile | gemini_profile | grok_profile) ;; *)
     printf 'worker-model: unknown pin key: %s\n' "$key" >&2; return 2 ;;
   esac
+  case "$key" in
+    claudeb_profile) pin_vendor=claudeb ;;
+    codex_profile) pin_vendor=codex ;;
+    gemini_profile) pin_vendor=gemini ;;
+    grok_profile) pin_vendor=grok ;;
+  esac
   file=$(worker_model_file)
+  action=add
   case "$name" in
     '')
       if ! current=$(worker_model_pinned_account "$key"); then
@@ -279,7 +342,11 @@ worker_model_pin_account() {
       fi
       return 0
       ;;
-    --clear)
+    --clear) action=clear ;;
+    --unpin)
+      if [ -z "$drop" ]; then action=clear
+      else name=$drop; action=unpin
+      fi
       ;;
     *)
       if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
@@ -301,43 +368,29 @@ worker_model_pin_account() {
       "$vendor" >&2
     return 3
   fi
-  mkdir -p "$(dirname "$file")" || return 2
-  (
-    local tmp="$file.tmp.$$"
-    if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then
-      printf '%s: failed to lock %s\n' "$vendor" "$file.lock" >&2
-      return 2
-    fi
-    if ! current=$(worker_model_pinned_account "$key"); then
-      printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
-      return 2
-    fi
-    if [ "$name" = --clear ] && [ -z "$current" ]; then
-      printf '%s: no pin to clear\n' "$vendor"
-      return 0
-    fi
-    trap 'rm -f "$tmp"' EXIT
-    {
-      if [ -r "$file" ]; then grep -Ev "^${key}(_wall)?=" "$file" || true; fi
-      if [ "$name" != --clear ]; then
-        printf '%s=%s\n' "$key" "$name"
-        # Pinning an ALREADY walled account asks for the window after that wall, not for the one
-        # that is gone: the recorded horizon is what lets worker-pick tell that wall from a later
-        # one, which does end the pin (docs/routing-contract.md rule 3).
-        [ -z "$wall_until" ] || printf '%s_wall=%s\n' "$key" "$wall_until"
-      fi
-    } >"$tmp" || return 2
-    mv "$tmp" "$file" || return 2
-    worker_pool_invalidate_cache
-    trap - EXIT
-    if [ "$name" = --clear ]; then
-      printf '%s: cleared the pin — workers follow worker-pick again\n' "$vendor"
-      return 0
-    fi
-    printf '%s: pinned workers to %s\n' "$vendor" "$name"
-    if "$disabled_fn" "$name"; then
-      printf '%s: note: %s is out of the worker pool; the pin is the one override, so workers will still run on it\n' \
-        "$vendor" "$name" >&2
-    fi
-  ) 9>"$file.lock"
+  if ! current=$(worker_model_pinned_account "$key"); then
+    printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
+    return 2
+  fi
+  if [ "$action" = clear ]; then
+    [ -n "$current" ] || { printf '%s: no pin to clear\n' "$vendor"; return 0; }
+    worker_model_pin_store "$key" "" || return 2
+    printf '%s: cleared the pin — workers follow worker-pick again\n' "$vendor"
+    return 0
+  fi
+  if [ "$action" = unpin ]; then
+    worker_model_pin_has "$pin_vendor" "$name" || {
+      printf '%s: %s is not pinned\n' "$vendor" "$name" >&2
+      return 1
+    }
+    worker_model_pin_remove "$pin_vendor" "$name" || return 2
+    printf '%s: unpinned %s\n' "$vendor" "$name"
+    return 0
+  fi
+  worker_model_pin_add "$pin_vendor" "$name" || return 2
+  printf '%s: pinned workers to %s\n' "$vendor" "$name"
+  if "$disabled_fn" "$name"; then
+    printf '%s: note: %s is out of the worker pool; the pin is the one override, so workers will still run on it\n' \
+      "$vendor" "$name" >&2
+  fi
 }

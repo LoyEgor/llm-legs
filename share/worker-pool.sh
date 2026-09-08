@@ -53,7 +53,7 @@ worker_pool_refuse_headless() {
     return 1
   fi
   worker_pool_is_disabled "$dir" "$account" || return 0
-  [ -n "$pin" ] && [ "$pin" = "$account" ] && return 0
+  case ",$(printf '%s' "$pin" | tr -d ' ')," in *",$account,"*) return 0 ;; esac
   printf '%s: %s is out of the worker pool, so no headless run may use it. Turn "In pool" back on for it, or pin it in ~/.claude/worker-model.\n' \
     "$vendor" "$account" >&2
   return 1
@@ -106,7 +106,7 @@ worker_pool_set_all() {
   while IFS= read -r name; do
     [ -n "$name" ] && [ "$name" != --all ] || continue
     if [ "$mode" = on ]; then
-      worker_pool_is_disabled "$dir" "$name" || worker_pool_set_disabled "$dir" "$name" on
+      worker_pool_set_disabled "$dir" "$name" on
     else
       ! worker_pool_is_disabled "$dir" "$name" || worker_pool_set_disabled "$dir" "$name" off
     fi

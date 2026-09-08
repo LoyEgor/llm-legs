@@ -56,8 +56,9 @@ CONFIG="$WORK/worker-model"
 TIERS="$WORK/account-tiers"
 CACHE="$WORK/cache"
 CLAIMS="$WORK/claims"
+WALLS="$WORK/walls"
 export WORKER_PICK_CACHE_DIR="$CACHE"
-mkdir -p "$HOME_FIXTURE" "$CACHE" "$CLAIMS"
+mkdir -p "$HOME_FIXTURE" "$CACHE" "$CLAIMS" "$WALLS"
 printf '%s\n' 'session=100' 'worker=20' 'tie-a=100' 'tie-b=100' 'dry=100' 'walled-wk=100' \
   'walled-5h=100' 'off=100' 'dead=100' 'spent=100' 'spent5h=100' 'effective=100' 'raw=100' \
   'expired=100' 'live=100' 'soon=100' 'later=100' >"$TIERS"
@@ -76,10 +77,11 @@ run_env=(TZ=UTC "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
   "CODEXB_PROFILES_DIR=$HOME_FIXTURE/.codex-profiles"
   "GEMINIB_PROFILES_DIR=$HOME_FIXTURE/.gemini-profiles"
   "GROKB_PROFILES_DIR=$HOME_FIXTURE/.grok-profiles"
-  CLAUDE_LIMITS_ACCOUNT=session "WORKER_CLAIMS_DIR=$CLAIMS")
+  CLAUDE_LIMITS_ACCOUNT=session "WORKER_CLAIMS_DIR=$CLAIMS" "WORKER_WALLS_DIR=$WALLS")
 # Claims are per-run state, and a marker left behind would silently demote an account in every
 # later case, so each case that is not about claims starts from an empty store.
 clear_claims() { rm -rf "$CLAIMS"; mkdir -p "$CLAIMS"; }
+clear_walls() { rm -rf "$WALLS"; mkdir -p "$WALLS"; }
 sync_fixture_pool() {
   local vendor dir
   for vendor in claude codex gemini grok; do
@@ -434,7 +436,17 @@ lapse_case() {
 }
 lapse_case ghost '.' absent session
 lapse_case dead '.' 'auth unavailable' session
-lapse_case walled-wk '.' exhausted session
+# Each pin is blamed for its OWN row: with two of them lapsing, the reason beside a name is that
+# account's own, not whichever pinned row came first in the store.
+write_config 'claudeb_profile=ghost,dead'
+run_case claude_pool
+assert contains "$(vsection claude)" 'pin ghost absent → session'
+assert contains "$(vsection claude)" 'pin dead auth unavailable → session'
+write_config 'claudeb_profile=walled-wk'
+run_case claude_pool
+assert contains "$(nrow 1)" 'claude/walled-wk'
+assert test "$(sed -n 's/^claudeb_profile=//p' "$CONFIG")" = walled-wk
+assert test "$(acct_line)" = 'ACCOUNT: walled-wk'
 lapse_case tie-a '.vendors.claude.accounts |= map(
   if .account == "tie-a" then del(.weekly, .five_hour) else . end)' 'no quota data' session
 write_config 'claudeb_profile=dry'
@@ -446,56 +458,39 @@ assert test "$query_rc" -eq 3
 assert grep -q 'pin dry excluded → no selectable account' "$WORK/query.err"
 write_config
 
-# A wall ENDS the pin rather than pausing it: Egor pins an account to spend it, and one that is
-# spent is not one he wants back when the window rolls over (Egor, 2026-08-09). Every other lapse
-# is a condition that passes on its own, so those leave the pin exactly where he put it.
+# Stale usage at 100% never skips or clears a pin. Only a met run-observed wall does.
 pinned_now() { sed -n 's/^claudeb_profile=//p' "$CONFIG"; }
-cleared_case() {
-  write_config "$1=$2"
-  run_filter "${4:-claude_pool}" "${5:-.}"
-  assert test -z "$(sed -n "s/^$1=//p" "$CONFIG")"
-  assert grep -q "pin $2 hit its wall — cleared" "$WORK/note.err"
-  # The run that clears still says what it did with THIS query: the pin was live when it was read.
-  assert contains "$output" "pin $2 exhausted → $3"
-}
 kept_case() {
   write_config "claudeb_profile=$1"
   run_filter claude_pool "$2"
   assert test "$(pinned_now)" = "$1"
   assert test ! -s "$WORK/note.err"
 }
-cleared_case claudeb_profile walled-wk session
-cleared_case claudeb_profile walled-5h session
+write_config 'claudeb_profile=walled-wk'
+run_case claude_pool
+assert test "$(pinned_now)" = walled-wk
+assert contains "$(nrow 1)" 'claude/walled-wk'
+assert test "$(acct_line)" = 'ACCOUNT: walled-wk'
+write_config 'claudeb_profile=walled-5h'
+run_case claude_pool
+assert test "$(pinned_now)" = walled-5h
+assert contains "$(nrow 1)" 'claude/walled-5h'
 kept_case dead '.'
 kept_case ghost '.'
 kept_case tie-a '.vendors.claude.accounts |= map(
   if .account == "tie-a" then del(.weekly, .five_hour) else . end)'
-# A wall that was ALREADY standing when the pin was placed is one Egor pinned THROUGH — he wants
-# the account for the window AFTER it — so the horizon the vendor CLI recorded beside the pin keeps
-# it standing, loudly lapsed for this query but still in the file.
-write_config 'claudeb_profile=walled-wk' 'claudeb_profile_wall=2000003600'
-run_case claude_pool
-assert test "$(pinned_now)" = walled-wk
-assert test ! -s "$WORK/note.err"
-assert contains "$output" 'pin walled-wk exhausted → session'
-# Past that horizon the wall standing is a NEW one, which ends the pin as any wall does — and the
-# companion leaves with it rather than outliving the pin it belonged to.
-write_config 'claudeb_profile=walled-wk' 'claudeb_profile_wall=1999999999'
-run_case claude_pool
-assert test -z "$(pinned_now)"
-assert test -z "$(sed -n 's/^claudeb_profile_wall=//p' "$CONFIG")"
-assert grep -q 'pin walled-wk hit its wall — cleared' "$WORK/note.err"
-# Stale data clears nothing: the wall it reports may have reset hours ago, and a pin is not
-# something to drop on a reading this run itself calls STALE.
+# Stale 100% data without a run-observed wall still tries the pin.
 write_config 'claudeb_profile=walled-wk'
 run_filter claude_pool '.fetched_at = 1999990000'
 assert contains "$output" 'DATA: STALE'
 assert test "$(pinned_now)" = walled-wk
-assert test ! -s "$WORK/note.err"
-# Every vendor, one rule: the pin key is the only difference.
-cleared_case codex_profile main plain codex_plain '.vendors.codex.accounts = [
+assert contains "$(nrow 1)" 'claude/walled-wk'
+write_config 'codex_profile=main'
+run_filter codex_plain '.vendors.codex.accounts = [
   {account:"plain",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"main",five_hour:{used_pct:100},weekly:{used_pct:20}}]'
+assert test "$(sed -n 's/^codex_profile=//p' "$CONFIG")" = main
+assert contains "$(nrow 1)" 'codex/main'
 write_config
 
 # Rule 3 on the vendor that reports one bucket: 91% is not a wall, so it still routes.
@@ -604,7 +599,8 @@ assert contains "$(vsection codex)" '40% 40% main astra·high PINNED off'
 run_filter codex_plain '.vendors.codex.accounts = [
   {account:"plain",five_hour:{used_pct:20},weekly:{used_pct:20}},
   {account:"main",five_hour:{used_pct:100},weekly:{used_pct:20}}]'
-assert contains "$(vsection codex)" 'pin main exhausted → plain'
+assert contains "$(nrow 1)" 'codex/main'
+assert test "$(sed -n 's/^codex_profile=//p' "$CONFIG")" = main
 write_config
 
 # Grok is the fourth vendor and reads the same three rules, with one bucket and one auth softening:
@@ -723,16 +719,13 @@ next_line=$(next_block)
 assert before "$next_line" 'claude/session' 'grok/supergrok'
 assert before "$next_line" 'grok/supergrok' 'codex/main'
 assert before "$next_line" 'codex/main' 'gemini/main'
-# A pin that lapsed selected nothing, so its vendor is back to competing on budget like any other.
+# A pin at 100% with no run-observed wall still leads the NEXT table.
 write_config 'claudeb_profile=walled-wk'
 run_filter golden "$AUTO_PIN_STORE
   | .vendors.claude.accounts += [{account:\"walled-wk\",enabled:true,weekly:{used_pct:100}}]"
 next_line=$(next_block)
-# The lapse is loud in the vendor section the pin belongs to, above the rows it did not choose.
-assert contains "$(vsection claude)" 'pin walled-wk exhausted → session'
-assert before "$next_line" 'codex/main' 'grok/spare'
-assert before "$next_line" 'grok/spare' 'claude/session'
-assert before "$next_line" 'claude/session' 'gemini/main'
+assert contains "$(nrow 1)" 'claude/walled-wk'
+assert test "$(sed -n 's/^claudeb_profile=//p' "$CONFIG")" = walled-wk
 # Reviewers and chat never see the pin, so it moves neither their answer nor anything else: the
 # pinned account stands in those queries as an ordinary candidate.
 write_config 'claudeb_profile=worker'
@@ -806,6 +799,26 @@ assert contains "$(nrow 1)" 'claude/worker opus·high PINNED'
 assert test "$(acct_line)" = 'ACCOUNT: worker'
 assert before "$(next_block)" 'claude/worker' 'grok/spare'
 clear_claims
+write_config
+
+# (i) two pins on one vendor → NEXT 1-2 are those two in vector order, then the pool.
+write_config 'claudeb_profile=session,worker'
+run_filter golden "$TWO_BY_TWO"
+assert contains "$(nrow 1)" 'claude/session* opus·high PINNED'
+assert contains "$(nrow 2)" 'claude/worker opus·high PINNED'
+assert before "$(next_block)" 'claude/session' 'claude/worker'
+assert before "$(next_block)" 'claude/worker' 'grok/spare'
+assert test "$(acct_line)" = 'ACCOUNT: session'
+# (ii) pins on two vendors → both lead, ordered by the vector across vendors.
+write_config 'claudeb_profile=worker' 'grok_profile=spare,supergrok'
+run_filter golden "$TWO_BY_TWO"
+assert contains "$(nrow 1)" 'grok/spare grok·high PINNED'
+assert contains "$(nrow 2)" 'grok/supergrok grok·high PINNED'
+assert contains "$(nrow 3)" 'claude/worker opus·high PINNED'
+assert before "$(next_block)" 'grok/spare' 'grok/supergrok'
+assert before "$(next_block)" 'grok/supergrok' 'claude/worker'
+assert before "$(next_block)" 'claude/worker' 'claude/session'
+assert test "$(acct_line)" = 'ACCOUNT: spare'
 write_config
 
 # The merge uses the same vector as row 1: a five-hour deferral outranks budget across vendors.
@@ -945,9 +958,12 @@ grok_case '{available:true,accounts:[
   {account:"spare",enabled:true,weekly:{used_pct:40}}]}'
 assert contains "$(vsection grok)" 'pin blank no quota data → spare'
 assert test "$(sed -n 's/^grok_profile=//p' "$CONFIG")" = blank
-cleared_case grok_profile spent spare golden '.vendors.grok = {available:true,accounts:[
+write_config 'grok_profile=spent'
+grok_case '{available:true,accounts:[
   {account:"spent",enabled:true,weekly:{used_pct:100}},
   {account:"spare",enabled:true,weekly:{used_pct:10}}]}'
+assert contains "$(nrow 1)" 'grok/spent'
+assert test "$(sed -n 's/^grok_profile=//p' "$CONFIG")" = spent
 write_config
 
 # A role switch is not a limit: with `grok_workers=off` the vendor states the switch instead of
@@ -1047,6 +1063,12 @@ assert test "$query_out" = session
 # The ladder is pin > roles > pool: a usable pin answers over a closed role exactly as it answers
 # over pool exclusion, because naming an account there is the deliberate "use this one anyway".
 write_config 'claudeb_profile=off' 'claudeb_workers=off'
+query_case claude_pool --account claudeb
+assert test "$query_rc" -eq 0
+assert test "$query_out" = off
+# The whole tier answers under that wall, not its first name: a pin that cannot serve does not
+# swallow the one that can.
+write_config 'claudeb_profile=ghost,off' 'claudeb_workers=off'
 query_case claude_pool --account claudeb
 assert test "$query_rc" -eq 0
 assert test "$query_out" = off
@@ -1567,12 +1589,70 @@ for empty_exclude in "" ",,"; do
   assert grep -q 'needs at least one account name' "$WORK/query-bad.err"
 done
 
+# A wall worker-run just watched is a USAGE wall even when llm-limits still shows 0%.
+write_config
+clear_claims
+clear_walls
+run_case claude_pool
+query --account claudeb
+assert test "$query_out" = session
+printf '2000003600\n' >"$WALLS/claudeb-session"
+run_case claude_pool
+assert contains "$(nrow 1)" 'claude/dry'
+assert contains "$(vsection claude)" 'session* opus·high WALLED'
+query --account claudeb
+assert test "$query_out" = dry
+assert test "$query_rc" -eq 0
+# NEXT skips the recorded wall.
+assert not_contains "$(nrow 1)" 'claude/session'
+# A chat or reviewers query decides nothing about workers, so a wall record does not let it spend
+# the pin either — only the workers query that follows does.
+write_config 'claudeb_profile=session'
+query_case claude_pool --account claudeb --role chat
+assert test "$(pinned_now)" = session
+query_case claude_pool --account claudeb --role reviewers
+assert test "$(pinned_now)" = session
+run_case claude_pool
+assert test -z "$(pinned_now)"
+# (g) unexpired wall record for a still-pinned account → worker-pick clears the pin once and ranks the pool.
+write_config 'claudeb_profile=session'
+run_case claude_pool
+assert test -z "$(pinned_now)"
+assert contains "$(vsection claude)" 'session* opus·high WALLED'
+assert contains "$(nrow 1)" 'claude/dry'
+assert not_contains "$(nrow 1)" 'PINNED'
+# Expired record is ignored and deleted.
+write_config
+clear_walls
+printf '1999999999\n' >"$WALLS/claudeb-session"
+run_case claude_pool
+query --account claudeb
+assert test "$query_out" = session
+assert test ! -e "$WALLS/claudeb-session"
+assert not_contains "$(vsection claude)" 'session* opus·high WALLED'
+# unexpired wall on a pin → NEXT rank 1 is the pool's best, any vendor; pin is cleared.
+write_config 'claudeb_profile=session'
+clear_walls
+printf '2000003600\n' >"$WALLS/claudeb-session"
+run_case golden
+assert test -z "$(pinned_now)"
+assert contains "$(nrow 1)" 'gemini/main'
+assert not_contains "$(nrow 1)" 'claude/session'
+# expired record → pin is rank 1 again, file untouched.
+write_config 'claudeb_profile=session'
+printf '1999999999\n' >"$WALLS/claudeb-session"
+run_case golden
+assert test "$(pinned_now)" = session
+assert contains "$(nrow 1)" 'claude/session'
+clear_walls
+
 # What the rows SAY is display; what they DECIDE is this table. Every fixture runs under the
 # default config and is pinned by the answer it produces — the `NEXT:` line plus the four machine
 # queries, `-` where none is selectable — so an edit to the wording of a row, a tag or the DATA
 # line that also moves a routing decision fails here instead of reaching a statusline weeks later.
 write_config
 clear_claims
+clear_walls
 decisions_now() {
   local name vendor next_rows
   for name in $(jq -r 'keys[]' "$FIXTURES"); do

@@ -49,14 +49,18 @@ command -v worker_pool_refuse_headless >/dev/null ||
   fail 'share/worker-model.sh is missing: worker-run cannot tell an allowed model from a cheap one'
 command -v worker_model_allows >/dev/null ||
   fail 'share/worker-model.sh defines no worker_model_allows: refusing to launch unchecked'
-. "$SCRIPT_DIRECTORY/../share/codex-accounts.sh" ||
-  fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
+. "$SCRIPT_DIRECTORY/../share/worker-walls.sh" ||
+  fail 'share/worker-walls.sh is missing: worker-run cannot record a run-observed wall'
+command -v worker_walls_record >/dev/null ||
+  fail 'share/worker-walls.sh defines no worker_walls_record: refusing to launch without a wall writer'
 
 # The main→base-HOME, named→<profiles-dir>/<name> mapping (shared-invariants row m) lives in one
 # place for every reader of an agy profile; respelled here, a worker's transcript would be looked
 # for under a directory geminib does not use.
 . "$SCRIPT_DIRECTORY/../share/gemini-accounts.sh" ||
   fail 'share/gemini-accounts.sh is missing: worker-run cannot resolve an agy profile HOME'
+. "$SCRIPT_DIRECTORY/../share/codex-accounts.sh" ||
+  fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 
@@ -82,6 +86,10 @@ DEADLINE=${WORKER_RUN_DEADLINE:-21600}
 # times the worst case and still far under the ceiling. 0 disables the idle half entirely.
 IDLE=${WORKER_RUN_IDLE_S:-1800}
 [[ "$IDLE" =~ ^[0-9]+$ ]] || IDLE=1800
+SILENT=${WORKER_RUN_SILENT_S:-600}
+WALL_SETTLE=${WORKER_RUN_WALL_SETTLE_S:-60}
+[[ "$WALL_SETTLE" =~ ^[0-9]+$ ]] || WALL_SETTLE=60
+[[ "$SILENT" =~ ^[0-9]+$ ]] || SILENT=600
 
 # The run record the watchdog watches, set by `supervise` before any vendor is launched.
 RUN_DIRECTORY=''
@@ -198,16 +206,7 @@ record_session_file() { # directory session transcript
   record_worker_session "$directory"
 }
 
-# Size and mtime of every source a live reading can come from: this run's own output files, the
-# session transcript, and the newest edit under its workdir — the same reading LAST-EDIT prints, so
-# a worker the status row calls active cannot be idle here. Compared tick to tick by the watchdog:
-# any change is work.
-#
-# Prefixed `y~`/`n~` by whether this run can be observed AT ALL. Every vendor but claudeb streams
-# into `out` while it works, so silence there is evidence; claudeb writes `out` once, at exit, so a
-# claudeb run whose transcript was never located and which has touched no file yet emits no live
-# signal at all, and its silence is evidence of nothing (live 2026-09-04: a run mid-edit, LAST-EDIT
-# 59s, SIGTERMed at thirty minutes on exactly that blindness).
+# Shared-checkout dirt is not this run's activity; only paths its own transcript names count.
 activity_fingerprint() { # directory vendor workdir
   local directory="$1" vendor="$2" workdir="$3" path stamp observed=y fingerprint=''
   if [ "$vendor" = claudeb ]; then
@@ -220,7 +219,7 @@ activity_fingerprint() { # directory vendor workdir
     [ -n "$path" ] && [ -e "$path" ] || continue
     fingerprint+="$(stat -f '%N %z %m' "$path" 2>/dev/null || stat -c '%n %s %Y' "$path" 2>/dev/null)|"
   done
-  if stamp=$(workdir_activity_stamp "$directory" "$workdir"); then
+  if stamp=$(workdir_activity_stamp "$directory" "$workdir" own); then
     observed=y
     fingerprint+="edit $stamp|"
   fi
@@ -279,21 +278,35 @@ run_with_deadline() {
       vendor=$(jq -r '.vendor // empty' "$directory/meta.json" 2>/dev/null)
       workdir=$(jq -r '.workdir // empty' "$directory/meta.json" 2>/dev/null)
     fi
-    # A tenth of the TIGHTER of the two windows, so both are measured to a fraction of themselves,
-    # clamped: a tick reads the work tree, and thirty seconds is fine enough for a six-hour ceiling.
     window=$DEADLINE
     [ "$IDLE" -eq 0 ] || [ "$IDLE" -ge "$window" ] || window=$IDLE
+    [ "$SILENT" -eq 0 ] || [ "$SILENT" -ge "$window" ] || window=$SILENT
     hop=$((window / 10))
     [ "$hop" -ge 1 ] || hop=1
     [ "$hop" -le 30 ] || hop=30
     end=$(($(date +%s) + DEADLINE))
     idle_since=$(date +%s)
+    silent_since=$idle_since
     reason=''
     # Seeded before the first sleep, not left empty: an empty seed differs from every real reading,
     # so the first tick would always read as progress and no idle kill could land on its own hop.
     seen=$(activity_fingerprint "$directory" "$vendor" "$workdir")
     while [ "$(date +%s)" -lt "$end" ]; do
       sleep "$hop"
+      kill -0 "$child" 2>/dev/null || exit 0
+      # Log text may quote a wall; a structured vendor error is authoritative even with heartbeats.
+      if [ -n "$directory" ] && { [ "$(($(date +%s) - $(newest_mtime "$directory/out" "$directory/err")))" -ge "$WALL_SETTLE" ] ||
+           { [ "$vendor" = grok ] && grok_stream_errors "$directory" 4096 | grep -Eiq "$GROK_LIMIT_RE"; }; } &&
+         has_limit_signature "$directory" "$vendor" 4096; then
+        reason=wall
+        break
+      fi
+      if [ -n "$directory" ] && [ "$SILENT" -gt 0 ] &&
+         [ ! -s "$directory/out" ] && [ ! -s "$directory/err" ] &&
+         [ $(($(date +%s) - silent_since)) -ge "$SILENT" ]; then
+        reason="silent $SILENT"
+        break
+      fi
       [ -n "$directory" ] && [ "$IDLE" -gt 0 ] || continue
       current=$(activity_fingerprint "$directory" "$vendor" "$workdir")
       if [ "$current" != "$seen" ]; then
@@ -309,6 +322,7 @@ run_with_deadline() {
     done
     [ -n "$reason" ] || reason="deadline $DEADLINE"
     [ -z "$directory" ] || printf '%s\n' "$reason" >"$directory/killed" 2>/dev/null || :
+    [ "$reason" != wall ] || record_run_wall "$directory" "$vendor"
     end_child "$child" TERM
     sleep 10
     end_child "$child" KILL
@@ -334,7 +348,9 @@ run_with_deadline() {
 # run ends is the signal and not a deadline it races, then the child's whole group, then a KILL
 # escalation for a CLI that ignores TERM — detached, because this supervisor is on its way out.
 stop_run() { # signal
-  [ -z "$RUN_DIRECTORY" ] || printf 'signal %s\n' "$1" >"$RUN_DIRECTORY/killed" 2>/dev/null || :
+  local reason="signal $1"
+  [ "$1" != TERM ] || reason=term
+  [ -z "$RUN_DIRECTORY" ] || printf '%s\n' "$reason" >"$RUN_DIRECTORY/killed" 2>/dev/null || :
   [ -z "$watchdog" ] || kill "$watchdog" 2>/dev/null || :
   end_child "$child" TERM
   ( sleep 5; end_child "$child" KILL ) >/dev/null 2>&1 &
@@ -472,7 +488,8 @@ grok_home() {
 codex_unsupported_model() {
   # tail-scoped for the same reason has_limit_signature is: codex streams the
   # echoed brief to stderr, and the phrase can appear there as prose.
-  tail -n 40 "$1/err" 2>/dev/null | grep -Fqi 'model is not supported'
+  if [ -n "${2:-}" ]; then tail -c "$2" "$1/err" 2>/dev/null; else cat "$1/err" 2>/dev/null; fi |
+    tail -n 40 | grep -Fqi 'model is not supported'
 }
 
 # Where the spawned instance keeps its own transcript: claudeb files it under the profile's projects
@@ -660,11 +677,13 @@ supervise_claudeb() {
 }
 
 codex_attempt() {
-  local directory="$1" account="$2" rc
+  local directory="$1" account="$2" rc saved_home="${CODEX_HOME-}" had_home="${CODEX_HOME+x}"
   shift 2
   if [ "$account" = main ]; then
-    (unset CODEX_HOME; run_with_deadline "$@" <"$directory/brief.launch" >/dev/null 2>"$directory/err")
+    unset CODEX_HOME
+    run_with_deadline "$@" <"$directory/brief.launch" >/dev/null 2>"$directory/err"
     rc=$?
+    [ -z "$had_home" ] || export CODEX_HOME="$saved_home"
   else
     CODEX_HOME="$(codex_home "$account")" run_with_deadline "$@" <"$directory/brief.launch" >/dev/null 2>"$directory/err"
     rc=$?
@@ -711,8 +730,6 @@ supervise_codex() {
     rc=$?
   fi
   if [ "$rc" -ne 0 ] && codex_unsupported_model "$directory"; then
-    # A brief's model override can name a model the account cannot use; the run
-    # is otherwise sound, and worker-pick's own default always resolves.
     retry=()
     for value in "${command[@]}"; do
       if [ "$drop" = true ]; then drop=false; continue; fi
@@ -720,6 +737,9 @@ supervise_codex() {
       retry+=("$value")
     done
     if [ "$dropped" = true ]; then
+      value=$(codex_config_model)
+      worker_model_allows codex "$value" || return "$rc"
+      retry+=(-c "model=\"$value\"")
       meta_update "$directory" '.model_flag_dropped = true' || return 4
       : >"$directory/out"
       codex_attempt "$directory" "$account" "${retry[@]}"
@@ -796,14 +816,29 @@ grok_end_field() { # directory jq-expression
     sed '/^$/d' | tail -n1
 }
 
+record_run_wall() {
+  local directory="$1" vendor="$2" account reset epoch event
+  account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null) || return 0
+  [ -n "$account" ] || return 0
+  event="$directory/wall-reset.$(head -n1 "$directory/attempt" 2>/dev/null)"
+  if ! IFS= read -r epoch 2>/dev/null <"$event"; then
+    reset=$(worker_walls_extract_reset "$directory/out" "$directory/err")
+    epoch=$(worker_walls_parse_reset "$reset") || epoch=$(($(date +%s) + 3600))
+    printf '%s\n' "$epoch" >"$event" || return 1
+  fi
+  worker_walls_record "$vendor" "$account" "$epoch" || true
+  worker_model_clear_walled_pin "$vendor" "$account" || true
+}
+
 reroute_walled() {
   # The run ends on a wall only once every account is walled; otherwise the brief
-  # continues on the next one and no caller re-dispatches by hand. A caller-given
-  # --account is that caller's decision and stays put — and since --resume always
-  # carries one, no session is ever dragged across accounts.
+  # continues on the next one and no caller re-dispatches by hand. A named account
+  # (--account or the pin fallback) is spent first, then the pool; only a resumed
+  # session stays, because that session lives inside one profile.
   local directory="$1" vendor="$2" walled tag
   has_limit_signature "$directory" "$vendor" || return 1
-  [ "$(jq -r '.pinned' "$directory/meta.json")" != true ] || return 1
+  record_run_wall "$directory" "$vendor"
+  [ -z "$(jq -r '.resume // empty' "$directory/meta.json")" ] || return 1
   walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
   pick_account "$vendor" "$walled"
   [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 1
@@ -861,7 +896,7 @@ supervise() {
     [ "$rc" -eq 0 ] && return 0
     # A run somebody signalled is over: rerouting it would answer an operator's kill by launching
     # the same brief again on another account.
-    case "$(head -n1 "$directory/killed" 2>/dev/null)" in 'signal '*) return "$rc" ;; esac
+    case "$(head -n1 "$directory/killed" 2>/dev/null)" in term|'signal '*) return "$rc" ;; esac
     reroute_walled "$directory" "$vendor" || return "$rc"
     # The rescue attempt is a session of its own on another account, and the walled attempt's
     # transcript is still the newest one in the tree it shares.
@@ -1168,10 +1203,46 @@ record_worker_session() {
   return 0
 }
 
+refuse_live_run() { # brief resume
+  local brief="$1" resume="$2" root entry directory pid now started sha other_sha
+  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+  if [ -n "$resume" ]; then
+    for entry in "$root"/*/worker-session; do
+      [ -f "$entry" ] && grep -qxF -- "$resume" "$entry" || continue
+      directory=${entry%/worker-session}
+      [ ! -e "$directory/exit_code" ] || continue
+      pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
+      supervisor_running "$directory" "$pid" || continue
+      printf 'OUTCOME: RESUME_BUSY %s\nATTACH %s\n' "${directory##*/}" "${directory##*/}"
+      exit 4
+    done
+  fi
+  [ "${WORKER_RUN_ALLOW_DUPLICATE:-0}" != 1 ] || return 0
+  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || return 0
+  sha=$(shasum -a 256 "$brief" | awk '{print $1}')
+  [ -n "$sha" ] || return 0
+  now=$(date +%s)
+  for entry in "$root"/*/launcher; do
+    [ -f "$entry" ] && grep -qxF -- "$CLAUDE_CODE_SESSION_ID" "$entry" || continue
+    directory=${entry%/launcher}
+    [ ! -e "$directory/exit_code" ] || continue
+    started=$(jq -r '.pid_started_at // .started_at // 0' "$directory/meta.json" 2>/dev/null)
+    [[ "$started" =~ ^[0-9]+$ ]] || continue
+    [ "$started" -le "$now" ] && [ $((now - started)) -lt 1800 ] || continue
+    pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
+    supervisor_running "$directory" "$pid" || continue
+    other_sha=$(shasum -a 256 "$directory/brief" 2>/dev/null | awk '{print $1}')
+    [ "$sha" = "$other_sha" ] || continue
+    printf 'OUTCOME: DUPLICATE_RUN %s\nATTACH %s\n' "${directory##*/}" "${directory##*/}"
+    exit 4
+  done
+  return 0
+}
+
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line=''
-  local account pin_fallback=false pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
+  local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
@@ -1232,6 +1303,7 @@ start_run() {
   esac
   refuse_cheap_model "$vendor" "$model" "$resume"
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
+  refuse_live_run "$brief" "$resume"
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
   # relative arguments valid here would dangle there — pin them to the caller's cwd.
   for value in "${!images[@]}"; do
@@ -1264,12 +1336,9 @@ start_run() {
       printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
       exit 3
     else
-      pin=$(config_value "${vendor}_profile")
+      pin=$(worker_model_pin_first "$vendor")
       if [ -n "$pin" ]; then
-        # A *_profile pin is a directly named account (shared-invariants row q):
-        # a reroute off it would override the same standing --account carries.
         account="$pin"
-        pin_fallback=true
       elif [ "$vendor" = claudeb ]; then
         fail 'claudeb needs an explicit account or claudeb_profile pin when worker-pick is unavailable'
       elif [ "$vendor" = grok ]; then
@@ -1286,14 +1355,14 @@ start_run() {
   # --account, a resumed session or the pin fallback cannot get in under it, and the vendor pin is
   # the one override, because naming it there is the deliberate "use this one anyway".
   if [ "$(config_value "${vendor}_workers")" = off ] &&
-     [ "$account" != "$(config_value "${vendor}_profile")" ]; then
+     ! worker_model_pin_has "$vendor" "$account"; then
     printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
   fi
   # The pool is a wall, not advice to the picker: an account Egor took out cannot carry a worker
   # even when the brief names it outright — only the vendor pin overrides. A picked account is
   # already in the pool, so this only ever fires on --account.
-  if ! worker_pool_refuse_headless "$vendor" "$account" "$(config_value "${vendor}_profile")"; then
+  if ! worker_pool_refuse_headless "$vendor" "$account" "$(worker_model_pin_csv < <(worker_model_pins "$vendor"))"; then
     printf 'OUTCOME: %s_UNAVAILABLE\n' "$(vendor_name "$vendor")"
     exit 4
   fi
@@ -1316,6 +1385,7 @@ start_run() {
       ;;
     codex)
       config_model=$(codex_config_model)
+      [ "$model" != default ] || model=$config_model
       explicit_model=$model
       explicit_effort=$effort
       model=${model:-$config_model}
@@ -1436,8 +1506,7 @@ start_run() {
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
-    --argjson pinned "$([ -n "$explicit_account" ] || [ "$pin_fallback" = true ] && printf true || printf false)" \
-    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort,pinned:$pinned}
+    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
@@ -1576,10 +1645,15 @@ GROK_TRANSIENT_RE='(status|http)[^0-9]{0,12}(429|5[0-9][0-9])([^0-9]|$)|too many
 # Where a grok failure states itself: stderr, plus the `error` events of the stream — the CLI puts a
 # startup failure on stderr alone (the `-s` collision) and a mid-run one in an event on stdout. The
 # agent's own answer text is left out on purpose: this repository's briefs discuss quotas and 429s.
-grok_error_text() { # directory
-  cat "$1/err" 2>/dev/null
+grok_stream_errors() { # directory [bytes]
+  if [ -n "${2:-}" ]; then tail -c "$2" "$1/out" 2>/dev/null; else cat "$1/out" 2>/dev/null; fi |
   jq -rR 'fromjson? | select(type == "object" and (.type == "error" or .type == "max_turns_reached"))
-          | tostring' "$1/out" 2>/dev/null
+          | tostring' 2>/dev/null
+}
+
+grok_error_text() { # directory [bytes]
+  if [ -n "${2:-}" ]; then tail -c "$2" "$1/err" 2>/dev/null; else cat "$1/err" 2>/dev/null; fi
+  grok_stream_errors "$@"
 }
 
 # A turn cap the run hit is the vendor answering fine to the last turn. Read as GROK_UNAVAILABLE it
@@ -1604,9 +1678,21 @@ grok_reason_line() { # directory
   fi
 }
 
+newest_mtime() { # files...
+  local newest=0 m path
+  for path in "$@"; do
+    m=$(stat -f %m "$path" 2>/dev/null) || m=$(stat -c %Y "$path" 2>/dev/null) || continue
+    [[ "$m" =~ ^[0-9]+$ ]] && [ "$m" -gt "$newest" ] && newest=$m
+  done
+  printf '%s\n' "$newest"
+}
+
 has_limit_signature() {
-  local directory="$1" vendor="$2" pattern tail_lines=0
+  local directory="$1" vendor="$2" bytes="${3:-}" pattern tail_lines=0 path
   local -a scan
+  if [ "$vendor" = codex ] && codex_unsupported_model "$directory" "$bytes"; then return 1; fi
+  if tail -c 4096 "$directory/err" 2>/dev/null |
+     grep -Eq 'worker-pick: no selectable [a-z]+ account \([^)]*WALLED'; then return 0; fi
   # out holds the worker's ANSWER, which in this repo routinely discusses quotas
   # and 429s; vendor limit errors arrive on stderr (live-verified for agy and
   # codex). claudeb print mode can emit its limit error on stdout, so it keeps
@@ -1622,12 +1708,17 @@ has_limit_signature() {
     gemini) pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota|rate.?limit|(^|[^0-9])429([^0-9]|$)'; scan=("$directory/err") ;;
     # grok states a failure in two places — stderr and the stream's own error events — so its text
     # is assembled rather than read from a file list.
-    grok) grok_error_text "$directory" | grep -Eiq "$GROK_LIMIT_RE"; return ;;
+    grok) grok_error_text "$directory" "$bytes" | grep -Eiq "$GROK_LIMIT_RE"; return ;;
   esac
-  # A rejected model override is a 400, never a wall, however the surrounding
-  # transcript reads.
-  if [ "$vendor" = codex ] && codex_unsupported_model "$directory"; then return 1; fi
-  if [ "$tail_lines" -gt 0 ]; then
+  if [ -n "$bytes" ]; then
+    for path in "${scan[@]}"; do
+      if [ "$tail_lines" -gt 0 ]; then
+        tail -c "$bytes" "$path" 2>/dev/null | tail -n "$tail_lines"
+      else
+        tail -c "$bytes" "$path" 2>/dev/null
+      fi
+    done | grep -Eiq "$pattern"
+  elif [ "$tail_lines" -gt 0 ]; then
     tail -n "$tail_lines" "${scan[0]}" 2>/dev/null | grep -Eiq "$pattern"
   else
     grep -Eiq "$pattern" "${scan[@]}" 2>/dev/null
@@ -1649,6 +1740,9 @@ killed_line() { # directory code
   case "$2" in 143|137) ;; *) return 0 ;; esac
   reason=$(head -n1 "$1/killed" 2>/dev/null) || return 0
   case "$reason" in
+    'silent '*) printf 'KILLED: silent — no output in %ss\n' "${reason#silent }" ;;
+    wall) printf 'KILLED: wall — vendor usage limit detected\n' ;;
+    term) printf 'KILLED: signal TERM — the supervisor was signalled and stopped the vendor child with it\n' ;;
     'idle '*) printf 'KILLED: idle watchdog — nothing this run writes changed for %ss (WORKER_RUN_IDLE_S)\n' "${reason#idle }" ;;
     'deadline '*) printf 'KILLED: deadline — the %ss ceiling ended a run still being served (WORKER_RUN_DEADLINE)\n' "${reason#deadline }" ;;
     'signal '*) printf 'KILLED: signal %s — the supervisor was signalled and stopped the vendor child with it\n' "${reason#signal }" ;;
@@ -1663,17 +1757,17 @@ print_outcome() {
   killed_line "$directory" "$code"
   if has_limit_signature "$directory" "$vendor"; then
     printf 'OUTCOME: %s_USAGE_LIMIT\n' "$(vendor_name "$vendor")"
-    # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose:
-    # a pinned/resumed run never consulted the pool, and "every account walled" said of one sent
-    # the orchestrator hunting a pool problem that never existed.
-    if [ "$(jq -r '.pinned' "$directory/meta.json" 2>/dev/null)" = true ]; then
-      printf 'WALL: pinned account %s — pool not consulted\n' \
+    # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose.
+    # A resumed session is the one run that never left its account; every other USAGE_LIMIT is the
+    # pool exhausted.
+    if [ -n "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)" ]; then
+      printf 'WALL: resumed session stays on %s\n' \
         "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)"
     else
       printf 'WALL: pool exhausted (walled: %s)\n' \
         "$(jq -r '((.walled_accounts // []) + [.account]) | join(", ")' "$directory/meta.json" 2>/dev/null)"
     fi
-    reset=$(grep -Eioh '(retry[_ -]?at|reset(s)?([_ -]?at|[ _-]?in)?)[[:space:]:=]+[^,;]+' "$directory/out" "$directory/err" 2>/dev/null | head -n1)
+    reset=$(worker_walls_extract_reset "$directory/out" "$directory/err")
     [ -z "$reset" ] || printf 'RESET: %s\n' "$reset"
   elif [ "$vendor" = grok ] && grok_max_turns_hit "$directory"; then
     printf 'OUTCOME: GROK_MAX_TURNS\n'
@@ -2283,19 +2377,26 @@ last_edit_age() { # directory workdir now
   printf '%s\n' "$age"
 }
 
-# The instant behind that age, and the run's one live signal while its vendor has written nothing:
-# newest mtime among the paths the dirt tracker already calls this run's own. A gained path that is
-# GONE answers with the nearest directory still standing, so a deletion counts as the work it is.
-# Read by the status row and by the idle watchdog, from here alone — two definitions of "this run
-# touched something" is a status row calling a run active while the watchdog kills it.
-workdir_activity_stamp() { # directory workdir
+# LAST-EDIT keeps the dirt view; the watchdog passes `own` to exclude co-tenant edits.
+workdir_activity_stamp() { # directory workdir [own]
   local directory="$1" workdir="$2" top path target mtime newest=''
-  [ -f "$directory/dirty-before" ] || return 1
-  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  if [ "${3:-}" = own ]; then
+    top=$workdir
+  else
+    [ -f "$directory/dirty-before" ] || return 1
+    top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 1
+  fi
   [ -n "$top" ] || return 1
   while IFS= read -r path; do
     [ -n "$path" ] || continue
+    if [ "${3:-}" = own ]; then
+      case "$path" in /*|..|../*|*/../*|*/..) continue ;; esac
+    fi
     target="$top/$path"
+    if [ "${3:-}" = own ] && [ ! -e "$target" ]; then
+      [ -n "$newest" ] || newest=0
+      continue
+    fi
     while ! mtime=$(stat -f %m "$target" 2>/dev/null || stat -c %Y "$target" 2>/dev/null); do
       [ "$target" != "$top" ] || { mtime=''; break; }
       target=${target%/*}
@@ -2303,7 +2404,15 @@ workdir_activity_stamp() { # directory workdir
     [ -n "$mtime" ] || continue
     [[ "$mtime" =~ ^[0-9]+$ ]] || continue
     [ -n "$newest" ] && [ "$mtime" -le "$newest" ] || newest=$mtime
-  done < <(workdir_gained_paths "$directory" "$workdir")
+  done < <(
+    if [ "${3:-}" = own ]; then
+      sed '/^WORKDIR: /d; /^UNKNOWN: /d; /^PARTIAL: /d' "$directory/files" 2>/dev/null
+      compute_run_files "$directory"
+      printf '%s\n' "$RUN_FILES_LIST"
+    else
+      workdir_gained_paths "$directory" "$workdir"
+    fi
+  )
   [ -n "$newest" ] || return 1
   printf '%s\n' "$newest"
 }
@@ -2625,6 +2734,7 @@ claim_run() {
 }
 
 CONFIG_FILE="${WORKER_RUN_CONFIG_FILE:-$HOME/.claude/worker-model}"
+export WORKER_PICK_CONFIG_FILE="${WORKER_PICK_CONFIG_FILE:-$CONFIG_FILE}"
 CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
 # Every arm exits from inside the case: workers edit this very file while their
 # own supervisor and the caller's `wait` are still running it, and bash re-reads

@@ -27,9 +27,7 @@ set -u
 
 MODE="${1:-}"
 GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
-# The `_wall` companion is part of the pin, not a separate knob: writing one by hand extends a pin
-# the same way moving it does.
-PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile(_wall)?='
+PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='
 
 # `~/.claude/hooks/worker-pin-gate.sh` is a symlink into the repository, so a shared module — the
 # ONE allowed-model list (`share/worker-model.sh`), the ONE command splitter

@@ -238,8 +238,10 @@ show_status() {
 }
 
 pin_account() {
-  worker_model_pin_account grok_profile grokb account_names is_disabled "${1:-}" \
-    "$(worker_model_pin_wall_until grok "${1:-}")"
+  case "${1:-}" in
+    --unpin) worker_model_pin_account grok_profile grokb account_names is_disabled --unpin "${2:-}" ;;
+    *) worker_model_pin_account grok_profile grokb account_names is_disabled "${1:-}" ;;
+  esac
 }
 
 set_all_pool() { worker_pool_set_all "$pool_dir" grokb account_names "$1"; }
@@ -329,7 +331,7 @@ show_help() {
     'grokb remove <name> [--force]        Forget a profile and prune its cached quota; --force overrides the logged-in guard.' \
     'grokb enable <name>|--all            Return an account (or every account) to worker selection.' \
     'grokb disable <name>|--all           Exclude an account (or every account) from the worker pool.' \
-    'grokb use <name>|--clear             Pin worker selection to one account; no name prints the pin.' \
+    'grokb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
     'grokb list                           List profiles with login state.' \
     'grokb status                         Per-account login state and quota.'
 }
@@ -361,7 +363,7 @@ case "${1:-}" in
     ;;
   use)
     shift
-    pin_account "${1:-}"
+    pin_account "$@"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: grokb list\n' >&2; exit 2; }

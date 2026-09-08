@@ -624,13 +624,15 @@ assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use main
 assert grep -qx 'codex_profile=main' "$PIN_CONFIG"
 assert test -f "$PIN_CONFIG.lock"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use alpha
-assert grep -qx 'codex_profile=alpha' "$PIN_CONFIG"
+assert grep -qx 'codex_profile=main,alpha' "$PIN_CONFIG"
 assert test "$(grep -c '^codex_profile=' "$PIN_CONFIG")" = 1
 assert grep -qx 'worker=auto' "$PIN_CONFIG"
 assert grep -qx 'claudeb_profile=claude-a' "$PIN_CONFIG"
 assert grep -qx 'gemini_profile=gemini-a' "$PIN_CONFIG"
 pin_output=$(env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use)
-assert grep -qx 'codexb: workers are pinned to alpha' <<<"$pin_output"
+assert grep -qx 'codexb: workers are pinned to main,alpha' <<<"$pin_output"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --unpin alpha
+assert grep -qx 'codex_profile=main' "$PIN_CONFIG"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --clear
 assert_fails grep -q '^codex_profile=' "$PIN_CONFIG"
 assert grep -qx 'worker=auto' "$PIN_CONFIG"

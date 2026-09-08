@@ -1698,7 +1698,7 @@ if ! vendor_paused grok && [ -r "$grok_cache" ]; then
 fi
 grok_cache_mtime=$(int_or_empty "$(file_mtime "$grok_cache" 2>/dev/null || true)")
 [ -n "$grok_cache_mtime" ] || grok_cache_mtime=$now_epoch
-grok_pin=$(worker_model_pinned_account grok_profile 2>/dev/null || true)
+grok_pin=$(worker_model_pin_first grok 2>/dev/null || true)
 grok_order=$(jq -r '.accounts[]?.account // empty' <<<"$grok_payload" | account_order_json grok)
 grok=$(jq -cn --argjson payload "$grok_payload" --argjson wall "$grok_wall" --argjson now "$now_epoch" \
   --argjson order "$grok_order" --argjson mtime "$grok_cache_mtime" --arg pin "$grok_pin" \

@@ -6,7 +6,7 @@ DENY_AT=95
 [ -z "${WORKER_GATE_WARN_PCT:-}" ] || WARN_AT="$WORKER_GATE_WARN_PCT"
 [ -z "${WORKER_GATE_DENY_PCT:-}" ] || DENY_AT="$WORKER_GATE_DENY_PCT"
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
-TOGGLE="${WORKER_MODEL_FILE:-$HOME/.claude/worker-model}"
+TOGGLE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/worker-pick}"
 
 STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
@@ -327,8 +327,21 @@ case "$worker" in
   gemini-worker) pin_key=gemini_profile; vendor=gemini; limits_vendor=gemini; label=Gemini ;;
   grok-worker) pin_key=grok_profile; vendor=grok; limits_vendor=grok; label=Grok ;;
 esac
-[ -n "$pin_key" ] && [ -r "$TOGGLE" ] &&
-  pin=$(sed -n "s/^${pin_key}=//p" "$TOGGLE" | head -1 | tr -d '[:space:]')
+if [ -n "$pin_key" ]; then
+  _load_wm() {
+    command -v worker_model_pin_first >/dev/null 2>&1 && return 0
+    local path=${BASH_SOURCE[0]} dir
+    while [ -L "$path" ]; do
+      dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+      path=$(readlink "$path")
+      [[ "$path" = /* ]] || path="$dir/$path"
+    done
+    dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+    . "$dir/../share/worker-model.sh" 2>/dev/null
+  }
+  _load_wm || true
+  pin=$(worker_model_pin_first "$vendor" 2>/dev/null || true)
+fi
 
 # The toggle names the implementation worker for every session, and reading it before each
 # delegation is the one step of that rule a hook can take over. A mismatch is reported, never

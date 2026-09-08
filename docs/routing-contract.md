@@ -39,14 +39,14 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    ranked by its budget like any other, and no answer is marked `SESSION RESERVE`. The
    pool toggle is the only consent gate, and it applies to every consumer identically —
    worker dispatch, review-bench, the chat picker, anything else that asks.
-2. **Selection.** The vendor pin wins when usable — usable here being auth alive, a numeric
-   budget and no wall, and nothing else: a pin overrides the pool toggle (rule 4), so pool
-   membership is no part of that test. It is the top override of worker routing, so a usable
-   pin's account leads the ranked NEXT rows (and is the `--account` answer for that vendor)
-   whatever budget an unpinned account holds; pins among themselves share the same vector,
-   and an unpinned mate of a pinned account ranks on the vector like everyone else. It lapses
-   loudly with a reason when it cannot serve, and a lapsed pin leaves an ordinary pool pick
-   ranked on the vector like any other.
+2. **Selection.** The vendor pin tier wins when usable — usable here being auth alive, a numeric
+   budget and no run-observed wall, and nothing else: a pin overrides the pool toggle (rule 4), so pool
+   membership is no part of that test. It is the top override of worker routing, so every usable
+   pinned account leads the ranked NEXT rows (and the `--account` answer for that vendor is that
+   vendor's rank-1 tier member) whatever budget an unpinned account holds; pins among themselves
+   share the same vector, and every unpinned account ranks after the whole tier. Limits at
+   100% do not skip a pin. A run-observed wall or dead auth lapses that one name loudly for this query
+   and leaves the rest of the ranking.
    Otherwise the candidates are ranked on one key vector, ascending, identical for all four
    vendors, and the NEXT table applies it across vendors:
 
@@ -85,18 +85,18 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    beside `WALLED`/`PINNED`. No third softening may be added beside them. A caller that watches an account
    wall mid-task re-queries with `--exclude`; when every candidate is walled the answer
    is exit 3 / `ALL WALLED` and the orchestrator asks the owner.
-   A **pinned** account that walls is the one case where a query writes: the pin is removed
-   from `~/.claude/worker-model` outright, because it is pinned to be spent and the owner does
-   not want it back when the window rolls over. Only the usage wall clears it — dead auth is a
-   login to fix — and only on data this run calls fresh; every other lapse leaves the pin standing.
-   The wall that clears a pin is one that ARRIVED after it. A pin placed while the wall already
-   stood is a fresh statement about the window after that wall — the owner pinning an account he
-   can see is at 100% is asking for it once it resets, and the statusline re-querying a second
-   later must not answer that by deleting the pin. So the vendor CLI records how far the standing
-   wall runs when it writes the pin (`<vendor>_profile_wall=<epoch>`, written, replaced and
-   stripped with the pin itself and never on its own), and a query clears the pin only for a wall
-   outliving that record. A pin with no record — written by hand, or placed on a free account —
-   is ended by the first wall exactly as before.
+   A pin names an **account**, never a vendor, and is a tier: Egor may pin any number of
+   accounts across vendors (`<vendor>_profile=<name>[,<name>...]`). Every pinned account ranks
+   first (among themselves on the same vector as the pool), then everyone else. A pin is always
+   tried first — stale usage at 100% does not skip it, because the owner knows more than stale
+   data. The only skip is a run-observed wall record (`claude-worker-runs/walls/<vendor>-<account>`)
+   whose reset has not passed. A wall that was actually MET — the run launched on that pinned
+   account and the vendor answered limit — writes that record and removes that one name from
+   `~/.claude/worker-model`; `worker-pick` clears a still-present pin the same way once when it
+   finds an unexpired record. Stale llm-limits data never skips or clears a pin. Dead auth still
+   lapses it as a login to fix. `worker-run` continues a walled pin or `--account` on the next
+   account of the ranking (the next pinned name if any, else the pool); only `--resume` stays,
+   because the session lives there.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
@@ -336,7 +336,7 @@ routing-math paragraph the rules above replace.
   ACCOUNTS across vendors — several per vendor allowed, since the block answers where the next runs
   go rather than nominating one account per leg — as ranked rows
   `<rank> <budget> <wk> <5h> <vendor>/<account> <model>·<eff> [flags]`. The ordering rule is:
-  usable pin first, then `[five-hour deferral, fresh claim, late auth, −budget, name]`; apply it
+  pin tier first, then `[five-hour deferral, fresh claim, late auth, −budget, name]`; apply it
   across vendors and cap the result at five rows. `ACCOUNT: <name>` names row 1, then one section
   per vendor carrying that vendor's rows with the exact reset (`↺ Mon 09:30`), then `DATA:`. A run
   that ranked nothing prints one `NEXT: <reason>` line instead of the table. The session account

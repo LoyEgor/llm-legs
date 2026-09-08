@@ -660,13 +660,19 @@ printf 'worker=auto\nclaudeb_profile=claude-a\ncodex_profile=codex-a\n' >"$PIN_C
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use main
 assert grep -qx 'gemini_profile=main' "$PIN_CONFIG"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use pinacct
-assert grep -qx 'gemini_profile=pinacct' "$PIN_CONFIG"
+assert grep -qx 'gemini_profile=main,pinacct' "$PIN_CONFIG"
 assert test "$(grep -c '^gemini_profile=' "$PIN_CONFIG")" = 1
 assert grep -qx 'worker=auto' "$PIN_CONFIG"
 assert grep -qx 'claudeb_profile=claude-a' "$PIN_CONFIG"
 assert grep -qx 'codex_profile=codex-a' "$PIN_CONFIG"
 pin_output=$(env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use)
-assert grep -qx 'geminib: workers are pinned to pinacct' <<<"$pin_output"
+assert grep -qx 'geminib: workers are pinned to main,pinacct' <<<"$pin_output"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --unpin pinacct
+assert grep -qx 'gemini_profile=main' "$PIN_CONFIG"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --unpin main
+assert_fails grep -q '^gemini_profile=' "$PIN_CONFIG"
+assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use pinacct
+assert grep -qx 'gemini_profile=pinacct' "$PIN_CONFIG"
 assert env WORKER_PICK_CONFIG_FILE="$PIN_CONFIG" bash "$SCRIPT" use --clear
 assert_fails grep -q '^gemini_profile=' "$PIN_CONFIG"
 assert grep -qx 'worker=auto' "$PIN_CONFIG"
