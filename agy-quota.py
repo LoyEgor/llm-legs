@@ -40,9 +40,14 @@ ANSI = re.compile(
     re.S,
 )
 
-# "not signed in" alone is NOT a verdict: a logged-in agy transiently prints it while
-# auto-signing-in; login-needed is the explicit chooser, or the timeout with it unresolved.
+# Neither "not signed in" nor the login chooser is a verdict on sight: a logged-in agy paints
+# both ("Signing in... / Select login method") for the fraction of a second before its keyring
+# token is applied (2026-09-09: seven legs marked logged-out that way). Login-needed is the
+# chooser still standing, with no ready footer, once LOGIN_CONFIRM_TIMEOUT has passed.
 LOGIN_SCREEN_MARKER = "Select login method"
+READY_MARKER = "? for shortcuts"
+CLEAR_SCREEN = b"\x1b[2J"
+LOGIN_CONFIRM_TIMEOUT = float(os.environ.get("AGY_QUOTA_LOGIN_CONFIRM_TIMEOUT", "8"))
 NOT_SIGNED_IN = re.compile(r"\bnot signed in\b", re.IGNORECASE)
 LOGIN_PROBE_WINDOW = 4096
 AUTH_EXIT = 2
@@ -163,36 +168,46 @@ def fetch() -> dict[str, Any]:
     )
     transcript = bytearray()
     deadline = time.monotonic() + STARTUP_TIMEOUT
+    login_deadline: float | None = None
     signed_out_seen = False
 
     try:
-        while time.monotonic() < deadline:
+        while True:
+            now = time.monotonic()
+            if login_deadline is not None and now >= login_deadline:
+                raise AuthRequired("login screen")
+            if now >= deadline:
+                if signed_out_seen:
+                    raise AuthRequired("not signed in (auto-sign-in never completed)")
+                raise TimeoutError("agy startup timed out")
             readable, _, _ = select.select([master_fd], [], [], 0.25)
-            if readable:
-                try:
-                    chunk = os.read(master_fd, 65536)
-                except OSError as error:
-                    raise RuntimeError(f"agy exited during startup: {error}") from error
-                if not chunk:
-                    raise RuntimeError("agy exited during startup")
-                transcript += chunk
-                transcript = transcript[-1_000_000:]
+            if not readable:
+                continue
+            try:
+                chunk = os.read(master_fd, 65536)
+            except OSError as error:
+                raise RuntimeError(f"agy exited during startup: {error}") from error
+            if not chunk:
+                raise RuntimeError("agy exited during startup")
+            transcript += chunk
+            transcript = transcript[-1_000_000:]
 
-                screen = clean_terminal(transcript)
-                if "Do you trust the contents" in screen:
-                    raise RuntimeError(
-                        f"agy workdir is not trusted: {WORKDIR}; open agy there once manually"
-                    )
-                if LOGIN_SCREEN_MARKER in screen:
-                    raise AuthRequired("login screen")
-                if NOT_SIGNED_IN.search(screen[:LOGIN_PROBE_WINDOW]):
-                    signed_out_seen = True
-                if "? for shortcuts" in screen:
-                    break
-        else:
-            if signed_out_seen:
-                raise AuthRequired("not signed in (auto-sign-in never completed)")
-            raise TimeoutError("agy startup timed out")
+            screen = clean_terminal(transcript)
+            if "Do you trust the contents" in screen:
+                raise RuntimeError(
+                    f"agy workdir is not trusted: {WORKDIR}; open agy there once manually"
+                )
+            if READY_MARKER in screen:
+                break
+            # The transcript is history, not the screen: the chooser counts only while it is still
+            # on the frame painted since the last clear.
+            frame = clean_terminal(transcript.rsplit(CLEAR_SCREEN, 1)[-1])
+            if LOGIN_SCREEN_MARKER not in frame:
+                login_deadline = None
+            elif login_deadline is None:
+                login_deadline = min(deadline, now + LOGIN_CONFIRM_TIMEOUT)
+            if NOT_SIGNED_IN.search(screen[:LOGIN_PROBE_WINDOW]):
+                signed_out_seen = True
 
         ports_deadline = time.monotonic() + 5
         ports: list[int] = []
