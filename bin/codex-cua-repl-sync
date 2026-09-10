@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+set -u
+
+# bash 3.2 + set -u aborts on "${arr[@]}" when the array is empty.
+expand_or_empty() {
+  eval "set -- \${$1[@]+\"\${$1[@]}\"}"
+  printf '%s\n' "$@"
+}
+
+check_only=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check) check_only=true; shift ;;
+    *) printf 'usage: codex-cua-repl-sync [--check]\n' >&2; exit 2 ;;
+  esac
+done
+
+fail() {
+  printf 'codex-cua-repl-sync: %s\n' "$*" >&2
+  exit 1
+}
+
+real_home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')
+[ -n "$real_home" ] || real_home="/Users/$(id -un)"
+[ -d "$real_home" ] || real_home="$HOME"
+
+codex_home="${CODEX_HOME:-}"
+if [ -z "$codex_home" ]; then
+  if [ -d "$HOME/.codex" ]; then codex_home="$HOME/.codex"
+  elif [ -d "$real_home/.codex" ]; then codex_home="$real_home/.codex"
+  else codex_home="$HOME/.codex"
+  fi
+fi
+
+config_file="${BROWSE_CODEX_CONFIG:-$codex_home/config.toml}"
+plugins_cache="$codex_home/plugins/cache/openai-bundled/unified-computer-use"
+if [ ! -d "$plugins_cache" ] && [ -d "$real_home/.codex/plugins/cache/openai-bundled/unified-computer-use" ]; then
+  plugins_cache="$real_home/.codex/plugins/cache/openai-bundled/unified-computer-use"
+fi
+
+manifest=$(printf '%s\n' "$plugins_cache"/*/.mcp.json | LC_ALL=C sort -V | tail -n 1)
+[ -n "$manifest" ] && [ -f "$manifest" ] || fail "no .mcp.json found under $plugins_cache"
+
+manifest_cmd=$(jq -r '.mcpServers.cua_repl.command // empty' "$manifest")
+[ -n "$manifest_cmd" ] || fail "missing .mcpServers.cua_repl.command in $manifest"
+
+manifest_args=()
+while IFS= read -r arg; do
+  [ -n "$arg" ] || continue
+  manifest_args+=("$arg")
+done < <(jq -r '.mcpServers.cua_repl.args[]?' "$manifest")
+
+desired_args_json=$(jq -c '.mcpServers.cua_repl.args // []' "$manifest")
+desired_env_keys=$(jq -r '.mcpServers.cua_repl.env // {} | keys[]' "$manifest" | LC_ALL=C sort)
+
+json_equal() {
+  python3 -c 'import json,sys
+try:
+  sys.exit(0 if json.loads(sys.argv[1]) == json.loads(sys.argv[2]) else 1)
+except Exception:
+  sys.exit(1)' "$1" "$2"
+}
+
+toml_env_keys() {
+  awk '
+    /^[[:space:]]*\[/ { next }
+    /^[[:space:]]*(#|$)/ { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      if (match(line, /^"[^"]+"/)) key = substr(line, RSTART + 1, RLENGTH - 2)
+      else if (match(line, /^[A-Za-z0-9_]+/)) key = substr(line, RSTART, RLENGTH)
+      else next
+      print key
+    }
+  ' <<<"$1" | LC_ALL=C sort
+}
+
+write_cua_toml() {
+  mkdir -p "$(dirname "$config_file")" || fail 'could not create config directory'
+  tmp_toml=$(mktemp "$config_file.XXXXXX") || fail 'could not create temporary config'
+  if [ -f "$config_file" ]; then
+    awk '
+      /^[[:space:]]*\[/ { skip = ($0 ~ /^[[:space:]]*\[mcp_servers\.cua_repl(\.env)?\][[:space:]]*$/) }
+      !skip { print }
+    ' "$config_file" >"$tmp_toml" || fail 'could not read config'
+  fi
+  {
+    printf '\n[mcp_servers.cua_repl]\nstartup_timeout_sec = 120\n'
+    printf 'command = %s\n' "$(jq -c '.mcpServers.cua_repl.command' "$manifest")"
+    printf 'args = %s\n' "$desired_args_json"
+    printf '\n[mcp_servers.cua_repl.env]\n'
+    jq -r '.mcpServers.cua_repl.env // {} | to_entries[] | "\(.key | tojson) = \(.value | tojson)"' "$manifest"
+  } >>"$tmp_toml" && mv -f "$tmp_toml" "$config_file" || fail 'could not write config'
+}
+
+cua_repl_present() {
+  [ -f "$config_file" ] && grep -Eq '^[[:space:]]*\[mcp_servers\.cua_repl\]' "$config_file"
+}
+
+fill_empty_instruction() {
+  local key="$1" val_file="$2"
+  python3 -c '
+import json, os, re, sys
+key = sys.argv[1]
+path = sys.argv[2]
+val_path = sys.argv[3]
+with open(val_path, "r") as fh:
+    val = fh.read()
+line = "%s = %s" % (key, json.dumps(val, ensure_ascii=False))
+header = re.compile(r"^\[mcp_servers\.node_repl\.env\]\s*$")
+q = chr(34) * 2
+a = chr(39) * 2
+empty = re.compile(r"^" + re.escape(key) + r"\s*=\s*(" + re.escape(q) + r"|" + re.escape(a) + r")\s*$")
+with open(path) as fh:
+    rows = fh.readlines()
+out = []
+in_sec = False
+for raw in rows:
+    stripped = raw.lstrip()
+    indent = raw[: len(raw) - len(stripped)]
+    if stripped.startswith("["):
+        in_sec = bool(header.match(stripped.rstrip("\n")))
+        out.append(raw)
+        continue
+    if in_sec and empty.match(stripped.rstrip("\n")):
+        out.append(indent + line + "\n")
+        continue
+    out.append(raw)
+tmp = path + ".tmp." + str(os.getpid())
+with open(tmp, "w") as fh:
+    fh.writelines(out)
+os.rename(tmp, path)
+' "$key" "$config_file" "$val_file" || fail "could not fill $key"
+}
+
+cua_out_of_sync=false
+timeout_out_of_sync=false
+
+if [ ! -f "$config_file" ]; then
+  cua_out_of_sync=true
+  timeout_out_of_sync=true
+else
+  cua_section=$(awk '
+    /^[[:space:]]*\[/ { in_sec = ($0 ~ /^[[:space:]]*\[mcp_servers\.cua_repl\][[:space:]]*$/) }
+    in_sec { print }
+  ' "$config_file")
+  cua_env=$(awk '
+    /^[[:space:]]*\[/ { in_sec = ($0 ~ /^[[:space:]]*\[mcp_servers\.cua_repl\.env\][[:space:]]*$/) }
+    in_sec { print }
+  ' "$config_file")
+  if ! grep -Eq '^[[:space:]]*\[mcp_servers\.cua_repl\]' "$config_file"; then
+    cua_out_of_sync=true
+    timeout_out_of_sync=true
+  else
+    if ! grep -Fq "command = \"$manifest_cmd\"" <<<"$cua_section"; then
+      cua_out_of_sync=true
+    fi
+    if ! awk '
+      /^[[:space:]]*\[mcp_servers\.cua_repl\]/ { in_sec=1; next }
+      /^[[:space:]]*\[/ { in_sec=0 }
+      in_sec && /^[[:space:]]*startup_timeout_sec[[:space:]]*=[[:space:]]*120/ { found=1 }
+      END { exit !found }
+    ' <<<"$cua_section"; then
+      timeout_out_of_sync=true
+    fi
+    registered_args_json=$(awk '
+      /^[[:space:]]*args[[:space:]]*=/ {
+        sub(/^[^=]*=[[:space:]]*/, "")
+        print
+        exit
+      }
+    ' <<<"$cua_section")
+    if ! json_equal "${registered_args_json:-[]}" "$desired_args_json"; then
+      cua_out_of_sync=true
+    fi
+    registered_env_keys=$(toml_env_keys "$cua_env")
+    if [ "$desired_env_keys" != "$registered_env_keys" ]; then
+      cua_out_of_sync=true
+    fi
+    while IFS= read -r k; do
+      [ -n "$k" ] || continue
+      v=$(jq -r --arg k "$k" '.mcpServers.cua_repl.env[$k]' "$manifest")
+      if ! grep -Fq "$k = \"$v\"" <<<"$cua_env" && ! grep -Fq "$k = '$v'" <<<"$cua_env" &&
+         ! grep -Fqx "$(jq -rn --arg k "$k" --arg v "$v" '"\($k | tojson) = \($v | tojson)"')" <<<"$cua_env"; then
+        cua_out_of_sync=true
+        break
+      fi
+    done < <(jq -r '.mcpServers.cua_repl.env // {} | keys[]' "$manifest")
+  fi
+fi
+
+empty_instructions=()
+if [ -f "$config_file" ]; then
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    val=$(jq -r --arg k "$key" '.mcpServers.cua_repl.env[$k] // empty' "$manifest")
+    [ -n "$val" ] || continue
+    if awk -v k="$key" '
+      /^[[:space:]]*\[mcp_servers\.node_repl\.env\]/ { in_sec=1; next }
+      /^[[:space:]]*\[/ { in_sec=0 }
+      in_sec && $0 ~ ("^[[:space:]]*" k "[[:space:]]*=[[:space:]]*(\"\"|'\'\'')[[:space:]]*$") { found=1 }
+      END { exit !found }
+    ' "$config_file"; then
+      empty_instructions+=("$key")
+    fi
+  done < <(jq -r '.mcpServers.cua_repl.env // {} | keys[] | select(startswith("NODE_REPL_INSTRUCTIONS_USE_CASE_"))' "$manifest")
+fi
+
+if [ "$check_only" = true ]; then
+  if [ "$cua_out_of_sync" = false ] && [ "$timeout_out_of_sync" = false ] && [ "${#empty_instructions[@]}" -eq 0 ]; then
+    printf 'unchanged\n'
+    exit 0
+  fi
+  [ "$cua_out_of_sync" = false ] || printf 'out of sync: [mcp_servers.cua_repl]\n'
+  [ "$timeout_out_of_sync" = false ] || printf 'out of sync: startup_timeout_sec\n'
+  if [ "${#empty_instructions[@]}" -gt 0 ]; then
+    while IFS= read -r key; do
+      [ -n "$key" ] || continue
+      printf 'empty instruction: %s\n' "$key"
+    done < <(expand_or_empty empty_instructions)
+  fi
+  exit 1
+fi
+
+changes=0
+
+if [ "$cua_out_of_sync" = true ] || [ "$timeout_out_of_sync" = true ]; then
+  cli_added=false
+  codex_bin=$(command -v codex || true)
+  if [ -n "$codex_bin" ] && [ "$config_file" = "$codex_home/config.toml" ]; then
+    add_cmd=("$codex_bin" mcp add cua_repl)
+    while IFS= read -r k; do
+      [ -n "$k" ] || continue
+      v=$(jq -r --arg k "$k" '.mcpServers.cua_repl.env[$k]' "$manifest")
+      add_cmd+=(--env "$k=$v")
+    done < <(jq -r '.mcpServers.cua_repl.env // {} | keys[]' "$manifest")
+    add_cmd+=(-- "$manifest_cmd")
+    if [ "${#manifest_args[@]}" -gt 0 ]; then
+      while IFS= read -r arg; do
+        [ -n "$arg" ] || continue
+        add_cmd+=("$arg")
+      done < <(expand_or_empty manifest_args)
+    fi
+    if "${add_cmd[@]}"; then
+      cli_added=true
+      printf 'synced [mcp_servers.cua_repl]\n'
+      changes=$((changes + 1))
+    fi
+  fi
+
+  write_cua_toml
+  cua_repl_present || fail 'could not register cua_repl'
+  printf 'synced [mcp_servers.cua_repl] in config.toml\n'
+  changes=$((changes + 1))
+fi
+
+if [ "${#empty_instructions[@]}" -gt 0 ]; then
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    val=$(jq -r --arg k "$key" '.mcpServers.cua_repl.env[$k]' "$manifest")
+    val_file=$(mktemp "${TMPDIR:-/tmp}/cua-instr.XXXXXX") || fail 'could not stage instruction value'
+    printf '%s' "$val" >"$val_file"
+    fill_empty_instruction "$key" "$val_file"
+    rm -f "$val_file"
+    printf 'filled %s\n' "$key"
+    changes=$((changes + 1))
+  done < <(expand_or_empty empty_instructions)
+fi
+
+if [ "$changes" -eq 0 ]; then
+  printf 'unchanged\n'
+fi
+
+"$0" --check >/dev/null || fail "registration remains out of sync after repair"

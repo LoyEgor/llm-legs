@@ -11,10 +11,11 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--chrome]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
-    '       worker-run claim <run-id> --paths <path>... [--complete]' >&2
+    '       worker-run claim <run-id> --paths <path>... [--complete]' \
+    '       worker-run browse [--vendor codex|claudeb] [--dia-profile <dir>] [--record <deviceId> <account>] [--json]' >&2
   exit 2
 }
 
@@ -116,7 +117,11 @@ launch_attempt() { # directory
   [[ "$attempt" =~ ^[0-9]+$ ]] || attempt=0
   attempt=$((attempt + 1))
   token="$(basename "$directory")-a$attempt"
-  { cat "$directory/brief" && printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
+  { if [ -f "$directory/browser-preamble" ]; then
+      cat "$directory/browser-preamble" || return 1
+      printf '\n'
+    fi
+    cat "$directory/brief" && printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
     >"$directory/brief.launch.tmp.$$" &&
     mv -f "$directory/brief.launch.tmp.$$" "$directory/brief.launch" || return 1
   printf '%s\n' "$attempt" >"$directory/attempt" 2>/dev/null || :
@@ -705,20 +710,23 @@ read_json_array() {
 }
 
 supervise_claudeb() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli rc
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc chrome
   local -a command retry
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
   effort=$(jq -r '.effort' "$meta")
   resume=$(jq -r '.resume' "$meta")
   cli=$(jq -r '.cli' "$meta")
+  chrome=$(jq -r '.chrome // false' "$meta")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
   [ -z "$resume" ] || command+=(--resume "$resume")
+  [ "$chrome" = false ] || command+=(--chrome)
   run_with_deadline "${command[@]}" <"$directory/brief.launch" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "$rc" -ne 0 ] && grep -Eiq -- '((unknown|unrecognized|invalid|unexpected|unsupported|not supported).{0,80}--effort|--effort.{0,80}(unknown|unrecognized|invalid|unexpected|unsupported|not supported))' "$directory/err"; then
     retry=("$cli" profile "$account" -p --model "$model" --output-format json --dangerously-skip-permissions)
     [ -z "$resume" ] || retry+=(--resume "$resume")
+    [ "$chrome" = false ] || retry+=(--chrome)
     meta_update "$directory" '.effort_flag_dropped = true' || return 4
     : >"$directory/out"
     : >"$directory/err"
@@ -893,6 +901,8 @@ reroute_walled() {
   local directory="$1" vendor="$2" walled tag
   has_limit_signature "$directory" "$vendor" || return 1
   record_run_wall "$directory" "$vendor"
+  # An account-bound browser preamble cannot follow the ordinary pool reroute.
+  if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then return 1; fi
   [ -z "$(jq -r '.resume // empty' "$directory/meta.json")" ] || return 1
   walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
   pick_account "$vendor" "$walled"
@@ -910,6 +920,7 @@ reroute_walled() {
   # served model and refused tools would be reported as the rescue attempt's own.
   meta_update "$directory" \
     '.walled_accounts = ((.walled_accounts // []) + [.account]) | .account = $next | .started_at = $now
+     | if .browser then .browser_account = $next else . end
      | del(.served_model, .denied_tools)' \
     --arg next "$PICKED_ACCOUNT" --argjson now "$(date +%s)" || return 1
   if IFS= read -r tag <"$directory/tag" 2>/dev/null; then
@@ -1376,6 +1387,7 @@ start_run() {
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
+  local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
   local -a add_dirs images command_meta command
   add_dirs=()
   images=()
@@ -1394,6 +1406,8 @@ start_run() {
       --add-dir) [ "$#" -ge 2 ] || usage; add_dirs+=("$2"); shift 2 ;;
       --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
       --web-search) web_search=true; shift ;;
+      --chrome) chrome=true; shift ;;
+      --browser) browser=true; shift ;;
       *) usage ;;
     esac
   done
@@ -1416,9 +1430,11 @@ start_run() {
       [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'claudeb does not support --add-dir, --image, or --web-search'
       ;;
     codex)
+      [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       [ -z "$resume" ] || [ "${#add_dirs[@]}" -eq 0 ] || fail 'codex resume does not support --add-dir'
       ;;
     gemini)
+      [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'gemini does not support --image or --web-search flags'
       # agy has no stdin mode — the brief travels on argv, and past the kernel's
       # per-argument ceiling execve fails with a bare E2BIG long after start.
@@ -1426,14 +1442,19 @@ start_run() {
       [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
     grok)
+      [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), and it takes no
       # image attachment.
       [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
       ;;
   esac
-  epoch=$(date +%s)
-  printf -v suffix '%04x' "$RANDOM"
-  run_id="$vendor-$epoch-$$-$suffix"
+  if [ "$browser" = true ]; then
+    case "$vendor" in
+      claudeb) chrome=true ;;
+      codex) ;;
+      *) printf 'REASON: %s does not support --browser\n' "$vendor"; return 2 ;;
+    esac
+  fi
   refuse_cheap_model "$vendor" "$model" "$resume"
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
@@ -1446,6 +1467,25 @@ start_run() {
   for value in "${!add_dirs[@]}"; do
     [[ "${add_dirs[$value]}" = /* ]] || add_dirs[$value]="$PWD/${add_dirs[$value]}"
   done
+
+  if [ "$browser" = true ]; then
+    browser_json=$(browse_run --vendor "$vendor" --json) || :
+    if ! jq -e --arg vendor "$vendor" '.plan.vendor == $vendor' <<<"$browser_json" >/dev/null 2>&1; then
+      jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
+      return 2
+    fi
+    browser_account=$(jq -r '.plan.account' <<<"$browser_json")
+    browser_device=$(jq -r '.plan.device // .dia_device.id // empty' <<<"$browser_json")
+    browser_preamble=$(jq -r '.preamble_file' <<<"$browser_json")
+    if [ "$vendor" = claudeb ] && [ -n "$explicit_account" ] && [ "$explicit_account" != "$browser_account" ]; then
+      jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
+      printf 'REASON: claudeb/%s cannot see device %s; plan says %s\n' "$explicit_account" "$browser_device" "$browser_account"
+      return 2
+    fi
+    jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json" >&2
+    explicit_account=${explicit_account:-$browser_account}
+    browser_account=$explicit_account
+  fi
 
   if [ -n "$explicit_account" ]; then
     account="$explicit_account"
@@ -1515,6 +1555,7 @@ start_run() {
       cli="${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}"
       command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
+      [ "$chrome" = false ] || command_meta+=(--chrome)
       ;;
     codex)
       config_model=$(codex_config_model)
@@ -1600,10 +1641,12 @@ start_run() {
   local prune_marker="$root/.prune"
   if [ ! -f "$prune_marker" ] || [ -n "$(find "$prune_marker" -mtime +1 2>/dev/null)" ]; then
     touch "$prune_marker" 2>/dev/null
-    find "$root" -mindepth 1 -maxdepth 1 -type d -mtime +7 -exec rm -rf {} + 2>/dev/null
+    find "$root" -mindepth 1 -maxdepth 1 -type d ! -name browse -mtime +7 -exec rm -rf {} + 2>/dev/null
   fi
   epoch=$(date +%s)
   local attempts=0
+  printf -v suffix '%04x' "$RANDOM"
+  run_id="$vendor-$epoch-$$-$suffix"
   while :; do
     directory="$root/$run_id"
     mkdir "$directory" 2>/dev/null && break
@@ -1613,6 +1656,10 @@ start_run() {
     [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
   done
   cp "$brief" "$directory/brief" || fail 'could not copy brief'
+  if [ "$browser" = true ]; then
+    cp "$browser_preamble" "$directory/browser-preamble" || fail 'could not copy browser preamble'
+    rm -f "$browser_preamble"
+  fi
   # The recorded brief is the input, byte for byte — `worker-run report`, RESUME and ATTACH all
   # quote it back, and a preamble growing on every hop would be a brief nobody wrote. What the
   # vendor is handed is this second file, and only ever this one.
@@ -1639,7 +1686,10 @@ start_run() {
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
-    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
+    --argjson chrome "$chrome" --argjson browser "$browser" \
+    --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
+    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
+     + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
@@ -1917,7 +1967,9 @@ print_outcome() {
     # Worker agents relay these lines verbatim, so the wall's SCOPE lives here, not in agent prose.
     # A resumed session is the one run that never left its account; every other USAGE_LIMIT is the
     # pool exhausted.
-    if [ -n "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)" ]; then
+    if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then
+      printf 'WALL: browser device stays on %s\n' "$(jq -r '.account' "$directory/meta.json")"
+    elif [ -n "$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)" ]; then
       printf 'WALL: resumed session stays on %s\n' \
         "$(jq -r '.account' "$directory/meta.json" 2>/dev/null)"
     else
@@ -2710,13 +2762,7 @@ report_run() {
   run_files "$directory"
   unnamed_line "$directory"
   printf 'RESULT:\n'
-  if [ "$vendor" = claudeb ]; then
-    jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n 400
-  elif [ "$vendor" = grok ]; then
-    grok_result_text "$directory" | tail -n 400
-  else
-    tail -n 400 "$directory/out" 2>/dev/null
-  fi
+  run_result_text "$directory" "$vendor" | tail -n 400
 }
 
 produced_commit_rows() { # top rel head-before [after]
@@ -3034,6 +3080,655 @@ claim_run() {
   head -n 20 "$directory/files" 2>/dev/null
 }
 
+browse_device_cache() (
+  local operation="$1" device="$2" account="$3"
+  local browse_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse"
+  local dev_file="$browse_dir/devices.json" lock="$browse_dir/devices.lock.d" tmp_file deadline owner mtime now
+  mkdir -p "$browse_dir" || return 1
+  deadline=$((SECONDS + 10))
+  while :; do
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s\n' "$$" >"$lock/pid" || { rm -rf "$lock"; return 1; }
+      break
+    fi
+    owner=''
+    read -r owner 2>/dev/null <"$lock/pid" || owner=''
+    mtime=$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock" 2>/dev/null) || mtime=0
+    now=$(date +%s)
+    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null ||
+       { [ "$mtime" -gt 0 ] && [ $((now - mtime)) -gt 60 ]; }; then
+      rm -rf "$lock" 2>/dev/null
+      continue
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || return 1
+    sleep 0.05
+  done
+  trap 'rm -rf "$lock" 2>/dev/null; [ -z "${tmp_file:-}" ] || rm -f "$tmp_file"' EXIT
+  local existing='{}'
+  [ ! -f "$dev_file" ] || existing=$(cat "$dev_file") || return 1
+  tmp_file=$(mktemp "$dev_file.XXXXXX") || return 1
+  jq --arg op "$operation" --arg dev "$device" --arg acct "$account" \
+    --arg seen "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" '
+      if $op == "record" then . + {($dev): {account: $acct, seen: $seen}}
+      elif $op == "drop" and (.[$dev] == null or .[$dev].account == $acct) then
+        . + {($dev): {account: $acct, seen: $seen, denied: true}}
+      else . end
+    ' <<<"$existing" >"$tmp_file" && mv -f "$tmp_file" "$dev_file"
+)
+
+browse_cache_output() {
+  local line device account
+  local uuid='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+  local acct='[A-Za-z0-9][A-Za-z0-9_.-]*'
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^BROWSER-DEVICE-ACCOUNT:[[:blank:]]+($uuid)[[:blank:]]+($acct)[[:space:]]*$ ]]; then
+      device=${BASH_REMATCH[1]} account=${BASH_REMATCH[2]}
+      browse_device_cache record "$device" "$account" || true
+    elif [[ "$line" =~ ^OUTCOME:[[:blank:]]+BROWSER_DEVICE_NOT_IN_ACCOUNT[[:blank:]]+device=($uuid)[[:blank:]]+account=($acct)[[:space:]]*$ ]]; then
+      device=${BASH_REMATCH[1]} account=${BASH_REMATCH[2]}
+      browse_device_cache drop "$device" "$account" || true
+    fi
+  done
+}
+
+run_result_text() {
+  if [ -f "$1/result" ]; then cat "$1/result"; return; fi
+  case "$2" in
+    claudeb) jq -r '.result // empty' "$1/out" 2>/dev/null ;;
+    grok) grok_result_text "$1" ;;
+    *) cat "$1/out" 2>/dev/null ;;
+  esac
+}
+
+complete_run() {
+  local directory="$1" code="$2" vendor
+  local -a result_status
+  vendor=$(jq -r .vendor "$directory/meta.json")
+  if [ ! -f "$directory/result" ]; then
+    if jq -e '.browser == true or .chrome == true' "$directory/meta.json" >/dev/null 2>&1; then
+      run_result_text "$directory" "$vendor" | tee "$directory/result.tmp.$$" | browse_cache_output
+      result_status=("${PIPESTATUS[@]}")
+      if [ "${result_status[0]}" = 0 ]; then
+        mv -f "$directory/result.tmp.$$" "$directory/result"
+      else
+        rm -f "$directory/result.tmp.$$"
+      fi
+    else
+      if run_result_text "$directory" "$vendor" >"$directory/result.tmp.$$"; then
+        mv -f "$directory/result.tmp.$$" "$directory/result"
+      else
+        rm -f "$directory/result.tmp.$$"
+      fi
+    fi
+  fi
+  print_outcome "$directory" "$vendor" "$code"
+}
+
+browse_run() {
+  local browse_vendor='' browse_dia_profile='' browse_record_device='' browse_record_account=''
+  local browse_json=false
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --vendor)
+        [ "$#" -ge 2 ] || usage
+        browse_vendor="$2"
+        case "$browse_vendor" in
+          codex|claudeb) ;;
+          *) fail "unknown vendor for browse: $browse_vendor" ;;
+        esac
+        shift 2
+        ;;
+      --dia-profile)
+        [ "$#" -ge 2 ] || usage
+        browse_dia_profile="$2"
+        shift 2
+        ;;
+      --record)
+        [ "$#" -ge 3 ] || usage
+        browse_record_device="$2"
+        browse_record_account="$3"
+        shift 3
+        ;;
+      --json)
+        browse_json=true
+        shift
+        ;;
+      *) usage ;;
+    esac
+  done
+
+  local real_home
+  real_home=$(dscl . -read "/Users/$(id -un)" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory: //p')
+  [ -n "$real_home" ] || real_home="/Users/$(id -un)"
+  [ -d "$real_home" ] || real_home="$HOME"
+
+  local browse_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse"
+  local dev_file="$browse_dir/devices.json"
+  if [ -n "$browse_record_device" ] && [ -n "$browse_record_account" ]; then
+    browse_device_cache record "$browse_record_device" "$browse_record_account" ||
+      fail 'could not record browser device account'
+  fi
+
+  local dia_status='absent'
+  local pgrep_cmd="${BROWSE_PGREP:-pgrep}"
+  local open_cmd="${BROWSE_OPEN:-open}"
+  if [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
+    dia_status='running'
+  else
+    if $pgrep_cmd -x Dia >/dev/null 2>&1 || $pgrep_cmd -f Dia.app/Contents/MacOS/Dia >/dev/null 2>&1; then
+      dia_status='running'
+    else
+      $open_cmd -a Dia >/dev/null 2>&1 || true
+      local deadline=$(( $(date +%s) + 15 ))
+      while [ "$(date +%s)" -le "$deadline" ]; do
+        if $pgrep_cmd -x Dia >/dev/null 2>&1 || $pgrep_cmd -f Dia.app/Contents/MacOS/Dia >/dev/null 2>&1; then
+          dia_status='launched'
+          break
+        fi
+        sleep 0.25
+      done
+    fi
+  fi
+
+  local dia_user_data="${BROWSE_DIA_USER_DATA:-}"
+  if [ -z "$dia_user_data" ]; then
+    if [ -d "$HOME/Library/Application Support/Dia/User Data" ]; then
+      dia_user_data="$HOME/Library/Application Support/Dia/User Data"
+    elif [ -d "$real_home/Library/Application Support/Dia/User Data" ]; then
+      dia_user_data="$real_home/Library/Application Support/Dia/User Data"
+    else
+      dia_user_data="$HOME/Library/Application Support/Dia/User Data"
+    fi
+  fi
+
+  local dia_profile_name='' dia_profile_dir='' dia_profile_reason=''
+  local dia_device_id='' dia_device_name='' dia_device_reason=''
+  local -a dia_profiles=() dia_names=() dia_devices=() dia_device_names=() dia_accounts=()
+  local local_state="$dia_user_data/Local State"
+  if [ ! -f "$local_state" ]; then
+    dia_profile_reason='dia profile unreadable — Local State missing'
+  elif ! jq -e . "$local_state" >/dev/null 2>&1; then
+    dia_profile_reason='dia profile unreadable — Local State invalid JSON'
+  else
+    while IFS= read -r dia_profile_dir; do
+      [ -n "$dia_profile_dir" ] || continue
+      dia_profile_name=$(jq -r --arg d "$dia_profile_dir" '.profile.info_cache[$d].name // $d' "$local_state")
+      dia_device_id='' dia_device_name=''
+      local ext_settings="$dia_user_data/$dia_profile_dir/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
+      if [ -d "$ext_settings" ]; then
+        local last_match
+        last_match=$(LC_ALL=C grep -a -h -o -E "bridgeDeviceId.{0,150}" "$ext_settings"/*.ldb "$ext_settings"/*.log 2>/dev/null | LC_ALL=C tr -d "\0" | tail -n 1)
+        if [ -n "$last_match" ]; then
+          dia_device_id=$(LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" <<<"$last_match" | head -n 1)
+          dia_device_name=$(LC_ALL=C sed -E -n "s/.*[dD]?isplayName[^\"]*\"([^\"]+)\".*/\1/p" <<<"$last_match")
+        fi
+      fi
+      dia_profiles+=("$dia_profile_dir")
+      dia_names+=("$dia_profile_name")
+      dia_devices+=("$dia_device_id")
+      dia_device_names+=("$dia_device_name")
+    done < <(jq -r --arg forced "$browse_dia_profile" '
+      if $forced != "" then [$forced]
+      else [.profile.last_used, (.profile.last_active_profiles // [])[]] end
+      | map(select(type == "string" and length > 0))
+      | reduce .[] as $d ([]; if index($d) == null then . + [$d] else . end) | .[]
+    ' "$local_state")
+    [ "${#dia_profiles[@]}" -gt 0 ] || dia_profile_reason='dia profile unreadable — profile.last_used missing'
+  fi
+
+  local chrome_user_data="${BROWSE_CHROME_USER_DATA:-}"
+  if [ -z "$chrome_user_data" ]; then
+    if [ -d "$HOME/Library/Application Support/Google/Chrome" ]; then
+      chrome_user_data="$HOME/Library/Application Support/Google/Chrome"
+    elif [ -d "$real_home/Library/Application Support/Google/Chrome" ]; then
+      chrome_user_data="$real_home/Library/Application Support/Google/Chrome"
+    else
+      chrome_user_data="$HOME/Library/Application Support/Google/Chrome"
+    fi
+  fi
+
+  local -a banned_arr=()
+  local banned_str='none'
+  if [ -d "$chrome_user_data" ]; then
+    while IFS= read -r u; do
+      [ -n "$u" ] || continue
+      banned_arr+=("$u")
+    done < <(LC_ALL=C grep -a -h -o -E "bridgeDeviceId.{0,150}" "$chrome_user_data"/*/Local\ Extension\ Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn/*.ldb "$chrome_user_data"/*/Local\ Extension\ Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn/*.log 2>/dev/null | LC_ALL=C tr -d "\0" | LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" | sort -u)
+  fi
+  if [ "${#banned_arr[@]}" -gt 0 ]; then
+    banned_str=$(IFS=,; printf '%s' "${banned_arr[*]}")
+  fi
+
+  local chrome_status='absent'
+  if [ -n "${BROWSE_CHROME_STATUS:-}" ]; then
+    chrome_status="$BROWSE_CHROME_STATUS"
+  elif [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
+    chrome_status='absent'
+  elif $pgrep_cmd -x "Google Chrome" >/dev/null 2>&1 || $pgrep_cmd -f "Google Chrome.app/Contents/MacOS/Google Chrome" >/dev/null 2>&1; then
+    chrome_status='running'
+  fi
+
+  local codex_config="${BROWSE_CODEX_CONFIG:-}"
+  if [ -z "$codex_config" ]; then
+    if [ -f "$HOME/.codex/config.toml" ]; then
+      codex_config="$HOME/.codex/config.toml"
+    elif [ -f "$real_home/.codex/config.toml" ]; then
+      codex_config="$real_home/.codex/config.toml"
+    else
+      codex_config="$HOME/.codex/config.toml"
+    fi
+  fi
+
+  local -a reasons_list=()
+  local cua_repl_status='broken' sync_rc=0 sync_error='' sync_stderr
+  local sync_cmd="${BROWSE_CUA_SYNC:-$SCRIPT_DIRECTORY/codex-cua-repl-sync}"
+  sync_stderr=$(mktemp "${TMPDIR:-/tmp}/worker-run-cua.XXXXXX") || fail 'could not capture cua_repl diagnostics'
+  BROWSE_CODEX_CONFIG="$codex_config" "$sync_cmd" --check >/dev/null 2>"$sync_stderr" || sync_rc=$?
+  if [ "$sync_rc" -eq 0 ]; then
+    cua_repl_status=registered
+  elif [ "$sync_rc" -eq 1 ]; then
+    if BROWSE_CODEX_CONFIG="$codex_config" "$sync_cmd" >/dev/null 2>"$sync_stderr"; then
+      cua_repl_status=repaired
+    fi
+  fi
+  if [ "$cua_repl_status" = broken ]; then
+    IFS= read -r sync_error <"$sync_stderr" || :
+    reasons_list+=("REASON: codex skipped — cua_repl registration failed: ${sync_error:-sync exited without diagnostics}")
+  fi
+  rm -f "$sync_stderr"
+
+  local manifest_status='missing' manifest_path='' manifest_tmp
+  local chrome_manifest="${BROWSE_CHROME_MANIFEST:-}"
+  local native_host="${BROWSE_NATIVE_HOST:-}"
+  if [ -z "$chrome_manifest" ]; then
+    chrome_manifest="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json"
+    if [ ! -f "$chrome_manifest" ] &&
+       [ -f "$real_home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json" ]; then
+      chrome_manifest="$real_home/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.anthropic.claude_code_browser_extension.json"
+    fi
+  fi
+  if [ -z "$native_host" ]; then
+    native_host="$HOME/.claude/chrome/chrome-native-host"
+    if [ ! -x "$native_host" ] && [ -x "$real_home/.claude/chrome/chrome-native-host" ]; then
+      native_host="$real_home/.claude/chrome/chrome-native-host"
+    fi
+  fi
+  if [ ! -f "$chrome_manifest" ]; then
+    reasons_list+=("REASON: claudeb skipped — native messaging manifest missing")
+  else
+    manifest_path=$(jq -r '.path // empty' "$chrome_manifest" 2>/dev/null)
+    if [ -f "$manifest_path" ] && [ -x "$manifest_path" ]; then
+      manifest_status=ok
+    elif [ -f "$native_host" ] && [ -x "$native_host" ]; then
+      manifest_status=broken
+      manifest_tmp=$(mktemp "$chrome_manifest.XXXXXX") || manifest_tmp=''
+      if [ -n "$manifest_tmp" ] && jq --arg host "$native_host" '.path = $host' "$chrome_manifest" >"$manifest_tmp" &&
+         mv -f "$manifest_tmp" "$chrome_manifest"; then
+        manifest_status=repaired
+        reasons_list+=("REASON: manifest path repaired: $manifest_path -> $native_host")
+      else
+        reasons_list+=("REASON: claudeb skipped — native messaging manifest repair failed")
+      fi
+      [ -z "$manifest_tmp" ] || rm -f "$manifest_tmp"
+    else
+      manifest_status=broken
+      reasons_list+=("REASON: claudeb skipped — native host missing at ${manifest_path:-$native_host}")
+    fi
+  fi
+
+  local sky_status='absent'
+  if [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
+    sky_status='running'
+  elif $pgrep_cmd -x "SkyComputerUseService" >/dev/null 2>&1 || $pgrep_cmd -f "SkyComputerUseService" >/dev/null 2>&1; then
+    sky_status='running'
+  elif [ "$browse_vendor" != claudeb ]; then
+    local sky_app="${BROWSE_SKY_APP:-}"
+    if [ -z "$sky_app" ]; then
+      sky_app="$HOME/.codex/computer-use/Codex Computer Use.app"
+      if [ ! -d "$sky_app" ]; then
+        sky_app="$real_home/.codex/computer-use/Codex Computer Use.app"
+      fi
+    fi
+    if [ -d "$sky_app" ]; then
+      $open_cmd "$sky_app" >/dev/null 2>&1 || true
+      local deadline=$(( $(date +%s) + 15 ))
+      while [ "$(date +%s)" -le "$deadline" ]; do
+        if $pgrep_cmd -x "SkyComputerUseService" >/dev/null 2>&1 || $pgrep_cmd -f "SkyComputerUseService" >/dev/null 2>&1; then
+          sky_status='started'
+          break
+        fi
+        sleep 0.25
+      done
+    fi
+  fi
+
+  local wp_cmd="${BROWSE_WORKER_PICK:-${WORKER_RUN_WORKER_PICK:-worker-pick}}"
+  local wp_raw=''
+  wp_raw=$("$wp_cmd" 2>&1) || true
+
+  local -a usable_claude=() usable_codex=()
+  local -A claude_exclusions=()
+  local current_v='' line acct rest flag_reason reset_str stripped tok vname
+
+  while IFS= read -r line; do
+    case "$line" in
+      codex:*) current_v=codex ;;
+      claude:*) current_v=claude ;;
+      " "*) ;;
+      *) current_v="" ;;
+    esac
+    [ -n "$current_v" ] || continue
+    case "$(sed -e 's/^[[:space:]]*//' <<<"$line")" in \**) continue ;; esac
+
+    acct='' rest='' flag_reason='' reset_str=''
+    stripped="${line#$current_v:}"
+    stripped=$(sed -e "s/^[[:space:]]*//" <<<"$stripped")
+    case "$stripped" in
+      pin[[:space:]]*|unavailable|"off for workers"|"no accounts"|"no quota data"|"every account is out of the worker pool"*)
+        continue
+        ;;
+    esac
+    if [ "${#line}" -ge 58 ] && grep -Eq "^.{9,36}(%|-)" <<<"$line"; then
+      acct=$(cut -c 38-58 <<<"$line" | tr -d "[:space:]*")
+      rest=$(cut -c 59- <<<"$line")
+    else
+      rest="$stripped"
+      for tok in $stripped; do
+        case "$tok" in
+          *%|*d|*h|↺*|WALLED|PINNED|5h!|off|blocked|login|needed|auth|expired|opus*|astra*|f38*|grok*|low|med*|high|xhigh|auto|-|–|\?|\*|pin)
+            ;;
+          *)
+            acct=${tok%\*}
+            break
+            ;;
+        esac
+      done
+    fi
+
+    [ -n "$acct" ] || continue
+
+    if [[ "$rest" =~ ↺[[:space:]]*([^[:space:]]+([[:space:]]+[^[:space:]]+)?) ]]; then
+      reset_str="${BASH_REMATCH[1]}"
+    fi
+
+    if [[ "$rest" =~ (^|[[:space:]])off([[:space:]]|$) ]]; then
+      flag_reason="out of pool"
+    elif [[ "$rest" =~ (^|[[:space:]])WALLED([[:space:]]|$) ]]; then
+      # The ↺ column is the weekly reset, not the wall's end; llm-limits owns reset times.
+      flag_reason="walled"
+    elif [[ "$rest" =~ (^|[[:space:]])login[[:space:]]+needed([[:space:]]|$) ]]; then
+      flag_reason="login needed"
+    elif [[ "$rest" =~ (^|[[:space:]])blocked([[:space:]]|$) ]]; then
+      flag_reason="blocked"
+    elif [[ "$rest" =~ (^|[[:space:]])auth[[:space:]]+expired([[:space:]]|$) ]]; then
+      flag_reason="auth expired"
+    fi
+
+    vname="$current_v"
+    [ "$vname" != claude ] || vname=claudeb
+
+    if [ -n "$flag_reason" ]; then
+      reasons_list+=("REASON: $vname/$acct skipped — $flag_reason")
+      [ "$current_v" != claude ] || claude_exclusions[$acct]="$flag_reason"
+    else
+      if [ "$current_v" = claude ]; then
+        usable_claude+=("$acct")
+      elif [ "$current_v" = codex ]; then
+        usable_codex+=("$acct")
+      fi
+    fi
+  done <<<"$wp_raw"
+
+  local is_cached=false cached_acct='' cached_denied=false any_cached=false selected=0 i a active_reason
+  local dia_other_json='[]'
+  local -a dia_other_lines=()
+  for i in "${!dia_profiles[@]}"; do
+    cached_acct='' cached_denied=false
+    if [ -n "${dia_devices[$i]}" ] && [ -f "$dev_file" ]; then
+      cached_acct=$(jq -r --arg dev "${dia_devices[$i]}" '.[$dev].account // empty' "$dev_file" 2>/dev/null)
+      if [ "$(jq -r --arg dev "${dia_devices[$i]}" '.[$dev].denied // false' "$dev_file" 2>/dev/null)" = true ]; then
+        cached_denied=true
+      fi
+    fi
+    dia_accounts+=("$cached_acct")
+    if [ "$cached_denied" = true ]; then
+      :
+    else
+      [ -z "$cached_acct" ] || any_cached=true
+      if [ "$is_cached" = false ] && [ -n "$cached_acct" ]; then
+        for a in "${usable_claude[@]}"; do
+          if [ "$a" = "$cached_acct" ]; then selected=$i; is_cached=true; break; fi
+        done
+      fi
+    fi
+  done
+  dia_profile_dir="${dia_profiles[$selected]:-}" dia_profile_name="${dia_names[$selected]:-}"
+  dia_device_id="${dia_devices[$selected]:-}" dia_device_name="${dia_device_names[$selected]:-}"
+  cached_acct="${dia_accounts[$selected]:-}"
+  if [ "$selected" -ne 0 ]; then
+    active_reason=unknown
+    if [ -n "${dia_accounts[0]}" ]; then
+      active_reason="${claude_exclusions[${dia_accounts[0]}]:-out of pool}"
+    fi
+    reasons_list+=("REASON: dia/${dia_names[0]} skipped — account ${dia_accounts[0]:-unknown} $active_reason")
+  fi
+  for i in "${!dia_profiles[@]}"; do
+    [ "$i" -ne "$selected" ] || continue
+    dia_other_lines+=("DIA-OTHER: ${dia_names[$i]} (${dia_profiles[$i]}) ${dia_devices[$i]:-none} ${dia_accounts[$i]:+account=}${dia_accounts[$i]:-unknown}")
+    dia_other_json=$(jq --arg name "${dia_names[$i]}" --arg dir "${dia_profiles[$i]}" \
+      --arg device "${dia_devices[$i]}" --arg account "${dia_accounts[$i]}" \
+      '. + [{name:$name, dir:$dir, device:$device, account:(if $account == "" then null else $account end)}]' <<<"$dia_other_json")
+  done
+  if [ -z "$dia_device_id" ]; then
+    dia_device_reason="no claude extension device in ${dia_profile_dir:-unknown} — extension not installed or never logged in"
+  fi
+  [ -z "$dia_profile_reason" ] || reasons_list+=("REASON: $dia_profile_reason")
+  [ -z "$dia_device_reason" ] || reasons_list+=("REASON: $dia_device_reason")
+  if [ "$is_cached" = true ]; then
+    local -a reordered=("$cached_acct")
+    for a in "${usable_claude[@]}"; do
+      [ "$a" = "$cached_acct" ] || reordered+=("$a")
+    done
+    usable_claude=("${reordered[@]}")
+  elif [ "$any_cached" = true ]; then
+    reasons_list+=("REASON: claudeb skipped — no open Dia device has a usable cached account")
+  fi
+  local denied_acct='' denied_seen=''
+  if [ -n "$dia_device_id" ] && [ -f "$dev_file" ]; then
+    denied_acct=$(jq -r --arg dev "$dia_device_id" 'if .[$dev].denied == true then .[$dev].account // empty else empty end' "$dev_file" 2>/dev/null)
+    denied_seen=$(jq -r --arg dev "$dia_device_id" 'if .[$dev].denied == true then .[$dev].seen // empty else empty end' "$dev_file" 2>/dev/null)
+  fi
+  if [ -n "$denied_acct" ]; then
+    reasons_list+=("REASON: claudeb/$denied_acct skipped — device $dia_device_id not visible (probe failed ${denied_seen:-unknown})")
+    if [ "${#usable_claude[@]}" -gt 0 ]; then
+      local -a denied_last=()
+      local had_denied=false
+      for a in "${usable_claude[@]}"; do
+        if [ "$a" = "$denied_acct" ]; then had_denied=true; else denied_last+=("$a"); fi
+      done
+      if [ "$had_denied" = true ]; then
+        denied_last+=("$denied_acct")
+        usable_claude=("${denied_last[@]}")
+      fi
+    fi
+  fi
+  [ "${#usable_claude[@]}" -gt 0 ] || reasons_list+=("REASON: claudeb skipped — no usable accounts")
+  [ "${#usable_codex[@]}" -gt 0 ] || reasons_list+=("REASON: codex skipped — no usable accounts")
+
+  local plan_vendor='none' plan_account='' plan_device='' plan_source=''
+  if [ "$dia_status" = absent ]; then
+    reasons_list+=("REASON: dia not running")
+  elif [ "$browse_vendor" = codex ]; then
+    if [ "${#usable_codex[@]}" -gt 0 ] && [ "$cua_repl_status" != broken ]; then
+      plan_vendor='codex'
+      plan_account="${usable_codex[0]}"
+    fi
+  elif [ "$browse_vendor" = claudeb ]; then
+    if [ -n "$dia_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ] && [[ "$manifest_status" = ok || "$manifest_status" = repaired ]] &&
+       { [ "$is_cached" = true ] || [ "$any_cached" = false ]; }; then
+      plan_vendor='claudeb'
+      plan_account="${usable_claude[0]}"
+      plan_device="$dia_device_id"
+      if [ "$is_cached" = true ]; then plan_source='cached'; else plan_source='probe'; fi
+    fi
+  else
+    if [ "${#usable_codex[@]}" -gt 0 ] && [ "$cua_repl_status" != broken ]; then
+      plan_vendor='codex'
+      plan_account="${usable_codex[0]}"
+    elif [ -n "$dia_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ] && [[ "$manifest_status" = ok || "$manifest_status" = repaired ]] &&
+       { [ "$is_cached" = true ] || [ "$any_cached" = false ]; }; then
+      plan_vendor='claudeb'
+      plan_account="${usable_claude[0]}"
+      plan_device="$dia_device_id"
+      if [ "$is_cached" = true ]; then plan_source='cached'; else plan_source='probe'; fi
+    fi
+  fi
+
+  local preamble_file=''
+  mkdir -p "$browse_dir"
+  find "$browse_dir" -maxdepth 1 -name 'preamble-*.md' -mmin +1440 -delete 2>/dev/null || true
+  if [ "$plan_vendor" != none ]; then
+    preamble_file=$(mktemp "$browse_dir/preamble-$(date +%s)-$$.XXXXXX") || fail 'could not create browser preamble'
+    mv "$preamble_file" "$preamble_file.md" && preamble_file="$preamble_file.md"
+    if [ "$plan_vendor" = codex ]; then
+      cat >"$preamble_file" <<EOF
+# Browser Automation Preamble (Codex / Dia)
+
+Drive Egor's visible browser (Dia) using CUA REPL (\`js\` tool).
+
+## Instructions
+- First js call must be exactly: \`await cua.getState()\`
+- Identify Dia: Dia is the \`extension\`-type browser WITHOUT \`profileName\` whose tab titles match \`await cua.getApp("Dia")\`.
+- Identification hints (not CUA ids): Dia profile "${dia_profile_name:-unknown}" (${dia_profile_dir:-unknown}); window title "${dia_device_name:-Dia browser}". Anthropic bridge device UUIDs are irrelevant to \`cua\` — do not use them as CUA browser ids.
+- The browser with profileName "Egor work" is Chrome — never drive it.
+- Never drive Google Chrome. Never perform logins or credential entry.
+- All test/probing navigations must use https://example.com (Dia blocks httpbin.org / postman-echo.com for extension tabs).
+- Extension path first; use computer surface fallback (getApp/pressKey/typeText/getAXState) via SkyComputerUseService if needed.
+- Always close any created tabs before finishing.
+- End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`
+EOF
+    elif [ "$plan_vendor" = claudeb ]; then
+      cat >"$preamble_file" <<EOF
+# Browser Automation Preamble (Claudeb / Dia)
+
+Drive Egor's visible browser (Dia) using Claude in Chrome extension.
+
+## Instructions
+- Call \`list_connected_browsers\` first.
+- If target device \`$plan_device\` is listed, select it and continue.
+- If target device is not listed, print exactly:
+  \`OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$plan_device account=$plan_account\`
+  and stop immediately.
+- Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
+- Banned Chrome extension device IDs: $banned_str
+- Target Dia device ID: $plan_device
+- Never drive Google Chrome.
+- All test/probing navigations must use https://example.com.
+- On success print \`BROWSER-DEVICE-ACCOUNT: $plan_device $plan_account\` and end with \`OUTCOME: BROWSER_OK\`.
+- Always close any created tabs before finishing.
+EOF
+    fi
+  fi
+
+  if [ "$browse_json" = true ]; then
+    local claude_json codex_json reasons_json plan_json
+    claude_json=$(printf '%s\n' "${usable_claude[@]}" | jq -R . | jq -s 'map(select(length > 0))')
+    if [ "${#usable_codex[@]}" -gt 0 ]; then
+      codex_json=$(printf '"%s"' "${usable_codex[0]}")
+    else
+      codex_json=null
+    fi
+    reasons_json=$(printf '%s\n' "${reasons_list[@]}" | sed 's/^REASON: //' | jq -R . | jq -s 'map(select(length > 0))')
+    if [ "$plan_vendor" != none ]; then
+      plan_json=$(jq -n --arg v "$plan_vendor" --arg a "$plan_account" --arg d "$plan_device" --arg s "$plan_source" \
+        '{vendor:$v, account:$a} + (if $d != "" then {device:$d, source:$s} else {} end)')
+    else
+      plan_json=null
+    fi
+    jq -n \
+      --arg dia "$dia_status" \
+      --arg dia_p_name "$dia_profile_name" \
+      --arg dia_p_dir "$dia_profile_dir" \
+      --arg dia_dev_id "$dia_device_id" \
+      --arg dia_dev_name "$dia_device_name" \
+      --argjson dia_other "$dia_other_json" \
+      --arg banned "$banned_str" \
+      --arg chrome "$chrome_status" \
+      --arg manifest "$manifest_status" \
+      --arg cua "$cua_repl_status" \
+      --arg sky "$sky_status" \
+      --argjson claude "$claude_json" \
+      --argjson codex "$codex_json" \
+      --argjson reasons "$reasons_json" \
+      --argjson plan "$plan_json" \
+      --arg preamble "$preamble_file" \
+      '{
+        dia: $dia,
+        dia_profile: (if $dia_p_dir != "" then {name: $dia_p_name, dir: $dia_p_dir} else null end),
+        dia_device: (if $dia_dev_id != "" then {id: $dia_dev_id, display_name: $dia_dev_name} else null end),
+        dia_other: $dia_other,
+        banned_devices: (if $banned != "none" and $banned != "" then ($banned | split(",")) else [] end),
+        chrome: $chrome,
+        manifest: $manifest,
+        cua_repl: $cua,
+        sky: $sky,
+        next_claude_accounts: $claude,
+        next_codex_account: $codex,
+        reasons: $reasons,
+        plan: $plan,
+        preamble_file: (if $preamble != "" then $preamble else null end)
+      }'
+  else
+    printf 'DIA: %s\n' "$dia_status"
+    if [ -n "$dia_profile_dir" ]; then
+      printf 'DIA-PROFILE: %s (%s)\n' "$dia_profile_name" "$dia_profile_dir"
+    else
+      printf 'DIA-PROFILE: unknown\n'
+    fi
+    if [ -n "$dia_device_id" ]; then
+      printf 'DIA-DEVICE: %s "%s"\n' "$dia_device_id" "${dia_device_name:-Dia browser}"
+    else
+      printf 'DIA-DEVICE: none\n'
+    fi
+    for line in "${dia_other_lines[@]}"; do printf '%s\n' "$line"; done
+    printf 'BANNED-DEVICES: %s\n' "$banned_str"
+    printf 'CHROME: %s\n' "$chrome_status"
+    printf 'MANIFEST: %s\n' "$manifest_status"
+    printf 'CUA-REPL: %s\n' "$cua_repl_status"
+    printf 'SKY: %s\n' "$sky_status"
+    if [ "${#usable_claude[@]}" -gt 0 ]; then
+      local IFS=,
+      printf 'NEXT-CLAUDE-ACCOUNTS: %s\n' "${usable_claude[*]}"
+    else
+      printf 'NEXT-CLAUDE-ACCOUNTS: none\n'
+    fi
+    if [ "${#usable_codex[@]}" -gt 0 ]; then
+      printf 'NEXT-CODEX-ACCOUNT: %s\n' "${usable_codex[0]}"
+    else
+      printf 'NEXT-CODEX-ACCOUNT: none\n'
+    fi
+    for r in "${reasons_list[@]}"; do
+      printf '%s\n' "$r"
+    done
+    if [ "$plan_vendor" = codex ]; then
+      printf 'PLAN: codex account=%s\n' "$plan_account"
+    elif [ "$plan_vendor" = claudeb ]; then
+      printf 'PLAN: claudeb account=%s device=%s source=%s\n' "$plan_account" "$plan_device" "$plan_source"
+    else
+      printf 'PLAN: none\n'
+    fi
+    if [ -n "$preamble_file" ]; then
+      printf 'PREAMBLE-FILE: %s\n' "$preamble_file"
+    fi
+    if [ -n "$browse_record_device" ] && [ -n "$browse_record_account" ]; then
+      printf 'RECORDED: %s %s\n' "$browse_record_device" "$browse_record_account"
+    fi
+  fi
+
+  [ "$plan_vendor" != none ] || return 2
+  return 0
+}
+
 CONFIG_FILE="${WORKER_RUN_CONFIG_FILE:-$HOME/.claude/worker-model}"
 export WORKER_PICK_CONFIG_FILE="${WORKER_PICK_CONFIG_FILE:-$CONFIG_FILE}"
 CODEX_CONFIG="${WORKER_RUN_CODEX_CONFIG:-$HOME/.codex/config.toml}"
@@ -3047,7 +3742,8 @@ case "${1:-}" in
   wait) shift; wait_run "$@"; exit $? ;;
   report) shift; report_run "$@"; exit $? ;;
   claim) shift; claim_run "$@"; exit $? ;;
-  _deliver) print_outcome "$2" "$(jq -r .vendor "$2/meta.json")" "$3"; exit 0 ;;
+  browse) shift; browse_run "$@"; exit $? ;;
+  _deliver) complete_run "$2" "$3"; exit 0 ;;
   _supervise) shift; supervise "$@"; exit $? ;;
   *) usage ;;
 esac

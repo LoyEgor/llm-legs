@@ -5466,6 +5466,8 @@ for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
     230000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
   rm -f "$HOME/.local/bin/worker-run"
+  'claudeb profile com -p --browser' \
+  'claudeb profile com -p --chrome' \
   gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
     120000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
