@@ -782,6 +782,19 @@ EOF
   mkdir -p "$BT_DIA_EXT"
   printf 'bridgeDeviceId\x01\x0c\x0d\x3f\xd06ada21d4-ae66-4990-9040-97e18bb7b529"\x07\x12\x0ddisplayName\x01\x2b\x01\x05<<\"Dia browser\"\x02\x26\x04\x05\x09hControl' >"$BT_DIA_EXT/000001.log"
 
+  cat >"$BT_CHROME/Local State" <<'EOF'
+{
+  "profile": {
+    "info_cache": {
+      "Profile 1": {
+        "name": "Egor work"
+      }
+    },
+    "last_used": "Profile 1"
+  }
+}
+EOF
+
   local BT_CHROME_EXT="$BT_CHROME/Profile 1/Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"
   mkdir -p "$BT_CHROME_EXT"
   printf 'bridgeDeviceId\x01\x0c\x0d\x3f\xd0b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d"\x07\x12\x0ddisplayName\x01\x2b\x01\x05<<\"Chrome browser\"\x02\x26' >"$BT_CHROME_EXT/000001.log"
@@ -805,6 +818,45 @@ OUTPUT
 EOF
   chmod +x "$BT_WP"
 
+  # The transport a vendor drives the browser through is a process tree plus a socket, and both
+  # belong to Egor's real machine: every case here reads a fixture listing instead, so no assertion
+  # depends on which browser happens to be open while the suite runs.
+  local BT_PS="$BT_WORK/bin/ps-fixture" BT_LSOF="$BT_WORK/bin/lsof-fixture"
+  local BT_PS_LISTING="$BT_WORK/ps-listing"
+  local BT_SOCK_CLAUDE="$BT_WORK/sockets/claude" BT_SOCK_CODEX="$BT_WORK/sockets/codex"
+  mkdir -p "$BT_SOCK_CLAUDE" "$BT_SOCK_CODEX"
+  : >"$BT_SOCK_CLAUDE/101.sock"
+  : >"$BT_SOCK_CLAUDE/201.sock"
+  : >"$BT_SOCK_CODEX/1f0c9d3a.sock"
+  cat >"$BT_WORK/ps-connected" <<'EOF'
+  100     1 /Applications/Dia.app/Contents/MacOS/Dia
+  101   100 /Users/egorloy/.local/bin/claude --chrome-native-host
+  102   100 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
+  200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+  201   200 /Users/egorloy/.local/bin/claude --chrome-native-host
+  202   200 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
+  300   100 /Applications/Dia.app/Contents/MacOS/Dia --type=renderer
+EOF
+  # Chrome is up, but every extension host under it belongs to Dia: parentage is the whole test.
+  cat >"$BT_WORK/ps-chrome-bare" <<'EOF'
+  100     1 /Applications/Dia.app/Contents/MacOS/Dia
+  102   100 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
+  200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+EOF
+  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
+  cat >"$BT_PS" <<EOF
+#!/bin/sh
+cat "$BT_PS_LISTING"
+EOF
+  cat >"$BT_LSOF" <<EOF
+#!/bin/sh
+printf 'ChatGPT %s egorloy 3u unix 0x0 0t0 %s/1f0c9d3a.sock\n' "\$2" "$BT_SOCK_CODEX"
+EOF
+  chmod +x "$BT_PS" "$BT_LSOF"
+  local BROWSE_PS="$BT_PS" BROWSE_LSOF="$BT_LSOF"
+  local BROWSE_CLAUDE_SOCKET_DIR="$BT_SOCK_CLAUDE" BROWSE_CODEX_SOCKET_DIR="$BT_SOCK_CODEX"
+  export BROWSE_PS BROWSE_LSOF BROWSE_CLAUDE_SOCKET_DIR BROWSE_CODEX_SOCKET_DIR
+
   local out rc=0 preamble_path
   out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
         BROWSE_CHROME_USER_DATA="$BT_CHROME" \
@@ -817,7 +869,11 @@ EOF
   assert grep -qx 'DIA: running' <<<"$out"
   assert grep -qx 'DIA-PROFILE: work dia (Profile 8)' <<<"$out"
   assert grep -qx 'DIA-DEVICE: 6ada21d4-ae66-4990-9040-97e18bb7b529 "Dia browser"' <<<"$out"
-  assert grep -qx 'BANNED-DEVICES: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' <<<"$out"
+  assert grep -qx 'TARGET: dia' <<<"$out"
+  assert grep -qx 'CHROME-DEVICE: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d "Chrome browser"' <<<"$out"
+  assert grep -qx 'CHROME-PROFILE: Egor work (Profile 1)' <<<"$out"
+  assert test "$(grep -c '^BANNED-DEVICES:' <<<"$out")" -eq 0
+  assert test "$(grep -c '^LAUNCHED:' <<<"$out")" -eq 0
   assert grep -qx 'CHROME: absent' <<<"$out"
   assert grep -qx 'CUA-REPL: registered' <<<"$out"
   assert grep -qx 'SKY: running' <<<"$out"
@@ -834,6 +890,10 @@ EOF
   assert grep -q 'https://example.com' "$preamble_path"
   assert grep -q 'work dia' "$preamble_path"
   assert grep -q 'irrelevant to `cua`' "$preamble_path"
+  assert grep -q 'agent.browsers.list()' "$preamble_path"
+  assert grep -q 'WITHOUT a `profileName`' "$preamble_path"
+  assert grep -q 'Egor work.*is Google Chrome' "$preamble_path"
+  assert grep -q 'Never drive Google Chrome' "$preamble_path"
   assert test "$(grep -c '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path")" -eq 0
   assert test "$(grep -c 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path")" -eq 0
 
@@ -856,8 +916,8 @@ EOF
   preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
   assert test -f "$preamble_path"
   assert grep -q 'list_connected_browsers' "$preamble_path"
-  assert grep -q '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
-  assert grep -q 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
+  assert grep -qF 'Target Dia device ID: 6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
+  assert grep -qF 'Off-target extension device IDs (Google Chrome — never drive one, never `switch_browser` to it): b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
 
   rc=0
   out=$(BROWSE_DIA_USER_DATA="$BT_DIA" \
@@ -927,7 +987,12 @@ EOF
   assert test "$(jq -r .dia_profile.dir <<<"$json_out")" = 'Profile 8'
   assert test "$(jq -r .dia_profile.name <<<"$json_out")" = 'work dia'
   assert test "$(jq -r .dia_device.id <<<"$json_out")" = '6ada21d4-ae66-4990-9040-97e18bb7b529'
-  assert test "$(jq -r '.banned_devices[0]' <<<"$json_out")" = 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d'
+  assert test "$(jq -r .target <<<"$json_out")" = 'dia'
+  assert test "$(jq -r .chrome_device.id <<<"$json_out")" = 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d'
+  assert test "$(jq -r .chrome_profile.name <<<"$json_out")" = 'Egor work'
+  assert test "$(jq -r .chrome_profile.dir <<<"$json_out")" = 'Profile 1'
+  assert test "$(jq -r .launched <<<"$json_out")" = 'null'
+  assert test "$(jq -r 'has("banned_devices")' <<<"$json_out")" = 'false'
   assert test "$(jq -r .cua_repl <<<"$json_out")" = 'registered'
   assert test "$(jq -r .plan.vendor <<<"$json_out")" = 'codex'
   assert test "$(jq -r .plan.account <<<"$json_out")" = 'main'
@@ -1402,6 +1467,147 @@ EOF
   assert grep -qx 'NEXT-CLAUDE-ACCOUNTS: extra,com' <<<"$out"
   assert grep -qx "PLAN: claudeb account=extra device=$dev source=probe" <<<"$out"
   BROWSE_WORKER_PICK="$BT_WP"
+  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
+
+  # 16: --target chrome flips which device is drivable and which is off-target
+  printf '{}\n' >"$cache"
+  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
+  out=$("$RUNNER" browse --target chrome --vendor claudeb)
+  assert grep -qx 'TARGET: chrome' <<<"$out"
+  assert grep -qx 'CHROME-DEVICE: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d "Chrome browser"' <<<"$out"
+  assert grep -qx 'DIA-DEVICE: 6ada21d4-ae66-4990-9040-97e18bb7b529 "Dia browser"' <<<"$out"
+  assert grep -qx 'PLAN: claudeb account=com device=b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d source=probe' <<<"$out"
+  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
+  assert grep -qF 'Target Google Chrome device ID: b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path"
+  assert grep -qF 'Off-target extension device IDs (Dia — never drive one, never `switch_browser` to it): ' "$preamble_path"
+  assert grep -qF '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path"
+  assert grep -qxF -- '- Never drive Dia.' "$preamble_path"
+  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
+  out=$("$RUNNER" browse --target chrome --vendor codex)
+  assert grep -qx 'PLAN: codex account=main' <<<"$out"
+  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
+  assert grep -q 'Codex / Google Chrome' "$preamble_path"
+  assert grep -q 'profileName. is "Egor work"' "$preamble_path"
+  assert grep -q 'WITHOUT a `profileName` is Dia' "$preamble_path"
+  assert grep -q 'Never drive Dia' "$preamble_path"
+  json_out=$("$RUNNER" browse --target chrome --vendor codex --json)
+  assert test "$(jq -r .target <<<"$json_out")" = 'chrome'
+
+  # 17: the default is a literal, and only dia|chrome are targets
+  out=$("$RUNNER" browse --vendor codex)
+  assert grep -qx 'TARGET: dia' <<<"$out"
+  preamble_path=$(sed -n 's/^PREAMBLE-FILE: //p' <<<"$out")
+  assert test "$(grep -c 'Codex / Dia' "$preamble_path")" -eq 1
+  for bad in opera '' --json; do
+    rc=0
+    "$RUNNER" browse --target "$bad" >/dev/null 2>&1 || rc=$?
+    assert test "$rc" -eq 2
+  done
+  rc=0
+  "$RUNNER" browse --target >/dev/null 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+  clear_stub
+  rc=0
+  "$RUNNER" start codex --target chrome --brief "$WORK/brief" >/dev/null 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+  assert test ! -s "$CALL_LOG"
+
+  # 18: a closed target browser launches itself, in the background and without a URL
+  : >"$BT_WORK/launch.log"
+  cat >"$BT_WORK/bin/open-launch" <<EOF
+#!/bin/sh
+printf '%s\n' "\$*" >>"$BT_WORK/launch.log"
+cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
+: >"$BT_WORK/launched.marker"
+EOF
+  chmod +x "$BT_WORK/bin/open-launch"
+  cat >"$BT_WORK/bin/pgrep-marker" <<EOF
+#!/bin/sh
+test -e "$BT_WORK/launched.marker"
+EOF
+  chmod +x "$BT_WORK/bin/pgrep-marker"
+  rm -f "$BT_WORK/launched.marker"
+  : >"$BT_PS_LISTING"
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch" \
+        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=5 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
+        "$RUNNER" browse --vendor claudeb) || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -qx 'LAUNCHED: dia' <<<"$out"
+  assert grep -qx 'DIA: launched' <<<"$out"
+  assert grep -qx -- '-g -a Dia' "$BT_WORK/launch.log"
+  assert test "$(grep -c Chrome "$BT_WORK/launch.log")" -eq 0
+  assert grep -q '^PLAN: claudeb ' <<<"$out"
+
+  rm -f "$BT_WORK/launched.marker"
+  : >"$BT_PS_LISTING"
+  : >"$BT_WORK/launch.log"
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch" \
+        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=5 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
+        "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -qx 'LAUNCHED: chrome' <<<"$out"
+  assert grep -qx 'CHROME: launched' <<<"$out"
+  assert grep -qF -- '--profile-directory=Profile 1' "$BT_WORK/launch.log"
+  assert test "$(grep -c ' Dia' "$BT_WORK/launch.log")" -eq 0
+
+  # 19: launched but the extension never connects — one instruction, and no plan
+  cat >"$BT_WORK/bin/open-launch-mute" <<EOF
+#!/bin/sh
+cp "$BT_WORK/ps-chrome-bare" "$BT_PS_LISTING"
+: >"$BT_WORK/launched.marker"
+EOF
+  chmod +x "$BT_WORK/bin/open-launch-mute"
+  rm -f "$BT_WORK/launched.marker"
+  : >"$BT_PS_LISTING"
+  SECONDS=0
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_OPEN="$BT_WORK/bin/open-launch-mute" \
+        BROWSE_SKIP_PROCESSES=0 BROWSE_LAUNCH_TIMEOUT=1 BROWSE_SKY_APP="$BT_WORK/no-sky-app" \
+        "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
+  assert test "$rc" -eq 2
+  assert test "$SECONDS" -lt 15
+  assert grep -qx 'LAUNCHED: chrome' <<<"$out"
+  assert grep -qx "REASON: Google Chrome launched but the Claude extension did not connect within 1s — open Google Chrome's extensions page and check the extension is enabled in Egor work" <<<"$out"
+  assert grep -qx 'PLAN: none' <<<"$out"
+
+  # 20: a ChatGPT host under the other browser is not this target's transport
+  cp "$BT_WORK/ps-chrome-bare" "$BT_PS_LISTING"
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_SKIP_PROCESSES=0 BROWSE_CHROME_STATUS=running \
+        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target chrome --vendor codex) || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -qx 'REASON: codex skipped — the ChatGPT extension is not connected in Google Chrome (Egor work); enable it at chrome://extensions and sign in' <<<"$out"
+  assert grep -qx 'PLAN: none' <<<"$out"
+  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_SKIP_PROCESSES=0 BROWSE_CHROME_STATUS=running \
+        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target chrome --vendor codex) || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -qx 'PLAN: codex account=main' <<<"$out"
+  assert test "$(grep -c 'ChatGPT extension is not connected' <<<"$out")" -eq 0
+
+  # 21: a device no pool account can see is a sign-in instruction, never a plan
+  BROWSE_CODEX_CONFIG="$BT_CODEX_CONF.nocua"
+  cat >"$BT_WP.single" <<'EOF'
+#!/bin/sh
+printf 'claude: com\n'
+EOF
+  chmod +x "$BT_WP.single"
+  jq -n --arg dev b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d --arg seen '2026-09-01T00:00:00Z' \
+    '{($dev): {account:"com", seen:$seen, denied:true}}' >"$cache"
+  rc=0
+  out=$(BROWSE_WORKER_PICK="$BT_WP.single" "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -qx 'REASON: sign in the Claude extension in Google Chrome (Egor work) as com — device b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d is visible to no pool account' <<<"$out"
+  assert grep -qx 'PLAN: none' <<<"$out"
+  rc=0
+  out=$(BROWSE_WORKER_PICK="$BT_WP.multi" "$RUNNER" browse --target chrome --vendor claudeb) || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -qx 'PLAN: claudeb account=spare device=b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d source=probe' <<<"$out"
+  assert test "$(grep -c 'sign in the Claude extension' <<<"$out")" -eq 0
+  printf '{}\n' >"$cache"
   BROWSE_CODEX_CONFIG="$BT_CODEX_CONF"
 
 }

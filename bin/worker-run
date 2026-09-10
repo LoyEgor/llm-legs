@@ -11,11 +11,11 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--chrome]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
-    '       worker-run browse [--vendor codex|claudeb] [--dia-profile <dir>] [--record <deviceId> <account>] [--json]' >&2
+    '       worker-run browse [--vendor codex|claudeb] [--target dia|chrome] [--dia-profile <dir>] [--record <deviceId> <account>] [--json]' >&2
   exit 2
 }
 
@@ -1388,6 +1388,7 @@ start_run() {
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
   local web_search=false
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
+  local browser_target=''
   local -a add_dirs images command_meta command
   add_dirs=()
   images=()
@@ -1408,6 +1409,12 @@ start_run() {
       --web-search) web_search=true; shift ;;
       --chrome) chrome=true; shift ;;
       --browser) browser=true; shift ;;
+      --target)
+        [ "$#" -ge 2 ] || usage
+        browser_target="$2"
+        case "$browser_target" in dia|chrome) ;; *) usage ;; esac
+        shift 2
+        ;;
       *) usage ;;
     esac
   done
@@ -1448,6 +1455,7 @@ start_run() {
       [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
       ;;
   esac
+  [ -z "$browser_target" ] || [ "$browser" = true ] || usage
   if [ "$browser" = true ]; then
     case "$vendor" in
       claudeb) chrome=true ;;
@@ -1469,7 +1477,7 @@ start_run() {
   done
 
   if [ "$browser" = true ]; then
-    browser_json=$(browse_run --vendor "$vendor" --json) || :
+    browser_json=$(browse_run --vendor "$vendor" --target "${browser_target:-dia}" --json) || :
     if ! jq -e --arg vendor "$vendor" '.plan.vendor == $vendor' <<<"$browser_json" >/dev/null 2>&1; then
       jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
       return 2
@@ -3080,6 +3088,46 @@ claim_run() {
   head -n 20 "$directory/files" 2>/dev/null
 }
 
+# What a vendor actually drives a browser through is a native-messaging host the BROWSER spawned,
+# so a host belonging to the other browser can never answer for this one: parentage is the test,
+# never the mere presence of a socket.
+browse_browser_pids() { # ps-listing app-path
+  awk -v app="$2" '
+    { pid = $1; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
+      if (index($0, app) && index($0, "--type=") == 0) print pid }' <<<"$1"
+}
+
+browse_host_pids() { # ps-listing needle parent-pid...
+  local listing="$1" needle="$2"
+  shift 2
+  awk -v needle="$needle" -v parents=" $* " '
+    { pid = $1; ppid = $2; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
+      if (index($0, needle) && index(parents, " " ppid " ")) print pid }' <<<"$listing"
+}
+
+browse_transport_present() { # vendor app-path
+  local vendor="$1" app="$2" listing pids host sock_dir lsof_cmd="${BROWSE_LSOF:-lsof}"
+  listing=$("${BROWSE_PS:-ps}" -Ao pid=,ppid=,command= 2>/dev/null) || return 1
+  pids=$(browse_browser_pids "$listing" "$app")
+  [ -n "$pids" ] || return 1
+  if [ "$vendor" = claudeb ]; then
+    sock_dir="${BROWSE_CLAUDE_SOCKET_DIR:-/tmp/claude-mcp-browser-bridge-$(id -un)}"
+    for host in $(browse_host_pids "$listing" -- '--chrome-native-host' $pids); do
+      [ -e "$sock_dir/$host.sock" ] && return 0
+    done
+    return 1
+  fi
+  sock_dir="${BROWSE_CODEX_SOCKET_DIR:-/tmp/codex-browser-use}"
+  [ -d "$sock_dir" ] || return 1
+  for host in $(browse_host_pids "$listing" 'ChatGPT for Chrome' $pids); do
+    # The socket is named by a rotating uuid, so only the host's own open files tie one to this
+    # browser; where lsof cannot be asked, the parentage stands alone.
+    command -v "$lsof_cmd" >/dev/null 2>&1 || return 0
+    "$lsof_cmd" -p "$host" 2>/dev/null | grep -qF "$sock_dir/" && return 0
+  done
+  return 1
+}
+
 browse_device_cache() (
   local operation="$1" device="$2" account="$3"
   local browse_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/browse"
@@ -3166,7 +3214,7 @@ complete_run() {
 
 browse_run() {
   local browse_vendor='' browse_dia_profile='' browse_record_device='' browse_record_account=''
-  local browse_json=false
+  local browse_json=false browse_target=dia
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --vendor)
@@ -3176,6 +3224,14 @@ browse_run() {
           codex|claudeb) ;;
           *) fail "unknown vendor for browse: $browse_vendor" ;;
         esac
+        shift 2
+        ;;
+      --target)
+        [ "$#" -ge 2 ] || usage
+        browse_target="$2"
+        # A literal, and the only place one is spelled: Dia stays the default with nothing — no
+        # environment variable, no config key — able to flip it for a whole machine.
+        case "$browse_target" in dia|chrome) ;; *) usage ;; esac
         shift 2
         ;;
       --dia-profile)
@@ -3209,26 +3265,8 @@ browse_run() {
       fail 'could not record browser device account'
   fi
 
-  local dia_status='absent'
   local pgrep_cmd="${BROWSE_PGREP:-pgrep}"
   local open_cmd="${BROWSE_OPEN:-open}"
-  if [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
-    dia_status='running'
-  else
-    if $pgrep_cmd -x Dia >/dev/null 2>&1 || $pgrep_cmd -f Dia.app/Contents/MacOS/Dia >/dev/null 2>&1; then
-      dia_status='running'
-    else
-      $open_cmd -a Dia >/dev/null 2>&1 || true
-      local deadline=$(( $(date +%s) + 15 ))
-      while [ "$(date +%s)" -le "$deadline" ]; do
-        if $pgrep_cmd -x Dia >/dev/null 2>&1 || $pgrep_cmd -f Dia.app/Contents/MacOS/Dia >/dev/null 2>&1; then
-          dia_status='launched'
-          break
-        fi
-        sleep 0.25
-      done
-    fi
-  fi
 
   local dia_user_data="${BROWSE_DIA_USER_DATA:-}"
   if [ -z "$dia_user_data" ]; then
@@ -3287,26 +3325,114 @@ browse_run() {
     fi
   fi
 
-  local -a banned_arr=()
-  local banned_str='none'
+  local chrome_profile_dir='' chrome_profile_name='' chrome_device_id='' chrome_device_name=''
+  local chrome_ext_dir chrome_scan_dir chrome_last
+  local uuid_re='[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
   if [ -d "$chrome_user_data" ]; then
-    while IFS= read -r u; do
-      [ -n "$u" ] || continue
-      banned_arr+=("$u")
-    done < <(LC_ALL=C grep -a -h -o -E "bridgeDeviceId.{0,150}" "$chrome_user_data"/*/Local\ Extension\ Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn/*.ldb "$chrome_user_data"/*/Local\ Extension\ Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn/*.log 2>/dev/null | LC_ALL=C tr -d "\0" | LC_ALL=C grep -Eo "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}" | sort -u)
+    for chrome_ext_dir in "$chrome_user_data"/*/"Local Extension Settings/fcoeoabgfenejglbffodgkkbkcdhcgfn"; do
+      [ -d "$chrome_ext_dir" ] || continue
+      chrome_last=$(LC_ALL=C grep -a -h -o -E "bridgeDeviceId.{0,150}" "$chrome_ext_dir"/*.ldb "$chrome_ext_dir"/*.log 2>/dev/null | LC_ALL=C tr -d "\0" | tail -n 1)
+      [ -n "$chrome_last" ] || continue
+      chrome_device_id=$(LC_ALL=C grep -Eo "$uuid_re" <<<"$chrome_last" | head -n 1)
+      [ -n "$chrome_device_id" ] || continue
+      chrome_device_name=$(LC_ALL=C sed -E -n 's/.*[dD]?isplayName[^"]*"([^"]+)".*/\1/p' <<<"$chrome_last")
+      chrome_scan_dir=${chrome_ext_dir%/Local Extension Settings/*}
+      chrome_profile_dir=${chrome_scan_dir##*/}
+      break
+    done
+    if [ -z "$chrome_profile_dir" ]; then
+      # No Claude device does not mean no target: the Codex path drives the ChatGPT extension, and
+      # its profile is the one a `--target chrome` run has to be launched into.
+      for chrome_ext_dir in "$chrome_user_data"/*/"Local Extension Settings/hehggadaopoacecdllhhajmbjkdcmajg"; do
+        [ -d "$chrome_ext_dir" ] || continue
+        chrome_scan_dir=${chrome_ext_dir%/Local Extension Settings/*}
+        chrome_profile_dir=${chrome_scan_dir##*/}
+        break
+      done
+    fi
+    if [ -n "$chrome_profile_dir" ] && [ -f "$chrome_user_data/Local State" ]; then
+      chrome_profile_name=$(jq -r --arg d "$chrome_profile_dir" '.profile.info_cache[$d].name // empty' \
+        "$chrome_user_data/Local State" 2>/dev/null) || chrome_profile_name=''
+    fi
   fi
-  if [ "${#banned_arr[@]}" -gt 0 ]; then
-    banned_str=$(IFS=,; printf '%s' "${banned_arr[*]}")
+  local chrome_profile_label="${chrome_profile_dir:-unknown}"
+  [ -z "$chrome_profile_name" ] || chrome_profile_label="$chrome_profile_name ($chrome_profile_dir)"
+
+  local target_label='Dia' target_app='Dia.app/Contents/MacOS/Dia' target_ext_url='dia://extensions'
+  local off_label='Google Chrome'
+  if [ "$browse_target" = chrome ]; then
+    target_label='Google Chrome'
+    target_app='Google Chrome.app/Contents/MacOS/Google Chrome'
+    target_ext_url='chrome://extensions'
+    off_label='Dia'
   fi
 
-  local chrome_status='absent'
-  if [ -n "${BROWSE_CHROME_STATUS:-}" ]; then
-    chrome_status="$BROWSE_CHROME_STATUS"
-  elif [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
-    chrome_status='absent'
-  elif $pgrep_cmd -x "Google Chrome" >/dev/null 2>&1 || $pgrep_cmd -f "Google Chrome.app/Contents/MacOS/Google Chrome" >/dev/null 2>&1; then
-    chrome_status='running'
+  local dia_status='absent' chrome_status='absent' launched='' launch_timeout=''
+  local launch_wait="${BROWSE_LAUNCH_TIMEOUT:-25}"
+  if [ "${BROWSE_SKIP_PROCESSES:-0}" = 1 ]; then
+    dia_status='running'
+    if [ "$browse_target" = chrome ]; then
+      chrome_status="${BROWSE_CHROME_STATUS:-running}"
+    else
+      chrome_status="${BROWSE_CHROME_STATUS:-absent}"
+    fi
+  else
+    if $pgrep_cmd -x Dia >/dev/null 2>&1 || $pgrep_cmd -f Dia.app/Contents/MacOS/Dia >/dev/null 2>&1; then
+      dia_status='running'
+    fi
+    if [ -n "${BROWSE_CHROME_STATUS:-}" ]; then
+      chrome_status="$BROWSE_CHROME_STATUS"
+    elif $pgrep_cmd -x "Google Chrome" >/dev/null 2>&1 ||
+         $pgrep_cmd -f "Google Chrome.app/Contents/MacOS/Google Chrome" >/dev/null 2>&1; then
+      chrome_status='running'
+    fi
+    local target_absent=false
+    if [ "$browse_target" = chrome ]; then
+      [ "$chrome_status" != absent ] || target_absent=true
+    else
+      [ "$dia_status" != absent ] || target_absent=true
+    fi
+    if [ "$target_absent" = true ]; then
+      # The TARGET and nothing else: Egor's other browser is his, and a preflight that opens it has
+      # already broken the one rule `--target` exists to keep.
+      if [ "$browse_target" = chrome ]; then
+        if [ -n "$chrome_profile_dir" ]; then
+          $open_cmd -g -a "Google Chrome" --args --profile-directory="$chrome_profile_dir" >/dev/null 2>&1 || true
+        else
+          $open_cmd -g -a "Google Chrome" >/dev/null 2>&1 || true
+        fi
+      else
+        $open_cmd -g -a Dia >/dev/null 2>&1 || true
+      fi
+      local deadline=$(( $(date +%s) + 15 ))
+      while [ "$(date +%s)" -le "$deadline" ]; do
+        if $pgrep_cmd -x "$target_label" >/dev/null 2>&1 || $pgrep_cmd -f "$target_app" >/dev/null 2>&1; then
+          launched="$browse_target"
+          break
+        fi
+        sleep 0.25
+      done
+      if [ -n "$launched" ]; then
+        if [ "$browse_target" = chrome ]; then chrome_status='launched'; else dia_status='launched'; fi
+        # A browser that is up is not yet a browser a worker can drive: the extension's native host
+        # is spawned after the window, and until its socket exists every vendor call answers nothing.
+        local -a wait_vendors=(codex claudeb)
+        [ -z "$browse_vendor" ] || wait_vendors=("$browse_vendor")
+        local wait_deadline=$(( $(date +%s) + launch_wait )) wait_vendor
+        launch_timeout="$launch_wait"
+        while :; do
+          for wait_vendor in "${wait_vendors[@]}"; do
+            if browse_transport_present "$wait_vendor" "$target_app"; then launch_timeout=''; break; fi
+          done
+          [ -n "$launch_timeout" ] || break
+          [ "$(date +%s)" -lt "$wait_deadline" ] || break
+          sleep 0.5
+        done
+      fi
+    fi
   fi
+  local target_status="$dia_status"
+  [ "$browse_target" != chrome ] || target_status="$chrome_status"
 
   local codex_config="${BROWSE_CODEX_CONFIG:-}"
   if [ -z "$codex_config" ]; then
@@ -3505,7 +3631,7 @@ browse_run() {
   dia_profile_dir="${dia_profiles[$selected]:-}" dia_profile_name="${dia_names[$selected]:-}"
   dia_device_id="${dia_devices[$selected]:-}" dia_device_name="${dia_device_names[$selected]:-}"
   cached_acct="${dia_accounts[$selected]:-}"
-  if [ "$selected" -ne 0 ]; then
+  if [ "$selected" -ne 0 ] && [ "$browse_target" = dia ]; then
     active_reason=unknown
     if [ -n "${dia_accounts[0]}" ]; then
       active_reason="${claude_exclusions[${dia_accounts[0]}]:-out of pool}"
@@ -3519,8 +3645,38 @@ browse_run() {
       --arg device "${dia_devices[$i]}" --arg account "${dia_accounts[$i]}" \
       '. + [{name:$name, dir:$dir, device:$device, account:(if $account == "" then null else $account end)}]' <<<"$dia_other_json")
   done
-  if [ -z "$dia_device_id" ]; then
-    dia_device_reason="no claude extension device in ${dia_profile_dir:-unknown} — extension not installed or never logged in"
+  local target_device_id="$dia_device_id" target_device_name="$dia_device_name"
+  local target_profile_dir="$dia_profile_dir"
+  local target_profile_label="${dia_profile_name:-${dia_profile_dir:-unknown}}"
+  local -a off_devices=()
+  if [ "$browse_target" = chrome ]; then
+    target_device_id="$chrome_device_id" target_device_name="$chrome_device_name"
+    target_profile_dir="$chrome_profile_dir" target_profile_label="${chrome_profile_name:-${chrome_profile_dir:-unknown}}"
+    for i in "${!dia_devices[@]}"; do
+      [ -z "${dia_devices[$i]}" ] || off_devices+=("${dia_devices[$i]}")
+    done
+    # Chrome carries one extension profile, so the whole cached/denied question is that one
+    # device's; the Dia profile walk above answered a question about another browser.
+    is_cached=false any_cached=false cached_acct=''
+    if [ -n "$target_device_id" ] && [ -f "$dev_file" ]; then
+      cached_acct=$(jq -r --arg dev "$target_device_id" \
+        'if .[$dev].denied == true then empty else .[$dev].account // empty end' "$dev_file" 2>/dev/null)
+    fi
+    if [ -n "$cached_acct" ]; then
+      any_cached=true
+      for a in "${usable_claude[@]}"; do
+        [ "$a" = "$cached_acct" ] || continue
+        is_cached=true
+        break
+      done
+    fi
+  else
+    [ -z "$chrome_device_id" ] || off_devices+=("$chrome_device_id")
+  fi
+  local off_str='none'
+  [ "${#off_devices[@]}" -eq 0 ] || off_str=$(IFS=,; printf '%s' "${off_devices[*]}")
+  if [ -z "$target_device_id" ]; then
+    dia_device_reason="no claude extension device in ${target_profile_dir:-unknown} — extension not installed or never logged in"
   fi
   [ -z "$dia_profile_reason" ] || reasons_list+=("REASON: $dia_profile_reason")
   [ -z "$dia_device_reason" ] || reasons_list+=("REASON: $dia_device_reason")
@@ -3531,15 +3687,15 @@ browse_run() {
     done
     usable_claude=("${reordered[@]}")
   elif [ "$any_cached" = true ]; then
-    reasons_list+=("REASON: claudeb skipped — no open Dia device has a usable cached account")
+    reasons_list+=("REASON: claudeb skipped — no open $target_label device has a usable cached account")
   fi
-  local denied_acct='' denied_seen=''
-  if [ -n "$dia_device_id" ] && [ -f "$dev_file" ]; then
-    denied_acct=$(jq -r --arg dev "$dia_device_id" 'if .[$dev].denied == true then .[$dev].account // empty else empty end' "$dev_file" 2>/dev/null)
-    denied_seen=$(jq -r --arg dev "$dia_device_id" 'if .[$dev].denied == true then .[$dev].seen // empty else empty end' "$dev_file" 2>/dev/null)
+  local denied_acct='' denied_seen='' signin_needed=false
+  if [ -n "$target_device_id" ] && [ -f "$dev_file" ]; then
+    denied_acct=$(jq -r --arg dev "$target_device_id" 'if .[$dev].denied == true then .[$dev].account // empty else empty end' "$dev_file" 2>/dev/null)
+    denied_seen=$(jq -r --arg dev "$target_device_id" 'if .[$dev].denied == true then .[$dev].seen // empty else empty end' "$dev_file" 2>/dev/null)
   fi
   if [ -n "$denied_acct" ]; then
-    reasons_list+=("REASON: claudeb/$denied_acct skipped — device $dia_device_id not visible (probe failed ${denied_seen:-unknown})")
+    reasons_list+=("REASON: claudeb/$denied_acct skipped — device $target_device_id not visible (probe failed ${denied_seen:-unknown})")
     if [ "${#usable_claude[@]}" -gt 0 ]; then
       local -a denied_last=()
       local had_denied=false
@@ -3552,34 +3708,58 @@ browse_run() {
       fi
     fi
   fi
+  # A device no pool account can see is a login, and a login is Egor's to make: naming the browser,
+  # the profile and the accounts is the whole of what this preflight may do about it.
+  if [ -n "$target_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ]; then
+    if [ "$any_cached" = true ] && [ "$is_cached" = false ]; then
+      signin_needed=true
+    elif [ -n "$denied_acct" ]; then
+      signin_needed=true
+      for a in "${usable_claude[@]}"; do
+        [ "$a" = "$denied_acct" ] || { signin_needed=false; break; }
+      done
+    fi
+  fi
+  if [ "$signin_needed" = true ]; then
+    reasons_list+=("REASON: sign in the Claude extension in $target_label ($target_profile_label) as $(IFS=,; printf '%s' "${usable_claude[*]}") — device $target_device_id is visible to no pool account")
+  fi
+  local codex_transport=true
+  if [ "$browse_vendor" != claudeb ] && [ "${BROWSE_SKIP_PROCESSES:-0}" != 1 ] &&
+     [ "$target_status" != absent ] && ! browse_transport_present codex "$target_app"; then
+    codex_transport=false
+    reasons_list+=("REASON: codex skipped — the ChatGPT extension is not connected in $target_label ($target_profile_label); enable it at $target_ext_url and sign in")
+  fi
+  if [ -n "$launch_timeout" ]; then
+    local waited_for='Claude or ChatGPT'
+    case "$browse_vendor" in
+      claudeb) waited_for=Claude ;;
+      codex) waited_for=ChatGPT ;;
+    esac
+    reasons_list+=("REASON: $target_label launched but the $waited_for extension did not connect within ${launch_timeout}s — open $target_label's extensions page and check the extension is enabled in $target_profile_label")
+  fi
   [ "${#usable_claude[@]}" -gt 0 ] || reasons_list+=("REASON: claudeb skipped — no usable accounts")
   [ "${#usable_codex[@]}" -gt 0 ] || reasons_list+=("REASON: codex skipped — no usable accounts")
 
   local plan_vendor='none' plan_account='' plan_device='' plan_source=''
-  if [ "$dia_status" = absent ]; then
-    reasons_list+=("REASON: dia not running")
-  elif [ "$browse_vendor" = codex ]; then
-    if [ "${#usable_codex[@]}" -gt 0 ] && [ "$cua_repl_status" != broken ]; then
-      plan_vendor='codex'
-      plan_account="${usable_codex[0]}"
-    fi
-  elif [ "$browse_vendor" = claudeb ]; then
-    if [ -n "$dia_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ] && [[ "$manifest_status" = ok || "$manifest_status" = repaired ]] &&
-       { [ "$is_cached" = true ] || [ "$any_cached" = false ]; }; then
-      plan_vendor='claudeb'
-      plan_account="${usable_claude[0]}"
-      plan_device="$dia_device_id"
-      if [ "$is_cached" = true ]; then plan_source='cached'; else plan_source='probe'; fi
-    fi
+  local codex_ok=false claudeb_ok=false
+  if [ "${#usable_codex[@]}" -gt 0 ] && [ "$cua_repl_status" != broken ] && [ "$codex_transport" = true ]; then
+    codex_ok=true
+  fi
+  if [ -n "$target_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ] && [ "$signin_needed" = false ] &&
+     [[ "$manifest_status" = ok || "$manifest_status" = repaired ]] &&
+     { [ "$is_cached" = true ] || [ "$any_cached" = false ]; }; then
+    claudeb_ok=true
+  fi
+  if [ "$target_status" = absent ] || [ -n "$launch_timeout" ]; then
+    [ "$target_status" != absent ] || reasons_list+=("REASON: $browse_target not running")
   else
-    if [ "${#usable_codex[@]}" -gt 0 ] && [ "$cua_repl_status" != broken ]; then
+    if [ "$browse_vendor" != claudeb ] && [ "$codex_ok" = true ]; then
       plan_vendor='codex'
       plan_account="${usable_codex[0]}"
-    elif [ -n "$dia_device_id" ] && [ "${#usable_claude[@]}" -gt 0 ] && [[ "$manifest_status" = ok || "$manifest_status" = repaired ]] &&
-       { [ "$is_cached" = true ] || [ "$any_cached" = false ]; }; then
+    elif [ "$browse_vendor" != codex ] && [ "$claudeb_ok" = true ]; then
       plan_vendor='claudeb'
       plan_account="${usable_claude[0]}"
-      plan_device="$dia_device_id"
+      plan_device="$target_device_id"
       if [ "$is_cached" = true ]; then plan_source='cached'; else plan_source='probe'; fi
     fi
   fi
@@ -3590,28 +3770,47 @@ browse_run() {
   if [ "$plan_vendor" != none ]; then
     preamble_file=$(mktemp "$browse_dir/preamble-$(date +%s)-$$.XXXXXX") || fail 'could not create browser preamble'
     mv "$preamble_file" "$preamble_file.md" && preamble_file="$preamble_file.md"
+    local target_pick off_pick target_hint
+    target_hint="Dia profile \"${dia_profile_name:-unknown}\" (${dia_profile_dir:-unknown}); window title \"${dia_device_name:-Dia browser}\""
+    if [ "$browse_target" = chrome ]; then
+      target_hint="Chrome profile \"${chrome_profile_name:-unknown}\" (${chrome_profile_dir:-unknown})"
+      if [ -n "$chrome_profile_name" ]; then
+        target_pick="the \`extension\`-type entry whose \`profileName\` is \"$chrome_profile_name\" (Chrome ${chrome_profile_dir:-profile}); its \`family\` is \`chrome\`"
+      else
+        target_pick="the \`extension\`-type entry that HAS a \`profileName\` (Chrome ${chrome_profile_dir:-profile}); its \`family\` is \`chrome\`"
+      fi
+      off_pick="every \`extension\` entry WITHOUT a \`profileName\` is Dia"
+    else
+      target_pick="the \`extension\`-type entry WITHOUT a \`profileName\` (Dia is not in the plugin's browser registry, so its profile never resolves), confirmed by tab titles matching \`await cua.getApp(\"Dia\")\`"
+      if [ -n "$chrome_profile_name" ]; then
+        off_pick="the entry whose \`profileName\` is \"$chrome_profile_name\" is Google Chrome"
+      else
+        off_pick="the \`extension\` entry that HAS a \`profileName\` is Google Chrome"
+      fi
+    fi
     if [ "$plan_vendor" = codex ]; then
       cat >"$preamble_file" <<EOF
-# Browser Automation Preamble (Codex / Dia)
+# Browser Automation Preamble (Codex / $target_label)
 
-Drive Egor's visible browser (Dia) using CUA REPL (\`js\` tool).
+Drive Egor's visible browser ($target_label) using CUA REPL (\`js\` tool).
 
 ## Instructions
 - First js call must be exactly: \`await cua.getState()\`
-- Identify Dia: Dia is the \`extension\`-type browser WITHOUT \`profileName\` whose tab titles match \`await cua.getApp("Dia")\`.
-- Identification hints (not CUA ids): Dia profile "${dia_profile_name:-unknown}" (${dia_profile_dir:-unknown}); window title "${dia_device_name:-Dia browser}". Anthropic bridge device UUIDs are irrelevant to \`cua\` — do not use them as CUA browser ids.
-- The browser with profileName "Egor work" is Chrome — never drive it.
-- Never drive Google Chrome. Never perform logins or credential entry.
+- Then \`await agent.browsers.list()\` and pick by the field named below; each entry carries \`{family?, id, name, type, profileName?, metadata?}\` and the ids rotate between runs, so never reuse one.
+- Target ($target_label): $target_pick.
+- Identification hints (not CUA ids): $target_hint. Anthropic bridge device UUIDs are irrelevant to \`cua\` — do not use them as CUA browser ids.
+- Off-target: $off_pick — never drive it, never switch to it.
+- Never drive $off_label. Never perform logins or credential entry.
 - All test/probing navigations must use https://example.com (Dia blocks httpbin.org / postman-echo.com for extension tabs).
-- Extension path first; use computer surface fallback (getApp/pressKey/typeText/getAXState) via SkyComputerUseService if needed.
+- Extension path first; use computer surface fallback (\`await cua.getApp("$target_label")\`, pressKey/typeText/getAXState) via SkyComputerUseService if needed.
 - Always close any created tabs before finishing.
 - End the answer with: \`OUTCOME: BROWSER_OK_EXTENSION|BROWSER_OK_COMPUTER|BROWSER_UNAVAILABLE reason=<text>\`
 EOF
     elif [ "$plan_vendor" = claudeb ]; then
       cat >"$preamble_file" <<EOF
-# Browser Automation Preamble (Claudeb / Dia)
+# Browser Automation Preamble (Claudeb / $target_label)
 
-Drive Egor's visible browser (Dia) using Claude in Chrome extension.
+Drive Egor's visible browser ($target_label) using Claude in Chrome extension.
 
 ## Instructions
 - Call \`list_connected_browsers\` first.
@@ -3620,9 +3819,9 @@ Drive Egor's visible browser (Dia) using Claude in Chrome extension.
   \`OUTCOME: BROWSER_DEVICE_NOT_IN_ACCOUNT device=$plan_device account=$plan_account\`
   and stop immediately.
 - Never \`switch_browser\` to an unlisted device, and never run pairing or login flows headless.
-- Banned Chrome extension device IDs: $banned_str
-- Target Dia device ID: $plan_device
-- Never drive Google Chrome.
+- Off-target extension device IDs ($off_label — never drive one, never \`switch_browser\` to it): $off_str
+- Target $target_label device ID: $plan_device
+- Never drive $off_label.
 - All test/probing navigations must use https://example.com.
 - On success print \`BROWSER-DEVICE-ACCOUNT: $plan_device $plan_account\` and end with \`OUTCOME: BROWSER_OK\`.
 - Always close any created tabs before finishing.
@@ -3652,7 +3851,12 @@ EOF
       --arg dia_dev_id "$dia_device_id" \
       --arg dia_dev_name "$dia_device_name" \
       --argjson dia_other "$dia_other_json" \
-      --arg banned "$banned_str" \
+      --arg target "$browse_target" \
+      --arg chrome_dev_id "$chrome_device_id" \
+      --arg chrome_dev_name "$chrome_device_name" \
+      --arg chrome_p_name "$chrome_profile_name" \
+      --arg chrome_p_dir "$chrome_profile_dir" \
+      --arg launched "$launched" \
       --arg chrome "$chrome_status" \
       --arg manifest "$manifest_status" \
       --arg cua "$cua_repl_status" \
@@ -3667,8 +3871,11 @@ EOF
         dia_profile: (if $dia_p_dir != "" then {name: $dia_p_name, dir: $dia_p_dir} else null end),
         dia_device: (if $dia_dev_id != "" then {id: $dia_dev_id, display_name: $dia_dev_name} else null end),
         dia_other: $dia_other,
-        banned_devices: (if $banned != "none" and $banned != "" then ($banned | split(",")) else [] end),
+        target: $target,
+        chrome_device: (if $chrome_dev_id != "" then {id: $chrome_dev_id, display_name: $chrome_dev_name} else null end),
+        chrome_profile: (if $chrome_p_dir != "" then {name: $chrome_p_name, dir: $chrome_p_dir} else null end),
         chrome: $chrome,
+        launched: (if $launched != "" then $launched else null end),
         manifest: $manifest,
         cua_repl: $cua,
         sky: $sky,
@@ -3679,6 +3886,7 @@ EOF
         preamble_file: (if $preamble != "" then $preamble else null end)
       }'
   else
+    printf 'TARGET: %s\n' "$browse_target"
     printf 'DIA: %s\n' "$dia_status"
     if [ -n "$dia_profile_dir" ]; then
       printf 'DIA-PROFILE: %s (%s)\n' "$dia_profile_name" "$dia_profile_dir"
@@ -3691,8 +3899,14 @@ EOF
       printf 'DIA-DEVICE: none\n'
     fi
     for line in "${dia_other_lines[@]}"; do printf '%s\n' "$line"; done
-    printf 'BANNED-DEVICES: %s\n' "$banned_str"
+    if [ -n "$chrome_device_id" ]; then
+      printf 'CHROME-DEVICE: %s "%s"\n' "$chrome_device_id" "${chrome_device_name:-Chrome browser}"
+    else
+      printf 'CHROME-DEVICE: none\n'
+    fi
+    printf 'CHROME-PROFILE: %s\n' "$chrome_profile_label"
     printf 'CHROME: %s\n' "$chrome_status"
+    [ -z "$launched" ] || printf 'LAUNCHED: %s\n' "$launched"
     printf 'MANIFEST: %s\n' "$manifest_status"
     printf 'CUA-REPL: %s\n' "$cua_repl_status"
     printf 'SKY: %s\n' "$sky_status"
