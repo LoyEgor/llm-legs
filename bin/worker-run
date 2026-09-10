@@ -2188,7 +2188,7 @@ grok_tool_rows() { # updates since
     | ($call.status // "") as $status
     | ($call.input // {}) as $args
     | ($call.t) as $t
-    | [if $call.read_only == true or $name == "search_tool" then empty
+    | [if $call.read_only == true or $name == "search_tool" or $kind == "plan" then empty
        elif ($kind | IN("write", "edit")) then
          if $status == "completed" then
            "F\t" + (($args.file_path // $args.path // $args.absolute_path // "") | tostring)

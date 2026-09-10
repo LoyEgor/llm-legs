@@ -3899,6 +3899,8 @@ grok_call() { # id name kind read-only input-json
        _meta: {"x.ai/tool": {name: $name, kind: $kind, read_only: $ro}}}}}'
 }
 grok_update() { # id status [current-dir]
+  grok_call p1 todo_write plan false '{"todos": []}'
+  grok_update p1 completed
   jq -cn --argjson ts "$GROK_TS" --arg id "$1" --arg status "$2" --arg dir "${3:-}" \
     '{timestamp: $ts, method: "session/update", params: {sessionId: "s", update: {
        sessionUpdate: "tool_call_update", toolCallId: $id, status: $status,
