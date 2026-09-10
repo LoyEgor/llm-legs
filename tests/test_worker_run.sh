@@ -31,6 +31,7 @@ assert_launched_brief() { # capture-of-what-the-CLI-read
 }
 
 export HOME="$WORK/home"
+export CLAUDEB_DIR="$HOME/.claude-profiles/.claudeb"
 export XDG_CACHE_HOME="$WORK/cache"
 export WORKER_RUN_ALLOW_DUPLICATE=1
 export WORKER_RUN_DIR="$WORK/runs"
@@ -364,6 +365,7 @@ reliability_tests() {
     clear_stub
     fixture="$WORK/live-edits"
     mkdir -p "$fixture"
+    git -C "$fixture" init -q
     STUB_SLEEP=7 STUB_SESSION=live-edits STUB_TRANSCRIPT_SESSION=live-edits STUB_TRANSCRIPT_ACCOUNT=edits \
       STUB_EDIT_PATH=owned WORKER_RUN_IDLE_S=3 start_ok claudeb --account edits --workdir "$fixture"
     for started in 1 2 3 4 5 6; do
@@ -392,13 +394,15 @@ reliability_tests() {
         printf '%s\n' "$text" >"$fixture/err"
         printf '1000000\n' >"$WORK/wall-clock"
         record_run_wall "$fixture" codex
-        epoch=$(cat "$WORKER_WALLS_DIR/codex-epoch")
+        epoch=$(sed -n 1p "$WORKER_WALLS_DIR/codex-epoch")
+        [ "$(sed -n 2p "$WORKER_WALLS_DIR/codex-epoch")" = 1000000 ] || exit 1
         printf '1000120\n' >"$WORK/wall-clock"
         record_run_wall "$fixture" codex
-        [ "$(cat "$WORKER_WALLS_DIR/codex-epoch")" = "$epoch" ] || exit 1
+        [ "$(sed -n 1p "$WORKER_WALLS_DIR/codex-epoch")" = "$epoch" ] || exit 1
+        [ "$(sed -n 2p "$WORKER_WALLS_DIR/codex-epoch")" = 1000120 ] || exit 1
         printf '%s\n' "$(( $(cat "$fixture/attempt") + 1 ))" >"$fixture/attempt"
         record_run_wall "$fixture" codex
-        [ "$(cat "$WORKER_WALLS_DIR/codex-epoch")" -gt "$epoch" ] || exit 1
+        [ "$(sed -n 1p "$WORKER_WALLS_DIR/codex-epoch")" -gt "$epoch" ] || exit 1
         printf '%s\n' "$(( $(cat "$fixture/attempt") + 1 ))" >"$fixture/attempt"
       done
     )
@@ -469,7 +473,7 @@ EOF
     result=$("$RUNNER" wait "$RUN_ID" --max 6)
     assert grep -qx 'STATUS: done' <<<"$result"
     assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
-    assert test "$(cat "$WORKER_WALLS_DIR/grok-wall")" -gt "$(date +%s)"
+    assert test "$(sed -n 1p "$WORKER_WALLS_DIR/grok-wall")" -gt "$(date +%s)"
   fi
 
   if reliability_case A; then
@@ -479,7 +483,7 @@ EOF
     result=$("$RUNNER" wait "$RUN_ID" --max 6)
     assert grep -qx 'STATUS: done' <<<"$result"
     assert grep -qx 'REROUTE: walled on wall → continued on rescue' <<<"$result"
-    assert test "$(cat "$WORKER_WALLS_DIR/codex-wall")" -gt "$(date +%s)"
+    assert test "$(sed -n 1p "$WORKER_WALLS_DIR/codex-wall")" -gt "$(date +%s)"
     assert test "$(cat "$RUN_DIR/attempt")" = 2
     assert_fails kill -0 "$(cat "$STUB_DIR/wall.pid")"
     assert_fails kill -0 "$(cat "$STUB_DIR/wall.child.pid")"
@@ -1229,7 +1233,7 @@ assert test -f "$RUN_DIR/dirty-before"
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$declared_workdir" && pwd -P)"
 report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' <<<"$report"
+assert grep -qx 'RUN-FILES: 0' <<<"$report"
 assert test -z "$(git -C "$declared_workdir" status --porcelain -uall)"
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
@@ -1466,11 +1470,41 @@ assert grep -q '^COST: 1k tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
 jq '.total_cost_usd = 0.0000005' "$RUN_DIR/out" >"$WORK/out.tiny" && mv "$WORK/out.tiny" "$RUN_DIR/out"
 assert grep -q '^COST: <1 tok-eq$' <<<"$("$RUNNER" report "$RUN_ID")"
 
-# The changed files a report claims are the ones the RUN's own transcript recorded. A shared
-# checkout carries other agents' live work, so nothing here may fall back to the workdir: a missing
-# transcript answers "unknown" rather than with somebody else's hunks.
+transcript_report() (
+  local directory="$1" name workdir count
+  local SCRIPT_DIRECTORY="$ROOT/bin" gemini_base_home="$HOME" gemini_profiles_dir="$GEMINIB_PROFILES_DIR"
+  . "$ROOT/share/gemini-accounts.sh"
+  for name in compute_transcript_files session_id session_transcript codex_home grok_home \
+      grok_end_field grok_session_dir_matches classify_tool_rows resolve_tool_path \
+      writes_through_shell gemini_tool_rows codex_tool_rows grok_tool_rows transcript_files \
+      transcript_ran_shell workdir_escape_line; do
+    eval "$(sed -n "/^$name() {/,/^}/p" "$RUNNER")"
+  done
+  eval "$(sed -n '/^SHELL_FLOOR_PARTIAL=/p; /^WRITE_SHELL_PATTERN=/p' "$RUNNER")"
+  compute_transcript_files "$directory"
+  workdir=$(jq -r '.workdir' "$directory/meta.json")
+  { printf 'WORKDIR: %s\n' "$workdir"
+    [ -z "$RUN_FILES_REASON" ] || printf 'UNKNOWN: %s\n' "$RUN_FILES_REASON"
+    [ -z "$RUN_FILES_PARTIAL" ] || printf 'PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
+    [ -z "$RUN_FILES_LIST" ] || printf '%s\n' "$RUN_FILES_LIST"
+  } >"$WORK/transcript-files"
+  workdir_escape_line "$directory"
+  if [ -n "$RUN_FILES_REASON" ]; then
+    printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
+  elif [ -z "$RUN_FILES_LIST" ]; then
+    printf 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)\n'
+  else
+    printf 'WORKDIR: %s\n' "$workdir"
+    count=$(grep -c . <<<"$RUN_FILES_LIST")
+    printf 'RUN-FILES: %s\n' "$count"
+    sed 's/^/RUN-FILE: /' <<<"$RUN_FILES_LIST"
+  fi
+  [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
+  return 0
+)
+
 assert grep -qx 'RUN-FILES: unknown (no session transcript for claude-session)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 mkdir -p "$CLAUDEB_PROFILES_ROOT/effortacct/projects/fixture"
 run_workdir=$(jq -r '.workdir' "$RUN_DIR/meta.json")
 run_started=$(jq -r '.started_at' "$RUN_DIR/meta.json")
@@ -1501,7 +1535,7 @@ TRANSCRIPT="$CLAUDEB_PROFILES_ROOT/effortacct/projects/fixture/claude-session.js
   tool_call Write file_path "$run_workdir/bin/refused" tu_1
   tool_error tu_1
 } >"$TRANSCRIPT"
-report=$("$RUNNER" report "$RUN_ID")
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 3' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/one' <<<"$report"
 assert grep -qx 'RUN-FILE: tests/two.ipynb' <<<"$report"
@@ -1518,7 +1552,7 @@ assert test "$(grep -c 'bin/refused' <<<"$report")" -eq 0
 # printed every path absolute, as if the run had worked outside its own directory.
 jq --arg w "$run_workdir/" '.workdir = $w' "$RUN_DIR/meta.json" >"$WORK/meta.slash" \
   && mv "$WORK/meta.slash" "$RUN_DIR/meta.json"
-report=$("$RUNNER" report "$RUN_ID")
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 3' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/one' <<<"$report"
 jq --arg w "$run_workdir" '.workdir = $w' "$RUN_DIR/meta.json" >"$WORK/meta.plain" \
@@ -1537,7 +1571,7 @@ TOOL_TS=$(iso "$run_started")
 tool_call Edit file_path "$run_workdir/bin/at-start" >>"$TRANSCRIPT"
 TOOL_TS=$(iso $((run_started + 2)))
 tool_call Write file_path "$run_workdir/bin/this-run" >>"$TRANSCRIPT"
-report=$("$RUNNER" report "$RUN_ID")
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/at-start' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/this-run' <<<"$report"
@@ -1547,15 +1581,15 @@ assert test "$(grep -c 'pre-resume' <<<"$report")" -eq 0
 # `mv` — appears in no transcript as a tool call, so the zero says what it actually counted.
 : >"$TRANSCRIPT"
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 # Nothing to resolve, so nothing to resolve it against: a bare WORKDIR line over a count that names
 # no file reads as a directory this run is claiming.
-assert test "$(grep -c '^WORKDIR: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+assert test "$(grep -c '^WORKDIR: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
 # A transcript jq cannot parse is unknown, never 0: the pipeline used to swallow the parse failure
 # and report an authoritative "changed nothing" about a run nobody could read.
 printf 'not json {\n' >"$TRANSCRIPT"
-assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
+assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$(transcript_report "$RUN_DIR")"
 
 # A run whose transcript cannot be found says so; a silent 0 would read as a run that changed
 # nothing. Every vendor answers here now, so the reason names the missing rollout and no longer
@@ -1565,101 +1599,28 @@ set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=filesacct
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (no session transcript for codex-session)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
-# --- The run record ------------------------------------------------------------------------------
-# What a run wrote, and for whom, kept beside the run itself. A report answers only whoever printed
-# it: unprinted it named nobody's work, truncated it named part of it, and pasted elsewhere it named
-# the wrong chat. The record is written whether or not anyone ever looks, and a vendor that cannot
-# name files says so here too — a reader must not take the silence for an empty list.
+# The record and launcher mapping exist even when the workdir cannot be snapshotted.
 assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $(jq -r '.workdir' "$RUN_DIR/meta.json")"
-assert grep -qx 'UNKNOWN: no session transcript for codex-session' "$RUN_DIR/files"
-# And the run's own session is recorded whatever the vendor: grok loads this machine's hooks out of
-# `~/.claude/settings.json` for Claude compatibility and journals under its own id, a codex or agy
-# id reaching a journal is that case one relay deeper, and an id that reaches no journal costs a
-# reader nothing — the pairing is only ever consulted about an id some row already carries.
+assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test "$(cat "$RUN_DIR/worker-session")" = codex-session
-
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
-export PICK_RC=0 PICK_ACCOUNT=recordacct
+export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
 mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
-# Stamped ahead of now because the run has not started yet and its own start is the cut: a fixture
-# written at this second would be filtered out as the work of some earlier run.
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-# The run records its workdir as git and the shell resolve it, and a fixture spelled through the
-# symlink a temporary directory reaches it by strips against nothing.
-record_workdir=$(cd "$WORK/workdir" && pwd -P)
-{
-  tool_call Edit file_path "$record_workdir/bin/recorded"
-  tool_call Write file_path "$WORK/outside/recorded-absolute"
-} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export CLAUDE_CODE_SESSION_ID=chat-abc
 start_ok claudeb
 assert await_done
 assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
-# And in the launched process's environment, under a name the harness does not overwrite: a report
-# the worker produces is queued for the chat that asked for it, and this is the only thing that
-# names one — inside the CLI, CLAUDE_CODE_SESSION_ID is the worker's own session, so a lost export
-# files the report in the worker's own outbox where nobody ever reads it.
 assert test "$(cat "$STUB_DIR/launcher_env")" = chat-abc
-# The worker's OWN session beside the chat that launched it. A run that edits through the shell
-# alone names no file here, while its own hooks journaled every one of those edits under this id —
-# without the pair on record the launching chat commits its worker's work as nobody's.
 assert test "$(cat "$RUN_DIR/worker-session")" = claude-session
-assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $record_workdir"
-assert grep -qx 'bin/recorded' "$RUN_DIR/files"
-assert grep -qxF "$WORK/outside/recorded-absolute" "$RUN_DIR/files"
-assert test "$(grep -c '^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
-# The same paths the report prints: one answer rendered twice, never two answers that can disagree.
-report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'RUN-FILE: bin/recorded' <<<"$report"
-
-# A walled attempt wrote whatever it wrote before the wall, and rerouting restamps the run's start
-# and takes a new session — so the later attempt's own list cannot see it. The record is a union
-# across attempts, or the first attempt's files belong to nobody at all.
-printf '%s\n' "WORKDIR: $record_workdir" \
-  'UNKNOWN: no session transcript for the walled attempt' bin/from-the-walled-attempt >"$RUN_DIR/files"
-# The session that attempt ran under, which the reroute replaced: what it journaled stands under
-# that id and under no other, so the sessions are unioned exactly as the paths are.
 printf 'walled-session\n' >>"$RUN_DIR/worker-session"
 "$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
-assert grep -qx 'walled-session' "$RUN_DIR/worker-session"
-assert grep -qx 'claude-session' "$RUN_DIR/worker-session"
-# Once per id however often the record is rewritten: a resumed run repeats the id its session
-# already had, and the readers walk this file against every journal row they hold.
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 2
-assert grep -qx 'bin/from-the-walled-attempt' "$RUN_DIR/files"
-assert grep -qx 'bin/recorded' "$RUN_DIR/files"
-assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $record_workdir"
-# The uncertainty carries forward with the paths: an attempt whose list was unanswerable stays
-# unanswerable however cleanly the attempt after it read.
-assert grep -qx 'UNKNOWN: no session transcript for the walled attempt' "$RUN_DIR/files"
+assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
 
-# An editor list answers for editor calls. A run that also worked through the shell changed files no
-# transcript records, so its list is a floor — said per run, since a run that ran no shell command
-# has a complete one. PARTIAL rather than UNKNOWN: the paths beside it are real and reviewable, and
-# the gate speaks about UNKNOWN alone.
-assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
-assert test "$(grep -c 'RUN-FILES-PARTIAL: ' <<<"$report")" -eq 0
-clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-{
-  tool_call Edit file_path "$record_workdir/bin/recorded"
-  tool_call Bash command 'sed -i "" s/a/b/ bin/edited-through-the-shell'
-} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export CLAUDE_CODE_SESSION_ID=chat-abc
-start_ok claudeb
-assert await_done
-assert grep -qx 'bin/recorded' "$RUN_DIR/files"
-assert grep -q '^PARTIAL: the run also ran shell commands' "$RUN_DIR/files"
-assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$("$RUNNER" report "$RUN_ID")"
-
-# What the run's own repository gained uncommitted content on while it ran — the only evidence a
-# shell edit leaves anywhere. Nothing records `sed -i` as a tool call, so a file rewritten that way
-# is in no listing, in no journal and under no artifact, and every standing-debt reader answered
-# `none` over it (live case 2026-08-21).
 clear_stub
 DIRT_REPO="$WORK/dirt-repo"
 mkdir -p "$DIRT_REPO/bin" "$DIRT_REPO/tests"
@@ -1669,8 +1630,6 @@ printf 'original\n' >"$DIRT_REPO/tests/tracked-by-the-editor"
 printf 'original\n' >"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
 git -C "$DIRT_REPO" add -A >/dev/null
 git -C "$DIRT_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
-# Somebody else's live work, uncommitted BEFORE this run existed. The floor the snapshot is taken
-# against, or every file Egor had open becomes evidence produced by whichever run finished beside it.
 printf 'egor was here\n' >>"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
 DIRT_TOP=$(cd "$DIRT_REPO" && pwd -P)
 TOOL_TS=$(iso $(($(date +%s) + 60)))
@@ -1679,105 +1638,148 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Bash command 'sed -i "" s/original/rewritten/ bin/shell-edited'
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export CLAUDE_CODE_SESSION_ID=chat-abc
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
-# The stub never runs the worker's commands, so the shell edit and the editor call are made here —
-# what is under test is which of them the record claims, not that a CLI can write a file.
 printf 'rewritten\n' >"$DIRT_REPO/bin/shell-edited"
 printf 'rewritten\n' >"$DIRT_REPO/tests/tracked-by-the-editor"
 printf 'brand new\n' >"$DIRT_REPO/bin/created-through-a-redirect"
 mkdir -p "$DIRT_REPO/notes"
 printf 'brand new\n' >"$DIRT_REPO/notes/inside-an-untracked-directory"
 assert await_done
-assert test "$(head -n1 "$RUN_DIR/dirty")" = "WORKDIR: $DIRT_TOP"
-assert grep -qx 'bin/shell-edited' "$RUN_DIR/dirty"
-assert grep -qx 'bin/created-through-a-redirect' "$RUN_DIR/dirty"
-# A file under a directory git has never tracked: named only with -uall, and reported as the bare
-# directory otherwise — which is no path any reader of this record can price.
-assert grep -qx 'notes/inside-an-untracked-directory' "$RUN_DIR/dirty"
-assert_fails grep -qx 'notes/' "$RUN_DIR/dirty"
-# Already dirty before the run began: a co-tenant's, and this run has no evidence about it.
-assert_fails grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dirty"
-# The tracker named this one, so it is priced through the owner the listing carries; repeated here
-# it would be one path claimed twice, once with an owner and once without.
-assert_fails grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/dirty"
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP"
+assert grep -qx 'bin/shell-edited' "$RUN_DIR/files"
+assert grep -qx 'bin/created-through-a-redirect' "$RUN_DIR/files"
+assert grep -qx 'notes/inside-an-untracked-directory' "$RUN_DIR/files"
+assert_fails grep -qx 'notes/' "$RUN_DIR/files"
+assert_fails grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/files"
+assert grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/files"
 assert grep -qx 'tests/tracked-by-the-editor' "$RUN_DIR/files"
 
-# A file already dirty that the run REWRITES is this run's work too. The floor is a set of NAMES,
-# and subtracted by name a path that was on it before is invisible however far its content moved:
-# a fixing pass whose every edit landed in files somebody already had open reached the record as
-# nothing at all (live case 2026-08-22). So the floor carries each path's content beside its name,
-# and a changed sha is the evidence a name comparison never had.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/x/y/ bin/the-co-tenant-was-already-editing-this' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 printf 'the run rewrote it\n' >>"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
 assert await_done
-assert grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/dirty"
-# And a file on the same floor this run never touched is still the co-tenant's: same name, same
-# content, no claim.
-assert_fails grep -qx 'bin/somebody-elses-file' "$RUN_DIR/dirty"
+assert grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/files"
+assert_fails grep -qx 'bin/somebody-elses-file' "$RUN_DIR/files"
 
-# A run whose transcript answered for every edit it made has named its work already. The rest of a
-# shared checkout's dirt is somebody else's, and a snapshot of it here is this run's record
-# vouching for another chat's file.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Edit file_path "$DIRT_TOP/tests/tracked-by-the-editor" \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 printf 'and again\n' >"$DIRT_REPO/bin/somebody-elses-file"
 assert await_done
 assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
 assert test ! -e "$RUN_DIR/dirty"
 
-# A run launched in a SUBDIRECTORY still records its repository's own spelling of every path:
-# `--porcelain` answers against the repository top whatever directory it was asked from, and
-# anchored on the workdir instead every path would resolve one level deep and price nothing.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 {
   tool_call Bash command 'sed -i "" s/rewritten/again/ bin/shell-edited'
   tool_call Edit file_path "$DIRT_TOP/tests/named-from-a-subdirectory"
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO/tests"
 printf 'from a subdirectory\n' >"$DIRT_REPO/bin/edited-from-a-subdirectory"
 printf 'from a subdirectory\n' >"$DIRT_REPO/tests/named-from-a-subdirectory"
 assert await_done
-assert test "$(head -n1 "$RUN_DIR/dirty")" = "WORKDIR: $DIRT_TOP"
-assert grep -qx 'bin/edited-from-a-subdirectory' "$RUN_DIR/dirty"
-# And the listing still bounds the snapshot from one directory in: the two are spelled against
-# different anchors, so subtracted in the listing's own spelling every path the run's own tracker
-# named is recorded here a second time with no owner at all.
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $DIRT_TOP/tests"
+assert grep -qxF "$DIRT_TOP/bin/edited-from-a-subdirectory" "$RUN_DIR/files"
 assert grep -qx 'named-from-a-subdirectory' "$RUN_DIR/files"
-assert_fails grep -qx 'tests/named-from-a-subdirectory' "$RUN_DIR/dirty"
+assert_fails grep -qx 'tests/named-from-a-subdirectory' "$RUN_DIR/files"
 
-# The floor and a clean tree are the same empty set, so a floor git could not answer for is written
-# nowhere at all and the snapshot refuses to run without one: measured against nothing, every file
-# Egor and every co-tenant chat had open is content this run gained.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/again/once more/ bin/shell-edited' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 assert test -e "$RUN_DIR/dirty-before"
-rm -f "$RUN_DIR/dirty-before"
+rm -f "$RUN_DIR/dirty-before-shas"
 printf 'nobody measured the floor\n' >"$DIRT_REPO/bin/without-a-floor"
 assert await_done
 assert test ! -e "$RUN_DIR/dirty"
 
-# A workdir in no repository has no dirty set to take, and the run says nothing rather than
-# guessing.
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ somewhere' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 start_ok claudeb
 assert await_done
-assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
+assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
 assert test ! -e "$RUN_DIR/dirty"
 assert test ! -e "$RUN_DIR/dirty-before"
+
+snapshot_shell_tests() {
+  local vendor path frozen
+  for vendor in claudeb codex gemini grok; do
+    clear_stub
+    set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=high' 'gemini_model=flash38' 'gemini_effort=high' 'grok_effort=high'
+    printf 'recordacct\n' >"$STUB_DIR/gemini_profiles"
+    export SNAPSHOT_DELETED="$DIRT_REPO/bin/shell-deleted-$vendor"
+    export SNAPSHOT_TOUCHED="$DIRT_REPO/bin/shell-touched-$vendor"
+    printf 'delete this\n' >"$SNAPSHOT_DELETED"
+    printf 'keep this\n' >"$SNAPSHOT_TOUCHED"
+    git -C "$DIRT_REPO" add "bin/shell-deleted-$vendor" "bin/shell-touched-$vendor"
+    git -C "$DIRT_REPO" -c user.name=fixture -c user.email=fixture@example.test commit -qm 'shell attribution fixture'
+    cat >"$STUB_DIR/relay_hook" <<'EOF'
+#!/usr/bin/env bash
+printf 'shell content\n' >"$SNAPSHOT_TARGET"
+rm "$SNAPSHOT_DELETED"
+touch "$SNAPSHOT_TOUCHED"
+EOF
+    chmod +x "$STUB_DIR/relay_hook"
+    export SNAPSHOT_TARGET="$DIRT_REPO/bin/shell-only-$vendor"
+    start_ok "$vendor" --workdir "$DIRT_REPO"
+    assert await_done
+    path="bin/shell-only-$vendor"
+    assert grep -qx "$path" "$RUN_DIR/files"
+    assert grep -q "$path" "$RUN_DIR/produced"
+    assert grep -qx "bin/shell-deleted-$vendor" "$RUN_DIR/files"
+    assert grep -q $'\t-\t'"bin/shell-deleted-$vendor"'$' "$RUN_DIR/produced"
+    assert_fails grep -q "bin/shell-touched-$vendor" "$RUN_DIR/files"
+    assert_fails grep -q "bin/shell-touched-$vendor" "$RUN_DIR/produced"
+    assert_fails grep -q '^UNKNOWN: \|^PARTIAL: ' "$RUN_DIR/files"
+    assert test ! -e "$RUN_DIR/dirty"
+    frozen=$(cat "$RUN_DIR/produced")
+    printf 'later content\n' >"$SNAPSHOT_TARGET"
+    assert grep -qx "RUN-FILE: $path" <<<"$("$RUNNER" report "$RUN_ID")"
+    assert "$RUNNER" claim "$RUN_ID" --paths "$path" >/dev/null
+    assert test "$(cat "$RUN_DIR/produced")" = "$frozen"
+    assert_fails "$RUNNER" claim "$RUN_ID" --paths "bin/shell-touched-$vendor" >"$WORK/snapshot-claim.out" 2>&1
+    assert grep -q "not in this run's snapshot diff" "$WORK/snapshot-claim.out"
+    rm -f "$STUB_DIR/relay_hook"
+  done
+  unset SNAPSHOT_TARGET SNAPSHOT_DELETED SNAPSHOT_TOUCHED
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export STUB_SLEEP=1
+  start_ok claudeb --workdir "$DIRT_REPO"
+  git -C "$DIRT_REPO" show HEAD:bin/the-co-tenant-was-already-editing-this >"$DIRT_REPO/bin/the-co-tenant-was-already-editing-this"
+  assert await_done
+  assert grep -qx 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/files"
+  assert grep -q 'bin/the-co-tenant-was-already-editing-this' "$RUN_DIR/produced"
+  clear_stub
+}
+snapshot_shell_tests
+
+clear_stub
+INITIAL_REPO="$WORK/initial-repo"
+mkdir -p "$INITIAL_REPO"
+git -C "$INITIAL_REPO" init -q
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$INITIAL_REPO"
+printf 'initial content\n' >"$INITIAL_REPO/initial"
+git -C "$INITIAL_REPO" add initial
+git -C "$INITIAL_REPO" -c user.name=fixture -c user.email=fixture@example.test commit -qm initial
+assert await_done
+assert grep -qx initial "$RUN_DIR/files"
+assert grep -qxF -- $'-\t'"$(git -C "$INITIAL_REPO" rev-parse HEAD:initial)"$'\tinitial\tcommit' "$RUN_DIR/produced"
 
 # --- What the run PRODUCED ------------------------------------------------------------------------
 # A listing names paths; a debt reader prices CONTENT. `produced` is the run's own answer in the
@@ -1790,6 +1792,7 @@ git -C "$PROD_REPO" init -q .
 printf 'one\n' >"$PROD_REPO/bin/modified"
 printf 'here\n' >"$PROD_REPO/bin/deleted"
 printf 'before\n' >"$PROD_REPO/bin/committed"
+printf 'orig\n' >"$PROD_REPO/bin/committed-open"
 printf 'never moved\n' >"$PROD_REPO/bin/untouched"
 printf 'orig\n' >"$PROD_REPO/bin/co-tenant-open"
 # A filename holding a BACKSLASH, which is a legal name git records verbatim. Handed to awk through
@@ -1806,6 +1809,7 @@ blob_of() { printf '%s\n' "$1" | git -C "$PROD_REPO" hash-object --stdin; }
 # A co-tenant's live edit, standing before this run was launched: it is what the run's own rewrite is
 # measured against, and the one case HEAD's blob answers wrongly.
 printf 'egor was here\n' >"$PROD_REPO/bin/co-tenant-open"
+printf 'egor was here\n' >"$PROD_REPO/bin/committed-open"
 printf 'egor was here\n' >"$PROD_REPO/$PROD_ESC"
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 {
@@ -1824,11 +1828,13 @@ assert test "$(cat "$RUN_DIR/head-before")" = "$PROD_BASE"
 printf 'two\n' >"$PROD_REPO/bin/modified"
 printf 'born\n' >"$PROD_REPO/bin/born"
 rm -f "$PROD_REPO/bin/deleted"
+touch "$PROD_REPO/bin/untouched"
 printf 'the worker rewrote it\n' >"$PROD_REPO/bin/co-tenant-open"
 printf 'the worker rewrote it\n' >"$PROD_REPO/$PROD_ESC"
 printf 'after\n' >"$PROD_REPO/bin/committed"
+printf 'the worker rewrote it\n' >"$PROD_REPO/bin/committed-open"
 printf 'landed\n' >"$PROD_REPO/bin/committed-born"
-git -C "$PROD_REPO" add bin/committed bin/committed-born >/dev/null
+git -C "$PROD_REPO" add bin/committed bin/committed-born bin/committed-open >/dev/null
 git -C "$PROD_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed' >/dev/null
 assert await_done
 assert grep -qxF -- "$(blob_of one)$tab$(blob_of two)${tab}bin/modified" "$RUN_DIR/produced"
@@ -1854,10 +1860,16 @@ assert git -C "$PROD_REPO" cat-file -e "$(blob_of 'the worker rewrote it')"
 # A listed path whose content never moved produced nothing: a row for it owns a link that is not
 # there, and the reader would price the whole file against a base nobody wrote.
 assert_fails grep -q 'bin/untouched' "$RUN_DIR/produced"
+assert_fails grep -qx 'bin/untouched' "$RUN_DIR/files"
+assert grep -qx 'bin/deleted' "$RUN_DIR/files"
+assert test -f "$RUN_DIR/dirty-after-shas"
+assert test "$(cat "$RUN_DIR/head-after")" = "$(git -C "$PROD_REPO" rev-parse HEAD)"
+assert_fails grep -q '^UNKNOWN: \|^PARTIAL: ' "$RUN_DIR/files"
 # The commits the run made, in the transitions git prints for them, marked so the reader can apply
 # the first-row-wins rule that a cherry-picked blob needs and an edit does not.
 assert grep -qxF -- "$(blob_of before)$tab$(blob_of after)${tab}bin/committed${tab}commit" "$RUN_DIR/produced"
 assert grep -qxF -- "-$tab$(blob_of landed)${tab}bin/committed-born${tab}commit" "$RUN_DIR/produced"
+assert grep -qxF -- "$(blob_of 'egor was here')$tab$(blob_of 'the worker rewrote it')${tab}bin/committed-open" "$RUN_DIR/produced"
 # One grammar for both kinds, or the sweep reading these rows splits a path off the wrong field.
 assert test "$(awk -F'\t' 'NF < 3 || NF > 4' "$RUN_DIR/produced" | wc -l | tr -d ' ')" -eq 0
 assert test "$(awk -F'\t' 'NF == 4 && $4 != "commit"' "$RUN_DIR/produced" | wc -l | tr -d ' ')" -eq 0
@@ -1948,7 +1960,7 @@ export STUB_SLEEP=1
 start_ok claudeb --workdir "$PROD_REPO"
 printf 'claimed content\n' >"$PROD_REPO/bin/claimed-content"
 assert await_done
-assert_fails grep -q 'bin/claimed-content' "$RUN_DIR/produced"
+assert grep -q 'bin/claimed-content' "$RUN_DIR/produced"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-content >/dev/null
 assert grep -qxF -- "-$tab$(blob_of 'claimed content')${tab}bin/claimed-content" "$RUN_DIR/produced"
 # APPENDED, never recomputed: the rows already standing were measured when the run ended, and a
@@ -1956,8 +1968,17 @@ assert grep -qxF -- "-$tab$(blob_of 'claimed content')${tab}bin/claimed-content"
 printf 'a co-tenant moved it on\n' >"$PROD_REPO/bin/claimed-content"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/claimed-content >/dev/null
 assert grep -qxF -- "-$tab$(blob_of 'claimed content')${tab}bin/claimed-content" "$RUN_DIR/produced"
-assert test "$(grep -cF 'bin/claimed-content' "$RUN_DIR/produced")" -eq 2
+assert test "$(grep -cF 'bin/claimed-content' "$RUN_DIR/produced")" -eq 1
 
+
+legacy_claim_record() {
+  local path
+  printf 'WORKDIR: %s\nPARTIAL: legacy transcript listing\n' "$(jq -r '.workdir' "$RUN_DIR/meta.json")" >"$RUN_DIR/files"
+  printf 'WORKDIR: %s\n' "$DIRT_TOP" >"$RUN_DIR/dirty"
+  for path in "$@"; do printf '%s\n' "$path" >>"$RUN_DIR/dirty"; done
+  rm -f "$RUN_DIR/dirty-after-shas" "$RUN_DIR/head-after"
+  "$RUNNER" wait "$RUN_ID" --max 0 >"$WORK/wait.out"
+}
 
 # --- Naming what the run could not name -----------------------------------------------------------
 # A run that worked through the shell lists nothing and its work is owned by nobody. The launching
@@ -1968,10 +1989,12 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-one' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export CLAUDE_CODE_SESSION_ID=chat-abc
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-one"
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-two"
 assert await_done
+legacy_claim_record 'bin/claimed-one' 'bin/claimed-two'
 assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
 # The line the orchestrator acts on, and the paths in it are already spelled the way `claim` takes
 # them: a list it has to re-spell is a list it gets wrong.
@@ -2054,9 +2077,11 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ "bin/named with a space"' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 printf 'through the shell\n' >"$DIRT_REPO/bin/named with a space"
 assert await_done
+legacy_claim_record 'bin/named with a space'
 printed=$(grep '^UNNAMED: ' "$WORK/wait.out")
 assert test -n "$printed"
 assert eval "\"$RUNNER\" ${printed#*claim yours: worker-run }" >/dev/null
@@ -2077,9 +2102,11 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ bin/claimed-from-a-subdirectory' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO/tests"
 printf 'through the shell\n' >"$DIRT_REPO/bin/claimed-from-a-subdirectory"
 assert await_done
+legacy_claim_record 'bin/claimed-from-a-subdirectory'
 assert grep -qxF "UNNAMED: 1 path(s) changed in this run's window that no record names — claim yours: worker-run claim $RUN_ID --paths $DIRT_TOP/bin/claimed-from-a-subdirectory" \
   "$WORK/wait.out"
 assert eval "\"$RUNNER\" $(grep '^UNNAMED: ' "$WORK/wait.out" | sed 's/.*claim yours: worker-run //')" >/dev/null
@@ -2096,9 +2123,11 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ bin/still-unnamed' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 printf 'through the shell\n' >"$DIRT_REPO/bin/still-unnamed"
 assert await_done
+legacy_claim_record 'bin/still-unnamed'
 assert grep -q '^UNNAMED: ' "$WORK/wait.out"
 assert "$RUNNER" claim "$RUN_ID" --paths bin/was-never-dirty --complete >/dev/null
 assert grep -qx 'bin/still-unnamed' "$RUN_DIR/dirty"
@@ -2111,11 +2140,13 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ bin/capped-one' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO"
 for capped in one two three; do
   printf 'through the shell\n' >"$DIRT_REPO/bin/capped-$capped"
 done
 assert await_done
+legacy_claim_record 'bin/capped-one' 'bin/capped-two' 'bin/capped-three'
 CAPPED_COUNT=$(grep -cv '^WORKDIR: ' "$RUN_DIR/dirty")
 assert test "$CAPPED_COUNT" -ge 3
 capped_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 | grep '^UNNAMED: ')
@@ -2140,11 +2171,13 @@ clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 tool_call Bash command 'sed -i "" s/a/b/ bin/capped-sub-one' \
   >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
 start_ok claudeb --workdir "$DIRT_REPO/tests"
 for capped in one two three; do
   printf 'through the shell\n' >"$DIRT_REPO/bin/capped-sub-$capped"
 done
 assert await_done
+legacy_claim_record 'bin/capped-sub-one' 'bin/capped-sub-two' 'bin/capped-sub-three'
 capped_sub_line=$(WORKER_RUN_UNNAMED_INLINE_MAX=1 "$RUNNER" wait "$RUN_ID" --max 0 \
   | grep '^UNNAMED: ')
 assert grep -qF -e "--paths $DIRT_TOP/<row>" <<<"$capped_sub_line"
@@ -2269,7 +2302,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-written' <<<"$report"
 assert grep -qxF "RUN-FILE: $WORK/outside/agy-absolute" <<<"$report"
@@ -2279,8 +2313,8 @@ assert test "$(grep -c 'agy-only-read' <<<"$report")" -eq 0
 # A read-only shell command does not spoil the list, but any shell at all makes the list a floor —
 # the same sentence claudeb's own runs carry, since it is the same fact about a transcript.
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
-assert grep -qx 'bin/agy-written' "$RUN_DIR/files"
-assert test "$(grep -c '^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
+assert grep -qx 'bin/agy-written' "$WORK/transcript-files"
+assert test "$(grep -c '^UNKNOWN: ' "$WORK/transcript-files")" -eq 0
 assert test ! -e "$RUN_DIR/workdir-escape"
 
 # Relative tool targets are anchored to the run workdir before both rendering and escape detection.
@@ -2289,7 +2323,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 agy_write write_to_file 'bin/agy-relative' >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-relative' <<<"$report"
 assert test ! -e "$RUN_DIR/workdir-escape"
@@ -2304,7 +2339,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert test "$(grep -c '^RUN-FILE: ' <<<"$report")" -eq 1
 assert grep -qx 'RUN-FILE: bin/agy-write-succeeded' <<<"$report"
 assert test "$(grep -c 'agy-write-failed' <<<"$report")" -eq 0
@@ -2323,13 +2359,14 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 assert grep -qx 'UNKNOWN: the run wrote through the shell, whose targets no transcript names' \
-  "$RUN_DIR/files"
+  "$WORK/transcript-files"
 # And no path stands beside the UNKNOWN: half a list read as the whole of one is the claim the
 # fail-closed rule exists to refuse.
-assert test "$(grep -c 'agy-written' "$RUN_DIR/files")" -eq 0
+assert test "$(grep -c 'agy-written' "$WORK/transcript-files")" -eq 0
 
 # Numbered and ampersand redirects open files too, so every supported fd spelling spoils the list.
 clear_stub
@@ -2340,8 +2377,9 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A redirect to a file descriptor or to /dev/null writes no file. Counted as a write it made every
 # `2>/dev/null` in a read-only review run unanswerable, which is most of them.
@@ -2353,7 +2391,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-assert grep -qx 'RUN-FILES: 1' <<<"$("$RUNNER" report "$RUN_ID")"
+transcript_report "$RUN_DIR" >/dev/null
+assert grep -qx 'RUN-FILES: 1' <<<"$(transcript_report "$RUN_DIR")"
 
 # The /dev/null exception ends at the device name; a similarly prefixed file is still a write.
 clear_stub
@@ -2364,8 +2403,9 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # Comparison and arrow operators are not redirects; the shell still makes this exact editor list a floor.
 clear_stub
@@ -2376,7 +2416,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
 
@@ -2392,8 +2433,9 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: generate_image)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A write whose target the transcript leaves empty is the same refusal.
 clear_stub
@@ -2401,8 +2443,9 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 agy_row "$AGY_TS" write_to_file '{"CodeContent": "x"}' >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a write whose target it does not name)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A resumed conversation APPENDS to the same transcript, so the file holds the calls of the runs
 # before it — reported unfiltered this run claims a file an earlier one edited. The run's own start
@@ -2417,7 +2460,8 @@ AGY_TS=$(agy_iso "$run_started")
 AGY_TS="${AGY_TS%Z}.123Z"
 agy_write write_to_file "$agy_workdir/bin/agy-at-the-start" >>"$AGY_TRANSCRIPT"
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-at-the-start' <<<"$report"
 unset STUB_SLEEP
@@ -2428,15 +2472,17 @@ AGY_TS=not-a-timestamp
 agy_write write_to_file "$agy_workdir/bin/agy-unparseable-time" >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A transcript jq cannot parse is unknown, never 0.
 clear_stub
 printf 'not json {\n' >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
+transcript_report "$RUN_DIR" >/dev/null
+assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$(transcript_report "$RUN_DIR")"
 
 # No transcript at all — an agy too old to keep one, a conversation id the log never printed, a
 # profile that is not where it was looked for — is unknown too, and never the workdir.
@@ -2444,8 +2490,9 @@ clear_stub
 mv "$AGY_TRANSCRIPT" "$AGY_TRANSCRIPT.moved"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (no session transcript for gemini-conversation)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 rm -f "$AGY_TRANSCRIPT.moved"
 
 # Live-reproduced 2026-08-24: handed a workdir it does not trust, agy moved into the first
@@ -2461,7 +2508,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/agy-went-elsewhere" \
   <<<"$report"
 assert grep -q '^RUN-FILES: unknown' <<<"$report"
@@ -2473,7 +2521,7 @@ assert grep -q '^WORKDIR-ESCAPE: ' "$WORK/wait.out"
 assert test "$(grep -c . "$RUN_DIR/workdir-escape")" -eq 1
 # Every escaped destination accumulated across attempts reaches the report once.
 printf '%s\n' "$WORK/outside/agy-second-escape" >>"$RUN_DIR/workdir-escape"
-report=$("$RUNNER" report "$RUN_ID")
+report=$(transcript_report "$RUN_DIR")
 assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$report")" -eq 2
 # A run that touched its own workdir AND wrote outside it is doing its job: a worker reads
 # ~/.claude and writes /tmp, and screamed about every time this line would say nothing at all.
@@ -2485,8 +2533,9 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert test ! -e "$RUN_DIR/workdir-escape"
-assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
 # codex names its edits twice over and neither alone is complete: the patch event holds the paths of
 # a patch that applied, the call itself holds the patch TEXT (both gaps live-measured over the local
@@ -2529,7 +2578,8 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 4' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/cx-patched' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/cx-moved-from' <<<"$report"
@@ -2539,7 +2589,7 @@ assert test "$(grep -c 'cx-patch-failed' <<<"$report")" -eq 0
 assert test "$(grep -c 'cx-patch-text-failed' <<<"$report")" -eq 0
 assert test "$(grep -c 'cx-no-event-failed' <<<"$report")" -eq 0
 assert grep -q '^RUN-FILES-PARTIAL: the run also ran shell commands' <<<"$report"
-assert grep -qx 'bin/cx-patched' "$RUN_DIR/files"
+assert grep -qx 'bin/cx-patched' "$WORK/transcript-files"
 
 # A target still carrying an unexpanded `$name` or a backtick is text, not a path anybody can
 # attribute: a run editing this suite's own fixtures patches their `*** Update File: $cx_workdir/…`
@@ -2558,7 +2608,8 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 4' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/cx-patched' <<<"$report"
 assert grep -qxF 'RUN-FILE: bin/cost$report.txt' <<<"$report"
@@ -2567,10 +2618,10 @@ assert grep -qxF 'RUN-FILE: bin/cost`report.txt' <<<"$report"
 assert_fails grep -q '^RUN-FILE: .*cx-from-a-variable' <<<"$report"
 assert_fails grep -q '^RUN-FILE: .*cx-from-a-brace' <<<"$report"
 assert_fails grep -q '^RUN-FILE: .*cx-from-a-backtick' <<<"$report"
-assert test "$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$RUN_DIR/files" | grep -c 'cx-from-a-')" -eq 0
+assert test "$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$WORK/transcript-files" | grep -c 'cx-from-a-')" -eq 0
 # The text itself, so a reader can see what the transcript could not resolve.
 assert grep -qx 'RUN-FILES-PARTIAL: the run named a target the transcript cannot resolve: $cx_workdir/bin/cx-from-a-variable' <<<"$report"
-assert grep -qx 'PARTIAL: the run named a target the transcript cannot resolve: $cx_workdir/bin/cx-from-a-variable' "$RUN_DIR/files"
+assert grep -qx 'PARTIAL: the run named a target the transcript cannot resolve: $cx_workdir/bin/cx-from-a-variable' "$WORK/transcript-files"
 # And it never reads as the whole list being unanswerable: the paths beside it are real.
 assert_fails grep -q '^RUN-FILES: unknown' <<<"$report"
 
@@ -2584,7 +2635,8 @@ AGY_TS=$(agy_iso $(($(date +%s) + 60)))
 } >"$AGY_TRANSCRIPT"
 start_ok gemini
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/agy-written' <<<"$report"
 assert grep -qx 'RUN-FILES-PARTIAL: the run named a target the transcript cannot resolve: $agy_workdir/bin/agy-from-a-variable' <<<"$report"
@@ -2600,7 +2652,8 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert test "$(grep -c 'cx-mentioned-only' <<<"$report")" -eq 0
 
@@ -2614,7 +2667,8 @@ printf -v crlf_patch '*** Begin Patch\r\n*** Update File: %s/bin/cx-crlf\r\n*** 
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILE: bin/cx-crlf' <<<"$report"
 assert test "$(printf '%s' "$report" | tr -cd '\r' | wc -c | tr -d ' ')" -eq 0
 
@@ -2628,8 +2682,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # Single quotes and backticks are string literals like any other, and a call spelled with them reads.
 clear_stub
@@ -2638,8 +2693,9 @@ cx_exec "await tools.exec_command({cmd:'git status',workdir:'$cx_workdir'}); awa
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # An interpolated template literal names no command this reader can read, and fails closed.
 clear_stub
@@ -2648,8 +2704,9 @@ cx_exec "const verb = 'status'; const cmd = \`git \${verb}\`; await tools.exec_c
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # Shorthand resolves by NAME against the binding standing before the call, so an explicit value and a
 # shorthand one interleaved each keep their own command; taking them in two blocks paired the second
@@ -2660,8 +2717,9 @@ cx_exec "var cmd = \"sed -i '' s/a/b/ bin/cx-not-this-one\"; await tools.exec_co
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # The same binding serves every shorthand call that follows it, however many there are.
 clear_stub
@@ -2670,8 +2728,9 @@ cx_exec "const cmd = 'git status --short'; await tools.exec_command({cmd}); awai
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A shorthand name with no binding before it resolves to nothing at all.
 clear_stub
@@ -2679,8 +2738,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 cx_exec "await tools.exec_command({cmd}); const cmd = 'git status';" >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # workdir resolves per call the same way: the shorthand of the second call is the directory bound
 # before IT, and reading the first binding instead put every command outside the workdir.
@@ -2690,8 +2750,9 @@ cx_exec "var workdir = '$WORK/extra'; await tools.exec_command({cmd: 'git status
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert test ! -e "$RUN_DIR/workdir-escape"
-assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$("$RUNNER" report "$RUN_ID")")" -eq 0
+assert test "$(grep -c '^WORKDIR-ESCAPE: ' <<<"$(transcript_report "$RUN_DIR")")" -eq 0
 
 # Tool-looking text in strings and comments is not an executed call.
 clear_stub
@@ -2700,8 +2761,9 @@ cx_exec $'await tools.view_image({path:"fixture.png"}); const note = "tools.fs_w
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # Direct function-call arguments must be a JSON object, not prose containing field-shaped text.
 clear_stub
@@ -2709,8 +2771,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 cx_call exec_command "arbitrary text cmd: \"git status\", workdir: \"$cx_workdir\"" >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: exec_command arguments)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # Bare JavaScript object keys are the dominant exec_command rollout form and use the same shell rule.
 clear_stub
@@ -2721,8 +2784,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # JavaScript shorthand arguments resolve through their string bindings.
 clear_stub
@@ -2731,8 +2795,9 @@ cx_exec "const cmd = \"git status --short\"; const workdir = \"$cx_workdir\"; aw
   >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # Bytes typed into a shell a previous call started are read as a command line like any other.
 clear_stub
@@ -2743,8 +2808,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A tool this reader does not know: node's own REPL, a spawned subagent, an MCP server's write —
 # each can put bytes on disk under no name the rollout carries.
@@ -2756,8 +2822,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: js)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 clear_stub
 CX_TS=$(iso $(($(date +%s) + 60)))
 {
@@ -2766,8 +2833,9 @@ CX_TS=$(iso $(($(date +%s) + 60)))
 } >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: fs.write)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A resumed codex session appends to the rollout it already had, and the cut is the run's own start.
 clear_stub
@@ -2779,7 +2847,8 @@ cx_patch_event "$cx_workdir/bin/cx-before-the-resume" '' true >"$CX_ROLLOUT"
 CX_TS=$(iso "$run_started")
 cx_patch_event "$cx_workdir/bin/cx-at-the-start" '' true >>"$CX_ROLLOUT"
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/cx-at-the-start' <<<"$report"
 unset STUB_SLEEP
@@ -2790,8 +2859,9 @@ CX_TS=not-a-timestamp
 cx_patch_event "$cx_workdir/bin/cx-unparseable-time" '' true >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # An unusable timestamp on a classified read-only call remains read-only.
 clear_stub
@@ -2799,8 +2869,9 @@ CX_TS=not-a-timestamp
 cx_call view_image '{"path":"fixture.png"}' >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 assert grep -E '^\| am \|.*record_workdir_escape.*workdir_escape_line' "$ROOT/docs/shared-invariants.md" >/dev/null
 
@@ -2808,7 +2879,8 @@ clear_stub
 printf 'not json {\n' >"$CX_ROLLOUT"
 start_ok codex
 assert await_done
-assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$("$RUNNER" report "$RUN_ID")"
+transcript_report "$RUN_DIR" >/dev/null
+assert grep -qx 'RUN-FILES: unknown (transcript unreadable)' <<<"$(transcript_report "$RUN_DIR")"
 rm -f "$CX_ROLLOUT"
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_ACCOUNT=recordacct
@@ -3361,7 +3433,7 @@ assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert grep -qx -- '--account codex --claim --exclude pinnedacct' "$PICK_LOG"
 assert grep -qx 'REROUTE: walled on pinnedacct → continued on rescue3' "$WORK/wait.out"
 assert test -f "$WORKER_WALLS_DIR/codex-pinnedacct"
-wall_epoch=$(tr -d '[:space:]' <"$WORKER_WALLS_DIR/codex-pinnedacct")
+wall_epoch=$(sed -n 1p "$WORKER_WALLS_DIR/codex-pinnedacct" | tr -d '[:space:]')
 now=$(date +%s)
 assert test "$wall_epoch" -ge $((now + 3600 - 30))
 assert test "$wall_epoch" -le $((now + 3600 + 30))
@@ -3899,8 +3971,6 @@ grok_call() { # id name kind read-only input-json
        _meta: {"x.ai/tool": {name: $name, kind: $kind, read_only: $ro}}}}}'
 }
 grok_update() { # id status [current-dir]
-  grok_call p1 todo_write plan false '{"todos": []}'
-  grok_update p1 completed
   jq -cn --argjson ts "$GROK_TS" --arg id "$1" --arg status "$2" --arg dir "${3:-}" \
     '{timestamp: $ts, method: "session/update", params: {sessionId: "s", update: {
        sessionUpdate: "tool_call_update", toolCallId: $id, status: $status,
@@ -3917,10 +3987,13 @@ grok_summary "$grok_workdir"
   grok_update r1 completed
   grok_call c1 run_terminal_command execute false "$(jq -cn '{command: "git status --short"}')"
   grok_update c1 completed "$grok_workdir"
+  grok_call p1 todo_write plan false '{"todos": []}'
+  grok_update p1 completed
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 2' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/grok-written' <<<"$report"
 assert grep -qxF "RUN-FILE: $WORK/outside/grok-absolute" <<<"$report"
@@ -3939,7 +4012,8 @@ GROK_TS=$(($(date +%s) + 60))
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qx 'RUN-FILES: 1' <<<"$report"
 assert grep -qx 'RUN-FILE: bin/grok-kept' <<<"$report"
 assert test "$(grep -c 'grok-refused' <<<"$report")" -eq 0
@@ -3956,8 +4030,9 @@ GROK_TS=$(($(date +%s) + 60))
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a call whose file targets it does not name: image_gen)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # The dispatcher tool answers for what it dispatched: a shell through it is a shell.
 clear_stub
@@ -3969,8 +4044,9 @@ GROK_TS=$(($(date +%s) + 60))
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the run wrote through the shell, whose targets no transcript names)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A mutating row with no usable time cannot be silently dropped out of the run's window.
 clear_stub
@@ -3981,8 +4057,9 @@ GROK_TS=null
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
+transcript_report "$RUN_DIR" >/dev/null
 assert grep -qx 'RUN-FILES: unknown (the transcript records a mutating context with an unparseable timestamp)' \
-  <<<"$("$RUNNER" report "$RUN_ID")"
+  <<<"$(transcript_report "$RUN_DIR")"
 
 # A session record filed under another directory is not this run's, however well the id matches.
 clear_stub
@@ -3994,21 +4071,24 @@ GROK_TS=$(($(date +%s) + 60))
 grok_summary "$WORK/extra"
 start_ok grok
 assert await_done
-assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$("$RUNNER" report "$RUN_ID")"
+transcript_report "$RUN_DIR" >/dev/null
+assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$(transcript_report "$RUN_DIR")"
 # With no summary.json at all the encoded directory name is what answers, and it answers for this
 # run: a record whose own cwd cannot be read is not a licence to claim it.
 rm -f "$(dirname "$GROK_UPDATES")/summary.json"
 clear_stub
 start_ok grok
 assert await_done
-assert grep -qx 'RUN-FILE: bin/grok-elsewhere' <<<"$("$RUNNER" report "$RUN_ID")"
+transcript_report "$RUN_DIR" >/dev/null
+assert grep -qx 'RUN-FILE: bin/grok-elsewhere' <<<"$(transcript_report "$RUN_DIR")"
 
 # No record at all is unknown too, and never the workdir.
 clear_stub
 mv "$GROK_UPDATES" "$GROK_UPDATES.moved"
 start_ok grok
 assert await_done
-assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$("$RUNNER" report "$RUN_ID")"
+transcript_report "$RUN_DIR" >/dev/null
+assert grep -qx "RUN-FILES: unknown (no session transcript for $GROK_SESSION)" <<<"$(transcript_report "$RUN_DIR")"
 mv "$GROK_UPDATES.moved" "$GROK_UPDATES"
 
 # Nothing inside the workdir at all is the one failure a launcher cannot see: a green run over an
@@ -4021,7 +4101,8 @@ GROK_TS=$(($(date +%s) + 60))
 } >"$GROK_UPDATES"
 start_ok grok
 assert await_done
-report=$("$RUNNER" report "$RUN_ID")
+transcript_report "$RUN_DIR" >/dev/null
+report=$(transcript_report "$RUN_DIR")
 assert grep -qxF "WORKDIR-ESCAPE: the run named no path inside its own workdir; it worked in $WORK/extra/grok-went-elsewhere" \
   <<<"$report"
 assert grep -qxF "$WORK/extra/grok-went-elsewhere" "$RUN_DIR/workdir-escape"
@@ -4257,4 +4338,221 @@ else
   fail "the ledger writer of ../claude-setup is unreadable (set CLAUDE_SETUP_ROOT)"
 fi
 
-echo "PASS: $asserts asserts; worker-run detaches vendor CLIs, preserves live runs across bounded waits, resolves accounts and model knobs, reroutes an unpinned run off a walled account until every candidate is walled, retries only documented compatibility failures, records beside each run the chat that launched it, the worker session it ran under and the files it wrote — read for claudeb, codex, agy and grok alike out of that vendor's own transcript, the same list its report prints, unioned across every attempt, an UNKNOWN line where a mutating call names no target, a shell command writes, a tool is one this reader cannot classify or the workdir leaves the list unanswerable, a PARTIAL one where the run also worked through the shell or named a target still carrying an unexpanded shell variable, and a WORKDIR-ESCAPE line beside a run that named no path inside its own workdir at all, written for a failed run and for a run that never reached its workdir too, and for no chat at all when none can be named — answers a still-running wait with LAST-EDIT and CPU-SECONDS beside the stdout byte counts that say nothing about liveness, stamps the bench of a triage its brief delegates with the supervisor's pid and its launch instant, records the live vendor CLI's own pid beside the supervisor's for the memory guard to root its kill at, hands every launch the preamble's answer to an exit 137, ends a wait over an incomplete listing with the UNNAMED line naming every path in the run's window no record answers for — spelled as \`claim\` takes them while they are few enough to read, replaced past that cap by the exact count and the record holding the list, and never printed for a run whose own list is complete — takes that answer from the LAUNCHING chat alone and only once the run has ended, refusing a foreign chat, a live run and any path outside the run's workdir without applying half a claim, writes the claimed paths in as ordinary listing rows, drops them from the dirt record without adding one it never held, keeps the PARTIAL/UNKNOWN caveat standing until \`--complete\` says the list is whole, and reports terminal outcomes, and refuses every model outside the per-vendor allowed list — from the brief, the toggle file or the codex config alike — with \`OUTCOME: MODEL_REFUSED\` before an account is resolved or a run directory exists"
+# Snapshot attribution P1/P2 (after-snapshot UNKNOWN, first-row-wins, foreign HEAD, path shape, symlink, claim).
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc
+mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+ATTR_REPO="$WORK/attr-repo"
+mkdir -p "$ATTR_REPO/bin"
+git -C "$ATTR_REPO" init -q .
+printf 'base\n' >"$ATTR_REPO/bin/keep"
+git -C "$ATTR_REPO" add -A >/dev/null
+git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+ATTR_TOP=$(cd "$ATTR_REPO" && pwd -P)
+tab=$'\t'
+blob_of() { printf '%s\n' "$1" | git -C "${1:-$ATTR_REPO}" hash-object --stdin; }
+attr_blob() { printf '%s\n' "$1" | git -C "$ATTR_REPO" hash-object --stdin; }
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/keep" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'stale-produced\n' >"$RUN_DIR/produced"
+printf 'WORKDIR: %s\nstale-dirty\n' "$ATTR_TOP" >"$RUN_DIR/dirty"
+mv "$ATTR_REPO/.git" "$ATTR_REPO/.git.hidden"
+assert await_done
+mv "$ATTR_REPO/.git.hidden" "$ATTR_REPO/.git"
+assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/produced"
+assert test ! -e "$RUN_DIR/dirty"
+assert grep -q '^UNNAMED: ' "$WORK/wait.out"
+assert grep -q "claim $RUN_ID" "$WORK/wait.out"
+assert grep -q '^UNNAMED: ' <<<"$("$RUNNER" report "$RUN_ID")"
+assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/keep >"$WORK/claim-unknown.out" 2>&1
+assert grep -q 'no after-snapshot' "$WORK/claim-unknown.out"
+
+clear_stub
+printf 'B\n' >"$ATTR_REPO/bin/rewritten-open"
+git -C "$ATTR_REPO" add bin/rewritten-open
+git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'head blob B' >/dev/null
+printf 'D\n' >"$ATTR_REPO/bin/rewritten-open"
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/rewritten-open" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'C\n' >"$ATTR_REPO/bin/rewritten-open"
+git -C "$ATTR_REPO" add bin/rewritten-open
+git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'the run committed C' >/dev/null
+assert await_done
+assert grep -qxF -- "$(attr_blob D)$tab$(attr_blob C)${tab}bin/rewritten-open" "$RUN_DIR/produced"
+assert_fails grep -q $'\tbin/rewritten-open\tcommit$' "$RUN_DIR/produced"
+assert_fails grep -qxF -- "$(attr_blob B)$tab$(attr_blob C)${tab}bin/rewritten-open${tab}commit" "$RUN_DIR/produced"
+
+clear_stub
+UP_REPO="$WORK/upstream-repo"
+mkdir -p "$UP_REPO/bin"
+git -C "$UP_REPO" init -q .
+printf 'shared\n' >"$UP_REPO/bin/shared"
+git -C "$UP_REPO" add -A >/dev/null
+git -C "$UP_REPO" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+git clone -q "$UP_REPO" "$WORK/run-clone"
+printf 'upstream\n' >"$UP_REPO/bin/from-upstream"
+git -C "$UP_REPO" add bin/from-upstream
+GIT_AUTHOR_DATE='2020-01-01T00:00:00' GIT_COMMITTER_DATE='2020-01-01T00:00:00' \
+  git -C "$UP_REPO" -c user.email=t@t -c user.name=t commit -qm 'old upstream' >/dev/null
+CLONE_TOP=$(cd "$WORK/run-clone" && pwd -P)
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$CLONE_TOP/bin/ours" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$WORK/run-clone"
+git -C "$WORK/run-clone" fetch -q origin && git -C "$WORK/run-clone" merge --ff-only -q FETCH_HEAD
+printf 'ours\n' >"$WORK/run-clone/bin/ours"
+assert await_done
+assert grep -q 'bin/ours' "$RUN_DIR/produced"
+assert_fails grep -q 'from-upstream' "$RUN_DIR/produced"
+assert_fails grep -qx 'bin/from-upstream' "$RUN_DIR/files"
+assert grep -q 'outside the run window' "$RUN_DIR/files-note"
+
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/keep" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'dash\n' >"$ATTR_REPO/-odd-name"
+assert await_done
+assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
+assert_fails grep -q -- '-odd-name' "$RUN_DIR/files"
+assert test ! -e "$RUN_DIR/produced"
+rm -f "$ATTR_REPO/-odd-name"
+
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/claim-clear" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'claim-me\n' >"$ATTR_REPO/bin/claim-clear"
+assert await_done
+: >"$RUN_DIR/journaled"
+assert "$RUNNER" claim "$RUN_ID" --paths bin/claim-clear >/dev/null
+assert test ! -e "$RUN_DIR/journaled"
+
+clear_stub
+mkdir -p "$ATTR_REPO/target-dir"
+printf 'old-target\n' >"$ATTR_REPO/old-file"
+printf 'new-target\n' >"$ATTR_REPO/new-file"
+ln -s old-file "$ATTR_REPO/link-file"
+ln -s target-dir "$ATTR_REPO/link-dir"
+git -C "$ATTR_REPO" add -A >/dev/null
+git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'symlinks' >/dev/null
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/link-file" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+ln -sf new-file "$ATTR_REPO/link-file"
+ln -s missing "$ATTR_REPO/dangling"
+ln -s target-dir "$ATTR_REPO/new-link-dir"
+assert await_done
+link_prev=$(printf '%s' old-file | git -C "$ATTR_REPO" hash-object --stdin)
+link_cur=$(printf '%s' new-file | git -C "$ATTR_REPO" hash-object --stdin)
+dang_cur=$(printf '%s' missing | git -C "$ATTR_REPO" hash-object --stdin)
+dir_cur=$(printf '%s' target-dir | git -C "$ATTR_REPO" hash-object --stdin)
+assert grep -qxF -- "$link_prev$tab$link_cur${tab}link-file" "$RUN_DIR/produced"
+assert grep -qxF -- "-$tab$dang_cur${tab}dangling" "$RUN_DIR/produced"
+assert grep -qxF -- "-$tab$dir_cur${tab}new-link-dir" "$RUN_DIR/produced"
+assert_fails grep -q $'\t-\tdangling$' "$RUN_DIR/produced"
+assert_fails grep -q $'\t-\tnew-link-dir$' "$RUN_DIR/produced"
+assert_fails grep -q $'\t-\tlink-dir$' "$RUN_DIR/produced"
+
+# snapshot_tab_or_newline_path_unknown
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/keep" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'during-run\n' >"$ATTR_REPO/bin/keep"
+printf 'tabbed\n' >"$ATTR_REPO/bin/has${tab}tab"
+printf 'nl\n' >"$ATTR_REPO/bin/has"$'\n'"nl"
+assert await_done
+assert test "$(head -n1 "$RUN_DIR/files")" = "WORKDIR: $ATTR_TOP"
+assert grep -q '^UNKNOWN: ' "$RUN_DIR/files"
+assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
+assert test "$(grep -cv '^WORKDIR: \|^UNKNOWN: ' "$RUN_DIR/files")" -eq 0
+assert_fails grep -qx 'bin/keep' "$RUN_DIR/files"
+assert test ! -s "$RUN_DIR/produced"
+rm -f "$ATTR_REPO/bin/has${tab}tab" "$ATTR_REPO/bin/has"$'\n'"nl"
+
+# snapshot_linked_worktree_attribution
+clear_stub
+WT_DIR="$WORK/attr-linked-wt"
+git -C "$ATTR_REPO" worktree add -b attr-linked "$WT_DIR" >/dev/null
+WT_TOP=$(cd "$WT_DIR" && pwd -P)
+printf 'wt-head\n' >"$WT_DIR/bin/in-wt"
+git -C "$WT_DIR" add bin/in-wt
+git -C "$WT_DIR" -c user.email=t@t -c user.name=t commit -qm 'worktree head' >/dev/null
+WT_HEAD=$(git -C "$WT_DIR" rev-parse HEAD)
+WT_PREV=$(git -C "$WT_DIR" rev-parse HEAD:bin/in-wt)
+MAIN_HEAD=$(git -C "$ATTR_REPO" rev-parse HEAD)
+assert test "$WT_HEAD" != "$MAIN_HEAD"
+printf 'main-only\n' >"$ATTR_REPO/bin/main-dirt"
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$WT_TOP/bin/in-wt" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$WT_DIR"
+printf 'run-edit\n' >"$WT_DIR/bin/in-wt"
+assert await_done
+assert test "$(cat "$RUN_DIR/head-before")" = "$WT_HEAD"
+assert grep -qx 'bin/in-wt' "$RUN_DIR/files"
+assert grep -qxF -- "$WT_PREV$tab$(attr_blob run-edit)${tab}bin/in-wt" "$RUN_DIR/produced"
+assert_fails grep -q 'main-dirt' "$RUN_DIR/files"
+assert_fails grep -q 'main-dirt' "$RUN_DIR/produced"
+assert_fails grep -q '^UNKNOWN: \|^PARTIAL: ' "$RUN_DIR/files"
+
+# snapshot_rename_delete_and_birth
+clear_stub
+printf 'same-blob\n' >"$ATTR_REPO/bin/renamed-from"
+git -C "$ATTR_REPO" add bin/renamed-from
+git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'to rename' >/dev/null
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/renamed-from" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+git -C "$ATTR_REPO" mv bin/renamed-from bin/renamed-to
+git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'rename inside the run' >/dev/null
+assert await_done
+rename_blob=$(attr_blob same-blob)
+assert grep -qx 'bin/renamed-from' "$RUN_DIR/files"
+assert grep -qx 'bin/renamed-to' "$RUN_DIR/files"
+assert grep -qxF -- "$rename_blob$tab-${tab}bin/renamed-from${tab}commit" "$RUN_DIR/produced"
+assert grep -qxF -- "-$tab$rename_blob${tab}bin/renamed-to${tab}commit" "$RUN_DIR/produced"
+assert_fails grep -q 'renamed-from.*renamed-to' "$RUN_DIR/produced"
+assert_fails grep -q 'renamed-to.*renamed-from' "$RUN_DIR/produced"
+
+# snapshot_missing_after_killed_supervisor
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$ATTR_TOP/bin/keep" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$ATTR_REPO"
+printf 'killed-edit\n' >"$ATTR_REPO/bin/keep"
+assert await_done
+assert test -f "$RUN_DIR/dirty-before-shas"
+assert test -f "$RUN_DIR/head-before"
+rm -f "$RUN_DIR/head-after" "$RUN_DIR/dirty-after-shas" "$RUN_DIR/files" "$RUN_DIR/produced"
+killed_report=$("$RUNNER" report "$RUN_ID")
+assert grep -qi 'UNKNOWN\|unknown' <<<"$killed_report"
+assert grep -q "claim $RUN_ID" <<<"$killed_report"
+assert_fails "$RUNNER" claim "$RUN_ID" --paths bin/keep >"$WORK/claim-killed.out" 2>&1
+assert grep -q 'no after-snapshot' "$WORK/claim-killed.out"
+
+echo "PASS: $asserts asserts; worker-run lifecycle, routing, snapshot attribution, transcript diagnostics, legacy claims and launcher journal integration"

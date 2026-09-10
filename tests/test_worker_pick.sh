@@ -1646,6 +1646,39 @@ assert test "$(pinned_now)" = session
 assert contains "$(nrow 1)" 'claude/session'
 clear_walls
 
+# A record stands in for llm-limits only until llm-limits reads the account again: a reading taken
+# after the record's write that shows both windows under 100% lapses it (the RESET fallback of
+# now+3600 outlives a real reset by up to an hour); an older reading, one still at 100%, or a
+# one-line record written before the write epoch existed keeps the wall until its reset.
+write_config
+clear_claims
+clear_walls
+read_store() {
+  jq -c --argjson as_of "$1" --argjson pct "$2" '.claude_pool | .vendors.claude.accounts |= map(
+    if .account == "session" then .five_hour += {as_of: $as_of, effective_pct: $pct} |
+      .weekly += {as_of: $as_of, effective_pct: 0} else . end)' "$FIXTURES" >"$STORE"
+}
+printf '2000003600\n2000000000\n' >"$WALLS/claudeb-session"
+read_store 1999999000 0
+run_store wall-read-older
+assert contains "$(vsection claude)" 'session* opus·high WALLED'
+assert test -e "$WALLS/claudeb-session"
+read_store 2000000100 100
+run_store wall-read-still-full
+assert contains "$(vsection claude)" 'session* opus·high WALLED'
+assert test -e "$WALLS/claudeb-session"
+read_store 2000000100 0
+run_store wall-read-open
+assert not_contains "$(vsection claude)" 'session* opus·high WALLED'
+assert test ! -e "$WALLS/claudeb-session"
+assert contains "$(nrow 1)" 'claude/session'
+printf '2000003600\n' >"$WALLS/claudeb-session"
+read_store 2000000100 0
+run_store wall-one-line-record
+assert contains "$(vsection claude)" 'session* opus·high WALLED'
+assert test -e "$WALLS/claudeb-session"
+clear_walls
+
 # What the rows SAY is display; what they DECIDE is this table. Every fixture runs under the
 # default config and is pinned by the answer it produces — the `NEXT:` line plus the four machine
 # queries, `-` where none is selectable — so an edit to the wording of a row, a tag or the DATA

@@ -960,42 +960,29 @@ supervise() {
 }
 
 persist_run_files() {
-  # The run's own file list, written beside the run the moment it ends, so who answers for reviewing
-  # this work no longer depends on somebody reading a report: an unread report left the work covered
-  # by nobody, a truncated one covered a prefix silently, and a report read by another chat named the
-  # wrong owner (2026-08-17 lens round). Line one is the workdir the paths are relative to; an
-  # UNKNOWN line says the list could not be established, which a reader must not read as "no files".
   local directory="$1" workdir
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
-  compute_run_files "$directory"
+  if snapshot_workdir "$directory" "$workdir" after; then
+    compute_snapshot_files "$directory" "$workdir"
+  else
+    RUN_FILES_LIST=''
+    RUN_FILES_REASON='the workdir after snapshot could not be established'
+  fi
   record_worker_session "$directory"
-  # A record is written even when there is nothing to put in it. No record at all is indistinguishable
-  # from a run that never terminated, and both readers take that absence for "this run wrote nothing"
-  # — the one answer that is certainly wrong about a run that has ended.
   if [ -z "$workdir" ] || [ "$workdir" = null ]; then
     RUN_FILES_LIST=''
     RUN_FILES_REASON='the run recorded no workdir to resolve its files against'
   fi
   {
     [ -z "$workdir" ] || [ "$workdir" = null ] || printf 'WORKDIR: %s\n' "$workdir"
-    # Union with what earlier attempts recorded — their calls are behind this attempt's start cut,
-    # and their UNCERTAINTY carries forward with their paths: an attempt whose list was unanswerable
-    # stays unanswerable however cleanly the attempt after it read. PARTIAL rather than UNKNOWN for
-    # the shell case: the paths beside it are real and reviewable, and only what stands beside them
-    # is missing.
-    { [ -z "$RUN_FILES_REASON" ] || printf 'UNKNOWN: %s\n' "$RUN_FILES_REASON"
-      [ -z "$RUN_FILES_PARTIAL" ] || printf 'PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
-      grep '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null; } | sort -u
-    { [ -z "$RUN_FILES_LIST" ] || printf '%s\n' "$RUN_FILES_LIST"
-      grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null; } | sort -u
+    [ -z "$RUN_FILES_REASON" ] || printf 'UNKNOWN: %s\n' "$RUN_FILES_REASON"
+    [ -z "$RUN_FILES_LIST" ] || printf '%s\n' "$RUN_FILES_LIST"
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
     rm -f "$directory/files.tmp.$$" 2>/dev/null
-  record_workdir_escape "$directory"
-  # After the listing and never before it: what this reads out of the record is the record this
-  # call just wrote, and the paths it must not claim are the ones standing in it.
   record_workdir_dirt "$directory" "$workdir"
-  record_produced "$directory" "$workdir"
+  [ -n "$RUN_FILES_REASON" ] || record_produced "$directory" "$workdir"
+  transcript_crosscheck "$directory"
   return 0
 }
 
@@ -1029,14 +1016,44 @@ workdir_escape_line() { # directory
 # launched from. Untracked files are listed individually (`-uall`): a file the run created and
 # nothing tracks is exactly the work that reaches no other record at all.
 #
+# Same arms as ../claude-setup/hooks/lib/review-journal.sh `rj_path_shape_ok`: a path the reader
+# would skip must fail the snapshot closed, not land in `produced` and then vanish from the ledger.
+path_shape_ok() { # path
+  case $1 in
+    ''|.|..) return 1 ;;
+    /*|~*|-*) return 1 ;;
+    ../*|*/../*|*/..) return 1 ;;
+    *[[:cntrl:]]*) return 1 ;;
+  esac
+  return 0
+}
+
+# A symlink's git blob is the link text, never the target. `test -f` follows the link, so a
+# symlink-to-dir or a dangling link hashed as `-` and read as a deletion.
+hash_workdir_path() { # top path
+  local top="$1" path="$2" sha
+  if [ -L "$top/$path" ]; then
+    sha=$(printf '%s' "$(readlink "$top/$path")" | git -C "$top" hash-object -w --stdin 2>/dev/null) || sha=
+  elif [ -f "$top/$path" ]; then
+    sha=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) || sha=
+  fi
+  printf '%s\n' "${sha:--}"
+}
+
 # Nonzero where git could not answer at all, never an empty answer: read as a clean tree, a status
 # that failed at launch makes every file Egor already had open content this run gained.
 workdir_dirty_paths() { # workdir
   local answer
   [ -n "${1:-}" ] && [ "$1" != null ] || return 1
   answer=$(git -C "$1" status --porcelain --no-renames -uall -z 2>/dev/null |
-    tr '\0' '\n' | cut -c4- | sed '/^$/d' | sort -u; exit "${PIPESTATUS[0]}") || return 1
-  [ -z "$answer" ] || printf '%s\n' "$answer"
+    (while IFS= read -r -d '' entry; do
+      path=${entry:3}
+      [ -z "$path" ] && continue
+      path_shape_ok "$path" || exit 1
+      printf '%s\n' "$path"
+    done); status=("${PIPESTATUS[@]}");
+    [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
+  [ -z "$answer" ] || printf '%s\n' "$answer" | sort -u
 }
 
 # The content standing at each already-uncommitted path, as `<blob sha>\t<path>`, so the snapshot
@@ -1054,11 +1071,80 @@ workdir_dirty_shas() { # workdir
   [ -n "$paths" ] || return 0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    sha=-
-    [ -f "$top/$path" ] && sha=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) && [ -n "$sha" ] ||
-      sha=-
-    printf '%s\t%s\n' "$sha" "$path"
+    printf '%s\t%s\n' "$(hash_workdir_path "$top" "$path")" "$path"
   done <<<"$paths"
+}
+
+snapshot_workdir() { # directory workdir side
+  local directory="$1" workdir="$2" side="$3" shas head
+  shas=$(workdir_dirty_shas "$workdir") || {
+    [ "$side" = after ] && rm -f "$directory/produced" "$directory/dirty"
+    return 1
+  }
+  head=$(git -C "$workdir" rev-parse --verify --quiet HEAD 2>/dev/null) || head=''
+  { [ -z "$shas" ] || printf '%s\n' "$shas"; } >"$directory/dirty-$side-shas.tmp.$$" &&
+    mv -f "$directory/dirty-$side-shas.tmp.$$" "$directory/dirty-$side-shas" || return 1
+  printf '%s\n' "$head" >"$directory/head-$side.tmp.$$" &&
+    mv -f "$directory/head-$side.tmp.$$" "$directory/head-$side" || return 1
+}
+
+snapshot_blob() { # directory top side path
+  local directory="$1" top="$2" side="$3" path="$4" sha head
+  sha=$(AWK_PATH=$path awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
+    "$directory/dirty-$side-shas" 2>/dev/null)
+  if [ -z "$sha" ]; then
+    head=$(tr -d '[:space:]' <"$directory/head-$side" 2>/dev/null)
+    [ -z "$head" ] || sha=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
+  fi
+  printf '%s\n' "${sha:--}"
+}
+
+snapshot_changed_paths() { # directory top
+  local directory="$1" top="$2" before after changed paths path prev cur
+  [ -f "$directory/dirty-before-shas" ] && [ -f "$directory/dirty-after-shas" ] &&
+    [ -f "$directory/head-after" ] || return 1
+  before=$(cat "$directory/head-before" 2>/dev/null) || before=''
+  after=$(cat "$directory/head-after" 2>/dev/null) || return 1
+  changed=''
+  if [ "$before" != "$after" ]; then
+    [ -n "$before" ] || before=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
+    [ -n "$after" ] || after=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
+    changed=$(git -C "$top" diff --no-renames --name-only -z "$before" "$after" -- |
+      (while IFS= read -r -d '' path; do
+        [ -z "$path" ] && continue
+        path_shape_ok "$path" || exit 1
+        printf '%s\n' "$path"
+      done); status=("${PIPESTATUS[@]}");
+      [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]) || return 1
+  fi
+  paths=$({ cut -f2- "$directory/dirty-before-shas" "$directory/dirty-after-shas"
+    [ -z "$changed" ] || printf '%s\n' "$changed"; } | sort -u)
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    prev=$(snapshot_blob "$directory" "$top" before "$path")
+    cur=$(snapshot_blob "$directory" "$top" after "$path")
+    [ "$prev" = "$cur" ] || printf '%s\n' "$path"
+  done <<<"$paths"
+}
+
+compute_snapshot_files() { # directory workdir
+  local directory="$1" workdir="$2" top rel paths path
+  RUN_FILES_LIST=''
+  RUN_FILES_REASON=''
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || {
+    RUN_FILES_REASON='the workdir is not a git working tree'; return 0;
+  }
+  if ! paths=$(snapshot_changed_paths "$directory" "$top"); then
+    RUN_FILES_REASON='the workdir before/after snapshots could not be established'
+    return 0
+  fi
+  rel=${workdir%/}
+  case "$rel" in "$top"/*) rel=${rel#"$top"/} ;; *) rel='' ;; esac
+  RUN_FILES_LIST=$(while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    produced_spelling "$top" "$rel" "$path"
+    printf '\n'
+  done <<<"$paths" | sort -u)
 }
 
 # The paths whose content is not what `dirty-before` recorded for them: rewritten by this run, or
@@ -1118,12 +1204,22 @@ produced_spelling() { # top rel path
 # are hashed with `-w`: the reader prices a link by diffing the two blobs out of the object store,
 # and one never written there prices the whole file.
 produced_edit_rows() { # directory top rel head-before
-  local before="$1/dirty-before-shas" top="$2" rel="$3" head="$4" path prev cur
+  local before="$1/dirty-before-shas" top="$2" rel="$3" head="$4" path prev cur after_head head_blob
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    cur=-
-    [ -f "$top/$path" ] && cur=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) && [ -n "$cur" ] ||
-      cur=-
+    if [ -f "$1/head-after" ]; then
+      cur=$(snapshot_blob "$1" "$top" after "$path")
+      after_head=$(cat "$1/head-after")
+      if [ -n "$after_head" ] && [ "$after_head" != "$head" ] &&
+          ! AWK_PATH=$path awk -F'\t' '$2 == ENVIRON["AWK_PATH"] { found=1 } END { exit !found }' "$1/dirty-after-shas"; then
+        # A clean launch needs only the commit row; preexisting dirt has a different starting blob.
+        head_blob=''
+        [ -z "$head" ] || head_blob=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
+        [ "$(snapshot_blob "$1" "$top" before "$path")" != "${head_blob:--}" ] || continue
+      fi
+    else
+      cur=$(hash_workdir_path "$top" "$path")
+    fi
     # Through the environment and never `-v`: awk expands escape sequences in a `-v` assignment, so
     # a filename holding a backslash reaches the program as some other name and matches no row.
     prev=$(AWK_PATH=$path awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
@@ -1142,11 +1238,17 @@ produced_edit_rows() { # directory top rel head-before
 # side that holds no content, which is this record's `-`.
 produced_commit_rows() { # top rel head-before
   local top="$1" rel="$2" head="$3" after
-  [ -n "$head" ] || return 0
-  after=$(git -C "$top" rev-parse --verify --quiet HEAD 2>/dev/null) || return 0
+  after=${4-}
+  [ "$#" -ge 4 ] || after=$(git -C "$top" rev-parse --verify --quiet HEAD 2>/dev/null) || return 0
   [ -n "$after" ] && [ "$after" != "$head" ] || return 0
-  git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after" \
-    2>/dev/null | tr '\0' '\n' |
+  {
+    if [ -n "$head" ] && git -C "$top" merge-base --is-ancestor "$head" "$after" 2>/dev/null; then
+      git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after"
+    else
+      [ -n "$head" ] || head=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
+      git -C "$top" diff --raw --no-renames --no-abbrev -z "$head" "$after" --
+    fi
+  } 2>/dev/null | tr '\0' '\n' |
     AWK_TOP=$top AWK_REL=$rel awk '
       BEGIN { top = ENVIRON["AWK_TOP"]; rel = ENVIRON["AWK_REL"] }
       !NF { next }
@@ -1183,7 +1285,8 @@ record_produced() { # directory workdir
     *) rel='' ;;
   esac
   head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
-  { produced_commit_rows "$top" "$rel" "$head"
+  { produced_commit_rows "$top" "$rel" "$head" "$(cat "$directory/head-after" 2>/dev/null)" |
+      AWK_LIST="$RUN_FILES_LIST" awk -F'\t' 'BEGIN { n=split(ENVIRON["AWK_LIST"], p, "\n"); for (i=1;i<=n;i++) named[p[i]]=1 } $3 in named'
     produced_edit_rows "$directory" "$top" "$rel" "$head" \
       < <(listing_top_paths "$directory" "$top" "$workdir"); } \
     >"$directory/produced.tmp.$$" 2>/dev/null &&
@@ -1192,51 +1295,21 @@ record_produced() { # directory workdir
   return 0
 }
 
-# What this run's repository gained uncommitted content on while it ran, for the readers that price
-# review debt. A worker working through the SHELL — `sed -i`, a redirect, a heredoc — leaves no
-# editor tool call in its transcript and no journal entry anywhere, so that work is in no file
-# list, in no journal and under no artifact: a repository-wide debt question answered `none` over
-# two rewritten files, and a merged review scoped straight past them (live case 2026-08-21).
-#
-# Written ONLY where the run itself says its own list cannot be complete. A run whose transcript
-# answered for every edit it made has named its work already, and the rest of a shared checkout's
-# dirt is a co-tenant's — claimed here it would be this run's evidence for somebody else's file.
-#
-# Bounded twice over, because `git status` answers for the whole checkout and parallel agents share
-# it: the paths already uncommitted when the run STARTED are dropped (that is Egor's or another
-# chat's work, recorded wherever it was recorded), and so are the paths the run's own tracker named
-# (they carry an owner and are priced through it). What is left is content that changed inside this
-# run's window and that nothing on this machine attributes to anyone — which is exactly how every
-# reader of this file prices it: as owed by nobody, never as the launcher's.
-#
-# No floor on record, no snapshot: the guard missing and the tree clean at launch are the same
-# empty set, and taken for the second the dirt of everyone working beside this run is claimed here.
 record_workdir_dirt() { # directory workdir
   local directory="$1" workdir="$2" top gained
-  grep -q '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null || return 0
-  [ -f "$directory/dirty-before" ] || return 0
+  [ -z "$RUN_FILES_REASON" ] || return 0
+  [ ! -s "$directory/launcher" ] || return 0
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
-  [ -n "$top" ] || return 0
-  gained=$(comm -23 \
-    <(workdir_gained_paths "$directory" "$workdir") \
-    <(listing_top_paths "$directory" "$top" "$workdir"))
+  gained=$(snapshot_changed_paths "$directory" "$top") || return 0
   [ -n "$gained" ] || [ -f "$directory/dirty" ] || return 0
-  { printf 'WORKDIR: %s\n' "$top"
-    [ -z "$gained" ] || printf '%s\n' "$gained"
-    grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null; } |
-    awk 'NR == 1 || !seen[$0]++' >"$directory/dirty.tmp.$$" 2>/dev/null &&
+  { printf 'WORKDIR: %s\n' "$top"; [ -z "$gained" ] || printf '%s\n' "$gained"; } \
+    >"$directory/dirty.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty.tmp.$$" "$directory/dirty" 2>/dev/null ||
     rm -f "$directory/dirty.tmp.$$" 2>/dev/null
   return 0
 }
 
 record_worker_session() {
-  # The worker's OWN session id, beside the launcher this run answers to. A run that edited through
-  # the shell alone lists no file at all (`PARTIAL:` and nothing else), while the worker session's
-  # own hooks journaled every one of those edits under THIS id — so without the mapping the launching
-  # chat commits its worker's work with no debt on it (live case 2026-08-20). Unioned across attempts
-  # like the file list: rerouting takes a new session, and the walled attempt journaled under the old
-  # one. A resumed run repeats the id the session already had, which is what its entries carry too.
   local directory="$1" session
   # Every vendor, not claudeb alone. grok loads this machine's hooks out of `~/.claude/settings.json`
   # for Claude compatibility and journals under its OWN session id, which read without this pairing
@@ -1862,18 +1935,9 @@ print_outcome() {
   fi
 }
 
-# Said once for every vendor: an editor list answers for editor calls, and a run that also worked
-# through the shell changed files no transcript records as a call, so its list is a floor. The gate
-# and the record readers match this text, so the vendors may not word it differently.
+# Transcript evidence is diagnostic and drives the watchdog, never file ownership.
 SHELL_FLOOR_PARTIAL='the run also ran shell commands, whose edits no transcript records'
 
-# The shell command forms that write a file no transcript names. One list for every vendor, because
-# the question is the same one: a worker's editor calls name their targets and its shell does not,
-# so a run that wrote this way cannot answer for its own files however cleanly the rest of it read.
-# Redirects to a file descriptor or to /dev/null are struck out first — they write no file, and
-# counted as writes they made every `2>/dev/null` in a read-only run unanswerable. What is NOT here:
-# a program that writes files of its own accord (a build, a test run, a package install). Those the
-# workdir-dirt net answers for, and listed here they would make almost every real run UNKNOWN.
 WRITE_SHELL_PATTERN='(^|[^0-9<>&=])([0-9]+|&)?>>?([^=&]|$)|(^|[[:space:]])(sed|perl|ruby)[[:space:]]+[^|;&]*-i|(^|[[:space:]])(tee|mv|cp|rm|rmdir|touch|ln|truncate|dd|patch)([[:space:]]|$)|(^|[[:space:]])git[[:space:]]+(apply|checkout|restore|stash|clean|reset|mv|rm)([[:space:]]|$)'
 
 writes_through_shell() { # command-line
@@ -1882,13 +1946,6 @@ writes_through_shell() { # command-line
     grep -Eq "$WRITE_SHELL_PATTERN"
 }
 
-# One verdict over the tagged rows a vendor's own extractor emits: `F` a mutating call's target,
-# `C` a shell command line, `D` the directory a shell command ran in, `X` a call whose file targets
-# the transcript does not name, `T` a mutating context with no usable timestamp. Fail-closed, and the
-# whole run at once: a write naming no target, a shell command that writes, or a call this reader does
-# not know leaves the run UNKNOWN — the answer it gave before any extractor existed, and the one the
-# dirt net is written against. A read-only shell command does not spoil the list; any shell at all
-# makes it a floor, as it does for claudeb.
 resolve_tool_path() { # path workdir
   local value="$1" workdir="$2" part joined='' index
   local -a parts resolved
@@ -2247,13 +2304,7 @@ transcript_files() {
     <<<"$paths" | sort -u
 }
 
-compute_run_files() {
-  # The run's OWN changed files, from the run's own transcript. `git status` in the workdir answers
-  # for the whole checkout, which parallel agents share — a relay reading it reported another
-  # worker's hunks as this run's work, apology included (live-caught 2026-08-11). Anything this
-  # cannot establish sets a REASON rather than falling back to the workdir or to silence: an empty
-  # list and an unanswerable one are different claims, and both the printed report and the record on
-  # disk are rendered from this one answer so they can never disagree.
+compute_transcript_files() {
   local directory="$1" vendor account workdir session transcript started rows
   RUN_FILES_LIST=''
   RUN_FILES_REASON=''
@@ -2311,6 +2362,36 @@ compute_run_files() {
   return 0
 }
 
+transcript_crosscheck() (
+  local directory="$1" listed
+  listed=$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null)
+  compute_transcript_files "$directory"
+  record_workdir_escape "$directory"
+  if [ -n "$RUN_FILES_REASON" ]; then
+    printf 'transcript cross-check unavailable: %s\n' "$RUN_FILES_REASON"
+  elif [ "$listed" != "$RUN_FILES_LIST" ] || [ -n "$RUN_FILES_PARTIAL" ]; then
+    printf 'transcript listing disagrees with the workdir snapshot; snapshot attribution stands\n'
+  fi >"$directory/files-note"
+  if [ -n "${RUN_FOREIGN_NOTE:-}" ]; then
+    printf '%s\n' "$RUN_FOREIGN_NOTE" >>"$directory/files-note" 2>/dev/null || :
+  fi
+)
+
+compute_run_files() {
+  local directory="$1" workdir
+  RUN_FILES_LIST=''
+  RUN_FILES_REASON=''
+  RUN_FILES_PARTIAL=''
+  RUN_FILES_ESCAPE=''
+  if [ -f "$directory/files" ]; then
+    RUN_FILES_LIST=$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null)
+    RUN_FILES_REASON=$(sed -n 's/^UNKNOWN: //p' "$directory/files" | head -n1)
+    return 0
+  fi
+  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
+  compute_snapshot_files "$directory" "$workdir"
+}
+
 transcript_ran_shell() {
   local transcript="$1" since="${2:-0}" hits
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
@@ -2328,16 +2409,13 @@ run_files() {
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   compute_run_files "$directory"
   workdir_escape_line "$directory"
+  [ ! -s "$directory/files-note" ] || sed 's/^/RUN-FILES-NOTE: /' "$directory/files-note"
   if [ -n "$RUN_FILES_REASON" ]; then
     printf 'RUN-FILES: unknown (%s)\n' "$RUN_FILES_REASON"
     return 0
   fi
   if [ -z "$RUN_FILES_LIST" ]; then
-    # The count answers for editor tool calls only, and a bare `0` read as "changed nothing": an
-    # edit made through the shell — `sed -i`, a redirect, `mv` — is real and appears in no transcript
-    # as a tool call.
-    printf 'RUN-FILES: 0 (editor tool calls only; shell edits are not tracked)\n'
-    [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
+    printf 'RUN-FILES: 0\n'
     return 0
   fi
   count=$(grep -c '' <<<"$RUN_FILES_LIST")
@@ -2348,7 +2426,6 @@ run_files() {
   while IFS= read -r value; do
     printf 'RUN-FILE: %s\n' "$value"
   done <<<"$RUN_FILES_LIST"
-  [ -z "$RUN_FILES_PARTIAL" ] || printf 'RUN-FILES-PARTIAL: %s\n' "$RUN_FILES_PARTIAL"
 }
 
 readonly_report_hint() {
@@ -2500,8 +2577,7 @@ workdir_activity_stamp() { # directory workdir [own]
     [ -n "$newest" ] && [ "$mtime" -le "$newest" ] || newest=$mtime
   done < <(
     if [ "${3:-}" = own ]; then
-      sed '/^WORKDIR: /d; /^UNKNOWN: /d; /^PARTIAL: /d' "$directory/files" 2>/dev/null
-      compute_run_files "$directory"
+      compute_transcript_files "$directory"
       printf '%s\n' "$RUN_FILES_LIST"
     else
       workdir_gained_paths "$directory" "$workdir"
@@ -2632,6 +2708,7 @@ report_run() {
                else printf "%.1fM tok-eq", t / 1e6 }')"
   fi
   run_files "$directory"
+  unnamed_line "$directory"
   printf 'RESULT:\n'
   if [ "$vendor" = claudeb ]; then
     jq -r '.result // empty' "$directory/out" 2>/dev/null | tail -n 400
@@ -2640,6 +2717,118 @@ report_run() {
   else
     tail -n 400 "$directory/out" 2>/dev/null
   fi
+}
+
+produced_commit_rows() { # top rel head-before [after]
+  local top="$1" rel="$2" head="$3" after directory="${RUN_DIRECTORY:-}" since until dirty foreign
+  after=${4-}
+  [ "$#" -ge 4 ] || after=$(git -C "$top" rev-parse --verify --quiet HEAD 2>/dev/null) || return 0
+  [ -n "$after" ] && [ "$after" != "$head" ] || return 0
+  foreign=/dev/null
+  dirty=/dev/null
+  if [ -n "$directory" ]; then
+    [ -f "$directory/dirty-before-shas" ] && dirty=$directory/dirty-before-shas
+    foreign=${RUN_FOREIGN_FILE:-/dev/null}
+    since=$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)
+  fi
+  until=$(date +%s)
+  export AWK_TOP=$top AWK_REL=$rel AWK_DIRTY=$dirty AWK_FOREIGN=$foreign
+  if [ -n "${since:-}" ] && [[ "$since" =~ ^[0-9]+$ ]]; then
+    export AWK_WINDOW=1 AWK_SINCE=$since AWK_UNTIL=$until
+  else
+    export AWK_WINDOW=0 AWK_SINCE=0 AWK_UNTIL=0
+  fi
+  {
+    if [ -n "$head" ] && git -C "$top" merge-base --is-ancestor "$head" "$after" 2>/dev/null; then
+      git -C "$top" log --raw -m --no-renames --no-abbrev --reverse -z --format='%H %ct' "$head..$after"
+    else
+      [ -n "$head" ] || head=$(git -C "$top" hash-object -w -t tree --stdin </dev/null)
+      git -C "$top" diff --raw --no-renames --no-abbrev -z "$head" "$after" --
+    fi
+  } 2>/dev/null | tr '\0' '\n' |
+    awk '
+      BEGIN {
+        top = ENVIRON["AWK_TOP"]; rel = ENVIRON["AWK_REL"]
+        since = ENVIRON["AWK_SINCE"]+0; until = ENVIRON["AWK_UNTIL"]+0
+        window = ENVIRON["AWK_WINDOW"]+0; foreign = ENVIRON["AWK_FOREIGN"]
+        in_window = 1
+        while ((getline line < ENVIRON["AWK_DIRTY"]) > 0) {
+          split(line, d, "\t")
+          if (d[2] != "") predirty[d[2]] = 1
+        }
+      }
+      !NF { next }
+      pending != "" {
+        top_path = $0
+        if (top_path in predirty) { pending = ""; next }
+        path = top_path
+        if (rel != "") {
+          if (index(path, rel "/") == 1) path = substr(path, length(rel) + 2)
+          else path = top "/" path
+        }
+        if (window && !in_window) {
+          if (foreign != "" && foreign != "/dev/null") print path >> foreign
+          pending = ""
+          next
+        }
+        split(pending, f, " ")
+        prev = f[3]; cur = f[4]
+        if (prev ~ /^0+$/) prev = "-"
+        if (cur ~ /^0+$/) cur = "-"
+        printf "%s\t%s\t%s\tcommit\n", prev, cur, path
+        pending = ""
+        next
+      }
+      /^:/ { pending = $0; next }
+      {
+        if (window) {
+          split($0, h, " ")
+          ct = h[2]+0
+          in_window = (ct >= since && ct <= until) ? 1 : 0
+        }
+      }'
+}
+
+record_produced() { # directory workdir
+  local directory="$1" workdir="$2" top rel head after foreign commits
+  RUN_FOREIGN_NOTE=''
+  [ -s "$directory/launcher" ] || return 0
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
+  [ -n "$top" ] || return 0
+  rel=${workdir%/}
+  case "$rel" in
+    "$top"/*) rel=${rel#"$top"/} ;;
+    *) rel='' ;;
+  esac
+  head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
+  after=$(cat "$directory/head-after" 2>/dev/null)
+  foreign="$directory/foreign.tmp.$$"
+  commits="$directory/commit-rows.tmp.$$"
+  : >"$foreign"
+  RUN_DIRECTORY=$directory
+  RUN_FOREIGN_FILE=$foreign
+  produced_commit_rows "$top" "$rel" "$head" "$after" >"$commits"
+  unset RUN_FOREIGN_FILE
+  {
+    produced_edit_rows "$directory" "$top" "$rel" "$head" \
+      < <(listing_top_paths "$directory" "$top" "$workdir")
+    AWK_LIST="$RUN_FILES_LIST" awk -F'\t' 'BEGIN { n=split(ENVIRON["AWK_LIST"], p, "\n"); for (i=1;i<=n;i++) named[p[i]]=1 } $3 in named' "$commits"
+  } | AWK_FOREIGN=$foreign awk -F'\t' '
+      BEGIN { while ((getline p < ENVIRON["AWK_FOREIGN"]) > 0) if (p != "") skip[p]=1 }
+      NF >= 3 && !($3 in skip)
+    ' >"$directory/produced.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/produced.tmp.$$" "$directory/produced" 2>/dev/null ||
+    rm -f "$directory/produced.tmp.$$" 2>/dev/null
+  if [ -s "$foreign" ]; then
+    RUN_FOREIGN_NOTE='commits outside the run window landed in head-before..head-after; those paths are unattributed'
+    sort -u "$foreign" | sed '/^$/d' >"$foreign.sorted"
+    grep -vxF -f "$foreign.sorted" "$directory/files" >"$directory/files.tmp.$$" 2>/dev/null &&
+      mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
+      rm -f "$directory/files.tmp.$$" 2>/dev/null
+    rm -f "$foreign.sorted"
+  fi
+  rm -f "$foreign" "$commits"
+  return 0
 }
 
 # How many of those paths the line still spells out itself. Past it the reader is pointed at the
@@ -2653,12 +2842,27 @@ UNNAMED_INLINE_MAX=${WORKER_RUN_UNNAMED_INLINE_MAX:-25}
 # the end of `wait` because that is the one moment the launching chat is looking at this run and can
 # still say which of them are its worker's (live case 2026-08-25: 887 lines nobody answered for).
 unnamed_line() { # directory
-  local directory="$1" top paths count listed path
-  grep -q '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null || return 0
+  local directory="$1" top paths count listed path workdir missing_after=false
+  if grep -q '^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null; then
+    :
+  elif [ ! -f "$directory/files" ] && [ -f "$directory/exit_code" ] &&
+       { [ -f "$directory/head-before" ] || [ -f "$directory/dirty-before-shas" ]; } &&
+       { [ ! -f "$directory/head-after" ] || [ ! -f "$directory/dirty-after-shas" ]; }; then
+    missing_after=true
+  else
+    return 0
+  fi
   top=$(sed -n 's/^WORKDIR: //p' "$directory/dirty" 2>/dev/null | head -n1)
-  [ -n "$top" ] || return 0
   paths=$(grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null | sed '/^$/d')
-  [ -n "$paths" ] || return 0
+  if [ -z "$top" ] || [ -z "$paths" ]; then
+    grep -q '^UNKNOWN: ' "$directory/files" 2>/dev/null || [ "$missing_after" = true ] || return 0
+    workdir=$(sed -n 's/^WORKDIR: //p' "$directory/files" 2>/dev/null | head -n1)
+    [ -n "$workdir" ] || workdir=$(jq -r '.workdir // empty' "$directory/meta.json" 2>/dev/null)
+    [ "$workdir" != null ] || workdir=''
+    printf 'UNNAMED: this run'"'"'s files are UNKNOWN — claim yours: worker-run claim %s --paths %s/<path>...\n' \
+      "${directory##*/}" "${workdir:-<workdir>}"
+    return 0
+  fi
   count=$(grep -c '' <<<"$paths")
   if [ "$count" -gt "$UNNAMED_INLINE_MAX" ]; then
     # The list is the record's, not this line's, past the point where it stops being readable: the
@@ -2707,13 +2911,6 @@ normalize_path() { # path
   printf '%s' "${out:-/}"
 }
 
-# `worker-run claim <run-id> --paths <p>... [--complete]` — the launching chat NAMING the work its
-# worker did through the shell. A run that edited that way lists no file and its work is owned by
-# nobody; only the chat that spawned it knows which of the paths that changed in its window are its
-# worker's, so only that chat may say so, and only once the run has ended and the set has stopped
-# moving. The PARTIAL/UNKNOWN caveat stands through an ordinary claim — the claimed rows are real,
-# and whatever stood beside them may still be missing — and is retired only by `--complete`, which
-# is the caller stating that this IS the whole list.
 claim_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" directory workdir top complete=false session launcher path absolute relative
@@ -2770,6 +2967,14 @@ claim_run() {
           fail "$path is not under this run's workdir ($workdir)${top:+ or its repository ($top)}"
         ;;
     esac
+    if [ -f "$directory/head-after" ]; then
+      [ -n "$top" ] && snapshot_changed_paths "$directory" "$top" |
+        grep -qxF -- "${absolute#"$top"/}" ||
+        fail "$path is not in this run's snapshot diff"
+    elif [ "$complete" != true ] &&
+         ! grep -q '^PARTIAL: ' "$directory/files" 2>/dev/null; then
+      fail "run $run_id has no after-snapshot; its files cannot be claimed"
+    fi
     resolved+=("$absolute")
   done
   {
@@ -2824,6 +3029,7 @@ claim_run() {
             case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
           done))
   fi
+  rm -f "$directory/journaled"
   printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "${#resolved[@]}" "$run_id"
   head -n 20 "$directory/files" 2>/dev/null
 }

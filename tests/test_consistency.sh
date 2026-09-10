@@ -1086,7 +1086,7 @@ assert eq "$(sed -n '/^if \[ -n "\$RJ_UNATTRIBUTED" \]; then/,/^fi/p' \
 # live worker reads as a stranger for the whole window the work is being done in: the record
 # pairing the two ids lands when the run ends.
 assert grep -Fq 'def content_coowners(repo, rows=None, launchers=None):' "$REVIEW_ROOT/share/rbench/debt.py"
-assert grep -Fq 'together = content_coowners(repo, launchers=launchers) if together is None else together' "$REVIEW_ROOT/share/rbench/debt.py"
+assert grep -Fq 'together = content_coowners(repo, journal, launchers=launchers) if together is None else together' "$REVIEW_ROOT/share/rbench/debt.py"
 assert grep -Fq 'named = {producer} | together.get((path, link["cur"]), set())' \
   "$REVIEW_ROOT/share/rbench/debt.py"
 # Each of those chats is written into the per-session repository index too, or `debt-total`
@@ -1152,7 +1152,9 @@ if test -r "$COMMIT_REPORT"; then
   # A call the gate refused takes no PostToolUse and its snapshot stays: aged out under BOTH names,
   # since the session-only fallback matches no per-call glob and the next call carrying no id of its
   # own then consumes another call's tree as its evidence.
-  assert grep -Fq '\( -name "$1.*.heads" -o -name "$1.heads" \)' \
+  assert grep -Fq '\( -name "$1.*.heads" -o -name "$1.heads" \' \
+    "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
+  assert grep -Fq 'name "$1.*.heads.journal" -o -name "$1.heads.journal" \)' \
     "$CLAUDE_SETUP/hooks/lib/review-journal.sh"
   assert grep -Fq "call=\$(printf '%s' \"\$payload\" | jq -r '.tool_use_id // empty' 2>/dev/null)" \
     "$COMMIT_REPORT"
@@ -1191,7 +1193,7 @@ if test -r "$COMMIT_REPORT"; then
   # substitution is still a call, and anchoring the name to the start of a line missed it.
   assert eq "$(grep -v '^[[:space:]]*#' "$FLOW_GATE" | grep -c 'rj_register_repo')" 0
   assert eq "$(grep -v '^[[:space:]]*#' "$COMMIT_REPORT" | grep -c 'rj_register_repo')" 0
-  assert grep -Fq 'snapshot_file=$(rj_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
+  assert grep -Fq 'snapshot_file=$(rj_resolve_head_snapshot "$session" "$call")' "$COMMIT_REPORT"
   # What the call landed is the range between the HEAD the gate wrote down before it and this one,
   # narrowed by the snapshot's mtime: a checkout inside the call can otherwise add an older branch's
   # whole existing history. Both consumers use the one helper from the shared library.
@@ -1289,10 +1291,11 @@ if test -r "$JOURNAL_LIB"; then
   assert doc_has '`<session-id>\t<epoch>\t<prev>\t<cur>\t<repo-relative-path>`'
   assert doc_has 'names the path for the debt universe and owns nothing'
   assert grep -Fq 'DEBT_JOURNAL' "$RB_STORE"
-  # Appends participate in the rewriters' lock; a busy lock degrades to a raw append, never a
-  # dropped record.
-  assert grep -Fq 'rj_lock "$lock" && locked=1' "$JOURNAL_LIB"
+  # Appends take the rewriters' lock or refuse loudly; a busy lock never degrades to an unlocked
+  # append, and the caller keeps its snapshot for the next call instead of dropping the record.
+  assert grep -Fq 'lock busy, append refused' "$JOURNAL_LIB"
   assert grep -Fq 'rj_append_raw "$@"' "$JOURNAL_LIB"
+  assert eq "$(sed -n '/^rj_append()/,/^}/p' "$JOURNAL_LIB" | grep -c 'rj_append_raw')" 1
   # A path with ANY surviving record has an owner, and no artifact's epoch retires one: ownership is
   # written into the ledger when the work is recorded and lives there until the row leaves. The
   # epoch floor that discarded settled-looking records returned `orphaned` over debt whose author
@@ -1933,7 +1936,11 @@ WORKER_RUN="$ROOT/bin/worker-run"
 assert grep -Fq '>"$directory/launcher"' "$WORKER_RUN"
 assert grep -Fq "printf 'WORKDIR: %s\\n' \"\$workdir\"" "$WORKER_RUN"
 assert grep -Fq "printf 'UNKNOWN: %s\\n' \"\$RUN_FILES_REASON\"" "$WORKER_RUN"
-assert grep -Fq "printf 'PARTIAL: %s\\n' \"\$RUN_FILES_PARTIAL\"" "$WORKER_RUN"
+# The files are the before/after content diff of the workdir, never a vendor transcript: a run that
+# edited through the shell alone is fully attributed, so no PARTIAL row exists to fall through.
+assert grep -Fq 'snapshot_workdir "$directory" "$workdir" after' "$WORKER_RUN"
+assert grep -Fq 'compute_snapshot_files "$directory" "$workdir"' "$WORKER_RUN"
+assert eq "$(grep -c "printf 'PARTIAL: " "$WORKER_RUN")" 0
 assert grep -Fq 'mv -f "$directory/files.tmp.$$" "$directory/files"' "$WORKER_RUN"
 # The other half of the record, and the one that answers for a run which edited through the shell
 # alone: the worker's own session, whose hooks journaled those edits under an id no chat in the
@@ -1993,6 +2000,12 @@ assert grep -Fq "printf '%s\\t%s\\t%s\\n' \"\$prev\" \"\$cur\"" "$WORKER_RUN"
 assert grep -Fq 'printf "%s\t%s\t%s\tcommit\n", prev, cur, path' "$WORKER_RUN"
 assert grep -Fq 'log --raw -m --no-renames --no-abbrev --reverse -z --format=%H "$head..$after"' \
   "$WORKER_RUN"
+# Writer and reader must refuse the same path shapes, or a `-foo` row is dropped by the
+# sweep and the run is still stamped journaled.
+_shape_lib="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh"
+writer_shape=$(sed -n '/^path_shape_ok()/,/^}/p' "$WORKER_RUN" | sed -n '/case /,/esac/p')
+reader_shape=$(sed -n '/^rj_path_shape_ok()/,/^}/p' "$_shape_lib" | sed -n '/case /,/esac/p')
+assert eq "$writer_shape" "$reader_shape"
 # Only for a run some chat answers for, and never rewritten once it stands: a claim APPENDS.
 assert grep -Fq '[ -s "$directory/launcher" ] || return 0' "$WORKER_RUN"
 assert grep -Fq '>>"$directory/produced"' "$WORKER_RUN"
@@ -2056,9 +2069,13 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   assert grep -Fq ': >"$directory/journaled"' "$COMMIT_JOURNAL"
   # A final record that will never name a file is retired unread: there is nothing left to import,
   # and its readers hold the whole workdir as pending while it sits there. One per terminal ground
-  # — no usable owner, no `produced` and no listing, no workdir a repository holds — plus the one
-  # after a sweep that recorded everything it read.
-  assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 4
+  # — no `produced` and no listing, no workdir a repository holds — plus the one after a sweep that
+  # recorded everything it read. A record naming no usable session is not retired: retired, its
+  # files would read as zero debt; left, every sweep says `worker-launcher-unknown` until the stamp
+  # is restored (2026-09-10).
+  assert eq "$(grep -c ': >"$directory/journaled"' "$COMMIT_JOURNAL")" 3
+  assert grep -Fq 'note_terminal "worker-launcher-unknown.${directory##*/}"' "$COMMIT_JOURNAL"
+  assert grep -Fq 'note_terminal "worker-snapshot-unknown.${1##*/}"' "$COMMIT_JOURNAL"
   # Retired is not resolved, and nothing inherits what the record never named: no heir file is
   # written, and a path the run never listed is nobody's rather than the next committer's or the
   # launcher's (live 2026-08-24, 2026-08-25).
@@ -2334,7 +2351,8 @@ JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 if test -r "$JOURNAL_LIB"; then
   rj_journal_dir=$(sed -n '/^rj_journal_dir()/,/^}/p' "$JOURNAL_LIB")
   assert grep -Fq "$JOURNAL_RESOLVE" <<<"$rj_journal_dir"
-  assert grep -Fq 'mkdir "$1" 2>/dev/null' <<<"$(sed -n '/^rj_lock()/,/^}/p' "$JOURNAL_LIB")"
+  assert grep -Fq 'mkdir "$1" 2>/dev/null' <<<"$(sed -n '/^rj_lock_claim()/,/^}/p' "$JOURNAL_LIB")"
+  assert grep -Fq 'rj_lock_claim' <<<"$(sed -n '/^rj_lock()/,/^}/p' "$JOURNAL_LIB")"
   rj_absorb_journal=$(sed -n '/^rj_absorb_journal()/,/^}/p' "$JOURNAL_LIB")
   assert grep -Fq 'local dst_lock=$2.lock src_lock=$1.lock' <<<"$rj_absorb_journal"
   assert grep -Fq 'rj_lock "$dst_lock" || return 1' <<<"$rj_absorb_journal"

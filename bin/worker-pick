@@ -245,11 +245,30 @@ cx_claims=$(claims_json codex)
 gm_claims=$(claims_json gemini)
 gr_claims=$(claims_json grok)
 
-# A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled.
+# A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled —
+# until a reading of that account newer than the record shows both windows open; then the
+# collector has caught up and the record lapses (an unparseable RESET falls back to now+3600,
+# which outlives a real reset by up to an hour).
+limits_reading() {
+  local vendor="$1" account="$2"
+  [ -r "$LIMITS_FILE" ] || return 0
+  case "$vendor" in claudeb) vendor=claude ;; esac
+  jq -r --arg v "$vendor" --arg a "$account" '
+    .vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
+    [.five_hour, .weekly] | map(select(type == "object")) | select(length == 2) |
+    map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] | select(length == 2)) |
+    select(length == 2) | [(map(.[0]) | min), (map(.[1]) | max)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
+    head -n1
+}
 walls_json() {
-  local list
-  list=$(worker_walls_fresh "$1" "$now" 2>/dev/null |
-    jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
+  local vendor="$1" list account reading as_of pct
+  list=$(worker_walls_fresh "$vendor" "$now" 2>/dev/null | while IFS= read -r account; do
+    [ -n "$account" ] || continue
+    reading=$(limits_reading "$vendor" "$account")
+    as_of=${reading%%	*}; pct=${reading##*	}
+    [ -n "$reading" ] && worker_walls_lapse_if_read "$vendor" "$account" "$as_of" "$pct" && continue
+    printf '%s\n' "$account"
+  done | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
   printf '%s' "${list:-[]}"
 }
 cb_walls=$(walls_json claudeb)

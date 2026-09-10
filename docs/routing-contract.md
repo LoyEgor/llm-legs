@@ -90,7 +90,7 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    first (among themselves on the same vector as the pool), then everyone else. A pin is always
    tried first — stale usage at 100% does not skip it, because the owner knows more than stale
    data. The only skip is a run-observed wall record (`claude-worker-runs/walls/<vendor>-<account>`)
-   whose reset has not passed. A wall that was actually MET — the run launched on that pinned
+   whose reset has not passed and that no llm-limits reading newer than the record has shown open. A wall that was actually MET — the run launched on that pinned
    account and the vendor answered limit — writes that record and removes that one name from
    `~/.claude/worker-model`; `worker-pick` clears a still-present pin the same way once when it
    finds an unexpired record. Stale llm-limits data never skips or clears a pin. Dead auth still
