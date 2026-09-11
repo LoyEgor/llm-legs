@@ -20,6 +20,7 @@ codexb_root=$(resolve_root)
 . "$codexb_root/share/worker-model.sh"
 . "$codexb_root/share/account-announce.sh"
 . "$codexb_root/share/limits-view.sh"
+. "$codexb_root/share/account-status-tui.sh"
 pool_dir=$(worker_pool_dir codex)
 
 is_disabled() { worker_pool_is_disabled "$pool_dir" "$1"; }
@@ -245,7 +246,7 @@ list_accounts() {
   done < <(account_names)
 }
 
-show_status() {
+render_plain_status() {
   local quotas name status entry hused wused hreset wreset
   quotas=$(quota_snapshot)
   while IFS= read -r name; do
@@ -263,6 +264,40 @@ show_status() {
     printf '%s: %s%s | 5H %s reset %s | WEEKLY %s reset %s\n' \
       "$name" "${status#*$'\t'}" "$(pool_suffix "$name")" "$hused" "$hreset" "$wused" "$wreset"
   done < <(account_names)
+}
+
+codexb_status_pick_cmd() {
+  if [ -n "${CODEXB_WORKER_PICK:-}" ]; then printf '%s' "$CODEXB_WORKER_PICK"; return; fi
+  if [ -x "$codexb_root/bin/worker-pick" ]; then printf '%s' "$codexb_root/bin/worker-pick"; return; fi
+  command -v worker-pick 2>/dev/null || return 1
+}
+
+codexb_status_now() { date +%s; }
+
+codexb_status_launch() {
+  [ -n "${accounts_launch:-}" ] || return 0
+  run_account true "$accounts_launch"
+}
+
+codexb_status_refresh() {
+  local target=codex
+  [ -z "${2:-}" ] || target="$target/$2"
+  "${LLM_LIMITS_CMD:-$codexb_root/llm-limits.sh}" --refresh-account "$target"
+}
+
+codexb_status_outcome() {
+  if [ "$(cat "$1/.result")" = 0 ]; then printf '✓ refreshed %s' "$(date '+%H:%M')"
+  else printf '⚠ not refreshed'; fi
+}
+
+show_status() {
+  if [ ! -t 1 ]; then render_plain_status; return; fi
+  local accounts_vendor=codex accounts_store_vendor=codex accounts_rows=account_status_rows
+  local accounts_pick_resolver=codexb_status_pick_cmd accounts_now=codexb_status_now
+  local accounts_live_probe='' accounts_live_age=''
+  local accounts_refresh_action=codexb_status_refresh accounts_refresh_summary=codexb_status_outcome
+  local accounts_plain=render_plain_status accounts_launch_hook=codexb_status_launch
+  account_status_show cached
 }
 
 account_exists() {

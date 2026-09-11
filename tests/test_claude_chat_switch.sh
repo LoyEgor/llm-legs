@@ -50,6 +50,8 @@ HOME="$WORK/home"
 FAKE_BIN="$WORK/bin"
 HS_CAPTURE="$WORK/hs_payload.txt"
 export HOME HS_CAPTURE
+export CLAUDEB_DIR="$WORK/claudeb-state"
+export CLAUDEGPT_HOME="$HOME/.local/share/claudegpt"
 mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/olx" \
          "$HOME/.claude/projects" "$FAKE_BIN"
 
@@ -58,6 +60,7 @@ mkdir -p "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/olx" \
 cat >"$FAKE_BIN/hs" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$HS_CAPTURE"
+[ "${STUB_HS_FAIL:-0}" -eq 0 ] || exit 99
 printf '[claude-chat-switch]\tarmed\tprofile=x\narmed\n'
 exit 0
 EOF
@@ -71,9 +74,18 @@ cat >"$FAKE_BIN/ps" <<'EOF'
 #!/usr/bin/env bash
 for arg in "$@"; do pid=$arg; done
 case "$*" in
+  '-t '*)
+    # --self resolves its chat from the REAL process tree, so its table is written by the
+    # wrapper that launches the script, with that wrapper's own pid as the claude row.
+    if [ -n "${SELF_TABLE:-}" ]; then cat "$SELF_TABLE"; else printf '%s\n' "$STUB_PS_TABLE"; fi
+    printf 'read\n' >> "$STUB_PS_READS"
+    ;;
   # `ps eww` appends the environment to the command; that is where the chat's
   # claudeb profile is read from, so the stub answers it like the real one.
-  *eww*) [ -n "${STUB_CONFIG_DIR:-}" ] && echo "claude CLAUDE_CONFIG_DIR=$STUB_CONFIG_DIR TERM=xterm" ;;
+  *eww*)
+    [ -z "${STUB_GATEWAY:-}" ] || echo "claude CLAUDEGPT_ACCOUNT=work4"
+    [ -z "${STUB_CONFIG_DIR:-}" ] || echo "claude CLAUDE_CONFIG_DIR=$STUB_CONFIG_DIR TERM=xterm"
+    ;;
   *comm=*) echo "claude" ;;
   *ppid=*) echo "1" ;;
   *tty=*)
@@ -88,7 +100,20 @@ case "$*" in
   *lstart=*) echo "$STUB_LSTART" ;;
 esac
 EOF
-chmod +x "$FAKE_BIN/hs" "$FAKE_BIN/ps"
+cat >"$FAKE_BIN/osascript" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *frontmost*) echo "${STUB_FRONT_APP:-Terminal}" ;;
+  *) echo /dev/ttys009 ;;
+esac
+EOF
+cat >"$FAKE_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${STUB_CWD:-}" ] || printf 'p100\nn%s\n' "$STUB_CWD"
+EOF
+chmod +x "$FAKE_BIN/hs" "$FAKE_BIN/ps" "$FAKE_BIN/osascript" "$FAKE_BIN/lsof"
+export STUB_PS_READS="$WORK/ps_reads"
+
 PATH="$FAKE_BIN:$PATH"
 export PATH
 
@@ -97,6 +122,7 @@ export PATH
 run_switch() {
   local env_args=() ; while [ "$1" != "--" ]; do env_args+=("$1"); shift; done; shift
   : > "$HS_CAPTURE"
+  : > "$STUB_PS_READS"
   OUT=$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID "${env_args[@]}" \
         "$SCRIPT" "$@" 2>&1); RC=$?
   PAYLOAD=$(cat "$HS_CAPTURE" 2>/dev/null)
@@ -123,7 +149,7 @@ run_switch -- olx 11111111-2222-3333-4444-555555555555
 assert test "$RC" -eq 0
 assert grep -q 'ClaudeChatSwitch.switchChat("olx", "11111111-2222-3333-4444-555555555555", ' <<<"$PAYLOAD"
 # third arg is the resolved claude pid — a bare integer; passive mode has no tty
-assert grep -Eq ', [0-9]+, nil, \{cwd="' <<<"$PAYLOAD"
+assert grep -Eq ', [0-9]+, nil, \{mode="has_chat", wait_pid=[0-9]+, cwd="' <<<"$PAYLOAD"
 # the arm is confirmed by the returned sentinel, not by scanning the console output
 assert grep -q "and 'armed' or 'refused'" <<<"$PAYLOAD"
 assert grep -q 'armed' <<<"$OUT"
@@ -171,7 +197,7 @@ touch "$HOME/.claude/projects/$FSLUG/$FSID.jsonl"
 run_switch -- --self --cwd "$FOREIGN" olx "$FSID"
 assert test "$RC" -eq 0
 assert grep -q "ClaudeChatSwitch.switchChat(\"olx\", \"$FSID\", " <<<"$PAYLOAD"
-assert grep -q '"/dev/ttys009", {cwd="' <<<"$PAYLOAD"
+assert grep -q '"/dev/ttys009", {mode="has_chat", wait_pid=[0-9]*, cwd="' <<<"$PAYLOAD"
 assert grep -q "cwd=\"$FOREIGN_REAL\", registry=\"$HOME/.claude/sessions/" <<<"$PAYLOAD"
 assert grep -q "cd '$FOREIGN_REAL' && claudeb profile olx --resume $FSID" <<<"$OUT"
 
@@ -234,6 +260,82 @@ assert test "$RC" -eq 0
 assert grep -q "launcher=\"claudeb profile olx --resume $GWSID\"" <<<"$PAYLOAD"
 assert grep -q "claudeb profile olx --resume $GWSID" <<<"$OUT"
 
+printf '{"cwd":"%s"}\n' "$FOREIGN_REAL" > "$HOME/.claude/projects/$FSLUG/$FSID.jsonl"
+SHELL_TABLE='100 1 S+ /bin/zsh -zsh'
+run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_CWD="$FOREIGN_REAL" -- --front olx
+assert test "$RC" -eq 0
+assert grep -Fq 'mode="bare_shell", wait_pid=0' <<<"$PAYLOAD"
+assert grep -Fq "cwd=\"$FOREIGN_REAL\"" <<<"$PAYLOAD"
+assert grep -Fq 'launcher="claudeb profile olx"' <<<"$PAYLOAD"
+assert test "$(wc -l < "$STUB_PS_READS" | tr -d ' ')" -eq 1
+assert test -z "$(grep 'cd ' <<<"$OUT")"
+# An id named on the command line is a conversation to REOPEN, shell prompt or not: a bare shell
+# resumes it in its own project instead of silently launching a fresh chat.
+run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_CWD="$FOREIGN_REAL" -- --front --dry-run olx "$FSID"
+assert test "$RC" -eq 0
+assert grep -Fq 'mode=bare_shell source_kind=shell' <<<"$OUT"
+assert grep -Fq "command=cd '$FOREIGN_REAL' && claudeb profile olx --resume $FSID" <<<"$OUT"
+# ...and an id with nothing on disk downgrades LOUDLY, the way a live chat's does.
+run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_CWD="$FOREIGN_REAL" -- --front olx nosuch-session-9999
+assert test "$RC" -eq 0
+assert grep -Fq 'launcher="claudeb profile olx"' <<<"$PAYLOAD"
+assert grep -Fq 'freshReason="no transcript on disk for session nosuch-session-9999"' <<<"$PAYLOAD"
+assert grep -Fq 'FRESH chat' <<<"$OUT"
+run_switch STUB_PS_TABLE="$SHELL_TABLE" -- --front --gateway --model astra work4
+assert test "$RC" -eq 0
+assert grep -Fq "cwd=\"$HOME\"" <<<"$PAYLOAD"
+assert grep -Fq 'launcher="claudegpt p work4 --model astra"' <<<"$PAYLOAD"
+run_switch STUB_PS_TABLE="$SHELL_TABLE" -- --front --dry-run olx
+assert test "$RC" -eq 0
+assert test -z "$PAYLOAD"
+assert grep -Fq 'mode=bare_shell source_kind=shell claude_pid=0 wait_pid=0 shell_pid=100' <<<"$OUT"
+run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_HS_FAIL=1 -- --front --dry-run --gateway work4
+assert test "$RC" -eq 0
+assert test -z "$PAYLOAD"
+assert grep -Fxq 'command=claudegpt p work4' <<<"$OUT"
+run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_HS_FAIL=1 -- --front --gateway work4
+assert test "$RC" -eq 1
+assert test -n "$PAYLOAD"
+assert grep -Fq 'mode=bare_shell: could not arm Hammerspoon' <<<"$OUT"
+run_switch STUB_PS_TABLE='100 1 S /bin/zsh -zsh
+101 100 S+ /usr/bin/vim vim' -- --front olx
+assert test "$RC" -eq 1
+assert grep -Fq 'mode=unsupported' <<<"$OUT"
+assert test -z "$PAYLOAD"
+
+CHAT_TABLE='100 1 S /bin/zsh -zsh
+103 100 S+ /usr/local/bin/claude claude'
+GATEWAY_TABLE='100 1 S /bin/zsh -zsh
+101 100 S+ /usr/bin/python3 python3 /local/bin/claudegpt p work4
+102 101 S+ /local/bin/ccr ccr launch
+103 102 S+ /usr/local/bin/claude claude
+99 100 S /usr/bin/python3 python3 /other/bin/claudegpt p main'
+printf '{"cwd":"%s"}\n' "$FOREIGN_REAL" > "$HOME/.claude/projects/$FSLUG/$GWSID.jsonl"
+for source in claude gateway; do
+  table="$CHAT_TABLE"; expected_pid=103; sid="$FSID"
+  if [ "$source" = gateway ]; then table="$GATEWAY_TABLE"; expected_pid=101; sid="$GWSID"; fi
+  for target in claude gateway; do
+    args=(--front --dry-run); account=olx
+    expected="claudeb profile olx --resume $sid"
+    if [ "$target" = gateway ]; then
+      args+=(--gateway); account=work4
+      expected="claudegpt p work4"
+      [ "$source" != gateway ] || expected="$expected --model astra"
+      expected="$expected --resume $sid"
+    fi
+    run_switch STUB_PS_TABLE="$table" -- "${args[@]}" "$account" "$sid"
+    assert test "$RC" -eq 0
+    assert test -z "$PAYLOAD"
+    assert grep -Fq "source_kind=$source claude_pid=103 wait_pid=$expected_pid" <<<"$OUT"
+    assert grep -Fq "command=cd '$FOREIGN_REAL' && $expected" <<<"$OUT"
+    assert test "$(wc -l < "$STUB_PS_READS" | tr -d ' ')" -eq 1
+  done
+done
+run_switch STUB_PS_TABLE="$CHAT_TABLE" STUB_GATEWAY=1 -- --front --dry-run olx "$FSID"
+assert grep -Fq 'source_kind=gateway claude_pid=103 wait_pid=103' <<<"$OUT"
+run_switch STUB_PS_TABLE="$GATEWAY_TABLE" -- --front --gateway work4 "$GWSID"
+assert grep -Fq 'mode="has_chat", wait_pid=101' <<<"$PAYLOAD"
+
 # --- flag validation -------------------------------------------------------
 run_switch -- --front --self olx "$FSID"
 assert test "$RC" -eq 1
@@ -252,6 +354,30 @@ run_switch STUB_NO_REGISTRY=1 -- --self --cwd "$FOREIGN" olx "$FSID"
 assert test "$RC" -eq 1
 assert grep -q "no live sessions-registry entry" <<<"$OUT"
 assert test -z "$PAYLOAD"
+
+# --- --self waits for the claudegpt wrapper, not the inner chat ------------
+# The wrapper owns the tty until it exits too, so a resume delivered when the inner claude dies
+# would be typed into it. The wrapper script below stands in for the chat: it writes the tab
+# table with its OWN pid as the claude row, then runs the script as its child.
+SELF_TABLE="$WORK/self_table"
+cat >"$WORK/self_wrap.sh" <<'EOF'
+printf '100 1 S /bin/zsh -zsh
+101 100 S+ /usr/bin/python3 python3 /local/bin/claudegpt p work4
+%s 101 S+ /usr/local/bin/claude claude\n' "$$" >"$SELF_TABLE"
+"$SCRIPT" --self --dry-run olx "$SID"
+EOF
+OUT=$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID SELF_TABLE="$SELF_TABLE" \
+      SCRIPT="$SCRIPT" SID="$FSID" bash "$WORK/self_wrap.sh" 2>&1)
+assert grep -Eq 'mode=has_chat source_kind=gateway claude_pid=[0-9]+ wait_pid=101 ' <<<"$OUT"
+assert test -z "$(grep -Eo 'claude_pid=101 ' <<<"$OUT")"
+# A tab that will not classify is no reason to refuse: the chat's own ancestor walk still answers.
+cat >"$WORK/self_wrap_blind.sh" <<'EOF'
+printf '100 1 S /bin/zsh -zsh\n' >"$SELF_TABLE"
+"$SCRIPT" --self --dry-run olx "$SID"
+EOF
+OUT=$(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID SELF_TABLE="$SELF_TABLE" \
+      SCRIPT="$SCRIPT" SID="$FSID" bash "$WORK/self_wrap_blind.sh" 2>&1)
+assert grep -Eq 'mode=has_chat source_kind=claude claude_pid=([0-9]+) wait_pid=\1 ' <<<"$OUT"
 
 # --- nothing to resume -> loud, never a silent fresh chat ------------------
 # Losing a conversation to a fresh chat is the one outcome that must reach him at
@@ -597,7 +723,7 @@ check(env._G.ClaudeChatSwitch == module, "the module did not publish itself into
 -- (a) the chat sits on the picker past the first grace: one blind Enter, a grace
 -- that restarts before the press lands, then the normal resume once the pid dies.
 W = newWorld({ holdVoice = true })
-check(module.switchChat("olx", "sid-a", W.pid, "/dev/ttys009", { cwd = "/tmp" }) == true,
+check(module.switchChat("olx", "sid-a", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-a" }) == true,
     "switchChat refused the auto-mode arm")
 check(#W.bursts == 1 and W.bursts[1].label == "/exit" and W:events("exit-typed") == 1,
     "/exit was not typed on arm")
@@ -639,7 +765,7 @@ print("ok  wall: first grace -> one Enter, grace restarted, exit-wall-passed")
 
 -- (b) the chat outlasts both graces: that one Enter only, then the fail path.
 W = newWorld()
-module.switchChat("olx", "sid-b", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-b", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-b" })
 W:tick(15)
 check(W:events("exit-wall") == 1 and #W.presses == 1, "the wall Enter did not go out")
 W:tick(14)
@@ -663,7 +789,7 @@ print("ok  wall: both graces -> exit-wall-unpassed, fail, no second Enter")
 
 -- (c) a chat that exits inside the first grace never sees the wall.
 W = newWorld()
-module.switchChat("olx", "sid-c", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-c", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-c" })
 W:tick(5)
 W.pidAlive = false
 W:tick(1)
@@ -679,7 +805,7 @@ print("ok  wall: exit inside the first grace logs no wall lines")
 -- the blind wall only takes over once it has given up, and each confirm press
 -- restarts the grace, so the two never answer the same picker at once.
 W = newWorld({ screen = PICKER })
-module.switchChat("olx", "sid-d", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-d", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-d" })
 W:tick(21)
 check(W:pressLabels() == "exit-confirm,exit-confirm",
     "the screen-read confirm did not answer the picker twice")
@@ -697,7 +823,7 @@ print("ok  wall: screen-read confirm runs first, wall answers only after it")
 -- gives the switch up on schedule, rather than queueing the wall's Enter behind the
 -- stuck one for both to fire back to back once the gate opens.
 W = newWorld({ holdVoice = true, screen = PICKER })
-module.switchChat("olx", "sid-e", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-e", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-e" })
 W:tick(14)
 check(#W.voice == 1 and W.voice[1].label == "exit-confirm" and #W.presses == 0,
     "the confirm Enter did not end up held by the dictation gate")
@@ -718,7 +844,7 @@ print("ok  wall: stuck confirm -> give up on schedule, no wall, no second Enter"
 -- (f) the picker becomes readable while the wall's Enter is still held: the confirm
 -- path stays off from there on, so the wall's own grace ends the switch on one Enter.
 W = newWorld({ holdVoice = true })
-module.switchChat("olx", "sid-f", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-f", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-f" })
 W:tick(15)
 check(W:events("exit-wall") == 1 and #W.voice == 1 and W.voice[1].label == "exit-wall",
     "the wall did not queue its Enter")
@@ -737,7 +863,7 @@ print("ok  wall: a picker readable after the wall never adds a confirm Enter")
 
 -- (g) the chat dies on its own while the wall's Enter is still held.
 W = newWorld({ holdVoice = true })
-module.switchChat("olx", "sid-g", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-g", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-g" })
 W:tick(15)
 check(W:events("exit-wall") == 1 and #W.presses == 0, "the wall Enter was not still held")
 W.pidAlive = false
@@ -754,7 +880,7 @@ print("ok  wall: exit-wall-passed names an Enter that never went out")
 -- Granted after that, it clears the composer of a bare shell and runs /exit as a command -
 -- on top of the resume this switch has by then already typed into that tab.
 W = newWorld({ holdExit = true })
-module.switchChat("olx", "sid-h", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-h", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-h" })
 check(#W.bursts == 0 and #W.voice == 1 and W.voice[1].label == "/exit",
     "/exit did not end up waiting for the keyboard")
 W.pidAlive = false
@@ -771,7 +897,7 @@ print("ok  wall: a queued /exit is dropped when the chat exits on its own")
 -- Everything it leaves in the air belongs to a job that is over, and a switch that comes
 -- after it owns the tab: nothing of the old one may land there or write into its state.
 W = newWorld({ holdVoice = true })
-module.switchChat("olx", "sid-i", W.pid, "/dev/ttys009", { cwd = "/tmp" })
+module.switchChat("olx", "sid-i", W.pid, "/dev/ttys009", { cwd = "/tmp", launcher = "claudeb profile olx --resume sid-i" })
 W:tick(15)
 check(W:events("exit-wall") == 1 and #W.voice == 1, "the wall Enter was not still held")
 module.cancel()
@@ -788,7 +914,7 @@ print("ok  wall: a cancelled switch lands nothing it left in the air")
 -- conversation is not coming with it is said out loud at the moment it is decided.
 W = newWorld()
 module.switchChat("olx", "", W.pid, "/dev/ttys009",
-    { cwd = "/tmp", freshReason = "no transcript on disk for session sid-j" })
+    { cwd = "/tmp", launcher = "claudeb profile olx", freshReason = "no transcript on disk for session sid-j" })
 check(W:events("fresh") == 1 and W:detail("fresh"):find("sid-j", 1, true),
     "the fresh downgrade was not logged with its reason")
 check(#W.alerts == 1 and W.alerts[1]:find("no transcript on disk", 1, true),
@@ -804,7 +930,7 @@ print("ok  wall: a fresh downgrade is logged and alerted with its reason")
 -- may be announced - least of all that a conversation was replaced by an empty chat.
 W = newWorld({ refuse = true })
 check(module.switchChat("olx", "", W.pid, "/dev/ttys009",
-    { freshReason = "no transcript on disk for session sid-k" }) == false,
+    { launcher = "claudeb profile olx", freshReason = "no transcript on disk for session sid-k" }) == false,
     "a refused switch reported itself as armed")
 check(#W.alerts == 1 and W.alerts[1]:find("another automation", 1, true),
     "a refused switch said something other than that the tab was taken")

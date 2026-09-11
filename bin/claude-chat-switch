@@ -1,39 +1,30 @@
 #!/usr/bin/env bash
-# Hand a Terminal tab over to another Claude Code chat — the same conversation on
-# a different claudeb profile, or a different conversation entirely (--cwd). Because
-# a claude process cannot re-exec itself onto another account or session, the actual
-# relaunch has to happen AFTER that chat's claude exits — from an outside actor. This
-# script only resolves the target (profile + session id + cwd + the claude pid to wait
-# on) and hands it to a Hammerspoon one-shot (ClaudeChatSwitch.switchChat), which waits
-# for that pid to die and then types `[cd <cwd> && ]claudeb profile <profile> --resume
-# <session-id>` into Terminal.
 set -u
 
 PROFILES_DIR="$HOME/.claude-profiles"
 GATEWAY_DIR="${CLAUDEGPT_HOME:-$HOME/.local/share/claudegpt}/accounts"
-# The one place a reopen command is built (bin/chats, bin/chat-find and the chat-link
-# hooks read the same module), so a claudegpt chat cannot be handed a claudeb line here.
 CHAT_RESUME="$(dirname "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")")/share/chat_resume.py"
 
-die() { printf 'claude-chat-switch: %s\n' "$*" >&2; exit 1; }
+mode=unknown
+die() { printf 'claude-chat-switch: mode=%s: %s\n' "$mode" "$*" >&2; exit 1; }
 
 usage() {
   cat >&2 <<'EOF'
-usage: claude-chat-switch [--front|--self] [--gateway] [--cwd <dir>] <profile> [session-id]
+usage: claude-chat-switch [--front|--self] [--dry-run] [--gateway] [--model sol|astra] [--cwd <dir>] <profile> [session-id]
 
   <profile>     an existing account under ~/.claude-profiles (NOT "main"), or with
                 --gateway an OpenAI account under the claudegpt store
   [session-id]  optional; defaults to $CLAUDE_CODE_SESSION_ID, else the newest
                 transcript for the current directory's project
-  --front       target the chat in the frontmost Terminal tab instead of the
-                calling shell's session; Hammerspoon also types /exit into it,
-                so the whole switch is hands-free (menubar path)
+  --dry-run     print mode, pids, cwd and command without arming or typing
+  --model       gateway model alias for a fresh launch
+  --front       target the frontmost Terminal tab: launch fresh from a bare
+                shell, or wait for a chat to go idle, /exit it and reopen it
   --self        same hands-free switch, but targeted at the CALLING chat's own
                 tab, so it works without Terminal being frontmost (the path a
                 chat uses to hand its tab to another conversation)
-  --gateway     <profile> names a claudegpt (OpenAI) account, so the chat reopens
-                with `claudegpt p <account>`; the same name in ~/.claude-profiles
-                is a different account and is not what this means
+  --gateway     <profile> names a claudegpt (OpenAI) account; the same name
+                in ~/.claude-profiles is a different account
   --cwd <dir>   directory to cd into before resuming — the project the target
                 session belongs to, when that is not the chat's own; without it
                 the chat's own directory travels with the switch
@@ -61,21 +52,74 @@ list_gateway_accounts() {
   done
 }
 
-# The launcher line for one chat under one account, built by the shared resolver. An
-# empty session is a chat with no transcript, which reopens as a fresh conversation.
 reopen_command() {
-  local session=$1 account=$2 out
-  if [ "$gateway_mode" -eq 1 ]; then
-    out=$(python3 "$CHAT_RESUME" switch "$session" --account "$account" --gateway 2>/dev/null)
-  else
-    out=$(python3 "$CHAT_RESUME" switch "$session" --account "$account" 2>/dev/null)
+  local session=$1 account=$2
+  local -a args=()
+  if [ -n "$session" ]; then args=(switch "$session"); else args=(launch); fi
+  args+=(--account "$account")
+  [ "$gateway_mode" -eq 1 ] && args+=(--gateway)
+  [ -n "$model_arg" ] && args+=(--model "$model_arg")
+  python3 "$CHAT_RESUME" "${args[@]}"
+}
+
+# $1, when given, is the chat this switch is FOR: its own ancestor walk already named it, and the
+# foreground pick below would answer with a different claude on the same tab. $2=true reads the tab
+# as a bonus rather than as the target: --self already knows its chat, so a tab that will not
+# classify (or classifies as some other process) leaves that answer alone instead of refusing.
+classify_tab() {
+  local known="${1:-0}" soft="${2:-false}" table result c_mode c_pid c_wait c_shell c_kind
+  table=$(ps -t "${tty_dev#/dev/}" -o pid=,ppid=,stat=,comm=,command= 2>/dev/null) ||
+    { [ "$soft" = true ] && return 1; die "cannot read tab processes"; }
+  result=$(printf '%s\n' "$table" | CCS_KNOWN_CHAT_PID="$known" python3 -c '
+import os, shlex, sys
+rows = {}
+for line in sys.stdin:
+    fields = line.split(None, 4)
+    if len(fields) == 5 and fields[0].isdigit() and fields[1].isdigit():
+        pid, parent, stat, comm, command = fields
+        rows[int(pid)] = (int(parent), stat, os.path.basename(comm), command)
+chats = [p for p, r in rows.items() if r[2] == "claude" and "Z" not in r[1]]
+known = int(os.environ.get("CCS_KNOWN_CHAT_PID") or 0)
+if known in chats:
+    chats = [known]
+if chats:
+    inner = next((p for p in chats if "+" in rows[p][1]), chats[0])
+    outer, kind, current, seen = inner, "claude", inner, set()
+    while current in rows and current not in seen:
+        seen.add(current)
+        parent, stat, comm, command = rows[current]
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            argv = command.split()
+        wrapper = comm == "claudegpt" or (comm.lower().startswith("python") and
+            any(os.path.basename(a) == "claudegpt" for a in argv[1:3]))
+        if wrapper:
+            outer, kind = current, "gateway"
+        current = parent
+    print("has_chat", inner, outer, 0, kind)
+else:
+    foreground = [(p, r) for p, r in rows.items() if "+" in r[1] and "Z" not in r[1]]
+    shells = [(p, r) for p, r in foreground if r[2].lstrip("-") in
+              ("sh", "bash", "zsh", "fish", "ksh", "tcsh", "csh", "dash")]
+    if len(foreground) == 1 and len(shells) == 1:
+        print("bare_shell", 0, 0, shells[0][0], "shell")
+    else:
+        print("unsupported", 0, 0, 0, "unknown")
+') || { [ "$soft" = true ] && return 1; die "cannot classify tab processes"; }
+  read -r c_mode c_pid c_wait c_shell c_kind <<<"$result"
+  if [ "$soft" = true ]; then
+    { [ "$c_mode" = has_chat ] && [ "$c_pid" = "$known" ]; } || return 1
   fi
-  # A resolver that cannot answer must not silently downgrade a gateway chat to claudeb.
-  if [ -z "$out" ]; then
-    [ "$gateway_mode" -eq 1 ] && die "cannot build the reopen command (missing $CHAT_RESUME)."
-    out="claudeb profile $account${session:+ --resume $session}"
+  mode="$c_mode"; claude_pid="$c_pid"; wait_pid="$c_wait"
+  shell_pid="$c_shell"; source_kind="$c_kind"
+  [ "$mode" != unsupported ] || die "foreground process is not an idle shell or Claude chat on $tty_dev"
+  if [ "$mode" = bare_shell ]; then
+    resume_cwd=$(lsof -a -p "$shell_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    [ -n "$resume_cwd" ] || resume_cwd="$HOME"
+  elif ps eww -o command= -p "$claude_pid" 2>/dev/null | grep -qE '(^| )CLAUDEGPT_ACCOUNT=[^ ]+'; then
+    source_kind=gateway
   fi
-  printf '%s' "$out"
 }
 
 # claudeb's own reserved words (bin/claudeb reserved_name) plus "main", which is
@@ -124,7 +168,7 @@ note() {
   text=${text//$'\n'/ }
   text=${text//$'\r'/ }
   notes="${notes:+$notes; }$text"
-  printf 'claude-chat-switch: %s\n' "$text" >&2
+  printf 'claude-chat-switch: mode=%s: %s\n' "$mode" "$text" >&2
 }
 
 # The transcript of a session, wherever it lives; sets $transcript. Looking only under
@@ -232,10 +276,17 @@ find_claude_pid() {
 front_mode=0
 self_mode=0
 gateway_mode=0
+dry_run=0
+model_arg=""
+source_kind=claude
+wait_pid=""
+shell_pid=0
 cwd_arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --gateway) gateway_mode=1; shift ;;
+    --dry-run) dry_run=1; shift ;;
+    --model) [ $# -ge 2 ] || usage; model_arg="$2"; shift 2 ;;
     --front) front_mode=1; shift ;;
     --self)  self_mode=1; shift ;;
     --cwd)   [ $# -ge 2 ] || usage; cwd_arg="$2"; shift 2 ;;
@@ -265,20 +316,20 @@ fi
 if [ "$gateway_mode" -eq 1 ]; then
   # "main" is a real gateway login (its own OpenAI account), unlike claudeb's "main".
   if [ ! -d "$GATEWAY_DIR/$profile" ]; then
-    { printf "claude-chat-switch: no claudegpt account '%s' under %s\n" "$profile" "$GATEWAY_DIR"
+    { printf "claude-chat-switch: mode=$mode: no claudegpt account '%s' under %s\n" "$profile" "$GATEWAY_DIR"
       printf 'existing claudegpt accounts:\n'; list_gateway_accounts; } >&2
     exit 1
   fi
 else
   is_reserved "$profile" && die "'$profile' is not a valid profile name (reserved; \"main\" is not a claudeb profile)."
   if [ ! -d "$PROFILES_DIR/$profile" ]; then
-    { printf "claude-chat-switch: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
+    { printf "claude-chat-switch: mode=$mode: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
       printf 'existing profiles:\n'; list_profiles; } >&2
     exit 1
   fi
 fi
 
-command -v hs >/dev/null 2>&1 || die "'hs' (Hammerspoon CLI) not on PATH; is Hammerspoon running?"
+[ "$dry_run" -eq 1 ] || command -v hs >/dev/null 2>&1 || die "'hs' (Hammerspoon CLI) not on PATH; is Hammerspoon running?"
 command -v jq >/dev/null 2>&1 || die "'jq' is required for the sessions registry lookup but is not on PATH."
 
 if [ "$self_mode" -eq 1 ]; then
@@ -293,6 +344,9 @@ if [ "$self_mode" -eq 1 ]; then
   { [ -n "$tty_dev" ] && [ "$tty_dev" != "?" ] && [ "$tty_dev" != "??" ]; } \
     || die "this chat has no terminal (background/daemon session); nothing to type into."
   case "$tty_dev" in /dev/*) ;; *) tty_dev="/dev/$tty_dev" ;; esac
+  # The chat may be running under a claudegpt wrapper that keeps the tty after the inner claude
+  # exits; the resume has to wait for THAT pid, or it is typed into the wrapper's own prompt.
+  classify_tab "$claude_pid" true || true
 elif [ "$front_mode" -eq 1 ]; then
   front_app=$(osascript -e 'tell application "System Events" to get name of first application process whose frontmost is true' 2>/dev/null)
   [ "$front_app" = "Terminal" ] || die "Terminal is not the frontmost app (frontmost: ${front_app:-unknown})."
@@ -300,13 +354,28 @@ elif [ "$front_mode" -eq 1 ]; then
   tty_dev=$(osascript -e 'tell application "Terminal" to get tty of selected tab of front window' 2>/dev/null)
   [ -n "$tty_dev" ] || die "could not read the tty of the frontmost Terminal tab."
 
-  claude_pid=$(ps -t "${tty_dev#/dev/}" -o pid=,comm= 2>/dev/null \
-    | awk '{ pid=$1; sub(/^ *[0-9]+ +/, ""); n=split($0, parts, "/"); if (parts[n] == "claude") { print pid; exit } }')
-  [ -n "$claude_pid" ] || die "no claude process on the frontmost Terminal tab ($tty_dev)."
+  classify_tab
 fi
 
 fresh_reason=""
-if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
+if [ "$mode" = bare_shell ]; then
+  [ -z "$cwd_arg" ] || die "--cwd cannot change a bare shell launch directory"
+  # An id named on the command line is a conversation to reopen, shell prompt or not; only the
+  # absence of one makes this tab a fresh launch. A transcript that is gone downgrades it loudly
+  # rather than silently, the way a live chat's missing transcript does.
+  resume_id=""
+  if [ -n "$session_id" ]; then
+    if find_transcript "$session_id" "" "$shell_pid"; then
+      resume_id="$session_id"
+      project_home "$transcript" "$resume_cwd"
+    else
+      fresh_reason="no transcript on disk for session $session_id"
+      session_id=""
+    fi
+  fi
+elif [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
+  mode=has_chat
+  wait_pid=${wait_pid:-$claude_pid}
   registry=$(live_registry "$claude_pid")
   # --self is armed BY the chat it exits, usually mid-turn: without the registry
   # Hammerspoon has no idle signal and would type /exit into a running turn, where
@@ -358,7 +427,7 @@ else
   fi
 fi
 
-[ -n "$session_id" ] || die "could not determine a session id (not in \$CLAUDE_CODE_SESSION_ID and no transcript for this directory). Pass one explicitly: claude-chat-switch $profile <session-id>"
+[ "$mode" = bare_shell ] || [ -n "$session_id" ] || die "could not determine a session id (not in \$CLAUDE_CODE_SESSION_ID and no transcript for this directory). Pass one explicitly: claude-chat-switch $profile <session-id>"
 
 # --cwd names the project being switched TO, so one that does not hold the target's
 # transcript is the wrong directory and would bring the chat back outside its own
@@ -377,6 +446,8 @@ if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
   case "$tty_dev" in *[!A-Za-z0-9/._-]*) die "tty has unexpected characters: $tty_dev" ;; esac
 else
   claude_pid=$(find_claude_pid) || die "could not locate the claude process for this chat (no 'claude' ancestor)."
+  mode=has_chat
+  wait_pid=$claude_pid
 fi
 
 # Lua string literals, not shell: only backslash and the quote itself can break out,
@@ -396,10 +467,25 @@ if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
 else
   armed_id="$session_id"
 fi
-# Hammerspoon types what is resolved here rather than assembling a launcher of its own:
-# the account's store decides which launcher reopens the chat, and only this side reads it.
-launcher=$(reopen_command "$armed_id" "$profile")
-opts="{cwd=$(lua_str "$cd_target"), registry=$(lua_str "${registry:-}"), freshReason=$(lua_str "$fresh_reason"), note=$(lua_str "$notes"), launcher=$(lua_str "$launcher")}"
+resolver_err=$(mktemp)
+launcher=$(reopen_command "$armed_id" "$profile" 2>"$resolver_err")
+resolver_rc=$?
+resolver_note=$(cat "$resolver_err")
+rm -f "$resolver_err"
+[ "$resolver_rc" -eq 0 ] && [ -n "$launcher" ] || die "cannot build launcher: $resolver_note"
+[ -z "$resolver_note" ] || note "$resolver_note"
+resume_cmd="$launcher"
+# A bare shell launches fresh in whatever directory it is sitting in; the one exception is an id
+# named on the command line, whose conversation belongs to its own project and not to this tab.
+{ [ "$mode" = has_chat ] || { [ "$mode" = bare_shell ] && [ -n "$resume_id" ]; }; } &&
+  [ -n "$cd_target" ] && resume_cmd="cd '${cd_target//\'/\'\\\'\'}' && $launcher"
+if [ "$dry_run" -eq 1 ]; then
+  printf 'mode=%s source_kind=%s claude_pid=%s wait_pid=%s shell_pid=%s tty=%s\ncwd=%s\ncommand=%s\n' \
+    "$mode" "$source_kind" "$claude_pid" "$wait_pid" "$shell_pid" "${tty_dev:-}" "$cd_target" "$resume_cmd"
+  exit 0
+fi
+opts="{mode=$(lua_str "$mode"), wait_pid=$wait_pid, cwd=$(lua_str "$cd_target"), registry=$(lua_str "${registry:-}"), freshReason=$(lua_str "$fresh_reason"), note=$(lua_str "$notes"), launcher=$(lua_str "$launcher")}"
+
 if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
   call="ClaudeChatSwitch.switchChat(\"$profile\", \"$resume_id\", $claude_pid, \"$tty_dev\", $opts)"
 else
@@ -415,19 +501,5 @@ if [ "$hs_rc" -ne 0 ] || [ "$hs_last" != "armed" ]; then
   die "could not arm Hammerspoon: ${hs_out:-unknown error}"
 fi
 
-resume_cmd=$(reopen_command "$session_id" "$profile")
-# Same quoting Hammerspoon types, so what he reads is what lands in the shell.
-[ -n "$cd_target" ] && resume_cmd="cd '${cd_target//\'/\'\\\'\'}' && $resume_cmd"
-
-if [ "$front_mode" -eq 1 ] || [ "$self_mode" -eq 1 ]; then
-  if [ -n "$resume_id" ]; then
-    printf 'claude-chat-switch: armed (auto). Hammerspoon will wait for the chat on %s to go idle, /exit it, and open session %s: %s\n' \
-      "$tty_dev" "$session_id" "$resume_cmd"
-  else
-    printf 'claude-chat-switch: armed (auto). %s; Hammerspoon will /exit the chat on %s and open a FRESH chat: %s\n' \
-      "$fresh_reason" "$tty_dev" "$(reopen_command "" "$profile")"
-  fi
-else
-  printf 'claude-chat-switch: armed. Exit this chat (Ctrl+C twice or /exit) and session %s reopens under profile "%s", resumed by: %s\n' \
-    "$session_id" "$profile" "$resume_cmd"
-fi
+printf 'claude-chat-switch: armed mode=%s. %s%scommand: %s\n' \
+  "$mode" "${fresh_reason:+$fresh_reason; FRESH chat. }" "${notes:+$notes; }" "$resume_cmd"

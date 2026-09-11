@@ -20,6 +20,31 @@ app = importlib.util.module_from_spec(spec)
 loader.exec_module(app)
 
 
+class ChatLaunchTests(unittest.TestCase):
+    def test_launch_commands(self):
+        cases = [
+            (["--account", "com"], "claudeb profile com"),
+            (["--account", "com", "--gateway"], "claudegpt p com"),
+            (["--account", "com", "--gateway", "--model", "sol"], "claudegpt p com --model sol"),
+            (["--account", "com", "--gateway", "--model", "astra"], "claudegpt p com --model astra"),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args), patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(app.chat_resume.main(["launch", *args]), 0)
+                self.assertEqual(output.getvalue().strip(), expected)
+
+    def test_claude_launch_rejects_gateway_model(self):
+        with self.assertRaises(SystemExit), patch("sys.stderr", new_callable=io.StringIO):
+            app.chat_resume.main(["launch", "--account", "com", "--model", "sol"])
+
+    def test_switch_cli_target_is_explicit(self):
+        with patch.object(app.chat_resume, "is_gateway_account", return_value=True), \
+             patch.object(app.chat_resume, "is_claudeb_profile", return_value=False), \
+             patch("sys.stdout", new_callable=io.StringIO) as output:
+            app.chat_resume.main(["switch", "fixture", "--account", "com"])
+            self.assertEqual(output.getvalue().strip(), "claudeb profile com --resume fixture")
+
+
 class LauncherTests(unittest.TestCase):
     def test_picker_labels_do_not_change_routes(self):
         picker = app.menu_settings()["modelPicker"]

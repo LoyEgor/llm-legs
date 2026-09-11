@@ -326,6 +326,37 @@ assert grep -Eq '^main: Logged in using ChatGPT \| 5H 10% reset .+ \| WEEKLY 50%
 assert grep -Eq '^alpha: Logged in using ChatGPT \| 5H 10% reset .+ \| WEEKLY 20% reset .+$' <<<"$status_output"
 assert grep -Eq '^beta: Not logged in( \||$)' <<<"$status_output"
 
+(
+  export LLM_LIMITS_CACHE="$WORK/codex-tui.json" CODEXB_WORKER_PICK="$WORK/status-pick"
+  export CODEXB_PROFILES_DIR="$HOME/.codex-profiles"
+  jq -n --argjson now "$(date +%s)" '{vendors:{codex:{accounts:[
+    {account:"alpha",five_hour:{used_pct:10,as_of:$now},weekly:{used_pct:20,as_of:$now}},
+    {account:"beta",five_hour:{used_pct:30,as_of:$now},weekly:{used_pct:15,as_of:$now}},
+    {account:"main",enabled:false,five_hour:{used_pct:90,as_of:$now}}]}}}' >"$LLM_LIMITS_CACHE"
+  printf '#!/usr/bin/env bash\n[ "$*" = "--account codex --role chat" ] || exit 2\n[ -z "${PICK_NONE:-}" ] || exit 3\nprintf beta\n' >"$CODEXB_WORKER_PICK"
+  chmod +x "$CODEXB_WORKER_PICK"
+  for spec in '0d beta' '1b5b410d alpha' '1b5b420d main' '1b5b431b5b440d beta' '71 none' '1b none'; do
+    read -r keys expected <<<"$spec"
+    : >"$CODEX_CALLS"
+    tty_out=$(python3 "$ROOT/tests/fixtures/account-status-pty.py" "$keys" "$SCRIPT") || fail "codexb TTY keys $keys failed"
+    assert grep -qF $'\033[7m* beta' <<<"$tty_out"
+    assert grep -qF '↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit' <<<"$tty_out"
+    assert_fails grep -qF FABLE <<<"$tty_out"
+    if [ "$expected" = none ]; then assert test ! -s "$CODEX_CALLS"
+    else assert grep -q "^CALL account=$expected .* argc=0$" "$CODEX_CALLS"; fi
+  done
+  : >"$CODEX_CALLS"
+  tty_out=$(PICK_NONE=1 python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT") || fail "codexb TTY fallback failed"
+  assert grep -qF $'\033[7m  alpha' <<<"$tty_out"
+  assert grep -q '^CALL account=alpha .* argc=0$' "$CODEX_CALLS"
+  export LLM_LIMITS_CMD="$WORK/status-refresh"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$LLM_LIMITS_CMD"
+  chmod +x "$LLM_LIMITS_CMD"
+  tty_out=$(python3 "$ROOT/tests/fixtures/account-status-pty.py" 7271 "$SCRIPT") || fail "codexb TTY refresh/quit failed"
+  assert grep -qF '⟳ refreshing' <<<"$tty_out"
+  assert test "$(bash "$SCRIPT" status)" = "$status_output"
+) || exit 1
+
 : >"$CODEX_CALLS"
 CODEX_HOME=poison bash "$SCRIPT" run main --flag 'two words' '*' '' || fail "main run failed"
 assert grep -qx 'CALL account=main home=<unset> argc=4' "$CODEX_CALLS"

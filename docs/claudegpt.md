@@ -210,14 +210,31 @@ in rather than a guess.
 
 **The resolver.** `share/chat_resume.py` is the one place that answers "how do I reopen chat
 `<uuid>`": `resume_argv` reopens a chat as it was launched (the chat's own launcher outranks
-any ambient account) and `switch_argv` reopens it under an account he picked (that account's
-store decides the launcher, and a name in both stores — `com` is a claudeb profile AND a
-gateway login — stays the claudeb one, so no existing switch changes meaning). `bin/chats`,
+any ambient account) and `switch_argv` reopens it under an account he picked. The menu and resolver CLI select
+the target kind explicitly: `--gateway` means a gateway login, its absence a Claude
+profile; library callers without an explicit kind retain store-based selection, with
+a shared name such as `com` preferring the Claude profile. `bin/chats`,
 `bin/chat-find`, `bin/claude-chat-switch` and the `chat-switch-link` / `chat-link-format`
 hooks all call it instead of spelling a launcher; the Claude-model answer is byte for byte
 what those surfaces printed before. `claude-chat-switch --gateway <account>` is how the
 Hammerspoon menu's "Switch chat to this" on a **Codex** account row reaches this — the same
 item the Claude rows carry, same exit-and-relaunch handover, no hot switching.
+
+“Switch chat to this” also works from a bare Terminal shell: `claude-chat-switch`
+classifies one tty process snapshot and asks `chat_resume.py launch` for a fresh
+command in the shell’s cwd (falling back to HOME when cwd cannot be read). Existing
+chats use `switch` to keep the transcript; source kind comes from the wrapper or
+process account stamp, target kind from the clicked row. Hammerspoon only types the
+resolved launcher, with no fallback of its own: bare shells skip idle/exit/polling
+and the cd prefix, while chats wait for the outer gateway wrapper’s cleanup before
+relaunching. Failures name the detected mode. `--front --dry-run` prints mode, pids,
+cwd and command without arming Hammerspoon or typing. Cross-kind verification on
+2026-09-11 used real transcripts with `--resume`, `--fork-session`, print mode and
+session persistence disabled: gateway → Claude `com` returned `ok` (exit 0); Claude
+→ gateway `work4` / `sol` returned `ok` (exit 0) on confirmation with a minimal
+system prompt; its first successful run answered the old transcript context instead.
+Three short runs total. Both directions retain resume; neither needs a fresh-launch
+fallback.
 
 `bin/chats` lists gateway accounts in its ←→ account bar as `gpt:<name>`, with the share read
 from `vendors.codex` (the same store the statusline reads for a gateway chat), and its model

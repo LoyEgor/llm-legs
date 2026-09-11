@@ -248,18 +248,23 @@ gm_claims=$(claims_json gemini)
 gr_claims=$(claims_json grok)
 
 # A wall worker-run just watched, before llm-limits has caught up. Unexpired record → walled —
-# until a reading of that account newer than the record shows both windows open; then the
-# collector has caught up and the record lapses (an unparseable RESET falls back to now+3600,
+# until a reading of that account newer than the record shows EVERY window it records open; then
+# the collector has caught up and the record lapses (an unparseable RESET falls back to now+3600,
 # which outlives a real reset by up to an hour).
 limits_reading() {
   local vendor="$1" account="$2"
   [ -r "$LIMITS_FILE" ] || return 0
   case "$vendor" in claudeb) vendor=claude ;; esac
+  # Vendors carry different windows — grok records a weekly quota and no five-hour one — so the
+  # count is read off the account rather than fixed at two: demanding both left every grok wall
+  # in force until its fallback expiry.
   jq -r --arg v "$vendor" --arg a "$account" '
     .vendors[$v] | (.accounts // [.])[]? | select((.account // "main") == $a) |
-    [.five_hour, .weekly] | map(select(type == "object")) | select(length == 2) |
-    map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] | select(length == 2)) |
-    select(length == 2) | [(map(.[0]) | min), (map(.[1]) | max)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
+    ([.five_hour, .weekly] | map(select(type == "object")) | select(length > 0)) as $buckets |
+    ($buckets | map([(.as_of | numbers), ((.effective_pct // .used_pct) | numbers)] |
+                    select(length == 2))) |
+    select(length == ($buckets | length)) |
+    [(map(.[0]) | min), (map(.[1]) | max)] | @tsv' "$LIMITS_FILE" 2>/dev/null |
     head -n1
 }
 walls_json() {
@@ -290,12 +295,14 @@ clear_observed_pins() {
   done < <(worker_model_pins "$vendor" 2>/dev/null)
 }
 # The pin is workers-only, so only a workers query may spend one on a wall: a chat, research or
-# reviewers reading decides nothing about workers and must leave the file as it found it.
+# reviewers reading decides nothing about workers and must leave the file as it found it. A paused
+# vendor spends nothing either — pause blanks the in-memory pins only, deliberately keeping them
+# on disk for when it resumes.
 if [ "$query_role" = workers ]; then
-  clear_observed_pins claudeb
-  clear_observed_pins codex
-  clear_observed_pins gemini
-  clear_observed_pins grok
+  [ "$cb_paused" = true ] || clear_observed_pins claudeb
+  [ "$cx_paused" = true ] || clear_observed_pins codex
+  [ "$gm_paused" = true ] || clear_observed_pins gemini
+  [ "$gr_paused" = true ] || clear_observed_pins grok
 fi
 
 pins_json() {
@@ -771,8 +778,9 @@ summary=$(jq -r \
     .eligible = (.eligible and (.blocked | not)) |
     # Fable exhaustion never disqualifies ordinary work, so the fable bucket carries its own
     # candidacy: the account must be able to run Fable at all and have a measured fable window.
+    # A run-observed wall still counts here — it is the whole account that is out, not a bucket.
     .fable_pinnable = (.auth_ok and .fable_capable and (.fb | type) == "number" and
-                       (usage_walled(.fb) | not) and (excluded | not)) |
+                       (usage_walled(.fb) | not) and (.observed | not) and (excluded | not)) |
     .fable_ok = (.enabled and .fable_pinnable)]) as $cl_accounts |
   ($cl_accounts | map(select(.eligible)) | rank) as $cl_eligible |
   serving_pins($cl_accounts; $cb_pins) as $cb_pin_tier |

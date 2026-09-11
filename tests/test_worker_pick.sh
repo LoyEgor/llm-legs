@@ -346,6 +346,13 @@ query --account claudeb --fable --exclude session,tie-a,tie-b
 assert test "$query_rc" -eq 3
 assert grep -q 'no fable-capable account with a fable bucket below 100%' "$WORK/query.err"
 assert test 0 -eq "$(grep -c 'score' "$WORK/query.err")"
+# A run-observed wall is the whole ACCOUNT's, so it takes it out of the fable answer as well.
+printf '2000003600\n' >"$WALLS/claudeb-session"
+query --account claudeb --fable
+assert test "$query_out" = tie-a
+clear_walls
+query --account claudeb --fable
+assert test "$query_out" = session
 # The fable bucket is paced by the reset it carries, not the weekly one: equal fable percentages
 # with equal weeks still order by which fable window rolls over sooner.
 run_filter claude_pool '.vendors.claude.accounts = [
@@ -1712,6 +1719,37 @@ run_store wall-one-line-record
 assert contains "$(vsection claude)" 'session* opus·high WALLED'
 assert test -e "$WALLS/claudeb-session"
 clear_walls
+
+# The reading that lapses a record covers every window the account HAS, not a fixed pair: grok
+# measures weekly alone, and demanding a five-hour one too left its walls standing until reset.
+grok_read_store() {
+  jq -c --arg name golden --argjson as_of "$1" --argjson pct "$2" '.[$name] |
+    .vendors.grok = {available:true,accounts:[{account:"supergrok",enabled:true,
+      weekly:{used_pct:$pct,effective_pct:$pct,as_of:$as_of},auth:{status:"ok"}}]}' \
+    "$FIXTURES" >"$STORE" || fail 'grok wall fixture transform failed'
+}
+printf '2000003600\n2000000000\n' >"$WALLS/grok-supergrok"
+grok_read_store 1999999000 0
+run_store grok-wall-read-older
+assert contains "$(vsection grok)" 'WALLED'
+assert test -e "$WALLS/grok-supergrok"
+grok_read_store 2000000100 0
+run_store grok-wall-read-open
+assert not_contains "$(vsection grok)" 'WALLED'
+assert test ! -e "$WALLS/grok-supergrok"
+clear_walls
+
+# A paused vendor spends no pin: pause blanks the in-memory copy only, and the record on disk is
+# what the vendor comes back to.
+write_config 'claudeb_profile=session' 'claudeb_paused=on'
+printf '2000003600\n' >"$WALLS/claudeb-session"
+run_case claude_pool
+assert test "$(pinned_now)" = session
+write_config 'claudeb_profile=session'
+run_case claude_pool
+assert test -z "$(pinned_now)"
+clear_walls
+write_config
 
 # What the rows SAY is display; what they DECIDE is this table. Every fixture runs under the
 # default config and is pinned by the answer it produces — the `NEXT:` line plus the four machine

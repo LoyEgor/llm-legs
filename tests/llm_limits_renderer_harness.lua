@@ -627,6 +627,18 @@ switchModule.switchChatTo("com")
 assert(switchArgs and switchArgs[1] == "--front" and switchArgs[2] == "com",
   "a Claude row's switch stopped being a plain claudeb switch")
 
+local switchAlert, switchCallback
+local failingSwitch = loadModule(switchFixture, function(_, callback)
+  switchCallback = callback
+  return { start = function() return true end, setEnvironment = function() end }
+end, nil, function(message) switchAlert = message end)
+for _, mode in ipairs({ "bare_shell", "has_chat" }) do
+  failingSwitch.switchChatTo("com")
+  switchCallback(1, "", "claude-chat-switch: mode=" .. mode .. ": cannot build launcher")
+  assert(switchAlert:find(mode, 1, true) and switchAlert:find("cannot build launcher", 1, true),
+    "switch failure alert lost detected mode or cause")
+end
+
 local runningTask = {
   isRunning = function() return true end,
   start = function() return true end,

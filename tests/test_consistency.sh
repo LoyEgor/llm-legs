@@ -44,6 +44,17 @@ short_rows=$(awk '/^\| [0-9a-z]+ \|/ { line = $0; gsub(/\\\|/, "", line)
   n = gsub(/\|/, "|", line); if (n < 5) print substr($0, 1, 30) }' "$ROOT/$DOC")
 assert test -z "$short_rows"
 
+for cli in claudeb codexb; do
+  assert grep -qF '/share/account-status-tui.sh"' "$ROOT/bin/$cli"
+  assert test "$(grep -Ec '^(interactive_accounts|render_interactive_accounts|accounts_refresh_start)\(\)' "$ROOT/bin/$cli")" = 0
+  assert grep -q 'account_status_show' "$ROOT/bin/$cli"
+done
+for function in interactive_accounts render_interactive_accounts accounts_refresh_start; do
+  assert test "$(grep -c "^$function()" "$ROOT/share/account-status-tui.sh")" = 1
+done
+assert test "$(grep -c -- '--account .*--role chat' "$ROOT/share/account-status-tui.sh")" = 1
+assert doc_has '`share/account-status-tui.sh`'
+
 REPORT_BUS="$ROOT/bin/report-bus"
 REPORT_DOC="$ROOT/docs/report-bus.md"
 REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/stop.d/notice-run-consume.sh"
@@ -2411,6 +2422,7 @@ assert eq "$timer_calls" 'startTimerFor(\"$surface\", $minutes)
 startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")'
 assert eq "$(grep -c '^function ClaudeChatSwitch\.cancel(' "$SWITCH_LUA")" 1
 assert grep -Fq 'function ClaudeChatSwitch.cancel()' "$SWITCH_LUA"
+assert test "$(grep -Fc 'claudeb profile' "$SWITCH_LUA")" -eq 0
 assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)" '_G.ClaudeChatSwitch.cancel()'
 
 

@@ -2140,6 +2140,19 @@ accounts_picked=''
 assert test -z "$(render_interactive_accounts 0 name '' 2>/dev/null | awk '/^\*/ { print $2 }')"
 accounts_picked=beta
 
+(
+  claudeb_exec() { printf 'LAUNCH=%s\n' "$*"; }
+  for picker in "$CHAT_PICK" "$CHAT_PICK_NONE"; do
+    accounts_picked=$(CLAUDEB_WORKER_PICK="$picker" chat_account)
+    expected=beta
+    [ -n "$accounts_picked" ] || expected=alpha
+    out=$(interactive_accounts <<<$'\n'
+      maybe_launch_profile)
+    assert grep -qF "LAUNCH=$0 profile $expected" <<<"$out"
+    assert grep -qF $'\033[7m'"$([ "$expected" = beta ] && printf '*' || printf ' ') $expected" <<<"$out"
+  done
+) || exit 1
+
 sel_line=$(render_interactive_accounts 0 name beta 2>/dev/null | sed -n '4p')
 assert grep -qF $'\033[7m' <<<"$sel_line"
 plain_line=$(render_interactive_accounts 0 name '' 2>/dev/null | sed -n '4p')
@@ -2193,6 +2206,23 @@ EOF
   assert grep -q '^bb ' <<<"$out"
   assert_fails grep -q '\.claudeb' <<<"$out"
   assert_fails grep -q '\.junk' <<<"$out"
+  (
+    export HOME="$st_home" CLAUDEB_DIR="$st_store" PATH="$st_bin:$PATH"
+    export LLM_LIMITS_CACHE="$WORK/claudeb-tui.json" CLAUDEB_WORKER_PICK="$st_bin/pick"
+    jq -n --argjson now "$st_now" '{vendors:{claude:{accounts:[
+      {account:"aa",five_hour:{used_pct:12,as_of:$now}},
+      {account:"bb",five_hour:{used_pct:40,as_of:$now}}]}}}' >"$LLM_LIMITS_CACHE"
+    printf '#!/usr/bin/env bash\n[ "$*" = "--account claudeb --role chat" ] || exit 2\nprintf bb\n' >"$st_bin/pick"
+    printf '#!/usr/bin/env bash\nprintf "LAUNCHED=%%s\\n" "$CLAUDE_LIMITS_ACCOUNT"\n' >"$st_bin/claude"
+    chmod +x "$st_bin/pick" "$st_bin/claude"
+    tty_out=$(python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT") || fail "claudeb TTY Enter failed"
+    assert grep -qF $'\033[7m* bb' <<<"$tty_out"
+    assert grep -qF 'LAUNCHED=bb' <<<"$tty_out"
+    assert grep -qF '↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit' <<<"$tty_out"
+    tty_out=$(CLAUDEB_WORKER_PICK="$CHAT_PICK_NONE" python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT") || fail "claudeb TTY fallback failed"
+    assert grep -qF 'LAUNCHED=aa' <<<"$tty_out"
+    assert test ! -e "$net_log"
+  ) || exit 1
   acc_out=$(PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" accounts --no-spend) \
     || fail "accounts --no-spend failed"
   assert_fails grep -q '\.claudeb' <<<"$acc_out"

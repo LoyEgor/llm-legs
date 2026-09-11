@@ -1,18 +1,8 @@
 #!/usr/bin/env python3
-"""The one answer to "how do I reopen chat <uuid>", for every surface that offers it.
+"""Resolve fresh launches and transcript resumes for every chat surface.
 
-A chat launched through `claudegpt` runs on an OpenAI gateway account that lives in
-that launcher's own store, never under ~/.claude-profiles, and only
-`claudegpt p <account>` reaches it: `claudeb profile <account> --resume <uuid>` opens
-the same transcript on a Claude account and a Claude model, which is a different
-conversation. Two facts answer it — the stamp `bin/claudegpt` writes for every launch
-(`<claudegpt-home>/sessions/<uuid>`) and the `anthropic.ccr.*` model id the transcript
-itself carries — and every surface reads them through here instead of building a
-launcher line of its own.
-
-Two questions, kept apart because they have different answers: `resume_argv` reopens a
-chat as it was launched (the chat's own launcher wins over any ambient account), and
-`switch_argv` reopens it under an account the user picked (that account's store wins).
+Resume preserves the source account and model; switch follows the chosen target
+kind. Library callers without an explicit kind use account-store discovery.
 """
 
 import argparse
@@ -203,9 +193,16 @@ def switch_argv(session, account, model_id=None, gateway=None):
     if gateway is None:
         gateway = not is_claudeb_profile(account) and is_gateway_account(account)
     if gateway:
-        alias = gateway_alias(model_id) or (read_stamp(session) or {}).get("model") or None
+        alias = gateway_alias(model_id) or (model_id if model_id in GATEWAY_LABELS else None) \
+            or (read_stamp(session) or {}).get("model") or None
         return gateway_argv(account, session, alias)
     return claudeb_argv(account, session)
+
+
+def launch_argv(account, gateway=False, model=None):
+    if gateway:
+        return gateway_argv(account, None, gateway_alias(model) or model)
+    return claudeb_argv(account, None)
 
 
 def shell_quote(value):
@@ -229,13 +226,22 @@ def main(argv=None):
         if mode == "switch":
             one.add_argument("--gateway", action="store_true",
                              help="the account names a gateway login, not a claudeb profile")
+    launch = sub.add_parser("launch")
+    launch.add_argument("--account", required=True)
+    launch.add_argument("--gateway", action="store_true")
+    launch.add_argument("--model", choices=tuple(GATEWAY_LABELS))
     args = parser.parse_args(argv)
+    if args.mode == "launch":
+        if args.model and not args.gateway:
+            parser.error("launch --model requires --gateway")
+        print(resume_line(launch_argv(args.account, args.gateway, args.model)))
+        return 0
     session = args.session
     if args.mode == "switch":
         if not args.account:
             parser.error("switch needs --account")
         built = switch_argv(session, args.account, args.model,
-                            gateway=True if args.gateway else None)
+                            gateway=args.gateway)
     else:
         built = resume_argv(session, args.account, args.model)
     print(resume_line(built, args.cwd))

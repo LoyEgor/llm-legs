@@ -935,7 +935,7 @@ function M.switchChatTo(name, gateway)
     end
   end)
   if not ok then
-    hs.alert.show("Chat switch failed: could not start claude-chat-switch")
+    hs.alert.show("Chat switch failed (mode=unknown): could not start claude-chat-switch")
   end
 end
 

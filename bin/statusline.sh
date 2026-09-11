@@ -321,7 +321,7 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
   fi
 }
 
-review_session_line() { # session now [rendered toplevel]
+review_session_line() { # session now
   local sid="$1" now="$2"
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local cache="$statusline_cache_dir/review-autonomy-$sid"
