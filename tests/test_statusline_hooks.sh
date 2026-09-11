@@ -4875,17 +4875,17 @@ GATE_ANSWER=off
 # still verify — the pid, and the heartbeat that is the only thing separating a slow cell from a
 # wedge. A document with neither is one an older review-bench wrote and keeps the rule it shipped
 # with, unchanged.
-progress_doc() { # name pid tier done total state heartbeat-age [repo] [session] [started]
+progress_doc() { # name pid tier done total state heartbeat-age [repo] [session] [started] [failed]
   jq -cn --arg repo "${8:-$REVIEW_CLEAN}" --argjson pid "$2" --arg tier "$3" \
     --argjson done_cells "$4" --argjson total "$5" --arg state "$6" \
     --argjson heartbeat "$(progress_started "$7")" --arg session "${9:-}" \
-    --arg started "${10:-2026-07-27T22:00:00+00:00}" '
+    --arg started "${10:-2026-07-27T22:00:00+00:00}" --argjson failed "${11:-0}" '
     {repo:$repo, pid:$pid, run_id:"progress-state-fixture",
      tier:(if $tier == "" then null else $tier end), max:false, target:"abc1234",
      cells:[range($total) | "cell-\(.)"], done:[range($done_cells) | "cell-\(.)"],
-     failed:0, started:$started, ts:$started, state:$state, heartbeat_epoch:$heartbeat}
+     failed:$failed, started:$started, ts:$started, state:$state, heartbeat_epoch:$heartbeat}
     + (if $session == "" then {} else {session:$session} end)
-    + (if $state == "done" or $state == "failed" then {finished_epoch:$heartbeat} else {} end)' \
+    + (if $state == "done" or $state == "dead" then {finished_epoch:$heartbeat} else {} end)' \
     > "$PROGRESS_DIR/${progress_prefix}state-$1.json"
 }
 progress_doc_clear() { rm -f "$PROGRESS_DIR/${progress_prefix}state-"*.json; }
@@ -4906,18 +4906,23 @@ progress_state_wedged_out=$(progress_render state-running-wedged)
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 3/8?${RESET}" <<< "$progress_state_wedged_out"
 progress_doc_clear
 
-# Killed under the reader: the one ending nothing downstream will ever report, so it is red and it
-# stays until review-bench takes the document away.
-progress_doc running-killed 99999999 T2 3 8 running 0
+progress_doc running-killed 99999999 T2 3 8 running 0 "" review-progress-state-running-killed
 progress_state_killed_out=$(progress_render state-running-killed)
-assert grep -Fq " ${DIM}│${RESET} ${RED}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_killed_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 dead 3/8${RESET}" <<< "$progress_state_killed_out"
 progress_doc_clear
 
 # `dead` is the reaper's own word about a run whose pid is gone, and it outranks a live pid: the
 # document names the run, and a pid handed to something else says nothing about it.
-progress_doc dead "$$" T2 3 8 dead 0
+progress_doc dead "$$" T2 3 8 dead 0 "" review-progress-state-dead
 progress_state_dead_out=$(progress_render state-dead)
-assert grep -Fq " ${DIM}│${RESET} ${RED}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_dead_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 dead 3/8${RESET}" <<< "$progress_state_dead_out"
+progress_doc_clear
+progress_state_consumed_out=$(progress_render state-dead)
+assert review_slot_silent "$progress_state_consumed_out"
+
+progress_doc dead-unowned "$$" T2 3 8 dead 0
+progress_state_unowned_out=$(progress_render state-dead-unowned)
+assert review_slot_silent "$progress_state_unowned_out"
 progress_doc_clear
 
 progress_doc done "$$" T2 8 8 done 0
@@ -4930,9 +4935,9 @@ progress_state_done_old_out=$(progress_render state-done-old)
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✓ 8/8${RESET}" <<< "$progress_state_done_old_out"
 progress_doc_clear
 
-progress_doc failed "$$" T2 5 8 failed 0
-progress_state_failed_out=$(progress_render state-failed)
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✗ 5/8${RESET}" <<< "$progress_state_failed_out"
+progress_doc done-failed-cells 99999999 T0 5 9 done 0 "" "" "" 2
+progress_state_done_failed_out=$(progress_render state-done-failed-cells)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T0 ✓ 5/9${RESET}" <<< "$progress_state_done_failed_out"
 progress_doc_clear
 
 # The compatibility path, unchanged: a live pid renders bright, and the 2h wall still takes the
@@ -4980,16 +4985,22 @@ progress_state_wedged_over_done_out=$(progress_render state-class-wedged)
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 5/8?${RESET}" <<< "$progress_state_wedged_over_done_out"
 progress_doc_clear
 
-# Red is this chat's alarm and nobody else's: another chat's run that died under ITS reader is
-# still only background news here, so it keeps the dim a foreign run is given in every other state.
 progress_doc foreign-killed 99999999 T2 3 8 running 0 "" review-progress-another-chat
 progress_state_foreign_killed_out=$(progress_render state-foreign-killed)
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_foreign_killed_out"
-assert test "${progress_state_foreign_killed_out#*"${RED}rev"}" = "$progress_state_foreign_killed_out"
+assert review_slot_silent "$progress_state_foreign_killed_out"
 progress_doc_clear
 progress_doc foreign-dead "$$" T2 3 8 dead 0 "" review-progress-another-chat
 progress_state_foreign_dead_out=$(progress_render state-foreign-dead)
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 ✗ 3/8${RESET}" <<< "$progress_state_foreign_dead_out"
+assert review_slot_silent "$progress_state_foreign_dead_out"
+progress_doc_clear
+
+progress_doc foreign-dead-sibling "$$" T2 3 8 dead 0 "$PROGRESS_WT" review-progress-another-chat
+progress_state_foreign_dead_sibling_out=$(progress_render state-foreign-dead-sibling)
+assert review_slot_silent "$progress_state_foreign_dead_sibling_out"
+progress_doc own-beside-dead "$$" T2 2 8 running 0
+progress_state_beside_dead_out=$(progress_render state-beside-dead)
+assert grep -Fq " ${DIM}│${RESET} rev T2 2/8" <<< "$progress_state_beside_dead_out"
+assert test "${progress_state_beside_dead_out#*+1}" = "$progress_state_beside_dead_out"
 progress_doc_clear
 
 # The run that IS rendered is never also counted: another chat's run over this tree is still this

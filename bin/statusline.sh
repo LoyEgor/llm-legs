@@ -980,7 +980,7 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
               and (($now - $started_epoch) * 1000
                    > ([3 * $expected_ms, 120000] | max)))
         ] | length > 0) as $late
-      | (if (["running", "done", "failed", "dead"] | index($run.state)) != null
+      | (if (["running", "done", "dead"] | index($run.state)) != null
          then $run.state else "" end) as $state
       | (if (($run.heartbeat_epoch | type) == "number"
                  and ($run.heartbeat_epoch | floor) == $run.heartbeat_epoch
@@ -1017,7 +1017,7 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
         [ "$progress_start" -le "$((progress_mtime + 5))" ] || continue
         progress_run_class=live ;;
       running)
-        progress_run_class=killed
+        progress_run_class=dead
         if kill -0 "$progress_pid" 2>/dev/null &&
           progress_start=$(process_start_epoch "$progress_pid" "$now") &&
           [ "$progress_start" -le "$((progress_mtime + 5))" ]; then
@@ -1032,11 +1032,14 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
             progress_run_class=wedged
           fi
         fi ;;
-      dead) progress_run_class=killed ;;
+      dead) progress_run_class=dead ;;
       done) progress_run_class=done ;;
-      failed) progress_run_class=failed ;;
     esac
-    # Lateness is a statement about a run still working; a finished, wedged or killed one carries
+    if [ "$progress_run_class" = dead ]; then
+      [ -n "$session_id" ] && [ -n "$progress_run_session" ] &&
+        [ "${progress_run_session//[^A-Za-z0-9_-]/}" = "$session_id" ] || continue
+    fi
+    # Lateness is a statement about a run still working; a finished, wedged or dead one carries
     # its own mark and nothing else may repaint it.
     [ "$progress_run_class" = live ] || progress_run_late=""
     # The tree the run is over, and a subdirectory it was started from still resolves to it. A
@@ -1207,21 +1210,14 @@ if [ -n "$progress_total" ]; then
     progress_label="${progress_label} ${progress_tier}"
     [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
   fi
-  # A run that stopped keeps its counter and gains the mark that says how it stopped: the numbers
-  # are the result the chat has not consumed yet, and blanking them here would hide a review that
-  # ran. Red is the run that was killed under the reader — the one state nothing downstream will
-  # ever report — while a done or failed panel is news that has already happened, hence dim.
   case "$progress_class" in
     done) progress_label="${progress_label} ✓" ;;
-    failed|killed) progress_label="${progress_label} ✗" ;;
+    dead) progress_label="${progress_label} dead" ;;
   esac
   progress_label="${progress_label} ${progress_done}/${progress_total}"
   [ "$progress_class" = wedged ] && progress_label="${progress_label}?"
-  # Red is this chat's alarm and nobody else's: a foreign run keeps the dim it was given above in
-  # EVERY state, a run killed under another reader included — it is not this chat's to answer.
   case "$progress_class" in
-    killed) [ "$progress_foreign" = 1 ] || progress_color="$RED" ;;
-    done|failed|wedged) progress_color="$DIM" ;;
+    done|dead|wedged) progress_color="$DIM" ;;
     *) [ -z "$progress_color" ] && [ -n "$progress_late" ] && progress_color="$RED" ;;
   esac
 fi
