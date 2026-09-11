@@ -3891,9 +3891,9 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38
   <<< "$research_seeded_out" >/dev/null
 
 # image-gen is a relay too, so its row is tagged like the workers': `<account> · image · <vendor>`,
-# vendor from the brief's VENDOR: line (codex by default) and account ONLY from a pin in the brief
-# — an `ACCOUNT:` line or an `--account` on the launch line. The scripts route themselves a second
-# later on their own state, so any other guess names an account the run may never spend.
+# vendor from the brief's VENDOR: line (codex by default), account from a pin in the brief — an
+# `ACCOUNT:` line or an `--account` on the launch line — else the router's `--role image` answer,
+# else the word `pool`; never `?`. A FANOUT: brief is `<all|pool> · image · fanout`.
 image_spawn() { # session prompt [worker-pick]
   jq -cn --arg session "$1" --arg prompt "$2" '{
     hook_event_name:"PreToolUse",session_id:$session,
@@ -3905,17 +3905,23 @@ printf '#!/usr/bin/env bash\n[ "$1" = --account ] || exit 1\ncase "$2" in codex)
   > "$IMAGE_PICK"
 chmod +x "$IMAGE_PICK"
 
-# Unpinned, router answering or not: `?` is the honest first segment either way, and the tag keeps
-# its shape so the renderer still colours the row. What the script picks is the script's to say.
+# Unpinned: the router's `--role image` answer is the prediction, and the tag keeps its shape so
+# the renderer still colours the row.
 image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "? · image · codex: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · image · codex: Draw the icon"' \
   <<< "$image_routed" >/dev/null
-assert_eq '? · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-routed/pending-image-gen")"
+assert_eq 'cxroute · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-routed/pending-image-gen")"
 
 image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "? · image · gemini: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · image · gemini: Draw the icon"' \
   <<< "$image_vendor" >/dev/null
-assert_eq '? · image · gemini' "$(cat "$HOME/.cache/claude-worker-tags/img-vendor/pending-image-gen")"
+assert_eq 'gmroute · image · gemini' "$(cat "$HOME/.cache/claude-worker-tags/img-vendor/pending-image-gen")"
+
+# A fan-out spends every vendor: the vendor slot says so, the account slot says how many accounts.
+image_fanout=$(image_spawn img-fanout $'FANOUT: all\nACCOUNTS: all\nDraw a cat.' "$IMAGE_PICK")
+assert_eq 'all · image · fanout' "$(cat "$HOME/.cache/claude-worker-tags/img-fanout/pending-image-gen")"
+image_fanout_pick=$(image_spawn img-fanout-pick $'FANOUT: codex|grok\nACCOUNTS: pick\nDraw a cat.' "$IMAGE_PICK")
+assert_eq 'pool · image · fanout' "$(cat "$HOME/.cache/claude-worker-tags/img-fanout-pick/pending-image-gen")"
 
 # The brief's own ACCOUNT: line is the pin the script will be given, so it is the one prediction
 # this hook may make — and `--account` on the launch line spelled in the brief is the same pin.
@@ -3928,8 +3934,11 @@ image_flag=$(image_spawn img-flag \
   $'VENDOR: codex\nRun codex-image --account alt2 --dest /tmp/a.png --prompt "a cat"' "$IMAGE_PICK")
 assert_eq 'alt2 · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-flag/pending-image-gen")"
 
-image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.')
-assert_eq '? · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-unknown/pending-image-gen")"
+# Router silent (exit 3 for grok in the fake) or absent: `pool` — the script will pick from it.
+image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
+assert_eq 'pool · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-unknown/pending-image-gen")"
+image_nopick=$(image_spawn img-nopick $'VENDOR: grok\nDraw a cat.')
+assert_eq 'pool · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-nopick/pending-image-gen")"
 
 # An image brief edits no instruction file, so the MD guard is not injected into it.
 assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' \

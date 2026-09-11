@@ -98,18 +98,26 @@ elif [ "$subagent" = grok-worker ]; then
   if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
 elif [ "$subagent" = image-gen ]; then
   # An image run has no model or effort knob, so the middle segment is the word `image` and the
-  # third is the vendor whose quota it spends — the same shape the renderer already reads.
-  vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
-    grep -oE '(codex|gemini|grok)$')
-  [ -n "$vendor" ] || vendor=codex
-  # The scripts route themselves, so only a PIN is a prediction: an `ACCOUNT:` line or an
-  # `--account` on the launch line names the account the run must spend, and anything else — a
-  # worker-pick answer, the toggle's profile — is this hook's guess about a choice the script makes
-  # a second later on its own state. A row naming an account the run never touched is worse than
-  # one that says nobody knows yet.
-  acct=$(brief_line ACCOUNT)
-  [ -n "$acct" ] || acct=$(flag_account)
-  [ -n "$acct" ] || acct='?'
+  # third is the vendor whose quota it spends; a `FANOUT:` brief spends every vendor at once.
+  fanout=$(printf '%s' "$prompt" | grep -m1 -oE '^FANOUT:[[:space:]]*[A-Za-z,|]+' || true)
+  if [ -n "$fanout" ]; then
+    vendor=fanout
+    acct=$(printf '%s' "$prompt" | grep -m1 -oE '^ACCOUNTS:[[:space:]]*(all|pick)' | grep -oE '(all|pick)$')
+    [ "$acct" = pick ] && acct=pool
+    [ -n "$acct" ] || acct=all
+  else
+    vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
+      grep -oE '(codex|gemini|grok)$')
+    [ -n "$vendor" ] || vendor=codex
+    # A pin — an `ACCOUNT:` line or `--account` on the launch line — is the account for sure. Without
+    # one the row predicts the router's `--role image` answer, as the research row does: the script
+    # asks the same router a second later, so the two differ only under a race, and a row that
+    # says `?` tells Egor nothing (2026-09-11).
+    acct=$(brief_line ACCOUNT)
+    [ -n "$acct" ] || acct=$(flag_account)
+    [ -n "$acct" ] || acct=$(route_account "$vendor" --role image)
+    [ -n "$acct" ] || acct=pool
+  fi
   prefix="$acct · image · $vendor"
 elif [ "$subagent" = gemini-research ]; then
   # The launcher hardcodes `--model gemini-3.8-flash-high`: model and effort are fixed words here,

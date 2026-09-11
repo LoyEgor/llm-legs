@@ -56,8 +56,11 @@ image_name=${image_path##*/}
 printf '%s\n' '{"type":"tool_call","toolCallId":"call-895c6af1-3625-4f14-9c9c-69ed9576ca08-2","title":"image_gen","kind":"image_gen","status":"pending","toolName":"image_gen","rawInput":{"prompt":"A perfectly centered flat solid red circle on a pure white background. Simple geometric shape, no shading, no gradients, no outlines, no texture, no shadows. The circle is a uniform bright red (#FF0000) filled disk, occupying most of the square canvas with a small white margin around it. Clean vector-like flat design, minimal, exact geometry.","aspect_ratio":"1:1"},"content":[],"locations":[]}'
 printf '%s\n' '{"type":"tool_call_update","toolCallId":"call-895c6af1-3625-4f14-9c9c-69ed9576ca08-2","status":null,"content":[],"rawOutput":null,"locations":[]}'
 content_text=$(jq -cn --arg path "$image_path" --arg filename "$image_name" '{path:$path,filename:$filename,session_folder:"images",message:("Image generated and saved to " + $path + ". Do not read or re-display it, and do not describe how it appears to the user.")}')
-jq -cn --arg path "$image_path" --arg filename "$image_name" --arg text "$content_text" '{type:"tool_call_update",toolCallId:"call-895c6af1-3625-4f14-9c9c-69ed9576ca08-2",status:"completed",content:[{type:"content",content:{type:"text",text:$text}}],rawOutput:{type:"ImageGen",path:$path,filename:$filename,session_folder:"images"},locations:[]}'
+# image_gen and image_edit are separate ToolOutput variants in the CLI, so the tag a run answers
+# with follows the tool it was allowed to call.
+output_type=${FAKE_GROKB_OUTPUT_TYPE:-ImageGen}
+jq -cn --arg path "$image_path" --arg filename "$image_name" --arg text "$content_text" --arg type "$output_type" '{type:"tool_call_update",toolCallId:"call-895c6af1-3625-4f14-9c9c-69ed9576ca08-2",status:"completed",content:[{type:"content",content:{type:"text",text:$text}}],rawOutput:{type:$type,path:$path,filename:$filename,session_folder:"images"},locations:[]}'
 printf '%s\n' '{"type":"max_turns_reached"}'
-printf '%s\n' '{"type":"end","stopReason":"cancelled","sessionId":"fixture-session","requestId":"fixture-request","usage":{"input_tokens":11662,"cache_read_input_tokens":34688,"cache_creation_input_tokens":0,"output_tokens":2388,"reasoning_tokens":1996,"total_tokens":48738},"num_turns":4}'
+jq -cn --arg session "${FAKE_GROKB_SESSION_ID:-01a058dd-9d01-7ee3-8e4a-fdfda5426483}" '{type:"end",stopReason:"cancelled",sessionId:$session,requestId:"fixture-request",usage:{input_tokens:11662,cache_read_input_tokens:34688,cache_creation_input_tokens:0,output_tokens:2388,reasoning_tokens:1996,total_tokens:48738},num_turns:4}'
 printf 'Error: max turns reached\n' >&2
 exit 1

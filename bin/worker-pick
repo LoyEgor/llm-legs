@@ -21,7 +21,7 @@ query_role_given=false
 query_fable=false
 query_claim=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research] [--fable] [--claim]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image] [--fable] [--claim]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -46,7 +46,7 @@ while [ "$#" -gt 0 ]; do
       query_role="$2"
       query_role_given=true
       case "$query_role" in
-        workers|reviewers|chat|research) ;;
+        workers|reviewers|chat|research|image) ;;
         *) printf 'worker-pick: unknown role %s\n' "$query_role" >&2; usage ;;
       esac
       shift 2
@@ -187,9 +187,11 @@ gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
 # workers wall cannot be decided here — whether the pin serves is only known once selection ran.
 role_off() { [ "$(conf "$1_$2")" = off ]; }
 query_role_wall=false
-# `chat` and `research` have no role wall of their own — the pool toggle is the only gate — so no
-# corresponding key is ever read, and a workers/reviewers closure says nothing about either role.
+# `chat`, `research` and `image` have no `<vendor>_<role>` key. `image` also ignores
+# `<vendor>_workers=off` and the pin: a picture is not code work, so image = pool + login + not
+# walled, ordered by free budget (Egor, 2026-09-11). Walls, pool and login still apply.
 if [ -n "$query_vendor" ] && [ "$query_role" != chat ] && [ "$query_role" != research ] &&
+   [ "$query_role" != image ] &&
    role_off "$query_vendor" "$query_role"; then
   if [ "$query_role" = workers ]; then
     query_role_wall=true
@@ -198,9 +200,9 @@ if [ -n "$query_vendor" ] && [ "$query_role" != chat ] && [ "$query_role" != res
     exit 3
   fi
 fi
-# The pin is Egor's override for workers only. A rater or a chat handed it would spend an account
-# he aimed at implementation, so those queries are answered by the pool alone and the pinned
-# account stands in them as an ordinary candidate.
+# The pin is Egor's override for workers alone. A rater, a chat or an image run handed it would
+# spend an account he aimed at implementation, so those queries are answered by the pool alone
+# and the pinned account stands in them as an ordinary candidate.
 # The table is the workers view, and a vendor closed for that role is not a candidate in it: the
 # flags are read here so selection, ordering and the ALL WALLED verdict are all decided without
 # it, the way a deliberately empty pool is.
@@ -311,7 +313,7 @@ gr_pins=$(pins_json grok)
 [ "$gm_paused" = false ] || gm_pins='[]'
 [ "$gr_paused" = false ] || gr_pins='[]'
 case "$query_role" in
-  reviewers|chat|research) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
+  reviewers|chat|research|image) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
 esac
 cb_pin=$(jq -r '.[0] // empty' <<<"$cb_pins")
 cx_pin=$(jq -r '.[0] // empty' <<<"$cx_pins")

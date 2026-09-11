@@ -1,0 +1,13 @@
+{
+  "vendor": "codex",
+  "verified": "2026-09-11",
+  "cli": {"name": "codex", "version": "0.153.4", "version_args": ["--version"]},
+  "model": {"image": "gpt-image-2", "video": null},
+  "refs": {"max": 5, "verified_max": false},
+  "aspects": null,
+  "exact_size": false,
+  "transparent": "native+chroma",
+  "resume": {"flag": "--resume", "id_source": "thread.started thread_id on codex exec --experimental-json"},
+  "video": null,
+  "unsupported": ["aspect", "mask", "n", "quality", "size", "transparency argument", "video"]
+}

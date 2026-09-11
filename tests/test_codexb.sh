@@ -678,6 +678,13 @@ done
 
 cat >"$IMAGE_BIN/codex" <<'EOF'
 #!/usr/bin/env bash
+# The caps check asks the live CLI for its version, and it must not be mistaken for a generation:
+# recorded in IMAGE_CALLS it would answer the argv assertions below, and falling through to the
+# generating branch it would block on a stdin nobody is writing.
+if [ "${1-}" = --version ]; then
+  printf 'codex-cli %s\n' "${IMAGE_CAPS_VERSION:-0.0.0}"
+  exit 0
+fi
 account=main
 [ -z "${CODEX_HOME+x}" ] || account=$(basename "$CODEX_HOME")
 printf 'account=%s home=%s\n' "$account" "${CODEX_HOME-<unset>}" >>"$IMAGE_CALLS"
@@ -732,6 +739,9 @@ cat >"$IMAGE_BIN/magick" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$IMAGE_MAGICK_CALLS"
 case "$*" in
+  # No alpha channel, which is what the built-in tool answers whenever it cannot honour the
+  # transparency request — the branch the chroma assertions below are about.
+  'identify -format %A '*) printf 'Undefined'; exit 0 ;;
   *-format*info:) printf 'srgb(7,246,5)'; exit 0 ;;
 esac
 for output in "$@"; do :; done
@@ -777,11 +787,19 @@ assert test "$image_rc" -eq 2
 assert grep -q 'requires a .png destination' "$IMAGE_ERR"
 
 printf 'reference\n' >"$WORK/reference.jpg"
+# One over the cap the manifest states, never a literal of this suite's own: the imagegen tool
+# refuses the call itself, so the whole generation would be spent to be told so.
+IMAGE_REF_MAX=$(jq -r '.refs.max' "$ROOT/share/image-caps/codex.json")
+IMAGE_CAPS_VERSION=$(jq -r '.cli.version' "$ROOT/share/image-caps/codex.json")
+export IMAGE_CAPS_VERSION
+image_refs=()
+for image_ref_index in $(seq 1 $((IMAGE_REF_MAX + 1))); do
+  image_refs+=(--ref "$WORK/reference.jpg")
+done
 image_rc=0
-image_run --dest "$WORK/image-output/refs.jpg" --prompt badge \
-  --ref "$WORK/reference.jpg" --ref "$WORK/reference.jpg" \
-  --ref "$WORK/reference.jpg" --ref "$WORK/reference.jpg" || image_rc=$?
+image_run --dest "$WORK/image-output/refs.jpg" --prompt badge "${image_refs[@]}" || image_rc=$?
 assert test "$image_rc" -eq 2
+assert grep -q "references exceed the $IMAGE_REF_MAX" "$IMAGE_ERR"
 : >"$IMAGE_CALLS"
 : >"$IMAGE_PICK_CALLS"
 assert image_run --dest "$WORK/image-output/explicit.jpg" --prompt 'simple badge' \
@@ -824,7 +842,11 @@ assert image_run --dest "$WORK/image-output/alpha.png" \
   --transparent --account explicit
 assert grep -q '#00FF00' "$IMAGE_PROMPT"
 assert grep -q 'transparency effects' "$IMAGE_PROMPT"
-assert_fails grep -Eqi '(^|[^[:alnum:]_])transparent([^[:alnum:]_]|$)' "$IMAGE_PROMPT"
+# Unlike the chroma-only legs, this one leaves the caller's wording alone: the built-in tool can
+# return real alpha, and the word names the very thing it is being asked for. The green is the
+# ORDERED fallback for the answer that comes back opaque anyway, which is this run.
+assert grep -Eqi '(^|[^[:alnum:]_])transparent([^[:alnum:]_]|$)' "$IMAGE_PROMPT"
+assert grep -q 'genuinely transparent background' "$IMAGE_PROMPT"
 assert grep -qF -- "-format %[pixel:p{2,2}] info:" "$IMAGE_MAGICK_CALLS"
 assert grep -q -- "-alpha extract -morphology EdgeIn Octagon:2 .*/edge.png" "$IMAGE_MAGICK_CALLS"
 assert grep -qF -- "-channel G -fx min(g,max(r,b)) +channel" "$IMAGE_MAGICK_CALLS"
@@ -848,7 +870,7 @@ IMAGE_PICK_MODE=ok
 IMAGE_PICK_ACCOUNT=picked
 export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
-assert grep -qx -- '--account codex' "$IMAGE_PICK_CALLS"
+assert grep -qx -- '--account codex --role image' "$IMAGE_PICK_CALLS"
 assert_fails grep -q -- '--claim' "$IMAGE_PICK_CALLS"
 assert test -e "$IMAGE_CLAIMS/codex/picked"
 assert grep -qx "account=picked home=$WORK/image-profiles/picked" "$IMAGE_CALLS"

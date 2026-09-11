@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: gemini-image --dest <absolute path> --prompt <description> [--aspect <1:1|2:3|3:2|3:4|4:3|9:16|16:9>] [--ref <absolute image path>]... [--transparent] [--account <profile>]\n' >&2
+  printf 'usage: gemini-image --dest <absolute path> --prompt <description> [--aspect <%s>] [--ref <absolute image path>]... [--transparent] [--account <profile>] [--resume <conversation-id> --account <profile>]\n' "$aspect_choices" >&2
   exit 2
 }
 
@@ -31,10 +31,15 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 
+root=$(resolve_root)
+. "$root/share/image-caps.sh"
+aspect_choices=$(image_caps_get "$root" gemini '.aspects.generate | join("|")')
 dest=''
 prompt=''
-aspect='1:1'
+aspect=$(image_caps_get "$root" gemini '.aspects.default')
+aspect_given=false
 account=''
+resume=''
 remove_green=false
 refs=()
 
@@ -53,6 +58,7 @@ while [ "$#" -gt 0 ]; do
     --aspect)
       [ "$#" -ge 2 ] || usage
       aspect=$2
+      aspect_given=true
       shift 2
       ;;
     --ref)
@@ -67,6 +73,11 @@ while [ "$#" -gt 0 ]; do
     --account)
       [ "$#" -ge 2 ] || usage
       account=$2
+      shift 2
+      ;;
+    --resume)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+      resume=$2
       shift 2
       ;;
     *) usage ;;
@@ -91,12 +102,20 @@ command -v magick >/dev/null 2>&1 || {
   printf 'gemini-image: magick is required for this output\n' >&2
   exit 1
 }
-case "$aspect" in
-  1:1|2:3|3:2|3:4|4:3|9:16|16:9) ;;
-  *) usage ;;
-esac
 ref_count=${#refs[@]}
-[ "$ref_count" -le 3 ] || usage
+aspect_kind=generate
+[ "$ref_count" -eq 0 ] && [ -z "$resume" ] || aspect_kind=edit
+# A resumed turn with no --aspect names none: the manifest default is 1:1, and sending it
+# repainted a 16:9 result square (live, 2026-09-11); the conversation keeps its own ratio.
+[ -z "$resume" ] || [ "$aspect_given" = true ] || aspect=''
+[ -z "$aspect" ] || jq -e --arg aspect "$aspect" --arg kind "$aspect_kind" \
+  '.aspects[$kind] | index($aspect) != null' "$(image_caps_file "$root" gemini)" >/dev/null || usage
+ref_max=$(image_caps_get "$root" gemini '.refs.max')
+[ "$ref_max" = null ] || [ "$ref_count" -le "$ref_max" ] || usage
+if [ "$remove_green" = true ] && [ "$(image_caps_get "$root" gemini '.transparent')" != chroma ]; then
+  printf 'gemini-image: unsupported manifest transparency mode\n' >&2
+  exit 1
+fi
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
     [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
@@ -105,21 +124,28 @@ fi
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
   usage
 fi
+if [ -n "$resume" ]; then
+  [[ "$resume" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || usage
+  if [ -z "$account" ]; then
+    printf 'gemini-image: --resume requires --account from the original run\n' >&2
+    exit 2
+  fi
+fi
 
 base_home=$HOME
-root=$(resolve_root)
 . "$root/share/image-chroma.sh"
 gemini_base_home=$base_home
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$base_home/.gemini-profiles}"
 . "$root/share/gemini-accounts.sh"
 . "$root/share/worker-model.sh"
+. "$root/share/worker-pool.sh"
 . "$root/share/worker-claims.sh"
 
 picked=false
 if [ -z "$account" ]; then
   pick_rc=0
   if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account gemini 2>/dev/null) || pick_rc=$?
+    account=$(worker-pick --account gemini --role image 2>/dev/null) || pick_rc=$?
   else
     pick_rc=127
   fi
@@ -145,12 +171,18 @@ if ! grep -Fqx -- "$account" <<<"$(gemini_account_names)"; then
   printf 'gemini-image: unknown account: %s\n' "$account" >&2
   exit 1
 fi
+worker_pool_refuse_headless gemini "$account" "$(worker_model_pin_csv < <(worker_model_pins gemini))" || exit 4
 if [ "$picked" = true ] && ! worker_claims_record gemini "$account"; then
   printf 'gemini-image: could not record the claim on %s\n' "$account" >&2
 fi
 
 profile_home=$(gemini_account_home "$account")
 brain_dir="$profile_home/.gemini/antigravity-cli/brain"
+conversations_dir="$profile_home/.gemini/antigravity-cli/conversations"
+if [ -n "$resume" ] && [ ! -f "$conversations_dir/$resume.db" ]; then
+  printf 'gemini-image: conversation not found in account %s\n' "$account" >&2
+  exit 2
+fi
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-image.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
 launch_marker="$tmp_dir/launch"
@@ -164,6 +196,9 @@ fi
 
 if [ "$ref_count" -eq 0 ]; then
   image_paths='Omit ImagePaths.'
+  if [ -n "$resume" ]; then
+    image_paths='Use the last generated image from this conversation as ImagePaths; apply the edit instructions to it.'
+  fi
 else
   image_paths='ImagePaths:'
   for ref in "${refs[@]}"; do
@@ -173,13 +208,13 @@ else
 fi
 # Unique per invocation: the fallback search below keys on it, and concurrent
 # generations on one account share a single brain directory.
-image_name="gemini-image-$$-$(date +%s)"
+image_name="gemini_image$$_$(date +%s)"
 instruction="Generate one image with this content:
 $content
 
 Call generate_image exactly once with these parameters:
 ImageName: $image_name
-AspectRatio: $aspect
+${aspect:+AspectRatio: $aspect}
 $image_paths
 If that call fails with a quota error, do NOT wait or retry: reply with the single word QUOTA.
 Reply with ONLY the absolute path of the generated file on the last line."
@@ -188,25 +223,54 @@ Reply with ONLY the absolute path of the generated file on the last line."
 : >"$launch_marker"
 touch -A -01 "$launch_marker" 2>/dev/null || true
 generation_rc=0
+resume_args=()
+if [ -n "$resume" ]; then
+  resume_args+=("$(image_caps_get "$root" gemini '.resume.flag')" "$resume")
+fi
 geminib profile "$account" --model gemini-3.6-flash-low --print-timeout 180s \
-  --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" >"$stdout_file" || generation_rc=$?
+  ${resume_args[@]+"${resume_args[@]}"} --output-format stream-json \
+  --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" \
+  >"$stdout_file" 2>"$tmp_dir/stderr" || generation_rc=$?
+events_file="$tmp_dir/events.json"
+jq -Rn '[inputs | fromjson? | select(type == "object")]' "$stdout_file" >"$events_file"
+session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id // empty] | last) //
+  ([.[] | select(.event == "init") | .conversation_id // empty] | last) // "none"' "$events_file")
+response=$(jq -r '[.[] | select(.event == "result") | .result.response // empty] | last // ""' "$events_file")
+jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) |
+  .. | strings' "$events_file" >"$tmp_dir/errors"
 # The image model has its own per-account quota, invisible in the chat-model quota table.
-if [ "$(tail -n 1 "$stdout_file" | tr -d '\r')" = QUOTA ]; then
+if [ "$generation_rc" -eq 3 ] || [ "$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')" = QUOTA ] ||
+   grep -Eq '^QUOTA[[:space:]]*$' "$stdout_file" ||
+   grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' "$tmp_dir/errors"; then
   printf 'GEMINI_USAGE_LIMIT\n' >&2
   exit 3
 fi
 if [ "$generation_rc" -ne 0 ]; then
-  if grep -Eqi 'RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|rate limit' \
-      "$stdout_file" "$log_file" 2>/dev/null; then
+  if grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' \
+      "$stdout_file" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
     printf 'GEMINI_USAGE_LIMIT\n' >&2
     exit 3
   fi
+  if grep -Eqi 'out of the worker pool|treating every account as out of the pool' \
+      "$stdout_file" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
+    printf 'gemini-image: account refused by the worker pool\n' >&2
+    exit 4
+  fi
   printf 'gemini-image: generation failed\n' >&2
-  tail -n 20 "$stdout_file" >&2
+  tail -n 20 "$tmp_dir/stderr" >&2
   exit 1
 fi
 
-generated=$(tail -n 1 "$stdout_file" | tr -d '\r')
+generated=''
+while IFS= read -r candidate; do
+  if [[ "$candidate" = /* ]] && [ -f "$candidate" ] && [ ! "$candidate" -ot "$launch_marker" ]; then
+    generated=$candidate
+  fi
+done < <(jq -r '.[] | select(.event == "step_update") | .step_update |
+  select(.state == "DONE" and .tool_name == "generate_image") | .tool_info.output // empty |
+  select(type == "string") | split("\n")[] |
+  select(startswith("Generated image is saved at ")) | ltrimstr("Generated image is saved at ") | rtrimstr(".")' "$events_file")
+[ -n "$generated" ] || generated=$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')
 if [[ "$generated" != /* ]] || [ ! -f "$generated" ] || [ "$generated" -ot "$launch_marker" ]; then
   generated=''
 fi
@@ -242,3 +306,74 @@ format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
   exit 1
 }
 printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"
+printf 'session=%s\n' "$session"
+observed_model=''
+# The stream's init.model is the chat model. Image provenance lives in the saved tool step.
+if [[ "$session" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] && [ -f "$conversations_dir/$session.db" ] && command -v python3 >/dev/null 2>&1; then
+  observed_model=$(python3 - "$conversations_dir/$session.db" "$generated" <<'PY' || true
+import pathlib
+import sqlite3
+import sys
+
+def varint(data, offset):
+    value = 0
+    for shift in range(0, 70, 7):
+        byte = data[offset]
+        offset += 1
+        value |= (byte & 127) << shift
+        if not byte & 128:
+            return value, offset
+    raise ValueError("invalid varint")
+
+def fields(data):
+    offset = 0
+    while offset < len(data):
+        tag, offset = varint(data, offset)
+        wire = tag & 7
+        if wire == 0:
+            _, offset = varint(data, offset)
+        elif wire in (1, 5):
+            offset += 8 if wire == 1 else 4
+        elif wire == 2:
+            length, offset = varint(data, offset)
+            end = offset + length
+            if end > len(data):
+                raise ValueError("truncated field")
+            yield tag >> 3, data[offset:end]
+            offset = end
+        else:
+            raise ValueError("unsupported wire type")
+
+def image_model(data, uri, depth=0):
+    if depth > 10:
+        return None
+    try:
+        for number, value in fields(data):
+            if number == 104:
+                image = dict(fields(value))
+                media = dict(fields(image.get(6, b"")))
+                if media.get(5) == uri:
+                    return image.get(5, b"").decode()
+            found = image_model(value, uri, depth + 1)
+            if found:
+                return found
+    except (ValueError, IndexError, UnicodeError):
+        pass
+    return None
+
+try:
+    uri = ("file://" + sys.argv[2]).encode()
+    with sqlite3.connect(pathlib.Path(sys.argv[1]).as_uri() + "?mode=ro", uri=True) as db:
+        for (payload,) in db.execute("SELECT step_payload FROM steps ORDER BY idx DESC"):
+            if payload and uri in payload:
+                model = image_model(payload, uri)
+                if model and all(c.isalnum() or c in "-._" for c in model):
+                    print(model)
+                    break
+except (sqlite3.Error, OSError):
+    pass
+PY
+  )
+fi
+image_caps_model_check "$root" gemini image "$observed_model"
+image_caps_check "$root" gemini "${AGY_BIN:-$base_home/.local/bin/agy}"

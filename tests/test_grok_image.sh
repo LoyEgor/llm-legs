@@ -52,6 +52,12 @@ esac
 EOF
 chmod +x "$FAKE_BIN/worker-pick"
 
+cat >"$FAKE_BIN/grok" <<'EOF'
+#!/usr/bin/env bash
+printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.13}"
+EOF
+chmod +x "$FAKE_BIN/grok"
+
 cat >"$FAKE_BIN/magick" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$MAGICK_CALLS"
@@ -64,12 +70,18 @@ IMAGE_ERR="$WORK/image.err"
 GROK_PROFILES="$WORK/grok-profiles"
 mkdir -p "$GROK_PROFILES/explicit" "$GROK_PROFILES/picked"
 CLAIMS_DIR="$WORK/worker-claims"
+MAIN_GROK_HOME="$WORK/grok-main"
+SESSION_UUID=01a058dd-9d01-7ee3-8e4a-fdfda5426483
 image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" \
     GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
+    GROKB_GROK_BIN="${GROKB_GROK_BIN:-$FAKE_BIN/grok}" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
+    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.13}" \
     GROK_IMAGE_GROKB="$FIXTURE" GROK_IMAGE_WORKER_PICK="$FAKE_BIN/worker-pick" \
     FAKE_GROKB_MODE="${FAKE_GROKB_MODE:-image}" PICK_MODE="${PICK_MODE:-ok}" \
     PICK_ACCOUNT="${PICK_ACCOUNT:-picked}" FAKE_GROKB_IMAGE_FORMAT="${FAKE_GROKB_IMAGE_FORMAT:-jpg}" \
+    FAKE_GROKB_OUTPUT_TYPE="${FAKE_GROKB_OUTPUT_TYPE:-ImageGen}" \
+    FAKE_GROKB_SESSION_ID="${FAKE_GROKB_SESSION_ID:-$SESSION_UUID}" \
     bash "$SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
 
@@ -96,12 +108,17 @@ image_rc=0
 image_run --dest "$OUTPUT_DIR/flat.jpg" --prompt badge --transparent || image_rc=$?
 assert test "$image_rc" -eq 2
 assert grep -q 'requires a .png destination' "$IMAGE_ERR"
-# More references than image_edit takes, a relative one and one that is not there.
-image_rc=0
+# The reference cap is the manifest's, never a literal in the script or in this suite: one more
+# than it is refused, exactly it is sent. A suite that hard-coded the number would keep passing
+# while the two drifted apart.
+MANIFEST="$ROOT/share/image-caps/grok.json"
+REFS_MAX=$(jq -r '.refs.max' "$MANIFEST")
+assert test "$REFS_MAX" -ge 3
 printf 'reference\n' >"$WORK/ref-a.jpg"
-image_run --dest "$OUTPUT_DIR/many.png" --prompt badge \
-  --ref "$WORK/ref-a.jpg" --ref "$WORK/ref-a.jpg" --ref "$WORK/ref-a.jpg" --ref "$WORK/ref-a.jpg" \
-  || image_rc=$?
+over_cap=()
+for ((i = 0; i <= REFS_MAX; i++)); do over_cap+=(--ref "$WORK/ref-a.jpg"); done
+image_rc=0
+image_run --dest "$OUTPUT_DIR/many.png" --prompt badge "${over_cap[@]}" || image_rc=$?
 assert test "$image_rc" -eq 2
 image_rc=0
 image_run --dest "$OUTPUT_DIR/relref.png" --prompt badge --ref ref-a.jpg || image_rc=$?
@@ -168,6 +185,14 @@ for unsupported in 4:3 3:4; do
   assert grep -q "^grok-image: --aspect $unsupported needs --ref" "$IMAGE_ERR"
 done
 assert test ! -s "$FAKE_GROKB_CALLS"
+# Exactly the manifest's cap goes out whole: the three-reference ceiling this script used to
+# enforce was its own, not the vendor's.
+: >"$FAKE_GROKB_CALLS"
+at_cap=()
+for ((i = 0; i < REFS_MAX; i++)); do at_cap+=(--ref "$WORK/ref-a.jpg"); done
+assert image_run --dest "$OUTPUT_DIR/atcap.jpg" --prompt badge --account explicit "${at_cap[@]}"
+assert test "$(grep -c "^- $WORK/ref-a.jpg$" "$FAKE_GROKB_PROMPT")" -eq "$REFS_MAX"
+
 # With a reference the run goes to image_edit, which takes them.
 printf 'reference\n' >"$WORK/aspect-reference.jpg"
 FAKE_GROKB_IMAGE_FORMAT=jpg
@@ -179,6 +204,67 @@ assert grep -q 'Aspect ratio: 4:3' "$FAKE_GROKB_PROMPT"
 assert grep -qx 'ARG=image_edit' "$FAKE_GROKB_CALLS"
 assert_fails grep -qx 'ARG=image_gen,image_edit' "$FAKE_GROKB_CALLS"
 
+# The whole image_edit list, straight from the manifest: the exotic ratios are exactly the ones a
+# hand-written enum drops, and `auto` is what an unrequested size means on both tools.
+while IFS= read -r edit_aspect; do
+  : >"$FAKE_GROKB_PROMPT"
+  assert image_run --dest "$OUTPUT_DIR/exotic.jpg" --prompt 'make the badge blue' \
+    --aspect "$edit_aspect" --ref "$WORK/aspect-reference.jpg" --account explicit
+  assert grep -qF "Aspect ratio: $edit_aspect" "$FAKE_GROKB_PROMPT"
+done < <(jq -r '.aspects.edit[]' "$MANIFEST")
+while IFS= read -r gen_aspect; do
+  : >"$FAKE_GROKB_PROMPT"
+  assert image_run --dest "$OUTPUT_DIR/gen.jpg" --prompt badge --aspect "$gen_aspect" --account explicit
+  assert grep -qF "Aspect ratio: $gen_aspect" "$FAKE_GROKB_PROMPT"
+done < <(jq -r '.aspects.generate[]' "$MANIFEST")
+: >"$FAKE_GROKB_PROMPT"
+assert image_run --dest "$OUTPUT_DIR/defaultgen.jpg" --prompt badge --account explicit
+assert grep -qF "Aspect ratio: $(jq -r '.aspects.default' "$MANIFEST")" "$FAKE_GROKB_PROMPT"
+
+# image_edit answers under its own ToolOutput tag, not image_gen's. A harvester that matched
+# ImageGen alone would read every real edit as a run that produced nothing and bill it twice.
+FAKE_GROKB_OUTPUT_TYPE=ImageEdit
+export FAKE_GROKB_OUTPUT_TYPE
+assert image_run --dest "$OUTPUT_DIR/editvariant.jpg" --prompt 'make the badge blue' \
+  --ref "$WORK/aspect-reference.jpg" --account explicit
+assert cmp "$FAKE_GROKB_SESSION_ROOT/fake-session/images/1.jpg" "$OUTPUT_DIR/editvariant.jpg"
+FAKE_GROKB_OUTPUT_TYPE=ImageGen
+export FAKE_GROKB_OUTPUT_TYPE
+
+# --resume names a session, and a session lives in exactly one profile's store: the account is
+# recovered from the store that holds it, so no selector runs and no claim is spent.
+RESUMED_SESSION=$SESSION_UUID
+mkdir -p "$GROK_PROFILES/explicit/sessions/%2Ftmp%2Fwork/$RESUMED_SESSION"
+: >"$FAKE_GROKB_CALLS"
+: >"$PICK_CALLS"
+: >"$FAKE_GROKB_PROMPT"
+assert image_run --dest "$OUTPUT_DIR/resumed.jpg" --prompt 'now make it bluer' --resume "$RESUMED_SESSION"
+assert test ! -s "$PICK_CALLS"
+assert grep -qx 'ARG=--resume' "$FAKE_GROKB_CALLS"
+assert grep -qx "ARG=$RESUMED_SESSION" "$FAKE_GROKB_CALLS"
+assert grep -qx 'ARG=explicit' "$FAKE_GROKB_CALLS"
+assert grep -qx 'ARG=image_edit' "$FAKE_GROKB_CALLS"
+assert grep -qx 'account=explicit' "$IMAGE_OUT"
+assert grep -q 'image you produced most recently in this session' "$FAKE_GROKB_PROMPT"
+# A resumed run is an edit even with no --ref, so image_edit's wider ratio list applies to it.
+assert image_run --dest "$OUTPUT_DIR/resumedwide.jpg" --prompt bluer --aspect 20:9 --resume "$RESUMED_SESSION"
+# A session id no store holds cannot be routed by guessing an account.
+: >"$FAKE_GROKB_CALLS"
+image_rc=0
+image_run --dest "$OUTPUT_DIR/orphan.jpg" --prompt bluer \
+  --resume 01a05000-0000-7000-8000-000000000000 || image_rc=$?
+assert test "$image_rc" -eq 1
+assert grep -q 'no account holds session' "$IMAGE_ERR"
+assert test ! -s "$FAKE_GROKB_CALLS"
+# Grok reads a non-UUID resume value as a session TITLE scoped to the current directory, and this
+# script's cwd is a fresh temp dir that owns no sessions: it would resolve to nothing or to a
+# stranger's session, after the spend.
+image_rc=0
+image_run --dest "$OUTPUT_DIR/badresume.jpg" --prompt bluer --resume 'my session' || image_rc=$?
+assert test "$image_rc" -eq 2
+assert grep -q 'session UUID printed as session=' "$IMAGE_ERR"
+assert test ! -s "$FAKE_GROKB_CALLS"
+
 : >"$FAKE_GROKB_CALLS"
 : >"$PICK_CALLS"
 : >"$MAGICK_CALLS"
@@ -189,7 +275,7 @@ assert test "$(sips -g format "$OUTPUT_DIR/generated.png" | awk '/format:/ {prin
 assert test "$(sips -g hasAlpha "$OUTPUT_DIR/generated.png" | awk '/hasAlpha:/ {print $2}')" = yes
 assert test ! -s "$MAGICK_CALLS"
 # The claim is taken after the account has proved usable, not by the pick itself.
-assert grep -qx -- '--account grok' "$PICK_CALLS"
+assert grep -qx -- '--account grok --role image' "$PICK_CALLS"
 assert test -e "$CLAIMS_DIR/grok/picked"
 assert grep -qx 'ARG=profile' "$FAKE_GROKB_CALLS"
 assert grep -qx 'ARG=picked' "$FAKE_GROKB_CALLS"
@@ -207,7 +293,33 @@ assert grep -qx 'GROK_MEMORY=0' "$FAKE_GROKB_CALLS"
 assert grep -q 'Generate exactly one image and stop' "$FAKE_GROKB_PROMPT"
 assert grep -q 'Aspect ratio: 1:1' "$FAKE_GROKB_PROMPT"
 assert grep -qx 'account=picked' "$IMAGE_OUT"
+# The footer is the shared image-script contract: the four keys existing consumers already read,
+# in their old positions, then session, model and caps.
+assert test "$(cut -d= -f1 "$IMAGE_OUT" | tr '\n' ' ')" = 'dest size format account session model caps '
+assert grep -qx "session=$SESSION_UUID" "$IMAGE_OUT"
+assert grep -qx "model=$(jq -r '.model.image' "$MANIFEST") model_caps=fresh" "$IMAGE_OUT"
+assert grep -qx 'caps=fresh' "$IMAGE_OUT"
 assert test -z "$(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -name 'grok-image.*' -print -quit)"
+
+# A CLI other than the verified one may promise the wrong limits, and the model id it would send
+# is no longer knowable either: both say so rather than repeating the manifest.
+FAKE_GROK_VERSION=9.9.9
+export FAKE_GROK_VERSION
+assert image_run --dest "$OUTPUT_DIR/staleversion.jpg" --prompt badge --account explicit
+assert grep -qx "caps=stale cli=9.9.9 verified=$(jq -r '.cli.version' "$MANIFEST")" "$IMAGE_OUT"
+assert grep -qx 'model=unknown model_caps=unknown' "$IMAGE_OUT"
+FAKE_GROK_VERSION=1.0.13
+export FAKE_GROK_VERSION
+
+# An account that pins its own Imagine model is the one case the CLI does report, and a pin the
+# manifest was never verified against is exactly what model_caps exists to flag.
+cat >"$GROK_PROFILES/explicit/config.toml" <<'EOF'
+[features]
+image_gen_model_override = "grok-imagine-image-fast"
+EOF
+assert image_run --dest "$OUTPUT_DIR/pinnedmodel.jpg" --prompt badge --account explicit
+assert grep -qx "model=grok-imagine-image-fast model_caps=stale verified=$(jq -r '.model.image' "$MANIFEST")" "$IMAGE_OUT"
+rm -f "$GROK_PROFILES/explicit/config.toml"
 
 : >"$MAGICK_CALLS"
 FAKE_GROKB_IMAGE_FORMAT=jpg
@@ -289,4 +401,4 @@ CLAUDE_LAUNCHER_SESSION=image-launching-chat \
 assert test "$image_rc" -eq 0
 assert grep -qx 'CLAUDE_LAUNCHER_SESSION=image-launching-chat' "$FAKE_GROKB_CALLS"
 
-echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, verbatim ImageGen stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, fake session preservation, temp-cwd cleanup, and the launching chat's stamp passed through to the CLI it starts"
+echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, manifest-driven aspect enums per tool with auto and the manifest ref cap, ImageGen and ImageEdit stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, --resume routed to image_edit through the store that holds the session without worker-pick, the seven-line footer with model and caps freshness, fake session preservation, temp-cwd cleanup, and the launching chat's stamp passed through to the CLI it starts"

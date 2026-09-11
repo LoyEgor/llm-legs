@@ -1,8 +1,39 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+command -v jq >/dev/null 2>&1 || {
+  printf 'grok-image: jq is required\n' >&2
+  exit 1
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-caps.sh"
+. "$root/share/image-chroma.sh"
+. "$root/share/worker-claims.sh"
+. "$root/share/grok-media.sh"
+
+caps() { image_caps_get "$root" grok "$1"; }
+
+generate_aspects=$(caps '.aspects.generate | join("|")')
+edit_aspects=$(caps '.aspects.edit | join("|")')
+refs_max=$(caps '.refs.max')
+default_aspect=$(caps '.aspects.default')
+
 usage() {
-  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <1:1|2:3|3:2|3:4|4:3|9:16|16:9>] [--ref <absolute image path>]... [--transparent] [--account <profile>]\n' >&2
+  printf 'usage: grok-image --dest <absolute path> --prompt <description> [--aspect <ratio>] [--ref <absolute image path>]... [--transparent] [--account <profile>] [--resume <session-id>]\n' >&2
+  printf '  --aspect without --ref/--resume (image_gen): %s\n' "$generate_aspects" >&2
+  printf '  --aspect with --ref/--resume (image_edit):    %s\n' "$edit_aspects" >&2
+  printf '  --ref up to %s; --resume takes the session id printed as session= by an earlier run\n' "$refs_max" >&2
   exit 2
 }
 
@@ -21,20 +52,11 @@ actual_format() { # path
   case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
 }
 
-resolve_root() {
-  local source="${BASH_SOURCE[0]}" directory
-  while [ -L "$source" ]; do
-    directory=$(cd -P "$(dirname "$source")" && pwd)
-    source=$(readlink "$source")
-    [[ "$source" = /* ]] || source="$directory/$source"
-  done
-  cd -P "$(dirname "$source")/.." && pwd
-}
-
 dest=''
 prompt=''
-aspect='1:1'
+aspect=$default_aspect
 account=''
+resume=''
 remove_green=false
 refs=()
 
@@ -69,6 +91,11 @@ while [ "$#" -gt 0 ]; do
       account=$2
       shift 2
       ;;
+    --resume)
+      [ "$#" -ge 2 ] || usage
+      resume=$2
+      shift 2
+      ;;
     *) usage ;;
   esac
 done
@@ -91,78 +118,65 @@ command -v magick >/dev/null 2>&1 || {
   printf 'grok-image: magick is required for this output\n' >&2
   exit 1
 }
-case "$aspect" in
-  1:1|2:3|3:2|3:4|4:3|9:16|16:9) ;;
-  *) usage ;;
-esac
-ref_count=${#refs[@]}
-[ "$ref_count" -le 3 ] || usage
-# The flag surface is every image script's, but the two grok tools behind it take different ratios:
-# `image_gen` documents 1:1, 16:9, 9:16, 3:2 and 2:3, while 4:3 and 3:4 are `image_edit`'s, reached
-# only with references. Refused here rather than sent — the CLI passes the string to the images API
-# unvalidated, and a generation is billed the moment it goes out.
-if [ "$ref_count" -eq 0 ]; then
-  case "$aspect" in
-    4:3|3:4)
-      printf 'grok-image: --aspect %s needs --ref (image_edit); image_gen takes 1:1, 16:9, 9:16, 3:2, 2:3\n' \
-        "$aspect" >&2
-      exit 2
-      ;;
-  esac
+# A non-UUID resume value is not an id to Grok: it is a session TITLE matched against the current
+# working directory, and this script's cwd is a fresh temp dir that owns no sessions at all. Such a
+# value resolves to nothing or, worse, to some other session that happens to share a title.
+if [ -n "$resume" ] && ! [[ "$resume" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  printf 'grok-image: --resume takes the session UUID printed as session= by an earlier run\n' >&2
+  exit 2
 fi
+ref_count=${#refs[@]}
+[ "$ref_count" -le "$refs_max" ] || usage
+# A resumed run edits what the session already produced, so it reaches image_edit with or without
+# a new reference — and image_edit is the tool whose wider ratio list applies.
+editing=false
+if [ "$ref_count" -gt 0 ] || [ -n "$resume" ]; then editing=true; fi
+# The flag surface is every image script's, but the two grok tools behind it take different ratios.
+# Refused here rather than sent: the CLI passes the string to the images API unvalidated, and a
+# generation is billed the moment it goes out.
+allowed_aspects=$generate_aspects
+[ "$editing" = false ] || allowed_aspects=$edit_aspects
+case "|$allowed_aspects|" in
+  *"|$aspect|"*) ;;
+  *)
+    case "|$edit_aspects|" in
+      *"|$aspect|"*)
+        printf 'grok-image: --aspect %s needs --ref or --resume (image_edit); image_gen takes %s\n' \
+          "$aspect" "$generate_aspects" >&2
+        exit 2
+        ;;
+    esac
+    usage
+    ;;
+esac
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
     [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
   done
 fi
-if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+if [ -n "$account" ] && ! grok_media_valid_account "$account"; then
   usage
 fi
-command -v jq >/dev/null 2>&1 || {
-  printf 'grok-image: jq is required\n' >&2
-  exit 1
-}
 
-root=$(resolve_root)
-. "$root/share/image-chroma.sh"
-. "$root/share/worker-claims.sh"
 worker_pick_cmd="${GROK_IMAGE_WORKER_PICK:-worker-pick}"
 grokb_cmd="${GROK_IMAGE_GROKB:-grokb}"
-
-picked=false
-if [ -z "$account" ]; then
-  pick_rc=0
-  account=$("$worker_pick_cmd" --account grok 2>/dev/null) || pick_rc=$?
-  if [ "$pick_rc" -eq 3 ]; then
-    printf 'GROK_USAGE_LIMIT\n' >&2
-    exit 3
-  fi
-  if [ "$pick_rc" -ne 0 ] || ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    . "$root/share/worker-model.sh"
-    account=$(worker_model_pin_first grok 2>/dev/null || true)
-    if ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-      printf 'grok-image: worker-pick failed\n' >&2
-      exit 1
-    fi
-    printf 'grok-image: worker-pick unavailable; falling back to account %s\n' "$account" >&2
-  else
-    picked=true
-  fi
-fi
-
-# `grokb profile` creates what it cannot find, so an unchecked typo here does not fail: it mkdirs a
-# ghost account that then stands in grokb list, the quota scan and the limits menu asking for a login.
 grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
-if [ "$account" != main ] && [ ! -d "$grok_profiles_dir/$account" ]; then
-  printf 'grok-image: account directory does not exist: %s\n' "$grok_profiles_dir/$account" >&2
-  exit 1
+main_grok_home="${GROKB_MAIN_GROK_HOME:-$HOME/.grok}"
+
+# A session belongs to exactly one profile's store, so resuming may not go through the selector:
+# any other account simply cannot see it.
+if [ -n "$resume" ] && [ -z "$account" ]; then
+  account=$(grok_media_account_for_session "$grok_profiles_dir" "$main_grok_home" "$resume") || account=''
+  if [ -z "$account" ]; then
+    printf 'grok-image: no account holds session %s; pass --account\n' "$resume" >&2
+    exit 1
+  fi
 fi
-# The claim is recorded once the account is known to be usable, which is why the pick above does
-# not take it: a claim spent on a profile this run cannot launch de-prioritises that account for
-# the next ten minutes and buys nothing. Same recorder worker-pick uses, so there is one format.
-if [ "$picked" = true ] && ! worker_claims_record grok "$account"; then
-  printf 'grok-image: could not record the claim on %s\n' "$account" >&2
-fi
+
+select_rc=0
+grok_media_select_account grok-image "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" || select_rc=$?
+[ "$select_rc" -eq 0 ] || exit "$select_rc"
+account=$grok_media_account
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-image.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -180,50 +194,50 @@ instruction="Generate exactly one image and stop after the image tool completes.
 Aspect ratio: $aspect.
 Requested content: $content"
 tools_arg=image_gen
-if [ "$ref_count" -gt 0 ]; then
+if [ "$editing" = true ]; then
   # image_edit alone, never both: left in the list, image_gen is a tool the model may answer a
-  # reference run with — and on 4:3/3:4 it would spend the generation on the very ratio it does
-  # not take, which is what the gate above refuses to send.
+  # reference run with — and on a ratio only image_edit takes it would spend the generation on the
+  # very value the gate above exists to keep off the wire.
   tools_arg=image_edit
-  instruction+=$'\nUse image_edit with these source paths in its image parameter:'
-  for ref in "${refs[@]}"; do
-    instruction+=$'\n- '
-    instruction+="$ref"
-  done
+  if [ "$ref_count" -gt 0 ]; then
+    instruction+=$'\nUse image_edit with these source paths in its image parameter:'
+    for ref in "${refs[@]}"; do
+      instruction+=$'\n- '
+      instruction+="$ref"
+    done
+  else
+    instruction+=$'\nUse image_edit on the image you produced most recently in this session, passing its absolute path in the image parameter.'
+  fi
   instruction+=$'\nApply the requested content as the edit instruction and keep unrelated source details unchanged.'
 else
   instruction+=$'\nUse image_gen and pass the aspect ratio above as aspect_ratio.'
 fi
 
+launch_args=(profile "$account" -p "$instruction"
+  --tools "$tools_arg" --always-approve --max-turns 4 --output-format streaming-json
+  --disable-web-search --no-subagents --cwd "$work_dir")
+[ -z "$resume" ] || launch_args+=(--resume "$resume")
+
 generation_rc=0
-GROK_MEMORY=0 "$grokb_cmd" profile "$account" -p "$instruction" \
-  --tools "$tools_arg" --always-approve --max-turns 4 --output-format streaming-json \
-  --disable-web-search --no-subagents --cwd "$work_dir" \
+GROK_MEMORY=0 "$grokb_cmd" "${launch_args[@]}" \
   >"$stream_file" 2>"$stderr_file" || generation_rc=$?
 
-generated=$(jq -Rr '
-  fromjson? |
-  select(.type == "tool_call_update" and .rawOutput.type == "ImageGen") |
-  .rawOutput.path // empty
-' "$stream_file" 2>/dev/null | tail -n 1) || generated=''
-if [[ "$generated" != /* ]] || [ ! -f "$generated" ]; then
-  generated=''
-fi
+generated=$(grok_media_stream_path "$stream_file" ImageGen,ImageEdit) || generated=''
 
 if [ -z "$generated" ]; then
-  if grep -Eqi 'hit the rate limit for your plan|hit the credit limit for your plan|subscription:free-usage-exhausted|run out of credits|(status|http)[^0-9]{0,12}402([^0-9]|$)|402 payment required' \
-      "$stream_file" "$stderr_file" 2>/dev/null; then
-    printf 'GROK_USAGE_LIMIT\n' >&2
-    exit 3
-  fi
-  if grep -Eqi 'out of the worker pool|treating every account as out of the pool' \
-      "$stream_file" "$stderr_file" 2>/dev/null; then
-    printf 'grok-image: account refused by the worker pool\n' >&2
-    exit 4
-  fi
+  case "$(grok_media_failure_class "$stream_file" "$stderr_file")" in
+    limit)
+      printf 'GROK_USAGE_LIMIT\n' >&2
+      exit 3
+      ;;
+    pool)
+      printf 'grok-image: account refused by the worker pool\n' >&2
+      exit 4
+      ;;
+  esac
   printf 'grok-image: generation failed (exit %s); no ImageGen event with a readable file\n' \
     "$generation_rc" >&2
-  tail -n 20 "$stderr_file" "$stream_file" 2>/dev/null >&2 || true
+  tail -n 20 "$stderr_file" "$stream_file" >&2 2>/dev/null || true
   exit 1
 fi
 
@@ -243,4 +257,20 @@ format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
   printf 'grok-image: could not inspect output\n' >&2
   exit 1
 }
-printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"
+
+caps_line=$(image_caps_check "$root" grok "$(grok_media_grok_bin || true)")
+grok_home=$main_grok_home
+[ "$account" = main ] || grok_home="$grok_profiles_dir/$account"
+override_key=image_gen_model_override
+[ "$editing" = false ] || override_key=image_edit_model_override
+observed_model=$(grok_media_model_override "$grok_home" "$override_key")
+# Without an override the CLI defers to a remotely configured default it never reports back, so
+# the compiled-in id is only an observation while the binary is the verified one.
+if [ -z "$observed_model" ] && [ "$caps_line" = 'caps=fresh' ]; then
+  observed_model=$(caps '.model.image')
+fi
+
+printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
+  "$dest" "$width" "$height" "$format" "$account" "$(grok_media_session_id "$stream_file")"
+image_caps_model_check "$root" grok image "$observed_model"
+printf '%s\n' "$caps_line"

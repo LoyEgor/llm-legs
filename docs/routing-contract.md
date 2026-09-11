@@ -209,14 +209,16 @@ one-shot deny is a rule a model walks through by calling twice.
 
 ## Roles
 
-A vendor serves four roles — `workers` (implementation), `reviewers` (review-bench raters),
-`chat` (where Egor's own session should move next) and `research` (read-only Gemini research) — and `<vendor>_workers` /
+A vendor serves five roles — `workers` (implementation), `reviewers` (review-bench raters),
+`chat` (where Egor's own session should move next), `research` (read-only Gemini research) and
+`image` (subscription image/video generation) — and `<vendor>_workers` /
 `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered over the pool: the
 literal value `off` closes that vendor for that role, an absent key or any other value leaves it
-open. There is no `<vendor>_chat` or `<vendor>_research` key and none is to be invented — the pool
-toggle is the whole gate for either role. The default role is `workers`, so every existing caller keeps its meaning; a
+open. There is no `<vendor>_chat`, `<vendor>_research` or `<vendor>_image` key and none is to be invented — the pool
+toggle is the whole gate for `chat` and `research`. The default role is `workers`, so every existing caller keeps its meaning; a
 rater asks with `worker-pick --account <vendor> --role reviewers`, the chat picker with
-`--role chat`, and the research launcher with `--role research`.
+`--role chat`, the research launcher with `--role research`, and the image scripts / fan-out with
+`--role image`.
 
 `gemini-research` maps a picker refusal containing `WALLED` to exit 3 / `GEMINI_USAGE_LIMIT`;
 paused, switched-off, empty-pool and missing-data refusals are availability failures at exit 4.
@@ -231,10 +233,15 @@ pool's own candidate is never handed over instead. The pin overrides it the same
 pool exclusion — a usable pin answers the workers query and the workers table even while
 `<vendor>_workers=off`, and rule 3 still ends it at its wall, unchanged.
 
-The pin is **workers-only**. A reviewers, chat or research query never sees it: it is neither an override
-nor a forced choice there, and the pinned account stands in those answers as an ordinary
-candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is therefore final
-— no pin opens it.
+The pin is **workers-only**. A reviewers, chat, research or image query never sees it: it is
+neither an override nor a forced choice there, and the pinned account stands in those answers as
+an ordinary candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is
+therefore final — no pin opens it.
+
+`image` ignores `<vendor>_workers=off` and the pin alike: a picture is not code work, so an image
+query is pool membership + login + not walled, ordered by free budget, and a fan-out that asks
+every vendor still reaches a vendor whose code workers are paused. Walls, the five-hour deferral,
+pool exclusion and missing login still apply, unchanged.
 
 `chat` is the same candidates under the same walls, minus the one thing that is about workers.
 An account Egor took out of the pool is not one to move a chat onto either. The pin it never sees

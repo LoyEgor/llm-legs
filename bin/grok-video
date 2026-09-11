@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v jq >/dev/null 2>&1 || {
+  printf 'grok-video: jq is required\n' >&2
+  exit 1
+}
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+root=$(resolve_root)
+. "$root/share/image-caps.sh"
+. "$root/share/worker-claims.sh"
+. "$root/share/grok-media.sh"
+
+caps() { image_caps_get "$root" grok "$1"; }
+
+container=$(caps '.video.container')
+refs_max=$(caps '.video.refs_max')
+voices_max=$(caps '.video.voices_max')
+single_durations=$(caps '.video.durations | join("|")')
+reference_min=$(caps '.video.reference_duration.min')
+reference_max=$(caps '.video.reference_duration.max')
+default_duration=$(caps '.video.reference_duration.default')
+resolutions=$(caps '.video.resolutions | join("|")')
+default_resolution=$(caps '.video.resolution_default')
+video_aspects=$(caps '.video.aspects | join("|")')
+single_tool=$(caps '.video.tools.single_ref')
+multi_tool=$(caps '.video.tools.multi_ref')
+
+usage() {
+  printf 'usage: grok-video --dest <absolute .%s path> --prompt <motion description> [--ref <absolute image path>]... [--voice <id>]... [--duration <seconds>] [--resolution <%s>] [--aspect <ratio>] [--account <profile>] [--resume <session-id>]\n' \
+    "$container" "$resolutions" >&2
+  printf '  one --ref and no --voice: %s, duration %s, no aspect ratio (set it on the source image)\n' \
+    "$single_tool" "$single_durations" >&2
+  printf '  %s to %s refs and/or up to %s --voice: %s, duration %s-%s, aspect %s\n' \
+    2 "$refs_max" "$voices_max" "$multi_tool" "$reference_min" "$reference_max" "$video_aspects" >&2
+  printf '  at least one --ref or one --voice is required; --resume takes the session id printed as session= by an earlier run\n' >&2
+  exit 2
+}
+
+dest=''
+prompt=''
+duration=''
+resolution=$default_resolution
+aspect=''
+account=''
+resume=''
+refs=()
+voices=()
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dest) [ "$#" -ge 2 ] || usage; dest=$2; shift 2 ;;
+    --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
+    --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); shift 2 ;;
+    --voice) [ "$#" -ge 2 ] || usage; voices+=("$2"); shift 2 ;;
+    --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
+    --resolution) [ "$#" -ge 2 ] || usage; resolution=$2; shift 2 ;;
+    --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
+    --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
+    --resume) [ "$#" -ge 2 ] || usage; resume=$2; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+[ -n "$dest" ] && [ -n "$prompt" ] || usage
+[[ "$dest" = /* ]] || usage
+[ "$(printf '%s' "${dest##*.}" | tr '[:upper:]' '[:lower:]')" = "$container" ] || usage
+[ -d "$(dirname "$dest")" ] || usage
+
+ref_count=${#refs[@]}
+voice_count=${#voices[@]}
+[ "$ref_count" -le "$refs_max" ] || usage
+[ "$voice_count" -le "$voices_max" ] || usage
+[ $((ref_count + voice_count)) -gt 0 ] || usage
+if [ "$ref_count" -gt 0 ]; then
+  for ref in "${refs[@]}"; do
+    [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+  done
+fi
+# The roster is not enumerable offline — the schema names four examples and says an unknown id
+# fails with the list of available ones — so a voice is passed through as given and only its shape
+# is checked here.
+if [ "$voice_count" -gt 0 ]; then
+  for voice in "${voices[@]}"; do
+    [[ "$voice" =~ ^[a-z0-9][a-z0-9_-]*$ ]] || usage
+  done
+fi
+
+tool=$multi_tool
+if [ "$ref_count" -eq 1 ] && [ "$voice_count" -eq 0 ]; then tool=$single_tool; fi
+
+if [ "$tool" = "$single_tool" ]; then
+  # image_to_video has no aspect_ratio field at all: its frame is the source image's. Silently
+  # promoting the run to reference_to_video to honour the flag would animate a different tool.
+  if [ -n "$aspect" ]; then
+    printf 'grok-video: %s takes no aspect ratio; set it on the source image (grok-image --aspect) or pass a second --ref or a --voice for %s\n' \
+      "$single_tool" "$multi_tool" >&2
+    exit 2
+  fi
+  case "|$single_durations|" in
+    *"|${duration:-$default_duration}|"*) ;;
+    *)
+      printf 'grok-video: %s takes duration %s, not %s\n' \
+        "$single_tool" "$single_durations" "${duration:-$default_duration}" >&2
+      exit 2
+      ;;
+  esac
+else
+  allowed_durations="$reference_min-$reference_max"
+  if [ -n "$duration" ]; then
+    [[ "$duration" =~ ^[0-9]+$ ]] || usage
+    if [ "$duration" -lt "$reference_min" ] || [ "$duration" -gt "$reference_max" ]; then
+      printf 'grok-video: %s takes duration %s, not %s\n' "$multi_tool" "$allowed_durations" "$duration" >&2
+      exit 2
+    fi
+  fi
+  if [ -n "$aspect" ]; then
+    case "|$video_aspects|" in
+      *"|$aspect|"*) ;;
+      *) usage ;;
+    esac
+  fi
+fi
+duration=${duration:-$default_duration}
+case "|$resolutions|" in
+  *"|$resolution|"*) ;;
+  *) usage ;;
+esac
+if [ -n "$resume" ] && ! [[ "$resume" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  printf 'grok-video: --resume takes the session UUID printed as session= by an earlier run\n' >&2
+  exit 2
+fi
+if [ -n "$account" ] && ! grok_media_valid_account "$account"; then
+  usage
+fi
+
+ffprobe_cmd="${GROK_VIDEO_FFPROBE:-ffprobe}"
+mdls_cmd="${GROK_VIDEO_MDLS:-mdls}"
+# Checked before the spend, the way grok-image checks magick: a generation is billed the moment it
+# is sent, and a video nobody can measure cannot be reported under the size=WxH contract.
+if ! command -v "$ffprobe_cmd" >/dev/null 2>&1 && ! command -v "$mdls_cmd" >/dev/null 2>&1; then
+  printf 'grok-video: ffprobe or mdls is required to inspect the output\n' >&2
+  exit 1
+fi
+
+worker_pick_cmd="${GROK_VIDEO_WORKER_PICK:-worker-pick}"
+grokb_cmd="${GROK_VIDEO_GROKB:-grokb}"
+grok_profiles_dir="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}"
+main_grok_home="${GROKB_MAIN_GROK_HOME:-$HOME/.grok}"
+
+if [ -n "$resume" ] && [ -z "$account" ]; then
+  account=$(grok_media_account_for_session "$grok_profiles_dir" "$main_grok_home" "$resume") || account=''
+  if [ -z "$account" ]; then
+    printf 'grok-video: no account holds session %s; pass --account\n' "$resume" >&2
+    exit 1
+  fi
+fi
+
+select_rc=0
+grok_media_select_account grok-video "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" || select_rc=$?
+[ "$select_rc" -eq 0 ] || exit "$select_rc"
+account=$grok_media_account
+
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-video.XXXXXX")
+trap 'grok_media_lock_release; rm -rf "$tmp_dir"' EXIT
+work_dir="$tmp_dir/work"
+mkdir -p "$work_dir"
+stream_file="$tmp_dir/stream.jsonl"
+stderr_file="$tmp_dir/grok.stderr"
+
+grok_media_lock_acquire grok-video "$account" || exit 1
+
+instruction="Generate exactly one video and stop after the video tool completes.
+Use $tool with these arguments and nothing else:"
+if [ "$tool" = "$single_tool" ]; then
+  instruction+=$'\n- image: '
+  instruction+="${refs[0]}"
+else
+  if [ "$ref_count" -gt 0 ]; then
+    instruction+=$'\n- images, in this order, referenced in the prompt as <IMAGE_0>, <IMAGE_1>, ...:'
+    for ref in "${refs[@]}"; do
+      instruction+=$'\n  - '
+      instruction+="$ref"
+    done
+  fi
+  if [ "$voice_count" -gt 0 ]; then
+    instruction+=$'\n- voices, in this order, referenced in the prompt as <AUDIO_0>, <AUDIO_1>, ...:'
+    for voice in "${voices[@]}"; do
+      instruction+=$'\n  - '
+      instruction+="$voice"
+    done
+  fi
+  [ -z "$aspect" ] || instruction+=$'\n- aspect_ratio: '"$aspect"
+fi
+instruction+=$'\n- duration: '"$duration"
+instruction+=$'\n- resolution_name: '"$resolution"
+instruction+=$'\n- prompt: '"$prompt"
+
+launch_args=(profile "$account" -p "$instruction"
+  --tools "$tool" --always-approve --max-turns 4 --output-format streaming-json
+  --disable-web-search --no-subagents --cwd "$work_dir")
+[ -z "$resume" ] || launch_args+=(--resume "$resume")
+
+generation_rc=0
+GROK_MEMORY=0 "$grokb_cmd" "${launch_args[@]}" \
+  >"$stream_file" 2>"$stderr_file" || generation_rc=$?
+
+# Both video tools answer under the ImageToVideo tag; reference_to_video has no variant of its own.
+generated=$(grok_media_stream_path "$stream_file" ImageToVideo) || generated=''
+
+if [ -z "$generated" ]; then
+  case "$(grok_media_failure_class "$stream_file" "$stderr_file")" in
+    limit)
+      printf 'GROK_USAGE_LIMIT\n' >&2
+      exit 3
+      ;;
+    pool)
+      printf 'grok-video: account refused by the worker pool\n' >&2
+      exit 4
+      ;;
+  esac
+  # Neither of these clears on a reset, so neither may be reported as a wall: exit 3 would send
+  # the caller round the pool for an account whose quota was never the problem.
+  if grep -qi 'zero data retention\|zdr_output_storage_required' "$stream_file" "$stderr_file" 2>/dev/null; then
+    printf 'grok-video: video tools are disabled under zero data retention; turn off /privacy mode for %s or configure tools.zdr_video_output_s3\n' \
+      "$account" >&2
+    exit 1
+  fi
+  if grep -qi 'Video generation is a SuperGrok feature' "$stream_file" "$stderr_file" 2>/dev/null; then
+    printf 'grok-video: %s has no video generation on its tier (SuperGrok only)\n' "$account" >&2
+    exit 1
+  fi
+  printf 'grok-video: generation failed (exit %s); no ImageToVideo event with a readable file\n' \
+    "$generation_rc" >&2
+  tail -n 20 "$stderr_file" "$stream_file" >&2 2>/dev/null || true
+  exit 1
+fi
+
+cp "$generated" "$dest"
+
+width=''
+height=''
+format=''
+measured=''
+if command -v "$ffprobe_cmd" >/dev/null 2>&1; then
+  probe=$("$ffprobe_cmd" -v error -show_entries 'stream=width,height:format=duration,format_name' \
+    -select_streams v:0 -of json "$dest" 2>/dev/null) || probe=''
+  if [ -n "$probe" ]; then
+    width=$(jq -r '.streams[0].width // empty' <<<"$probe")
+    height=$(jq -r '.streams[0].height // empty' <<<"$probe")
+    measured=$(jq -r '.format.duration // empty' <<<"$probe")
+    format=$(jq -r '.format.format_name // empty' <<<"$probe")
+  fi
+fi
+if { [ -z "$width" ] || [ -z "$height" ]; } && command -v "$mdls_cmd" >/dev/null 2>&1; then
+  probe=$("$mdls_cmd" -name kMDItemPixelWidth -name kMDItemPixelHeight \
+    -name kMDItemDurationSeconds -name kMDItemContentType "$dest" 2>/dev/null) || probe=''
+  width=$(awk -F'= *' '/kMDItemPixelWidth/ {print $2; exit}' <<<"$probe")
+  height=$(awk -F'= *' '/kMDItemPixelHeight/ {print $2; exit}' <<<"$probe")
+  measured=$(awk -F'= *' '/kMDItemDurationSeconds/ {print $2; exit}' <<<"$probe")
+  format=$(awk -F'= *' '/kMDItemContentType/ {gsub(/"/, "", $2); print $2; exit}' <<<"$probe")
+  [ "$measured" != '(null)' ] || measured=''
+  [ "$format" != '(null)' ] || format=''
+fi
+# ffprobe answers with the whole muxer family (`mov,mp4,m4a,3gp,3g2,mj2`) and Spotlight with a
+# UTI; both mean the container the manifest names, and consumers read one token.
+case "$format" in
+  ''|*"$container"*|public.mpeg-4) format=$container ;;
+  *) format=${format%%,*} ;;
+esac
+# Spotlight only answers for indexed volumes, so mdls returns (null) for a destination under
+# /tmp or an external disk and ffmpeg is then the only probe that can measure the file.
+case "$width$height" in
+  ''|*'(null)'*)
+    printf 'grok-video: saved %s but could not inspect it; install ffmpeg for ffprobe\n' "$dest" >&2
+    exit 1
+    ;;
+esac
+measured=${measured%.*}
+[ -n "$measured" ] || measured=$duration
+
+caps_line=$(image_caps_check "$root" grok "$(grok_media_grok_bin || true)")
+observed_model=''
+# The video model has no per-account override knob, so it is pinned by the binary: while the CLI
+# is the verified one, the id compiled into it is what a run reached.
+[ "$caps_line" != 'caps=fresh' ] || observed_model=$(caps '.model.video')
+
+printf 'dest=%s\nsize=%sx%s\nformat=%s\nduration=%s\naccount=%s\nsession=%s\n' \
+  "$dest" "$width" "$height" "$format" "$measured" "$account" "$(grok_media_session_id "$stream_file")"
+image_caps_model_check "$root" grok video "$observed_model"
+printf '%s\n' "$caps_line"

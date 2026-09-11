@@ -1,0 +1,183 @@
+{
+  "vendor": "gemini",
+  "verified": "2026-09-11",
+  "cli": {
+    "name": "agy",
+    "version": "1.2.1",
+    "version_args": [
+      "--version"
+    ]
+  },
+  "model": {
+    "image": "gemini-3.1-flash-image",
+    "video": null
+  },
+  "refs": {
+    "max": 3,
+    "verified_max": true
+  },
+  "aspects": {
+    "generate": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "edit": [
+      "1:1",
+      "2:3",
+      "3:2",
+      "3:4",
+      "4:3",
+      "9:16",
+      "16:9"
+    ],
+    "default": "1:1"
+  },
+  "exact_size": false,
+  "transparent": "chroma",
+  "resume": {
+    "flag": "--conversation",
+    "id_source": "stream-json result.conversation_id; init.conversation_id fallback",
+    "requires_account": true
+  },
+  "video": null,
+  "unsupported": [
+    "resolution",
+    "mask",
+    "video",
+    "n",
+    "quality",
+    "native_alpha",
+    "audio_generation",
+    "seed",
+    "image_model_selection"
+  ],
+  "outpainting": {
+    "status": "soft-supported",
+    "method": "ImagePaths + wider AspectRatio + prompt to extend the scene",
+    "live_verified": false
+  },
+  "tool": {
+    "name": "generate_image",
+    "description": "Generate an image, or edit existing images, from a text prompt.",
+    "schema": {
+      "type": "object",
+      "required": [
+        "Prompt",
+        "ImageName"
+      ],
+      "properties": {
+        "Prompt": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What the image should depict, or how to edit the given images."
+        },
+        "ImageName": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short descriptive name for the saved file."
+        },
+        "ImagePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3,
+          "description": "Images to edit, combine, or use as references."
+        },
+        "AspectRatio": {
+          "type": "string",
+          "enum": [
+            "1:1",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "9:16",
+            "16:9"
+          ],
+          "description": "Defaults to 1:1."
+        }
+      }
+    }
+  },
+  "sources": {
+    "binary": {
+      "location": "/Users/egorloy/.local/bin/agy",
+      "version": "1.2.1",
+      "method": "strings -n 8; generateImageArgs schema tags, GenerateImageTool description, CortexStepGenerateImage protobuf"
+    },
+    "help": {
+      "location": "agy --help; agy --version",
+      "observed": "1.2.1; --conversation, --continue, --output-format stream-json"
+    },
+    "headless": {
+      "url": "https://antigravity.google/docs/cli/headless/"
+    },
+    "tools": {
+      "url": "https://antigravity.google/docs/sdk/tools/"
+    },
+    "history": {
+      "location": "~/.gemini/antigravity-cli/conversations/0683acd9-1b31-4bae-9613-e7ec63574ff0.db",
+      "observed": "2026-08-21 generation: steps.idx=3; generate_image; model_name=gemini-3.1-flash-image; image/jpeg; saved file path in output and generated_media URI"
+    },
+    "wrapper": {
+      "location": "bin/gemini-image; share/image-chroma.sh; share/gemini-accounts.sh",
+      "observed": "Wrapper defaults and emulation, not native vendor capabilities"
+    }
+  },
+  "field_sources": {
+    "vendor": [
+      "help"
+    ],
+    "verified": [
+      "help",
+      "binary",
+      "history"
+    ],
+    "cli": [
+      "help"
+    ],
+    "model": [
+      "binary",
+      "history"
+    ],
+    "refs": [
+      "binary"
+    ],
+    "aspects": [
+      "binary"
+    ],
+    "exact_size": [
+      "binary"
+    ],
+    "transparent": [
+      "binary",
+      "history",
+      "wrapper"
+    ],
+    "resume": [
+      "help",
+      "headless",
+      "wrapper"
+    ],
+    "video": [
+      "binary",
+      "tools"
+    ],
+    "unsupported": [
+      "binary",
+      "history"
+    ],
+    "outpainting": [
+      "binary"
+    ],
+    "tool": [
+      "binary"
+    ]
+  }
+}

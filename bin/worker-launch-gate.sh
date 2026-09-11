@@ -70,7 +70,7 @@ OWNED_RUN_RE="${VENDOR_WORD}worker-run[[:space:]]+(start|wait)${EDGE}"
 # spend an image account with nothing rendering the spend — no task row, no tag, no notification —
 # so `image-gen` is the only hand they pass in, a relay's included: a worker generating an image is
 # a launch inside a launch nobody can see.
-OWNED_IMAGE_RE="${VENDOR_WORD}(codex|gemini|grok)-image${EDGE}"
+OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|image-fanout)${EDGE}"
 
 SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|gemini-research)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
 
@@ -241,7 +241,7 @@ case "$agent_type" in
   *)
     image_hit=$(first_hit "$OWNED_IMAGE_RE")
     [ -z "$image_hit" ] ||
-      deny "Blocked: \`${image_hit}\` generates an image from this chat's own Bash, where the account it spends renders as nothing — no tagged row, no notification when it lands. Spawn the \`image-gen\` Agent instead and put the description, the absolute destination path, the format, transparency yes/no and the size in its brief; it owns these three scripts and is the only agent type that may run them — a relay worker may not either. Quoting one inside a heredoc body is not running it."
+      deny "Blocked: \`${image_hit}\` generates an image from this chat's own Bash, where the account it spends renders as nothing — no tagged row, no notification when it lands. Spawn the \`image-gen\` Agent instead and put the description, the absolute destination path, the format, transparency yes/no and the size in its brief; it owns these five scripts and is the only agent type that may run them — a relay worker may not either. Quoting one inside a heredoc body is not running it."
     ;;
 esac
 case "$agent_type" in

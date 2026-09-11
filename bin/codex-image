@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
 usage() {
-  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--size <WxH>] [--ref <absolute image path>]... [--transparent] [--account <profile>]\n' >&2
+  printf 'usage: codex-image --dest <absolute path> --prompt <description> [--size <WxH>] [--ref <absolute image path>]... [--transparent] [--resume <session id>] [--account <profile>]\n' >&2
+  printf '       references: at most %s; transparency mode: %s\n' "$ref_max" "$transparent_mode" >&2
   exit 2
 }
 
@@ -21,20 +32,46 @@ actual_format() { # path
   case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
 }
 
-resolve_root() {
-  local source="${BASH_SOURCE[0]}" directory
-  while [ -L "$source" ]; do
-    directory=$(cd -P "$(dirname "$source")" && pwd)
-    source=$(readlink "$source")
-    [[ "$source" = /* ]] || source="$directory/$source"
-  done
-  cd -P "$(dirname "$source")/.." && pwd
+# `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
+# answers `Blend` and would be delivered as a transparent asset that is nothing of the kind.
+has_usable_alpha() { # path
+  local flag minima
+  flag=$(magick identify -format '%A' "$1" 2>/dev/null) || return 1
+  case "$flag" in Undefined|undefined|False|false) return 1 ;; esac
+  minima=$(magick "$1" -alpha extract -format '%[fx:minima]' info: 2>/dev/null) || return 1
+  awk -v value="$minima" 'BEGIN { exit !(value + 0 < 0.99) }'
 }
+
+command -v jq >/dev/null 2>&1 || {
+  printf 'codex-image: jq is required to read the capability manifest\n' >&2
+  exit 1
+}
+root=$(resolve_root)
+. "$root/share/image-caps.sh" ||
+  { printf 'codex-image: share/image-caps.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
+ref_max=$(image_caps_get "$root" codex '.refs.max // "none"' 2>/dev/null) || ref_max=''
+transparent_mode=$(image_caps_get "$root" codex '.transparent // empty' 2>/dev/null) || transparent_mode=''
+[ -n "$ref_max" ] && [ -n "$transparent_mode" ] || {
+  printf 'codex-image: share/image-caps/codex.json is unreadable; refusing to run unchecked\n' >&2
+  exit 4
+}
+transparent_native=false
+transparent_chroma=false
+case "$transparent_mode" in
+  native) transparent_native=true ;;
+  native+chroma) transparent_native=true; transparent_chroma=true ;;
+  chroma) transparent_chroma=true ;;
+  *)
+    printf 'codex-image: unknown transparency mode in the manifest: %s\n' "$transparent_mode" >&2
+    exit 4
+    ;;
+esac
 
 dest=''
 prompt=''
 size=''
 account=''
+resume_id=''
 remove_green=false
 refs=()
 
@@ -63,6 +100,11 @@ while [ "$#" -gt 0 ]; do
     --transparent)
       remove_green=true
       shift
+      ;;
+    --resume)
+      [ "$#" -ge 2 ] || usage
+      resume_id=$2
+      shift 2
       ;;
     --account)
       [ "$#" -ge 2 ] || usage
@@ -95,7 +137,10 @@ if [ -n "$size" ] && ! [[ "$size" =~ ^[0-9]+x[0-9]+$ ]]; then
   usage
 fi
 ref_count=${#refs[@]}
-[ "$ref_count" -le 3 ] || usage
+if [[ "$ref_max" =~ ^[0-9]+$ ]] && [ "$ref_count" -gt "$ref_max" ]; then
+  printf 'codex-image: %s references exceed the %s the imagegen tool takes\n' "$ref_count" "$ref_max" >&2
+  exit 2
+fi
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
     [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
@@ -104,9 +149,16 @@ fi
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
   usage
 fi
+# A thread NAME is a resume target for the CLI but not one this script can trace back to the
+# account that holds it, and printed session ids are always UUIDs.
+if [ -n "$resume_id" ] &&
+  ! [[ "$resume_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  printf 'codex-image: --resume takes the session UUID printed as session=, not %s\n' "$resume_id" >&2
+  exit 2
+fi
 
 base_home=$HOME
-root=$(resolve_root)
+profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 . "$root/share/image-chroma.sh"
 # Image generation is a worker launch like any other — it runs `codex` headless with CODEX_HOME
 # set, never through codexb — so the pool answers here too.
@@ -116,11 +168,38 @@ root=$(resolve_root)
   { printf 'codex-image: share/worker-model.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
 . "$root/share/worker-claims.sh"
 
+# A session lives inside one account's CODEX_HOME, and `codex exec resume` answers an id it cannot
+# find by silently starting a NEW thread (openai/codex#15538) — so the account is recovered from
+# the store rather than routed for, and an ambiguous answer is asked about instead of guessed.
+resume_account_candidates() { # session id
+  local id=$1 home name
+  for home in "$base_home/.codex" "$profiles_dir"/*; do
+    [ -d "$home" ] || continue
+    if [ "$home" = "$base_home/.codex" ]; then name=main; else name=${home##*/}; fi
+    if [ -d "$home/generated_images/$id" ] ||
+      [ -n "$(find "$home/sessions" -type f -name "*$id*" -print -quit 2>/dev/null)" ]; then
+      printf '%s\n' "$name"
+    fi
+  done
+}
+
+if [ -n "$resume_id" ] && [ -z "$account" ]; then
+  candidates=$(resume_account_candidates "$resume_id")
+  candidate_count=$(printf '%s' "$candidates" | grep -c . || true)
+  if [ "$candidate_count" -eq 1 ]; then
+    account=$candidates
+  else
+    printf 'codex-image: %s accounts hold session %s; pass --account\n' \
+      "$candidate_count" "$resume_id" >&2
+    exit 2
+  fi
+fi
+
 picked=false
 if [ -z "$account" ]; then
   pick_rc=0
   if command -v worker-pick >/dev/null 2>&1; then
-    account=$(worker-pick --account codex 2>/dev/null) || pick_rc=$?
+    account=$(worker-pick --account codex --role image 2>/dev/null) || pick_rc=$?
   else
     pick_rc=127
   fi
@@ -142,7 +221,6 @@ fi
 
 worker_pool_refuse_headless codex "$account" "$(worker_model_pin_csv < <(worker_model_pins codex))" || exit 4
 
-profiles_dir="${CODEX_PROFILES_DIR:-$base_home/.codex-profiles}"
 if [ "$account" = main ]; then
   generated_images_dir="$base_home/.codex/generated_images"
   codex_home=''
@@ -177,21 +255,34 @@ cli_stdout="$tmp_dir/codex.stdout"
 cli_stderr="$tmp_dir/codex.stderr"
 requested_file="$tmp_dir/generated.${dest##*.}"
 content=$prompt
-if [ "$remove_green" = true ]; then
+# Only the chroma-ONLY mode edits the request: the word names the very thing the built-in tool is
+# being asked for wherever native alpha is on offer, and stripping it there would spend the
+# generation on an opaque image.
+if [ "$remove_green" = true ] && [ "$transparent_native" = false ]; then
   content=$(printf '%s' "$content" | sed 's/[[:<:]][Tt][Rr][Aa][Nn][Ss][Pp][Aa][Rr][Ee][Nn][Tt][[:>:]]//g')
   content="$content on a flat solid #00FF00 green background"
 fi
 
 {
   printf 'Use your built-in image_gen tool (imagegen skill). Generate one image with this content:\n%s\n\n' "$content"
+  if [ "$remove_green" = true ] && [ "$transparent_native" = true ]; then
+    printf 'Ask image_gen for a genuinely transparent background and preserve the alpha channel it returns; never flatten it onto a color.\n'
+    if [ "$transparent_chroma" = true ]; then
+      # The fallback key has to be ORDERED here: asked for alpha and unable to deliver it, the tool
+      # answers with an opaque background of its own choosing, and keying that costs the subject.
+      printf 'Only if real transparency is impossible, fill the background with one flat solid #00FF00 green instead.\n'
+    fi
+  fi
   if [ -n "$size" ]; then
     printf 'Generate at the exact size %s.\n' "$size"
   else
     printf 'Use low quality.\n'
   fi
   if [ "$ref_count" -gt 0 ]; then
-    printf 'Use these reference images:\n'
+    printf 'Reference images: call view_image on each path below first, then pass exactly those paths as the image_gen referenced_image_paths argument and leave num_last_images_to_include unset.\n'
     printf -- '- %s\n' "${refs[@]}"
+  elif [ -n "$resume_id" ]; then
+    printf 'Edit the image generated earlier in this thread: set num_last_images_to_include to 1 and pass no referenced_image_paths.\n'
   fi
   printf 'Copy the final image to %s and reply with the absolute path of the file you actually saved on the last line.\n' "$requested_file"
 } >"$instruction_file"
@@ -222,8 +313,12 @@ codex_deadline="${CODEX_IMAGE_DEADLINE:-900}"
 # A deadline while the account lock is held: a hung codex would otherwise block
 # this account forever (waiters cap at 600s, stale reclaim needs >1200s).
 run_codex() {
-  "$codex_cmd" exec -C "$work_dir" --color never --skip-git-repo-check \
-    -o "$stdout_file" - <"$instruction_file" >"$cli_stdout" 2>"$cli_stderr" &
+  local -a argv=(exec -C "$work_dir" --color never --skip-git-repo-check --experimental-json -o "$stdout_file")
+  if [ -n "$resume_id" ]; then
+    argv+=(resume "$resume_id")
+  fi
+  argv+=(-)
+  "$codex_cmd" "${argv[@]}" <"$instruction_file" >"$cli_stdout" 2>"$cli_stderr" &
   local child=$!
   ( end=$(($(date +%s) + codex_deadline))
     while [ "$(date +%s)" -lt "$end" ]; do sleep 5; done
@@ -243,6 +338,17 @@ if [ "$account" = main ]; then
 else
   CODEX_HOME="$codex_home" run_codex || codex_rc=$?
 fi
+
+session=$(jq -Rr 'fromjson? | select(.type == "thread.started") | .thread_id // empty' \
+  "$cli_stdout" 2>/dev/null | head -n 1) || session=''
+if ! [[ "$session" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+  session=''
+fi
+if [ -n "$resume_id" ] && [ -n "$session" ] && [ "$session" != "$resume_id" ]; then
+  printf 'codex-image: resume %s opened a new thread %s instead of continuing it\n' \
+    "$resume_id" "$session" >&2
+fi
+
 if [ "$codex_rc" -ne 0 ]; then
   if [ -e "$tmp_dir/deadline" ]; then
     printf 'codex-image: generation exceeded %ss deadline\n' "$codex_deadline" >&2
@@ -253,33 +359,54 @@ if [ "$codex_rc" -ne 0 ]; then
     exit 3
   fi
   printf 'codex-image: generation failed\n' >&2
-  tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" 2>/dev/null >&2 || true
+  tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" >&2 2>/dev/null || true
   exit 1
 fi
+
+newest_since_launch() { # directory
+  local candidate newest=''
+  while IFS= read -r candidate; do
+    if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then
+      newest=$candidate
+    fi
+  done < <(find "$1" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
+    -newer "$launch_marker" -print 2>/dev/null)
+  printf '%s' "$newest"
+}
 
 generated=$(tail -n 1 "$stdout_file" 2>/dev/null | tr -d '\r')
 if [[ "$generated" != /* ]] || [ ! -f "$generated" ] || [ "$generated" -ot "$launch_marker" ]; then
   generated=''
 fi
+# The built-in tool keys its output directory on the thread, so the harvested session narrows the
+# search to this run's own images before the whole store is swept.
+if [ -z "$generated" ] && [ -n "$session" ] && [ -d "$generated_images_dir/$session" ]; then
+  generated=$(newest_since_launch "$generated_images_dir/$session")
+fi
 if [ -z "$generated" ] && [ -d "$generated_images_dir" ]; then
-  while IFS= read -r candidate; do
-    if [ -z "$generated" ] || [ "$candidate" -nt "$generated" ]; then
-      generated=$candidate
-    fi
-  done < <(find "$generated_images_dir" -type f \
-    \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
-    -newer "$launch_marker" -print 2>/dev/null)
+  generated=$(newest_since_launch "$generated_images_dir")
 fi
 rmdir "$lock_dir" 2>/dev/null || true
 lock_held=false
 if [ -z "$generated" ]; then
   printf 'codex-image: generated file not found\n' >&2
-  tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" 2>/dev/null >&2 || true
+  tail -n 20 "$cli_stderr" "$cli_stdout" "$stdout_file" >&2 2>/dev/null || true
   exit 1
 fi
 
 if [ "$remove_green" = true ]; then
-  chroma_key_to_png "$generated" "$tmp_dir" "$dest"
+  if [ "$transparent_native" = true ] && has_usable_alpha "$generated"; then
+    if [ "$(actual_format "$generated")" = png ]; then
+      cp "$generated" "$dest"
+    else
+      magick "$generated" "PNG:$dest"
+    fi
+  elif [ "$transparent_chroma" = true ]; then
+    chroma_key_to_png "$generated" "$tmp_dir" "$dest"
+  else
+    printf 'codex-image: the generation carries no alpha and the manifest allows no chroma fallback\n' >&2
+    exit 1
+  fi
 elif [ "$extension" != "$(actual_format "$generated")" ]; then
   magick "$generated" "$dest"
 else
@@ -294,4 +421,9 @@ format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
   printf 'codex-image: could not inspect output\n' >&2
   exit 1
 }
-printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\n' "$dest" "$width" "$height" "$format" "$account"
+printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
+  "$dest" "$width" "$height" "$format" "$account" "${session:-none}"
+# The built-in tool names its model nowhere in a `codex exec` run, so the observation is empty and
+# the line says so; the manifest's `gpt-image-2` is guarded by the CLI version instead.
+image_caps_model_check "$root" codex image ''
+image_caps_check "$root" codex "$codex_cmd"

@@ -1041,6 +1041,40 @@ assert test "$query_rc" -eq 3
 assert grep -q 'every gemini account is out of the worker pool' "$WORK/query.err"
 write_config
 
+# Image is not code work: workers-off is not a wall and the pin is not an override there; the
+# pool and its budgets answer, so the freer `main` beats the pinned `work`.
+write_config 'gemini_profile=work' 'gemini_workers=off'
+run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}},
+  {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
+query --account gemini --role image
+assert test "$query_rc" -eq 0
+assert test "$query_out" = main
+query --account gemini
+assert test "$query_rc" -eq 0
+assert test "$query_out" = work
+write_config 'gemini_workers=off'
+query --account gemini --role image
+assert test "$query_rc" -eq 0
+assert test "$query_out" = main
+query --account gemini
+assert test "$query_rc" -eq 3
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: gemini is switched off for workers'
+run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",enabled:false,five_hour:{used_pct:10},weekly:{used_pct:10}},
+  {account:"work",group:"Gemini Models",enabled:false,five_hour:{used_pct:40},weekly:{used_pct:40}}]}'
+query --account gemini --role image
+assert test "$query_rc" -eq 3
+assert grep -q 'every gemini account is out of the worker pool' "$WORK/query.err"
+write_config
+run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
+  {account:"main",group:"Gemini Models",enabled:true,five_hour:{used_pct:100},weekly:{used_pct:100}},
+  {account:"work",group:"Gemini Models",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:10}}]}'
+query --account gemini --role image
+assert test "$query_rc" -eq 0
+assert test "$query_out" = work
+write_config
+
 # Roles are walls layered over the pool: a vendor closed for a role may not serve that work at
 # all, so the query never reaches the question of which account.
 write_config 'claudeb_workers=off'
@@ -1566,8 +1600,8 @@ assert test "$query_out" = worker
 # A value naming nothing would widen the query instead of narrowing it, so it is refused too.
 for bad in "--account nosuchvendor" "--exclude com" "--account" "--account claudeb --bogus x" "stray" \
            "--account claudeb --exclude" "--exclude" "--fable" "--claim" \
-           "--role reviewers" "--role chat" "--role research" "--role" "--account claudeb --role" \
-           "--account claudeb --role rater"; do
+           "--role reviewers" "--role chat" "--role research" "--role image" "--role" \
+           "--account claudeb --role" "--account claudeb --role rater"; do
   bad_out=$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" $bad 2>"$WORK/query-bad.err")
   bad_rc=$?
   assert test "$bad_rc" -eq 2
@@ -1776,4 +1810,4 @@ assert not_contains "$claude_output" 'main*'
 assert test -e "$GATEWAY_CACHE/worker-pick.line.session"
 assert test ! -e "$GATEWAY_CACHE/worker-pick.line.main"
 
-printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the four roles including chat and research without pins or role keys, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/cache/decision golden contract with no routing prose\n' "$asserts"
+printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the five roles including chat and research without pins or role keys and image ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, `gr` cache field, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/cache/decision golden contract with no routing prose\n' "$asserts"
