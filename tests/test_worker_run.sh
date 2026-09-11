@@ -837,11 +837,22 @@ EOF
   202   200 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
   300   100 /Applications/Dia.app/Contents/MacOS/Dia --type=renderer
 EOF
-  # Chrome is up, but every extension host under it belongs to Dia: parentage is the whole test.
+  # Chrome is up with no transport of its own, spelled through every near miss: the extension hosts
+  # under it belong to Dia (101 even holds a socket), the one child Chrome does have is an ordinary
+  # renderer whose flags are not a host command, and the host that IS Chrome's (205) has no socket.
+  # Each line fails a different one of the three tests — command, parentage, its own socket.
   cat >"$BT_WORK/ps-chrome-bare" <<'EOF'
   100     1 /Applications/Dia.app/Contents/MacOS/Dia
+  101   100 /Users/egorloy/.local/bin/claude --chrome-native-host
   102   100 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
   200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+  201   200 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --type=utility --utility-sub-type=network.mojom.NetworkService
+  205   200 /Users/egorloy/.local/bin/claude --chrome-native-host
+EOF
+  cat >"$BT_WORK/ps-dia-bare" <<'EOF'
+  100     1 /Applications/Dia.app/Contents/MacOS/Dia
+  200     1 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+  202   200 /Users/egorloy/.codex/plugins/cache/openai-bundled/chrome/latest/extension-host/macos/arm64/ChatGPT for Chrome chrome-extension://hehggadaopoacecdllhhajmbjkdcmajg/
 EOF
   cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
   cat >"$BT_PS" <<EOF
@@ -1002,6 +1013,7 @@ EOF
   local WORKER_RUN_DIR="$BT_RUNS"
   export BROWSE_DIA_USER_DATA BROWSE_CHROME_USER_DATA BROWSE_CODEX_CONFIG BROWSE_WORKER_PICK BROWSE_SKIP_PROCESSES WORKER_RUN_DIR
   local dev=6ada21d4-ae66-4990-9040-97e18bb7b529 other_dev=8e70ec10-fa25-45a9-8e57-2ecae0629d12
+  local chrome_dev=b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d
   local cache="$BT_RUNS/browse/devices.json" fixture="$BT_RUNS/codex-browser-fixture"
   mkdir -p "$fixture"
   printf '{"vendor":"codex","account":"spare","workdir":"%s","started_at":0,"pid":0,"browser":true}\n' "$WORK/workdir" >"$fixture/meta.json"
@@ -1174,6 +1186,17 @@ EOF
   assert grep -q 'await cua.getState()' "$STUB_DIR/codex.stdin"
   assert grep -qx 'test brief' "$STUB_DIR/codex.stdin"
   assert test "$(cat "$WORK/brief")" = "$original_brief"
+
+  # A codex plan names no device, and what the run then records is the TARGET's browser: the other
+  # browser's uuid in meta.json points every later reader at a device the run never touched.
+  clear_stub
+  start_ok codex --browser --target chrome --account alternate
+  assert await_done
+  assert jq -e --arg dev "$chrome_dev" '.browser_device == $dev' "$RUN_DIR/meta.json" >/dev/null
+  clear_stub
+  start_ok codex --browser --target dia --account alternate
+  assert await_done
+  assert jq -e --arg dev "$dev" '.browser_device == $dev' "$RUN_DIR/meta.json" >/dev/null
 
   clear_stub
   BT_SYNC_MODE=broken
@@ -1551,6 +1574,8 @@ EOF
   assert grep -qx 'CHROME: launched' <<<"$out"
   assert grep -qF -- '--profile-directory=Profile 1' "$BT_WORK/launch.log"
   assert test "$(grep -c ' Dia' "$BT_WORK/launch.log")" -eq 0
+  # Chrome's own claude host answers for it, so the wait ends instead of timing out.
+  assert test "$(grep -c 'did not connect' <<<"$out")" -eq 0
 
   # 19: launched but the extension never connects — one instruction, and no plan
   cat >"$BT_WORK/bin/open-launch-mute" <<EOF
@@ -1584,6 +1609,27 @@ EOF
   rc=0
   out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-marker" BROWSE_SKIP_PROCESSES=0 BROWSE_CHROME_STATUS=running \
         BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --target chrome --vendor codex) || rc=$?
+  assert test "$rc" -eq 0
+  assert grep -qx 'PLAN: codex account=main' <<<"$out"
+  assert test "$(grep -c 'ChatGPT extension is not connected' <<<"$out")" -eq 0
+
+  # 20b: the same parentage the other way round — Chrome's ChatGPT host is not Dia's transport
+  cat >"$BT_WORK/bin/pgrep-yes" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+  chmod +x "$BT_WORK/bin/pgrep-yes"
+  cp "$BT_WORK/ps-dia-bare" "$BT_PS_LISTING"
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-yes" BROWSE_SKIP_PROCESSES=0 \
+        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --vendor codex) || rc=$?
+  assert test "$rc" -eq 2
+  assert grep -qx 'REASON: codex skipped — the ChatGPT extension is not connected in Dia (work dia); enable it at dia://extensions and sign in' <<<"$out"
+  assert grep -qx 'PLAN: none' <<<"$out"
+  cp "$BT_WORK/ps-connected" "$BT_PS_LISTING"
+  rc=0
+  out=$(BROWSE_PGREP="$BT_WORK/bin/pgrep-yes" BROWSE_SKIP_PROCESSES=0 \
+        BROWSE_SKY_APP="$BT_WORK/no-sky-app" "$RUNNER" browse --vendor codex) || rc=$?
   assert test "$rc" -eq 0
   assert grep -qx 'PLAN: codex account=main' <<<"$out"
   assert test "$(grep -c 'ChatGPT extension is not connected' <<<"$out")" -eq 0
@@ -2366,7 +2412,7 @@ transcript_report() (
   for name in compute_transcript_files session_id session_transcript codex_home grok_home \
       grok_end_field grok_session_dir_matches classify_tool_rows resolve_tool_path \
       writes_through_shell gemini_tool_rows codex_tool_rows grok_tool_rows transcript_files \
-      transcript_ran_shell workdir_escape_line; do
+      transcript_wrote_through_shell workdir_escape_line; do
     eval "$(sed -n "/^$name() {/,/^}/p" "$RUNNER")"
   done
   eval "$(sed -n '/^SHELL_FLOOR_PARTIAL=/p; /^WRITE_SHELL_PATTERN=/p' "$RUNNER")"
@@ -2566,6 +2612,67 @@ assert await_done
 assert test "$(grep -c '^PARTIAL: ' "$RUN_DIR/files")" -eq 0
 assert test ! -e "$RUN_DIR/dirty"
 
+# The contract in a checkout other chats are working in RIGHT NOW: the snapshot holds every path
+# that moved in the run's window, and only the run's own listing says which of them the run wrote.
+# Handed the rest, the launching chat inherits a co-tenant's live work as its own review debt —
+# live 2026-09-11, a run that edited 2 files was charged with 8.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+tool_call Edit file_path "$DIRT_TOP/tests/edited-by-the-run" \
+  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'the run wrote this\n' >"$DIRT_REPO/tests/edited-by-the-run"
+printf 'a co-tenant wrote this\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
+assert test "$(grep -c '^RUN-FILE: ' <<<"$report")" -eq 1
+assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
+assert_fails grep -q 'written-by-a-co-tenant' "$RUN_DIR/produced"
+assert grep -qxF "1 path(s) changed in the checkout during the run by another writer and are not this run's: bin/written-by-a-co-tenant" \
+  "$RUN_DIR/files-note"
+# The snapshot did NOT stand here, and saying it did is what sent the co-tenant's paths through.
+assert_fails grep -q 'snapshot attribution stands' "$RUN_DIR/files-note"
+
+# A worker that merely RAN something — its own suite — named every file it wrote. Doubted there,
+# every serious run is back to claiming the whole window.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Edit file_path "$DIRT_TOP/tests/edited-by-the-run"
+  tool_call Bash command 'bash tests/run.sh'
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'the run wrote this again\n' >"$DIRT_REPO/tests/edited-by-the-run"
+printf 'a co-tenant wrote this again\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+assert await_done
+report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'RUN-FILES: 1' <<<"$report"
+assert grep -qx 'RUN-FILE: tests/edited-by-the-run' <<<"$report"
+assert_fails grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
+assert_fails grep -q 'snapshot attribution stands' "$RUN_DIR/files-note"
+
+# And a Bash call that WRITES is the one case the listing cannot be trusted to be whole: the floor
+# comes back, the snapshot stands, and both paths are the launching chat's to review.
+clear_stub
+TOOL_TS=$(iso $(($(date +%s) + 60)))
+{
+  tool_call Edit file_path "$DIRT_TOP/tests/edited-by-the-run"
+  tool_call Bash command 'sed -i "" s/a/b/ bin/written-by-a-co-tenant'
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+export STUB_SLEEP=1
+start_ok claudeb --workdir "$DIRT_REPO"
+printf 'once more\n' >"$DIRT_REPO/tests/edited-by-the-run"
+printf 'once more\n' >"$DIRT_REPO/bin/written-by-a-co-tenant"
+assert await_done
+assert grep -qx 'tests/edited-by-the-run' "$RUN_DIR/files"
+assert grep -qx 'bin/written-by-a-co-tenant' "$RUN_DIR/files"
+assert grep -qx 'transcript listing disagrees with the workdir snapshot; snapshot attribution stands' \
+  "$RUN_DIR/files-note"
+
 clear_stub
 TOOL_TS=$(iso $(($(date +%s) + 60)))
 {
@@ -2624,6 +2731,14 @@ touch "$SNAPSHOT_TOUCHED"
 EOF
     chmod +x "$STUB_DIR/relay_hook"
     export SNAPSHOT_TARGET="$DIRT_REPO/bin/shell-only-$vendor"
+    # The hook above writes through the SHELL, and claudeb is the one vendor here whose transcript
+    # this suite writes: without the Bash call that did it, its listing reads as complete and the
+    # snapshot narrows to nothing — which is the whole point of the shell floor.
+    if [ "$vendor" = claudeb ]; then
+      TOOL_TS=$(iso $(($(date +%s) + 600)))
+      tool_call Bash command 'printf "shell content\n" >bin/shell-only-claudeb; rm bin/shell-deleted-claudeb' \
+        >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+    fi
     start_ok "$vendor" --workdir "$DIRT_REPO"
     assert await_done
     path="bin/shell-only-$vendor"
@@ -2708,6 +2823,9 @@ TOOL_TS=$(iso $(($(date +%s) + 60)))
   tool_call Edit file_path "$PROD_TOP/bin/untouched"
   tool_call Edit file_path "$PROD_TOP/bin/co-tenant-open"
   tool_call Edit file_path "$PROD_TOP/$PROD_ESC"
+  tool_call Edit file_path "$PROD_TOP/bin/committed"
+  tool_call Edit file_path "$PROD_TOP/bin/committed-open"
+  tool_call Write file_path "$PROD_TOP/bin/committed-born"
 } >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
 start_ok claudeb --workdir "$PROD_REPO"
@@ -5340,8 +5458,12 @@ ln -s target-dir "$ATTR_REPO/link-dir"
 git -C "$ATTR_REPO" add -A >/dev/null
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'symlinks' >/dev/null
 TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Edit file_path "$ATTR_TOP/link-file" \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+# A symlink is made with `ln`, never with an editor call: the run says so, or the two links below
+# that no tool call names read as another writer's.
+{
+  tool_call Edit file_path "$ATTR_TOP/link-file"
+  tool_call Bash command 'ln -sf new-file link-file; ln -s missing dangling'
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export STUB_SLEEP=1
 start_ok claudeb --workdir "$ATTR_REPO"
 ln -sf new-file "$ATTR_REPO/link-file"
@@ -5411,8 +5533,10 @@ printf 'same-blob\n' >"$ATTR_REPO/bin/renamed-from"
 git -C "$ATTR_REPO" add bin/renamed-from
 git -C "$ATTR_REPO" -c user.email=t@t -c user.name=t commit -qm 'to rename' >/dev/null
 TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Edit file_path "$ATTR_TOP/bin/renamed-from" \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+{
+  tool_call Edit file_path "$ATTR_TOP/bin/renamed-from"
+  tool_call Bash command 'git mv bin/renamed-from bin/renamed-to'
+} >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
 export STUB_SLEEP=1
 start_ok claudeb --workdir "$ATTR_REPO"
 git -C "$ATTR_REPO" mv bin/renamed-from bin/renamed-to

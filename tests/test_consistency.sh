@@ -2050,7 +2050,7 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # The record's own fields, and the LEDGER they land in: a transition one of the run's own COMMITS
   # landed is the debt ledger's, everything else the commit journal's, and a debt row stamped into
   # the commit journal is read by nobody pricing debt.
-  assert grep -Fq 'journal_row "$1/$RJ_DEBT_JOURNAL" "$2" "$3" "$4" "$5" "$6" || return 1' \
+  assert grep -Fq 'journal_row "$1/$RJ_DEBT_JOURNAL" "$2" "$3" "$4" "$5" "$6" "${7:-}" || return 1' \
     "$COMMIT_JOURNAL"
   assert grep -Fq 'journal_commit_row "$3" "$RUN_TOP" "$2" "$prev" "$cur" "$relative"' \
     "$COMMIT_JOURNAL"

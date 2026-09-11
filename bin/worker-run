@@ -971,7 +971,7 @@ supervise() {
 }
 
 persist_run_files() {
-  local directory="$1" workdir
+  local directory="$1" workdir snapshot reason
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   if snapshot_workdir "$directory" "$workdir" after; then
     compute_snapshot_files "$directory" "$workdir"
@@ -983,6 +983,24 @@ persist_run_files() {
   if [ -z "$workdir" ] || [ "$workdir" = null ]; then
     RUN_FILES_LIST=''
     RUN_FILES_REASON='the run recorded no workdir to resolve its files against'
+  fi
+  snapshot=$RUN_FILES_LIST
+  reason=$RUN_FILES_REASON
+  # The snapshot says what CHANGED in the shared checkout, the transcript what THIS RUN wrote; only a
+  # readable, complete listing may narrow the snapshot, else a co-tenant's edit becomes this run's.
+  compute_transcript_files "$directory"
+  RUN_LISTING_LIST=$RUN_FILES_LIST
+  RUN_LISTING_REASON=$RUN_FILES_REASON
+  RUN_LISTING_PARTIAL=$RUN_FILES_PARTIAL
+  record_workdir_escape "$directory"
+  RUN_FILES_LIST=$snapshot
+  RUN_FILES_REASON=$reason
+  RUN_FILES_COTENANT=''
+  if [ -z "$reason" ] && [ -z "$RUN_LISTING_REASON" ] && [ -z "$RUN_LISTING_PARTIAL" ]; then
+    RUN_FILES_COTENANT=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
+                                  <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
+    RUN_FILES_LIST=$(comm -12 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
+                              <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
   fi
   {
     [ -z "$workdir" ] || [ "$workdir" = null ] || printf 'WORKDIR: %s\n' "$workdir"
@@ -1280,32 +1298,6 @@ produced_commit_rows() { # top rel head-before
       /^:/ { pending = $0 }'
 }
 
-# The content this run PRODUCED, which is what a debt reader prices: one row per link, so ownership
-# follows the BLOB and no longer a path and an epoch. Written only for a run that answers to a chat
-# and worked in a git tree — content nobody owns is what `dirty` is for — and written even when it
-# is empty, since its presence is this run answering for its own content and its absence is what
-# sends the sweep back to the listing.
-record_produced() { # directory workdir
-  local directory="$1" workdir="$2" top rel head
-  [ -s "$directory/launcher" ] || return 0
-  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
-  [ -n "$top" ] || return 0
-  rel=${workdir%/}
-  case "$rel" in
-    "$top"/*) rel=${rel#"$top"/} ;;
-    *) rel='' ;;
-  esac
-  head=$(tr -d '[:space:]' <"$directory/head-before" 2>/dev/null)
-  { produced_commit_rows "$top" "$rel" "$head" "$(cat "$directory/head-after" 2>/dev/null)" |
-      AWK_LIST="$RUN_FILES_LIST" awk -F'\t' 'BEGIN { n=split(ENVIRON["AWK_LIST"], p, "\n"); for (i=1;i<=n;i++) named[p[i]]=1 } $3 in named'
-    produced_edit_rows "$directory" "$top" "$rel" "$head" \
-      < <(listing_top_paths "$directory" "$top" "$workdir"); } \
-    >"$directory/produced.tmp.$$" 2>/dev/null &&
-    mv -f "$directory/produced.tmp.$$" "$directory/produced" 2>/dev/null ||
-    rm -f "$directory/produced.tmp.$$" 2>/dev/null
-  return 0
-}
-
 record_workdir_dirt() { # directory workdir
   local directory="$1" workdir="$2" top gained
   [ -z "$RUN_FILES_REASON" ] || return 0
@@ -1483,7 +1475,10 @@ start_run() {
       return 2
     fi
     browser_account=$(jq -r '.plan.account' <<<"$browser_json")
-    browser_device=$(jq -r '.plan.device // .dia_device.id // empty' <<<"$browser_json")
+    # A codex plan carries no device, and the fallback the run records has to be the TARGET's own
+    # browser: Dia's uuid written into a chrome run names a device that run never touches.
+    browser_device=$(jq -r --arg target "${browser_target:-dia}" \
+      '.plan.device // (if $target == "chrome" then .chrome_device.id else .dia_device.id end) // empty' <<<"$browser_json")
     browser_preamble=$(jq -r '.preamble_file' <<<"$browser_json")
     if [ "$vendor" = claudeb ] && [ -n "$explicit_account" ] && [ "$explicit_account" != "$browser_account" ]; then
       jq -r '.reasons[] | "REASON: " + .' <<<"$browser_json"
@@ -2386,13 +2381,15 @@ compute_transcript_files() {
         RUN_FILES_REASON='transcript unreadable'
         return 0
       fi
-      # A list of editor calls answers for editor calls: a run that also worked through the shell —
+      # A list of editor calls answers for editor calls: a run that also WROTE through the shell —
       # `sed -i`, a redirect, `mv` — changed files no transcript records as a tool call, and the list
-      # is a floor rather than the whole of it. Said per run, because a run that ran no shell command
-      # has a complete list and must not be doubted.
-      if transcript_ran_shell "$transcript" "$started"; then
-        RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL"
-      fi
+      # is a floor rather than the whole of it. Said per run, because a run whose shell only READ
+      # (its own test suite, `git status`) has a complete list and must not be doubted.
+      transcript_wrote_through_shell "$transcript" "$started"
+      case $? in
+        0) RUN_FILES_PARTIAL="$SHELL_FLOOR_PARTIAL" ;;
+        2) RUN_FILES_LIST=''; RUN_FILES_REASON='transcript unreadable'; return 0 ;;
+      esac
       ;;
     gemini)
       rows=$(gemini_tool_rows "$transcript" "$started") || {
@@ -2422,16 +2419,38 @@ compute_transcript_files() {
   return 0
 }
 
-transcript_crosscheck() (
+cotenant_note() { # paths
+  local paths="$1" count listed
+  count=$(grep -c '' <<<"$paths")
+  listed=$paths
+  [ "$count" -le "$UNNAMED_INLINE_MAX" ] || listed=$(head -n "$UNNAMED_INLINE_MAX" <<<"$paths")
+  listed=$(tr '\n' ' ' <<<"$listed")
+  listed=${listed% }
+  if [ "$count" -gt "$UNNAMED_INLINE_MAX" ]; then
+    printf '%s path(s) changed in the checkout during the run by another writer and are not this run'"'"'s; the first %s: %s\n' \
+      "$count" "$UNNAMED_INLINE_MAX" "$listed"
+    return 0
+  fi
+  printf '%s path(s) changed in the checkout during the run by another writer and are not this run'"'"'s: %s\n' \
+    "$count" "$listed"
+}
+
+# The caveat the launching chat reads beside the file list, from what `persist_run_files` already
+# resolved. Where the intersection stood, what the run does NOT answer for is the whole of the
+# caveat; where it could not, the snapshot is still the attribution and the reader is told so.
+transcript_crosscheck() ( # directory
   local directory="$1" listed
-  listed=$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null)
-  compute_transcript_files "$directory"
-  record_workdir_escape "$directory"
-  if [ -n "$RUN_FILES_REASON" ]; then
-    printf 'transcript cross-check unavailable: %s\n' "$RUN_FILES_REASON"
-  elif [ "$listed" != "$RUN_FILES_LIST" ] || [ -n "$RUN_FILES_PARTIAL" ]; then
-    printf 'transcript listing disagrees with the workdir snapshot; snapshot attribution stands\n'
-  fi >"$directory/files-note"
+  {
+    if [ -n "${RUN_LISTING_REASON:-}" ]; then
+      printf 'transcript cross-check unavailable: %s\n' "$RUN_LISTING_REASON"
+    elif [ -n "${RUN_FILES_COTENANT:-}" ]; then
+      cotenant_note "$RUN_FILES_COTENANT"
+    elif [ -n "${RUN_LISTING_PARTIAL:-}" ] || [ -n "$RUN_FILES_REASON" ]; then
+      listed=$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null)
+      [ "$listed" = "${RUN_LISTING_LIST:-}" ] && [ -z "${RUN_LISTING_PARTIAL:-}" ] ||
+        printf 'transcript listing disagrees with the workdir snapshot; snapshot attribution stands\n'
+    fi
+  } >"$directory/files-note"
   if [ -n "${RUN_FOREIGN_NOTE:-}" ]; then
     printf '%s\n' "$RUN_FOREIGN_NOTE" >>"$directory/files-note" 2>/dev/null || :
   fi
@@ -2452,16 +2471,20 @@ compute_run_files() {
   compute_snapshot_files "$directory" "$workdir"
 }
 
-transcript_ran_shell() {
-  local transcript="$1" since="${2:-0}" hits
+# Whether any Bash call in this run's window wrote. Not "ran a command at all": a worker that runs
+# its own suite trips that on every serious run, and a listing doubted there can never narrow the
+# workdir snapshot to what the run itself wrote. 0 = wrote, 1 = did not, 2 = unreadable.
+transcript_wrote_through_shell() { # transcript since
+  local transcript="$1" since="${2:-0}" commands
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
-  hits=$(jq -r --argjson since "$since" '
+  commands=$(jq -r --argjson since "$since" '
            select(((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
                     | fromdateiso8601? // 0)) >= $since)
            | .. | objects
            | select((.type? == "tool_use") and ((.name? // "") == "Bash"))
-           | .name' "$transcript" 2>/dev/null) || return 1
-  [ -n "$hits" ]
+           | (.input.command? // "") | tostring' "$transcript" 2>/dev/null) || return 2
+  [ -n "$commands" ] || return 1
+  writes_through_shell "$commands"
 }
 
 run_files() {
@@ -2843,6 +2866,11 @@ produced_commit_rows() { # top rel head-before [after]
       }'
 }
 
+# The content this run PRODUCED, which is what a debt reader prices: one row per link, so ownership
+# follows the BLOB and no longer a path and an epoch. Written only for a run that answers to a chat
+# and worked in a git tree — content nobody owns is what `dirty` is for — and written even when it
+# is empty, since its presence is this run answering for its own content and its absence is what
+# sends the sweep back to the listing.
 record_produced() { # directory workdir
   local directory="$1" workdir="$2" top rel head after foreign commits
   RUN_FOREIGN_NOTE=''
@@ -3097,12 +3125,14 @@ browse_browser_pids() { # ps-listing app-path
       if (index($0, app) && index($0, "--type=") == 0) print pid }' <<<"$1"
 }
 
-browse_host_pids() { # ps-listing needle parent-pid...
-  local listing="$1" needle="$2"
+# The host is matched by the command it IS, never by a fragment a sibling can also carry: a browser
+# spawns dozens of children, and only the extension host's socket answers for this vendor.
+browse_host_pids() { # ps-listing command-regex parent-pid...
+  local listing="$1" pattern="$2"
   shift 2
-  awk -v needle="$needle" -v parents=" $* " '
+  awk -v pattern="$pattern" -v parents=" $* " '
     { pid = $1; ppid = $2; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, "")
-      if (index($0, needle) && index(parents, " " ppid " ")) print pid }' <<<"$listing"
+      if ($0 ~ pattern && index(parents, " " ppid " ")) print pid }' <<<"$listing"
 }
 
 browse_transport_present() { # vendor app-path
@@ -3112,14 +3142,14 @@ browse_transport_present() { # vendor app-path
   [ -n "$pids" ] || return 1
   if [ "$vendor" = claudeb ]; then
     sock_dir="${BROWSE_CLAUDE_SOCKET_DIR:-/tmp/claude-mcp-browser-bridge-$(id -un)}"
-    for host in $(browse_host_pids "$listing" -- '--chrome-native-host' $pids); do
+    for host in $(browse_host_pids "$listing" 'claude.*[[:space:]]--chrome-native-host([[:space:]]|$)' $pids); do
       [ -e "$sock_dir/$host.sock" ] && return 0
     done
     return 1
   fi
   sock_dir="${BROWSE_CODEX_SOCKET_DIR:-/tmp/codex-browser-use}"
   [ -d "$sock_dir" ] || return 1
-  for host in $(browse_host_pids "$listing" 'ChatGPT for Chrome' $pids); do
+  for host in $(browse_host_pids "$listing" 'ChatGPT for Chrome([[:space:]]|$)' $pids); do
     # The socket is named by a rotating uuid, so only the host's own open files tie one to this
     # browser; where lsof cannot be asked, the parentage stands alone.
     command -v "$lsof_cmd" >/dev/null 2>&1 || return 0
