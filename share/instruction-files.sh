@@ -87,10 +87,104 @@ _instruction_class_files() {
 # harness rewrites it whenever Egor switches model or permission mode, so denying writes to it
 # cost him a tactical "ok" and caught nothing. What it does hold is these very hooks, and it is
 # the one watched file git cannot give back, so it stays reported and its bytes stay kept.
+# $2, when given, is the ranked cache below: the watch set is then the enumeration PLUS the few
+# project files the ranking speaks for. Called without it — the rebuild does, and so does anything
+# that wants the enumeration alone — the answer is what ~/.claude reaches and nothing else.
 instruction_visible_paths() {
-  local home=${1:-$HOME}
+  local home=${1:-$HOME} cache=${2:-}
   [ -f "$home/.claude/settings.json" ] && _instruction_emit "$home/.claude/settings.json"
   instruction_guarded_paths "$home"
+  [ -z "$cache" ] || instruction_ranked_paths "$cache"
+}
+
+# The enumeration above is what `~/.claude` REACHES, and the gate's `always` class is wider than
+# that: any project `CLAUDE.md` and any `CLAUDE.local.md` answers to it, wherever the project sits.
+# Those are the dearest files Egor owns — a project `CLAUDE.md` rides in every session of that
+# project — and the tripwire watched none of them, which is the hole `_instruction_class_dirs`
+# warns about in the other direction: guarded by one door, invisible to the other.
+# "Every project Egor might open" is not a set that can be enumerated, so the ranking already on
+# disk stands in for it: tokenmap's `read-rates.json`, the same index both gates quote prices from,
+# ordered by monthly reads and cut at a fixed count. That bounds the watch set — it cannot grow
+# with the number of repositories on the disk — and spends the budget on the files whose silent
+# change costs the most.
+# MEMORY.md and the memory directory are deliberately out, though they rank just as high: the
+# model writes them by design, and an alarm that fires on every save it was told to make is an
+# alarm Egor learns to ignore. A worktree's copy is out for the opposite reason — it is the
+# repository's own CLAUDE.md under a path that is deleted when the task ends, so it would spend a
+# slot on a duplicate and then report the ordinary removal of a branch as a DELETED instruction file.
+INSTRUCTION_RANKED_MAX=${INSTRUCTION_RANKED_MAX:-10}
+# Stamped into the cache's first line. The cache is otherwise only re-cut when the index moves, so
+# without this a change to the rules above — a new exclusion, a different count — would not reach
+# the watch set until tokenmap happened to regenerate.
+INSTRUCTION_RANKED_VERSION=1
+
+instruction_ranked_rates() {
+  local home=${1:-$HOME}
+  printf '%s' "${TOKENMAP_RATES:-$home/.local/share/tokenmap/read-rates.json}"
+}
+
+# The cache's lines as RECORDED, without asking the disk whether they still exist. A caller
+# deciding whether the ranking still speaks for a path may not be told "no" merely because the
+# file is the one that vanished — that is the very case it is asking about.
+instruction_ranked_names() { # cache
+  local p
+  [ -f "$1" ] || return 0
+  while IFS= read -r p; do
+    case "$p" in ''|'#'*) continue ;; esac
+    _instruction_emit "$p"
+  done <"$1"
+}
+
+instruction_ranked_paths() { # cache
+  local p
+  while IFS= read -r p; do
+    [ -f "$p" ] && printf '%s\n' "$p"
+  done < <(instruction_ranked_names "$1")
+}
+
+# Rebuilt at session start alone, never on the hot path: this is a jq over a 200 KB index plus a
+# realpath per candidate, against the three milliseconds the whole quiet check is allowed.
+# A path the enumeration already reaches is dropped HERE, by resolved target rather than by name:
+# `~/.claude/CLAUDE.md` is a symlink onto the config repository's copy, which is also the ranking's
+# first row, and watching one file under two names reports every change to it twice.
+instruction_ranked_rebuild() { # home cache
+  local home=${1:-$HOME} cache=$2 rates tmp p real known=''
+  rates=$(instruction_ranked_rates "$home")
+  [ -f "$rates" ] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  while IFS= read -r p; do
+    real=$(realpath "$p" 2>/dev/null) || real=$p
+    known="$known$real$_instruction_nl"
+  done < <(instruction_visible_paths "$home")
+  tmp="$cache.$$"
+  mkdir -p "$(dirname "$cache")" 2>/dev/null || return 1
+  printf '#%s\n' "$INSTRUCTION_RANKED_VERSION" >"$tmp" || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] && [ -f "$p" ] || continue
+    real=$(realpath "$p" 2>/dev/null) || real=$p
+    case "$_instruction_nl$known" in *"$_instruction_nl$real$_instruction_nl"*) continue ;; esac
+    known="$known$real$_instruction_nl"
+    _instruction_emit "$p" >>"$tmp"
+  done < <(jq -r --argjson n "$INSTRUCTION_RANKED_MAX" '
+      (.paths.entries // {}) | to_entries
+      | map(select(.key | test("/(CLAUDE\\.md|CLAUDE\\.local\\.md)$")))
+      | map(select(.key | test("/\\.claude/worktrees/") | not))
+      | sort_by(-(.value.monthly.reads // 0)) | .[:$n] | .[].key' "$rates" 2>/dev/null)
+  mv "$tmp" "$cache" 2>/dev/null || { rm -f "$tmp"; return 1; }
+}
+
+# Stale means the ranking has moved since the cache was cut, or there is no cache at all. A rates
+# file that never appears leaves the cache absent and the watch set at the enumeration, which is
+# the behaviour before any of this existed.
+instruction_ranked_refresh() { # home cache
+  local home=${1:-$HOME} cache=$2 rates stamp=''
+  rates=$(instruction_ranked_rates "$home")
+  [ -f "$rates" ] || return 0
+  if [ -f "$cache" ] && [ ! "$cache" -ot "$rates" ]; then
+    IFS= read -r stamp <"$cache"
+    [ "$stamp" = "#$INSTRUCTION_RANKED_VERSION" ] && return 0
+  fi
+  instruction_ranked_rebuild "$home" "$cache"
 }
 
 # What the write GATE guards.

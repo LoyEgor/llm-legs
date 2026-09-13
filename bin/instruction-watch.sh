@@ -23,6 +23,8 @@ set -u
 STATE_DIR="${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}"
 LOG_FILE="${INSTRUCTION_WATCH_LOG:-$HOME/.claude/instruction-changes.log}"
 ALERT="${INSTRUCTION_WATCH_ALERT:-hs}"
+# A rolled-back writer must be told or it may repeat the write.
+CHAT="${INSTRUCTION_WATCH_CHAT:-reverts}"
 
 # ~/.claude/hooks is a symlink into the config repository and the entry there is a symlink
 # into this one, so follow the chain rather than the first hop.
@@ -34,7 +36,9 @@ for _ in 1 2 3 4 5; do
 done
 . "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null || exit 0
 
-visible_paths() { instruction_visible_paths "$HOME"; }
+RANKED_CACHE="$STATE_DIR/ranked.txt"
+
+visible_paths() { instruction_visible_paths "$HOME" "$RANKED_CACHE"; }
 
 # The harness rewrites settings.json whenever the model or the permission mode changes, and
 # those are Egor's own switches, not an edit to the file's meaning: five alerts in seventeen
@@ -82,6 +86,9 @@ shq() {
 SNAP_DIR="$STATE_DIR/snapshot"
 REVERT_DIR="$STATE_DIR/reverts"
 ALERT_DIR="$STATE_DIR/alerts"
+JOURNAL="$STATE_DIR/events.jsonl"
+RECEIPT_DIR="$STATE_DIR/receipts"
+JOURNAL_MAX=${INSTRUCTION_WATCH_JOURNAL_MAX:-200}
 SNAP_MAX_BYTES=1048576
 _watch_nl='
 '
@@ -200,19 +207,49 @@ log_line() {
   printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$1" >>"$LOG_FILE" 2>/dev/null || true
 }
 
-# Egor's own channel. Detached and silenced: a wedged Hammerspoon must not hold a hook
-# that runs after every Bash call.
-# The message carries a file name, and an ADDED report carries one nobody vetted, so it is
-# escaped as a Lua literal rather than trusted: backslash first, then the quote, then the
-# newlines a Lua string cannot hold at all.
-alert_egor() {
-  command -v "$ALERT" >/dev/null 2>&1 || return 0
-  local msg=$1
-  msg=${msg//\\/\\\\}
-  msg=${msg//\"/\\\"}
-  msg=${msg//$'\n'/ }
-  msg=${msg//$'\r'/ }
-  ( "$ALERT" -c "hs.alert.show(\"$msg\", 6)" >/dev/null 2>&1 & ) &
+journal_event() { # sent id summary
+  local sent=$1 id=$2 summary=$3 line n
+  local files='' vis k
+  local lock="$STATE_DIR/journal.lock" i=0 born now
+  for k in "${keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
+  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  line=$(jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    --arg sid "${sid:-}" --arg summary "$summary" --arg sent "$sent" \
+    --arg files "$files" --arg restores "$(printf '%s\n' ${restores[@]+"${restores[@]}"})" \
+    --arg reverted "$(printf '%s\n' ${reverted[@]+"${reverted[@]}"})" \
+    '{id:$id,at:$at,sid:$sid,summary:$summary,sent:$sent,
+      files:($files|split("\n")|map(select(length>0))),
+      restores:($restores|split("\n")|map(select(length>0))),
+      reverted:($reverted|split("\n")|map(select(length>0)))}' 2>/dev/null) || return 1
+  [ -n "$line" ] || return 1
+  # tail-then-mv of the journal drops a line another session appends between the two;
+  # that session has already claimed its marker, so the record would vanish.
+  while ! mkdir "$lock" 2>/dev/null; do
+    born=$(stat -f %m "$lock" 2>/dev/null) || born=
+    now=$(date +%s)
+    if [ -n "$born" ] && [ $((now - born)) -gt 30 ]; then
+      rmdir "$lock" 2>/dev/null || true
+    fi
+    i=$((i + 1))
+    [ "$i" -lt 50 ] || return 1
+    sleep 0.02
+  done
+  printf '%s\n' "$line" >>"$JOURNAL" 2>/dev/null || { rmdir "$lock" 2>/dev/null; return 1; }
+  n=$(wc -l <"$JOURNAL" 2>/dev/null) || n=0
+  if [ "${n:-0}" -gt $((JOURNAL_MAX * 2)) ] 2>/dev/null; then
+    tail -n "$JOURNAL_MAX" "$JOURNAL" >"$JOURNAL.$$" 2>/dev/null &&
+      mv "$JOURNAL.$$" "$JOURNAL" 2>/dev/null
+    rm -f "$JOURNAL.$$" 2>/dev/null
+  fi
+  rmdir "$lock" 2>/dev/null || true
+  return 0
+}
+
+poke_alert() {
+  # Keep untrusted filenames in JSON, never in the Lua command.
+  command -v "$ALERT" >/dev/null 2>&1 || return 1
+  ( "$ALERT" -c 'local ok, m = pcall(require, "instruction-watch"); if ok then m.pump() end' \
+      >/dev/null 2>&1 & ) &
   return 0
 }
 
@@ -224,11 +261,42 @@ alert_egor() {
 # for what he has already been told. Only the session that wins the atomic claim speaks; every
 # other one still rewrites its baseline and still reports the change to its own model, which is
 # per-session context and stays.
-alert_once() { # path content-key message
-  local key
-  key=$(printf '%s\n%s\n' "$1" "$2" | shasum -a 256 | cut -c1-16)
-  instruction_mark_once "$ALERT_DIR" "$key" || return 0
-  alert_egor "$3"
+watch_mark_key() { # path content-key
+  printf '%s\n%s\n' "$1" "$2" | shasum -a 256 | cut -c1-16
+}
+
+clear_gone_marks() { # path
+  local g
+  for g in absent gone; do
+    rmdir "$ALERT_DIR/$(watch_mark_key "$1" "$g")" 2>/dev/null || true
+  done
+}
+
+alert_once() { # path content-key summary
+  local key sent=unsent id='' claimed='' k
+  # Keying only keys[0] skipped the rest of a multi-file check when that first
+  # file was already marked by another session.
+  for k in "${keys[@]}"; do
+    key=$(watch_mark_key "${k%%"$_watch_nl"*}" "${k#*"$_watch_nl"}")
+    if instruction_mark_once "$ALERT_DIR" "$key"; then
+      claimed="$claimed$key "
+      [ -n "$id" ] || id=$key
+    fi
+  done
+  [ -n "$id" ] || return 0
+  # Receipts live 30d, the marker 1d; reusing the marker as the journal id lets
+  # a leftover receipt swallow a same-bytes repeat after the marker expires.
+  id=$(printf '%s\n%s\n%s\n%s\n' "$id" "$$" "$RANDOM" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    | shasum -a 256 | cut -c1-16)
+  command -v "$ALERT" >/dev/null 2>&1 && sent=attempted
+  if ! journal_event "$sent" "$id" "$3"; then
+    # A failed append would otherwise leave the change claimed and unjournaled.
+    for key in $claimed; do
+      rmdir "$ALERT_DIR/$key" 2>/dev/null || true
+    done
+    return 0
+  fi
+  poke_alert || return 0
 }
 
 cmd_baseline() {
@@ -239,6 +307,8 @@ cmd_baseline() {
   # the version still in use, so what this reaches is superseded copies alone.
   find "$STATE_DIR" -mindepth 1 -maxdepth 1 -name 'session-*' -mtime +7 -delete 2>/dev/null
   find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
+  find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
+  instruction_ranked_refresh "$HOME" "$RANKED_CACHE" || true
   local out=$1
   write_baseline "$out" "$out.$$" "$out" || true
   exit 0
@@ -259,6 +329,22 @@ report() {
   [ -n "$rate" ] || return 0
   [ -z "$top_rate" ] || [ "$rate" -gt "$top_rate" ] 2>/dev/null || return 0
   top_rate=$rate
+}
+
+ranked_has() { # path
+  if [ -z "$ranked_loaded" ]; then
+    ranked_loaded=1
+    ranked_set=$'\n'
+    while IFS= read -r ranked_p; do ranked_set="$ranked_set$ranked_p"$'\n'; done \
+      < <(instruction_ranked_names "$RANKED_CACHE")
+  fi
+  case "$ranked_set" in *$'\n'"$1"$'\n'*) return 0 ;; esac
+  return 1
+}
+
+from_ranking() { # path
+  case "$1" in "$HOME"/.claude/*) return 1 ;; esac
+  return 0
 }
 
 # Only a file the baseline vouches for gets a restore command. One that appeared unreviewed has
@@ -409,6 +495,7 @@ cmd_check() {
   done <<<"$stat_out"
 
   local -a reports=() keys=() restores=() reverted=()
+  local ranked_set='' ranked_loaded='' ranked_p
   local cur cur_mtime cur_size cur_ino cur_link cur_hash delta moved=0 top_rate=''
   local relay_revert=''
   local vis_seen vis_ino
@@ -426,6 +513,15 @@ cmd_check() {
         IFS=$'\t' read -r _ _ vis_ino cur_link <<<"${s_val[$j]}"
         break
       done
+    fi
+    # A recut drops a vanished ranked path from ranked.txt, so !ranked_has here
+    # would also be a real DELETED — only prune when the file is still on disk.
+    if from_ranking "$vis" && ! ranked_has "$vis" && [ -n "$cur" ]; then
+      moved=1
+      continue
+    fi
+    if [ -n "$cur" ]; then
+      clear_gone_marks "$vis"
     fi
     if [ -z "$cur" ]; then
       # A recorded target that is gone under a name that still resolves is a retarget, not a
@@ -493,7 +589,15 @@ cmd_check() {
     for j in "${!b_vis[@]}"; do
       [ "${b_vis[$j]}" = "$vis" ] && { known=1; break; }
     done
-    [ -n "$known" ] || report "ADDED $vis" "$vis" "$(hash_of "$vis" "$vis")"
+    [ -n "$known" ] && continue
+    # ranked_has is true for a name already in the cache; that is a real ADDED
+    # unless a recut newer than this baseline is what brought the path in.
+    if ranked_has "$vis" && [ "$RANKED_CACHE" -nt "$baseline" ]; then
+      moved=1
+      continue
+    fi
+    report "ADDED $vis" "$vis" "$(hash_of "$vis" "$vis")"
+    clear_gone_marks "$vis"
   done < <(visible_paths)
 
   # Rebuilding the baseline costs a hash per protected file, so it happens only when
@@ -528,9 +632,7 @@ cmd_check() {
   # The log is the durable half of the audit trail, so it is written before the baseline moves
   # on. Rebuilding first meant a hook killed in between erased the only record of the change.
   log_line "sid=${sid:-?} $joined${undo:+ | undo: ${restores[*]}}${undone:+ | reverted: ${reverted[*]}}"
-  # Keyed on the report the alert NAMES, which is the first one: what Egor reads is that line.
-  alert_once "${keys[0]%%"$_watch_nl"*}" "${keys[0]#*"$_watch_nl"}" \
-    "Instruction file changed: ${reports[0]}"
+  alert_once "${keys[0]%%"$_watch_nl"*}" "${keys[0]#*"$_watch_nl"}" "$joined"
   # A baseline that cannot be rewritten means this same change is reported again after every
   # later Bash call, so the repetition is named rather than left looking like fresh news.
   write_baseline "$baseline" "$baseline.$$" "$baseline" ||
@@ -538,6 +640,11 @@ cmd_check() {
   # The dearest class in this report, not the global file's rate quoted over a skill that costs
   # a fiftieth of it. A report naming only files this table does not price says nothing at all.
   [ -n "$top_rate" ] && cost=" (up to ~$top_rate full-read equivalents/month)"
+  case "$CHAT" in
+    all) ;;
+    reverts) [ "${#reverted[@]}" -gt 0 ] || exit 0 ;;
+    *) exit 0 ;;
+  esac
   emit_context "$event" "Instruction-file tripwire: $joined.$stale$undone$undo These files are re-read across sessions$cost, and Egor's standing rule is that they are read-only without his explicit OK in the current turn — no Edit, and equally no shell write. If he approved this change in this turn, nothing to do; this line is the audit trail. If he did not: tell him in ONE line what changed, hand him the restore command if there is one, and carry on with your task. Do NOT run that command and do not undo the change any other way — the writer may be another chat, a worker of yours, a tool that rewrote the file wholesale, or Egor himself, and this hook cannot tell which, so a rollback you decide on your own destroys someone's live work. Restore only if he asks for it."
   exit 0
 }

@@ -35,8 +35,9 @@ INSTRUCTION_WATCH_STATE="$HOME/.cache/watch"
 INSTRUCTION_WATCH_LOG="$HOME/.claude/instruction-changes.log"
 INSTRUCTION_WRITE_GATE_STAMPS="$HOME/.cache/write-gate"
 WRITE_TRANSCRIPT="$WORK/write-transcript.jsonl"
+INSTRUCTION_WATCH_CHAT=all
 export INSTRUCTION_WATCH_ALERT INSTRUCTION_WATCH_STATE INSTRUCTION_WATCH_LOG \
-       INSTRUCTION_WRITE_GATE_STAMPS
+       INSTRUCTION_WRITE_GATE_STAMPS INSTRUCTION_WATCH_CHAT
 mkdir -p "$HOME/.claude/docs" "$HOME/.claude/agents" "$HOME/.claude/skills/demo" \
          "$HOME/.claude/commands" "$HOME/.claude/hooks/lib" "$TMPDIR"
 : > "$WRITE_TRANSCRIPT"
@@ -1291,7 +1292,7 @@ case "$out" in *"DELETED $HOME/.claude/CLAUDE.md"*) fail "a present file was rep
 printf 'worker agent\n' > "$HOME/.claude/agents/codex-worker.md"
 watch baseline sid-d >/dev/null
 
-echo "== tripwire: a hostile file name cannot escape the alert string"
+echo "== tripwire: a hostile file name never reaches the command that wakes Hammerspoon"
 ALERT_LOG="$WORK/alert.log"
 cat >"$INSTRUCTION_WATCH_ALERT" <<'STUB'
 #!/usr/bin/env bash
@@ -1302,12 +1303,12 @@ export ALERT_LOG
 nasty="$HOME/.claude/agents/quote\"and\\slash.md"
 printf 'smuggled\n' > "$nasty"
 watch check sid-d >/dev/null
-# The alert is fired detached so a wedged Hammerspoon cannot hold the hook, so wait for it.
 for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$ALERT_LOG" ] && break; sleep 0.2; done
 assert [ -s "$ALERT_LOG" ]
-# Both specials arrive escaped, so the Lua literal closes where it should.
-assert_contains '\"' "$(cat "$ALERT_LOG")"
-assert_contains '\\' "$(cat "$ALERT_LOG")"
+poke=$(cat "$ALERT_LOG")
+assert_contains 'pcall(require, "instruction-watch")' "$poke"
+assert_contains 'm.pump()' "$poke"
+case "$poke" in *quote*|*slash*|*.md*) fail "a watched file name reached the Hammerspoon command" ;; esac
 rm "$nasty"
 watch baseline sid-d >/dev/null
 
@@ -2011,5 +2012,359 @@ assert_contains 'permissionDecision":"deny' \
   "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$big" \
        '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
      | INSTRUCTION_BLOAT_GATE_STAMPS="$HOME/.cache/bloat-32" /bin/bash "$BLOAT")"
+
+echo "== tripwire: by default the report reaches Egor and the log, not every unrelated chat"
+unset INSTRUCTION_WATCH_CHAT
+ALERT_REC="$WORK/alert-calls"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$ALERT_REC" > "$WORK/alert-stub"
+chmod +x "$WORK/alert-stub"
+raw_check() { # sid tool key value transcript
+  jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "$5" --arg c "$WORK" \
+    '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
+      tool_input:{($k):$v}}' | bash "$WATCH" check
+}
+alert_said() {
+  local i=0
+  while [ $i -lt 40 ]; do
+    [ -s "$ALERT_REC" ] && { cat "$ALERT_REC"; return 0; }
+    sleep 0.05
+    i=$((i + 1))
+  done
+  return 1
+}
+printf 'tier doc\n' > "$DOC"
+span_base sid-quiet >/dev/null
+: > "$INSTRUCTION_WATCH_LOG"
+rm -f "$ALERT_REC"
+kept_before=$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f 2>/dev/null | wc -l)
+printf 'written by somebody else entirely\n' > "$DOC"
+assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T")"
+assert_contains "CHANGED" "$(cat "$INSTRUCTION_WATCH_LOG")"
+assert_contains "instruction-watch" "$(alert_said)"
+assert_contains "review-tiers.md" "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq -r '.files[0]')"
+assert [ "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)" -gt "$kept_before" ]
+assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T")"
+
+echo "== tripwire: a session whose write was put back is still told"
+printf 'tier doc\n' > "$DOC"
+span_base sid-quiet-revert >/dev/null
+printf 'a line no human asked for\n' >> "$DOC"
+ctx=$(raw_check sid-quiet-revert Bash command "echo a line no human asked for >> $DOC" "$SPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "REVERTED" "$ctx"
+assert_eq "tier doc" "$(cat "$DOC")"
+
+echo "== tripwire: off silences the chat channel entirely"
+export INSTRUCTION_WATCH_CHAT=off
+span_base sid-off >/dev/null
+printf 'another line no human asked for\n' >> "$DOC"
+assert_eq "" "$(raw_check sid-off Bash command "echo another line no human asked for >> $DOC" "$SPAN_T")"
+assert_eq "tier doc" "$(cat "$DOC")"
+export INSTRUCTION_WATCH_CHAT=all
+
+echo "== journal: one durable record per change, machine-wide, with what a menu needs"
+J="$INSTRUCTION_WATCH_STATE/events.jsonl"
+rm -f "$J"
+rm -rf "$INSTRUCTION_WATCH_STATE/alerts"
+printf 'tier doc\n' > "$DOC"
+span_base sid-j1 >/dev/null
+span_base sid-j2 >/dev/null
+printf 'a tier line nobody approved\n' > "$DOC"
+raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-j2 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_eq 1 "$(grep -c . "$J")"
+rec=$(tail -1 "$J")
+assert_contains "CHANGED" "$(printf '%s' "$rec" | jq -r '.summary')"
+assert_contains "review-tiers.md" "$(printf '%s' "$rec" | jq -r '.files[0]')"
+assert_contains "cp " "$(printf '%s' "$rec" | jq -r '.restores[0] // ""')"
+assert [ -n "$(printf '%s' "$rec" | jq -r '.id')" ]
+assert_contains "sid-j" "$(printf '%s' "$rec" | jq -r '.sid')"
+assert_eq attempted "$(printf '%s' "$rec" | jq -r '.sent')"
+
+echo "== journal: a delivery that could not even be attempted says so"
+saved_alert=$INSTRUCTION_WATCH_ALERT
+INSTRUCTION_WATCH_ALERT="$WORK/no-such-hammerspoon"
+export INSTRUCTION_WATCH_ALERT
+printf 'a second tier line nobody approved\n' > "$DOC"
+raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_eq unsent "$(tail -1 "$J" | jq -r '.sent')"
+INSTRUCTION_WATCH_ALERT=$saved_alert
+export INSTRUCTION_WATCH_ALERT
+
+echo "== journal: bounded, so a cache cannot grow for the life of the machine"
+INSTRUCTION_WATCH_JOURNAL_MAX=2
+export INSTRUCTION_WATCH_JOURNAL_MAX
+i=0
+while [ $i -lt 6 ]; do
+  printf 'tier line %s\n' "$i" > "$DOC"
+  raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+  i=$((i + 1))
+done
+assert [ "$(grep -c . "$J")" -le 4 ]
+assert_contains "tier line 5" "$(tail -1 "$J" | jq -r '.summary')$(cat "$DOC")"
+unset INSTRUCTION_WATCH_JOURNAL_MAX
+
+echo "== coverage: the ranking already on disk brings the dearest project files into the set"
+RATES="$WORK/read-rates.json"
+PROJ="$WORK/proj"
+mkdir -p "$PROJ"
+printf 'project rules\n' > "$PROJ/CLAUDE.md"
+jq -n --arg p "$PROJ/CLAUDE.md" --arg g "$REAL_MD" --arg m "$HOME/.claude/projects/x/memory/MEMORY.md" \
+  '{paths:{entries:{($g):{monthly:{reads:9000}},($p):{monthly:{reads:5000}},
+                    ($m):{monthly:{reads:8000}}}}}' > "$RATES"
+TOKENMAP_RATES="$RATES"
+export TOKENMAP_RATES
+span_base sid-rank >/dev/null
+RANKED="$INSTRUCTION_WATCH_STATE/ranked.txt"
+assert_contains "$PROJ/CLAUDE.md" "$(cat "$RANKED")"
+assert_eq 1 "$(grep -c '^/' "$RANKED")"
+printf 'project rules and a line nobody approved\n' > "$PROJ/CLAUDE.md"
+out=$(raw_check sid-rank Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "$PROJ/CLAUDE.md" "$out"
+assert_contains "$PROJ/CLAUDE.md" "$(tail -1 "$J" | jq -r '.files[0]')"
+echo "== coverage: a file the ranking brings in is not a file somebody added"
+rm -f "$RANKED"
+unset TOKENMAP_RATES
+span_base sid-grow >/dev/null
+TOKENMAP_RATES="$RATES"
+export TOKENMAP_RATES
+span_base sid-other >/dev/null
+assert_contains "$PROJ/CLAUDE.md" "$(cat "$RANKED")"
+out=$(raw_check sid-grow Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+case "$out" in *ADDED*) fail "the watch set growing was reported as a file somebody added: $out" ;; esac
+printf 'project rules edited\n' > "$PROJ/CLAUDE.md"
+out=$(raw_check sid-grow Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED" "$out"
+assert_contains "$PROJ/CLAUDE.md" "$out"
+
+echo "== coverage: a worktree's copy is not a second instruction file"
+mkdir -p "$PROJ/.claude/worktrees/wt"
+printf 'worktree copy\n' > "$PROJ/.claude/worktrees/wt/CLAUDE.md"
+jq -n --arg p "$PROJ/CLAUDE.md" --arg w "$PROJ/.claude/worktrees/wt/CLAUDE.md" \
+  '{paths:{entries:{($w):{monthly:{reads:99000}},($p):{monthly:{reads:5000}}}}}' > "$RATES"
+rm -f "$RANKED"
+span_base sid-wt >/dev/null
+case "$(cat "$RANKED")" in
+  *worktrees*) fail "a worktree copy took a slot and would report its removal as a deletion" ;;
+esac
+assert_contains "$PROJ/CLAUDE.md" "$(cat "$RANKED")"
+
+echo "== coverage: a rules change re-cuts a cache the index has not moved under"
+printf '#0\n%s\n' "$PROJ/.claude/worktrees/wt/CLAUDE.md" > "$RANKED"
+span_base sid-ver >/dev/null
+assert_eq "#1" "$(head -1 "$RANKED")"
+case "$(cat "$RANKED")" in *worktrees*) fail "a stale cache outlived the rules that cut it" ;; esac
+unset TOKENMAP_RATES
+
+echo "== coverage: a file the ranking DROPS is not a file somebody deleted"
+TOKENMAP_RATES="$RATES"
+export TOKENMAP_RATES
+mkdir -p "$WORK/proj-b"
+printf 'b rules\n' > "$WORK/proj-b/CLAUDE.md"
+jq -n --arg p "$PROJ/CLAUDE.md" --arg q "$WORK/proj-b/CLAUDE.md" \
+  '{paths:{entries:{($p):{monthly:{reads:5000}},($q):{monthly:{reads:9000}}}}}' > "$RATES"
+rm -f "$RANKED"
+span_base sid-drop >/dev/null
+assert_contains "proj-b" "$(cat "$RANKED")"
+jq -n --arg p "$PROJ/CLAUDE.md" '{paths:{entries:{($p):{monthly:{reads:5000}}}}}' > "$RATES"
+rm -f "$RANKED"
+span_base sid-recut >/dev/null
+case "$(cat "$RANKED")" in *proj-b*) fail "the re-cut cache still names the dropped project" ;; esac
+out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+case "$out" in *DELETED*) fail "a file the ranking dropped was reported as deleted: $out" ;; esac
+printf 'b rules edited after demotion\n' > "$WORK/proj-b/CLAUDE.md"
+out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+case "$out" in *CHANGED*) fail "a demoted ranked file still on disk reported CHANGED: $out" ;; esac
+rm -f "$PROJ/CLAUDE.md"
+out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "DELETED" "$out"
+assert_contains "$PROJ/CLAUDE.md" "$out"
+printf 'project rules\n' > "$PROJ/CLAUDE.md"
+unset TOKENMAP_RATES
+
+
+echo "== tripwire: a marked first file does not drop the rest of a multi-file check"
+AGENTF="$HOME/.claude/agents/codex-worker.md"
+span_base sid-mf1 >/dev/null
+span_base sid-mf2 >/dev/null
+printf 'mf-A\n' > "$DOC"
+printf 'mf-B\n' > "$AGENTF"
+first=
+while IFS=$'\t' read -r _ _ _ _ _ _ vis _; do
+  case "$vis" in
+    "$DOC"|"$AGENTF") first=$vis; break ;;
+  esac
+done < "$INSTRUCTION_WATCH_STATE/session-sid-mf2.tsv"
+[ -n "$first" ] || fail "multi-file baseline did not name either changed path"
+key=$(printf '%s\n%s\n' "$first" "$(shasum -a 256 "$first" | cut -d' ' -f1)" | shasum -a 256 | cut -c1-16)
+mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$key"
+raw_check sid-mf2 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+other=$AGENTF
+[ "$first" = "$AGENTF" ] && other=$DOC
+assert_contains "$(basename "$other")" "$(tail -1 "$J" | jq -r '.files[]' | tr '\n' ' ')"
+
+echo "== tripwire: creating a ranked path that was absent from the baseline is ADDED"
+unset TOKENMAP_RATES
+mkdir -p "$PROJ"
+printf '#1\n%s\n' "$PROJ/CLAUDE.local.md" > "$RANKED"
+span_base sid-add-ranked >/dev/null
+printf 'created local\n' > "$PROJ/CLAUDE.local.md"
+out=$(raw_check sid-add-ranked Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "ADDED" "$out"
+assert_contains "CLAUDE.local.md" "$out"
+
+echo "== tripwire: a same-path delete after restore is journaled again"
+printf 'del-restore\n' > "$DOC"
+span_base sid-delrep >/dev/null
+rm -f "$DOC"
+raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_contains "DELETED" "$(tail -1 "$J" | jq -r '.summary')"
+dels_before=$(grep -c '"DELETED' "$J" || true)
+printf 'del-restore\n' > "$DOC"
+raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_contains "ADDED" "$(tail -1 "$J" | jq -r '.summary')"
+rm -f "$DOC"
+raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_contains "DELETED" "$(tail -1 "$J" | jq -r '.summary')"
+dels_after=$(grep -c '"DELETED' "$J" || true)
+assert [ "$dels_after" -gt "$dels_before" ]
+printf 'tier doc\n' > "$DOC"
+
+echo "== tripwire: deleting a ranked file is reported even after a recut drops it"
+TOKENMAP_RATES="$RATES"
+export TOKENMAP_RATES
+mkdir -p "$PROJ"
+printf 'project rules\n' > "$PROJ/CLAUDE.md"
+jq -n --arg p "$PROJ/CLAUDE.md" '{paths:{entries:{($p):{monthly:{reads:5000}}}}}' > "$RATES"
+rm -f "$RANKED"
+span_base sid-del-after-recut >/dev/null
+assert_contains "$PROJ/CLAUDE.md" "$(cat "$RANKED")"
+rm -f "$PROJ/CLAUDE.md"
+touch "$RATES"
+rm -f "$RANKED"
+span_base sid-del-recut-other >/dev/null
+case "$(cat "$RANKED")" in *"$PROJ/CLAUDE.md"*) fail "recut still names the deleted ranked file" ;; esac
+out=$(raw_check sid-del-after-recut Bash command 'git status --short' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "DELETED" "$out"
+assert_contains "$PROJ/CLAUDE.md" "$out"
+printf 'project rules\n' > "$PROJ/CLAUDE.md"
+unset TOKENMAP_RATES
+
+echo "== journal: a failed append releases the marker so a later check can record"
+span_base sid-jfail-a >/dev/null
+span_base sid-jfail-b >/dev/null
+printf 'jfail-body\n' > "$DOC"
+rm -f "$J"
+mkdir "$J"
+raw_check sid-jfail-a Bash command 'git status --short' "$NOSPAN_T" >/dev/null 2>/dev/null
+rmdir "$J" 2>/dev/null || rm -rf "$J"
+raw_check sid-jfail-b Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_contains "CHANGED" "$(cat "$J")"
+assert_contains "review-tiers.md" "$(cat "$J")"
+
+echo "== journal: a same-bytes repeat after the marker dies gets a new id"
+printf 'rep-v1\n' > "$DOC"
+span_base sid-rep >/dev/null
+printf 'rep-v2\n' > "$DOC"
+raw_check sid-rep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+id1=$(tail -1 "$J" | jq -r .id)
+rm -rf "$INSTRUCTION_WATCH_STATE/alerts"
+printf 'rep-v1\n' > "$DOC"
+raw_check sid-rep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+printf 'rep-v2\n' > "$DOC"
+raw_check sid-rep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+id2=$(tail -1 "$J" | jq -r .id)
+assert [ -n "$id1" ]
+assert [ -n "$id2" ]
+assert [ "$id1" != "$id2" ]
+assert [ "$(grep -c '"sid":"sid-rep"' "$J")" -ge 2 ]
+
+echo "== journal: concurrent appends during a trim both survive"
+span_base sid-trim-a >/dev/null
+printf 'trim-race-B\n' > "$HOME/.claude/agents/codex-worker.md"
+span_base sid-trim-b >/dev/null
+INSTRUCTION_WATCH_JOURNAL_MAX=2
+export INSTRUCTION_WATCH_JOURNAL_MAX
+i=1
+while [ $i -le 5 ]; do
+  printf '{"id":"trim%d","at":"2026-01-01T00:00:0%dZ","sid":"p","summary":"plant","sent":"unsent","files":[],"restores":[],"reverted":[]}\n' "$i" "$i" >> "$J"
+  i=$((i + 1))
+done
+printf 'trim-race-A\n' > "$DOC"
+raw_check sid-trim-a Bash command 'git status --short' "$NOSPAN_T" >/dev/null &
+p1=$!
+raw_check sid-trim-b Bash command 'git status --short' "$NOSPAN_T" >/dev/null &
+p2=$!
+wait "$p1" "$p2"
+assert_contains "review-tiers.md" "$(cat "$J")"
+assert_contains "codex-worker.md" "$(cat "$J")"
+unset INSTRUCTION_WATCH_JOURNAL_MAX
+
+# The harness reads the FIRST journal line and the ranked cache; the tests above
+# trimmed both. Leave a fresh collector record and the project file it lists.
+printf 'project rules\n' > "$PROJ/CLAUDE.md"
+printf '#1\n%s\n' "$PROJ/CLAUDE.md" > "$RANKED"
+printf 'pre-hs\n' > "$DOC"
+span_base sid-hs >/dev/null
+printf 'pre-hs and a line the harness will read\n' > "$DOC"
+raw_check sid-hs Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+tail -1 "$J" > "$J.one" && mv "$J.one" "$J"
+
+echo "== Hammerspoon: the record the collector just wrote travels to the menu and the receipt"
+hs_bounded() {
+  python3 - "$@" <<'HSPY'
+import subprocess
+import sys
+
+try:
+    result = subprocess.run(["hs", *sys.argv[1:]], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=10)
+except (FileNotFoundError, subprocess.TimeoutExpired):
+    raise SystemExit(124)
+sys.stdout.write(result.stdout)
+sys.stderr.write(result.stderr)
+raise SystemExit(result.returncode)
+HSPY
+}
+assert [ -s "$INSTRUCTION_WATCH_STATE/events.jsonl" ]
+if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded -c 'return "ok"' 2>/dev/null)" = ok ]; then
+  # Isolate require and globals: the harness otherwise replaces the live module and starts it.
+  menu_lua=$(cat <<LUA
+local env = setmetatable({}, { __index = _G })
+env._G = { INSTRUCTION_WATCH_FIXTURE = [[$INSTRUCTION_WATCH_STATE]] }
+env.package = { path = package.path, loaded = {} }
+env.os = setmetatable({ getenv = function(key)
+    if key == "HOME" then return [[$HOME]] end
+    return os.getenv(key)
+end }, { __index = os })
+local inert = function() return { start = function() end, stop = function() end } end
+env.hs = setmetatable({
+    pathwatcher = { new = inert }, timer = { doEvery = inert },
+    alert = { show = function() error("unexpected real alert attempt") end },
+}, { __index = hs })
+env.require = function(name)
+    assert(name == "instruction-watch", "unexpected module: " .. name)
+    local module = assert(loadfile([[$ROOT/hammerspoon/instruction-watch.lua]], "t", env))()
+    env.package.loaded[name] = module
+    return module
+end
+env.dofile = function(path) return assert(loadfile(path, "t", env))() end
+return env.dofile([[$ROOT/tests/instruction_watch_menu_harness.lua]])
+LUA
+)
+  menu_out=$(hs_bounded -c "$menu_lua" 2>/dev/null) \
+    || fail "the Hammerspoon menu harness threw"
+  assert_eq "PASS: instruction-watch menu contract" "$menu_out"
+else
+  echo "   (skipped: Hammerspoon is not reachable from this shell)"
+fi
 
 echo "OK ($asserts assertions)"
