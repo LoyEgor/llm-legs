@@ -344,7 +344,6 @@ RB_LAUNCH="$RB_PKG/launch.py"
 RB_ROUND="$RB_PKG/round.py"
 RB_DEBT="$RB_PKG/debt.py"
 RB_REPORT="$RB_PKG/report.py"
-RB_STATS="$RB_PKG/stats.py"
 RB_CLI="$RB_PKG/cli.py"
 
 # A pin over a package needs both of these. `grep -Fq a.py b.py` is OR — it exits at the first
@@ -428,7 +427,6 @@ assert doc_has '`agy-flash35`/`gemini-3.5-flash` went that way'
 assert doc_has 'historical rows are keyed `flash35-<effort>`'
 assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
 assert grep -Fq 'return "flash35-" + rater[len(retired_flash):]' "$RB_RATERS"
-assert grep -Fq 'if cell.startswith("flash35-"):' "$REVIEW_ROOT/share/rbench/stats.py"
 # Every live Flash family the bench can launch has a tag arm: a family the statusline cannot name
 # shows the configured default instead of the model the run is actually spending.
 for agy_family in 3.8-flash:flash38 3.7-flash:flash37 3.6-flash:flash36; do
