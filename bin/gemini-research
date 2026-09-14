@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  printf 'usage: gemini-research --prompt-file <f> --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 40m]\n' >&2
+  printf 'usage: gemini-research --prompt-file <f> --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 360m]\n' >&2
   exit 2
 }
 
@@ -19,7 +19,7 @@ resolve_root() {
 prompt_file=''
 out=''
 account=''
-timeout_value='40m'
+timeout_value='360m'
 repos=()
 
 while [ "$#" -gt 0 ]; do
