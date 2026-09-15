@@ -6,8 +6,6 @@ WORKDIR_HOOK="$ROOT/bin/statusline-workdir-hook.sh"
 WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 STATUSLINE="$ROOT/bin/statusline.sh"
-REVIEW_ROOT="${REVIEW_ROOT:-$ROOT/../review-bench}"
-BENCH_CMD="$REVIEW_ROOT/bin/review-bench"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
@@ -29,8 +27,6 @@ cg_identity() (
 assert_eq ' main' "$(cg_identity main)"
 assert_eq ' work4' "$(cg_identity work4)"
 assert_eq ' work4' "$(cg_identity '')"
-
-[ -x "$BENCH_CMD" ] || fail "review-bench root $REVIEW_ROOT is unreadable (set REVIEW_ROOT)"
 
 HOME="$WORK/home"
 FIXTURES="$WORK/fixtures"
@@ -133,6 +129,15 @@ run_workdir_hook() {
   assert_eq "" "$output"
 }
 
+PLACE="$ROOT/bin/statusline-place"
+place_set() { # session tree [main] [kind]
+  mkdir -p "$STATE_DIR"
+  printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "${4:-seed}" "$2" "${3:-$2}" >> "$STATE_DIR/place-$1"
+}
+last_tree() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f3; }
+last_kind() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f2; }
+place_count() { if [ -f "$STATE_DIR/place-$1" ]; then wc -l < "$STATE_DIR/place-$1" | tr -d ' '; else echo 0; fi; }
+
 # Every write the hook makes goes to the session cache under $HOME, which these
 # cases redirect; a hardcoded absolute redirect (a debug probe left in) escapes
 # the sandbox entirely and no behavioural case below can see it.
@@ -140,143 +145,130 @@ assert_eq "" "$(grep -nE '(^|[[:space:]])>>?[[:space:]]*/' "$WORKDIR_HOOK" | gre
 
 payload=$(workdir_payload Bash session-cd "$REPO_A" "cd '$REPO_A' && make")
 run_workdir_hook "$payload"
-assert test -f "$STATE_DIR/workdir-session-cd"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-cd")"
+assert test -f "$STATE_DIR/place-session-cd"
+assert_eq "$TOP_A" "$(last_tree session-cd)"
 
 payload=$(workdir_payload Bash session-cd-last "$REPO_A" "cd '$REPO_A' && cd '$REPO_B'")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-last")"
+assert_eq "$TOP_B" "$(last_tree session-cd-last)"
 
 payload=$(workdir_payload Bash session-cd-home "$REPO_A" 'cd "$HOME/project"')
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-home")"
+assert_eq "$TOP_B" "$(last_tree session-cd-home)"
 
 payload=$(workdir_payload Bash session-cd-home-braced "$REPO_A" 'cd "${HOME}/project"')
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-home-braced")"
+assert_eq "$TOP_B" "$(last_tree session-cd-home-braced)"
 
 payload=$(workdir_payload Bash session-cd-tilde "$REPO_A" 'cd "~/project"')
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-tilde")"
+assert_eq "$TOP_B" "$(last_tree session-cd-tilde)"
 
 nl_cmd=$(printf "true\ncd '%s'" "$REPO_B")
 payload=$(workdir_payload Bash session-cd-nl "$REPO_A" "$nl_cmd")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-nl")"
+assert_eq "$TOP_B" "$(last_tree session-cd-nl)"
 
 payload=$(workdir_payload Bash session-cd-amp "$REPO_A" "true & cd '$REPO_B'")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-amp")"
+assert_eq "$TOP_B" "$(last_tree session-cd-amp)"
 
-# `(cd /x && cmd)` is the form the cd-guard hook tells sessions to use instead of
-# a persistent cd, so it is the most common cd there is — and the one that never
-# moves the session: it dies with the command. A subshell cd that runs WORK earns
-# the home only as sustained work, three in a row, like an away write. All three
-# spellings feed the same run; the unquoted one also proves the closing paren
-# stays out of the path, since a swallowed `)` would resolve nowhere and break
-# the run.
-S="$STATE_DIR/workdir-session-cd-subshell"
-printf '%s\n' "$TOP_A" > "$S"
-run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd '$REPO_B' && make)")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "true && (cd '$REPO_B' && make)")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Bash session-cd-subshell "$REPO_A" "(cd $REPO_B && make)")"
-assert_eq "$TOP_B" "$(cat "$S")"
-assert test ! -e "$S.away"
+# `(cd /x && cmd)` running work is where the chat's changes go, on the first one; the unquoted
+# spelling also proves the closing paren stays out of the path.
+subshell_case=0
+for subshell_cmd in "(cd '$REPO_B' && make)" "true && (cd '$REPO_B' && make)" "(cd $REPO_B && make)"; do
+  S="session-cd-subshell-$((++subshell_case))"
+  place_set "$S" "$TOP_A"
+  run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_A" "$subshell_cmd")"
+  assert_eq "$TOP_B" "$(last_tree "$S")"
+  assert_eq git "$(last_kind "$S")"
+done
 
-S="$STATE_DIR/workdir-session-cd-subshell-split"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-cd-subshell-split"
+place_set "$S" "$TOP_A"
 for _ in 1 2 3; do
   run_workdir_hook "$(workdir_payload Bash session-cd-subshell-split "$REPO_A" "(cd '$REPO_B' && make)")"
   run_workdir_hook "$(workdir_payload Bash session-cd-subshell-split "$REPO_A" "(cd '$REPO_D' && make)")"
 done
-assert_eq "$TOP_A" "$(cat "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
+assert_eq 7 "$(place_count "$S")"
 
 # A persistent cd does move the session, so it still retargets on the first one,
 # and so does a mutating `git -C`.
-S="$STATE_DIR/workdir-session-cd-persistent"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-cd-persistent"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(workdir_payload Bash session-cd-persistent "$REPO_A" "cd '$REPO_B' && make")"
-assert_eq "$TOP_B" "$(cat "$S")"
+assert_eq "$TOP_B" "$(last_tree "$S")"
 
-S="$STATE_DIR/workdir-session-git-mut-home"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-git-mut-home"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(workdir_payload Bash session-git-mut-home "$REPO_A" "(git -C '$REPO_B' checkout main)")"
-assert_eq "$TOP_B" "$(cat "$S")"
+assert_eq "$TOP_B" "$(last_tree "$S")"
 
 # A `cd` inside a heredoc body or a multi-line quoted string is text a command is
 # fed, not the session moving: the worktree pin, which only a persistent cd
 # breaks, stays put through every spelling of the delimiter.
-S="$STATE_DIR/workdir-session-heredoc-bare"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-heredoc-bare"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-heredoc-bare "$REPO_E" \
   "$(printf "cat <<EOF\ncd '%s'\nEOF" "$REPO_D")")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
-S="$STATE_DIR/workdir-session-heredoc-quoted"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-heredoc-quoted"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-heredoc-quoted "$REPO_E" \
   "$(printf "cat <<'EOF'\ncd '%s'\nEOF" "$REPO_D")")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
-S="$STATE_DIR/workdir-session-heredoc-dash"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-heredoc-dash"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-heredoc-dash "$REPO_E" \
   "$(printf "cat <<-EOF\n\tcd '%s'\n\tEOF" "$REPO_D")")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
-# Masking may only ever LOSE a cd: the real one after the body still moves the
-# home, pin and all.
-S="$STATE_DIR/workdir-session-heredoc-then-cd"
-printf '%s\n' "$TOP_E" > "$S"
+# Masking may only ever LOSE a cd: the real one after the body still moves.
+S="session-heredoc-then-cd"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-heredoc-then-cd "$REPO_E" \
   "$(printf "cat <<'EOF'\ncd /nowhere\nEOF\ncd '%s'" "$REPO_D")")"
-assert_eq "$TOP_D" "$(cat "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
-S="$STATE_DIR/workdir-session-quoted-span"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-quoted-span"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-quoted-span "$REPO_E" \
   "$(printf "echo 'first\ncd %s\nlast'" "$REPO_D")")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 run_workdir_hook "$(workdir_payload Bash session-quoted-span "$REPO_E" \
   "$(printf 'echo "first\ncd %s\nlast"' "$REPO_D")")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
 # Nesting is no proof the session moved either: an inner subshell cd dies with the
 # command, and a brace group is read as no cd at all.
-S="$STATE_DIR/workdir-session-cd-nested"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-cd-nested"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-cd-nested "$REPO_E" "( (cd '$REPO_D') )")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 run_workdir_hook "$(workdir_payload Bash session-cd-nested "$REPO_E" "{ cd '$REPO_D'; }")"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
-# The worktree pin ignores subshell cds outright, at any count: they are the
-# excursions — test runs, greps — stickiness exists to absorb.
-S="$STATE_DIR/workdir-session-subshell-sticky"
-printf '%s\n' "$TOP_E" > "$S"
-for _ in 1 2 3 4; do
-  run_workdir_hook "$(workdir_payload Bash session-subshell-sticky "$REPO_E" "(cd '$REPO_A' && make test)")"
-done
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.away"
+# No stickiness: a worktree is left on the first change elsewhere.
+S="session-subshell-sticky"
+place_set "$S" "$TOP_E"
+run_workdir_hook "$(workdir_payload Bash session-subshell-sticky "$REPO_E" "(cd '$REPO_A' && make test)")"
+assert_eq "$TOP_A" "$(last_tree "$S")"
 
-# The incident this model exists for: a session that ran five `(cd /other && git
-# log)` lookups in a row saw the strip claim the work had moved there. A subshell
-# cd whose whole chain is provably read-only is read-grade — it never moves the
-# home and leaves no run behind, at any count.
+# A subshell cd whose whole chain is provably read-only writes no line, at any count.
 ro_case=0
 while IFS= read -r ro_cmd; do
   [ -n "$ro_cmd" ] || continue
   ro_case=$((ro_case + 1))
-  S="$STATE_DIR/workdir-session-ro-$ro_case"
-  printf '%s\n' "$TOP_A" > "$S"
+  S="session-ro-$ro_case"
+  place_set "$S" "$TOP_A"
   for _ in 1 2 3 4 5; do
     run_workdir_hook "$(workdir_payload Bash "session-ro-$ro_case" "$REPO_A" "$ro_cmd")"
   done
-  assert_eq "$TOP_A" "$(cat "$S")"
-  assert test ! -e "$S.away"
+  assert_eq "$TOP_A" "$(last_tree "$S")"
+  assert_eq 1 "$(place_count "$S")"
 done <<EOF
 (cd '$REPO_D' && git log)
 (cd '$REPO_D' && cat other.txt | rg other)
@@ -288,22 +280,17 @@ done <<EOF
 (cd '$REPO_D' && git log > /dev/null)
 EOF
 
-# Anything not PROVABLY read-only stays work, and work in a subshell is still
-# sustained: three in a row move the home. A surviving `>` condemns the command
-# whatever ran it, the mutating traps inside reading tools (`sort -ro`,
-# `find -fprint`, `git diff --output`) are read by name, and a backtick is
-# condemned unseen.
+# Anything not PROVABLY read-only is work: a surviving `>` condemns the command whatever ran it,
+# the mutating traps inside reading tools (`sort -ro`, `find -fprint`, `git diff --output`) are
+# read by name, and a backtick is condemned unseen.
 work_case=0
 while IFS= read -r work_cmd; do
   [ -n "$work_cmd" ] || continue
   work_case=$((work_case + 1))
-  S="$STATE_DIR/workdir-session-subshell-work-$work_case"
-  printf '%s\n' "$TOP_A" > "$S"
+  S="session-subshell-work-$work_case"
+  place_set "$S" "$TOP_A"
   run_workdir_hook "$(workdir_payload Bash "session-subshell-work-$work_case" "$REPO_A" "$work_cmd")"
-  run_workdir_hook "$(workdir_payload Bash "session-subshell-work-$work_case" "$REPO_A" "$work_cmd")"
-  assert_eq "$TOP_A" "$(cat "$S")"
-  run_workdir_hook "$(workdir_payload Bash "session-subshell-work-$work_case" "$REPO_A" "$work_cmd")"
-  assert_eq "$TOP_D" "$(cat "$S")"
+  assert_eq "$TOP_D" "$(last_tree "$S")"
 done <<EOF
 (cd '$REPO_D' && npm test)
 (cd '$REPO_D' && git log > out.txt)
@@ -320,63 +307,46 @@ done <<EOF
 (cd '$REPO_D' && echo \`touch out.txt\`)
 EOF
 
-# Nor can a read-grade excursion establish a home where there is none: that is
-# SessionStart's job, or a write's.
+# Nor does a lookup create a journal.
 for _ in 1 2 3; do
   run_workdir_hook "$(workdir_payload Bash session-ro-fresh "$REPO_A" "(cd '$REPO_D' && git log)")"
 done
-assert test ! -e "$STATE_DIR/workdir-session-ro-fresh"
-assert test ! -e "$STATE_DIR/workdir-session-ro-fresh.away"
+assert test ! -e "$STATE_DIR/place-session-ro-fresh"
 
-# A read-grade excursion cannot break a worktree pin either.
-S="$STATE_DIR/workdir-session-ro-sticky"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-ro-sticky"
+place_set "$S" "$TOP_E"
 for _ in 1 2 3 4 5; do
   run_workdir_hook "$(workdir_payload Bash session-ro-sticky "$REPO_E" "(cd '$REPO_D' && git log)")"
 done
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.away"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
 # `cd` is the most read-only token there is, but a PERSISTENT one is the session
 # itself moving, so it retargets at once with nothing else on the line.
-S="$STATE_DIR/workdir-session-cd-bare"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-cd-bare"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(workdir_payload Bash session-cd-bare "$REPO_A" "cd '$REPO_D'")"
-assert_eq "$TOP_D" "$(cat "$S")"
-
-# Read-grade evidence AT home interrupts a run in progress exactly like a Read
-# does — the run is consecutive evidence — and nothing more.
-S="$STATE_DIR/workdir-session-ro-home"
-printf '%s\n' "$TOP_D" > "$S"
-run_workdir_hook "$(agent_payload Edit session-ro-home "$REPO_D" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(workdir_payload Bash session-ro-home "$REPO_D" "(cd $REPO_D)")"
-assert_eq "$TOP_A
-$TOP_D" "$(cat "$S.away")"
-assert_eq "$TOP_D" "$(cat "$S")"
-run_workdir_hook "$(agent_payload Edit session-ro-home "$REPO_D" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(agent_payload Edit session-ro-home "$REPO_D" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_D" "$(cat "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
 payload=$(workdir_payload Bash session-pushd "$REPO_A" "pushd '$REPO_B' && make")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-pushd")"
+assert_eq "$TOP_B" "$(last_tree session-pushd)"
 
 payload=$(workdir_payload Bash session-pushd-n "$REPO_A" "pushd -n '$REPO_B'")
 run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-pushd-n"
+assert test ! -e "$STATE_DIR/place-session-pushd-n"
 
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-cd-dash"
+place_set session-cd-dash "$TOP_A"
 payload=$(workdir_payload Bash session-cd-dash "$REPO_B" "cd -")
 run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-cd-dash")"
+assert_eq "$TOP_A" "$(last_tree session-cd-dash)"
 
 payload=$(workdir_payload Bash session-git-ro "$REPO_A" "git -C \"$REPO_B\" status")
 run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-git-ro"
+assert test ! -e "$STATE_DIR/place-session-git-ro"
 
 payload=$(workdir_payload Bash session-git-mut "$REPO_A" "git -C \"$REPO_B\" checkout main")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-git-mut")"
+assert_eq "$TOP_B" "$(last_tree session-git-mut)"
 
 WT_ADD_BASIC="$FIXTURES/wt-add-basic"
 git -C "$REPO_A" branch hook-wt-basic
@@ -385,7 +355,7 @@ payload=$(workdir_payload Bash session-wt-add-basic "$REPO_A" \
   "git worktree add $WT_ADD_BASIC hook-wt-basic")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_BASIC" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-basic")"
+  "$(last_tree session-wt-add-basic)"
 
 WT_ADD_BEFORE="$FIXTURES/wt-add-before"
 git -C "$REPO_A" worktree add -q -b hook-wt-before "$WT_ADD_BEFORE" HEAD
@@ -393,7 +363,7 @@ payload=$(workdir_payload Bash session-wt-add-before "$REPO_A" \
   "git worktree add -b hook-wt-before $WT_ADD_BEFORE HEAD")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_BEFORE" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-before")"
+  "$(last_tree session-wt-add-before)"
 
 WT_ADD_AFTER="$FIXTURES/wt-add-after"
 git -C "$REPO_A" worktree add -q "$WT_ADD_AFTER" -b hook-wt-after HEAD
@@ -401,7 +371,7 @@ payload=$(workdir_payload Bash session-wt-add-after "$REPO_A" \
   "git worktree add $WT_ADD_AFTER -b hook-wt-after HEAD")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_AFTER" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-after")"
+  "$(last_tree session-wt-add-after)"
 
 WT_ADD_REASON="$FIXTURES/wt-add-reason"
 git -C "$REPO_A" branch hook-wt-reason
@@ -410,7 +380,7 @@ payload=$(workdir_payload Bash session-wt-add-reason "$REPO_A" \
   "git worktree add --lock --reason my-note $WT_ADD_REASON hook-wt-reason")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_REASON" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-reason")"
+  "$(last_tree session-wt-add-reason)"
 
 WT_ADD_ORPHAN="$FIXTURES/wt-add-orphan"
 git -C "$REPO_A" worktree add -q --orphan "$WT_ADD_ORPHAN"
@@ -418,7 +388,7 @@ payload=$(workdir_payload Bash session-wt-add-orphan "$REPO_A" \
   "git worktree add --orphan $WT_ADD_ORPHAN")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_ORPHAN" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-orphan")"
+  "$(last_tree session-wt-add-orphan)"
 
 WT_ADD_SPACE="$FIXTURES/wt add space"
 git -C "$REPO_A" worktree add -q -b hook-wt-space "$WT_ADD_SPACE" HEAD
@@ -426,7 +396,7 @@ payload=$(workdir_payload Bash session-wt-add-space "$REPO_A" \
   "git worktree add -b hook-wt-space '$WT_ADD_SPACE' HEAD")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_SPACE" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-space")"
+  "$(last_tree session-wt-add-space)"
 
 WT_ADD_REL="$REPO_A/.claude/worktrees/hook-wt-relative"
 git -C "$REPO_A" branch hook-wt-relative
@@ -435,40 +405,40 @@ payload=$(workdir_payload Bash session-wt-add-relative "$REPO_D" \
   "git -C '$REPO_A' worktree add .claude/worktrees/hook-wt-relative hook-wt-relative")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_REL" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-relative")"
+  "$(last_tree session-wt-add-relative)"
 
 WT_ADD_AFTER_CD="$REPO_A/.claude/worktrees/hook-wt-after-cd"
 git -C "$REPO_A" branch hook-wt-after-cd
 git -C "$REPO_A" worktree add -q ".claude/worktrees/hook-wt-after-cd" hook-wt-after-cd
-printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-session-wt-add-after-cd"
+place_set session-wt-add-after-cd "$TOP_D"
 payload=$(workdir_payload Bash session-wt-add-after-cd "$REPO_D" \
   "cd '$REPO_A' && git worktree add .claude/worktrees/hook-wt-after-cd hook-wt-after-cd")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_AFTER_CD" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-after-cd")"
+  "$(last_tree session-wt-add-after-cd)"
 
 # The bootstrap subshell a worktree add is followed by cds INTO the new worktree: read as the
 # add's base, it resolves the relative path inside the tree that was just created.
 WT_ADD_BOOTSTRAP="$REPO_A/.claude/worktrees/hook-wt-bootstrap"
 git -C "$REPO_A" branch hook-wt-bootstrap
 git -C "$REPO_A" worktree add -q ".claude/worktrees/hook-wt-bootstrap" hook-wt-bootstrap
-printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-session-wt-add-bootstrap"
+place_set session-wt-add-bootstrap "$TOP_D"
 payload=$(workdir_payload Bash session-wt-add-bootstrap "$REPO_D" \
   "cd '$REPO_A' && git worktree add .claude/worktrees/hook-wt-bootstrap hook-wt-bootstrap && (cd .claude/worktrees/hook-wt-bootstrap && git status)")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_BOOTSTRAP" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-bootstrap")"
+  "$(last_tree session-wt-add-bootstrap)"
 
 WT_ADD_FAILED="$FIXTURES/wt-add-failed"
 if git -C "$REPO_A" worktree add "$WT_ADD_FAILED" no-such-worktree-ref >/dev/null 2>&1; then
   fail "failed worktree-add fixture unexpectedly succeeded"
 fi
 assert test ! -e "$WT_ADD_FAILED"
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-add-failed"
+place_set session-wt-add-failed "$TOP_A"
 payload=$(workdir_payload Bash session-wt-add-failed "$REPO_A" \
   "git worktree add $WT_ADD_FAILED no-such-worktree-ref")
 run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-add-failed")"
+assert_eq "$TOP_A" "$(last_tree session-wt-add-failed)"
 
 WT_ADD_EXISTING="$REPO_D/existing-worktree-target"
 mkdir -p "$WT_ADD_EXISTING"
@@ -477,11 +447,11 @@ git -C "$REPO_A" branch hook-wt-existing
 if git -C "$REPO_A" worktree add "$WT_ADD_EXISTING" hook-wt-existing >/dev/null 2>&1; then
   fail "existing-directory worktree-add fixture unexpectedly succeeded"
 fi
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-wt-add-existing"
+place_set session-wt-add-existing "$TOP_E"
 payload=$(workdir_payload Bash session-wt-add-existing "$REPO_A" \
   "git worktree add '$WT_ADD_EXISTING' hook-wt-existing")
 run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-wt-add-existing")"
+assert_eq "$TOP_E" "$(last_tree session-wt-add-existing)"
 rm -f "$WT_ADD_EXISTING/blocker"
 rmdir "$WT_ADD_EXISTING"
 
@@ -490,106 +460,106 @@ WT_ADD_MULTILINE="$FIXTURES/wt-add-multiline"
 git -C "$REPO_A" branch hook-wt-multiline
 git -C "$REPO_A" worktree add -q "$WT_ADD_MULTILINE" hook-wt-multiline
 multiline_cmd=$(printf "git worktree add %s hook-wt-multiline\ncd '%s'" "$WT_ADD_MULTILINE" "$REPO_D")
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-add-multiline"
+place_set session-wt-add-multiline "$TOP_A"
 payload=$(workdir_payload Bash session-wt-add-multiline "$REPO_A" "$multiline_cmd")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_MULTILINE" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-multiline")"
+  "$(last_tree session-wt-add-multiline)"
 
 EXCLUDED_WT_BASE="$HOME/.claude/worktree-add-base"
 ln -s "$REPO_A" "$EXCLUDED_WT_BASE"
 WT_ADD_ABSOLUTE="$FIXTURES/wt-add-absolute"
 git -C "$REPO_A" branch hook-wt-absolute
 git -C "$EXCLUDED_WT_BASE" worktree add -q "$WT_ADD_ABSOLUTE" hook-wt-absolute
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-wt-add-absolute"
+place_set session-wt-add-absolute "$TOP_E"
 payload=$(workdir_payload Bash session-wt-add-absolute "$REPO_E" \
   "git -C '$EXCLUDED_WT_BASE' worktree add '$WT_ADD_ABSOLUTE' hook-wt-absolute")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_ABSOLUTE" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-absolute")"
+  "$(last_tree session-wt-add-absolute)"
 rm -f "$EXCLUDED_WT_BASE"
 
 WT_ADD_STICKY="$REPO_A/.claude/worktrees/hook-wt-sticky"
 git -C "$REPO_A" worktree add -q -b hook-wt-sticky "$WT_ADD_STICKY" HEAD
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-wt-add-sticky"
+place_set session-wt-add-sticky "$TOP_E"
 payload=$(workdir_payload Bash session-wt-add-sticky "$REPO_E" \
   "git worktree add -b hook-wt-sticky '$WT_ADD_STICKY' HEAD")
 run_workdir_hook "$payload"
 assert_eq "$(git -C "$WT_ADD_STICKY" rev-parse --show-toplevel)" \
-  "$(cat "$STATE_DIR/workdir-session-wt-add-sticky")"
+  "$(last_tree session-wt-add-sticky)"
 
 # The created path is read from the worktree list — snapshotted at PreToolUse,
 # diffed at PostToolUse — so the form that expands in the shell, which is what a
 # real dispatch writes and what no text parser can follow, retargets as well.
 WT_ADD_VAR="$REPO_A/.claude/worktrees/hook-wt-var"
 VAR_CMD='R="'"$REPO_A"'"; N=$R/.claude/worktrees/hook-wt-var; git -C "$R" worktree add -b hook-wt-var "$N" HEAD'
-S="$STATE_DIR/workdir-session-wt-add-var"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-var"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-var "$REPO_E" "$VAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse"')"
-assert test -f "$S.wtadd"
+assert test -f "$STATE_DIR/place-$S.snap"
 git -C "$REPO_A" worktree add -q -b hook-wt-var "$WT_ADD_VAR" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-var "$REPO_E" "$VAR_CMD")"
-assert_eq "$(git -C "$WT_ADD_VAR" rev-parse --show-toplevel)" "$(cat "$S")"
-assert test ! -e "$S.wtadd"
+assert_eq "$(git -C "$WT_ADD_VAR" rev-parse --show-toplevel)" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap"
 
 # An add that created nothing — and one that cannot be told from a concurrent
-# add — leave the home alone rather than guess at a path.
-S="$STATE_DIR/workdir-session-wt-add-failed"
-printf '%s\n' "$TOP_E" > "$S"
+# add — journal nothing rather than guess at a path.
+S="session-wt-add-failed"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-failed "$REPO_E" "$VAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse"')"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-failed "$REPO_E" "$VAR_CMD")"
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.wtadd"
+assert_eq "$TOP_E" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap"
 
-S="$STATE_DIR/workdir-session-wt-add-two"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-two"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-two "$REPO_E" "$VAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-two-a "$REPO_A/.claude/worktrees/hook-wt-two-a" HEAD
 git -C "$REPO_A" worktree add -q -b hook-wt-two-b "$REPO_A/.claude/worktrees/hook-wt-two-b" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-two "$REPO_E" "$VAR_CMD")"
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.wtadd"
+assert_eq "$TOP_E" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap"
 
 # One snapshot per CALL, keyed on the id both of its events carry: two adds whose
 # Pre/Post interleave each measure their own baseline, so the first Post cannot
 # adopt what the second add made and the second still finds a baseline of its own.
 WT_ADD_ILA="$REPO_A/.claude/worktrees/hook-wt-il-a"
 WT_ADD_ILB="$REPO_A/.claude/worktrees/hook-wt-il-b"
-S="$STATE_DIR/workdir-session-wt-add-il"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-il"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-a"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-il-a "$WT_ADD_ILA" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-b"')"
-assert test -f "$S.wtadd.call-a"
-assert test -f "$S.wtadd.call-b"
+assert test -f "$STATE_DIR/place-$S.snap.call-a"
+assert test -f "$STATE_DIR/place-$S.snap.call-b"
 git -C "$REPO_A" worktree add -q -b hook-wt-il-b "$WT_ADD_ILB" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
   jq -c '.tool_use_id = "call-a"')"
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.wtadd.call-a"
+assert_eq "$TOP_E" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap.call-a"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
   jq -c '.tool_use_id = "call-b"')"
-assert_eq "$(git -C "$WT_ADD_ILB" rev-parse --show-toplevel)" "$(cat "$S")"
-assert test ! -e "$S.wtadd.call-b"
+assert_eq "$(git -C "$WT_ADD_ILB" rev-parse --show-toplevel)" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap.call-b"
 
 # With no repository to snapshot there must be no snapshot at all: an empty one is
 # a baseline that answers nothing, and the text-parsed path is then never tried.
 WT_ADD_EMPTY="$FIXTURES/wt-add-empty"
-S="$STATE_DIR/workdir-session-wt-add-empty"
-rm -f "$S"
+S="session-wt-add-empty"
+rm -f "$STATE_DIR/place-$S"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-empty "$NON_GIT" \
   "git worktree add $WT_ADD_EMPTY hook-wt-empty" | jq -c '.hook_event_name = "PreToolUse"')"
-assert test ! -e "$S.wtadd"
+assert test ! -e "$STATE_DIR/place-$S.snap"
 git -C "$REPO_A" branch hook-wt-empty
 git -C "$REPO_A" worktree add -q "$WT_ADD_EMPTY" hook-wt-empty
 run_workdir_hook "$(workdir_payload Bash session-wt-add-empty "$NON_GIT" \
   "git worktree add $WT_ADD_EMPTY hook-wt-empty")"
-assert_eq "$(git -C "$WT_ADD_EMPTY" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_EMPTY" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # A concurrent add in the same family is a single new path too. When the command
 # names a directory that exists, the worktree it made is the only one that path
@@ -598,338 +568,304 @@ WT_ADD_TAKEN="$REPO_D/wt-add-taken"
 mkdir -p "$WT_ADD_TAKEN"
 WT_ADD_RIVAL="$REPO_A/.claude/worktrees/hook-wt-rival"
 RIVAL_CMD="git -C '$REPO_A' worktree add '$WT_ADD_TAKEN' hook-wt-rival"
-S="$STATE_DIR/workdir-session-wt-add-rival"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-rival"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-rival "$REPO_E" "$RIVAL_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-rival"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-rival "$WT_ADD_RIVAL" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-rival "$REPO_E" "$RIVAL_CMD" |
   jq -c '.tool_use_id = "call-rival"')"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
 
 WT_ADD_NAMED="$REPO_A/.claude/worktrees/hook-wt-named"
 NAMED_CMD="git -C '$REPO_A' worktree add -b hook-wt-named '$WT_ADD_NAMED' HEAD"
-S="$STATE_DIR/workdir-session-wt-add-named"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-named"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-named "$REPO_E" "$NAMED_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-named"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-named "$WT_ADD_NAMED" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-named "$REPO_E" "$NAMED_CMD" |
   jq -c '.tool_use_id = "call-named"')"
-assert_eq "$(git -C "$WT_ADD_NAMED" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_NAMED" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # The shape a real dispatch writes: the add, then a bootstrap subshell inside the
 # worktree it made. Reading the last hit gave that cd, whose `$W` resolves
 # nowhere, and the add was never heard.
 WT_ADD_BOOT="$REPO_A/.claude/worktrees/hook-wt-boot"
 BOOT_CMD=$(printf 'R=%s\ngit -C $R worktree add -b hook-wt-boot $R/.claude/worktrees/hook-wt-boot HEAD 2>&1 | tail -2\nW=$R/.claude/worktrees/hook-wt-boot\n(cd $W && pnpm install --frozen-lockfile 2>&1 | tail -3 && pnpm nx --version)' "$REPO_A")
-S="$STATE_DIR/workdir-session-wt-add-boot"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-boot"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-boot "$REPO_E" "$BOOT_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-boot"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-boot "$WT_ADD_BOOT" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-boot "$REPO_E" "$BOOT_CMD" |
   jq -c '.tool_use_id = "call-boot"')"
-assert_eq "$(git -C "$WT_ADD_BOOT" rev-parse --show-toplevel)" "$(cat "$S")"
-assert test ! -e "$S.wtadd.call-boot"
+assert_eq "$(git -C "$WT_ADD_BOOT" rev-parse --show-toplevel)" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap.call-boot"
 
 WT_ADD_ELSEWHERE="$REPO_A/.claude/worktrees/hook-wt-elsewhere"
 ELSEWHERE_CMD=$(printf 'R=%s\ngit -C $R worktree add -b hook-wt-elsewhere $R/.claude/worktrees/hook-wt-elsewhere HEAD\n(cd %s && ls)' "$REPO_A" "$REPO_D")
-S="$STATE_DIR/workdir-session-wt-add-elsewhere"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-elsewhere"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-elsewhere "$REPO_E" "$ELSEWHERE_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-elsewhere"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-elsewhere "$WT_ADD_ELSEWHERE" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-elsewhere "$REPO_E" "$ELSEWHERE_CMD" |
   jq -c '.tool_use_id = "call-elsewhere"')"
-assert_eq "$(git -C "$WT_ADD_ELSEWHERE" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_ELSEWHERE" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # A denied command fires PreToolUse and never the PostToolUse that consumes its
 # snapshot, so the leaked file is swept an hour later rather than after a week.
-S="$STATE_DIR/workdir-session-wt-prune"
-printf '%s\n' "$TOP_A" > "$S"
-: > "$S.wtadd.call-leaked"
-: > "$S.wtadd.call-live"
-# Two hours, not eight days: the week-long `workdir-*` sweep must not be what takes it.
+S="session-wt-prune"
+place_set "$S" "$TOP_A"
+: > "$STATE_DIR/place-$S.snap.call-leaked"
+: > "$STATE_DIR/place-$S.snap.call-live"
+# Two hours, not eight days: the week-long `place-*` sweep must not be what takes it.
 leaked_stamp=$(date -v-2H +%Y%m%d%H%M 2>/dev/null || date -d '2 hours ago' +%Y%m%d%H%M)
-touch -t "$leaked_stamp" "$S.wtadd.call-leaked"
-touch -t 202001010000 "$STATE_DIR/.workdir-prune"
+touch -t "$leaked_stamp" "$STATE_DIR/place-$S.snap.call-leaked"
+touch -t 202001010000 "$STATE_DIR/.place-prune"
 run_workdir_hook "$(workdir_payload Bash session-wt-prune "$REPO_A" "cd '$REPO_B'")"
-assert_eq "$TOP_B" "$(cat "$S")"
-assert test ! -e "$S.wtadd.call-leaked"
-assert test -f "$S.wtadd.call-live"
-rm -f "$S.wtadd.call-live"
+assert_eq "$TOP_B" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap.call-leaked"
+assert test -f "$STATE_DIR/place-$S.snap.call-live"
+rm -f "$STATE_DIR/place-$S.snap.call-live"
 
 # The live miss: one Bash call, `R=...; git -C "$R" worktree add "$R/.claude/worktrees/..." -b
 # name ref 2>&1 | tail`, then a for-loop of curls. cwd is already a worktree of the same
-# repo; the path token is an unexpanded `$R/...` so the list diff must name home.
+# repo; the path token is an unexpanded `$R/...` so the list diff must name the new worktree.
 WT_ADD_REAL="$REPO_A/.claude/worktrees/hook-wt-real"
 REAL_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-real" -b hook-wt-real HEAD 2>&1 | tail -2; echo ---PROBE-STAGING; for u in "https://example.com/a?embedded=portal" "https://example.com/b"; do curl -s -o /dev/null -w "%{http_code} %{redirect_url} $u\n" -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36" -e "https://example.com/" "$u"; done'
-S="$STATE_DIR/workdir-session-wt-add-real"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-real"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-real "$REPO_E" "$REAL_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-real"')"
-assert test -f "$S.wtadd.call-real"
+assert test -f "$STATE_DIR/place-$S.snap.call-real"
 git -C "$REPO_A" worktree add -q -b hook-wt-real "$WT_ADD_REAL" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-real "$REPO_E" "$REAL_CMD" |
   jq -c '.tool_use_id = "call-real"')"
-assert_eq "$(git -C "$WT_ADD_REAL" rev-parse --show-toplevel)" "$(cat "$S")"
-assert test ! -e "$S.wtadd.call-real"
+assert_eq "$(git -C "$WT_ADD_REAL" rev-parse --show-toplevel)" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap.call-real"
 
-# Same phrasing with no home yet: the add must still establish one.
+# Same phrasing with an empty journal: the add is still journaled.
 WT_ADD_REAL0="$REPO_A/.claude/worktrees/hook-wt-real0"
 REAL0_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-real0" -b hook-wt-real0 HEAD 2>&1 | tail -2'
-S="$STATE_DIR/workdir-session-wt-add-real0"
-rm -f "$S"
+S="session-wt-add-real0"
+rm -f "$STATE_DIR/place-$S"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-real0 "$REPO_E" "$REAL0_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-real0"')"
-assert test -f "$S.wtadd.call-real0"
+assert test -f "$STATE_DIR/place-$S.snap.call-real0"
 git -C "$REPO_A" worktree add -q -b hook-wt-real0 "$WT_ADD_REAL0" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-real0 "$REPO_E" "$REAL0_CMD" |
   jq -c '.tool_use_id = "call-real0"')"
-assert_eq "$(git -C "$WT_ADD_REAL0" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_REAL0" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # Unquoted `$R` in -C and the path, on a repo whose path has no spaces.
 mkdir -p "$REPO_D/.claude/worktrees"
 printf '.claude/worktrees/\n' >> "$REPO_D/.git/info/exclude"
 WT_ADD_UQ="$REPO_D/.claude/worktrees/hook-wt-unquoted"
 UQ_CMD="R=$REPO_D; git -C \$R worktree add \$R/.claude/worktrees/hook-wt-unquoted -b hook-wt-unquoted HEAD"
-S="$STATE_DIR/workdir-session-wt-add-uq"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-uq"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-uq "$REPO_D" "$UQ_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-uq"')"
-assert test -f "$S.wtadd.call-uq"
+assert test -f "$STATE_DIR/place-$S.snap.call-uq"
 git -C "$REPO_D" worktree add -q -b hook-wt-unquoted "$WT_ADD_UQ" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-uq "$REPO_D" "$UQ_CMD" |
   jq -c '.tool_use_id = "call-uq"')"
-assert_eq "$(git -C "$WT_ADD_UQ" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_UQ" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # `$W` holds the new path.
 WT_ADD_WVAR="$REPO_A/.claude/worktrees/hook-wt-wvar"
 WVAR_CMD='R="'"$REPO_A"'"; W=$R/.claude/worktrees/hook-wt-wvar; git -C "$R" worktree add "$W" -b hook-wt-wvar HEAD'
-S="$STATE_DIR/workdir-session-wt-add-wvar"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-wvar"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-wvar "$REPO_E" "$WVAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-wvar"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-wvar "$WT_ADD_WVAR" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-wvar "$REPO_E" "$WVAR_CMD" |
   jq -c '.tool_use_id = "call-wvar"')"
-assert_eq "$(git -C "$WT_ADD_WVAR" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_WVAR" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # `-B` after a concatenated `$R/...` path.
 WT_ADD_BB="$REPO_A/.claude/worktrees/hook-wt-bb"
 BB_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-bb" -B hook-wt-bb HEAD'
-S="$STATE_DIR/workdir-session-wt-add-bb"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-bb"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-bb "$REPO_E" "$BB_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-bb"')"
 git -C "$REPO_A" worktree add -q -B hook-wt-bb "$WT_ADD_BB" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-bb "$REPO_E" "$BB_CMD" |
   jq -c '.tool_use_id = "call-bb"')"
-assert_eq "$(git -C "$WT_ADD_BB" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_BB" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
 # Relative path with variable `-C`.
 WT_ADD_RELVAR="$REPO_A/.claude/worktrees/hook-wt-relvar"
 RELVAR_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add .claude/worktrees/hook-wt-relvar -b hook-wt-relvar HEAD'
-S="$STATE_DIR/workdir-session-wt-add-relvar"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-relvar"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-relvar "$REPO_E" "$RELVAR_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-relvar"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-relvar "$WT_ADD_RELVAR" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-relvar "$REPO_E" "$RELVAR_CMD" |
   jq -c '.tool_use_id = "call-relvar"')"
-assert_eq "$(git -C "$WT_ADD_RELVAR" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_RELVAR" rev-parse --show-toplevel)" "$(last_tree "$S")"
+
+# A relative path is named against `-C`, never the session cwd, even where the cwd holds a
+# directory of the same name.
+WT_ADD_RELBASE="$REPO_A/.claude/worktrees/hook-wt-relbase"
+mkdir -p "$REPO_E/.claude/worktrees/hook-wt-relbase"
+S="session-wt-add-relbase"
+place_set "$S" "$TOP_E"
+run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_E" \
+  "git -C '$REPO_A' worktree add .claude/worktrees/hook-wt-relbase -b hook-wt-relbase HEAD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-relbase"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-relbase "$WT_ADD_RELBASE" HEAD
+run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_E" \
+  "git -C '$REPO_A' worktree add .claude/worktrees/hook-wt-relbase -b hook-wt-relbase HEAD" |
+  jq -c '.tool_use_id = "call-relbase"')"
+assert_eq "$(git -C "$WT_ADD_RELBASE" rev-parse --show-toplevel)" "$(last_tree "$S")"
+rmdir "$REPO_E/.claude/worktrees/hook-wt-relbase"
 
 # Add then a bootstrap subshell whose `$W` resolves nowhere — add still wins.
 WT_ADD_BOOTR="$REPO_A/.claude/worktrees/hook-wt-bootr"
 BOOTR_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-bootr" -b hook-wt-bootr HEAD && W=$R/.claude/worktrees/hook-wt-bootr && (cd "$W" && true)'
-S="$STATE_DIR/workdir-session-wt-add-bootr"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-add-bootr"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-add-bootr "$REPO_E" "$BOOTR_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-bootr"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-bootr "$WT_ADD_BOOTR" HEAD
 run_workdir_hook "$(workdir_payload Bash session-wt-add-bootr "$REPO_E" "$BOOTR_CMD" |
   jq -c '.tool_use_id = "call-bootr"')"
-assert_eq "$(git -C "$WT_ADD_BOOTR" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_ADD_BOOTR" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
-# `git worktree move`: home on the moved-from path (or under it) follows to the dest.
+# `git worktree move` journals the destination.
 WT_MOVE_SRC="$REPO_A/.claude/worktrees/hook-wt-move-src"
 WT_MOVE_DST="$REPO_A/.claude/worktrees/hook-wt-move-dst"
 git -C "$REPO_A" worktree add -q -b hook-wt-move-src "$WT_MOVE_SRC" HEAD
 MOVE_CMD='R="'"$REPO_A"'"; git -C "$R" worktree move "$R/.claude/worktrees/hook-wt-move-src" "$R/.claude/worktrees/hook-wt-move-dst"'
-S="$STATE_DIR/workdir-session-wt-move"
-printf '%s\n' "$(git -C "$WT_MOVE_SRC" rev-parse --show-toplevel)" > "$S"
+S="session-wt-move"
+place_set "$S" "$(git -C "$WT_MOVE_SRC" rev-parse --show-toplevel)"
 run_workdir_hook "$(workdir_payload Bash session-wt-move "$REPO_E" "$MOVE_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-move"')"
-assert test -f "$S.wtadd.call-move"
+assert test -f "$STATE_DIR/place-$S.snap.call-move"
 git -C "$REPO_A" worktree move "$WT_MOVE_SRC" "$WT_MOVE_DST"
 run_workdir_hook "$(workdir_payload Bash session-wt-move "$REPO_E" "$MOVE_CMD" |
   jq -c '.tool_use_id = "call-move"')"
-assert_eq "$(git -C "$WT_MOVE_DST" rev-parse --show-toplevel)" "$(cat "$S")"
-assert test ! -e "$S.wtadd.call-move"
+assert_eq "$(git -C "$WT_MOVE_DST" rev-parse --show-toplevel)" "$(last_tree "$S")"
+assert test ! -e "$STATE_DIR/place-$S.snap.call-move"
 
-# Home under the moved-from path follows too.
+# A journal tree under the moved-from path does not confuse the diff.
 WT_MOVE_SRC2="$REPO_A/.claude/worktrees/hook-wt-move-src2"
 WT_MOVE_DST2="$REPO_A/.claude/worktrees/hook-wt-move-dst2"
 git -C "$REPO_A" worktree add -q -b hook-wt-move-src2 "$WT_MOVE_SRC2" HEAD
 mkdir -p "$WT_MOVE_SRC2/embed-skin"
 MOVE2_CMD='R="'"$REPO_A"'"; git -C "$R" worktree move "$R/.claude/worktrees/hook-wt-move-src2" "$R/.claude/worktrees/hook-wt-move-dst2"'
-S="$STATE_DIR/workdir-session-wt-move-under"
-printf '%s\n' "$WT_MOVE_SRC2/embed-skin" > "$S"
+S="session-wt-move-under"
+place_set "$S" "$WT_MOVE_SRC2/embed-skin"
 run_workdir_hook "$(workdir_payload Bash session-wt-move-under "$REPO_E" "$MOVE2_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-move2"')"
 git -C "$REPO_A" worktree move "$WT_MOVE_SRC2" "$WT_MOVE_DST2"
 run_workdir_hook "$(workdir_payload Bash session-wt-move-under "$REPO_E" "$MOVE2_CMD" |
   jq -c '.tool_use_id = "call-move2"')"
-assert_eq "$(git -C "$WT_MOVE_DST2" rev-parse --show-toplevel)" "$(cat "$S")"
+assert_eq "$(git -C "$WT_MOVE_DST2" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
-# A move of some other worktree leaves home where it is.
+# A move of any worktree is where the chat's changes go next.
 WT_MOVE_SRC3="$REPO_A/.claude/worktrees/hook-wt-move-src3"
 WT_MOVE_DST3="$REPO_A/.claude/worktrees/hook-wt-move-dst3"
 git -C "$REPO_A" worktree add -q -b hook-wt-move-src3 "$WT_MOVE_SRC3" HEAD
 MOVE3_CMD='R="'"$REPO_A"'"; git -C "$R" worktree move "$R/.claude/worktrees/hook-wt-move-src3" "$R/.claude/worktrees/hook-wt-move-dst3"'
-S="$STATE_DIR/workdir-session-wt-move-other"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-move-other"
+place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-wt-move-other "$REPO_E" "$MOVE3_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-move3"')"
 git -C "$REPO_A" worktree move "$WT_MOVE_SRC3" "$WT_MOVE_DST3"
 run_workdir_hook "$(workdir_payload Bash session-wt-move-other "$REPO_E" "$MOVE3_CMD" |
   jq -c '.tool_use_id = "call-move3"')"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$(git -C "$WT_MOVE_DST3" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
-# And so does a move whose PreToolUse left no baseline: with no diff to read, the destination is
-# nobody's worktree in particular.
+# With no baseline the parsed destination is taken, being its own toplevel.
 WT_MOVE_SRC4="$REPO_A/.claude/worktrees/hook-wt-move-src4"
 WT_MOVE_DST4="$REPO_A/.claude/worktrees/hook-wt-move-dst4"
 git -C "$REPO_A" worktree add -q -b hook-wt-move-src4 "$WT_MOVE_SRC4" HEAD
 MOVE4_CMD="git -C '$REPO_A' worktree move '$WT_MOVE_SRC4' '$WT_MOVE_DST4'"
-S="$STATE_DIR/workdir-session-wt-move-nosnap"
-printf '%s\n' "$TOP_E" > "$S"
+S="session-wt-move-nosnap"
+place_set "$S" "$TOP_E"
 git -C "$REPO_A" worktree move "$WT_MOVE_SRC4" "$WT_MOVE_DST4"
 run_workdir_hook "$(workdir_payload Bash session-wt-move-nosnap "$REPO_E" "$MOVE4_CMD" |
   jq -c '.tool_use_id = "call-move4"')"
-assert_eq "$TOP_E" "$(cat "$S")"
+assert_eq "$(git -C "$WT_MOVE_DST4" rev-parse --show-toplevel)" "$(last_tree "$S")"
 
-# `worktree` is mutating only for the subcommands that write one: a lookup in
-# another checkout leaves no trace at all, not even an away run to accumulate.
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-list"
+# `worktree` is mutating only for the subcommands that write one: a lookup writes no line.
+place_set session-wt-list "$TOP_A"
 payload=$(workdir_payload Bash session-wt-list "$REPO_A" "git -C '$REPO_B' worktree list")
 run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-list")"
-assert test ! -e "$STATE_DIR/workdir-session-wt-list.away"
+assert_eq "$TOP_A" "$(last_tree session-wt-list)"
 
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-bare"
+place_set session-wt-bare "$TOP_A"
 payload=$(workdir_payload Bash session-wt-bare "$REPO_A" "git -C '$REPO_B' worktree")
 run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-bare")"
-assert test ! -e "$STATE_DIR/workdir-session-wt-bare.away"
+assert_eq "$TOP_A" "$(last_tree session-wt-bare)"
 
 # A subcommand is read on the `git -C` line only: reaching across the line break
 # would eat the next line's `cd` as the subcommand and lose the move entirely.
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-nl"
+place_set session-wt-nl "$TOP_A"
 payload=$(workdir_payload Bash session-wt-nl "$REPO_A" \
   "$(printf "git -C '%s' worktree\ncd '%s'" "$REPO_B" "$REPO_D")")
 run_workdir_hook "$payload"
-assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-wt-nl")"
+assert_eq "$TOP_D" "$(last_tree session-wt-nl)"
 
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-prune-sub"
+place_set session-wt-prune-sub "$TOP_A"
 payload=$(workdir_payload Bash session-wt-prune-sub "$REPO_A" "git -C '$REPO_B' worktree prune")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-wt-prune-sub")"
+assert_eq "$TOP_B" "$(last_tree session-wt-prune-sub)"
 
 payload=$(workdir_payload Bash session-cd-then-ro "$REPO_A" "cd '$REPO_B' && git -C '$REPO_A' log")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-cd-then-ro")"
+assert_eq "$TOP_B" "$(last_tree session-cd-then-ro)"
 
-printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-plain"
+place_set session-plain "$TOP_B"
 payload=$(workdir_payload Bash session-plain "$REPO_A" "printf done")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-plain")"
+assert_eq "$TOP_B" "$(last_tree session-plain)"
 
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-tmp"
+place_set session-tmp "$TOP_A"
 payload=$(workdir_payload Bash session-tmp "$REPO_A" "cd /tmp && pwd")
 run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-tmp")"
+assert_eq "$TOP_A" "$(last_tree session-tmp)"
 
 payload=$(workdir_payload Bash session-non-git "$REPO_A" "cd '$NON_GIT' && pwd")
 run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-non-git"
+assert test ! -e "$STATE_DIR/place-session-non-git"
 
 payload=$(workdir_payload Edit session-edit "$REPO_B" "$REPO_A/tracked.txt")
 run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-edit")"
+assert_eq "$TOP_A" "$(last_tree session-edit)"
 
 payload=$(workdir_payload Edit ../evil "$REPO_A" "$REPO_B/tracked.txt")
 run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-evil")"
+assert_eq "$TOP_B" "$(last_tree evil)"
 assert test ! -e "$HOME/.cache/evil"
 
 payload=$(workdir_payload Bash session-agent "$REPO_A" "cd '$REPO_B'" | jq -c '. + {agent_id:"a1",agent_type:"claudeb-worker"}')
 run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-agent"
+assert test ! -e "$STATE_DIR/place-session-agent"
 
-# A subagent's cds stay invisible however many there are: the worker runs
-# wherever it was dispatched, and its shell is not the session's.
-S="$STATE_DIR/workdir-session-agent-cds"
-printf '%s\n' "$TOP_A" > "$S"
-for _ in 1 2 3 4; do
-  run_workdir_hook "$(agent_payload Bash session-agent-cds "$REPO_A" "cd '$REPO_B' && make")"
-done
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
+# A subagent's shell is not the chat's: its cds write nothing.
+S="session-agent-cds"
+place_set "$S" "$TOP_A"
+run_workdir_hook "$(agent_payload Bash "$S" "$REPO_A" "cd '$REPO_D' && make")"
+run_workdir_hook "$(agent_payload Bash "$S" "$REPO_A" "(cd '$REPO_D' && make)")"
+assert_eq 1 "$(place_count "$S")"
 
-# Its WRITES are heard, but only as sustained work — in orchestrator mode every
-# substantive edit is a subagent's, so ignoring them left the statusline behind.
-# The proof is the same three-in-a-row run as the worktree pin, and it applies to
-# a plain main-checkout home too: a worker starts at a path the session never
-# visited, so one write there is no evidence the work has moved.
-S="$STATE_DIR/workdir-session-agent-edit"
-printf '%s\n' "$TOP_A" > "$S"
-run_workdir_hook "$(agent_payload Edit session-agent-edit "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(agent_payload Write session-agent-edit "$REPO_A" "$REPO_D/new.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(agent_payload Edit session-agent-edit "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_D" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-S="$STATE_DIR/workdir-session-agent-split"
-printf '%s\n' "$TOP_A" > "$S"
-run_workdir_hook "$(agent_payload Edit session-agent-split "$REPO_A" "$REPO_D/other.txt")"
-run_workdir_hook "$(agent_payload Edit session-agent-split "$REPO_A" "$REPO_B/tracked.txt")"
-run_workdir_hook "$(agent_payload Edit session-agent-split "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-
-# Writing where the session already lives is not away work at all.
-S="$STATE_DIR/workdir-session-agent-home"
-printf '%s\n' "$TOP_A" > "$S"
-run_workdir_hook "$(agent_payload Edit session-agent-home "$REPO_A" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-# With no home yet there is nothing to protect, so the first write adopts.
-run_workdir_hook "$(agent_payload Edit session-agent-fresh "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-agent-fresh")"
-
-# The standing exclusions come first for subagents too, so a worker editing hooks
-# or caches never accumulates a run.
-S="$STATE_DIR/workdir-session-agent-excluded"
-printf '%s\n' "$TOP_A" > "$S"
-for _ in 1 2 3; do
-  run_workdir_hook "$(agent_payload Write session-agent-excluded "$REPO_A" "$HOME/.claude/settings.json")"
-done
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-# One run, whoever writes: a worktree pin sees parent and subagent writes as the
-# same sustained work.
-S="$STATE_DIR/workdir-session-agent-wt"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(workdir_payload Edit session-agent-wt "$REPO_E" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(agent_payload Edit session-agent-wt "$REPO_E" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_E" "$(cat "$S")"
-run_workdir_hook "$(agent_payload Write session-agent-wt "$REPO_E" "$REPO_A/new.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
+# Its edits are the chat's changes like any other, on the first one.
+S="session-agent-edit"
+place_set "$S" "$TOP_E"
+run_workdir_hook "$(agent_payload Edit "$S" "$REPO_E" "$REPO_D/other.txt")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
+assert_eq edit "$(last_kind "$S")"
+run_workdir_hook "$(agent_payload Write "$S" "$REPO_E" "$HOME/.cache/x/file.txt")"
+run_workdir_hook "$(agent_payload Read "$S" "$REPO_E" "$REPO_A/tracked.txt")"
+assert_eq 2 "$(place_count "$S")"
 
 dispatch_payload() {
   jq -cn --arg event "${5:-PreToolUse}" --arg tool "$1" --arg session "$2" --arg cwd "$3" --arg prompt "$4" \
@@ -941,65 +877,65 @@ dispatch_payload() {
 # The brief names that path, so the dispatch counts as a write — the harness
 # calls the tool Task or Agent depending on its version, and both are heard.
 for tool in Task Agent; do
-  S="$STATE_DIR/workdir-session-dispatch-$tool"
-  printf '%s\n' "$TOP_A" > "$S"
+  S="session-dispatch-$tool"
+  place_set "$S" "$TOP_A"
   run_workdir_hook "$(dispatch_payload "$tool" "session-dispatch-$tool" "$REPO_A" \
     "Work in the main checkout: cd '$REPO_D' && run the suite.")"
-  assert_eq "$TOP_D" "$(cat "$S")"
+  assert_eq "$TOP_D" "$(last_tree "$S")"
 done
 
 # First RESOLVABLE path, not first path: briefs open with excluded config paths,
 # file names and prose before naming the workspace, and only a directory that is
 # in a repository says where the worker will run.
-S="$STATE_DIR/workdir-session-dispatch-skip"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-dispatch-skip"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(dispatch_payload Task session-dispatch-skip "$REPO_A" \
   "Read $HOME/.claude/agents/worker.md, then $REPO_B/tracked.txt and /nonexistent/place; work in $REPO_D")"
-assert_eq "$TOP_D" "$(cat "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
 # The ten-token cap counts CANDIDATES, not raw matches: prose punctuation leaves
 # tokens that are a bare slash once trailing dots are stripped, and letting those
 # eat cap slots dropped the workspace named eleventh in the raw scan.
-S="$STATE_DIR/workdir-session-dispatch-cap"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-dispatch-cap"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(dispatch_payload Task session-dispatch-cap "$REPO_A" \
   "Start at /. then /... then /nonexistent/a1 /nonexistent/a2 /nonexistent/a3 /nonexistent/a4 \
 /nonexistent/a5 /nonexistent/a6 /nonexistent/a7 /nonexistent/a8 /nonexistent/a9 and work in $REPO_D")"
-assert_eq "$TOP_D" "$(cat "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
-S="$STATE_DIR/workdir-session-dispatch-nopath"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-dispatch-nopath"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(dispatch_payload Task session-dispatch-nopath "$REPO_A" "Summarise the review findings.")"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
+assert_eq "$TOP_A" "$(last_tree "$S")"
 
 # A worker dispatching its own subagent says nothing about where the SESSION
 # works, and its brief would drag the parent strip along.
-S="$STATE_DIR/workdir-session-dispatch-agent"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-dispatch-agent"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(dispatch_payload Task session-dispatch-agent "$REPO_A" "cd '$REPO_D' && fix it" \
   | jq -c '. + {agent_id:"a1",agent_type:"claudeb-worker"}')"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
+assert_eq "$TOP_A" "$(last_tree "$S")"
 
 # Only the launch counts: the same brief arrives again when the worker returns,
 # and hearing it twice would let one dispatch fill two thirds of the run.
-S="$STATE_DIR/workdir-session-dispatch-post"
-printf '%s\n' "$TOP_A" > "$S"
+S="session-dispatch-post"
+place_set "$S" "$TOP_A"
 run_workdir_hook "$(dispatch_payload Task session-dispatch-post "$REPO_A" "cd '$REPO_D' && fix it" PostToolUse)"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
+assert_eq "$TOP_A" "$(last_tree "$S")"
 
-# Against a sticky worktree pin a dispatch is evidence like any other write:
-# sustained, three in a row into the same toplevel.
-S="$STATE_DIR/workdir-session-dispatch-sticky"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(dispatch_payload Task session-dispatch-sticky "$REPO_E" "cd '$REPO_D' && build")"
-assert_eq "$TOP_E" "$(cat "$S")"
-run_workdir_hook "$(dispatch_payload Agent session-dispatch-sticky "$REPO_E" "work in $REPO_D")"
-assert_eq "$TOP_E" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Edit session-dispatch-sticky "$REPO_E" "$REPO_D/other.txt")"
-assert_eq "$TOP_D" "$(cat "$S")"
+S="session-dispatch-wt"
+place_set "$S" "$TOP_E"
+run_workdir_hook "$(dispatch_payload Task "$S" "$REPO_E" "cd '$REPO_D' && build")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
+assert_eq dispatch "$(last_kind "$S")"
+
+# A repository the journal excludes writes nothing, so the next candidate is still tried.
+DISPATCH_EXCLUDED="$HOME/.cache/dispatch-excluded"
+git init -q "$DISPATCH_EXCLUDED"
+S="session-dispatch-excluded"
+place_set "$S" "$TOP_A"
+run_workdir_hook "$(dispatch_payload Task "$S" "$REPO_A" "Scratch in $DISPATCH_EXCLUDED, then work in $REPO_D")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
 # --- no ownership claims are written -------------------------------------------------------
 # The hook used to answer a second question here — which changed paths are THIS chat's work — into
@@ -1012,362 +948,144 @@ run_workdir_hook "$(dispatch_payload Task session-touch-dispatch "$REPO_A" \
   "Work in $REPO_D. Change $REPO_D/other.txt and $REPO_B/tracked.txt.")"
 assert_eq 0 "$(find "$STATE_DIR" -name 'touched-*' | wc -l | tr -d ' ')"
 
-# The session's own reads are not evidence at all: a lookup elsewhere never moves
-# the home, however many of them run in a row, and it leaves no run behind for a
-# later write to complete.
-S="$STATE_DIR/workdir-session-read-move"
-printf '%s\n' "$TOP_A" > "$S"
-for _ in 1 2 3 4 5; do
-  run_workdir_hook "$(workdir_payload Read session-read-move "$REPO_A" "$REPO_D/other.txt")"
-done
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-# A read is invisible against a worktree pin too.
-S="$STATE_DIR/workdir-session-read-sticky"
-printf '%s\n' "$TOP_E" > "$S"
-for _ in 1 2 3 4 5; do
-  run_workdir_hook "$(workdir_payload Read session-read-sticky "$REPO_E" "$REPO_D/other.txt")"
-done
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-# A read back home is not work either — it neither rewrites the home nor clears
-# the run — but it does INTERRUPT a run someone else's writes started: the run is
-# CONSECUTIVE evidence, and leaving the tail untouched let scattered away writes,
-# ordinary home reads in between, walk the strip off to another repo.
-S="$STATE_DIR/workdir-session-read-home"
-printf '%s\n' "$TOP_A" > "$S"
-run_workdir_hook "$(agent_payload Edit session-read-home "$REPO_A" "$REPO_D/other.txt")"
-run_workdir_hook "$(workdir_payload Read session-read-home "$REPO_A" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(agent_payload Edit session-read-home "$REPO_A" "$REPO_D/other.txt")"
-run_workdir_hook "$(agent_payload Edit session-read-home "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert_eq "$TOP_D
-$TOP_A
-$TOP_D
-$TOP_D" "$(cat "$S.away")"
-# Nothing is created for a read at home when no run is pending, and a long stay
-# at home does not grow the run either.
-S="$STATE_DIR/workdir-session-read-home-idle"
-printf '%s\n' "$TOP_A" > "$S"
+# The chat's own reads are no change at all, in any quantity.
+S="session-read"
+place_set "$S" "$TOP_A"
 for _ in 1 2 3; do
-  run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_A/tracked.txt")"
+  run_workdir_hook "$(workdir_payload Read "$S" "$REPO_A" "$REPO_D/other.txt")"
 done
-assert test ! -e "$S.away"
-run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
-for _ in 1 2 3 4; do
-  run_workdir_hook "$(workdir_payload Read session-read-home-idle "$REPO_A" "$REPO_A/tracked.txt")"
-done
-assert_eq "$TOP_D
-$TOP_A" "$(cat "$S.away")"
-# The interrupted run still resumes on three fresh writes in a row.
-run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
-run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-run_workdir_hook "$(agent_payload Edit session-read-home-idle "$REPO_A" "$REPO_D/other.txt")"
-assert_eq "$TOP_D" "$(cat "$S")"
+assert_eq 1 "$(place_count "$S")"
+run_workdir_hook "$(workdir_payload Read session-read-fresh "$REPO_A" "$REPO_D/other.txt")"
+assert test ! -e "$STATE_DIR/place-session-read-fresh"
 
-# A subagent's reads stay invisible: an Explore agent reads across every repo it
-# can reach, and its sweep is not the session moving.
-S="$STATE_DIR/workdir-session-read-agent"
-printf '%s\n' "$TOP_A" > "$S"
-for _ in 1 2 3; do
-  run_workdir_hook "$(agent_payload Read session-read-agent "$REPO_A" "$REPO_D/other.txt")"
-done
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
+S="session-notebook"
+run_workdir_hook "$(workdir_payload NotebookEdit "$S" "$REPO_A" "$REPO_D/nb.ipynb")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
-# With no home at all a read establishes nothing — unlike a write, which adopts.
-# The seed is SessionStart's job.
-for _ in 1 2 3; do
-  run_workdir_hook "$(workdir_payload Read session-read-fresh "$REPO_A" "$REPO_D/other.txt")"
-done
-assert test ! -e "$STATE_DIR/workdir-session-read-fresh"
-assert test ! -e "$STATE_DIR/workdir-session-read-fresh.away"
+enter_payload() { # session cwd tool_response-json
+  jq -cn --arg session "$1" --arg cwd "$2" --argjson resp "$3" \
+    '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:$resp}'
+}
+S="session-enter"
+place_set "$S" "$TOP_A"
+run_workdir_hook "$(enter_payload "$S" "$REPO_A" "$(jq -cn --arg p "$REPO_E" '"Created worktree at \($p) on branch feature-y"')")"
+assert_eq "$TOP_E" "$(last_tree "$S")"
+assert_eq enter-worktree "$(last_kind "$S")"
+run_workdir_hook "$(enter_payload "$S" "$REPO_A" "$(jq -cn --arg p "$REPO_B" '{text:"Switched to worktree at \($p)"}')")"
+assert_eq "$TOP_B" "$(last_tree "$S")"
+run_workdir_hook "$(enter_payload "$S" "$REPO_A" '"no path in here"')"
+assert_eq 3 "$(place_count "$S")"
+run_workdir_hook "$(jq -cn --arg session "$S" --arg cwd "$REPO_E" \
+  '{hook_event_name:"PostToolUse",tool_name:"ExitWorktree",session_id:$session,cwd:$cwd,tool_input:{}}')"
+assert_eq "$TOP_E" "$(last_tree "$S")"
+assert_eq exit-worktree "$(last_kind "$S")"
+CLAUDE_PROJECT_DIR="$REPO_A" run_workdir_hook "$(jq -cn --arg session "$S" --arg cwd "$REPO_E" \
+  '{hook_event_name:"PostToolUse",tool_name:"ExitWorktree",session_id:$session,cwd:$cwd,tool_input:{}}')"
+assert_eq "$TOP_A" "$(last_tree "$S")"
 
-payload=$(jq -cn --arg session session-wt --arg cwd "$REPO_A" --arg resp "Created worktree at $REPO_B" \
-  '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:$resp}')
-run_workdir_hook "$payload"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-wt")"
-
-payload=$(jq -cn --arg session session-wt-obj --arg cwd "$REPO_B" --arg text "Now working in worktree at $REPO_A
-on branch main" \
-  '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:{text:$text}}')
-run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-wt-obj")"
-
-payload=$(jq -cn --arg session session-wt-none --arg cwd "$REPO_A" \
-  '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:"no path in here"}')
-run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-wt-none"
-
-payload=$(jq -cn --arg session session-wt --arg cwd "$REPO_B" \
-  '{hook_event_name:"PostToolUse",tool_name:"ExitWorktree",session_id:$session,cwd:$cwd,tool_input:{}}')
-run_workdir_hook "$payload"
-assert test ! -e "$STATE_DIR/workdir-session-wt"
-
-# Sticky worktree home: an edit into a sibling worktree or the main checkout of
-# the same repository must NOT retarget a session homed in .claude/worktrees. A
-# PERSISTENT cd is the exception — cd-guard denies every one the session did not
-# deliberately unlock, so one that reaches PostToolUse is the session moving.
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-cd"
-payload=$(workdir_payload Bash session-sticky-cd "$REPO_E" "cd '$REPO_F' && git status")
-run_workdir_hook "$payload"
-assert_eq "$TOP_F" "$(cat "$STATE_DIR/workdir-session-sticky-cd")"
-
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-main"
-payload=$(workdir_payload Bash session-sticky-main "$REPO_E" "cd '$REPO_A'")
-run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-sticky-main")"
-
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-edit"
-payload=$(workdir_payload Edit session-sticky-edit "$REPO_E" "$REPO_F/other.txt")
-run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-edit")"
-
-# Another repository is the same story: a persistent cd there is a move, while
-# the subshell form stays the one-off surgery (test runs, config edits) that
-# following used to hand the ports segment to that repo mid-task.
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-repo"
-payload=$(workdir_payload Bash session-sticky-repo "$REPO_E" "cd '$REPO_D'")
-run_workdir_hook "$payload"
-assert_eq "$TOP_D" "$(cat "$STATE_DIR/workdir-session-sticky-repo")"
-
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-repo-sub"
-payload=$(workdir_payload Bash session-sticky-repo-sub "$REPO_E" "(cd '$REPO_D' && make)")
-run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-sticky-repo-sub")"
-
-# Sticky is not permanent. A worktree made by hand never sees an ExitWorktree,
-# so a session that finishes there and works on in the main checkout used to be
-# pinned for life, naming a branch and a clean tree that were not the edited
-# ones. Three edits in a row into the same other toplevel move the home; the
-# first two only accumulate.
-S="$STATE_DIR/workdir-session-away-move"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(workdir_payload Edit session-away-move "$REPO_E" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_E" "$(cat "$S")"
-run_workdir_hook "$(workdir_payload Write session-away-move "$REPO_E" "$REPO_A/new.txt")"
-assert_eq "$TOP_E" "$(cat "$S")"
-assert_eq "$TOP_A
-$TOP_A" "$(cat "$S.away")"
-run_workdir_hook "$(workdir_payload Edit session-away-move "$REPO_E" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-# The run is appended and read from the tail, never incremented in place: a turn
-# that edits several files issues them as ONE parallel batch, and a
-# read-modify-write counter had all of those hooks read the same value and write
-# 1, so the batch this rule exists to catch never reached the threshold at all.
-S="$STATE_DIR/workdir-session-away-parallel"
-printf '%s\n' "$TOP_E" > "$S"
-for n in 1 2 3; do
-  printf '%s' "$(workdir_payload Edit session-away-parallel "$REPO_E" "$REPO_A/f$n.txt")" | "$WORKDIR_HOOK" &
-done
-wait
-assert_eq "$TOP_A" "$(cat "$S")"
-
-# Alternating writes never reach the threshold, so the run file would otherwise
-# grow for the life of the session.
-S="$STATE_DIR/workdir-session-away-trim"
-printf '%s\n' "$TOP_E" > "$S"
-for _ in $(seq 1 70); do
-  run_workdir_hook "$(workdir_payload Edit session-away-trim "$REPO_E" "$REPO_A/tracked.txt")"
-  run_workdir_hook "$(workdir_payload Edit session-away-trim "$REPO_E" "$REPO_D/other.txt")"
-done
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test "$(wc -l < "$S.away")" -le 64
-
-# The run must be consecutive AND in one place: edits alternating between two
-# foreign repos are excursions, not a move.
-S="$STATE_DIR/workdir-session-away-split"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(workdir_payload Edit session-away-split "$REPO_E" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(workdir_payload Edit session-away-split "$REPO_E" "$REPO_D/other.txt")"
-run_workdir_hook "$(workdir_payload Edit session-away-split "$REPO_E" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_E" "$(cat "$S")"
-
-# Any work back home clears the run — an edit in the worktree, or a plain cd
-# into it, which writes the home afresh.
-S="$STATE_DIR/workdir-session-away-reset"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(workdir_payload Bash session-away-reset "$REPO_A" "cd '$REPO_E'")"
-assert test ! -e "$S.away"
-run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(workdir_payload Edit session-away-reset "$REPO_E" "$REPO_A/tracked.txt")"
-assert_eq "$TOP_E" "$(cat "$S")"
-
-# A persistent cd needs no run at all: it breaks the pin on the first one and
-# takes a half-built run with it, while the subshell form it is steered into
-# (cd-ing out to run tests or grep another repo) stays absorbed at any count.
-S="$STATE_DIR/workdir-session-away-cds"
-printf '%s\n' "$TOP_E" > "$S"
-for _ in 1 2 3 4 5; do
-  run_workdir_hook "$(workdir_payload Bash session-away-cds "$REPO_E" "(cd '$REPO_A' && make test)")"
-done
-assert_eq "$TOP_E" "$(cat "$S")"
-assert test ! -e "$S.away"
-run_workdir_hook "$(workdir_payload Edit session-away-cds "$REPO_E" "$REPO_A/tracked.txt")"
-run_workdir_hook "$(workdir_payload Bash session-away-cds "$REPO_E" "cd '$REPO_A' && make test")"
-assert_eq "$TOP_A" "$(cat "$S")"
-assert test ! -e "$S.away"
-
-# A half-finished run is session state, not history: it dies with the home.
-S="$STATE_DIR/workdir-session-away-exit"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(workdir_payload Edit session-away-exit "$REPO_E" "$REPO_A/tracked.txt")"
-assert test -e "$S.away"
-run_workdir_hook "$(jq -cn --arg session session-away-exit --arg cwd "$REPO_E" \
-  '{hook_event_name:"PostToolUse",tool_name:"ExitWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:""}')"
-assert test ! -e "$S.away"
-
-S="$STATE_DIR/workdir-session-away-clear"
-printf '%s\n' "$TOP_E" > "$S"
-run_workdir_hook "$(workdir_payload Edit session-away-clear "$REPO_E" "$REPO_A/tracked.txt")"
-assert test -e "$S.away"
-run_workdir_hook "$(jq -cn --arg session session-away-clear --arg cwd "$REPO_E" \
-  '{hook_event_name:"SessionStart",session_id:$session,cwd:$cwd,source:"clear"}')"
-assert test ! -e "$S.away"
-
-# EnterWorktree is the deliberate move and bypasses stickiness.
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-sticky-enter"
-payload=$(jq -cn --arg session session-sticky-enter --arg cwd "$REPO_E" --arg resp "Created worktree at $REPO_F" \
-  '{hook_event_name:"PostToolUse",tool_name:"EnterWorktree",session_id:$session,cwd:$cwd,tool_input:{},tool_response:$resp}')
-run_workdir_hook "$payload"
-assert_eq "$TOP_F" "$(cat "$STATE_DIR/workdir-session-sticky-enter")"
-
-# A main-checkout home is not sticky: moving into a worktree adopts it.
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-main-to-wt"
-payload=$(workdir_payload Bash session-main-to-wt "$REPO_A" "cd '$REPO_E'")
-run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-main-to-wt")"
-
-# ~/.claude paths are excluded on the LOGICAL path, before symlink resolution:
-# ~/.claude/hooks really is a symlink into a config repo, and resolving first
-# used to adopt that repo as the session home.
+# ~/.claude is not excluded: the file's own symlink, or the directory's, lands on the repository
+# that physically holds it.
 ln -s "$REPO_D" "$HOME/.claude/hooks"
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-claude-symlink"
-payload=$(workdir_payload Write session-claude-symlink "$REPO_E" "$HOME/.claude/hooks/some-hook.sh")
-run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-claude-symlink")"
+S="session-claude-dir-symlink"
+place_set "$S" "$TOP_A"
+run_workdir_hook "$(workdir_payload Write "$S" "$REPO_A" "$HOME/.claude/hooks/some-hook.sh")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 rm -f "$HOME/.claude/hooks"
+mkdir -p "$HOME/.claude/hooks" "$REPO_B/hooks"
+printf 'x\n' > "$REPO_B/hooks/foo.sh"
+ln -s "$REPO_B/hooks/foo.sh" "$HOME/.claude/hooks/foo.sh"
+S="session-claude-file-symlink"
+place_set "$S" "$TOP_A"
+run_workdir_hook "$(workdir_payload Edit "$S" "$REPO_A" "$HOME/.claude/hooks/foo.sh")"
+assert_eq "$TOP_B" "$(last_tree "$S")"
+rm -rf "$HOME/.claude/hooks" "$REPO_B/hooks"
 
-# A non-worktree home still follows into any repository, including a SEPARATE
-# one nested under the project dir.
-NESTED="$REPO_A/vendored"
-mkdir -p "$NESTED"
-git -C "$NESTED" init -q -b main
-printf 'nested\n' > "$NESTED/n.txt"
-git -C "$NESTED" add n.txt
-git -C "$NESTED" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
-TOP_NESTED=$(git -C "$NESTED" rev-parse --show-toplevel)
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-nested-repo"
-payload=$(workdir_payload Bash session-nested-repo "$REPO_A" "cd '$NESTED'")
-run_workdir_hook "$payload"
-assert_eq "$TOP_NESTED" "$(cat "$STATE_DIR/workdir-session-nested-repo")"
-# The nested repo is an untracked entry in repo A; later renders assert a clean tree.
-rm -rf "$NESTED"
+# The standing exclusions: temp dirs, caches, node_modules, and anything outside git.
+mkdir -p "$REPO_A/node_modules/pkg" "$TMPDIR/tmp-repo" "$HOME/.cache/cache-repo"
+git -C "$TMPDIR/tmp-repo" init -q
+git -C "$HOME/.cache/cache-repo" init -q
+S="session-excluded"
+place_set "$S" "$TOP_A"
+for excluded_path in "$REPO_A/node_modules/pkg/index.js" "$TMPDIR/tmp-repo/f" \
+  "$HOME/.cache/cache-repo/f" "$NON_GIT/f" "/tmp/f"; do
+  run_workdir_hook "$(workdir_payload Write "$S" "$REPO_A" "$excluded_path")"
+done
+assert_eq 1 "$(place_count "$S")"
+rm -rf "$REPO_A/node_modules"
 
+# SessionStart seeds only a missing or empty journal, whatever its source; a subagent-typed
+# SessionStart is a top-level `claude --agent` session and seeds too.
 session_start_payload() {
   jq -cn --arg source "$1" --arg session "$2" --arg cwd "${3:-$REPO_A}" \
     '{hook_event_name:"SessionStart",source:$source,session_id:$session,cwd:$cwd}'
 }
-
-# startup/clear replace any surviving state with a seed from the session's own
-# starting cwd — an empty home would let the first one-off cd/edit anywhere
-# adopt a foreign dir before stickiness can protect anything. resume does not:
-# see the live-home cases below.
-for src in startup clear; do
-  printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-$src"
+for src in startup resume clear compact; do
   run_workdir_hook "$(session_start_payload "$src" "session-ss-$src")"
-  assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-$src")"
+  assert_eq "$TOP_A" "$(last_tree "session-ss-$src")"
+  assert_eq seed "$(last_kind "session-ss-$src")"
+  place_set "session-ss-$src" "$TOP_D" "$TOP_D" edit
+  run_workdir_hook "$(session_start_payload "$src" "session-ss-$src" "$REPO_B")"
+  assert_eq "$TOP_D" "$(last_tree "session-ss-$src")"
 done
+run_workdir_hook "$(session_start_payload startup session-ss-agent | jq -c '. + {agent_type:"reviewer"}')"
+assert_eq "$TOP_A" "$(last_tree session-ss-agent)"
+: > "$STATE_DIR/place-session-ss-empty"
+run_workdir_hook "$(session_start_payload resume session-ss-empty "$REPO_E")"
+assert_eq "$TOP_E" "$(last_tree session-ss-empty)"
+run_workdir_hook "$(session_start_payload startup session-ss-nogit "$NON_GIT")"
+assert test ! -e "$STATE_DIR/place-session-ss-nogit"
 
-printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-compact"
-run_workdir_hook "$(session_start_payload compact session-ss-compact)"
-assert_eq "$TOP_B" "$(cat "$STATE_DIR/workdir-session-ss-compact")"
+# `main` is the checkout owning the worktree, and a main checkout is its own.
+S="session-main-field"
+run_workdir_hook "$(workdir_payload Edit "$S" "$REPO_A" "$REPO_E/f.txt")"
+run_workdir_hook "$(workdir_payload Edit "$S" "$REPO_A" "$REPO_D/other.txt")"
+assert_eq "$TOP_E	$TOP_A
+$TOP_D	$TOP_D" "$(cut -f3,4 "$STATE_DIR/place-$S")"
 
-printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-agent"
-payload=$(session_start_payload startup session-ss-agent | jq -c '. + {agent_type:"reviewer"}')
-run_workdir_hook "$payload"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-agent")"
+# Three parallel edits are three lines: one printf per append, no read-modify-write.
+S="session-parallel"
+for parallel_file in tracked.txt a.txt b.txt; do
+  printf '%s' "$(workdir_payload Edit "$S" "$REPO_A" "$REPO_A/$parallel_file")" | "$WORKDIR_HOOK" &
+done
+wait
+assert_eq 3 "$(place_count "$S")"
+assert_eq 3 "$(grep -c "	edit	$TOP_A	$TOP_A\$" "$STATE_DIR/place-$S")"
 
-# Non-git cwd: state is cleared and nothing is seeded.
-printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-session-ss-nogit"
-run_workdir_hook "$(session_start_payload startup session-ss-nogit "$WORK")"
-assert test ! -e "$STATE_DIR/workdir-session-ss-nogit"
+# Past 400 lines the writer keeps the last 200.
+S="session-trim"
+for trim_i in $(seq 1 400); do place_set "$S" "$TOP_A"; done
+"$PLACE" add --session "$S" --kind edit --path "$REPO_D/other.txt"
+assert_eq 200 "$(place_count "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
+assert_fails() { asserts=$((asserts + 1)); ! "$@" >/dev/null 2>&1 || fail "assert $asserts should have failed: $*"; }
+assert_fails "$PLACE" add --session "$S" --kind wander --path "$REPO_D"
+assert_fails "$PLACE" why
+assert_eq 200 "$(place_count "$S")"
 
-# resume keeps ANY live home, worktree or not: the event's cwd is the launch dir
-# (often the main checkout), not where the work lives — reseeding would retarget
-# the strip and the ports segment on every resume of a long chat. clear still
-# reseeds, and so does a resume whose home no longer exists on disk.
-S="$STATE_DIR/workdir-session-ss-resume-plain"
-printf '%s\n' "$TOP_D" > "$S"
-printf '%s\n' "$TOP_A" > "$S.away"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-plain)"
-assert_eq "$TOP_D" "$(cat "$S")"
-assert test ! -e "$S.away"
+# From 399 lines, twenty parallel adds trim once and lose none of theirs: 200 kept, 18 after.
+S="session-trim-race"
+for trim_i in $(seq 1 399); do place_set "$S" "$TOP_A"; done
+for trim_i in $(seq 1 20); do "$PLACE" add --session "$S" --kind edit --path "$REPO_D/other.txt" & done
+wait
+assert_eq 218 "$(place_count "$S")"
+assert_eq 20 "$(grep -c "	edit	$TOP_D	" "$STATE_DIR/place-$S")"
+assert test ! -e "$STATE_DIR/place-$S.lock"
 
-printf '%s\n' "$FIXTURES/vanished-repo" > "$STATE_DIR/workdir-session-ss-resume-plain-dead"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-plain-dead)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-plain-dead")"
+"$PLACE" add --session session-exit --kind edit --path "$REPO_D/other.txt"
+assert_eq 0 "$?"
+assert_eq 600 "$(stat -f %Lp "$STATE_DIR/place-session-exit")"
+place_rc=0
+"$PLACE" add --session session-exit --kind edit --path "$NON_GIT" || place_rc=$?
+assert_eq 3 "$place_rc"
+assert_eq 1 "$(place_count session-exit)"
 
-# A dir that survives but is no longer its own toplevel is not a live home
-# either: git discovery ascends and the kept home would name the owning
-# checkout's branch as the workspace.
-printf '%s\n' "$REPO_A/vendored-gone" > "$STATE_DIR/workdir-session-ss-resume-subdir"
-mkdir -p "$REPO_A/vendored-gone"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-subdir)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-subdir")"
-rmdir "$REPO_A/vendored-gone"
-
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-resume-wt"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-wt)"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-resume-wt")"
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-session-ss-clear-wt"
-run_workdir_hook "$(session_start_payload clear session-ss-clear-wt)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-clear-wt")"
-printf '%s\n' "$REPO_A/.claude/worktrees/vanished-wt" > "$STATE_DIR/workdir-session-ss-resume-dead"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-dead)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-dead")"
-# A worktree directory that outlived its git link is NOT a live home: it sits
-# inside the parent checkout, so git discovery ascends and keeping it would make
-# the strip report the main checkout's branch — no `⧉`, nothing — as if that
-# were the workspace. Reseeding at least names where the shell is.
-UNLINKED="$REPO_A/.claude/worktrees/lost-link"
-git -C "$REPO_A" worktree add -q -b lost-link "$UNLINKED"
-rm -f "$UNLINKED/.git"
-printf '%s\n' "$UNLINKED" > "$STATE_DIR/workdir-session-ss-resume-unlinked"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-unlinked)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-unlinked")"
-rm -rf "$UNLINKED"
-git -C "$REPO_A" worktree prune
-git -C "$REPO_A" branch -qD lost-link
-# Same for a `.claude/worktrees/` path under no repository at all.
-NO_REPO="$FIXTURES/orphan-holder/.claude/worktrees/leftover"
-mkdir -p "$NO_REPO"
-printf '%s\n' "$NO_REPO" > "$STATE_DIR/workdir-session-ss-resume-norepo"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-norepo)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-norepo")"
-rm -rf "$FIXTURES/orphan-holder"
-# No state and empty state are the seeding paths, not keeping ones.
-rm -f "$STATE_DIR/workdir-session-ss-resume-fresh"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-fresh)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-fresh")"
-: > "$STATE_DIR/workdir-session-ss-resume-empty"
-run_workdir_hook "$(session_start_payload resume session-ss-resume-empty)"
-assert_eq "$TOP_A" "$(cat "$STATE_DIR/workdir-session-ss-resume-empty")"
-
-# The live failure this seed exists for: a session born in a worktree runs a
-# one-off cd into a sibling — the seeded home must hold through stickiness.
-run_workdir_hook "$(session_start_payload startup session-ss-seed-sticky "$REPO_E")"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-seed-sticky")"
-payload=$(workdir_payload Bash session-ss-seed-sticky "$REPO_E" "(cd '$REPO_A' && git status)")
-run_workdir_hook "$payload"
-assert_eq "$TOP_E" "$(cat "$STATE_DIR/workdir-session-ss-seed-sticky")"
+# Journals older than a week go with the hourly prune, and so does a snapshot no PostToolUse took.
+place_set session-prune-old "$TOP_A"
+place_set session-prune-new "$TOP_A"
+touch -t 202001010000 "$STATE_DIR/place-session-prune-old" "$STATE_DIR/.place-prune"
+run_workdir_hook "$(workdir_payload Edit session-prune-new "$REPO_A" "$REPO_A/tracked.txt")"
+assert test ! -e "$STATE_DIR/place-session-prune-old"
+assert_eq 2 "$(place_count session-prune-new)"
 
 statusline_payload() {
   local extra="${2-}"
@@ -1396,7 +1114,7 @@ run_statusline() {
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
     STATUSLINE_CODEX_REFRESH_CMD="${CODEX_REFRESH_CMD:-/usr/bin/true}" \
-    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" STATUSLINE_REVIEW_BENCH="${BENCH_CMD:-}" "$STATUSLINE"
+    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" "$STATUSLINE"
 }
 
 
@@ -1476,7 +1194,7 @@ assert test "${control_one#*»}" = "$control_one"
 # A worktree of the project is `⧉ <dir>`, never `»` — that arrow is reserved for
 # a foreign repository. This one sits outside <repo>/.claude/worktrees, which is
 # the one alarm the cluster still carries.
-printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-status-override"
+place_set status-override "$TOP_B"
 override_output=$(run_statusline "$status_payload") || fail "statusline override failed"
 assert test "${override_output#*»}" = "$override_output"
 assert grep -Fq "${RED}⧉ $(basename "$TOP_B")" <<< "$override_output"
@@ -1484,20 +1202,20 @@ assert test "${override_output#*⎇}" = "$override_output"
 
 # In a worktree the directory label IS the identity: no branch segment at all,
 # whatever the branch is called. Canonical location, name matching the branch.
-printf '%s\n' "$TOP_E" > "$STATE_DIR/workdir-status-canon"
+place_set status-canon "$TOP_E"
 canon_output=$(run_statusline "$(statusline_payload status-canon)") || fail "statusline canonical worktree failed"
 assert grep -Fq "${BLUE}⧉ feature-y" <<< "$canon_output"
 assert test "${canon_output#*⎇}" = "$canon_output"
 
 # A branch bearing no relation to the directory name is not printed either.
-printf '%s\n' "$TOP_J" > "$STATE_DIR/workdir-status-ticket"
+place_set status-ticket "$TOP_J"
 ticket_output=$(run_statusline "$(statusline_payload status-ticket)") || fail "statusline diverged branch failed"
 assert grep -Fq "${BLUE}⧉ wut-25-portal" <<< "$ticket_output"
 assert test "${ticket_output#*⎇}" = "$ticket_output"
 assert test "${ticket_output#*WUT-259}" = "$ticket_output"
 
 # Nor a harness auto-slug: branch names are policed nowhere on the strip.
-printf '%s\n' "$TOP_F" > "$STATE_DIR/workdir-status-autoslug"
+place_set status-autoslug "$TOP_F"
 autoslug_output=$(run_statusline "$(statusline_payload status-autoslug)") || fail "statusline auto-slug failed"
 assert grep -Fq "${BLUE}⧉ auto-slug" <<< "$autoslug_output"
 assert test "${autoslug_output#*⎇}" = "$autoslug_output"
@@ -1505,7 +1223,7 @@ assert test "${autoslug_output#*claude/agitated}" = "$autoslug_output"
 
 # Detached HEAD in a worktree is no exception — but the diff still measures.
 printf 'd1\n' > "$TOP_C/wt-det-junk.txt"
-printf '%s\n' "$TOP_C" > "$STATE_DIR/workdir-status-wt-detached"
+place_set status-wt-detached "$TOP_C"
 wt_det_output=$(run_statusline "$(statusline_payload status-wt-detached)") || fail "statusline detached worktree failed"
 assert grep -Fq "⧉ $(basename "$TOP_C")" <<< "$wt_det_output"
 assert test "${wt_det_output#*⎇}" = "$wt_det_output"
@@ -1520,12 +1238,12 @@ assert grep -Fq "${BLUE}⧉ feature-y" <<< "$in_wt_output"
 # Separate git dir: the location check must resolve the main worktree through git,
 # not by stripping `/.git` off the common dir, or an in-convention worktree reads
 # as misplaced.
-printf '%s\n' "$TOP_H" > "$STATE_DIR/workdir-status-sepdir"
+place_set status-sepdir "$TOP_H"
 sepdir_output=$(run_statusline "$(statusline_payload status-sepdir '' "$REPO_G")") || fail "statusline separate-git-dir failed"
 assert grep -Fq "${BLUE}⧉ sep-work" <<< "$sepdir_output"
 
 # A foreign repository keeps `»` and always shows its branch.
-printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-status-foreign"
+place_set status-foreign "$TOP_D"
 foreign_output=$(run_statusline "$(statusline_payload status-foreign)") || fail "statusline foreign repo failed"
 assert grep -Fq "»" <<< "$foreign_output"
 assert grep -Fq "$(basename "$TOP_D")" <<< "$foreign_output"
@@ -1533,22 +1251,31 @@ assert grep -Fq '⎇ main' <<< "$foreign_output"
 assert test "${foreign_output#*⧉}" = "$foreign_output"
 
 same_payload=$(statusline_payload status-same)
-printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-status-same"
+place_set status-same "$TOP_A"
 same_output=$(run_statusline "$same_payload") || fail "statusline same-repo failed"
 assert grep -Fq main <<< "$same_output"
 assert test "${same_output#*»}" = "$same_output"
 
-# A tracked directory that stopped resolving (removed worktree): the render falls
-# back to the session project silently — the stale pointer is dropped and nothing
-# is left behind to render a breadcrumb from.
-printf '%s\n' "$FIXTURES/vanished" > "$STATE_DIR/workdir-status-dangling"
+# Example 5: a journal naming only vanished trees falls back to the project dir, silently.
+place_set status-dangling "$FIXTURES/vanished"
 dangling_output=$(run_statusline "$(statusline_payload status-dangling)") || fail "statusline dangling failed"
 assert grep -Fq "${BLUE}⎇ main" <<< "$dangling_output"
 assert test "${dangling_output#*»}" = "$dangling_output"
 assert test "${dangling_output#*⧉}" = "$dangling_output"
 assert test "${dangling_output#*✗}" = "$dangling_output"
-assert test ! -e "$STATE_DIR/workdir-status-dangling"
-assert test ! -e "$STATE_DIR/workdir-status-dangling.gone"
+assert_eq 1 "$(place_count status-dangling)"
+# The newest line that still resolves wins over the vanished last line's main checkout, and with
+# none resolving that main checkout is shown.
+place_set status-gone-older "$TOP_B"
+place_set status-gone-older "$FIXTURES/vanished-wt" "$TOP_D"
+gone_output=$(run_statusline "$(statusline_payload status-gone-older)") || fail "statusline vanished tree failed"
+assert grep -Fq "⧉ $(basename "$TOP_B")" <<< "$gone_output"
+assert grep -Fq "fallback: the 1 newer line(s) name vanished trees" <<< "$("$PLACE" why --session status-gone-older)"
+place_set status-gone-main "$FIXTURES/vanished-wt" "$TOP_D"
+gone_output=$(run_statusline "$(statusline_payload status-gone-main)") || fail "statusline vanished main failed"
+assert grep -Fq "»${RESET} ${BLUE}$(basename "$TOP_D")${RESET}" <<< "$gone_output"
+assert grep -Fq "shown: $TOP_D" <<< "$("$PLACE" why --session status-gone-main)"
+assert grep -Fq "shown: the project dir (no journal at" <<< "$("$PLACE" why --session status-none)"
 
 # Outside a worktree the branch always shows, detached HEAD as `@sha`.
 detached_output=$(run_statusline "$(statusline_payload status-detached '' "$REPO_K")") || fail "statusline detached failed"
@@ -1717,14 +1444,14 @@ assert grep -Fq 'WUT-421' <<< "$fit_step11"
 
 # Steps 10 and 11 on the `»` pair: the active side alone, then no directory at all. Both sides
 # wear the initials form first, and the arrow loses its spaces with them.
-printf '%s\n' "$FIT_FOREIGN_TOP" > "$STATE_DIR/workdir-fit-arrow"
+place_set fit-arrow "$FIT_FOREIGN_TOP"
 fit_arrow=$(fit_render fit-arrow "")
 assert grep -Fq 'fit-bench-project » other-side-repo' <<< "$fit_arrow"
 assert_eq 93 "${#fit_arrow}"
-printf '%s\n' "$FIT_FOREIGN_TOP" > "$STATE_DIR/workdir-fit-arrow-ini"
+place_set fit-arrow-ini "$FIT_FOREIGN_TOP"
 fit_arrow_ini=$(fit_render fit-arrow-ini 47)
 assert grep -Fq 'fbp»osr' <<< "$fit_arrow_ini"
-printf '%s\n' "$FIT_FOREIGN_TOP" > "$STATE_DIR/workdir-fit-arrow-active"
+place_set fit-arrow-active "$FIT_FOREIGN_TOP"
 fit_arrow_active=$(fit_render fit-arrow-active 35)
 assert grep -Fq 'osr' <<< "$fit_arrow_active"
 assert test "${fit_arrow_active#*fbp}" = "$fit_arrow_active"
@@ -3145,11 +2872,11 @@ dgit checkout -q main
 
 # The LLM cd's into another repo mid-session: the diff follows the ACTIVE repo.
 printf 'w1\nw2\n' > "$TOP_B/wt-junk.txt"
-printf '%s\n' "$TOP_B" > "$STATE_DIR/workdir-diff-workdir"
+place_set diff-workdir "$TOP_B"
 dwd_out=$(run_statusline "$(statusline_payload diff-workdir "$diff_extra")")
 assert grep -Fq "⧉ $(basename "$TOP_B")" <<< "$dwd_out"
 assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dwd_out"
-rm -f "$TOP_B/wt-junk.txt" "$STATE_DIR/workdir-diff-workdir"
+rm -f "$TOP_B/wt-junk.txt" "$STATE_DIR/place-diff-workdir"
 
 # Detached HEAD still measures the diff (vs the detached commit).
 printf 'd1\n' > "$TOP_K/det-junk.txt"
@@ -3480,7 +3207,7 @@ assert grep -Fq "${DIM}⇢${RESET} ${GREEN}:4002${RESET}" <<< "$rte2ewt_out"
 assert test "${rte2ewt_out#*:4001}" = "$rte2ewt_out"
 
 printf '%s' "$tree_cache" > "$STATE_DIR/ports-r-tree-foreign"
-printf '%s\n' "$TOP_D" > "$STATE_DIR/workdir-r-tree-foreign"
+place_set r-tree-foreign "$TOP_D"
 rtforeign_out=$(run_statusline "$(statusline_payload r-tree-foreign '' "$TOP_A")")
 assert test "${rtforeign_out#*⇢}" = "$rtforeign_out"
 
@@ -4015,13 +3742,6 @@ GATE_CMD="$GATE_STUB"
 # Two renders per case, because the gate is never asked on the render path: the first starts the
 # refresh and shows whatever stood before it, the second reads what landed. A render that returned
 # the answer straight away would be one waiting a second for git on every prompt.
-# Each tree the render asks about caches under its own name: the session's, plus this suffix for a
-# tree the block has moved to, so the two answers cannot serve each other's key.
-away_tag() { # toplevel
-  local key
-  key=$(printf '%s' "$1" | cksum)
-  printf '%s' "${key// /-}"
-}
 review_await_session() { # session
   local file="$STATE_DIR/review-autonomy-$1" i
   for i in $(seq 1 100); do
@@ -4030,26 +3750,21 @@ review_await_session() { # session
   done
   fail "the backgrounded session answer never landed: $1"
 }
-review_await_verdict() { # session [away-toplevel]
+review_await_verdict() { # session
   local file="$STATE_DIR/review-class-$1" i
-  [ -n "${2:-}" ] && file="$file-$(away_tag "$2")"
   for i in $(seq 1 100); do
     [ -s "$file" ] && [ ! -d "$file.lock" ] && return 0
     sleep 0.05
   done
   fail "the backgrounded verdict never landed: $1"
 }
-review_render() { # session repo [away-toplevel]
+review_render() { # session repo
   local payload
   rm -f "$STATE_DIR/review-class-$1"
   rmdir "$STATE_DIR/review-class-$1.lock" 2>/dev/null
-  if [ -n "${3:-}" ]; then
-    rm -f "$STATE_DIR/review-class-$1-$(away_tag "$3")"
-    rmdir "$STATE_DIR/review-class-$1-$(away_tag "$3").lock" 2>/dev/null
-  fi
   payload=$(statusline_payload "$1" "" "$2")
   run_statusline "$payload" >/dev/null || fail "review render failed: $1"
-  review_await_verdict "$1" "${3:-}"
+  review_await_verdict "$1"
   run_statusline "$payload" || fail "review render failed: $1"
 }
 # too — the second render is only allowed to be the one that shows the answer.
@@ -4692,9 +4407,6 @@ progress_dead_out=$(progress_render dead-pid)
 assert test "${progress_dead_out#*4/7}" = "$progress_dead_out"
 rm -f "$PROGRESS_DIR/${progress_prefix}99999999.json"
 
-# The whole middle block is about ONE tree — the shown tree — and a review elsewhere is reported by
-# MOVING it there, never by naming a repository in the counter slot (Egor, 2026-08-27, superseding
-# the 2026-08-26 rule that the folder never moves).
 progress_home_dir="${BLUE}$(basename "$REVIEW_CLEAN")${RESET}"
 progress_away_dirs="${DIM}$(basename "$REVIEW_CLEAN")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_DIRTY")${RESET}"
 rev_unnamed() { # rendered
@@ -4710,21 +4422,22 @@ progress_foreign_out=$(progress_render foreign-repo)
 assert test "${progress_foreign_out#*4/7}" = "$progress_foreign_out"
 assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_out"
 
-# A run over another tree belongs to the chat that started it and to no other, and a live one of
-# this chat's takes the block with it: the folder, the branch, the counters and the counter beside
-# them are that tree's, so the number is read as belonging to the folder it is actually about.
 progress_set_session() { # session
   jq --arg session "$1" '.session = $session' \
     "$PROGRESS_DIR/$progress_prefix$$.json" > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
   mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
 }
+# This chat's own run elsewhere moves nothing by itself: only the journal line review-bench writes
+# at its start does, and then the whole block is that tree's.
 progress_set_session review-progress-foreign-mine
+progress_foreign_unjournaled_out=$(progress_render foreign-mine)
+assert test "${progress_foreign_unjournaled_out#*4/7}" = "$progress_foreign_unjournaled_out"
+assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_unjournaled_out"
+place_set review-progress-foreign-mine "$TOP_REVIEW_DIRTY" "$TOP_REVIEW_DIRTY" review-start
 progress_foreign_mine_out=$(progress_render foreign-mine)
 assert grep -Fq "$progress_away_dirs" <<< "$progress_foreign_mine_out"
 assert grep -Fq " ${DIM}│${RESET} rev T2 4/7" <<< "$progress_foreign_mine_out"
 assert rev_unnamed "$progress_foreign_mine_out"
-# The branch and the diff counters move with it: review-dirty's own untracked 21 lines, never the
-# clean home tree's nothing.
 assert grep -Fq "${BLUE}⎇ main${RESET} ${GREEN}+21${RESET}/${RED}-0${RESET}" \
   <<< "$progress_foreign_mine_out"
 
@@ -4733,41 +4446,23 @@ progress_foreign_other_out=$(progress_render foreign-other)
 assert test "${progress_foreign_other_out#*4/7}" = "$progress_foreign_other_out"
 assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_other_out"
 
-# Without a recorded session the walk still answers, for documents written before review-bench
-# recorded one — and where it cannot, a run elsewhere moves nothing and shows nothing.
-mkdir -p "$HOME/.claude/sessions"
-printf '{"sessionId":"review-progress-foreign-walk"}\n' > "$HOME/.claude/sessions/$$.json"
-write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
-progress_foreign_walk_out=$(progress_render foreign-walk)
-assert grep -Fq "$progress_away_dirs" <<< "$progress_foreign_walk_out"
-assert grep -Fq " ${DIM}│${RESET} rev T2 4/7" <<< "$progress_foreign_walk_out"
-progress_foreign_walk_other_out=$(progress_render foreign-walk-other)
-assert test "${progress_foreign_walk_other_out#*4/7}" = "$progress_foreign_walk_other_out"
-assert grep -Fq "$progress_home_dir" <<< "$progress_foreign_walk_other_out"
-rm -f "$HOME/.claude/sessions/$$.json"
-
-# The recorded session decides how loudly a run on THIS tree renders, and nothing about whether it
-# renders at all: another chat's run here is still this tree's news, and it moves nothing.
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00
 progress_set_session review-progress-another-chat
 progress_own_tree_other_out=$(progress_render own-tree-other)
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 4/7${RESET}" <<< "$progress_own_tree_other_out"
 assert grep -Fq "$progress_home_dir" <<< "$progress_own_tree_other_out"
 
-# Identity is the WORKING TREE and not the repository: `--git-common-dir` is one path for every
-# worktree of a project, so matching on it rendered a sibling's review here as if it were this
-# tree's. A sibling nobody here owns is still invisible; a sibling of THIS chat's own is an away
-# tree like any other, and takes the block to the worktree it actually runs in — `⧉` and all.
-# A subdirectory of this tree (the case that forced content matching in the first place, since its
-# file name is unpredictable) still resolves to home and renders there.
+# Identity is the working tree, not `--git-common-dir`, which every worktree of a project shares.
 PROGRESS_WT="$FIXTURES/review-clean-wt"
 git -C "$REVIEW_CLEAN" worktree add -q "$PROGRESS_WT" -b progress-sibling
+TOP_PROGRESS_WT=$(cd "$PROGRESS_WT" && pwd -P)
 write_progress "$$" T2 4 7 2026-07-27T22:00:00+00:00 "$PROGRESS_WT"
 progress_sibling_out=$(progress_render sibling-worktree)
 assert test "${progress_sibling_out#*4/7}" = "$progress_sibling_out"
 assert test "${progress_sibling_out#*⧉}" = "$progress_sibling_out"
 
 progress_set_session review-progress-sibling-mine
+place_set review-progress-sibling-mine "$TOP_PROGRESS_WT" "$review_clean_root" review-start
 progress_sibling_mine_out=$(progress_render sibling-mine)
 assert grep -Fq "$progress_home_dir ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
   <<< "$progress_sibling_mine_out"
@@ -4793,43 +4488,32 @@ assert_eq 0 \
   "$(grep -Eco 'rev (T[0-3] )?[0-9]+/[0-9]+' <<< "$progress_gone_out" | tr -d ' ')"
 assert review_slot_silent "$progress_gone_out"
 
-# The debt never disappears behind a review. Both stand on the line over ONE tree — the counter
-# with the word, the verdict with its numbers alone — where a run in flight used to blank the
-# verdict outright, so any review over this tree, this chat's or another chat's, hid the number the
-# reader acts on (Egor, 2026-08-24).
+# The debt never disappears behind a review: counter and verdict stand side by side over one tree.
 GATE_ANSWER='bright rev 54'
-# Alone, the verdict keeps the word: nothing beside it says what the numbers are about.
 progress_alone_out=$(review_render review-progress-alone "$REVIEW_CLEAN")
 assert grep -Fq " ${DIM}│${RESET} rev 54" <<< "$progress_alone_out"
 assert test "${progress_alone_out#*rev T}" = "$progress_alone_out"
-# This chat's own run: its own segment bright, the verdict's own split weighting untouched beside
-# it, and the word carried once.
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00
 progress_own_debt_out=$(review_render review-progress-own-debt "$REVIEW_CLEAN")
 assert grep -Fq " ${DIM}│${RESET} rev T0 3/9 ${DIM}│${RESET} 54" \
   <<< "$progress_own_debt_out"
 assert test "${progress_own_debt_out#*rev 54}" = "$progress_own_debt_out"
-# Another chat's run over this tree dims its own segment and colours nothing of the verdict: the
-# two weights are decided by two rules and neither paints the other.
 progress_set_session review-progress-elsewhere
 progress_other_debt_out=$(review_render review-progress-other-debt "$REVIEW_CLEAN")
 assert grep -Fq \
   " ${DIM}│${RESET} ${DIM}rev T0 3/9${RESET} ${DIM}│${RESET} 54" \
   <<< "$progress_other_debt_out"
-# A one-sided verdict loses the word the same way, and the trim takes that word and nothing else.
 GATE_ANSWER='bright rev 7'
 progress_one_sided_out=$(review_render review-progress-one-sided "$REVIEW_CLEAN")
 assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T0 3/9${RESET} ${DIM}│${RESET} 7" \
   <<< "$progress_one_sided_out"
-# A run this chat started over ANOTHER tree takes the whole block there, verdict included: the gate
-# is asked about the tree the reader is looking at and about no other, and the counter beside its
-# answer carries the word for both of them.
+# The gate is asked about the shown tree and no other.
 : > "$GATE_LOG"
 GATE_ANSWER='bright rev 54'
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 "$REVIEW_DIRTY"
 progress_set_session review-progress-foreign-named
-progress_foreign_named_out=$(review_render review-progress-foreign-named "$REVIEW_CLEAN" \
-  "$TOP_REVIEW_DIRTY")
+place_set review-progress-foreign-named "$TOP_REVIEW_DIRTY" "$TOP_REVIEW_DIRTY" review-start
+progress_foreign_named_out=$(review_render review-progress-foreign-named "$REVIEW_CLEAN")
 assert grep -Fq \
   " ${DIM}│${RESET} rev T0 3/9 ${DIM}│${RESET} 54" \
   <<< "$progress_foreign_named_out"
@@ -4839,13 +4523,10 @@ assert_eq "verdict $TOP_REVIEW_DIRTY review-progress-foreign-named" \
   "$(grep -F verdict "$GATE_LOG" | tail -1)"
 assert_eq 0 "$(grep -Fc -- "verdict $review_clean_root " "$GATE_LOG" | tr -d ' ')"
 
-# A run in a linked worktree of a foreign repository moves the block to THAT WORKTREE: `»` names
-# the repository, exactly as it would if the chat stood there, and `⧉` the worktree it is a review
-# of — which the repository's name alone could not tell from any of its siblings.
-TOP_PROGRESS_WT=$(cd "$PROGRESS_WT" && pwd -P)
 write_progress "$$" T0 3 9 2026-07-27T22:00:00+00:00 "$PROGRESS_WT"
 progress_set_session review-progress-foreign-wt
-progress_foreign_wt_out=$(review_render review-progress-foreign-wt "$REPO_A" "$TOP_PROGRESS_WT")
+place_set review-progress-foreign-wt "$TOP_PROGRESS_WT" "$review_clean_root" review-start
+progress_foreign_wt_out=$(review_render review-progress-foreign-wt "$REPO_A")
 assert grep -Fq \
   "${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} ${BLUE}$(basename "$REVIEW_CLEAN")${RESET} ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
   <<< "$progress_foreign_wt_out"
@@ -4929,7 +4610,7 @@ assert review_slot_silent "$progress_state_consumed_out"
 
 progress_doc dead-unowned "$$" T2 3 8 dead 0
 progress_state_unowned_out=$(progress_render state-dead-unowned)
-assert review_slot_silent "$progress_state_unowned_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 dead 3/8${RESET}" <<< "$progress_state_unowned_out"
 progress_doc_clear
 
 progress_doc done "$$" T2 8 8 done 0
@@ -4999,20 +4680,19 @@ progress_doc_clear
 
 progress_doc foreign-killed 99999999 T2 3 8 running 0 "" review-progress-another-chat
 progress_state_foreign_killed_out=$(progress_render state-foreign-killed)
-assert review_slot_silent "$progress_state_foreign_killed_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 dead 3/8${RESET}" <<< "$progress_state_foreign_killed_out"
 progress_doc_clear
 progress_doc foreign-dead "$$" T2 3 8 dead 0 "" review-progress-another-chat
 progress_state_foreign_dead_out=$(progress_render state-foreign-dead)
-assert review_slot_silent "$progress_state_foreign_dead_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 dead 3/8${RESET}" <<< "$progress_state_foreign_dead_out"
 progress_doc_clear
 
 progress_doc foreign-dead-sibling "$$" T2 3 8 dead 0 "$PROGRESS_WT" review-progress-another-chat
 progress_state_foreign_dead_sibling_out=$(progress_render state-foreign-dead-sibling)
-assert review_slot_silent "$progress_state_foreign_dead_sibling_out"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev +1${RESET}" <<< "$progress_state_foreign_dead_sibling_out"
 progress_doc own-beside-dead "$$" T2 2 8 running 0
 progress_state_beside_dead_out=$(progress_render state-beside-dead)
-assert grep -Fq " ${DIM}│${RESET} rev T2 2/8" <<< "$progress_state_beside_dead_out"
-assert test "${progress_state_beside_dead_out#*+1}" = "$progress_state_beside_dead_out"
+assert grep -Fq " ${DIM}│${RESET} rev T2 2/8 ${DIM}+1${RESET}" <<< "$progress_state_beside_dead_out"
 progress_doc_clear
 
 # The run that IS rendered is never also counted: another chat's run over this tree is still this
@@ -5073,191 +4753,74 @@ assert grep -Fq " ${DIM}│${RESET} rev T2 3/8" <<< "$progress_stale_cache_out"
 progress_doc_clear
 rm -f "$RUN_TREE_CACHE"
 
-# The block MOVES to the tree a review of this chat's is about, and comes back when that review is
-# answered (Egor, 2026-08-27, superseding the 2026-08-26 rule that it never moves): a folder that
-# stayed put while the numbers beside it were about another place named neither of them. In order:
-# a live run over home holds the block at home, whoever started it; else this chat's newest live
-# run elsewhere takes it; else home keeps it while it is working or owes a review; else an
-# unanswered round of this chat's elsewhere holds it. Only this chat's own runs and rounds move
-# anything.
-ANCHOR_BENCHES="$CLAUDEB_FIX/worker-stats/benches"
-write_anchor_run() { # run-id session repo [member-repo...]
-  local run_id="$1" session="$2" repo="$3"
-  shift 3
-  mkdir -p "$ANCHOR_BENCHES/$run_id"
-  jq -cn --arg run_id "$run_id" --arg session "$session" --arg repo "$repo" \
-    --args '{run_id:$run_id, session:$session, repo:$repo, worktree:true, commit:"abc1234",
-             started:"2026-07-27T22:00:00+00:00"}
-            + (if ($ARGS.positional | length) > 0
-               then {repos: [$ARGS.positional[] | {repo: .}]} else {} end)' "$@" \
-    > "$ANCHOR_BENCHES/$run_id/meta.json"
-  jq -cn --arg run_id "$run_id" --arg session "$session" --arg repo "$repo" --argjson pid "$$" \
-    '{repo:$repo, pid:$pid, run_id:$run_id, session:$session, tier:"T2", max:false,
-      target:"worktree", cells:["a","b"], done:["a"], failed:0,
-      started:"2026-07-27T22:00:00+00:00", ts:"2026-07-27T22:00:00+00:00"}' \
-    > "$PROGRESS_DIR/anchor-$run_id.json"
+# --- the contract's worked examples ("Shown tree") ------------------------------------------------
+example_render() { # session cwd
+  run_statusline "$(statusline_payload "$1" "" "$2")" || fail "example render failed: $1"
 }
-anchor_await() { # session
+example_home() { # rendered
+  grep -Fq "$progress_home_dir" <<< "$1" && [ "${1#*»}" = "$1" ] && [ "${1#*⧉}" = "$1" ]
+}
+
+# 1. worker-start elsewhere moves at once, worker-end moves nothing, the next edit here moves back.
+"$PLACE" add --session example-1 --kind worker-start --path "$REVIEW_DIRTY"
+assert grep -Fq "$progress_away_dirs" <<< "$(example_render example-1 "$REVIEW_CLEAN")"
+"$PLACE" add --session example-1 --kind worker-end --path "$REVIEW_DIRTY"
+assert grep -Fq "$progress_away_dirs" <<< "$(example_render example-1 "$REVIEW_CLEAN")"
+run_workdir_hook "$(workdir_payload Edit example-1 "$REVIEW_CLEAN" "$REVIEW_CLEAN/tracked.txt")"
+assert example_home "$(example_render example-1 "$REVIEW_CLEAN")"
+assert_eq "worker-start worker-end edit" "$(cut -f2 "$STATE_DIR/place-example-1" | tr '\n' ' ' | sed 's/ $//')"
+
+# 2. Two workers: A starts, B starts, A ends, B ends.
+for example_step in "worker-start $REVIEW_CLEAN" "worker-start $REVIEW_DIRTY" \
+  "worker-end $REVIEW_CLEAN" "worker-end $REVIEW_DIRTY"; do
+  "$PLACE" add --session example-2 --kind "${example_step%% *}" --path "${example_step#* }"
+done
+assert_eq "$review_clean_root $TOP_REVIEW_DIRTY $review_clean_root $TOP_REVIEW_DIRTY" \
+  "$(cut -f3 "$STATE_DIR/place-example-2" | tr '\n' ' ' | sed 's/ $//')"
+assert grep -Fq "$progress_away_dirs" <<< "$(example_render example-2 "$REVIEW_CLEAN")"
+
+# 3. Reading another tree moves nothing.
+place_set example-3 "$review_clean_root"
+run_workdir_hook "$(workdir_payload Read example-3 "$REVIEW_CLEAN" "$REVIEW_DIRTY/tracked.txt")"
+run_workdir_hook "$(workdir_payload Bash example-3 "$REVIEW_CLEAN" "(cd '$REVIEW_DIRTY' && git status)")"
+run_workdir_hook "$(workdir_payload Bash example-3 "$REVIEW_CLEAN" "git -C '$REVIEW_DIRTY' log")"
+assert_eq 1 "$(place_count example-3)"
+assert example_home "$(example_render example-3 "$REVIEW_CLEAN")"
+
+# 6. Another chat's reviews over the shown tree's repository: dim in the slot, `+N` for the rest,
+# and the folder stays where this chat's own journal put it.
+place_set review-progress-example-6 "$review_clean_root"
+progress_doc example-6-home "$$" T2 1 4 running 0 "" review-progress-another-chat
+progress_doc example-6-sibling "$$" T2 2 4 running 0 "$PROGRESS_WT" review-progress-another-chat
+progress_doc example-6-elsewhere "$$" T2 3 4 running 0 "$REVIEW_DIRTY" review-progress-another-chat
+example_6_out=$(progress_render example-6)
+assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T2 1/4${RESET} ${DIM}+1${RESET}" <<< "$example_6_out"
+assert example_home "$example_6_out"
+assert_eq 1 "$(place_count review-progress-example-6)"
+progress_doc_clear
+
+# The verdict cache is one file per session and the shown tree moves: while the refresh runs, an
+# answer cached for another tree is never shown, and one for this tree still is.
+verdict_landed() { # cache
   local i
   for i in $(seq 1 100); do
-    [ -f "$STATE_DIR/review-anchor-$1" ] && [ ! -d "$STATE_DIR/review-anchor-$1.lock" ] && return 0
+    [ "$(tail -n +2 "$1")" = off ] && [ ! -d "$1.lock" ] && return 0
     sleep 0.05
   done
-  fail "the backgrounded anchor never landed: $1"
+  fail "the verdict refresh never landed: $1"
 }
-anchor_render() { # session cwd [away-toplevel]
-  local payload
-  rm -f "$STATE_DIR/review-anchor-$1" "$STATE_DIR/review-class-$1"
-  rmdir "$STATE_DIR/review-anchor-$1.lock" "$STATE_DIR/review-class-$1.lock" 2>/dev/null
-  [ -n "${3:-}" ] && rm -f "$STATE_DIR/review-class-$1-$(away_tag "$3")"
-  payload=$(statusline_payload "$1" "" "$2")
-  run_statusline "$payload" >/dev/null || fail "anchor render failed: $1"
-  anchor_await "$1"
-  run_statusline "$payload" >/dev/null || fail "anchor render failed: $1"
-  review_await_verdict "$1" "${3:-}"
-  run_statusline "$payload" || fail "anchor render failed: $1"
-}
-anchor_own_dir="${BLUE}$(basename "$REPO_A")${RESET}"
-anchor_clean_name="$(basename "$REVIEW_CLEAN")"
-anchor_clean_dir="${BLUE}$anchor_clean_name${RESET}"
-rm -f "$PROGRESS_DIR"/anchor-*.json "$PROGRESS_DIR/$progress_prefix$$.json"
+verdict_moved_cache="$STATE_DIR/review-class-verdict-moved"
+place_set verdict-moved "$review_clean_root"
+printf '%s\n%s' "$TOP_REVIEW_DIRTY|0-0|0|0" 'bright rev 99' > "$verdict_moved_cache"
+verdict_moved_out=$(example_render verdict-moved "$REVIEW_CLEAN")
+assert test "${verdict_moved_out#*rev 99}" = "$verdict_moved_out"
+verdict_landed "$verdict_moved_cache"
+printf '%s\n%s' "$review_clean_root|0-0|0|0" 'bright rev 99' > "$verdict_moved_cache"
+verdict_same_out=$(example_render verdict-moved "$REVIEW_CLEAN")
+assert grep -Fq 'rev 99' <<< "$verdict_same_out"
+verdict_landed "$verdict_moved_cache"
 
-# (a) A live review of this chat's over repository B while the shell sits in A: the whole block is
-# B's — its folder after the `»`, its branch, its counters, its counter — and the gate is asked
-# about B and about nothing else, because the verdict is the number beside all of them.
-: > "$GATE_LOG"
-GATE_ANSWER='bright rev 2'
-write_anchor_run 20260727T220000Z-aaaaaaa anchor-live "$REVIEW_CLEAN"
-anchor_live_out=$(review_render anchor-live "$REPO_A" "$review_clean_root")
-assert grep -Fq "${DIM}$(basename "$REPO_A")${RESET} ${MAGENTA}»${RESET} $anchor_clean_dir" \
-  <<< "$anchor_live_out"
-assert grep -Fq " ${DIM}│${RESET} rev T2 1/2 ${DIM}│${RESET} 2" <<< "$anchor_live_out"
-assert rev_unnamed "$anchor_live_out"
-assert_eq "verdict $review_clean_root anchor-live" "$(grep -F verdict "$GATE_LOG" | tail -1)"
-assert_eq 0 "$(grep -Fc -- "verdict $TOP_A anchor-live" "$GATE_LOG" | tr -d ' ')"
-
-# (b) Two live runs with one of them over home: home wins, and another chat's run here is the dim
-# counter it always was — never a mover, in either direction.
-write_progress "$$" T3 4 7 2026-07-27T23:00:00+00:00 "$REPO_A"
-progress_set_session anchor-other-chat
-anchor_home_wins_out=$(review_render anchor-live "$REPO_A")
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_home_wins_out"
-assert test "${anchor_home_wins_out#*»}" = "$anchor_home_wins_out"
-assert grep -Fq " ${DIM}│${RESET} ${DIM}rev T3 4/7${RESET} ${DIM}│${RESET} 2" \
-  <<< "$anchor_home_wins_out"
-rm -f "$PROGRESS_DIR/$progress_prefix$$.json"
-
-# (c) A live run ANOTHER chat started elsewhere stays invisible and moves nothing.
-GATE_ANSWER=off
-write_anchor_run 20260727T221000Z-bbbbbbb anchor-someone-else "$REVIEW_CLEAN"
-anchor_not_mine_out=$(anchor_render anchor-notmine "$REPO_A")
-assert grep -Fq "$anchor_own_dir" <<< "$anchor_not_mine_out"
-assert test "${anchor_not_mine_out#*»}" = "$anchor_not_mine_out"
-assert review_slot_silent "$anchor_not_mine_out"
-rm -f "$PROGRESS_DIR"/anchor-*.json
-rm -rf "$ANCHOR_BENCHES/20260727T221000Z-bbbbbbb" "$ANCHOR_BENCHES/20260727T220000Z-aaaaaaa"
-
-# (d) No live run and an unanswered round of this chat's elsewhere: a home that is clean, idle and
-# owing nothing lets that round hold the block, branch and diff counters included — review-dirty's
-# own untracked 21 lines, not the clean home tree's nothing.
-: > "$GATE_LOG"
-printf '%s' "$REVIEW_DIRTY" > "$STATE_DIR/review-anchor-anchor-debt"
-rm -f "$STATE_DIR/review-class-anchor-debt" \
-  "$STATE_DIR/review-class-anchor-debt-$(away_tag "$TOP_REVIEW_DIRTY")"
-anchor_debt_payload=$(statusline_payload anchor-debt "" "$REVIEW_CLEAN")
-run_statusline "$anchor_debt_payload" >/dev/null || fail "anchor debt render failed"
-review_await_verdict anchor-debt
-review_await_verdict anchor-debt "$TOP_REVIEW_DIRTY"
-anchor_debt_out=$(run_statusline "$anchor_debt_payload") || fail "anchor debt render failed"
-assert grep -Fq "$progress_away_dirs" <<< "$anchor_debt_out"
-assert grep -Fq "${GREEN}+21${RESET}/${RED}-0${RESET}" <<< "$anchor_debt_out"
-assert review_slot_silent "$anchor_debt_out"
-# Both trees are asked, each under its own cache name, or one answer would serve the other's key.
-assert_eq 1 "$(grep -Fc -- "verdict $TOP_REVIEW_DIRTY anchor-debt" "$GATE_LOG" | tr -d ' ')"
-assert_eq 1 "$(grep -Fc -- "verdict $review_clean_root anchor-debt" "$GATE_LOG" | tr -d ' ')"
-
-# The round being answered is what hands the block back: nothing else about the chat changes.
-rm -f "$STATE_DIR/review-anchor-anchor-debt"
-anchor_closed_out=$(run_statusline "$anchor_debt_payload") || fail "anchor closed render failed"
-assert grep -Fq "$anchor_clean_dir" <<< "$anchor_closed_out"
-assert test "${anchor_closed_out#*»}" = "$anchor_closed_out"
-
-# (e) Work at home outranks a finished round elsewhere, both ways round: an uncommitted line here
-# holds the block, and so does a review this tree owes.
-printf '%s' "$REVIEW_CLEAN" > "$STATE_DIR/review-anchor-anchor-home-dirty"
-anchor_home_dirty_payload=$(statusline_payload anchor-home-dirty "" "$REVIEW_DIRTY")
-run_statusline "$anchor_home_dirty_payload" >/dev/null || fail "anchor home-dirty render failed"
-review_await_verdict anchor-home-dirty
-anchor_home_dirty_out=$(run_statusline "$anchor_home_dirty_payload") \
-  || fail "anchor home-dirty render failed"
-assert grep -Fq "${BLUE}$(basename "$REVIEW_DIRTY")${RESET}" <<< "$anchor_home_dirty_out"
-assert test "${anchor_home_dirty_out#*»}" = "$anchor_home_dirty_out"
-rm -f "$STATE_DIR/review-anchor-anchor-home-dirty"
-
-GATE_ANSWER='bright rev 2'
-printf '%s' "$REVIEW_DIRTY" > "$STATE_DIR/review-anchor-anchor-home-debt"
-anchor_home_debt_payload=$(statusline_payload anchor-home-debt "" "$REVIEW_CLEAN")
-run_statusline "$anchor_home_debt_payload" >/dev/null || fail "anchor home-debt render failed"
-review_await_verdict anchor-home-debt
-anchor_home_debt_out=$(run_statusline "$anchor_home_debt_payload") \
-  || fail "anchor home-debt render failed"
-assert grep -Fq "$anchor_clean_dir" <<< "$anchor_home_debt_out"
-assert test "${anchor_home_debt_out#*»}" = "$anchor_home_debt_out"
-assert grep -Fq " ${DIM}│${RESET} rev 2" <<< "$anchor_home_debt_out"
-rm -f "$STATE_DIR/review-anchor-anchor-home-debt"
-GATE_ANSWER=off
-
-# (f) Identity is the WORKING TREE: a round in a sibling worktree of home's own repository is an
-# away tree like any other, and the block renders that worktree — same family, so no `»`, and the
-# `⧉` label is what says which of the siblings the review is about.
-printf '%s' "$PROGRESS_WT" > "$STATE_DIR/review-anchor-anchor-sibling"
-rm -f "$STATE_DIR/review-class-anchor-sibling" \
-  "$STATE_DIR/review-class-anchor-sibling-$(away_tag "$TOP_PROGRESS_WT")"
-anchor_sibling_payload=$(statusline_payload anchor-sibling "" "$REVIEW_CLEAN")
-run_statusline "$anchor_sibling_payload" >/dev/null || fail "anchor sibling render failed"
-review_await_verdict anchor-sibling "$TOP_PROGRESS_WT"
-anchor_sibling_out=$(run_statusline "$anchor_sibling_payload") || fail "anchor sibling render failed"
-assert grep -Fq "$anchor_clean_dir ${RED}⧉ $(basename "$PROGRESS_WT")${RESET}" \
-  <<< "$anchor_sibling_out"
-assert test "${anchor_sibling_out#*»}" = "$anchor_sibling_out"
-rm -f "$STATE_DIR/review-anchor-anchor-sibling"
-
-# (g) A merged panel holds the block over the member equal to the shell's own repository — which
-# moves nothing — and over the first member otherwise.
-write_anchor_run 20260727T222000Z-ccccccc anchor-merged-member "$FIXTURES/merged-workspace-gone" \
-  "$REVIEW_CLEAN" "$REPO_A"
-anchor_member_out=$(anchor_render anchor-merged-member "$REVIEW_CLEAN")
-assert grep -Fq "$anchor_clean_dir" <<< "$anchor_member_out"
-assert test "${anchor_member_out#*»}" = "$anchor_member_out"
-rm -f "$PROGRESS_DIR"/anchor-*.json
-rm -rf "$ANCHOR_BENCHES/20260727T222000Z-ccccccc"
-write_anchor_run 20260727T223000Z-ddddddd anchor-merged-first "$FIXTURES/merged-workspace-gone" \
-  "$REVIEW_DIRTY" "$REPO_A"
-anchor_first_out=$(anchor_render anchor-merged-first "$REVIEW_CLEAN" "$TOP_REVIEW_DIRTY")
-assert grep -Fq "$progress_away_dirs" <<< "$anchor_first_out"
-rm -f "$PROGRESS_DIR"/anchor-*.json
-rm -rf "$ANCHOR_BENCHES"
-
-# (h) No review in front of the chat at all: byte-identical to a chat that never had one.
-anchor_none_out=$(anchor_render anchor-none "$REVIEW_CLEAN")
-anchor_control_out=$(anchor_render anchor-control "$REVIEW_CLEAN")
-assert_eq "$anchor_control_out" "$anchor_none_out"
-assert grep -Fq "$anchor_clean_dir" <<< "$anchor_none_out"
-assert test "${anchor_none_out#*»}" = "$anchor_none_out"
-assert_eq "" "$(cat "$STATE_DIR/review-anchor-anchor-none")"
-
-# (i) A round whose tree no longer resolves is ignored WHOLE: the session's own folder, and no
-# leftover member count from the dead panel.
-printf '%s' "/nonexistent/repo-gone +2" > "$STATE_DIR/review-anchor-anchor-gone"
-anchor_gone_out=$(run_statusline "$(statusline_payload anchor-gone "" "$REVIEW_CLEAN")") \
-  || fail "anchor missing-repo render failed"
-assert grep -Fq "$anchor_clean_dir" <<< "$anchor_gone_out"
-assert test "${anchor_gone_out#*+2}" = "$anchor_gone_out"
-assert test "${anchor_gone_out#*repo-gone}" = "$anchor_gone_out"
-assert test "${anchor_gone_out#*»}" = "$anchor_gone_out"
-rm -f "$STATE_DIR/review-anchor-anchor-gone"
-
-# (j) The verdict's cache key reads the commit journal of the checkout FAMILY — one file under the
+# The verdict's cache key reads the commit journal of the checkout FAMILY — one file under the
 # common dir, which is where the gate reads this chat's pending paths from. A key watching the
 # worktree's own git dir would serve a stale verdict for as long as the TTL allows after an edit
 # recorded from a sibling checkout.
@@ -5295,44 +4858,6 @@ gate_calls_await 2
 assert_eq 2 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 rm -f "$journal_wt_gitdir/claude-commit-journal" "$journal_wt_common/claude-commit-journal"
 GATE_ANSWER=off
-
-# (k) Nothing in the environment names the bench and no copy sits beside the statusline: the
-# resolution chain falls through to PATH, and the round it answers with moves the block like any
-# other. Rendered from a copy of the statusline with no sibling, because the repository's own copy
-# would answer before PATH is ever reached.
-NOSIB_DIR="$WORK/nosib"
-mkdir -p "$NOSIB_DIR/bin"
-cp "$STATUSLINE" "$NOSIB_DIR/bin/statusline.sh"
-ln -sfn "$ROOT/share" "$NOSIB_DIR/share"
-PATH_BENCH_DIR="$FIXTURES/path-bench"
-mkdir -p "$PATH_BENCH_DIR"
-cat > "$PATH_BENCH_DIR/review-bench" <<STUB
-#!/bin/bash
-[ "\$1" = review-anchor ] || exit 0
-printf '%s\n' "$REVIEW_DIRTY"
-STUB
-chmod +x "$PATH_BENCH_DIR/review-bench"
-anchor_saved_statusline="$STATUSLINE"
-anchor_saved_bench="$BENCH_CMD"
-anchor_saved_path="$PATH"
-STATUSLINE="$NOSIB_DIR/bin/statusline.sh"
-BENCH_CMD=""
-PATH="$PATH_BENCH_DIR:$PATH"
-rm -f "$STATE_DIR/review-anchor-anchor-path" "$STATE_DIR/review-class-anchor-path" \
-  "$STATE_DIR/review-class-anchor-path-$(away_tag "$TOP_REVIEW_DIRTY")"
-anchor_path_payload=$(statusline_payload anchor-path "" "$REVIEW_CLEAN")
-run_statusline "$anchor_path_payload" >/dev/null || fail "anchor PATH render failed"
-anchor_await anchor-path
-run_statusline "$anchor_path_payload" >/dev/null || fail "anchor PATH render failed"
-review_await_verdict anchor-path
-review_await_verdict anchor-path "$TOP_REVIEW_DIRTY"
-anchor_path_out=$(run_statusline "$anchor_path_payload") || fail "anchor PATH render failed"
-assert_eq "$REVIEW_DIRTY" "$(cat "$STATE_DIR/review-anchor-anchor-path")"
-assert grep -Fq "$progress_away_dirs" <<< "$anchor_path_out"
-STATUSLINE="$anchor_saved_statusline"
-BENCH_CMD="$anchor_saved_bench"
-PATH="$anchor_saved_path"
-rm -f "$STATE_DIR/review-anchor-anchor-path"
 
 # --- worker-launch-gate.sh: grok ------------------------------------------------------------------
 # A vendor launched as a bare headless CLI from a chat's Bash is a worker nobody can see. grok
@@ -5541,4 +5066,4 @@ assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line, a chat-pin segment that names this session's vendor word or account in magenta and is silent without a chat file, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

@@ -746,6 +746,29 @@ report_bus_tests() {
   "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
   assert_worker_post "$RUN_ID" DONE
 
+  local place_repo="$WORK/place-repo" place_top
+  git init -q "$place_repo"
+  place_top=$(cd "$place_repo" && pwd -P)
+  clear_stub
+  TMPDIR=/nonexistent WORKER_TEST_WORKDIR=$place_repo start_ok codex --account reportacct
+  assert await_done
+  TMPDIR=/nonexistent "$RUNNER" report "$RUN_ID" >/dev/null
+  assert test "$(cut -f2,3 "$HOME/.cache/claude-statusline/place-report-launcher" | tr '\t' ' ')" = "worker-start $place_top
+worker-end $place_top"
+
+  local norb_repo="$WORK/place-repo-norb" norb_top norb_path place_dir
+  git init -q "$norb_repo"
+  norb_top=$(cd "$norb_repo" && pwd -P)
+  mv "$WORK/bin/report-bus" "$WORK/report-bus.aside"
+  norb_path=$(IFS=:; for place_dir in $PATH; do [ -x "$place_dir/report-bus" ] || printf '%s:' "$place_dir"; done)
+  clear_stub
+  PATH=${norb_path%:} TMPDIR=/nonexistent WORKER_TEST_WORKDIR=$norb_repo start_ok codex --account reportacct
+  PATH=${norb_path%:} assert await_done
+  mv "$WORK/report-bus.aside" "$WORK/bin/report-bus"
+  TMPDIR=/nonexistent "$RUNNER" report "$RUN_ID" >/dev/null
+  assert test "$(tail -n 2 "$HOME/.cache/claude-statusline/place-report-launcher" | cut -f2,3 | tr '\t' ' ')" = "worker-start $norb_top
+worker-end $norb_top"
+
   clear_stub
   STUB_SLEEP=60 start_ok codex --account reportacct
   sleep 0.3

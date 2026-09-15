@@ -488,9 +488,18 @@ codex_config_model() {
 # on stdout is what tells a relay a run directory exists to wait on.
 outcome_line() (
   local outcome="$1" report_directory="${2:-}" report_id="${run_id:-}" launcher
-  local details files=unknown elapsed=0 began now marker='' marker_pid marker_age
+  local details files=unknown elapsed=0 began now marker='' marker_pid marker_age place_session
   local posting_pid=${BASHPID:-$(sh -c 'echo "$PPID"')}
   printf 'OUTCOME: %s\n' "$outcome"
+  if [ -n "$report_directory" ] && mkdir "$report_directory/.place-end" 2>/dev/null; then
+    place_session=$(cat "$report_directory/launcher" 2>/dev/null)
+    case "$place_session" in
+      ''|_orphan|.|..|*[!A-Za-z0-9._-]*) ;;
+      *)
+        "$SCRIPT_DIRECTORY/statusline-place" add --session "$place_session" --kind worker-end \
+          --path "$(jq -r '.workdir // empty' "$report_directory/meta.json" 2>/dev/null)" >/dev/null 2>&1 || : ;;
+    esac
+  fi
   command -v report-bus >/dev/null 2>&1 || return 0
   launcher=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-_orphan}}
   details="${vendor:-unknown}/${account:-${explicit_account:-unknown}}/${model:-${effective:-unknown}}/${effort:-unknown}"
@@ -1814,6 +1823,8 @@ start_run() {
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *)
       printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher"
+      "$SCRIPT_DIRECTORY/statusline-place" add --session "$CLAUDE_CODE_SESSION_ID" --kind worker-start \
+        --path "$workdir" >/dev/null 2>&1 || :
       export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID" ;;
   esac
   # What was already uncommitted here before this run touched anything. It is the floor the dirt

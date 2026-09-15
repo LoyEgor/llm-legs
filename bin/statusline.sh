@@ -46,15 +46,6 @@ snapshot_lock_acquire() {
   mkdir "$lock" 2>/dev/null
 }
 
-# The working tree a path belongs to, resolved the way repo_dirs resolves REPO_TOP so the two
-# compare. This is the identity anything chat-scoped matches on: `--git-common-dir` is shared by
-# every linked worktree, so a review running in one of them would render in all of them.
-git_worktree_top() {
-  local top
-  top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
-  (cd "$top" 2>/dev/null && pwd -P)
-}
-
 # Both identities a progress document needs, in ONE rev-parse: the working tree it runs over and
 # the repository that tree belongs to, resolved exactly as repo_dirs resolves REPO_TOP/REPO_COMMON
 # so all of them compare. The repository is what makes a run in a sibling worktree this
@@ -250,11 +241,9 @@ journal_dir() { # toplevel
 # a sibling worktree moves this key too — as it moves the gate's own answer. Everything the key
 # cannot see — a second edit to an already-modified file or another chat's commit landing — is
 # bounded by the TTL.
-review_verdict_line() { # toplevel session status_key now [cache_tag]
-  local top="$1" sid="$2" status_key="$3" now="$4" tag="${5:-}"
-  # One cache file per tree the render asks about: a chat showing a review elsewhere asks about
-  # that tree AND its own, and one file for both would answer each render from the other's key.
-  local cache="$statusline_cache_dir/review-class-${sid:-unknown}${tag:+-$tag}"
+review_verdict_line() { # toplevel session status_key now
+  local top="$1" sid="$2" status_key="$3" now="$4"
+  local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime journal_mtime clock_mtime commondir lock_mtime
   local repos_file side_top side_dir side_mtime side_journal=0 side_clock=0
@@ -329,7 +318,9 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
   # this tree: past the sweep it is a label outliving the state it was read from, which is the one
   # thing worse than no label.
   # Past it, `unknown` and never `off`: the two are different facts (fit_verdict_part). A cache
-  # that was never written is not a stale answer — the refresh above is still in flight.
+  # that was never written is not a stale answer — the refresh above is still in flight — and
+  # neither is one about another tree: the file is per session and the shown tree moves.
+  [ "${cached_key%%|*}" = "$top" ] || cached=""
   if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 120 ]; then
     printf '%s' "$cached"
@@ -392,10 +383,10 @@ review_session_line() { # session now
 # stand over commits that ask disowns. Cached exactly as the verdict beside it — the gate forks git
 # once per candidate commit, which is not a render-path cost — and keyed on everything cheap that
 # can change the answer: the two shas, and the family's journals ownership is read from.
-unpushed_marker() { # toplevel session now [cache_tag]
-  local top="$1" sid="$2" now="$3" tag="${4:-}"
+unpushed_marker() { # toplevel session now
+  local top="$1" sid="$2" now="$3"
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
-  local cache="$statusline_cache_dir/unpushed-${sid:-unknown}${tag:+-$tag}"
+  local cache="$statusline_cache_dir/unpushed-${sid:-unknown}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
   local timeout_bin
@@ -457,57 +448,6 @@ unpushed_marker() { # toplevel session now [cache_tag]
     printf '%s' unpushed
   else
     printf '%s' off
-  fi
-}
-
-# `review-bench review-anchor` reads every run record to answer, so like the gate's verdict it is
-# cached and refreshed off the render path.
-review_anchor_line() { # session cwd now
-  local sid="$1" cwd="$2" now="$3"
-  local bench="${STATUSLINE_REVIEW_BENCH:-}"
-  local cache lock cached cache_mtime lock_mtime timeout_bin
-  if [ -z "$bench" ]; then
-    if [ -x "$statusline_dir/review-bench" ]; then
-      bench="$statusline_dir/review-bench"
-    else
-      bench=$(command -v review-bench 2>/dev/null) || bench=""
-    fi
-  fi
-  [ -x "$bench" ] || return 0
-  # Keyed on the session alone: the cwd only picks a merged panel's member and the TTL bounds
-  # that, while a cwd key voided a valid anchor at every cd.
-  cache="$statusline_cache_dir/review-anchor-$sid"
-  lock="$cache.lock"
-  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
-  cached=""
-  [[ "$cache_mtime" =~ ^[0-9]+$ ]] && cached=$(cat "$cache" 2>/dev/null)
-  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && [ "$((now - cache_mtime))" -le 15 ]; then
-    printf '%s' "$cached"
-    return 0
-  fi
-  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
-    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
-    if [ ! -d "$lock" ] ||
-      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
-      (
-        snapshot_lock_acquire "$lock" || exit 0
-        trap 'rmdir "$lock" 2>/dev/null' EXIT
-        # Bounded like the gate's verdict call: a wedged git inside the bench must not leave the
-        # refresh holding the lock until the 120s staleness sweep.
-        timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
-        if [ -n "$timeout_bin" ]; then
-          answer=$("$timeout_bin" 10 "$bench" review-anchor --session "$sid" --cwd "$cwd" 2>/dev/null | head -1) || answer=""
-        else
-          answer=$("$bench" review-anchor --session "$sid" --cwd "$cwd" 2>/dev/null | head -1) || answer=""
-        fi
-        tmp="$cache.tmp.${BASHPID:-$$}"
-        printf '%s' "$answer" > "$tmp" 2>/dev/null &&
-          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
-      ) >/dev/null 2>&1 &
-    fi
-  fi
-  if [[ "$cache_mtime" =~ ^[0-9]+$ ]] && [ "$((now - cache_mtime))" -le 120 ]; then
-    printf '%s' "$cached"
   fi
 }
 
@@ -871,7 +811,7 @@ fi
 model_suffix=""
 [ -n "$effort" ] && model_suffix=" ${effort}"
 
-git_dir="$current_dir"
+git_dir="$dir_path"
 active_top=""; active_common=""; active_root=""; active_name=""; active_is_wt=0
 adopt_repo_dirs() {
   active_top="$REPO_TOP"; active_common="$REPO_COMMON"
@@ -881,40 +821,31 @@ adopt_project_dirs() {
   active_top="$project_top"; active_common="$project_common"
   active_root="$project_root"; active_name="$project_name"; active_is_wt="$project_is_wt"
 }
-workdir_state="$statusline_cache_dir/workdir-$session_id"
-if [ -n "$session_id" ] && [ -f "$workdir_state" ]; then
-  IFS= read -r active_dir < "$workdir_state"
-  if [ -z "$active_dir" ]; then
-    :
-  elif [ "$active_dir" = "$dir_path" ] && [ -n "$project_top" ]; then
-    git_dir="$active_dir"
-    adopt_project_dirs
-  elif repo_dirs "$active_dir"; then
-    git_dir="$active_dir"
-    adopt_repo_dirs
-  fi
-  # A pointer that stopped resolving (a removed worktree, usually) is dropped
-  # here, and the render falls back to the project dir below.
-  [ -n "$active_top" ] || rm -f "$workdir_state"
-fi
-if [ -z "$active_top" ]; then
-  if [ "$git_dir" = "$dir_path" ]; then
-    adopt_project_dirs
-  elif repo_dirs "$git_dir"; then
-    adopt_repo_dirs
-  fi
-fi
-
 # The middle block — the dir cluster, the branch, the counters, the rev counter, the verdict,
-# `unpushed` — is ATOMIC: all of it renders ONE working tree and nothing in the counter slot is ever
-# named by a repository, because one folder beside a number about another place named neither (Egor,
-# 2026-08-27, superseding 2026-08-26; full rule: docs/statusline-contract.md "Shown tree"). A review
-# elsewhere MOVES the whole block instead.
-#
-# Identity is the WORKING TREE and not the repository: a run in a sibling worktree of home's own
-# repository is an away tree, and shown, it renders as that worktree.
-home_top="$active_top"
-home_dir="$git_dir"
+# `unpushed` — is ATOMIC: all of it renders ONE working tree, the tree of the LAST line of this chat's
+# place journal (bin/statusline-place; docs/statusline-contract.md "Shown tree"). Nothing here
+# ranks, holds or checks liveness: the writers declare, this reads the last line that still resolves.
+shown_tree=""
+place_journal="$statusline_cache_dir/place-$session_id"
+if [ -n "$session_id" ] && [ -s "$place_journal" ]; then
+  place_lines=()
+  while IFS= read -r place_line; do place_lines+=("$place_line"); done < "$place_journal"
+  place_last=$((${#place_lines[@]} - 1))
+  for ((place_i = place_last; place_i >= 0; place_i--)); do
+    IFS=$'\t' read -r _ _ place_tree _ <<< "${place_lines[$place_i]}"
+    [ -n "$place_tree" ] && [ -d "$place_tree" ] && { shown_tree=$place_tree; break; }
+  done
+  if [ -z "$shown_tree" ] && [ "$place_last" -ge 0 ]; then
+    IFS=$'\t' read -r _ _ _ place_main <<< "${place_lines[$place_last]}"
+    [ -n "$place_main" ] && [ -d "$place_main" ] && shown_tree=$place_main
+  fi
+fi
+if [ -n "$shown_tree" ] && [ "$shown_tree" != "$project_top" ] && repo_dirs "$shown_tree"; then
+  git_dir="$shown_tree"
+  adopt_repo_dirs
+else
+  adopt_project_dirs
+fi
 
 tree_status_key() { # status rc
   local key
@@ -926,43 +857,22 @@ tree_status_key() { # status rc
   fi
 }
 
-# What home is holding, asked once per render and only where the answer decides something: with a
-# live run already choosing the tree, home's debt is a gate call nobody would read.
-home_probe_done=0
-home_status=""
-home_status_rc=1
-home_verdict=off
-home_unpushed=off
-home_probe() {
-  [ "$home_probe_done" = 1 ] && return 0
-  home_probe_done=1
-  [ -n "$home_top" ] || return 0
-  home_status=$(git -C "$home_top" status --porcelain 2>/dev/null)
-  home_status_rc=$?
-  home_verdict=$(review_verdict_line "$home_top" "$session_id" \
-    "$(tree_status_key "$home_status" "$home_status_rc")" "$now")
-  home_unpushed=$(unpushed_marker "$home_top" "$session_id" "$now")
-}
-
 # A run in flight owns the counter slot: review-bench writes one progress file per run, and while it
 # lives the slot reports that panel instead of the gate's verdict. Liveness is derived here, never
 # declared by the writer — the file survives kill -9, a crash and a closed terminal, so the pid must
 # be alive AND the process holding it must have started no later than the file's last write, which a
 # pid reused after that run died cannot satisfy.
 #
-# Two slots, because a run is this render's news for one of two reasons: it runs over HOME, whoever
-# started it, or it is THIS session's run somewhere else — the away tree the block may move to. A
-# run that is neither is another chat's business elsewhere and stays invisible.
+# Only a run over the SHOWN tree can hold the slot, whoever started it; a run elsewhere moves
+# nothing — review-bench journals its own start, and that line is what moves the block.
 ph_started=""; ph_done=""; ph_total=""; ph_tier=""; ph_max=""; ph_late=""
 ph_session=""; ph_pid=""; ph_class=""; ph_file=""; ph_foreign=0; ph_rank=3
-pa_started=""; pa_done=""; pa_total=""; pa_tier=""; pa_max=""; pa_late=""; pa_top=""
-pa_class=""; pa_file=""; pa_rank=3
 # Every run another chat left unconsumed over this repository, kept for the count that stands
 # beside the rendered one: the block shows ONE run, and the rest would otherwise be reviews this
 # statusline never mentions until their results arrive.
 fg_files=(); fg_tops=(); fg_commons=()
 progress_dir="$worker_stats_dir/progress"
-if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; then
+if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
   # Every file is read and matched on the repository recorded inside it, never on its name:
   # review-bench keys the name on the path it was handed, so a run started from a subdirectory
   # writes a name this render cannot predict. The second pattern covers a repository whose own
@@ -1057,10 +967,6 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
       dead) progress_run_class=dead ;;
       done) progress_run_class=done ;;
     esac
-    if [ "$progress_run_class" = dead ]; then
-      [ -n "$session_id" ] && [ -n "$progress_run_session" ] &&
-        [ "${progress_run_session//[^A-Za-z0-9_-]/}" = "$session_id" ] || continue
-    fi
     # Lateness is a statement about a run still working; a finished, wedged or dead one carries
     # its own mark and nothing else may repaint it.
     [ "$progress_run_class" = live ] || progress_run_late=""
@@ -1095,7 +1001,7 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
       wedged) progress_run_rank=1 ;;
       *) progress_run_rank=2 ;;
     esac
-    if [ -n "$home_top" ] && [ "$progress_run_top" = "$home_top" ]; then
+    if [ "$progress_run_top" = "$active_top" ]; then
       # This chat's own run holds the slot against any other chat's, however much newer that one
       # is: a stranger's finished document now survives for a day, and the newest-started rule
       # alone let it take the one slot from a run of this chat's still working — which then
@@ -1119,66 +1025,8 @@ if { [ -n "$home_top" ] || [ -n "$session_id" ]; } && [ -d "$progress_dir" ]; th
         ph_class=$progress_run_class
         ph_file=$progress_file
       fi
-    else
-      [ -n "$session_id" ] || continue
-      [ "$(review_run_owner "$progress_run_session" "$progress_pid")" = "$session_id" ] || continue
-      if [ -z "$pa_started" ] || [ "$progress_run_rank" -lt "$pa_rank" ] ||
-        { [ "$progress_run_rank" = "$pa_rank" ] && [[ "$progress_started" > "$pa_started" ]]; }; then
-        pa_rank=$progress_run_rank
-        pa_started=$progress_started
-        pa_done=$progress_run_done
-        pa_total=$progress_run_total
-        pa_tier=$progress_run_tier
-        pa_max=$progress_run_max
-        pa_late=$progress_run_late
-        pa_top=$progress_run_top
-        pa_class=$progress_run_class
-        pa_file=$progress_file
-      fi
     fi
   done
-fi
-
-# The unanswered round comes LAST on purpose: any work or debt at home outranks a review that is
-# already over, so an away tree holds the block only while home is clean, idle and owing nothing —
-# and hands it back by itself when that round is answered.
-shown_away=0
-away_top=""
-away_tag=""
-progress_slot=""
-if [ -n "$ph_started" ]; then
-  progress_slot=home
-elif [ -n "$pa_started" ]; then
-  progress_slot=away
-  away_top="$pa_top"
-else
-  home_probe
-  home_busy=0
-  [ -n "$home_status" ] && home_busy=1
-  [ "$home_status_rc" -eq 0 ] || home_busy=1
-  [ "$home_unpushed" = unpushed ] && home_busy=1
-  case "$home_verdict" in ''|off) ;; *) home_busy=1 ;; esac
-  if [ "$home_busy" = 0 ] && [ -n "$session_id" ]; then
-    # review-bench's own answer to what this chat still has in front of it — a round of this
-    # session that nothing has answered yet, and this render's only source for one.
-    anchor_line=$(review_anchor_line "$session_id" "$home_dir" "$now")
-    anchor_path="${anchor_line%% +*}"
-    if [ -n "$anchor_path" ]; then
-      anchor_top=$(git_worktree_top "$anchor_path" 2>/dev/null) || anchor_top=""
-      [ -n "$anchor_top" ] && [ "$anchor_top" != "$home_top" ] && away_top="$anchor_top"
-    fi
-  fi
-fi
-if [ -n "$away_top" ] && [ "$away_top" != "$home_top" ] && repo_dirs "$away_top"; then
-  shown_away=1
-  git_dir="$away_top"
-  adopt_repo_dirs
-  away_tag=$(printf '%s' "$away_top" | cksum 2>/dev/null)
-  away_tag="${away_tag// /-}"
-elif [ "$progress_slot" = away ]; then
-  # The tree went away between the run's own record and this render: nothing to render the block
-  # from, so nothing for its counter to be about either.
-  progress_slot=""
 fi
 
 progress_done=""
@@ -1196,8 +1044,7 @@ progress_foreign=0
 # worktrees count, since a run there is this repository's news even where it is not this tree's.
 rev_extra=0
 if [ "${#fg_files[@]}" -gt 0 ] && [ -n "$active_top" ]; then
-  fg_rendered=""
-  case "$progress_slot" in home) fg_rendered=$ph_file ;; away) fg_rendered=$pa_file ;; esac
+  fg_rendered=$ph_file
   for fg_i in "${!fg_files[@]}"; do
     [ "${fg_files[$fg_i]}" = "$fg_rendered" ] && continue
     if [ "${fg_tops[$fg_i]}" != "$active_top" ]; then
@@ -1209,7 +1056,7 @@ if [ "${#fg_files[@]}" -gt 0 ] && [ -n "$active_top" ]; then
     rev_extra=$((rev_extra + 1))
   done
 fi
-if [ "$progress_slot" = home ]; then
+if [ -n "$ph_started" ]; then
   progress_done=$ph_done; progress_total=$ph_total; progress_tier=$ph_tier
   progress_max=$ph_max; progress_late=$ph_late; progress_class=$ph_class
   # A run another chat started over this tree is this chat's background news, not its call to
@@ -1219,9 +1066,6 @@ if [ "$progress_slot" = home ]; then
     progress_foreign=1
     progress_color="$DIM"
   fi
-elif [ "$progress_slot" = away ]; then
-  progress_done=$pa_done; progress_total=$pa_total; progress_tier=$pa_tier
-  progress_max=$pa_max; progress_late=$pa_late; progress_class=$pa_class
 fi
 if [ -n "$progress_total" ]; then
   progress_label="rev"
@@ -1289,13 +1133,9 @@ ahead=""
 head_known=0
 git_status=""
 git_status_rc=1
-if [ "$shown_away" = 1 ]; then
+if [ -n "$active_top" ]; then
   git_status=$(git -C "$active_top" status --porcelain 2>/dev/null)
   git_status_rc=$?
-elif [ -n "$active_top" ]; then
-  home_probe
-  git_status="$home_status"
-  git_status_rc="$home_status_rc"
 fi
 if [ -n "$active_top" ]; then
   branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -2141,7 +1981,7 @@ if [ -n "$session_id" ]; then
   ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
-    ( "$probe_bin" "$session_id" "$PPID" "$home_top" >/dev/null 2>&1 & ) 2>/dev/null
+    ( "$probe_bin" "$session_id" "$PPID" "${project_top:-$active_top}" >/dev/null 2>&1 & ) 2>/dev/null
   fi
   if [[ "$ports_mtime" =~ ^[0-9]+$ ]] && [ "$((now - ports_mtime))" -le 60 ]; then
     ports_own=""; ports_away=""
@@ -2178,13 +2018,8 @@ fi
 review_style=""
 review_text=""
 if [ -n "$active_top" ]; then
-  if [ "$shown_away" = 1 ]; then
-    review_verdict=$(review_verdict_line "$active_top" "$session_id" \
-      "$(tree_status_key "$git_status" "$git_status_rc")" "$now" "$away_tag")
-  else
-    home_probe
-    review_verdict="$home_verdict"
-  fi
+  review_verdict=$(review_verdict_line "$active_top" "$session_id" \
+    "$(tree_status_key "$git_status" "$git_status_rc")" "$now")
   review_style=${review_verdict%% *}
   case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
   # Truncated and nothing else: the words are the gate's, and a segment that rewrites them is the
@@ -2211,13 +2046,7 @@ fi
 # on, and the flow it belongs to ends at the push. Asked about the same tree the verdict is.
 unpushed_show=0
 if [ -n "$active_top" ]; then
-  if [ "$shown_away" = 1 ]; then
-    [ "$(unpushed_marker "$active_top" "$session_id" "$now" "$away_tag")" = unpushed ] &&
-      unpushed_show=1
-  else
-    home_probe
-    [ "$home_unpushed" = unpushed ] && unpushed_show=1
-  fi
+  [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ] && unpushed_show=1
 fi
 
 # Line 1 is built to the terminal's width, not printed once: the harness exports COLUMNS, and a
