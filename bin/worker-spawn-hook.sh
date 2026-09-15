@@ -52,13 +52,10 @@ route_account() {
   "$WORKER_PICK" --account "$@" 2>/dev/null || true
 }
 
-# Derive codex model short label: from ~/.codex/config.toml model id last dash-segment, fallback 'astra'.
 codex_model_short_label() {
-  local toml="${1:-$HOME/.codex/config.toml}" label=""
-  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
-    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
-  printf '%s' "$label"
+  local model
+  model=$(worker_model_allowed_models codex | head -n1)
+  printf '%s' "${model##*-}"
 }
 
 if [ "$subagent" = claudeb-worker ]; then
@@ -70,7 +67,7 @@ if [ "$subagent" = claudeb-worker ]; then
   [ -n "$model" ] || model=opus
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
-  [ -n "$effort" ] || effort=high
+  [ -n "$effort" ] || effort=$(worker_model_default_effort claudeb "$(worker_model_default_model claudeb)")
   if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
 elif [ "$subagent" = codex-worker ]; then
   acct=$(brief_line ACCOUNT)
@@ -79,7 +76,7 @@ elif [ "$subagent" = codex-worker ]; then
   [ -n "$acct" ] || acct=main
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf codex_effort)
-  [ -n "$effort" ] || effort=medium
+  [ -n "$effort" ] || effort=$(worker_model_default_effort codex "$(worker_model_default_model codex)")
   codex_model=$(codex_model_short_label)
   prefix="$acct · $codex_model · $effort"
 elif [ "$subagent" = grok-worker ]; then
@@ -94,7 +91,7 @@ elif [ "$subagent" = grok-worker ]; then
   case "$model" in auto|grok-4.6) model=grok ;; esac
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
-  [ -n "$effort" ] || effort=high
+  [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   if [ -n "$acct" ]; then prefix="$acct · $model · $effort"; else prefix="$model · $effort"; fi
 elif [ "$subagent" = image-gen ]; then
   # An image run has no model or effort knob, so the middle segment is the word `image` and the
@@ -141,7 +138,7 @@ else
   [ "$model" = flash ] && model=flash36
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
-  [ -n "$effort" ] || effort=high
+  [ -n "$effort" ] || effort=$(worker_model_default_effort gemini "$(worker_model_default_model gemini)")
   prefix="$acct · $model · $effort"
 fi
 

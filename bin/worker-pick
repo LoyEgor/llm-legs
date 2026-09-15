@@ -111,13 +111,10 @@ WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 CACHE_DIR="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}"
 now="${WORKER_PICK_NOW:-$(date +%s)}"
 
-# Derive codex model short label from ~/.codex/config.toml; fallback "astra" defined here.
+# The codex worker model's short alias comes from the allow-list, never from ~/.codex/config.toml:
+# that file is Egor's interactive pick and would make the column promise a model no worker runs.
 codex_model_short_label() {
-  local toml="${1:-$HOME/.codex/config.toml}" label=""
-  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
-    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
-  printf '%s' "$label"
+  worker_model_allowed_models codex | head -n1 | sed 's/.*-//'
 }
 
 conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
@@ -158,14 +155,15 @@ case "$worker_mode" in
   grok) [ "$gr_paused" = false ] || worker_mode=auto ;;
 esac
 cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
-cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-high}
-cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-high}
+cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-$(worker_model_default_effort claudeb "$cb_model")}
+cx_model=$(worker_model_allowed_models codex | head -n1)
+cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-$(worker_model_default_effort codex "$cx_model")}
 gm_model=$(conf gemini_model); gm_model=${gm_model:-flash38}
-gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}
+gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_effort gemini "$gm_model")}
 # `auto` is a real value here, not a missing one: resolving it to a model id is worker-run's job,
 # and this line only reports the knob.
 gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
-gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-high}
+gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}
 case "$gm_effort" in medium) gm_eff_abbr=med ;; high) gm_eff_abbr=hi ;; *) gm_eff_abbr=$gm_effort ;; esac
 
 # What the `model·eff` column says a dispatch would launch. The model is the short alias of the one
@@ -677,6 +675,7 @@ summary=$(jq -r \
     {name:(.account // "main"),
      own:($own_vendor == "codex" and (.account // "main") == $own),
      enabled:(.enabled != false),auth_ok:auth_ok,
+     h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
      rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
@@ -692,7 +691,7 @@ summary=$(jq -r \
   (($cx_best.name // "") as $sel |
    (if $cx_best == null then "no selectable account" else $sel end) as $target |
    ($cx_accounts | display_sort($sel) |
-     map(cells($sel; $cx_pins; pct_cell(.h5); $cx_disp))) as $rows |
+     map(cells($sel; $cx_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $cx_disp))) as $rows |
    vendor_state($cx_accounts; $cx_off; $cx_pinned;
      (if ($cx.available // false) != true then "unavailable" else "no quota data" end)) as $state |
    pin_note($cx_pin_lapses; $target) as $note |
@@ -705,6 +704,7 @@ summary=$(jq -r \
   ([$gm_source[] | select(.removed != true and gemini_group) |
     {name:(.account // "main"),
      enabled:(.enabled != false),auth_ok:auth_ok,
+     h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),wk_reset:((.weekly.resets_at? // null) | epoch),
      rs:reset_str(.weekly)} |
     .spend = spending | .budget = spend_budget | .budget_days = spend_days |
@@ -720,7 +720,7 @@ summary=$(jq -r \
   (($gm_best.name // "") as $sel |
    (if $gm_best == null then "no selectable account" else $sel end) as $target |
    ($gm_accounts | display_sort($sel) |
-     map(cells($sel; $gm_pins; pct_cell(.h5); $gm_disp))) as $rows |
+     map(cells($sel; $gm_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $gm_disp))) as $rows |
    vendor_state($gm_accounts; $gm_off; $gm_pinned;
      (if any($gm_source[]; .auth_needed == true) then "login needed"
       elif ($gm_source | length) > 0 or $gm.available == true then "no Gemini Models quota data"
@@ -766,6 +766,7 @@ summary=$(jq -r \
      enabled:(.enabled == true),auth_ok:auth_ok,
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),
+     h5_absent:limits_window_absent(.five_hour),
      h5:eff(.five_hour),wk:eff(.weekly),fb:eff(.fable),
      wk_reset:((.weekly.resets_at? // null) | epoch),
      fb_reset:((.fable.resets_at? // null) | epoch),
@@ -799,7 +800,7 @@ summary=$(jq -r \
   (($cl_best.name // "") as $sel |
    (if $cl_best == null then "no selectable account" else $sel end) as $target |
    ($cl_accounts | display_sort($sel) |
-     map(cells($sel; $cb_pins; pct_cell(.h5); $cb_disp))) as $rows |
+     map(cells($sel; $cb_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $cb_disp))) as $rows |
    vendor_state($cl_accounts; $cb_off; $pin_rec; "no accounts") as $state |
    pin_note($cb_pin_lapses; $target) as $note |
    (section($rows; $state; $note) as $body |

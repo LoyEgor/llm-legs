@@ -7,12 +7,6 @@
 # command path — `claudeb use|codexb use|geminib use|grokb use` — is refused inside worker_model_pin_account itself,
 # the one chokepoint every spelling of that command reaches.
 #
-# Two things are denied, not the file: the PIN, and a `*_model=` value no implementation worker may
-# run (shared-invariants row `bq`) — that second one takes NO grant, since a cheap default here
-# downgrades every worker after it. `worker=` and `*_effort=`, which `/worker` rewrites directly,
-# are ungated, so a write leaving every `*_profile=` line as it found it and naming an allowed model
-# passes. Reading is never gated at all.
-#
 # A grant only UNBLOCKS. It buys no action on its own, so none of the bookkeeping a one-shot
 # permission would need has to exist. Fail-open on any error: a broken gate must never block work.
 #
@@ -30,7 +24,7 @@ GRANT_TTL_MIN="${WORKER_MODEL_PIN_TTL_MIN:-30}"
 PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='
 
 # `~/.claude/hooks/worker-pin-gate.sh` is a symlink into the repository, so a shared module — the
-# ONE allowed-model list (`share/worker-model.sh`), the ONE command splitter
+# per-model table (`share/worker-model.sh`), the ONE command splitter
 # (`share/instruction-files.sh`) — is reached through the link rather than from beside the caller.
 # Loaded only once a write to the pin file is already established: sourcing on every tool call
 # would cost every Bash call file reads for a check almost none of them need. Unreadable → the
@@ -75,12 +69,33 @@ drop_replaced() { # text → the text with each substitution's pattern emptied
   sed -E 's#(^|[^[:alnum:]_])s/[^/]*/#\1s//#g' <<<"$1"
 }
 
-# Unlike the pin, this one takes no grant: a cheap default here silently downgrades every worker
-# after it, and no wording in a chat message makes an implementation run on a cheap model right.
-deny_model() { # offending pairs
-  # The list was loaded inside a command substitution, whose functions did not survive it.
+disallowed_efforts() {
+  local pair vendor value model model_text
+  load_model_list || return 0
+  model_text=${2-$(cat "$(pin_file)" 2>/dev/null)}
+  while IFS= read -r pair; do
+    vendor=${pair%%_effort=*}
+    value=${pair#*_effort=}
+    model=$(grep -Eo "${vendor}_model=[A-Za-z0-9._-]+" <<<"$model_text" | head -n1)
+    model=${model#*=}
+    model=${model:-$(worker_model_default_model "$vendor")}
+    worker_model_effort_allowed "$vendor" "$model" "$value" ||
+      printf '%s %s %s\n' "$vendor" "$model" "$value"
+  done < <(grep -Eo '(claudeb|codex|gemini|grok)_effort=[A-Za-z0-9._-]+' <<<"$1" | sort -u)
+}
+
+deny_model() {
   load_model_list || :
-  deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. Implementation workers never run a cheap model — the allowed models are $(worker_model_allowed_summary) — and \`worker-run\` refuses anything else with \`OUTCOME: MODEL_REFUSED\` before an account is spent, so storing one here only breaks the next delegation. No grant unlocks this: leave the \`*_model=\` lines as they are, and if a task really wants another model, ask Egor in one line. Effort (\`*_effort=\`) is ungated."
+  deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. The table models are $(worker_model_allowed_summary). No grant unlocks an unlisted model; worker-run refuses it with OUTCOME: MODEL_REFUSED before an account is spent."
+}
+
+deny_effort() {
+  local vendor model effort detail=''
+  load_model_list || :
+  while read -r vendor model effort; do
+    detail="${detail}${vendor} model ${model}: effort ${effort}; allowed efforts: $(worker_model_effort_list "$vendor" "$model"). "
+  done <<<"$1"
+  deny "Blocked: ${detail}Effort defaults belong to the table in share/worker-model.sh; stored overrides must use its allowed efforts. No grant unlocks an unlisted effort."
 }
 
 grant_path() {
@@ -172,14 +187,24 @@ case "$MODE" in
     [ -n "$path" ] || exit 0
     is_pin_file "$path" || exit 0
     tool=$(printf '%s' "$input" | jq -r '.tool_name') || exit 0
-    # The model keys before the pin, and before the grant: an Edit is judged on what it would
-    # LEAVE behind, so `old_string` naming the cheap model being removed is not the offence.
     if [ "$tool" = Write ]; then
-      offending=$(disallowed_models "$(printf '%s' "$input" | jq -r '.tool_input.content // ""')")
+      pending=$(printf '%s' "$input" | jq -r '.tool_input.content // ""')
+      model_text=$pending
     else
-      offending=$(disallowed_models "$(printf '%s' "$input" | jq -r '.tool_input.new_string // ""')")
+      pending=$(printf '%s' "$input" | jq -r '.tool_input.new_string // ""')
+      model_text=$(printf '%s' "$input" | jq -r --arg current "$(cat "$(pin_file)" 2>/dev/null)" '
+        .tool_input as $edit | ($edit.old_string // "") as $old |
+        if $old == "" then $current + "\n" + ($edit.new_string // "")
+        elif $edit.replace_all then $current | split($old) | join($edit.new_string // "")
+        else ($current | index($old)) as $at |
+          if $at == null then $current + "\n" + ($edit.new_string // "")
+          else $current[:$at] + ($edit.new_string // "") + $current[$at + ($old | length):] end
+        end')
     fi
+    offending=$(disallowed_models "$pending")
     [ -z "$offending" ] || deny_model "$offending"
+    offending=$(disallowed_efforts "$pending" "$model_text")
+    [ -z "$offending" ] || deny_effort "$offending"
     fresh && exit 0
     if [ "$tool" = Write ]; then
       # The pin lines this write would leave behind, against the ones there now.
@@ -400,8 +425,12 @@ case "$MODE" in
     fi
     # The scan, not the raw command: a `*_model=` pair the command CARRIES — quoted in a brief, or
     # standing on the search side of a substitution — is not one it stores.
-    offending=$(disallowed_models "$(drop_replaced "$scan")")
+    pending=$(drop_replaced "$scan")
+    offending=$(disallowed_models "$pending")
     [ -z "$offending" ] || deny_model "$offending"
+    offending=$(disallowed_efforts "$pending" "$pending
+$(cat "$(pin_file)" 2>/dev/null)")
+    [ -z "$offending" ] || deny_effort "$offending"
     # The raw command, and only while nothing in it is a runtime: matched around one, the shape is
     # a guess, and a guess is exactly what may not open this door.
     if [ -z "$ambiguous" ] && pin_untouched_write "$cmd"; then exit 0; fi

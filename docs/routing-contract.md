@@ -193,17 +193,8 @@ session's own model, which is the one quota the whole relay design exists to spa
 closes. An orchestrator session is Fable **or** a `claudegpt` gateway chat (`anthropic.ccr.sol` /
 `anthropic.ccr.astra`) — Claude Code on an OpenAI subscription, spending the one session quota the
 relay design exists to spare, so it is the same rule and not a second one. The shape of that model
-list lives in `orchestrator_model` in the gate and nowhere else (shared-invariants row `bt`). The allowlist is `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`, `gemini-research`
-(shared-invariants row `bt`): `Explore`, `claude-code-guide` and the thin `gemini-research` relay are
-pure lookup, so they are rewritten to `model: sonnet` unless the call names a model itself; the
-research pass itself runs on Gemini 3.8 Flash. Read-only fan-out does not stay native at all: an
-`Explore`, a `general-purpose` or a typeless spawn with no model of its own is rewritten in place to
-`gemini-research`, its prompt prefixed by one `Repositories:` line naming the spawn's cwd and every
-absolute path the prompt already pointed at, because prose asking for the research leg loses every
-time to `Explore` being the harness's own type. A prompt whose first line is
-`NATIVE_EXPLORE: gemini walled` is the way back to a native `Explore` when every Gemini account is
-walled, and the rewrite's own reason says so. `Plan` and `statusline-setup` keep the session model,
-since design is Fable's own work. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
+list lives in `orchestrator_model` in the gate and nowhere else (shared-invariants row `bt`). The allowlist is `Plan`, `claude-code-guide`, `gemini-research`
+(shared-invariants row `bt`): `claude-code-guide` is a narrow documentation lookup exception and `Plan` is the context-dependent planning exception. Research is rewritten into `gemini-research` with its prompt prefixed by one `Repositories:` line; explicit tool models and prose escape phrases cannot bypass this routing. The compatibility entrypoint submits a tracked read-only Gemini worker-run. No broad native read-only exception exists. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
 and a session whose model cannot be read fails open. The refusal carries no retry: a stamped
 one-shot deny is a rule a model walks through by calling twice.
 
@@ -220,7 +211,7 @@ rater asks with `worker-pick --account <vendor> --role reviewers`, the chat pick
 `--role chat`, the research launcher with `--role research`, and the image scripts / fan-out with
 `--role image`.
 
-`gemini-research` maps a picker refusal containing `WALLED` to exit 3 / `GEMINI_USAGE_LIMIT`;
+`gemini-research` submits through `worker-run` and maps a picker refusal containing `WALLED` to exit 3 / `GEMINI_USAGE_LIMIT`;
 paused, switched-off, empty-pool and missing-data refusals are availability failures at exit 4.
 After a Gemini run hits a quota wall, automatic selection re-queries with every tried account in
 `--exclude` and claims the next answer. Once that retry query has no account left, the observed
@@ -293,28 +284,31 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 
 ## Models
 
-`worker-pick` answers which ACCOUNT; which MODEL is not a question at all. An implementation
-worker runs exactly one model per vendor — claudeb `opus`, codex `gpt-6-astra`, gemini `flash38`
-(Gemini 3.8 Flash; the review cells keep Pro, the worker does not), grok
-`auto` (`grok-4.6`, the one model it has) — and `share/worker-model.sh`
-(`worker_model_allowed_models`) is the one place that list is spelled in code
-(`docs/shared-invariants.md` row `bq`). A worker is dispatched to spend another account's quota on
-real work, and a run that comes back needing redoing costs more than the cheap model saved.
+`worker-pick` answers which ACCOUNT. `share/worker-model.sh` (`worker_model_table`) is the
+source for allowed models, default efforts, brief efforts and efforts requiring Egor's word
+(`docs/shared-invariants.md` row `bq`; policy table in `share/worker-policy.md`). Default models
+are claudeb `opus`, codex `gpt-6-astra`, gemini `flash38`, grok `auto` (`grok-4.6` also allowed).
+Opus defaults to `high`; brief efforts are `high`, `xhigh`, and word efforts are `low`, `medium`, `max`.
+claudeb `fable` and codex `gpt-5.6-sol` require Egor's explicit ask in this chat, as do word efforts.
 
-The refusal is a parsed contract and it stands wherever the name came from: a brief's `MODEL:` line
-(relays forward it as `--model`), `worker-run --model` itself, the vendor's own `*_model=` key, the
-default a missing key falls back to, and for codex the model `~/.codex/config.toml` names —
-`--model default` being that file's model under another spelling, not a model of its own.
-`worker-run` prints `OUTCOME: MODEL_REFUSED` and exits `4` BEFORE the account is resolved, so
-nothing is picked, no run directory exists and no quota is spent; the stderr line names the offered
-model and the vendor's allowed list. Nothing is walled and no reroute answers it — the brief asked
-for a model Egor forbade, and the answer is to drop the line or ask him.
+The model check covers `MODEL:` forwarded as `--model`, vendor `*_model=` values consumed by
+`worker-run`, and table defaults. Codex's default comes from the table, including `--model default`,
+not `~/.codex/config.toml`.
+`worker-run` prints `OUTCOME: MODEL_REFUSED` and exits `4` BEFORE the account is resolved:
+nothing is picked, no run directory exists and no quota is spent. Stderr names the offered
+model and the vendor's allowed list. Correct the model; no account is walled or rerouted.
 
-Storing one is refused at the file too: `bin/worker-pin-gate.sh` denies any Write/Edit or shell
-write that would leave a disallowed `*_model=` value in `~/.claude/worker-model`, which is how the
-`/worker` toggle is held to the same list. Unlike the account pin, that door takes no grant — a
-cheap default there downgrades every worker after it, silently. Effort (`*_effort=`) is untouched
-by all of it: it is the knob that still varies per task.
+`worker-run` prints `OUTCOME: EFFORT_REFUSED` and exits `4` BEFORE the account is resolved
+when effort is outside the resolved model's union of brief and word efforts. Nothing is picked,
+no run directory exists and no quota is spent. Stderr names the offered effort and allowed union.
+Correct the effort; no account is walled or rerouted. Neither Codex model permits `max`.
+Effort precedence is `--effort` (brief `EFFORT:`) > `<vendor>_effort` in `~/.claude/worker-model`
+> `worker_model_default_effort` for the resolved model. A Codex resume retains its session effort
+unless the brief explicitly overrides it.
+
+`/worker` refuses to store a model outside the table or an effort outside the model's union;
+`worker-pin-gate.sh` guards model writes. The union is mechanical validation; requiring Egor's
+word for word efforts and word-only models is orchestrator policy.
 
 ## Deleted with this contract (not configurable, not dormant)
 

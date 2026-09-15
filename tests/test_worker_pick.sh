@@ -140,6 +140,21 @@ assert contains "$(vsection codex)" '35%'
 run_filter codex_plain '.vendors.codex.accounts |= map(.weekly = {used_pct:35,resets_at:2000259200,as_of:2000000000,origin:"headers"})'
 assert contains "$(vsection codex)" '35%'
 
+for absent_bucket in 'null' '{used_pct:null,resets_at:null,as_of:2000000000,origin:"usage",stale:false,effective_pct:null}' '{}'; do
+  run_filter codex_plain ".vendors.codex.accounts[0] |= (.account = \"desktop-pro\" | .five_hour = $absent_bucket | .weekly = {used_pct:48,resets_at:2002592000})"
+  assert contains "$(vsection codex)" '48% – desktop-pro'
+  assert contains "$(nrow 1)" 'codex/desktop-pro'
+  assert not_contains "$(nrow 1)" '5h'
+  assert not_contains "$(vsection codex)" 'WALLED'
+  query --account codex
+  assert test "$query_rc" -eq 0
+  assert test "$query_out" = desktop-pro
+done
+run_filter codex_plain '.vendors.codex.accounts[0].five_hour = {used_pct:null,resets_at:null,as_of:2000000000,stale:true}'
+assert contains "$(vsection codex)" '48% ? plain'
+run_filter codex_plain '.vendors.codex.accounts[0].five_hour = {used_pct:48,stale:true}'
+assert contains "$(vsection codex)" '48% 48% plain'
+
 
 # Unusable data has no fail-safe answer for a caller, and a human-facing run says why.
 printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
@@ -222,7 +237,7 @@ run_filter claude_pool '.vendors.claude.accounts = [
   {account:"tie-b",enabled:true,weekly:{used_pct:20},five_hour:{used_pct:0},fable:{used_pct:0}}]'
 assert contains "$(nrow 1)" 'claude/tie-a opus·high'
 assert test "$(acct_line)" = 'ACCOUNT: tie-a'
-assert before "$(vsection claude)" ' 20% ? tie-a ' ' tie-b '
+assert before "$(vsection claude)" ' 20% – tie-a ' ' tie-b '
 
 # The budget is a pace, not a level: at the same percentage the account whose week resets sooner
 # may spend faster, and that is the whole difference between this metric and a bare percentage.
@@ -524,7 +539,7 @@ run_filter gemini_fresh '.vendors.gemini.enabled = false'
 assert contains "$(vsection gemini)" '35% 15% main f38·high off'
 assert not_contains "$output" 'ACCOUNT: main'
 run_filter gemini_fresh '.vendors.gemini = {
-  available:false,auth_needed:true,status:"login needed",source:"agy-local-rpc"}'
+  available:false,auth_needed:true,status:"login needed",source:"agy-print-usage"}'
 assert test "$(vsection gemini)" = 'login needed'
 run_filter gemini_fresh '.vendors.gemini = {available:true,accounts:[
   {account:"main",group:"Gemini Models",five_hour:{used_pct:10},weekly:{used_pct:10}},
@@ -687,8 +702,8 @@ assert not_contains "$(next_block)" 'gemini/'
 # A vendor that answers nothing says so in its own section, never as a row of the ranking: an
 # emptied pool is per-account, so its rows stay and carry the switch.
 assert contains "$(vsection claude)" '20% 20% session* opus·high off'
-assert test "$(vsection codex)" = '- ? ? main astra·high'
-assert test "$(vsection gemini)" = '- ? ? main f38·high'
+assert test "$(vsection codex)" = '- ? – main astra·high'
+assert test "$(vsection gemini)" = '- ? – main f38·high'
 # The order follows the numbers, not the vendor: the same store with codex barely touched puts
 # codex at the head and grok behind claudeb.
 run_filter golden ".vendors.grok = $GROK_PAIR
@@ -1300,7 +1315,7 @@ assert not_contains "$output" ' cap '
 run_filter claude_pool '.vendors.claude.accounts = [
   {account:"blank",enabled:true},
   {account:"cool",enabled:true,five_hour:{used_pct:10},weekly:{used_pct:50}}]'
-assert contains "$(vsection claude)" '- ? ? blank opus·high'
+assert contains "$(vsection claude)" '- ? – blank opus·high'
 run_case gemini_stale
 assert contains "$(vsection gemini)" '30% 20% main f38·high'
 # The row is NAMED, never a verdict over the table: one old account beside four fresh ones sent
@@ -1343,6 +1358,36 @@ data_row=$(vline 'DATA:')
 assert contains "$data_row" 'DATA: STALE — claude/old1 11d13h, claude/old2 1d3h'
 assert not_contains "$data_row" 'claude/new'
 assert not_contains "$data_row" 'gemini/main'
+
+printf '%s\n' 'worker=auto' >"$CONFIG"
+grok_case "$GROK_PAIR"
+assert contains "$(vsection codex)" 'astra·low'
+assert contains "$(vsection claude)" 'opus·high'
+assert contains "$(vsection gemini)" 'f38·high'
+assert contains "$(vsection grok)" 'grok·high'
+default_cache=$(cat "$CACHE/worker-pick.line.session")
+assert contains "$default_cache" '·astra·low'
+assert contains "$default_cache" '·opus·hi'
+assert contains "$default_cache" '·flash38·hi'
+assert contains "$default_cache" '·auto·hi'
+printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_effort=xhigh' \
+  'gemini_effort=low' 'grok_effort=xhigh' >"$CONFIG"
+grok_case "$GROK_PAIR"
+assert contains "$(vsection codex)" 'astra·high'
+assert contains "$(vsection claude)" 'opus·xhigh'
+assert contains "$(vsection gemini)" 'f38·low'
+assert contains "$(vsection grok)" 'grok·xhigh'
+override_cache=$(cat "$CACHE/worker-pick.line.session")
+assert contains "$override_cache" '·astra·hi'
+assert contains "$override_cache" '·opus·xh'
+assert contains "$override_cache" '·flash38·low'
+assert contains "$override_cache" '·auto·xh'
+printf 'not-json\n' >"$STORE"
+run_store effort-fail-safe
+assert contains "$(cat "$CACHE/worker-pick.line.session")" 'gx✗?·flash38·low'
+printf '%s\n' 'worker=auto' >"$CONFIG"
+run_store default-effort-fail-safe
+assert contains "$(cat "$CACHE/worker-pick.line.session")" 'gx✗?·flash38·hi'
 
 # Model and effort are read from worker-model and printed verbatim: quota state never
 # silently degrades the work.

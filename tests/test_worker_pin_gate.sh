@@ -489,7 +489,7 @@ done
 # The deny names the offender and the allowed list, and says nothing about the pin.
 model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
-assert contains "$model_deny" 'claudeb opus; codex gpt-6-astra; gemini flash38; grok auto|grok-4.6'
+assert contains "$model_deny" 'claudeb opus|fable; codex gpt-6-astra|gpt-5.6-sol; gemini flash38; grok auto|grok-4.6'
 assert lacks "$model_deny" 'is Egor'
 # A grant unblocks the pin and never the model.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
@@ -515,7 +515,33 @@ gemini_model=flash38
 grok_model=auto
 ')"
 assert allowed "$(edit_event "$PIN_FILE" 'claudeb_model=sonnet' 'claudeb_model=opus')"
-# Effort is untouched by any of it, and reading a cheap model's name is not writing one.
+for model_line in claudeb_model=fable codex_model=gpt-5.6-sol; do
+  assert allowed "$(write_event "$PIN_FILE" "$model_line")"
+  assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' "$model_line")"
+done
+for effort_line in codex_effort=max grok_effort=low; do
+  effort_deny=$(write_event "$PIN_FILE" "$effort_line")
+  assert denied "$effort_deny"
+  assert contains "$effort_deny" 'Effort defaults belong to the table'
+  assert denied "$(edit_event "$PIN_FILE" 'worker=auto' "$effort_line")"
+  assert denied "$(bash_event "sed -i '' 's/^${effort_line%%=*}=.*/$effort_line/' $PIN_FILE")"
+done
+assert contains "$(write_event "$PIN_FILE" 'codex_effort=max')" 'low|medium|high|xhigh'
+assert contains "$(write_event "$PIN_FILE" 'grok_effort=low')" 'high|xhigh'
+assert allowed "$(write_event "$PIN_FILE" 'claudeb_effort=low')"
+assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' 'claudeb_effort=low')"
+assert allowed "$(bash_event "sed -i '' 's/^claudeb_effort=.*/claudeb_effort=low/' $PIN_FILE")"
+printf 'codex_model=gpt-5.6-sol\n' >>"$PIN_FILE"
+assert contains "$(edit_event "$PIN_FILE" 'codex_effort=high' 'codex_effort=max')" 'medium|high|low|xhigh'
+assert contains "$(write_event "$PIN_FILE" 'codex_effort=max')" 'low|medium|high|xhigh'
+assert contains "$(write_event "$PIN_FILE" $'codex_model=gpt-5.6-sol\ncodex_effort=max')" 'medium|high|low|xhigh'
+assert allowed "$(write_event "$PIN_FILE" $'codex_model=gpt-5.6-sol\ncodex_effort=low')"
+mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
+assert denied "$(bash_event "printf 'codex_effort=max\n' >> $PIN_FILE")"
+assert denied "$(write_event "$PIN_FILE" 'codex_effort=max')"
+assert allowed "$(bash_event "printf 'claudeb_model=fable\ncodex_model=gpt-5.6-sol\n' >> $PIN_FILE")"
+assert allowed "$(bash_event "sed -i '' 's/codex_effort=max/codex_effort=low/' $PIN_FILE")"
+rm -f "$GRANT"
 assert allowed "$(edit_event "$PIN_FILE" 'claudeb_effort=high' 'claudeb_effort=medium')"
 assert allowed "$(bash_event "grep claudeb_model=sonnet $PIN_FILE")"
 

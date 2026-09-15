@@ -65,13 +65,10 @@ is_geminib_launch() {
     "${cmd_word}"'geminib[[:space:]]+((profile|p|run)[[:space:]]+["'\'']*[a-z0-9][a-z0-9-]*|["'\'']*[a-z0-9][a-z0-9-]*["'\'']*[[:space:]]+exec)'
 }
 
-# Derive codex model short label from ~/.codex/config.toml; fallback "astra" defined here.
 codex_model_short_label() {
-  local toml="${1:-$HOME/.codex/config.toml}" label=""
-  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
-    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
-  printf '%s' "$label"
+  local model
+  model=$(worker_model_allowed_models codex | head -n1)
+  printf '%s' "${model##*-}"
 }
 
 # A launch/resume command re-derives the tag every time (idempotent; a rotating
@@ -95,7 +92,7 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'codex[[:space:]]+exec([[:spa
   [ -n "$acct" ] || acct=main
   effort=$(grab 'model_reasoning_effort=[a-z]+' | cut -d= -f2)
   [ -n "$effort" ] || effort=$(worker_conf codex_effort)
-  [ -n "$effort" ] || effort=medium
+  [ -n "$effort" ] || effort=$(worker_model_default_effort codex "$(worker_model_default_model codex)")
   codex_model=$(codex_model_short_label)
   tag="$acct · $codex_model · $effort"
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'claudeb["'\'']?([[:space:]]|$)' &&
@@ -110,7 +107,7 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'claudeb["'\'']?([[:space:]]|
   [ -n "$model" ] || model=opus
   effort=$(grab '\-\-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf claudeb_effort)
-  [ -n "$effort" ] || effort=high
+  [ -n "$effort" ] || effort=$(worker_model_default_effort claudeb "$(worker_model_default_model claudeb)")
   if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
 elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
        is_geminib_launch; } &&
@@ -135,7 +132,7 @@ elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
   [ "$model" = flash ] && model=flash36
   [ -n "$model" ] || model=flash38
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
-  [ -n "$effort" ] || effort=high
+  [ -n "$effort" ] || effort=$(worker_model_default_effort gemini "$(worker_model_default_model gemini)")
   tag="$acct · $model · $effort"
 elif is_grokb_launch &&
      printf '%s' "$launch" | grep -qE -- '--prompt-file|-p |--prompt-json'; then
@@ -149,7 +146,7 @@ elif is_grokb_launch &&
   case "$model" in auto|grok-4.6) model=grok ;; esac
   effort=$(grab '\-\-reasoning-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
-  [ -n "$effort" ] || effort=high
+  [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'gemini-research([[:space:]]|$)'; then
   # `flash38 · high` is the launcher's own hardcoded `--model gemini-3.8-flash-high` and never a

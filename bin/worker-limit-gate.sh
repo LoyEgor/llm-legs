@@ -11,16 +11,10 @@ WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/work
 
 STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 
-# The native agent types an orchestrator session may still spawn (shared-invariants row `bt`). Pure lookup
-# and design only: everything that edits, reviews, verifies or scans is a relay worker. The second
-# list is the half that needs no session-model reasoning — lookup agents return excerpts and the
-# research agent delegates its pass — so those are rewritten to sonnet unless the call names a model.
-NATIVE_ALLOWLIST='Explore Plan claude-code-guide statusline-setup gemini-research'
-NATIVE_CHEAP='Explore claude-code-guide gemini-research'
-# The read-only fan-out types an orchestrator session spawns instead of the research leg, and the one line
-# that buys a native Explore back when every Gemini account is walled.
+# Native context helpers and the research relay are the only exceptions to worker routing.
+NATIVE_ALLOWLIST='Plan claude-code-guide gemini-research'
+# Fan-out enters the research relay even when its prompt or tool model asks for a native fallback.
 NATIVE_RESEARCH='Explore general-purpose'
-NATIVE_EXPLORE_ESCAPE='NATIVE_EXPLORE: gemini walled'
 
 # `gemini-research` runs outside the session and is told which trees to read, so the rewritten
 # prompt has to name them: the spawn's cwd, then every absolute directory the caller already
@@ -48,6 +42,7 @@ $token"
   done < <(printf '%s' "$prompt" | grep -oE "(/Volumes|$HOME)/[A-Za-z0-9._/@+-]+" 2>/dev/null)
   printf '%s\n' "$list"
 }
+
 
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
@@ -96,6 +91,10 @@ deny() {
 # routinely told "follow the brief at /path" and the review-bench commands stand in that file.
 REVIEW_STATE="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
 brief_text=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || brief_text=''
+# The prompt as it was TYPED, before the file expansion below folds whole briefs into it: a gate
+# that judged the expanded text would refuse an English spawn over a Russian line in some file the
+# prompt merely names.
+spawn_prompt=$brief_text
 for brief_file in $(printf '%s\n' "$brief_text" | grep -Eo '/[^[:space:]"'"'"'`<>]+' |
     sed -E 's/[.,;:)]+$//' | sort -u); do
   real_brief=$(realpath "$brief_file" 2>/dev/null) || continue
@@ -252,50 +251,32 @@ case "$worker" in
           *" $native "*)
             research_prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null) ||
               research_prompt=''
-            case "$research_prompt" in
-              "$NATIVE_EXPLORE_ESCAPE"*)
-                native=Explore
-                ;;
-              *)
-                if [ -z "$explicit_model" ]; then
-                  research_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || research_cwd=''
-                  [ -n "$research_cwd" ] || research_cwd=$PWD
-                  printf '%s' "$input" | jq -c \
-                    --arg p "$(printf 'Repositories: %s\n%s' \
-                      "$(research_repos "$research_cwd" "$research_prompt")" "$research_prompt")" \
-                    --arg r "Read-only research on an orchestrator session belongs on the Gemini leg, so this native $native spawn was rewritten to gemini-research with the same prompt, prefixed by the repositories it may read. If every Gemini account is walled — the run answers OUTCOME: GEMINI_USAGE_LIMIT or GEMINI_UNAVAILABLE — spawn Explore again with \`$NATIVE_EXPLORE_ESCAPE\` as the first line of the prompt: that one passes as a native Explore." \
-                    '{hookSpecificOutput: {
-                        hookEventName: "PreToolUse",
-                        permissionDecision: "allow",
-                        permissionDecisionReason: $r,
-                        additionalContext: $r,
-                        updatedInput: (.tool_input
-                          | .subagent_type = "gemini-research"
-                          | .prompt = $p)}}' 2>/dev/null || true
-                  exit 0
-                fi
-                ;;
-            esac
+            research_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || research_cwd=''
+            [ -n "$research_cwd" ] || research_cwd=$PWD
+            printf '%s' "$input" | jq -c \
+              --arg p "$(printf 'Repositories: %s\n%s' \
+                "$(research_repos "$research_cwd" "$research_prompt")" "$research_prompt")" \
+              --arg r "Read-only research on an orchestrator session is routed through the tracked Gemini worker-run compatibility entrypoint; explicit tool models do not authorize a native bypass." \
+              '. as $in | {hookSpecificOutput: {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: "allow",
+                  permissionDecisionReason: $r,
+                  additionalContext: $r,
+                  updatedInput: ($in.tool_input | .subagent_type = "gemini-research" | .prompt = $p | del(.model))}}' 2>/dev/null || true
+            exit 0
             ;;
         esac
         case " $NATIVE_ALLOWLIST " in
           *" $native "*)
-            # An explicit model is Egor's own call and stands as written. Otherwise lookup relays
-            # are dropped to sonnet while a design agent keeps the session model: that IS the
-            # orchestrator session's own work.
-            [ -z "$explicit_model" ] || exit 0
-            case " $NATIVE_CHEAP " in
-              *" $native "*)
-                printf '%s' "$input" | jq -c '{hookSpecificOutput: {
-                    hookEventName: "PreToolUse",
-                    permissionDecision: "allow",
-                    updatedInput: (.tool_input | .model = "sonnet")}}' 2>/dev/null || true
-                ;;
-            esac
+            if [ -n "$explicit_model" ]; then
+              printf '%s' "$input" | jq -c '{hookSpecificOutput: {
+                hookEventName: "PreToolUse", permissionDecision: "allow",
+                updatedInput: (.tool_input | del(.model))}}'
+            fi
             exit 0
             ;;
         esac
-        deny "native $native runs on this session's own quota: every run that edits, reviews, verifies or scans is a relay worker via worker-run (see ~/.claude/CLAUDE.md, Model routing); read-only lookups use Explore/Plan."
+        deny "native $native runs on this session's own quota: every run that edits, reviews, verifies or scans is a relay worker via worker-run (see ~/.claude/CLAUDE.md, Model routing); context-dependent planning and documentation use Plan/claude-code-guide."
       fi
     fi
     # A fork ignores the override field entirely, so off an orchestrator session there is nothing

@@ -8,13 +8,36 @@ either: in `auto` the workers pin tier leads, then `[five-hour deferral, fresh c
 menu toggles are the only other say. What is left here is the part no table decides — how much
 effort a task deserves, and the vendor shapes a brief has to know.
 
-- Use Codex effort `medium` for ordinary tasks and `high` for genuinely complex work.
 - Gemini/Antigravity is a full implementation worker selectable with `worker=gemini`; its base profile is `main`, and named profiles are isolated by `geminib`.
-- The LIGHT class (Egor, 2026-09-06): work whose error is cheap and whose result is verified by the caller — today only read-only research, fan-out search and file-spanning lookups, asked as closed questions whose answers the caller checks against the raw data; open-ended hunting and interpretation of what was found stay with a strong model — goes to the light model, currently Gemini 3.8 Flash through the native `gemini-research` agent (role `research`, independent of the worker toggle and the workers/reviewers switches). It is not a worker and edits nothing. The Agent gate enforces it: on a Fable session an `Explore`/`general-purpose` spawn is rewritten into `gemini-research` (`bin/worker-limit-gate.sh`), so the class is not a choice the model makes. Everything else — implementation, review triage, gates, anything whose mistake later burns other models' tokens — stays with the strong models; saving is rational only where a mistake is cheap. The light model is named in ONE place, `bin/gemini-research` (`--model`), and changes there.
+- The LIGHT class (Egor, 2026-09-06): work whose error is cheap and whose result is verified by the caller — today only read-only research, fan-out search and file-spanning lookups, asked as closed questions whose answers the caller checks against the raw data; open-ended hunting and interpretation of what was found stay with a strong model — goes to the light model, currently Gemini 3.8 Flash through the `gemini-research` compatibility entrypoint, which submits a tracked read-only Gemini `worker-run` (role `research`). It edits nothing. The Agent gate enforces it: on a Fable session an `Explore`/`general-purpose` spawn is rewritten into `gemini-research` (`bin/worker-limit-gate.sh`), so the class is not a choice the model makes. Everything else — implementation, review triage, gates, anything whose mistake later burns other models' tokens — stays with the strong models; saving is rational only where a mistake is cheap. The light model is named in ONE place, `bin/worker-run`'s research role, and changes there.
 - Grok/SuperGrok is a full implementation worker selectable with `worker=grok`; every account is a named profile isolated by `grokb`, and there is no usable base profile — the real `~/.grok` carries no login. It spends one weekly pool shared with Chat and Imagine, so a long run costs Egor more than the percentage suggests.
-- **A worker runs the one model Egor named for its vendor, and nothing else.** claudeb `opus`, codex `gpt-6-astra`, gemini `flash38` (Gemini 3.8 Flash, his call of 2026-09-04 — the review cells keep Pro, the worker does not), grok `auto` (`grok-4.6`, the one model it has). No sonnet, haiku or fable; no Terra or Luna; no other flash family. A worker is dispatched to spend another account's quota on real work, and a run that comes back needing redoing costs more than the cheap model saved. `share/worker-model.sh` holds the list, `worker-run` refuses anything else with `OUTCOME: MODEL_REFUSED` before an account is spent, and the `/worker` toggle refuses to store one — so a `MODEL:` line in a brief can only ever repeat what the vendor already runs, and belongs nowhere. If a task really seems to want another model, that is a question for Egor.
-- Use the account and effort exactly as the first `NEXT` row prints them (a brief `ACCOUNT:` or vendor pin is spent first, then the pool if it walls; only a resumed session stays). A per-task `EFFORT:` override belongs in the brief. The canonical knob-to-agy mapping lives in `worker-run`.
 - Code reviews: the chat picks the tier itself (task importance first, then diff complexity; T0 is the floor) and cell composition comes from `review-bench tiers`, never from prose; the human-side rules live in `~/.claude/docs/review-tiers.md`.
+
+## Model and effort table
+
+Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor is the default.
+
+| Vendor / model | Default effort | Brief efforts | Efforts requiring Egor's word | Model requires Egor's word |
+| --- | --- | --- | --- | --- |
+| claudeb / opus | high | high, xhigh | low, medium, max | no |
+| claudeb / fable | low | low, medium, high | xhigh, max | yes |
+| codex / gpt-6-astra | low | low, medium, high | xhigh | no |
+| codex / gpt-5.6-sol | medium | medium, high | low, xhigh | yes |
+| gemini / flash38 | high | low, medium, high | — | no |
+| grok / auto | high | high, xhigh | — | no |
+| grok / grok-4.6 | high | high, xhigh | — | no |
+
+Use the first `NEXT` row's account. Effort defaults to `<vendor>_effort` in
+`~/.claude/worker-model`, else the resolved model's table default. Write `EFFORT:` only to move
+off that default within Brief efforts. Word efforts and word-only models (`fable`,
+`gpt-5.6-sol`) require Egor's ask in this chat; quote nothing but his ask.
+His cues «не парься / задача простая / не жги» lower effort within Brief efforts;
+«подумай как следует / сложное» raise it there. Anything in the word columns, models included, needs his
+explicit word; otherwise no `MODEL:` line. Neither Codex model allows `max`.
+`worker-run` mechanically enforces the union of both effort columns (`OUTCOME: EFFORT_REFUSED`)
+and the model list (`OUTCOME: MODEL_REFUSED`) before spending an account; `/worker` refuses to
+store values outside them. Word requirements are orchestrator policy.
+The canonical knob-to-agy mapping lives in `worker-run`.
 
 ## Brief sizing and test loop
 

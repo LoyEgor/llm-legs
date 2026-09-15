@@ -4,27 +4,66 @@ worker_model_file() {
   printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 }
 
-# An implementation worker is dispatched to spend ANOTHER account's quota on real work, and a run
-# that comes back needing redoing costs more than the cheap model saved — so each vendor runs the
-# ONE model Egor named for it and nothing else. That is his call per vendor, not a rule that the
-# top model always wins: gemini's worker moved off 3.1 Pro to 3.8 Flash on 2026-09-04, while the
-# review cells keep Pro. This is the ONE list; `worker-run` refuses a launch outside it and
-# `worker-pin-gate.sh` refuses storing one in `~/.claude/worker-model`. Effort is a separate knob
-# and is not touched by any of it.
-#
-# The ids are the ones each vendor's leg in `worker-run` resolves to a CLI model, so a name that
-# passes here is a name that leg can launch. Grok's `auto` and `grok-4.6` are two spellings of the
-# same one model — `auto` means whichever model the account defaults to, and the leg omits `-m` for
-# it (shared-invariants row `bk`). Gemini's `flash38` names the FAMILY: the effort rides in the
-# agy slug, so the leg spells the model as `gemini-3.8-flash-<effort>` (row `h`).
-worker_model_allowed_models() { # vendor → allowed model ids, one per line
-  case "${1-}" in
-    claudeb) printf 'opus\n' ;;
-    codex) printf 'gpt-6-astra\n' ;;
-    gemini) printf 'flash38\n' ;;
-    grok) printf 'auto\ngrok-4.6\n' ;;
-    *) return 2 ;;
-  esac
+# Egor's per-model call: brief efforts need no extra word; word efforts and word-only
+# models require his explicit request in orchestrator policy. The union of both effort
+# columns is the mechanical rule; the first row of each vendor is its default model.
+worker_model_table() {
+  cat <<'TABLE'
+claudeb opus high high,xhigh low,medium,max no
+claudeb fable low low,medium,high xhigh,max yes
+codex gpt-6-astra low low,medium,high xhigh no
+codex gpt-5.6-sol medium medium,high low,xhigh yes
+gemini flash38 high low,medium,high - no
+grok auto high high,xhigh - no
+grok grok-4.6 high high,xhigh - no
+TABLE
+}
+
+worker_model_allowed_models() {
+  worker_model_table | awk -v vendor="${1-}" '
+    $1 == vendor { print $2; found = 1 }
+    END { if (!found) exit 2 }
+  '
+}
+
+worker_model_default_model() {
+  local models
+  models=$(worker_model_allowed_models "${1-}") || return 2
+  printf '%s\n' "${models%%$'\n'*}"
+}
+
+worker_model_default_effort() {
+  worker_model_table | awk -v vendor="${1-}" -v model="${2-}" '
+    $1 == vendor && $2 == model { print $3; found = 1; exit }
+    END { if (!found) exit 2 }
+  '
+}
+
+worker_model_effort_list() {
+  worker_model_table | awk -v vendor="${1-}" -v model="${2-}" '
+    $1 == vendor && $2 == model {
+      found = 1; sep = ""
+      for (col = 4; col <= 5; col++) {
+        n = split($col, efforts, ",")
+        for (i = 1; i <= n; i++) {
+          if (efforts[i] == "-" || seen[efforts[i]]++) continue
+          printf "%s%s", sep, efforts[i]; sep = "|"
+        }
+      }
+      exit
+    }
+    END { if (!found) exit 2 }
+  '
+}
+
+worker_model_effort_allowed() {
+  local efforts allowed
+  efforts=$(worker_model_effort_list "${1-}" "${2-}") || return 2
+  [ -n "${3-}" ] || return 1
+  while IFS= read -r allowed; do
+    [ "$allowed" != "$3" ] || return 0
+  done < <(tr '|' '\n' <<<"$efforts")
+  return 1
 }
 
 worker_model_allows() { # vendor model
@@ -43,9 +82,9 @@ worker_model_allowed_list() { # vendor
 
 worker_model_allowed_summary() { # every vendor, as one phrase
   local vendor out=''
-  for vendor in claudeb codex gemini grok; do
+  while IFS= read -r vendor; do
     out="${out:+$out; }$vendor $(worker_model_allowed_list "$vendor")"
-  done
+  done < <(worker_model_table | awk '!seen[$1]++ { print $1 }')
   printf '%s' "$out"
 }
 
