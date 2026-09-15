@@ -354,13 +354,141 @@ print(row['model'], row['ttl'])
 " <<<"$OUT")" = "claude-opus-5 0"
 
 # --- the cache answers with the same list, and yields to a new message -------
-assert test -f "$WORK/cache.json"
+HOTC="$WORK/cache-hot.json" COLDC="$WORK/cache-cold.json"
+assert test -f "$HOTC"
+assert test ! -e "$WORK/cache.json"
 FIRST="$OUT"
 recent --json
 assert test "$OUT" = "$FIRST"
 said "$RICH" 2026-02-11T10:00:00.000Z user 'ещё одна правка'
 recent
 assert grep -q '2026-02-11 10:00' <<<"$OUT"
+
+# --- the cache is rewritten only when a row changed ----------------------------
+cache_sig() { python3 -c 'import os, sys; s = os.stat(sys.argv[1]); print(s.st_ino, s.st_mtime_ns)' "$1"; }
+cached_rows() {  # cached_rows <cache file> <row text as JSON> — prints how many rows say it
+  python3 -c '
+import importlib.machinery, json, sys
+tool = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
+rows = tool.load_cache(sys.argv[2])
+print(sum(1 for row in rows.values() if row.get("text") == json.loads(sys.argv[3])))
+' "$SCRIPT" "$1" "$2"
+}
+BEFORE=$(cache_sig "$HOTC")
+recent
+assert test "$RC" -eq 0
+assert test "$(cache_sig "$HOTC")" = "$BEFORE"
+said "$RICH" 2026-02-12T10:00:00.000Z user 'и последняя правка'
+recent
+assert grep -q '2026-02-12 10:00' <<<"$OUT"
+assert test "$(cache_sig "$HOTC")" != "$BEFORE"
+assert test "$(cached_rows "$HOTC" '"и последняя правка"')" = 1
+# A JS-side cut can leave half a surrogate pair in a transcript; the cache write must survive
+# it. Outside --days 1, so only the cache sees the row, never the printed listing.
+CUT="$CORPUS/12121212-1212-1212-1212-121212121212.jsonl"
+printf '%s\n' '{"type":"user","cwd":"/tmp/proj","timestamp":"2026-02-12T11:00:00.000Z","message":{"role":"user","content":"обрезано \ud83d"}}' >"$CUT"
+recent --days 1
+assert test "$RC" -eq 0
+assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 1
+rm -f "$CUT"
+# A deletion that is the run's only change still rewrites the cache without the row.
+recent --days 1
+assert test "$RC" -eq 0
+assert test "$(cached_rows "$HOTC" '"обрезано \ud83d"')" = 0
+
+# --- below a project directory only --agents looks ----------------------------
+# Real nested transcripts are sidechain subagents that never list anyway; this one speaks, so
+# a listing that walked below the project directory would show it.
+NESTED="$CORPUS/11111111-1111-1111-1111-111111111111/subagents/agent-nested.jsonl"
+mkdir -p "$(dirname "$NESTED")"
+said "$NESTED" 2026-02-12T12:00:00.000Z user 'вложенная реплика'
+recent
+assert test "$RC" -eq 0
+assert test -z "$(grep -o 'вложенная реплика' <<<"$OUT")"
+recent --agents
+assert grep -q 'вложенная реплика' <<<"$OUT"
+
+# --- the week window reads the hot file alone; cold is for wide runs ----------
+# Two chats whose files were last written in January: the first wide run files them cold.
+AGED="$CORPUS/13131313-1313-1313-1313-131313131313.jsonl"
+said "$AGED" 2026-01-04T10:00:00.000Z user 'давний разговор'
+touch -t 202601041001 "$AGED"
+REVIVED="$CORPUS/14141414-1414-1414-1414-141414141414.jsonl"
+said "$REVIVED" 2026-01-03T10:00:00.000Z user 'старый чат'
+touch -t 202601031001 "$REVIVED"
+recent
+assert grep -q 'давний разговор' <<<"$OUT"
+assert test "$(cached_rows "$COLDC" '"давний разговор"')" = 1
+assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 0
+assert test "$(cached_rows "$COLDC" '"старый чат"')" = 1
+# The old chat speaks again. A week run that opened cold — even just to look the path up —
+# would block on this fifo; it measures the chat instead and files it hot.
+cp "$COLDC" "$WORK/cold.keep"
+rm -f "$COLDC"
+mkfifo "$COLDC"
+said "$REVIVED" 2026-02-13T10:00:00.000Z user 'старый чат ожил'
+OUT=$(python3 -c 'import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:], timeout=20).returncode)' \
+  "$SCRIPT" --root "$WORK/projects" --cache "$WORK/cache.json" --recent --days 7 2>&1); RC=$?
+assert test "$RC" -eq 0
+rm -f "$COLDC"
+mv "$WORK/cold.keep" "$COLDC"
+assert test "$(cached_rows "$HOTC" '"старый чат ожил"')" = 1
+assert test "$(cached_rows "$COLDC" '"старый чат"')" = 1
+# a week run rewrites hot and leaves cold alone
+HOT_BEFORE=$(cache_sig "$HOTC") COLD_BEFORE=$(cache_sig "$COLDC")
+said "$RICH" 2026-02-14T10:00:00.000Z user 'правка на неделе'
+recent --days 7
+assert test "$RC" -eq 0
+assert test "$(cache_sig "$HOTC")" != "$HOT_BEFORE"
+assert test "$(cache_sig "$COLDC")" = "$COLD_BEFORE"
+# a wide run drops the stale cold copy and lists from both files
+recent --all
+assert test "$RC" -eq 0
+assert test "$(cached_rows "$COLDC" '"старый чат"')" = 0
+assert test "$(grep -c 'старый чат' <<<"$OUT")" = 1
+assert grep -q 'старый чат ожил' <<<"$OUT"
+assert grep -q 'давний разговор' <<<"$OUT"
+assert grep -q 'правка на неделе' <<<"$OUT"
+# A hot row that aged past the cutoff is demoted by the week run too, not only by a wide one.
+python3 -c '
+import importlib.machinery, sys
+tool = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1]).load_module()
+hot, cold = tool.load_cache(sys.argv[2]), tool.load_cache(sys.argv[3])
+path = next(path for path, row in cold.items() if row.get("text") == "давний разговор")
+hot[path] = cold.pop(path)
+tool.save_cache(sys.argv[2], hot) and tool.save_cache(sys.argv[3], cold)
+' "$SCRIPT" "$HOTC" "$COLDC"
+assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 1
+recent --days 7
+assert test "$RC" -eq 0
+assert test "$(cached_rows "$HOTC" '"давний разговор"')" = 0
+assert test "$(cached_rows "$COLDC" '"давний разговор"')" = 1
+assert test "$(cached_rows "$COLDC" '"правка на неделе"')" = 0
+
+# --- the single cache file of old is split once and never read again ---------
+"$SCRIPT" --root "$WORK/projects" --cache "$WORK/old.json" --recent >/dev/null 2>&1
+python3 - "$WORK" <<'EOF'
+import json, os, sys
+rows, version = {}, None
+for part in ("old-cold.json", "old-hot.json"):
+    path = os.path.join(sys.argv[1], part)
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    version = data["version"]
+    rows.update(data["rows"])
+    os.unlink(path)
+for row in rows.values():
+    if row.get("text") == "правка на неделе":
+        row["text"] = "строка из старого кеша"
+with open(os.path.join(sys.argv[1], "old.json"), "w", encoding="utf-8") as handle:
+    json.dump({"version": version, "rows": rows}, handle)
+EOF
+OUT=$("$SCRIPT" --root "$WORK/projects" --cache "$WORK/old.json" --recent 2>&1); RC=$?
+assert test "$RC" -eq 0
+assert grep -q 'строка из старого кеша' <<<"$OUT"
+assert test ! -e "$WORK/old.json"
+assert test "$(cached_rows "$WORK/old-hot.json" '"строка из старого кеша"')" = 1
+assert test "$(cached_rows "$WORK/old-cold.json" '"давний разговор"')" = 1
 
 # --- listing and searching are separate askings ------------------------------
 recent оверлей

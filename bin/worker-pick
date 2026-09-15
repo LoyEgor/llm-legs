@@ -20,8 +20,9 @@ query_role=workers
 query_role_given=false
 query_fable=false
 query_claim=false
+query_list=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image] [--fable] [--claim]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -55,6 +56,7 @@ while [ "$#" -gt 0 ]; do
     --fable) query_fable=true; shift ;;
     # A caller that is about to spend the answer says so; a surface that only reports never does.
     --claim) query_claim=true; shift ;;
+    --list) query_list=true; shift ;;
     *) printf 'worker-pick: unexpected argument %s\n' "$1" >&2; usage ;;
   esac
 done
@@ -62,7 +64,11 @@ if [ "$query_exclude_given" = true ] && [ -z "$query_vendor" ]; then
   printf 'worker-pick: --exclude only means something with --account\n' >&2
   usage
 fi
-if [ "$query_role_given" = true ] && [ -z "$query_vendor" ]; then
+if [ "$query_list" = true ] && [ -n "$query_vendor" ]; then
+  printf 'worker-pick: --list and --account are two different answers\n' >&2
+  usage
+fi
+if [ "$query_role_given" = true ] && [ -z "$query_vendor" ] && [ "$query_list" = false ]; then
   printf 'worker-pick: --role only means something with --account\n' >&2
   usage
 fi
@@ -203,11 +209,11 @@ fi
 # flags are read here so selection, ordering and the ALL WALLED verdict are all decided without
 # it, the way a deliberately empty pool is.
 cb_role_off=false; cx_role_off=false; gm_role_off=false; gr_role_off=false
-if [ -z "$query_vendor" ]; then
-  ! role_off claudeb workers || cb_role_off=true
-  ! role_off codex workers || cx_role_off=true
-  ! role_off gemini workers || gm_role_off=true
-  ! role_off grok workers || gr_role_off=true
+if [ -z "$query_vendor" ] && { [ "$query_role" = workers ] || [ "$query_role" = reviewers ]; }; then
+  ! role_off claudeb "$query_role" || cb_role_off=true
+  ! role_off codex "$query_role" || cx_role_off=true
+  ! role_off gemini "$query_role" || gm_role_off=true
+  ! role_off grok "$query_role" || gr_role_off=true
 fi
 
 chat_account_resolve
@@ -325,6 +331,10 @@ fail_safe() {
   # data cannot vouch for. Fail loudly and let the caller name a profile itself.
   if [ -n "$query_vendor" ]; then
     printf 'worker-pick: cannot select a %s account (%s)\n' "$query_vendor" "$1" >&2
+    exit 3
+  fi
+  if [ "$query_list" = true ]; then
+    printf 'worker-pick: cannot list accounts (%s)\n' "$1" >&2
     exit 3
   fi
   fs_next=""
@@ -535,6 +545,16 @@ summary=$(jq -r \
          ($cells | map(select(.key == $a.name)) | .[0] | next_row($vendor))] | join("\u001d")) |
       join("\u001e")
     end;
+  # `--list` walks the very array the table rows were rendered from, so its order cannot drift
+  # from the table; sorting it again here would give the picker a second ranking.
+  def list_rows($ordered; $vendor; $sel; $off; $pinned; $paused):
+    $ordered | map([$vendor, .name,
+      (if (.wk | type) == "number" then (.wk | round | tostring) else "-" end),
+      (if (.auth_ok | not) then "login"
+       elif $paused == "true" then "paused"
+       elif ($off == "true" and $pinned == null) or (.enabled == false and .name != $sel) then "off"
+       elif .walled then "walled"
+       else "ok" end)] | join("\t")) | join("\u001e");
   # The one-line face of the same rows, for the stderr of a query that could not answer.
   def reason($rows; $state; $note):
     ($note | map(. + " | ") | join("")) +
@@ -665,15 +685,16 @@ summary=$(jq -r \
   ($cx_pinned // $cx_eligible[0] // null) as $cx_best |
   (($cx_best.name // "") as $sel |
    (if $cx_best == null then "no selectable account" else $sel end) as $target |
-   ($cx_accounts | display_sort($sel) |
-     map(cells($sel; $cx_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $cx_disp))) as $rows |
+   ($cx_accounts | display_sort($sel)) as $ordered |
+   ($ordered | map(cells($sel; $cx_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $cx_disp))) as $rows |
+   list_rows($ordered; "codex"; $sel; $cx_off; $cx_pinned; $cx_par) as $list |
    vendor_state($cx_accounts; $cx_off; $cx_pinned;
      (if ($cx.available // false) != true then "unavailable" else "no quota data" end)) as $state |
    pin_note($cx_pin_lapses; $target) as $note |
    {selected:($cx_best != null),acct:$sel,pct:(($cx_best.spend // 0) | round),
     pinned:($cx_pinned != null),budget:(($cx_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $cx_best; $cx_pin_tier; $cx_scope; $cx_eligible; "codex"),
+    next:next_cells($rows; $cx_best; $cx_pin_tier; $cx_scope; $cx_eligible; "codex"),list:$list,
     line:reason($rows; $state; $note)}) as $codex |
 
   ([$gm_source[] | select(.removed != true and gemini_group) |
@@ -694,8 +715,9 @@ summary=$(jq -r \
   ($gm_pinned // $gm_eligible[0] // null) as $gm_best |
   (($gm_best.name // "") as $sel |
    (if $gm_best == null then "no selectable account" else $sel end) as $target |
-   ($gm_accounts | display_sort($sel) |
-     map(cells($sel; $gm_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $gm_disp))) as $rows |
+   ($gm_accounts | display_sort($sel)) as $ordered |
+   ($ordered | map(cells($sel; $gm_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $gm_disp))) as $rows |
+   list_rows($ordered; "gemini"; $sel; $gm_off; $gm_pinned; $gm_par) as $list |
    vendor_state($gm_accounts; $gm_off; $gm_pinned;
      (if any($gm_source[]; .auth_needed == true) then "login needed"
       elif ($gm_source | length) > 0 or $gm.available == true then "no Gemini Models quota data"
@@ -704,7 +726,7 @@ summary=$(jq -r \
    {selected:($gm_best != null),acct:$sel,pinned:($gm_pinned != null),
     budget:(($gm_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $gm_best; $gm_pin_tier; $gm_scope; $gm_eligible; "gemini"),
+    next:next_cells($rows; $gm_best; $gm_pin_tier; $gm_scope; $gm_eligible; "gemini"),list:$list,
     line:reason($rows; $state; $note)}) as $gemini |
 
   # Weekly is the only bucket grok measures, so `spending` finds no five-hour reading to fall back
@@ -726,14 +748,15 @@ summary=$(jq -r \
   ($gr_pinned // $gr_eligible[0] // null) as $gr_best |
   (($gr_best.name // "") as $sel |
    (if $gr_best == null then "no selectable account" else $sel end) as $target |
-   ($gr_accounts | display_sort($sel) |
-     map(cells($sel; $gr_pins; "–"; $gr_disp))) as $rows |
+   ($gr_accounts | display_sort($sel)) as $ordered |
+   ($ordered | map(cells($sel; $gr_pins; "–"; $gr_disp))) as $rows |
+   list_rows($ordered; "grok"; $sel; $gr_off; $gr_pinned; $gr_par) as $list |
    vendor_state($gr_accounts; $gr_off; $gr_pinned; "no quota data") as $state |
    pin_note($gr_pin_lapses; $target) as $note |
    {selected:($gr_best != null),acct:$sel,pct:(($gr_best.spend // 0) | round),
     pinned:($gr_pinned != null),budget:(($gr_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $gr_best; $gr_pin_tier; $gr_scope; $gr_eligible; "grok"),
+    next:next_cells($rows; $gr_best; $gr_pin_tier; $gr_scope; $gr_eligible; "grok"),list:$list,
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
@@ -774,14 +797,15 @@ summary=$(jq -r \
   ($fb_pinned // $fb_eligible[0] // null) as $fb_best |
   (($cl_best.name // "") as $sel |
    (if $cl_best == null then "no selectable account" else $sel end) as $target |
-   ($cl_accounts | display_sort($sel) |
-     map(cells($sel; $cb_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $cb_disp))) as $rows |
+   ($cl_accounts | display_sort($sel)) as $ordered |
+   ($ordered | map(cells($sel; $cb_pins; (if .h5_absent then "–" else pct_cell(.h5) end); $cb_disp))) as $rows |
+   list_rows($ordered; "claudeb"; $sel; $cb_off; $pin_rec; $cb_par) as $list |
    vendor_state($cl_accounts; $cb_off; $pin_rec; "no accounts") as $state |
    pin_note($cb_pin_lapses; $target) as $note |
    (section($rows; $state; $note) as $body |
     if $state == "" and ($rows | any(.name | endswith("*")))
     then $body + "\u001e* = this session account" else $body end) as $cl_rows |
-   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $cb_pin_tier; $cb_scope; $cl_eligible; "claude"),
+   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $cb_pin_tier; $cb_scope; $cl_eligible; "claude"),list:$list,
     line:reason($rows; $state; $note)}) as $claude |
 
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
@@ -819,7 +843,8 @@ summary=$(jq -r \
    (if $cl_present then "yes" else "no" end),
    $codex.rows,$codex.next,$codex.state,$gemini.rows,$gemini.next,$gemini.state,
    $grok.rows,$grok.next,$grok.state,
-   $claude.rows,$claude.next,$claude.state] | join("\u001f")
+   $claude.rows,$claude.next,$claude.state,
+   $claude.list,$codex.list,$gemini.list,$grok.list] | join("\u001f")
 ' "$LIMITS_FILE" 2>/dev/null) || fail_safe "limits parse failed"
 [ -n "$summary" ] || fail_safe "limits parse failed"
 
@@ -831,7 +856,8 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pinned cx_line cx_pin_lapse cx_budget
   cl_pool_empty gr_present gr_measured cx_measured gm_measured cl_measured \
   cx_present gm_present cl_present \
   cx_rows cx_nextrows cx_state gm_rows gm_nextrows gm_state \
-  gr_rows gr_nextrows gr_state cl_rows cl_nextrows cl_state <<<"$summary"
+  gr_rows gr_nextrows gr_state cl_rows cl_nextrows cl_state \
+  cl_list cx_list gm_list gr_list <<<"$summary"
 
 # A pin that served outranks the switch, so the vendor is not closed at all this run.
 [ "$cl_pinned" != yes ] || cb_role_off=false
@@ -880,6 +906,18 @@ if [ "$had_pool" = yes ] && [ -z "$cl_acct" ] && [ "$cx_selected" != yes ] &&
      { [ "$gm_known" = true ] && [ "$gm_role_off" = false ]; } ||
      { [ "$gr_known" = true ] && [ "$gr_role_off" = false ]; }; }; then
   all_walled=yes
+fi
+
+if [ "$query_list" = true ]; then
+  for list_blob in "$cl_list" "$cx_list" "$gm_list" "$gr_list"; do
+    [ -z "$list_blob" ] || printf '%s\n' "$list_blob" | tr '\036' '\n'
+  done
+  [ "$cx_selected" = yes ] || cx_acct=""
+  [ "$gm_selected" = yes ] || gm_acct=""
+  [ "$gr_selected" = yes ] || gr_acct=""
+  printf 'NEXT\t%s\t%s\n' claudeb "${cl_acct:--}" codex "${cx_acct:--}" \
+    gemini "${gm_acct:--}" grok "${gr_acct:--}"
+  exit 0
 fi
 
 if [ -n "$query_vendor" ]; then

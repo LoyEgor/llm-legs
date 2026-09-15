@@ -111,42 +111,7 @@ class Job:
         return result
 
 
-def limits():
-    """Per-account usage, purely to label the profile row. Zero-token: this reads
-    the cached table and never refreshes it.
-
-    A gateway account spends the Codex subscription behind it, so its share comes from
-    that vendor's block — the same store the statusline reads for a `claudegpt` chat.
-    The third answer is every account the table's STATUS column calls `login needed`.
-    """
-    try:
-        out = subprocess.run(["llm-limits", "--json", "--no-write"],
-                             capture_output=True, text=True, timeout=10).stdout
-        vendors = json.loads(out)["vendors"]
-    except Exception:
-        return {}, None, set()
-    used, out = {}, set()
-    for vendor, block in (("claudeb", vendors.get("claude")), ("gpt", vendors.get("codex"))):
-        for row in (block or {}).get("accounts", []):
-            name = row.get("account")
-            if not name:
-                continue
-            week = (row.get("weekly") or {}).get("effective_pct")
-            usable = isinstance(week, (int, float)) and not isinstance(week, bool)
-            used[(vendor, name)] = int(round(week)) if usable else None
-            if logged_out(row):
-                out.add((vendor, name))
-    return used, (vendors.get("claude") or {}).get("current_account"), out
-
-
-def logged_out(row):
-    """llm-limits.sh `account_status` for a claude or codex row."""
-    auth = row.get("auth")
-    status = auth.get("status") if isinstance(auth, dict) else None
-    return row.get("auth_needed") is True or (isinstance(status, str) and status != "ok")
-
-
-def profiles(hidden=()):
+def profiles():
     """Every account a chat can be reopened under, as (launcher, name).
 
     Two stores, and one name can be in both — `com` is a claudeb profile AND a gateway
@@ -162,7 +127,6 @@ def profiles(hidden=()):
              if not entry.startswith(".") and entry != "main"
              and os.path.isdir(os.path.join(PROFILES, entry))]
     names += [("gpt", name) for name in chat_resume.gateway_accounts()]
-    names = [entry for entry in names if entry not in hidden]
     if not names:
         die("no claudeb profiles under %s and no claudegpt account" % PROFILES)
     return names
@@ -227,41 +191,68 @@ def worker_pick():
     return sibling if os.access(sibling, os.X_OK) else "worker-pick"
 
 
-def chat_account():
-    """The account worker-pick would give a chat, or None if it can staff none.
+def ranking():
+    """`worker-pick --list --role chat`, the one ranking the bar shows, as (order, used,
+    hidden, chosen): every account in its order, the label each one's usage adds, the
+    logged-out ones, and the claudeb account a chat would be given.
 
-    Zero-token — it reads the cached limits table — and asked once, at startup:
-    the answer only moves when those numbers do.
+    Zero-token — it reads the cached limits table — and asked once, at startup. A gateway
+    account spends the Codex subscription behind it, so the codex rows order the `gpt` line.
     """
+    order, used, hidden, chosen = [], {}, set(), None
     try:
-        done = subprocess.run([worker_pick(), "--account", "claudeb", "--role", "chat"],
+        done = subprocess.run([worker_pick(), "--list", "--role", "chat"],
                               capture_output=True, text=True, timeout=10)
     except Exception:
-        return None
+        return order, used, hidden, chosen
     if done.returncode != 0:
-        return None
-    return done.stdout.strip() or None
+        return order, used, hidden, chosen
+    for line in done.stdout.splitlines():
+        fields = line.split("\t")
+        if fields[0] == "NEXT":
+            if fields[1:2] == ["claudeb"] and len(fields) == 3 and fields[2] != "-":
+                chosen = fields[2]
+            continue
+        launcher = {"claudeb": "claudeb", "codex": "gpt"}.get(fields[0])
+        if not launcher or len(fields) != 4:
+            continue
+        entry = (launcher, fields[1])
+        order.append(entry)
+        if fields[3] == "login":
+            hidden.add(entry)
+        mark = (fields[2] + "%" if fields[2].isdigit() else "") + \
+            ("!" if fields[3] == "walled" else "")
+        if mark:
+            used[entry] = mark
+    return order, used, hidden, chosen
 
 
-def current_profile(names, chosen, announced):
-    """The account to open on, given whatever the background calls have answered:
-    `chat_account()`'s pick, else the announced one, else the last profile launched —
-    the last of which is a file read, so it stands in before either call lands."""
+def arrange(names, order, hidden):
+    """The bar in worker-pick's order, freest first on each line, the logged-out accounts
+    gone; one it does not list follows in directory order, since no data is not a logout."""
+    rank = {entry: position for position, entry in enumerate(order)}
+    kept = [entry for entry in names if entry not in hidden]
+    return sorted(kept, key=lambda entry: (FOOTER.index(entry[0]), rank.get(entry, len(rank))))
+
+
+def current_profile(names, chosen):
+    """The account to open on: worker-pick's chat pick, else the last profile launched —
+    a file read, so it stands in before the ranking lands."""
     try:
         with open(STATE, encoding="utf-8") as handle:
             state = handle.readline().strip()
     except OSError:
         state = ""
-    for name in (chosen, announced, state):
+    for name in (chosen, state):
         if ("claudeb", name) in names:
             return names.index(("claudeb", name))
-    return 0
+    return 0 if names else None
 
 
 def restack(names, kept, positions):
-    """The bar's positions after the logged-out accounts go: each follows the entry it
-    named, and one whose account is gone falls back to the first."""
-    return [kept.index(names[position]) if names[position] in kept else 0
+    """The bar's positions after it is reordered: each follows the entry it named, and one
+    whose account is gone falls back to the first, or to none when the bar is empty."""
+    return [kept.index(names[position]) if names[position] in kept else (0 if kept else None)
             for position in positions]
 
 
@@ -413,9 +404,9 @@ def account_lines(names, used, profile):
     """The account bar, one line per store in FOOTER order, as (position, label, attribute)."""
     lines = [[] for _ in FOOTER]
     for position, entry in enumerate(names):
-        percent = used.get(entry)
+        mark = used.get(entry)
         shown = account_label(entry)
-        label = " %s %d%% " % (shown, percent) if percent is not None else " %s " % shown
+        label = " %s %s " % (shown, mark) if mark else " %s " % shown
         attribute = curses.A_REVERSE if position == profile else curses.A_DIM
         lines[FOOTER.index(entry[0])].append((position, label, attribute))
     return lines
@@ -507,21 +498,20 @@ def run(screen, chats, names, used, profile, level, windows):
     screen.timeout(100)
     view = {"cursor": 0, "top": 0, "now": time.time()}
     needle, note, scrolled, landed = "", "", False, None
-    listing, limiting, picking = Job(), Job(), Job()
-    ready, pending, pinned, chosen, announced = chats is not None, None, False, None, None
+    listing, ranked = Job(), Job()
+    ready, pending, pinned = chats is not None, None, False
     if not ready:
         chats, pending = [], 0
         listing.start(fetcher(windows[0]))
     if used is None:
         used = {}
-        limiting.start(limits)
+        ranked.start(ranking)
     if names is None:
         names = profiles()
     if profile is None:
         # The last profile launched is a file read, so the bar opens on a plausible
         # account instead of an arbitrary one while worker-pick is still answering.
-        profile = current_profile(names, None, None)
-        picking.start(chat_account)
+        profile = current_profile(names, None)
     default = held = profile
     while True:
         view["now"] = time.time()
@@ -536,16 +526,13 @@ def run(screen, chats, names, used, profile, level, windows):
                     die("no chat found in that window (try: chats --all)")
                 pending = level + 1
                 listing.start(fetcher(windows[pending]))
-        settled = False
-        if limiting.landed():
-            used, announced, hidden = limiting.take()
-            kept = profiles(hidden)
+        if ranked.landed():
+            order, used, hidden, chosen = ranked.take()
+            kept = arrange(names, order, hidden)
             profile, held, default = restack(names, kept, (profile, held, default))
-            names, settled = kept, True
-        if picking.landed():
-            chosen, settled = picking.take(), True
-        if settled and not pinned:
-            default = current_profile(names, chosen, announced)
+            names = kept
+            if not pinned:
+                default = current_profile(names, chosen)
         rows = [row for row in chats if matches(row, needle)]
         # ←→ before the listing lands is a choice of the DEFAULT itself: no row has
         # spoken about its cache yet, so the account landing later must not take it back.
@@ -592,7 +579,7 @@ def run(screen, chats, names, used, profile, level, windows):
             except KeyboardInterrupt:
                 return None
             except curses.error:
-                if listing.landed() or limiting.landed() or picking.landed():
+                if listing.landed() or ranked.landed():
                     break
         if key is None:
             continue
@@ -654,13 +641,13 @@ def run(screen, chats, names, used, profile, level, windows):
             view["cursor"] = 0
         elif key == curses.KEY_END:
             view["cursor"] = len(rows) - 1
-        elif key == curses.KEY_LEFT:
+        elif key == curses.KEY_LEFT and names:
             profile = (profile - 1) % len(names)
-        elif key == curses.KEY_RIGHT:
+        elif key == curses.KEY_RIGHT and names:
             profile = (profile + 1) % len(names)
-        elif key == curses.KEY_SR:
+        elif key == curses.KEY_SR and names:
             profile = line_jump(names, profile, -1)
-        elif key == curses.KEY_SF:
+        elif key == curses.KEY_SF and names:
             profile = line_jump(names, profile, 1)
         elif key == "\x1b":
             # Never an exit: a terminal that is not in application-keypad mode
@@ -673,6 +660,9 @@ def run(screen, chats, names, used, profile, level, windows):
             needle = needle[:-1]
         elif key in ("\n", "\r", curses.KEY_ENTER):
             if not rows:
+                continue
+            if not names:
+                note = "no logged-in account to open it under"
                 continue
             chosen = rows[view["cursor"]]
             # The chat's own directory, worktree and all: the project column shows the main
@@ -715,9 +705,9 @@ def main():
         die("this is a full-screen picker; run it from a terminal prompt "
             "(inside a chat: /exit first, then `chats`)")
 
-    # Nothing is loaded before the screen: the listing, the limits table and the chat
-    # account are handed in as None and run() loads all three in the background, so the
-    # picker is up in milliseconds instead of after three sequential subprocesses.
+    # Nothing is loaded before the screen: the listing and the account ranking are handed
+    # in as None and run() loads both in the background, so the picker is up in
+    # milliseconds instead of after sequential subprocesses.
     chosen = curses.wrapper(run, None, None, None, None, 0, windows)
     if not chosen:
         return

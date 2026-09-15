@@ -238,15 +238,14 @@ assert grep -qx 'pinned-ts: rec_ts' <<<"$OUT"
 assert grep -qx 'pinned-account: rec_acct' <<<"$OUT"
 
 # --- the account the picker opens on ----------------------------------------
-# worker-pick owns the choice; llm-limits' current account and .claudeb-state are
-# only what is left when it can staff nobody.
+# worker-pick owns the choice; .claudeb-state is only what is left when it can staff nobody.
 STUB="$WORK/stub-bin"
 mkdir -p "$STUB"
 cat >"$STUB/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "--account claudeb --role chat" ] || { printf 'stub: %s\n' "$*" >&2; exit 2; }
+[ "$*" = "--list --role chat" ] || { printf 'stub: %s\n' "$*" >&2; exit 2; }
 [ -n "${PICK_ANSWER:-}" ] || exit 3
-printf '%s\n' "$PICK_ANSWER"
+printf 'claudeb\t%s\t10\tok\nNEXT\tclaudeb\t%s\nNEXT\tcodex\t-\n' "$PICK_ANSWER" "$PICK_ANSWER"
 EOF
 chmod +x "$STUB/worker-pick"
 printf 'beta\n' >"$WORK/claudeb-state"
@@ -260,26 +259,29 @@ chats = importlib.util.module_from_spec(spec)
 loader.exec_module(chats)
 chats.STATE = sys.argv[2]
 
-# The bar carries both stores; only a claudeb name can be what worker-pick, the
-# announced account or .claudeb-state answered.
+
+def chosen():
+    return chats.ranking()[3]
+
+
+# The bar carries both stores; only a claudeb name can be what worker-pick or
+# .claudeb-state answered.
 names = [("claudeb", "alpha"), ("claudeb", "beta"), ("claudeb", "gamma"),
          ("gpt", "gamma")]
 os.environ["PICK_ANSWER"] = "gamma"
-print("pick:", chats.current_profile(names, chats.chat_account(), None))
-print("pick-over-announced:", chats.current_profile(names, chats.chat_account(), "beta"))
+print("pick:", chats.current_profile(names, chosen()))
 os.environ["PICK_ANSWER"] = "ghost"
-print("pick-unknown:", chats.current_profile(names, chats.chat_account(), None))
+print("pick-unknown:", chats.current_profile(names, chosen()))
 del os.environ["PICK_ANSWER"]
-print("none-announced:", chats.current_profile(names, chats.chat_account(), "alpha"))
-print("none-state:", chats.current_profile(names, chats.chat_account(), None))
+print("none-state:", chats.current_profile(names, chosen()))
 chats.STATE = sys.argv[2] + "-absent"
-print("none-nothing:", chats.current_profile(names, chats.chat_account(), None))
+print("none-nothing:", chats.current_profile(names, chosen()))
 # The selector is the one beside this script, so a checkout answers with its own
 # halves; the override is what a test — and an install that split them — has.
 # A gateway account of the same name never answers for a claudeb one.
 os.environ["PICK_ANSWER"] = "gamma"
 print("pick-not-gateway:", chats.current_profile([("gpt", "gamma"), ("claudeb", "gamma")],
-                                                  chats.chat_account(), None))
+                                                  chosen()))
 print("pick-binary:", chats.worker_pick())
 del os.environ["CLAUDEB_WORKER_PICK"]
 print("pick-sibling:", chats.worker_pick() == os.path.join(chats.HERE, "worker-pick"))
@@ -288,10 +290,8 @@ PY
 
 assert grep -qx 'pick: 2' <<<"$OUT"
 assert grep -qx 'pick-not-gateway: 1' <<<"$OUT"
-assert grep -qx 'pick-over-announced: 2' <<<"$OUT"
 # An answer no profile here carries is no answer at all.
 assert grep -qx 'pick-unknown: 1' <<<"$OUT"
-assert grep -qx 'none-announced: 0' <<<"$OUT"
 assert grep -qx 'none-state: 1' <<<"$OUT"
 assert grep -qx "pick-binary: $STUB/worker-pick" <<<"$OUT"
 assert grep -qx 'pick-sibling: True' <<<"$OUT"
@@ -322,20 +322,21 @@ assert grep -qx 'gateway-ttl: 3600' <<<"$OUT"
 assert grep -qx 'claude-bare-ttl: 0' <<<"$OUT"
 assert grep -qx 'gateway-bucket-ttl: 300' <<<"$OUT"
 
-# --- an account llm-limits calls `login needed` is not offered ----------------
-mkdir -p "$WORK/profiles/alpha" "$WORK/profiles/beta" "$WORK/profiles/zeta" "$STUB/limits"
-cat >"$STUB/limits/llm-limits" <<'EOF'
+# --- the bar is worker-pick's ranking, per line -----------------------------
+# Freest on the left, in the order `worker-pick --list` prints each vendor and never one the
+# picker works out itself; a gateway account is ranked by the codex row of the same name.
+mkdir -p "$WORK/profiles/alpha" "$WORK/profiles/beta" "$WORK/profiles/zeta" \
+  "$WORK/profiles/omega" "$STUB/list"
+cat >"$STUB/list/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "--json --no-write" ] || exit 2
-cat <<'JSON'
-{"vendors":{"claude":{"accounts":[
-  {"account":"alpha","auth":{"status":"ok"},"weekly":{"effective_pct":40}},
-  {"account":"beta","auth":{"status":"expired"}}]},
- "codex":{"accounts":[{"account":"gamma","auth_needed":true},{"account":"delta","auth":null}]}}}
-JSON
+[ "$*" = "--list --role chat" ] || exit 2
+printf '%s\t%s\t%s\t%s\n' \
+  claudeb omega 5 ok claudeb beta - login claudeb alpha 100 walled claudeb ghost 1 ok \
+  codex delta 30 ok codex gamma 0 login codex epsilon 60 ok gemini alpha 3 ok
+printf 'NEXT\t%s\t%s\n' claudeb omega codex delta gemini alpha grok -
 EOF
-chmod +x "$STUB/limits/llm-limits"
-OUT=$(PATH="$STUB/limits:$PATH" python3 - "$SCRIPT" "$WORK/profiles" <<'PY'
+chmod +x "$STUB/list/worker-pick"
+OUT=$(CLAUDEB_WORKER_PICK="$STUB/list/worker-pick" python3 - "$SCRIPT" "$WORK/profiles" <<'PY'
 import importlib.machinery, importlib.util, sys
 from unittest.mock import patch
 
@@ -345,15 +346,25 @@ chats = importlib.util.module_from_spec(spec)
 loader.exec_module(chats)
 chats.PROFILES = sys.argv[2]
 
-used, _, hidden = chats.limits()
-with patch.object(chats.chat_resume, "gateway_accounts", return_value=["gamma", "delta"]):
-    print("offered:", " ".join(chats.account_label(entry) for entry in chats.profiles(hidden)))
-print("used:", used[("claudeb", "alpha")])
+order, used, hidden, chosen = chats.ranking()
+with patch.object(chats.chat_resume, "gateway_accounts",
+                  return_value=["gamma", "epsilon", "zulu", "delta"]):
+    names = chats.profiles()
+bar = chats.arrange(names, order, hidden)
+print("offered:", " ".join(chats.account_label(entry) for entry in bar))
+lines = chats.account_lines(bar, used, 0)
+print("line1:", "|".join(label.strip() for _, label, _ in lines[0]))
+print("line2:", "|".join(label.strip() for _, label, _ in lines[1]))
+print("chosen:", chosen, chats.current_profile(bar, chosen))
 PY
-) || fail "logged-out probe failed"
-# zeta has no row in the table at all: no data is not a logout.
-assert grep -qx 'offered: alpha zeta gpt:delta' <<<"$OUT"
-assert grep -qx 'used: 40' <<<"$OUT"
+) || fail "ranking probe failed"
+# zeta and zulu have no row in the listing at all: no data is not a logout, so they follow the
+# ranked ones unlabelled; ghost has no profile here, and gemini is no line of this bar.
+assert grep -qx 'offered: omega alpha zeta gpt:delta gpt:epsilon gpt:zulu' <<<"$OUT"
+assert grep -qx 'line1: omega 5%|alpha 100%!|zeta' <<<"$OUT"
+assert grep -qx 'line2: gpt:delta 30%|gpt:epsilon 60%|gpt:zulu' <<<"$OUT"
+assert grep -qx 'chosen: omega 0' <<<"$OUT"
+assert test -z "$(grep -n 'llm-limits' "$SCRIPT")"
 
 # --- arguments are answered without a terminal ------------------------------
 run() { OUT=$("$SCRIPT" "$@" </dev/null 2>&1); RC=$?; }
@@ -528,11 +539,11 @@ assert open(calls).read() == "--recent --json --days 30\n"
 print("PASS: chats mouse smoke (32 checks)")
 PYMOUSE
 
-# --- the screen is up before any subprocess, and the three land together -----
-# The picker used to run chat-find, llm-limits and worker-pick one after another before
-# curses opened, so Egor waited seconds on a blank terminal. Each stub here sleeps a
-# second: a first paint that waits for any of them, or three loads run in sequence,
-# shows up as time on the clock rather than as a wrong-looking screen.
+# --- the screen is up before any subprocess, and both land together ---------
+# The picker used to run its subprocesses one after another before curses opened, so Egor
+# waited seconds on a blank terminal. Each stub here sleeps a second: a first paint that
+# waits for either of them, or loads run in sequence, shows up as time on the clock rather
+# than as a wrong-looking screen.
 FAST="$WORK/fast"
 mkdir -p "$FAST/bin" "$FAST/profiles/alpha" "$FAST/profiles/beta" "$FAST/profiles/gamma"
 cat >"$FAST/bin/chat-find" <<'EOF'
@@ -541,22 +552,14 @@ import json, time
 time.sleep(1)
 print(json.dumps([{"session": "s%d" % i, "cwd": "/", "at": 0, "ctx": 1000} for i in range(3)]))
 EOF
-cat >"$FAST/bin/llm-limits" <<'EOF'
-#!/usr/bin/env bash
-sleep 1
-cat <<'JSON'
-{"vendors":{"claude":{"accounts":[
-  {"account":"alpha","auth":{"status":"ok"},"weekly":{"effective_pct":40}},
-  {"account":"beta","auth":{"status":"expired"}},
-  {"account":"gamma","auth":{"status":"ok"},"weekly":{"effective_pct":10}}]}}}
-JSON
-EOF
 cat >"$FAST/bin/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 sleep 1
-printf 'gamma\n'
+[ "$*" = "--list --role chat" ] || exit 2
+printf '%s\t%s\t%s\t%s\n' claudeb gamma 10 ok claudeb alpha 40 ok claudeb beta - login
+printf 'NEXT\t%s\t%s\n' claudeb gamma codex - gemini - grok -
 EOF
-chmod +x "$FAST/bin/chat-find" "$FAST/bin/llm-limits" "$FAST/bin/worker-pick"
+chmod +x "$FAST/bin/chat-find" "$FAST/bin/worker-pick"
 printf 'beta\n' >"$FAST/claudeb-state"
 
 cat >"$FAST/probe.py" <<'PYFAST'
@@ -576,6 +579,7 @@ chats.PROFILES = os.path.join(sys.argv[2], "profiles")
 chats.STATE = os.path.join(sys.argv[2], "claudeb-state")
 WANT = sys.argv[3]
 KEYS = [c.KEY_LEFT] if sys.argv[4:] == ["left"] else []
+AFTER = [c.KEY_RIGHT, c.KEY_SF, "\n"] if sys.argv[4:] == ["after"] else []
 
 frames = []
 
@@ -596,7 +600,7 @@ class Screen:
         if KEYS:
             return KEYS.pop(0)
         if done():
-            return "\x04"
+            return AFTER.pop(0) if AFTER else "\x04"
         if time.monotonic() - START > 10:
             raise AssertionError("nothing landed: %r" % frames)
         time.sleep(0.01)
@@ -615,8 +619,8 @@ class Screen:
 def record(_, visible, view, accounts, profile, needle, used, note):
     frames.append({"at": time.monotonic() - START, "rows": len(visible), "used": len(used),
                    "accounts": " ".join(chats.account_label(e) for e in accounts),
-                   "account": chats.account_label(accounts[profile]),
-                   "window": view["window"]})
+                   "account": "-" if profile is None else chats.account_label(accounts[profile]),
+                   "window": view["window"], "note": note})
 
 
 with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
@@ -631,8 +635,8 @@ first, full = frames[0], frames[-1]
 print("quit:", result)
 print("timing: first paint %.3fs, full data %.3fs" % (first["at"], full["at"]))
 print("first-paint-fast:", first["at"] < 0.5)
-# Three one-second stubs in parallel land inside two seconds; run one after another they
-# could not land before three.
+# Two one-second stubs in parallel land inside two seconds; run one after another they
+# could not.
 print("loads-concurrent:", 1.0 <= full["at"] < 2.0)
 print("first-window:", first["window"])
 print("first-empty:", first["rows"], first["used"])
@@ -642,6 +646,7 @@ print("full-window:", full["window"])
 print("full-rows:", full["rows"])
 print("full-accounts:", full["accounts"])
 print("full-account:", full["account"])
+print("full-note:", full["note"])
 # The 100ms poll paints on a key or a landed load and on nothing else; an idle picker
 # redrawing every tick would leave dozens of frames behind in this second.
 print("idle-quiet:", len(frames) <= 6)
@@ -661,11 +666,11 @@ assert grep -qx 'first-window: loading…' <<<"$OUT"
 assert grep -qx 'first-empty: 0 0' <<<"$OUT"
 assert grep -qx 'first-accounts: alpha beta gamma gpt:delta' <<<"$OUT"
 assert grep -qx 'first-account: beta' <<<"$OUT"
-# Once they land: rows, the window they came from, the logged-out account gone, and the
-# account worker-pick named.
+# Once they land: rows, the window they came from, the bar in worker-pick's order with the
+# logged-out account gone, and the account it named.
 assert grep -qx 'full-window: last 7d · ↓ for more' <<<"$OUT"
 assert grep -qx 'full-rows: 3' <<<"$OUT"
-assert grep -qx 'full-accounts: alpha gamma gpt:delta' <<<"$OUT"
+assert grep -qx 'full-accounts: gamma alpha gpt:delta' <<<"$OUT"
 assert grep -qx 'full-account: gamma' <<<"$OUT"
 assert grep -qx 'idle-quiet: True' <<<"$OUT"
 
@@ -676,6 +681,25 @@ OUT=$(PATH="$FAST/bin:$PATH" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" alpha le
 assert grep -qx 'first-account: beta' <<<"$OUT"
 assert grep -qx 'full-account: alpha' <<<"$OUT"
 assert grep -qx 'full-rows: 3' <<<"$OUT"
+
+# Every account logged out: the bar is empty rather than the unfiltered list, no account is the
+# default, and ←→, Shift+↓ and ↵ on the empty bar change nothing and open nothing.
+mkdir -p "$FAST/login"
+cat >"$FAST/login/worker-pick" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "--list --role chat" ] || exit 2
+printf '%s\t%s\t%s\t%s\n' claudeb gamma 10 login claudeb alpha 40 login claudeb beta - login \
+  codex delta 20 login
+printf 'NEXT\t%s\t%s\n' claudeb - codex - gemini - grok -
+EOF
+chmod +x "$FAST/login/worker-pick"
+OUT=$(PATH="$FAST/bin:$PATH" CLAUDEB_WORKER_PICK="$FAST/login/worker-pick" \
+  python3 "$FAST/probe.py" "$SCRIPT" "$FAST" - after) || fail "all-login probe failed"
+assert grep -qx 'quit: None' <<<"$OUT"
+assert grep -qx 'full-rows: 3' <<<"$OUT"
+assert grep -qx 'full-accounts: ' <<<"$OUT"
+assert grep -qx 'full-account: -' <<<"$OUT"
+assert grep -qx 'full-note: no logged-in account to open it under' <<<"$OUT"
 
 # --- a worker session's launcher comes off the run record --------------------
 # The env stamp `worker-run` exports into a worker is one of two sides, and the one a sub-shell, a

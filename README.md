@@ -198,7 +198,7 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   lists every chat instead of searching. Both rank by the last real message, never by file mtime:
   opening a chat rewrites its transcript, so mtime says "just now" about a chat nobody spoke in.
   Headless runs (workers, benches) are left out unless `--agents`; the listing caches per
-  `(size, mtime)` in `~/.claude-profiles/.claudeb/chat-recent-cache.json`.
+  `(size, mtime)` in `~/.claude-profiles/.claudeb/chat-recent-cache-hot.json` (chats spoken in within `HOT_DAYS`, the only file a week-wide listing reads or writes) and `chat-recent-cache-cold.json` (the rest, loaded and reconciled on wider listings only).
 - `bin/chats` → `~/.local/bin/chats` — full-screen picker over that listing: ↑↓ chat, ←→ claudeb
   account (default: `worker-pick --account claudeb --role chat`, else the account in use as
   `llm-limits` reports it, else `.claudeb-state`), typing filters, Enter `exec`s `claudeb profile

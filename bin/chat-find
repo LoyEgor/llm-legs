@@ -34,9 +34,13 @@ SNIPPET_PAD = 70
 # is tool output, and that is ruled out on the raw bytes instead of by size.
 MAX_LINE = 4 * 1024 * 1024
 MAX_HITS_PER_FILE = 200
+# A base name, never read itself: rows live in <stem>-hot.json (file modified within
+# HOT_DAYS) and <stem>-cold.json; a file at the base is the pre-split cache, migrated once.
+# CHAT_FIND_CACHE and --cache name the base the same way.
 CACHE = os.environ.get("CHAT_FIND_CACHE") or os.path.expanduser(
     "~/.claude-profiles/.claudeb/chat-recent-cache.json")
 CACHE_VERSION = 5
+HOT_DAYS = 7
 # A transcript can end with megabytes of tool output after the last word spoken,
 # so the backward scan grows until it finds speech instead of trusting one window.
 TAIL_WINDOWS = (512 * 1024, 4 * 1024 * 1024, 32 * 1024 * 1024)
@@ -433,12 +437,43 @@ def save_cache(path, rows):
     tmp = "%s.tmp.%d" % (path, os.getpid())
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # json.dump streams through the pure-Python encoder: 2 s on this cache, 0.05 s via dumps.
+        # ensure_ascii stays on — a lone surrogate from a transcript would not encode as UTF-8.
+        payload = json.dumps({"version": CACHE_VERSION, "rows": rows}, separators=(",", ":"))
         with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump({"version": CACHE_VERSION, "rows": rows}, handle)
+            handle.write(payload)
         os.replace(tmp, path)
+        return True
     except OSError:
         try:
             os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+
+
+def cache_files(base):
+    stem, ext = os.path.splitext(base)
+    return stem + "-hot" + (ext or ".json"), stem + "-cold" + (ext or ".json")
+
+
+def modified(row):
+    key = row.get("key") if isinstance(row, dict) else None
+    try:
+        return float(key.split(":", 1)[1])
+    except (AttributeError, IndexError, ValueError):
+        return 0.0
+
+
+def migrate(base, hot_path, cold_path, cutoff):
+    if not os.path.exists(base):
+        return
+    hot, cold = load_cache(hot_path), load_cache(cold_path)
+    for path, row in load_cache(base).items():
+        (hot if modified(row) >= cutoff else cold).setdefault(path, row)
+    if save_cache(hot_path, hot) and save_cache(cold_path, cold):
+        try:
+            os.unlink(base)
         except OSError:
             pass
 
@@ -464,13 +499,28 @@ def scan_recent(root, days, cache_path, agents=False):
     opening them, and an unchanged (size, mtime) pair means the cached answer
     still holds. Those two facts are what keep a 6000-transcript corpus fast.
     """
-    cache = load_cache(cache_path) if cache_path else {}
-    horizon = time.time() - days * 86400 if days is not None else None
+    now = time.time()
+    horizon = now - days * 86400 if days is not None else None
+    cutoff, wide = now - HOT_DAYS * 86400, days is None or days > HOT_DAYS
+    hot, cold = {}, {}
+    if cache_path:
+        hot_path, cold_path = cache_files(cache_path)
+        migrate(cache_path, hot_path, cold_path, cutoff)
+        hot = load_cache(hot_path)
+        # A narrow run never opens cold to look a path up, not even one hot lacks: that
+        # path is measured instead, or every week listing would load the whole history
+        # again. It opens cold only to demote hot rows that aged past the cutoff.
+        cold = load_cache(cold_path) if wide else {}
     # Measurements outside this window are kept: the picker opens on a week and
     # widens as he scrolls, and a cache holding only the last window would make
     # every widening re-read the corpus it just discarded.
-    seen, rows, fresh = dict(cache), [], set()
-    for base, _, names in os.walk(root):
+    seen, rows, walked = dict(cold), [], set()
+    seen.update(hot)
+    for base, dirs, names in os.walk(root):
+        # Below a project directory sit only subagent transcripts (<session>/subagents/),
+        # sidechain on every line, so none can list — walking them was 40% of the files.
+        if not agents and base != root:
+            dirs[:] = []
         for name in names:
             if not name.endswith(".jsonl"):
                 continue
@@ -479,14 +529,14 @@ def scan_recent(root, days, cache_path, agents=False):
                 info = os.stat(path)
             except OSError:
                 continue
+            walked.add(path)
             if horizon and info.st_mtime < horizon:
                 continue
             key = "%d:%r" % (info.st_size, info.st_mtime)
-            row = cache.get(path)
+            row = seen.get(path)
             if not isinstance(row, dict) or row.get("key") != key:
                 row = measured(path, key)
             seen[path] = row
-            fresh.add(path)
             when = row.get("at")
             if not when or (horizon and when < horizon):
                 continue
@@ -495,11 +545,19 @@ def scan_recent(root, days, cache_path, agents=False):
             listed = {field: value for field, value in row.items() if field != "key"}
             rows.append(dict(listed, path=path, session=name[: -len(".jsonl")]))
     if cache_path:
-        # Chats get purged (the trash sweep) and whole projects get deleted; a
-        # stat each is cheap next to the transcript reads this cache exists to
-        # avoid, and without it the file only ever grows.
-        save_cache(cache_path, {path: row for path, row in seen.items()
-                                if path in fresh or os.path.exists(path)})
+        new_hot = {path: row for path, row in seen.items() if modified(row) >= cutoff}
+        if not wide and len(new_hot) < len(seen):
+            cold = load_cache(cold_path)
+            seen = {**cold, **seen}
+        new_cold = {path: row for path, row in seen.items() if path not in new_hot}
+        for target, before, after in ((hot_path, hot, new_hot), (cold_path, cold, new_cold)):
+            # Chats get purged (the trash sweep) and whole projects get deleted; a
+            # stat each is cheap next to the transcript reads this cache exists to
+            # avoid, and without it the file only ever grows.
+            after = {path: row for path, row in after.items()
+                     if path in walked or os.path.exists(path)}
+            if after != before:
+                save_cache(target, after)
     rows.sort(key=lambda row: row["at"], reverse=True)
     return rows
 

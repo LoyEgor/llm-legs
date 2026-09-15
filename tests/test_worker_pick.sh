@@ -1878,4 +1878,81 @@ claude_output=$(env "${gateway_env[@]}" CLAUDE_LIMITS_ACCOUNT=session \
 assert contains "$(awk -v head='^claude:' '$0 ~ head {sub(head, ""); print}' <<<"$claude_output")" 'session*'
 assert not_contains "$claude_output" 'main*'
 
-printf 'PASS: %s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the five roles including chat and research without pins or role keys and image ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"
+# `--list` is the table for a program: per vendor, the rows in the order the table prints them,
+# and one NEXT line per vendor naming what `--account <vendor>` answers for the same role.
+list_names() { awk -F'\t' -v v="$1" '$1 == v {print $2}' <<<"$query_out" | tr '\n' ' ' | squeeze; }
+list_line() { grep -m1 -- "^$1	$2	" <<<"$query_out"; }
+next_of() { awk -F'\t' -v v="$1" '$1 == "NEXT" && $2 == v {print $3}' <<<"$query_out"; }
+table_names() {
+  vsection "$1" | grep -v '^\* = ' |
+    awk '{name = ($1 == "-") ? $4 : $5; sub(/\*$/, "", name); print name}' | tr '\n' ' ' | squeeze
+}
+write_config
+run_filter claude_pool '.vendors.claude.accounts |= reverse'
+query --list
+assert test "$query_rc" -eq 0
+assert test -n "$(list_names claudeb)"
+assert test "$(list_names claudeb)" = "$(table_names claude)"
+assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tok')"
+assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
+assert test "$(list_line claudeb walled-wk)" = "$(printf 'claudeb\twalled-wk\t100\twalled')"
+assert test "$(list_line claudeb walled-5h)" = "$(printf 'claudeb\twalled-5h\t5\twalled')"
+assert test "$(list_line claudeb off)" = "$(printf 'claudeb\toff\t0\toff')"
+assert test "$(grep -c '^NEXT	' <<<"$query_out")" -eq 4
+list_out=$query_out
+query --account claudeb
+assert test "$(query_out=$list_out; next_of claudeb)" = "$query_out"
+query_out=$list_out
+assert test "$(next_of codex)" = -
+assert test "$(next_of grok)" = -
+# Dead auth wins the state column over the pool and the vendor switch: `chats` hides only `login`.
+run_filter claude_pool '.vendors.claude.accounts |= map(if .account == "dead" then .enabled = false else . end)'
+query --list
+assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
+write_config 'claudeb_paused=on'
+query --list
+assert test "$(list_line claudeb dead)" = "$(printf 'claudeb\tdead\t0\tlogin')"
+assert test "$(list_line claudeb session)" = "$(printf 'claudeb\tsession\t0\tpaused')"
+write_config
+run_case golden
+query --list
+assert test "$(list_names claudeb)" = "$(table_names claude)"
+assert test "$(list_names codex)" = "$(table_names codex)"
+assert test "$(list_names gemini)" = "$(table_names gemini)"
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok')"
+list_out=$query_out
+for list_vendor in claudeb codex gemini; do
+  query --account "$list_vendor"
+  assert test "$(query_out=$list_out; next_of "$list_vendor")" = "$query_out"
+done
+# The role reaches the listing whole: the pin serves workers only, so the chat NEXT is the pool's.
+write_config 'claudeb_profile=worker'
+query --list
+assert test "$(next_of claudeb)" = worker
+query --list --role chat
+assert test "$query_rc" -eq 0
+assert test "$(list_names claudeb)" = 'session worker'
+list_out=$query_out
+query --account claudeb --role chat
+assert test "$query_out" = session
+assert test "$(query_out=$list_out; next_of claudeb)" = session
+write_config 'codex_reviewers=off'
+query --list --role reviewers
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\toff')"
+assert test "$(next_of codex)" = -
+query --list
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tok')"
+write_config 'codex_paused=on'
+query --list
+assert test "$(list_line codex main)" = "$(printf 'codex\tmain\t48\tpaused')"
+assert test "$(next_of codex)" = -
+write_config
+query --list --account claudeb
+assert test "$query_rc" -eq 2
+assert test -z "$query_out"
+rm -f "$STORE"
+query --list
+assert test "$query_rc" -eq 3
+assert test -z "$query_out"
+
+printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the five roles including chat and research without pins or role keys and image ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

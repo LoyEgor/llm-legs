@@ -359,6 +359,12 @@ routing-math paragraph the rules above replace.
   MODE (`worker=gemini`, `worker=grok`) is the one thing above the metric: the vendor it names
   keeps row 1 with the account it selected, and every other account, its own siblings included,
   falls back into the budget order below.
+- `worker-pick --list [--role <role>]` is the same answer for a program that shows every
+  account: one `<vendor>\t<account>\t<weekly % or ->\t<state>` line per account, state one of
+  `ok`, `walled`, `login`, `paused`, `off` (the vendor closed for that role, or the account out
+  of the pool), each vendor's rows in exactly the order its section of the table prints them,
+  then one `NEXT\t<vendor>\t<account or ->` line per vendor naming what `--account <vendor>`
+  answers for that role. `bin/chats` orders its account bar by it and ranks nothing itself.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.
