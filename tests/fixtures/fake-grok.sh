@@ -17,7 +17,24 @@ case "${1:-}" in
     ;;
   models)
     # The heartbeat's token touch: the real CLI says this and rotates the token anyway, so its
-    # own words and exit status are never what decides an account's auth state.
+    # own words and exit status are never what decides an account's auth state. A test that needs
+    # the rotation itself names the new expiry in FAKE_GROK_ROTATE_EXPIRES; leaving it unset is a
+    # touch that renewed nothing.
+    if [ -n "${FAKE_GROK_ROTATE_EXPIRES:-}" ] && [ -n "${GROK_HOME:-}" ] \
+       && [ -f "$GROK_HOME/auth.json" ]; then
+      rotated="$GROK_HOME/auth.json.rotated"
+      if jq --arg expiry "$FAKE_GROK_ROTATE_EXPIRES" '
+           def rotate: .expires_at = $expiry | .key = "rotated-key-sentinel"
+             | (if has("refresh_token") then .refresh_token = "rotated-refresh-sentinel" else . end);
+           if (.key | type) == "string" then rotate
+           else with_entries(if (.value | type) == "object" and (.value.key | type) == "string"
+                             then .value |= rotate else . end)
+           end' "$GROK_HOME/auth.json" >"$rotated" 2>/dev/null; then
+        mv "$rotated" "$GROK_HOME/auth.json"
+      else
+        rm -f "$rotated"
+      fi
+    fi
     printf 'You are not authenticated.\n' >&2
     printf 'grok-4-fast\n'
     ;;

@@ -278,6 +278,44 @@ args_are_headless() {
   return 1
 }
 
+# Every grok launch in an account's profile. macOS env reads a `-u` after a NAME=value as the
+# utility, so the unsets have to stay first; `mode` is exec for a run that owns the terminal, touch
+# for the export path's refresh — bounded and stdin-less, because a CLI that prompts or wedges there
+# holds the cell launch that asked for a token.
+grok_env_run() { # mode name headless args...
+  local mode="$1" name="$2" headless="$3" grok_bin
+  shift 3
+  grok_bin=$(resolve_grok_bin) || return 127
+  local -a unsets=() assigns=(GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0
+                              GROK_DISABLE_AUTOUPDATER=1)
+  # A headless run is a worker; worker-git-guard keys its branch discipline on GROK_WORKER=1 the
+  # way it keys claudeb's on CLAUDEB_WORKER=1. Interactive login/profile must not carry it.
+  if [ "$headless" = true ]; then assigns+=(GROK_WORKER=1); else unsets+=(-u GROK_WORKER); fi
+  if [ "$name" = main ]; then unsets+=(-u GROK_HOME); else assigns+=(GROK_HOME="$profiles_dir/$name"); fi
+  local -a command=(env ${unsets[@]+"${unsets[@]}"} "${assigns[@]}" "$grok_bin" "$@")
+  if [ "$mode" = exec ]; then exec "${command[@]}"; fi
+  run_bounded "$grok_touch_timeout" "${command[@]}"
+}
+
+# llm-limits.sh bounds the heartbeat's touch the same way and on the same knob; `timeout` is not on
+# a stock macOS, so the watchdog fallback is the one that usually runs.
+grok_touch_timeout=${LLM_LIMITS_GROK_TOUCH_TIMEOUT:-30}
+case "$grok_touch_timeout" in ''|*[!0-9]*|0) grok_touch_timeout=30 ;; esac
+run_bounded() { # seconds command...
+  local seconds=$1 timeout_cmd pid watchdog rc=0
+  shift
+  timeout_cmd=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
+  if [ -n "$timeout_cmd" ]; then "$timeout_cmd" "$seconds" "$@" </dev/null; return $?; fi
+  "$@" </dev/null &
+  pid=$!
+  (sleep "$seconds"; kill "$pid" 2>/dev/null || true) &
+  watchdog=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
+
 run_account() {
   local allow_create="$1" name="${2:-}" directory created=false
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
@@ -291,20 +329,13 @@ run_account() {
   fi
   shift 2
   # An interactive session is Egor, and a login run must reach an account he took out of the pool.
+  local headless=false
   if args_are_headless "$@"; then
+    headless=true
     worker_pool_refuse_headless grok "$name" "$(worker_model_pinned_account grok_profile)" || exit 2
   fi
-  # A headless run is a worker; worker-git-guard keys its branch discipline on GROK_WORKER=1
-  # the way it keys claudeb's on CLAUDEB_WORKER=1. Interactive login/profile must not carry it.
-  # macOS env treats a `-u` after NAME=value as the utility, so unsets go first.
-  local worker_unset=() worker_flag=()
-  if args_are_headless "$@"; then worker_flag=(GROK_WORKER=1)
-  else worker_unset=(-u GROK_WORKER); fi
   if [ "$name" = main ]; then
-    grok_bin=$(resolve_grok_bin) || exit 127
-    exec env ${worker_unset[@]+"${worker_unset[@]}"} -u GROK_HOME \
-      GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 \
-      GROK_DISABLE_AUTOUPDATER=1 ${worker_flag[@]+"${worker_flag[@]}"} "$grok_bin" "$@"
+    grok_env_run exec main "$headless" "$@" || exit "$?"
   fi
   directory="$profiles_dir/$name"
   if [ ! -d "$directory" ]; then
@@ -316,10 +347,7 @@ run_account() {
       "$name" "$directory" >&2
   fi
   [ "$created" != true ] || announce_account_added "$grokb_root" grok "$name"
-  grok_bin=$(resolve_grok_bin) || exit 127
-  exec env ${worker_unset[@]+"${worker_unset[@]}"} GROK_HOME="$directory" \
-    GROK_CLAUDE_MCPS_ENABLED=0 GROK_CLAUDE_SKILLS_ENABLED=0 \
-    GROK_DISABLE_AUTOUPDATER=1 ${worker_flag[@]+"${worker_flag[@]}"} "$grok_bin" "$@"
+  grok_env_run exec "$name" "$headless" "$@" || exit "$?"
 }
 
 show_help() {
@@ -334,16 +362,78 @@ show_help() {
     'grokb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
     'grokb list                           List profiles with login state.' \
     'grokb status                         Per-account login state and quota.' \
-    'grokb export-token <name> --to <path> [--min-seconds N]  Write a renewal-free copy of the saved session for a confined run.'
+    'grokb export-token <name> --to <path> [--min-seconds N]  Write a renewal-free copy of the saved session for a confined run; rotates one with less than N seconds left first.'
+}
+
+# Both accept the two entry shapes grok-quota.py's auth_entry does, and the expiry is read as both
+# shapes llm-limits.sh's grok_token_expired accepts: a profile whose expires_at is a numeric epoch
+# is a live session, not an unreadable one to spend a rotation on.
+auth_entry_expiry() { # name -> stated<TAB>epoch (epoch 0 = unreadable)
+  jq -r '
+    def entry:
+      if type != "object" then empty
+      elif (.key | type) == "string" then .
+      else first(.[]? | select(type == "object" and (.key | type) == "string"))
+      end;
+    ((entry // null) | .expires_at? // null) as $exp |
+    (if ($exp | type) == "number" then $exp
+     elif ($exp | type) == "string" then
+       ($exp | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch null)
+     else null end) as $epoch |
+    [($exp // "" | tostring), (($epoch // 0) | floor)] | @tsv' \
+    "$(account_home "$1")/auth.json" 2>/dev/null
+}
+
+# Any key whose name mentions renewal goes, not just the one shape seen today: an unrecognised
+# renewal field reaching a throwaway runtime is exactly the rotation this export exists to prevent.
+auth_entry_without_renewal() { # name
+  jq -c '
+    def strip: with_entries(select(.key | test("refresh"; "i") | not));
+    if type != "object" then empty
+    elif (.key | type) == "string" then strip
+    else with_entries(if (.value | type) == "object" and (.value.key | type) == "string"
+                      then .value |= strip else . end)
+    end
+    | select(any(.. | objects; (.key | type) == "string"))' "$(account_home "$1")/auth.json" 2>/dev/null
+}
+
+# The CLI owns auth.json: any authenticated subcommand rotates a session near its expiry and writes
+# the new pair back through its own auth.json.lock, so this is the one refresh grok has here and
+# llm-limits.sh's heartbeat touch is the same call (shared-invariants row ak). Its words and its
+# exit status state nothing — only the expiry the rotation leaves behind is a verdict, bar the two
+# answers that mean no rotation was even attempted: no binary to run, and a bound that expired.
+refresh_failure=''
+refresh_access_token() { # name -> 1 and refresh_failure when nothing could rotate
+  local log='' rc=0 reason=''
+  refresh_failure=''
+  printf 'grokb: %s: access token too short for the run, touching the CLI to rotate it\n' "$1" >&2
+  log=$(mktemp "${TMPDIR:-/tmp}/grokb-touch.XXXXXX") || log=''
+  if [ -n "$log" ]; then
+    grok_env_run touch "$1" false models >"$log" 2>&1 || rc=$?
+    reason=$(grep -v '^[[:space:]]*$' "$log" | tail -n1)
+    reason=${reason#grokb: }
+    rm -f "$log"
+  else
+    grok_env_run touch "$1" false models >/dev/null 2>&1 || rc=$?
+  fi
+  case "$rc" in
+    127) refresh_failure=${reason:-grok CLI not found} ;;
+    124|137|143) refresh_failure="the token touch timed out after ${grok_touch_timeout}s" ;;
+    *) return 0 ;;
+  esac
+  return 1
 }
 
 # grok's own auth.json keeps a refresh_token beside the access key, and a confined runtime holding
 # one can rotate the login this machine signs in with. What leaves is the same document with every
 # renewal credential deleted: 1.0.13 reads a session from $GROK_HOME/auth.json and nowhere else, so a
 # run that outlives its access token gets a 401 it cannot heal rather than a fresh pair of tokens.
-# --min-seconds is the caller saying how long the run needs, because nothing on the far side renews.
+# --min-seconds is the caller saying how long the run needs, because nothing on the far side renews:
+# a session with less than that left is rotated in the live profile first, and only a rotation that
+# still does not reach N refuses.
 export_token() {
-  local name="${1:-}" target='' min_seconds=0 auth='' expires_at='' stamp='' epoch=0 now remaining document
+  local name="${1:-}" target='' min_seconds=0 expiry_row='' expires_at='' stamp='' epoch=0
+  local now remaining document refreshed=false
   if [ "$#" -gt 0 ]; then shift; fi
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -365,41 +455,39 @@ export_token() {
     printf 'grokb: %s already exists\n' "$target" >&2
     return 2
   fi
-  auth="$(account_home "$name")/auth.json"
-  expires_at=$(jq -r '
-    def entry:
-      if type != "object" then empty
-      elif (.key | type) == "string" then .
-      else first(.[]? | select(type == "object" and (.key | type) == "string"))
-      end;
-    entry.expires_at // empty' "$auth" 2>/dev/null) || expires_at=''
-  # Any key whose name mentions renewal goes, not just the one shape seen today: an unrecognised
-  # renewal field reaching a throwaway runtime is exactly the rotation this export exists to prevent.
-  document=$(jq -c '
-    def strip: with_entries(select(.key | test("refresh"; "i") | not));
-    if type != "object" then empty
-    elif (.key | type) == "string" then strip
-    else with_entries(if (.value | type) == "object" and (.value.key | type) == "string"
-                      then .value |= strip else . end)
-    end
-    | select(any(.. | objects; (.key | type) == "string"))' "$auth" 2>/dev/null) || document=''
-  if [ -z "$document" ]; then
-    printf 'grokb: %s is not signed in; refusing a login or a live-profile fallback\n' "$name" >&2
-    return 3
-  fi
-  stamp="${expires_at%Z}"
-  stamp="${stamp%%.*}"
-  epoch=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$stamp" +%s 2>/dev/null) || epoch=0
-  now=$(date +%s)
-  remaining=$((epoch - now))
-  # No readable expiry is the same answer as too little of it: the cell would use the token until a
-  # 401 it has no way to recover from.
-  if [ "$epoch" -le 0 ] || [ "$remaining" -lt "$min_seconds" ]; then
+  while :; do
+    expiry_row=$(auth_entry_expiry "$name") || expiry_row=''
+    expires_at=''
+    document=$(auth_entry_without_renewal "$name") || document=''
+    if [ -z "$document" ]; then
+      printf 'grokb: %s is not signed in; refusing a login or a live-profile fallback\n' "$name" >&2
+      return 3
+    fi
+    IFS=$'\t' read -r expires_at epoch <<<"$expiry_row" || true
+    [[ "$epoch" =~ ^[0-9]+$ ]] || epoch=0
+    # jq's ISO parser wants the zone marker grok writes; `date` still reads a stamp without one.
+    if [ "$epoch" -eq 0 ] && [ -n "$expires_at" ]; then
+      stamp="${expires_at%Z}"
+      stamp="${stamp%%.*}"
+      epoch=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$stamp" +%s 2>/dev/null) || epoch=0
+    fi
+    now=$(date +%s)
+    remaining=$((epoch - now))
+    # No readable expiry is the same answer as too little of it: the cell would use the token until
+    # a 401 it has no way to recover from.
+    if [ "$epoch" -gt 0 ] && [ "$remaining" -ge "$min_seconds" ]; then break; fi
     document=''
-    printf "grokb: %s's access token does not outlast the run (%s seconds left, %s needed)\n" \
-      "$name" "$remaining" "$min_seconds" >&2
-    return 4
-  fi
+    if [ "$refreshed" = true ]; then
+      printf "grokb: %s's access token does not outlast the run (%s seconds left after a refresh, %s needed)\n" \
+        "$name" "$remaining" "$min_seconds" >&2
+      return 4
+    fi
+    refreshed=true
+    if ! refresh_access_token "$name"; then
+      printf "grokb: %s's access token could not be rotated: %s\n" "$name" "$refresh_failure" >&2
+      return 4
+    fi
+  done
   if ! (set -C; umask 077; printf '%s\n' "$document" >"$target"); then
     document=''
     printf 'grokb: %s could not be written\n' "$target" >&2

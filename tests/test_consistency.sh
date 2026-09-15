@@ -927,18 +927,16 @@ assert doc_has 'Refresh error list'
 assert doc_has '`refresh_errors`'
 assert doc_has '`classify_cause`'
 
-rb_late_multiplier=$(grep -E '^REVIEW_LATE_MULTIPLIER = [0-9]+$' "$RB_REPORT" | awk '{print $3}')
-rb_late_floor_s=$(grep -E '^REVIEW_LATE_FLOOR_S = [0-9]+$' "$RB_REPORT" | awk '{print $3}')
 sl_late_pair=$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$STATUSLINE")
 sl_late_multiplier=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | head -n1)
 sl_late_floor_ms=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | tail -n1)
-assert test "$(grep -Ec '^REVIEW_LATE_MULTIPLIER = ' "$RB_REPORT")" -eq 1
-assert test "$(grep -Ec '^REVIEW_LATE_FLOOR_S = ' "$RB_REPORT")" -eq 1
 assert test "$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$STATUSLINE" | wc -l | tr -d ' ')" -eq 1
-assert eq "$rb_late_multiplier" 3
-assert eq "$sl_late_multiplier" "$rb_late_multiplier"
-assert eq "$rb_late_floor_s" 120
-assert eq "$sl_late_floor_ms" "$((rb_late_floor_s * 1000))"
+assert eq "$sl_late_multiplier" 3
+assert eq "$sl_late_floor_ms" 120000
+# The bench stopped reporting a late review; the statusline judges one alone, and only the
+# `expected` map the bench still writes makes that judgement possible.
+assert eq "$(grep -c 'REVIEW_LATE' "$RB_REPORT")" 0
+assert grep -Fq '"expected": dict(expected or {}),' "$RB_STORE"
 assert doc_has 'Late review threshold'
 assert doc_has '`3` ×'
 assert doc_has '`120`s (`120000`ms) floor'
@@ -1044,7 +1042,8 @@ assert grep -Fq '"bright "*) ;;' "$STATUSLINE"
 assert grep -Fq 'unknown) ;;' "$STATUSLINE"
 assert grep -Fq 'review_text=${review_text#rev }' "$STATUSLINE"
 assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$RB_DEBT"
-assert grep -Fq 'print(f"debt {len(owed)} mine" if owed else "none")' "$RB_DEBT"
+assert grep -Fq 'parts.append(f"debt {len(owed)} mine")' "$RB_DEBT"
+assert grep -Fq 'print(" · ".join(parts) if parts else "none")' "$RB_DEBT"
 assert grep -Fq 'review-bench debt --repo "$v_top" --session "$v_session" --split' "$FLOW_GATE"
 assert grep -Fq 'echo "bright rev $own"' "$FLOW_GATE"
 assert grep -Fq "printf '%s' unknown" "$STATUSLINE"
@@ -2118,7 +2117,10 @@ if [ -r "$COMMIT_JOURNAL" ]; then
   # becomes debt only where a commit lands it — and through the same one door, which is what puts
   # the launcher's own row in beside a worker's.
   assert grep -Fq \
-    'journal_row "$journal_dir/$RJ_COMMIT_JOURNAL" "$top" "$session" "$prev" "$cur" "$path"' \
+    'journal_snapshot_link "$journal_dir" "$top" "$prev" "$cur" "$path" "$began"' \
+    "$COMMIT_JOURNAL"
+  assert grep -Fq 'local owner=$session' "$COMMIT_JOURNAL"
+  assert grep -Fq 'journal_row "$1/$RJ_COMMIT_JOURNAL" "$2" "$owner" "$3" "$4" "$5"' \
     "$COMMIT_JOURNAL"
 else
   fail "worker files reach the launching chat: $COMMIT_JOURNAL is unreadable (set CLAUDE_SETUP_ROOT)"
@@ -2236,8 +2238,8 @@ assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STO
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
 assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 1
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
-# Both foreign-chat refusals name the chat: they exist to send a reader to another conversation.
-assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 2
+# The foreign-chat refusal names the chat: it exists to send a reader to another conversation.
+assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 1
 
 # --- Row ay: sanctioned headless launchers ------------------------------------
 # The list of tools that own their launches is spelled in the contract and again in the gate's
