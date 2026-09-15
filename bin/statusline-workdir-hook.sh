@@ -40,10 +40,11 @@ parsed=$(printf '%s' "$input" | jq -r '
   def bash_hit:
     tok as $tok
     | ((.tool_input.command // "") | mask_heredocs | mask_quoted_spans)
-    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+add(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([ \\t]+(?<sub>[A-Za-z][A-Za-z-]*))?([ \\t]+(?<sub2>[A-Za-z][A-Za-z-]*))?)"; "g")]
+    | [match("(^|[;&|(\\n])[[:space:]]*((cd|pushd)[[:space:]]+(?<cd>" + $tok + ")|git([[:space:]]+-C[[:space:]]+(?<wt_dir>" + $tok + "))?[[:space:]]+worktree[[:space:]]+(?<wt_verb>add|move)(?<wt_args>([ \\t]+(" + $tok + "))+)|git[[:space:]]+-C[[:space:]]+(?<dir>" + $tok + ")([ \\t]+(?<sub>[A-Za-z][A-Za-z-]*))?([ \\t]+(?<sub2>[A-Za-z][A-Za-z-]*))?)"; "g")]
     | map(
         ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd
         | ([.captures[] | select(.name == "wt_dir" and .string != null) | .string][0] // "") as $wt_dir
+        | ([.captures[] | select(.name == "wt_verb" and .string != null) | .string][0] // "") as $wt_verb
         | ([.captures[] | select(.name == "wt_args" and .string != null) | .string][0] // "") as $wt_args
         | ([.captures[] | select(.name == "dir" and .string != null) | .string][0] // "") as $dir
         | ([.captures[] | select(.name == "sub" and .string != null) | .string][0] // "") as $sub
@@ -53,30 +54,37 @@ parsed=$(printf '%s' "$input" | jq -r '
         | if $wt_args != "" then
             ([$wt_args | match($tok; "g").string]
              | reduce .[] as $arg ({path: "", option_arg: false};
-                 if .path != "" then .
+                 if $wt_verb == "move" then
+                   if ($arg | startswith("-")) then .
+                   elif .path == "" then .path = $arg
+                   else .path = $arg end
+                 elif .path != "" then .
                  elif .option_arg then .option_arg = false
                  elif (["-b", "-B", "--reason"] | index($arg) != null) then .option_arg = true
                  elif ($arg | startswith("-")) then .
                  else .path = $arg end)
-             | {path: .path, sep: "", worktree_add: "1", worktree_base: $wt_dir, at: $at})
-          elif $cd != "" then {path: $cd, sep: $sep, cd_hit: "1", worktree_add: "", worktree_base: "", at: $at}
+             | {path: .path, sep: "",
+                worktree_add: (if $wt_verb == "add" then "1" else "" end),
+                worktree_move: (if $wt_verb == "move" then "1" else "" end),
+                worktree_base: $wt_dir, at: $at})
+          elif $cd != "" then {path: $cd, sep: $sep, cd_hit: "1", worktree_add: "", worktree_move: "", worktree_base: "", at: $at}
           elif $dir != "" and (if $sub == "worktree"
                                then (["add","remove","move","prune","repair","lock","unlock"] | index($sub2) != null)
                                else (["checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull"] | index($sub) != null)
-                               end) then {path: $dir, sep: "", worktree_add: "", worktree_base: "", at: $at}
+                               end) then {path: $dir, sep: "", worktree_add: "", worktree_move: "", worktree_base: "", at: $at}
           else empty end)
     | . as $hits
-    # Creating a worktree outranks every cd and mutating `git -C` in the same
-    # command, wherever it sits: the add is followed by a bootstrap subshell
+    # Creating or moving a worktree outranks every cd and mutating `git -C` in the
+    # same command, wherever it sits: the add is followed by a bootstrap subshell
     # (`(cd $W && pnpm install)`) often enough that reading the last hit lost
     # the new worktree entirely.
-    | (([$hits[] | select(.worktree_add == "1")] | last)
+    | (([$hits[] | select(.worktree_add == "1" or .worktree_move == "1")] | last)
        // last
-       // {path: "", sep: "", worktree_add: "", worktree_base: ""}) as $last
+       // {path: "", sep: "", worktree_add: "", worktree_move: "", worktree_base: ""}) as $last
     # Only a cd BEFORE the add: the bootstrap subshell that follows it cds into
     # the new worktree itself, and taking that one resolves a relative worktree
     # path inside the worktree that was just created.
-    | if $last.worktree_add == "1" and $last.worktree_base == "" then
+    | if ($last.worktree_add == "1" or $last.worktree_move == "1") and $last.worktree_base == "" then
         $last + {worktree_base: ([$hits[] | select(.cd_hit == "1" and .at < $last.at) | .path] | last // "")}
       else $last end;
   def read_tools: ["cd","pushd","popd","cat","head","tail","less","ls","wc","grep","rg","find","stat","file","du","df","jq","awk","cut","sort","uniq","tr","basename","dirname","realpath","pwd","echo","printf","test","[","which","type","date","diff","cmp","tree","nl","column","git"];
@@ -121,7 +129,7 @@ parsed=$(printf '%s' "$input" | jq -r '
   def worktree_path:
     (.tool_response // "")
     | (if type == "string" then . elif type == "object" then ([.. | strings] | join("\n")) else "" end)
-    | ([capture("worktree at (?<wt>/[^\\n]+)")] | (.[0].wt // ""))
+    | ([capture("worktree at (?<wt>/[^\\n]+?)(?= on branch |\\n|$)")] | (.[0].wt // ""))
     | gsub("[[:space:]]+$"; "");
   def dispatch_paths:
     # Every absolute-looking token of the brief, in order: the resolver below
@@ -137,7 +145,7 @@ parsed=$(printf '%s' "$input" | jq -r '
     | map(select(. != "" and . != "/"))
     | .[0:10]
     | join("");
-  (if .tool_name == "Bash" then bash_hit else {path: "", sep: "", worktree_add: "", worktree_base: ""} end) as $bash
+  (if .tool_name == "Bash" then bash_hit else {path: "", sep: "", worktree_add: "", worktree_move: "", worktree_base: ""} end) as $bash
   | [(.hook_event_name | value), (.tool_name | value), (.session_id | value | gsub("[^A-Za-z0-9_-]"; "")),
    (.cwd | value),
    (if (.agent_id | value) != "" or (.agent_type | value) != "" then "1" else "" end),
@@ -150,6 +158,7 @@ parsed=$(printf '%s' "$input" | jq -r '
    (if $bash.sep == "(" then "1" else "" end),
    (if .tool_name == "Bash" and ((.tool_input.command // "") | command_read_only) then "1" else "" end),
    ($bash.worktree_add // ""),
+   ($bash.worktree_move // ""),
    ($bash.worktree_base // ""),
    ($bash.cd_hit // ""),
    (.tool_use_id | value | gsub("[^A-Za-z0-9_-]"; "")),
@@ -157,7 +166,7 @@ parsed=$(printf '%s' "$input" | jq -r '
   | join("")
 ' 2>/dev/null) || exit 0
 
-IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_read_only bash_worktree_add bash_worktree_base bash_cd_hit tool_use_id dispatch <<< "$parsed"
+IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate start_source bash_subshell bash_read_only bash_worktree_add bash_worktree_move bash_worktree_base bash_cd_hit tool_use_id dispatch <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -211,10 +220,10 @@ case "$tool_name" in
   # brief arrives again at PostToolUse, and counting it twice would let one
   # dispatch fill two thirds of the away run below.
   Task|Agent) [ "$hook_event" = PreToolUse ] || exit 0 ;;
-  # A worktree-add command is heard twice: PreToolUse only to snapshot the
+  # A worktree-add/move command is heard twice: PreToolUse only to snapshot the
   # worktree list its PostToolUse diff is measured against.
   Bash) [ "$hook_event" = PostToolUse ] ||
-    { [ "$hook_event" = PreToolUse ] && [ -n "$bash_worktree_add" ]; } || exit 0 ;;
+    { [ "$hook_event" = PreToolUse ] && { [ -n "$bash_worktree_add" ] || [ -n "$bash_worktree_move" ]; }; } || exit 0 ;;
   *) [ "$hook_event" = PostToolUse ] || exit 0 ;;
 esac
 # Subagent tool events carry the PARENT session_id, so a worker's stray `cd`
@@ -345,7 +354,7 @@ case "$tool_name" in
   Bash)
     # An add whose path the parser could not extract at all must still reach the
     # snapshot diff below: that diff, not the token, is what names the worktree.
-    [ -n "$candidate" ] || [ -n "$bash_worktree_add" ] || exit 0
+    [ -n "$candidate" ] || [ -n "$bash_worktree_add" ] || [ -n "$bash_worktree_move" ] || exit 0
     case "$candidate" in
       \"*\")
         candidate=${candidate:1:${#candidate}-2}
@@ -362,20 +371,53 @@ case "$tool_name" in
   *) exit 0 ;;
 esac
 
-if [ -n "$bash_worktree_add" ] && [ -f "$wtadd_file" ]; then
+if [ -n "$bash_worktree_move" ] && [ ! -f "$wtadd_file" ]; then
+  # An add's destination is a path this session just made, so the text-parsed one is safe to adopt
+  # with no baseline. A move's destination is somebody's worktree until the snapshot diff shows the
+  # one that went away was home, and with no baseline nothing can show it.
+  exit 0
+fi
+
+if { [ -n "$bash_worktree_add" ] || [ -n "$bash_worktree_move" ]; } && [ -f "$wtadd_file" ]; then
   # Exactly one new worktree is the one this command made. None means the add
   # failed; several mean a concurrent add the diff cannot attribute — both leave
-  # home where it is rather than guess.
-  wtadd_new=$(comm -13 "$wtadd_file" <(worktree_union) 2>/dev/null)
-  rm -f "$wtadd_file"
+  # home where it is rather than guess. A move is one gone and one new; home
+  # follows only when it is the gone path (or under it).
+  worktree_union > "$wtadd_file.now.$$"
+  wtadd_new=$(comm -13 "$wtadd_file" "$wtadd_file.now.$$" 2>/dev/null)
+  wtadd_gone=$(comm -23 "$wtadd_file" "$wtadd_file.now.$$" 2>/dev/null)
+  rm -f "$wtadd_file" "$wtadd_file.now.$$"
   case "$wtadd_new" in
     ''|*$'\n'*) exit 0 ;;
   esac
+  if [ -n "$bash_worktree_move" ]; then
+    case "$wtadd_gone" in
+      ''|*$'\n'*) exit 0 ;;
+    esac
+    [ -f "$state_file" ] || exit 0
+    IFS= read -r prev_home < "$state_file" || exit 0
+    # /var vs /private/var (macOS pwd -P): porcelain and a stored home can differ
+    # by that prefix, and after the move neither path exists to canonicalise.
+    _home=${prev_home#/private}
+    _gone=${wtadd_gone#/private}
+    case "$prev_home" in
+      "$wtadd_gone"|"$wtadd_gone"/*) ;;
+      *)
+        case "$_home" in
+          "$_gone"|"$_gone"/*) ;;
+          *) exit 0 ;;
+        esac
+        ;;
+    esac
+  fi
   # A concurrent add elsewhere in the same repository family is a single new path
   # too. Whenever the command names a directory that exists, that is the one it
-  # made, so anything else is somebody's; a path the parser could not resolve
-  # (a shell variable) leaves the diff as the only answer.
-  if named_candidate=$(resolve_dir "$candidate") && [ -n "$named_candidate" ]; then
+  # made, so anything else is somebody's. A `$` in the token is an unexpanded
+  # shell variable: resolve_dir can `cd` a relative leftover onto cwd (`cd ""`
+  # succeeds) and the named-candidate guard would then discard a valid diff.
+  skip_named=
+  case "$candidate" in *'$'*) skip_named=1 ;; esac
+  if [ -z "$skip_named" ] && named_candidate=$(resolve_dir "$candidate") && [ -n "$named_candidate" ]; then
     [ "$named_candidate" = "$(cd "$wtadd_new" 2>/dev/null && pwd -P)" ] || exit 0
   fi
   candidate=$wtadd_new
@@ -395,7 +437,7 @@ case "$tool_name" in
     done
     ;;
   *)
-    if [ -n "$bash_worktree_add" ]; then
+    if [ -n "$bash_worktree_add" ] || [ -n "$bash_worktree_move" ]; then
       # Unless the snapshot above replaced it, the candidate is the text-parsed
       # path, which may be one the add never created — or an existing subdir of
       # one. PostToolUse carries no success field, so demanding the candidate be
@@ -445,7 +487,7 @@ esac
 if [ -n "$read_grade" ] && [ ! -f "$state_file" ]; then
   exit 0
 fi
-if [ "$tool_name" != EnterWorktree ] && [ -z "$bash_worktree_add" ] && [ -f "$state_file" ]; then
+if [ "$tool_name" != EnterWorktree ] && [ -z "$bash_worktree_add" ] && [ -z "$bash_worktree_move" ] && [ -f "$state_file" ]; then
   IFS= read -r prev_home < "$state_file" || :
   if [ "$toplevel" = "$prev_home" ]; then
     # Work at home rewrites the home and clears the run. A read is not work, so

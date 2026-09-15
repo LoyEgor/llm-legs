@@ -38,6 +38,10 @@ TMPDIR="$WORK/runtime-tmp"
 CLAUDEB_FIX="$WORK/claudeb"
 export HOME TMPDIR
 mkdir -p "$HOME/.claude" "$FIXTURES" "$TMPDIR" "$CLAUDEB_FIX/limits"
+CODEX_FIX="$HOME/.codex-profiles"
+mkdir -p "$CODEX_FIX/work4" "$CODEX_FIX/.codexb/fast-mode"
+printf '%s\n' 'service_tier = "default"' > "$CODEX_FIX/work4/config.toml"
+printf '%s\n' default > "$CODEX_FIX/.codexb/fast-mode/work4"
 
 REPO_A="$FIXTURES/repo a"
 REPO_B="$FIXTURES/repo-b"
@@ -653,6 +657,156 @@ assert test ! -e "$S.wtadd.call-leaked"
 assert test -f "$S.wtadd.call-live"
 rm -f "$S.wtadd.call-live"
 
+# The live miss: one Bash call, `R=...; git -C "$R" worktree add "$R/.claude/worktrees/..." -b
+# name ref 2>&1 | tail`, then a for-loop of curls. cwd is already a worktree of the same
+# repo; the path token is an unexpanded `$R/...` so the list diff must name home.
+WT_ADD_REAL="$REPO_A/.claude/worktrees/hook-wt-real"
+REAL_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-real" -b hook-wt-real HEAD 2>&1 | tail -2; echo ---PROBE-STAGING; for u in "https://example.com/a?embedded=portal" "https://example.com/b"; do curl -s -o /dev/null -w "%{http_code} %{redirect_url} $u\n" -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36" -e "https://example.com/" "$u"; done'
+S="$STATE_DIR/workdir-session-wt-add-real"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-real "$REPO_E" "$REAL_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-real"')"
+assert test -f "$S.wtadd.call-real"
+git -C "$REPO_A" worktree add -q -b hook-wt-real "$WT_ADD_REAL" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-real "$REPO_E" "$REAL_CMD" |
+  jq -c '.tool_use_id = "call-real"')"
+assert_eq "$(git -C "$WT_ADD_REAL" rev-parse --show-toplevel)" "$(cat "$S")"
+assert test ! -e "$S.wtadd.call-real"
+
+# Same phrasing with no home yet: the add must still establish one.
+WT_ADD_REAL0="$REPO_A/.claude/worktrees/hook-wt-real0"
+REAL0_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-real0" -b hook-wt-real0 HEAD 2>&1 | tail -2'
+S="$STATE_DIR/workdir-session-wt-add-real0"
+rm -f "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-real0 "$REPO_E" "$REAL0_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-real0"')"
+assert test -f "$S.wtadd.call-real0"
+git -C "$REPO_A" worktree add -q -b hook-wt-real0 "$WT_ADD_REAL0" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-real0 "$REPO_E" "$REAL0_CMD" |
+  jq -c '.tool_use_id = "call-real0"')"
+assert_eq "$(git -C "$WT_ADD_REAL0" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# Unquoted `$R` in -C and the path, on a repo whose path has no spaces.
+mkdir -p "$REPO_D/.claude/worktrees"
+printf '.claude/worktrees/\n' >> "$REPO_D/.git/info/exclude"
+WT_ADD_UQ="$REPO_D/.claude/worktrees/hook-wt-unquoted"
+UQ_CMD="R=$REPO_D; git -C \$R worktree add \$R/.claude/worktrees/hook-wt-unquoted -b hook-wt-unquoted HEAD"
+S="$STATE_DIR/workdir-session-wt-add-uq"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-uq "$REPO_D" "$UQ_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-uq"')"
+assert test -f "$S.wtadd.call-uq"
+git -C "$REPO_D" worktree add -q -b hook-wt-unquoted "$WT_ADD_UQ" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-uq "$REPO_D" "$UQ_CMD" |
+  jq -c '.tool_use_id = "call-uq"')"
+assert_eq "$(git -C "$WT_ADD_UQ" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# `$W` holds the new path.
+WT_ADD_WVAR="$REPO_A/.claude/worktrees/hook-wt-wvar"
+WVAR_CMD='R="'"$REPO_A"'"; W=$R/.claude/worktrees/hook-wt-wvar; git -C "$R" worktree add "$W" -b hook-wt-wvar HEAD'
+S="$STATE_DIR/workdir-session-wt-add-wvar"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-wvar "$REPO_E" "$WVAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-wvar"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-wvar "$WT_ADD_WVAR" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-wvar "$REPO_E" "$WVAR_CMD" |
+  jq -c '.tool_use_id = "call-wvar"')"
+assert_eq "$(git -C "$WT_ADD_WVAR" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# `-B` after a concatenated `$R/...` path.
+WT_ADD_BB="$REPO_A/.claude/worktrees/hook-wt-bb"
+BB_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-bb" -B hook-wt-bb HEAD'
+S="$STATE_DIR/workdir-session-wt-add-bb"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-bb "$REPO_E" "$BB_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-bb"')"
+git -C "$REPO_A" worktree add -q -B hook-wt-bb "$WT_ADD_BB" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-bb "$REPO_E" "$BB_CMD" |
+  jq -c '.tool_use_id = "call-bb"')"
+assert_eq "$(git -C "$WT_ADD_BB" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# Relative path with variable `-C`.
+WT_ADD_RELVAR="$REPO_A/.claude/worktrees/hook-wt-relvar"
+RELVAR_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add .claude/worktrees/hook-wt-relvar -b hook-wt-relvar HEAD'
+S="$STATE_DIR/workdir-session-wt-add-relvar"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-relvar "$REPO_E" "$RELVAR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-relvar"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-relvar "$WT_ADD_RELVAR" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-relvar "$REPO_E" "$RELVAR_CMD" |
+  jq -c '.tool_use_id = "call-relvar"')"
+assert_eq "$(git -C "$WT_ADD_RELVAR" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# Add then a bootstrap subshell whose `$W` resolves nowhere — add still wins.
+WT_ADD_BOOTR="$REPO_A/.claude/worktrees/hook-wt-bootr"
+BOOTR_CMD='R="'"$REPO_A"'"; git -C "$R" worktree add "$R/.claude/worktrees/hook-wt-bootr" -b hook-wt-bootr HEAD && W=$R/.claude/worktrees/hook-wt-bootr && (cd "$W" && true)'
+S="$STATE_DIR/workdir-session-wt-add-bootr"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-add-bootr "$REPO_E" "$BOOTR_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-bootr"')"
+git -C "$REPO_A" worktree add -q -b hook-wt-bootr "$WT_ADD_BOOTR" HEAD
+run_workdir_hook "$(workdir_payload Bash session-wt-add-bootr "$REPO_E" "$BOOTR_CMD" |
+  jq -c '.tool_use_id = "call-bootr"')"
+assert_eq "$(git -C "$WT_ADD_BOOTR" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# `git worktree move`: home on the moved-from path (or under it) follows to the dest.
+WT_MOVE_SRC="$REPO_A/.claude/worktrees/hook-wt-move-src"
+WT_MOVE_DST="$REPO_A/.claude/worktrees/hook-wt-move-dst"
+git -C "$REPO_A" worktree add -q -b hook-wt-move-src "$WT_MOVE_SRC" HEAD
+MOVE_CMD='R="'"$REPO_A"'"; git -C "$R" worktree move "$R/.claude/worktrees/hook-wt-move-src" "$R/.claude/worktrees/hook-wt-move-dst"'
+S="$STATE_DIR/workdir-session-wt-move"
+printf '%s\n' "$(git -C "$WT_MOVE_SRC" rev-parse --show-toplevel)" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-move "$REPO_E" "$MOVE_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-move"')"
+assert test -f "$S.wtadd.call-move"
+git -C "$REPO_A" worktree move "$WT_MOVE_SRC" "$WT_MOVE_DST"
+run_workdir_hook "$(workdir_payload Bash session-wt-move "$REPO_E" "$MOVE_CMD" |
+  jq -c '.tool_use_id = "call-move"')"
+assert_eq "$(git -C "$WT_MOVE_DST" rev-parse --show-toplevel)" "$(cat "$S")"
+assert test ! -e "$S.wtadd.call-move"
+
+# Home under the moved-from path follows too.
+WT_MOVE_SRC2="$REPO_A/.claude/worktrees/hook-wt-move-src2"
+WT_MOVE_DST2="$REPO_A/.claude/worktrees/hook-wt-move-dst2"
+git -C "$REPO_A" worktree add -q -b hook-wt-move-src2 "$WT_MOVE_SRC2" HEAD
+mkdir -p "$WT_MOVE_SRC2/embed-skin"
+MOVE2_CMD='R="'"$REPO_A"'"; git -C "$R" worktree move "$R/.claude/worktrees/hook-wt-move-src2" "$R/.claude/worktrees/hook-wt-move-dst2"'
+S="$STATE_DIR/workdir-session-wt-move-under"
+printf '%s\n' "$WT_MOVE_SRC2/embed-skin" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-move-under "$REPO_E" "$MOVE2_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-move2"')"
+git -C "$REPO_A" worktree move "$WT_MOVE_SRC2" "$WT_MOVE_DST2"
+run_workdir_hook "$(workdir_payload Bash session-wt-move-under "$REPO_E" "$MOVE2_CMD" |
+  jq -c '.tool_use_id = "call-move2"')"
+assert_eq "$(git -C "$WT_MOVE_DST2" rev-parse --show-toplevel)" "$(cat "$S")"
+
+# A move of some other worktree leaves home where it is.
+WT_MOVE_SRC3="$REPO_A/.claude/worktrees/hook-wt-move-src3"
+WT_MOVE_DST3="$REPO_A/.claude/worktrees/hook-wt-move-dst3"
+git -C "$REPO_A" worktree add -q -b hook-wt-move-src3 "$WT_MOVE_SRC3" HEAD
+MOVE3_CMD='R="'"$REPO_A"'"; git -C "$R" worktree move "$R/.claude/worktrees/hook-wt-move-src3" "$R/.claude/worktrees/hook-wt-move-dst3"'
+S="$STATE_DIR/workdir-session-wt-move-other"
+printf '%s\n' "$TOP_E" > "$S"
+run_workdir_hook "$(workdir_payload Bash session-wt-move-other "$REPO_E" "$MOVE3_CMD" |
+  jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-move3"')"
+git -C "$REPO_A" worktree move "$WT_MOVE_SRC3" "$WT_MOVE_DST3"
+run_workdir_hook "$(workdir_payload Bash session-wt-move-other "$REPO_E" "$MOVE3_CMD" |
+  jq -c '.tool_use_id = "call-move3"')"
+assert_eq "$TOP_E" "$(cat "$S")"
+
+# And so does a move whose PreToolUse left no baseline: with no diff to read, the destination is
+# nobody's worktree in particular.
+WT_MOVE_SRC4="$REPO_A/.claude/worktrees/hook-wt-move-src4"
+WT_MOVE_DST4="$REPO_A/.claude/worktrees/hook-wt-move-dst4"
+git -C "$REPO_A" worktree add -q -b hook-wt-move-src4 "$WT_MOVE_SRC4" HEAD
+MOVE4_CMD="git -C '$REPO_A' worktree move '$WT_MOVE_SRC4' '$WT_MOVE_DST4'"
+S="$STATE_DIR/workdir-session-wt-move-nosnap"
+printf '%s\n' "$TOP_E" > "$S"
+git -C "$REPO_A" worktree move "$WT_MOVE_SRC4" "$WT_MOVE_DST4"
+run_workdir_hook "$(workdir_payload Bash session-wt-move-nosnap "$REPO_E" "$MOVE4_CMD" |
+  jq -c '.tool_use_id = "call-move4"')"
+assert_eq "$TOP_E" "$(cat "$S")"
+
 # `worktree` is mutating only for the subcommands that write one: a lookup in
 # another checkout leaves no trace at all, not even an away run to accumulate.
 printf '%s\n' "$TOP_A" > "$STATE_DIR/workdir-session-wt-list"
@@ -1233,6 +1387,7 @@ run_statusline() {
   # COLUMNS is passed explicitly and empty by default: the fit loop reads it, and a value inherited
   # from whatever terminal runs the suite would shrink lines every other case measures at full width.
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
+    CODEXB_PROFILES_DIR="$CODEX_FIX" \
     COLUMNS="${FIT_COLUMNS:-}" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
@@ -1291,6 +1446,20 @@ cg_expired=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
 assert grep -Fq '0%' <<< "$cg_expired"
 assert test "${cg_expired#*36%}" = "$cg_expired"
 assert grep -Fq $'\033[2m' <<< "$cg_expired"
+for cg_bucket in 'null' '{used_pct:null,resets_at:null,as_of:$now,origin:"usage",stale:false,effective_pct:null}' '{}'; do
+  jq -cn --argjson now "$cg_now" "{vendors:{codex:{accounts:[{account:\"desktop-pro\",
+    five_hour:$cg_bucket,weekly:{used_pct:22,as_of:\$now,resets_at:(\$now+2592000)}}]}}}" > "$WORK/limits.json"
+  cg_absent=$(CLAUDEGPT_ACCOUNT=desktop-pro run_statusline "$cg_payload")
+  cg_line2=$(printf '%s\n' "$cg_absent" | sed -n '2p' | sed $'s/\033\[[0-9;]*m//g')
+  assert test "${cg_line2#*5h}" = "$cg_line2"
+  assert grep -Eq '^ctx [^│]+ │ wk 22%' <<< "$cg_line2"
+  assert test "${cg_line2#*│ │}" = "$cg_line2"
+done
+jq '.vendors.codex.accounts[0].five_hour = {used_pct:null,resets_at:null,stale:true}' \
+  "$WORK/limits.json" > "$WORK/cg-limits.json"
+mv "$WORK/cg-limits.json" "$WORK/limits.json"
+cg_unknown=$(CLAUDEGPT_ACCOUNT=desktop-pro run_statusline "$cg_payload")
+assert grep -Fq "5h ${DIM}?${RESET}" <<< "$cg_unknown"
 printf '{}' > "$WORK/limits.json"
 
 status_payload=$(statusline_payload status-override)
@@ -1389,8 +1558,8 @@ assert grep -Fq "Fixture${RESET}" <<< "$no_effort_output"
 assert test "${no_effort_output#*Fixture high}" = "$no_effort_output"
 
 fast_output=$(run_statusline "$(statusline_payload status-fast '{"fast_mode":true}')") || fail "statusline fast failed"
-assert grep -Fq '⚡' <<< "$fast_output"
-assert test "${with_effort#*⚡}" = "$with_effort"
+assert test "${fast_output#*⚡}" = "$fast_output"
+assert test "${fast_output#*Fast Mode}" = "$fast_output"
 
 
 # There is no native Sonnet worker any more, so neither a missing file nor a `worker=sonnet` line
@@ -1405,6 +1574,11 @@ assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_ou
 # The `w:<name>` label is gone at every width: one candidate needs no vendor caption.
 assert test "${worker_out#*w:}" = "$worker_out"
 assert test "${worker_out#*SN}" = "$worker_out"
+
+printf 'worker=codex\n' > "$worker_file"
+worker_out=$(run_statusline "$(statusline_payload status-w-codex-default-effort)")
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·low${RESET}" <<< "$worker_out"
+rm -f "$worker_file"
 
 # A gateway chat spends a CODEX account, so the prediction it reads is the file worker-pick wrote
 # for that vendor; `worker-pick.line.main` above belongs to the Claude profile of that name and
@@ -1472,7 +1646,7 @@ assert test "${worker_out#*alt}" = "$worker_out"
 # Claudeb walled: the next vendor in that order carries the candidate, with ITS model and effort.
 printf 'cx✓alt·astra·med cb~? gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-cx)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·low${RESET}" <<< "$worker_out"
 
 # A vendor switched off for workers is skipped in auto, and gemini answers instead.
 printf 'cx⏸off·astra·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
@@ -1555,7 +1729,7 @@ assert test "${worker_out#*supergrok}" = "$worker_out"
 # The field is optional: a prediction written before grok existed renders exactly as it did.
 printf 'cx✓alt·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' >"$HOME/.cache/worker-pick.line.main"
 worker_out=$(run_statusline "$(statusline_payload status-w-auto-nogr)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·hi${RESET}" <<< "$worker_out"
+assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·low${RESET}" <<< "$worker_out"
 
 # A role switched off is a parked switch, not a walled account, for grok as for everyone.
 printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med gr⏸off·grok-4.6·hi\n' \
@@ -1778,31 +1952,7 @@ done
 fit_many_cut=$(fit_render fit-many-cut 50 "$FIT_MANY")
 assert grep -Fq 'a-b-c-d- main' <<< "$fit_many_cut"
 
-# `⚡` is two terminal cells: measured as one, a line judged to fit exactly is one cell over, wraps
-# and pushes line 2 out of view.
-fast_render() { # session cols
-  local out
-  out=$(FIT_COLUMNS="$2" run_statusline \
-    "$(statusline_payload "$1" \
-       '{"model":{"display_name":"Fable 5"},"effort":{"level":"xhigh"},"fast_mode":true}' \
-       "$FIT_REPO")" fitaccount) || fail "fast fit render failed: $1 at $2"
-  fit_visible "$out"
-}
-fast_full=$(fast_render fit-fast "")
-assert grep -Fq '⚡' <<< "$fast_full"
-fast_edge=$(fast_render fit-fast-edge 88)
-assert_eq 87 "${#fast_edge}"
-fast_over=$(fast_render fit-fast-over 87)
-assert test "${#fast_over}" -lt 87
-for fast_cols in 90 80 70 60 50 40; do
-  fast_line=$(fast_render "fit-fast-$fast_cols" "$fast_cols")
-  asserts=$((asserts + 1))
-  [ "$(( ${#fast_line} + 1 ))" -le "$fast_cols" ] ||
-    fail "fast fit width $fast_cols: $(( ${#fast_line} + 1 )) cells: $fast_line"
-  asserts=$((asserts + 1))
-  grep -Fq '⚡' <<< "$fast_line" || fail "fast fit width $fast_cols lost ⚡: $fast_line"
-done
-rm -f "$worker_file"
+# Fast Mode is a worker launch setting and is intentionally absent from the shared statusline.
 
 NOW=$(date +%s)
 bucket_json() {
@@ -1812,6 +1962,14 @@ bucket_json() {
      auth:{status:"ok",checked_at:$now}}'
 }
 
+jq -cn '{auth:{status:"failed"}}' > "$CLAUDEB_FIX/limits/window-fixture.json"
+claude_unknown=$(run_statusline "$(statusline_payload status-window-unknown)" window-fixture)
+assert grep -Fq "5h ${DIM}?${RESET}" <<< "$claude_unknown"
+bucket_json 33 11 | jq '.five_hour = {used_percentage:null,resets_at:null,origin:"usage",stale:false}' \
+  > "$CLAUDEB_FIX/limits/window-fixture.json"
+claude_absent=$(run_statusline "$(statusline_payload status-window-absent)" window-fixture)
+assert test "${claude_absent#*5h }" = "$claude_absent"
+
 bucket_json 33 11 > "$CLAUDEB_FIX/limits/acctfab.json"
 bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 
@@ -1820,6 +1978,7 @@ fable_out=$(run_statusline "$fable_payload" acctfab) || fail "statusline explici
 assert grep -Fq 'acctfab' <<< "$fable_out"
 assert test "${fable_out#*~acctfab}" = "$fable_out"
 assert grep -Fq "${GREEN}33%" <<< "$fable_out"
+assert grep -Fq "5h ${GREEN}33%${RESET} ${DIM}" <<< "$(sed -n '2p' <<< "$fable_out")"
 assert grep -Fq "${GREEN}11%" <<< "$fable_out"
 
 general_payload=$(statusline_payload status-explicit-gen \
@@ -3568,6 +3727,14 @@ seed_output=$(printf '%s' "$seed" | "$WORKER_HOOK") || fail "worker seed exited 
 assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · high — Investigate the suite"' <<< "$seed_output" >/dev/null
 assert_eq 'main · astra · high' "$(cat "$TAGDIR/workerone")"
 
+rm -f "$HOME/.claude/worker-model"
+default_effort_seed=$(worker_payload codex-worker worker/default-effort 'Use table defaults' "codex exec 'go'")
+printf '%s' "$default_effort_seed" | "$WORKER_HOOK" >/dev/null || fail "default-effort codex tag exited nonzero"
+assert_eq 'main · astra · low' "$(cat "$TAGDIR/workerdefault-effort")"
+default_effort_claudeb=$(worker_payload claudeb-worker worker/default-effort-claudeb 'Use table defaults' 'claudeb --model opus -p task')
+printf '%s' "$default_effort_claudeb" | "$WORKER_HOOK" >/dev/null || fail "default-effort claudeb tag exited nonzero"
+assert_eq 'opus · high' "$(cat "$TAGDIR/workerdefault-effort-claudeb")"
+
 # A later non-launch command reuses the stored tag to prefix its description.
 later=$(worker_payload codex-worker worker/one 'Run focused tests' 'bash tests/focused.sh')
 later_output=$(printf '%s' "$later" | "$WORKER_HOOK") || fail "worker rewrite exited nonzero"
@@ -3582,12 +3749,21 @@ prefixed=$(worker_payload codex-worker worker/one 'main · astra · high — Run
 prefixed_output=$(printf '%s' "$prefixed" | "$WORKER_HOOK") || fail "prefixed worker call exited nonzero"
 assert_eq "" "$prefixed_output"
 
-# Codex model label follows ~/.codex/config.toml, not a hardcode.
 mkdir -p "$HOME/.codex"
-printf 'model = "gpt-9-zenith"\n' > "$HOME/.codex/config.toml"
-seed_zenith=$(worker_payload codex-worker worker/zenith 'Optimize compute' "codex exec -c model_reasoning_effort=high 'go'")
-seed_zenith_out=$(printf '%s' "$seed_zenith" | "$WORKER_HOOK") || fail "zenith seed exited nonzero"
-assert_eq 'main · zenith · high' "$(cat "$TAGDIR/workerzenith")"
+for config_model in gpt-9-zenith gpt-5.6-terra; do
+  printf 'model = "%s"\n' "$config_model" > "$HOME/.codex/config.toml"
+  seed_default=$(worker_payload codex-worker worker/default 'Optimize compute' "codex exec -c model_reasoning_effort=high 'go'")
+  seed_default_out=$(printf '%s' "$seed_default" | "$WORKER_HOOK") || fail "default model seed exited nonzero"
+  assert_eq 'main · astra · high' "$(cat "$TAGDIR/workerdefault")"
+  for label_script in "$ROOT/bin/statusline.sh" "$WORKER_HOOK" "$SPAWN_HOOK"; do
+    label=$(
+      . "$ROOT/share/worker-model.sh"
+      eval "$(sed -n '/^codex_model_short_label() {/,/^}/p' "$label_script")"
+      codex_model_short_label
+    )
+    assert_eq astra "$label"
+  done
+done
 rm -f "$HOME/.codex/config.toml"
 
 # worker-run wait/report adopt the tag the launcher wrote into its run dir, and
@@ -3698,6 +3874,22 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "opus · high: Imp
   <<<"$unknown_spawn_out" >/dev/null
 assert_eq 'opus · high' \
   "$(cat "$HOME/.cache/claude-worker-tags/spawn-claudeb-unknown/pending-claudeb-worker")"
+
+rm -f "$HOME/.claude/worker-model"
+default_effort_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-codex-default-effort",
+  tool_input:{subagent_type:"codex-worker",description:"Implement fixture",prompt:"Working directory: /tmp"}}')
+default_effort_spawn_out=$(printf '%s' "$default_effort_spawn" | WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK") || fail "default-effort codex spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · low: Implement fixture"' \
+  <<<"$default_effort_spawn_out" >/dev/null
+assert_eq 'main · astra · low' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-codex-default-effort/pending-codex-worker")"
+default_effort_claudeb_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-claudeb-default-effort",
+  tool_input:{subagent_type:"claudeb-worker",description:"Implement fixture",prompt:"Working directory: /tmp"}}')
+printf '%s' "$default_effort_claudeb_spawn" | WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK" >/dev/null || fail "default-effort claudeb spawn exited nonzero"
+assert_eq 'opus · high' \
+  "$(cat "$HOME/.cache/claude-worker-tags/spawn-claudeb-default-effort/pending-claudeb-worker")"
 
 unknown_tag=$(worker_payload claudeb-worker worker/unknown 'Run it' 'claudeb --model opus -p task')
 unknown_tag_out=$(printf '%s' "$unknown_tag" | "$WORKER_HOOK") || fail "unknown-account tag hook exited nonzero"
@@ -4288,6 +4480,31 @@ assert grep -Fq "${review_seg}${DIM}rev ?${RESET}" <<< "$review_unknown_out"
 GATE_AUTONOMOUS=yes
 review_unknown_auto_out=$(review_session_render review-unknown-auto "$REVIEW_DIRTY")
 assert grep -Fq "${review_seg}● ${DIM}?${RESET}" <<< "$review_unknown_auto_out"
+
+# The mark is independent of the verdict: `off` still shows it, and a loud sentence wears it
+# outside the red colouring.
+GATE_ANSWER=off
+GATE_AUTONOMOUS=yes
+review_auto_off_alone_out=$(review_session_render review-auto-off-alone "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}●" <<< "$review_auto_off_alone_out"
+assert test "${review_auto_off_alone_out#*auto}" = "$review_auto_off_alone_out"
+GATE_AUTONOMOUS=no
+review_auto_off_none_out=$(review_session_render review-auto-off-none "$REVIEW_DIRTY")
+assert test "${review_auto_off_none_out#*●}" = "$review_auto_off_none_out"
+assert test "${review_auto_off_none_out#*auto}" = "$review_auto_off_none_out"
+GATE_AUTONOMOUS=yes
+review_auto_off_narrow_out=$(FIT_COLUMNS=24 review_session_render review-auto-off-narrow "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}●" <<< "$review_auto_off_narrow_out"
+assert test "${review_auto_off_narrow_out#*auto}" = "$review_auto_off_narrow_out"
+GATE_ANSWER='held because'
+GATE_AUTONOMOUS=yes
+review_auto_loud_out=$(review_session_render review-auto-loud "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● ${RED}held because${RESET}" <<< "$review_auto_loud_out"
+assert test "${review_auto_loud_out#*auto}" = "$review_auto_loud_out"
+GATE_AUTONOMOUS=no
+review_auto_loud_none_out=$(review_session_render review-auto-loud-none "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}${RED}held because${RESET}" <<< "$review_auto_loud_none_out"
+assert test "${review_auto_loud_none_out#*●}" = "$review_auto_loud_none_out"
 
 # A gate answering `0` says nothing is owed anywhere, which is the empty slot and never a `?`.
 # Proves the two states did not collapse into one the moment the third was added.
@@ -5354,6 +5571,8 @@ for gate_denied in \
   'grokb p supergrok -p "do the thing"' \
   'grokb profile supergrok --prompt-file=/tmp/brief' \
   'grok --prompt=do-the-thing' \
+  'claudeb profile com -p --browser' \
+  'claudeb profile com -p --chrome' \
   'grok --prompt-json=/tmp/brief.json'; do
   gate_out=$(gate_payload "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
@@ -5491,8 +5710,6 @@ for gate_agent in claudeb-worker codex-worker gemini-worker grok-worker; do
     230000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
   rm -f "$HOME/.local/bin/worker-run"
-  'claudeb profile com -p --browser' \
-  'claudeb profile com -p --chrome' \
   gate_out=$(gate_timeout_payload "$gate_agent" 'worker-run wait cb-20260901-abcdef' \
     120000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"

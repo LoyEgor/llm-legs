@@ -30,6 +30,7 @@ statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="
 statusline_dir=$(dirname "$statusline_self")
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
+. "$statusline_dir/../share/worker-model.sh"
 
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -761,13 +762,13 @@ else
 fi
 
 now=$(date +%s)
-h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
+h5_absent=false; h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
 if [ -n "$rl_json" ]; then
   # Legacy raw-headers caches carry no as_of; the cache file's mtime is the honest lower bound
   # (captured before any rewrite this render did), and a payload without either is as fresh as
   # this render.
   [[ "$rl_mtime" =~ ^[0-9]+$ ]] || rl_mtime="$now"
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin < <(printf '%s' "$rl_json" | jq -r \
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent < <(printf '%s' "$rl_json" | jq -r \
     --argjson now "$now" --argjson mtime "$rl_mtime" \
     --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
     (.auth.status == "expired") as $auth_expired
@@ -783,7 +784,10 @@ if [ -n "$rl_json" ]; then
                   or limits_reset_ancient($now; $reset) then "" else ($reset | tostring) end),
               (if $stale or $expired then "1" else "" end) ]
         end;
-    bucket(.five_hour; $thr5) + bucket(.seven_day; $thrw) + [(.seven_day.origin // "")]
+    bucket(.five_hour; $thr5) + bucket(.seven_day; $thrw) + [(.seven_day.origin // ""),
+      (limits_window_absent(.five_hour //
+        (if .auth_needed == true or (.auth.status | IN("failed", "expired"))
+         then {stale:true} else null end)) | tostring)]
     | join("\u001f")' 2>/dev/null)
 fi
 
@@ -814,7 +818,7 @@ fi
 if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
   limits_mtime=$(file_mtime "$limits_file")
   [[ "$limits_mtime" =~ ^[0-9]+$ ]] || limits_mtime=0
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim < <(jq -r \
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim h5_absent < <(jq -r \
     --arg account "$CLAUDEGPT_ACCOUNT" --argjson now "$now" --argjson mtime "$limits_mtime" \
     --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
     [.vendors.codex.accounts[]? | select(.account == $account)][0] as $a
@@ -830,7 +834,8 @@ if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
                        ($b.origin // ""); ($b.as_of // $mtime))
                   or ($now - $mtime) > $thr then "1" else "" end) ]
         end;
-    bucket($a.five_hour; $thr5) + bucket($a.weekly; $thrw) | join("\u001f")
+    bucket($a.five_hour; $thr5) + bucket($a.weekly; $thrw)
+    + [($a != null and limits_window_absent($a.five_hour) | tostring)] | join("\u001f")
   ' "$limits_file" 2>/dev/null)
   codex_quota_kick "$CLAUDEGPT_ACCOUNT" "$now"
 fi
@@ -847,8 +852,6 @@ fi
 
 model_suffix=""
 [ -n "$effort" ] && model_suffix=" ${effort}"
-fast_part=""
-[ -n "$fast_mode" ] && fast_part=" ${YELLOW}⚡${RESET}"
 
 git_dir="$current_dir"
 active_top=""; active_common=""; active_root=""; active_name=""; active_is_wt=0
@@ -1378,6 +1381,10 @@ wk_arrow=""
 
 sep="${DIM}│${RESET}"
 
+h5_part=""
+if [ "$h5_absent" != true ]; then
+  h5_part=" ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow}"
+fi
 fable_part=""
 fable_account="$acct"
 if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
@@ -2099,13 +2106,10 @@ abbrev_model() {
   printf '%s%s' "$(printf '%s%s' "$first" "$second" | tr '[:lower:]' '[:upper:]')" "$version"
 }
 
-# Derive codex model short label from ~/.codex/config.toml; fallback "astra" defined here.
 codex_model_short_label() {
-  local toml="${1:-$HOME/.codex/config.toml}" label=""
-  [ -r "$toml" ] && label=$(grep -m1 '^model[[:space:]]*=' "$toml" 2>/dev/null \
-    | sed 's/.*"\([^"]*\)".*/\1/; s/.*-//')
-  [[ "$label" =~ ^[A-Za-z0-9]+$ ]] || label=astra
-  printf '%s' "$label"
+  local model
+  model=$(worker_model_allowed_models codex | head -n1)
+  printf '%s' "${model##*-}"
 }
 
 worker_pick_fresh=0
@@ -2184,13 +2188,16 @@ worker_pick_vendor() {
 # segment names what a dispatch would launch, and a second reading of that is one reading too many.
 worker_vendor_knobs() {
   case "$1" in
-    cx) wv_model=$(codex_model_short_label); wv_effort=${codex_effort:-high} ;;
-    cb) wv_model=${claudeb_model:-opus}; wv_effort=${claudeb_effort:-high} ;;
-    gx) wv_model=${gemini_model:-flash38}; wv_effort=${gemini_effort:-high} ;;
+    cx) wv_model=$(worker_model_allowed_models codex | head -n1)
+        wv_effort=${codex_effort:-$(worker_model_default_effort codex "$wv_model")}
+        wv_model=$(codex_model_short_label) ;;
+    cb) wv_model=${claudeb_model:-opus}; wv_effort=${claudeb_effort:-$(worker_model_default_effort claudeb "$wv_model")} ;;
+    gx) wv_model=${gemini_model:-flash38}; wv_effort=${gemini_effort:-$(worker_model_default_effort gemini "$wv_model")} ;;
     # `auto` names no model: it means whichever one the account defaults to, so the candidate
     # carries the effort alone rather than a version nobody chose.
-    gr) wv_model=${grok_model:-auto}; [ "$wv_model" != auto ] || wv_model=""
-        wv_effort=${grok_effort:-high} ;;
+    gr) wv_model=${grok_model:-auto}
+        wv_effort=${grok_effort:-$(worker_model_default_effort grok "$wv_model")}
+        [ "$wv_model" != auto ] || wv_model="" ;;
   esac
 }
 
@@ -2373,10 +2380,7 @@ fit_width() {
   local s=$1
   s=${s//"$RESET"/}; s=${s//"$CYAN"/}; s=${s//"$BLUE"/}; s=${s//"$DIM"/}
   s=${s//"$GREEN"/}; s=${s//"$YELLOW"/}; s=${s//"$RED"/}; s=${s//"$MAGENTA"/}
-  # `⚡` is the one glyph on the line a terminal gives two cells (every other one — ⎇ │ · ✓ » ↓ ↑
-  # ⇢ ⧉ ▶ ⏸ — is narrow); counted as one, a line measured as exactly $COLUMNS wraps.
-  local narrow=${s//⚡/}
-  fit_len=$(( ${#s} + ${#s} - ${#narrow} ))
+  fit_len=${#s}
 }
 
 fit_trunc() {
@@ -2431,7 +2435,7 @@ fit_head_part() {
   else
     head="${model}${model_suffix}"
   fi
-  head_part="${CYAN}${head}${RESET}${fast_part}"
+  head_part="${CYAN}${head}${RESET}"
 }
 
 fit_cb_part() {
@@ -2537,14 +2541,17 @@ fit_review_part() {
   fi
 }
 
-# The gate's verdict plus the two session-wide facts that ride in the same segment. A `loud`
-# sentence gets neither marker nor total: a word this build cannot classify reaches the reader
-# exactly as the gate said it, and decorating it would be this render speaking over the gate.
+# Autonomy is a chat fact, not a verdict prefix: `off` would otherwise swallow the mark,
+# and wrapping it in the loud colour would paint the gate's sentence.
 fit_verdict_part() {
   local sp=" " word=rev text dot="" body=""
   verdict_part=""
   if [ "${review_style:-}" = loud ]; then
-    verdict_part=" ${sep} ${RED}${review_text}${RESET}"
+    if [ "$review_autonomous" = yes ]; then
+      verdict_part=" ${sep} ● ${RED}${review_text}${RESET}"
+    else
+      verdict_part=" ${sep} ${RED}${review_text}${RESET}"
+    fi
     return
   fi
   [ "$fit_rev_short" = 1 ] && { sp=""; word=r; }
@@ -2553,15 +2560,19 @@ fit_verdict_part() {
     verdict_part=" ${sep} ${dot}${DIM}${body}?${RESET}"
     return
   fi
-  [ "${review_style:-}" = bright ] || return
-  text=$review_text
-  if [ "$review_autonomous" = yes ]; then
-    dot="●${sp}"
-    text=${text#rev }
-  elif [ "$fit_rev_short" = 1 ]; then
-    case "$text" in "rev "*) text="${word}${sp}${text#rev }" ;; esac
+  if [ "${review_style:-}" = bright ]; then
+    text=$review_text
+    if [ "$review_autonomous" = yes ]; then
+      dot="●${sp}"
+      text=${text#rev }
+    elif [ "$fit_rev_short" = 1 ]; then
+      case "$text" in "rev "*) text="${word}${sp}${text#rev }" ;; esac
+    fi
+    verdict_part=" ${sep} ${dot}${text}"
+    return
   fi
-  verdict_part=" ${sep} ${dot}${text}"
+  [ "$review_autonomous" = yes ] || return
+  verdict_part=" ${sep} ●"
 }
 
 fit_unpushed_part() {
@@ -2638,7 +2649,7 @@ if [ -n "$fit_cols" ]; then
   done
 fi
 
-line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part} ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
+line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part}${h5_part} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
 
 if [ -n "$cost_raw" ]; then
   line2="${line2} ${sep} ${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
