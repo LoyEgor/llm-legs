@@ -337,6 +337,12 @@ local function appendOpenCode(menu, limits, paused)
   end
 end
 
+local function windowAbsent(bucket)
+  return bucket == nil or (type(bucket) == "table"
+    and bucket.used_pct == nil and bucket.used_percentage == nil and bucket.resets_at == nil
+    and not (bucket.stale == true and bucket.origin == nil))
+end
+
 local function bucketAtLimit(bucket)
   return type(bucket) == "table" and (tonumber(bucket.effective_pct) or 0) >= 100
 end
@@ -511,7 +517,7 @@ local function baseEnvironment()
   -- Everything launched from here reads or writes the store this menu just rendered. A Hammerspoon
   -- started with these set would otherwise send a wall probe to one store and read another —
   -- LLM_LIMITS_CACHE included, since opencode-go picks its probe targets out of that cache.
-  for _, name in ipairs({ "WORKER_STATS_DIR", "CLAUDEB_DIR", "LLM_LIMITS_CACHE" }) do
+  for _, name in ipairs({ "WORKER_STATS_DIR", "CLAUDEB_DIR", "LLM_LIMITS_CACHE", "CODEXB_PROFILES_DIR" }) do
     local value = os.getenv(name)
     if value and value ~= "" then environment[name] = value end
   end
@@ -659,13 +665,16 @@ function M.refreshRouting()
     routingRefreshPending = true
     return
   end
+  logAction("routing-launch", "worker-pick")
   local task = hs.task.new(M.workerPickPath, function(exitCode, stdOut)
     routingTask = nil
     if exitCode == 0 and type(stdOut) == "string" and stdOut ~= "" then
       M.routingCache = { text = stdOut, at = os.time() }
       M.routingFailed = false
+      logAction("routing-done", "worker-pick exit=0")
     else
       M.routingFailed = true
+      logAction("routing-failed", "worker-pick exit=" .. tostring(exitCode))
     end
     notifyRefreshState()
     if routingRefreshPending then
@@ -675,17 +684,21 @@ function M.refreshRouting()
   end, {})
   if not task then
     M.routingFailed = true
+    logAction("routing-failed", "worker-pick could not start")
     notifyRefreshState()
     return
   end
   local environment = baseEnvironment()
-  environment.WORKER_PICK_CACHE_DIR = "/dev/null"
+  -- worker-pick writes its short-lived routing line; /dev/null is not a directory and makes
+  -- every post-toggle refresh report a false failure.
+  environment.WORKER_PICK_CACHE_DIR = home .. "/.cache"
   task:setEnvironment(environment)
   routingTask = task
   local ok, started = pcall(task.start, task)
   if not ok or not started then
     routingTask = nil
     M.routingFailed = true
+    logAction("routing-failed", "worker-pick start failed")
     notifyRefreshState()
   end
 end
@@ -868,6 +881,10 @@ local function runAccountCommand(launchPath, args, failMessage, onSuccess, optio
         M.refreshRouting()
       end
     end
+    if options.skipRecollect then
+      finishTask(id, exitCode, stdOut, stdErr, failMessage)
+      return
+    end
     local reread = newCollectorTask(function(collectExit, collectOut, collectErr)
       logAction("collect", label .. " collect_exit=" .. tostring(collectExit))
       if failed then
@@ -972,6 +989,29 @@ function M.pinClaude(name, currentlyPinned)
   else
     runClaudeb({ "use", name }, "pin failed")
   end
+end
+
+function M.codexFastMode(name)
+  if type(name) ~= "string" or name == "" then return nil end
+  local profiles = os.getenv("CODEXB_PROFILES_DIR")
+  if not profiles or profiles == "" then profiles = home .. "/.codex-profiles" end
+  local marker = io.open(profiles .. "/.codexb/fast-mode/" .. name, "r")
+  local tier
+  if marker then
+    tier = marker:read("*l")
+    marker:close()
+  else
+    return false
+  end
+  if tier == "fast" or tier == "priority" then return true end
+  if tier == "default" then return false end
+  return nil
+end
+
+function M.toggleCodexFastMode(name, enabled)
+  runCodexb({ "fast-mode", name, enabled and "off" or "on" }, "Fast Mode toggle failed", function()
+    M.refreshRouting()
+  end, { skipRecollect = true })
 end
 
 function M.pinCodex(name, currentlyPinned)
@@ -1443,9 +1483,15 @@ end
 
 local function routingSubmenu()
   local cache = M.routingCache
+  local unavailable = function()
+    if M.routingFailed == true then
+      return {{ title = infoTitle("⚠ routing refresh failed", true, false), disabled = true }}
+    end
+    return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
+  end
   if type(cache) ~= "table" or type(cache.text) ~= "string"
       or type(cache.at) ~= "number" then
-    return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
+    return unavailable()
   end
   local store = hs.fs.attributes(M.cachePath)
   local dim = M.routingFailed == true
@@ -1461,12 +1507,15 @@ local function routingSubmenu()
     table.remove(lines)
   end
   if #lines == 0 then
-    return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
+    return unavailable()
   end
   local menu = {{
     title = infoTitle("as of " .. os.date("%H:%M", cache.at), false, dim),
     disabled = true,
   }}
+  if M.routingFailed == true then
+    table.insert(menu, { title = infoTitle("⚠ routing refresh failed", true, false), disabled = true })
+  end
   -- worker-pick already answers in rows: one account per line, columns aligned in the menu font.
   -- Anything this renderer split or re-laid-out here would be a second layout to keep in step.
   for _, line in ipairs(lines) do
@@ -1476,8 +1525,6 @@ local function routingSubmenu()
 end
 
 function M.menuItems()
-  collectOnOpen()
-
   local menu = {}
   local state = M.refreshState()
   if state.globalError then
@@ -1731,6 +1778,8 @@ function M.menuItems()
             -- about to spend the reset, so it lives on the action instead of crowding out the age.
             local resetSuffix = resetCredits and resetCredits > 0
               and string.format("  ↻%d", math.floor(resetCredits)) or ""
+            local fastMode = entry.key == "codex" and M.codexFastMode(acct) == true
+            if fastMode then resetSuffix = "  ⚡" .. resetSuffix end
             local accountRow
             if authNeeded then
               local loginFn, hardRefreshFn, removeFn
@@ -1787,8 +1836,9 @@ function M.menuItems()
                     function() M.toggleCodexAccount(acct, enabled) end),
                   { title = "Hard refresh",
                     fn = function() M.hardRefreshCodex(acct) end },
-                  -- The same item the Claude rows carry: a Codex account name is also a
-                  -- claudegpt gateway login, and the chat reopens through that launcher.
+                  -- The same item the Claude rows carry: every Codex account is a usable
+                  -- gateway target, because share/gateway_auth.py serves the launch from
+                  -- that account's own codexb login when it has no gateway login of its own.
                   { title = "Switch chat to this",
                     fn = function() M.switchChatTo(acct, true) end },
                 }
@@ -1823,10 +1873,24 @@ function M.menuItems()
                 if redeem then table.insert(accountRow.menu, redeem) end
               end
             end
+            if entry.key == "codex" and accountRow.menu then
+              -- A logged-out row's submenu is one constructor's fixed three items, and an account
+              -- that cannot launch has nothing to launch fast: the mark still shows, the toggle
+              -- waits for the login.
+              if authNeeded then
+                if fastMode then accountRow.title = accountRow.title .. metaTitle("  ⚡") end
+              else
+                table.insert(accountRow.menu, {
+                  title = "Fast Mode (workers)",
+                  checked = fastMode,
+                  fn = function() M.toggleCodexFastMode(acct, fastMode) end,
+                })
+              end
+            end
             table.insert(menu, accountRow)
           end
           if not authNeeded then
-            if type(fiveHour) == "table" then
+            if type(fiveHour) == "table" and not windowAbsent(fiveHour) then
               local fiveRow = {
                 title = rowTitle("", "5h", fiveHour, isStale(fiveHour),
                   bucketAtLimit(fiveHour)),

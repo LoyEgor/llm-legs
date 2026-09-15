@@ -11,6 +11,9 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 strip_ansi() { sed $'s/\033\[[0-9;]*m//g'; }
 unset CLICOLOR_FORCE
+# Every fixture owns its worker-model through HOME; an inherited path would point the run at
+# the real one, where a vendor Egor parked is missing from the store the asserts describe.
+unset WORKER_PICK_CONFIG_FILE
 # Unit fixtures must never discover and launch the developer's real agy binary.
 export LLM_LIMITS_GEMINI_REFRESH=0
 export LLM_LIMITS_CODEX_REFRESH=0
@@ -54,6 +57,14 @@ jq -e '.vendors.codex.five_hour.origin == "usage" and (.vendors.codex.five_hour.
 jq -e '.vendors.gemini.available == false and .vendors.gemini.status == "no quota snapshot" and .vendors.gemini.last_wall == "2026-07-11T08:00:00Z"' <<<"$out" >/dev/null || fail "Gemini state mismatch"
 jq -e . "$CACHE" >/dev/null || fail "cache was not valid JSON"
 compgen -G "$CACHE.tmp.*" >/dev/null && fail "atomic-write temporary file remains"
+
+FAST_MODE_PROFILES="$WORK/fast-mode-profiles"
+mkdir -p "$FAST_MODE_PROFILES/alpha"
+printf 'service_tier = "priority"\n' >"$FAST_MODE_PROFILES/alpha/config.toml"
+fast_mode_without_marker=$(/usr/bin/python3 "$ROOT/share/codex_fast_mode.py" "$FAST_MODE_PROFILES" alpha status) \
+  || fail "Fast Mode marker-state read failed"
+[ "$fast_mode_without_marker" = off ] \
+  || fail "profile config enabled worker Fast Mode without its marker"
 
 CORRUPT_BIN="$WORK/corrupt-bin"
 mkdir -p "$CORRUPT_BIN"
@@ -121,7 +132,7 @@ gemini_live=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" LLM_LIMITS_GEMINI_REFRESH=1 \
   HOME="$HOME_FIXTURE" LLM_LIMITS_CACHE="$CACHE" /bin/bash "$SCRIPT" --refresh) \
   || fail "Gemini refresh collection failed"
 jq -e --arg five_reset "$GEMINI_FIVE_RESET" \
-  '.vendors.gemini.available == true and .vendors.gemini.source == "agy-local-rpc" and
+  '.vendors.gemini.available == true and .vendors.gemini.source == "agy-print-usage" and
   .vendors.gemini.five_hour.used_pct == 1 and
   .vendors.gemini.weekly.used_pct == 25 and
   .vendors.gemini.five_hour.resets_at == $five_reset and
@@ -160,7 +171,7 @@ printf '%s\n' "$gemini_cache_saved" >"$GEMINI_CACHE"
 GEMINI_AUTH_HELPER="$WORK/fake-agy-auth"
 cat >"$GEMINI_AUTH_HELPER" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"auth_needed":true,"source":"agy-local-rpc","detail":"not signed in"}'
+printf '%s\n' '{"auth_needed":true,"source":"agy-print-usage","detail":"not signed in"}'
 exit 2
 EOF
 chmod +x "$GEMINI_AUTH_HELPER"
@@ -269,7 +280,7 @@ EOF
 GEMINI_MULTI_AUTH_HELPER="$WORK/fake-agy-multi-auth"
 cat >"$GEMINI_MULTI_AUTH_HELPER" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"auth_needed":true,"source":"agy-local-rpc","detail":"profile signed out"}'
+printf '%s\n' '{"auth_needed":true,"source":"agy-print-usage","detail":"profile signed out"}'
 exit 2
 EOF
 GEMINI_SECURITY_STUB="$WORK/fake-security"
@@ -653,13 +664,13 @@ jq -e '.vendors.gemini.available == true and
 GEMINI_CRASH_HELPER="$WORK/fake-agy-crash"
 cat >"$GEMINI_CRASH_HELPER" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"error":"agy exited during startup: broken pipe","source":"agy-local-rpc"}' >&2
+printf '%s\n' '{"error":"agy exited with status 1: broken pipe","source":"agy-print-usage"}' >&2
 exit 1
 EOF
 GEMINI_NET_HELPER="$WORK/fake-agy-net"
 cat >"$GEMINI_NET_HELPER" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' '{"error":"127.0.0.1:52341 tls=False: [Errno 61] Connection refused","source":"agy-local-rpc"}' >&2
+printf '%s\n' '{"error":"agy exited with status 1: fetch failed: connect ECONNREFUSED 127.0.0.1:52341","source":"agy-print-usage"}' >&2
 exit 1
 EOF
 chmod +x "$GEMINI_CRASH_HELPER" "$GEMINI_NET_HELPER"
@@ -676,10 +687,10 @@ jq -e '.vendors.gemini.auth_needed == true and
   .vendors.gemini.refresh_error.cause == "login needed (not signed in)"' <<<"$auth_json" >/dev/null \
   || fail "logged-out gemini (rc 2) is not classified login needed with its detail"
 jq -e '(.vendors.gemini | has("auth_needed") | not) and
-  .vendors.gemini.refresh_error.cause == "agy exited during startup: broken pipe"' <<<"$crash_json" >/dev/null \
+  .vendors.gemini.refresh_error.cause == "agy exited with status 1: broken pipe"' <<<"$crash_json" >/dev/null \
   || fail "a crashed gemini helper (rc 1) collapsed into login-needed or hid its distinct cause"
 jq -e '(.vendors.gemini | has("auth_needed") | not) and
-  (.vendors.gemini.refresh_error.cause | contains("Connection refused"))' <<<"$net_json" >/dev/null \
+  (.vendors.gemini.refresh_error.cause | contains("ECONNREFUSED"))' <<<"$net_json" >/dev/null \
   || fail "a network-weather gemini failure (rc 1) collapsed into login-needed or hid its cause"
 auth_cause=$(jq -r '.vendors.gemini.refresh_error.cause' <<<"$auth_json")
 crash_cause=$(jq -r '.vendors.gemini.refresh_error.cause' <<<"$crash_json")
@@ -728,57 +739,30 @@ jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("refresh_err
   || fail "healed Gemini did not clear its cause or feed the global success gate"
 rm -f "$GEMINI_SENTINEL"
 
-# agy-quota.py detection against a fake agy: the transient "not signed in" during
-# auto-sign-in must not read as login-needed (live regression: menu stuck after re-login).
+# agy-quota.py against a fake agy: print-mode `/usage` yields the quota, and the login line on
+# stderr is the logged-out verdict long before the timeout (tests/test_agy_quota.sh owns the rest).
 FAKE_AGY="$WORK/fake-agy"
 cat >"$FAKE_AGY" <<'EOF'
-#!/usr/bin/env python3
-import http.server, json, os, sys, threading, time
-mode = os.environ.get("FAKE_AGY_MODE", "signin")
-print("Welcome to the Antigravity CLI. You are currently not signed in.")
-if mode == "chooser":
-    print("Select login method")
-    sys.stdout.flush(); time.sleep(30); sys.exit(0)
-print("Signing in...")
-sys.stdout.flush()
-if mode == "stuck":
-    time.sleep(30); sys.exit(0)
-time.sleep(0.3)
-class H(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", 0)))
-        body = json.dumps({"response": {"groups": [{"displayName": "Gemini Models", "buckets": [
-            {"window": "5h", "remainingFraction": 1.0, "resetTime": "2099-01-01T00:00:00Z"},
-            {"window": "weekly", "remainingFraction": 0.5, "resetTime": "2099-01-01T00:00:00Z"}]}]}}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def log_message(self, *args): pass
-srv = http.server.HTTPServer(("127.0.0.1", 0), H)
-threading.Thread(target=srv.serve_forever, daemon=True).start()
-print("Signed in")
-print("? for shortcuts")
-sys.stdout.flush()
-time.sleep(60)
+#!/usr/bin/env bash
+if [ "${FAKE_AGY_MODE:-ok}" = "nologin" ]; then
+  printf 'Authentication required. Please visit the URL to log in:\n' >&2
+  sleep 30
+  exit 0
+fi
+printf '%s\n' '{"conversation_id":"","status":"SUCCESS","response":"","command":{"name":"usage","data":{"description":"shared weekly limit","groups":[{"name":"Gemini Models","description":"","buckets":[{"name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.5,"reset_time":"2099-01-01T00:00:00Z"},{"name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1.0,"reset_time":"2099-01-01T00:00:00Z"}]}]}}}'
 EOF
 chmod +x "$FAKE_AGY"
-agy_out=$(FAKE_AGY_MODE=signin AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
-  AGY_QUOTA_STARTUP_TIMEOUT=15 python3 "$ROOT/agy-quota.py") \
-  || fail "transient auto-sign-in was misread as login needed (rc $?)"
-jq -e '(.groups | type) == "array" and (has("auth_needed") | not)' <<<"$agy_out" >/dev/null \
-  || fail "transient auto-sign-in probe returned no quota"
+agy_out=$(FAKE_AGY_MODE=ok AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" python3 "$ROOT/agy-quota.py") \
+  || fail "print-mode /usage probe failed (rc $?)"
+jq -e '(.groups | type) == "array" and (has("auth_needed") | not) and
+  .groups[0].displayName == "Gemini Models" and
+  ([.groups[0].buckets[] | select(.window == "5h")][0].remainingFraction) == 1.0' <<<"$agy_out" >/dev/null \
+  || fail "print-mode /usage probe returned no quota in the cache shape"
 agy_rc=0
-agy_out=$(FAKE_AGY_MODE=chooser AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
-  AGY_QUOTA_STARTUP_TIMEOUT=15 python3 "$ROOT/agy-quota.py") || agy_rc=$?
-[ "$agy_rc" -eq 2 ] || fail "login chooser: expected exit 2, got $agy_rc"
-jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "login chooser: auth_needed missing"
-agy_rc=0
-agy_out=$(FAKE_AGY_MODE=stuck AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
-  AGY_QUOTA_STARTUP_TIMEOUT=2 python3 "$ROOT/agy-quota.py") || agy_rc=$?
-[ "$agy_rc" -eq 2 ] || fail "stuck sign-in: expected exit 2 on timeout, got $agy_rc"
-jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "stuck sign-in: auth_needed missing"
+agy_out=$(FAKE_AGY_MODE=nologin AGY_BIN="$FAKE_AGY" AGY_WORKDIR="$WORK" \
+  AGY_QUOTA_TIMEOUT=30 python3 "$ROOT/agy-quota.py") || agy_rc=$?
+[ "$agy_rc" -eq 2 ] || fail "login line on stderr: expected exit 2, got $agy_rc"
+jq -e '.auth_needed == true' <<<"$agy_out" >/dev/null || fail "login line on stderr: auth_needed missing"
 
 # Regression: statusline-last.json goes stale while cache-rl keeps updating —
 # the fresher cache-rl must win even though last.json is present and valid.

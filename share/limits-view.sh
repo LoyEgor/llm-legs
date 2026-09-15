@@ -49,6 +49,11 @@ def limits_daily_budget($eff_pct; $days):
     ((if $eff_pct < 0 then 0 elif $eff_pct > 100 then 100 else $eff_pct end) as $p |
      (100 - $p) / limits_budget_days($days))
   end;
+# Failed-probe placeholders are stale with no origin; their nulls mean unknown, not absent.
+def limits_window_absent($b):
+  $b == null or (($b | type) == "object"
+    and ($b.used_pct // $b.used_percentage) == null and $b.resets_at == null
+    and (($b.stale == true and $b.origin == null) | not));
 def limits_reset_text($epoch; $now):
   if $epoch == null or $epoch < limits_reset_epoch_floor
      or limits_reset_ancient($now; $epoch) then "-"

@@ -11,6 +11,11 @@ local DOCTOR_CONTENTS = "<doctor-snapshot>"
 local dialogAnswer = nil
 local dialogCalls = {}
 
+-- What the fake io.open serves for the per-account Fast Mode markers codexb writes, so a test can
+-- exercise the reader the menu actually uses instead of stubbing it out.
+local fastModeMarkers = {}
+local profileFastModeConfigs = {}
+
 -- What AppKit resolves {System, tertiaryLabelColor} to, the tone the renderer dims with. The two
 -- levels are the two appearances: black on a light menu, white on a dark one.
 local SYSTEM_DIM_ALPHA = 0.258824
@@ -90,7 +95,14 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
           .. describeColor(spec))
       return dimTone(interfaceStyle == "Dark" and 1 or 0)
     end } },
-    execute = function() return true end,
+    execute = function(command)
+      local account = tostring(command):match("fast%-mode%s+[\"']?([^%s\"']+)[\"']?%s+status")
+      local value = account and fastModeMarkers[account]
+      if value then
+        return (value:match("priority") or value:match("fast")) and "on\n" or "off\n", true
+      end
+      return "", false
+    end,
     fs = { attributes = fsAttributes or function() return nil end },
     -- The doctor snapshot is a second document read through the same decoder, so the fixture is
     -- chosen by what the fake io.open handed back rather than by call order.
@@ -119,6 +131,15 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         return nil
       end
       local contents = "fixture"
+      local fastAccount = path:match("/%.codexb/fast%-mode/(.+)$")
+      if fastAccount then
+        if fastModeMarkers[fastAccount] == nil then return nil end
+        contents = fastModeMarkers[fastAccount]
+      end
+      local profileAccount = path:match("/%.codex%-profiles/([^/]+)/config%.toml$")
+      if profileAccount and profileFastModeConfigs[profileAccount] then
+        contents = profileFastModeConfigs[profileAccount]
+      end
       if path:match("/doctor%-snapshot%.json$") then
         if doctorSnapshot == nil then return nil end
         contents = DOCTOR_CONTENTS
@@ -128,7 +149,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         contents = workerModel
       end
       return {
-        read = function() return contents end,
+        read = function(_, format)
+          if format == "*l" or format == "l" then return (tostring(contents):match("^[^\r\n]*")) end
+          return contents
+        end,
         lines = function() return tostring(contents):gmatch("[^\r\n]+") end,
         close = function() end,
       }
@@ -417,6 +441,62 @@ for _, vendor in ipairs({ "claude", "codex", "gemini" }) do
     vendor .. " unpinned account did not render an unchecked pin toggle")
 end
 
+do
+  local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)
+  module.codexFastMode = function(name) return name == "codex-pin" end
+  local fastMenu = module.menuItems()
+  local row = accountItem(fastMenu, "codex-pin")
+  assert(titleText(row):find("●", 1, true) and titleText(row):find("⚡", 1, true),
+    "Codex Fast Mode must preserve the worker pin")
+  assert(submenuItem(row, "Fast Mode (workers)").checked == true)
+  local captured
+  module.toggleCodexFastMode = function(name, enabled) captured = {name, enabled} end
+  submenuItem(row, "Fast Mode (workers)").fn()
+  assert(captured[1] == "codex-pin" and captured[2] == true)
+  local other = accountItem(fastMenu, "codex-current")
+  assert(not titleText(other):find("⚡", 1, true))
+  assert(submenuItem(other, "Fast Mode (workers)").checked == false)
+  submenuItem(other, "Fast Mode (workers)").fn()
+  assert(captured[1] == "codex-current" and captured[2] == false)
+end
+
+-- The ⚡ has to come from the file codexb writes: the block above stubs the reader out, so this is
+-- the only place the two halves of the toggle are checked against each other.
+-- `main` is a Codex account like any other here: codexb lists it, writes its marker beside the
+-- profiles' and worker-run reads it, so a reader that skipped the name left a dead toggle on the row.
+do
+  fastModeMarkers = { main = "priority\n" }
+  local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)
+  assert(module.codexFastMode("main") == true, "the base Codex account could not read Fast Mode on")
+  fastModeMarkers = {}
+end
+
+do
+  fastModeMarkers = { ["codex-pin"] = "priority\n", ["codex-current"] = "default\n" }
+  local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)
+  assert(module.codexFastMode("codex-pin") == true, "a priority marker did not read as Fast Mode on")
+  assert(module.codexFastMode("codex-current") == false,
+    "a default marker did not read as Fast Mode off")
+  local markerMenu = module.menuItems()
+  assert(titleText(accountItem(markerMenu, "codex-pin")):find("⚡", 1, true),
+    "the marker codexb writes did not reach the account row")
+  assert(titleText(accountItem(markerMenu, "codex-pin")):find("●", 1, true),
+    "the marker displaced the worker pin")
+  assert(not titleText(accountItem(markerMenu, "codex-current")):find("⚡", 1, true),
+    "an account whose marker says off still rendered ⚡")
+  fastModeMarkers = {}
+end
+
+do
+  profileFastModeConfigs = { ["codex-pin"] = 'service_tier = "priority"\n' }
+  local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)
+  assert(module.codexFastMode("codex-pin") == false,
+    "a profile config without a marker enabled worker Fast Mode")
+  assert(not titleText(accountItem(module.menuItems(), "codex-pin")):find("⚡", 1, true),
+    "a profile config without a marker rendered worker Fast Mode")
+  profileFastModeConfigs = {}
+end
+
 local function claudePinMenu(block)
   return loadModule({ schema = 1, vendors = {
     claude = { available = true, source = "claudeb-store", accounts = { block } },
@@ -551,6 +631,30 @@ local unavailableMenu = routingItem(unavailableRouting.menuItems()).menu
 assert(#unavailableMenu == 1 and titleText(unavailableMenu[1]) == "routing unavailable",
   "missing routing cache did not render the unavailable row")
 assert(isDimmed(unavailableMenu[1].title.attributes), "routing unavailable row was not dimmed")
+
+do
+  local tasks = {}
+  local failedRouting = loadModule(routingFixture, function(path, callback, args)
+    tasks[#tasks + 1] = { path = path, callback = callback, args = args }
+    return { start = function() return true end, setEnvironment = function() end,
+      isRunning = function() return true end }
+  end, routingNow)
+  failedRouting.routingCache = { text = routingText, at = routingNow }
+  failedRouting.refreshRouting()
+  assert(tasks[1] and tasks[1].path == failedRouting.workerPickPath,
+    "routing refresh did not launch worker-pick")
+  tasks[1].callback(1, "", "worker-pick failed")
+  local failedMenu = routingItem(failedRouting.menuItems()).menu
+  local warning
+  for _, item in ipairs(failedMenu) do
+    if titleText(item) == "⚠ routing refresh failed" then warning = item end
+  end
+  assert(warning and warning.disabled == true,
+    "routing refresh failure was not visible in the Routing submenu")
+  local logPath = os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
+  assert(table.concat(failedRouting.__writes[logPath] or {}, ""):find("routing-failed", 1, true),
+    "routing refresh failure was not action-logged")
+end
 
 -- Pool membership is one control with one meaning for every vendor, so the toggle has to exist
 -- on the Codex and Gemini rows too; without it the state is only reachable from a terminal.
@@ -1528,15 +1632,14 @@ do
     "menu Hard refresh did not inject CLAUDEB_WARM_USER_EXPLICIT=true")
   while #tasks > 0 do table.remove(tasks) end
   local menu = mod.menuItems()
-  assert(tasks[1] and tasks[1].env.CLAUDEB_WARM_USER_EXPLICIT == nil,
-    "passive menu collect inherited the manual-warm freeze exemption")
+  assert(#tasks == 0, "menu construction started a collector task")
   for _, item in ipairs(menu) do
     if titleText(item) == "Refresh" or titleText(item) == "Refresh + Start Windows" then
       item.fn()
     end
   end
-  assert(#tasks == 3, "global menu refresh actions did not start two collector tasks")
-  for index = 2, 3 do
+  assert(#tasks == 2, "global menu refresh actions did not start two collector tasks")
+  for index = 1, 2 do
     assert(tasks[index].env.CLAUDEB_WARM_USER_EXPLICIT == "true",
       "global menu refresh did not inject CLAUDEB_WARM_USER_EXPLICIT=true")
   end
@@ -1621,7 +1724,7 @@ residueModule.hardRefreshClaude("full")
 residueTasks[1].running = false
 residueTasks[1].callback(5, "", "collector failed")
 assert(residueModule.refreshState().prefix == "⚠ ", "explicit failure lacked runtime warning evidence")
-residueModule.menuItems()
+residueModule.hardRefreshClaude("full")
 residueTasks[2].running = false
 residueTasks[2].callback(0, "", "")
 assert(residueModule.refreshState().prefix == "", "healthy passive collect left a runtime warning pinned")
@@ -1868,7 +1971,7 @@ assert(watchModule.workerModelWatcher ~= nil,
   "worker-model watcher must be module-scoped so it is not GC'd")
 assert(#watchTasks == 1 and watchStarts == 1, "startup did not refresh routing exactly once")
 assert(watchTasks[1].path == watchModule.workerPickPath, "startup launched the wrong routing command")
-assert(watchTasks[1].env.WORKER_PICK_CACHE_DIR == "/dev/null",
+assert(watchTasks[1].env.WORKER_PICK_CACHE_DIR == os.getenv("HOME") .. "/.cache",
   "routing refresh did not suppress worker-pick cache writes")
 
 local watchNotifies = 0
