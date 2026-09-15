@@ -121,7 +121,7 @@ For LLM sessions asked to fix limits, the menu, or claudeb. Read this before tou
 - `bin/codex-cua-repl-sync` (`--check`) — idempotent sync for Codex CUA REPL MCP server in `~/.codex/config.toml`. Registers `cua_repl` from the newest unified-computer-use plugin bundle (`.mcp.json`), sets `startup_timeout_sec = 120`, and populates empty `NODE_REPL_INSTRUCTIONS_USE_CASE_*` environment variables (TOML-escaped; never `awk -v`). `--check` compares the full desired args/env set, so extra keys are stale too. Repair writes the TOML block even when `codex mcp add` fails and never `mcp remove`s first. Symlinked to `~/.local/bin/codex-cua-repl-sync`. Browse runs `--check` automatically and repairs on exit 1; failed repair excludes the Codex plan and reports its first stderr line. `BROWSE_CUA_SYNC` overrides the sync command, and `BROWSE_CODEX_CONFIG` preserves config-path overrides.
 - `bin/chats`, `bin/chat-find`, `bin/chat-name`, `bin/claude-chat-switch` — the chat surfaces, and this repository is their home (the picker depends on `worker-pick` and on the statusline's cache tracks; `~/.local/bin` symlinks point here). `chat-find --recent --json` is the listing every one of them reads: the last real message of every chat, ordered by when it was last SPOKEN in and never by file mtime, each row naming the chat through `share/chat_names.py` (invariant row `aw`). `bin/chats` renders that as the curses picker — one time column (the clock for a chat spoken in today, the date for anything older, five columns either way), project, model, and either the account still holding this chat's prompt cache or the context size. The screen is painted before any subprocess runs — header `loading…`, no rows, and the account bar as the two stores list it — while the listing, the `llm-limits` table and the `worker-pick` chat account load in parallel threads and repaint as each lands (rows, then percentages, the logged-out accounts dropped and the default account, which never overrides an ←→ made before it landed). The project column names the MAIN checkout a cwd belongs to (`project_label` in `share/chat_names.py`, shared with `chat-find`'s own listing): a cwd under `<repo>/.claude/worktrees/<branch>` — the only worktree layout Egor uses — shows the repository, never the branch directory, since the branch is already in the chat's title and a `git` call per row would be paid on every keystroke of the filter; `--resume` still starts in the worktree itself. Landing on a row whose cache is still within its lifetime selects the account holding it, claudeb or gateway alike (invariant row `bj`); otherwise the account is `worker-pick --role chat` — a claudegpt launch stamp never picks it. ←→ overrides it until the cursor moves, walking one ring over the two-line bar (claudeb profiles, then `gpt:` accounts; shift+↑↓ jumps between the lines), and an account `llm-limits` calls `login needed` is not listed. Typing a filter widens the history window in the background (`searching…` in the header). Enter `exec`s the reopen command in the chat's own cwd, so it lands in the tab the picker was typed in. WHICH command that is belongs to `share/chat_resume.py` and to nothing else: a chat launched through `claudegpt` runs on a gateway account that lives in that launcher's store, so it reopens as `claudegpt p <account> [--model sol|astra] --resume <uuid>` while every Claude chat keeps `claudeb profile <acct> --resume <uuid>` byte for byte. The account comes from the stamp `bin/claudegpt` writes per launch (`<claudegpt-home>/sessions/<uuid>`, `docs/claudegpt.md`) and the `anthropic.ccr.*` model id the transcript carries; a chat launched before stamping existed prints the literal `<gateway-account>` instead of a guess. The same module answers the OTHER question — reopen this chat under the account he PICKED — where the store holding the name decides the launcher (`com` is a claudeb profile and a gateway login at once, and the claudeb one keeps the name), which is what `bin/chats`'s ←→ bar (gateway accounts listed as `gpt:<name>` with their `vendors.codex` share) and `claude-chat-switch --gateway` select; the menu's "Switch chat to this" on a Codex account row is that flag. `Sol`/`Astra` is the model column for both aliases (invariant row `cc`). A mouse click lands the cursor on that row, a second click on the landed row opens it, the wheel scrolls.
 - `bin/claudegpt` — the gateway launcher: Claude Code on an OpenAI subscription (`docs/claudegpt.md`), whose two third-party binaries are **permanent infrastructure, not an experiment** — `EXPERIMENTS.json` deliberately carries no entry for them and `docs/EXIT-PLAN.md` no exit, because there is nothing temporary to dismantle: without them there is no gateway chat at all. Both are pinned builds under `~/.local/lib/claudegpt/bin` (`CLAUDEGPT_BIN` overrides the directory, `bin/claudegpt:30`) and a launch refuses with `claudegpt: missing executable: <path>` if either is absent or not executable (`bin/claudegpt:204-206`), so **installed** is checked with `ls -l ~/.local/lib/claudegpt/bin` — expect `ccr` and `cli-proxy-api`, mode `700`. Their identity: `~/.local/lib/claudegpt/bin/cli-proxy-api --version` prints `CLIProxyAPI Version: 7.2.152` (it then complains about the flag — the version line above that is the answer), while `ccr` (Claude Code Router 0.4.13) has no version flag and answers `~/.local/lib/claudegpt/bin/ccr --help` instead. Neither is a SERVICE: there is no LaunchAgent, and each launch starts its own pair — a CLIProxyAPI bridge on a free loopback port, `Popen`ed and probed at `http://127.0.0.1:<port>/v1/models` until the selected alias appears (`bin/claudegpt:222-260`), and a `ccr` router over a temporary database built per launch (`bin/claudegpt:263-270,303`) — both dying with the chat and taking the temporary directory with them. So **running** is per chat: `pgrep -fl 'cli-proxy-api -config'` lists one bridge per live gateway chat and `pgrep -fl 'ccr --db'` one router each; with no gateway chat open, BOTH being silent is the healthy answer, and a router with no bridge beside it is a launch whose bridge died — that chat's next request fails and relaunching is the fix.
-- `bin/statusline.sh` — Claude Code statusline. Per-segment sources: model/effort/`⚡`(fast_mode)/`1m` chip from the stdin payload; location from `~/.cache/claude-statusline/workdir-<session_id>` when it points at a live git dir (dangling record → unlinked + fall back to `workspace.current_dir`), rendered `<project> » <active>` whenever the active toplevel differs from the launch repo, `@<short-sha>` in red on detached HEAD; the magenta `pin` segment is THIS session's chat pin (`${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`: the vendor word for `*`, else the account; silent without the file — the global pin is the menu's). Rate limits always render from a stamped merged cache, never raw headers: `~/.claude/statusline-cache-rl` for `main` sessions and `~/.claude-profiles/.claudeb/limits/<acct>.json` for explicit claudeb accounts. A live `rate_limits` payload is merged strictly-newer (tmp+mv), except that a session whose `cost.total_cost_usd` grew since its last accepted merge (remembered per session in `~/.cache/claude-statusline/rl-cost-<session_id>`) re-stamps an unchanged window as measured now, and the merge result is what renders so a partial header backfills from cache. Uniform dimming on every path: `five_hour` past 1800s of `as_of` age (legacy caches without `as_of` use file mtime), `seven_day` past 21600s, plus origin=`cached`, expired auth, past `resets_at`, and llm-limits per-bucket stale flags; the `fb` segment reads `$LLM_LIMITS_FILE` (default `~/.llm-limits.json`) and also dims when that file itself is older than 21600s.
+- `bin/statusline.sh` — Claude Code statusline. Per-segment sources: model/effort/`⚡`(fast_mode)/`1m` chip from the stdin payload; location from the last line of `~/.cache/claude-statusline/place-<session_id>` that still resolves (`statusline-place why --session <id>` says which; none → `workspace.current_dir`), rendered `<project> » <active>` whenever the active toplevel differs from the launch repo, `@<short-sha>` in red on detached HEAD; the magenta `pin` segment is THIS session's chat pin (`${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`: the vendor word for `*`, else the account; silent without the file — the global pin is the menu's). Rate limits always render from a stamped merged cache, never raw headers: `~/.claude/statusline-cache-rl` for `main` sessions and `~/.claude-profiles/.claudeb/limits/<acct>.json` for explicit claudeb accounts. A live `rate_limits` payload is merged strictly-newer (tmp+mv), except that a session whose `cost.total_cost_usd` grew since its last accepted merge (remembered per session in `~/.cache/claude-statusline/rl-cost-<session_id>`) re-stamps an unchanged window as measured now, and the merge result is what renders so a partial header backfills from cache. Uniform dimming on every path: `five_hour` past 1800s of `as_of` age (legacy caches without `as_of` use file mtime), `seven_day` past 21600s, plus origin=`cached`, expired auth, past `resets_at`, and llm-limits per-bucket stale flags; the `fb` segment reads `$LLM_LIMITS_FILE` (default `~/.llm-limits.json`) and also dims when that file itself is older than 21600s.
 - `bin/memlogd` — the memory logger, and the one daemon here that ACTS rather than only recording: a LaunchAgent (`com.egor.memlogd`) sampling `vm_stat`/`vm.swapusage`/`ps` into `~/Library/Logs/memlogd/`, with per-incident process-table frames under `frames/`. Its **memory guard** is one rule with no knobs — system available RAM under 3072 MB AND the fattest currently-registered agent process tree over 1536 MB, and that tree's DESCENDANTS are SIGKILLed while its ROOT is spared, so the run's supervisor lives to write an exit code and report the cause. The registry is read from the two writers that already have it: `worker-run`'s per-run `meta.json` `.cli_pid` (the vendor CLI, so the kill takes the agent's commands and not the agent), falling back to `.pid` (the detached supervisor) where a run carries no `cli_pid`, and review-bench's per-cell `pid-<cell artifact>` files under `<state_dir>/benches/<run-id>/`; a run with an `exit_code` is skipped. Every root must also PROVE its identity — its process start (`now - etime`) within 60 s of the instant its writer stamped (`cli_pid_started_at`/`pid_started_at`, the cell file's mtime) — because a pid registered by a supervisor that died before writing `exit_code` outlives its process and macOS reuses the number; unverifiable is skipped, never killed. A kill writes `KILLED` to the day log and appends a `MEMGUARD` record to the cut run's own run dir, which is what `worker-run report`/`wait` print as `MEMGUARD:`. Tracked agents are launched with `NX_PARALLEL=1`/`NX_DAEMON=false` in their own process env only. Decision record: `docs/memory-guard.md`; suite: `bash tests/test_memlogd.sh`. Re-run `bin/memlogd install-agent` after editing the script — launchd runs the deployed copy at `~/.local/libexec/memlogd`, never the checkout.
 
 ## Where to look, per symptom
@@ -257,68 +257,35 @@ Treat `stale`, `expired`, `as_of`, and `effective_pct` as the data-honesty contr
 `statusline-workdir-hook.sh` (PostToolUse matcher
 `Bash|Edit|Write|NotebookEdit|Read|EnterWorktree|ExitWorktree`, plus a PreToolUse matcher
 `Bash|Task|Agent` — `Bash` there only to snapshot the worktree list a `git worktree add` or `move` is
-diffed against, so a PreToolUse registration without it kills that path whole) records the git toplevel a session actually works in; the status line shows it with a
-magenta `»` marker when it differs from the launch repo. That is the only question it answers:
-which changed paths are THIS chat's work is the commit journal's (`<common-dir>/claude-commit-journal`
-— one ledger per checkout family, wherever in it the write happened —
-`<session>TAB<epoch>TAB<path>`), and the `touched-<session_id>` file this hook used to write beside
-it had no reader left once the review segment became the review gate's mouthpiece.
-Rules:
-- Events carrying `agent_id`/`agent_type` report the PARENT `session_id`, so a subagent's Bash,
-  Read, dispatch (and every non-write tool) is ignored — a worker's stray `cd` must never retarget
-  the parent's display, and an Explore agent reads across every repo it can reach. Its
-  Edit/Write/NotebookEdit events do count, but only through the sustained-work run
-  below: three writes in a row into the same other toplevel, in ANY home (worktree or not),
-  since a worker starts where it was dispatched, not where the session lives. With no state file
-  at all a subagent write adopts its toplevel at once, like any other event.
-- Task/Agent (the dispatch tool, named either way depending on harness version) is heard on
-  PreToolUse only — in orchestrator mode the worker's edits happen in a process that reports
-  nothing, so the brief is the only signal, and hearing the PostToolUse replay too would count one
-  dispatch twice. The first ten `/`-rooted tokens of `tool_input.prompt` + `.description` are
-  scanned and the FIRST that clears the exclusions and `cd`s into a git repo wins (briefs name the
-  worker's cwd early; a file path does not resolve). It is write-grade evidence from the session:
-  immediate on a non-worktree home, through the run against a worktree pin.
-- Read (main session only, `file_path` dirname'd) is the weakest evidence and never retargets at
-  once: three consecutive reads into the same other toplevel, in ANY home. With no state file it is
-  ignored — a home is seeded by SessionStart or adopted by a write, never established by a lookup —
-  and a read back home neither rewrites the home nor clears a run in progress, but does interrupt
-  it (its toplevel is appended onto an existing run, never onto an empty one), since without that
-  the three need not be consecutive and scattered lookups alone would move the home.
-- Bash: the LAST `cd`/`git -C` in the command wins (`;`, `&`, `|`, `&&`, `||`, `(`-subshell, and
-  newline-separated all match; `(cd /path && cmd)` is the form the cd-guard hook prescribes).
-  A winning cd that sits after `(` is a subshell one and dies with the command — the session's
-  own cwd never moves — so it retargets only through the same sustained-work run: three
-  consecutive subshell cds into the SAME toplevel (a worktree-pinned home ignores them entirely).
-  A persistent `cd`/`pushd`, and `git -C <dir>`, still retarget on the first one, and the
-  persistent cd is the one thing besides sustained work that breaks a worktree pin: cd-guard
-  denies every persistent cd a session has not unlocked, so one that arrives is a deliberate
-  move. `git -C <dir>` counts only when followed by a mutating
-  subcommand (worktree/checkout/switch/commit/merge/rebase/cherry-pick/revert/restore/stash/
-  am/reset/pull); read-only `git -C ... status/log/diff` never retargets.
-- A Bash `git worktree add` or `git worktree move` is heard on PreToolUse, where it snapshots the
-  worktree lists of the `-C` dir, the session cwd and the current home into
-  `workdir-<sid>.wtadd`; the PostToolUse diff of that union names the created (or moved-to) path (the command
-  text cannot — `... worktree add $N` expands in the shell). Exactly one new path retargets an add;
-  a move rewrites home only when home is the one gone path or under it, and with no snapshot at all
-  it rewrites nothing — unlike an add, whose destination this session just made. A `$` in the parsed token is
-  never correlated against the new path. No snapshot falls back to the parsed token.
-- EnterWorktree records the toplevel of the `worktree at <absolute path>` in `.tool_response`
-  (string or object); ExitWorktree deletes the session's state file. tmp/system/`~/.claude*`/
-  node_modules paths are excluded; records older than 7 days are pruned.
-- Also registered for SessionStart: `source` `startup`/`resume`/`clear` clears the session's
-  workdir state file and re-seeds it from the starting cwd's git toplevel (without a seed the
-  first cd anywhere would adopt THAT dir as home, and worktree stickiness can only protect a
-  home that already exists); `resume` is the one exception — ANY home that still resolves as its
-  own git toplevel is kept, worktree or main checkout alike, because the resume cwd is where the
-  chat was relaunched (usually the main checkout), not where its work lives; a surviving
-  directory is not enough (a worktree without its `.git` link, or any subdirectory, resolves up
-  into the owning checkout, whose branch would then be shown as the workspace); `compact` keeps it — the shell and its
-  cwd survive `/compact`. This runs before the agent filter on purpose: `agent_type` on
-  SessionStart means a top-level `claude --agent` session, not a subagent.
-The statusline itself unlinks a state file that no longer points at a git dir.
+diffed against, so a PreToolUse registration without it kills that path whole) appends this chat's
+place journal through `bin/statusline-place add`; the statusline shows the tree of the journal's
+last line (`docs/statusline-contract.md` "Shown tree", which lists every writer, `worker-run` and
+`review-bench` included). That is the only question it answers: which changed paths are THIS chat's
+work is the commit journal's (`<common-dir>/claude-commit-journal`, `<session>TAB<epoch>TAB<path>`).
+Rules, all in one place because the hook decides nothing else:
+- SessionStart seeds the session cwd only while the journal is missing or empty; this runs before
+  the agent filter on purpose, `agent_type` on SessionStart being a top-level `claude --agent`.
+- Events carrying `agent_id`/`agent_type` report the PARENT `session_id`: only their
+  Edit/Write/NotebookEdit count, exactly like the chat's own; their Bash and dispatches are ignored.
+- Edit/Write/NotebookEdit → `edit` at the file. Read never writes a line.
+- Bash (PostToolUse): a persistent `cd`/`pushd` → `cd`; `(cd X && …)` or a mutating `git -C X` →
+  `git`, only when the command as a whole is not read-only; `git worktree add`/`move` →
+  `enter-worktree` at the path the PreToolUse snapshot (`place-<sid>.snap[.<tool_use_id>]`) diff
+  names, else at the parsed token when it is its own toplevel; `git worktree remove` and a write
+  with no cd and no `-C` → nothing. The parser is `share/statusline-workdir.jq`.
+- Task/Agent PreToolUse → `dispatch` at the first `/`-rooted brief token that is a directory in a
+  git work tree.
+- EnterWorktree → `enter-worktree` at `worktree at <path>` from `.tool_response`; ExitWorktree →
+  `exit-worktree` at `CLAUDE_PROJECT_DIR`, else the session cwd.
+- `statusline-place` drops `/tmp`, `/private/tmp`, `$TMPDIR`, `$HOME/.cache`, `node_modules` and
+  non-git paths, and resolves a file's own symlink first (so `~/.claude/hooks/x.sh` lands on the
+  repository holding it). Journals older than 7 days are pruned hourly.
+
+`statusline-place why --session <session_id>` is the diagnostic: the shown tree, the line that
+chose it, any fallback, and the last 10 lines.
 
 State files are stored at:
-- `~/.cache/claude-statusline/workdir-<session_id>`
+- `~/.cache/claude-statusline/place-<session_id>`
 - `~/.cache/claude-worker-tags/<agent_id>`
 
 `worker-tag-hook.sh` derives the actual relay account/model/effort from Codex, claudeb, or `geminib profile`
@@ -337,8 +304,8 @@ claude/claudeb/anthropic/fable context word in the same output, and nudges the s
 To disable any of these hooks, remove its entry from `hooks.PostToolUse` or `hooks.PreToolUse` in
 `~/.claude/settings.json`.
 
-Debug workdir tracking (a mutating `git -C` subcommand or a `cd` is required to record):
-`jq -cn --arg dir "$PWD" '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:"debug",cwd:$dir,tool_input:{command:("cd " + ($dir | @sh))}}' | ~/.claude/hooks/statusline-workdir-hook.sh; cat ~/.cache/claude-statusline/workdir-debug`
+Debug place tracking (a `cd`, a mutating `git -C` or `(cd X && <write>)` is required to record):
+`jq -cn --arg dir "$PWD" '{hook_event_name:"PostToolUse",tool_name:"Bash",session_id:"debug",cwd:$dir,tool_input:{command:("cd " + ($dir | @sh))}}' | ~/.claude/hooks/statusline-workdir-hook.sh; statusline-place why --session debug`
 
 Debug worker tag capture:
 `echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","agent_type":"codex-worker","agent_id":"debug","tool_input":{"command":"true","description":"Worker account: main · high"}}' | ~/.claude/hooks/worker-tag-hook.sh; cat ~/.cache/claude-worker-tags/debug`
