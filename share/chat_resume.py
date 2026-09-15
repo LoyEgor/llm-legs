@@ -10,10 +10,18 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import gateway_auth  # noqa: E402
+
 GATEWAY_PREFIX = "anthropic.ccr."
 # The launcher's two aliases and the label a model column shows for them; bin/statusline.sh
 # carries the same pair (docs/shared-invariants.md row `cc`).
 GATEWAY_LABELS = {"sol": "Sol", "astra": "Astra"}
+# "Switch chat to this" onto an OpenAI row is a target he picked, not a chat to reproduce, so
+# that surface names this alias instead of inheriting the old chat's. Only the CLI modes below
+# apply it: a library caller reopening a chat (`bin/chats`) is an ordinary reopen and must keep
+# the alias the chat was launched with.
+GATEWAY_SWITCH_ALIAS = "astra"
 STAMP_VERSION = "v1"
 # A chat is reopened months after it was launched, so the stamp is not a cache: it is the
 # only record of which gateway account a transcript belongs to.
@@ -131,8 +139,9 @@ def model_label(model_id):
 
 
 def is_gateway_account(name):
-    return bool(name) and bool(ACCOUNT_OK.match(name)) and os.path.isdir(
-        os.path.join(gateway_home(), "accounts", name))
+    # A usable gateway target is not a directory under the gateway store: an OpenAI
+    # account signed in under codexb is one too. share/gateway_auth.py owns that rule.
+    return bool(name) and bool(ACCOUNT_OK.match(name)) and gateway_auth.is_gateway_account(name)
 
 
 def is_claudeb_profile(name):
@@ -141,12 +150,7 @@ def is_claudeb_profile(name):
 
 
 def gateway_accounts():
-    try:
-        names = os.listdir(os.path.join(gateway_home(), "accounts"))
-    except OSError:
-        return []
-    return sorted(name for name in names if ACCOUNT_OK.match(name)
-                  and os.path.isdir(os.path.join(gateway_home(), "accounts", name)))
+    return gateway_auth.account_names()
 
 
 def gateway_argv(account, session, alias=None):
@@ -183,17 +187,20 @@ def resume_argv(session, account=None, model_id=None):
     return claudeb_argv(account, session)
 
 
-def switch_argv(session, account, model_id=None, gateway=None):
+def switch_argv(session, account, model_id=None, gateway=None, alias=None):
     """The command that reopens chat `session` under the account he picked.
 
     Which launcher that is comes from the store holding the name: `com` names both a
     claudeb profile and a gateway account, and the claudeb one keeps the name, so no
     existing switch changes meaning. `gateway=True` says the name came from a Codex row.
+    Without an explicit `alias` an OpenAI target keeps the alias the chat was launched
+    with — a reopen is not a model change; the switch surfaces pass one.
     """
     if gateway is None:
         gateway = not is_claudeb_profile(account) and is_gateway_account(account)
     if gateway:
-        alias = gateway_alias(model_id) or (model_id if model_id in GATEWAY_LABELS else None) \
+        alias = alias or gateway_alias(model_id) \
+            or (model_id if model_id in GATEWAY_LABELS else None) \
             or (read_stamp(session) or {}).get("model") or None
         return gateway_argv(account, session, alias)
     return claudeb_argv(account, session)
@@ -231,17 +238,23 @@ def main(argv=None):
     launch.add_argument("--gateway", action="store_true")
     launch.add_argument("--model", choices=tuple(GATEWAY_LABELS))
     args = parser.parse_args(argv)
+    # These two modes ARE "Switch chat to this" — `bin/claude-chat-switch` and the
+    # chat-switch-link hook are their only callers — so an OpenAI target is pinned here
+    # rather than in the library, which other surfaces use for an ordinary reopen.
     if args.mode == "launch":
         if args.model and not args.gateway:
             parser.error("launch --model requires --gateway")
-        print(resume_line(launch_argv(args.account, args.gateway, args.model)))
+        model = args.model or (GATEWAY_SWITCH_ALIAS if args.gateway else None)
+        print(resume_line(launch_argv(args.account, args.gateway, model)))
         return 0
     session = args.session
     if args.mode == "switch":
         if not args.account:
             parser.error("switch needs --account")
+        pinned = args.model if args.model in GATEWAY_LABELS else \
+            (GATEWAY_SWITCH_ALIAS if args.gateway else None)
         built = switch_argv(session, args.account, args.model,
-                            gateway=args.gateway)
+                            gateway=args.gateway, alias=pinned)
     else:
         built = resume_argv(session, args.account, args.model)
     print(resume_line(built, args.cwd))

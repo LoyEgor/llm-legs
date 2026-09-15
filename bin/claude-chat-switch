@@ -2,8 +2,8 @@
 set -u
 
 PROFILES_DIR="$HOME/.claude-profiles"
-GATEWAY_DIR="${CLAUDEGPT_HOME:-$HOME/.local/share/claudegpt}/accounts"
 CHAT_RESUME="$(dirname "$(dirname "$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")")")/share/chat_resume.py"
+GATEWAY_AUTH="$(dirname "$CHAT_RESUME")/gateway_auth.py"
 
 mode=unknown
 die() { printf 'claude-chat-switch: mode=%s: %s\n' "$mode" "$*" >&2; exit 1; }
@@ -45,11 +45,7 @@ list_profiles() {
 }
 
 list_gateway_accounts() {
-  local d
-  for d in "$GATEWAY_DIR"/*/; do
-    [ -d "$d" ] || continue
-    printf '  %s\n' "$(basename "$d")"
-  done
+  python3 "$GATEWAY_AUTH" list 2>/dev/null | sed 's/^/  /'
 }
 
 reopen_command() {
@@ -67,17 +63,26 @@ reopen_command() {
 # as a bonus rather than as the target: --self already knows its chat, so a tab that will not
 # classify (or classifies as some other process) leaves that answer alone instead of refusing.
 classify_tab() {
-  local known="${1:-0}" soft="${2:-false}" table result c_mode c_pid c_wait c_shell c_kind
-  table=$(ps -t "${tty_dev#/dev/}" -o pid=,ppid=,stat=,comm=,command= 2>/dev/null) ||
+  local known="${1:-0}" soft="${2:-false}" table executables result c_mode c_pid c_wait c_shell c_kind
+  table=$(ps -t "${tty_dev#/dev/}" -ww -o pid=,ppid=,stat=,comm=,command= 2>/dev/null) ||
     { [ "$soft" = true ] && return 1; die "cannot read tab processes"; }
-  result=$(printf '%s\n' "$table" | CCS_KNOWN_CHAT_PID="$known" python3 -c '
+  # macOS truncates comm to 15 columns unless it is last, even with -ww.
+  executables=$(ps -t "${tty_dev#/dev/}" -ww -o pid=,comm= 2>/dev/null) ||
+    { [ "$soft" = true ] && return 1; die "cannot read tab executables"; }
+  result=$(printf '%s\n' "$table" | CCS_KNOWN_CHAT_PID="$known" CCS_EXECUTABLES="$executables" python3 -c '
 import os, shlex, sys
+executables = {}
+for line in os.environ.get("CCS_EXECUTABLES", "").splitlines():
+    fields = line.split(None, 1)
+    if len(fields) == 2 and fields[0].isdigit():
+        executables[int(fields[0])] = os.path.basename(fields[1])
 rows = {}
 for line in sys.stdin:
     fields = line.split(None, 4)
     if len(fields) == 5 and fields[0].isdigit() and fields[1].isdigit():
         pid, parent, stat, comm, command = fields
-        rows[int(pid)] = (int(parent), stat, os.path.basename(comm), command)
+        if int(pid) in executables:
+            rows[int(pid)] = (int(parent), stat, executables[int(pid)], command)
 chats = [p for p, r in rows.items() if r[2] == "claude" and "Z" not in r[1]]
 known = int(os.environ.get("CCS_KNOWN_CHAT_PID") or 0)
 if known in chats:
@@ -127,7 +132,7 @@ else:
 # account dir). Keep this list in sync with reserved_name in bin/claudeb.
 is_reserved() {
   case "$1" in
-    main|help|add|enable|disable|remove|use|accounts|status|st|profile|p|run|warm|token-upkeep) return 0 ;;
+    main|help|add|enable|disable|remove|use|accounts|status|st|profile|p|run|warm|token-upkeep|export-token) return 0 ;;
     .*|*/*) return 0 ;;
     *) return 1 ;;
   esac
@@ -315,15 +320,18 @@ fi
 
 if [ "$gateway_mode" -eq 1 ]; then
   # "main" is a real gateway login (its own OpenAI account), unlike claudeb's "main".
-  if [ ! -d "$GATEWAY_DIR/$profile" ]; then
-    { printf "claude-chat-switch: mode=$mode: no claudegpt account '%s' under %s\n" "$profile" "$GATEWAY_DIR"
-      printf 'existing claudegpt accounts:\n'; list_gateway_accounts; } >&2
+  # Being a gateway target is not "has a directory under the gateway store": an OpenAI
+  # account signed in under codexb is one too, and share/gateway_auth.py owns that rule.
+  if ! gateway_status=$(python3 "$GATEWAY_AUTH" ready "$profile" 2>/dev/null); then
+    { printf "claude-chat-switch: no usable OpenAI account '%s' (%s)\n" \
+        "$profile" "${gateway_status:-resolver unavailable}"
+      printf 'existing gateway accounts:\n'; list_gateway_accounts; } >&2
     exit 1
   fi
 else
   is_reserved "$profile" && die "'$profile' is not a valid profile name (reserved; \"main\" is not a claudeb profile)."
   if [ ! -d "$PROFILES_DIR/$profile" ]; then
-    { printf "claude-chat-switch: mode=$mode: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
+    { printf "claude-chat-switch: no profile '%s' under %s\n" "$profile" "$PROFILES_DIR"
       printf 'existing profiles:\n'; list_profiles; } >&2
     exit 1
   fi

@@ -38,6 +38,10 @@ CHAT_SWITCH_LUA="${CHAT_SWITCH_LUA:-$ROOT/hammerspoon/config/claude_chat_switch.
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+if [ "${CHAT_SWITCH_SHELL_ONLY:-0}" = 1 ]; then
+  echo "PASS: claude-chat-switch shell-only fixture mode"
+  exit 0
+fi
 
 # HOME is still the real one here, which is what makes the install recognisable.
 case "$CHAT_SWITCH_LUA" in
@@ -77,7 +81,19 @@ case "$*" in
   '-t '*)
     # --self resolves its chat from the REAL process tree, so its table is written by the
     # wrapper that launches the script, with that wrapper's own pid as the claude row.
-    if [ -n "${SELF_TABLE:-}" ]; then cat "$SELF_TABLE"; else printf '%s\n' "$STUB_PS_TABLE"; fi
+    if [[ "$*" == *"pid=,comm="* ]]; then
+      if [ -n "${STUB_PS_EXECUTABLES:-}" ]; then
+        printf '%s\n' "$STUB_PS_EXECUTABLES"
+      elif [ -n "${SELF_TABLE:-}" ]; then
+        awk '{print $1, $4}' "$SELF_TABLE"
+      else
+        printf '%s\n' "$STUB_PS_TABLE" | awk '{print $1, $4}'
+      fi
+    elif [ -n "${SELF_TABLE:-}" ]; then
+      cat "$SELF_TABLE"
+    else
+      printf '%s\n' "$STUB_PS_TABLE"
+    fi
     printf 'read\n' >> "$STUB_PS_READS"
     ;;
   # `ps eww` appends the environment to the command; that is where the chat's
@@ -226,29 +242,54 @@ assert test -z "$PAYLOAD"
 # The gateway store is the OTHER place an account can live, and `claudeb profile` on a
 # claudegpt chat opens the same transcript on a Claude account and a Claude model.
 GW_HOME="$HOME/.local/share/claudegpt"
-mkdir -p "$GW_HOME/accounts/work4" "$GW_HOME/accounts/main" "$GW_HOME/sessions"
+mkdir -p "$GW_HOME/accounts/work4/auth" "$GW_HOME/accounts/main/auth" "$GW_HOME/sessions"
+for gw_account in work4 main; do
+  printf '{"type":"codex","access_token":"fixture","account_id":"acct-%s"}\n' "$gw_account" \
+    >"$GW_HOME/accounts/$gw_account/auth/codex-$gw_account-plus.json"
+done
+# The other store a gateway target can live in: an OpenAI account signed in under codexb
+# and never given a second, browser-driven gateway login.
+CODEX_ONLY="$HOME/.codex-profiles/burkhartor"
+mkdir -p "$CODEX_ONLY"
+python3 - "$CODEX_ONLY/auth.json" <<'PYEOF'
+import base64, json, sys, time
+def segment(payload):
+    return base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+token = f"{segment({'alg': 'none'})}.{segment({'exp': int(time.time()) + 86400})}.sig"
+json.dump({"auth_mode": "chatgpt", "last_refresh": "2026-09-11T15:32:38Z",
+           "tokens": {"access_token": token, "id_token": token,
+                      "refresh_token": "fixture-refresh", "account_id": "acct-burkhartor"}},
+          open(sys.argv[1], "w"))
+PYEOF
 GWSID="cccccccc-dddd-eeee-ffff-000000000000"
 
 run_switch -- --gateway nope "$GWSID"
 assert test "$RC" -eq 1
-assert grep -q "no claudegpt account 'nope'" <<<"$OUT"
-assert grep -q "existing claudegpt accounts:" <<<"$OUT"
+assert grep -q "no usable OpenAI account 'nope'" <<<"$OUT"
+assert grep -q "existing gateway accounts:" <<<"$OUT"
+
+# The systemic bug this resolver closes: a Codex account with no gateway login of its own
+# was refused here while it worked as a Codex worker.
+run_switch -- --gateway burkhartor "$GWSID"
+assert test "$RC" -eq 0
+assert grep -q "claudegpt p burkhartor --model astra --resume $GWSID" <<<"$OUT"
 
 run_switch -- --gateway work4 "$GWSID"
 assert test "$RC" -eq 0
-assert grep -q "launcher=\"claudegpt p work4 --resume $GWSID\"" <<<"$PAYLOAD"
-assert grep -q "claudegpt p work4 --resume $GWSID" <<<"$OUT"
+assert grep -q "launcher=\"claudegpt p work4 --model astra --resume $GWSID\"" <<<"$PAYLOAD"
+assert grep -q "claudegpt p work4 --model astra --resume $GWSID" <<<"$OUT"
 assert test -z "$(grep -o 'claudeb profile work4' <<<"$OUT")"
 
 # "main" is a claudeb reserved word and a real gateway login at the same time.
 run_switch -- --gateway main "$GWSID"
 assert test "$RC" -eq 0
-assert grep -q "launcher=\"claudegpt p main --resume $GWSID\"" <<<"$PAYLOAD"
+assert grep -q "launcher=\"claudegpt p main --model astra --resume $GWSID\"" <<<"$PAYLOAD"
 run_switch -- main "$GWSID"
 assert test "$RC" -eq 1
 
-# The launch stamp carries the model alias the chat was opened with.
-printf 'v1 work4 astra\n' > "$GW_HOME/sessions/$GWSID"
+# Moving onto an OpenAI account is a target he picked, so it opens on the strong alias even
+# when the chat was launched on the other one; the transcript still comes along.
+printf 'v1 work4 sol\n' > "$GW_HOME/sessions/$GWSID"
 run_switch -- --gateway work4 "$GWSID"
 assert test "$RC" -eq 0
 assert grep -q "launcher=\"claudegpt p work4 --model astra --resume $GWSID\"" <<<"$PAYLOAD"
@@ -267,7 +308,7 @@ assert test "$RC" -eq 0
 assert grep -Fq 'mode="bare_shell", wait_pid=0' <<<"$PAYLOAD"
 assert grep -Fq "cwd=\"$FOREIGN_REAL\"" <<<"$PAYLOAD"
 assert grep -Fq 'launcher="claudeb profile olx"' <<<"$PAYLOAD"
-assert test "$(wc -l < "$STUB_PS_READS" | tr -d ' ')" -eq 1
+assert test "$(wc -l < "$STUB_PS_READS" | tr -d ' ')" -eq 2
 assert test -z "$(grep 'cd ' <<<"$OUT")"
 # An id named on the command line is a conversation to REOPEN, shell prompt or not: a bare shell
 # resumes it in its own project instead of silently launching a fresh chat.
@@ -292,7 +333,7 @@ assert grep -Fq 'mode=bare_shell source_kind=shell claude_pid=0 wait_pid=0 shell
 run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_HS_FAIL=1 -- --front --dry-run --gateway work4
 assert test "$RC" -eq 0
 assert test -z "$PAYLOAD"
-assert grep -Fxq 'command=claudegpt p work4' <<<"$OUT"
+assert grep -Fxq 'command=claudegpt p work4 --model astra' <<<"$OUT"
 run_switch STUB_PS_TABLE="$SHELL_TABLE" STUB_HS_FAIL=1 -- --front --gateway work4
 assert test "$RC" -eq 1
 assert test -n "$PAYLOAD"
@@ -319,22 +360,34 @@ for source in claude gateway; do
     expected="claudeb profile olx --resume $sid"
     if [ "$target" = gateway ]; then
       args+=(--gateway); account=work4
-      expected="claudegpt p work4"
-      [ "$source" != gateway ] || expected="$expected --model astra"
-      expected="$expected --resume $sid"
+      expected="claudegpt p work4 --model astra --resume $sid"
     fi
     run_switch STUB_PS_TABLE="$table" -- "${args[@]}" "$account" "$sid"
     assert test "$RC" -eq 0
     assert test -z "$PAYLOAD"
     assert grep -Fq "source_kind=$source claude_pid=103 wait_pid=$expected_pid" <<<"$OUT"
     assert grep -Fq "command=cd '$FOREIGN_REAL' && $expected" <<<"$OUT"
-    assert test "$(wc -l < "$STUB_PS_READS" | tr -d ' ')" -eq 1
+    assert test "$(wc -l < "$STUB_PS_READS" | tr -d ' ')" -eq 2
   done
 done
 run_switch STUB_PS_TABLE="$CHAT_TABLE" STUB_GATEWAY=1 -- --front --dry-run olx "$FSID"
 assert grep -Fq 'source_kind=gateway claude_pid=103 wait_pid=103' <<<"$OUT"
 run_switch STUB_PS_TABLE="$GATEWAY_TABLE" -- --front --gateway work4 "$GWSID"
 assert grep -Fq 'mode="has_chat", wait_pid=101' <<<"$PAYLOAD"
+
+# The actual macOS layout truncates non-final comm columns, including Python and Claude.
+TRUNCATED_TABLE='100 1 S /bin/zsh -zsh
+101 100 S+ /opt/homebrew/Ce /opt/homebrew/Cellar/python/Python /local/bin/claudegpt p work4
+102 101 S+ /Users/egorloy/. /Users/egorloy/.local/lib/claudegpt/bin/ccr launch
+103 102 S+ /Users/egorloy/. /Users/egorloy/.local/bin/claude --resume fixture'
+FULL_EXECUTABLES='100 /bin/zsh
+101 /opt/homebrew/Cellar/python/Python
+102 /Users/egorloy/.local/lib/claudegpt/bin/ccr
+103 /Users/egorloy/.local/bin/claude'
+run_switch STUB_PS_TABLE="$TRUNCATED_TABLE" STUB_PS_EXECUTABLES="$FULL_EXECUTABLES" -- --front --dry-run --gateway work4 "$GWSID"
+assert test "$RC" -eq 0
+assert grep -Fq 'mode=has_chat source_kind=gateway claude_pid=103 wait_pid=101' <<<"$OUT"
+assert test -z "$PAYLOAD"
 
 # --- flag validation -------------------------------------------------------
 run_switch -- --front --self olx "$FSID"
@@ -516,6 +569,11 @@ touch "$HOME/.claude/projects/$TSLUG/$FSID.jsonl"
 run_switch -- --cwd "$TRAP" olx "$FSID"
 assert test "$RC" -eq 0
 assert grep -q "cwd=\"$TRAP_REAL\"" <<<"$PAYLOAD"
+
+if [ "${CHAT_SWITCH_SHELL_ONLY:-0}" = 1 ]; then
+  echo "PASS: claude-chat-switch shell ($asserts assertions); SKIP: Hammerspoon exit-wall harness"
+  exit 0
+fi
 
 # --- hs missing on PATH -> error ------------------------------------------
 NOHS="$WORK/nohs"; mkdir -p "$NOHS"
@@ -940,7 +998,19 @@ print(string.format("PASS: claude-chat-switch exit wall (%d checks)", checks))
 LUA
 } > "$HARNESS"
 
-WALL_OUT=$("$REAL_HS" -c "return dofile([[$HARNESS]])" 2>&1); WALL_RC=$?
+echo "PASS: claude-chat-switch shell ($asserts assertions); checking Hammerspoon harness"
+WALL_OUT=$(python3 - "$REAL_HS" "$HARNESS" <<'PYHS'
+import subprocess, sys
+try:
+    result = subprocess.run([sys.argv[1], "-c", "return dofile([[" + sys.argv[2] + "]])"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=30)
+    print(result.stdout, end="")
+    sys.exit(result.returncode)
+except subprocess.TimeoutExpired:
+    print("FAIL: Hammerspoon IPC did not answer within 30 seconds")
+    sys.exit(1)
+PYHS
+); WALL_RC=$?
 [ "$WALL_RC" -eq 0 ] || printf '%s\n' "$WALL_OUT" >&2
 assert test "$WALL_RC" -eq 0
 assert grep -q 'wall: first grace -> one Enter, grace restarted, exit-wall-passed' <<<"$WALL_OUT"

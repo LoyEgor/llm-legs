@@ -11,13 +11,33 @@ claudegpt p notcom --model astra
 
 Sol is the default. Inside the conversation use `/model anthropic.ccr.sol` or
 `/model anthropic.ccr.astra`. Claude models still use `claudeb`.
+When shared settings contain an `anthropic.ccr.*` model, `claudeb` adds `--model fable[1m]` for interactive and headless launches unless the caller supplies `--model`, without changing the settings file.
 
-On the first interactive launch, a profile without a gateway login displays an
-OpenAI sign-in link, then opens Claude Code automatically after successful login.
-An existing `codexb` login is not automatically imported:
+`codexb status` on a TTY is the second way in: Enter on an account row runs
+`claudegpt p <name> --model astra`, so picking a Codex account there opens Claude Code
+on that OpenAI subscription rather than the Codex CLI. Every other `codexb` verb —
+`profile`/`p`/`run`, `<name> exec`, `login` — still runs native Codex, and the
+account stores are untouched by the change. Its rows are the OpenAI accounts only, the
+way `claudeb status` shows the Anthropic ones only; neither picker offers the other
+vendor's accounts, so each Enter reaches a launcher that can actually open the row.
+
+`astra` rather than the `sol` default is deliberate wherever the OpenAI account is a
+target he PICKED — the status picker's Enter and "Switch chat to this" onto a Codex row.
+`share/chat_resume.py` `GATEWAY_SWITCH_ALIAS` is the one spelling, applied in that
+module's `switch`/`launch` CLI modes — the "Switch chat to this" surfaces — and never
+inside the library helpers (`docs/shared-invariants.md` row `cj`). A bare `sol`/`astra`
+on the command line still wins. Reopening a chat is NOT a switch: `resume`, and the
+library call `bin/chats` reopens through, keep the alias the chat was launched with, so
+a saved Sol conversation reopens on Sol. Switching keeps the transcript either way —
+the resolver emits `--resume <uuid>` exactly as before.
+
+An account already signed in under `codexb` launches straight away: its canonical
+login is reused read-only (see "Which accounts a gateway chat can open" below).
+Launching a chat never opens a browser login automatically. Initial authorization
+for a genuinely new account is explicit:
 
 ```sh
-claudegpt p work4
+claudegpt login work4
 ```
 
 Open the displayed OpenAI authorization link in the browser on this Mac. The
@@ -34,15 +54,19 @@ claudegpt p work4 --continue
 
 `--continue` resumes the latest conversation in that directory. Use Claude Code's
 `--resume` picker when several conversations share a directory. History stays in
-the shared Claude configuration; server-side cache reuse across accounts is not
+the shared Claude configuration; server-side cache reuse across accounts is not guaranteed.
+
 Multiple concurrent conversations can run on the same gateway account. Login and
 initial credential acquisition are serialized with an exclusive lock, while
 authenticated launches run concurrently, each running its own isolated loopback bridge
 and router database.
 
-The launcher reads the usual Claude configuration. Existing `*-worker.md` relay
-definitions are overridden only for this process to inherit the main model;
-their prompts and tools remain unchanged. A short launch-only instruction requests
+The launcher reads the usual Claude configuration. Every existing agent
+definition is overridden only for this process to inherit the main model; their
+prompts and tools remain unchanged. The override covers every agent, not just
+the `*-worker.md` relays, because a launch is `--auth-mode provider-only`: an
+agent keeping its own Claude `model:` pin reaches no credentials and 401s on its
+first turn, before any tool call. A short launch-only instruction requests
 delegation through the existing worker picker. Worker model and account policy
 remain owned by `worker-run`. A process-local wrapper removes gateway authentication
 from `worker-run` launches so workers use their own vendor profiles.
@@ -52,6 +76,41 @@ Pinned bridge binaries are installed in `~/.local/lib/claudegpt/bin`: hishamkara
 Claude Code Router 0.4.13 (`ccr`) and CLIProxyAPI 7.2.152 (`cli-proxy-api`). Their
 release archives were verified against the publishers' release checksums.
 These are third-party adapters; provider compatibility can change.
+
+## Which accounts a gateway chat can open
+
+`share/gateway_auth.py` is the ONE resolver behind readiness, launch and
+"Switch chat to this" — `bin/claudegpt`, `bin/claude-chat-switch` and
+`share/chat_resume.py` all ask it, so no surface can advertise a target another
+refuses. Its roster is every OpenAI account `codexb` knows
+(`~/.codex-profiles/<name>`, `CODEXB_PROFILES_DIR` overrides it, `main` dropped by
+the same removal marker `share/codex-accounts.sh` writes) plus any account that
+still has only a gateway login of its own. That is what closed the systemic
+mismatch: an account working as a Codex worker was refused by the menu item
+because it had no directory in the gateway store.
+
+A Codex profile needs **no second browser login**. The launch projects that
+profile's ACCESS token — and nothing else — into a per-run directory the bridge
+reads instead of the canonical store; the file is written atomically, `0600`,
+inside the launch's own temporary directory and dies with the chat. It
+deliberately carries no `refresh_token` and no `id_token`, which is what keeps the
+Codex CLI the single owner of the rotating secret: with an empty refresh token the
+bridge's refresh path returns the auth untouched (CLIProxyAPI 7.2.152,
+`internal/runtime/executor/codex_executor_auth.go:29-31`, `if refreshToken == ""
+{ return auth, nil }`), so no gateway copy can ever invalidate a working worker.
+The launcher checks the canonical token before launch and periodically during a chat.
+Near expiry, it asks the official Codex app-server `account/read` method with
+`refreshToken: true` to renew the canonical login. A per-profile lock serializes
+these gateway requests; Codex performs its own guarded reload and refresh. The
+bridge receives only the updated access token, never the rotating secret. Other
+Codex commands can also update the canonical login, and the projection follows it.
+Renewal failures are reported without invoking browser authorization.
+
+When both stores contain the name, their `account_id` values must match. A mismatch
+or malformed canonical login is an error, not permission to choose another identity.
+Gateway-only accounts keep their existing login. Each running projection pins its
+initial identity, so replacing a profile cannot silently switch an active chat to
+another account. Readiness and dry-run resolution perform no refreshes or writes.
 
 Gateway logins live under `~/.local/share/claudegpt/accounts/<name>/auth` with
 owner-only permissions. Each launch creates temporary routing settings, binds

@@ -11,12 +11,14 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "share"))
 import chat_resume  # noqa: E402
+import gateway_auth  # noqa: E402
 
 
 MODELS = {"sol": "gpt-5.6-sol", "astra": "gpt-6-astra"}
@@ -85,20 +87,29 @@ def run_setup(db, args, env):
 
 
 def relay_agents(directory):
+    """Every agent definition, re-pinned to the chat's own model.
+
+    The glob covers every agent, not just the `*-worker.md` relays: a launch is
+    `--auth-mode provider-only`, so an agent keeping its own Claude `model:` pin
+    reaches no credentials and 401s on its first turn, before any tool call.
+    """
     agents = {}
-    for path in sorted((directory / "agents").glob("*-worker.md")):
+    for path in sorted((directory / "agents").glob("*.md")):
         parts = path.read_text().split("---", 2)
         if len(parts) != 3:
-            fail("invalid worker definition: " + path.name)
+            continue
         description = re.search(r"^description: (.+)$", parts[1], re.M)
+        if not description:
+            continue
+        # `tools:` is optional and means "inherit every tool"; with the glob over the whole
+        # directory, demanding it would let one stray definition abort the launch.
         tools = re.search(r"^tools: (.+)$", parts[1], re.M)
-        if not description or not tools:
-            fail("unsupported worker definition: " + path.name)
         agents[path.stem] = {
             "description": description.group(1), "prompt": parts[2].strip(),
-            "tools": [tool.strip() for tool in tools.group(1).split(",")],
             "model": "inherit",
         }
+        if tools:
+            agents[path.stem]["tools"] = [tool.strip() for tool in tools.group(1).split(",")]
     return agents
 
 
@@ -112,6 +123,22 @@ def forwarded_value(forwarded, *flags):
                     and not forwarded[index + 1].startswith("-"):
                 return forwarded[index + 1]
     return None
+
+
+def without_forwarded(forwarded, flag):
+    """`forwarded` without `flag` and the value it carries, `--flag=value` included."""
+    kept, skip = [], False
+    for argument in forwarded:
+        if skip:
+            skip = False
+            continue
+        if argument == flag:
+            skip = True
+            continue
+        if argument.startswith(flag + "="):
+            continue
+        kept.append(argument)
+    return kept
 
 
 def launch_session(forwarded):
@@ -166,6 +193,21 @@ def written_session(corpus, cwd, since):
     return chosen
 
 
+def keep_projection(account, directory, path, home, expected_id, stopped, interval=60):
+    previous_error = None
+    while not stopped.wait(interval):
+        try:
+            gateway_auth.prepare(account, home=home, expected_id=expected_id)
+            if not gateway_auth.projection_is_current(account, path, home=home):
+                gateway_auth.project(account, directory, home=home, expected_id=expected_id)
+            previous_error = None
+        except (OSError, ValueError) as error:
+            message = str(error) if isinstance(error, ValueError) else "authorization file unavailable"
+            if message != previous_error:
+                print(f"claudegpt: {message}", file=sys.stderr)
+                previous_error = message
+
+
 def stop(process):
     if process and process.poll() is None:
         process.terminate()
@@ -185,30 +227,37 @@ def main():
     if forwarded[:1] == ["--"]:
         forwarded = forwarded[1:]
     if args.action == "list":
-        for path in sorted((STATE / "accounts").glob("*")):
-            if path.is_dir():
-                status = "ready" if list((path / "auth").glob("*.json")) else "login needed"
-                print(f"{path.name}: {status}")
+        for entry in gateway_auth.roster(home=str(STATE)):
+            source = " via codex login" if entry.source == "codex" else ""
+            detail = f" ({entry.detail})" if entry.detail else ""
+            print(f"{entry.name}: {entry.status}{source}{detail}")
         return 0
     if not args.account:
         fail("an account name is required")
     account = account_dir(args.account)
     auth = account / "auth"
     logins = list(auth.glob("*.json"))
+    resolved = gateway_auth.resolve(args.account, home=str(STATE))
     if args.action == "login" and logins:
         fail("this profile already has a gateway login; use another name for a new login")
-    if args.action != "login" and not logins and any(arg in ("-p", "--print") for arg in forwarded):
-        fail(f"run claudegpt login {args.account} first")
+    if args.action == "login" and resolved.source == "codex":
+        fail("this profile already has a Codex login; use another name for a gateway login")
     if len(logins) > 1:
         fail("each profile must contain exactly one gateway login")
+    needs_login = args.action == "login"
+    if not needs_login:
+        try:
+            resolved = gateway_auth.prepare(args.account, home=str(STATE))
+        except ValueError as error:
+            fail(str(error))
     for executable in ("ccr", "cli-proxy-api"):
         if not os.access(BIN / executable, os.X_OK):
             fail("missing executable: " + str(BIN / executable))
-    auth.mkdir(parents=True, mode=0o700, exist_ok=True)
-    account.chmod(0o700)
-    auth.chmod(0o700)
     lock = None
-    if args.action == "login" or not logins:
+    if needs_login:
+        auth.mkdir(parents=True, mode=0o700, exist_ok=True)
+        account.chmod(0o700)
+        auth.chmod(0o700)
         lock = (account / "active.lock").open("a")
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -220,10 +269,17 @@ def main():
     with tempfile.TemporaryDirectory(prefix="claudegpt-") as temporary:
         temp = Path(temporary)
         port = free_port()
+        # The bridge reads a per-run directory, not the canonical Codex store: what lands
+        # there is an access-token-only projection it cannot rotate.
+        projection = None
+        bridge_auth = auth
+        if not needs_login and resolved.source == "codex":
+            bridge_auth = temp / "auth"
+            projection = gateway_auth.project(args.account, bridge_auth, home=str(STATE))
         settings = temp / "proxy.yaml"
-        settings.write_text(json.dumps(config(auth, port)))
+        settings.write_text(json.dumps(config(bridge_auth, port)))
         proxy_command = [str(BIN / "cli-proxy-api"), "-config", str(settings)]
-        if args.action == "login" or not logins:
+        if needs_login:
             print(f"claudegpt: sign in to OpenAI for {args.account} using the link below.", file=sys.stderr)
             try:
                 result = subprocess.call([*proxy_command, "-codex-login", "-no-browser"], env=env)
@@ -243,7 +299,10 @@ def main():
             if lock:
                 lock.close()
                 lock = None
+            bridge_auth = auth
         proxy = None
+        keeper = None
+        stopped = threading.Event()
         try:
             proxy = subprocess.Popen([*proxy_command, "-local-model"], env=env,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -302,15 +361,25 @@ def main():
             env["PATH"] = str(wrappers) + os.pathsep + env.get("PATH", "")
             command = [str(BIN / "ccr"), "--db", str(db), "launch", "--model", args.model,
                        "--auth-mode", "provider-only", "--no-history", "--no-lifecycle", "--no-statusline"]
+            # ccr owns --permission-mode and refuses every CCR option that follows `--`, so a
+            # mode a caller appends as an ordinary Claude Code option is moved here, not dropped:
+            # the launch keeps the permission policy the caller asked for.
+            mode = forwarded_value(forwarded, "--permission-mode")
+            if mode is not None:
+                forwarded = without_forwarded(forwarded, "--permission-mode")
+                command += ["--permission-mode", mode]
             if "-p" in forwarded or "--print" in forwarded:
                 command.append("-p")
                 forwarded = [arg for arg in forwarded if arg not in ("-p", "--print")]
             command += ["--"]
+            if not any(arg == "--effort" or arg.startswith("--effort=") for arg in forwarded):
+                command += ["--effort", env.get("CLAUDE_CODE_EFFORT_LEVEL") or "high"]
             if agents:
                 command += ["--agents", json.dumps(agents), "--append-system-prompt",
-                            "For implementation work, act as the orchestrator: run worker-pick and delegate "
-                            "through its selected existing relay worker. Relay agents inherit this chat's model; "
-                            "do not override their model. Existing worker pool, account and permission rules apply."]
+                            "For implementation tasks, implement directly or delegate through the selected "
+                            "worker-run relay from worker-pick. Never use native implementation agents. Task size "
+                            "is never a refusal condition: delegate larger tasks and verify the result. Preserve "
+                            "existing worker-pool, account, permission, and model-routing rules."]
             session, pin = launch_session(forwarded)
             command += forwarded + pin
             corpus = str(directory / "projects")
@@ -319,6 +388,11 @@ def main():
             print(f"claudegpt: account={args.account} model={args.model}; /model selects Sol or Astra. "
                   "Claude models require claudeb. Resume with another account using --continue or --resume.",
                   file=sys.stderr)
+            if projection:
+                keeper = threading.Thread(target=keep_projection, daemon=True,
+                                          args=(args.account, bridge_auth, projection, str(STATE),
+                                                resolved.account_id, stopped))
+                keeper.start()
             started = time.time()
             code = subprocess.call(command, env=env)
             if not session:
@@ -328,6 +402,9 @@ def main():
             chat_resume.sweep_stamps(corpus, home=str(STATE))
             return code
         finally:
+            stopped.set()
+            if keeper:
+                keeper.join(timeout=70)
             stop(proxy)
             if lock:
                 lock.close()
