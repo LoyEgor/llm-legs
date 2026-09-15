@@ -109,13 +109,13 @@ chat_pins_dir() { printf '%s' "${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}";
 
 # Cyrillic stays out of bracket expressions and `?`: a C-locale hook reads them byte by byte.
 chat_pin_target() { # prompt → target
-  local msg tok
-  msg=${1#"${1%%[![:space:]]*}"}
-  msg=${msg%"${msg##*[![:space:]]}"}
-  case "$msg" in '' | *$'\n'*) return 1 ;; esac
-  msg=$(printf '%s\n' "$msg" |
-    sed -E 's/^([[:space:].,!?;:"'\'']|«|»)+//; s/([[:space:].,!?;:"'\'']|«|»)+$//' |
-    LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]') || return 1
+  local raw msg tok
+  raw=${1#"${1%%[![:space:]]*}"}
+  raw=${raw%"${raw##*[![:space:]]}"}
+  case "$raw" in '' | *$'\n'*) return 1 ;; esac
+  raw=$(printf '%s\n' "$raw" |
+    sed -E 's/^([[:space:].,!?;:"'\'']|«|»)+//; s/([[:space:].,!?;:"'\'']|«|»)+$//') || return 1
+  msg=$(printf '%s\n' "$raw" | LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]') || return 1
   if [[ "$msg" =~ ^(workers|worker|воркеры|воркер)[[:space:]]+(авто|auto)$ ]]; then
     printf 'auto'
     return 0
@@ -123,13 +123,15 @@ chat_pin_target() { # prompt → target
   [[ "$msg" =~ ^(workers|worker|воркеры|воркер)[[:space:]]+(на|on)[[:space:]]+([^[:space:]]+)$ ]] ||
     return 1
   tok=${BASH_REMATCH[3]}
+  # Pool names are case-sensitive: an account is granted as typed, only aliases are folded.
+  raw=${raw##*[[:space:]]}
   case "$tok" in
     codex | кодекс) printf 'codex' ;;
     claude | cloud | клод | клауд) printf 'claudeb' ;;
     gemini | джемини | джеминай) printf 'gemini' ;;
     grok | грок | grock | groq) printf 'grok' ;;
     auto | авто) printf 'auto' ;;
-    *) [[ "$tok" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1; printf '%s' "$tok" ;;
+    *) [[ "$raw" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1; printf '%s' "$raw" ;;
   esac
 }
 

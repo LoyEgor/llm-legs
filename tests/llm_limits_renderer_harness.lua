@@ -1315,6 +1315,32 @@ do
   assert(tasks[1] and tasks[1].path:find("geminib", 1, true)
       and tasks[1].args[1] == "use" and tasks[1].args[2] == "main",
     "single-account Gemini pin launched the wrong action")
+
+  -- The sole row names two different pins: `main` alone, and every Gemini account (`*`).
+  local starRow = accountItem(loadModule(fixture, nil, nil, nil, nil,
+    "gemini_profile=*").menuItems(), "Gemini")
+  local pinTitles = {}
+  for _, item in ipairs(starRow.menu) do
+    local text = titleText(item)
+    if text:find("Pin", 1, true) then
+      assert(not pinTitles[text], "single-account Gemini repeats the pin item " .. text)
+      pinTitles[text] = item
+    end
+  end
+  assert(pinTitles["Pin for workers"] and pinTitles["Pin for workers"].checked ~= true
+      and pinTitles["Pin vendor for workers"] and pinTitles["Pin vendor for workers"].checked == true,
+    "gemini_profile=* did not check the vendor pin apart from the account pin")
+
+  -- A logged-out sole Gemini under `*` still shows the pin and offers to clear it.
+  local loggedOut = { schema = 1, vendors = {
+    gemini = { available = false, auth_needed = true, status = "login needed" },
+  }}
+  local outRow = rowContaining(loadModule(loggedOut, nil, nil, nil, nil,
+    "gemini_profile=*").menuItems(), "login needed")
+  assert(titleText(outRow):find("●", 1, true), "gemini_profile=* lost ● on the login-needed row")
+  local outClear = submenuItem(outRow, "Pin vendor for workers")
+  assert(outClear and outClear.checked == true,
+    "gemini_profile=* login-needed row offered no checked vendor pin to clear")
 end
 
 do
@@ -1506,7 +1532,7 @@ for _, case in ipairs(loginCases) do
       .. (case.roleSwitches and " plus the two role switches, vendor pin and Pause" or ""))
   if case.roleSwitches then
     assert(titleText(row.menu[4]) == "For workers" and titleText(row.menu[5]) == "For reviewers"
-        and titleText(row.menu[6]) == "Pin for workers"
+        and titleText(row.menu[6]) == "Pin vendor for workers"
         and titleText(row.menu[7]) == "Pause",
       case.vendor .. " login row lost the vendor's role switches, pin or Pause")
   end
@@ -2049,9 +2075,9 @@ do
   for _, case in ipairs(cases) do
     local header = headerRow(mod.menuItems(), case.label)
     assert(header.disabled ~= true, case.label .. " header stayed disabled with a submenu")
-    local vendorPin = submenuItem(header, "Pin for workers")
+    local vendorPin = submenuItem(header, "Pin vendor for workers")
     assert(vendorPin and vendorPin.checked ~= true,
-      case.label .. " header lost the vendor Pin for workers, or checked it with no * pin")
+      case.label .. " header lost the vendor Pin vendor for workers, or checked it with no * pin")
     -- A whole-vendor pool switch is gone for good: an accidental Disable all emptied the pool,
     -- and nothing else in the menu can do that in one click.
     for _, title in ipairs({ "Enable all", "Disable all" }) do
@@ -2073,9 +2099,9 @@ end
 do
   local starMenu = loadModule(pinFixture, nil, nil, nil, nil, "codex_profile=*").menuItems()
   local starHeader = headerRow(starMenu, "Codex")
-  local starPin = submenuItem(starHeader, "Pin for workers")
+  local starPin = submenuItem(starHeader, "Pin vendor for workers")
   assert(starPin and starPin.checked == true,
-    "codex_profile=* did not check the vendor Pin for workers")
+    "codex_profile=* did not check the vendor Pin vendor for workers")
   assert(titleText(starHeader):find("●", 1, true),
     "codex_profile=* did not put ● on the Codex vendor row")
   assert(not accountHasMarker(starMenu, "codex-pin"),
@@ -2095,9 +2121,9 @@ do
   end
 
   local namedHeader = headerRow(pinMenu, "Codex")
-  local namedVendorPin = submenuItem(namedHeader, "Pin for workers")
+  local namedVendorPin = submenuItem(namedHeader, "Pin vendor for workers")
   assert(namedVendorPin and namedVendorPin.checked ~= true,
-    "codex_profile=name checked the vendor Pin for workers")
+    "codex_profile=name checked the vendor Pin vendor for workers")
   assert(not titleText(namedHeader):find("●", 1, true),
     "codex_profile=name painted ● on the Codex vendor row")
   assert(accountHasMarker(pinMenu, "codex-pin"),
@@ -2109,7 +2135,7 @@ do
 
   local starTasks = {}
   local starMod = loadModule(pinFixture, captureTasks(starTasks), nil, nil, nil, "codex_profile=*")
-  local starClear = submenuItem(headerRow(starMod.menuItems(), "Codex"), "Pin for workers")
+  local starClear = submenuItem(headerRow(starMod.menuItems(), "Codex"), "Pin vendor for workers")
   while #starTasks > 0 do table.remove(starTasks) end
   starClear.fn()
   assert(starTasks[1] and starTasks[1].path:find("codexb", 1, true)
@@ -2120,7 +2146,7 @@ do
   local setTasks = {}
   local setMod = loadModule(pinFixture, captureTasks(setTasks), nil, nil, nil,
     "codex_profile=codex-pin")
-  local setPin = submenuItem(headerRow(setMod.menuItems(), "Codex"), "Pin for workers")
+  local setPin = submenuItem(headerRow(setMod.menuItems(), "Codex"), "Pin vendor for workers")
   while #setTasks > 0 do table.remove(setTasks) end
   setPin.fn()
   assert(setTasks[1] and setTasks[1].path:find("codexb", 1, true)
@@ -2456,8 +2482,8 @@ do
     assert(reviewers and reviewers.checked == case.reviewers,
       case.label .. " For reviewers did not read the role flag")
     assert(submenuIndex(header, "For workers") < submenuIndex(header, "For reviewers")
-        and submenuIndex(header, "For reviewers") < submenuIndex(header, "Pin for workers")
-        and submenuIndex(header, "Pin for workers") < submenuIndex(header, "Pause")
+        and submenuIndex(header, "For reviewers") < submenuIndex(header, "Pin vendor for workers")
+        and submenuIndex(header, "Pin vendor for workers") < submenuIndex(header, "Pause")
         and submenuIndex(header, "Pause") < submenuIndex(header, "Refresh"),
       case.label .. " role switches or vendor pin did not sit above Refresh")
   end

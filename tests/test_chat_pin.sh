@@ -24,7 +24,7 @@ cat >"$LLM_LIMITS_FILE" <<'JSON'
 {"vendors": {
   "claude": {"accounts": [{"account": "alpha"}, {"account": "shared"}]},
   "codex": {"accounts": [{"account": "beta"}, {"account": "shared"}, {"account": "benched"}]},
-  "gemini": {"accounts": [{"account": "gamma"}]},
+  "gemini": {"accounts": [{"account": "gamma"}, {"account": "Zeta"}]},
   "grok": {"accounts": [{"account": "delta"}, {"account": "gone", "removed": true}]}
 }}
 JSON
@@ -116,6 +116,13 @@ assert chat_is 'claudeb_profile=*'
 grant BETA
 assert "$PIN" beta
 assert chat_is 'codex_profile=beta'
+# The pool's own spelling is the name: the hook grants «workers on Zeta» as typed.
+grant Zeta
+assert exits 2 "$PIN" zeta
+assert "$PIN" Zeta
+assert chat_is 'gemini_profile=Zeta'
+grant beta
+assert "$PIN" beta
 
 # Another chat's grant opens nothing here.
 rm -f "$GRANT"
@@ -148,5 +155,36 @@ assert contains "$("$PIN")" 'every grok pool account (*)'
 assert [ "$(worker_model_pin_scope grok)" = vendor ]
 assert [ "$(worker_model_pins grok)" = delta ]
 assert [ "$(worker_model_pin_scope codex)" = none ]
+
+# A wall that empties the chat file removes it: an empty chat file would still ask for a grant.
+export WORKER_WALLS_DIR="$WORK/walls"
+worker_walls_record grok delta "$(($(date +%s) + 3600))"
+assert worker_model_clear_walled_pin grok delta 2>/dev/null
+assert_fails test -e "$CHAT"
+assert [ "$(worker_model_pin_scope grok)" = none ]
+: >"$CHAT"
+assert exits 0 "$PIN" auto
+assert contains "$(cat "$WORK/out")" 'no chat pin'
+
+# A `*` pin's first account is worker-pick's pick among the pins, never the store's order.
+FAKE="$WORK/fake-root"
+mkdir -p "$FAKE/share" "$FAKE/bin"
+cp "$ROOT"/share/worker-model.sh "$ROOT"/share/worker-pool.sh "$ROOT"/share/worker-walls.sh "$FAKE/share/"
+printf 'codex_profile=*\n' >"$CHAT"
+first_with_pick() { # stub body → pin_first codex
+  printf '#!/usr/bin/env bash\n%s\n' "$1" >"$FAKE/bin/worker-pick"
+  chmod +x "$FAKE/bin/worker-pick"
+  (. "$FAKE/share/worker-model.sh" && worker_model_pin_first codex)
+}
+assert [ "$(first_with_pick '[ "$*" = "--account codex" ] && echo shared')" = shared ]
+assert [ "$(first_with_pick 'echo benched')" = beta ]
+assert [ "$(first_with_pick 'exit 3')" = beta ]
+printf 'codex_profile=shared,beta\n' >"$CHAT"
+assert [ "$(first_with_pick 'echo beta')" = shared ]
+
+# An unreadable limits store expands `*` to nothing, and says which file it could not read.
+printf 'codex_profile=*\n' >"$CHAT"
+assert [ -z "$(LLM_LIMITS_FILE="$WORK/missing.json" worker_model_pins codex 2>"$WORK/err")" ]
+assert contains "$(cat "$WORK/err")" "$WORK/missing.json"
 
 printf 'PASS: %s asserts; chat-pin writes one pin line for one chat — a vendor as `*`, an account through the vendor whose live pool holds it, ambiguous and unknown names refused — and inside a session only with a fresh grant naming this chat and this target\n' "$asserts"

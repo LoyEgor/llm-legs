@@ -195,17 +195,22 @@ worker_model_pin_split() { # raw value -> one name per line
 # The accounts a `*` pin covers: every account the limits store carries for the vendor that the
 # pool admits. Out-of-pool accounts stay out — only an account pin overrides the pool.
 worker_model_pool_accounts() {
-  local vendor="${1-}" store_vendor dir name
+  local vendor="${1-}" store_vendor dir name names store="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
   dir=$(worker_pool_dir "$vendor") || return 2
   store_vendor=$vendor
   [ "$store_vendor" != claudeb ] || store_vendor=claude
+  if ! names=$(jq -r --arg v "$store_vendor" '
+    .vendors[$v] | select(type == "object" and .removed != true) |
+    if (.accounts | type) == "array" then .accounts[] | select(.removed != true) | (.account // "main")
+    else "main" end' "$store" 2>/dev/null); then
+    printf 'worker-model: cannot read the limits store %s — a * pin covers no %s account\n' \
+      "$store" "$vendor" >&2
+    return 1
+  fi
   while IFS= read -r name; do
     [ -n "$name" ] || continue
     worker_pool_is_disabled "$dir" "$name" || printf '%s\n' "$name"
-  done < <(jq -r --arg v "$store_vendor" '
-    .vendors[$v] | select(type == "object" and .removed != true) |
-    if (.accounts | type) == "array" then .accounts[] | select(.removed != true) | (.account // "main")
-    else "main" end' "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null | awk '!seen[$0]++')
+  done < <(awk '!seen[$0]++' <<<"$names")
 }
 
 worker_model_pin_scope() {
@@ -233,8 +238,18 @@ worker_model_pins() {
   fi
 }
 
+# A `*` pin's first account is the one worker-pick ranks first, never the store's listing order.
 worker_model_pin_first() {
-  worker_model_pins "${1-}" | head -n1
+  local vendor="${1-}" pins first
+  pins=$(worker_model_pins "$vendor")
+  [ -n "$pins" ] || return 0
+  if [ -z "${WORKER_MODEL_IN_PICK:-}" ] && [ "$(worker_model_pin_scope "$vendor")" = vendor ] &&
+    first=$(WORKER_MODEL_IN_PICK=1 "${BASH_SOURCE[0]%/*}/../bin/worker-pick" --account "$vendor" \
+      2>/dev/null) && grep -qxF -- "$first" <<<"$pins"; then
+    printf '%s\n' "$first"
+    return 0
+  fi
+  printf '%s\n' "${pins%%$'\n'*}"
 }
 
 worker_model_pin_has() {
@@ -280,7 +295,11 @@ worker_model_pin_write() { # vendor key op(set|add|remove) argument [file]
       if [ -r "$file" ]; then grep -Ev "^${key}(_wall)?=" "$file" || true; fi
       [ -z "$csv" ] || printf '%s=%s\n' "$key" "$csv"
     } >"$tmp" || return 2
-    mv "$tmp" "$file" || return 2
+    if [ ! -s "$tmp" ] && [ "$file" = "$(worker_model_chat_pin_file 2>/dev/null)" ]; then
+      rm -f "$tmp" "$file" || return 2
+    else
+      mv "$tmp" "$file" || return 2
+    fi
     trap - EXIT
   ) 9>"$file.lock"
 }

@@ -96,7 +96,7 @@ case "$arg" in
     ;;
 esac
 
-if [ -z "$line" ] && [ ! -e "$file" ]; then show_state "$file"; exit 0; fi
+if [ -z "$line" ] && [ ! -s "$file" ]; then show_state "$file"; exit 0; fi
 
 granted "$target" ||
   die "no fresh grant for '$target': the chat pin is Egor's to move — it opens when he says «workers on ${target}» ($(worker_model_chat_pin_grant) holding '$target', younger than ${WORKER_MODEL_PIN_TTL_MIN}m); ask him in one line" 3

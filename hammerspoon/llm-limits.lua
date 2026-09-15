@@ -1591,7 +1591,7 @@ function M.menuItems()
       end
       local vendorPinned = vendorPins[vendorKey] == true
       table.insert(items, {
-        title = "Pin for workers",
+        title = "Pin vendor for workers",
         checked = vendorPinned,
         fn = function() pinVendor(vendorKey, vendorPinned) end,
       })
@@ -1655,10 +1655,14 @@ function M.menuItems()
         local authNeeded = type(vendor) == "table" and vendor.auth_needed == true
         local unavailableRow
         if entry.key == "gemini" and authNeeded then
+          local age, needsEntry = formatAccountAge(vendor.as_of), vendor.needs_user_entry == true
           unavailableRow = geminiLoginNeededRow(entry.label, "main", pinSet["main"] == true,
-            formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, roleOff,
-            vendor.age_alarm == true)
+            age, needsEntry, roleOff, vendor.age_alarm == true)
           if pinSet["main"] then renderedPins["main"] = true end
+          if vendorPins[entry.key] then
+            unavailableRow.title = loginNeededTitle(entry.label, true, age, needsEntry, roleOff,
+              vendor.age_alarm == true)
+          end
         else
           local unavailableTitle
           if authNeeded then

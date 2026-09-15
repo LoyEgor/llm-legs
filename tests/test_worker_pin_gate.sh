@@ -432,7 +432,8 @@ Workers auto!|auto
 worker auto|auto
 воркер авто|auto
 workers on rudolfelijah|rudolfelijah
-workers on Main|main
+workers on Main|Main
+Воркеры на Alpha.|Alpha
 воркеры на rawilimo481|rawilimo481
 CASES
 
