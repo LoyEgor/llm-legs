@@ -104,6 +104,42 @@ rm -f "$CLAUDEB_DIR/tokens/com" "$CLAUDEB_DIR/tokens/notcom" "$CLAUDEB_DIR/token
 # fixtures control the full account set.
 rm -rf "$HOME/.claude-profiles/com" "$HOME/.claude-profiles/notcom"
 
+MODEL_HOME="$WORK/model-home"
+MODEL_BIN="$WORK/model-bin"
+MODEL_ARGV="$WORK/model-argv"
+mkdir -p "$MODEL_HOME/.claude" "$MODEL_HOME/.claude-profiles/model-test" "$MODEL_BIN"
+cat >"$MODEL_BIN/claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$MODEL_ARGV"
+EOF
+chmod +x "$MODEL_BIN/claude"
+model_run() {
+  env HOME="$MODEL_HOME" CLAUDEB_DIR="$MODEL_HOME/store" PATH="$MODEL_BIN:$PATH" \
+    MODEL_ARGV="$MODEL_ARGV" bash "$SCRIPT" profile model-test "$@" >/dev/null 2>&1
+}
+for model in anthropic.ccr.astra anthropic.ccr.sol; do
+  printf '{"model":"%s"}\n' "$model" >"$MODEL_HOME/.claude/settings.json"
+  assert model_run
+  assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' --model 'fable[1m]')"
+  assert test -L "$MODEL_HOME/.claude-profiles/model-test/settings.json"
+  assert model_run -p 'noop'
+  assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' --model 'fable[1m]' -p noop)"
+  assert model_run --model haiku
+  assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' --model haiku)"
+  assert model_run -p 'noop' --model=haiku
+  assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop --model=haiku)"
+  assert test "$(cat "$MODEL_HOME/.claude/settings.json")" = "{\"model\":\"$model\"}"
+done
+for settings in '{"model":"claude-fable-5-1[1m]"}' '{}' '{invalid'; do
+  printf '%s\n' "$settings" >"$MODEL_HOME/.claude/settings.json"
+  assert model_run -p 'noop'
+  assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"
+  assert test "$(cat "$MODEL_HOME/.claude/settings.json")" = "$settings"
+done
+rm "$MODEL_HOME/.claude/settings.json"
+assert model_run -p 'noop'
+assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"
+
 now=$(date +%s)
 short_epoch=$((now + 3600))
 week_epoch=$((now + 172800))
@@ -2209,18 +2245,28 @@ EOF
   (
     export HOME="$st_home" CLAUDEB_DIR="$st_store" PATH="$st_bin:$PATH"
     export LLM_LIMITS_CACHE="$WORK/claudeb-tui.json" CLAUDEB_WORKER_PICK="$st_bin/pick"
+    # The codex block shares the store: this picker must neither offer an OpenAI account nor
+    # ever reach the gateway launcher — Anthropic rows, Anthropic models, native `claude`.
     jq -n --argjson now "$st_now" '{vendors:{claude:{accounts:[
       {account:"aa",five_hour:{used_pct:12,as_of:$now}},
-      {account:"bb",five_hour:{used_pct:40,as_of:$now}}]}}}' >"$LLM_LIMITS_CACHE"
+      {account:"bb",five_hour:{used_pct:40,as_of:$now}}]},
+      codex:{accounts:[{account:"gptonly",five_hour:{used_pct:7,as_of:$now}}]}}}' >"$LLM_LIMITS_CACHE"
+    gpt_marker="$WORK/claudeb-gateway-called"
+    rm -f "$gpt_marker"
     printf '#!/usr/bin/env bash\n[ "$*" = "--account claudeb --role chat" ] || exit 2\nprintf bb\n' >"$st_bin/pick"
     printf '#!/usr/bin/env bash\nprintf "LAUNCHED=%%s\\n" "$CLAUDE_LIMITS_ACCOUNT"\n' >"$st_bin/claude"
-    chmod +x "$st_bin/pick" "$st_bin/claude"
+    printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s"\n' "$gpt_marker" >"$st_bin/claudegpt"
+    chmod +x "$st_bin/pick" "$st_bin/claude" "$st_bin/claudegpt"
     tty_out=$(python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT") || fail "claudeb TTY Enter failed"
     assert grep -qF $'\033[7m* bb' <<<"$tty_out"
     assert grep -qF 'LAUNCHED=bb' <<<"$tty_out"
     assert grep -qF '↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit' <<<"$tty_out"
+    assert_fails grep -qF gptonly <<<"$tty_out"
+    assert test ! -e "$gpt_marker"
     tty_out=$(CLAUDEB_WORKER_PICK="$CHAT_PICK_NONE" python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT") || fail "claudeb TTY fallback failed"
     assert grep -qF 'LAUNCHED=aa' <<<"$tty_out"
+    assert_fails grep -qF gptonly <<<"$tty_out"
+    assert test ! -e "$gpt_marker"
     assert test ! -e "$net_log"
   ) || exit 1
   acc_out=$(PATH="$st_bin:$PATH" HOME="$st_home" CLAUDEB_DIR="$st_store" bash "$SCRIPT" accounts --no-spend) \
@@ -2771,4 +2817,58 @@ EOF
   assert jq -se 'any(.[]; .account == "rv401" and .kind == "revive" and .outcome == "warm-failed")' "$token_attempts_file" >/dev/null
 ) || exit 1
 
-echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, the wall standing at worker-pick's 100 on both buckets and the all-walled warning naming the reset of a bucket that is actually walling, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), the PICK star naming worker-pick's chat answer rather than the last-used account (selection() names nobody, an unselectable pool or a missing worker-pick leaves every row bare, in the plain table and the interactive one alike), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver on a robot path and never touching the token endpoint, no robot path POSTing the OAuth token endpoint with no marker file left to gate it while the user-explicit path still refreshes, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict"
+# A sandboxed cell runs `claude` itself, so export-token hands it a bearer and nothing else: a setup
+# token verbatim, a keychain login reduced to its ACCESS token. Neither store is written, and the
+# refusals matter more than the happy path — a cell that starts on a token about to expire cannot
+# renew it, and one that starts on no token at all would open a login prompt nobody is watching.
+XPORT="$WORK/export"
+mkdir -p "$XPORT"
+printf 'sk-ant-oat01-setup-placeholder' >"$tokens_dir/xsetup"
+xport_out=$(export_token xsetup --to "$XPORT/setup" --min-seconds 1800)
+assert test "$xport_out" = 'source=setup-token expires_at_ms=0'
+assert test "$(cat "$XPORT/setup")" = 'sk-ant-oat01-setup-placeholder'
+assert test "$(stat -f '%Sp' "$XPORT/setup")" = '-rw-------'
+xport_rc=0
+export_token xsetup --to "$XPORT/setup" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 2
+export_token main --to "$XPORT/main" >/dev/null 2>&1 && xport_rc=0 || xport_rc=$?
+assert test "$xport_rc" -eq 2
+assert_fails test -e "$XPORT/main"
+
+XPORT_EXPIRES=$(( ($(date +%s) + 7200) * 1000 ))
+export XPORT_EXPIRES
+cat >"$FAKE_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+printf '{"claudeAiOauth":{"accessToken":"sk-ant-oat01-access-placeholder","refreshToken":"sk-ant-ort01-refresh-placeholder","expiresAt":%s}}\n' "$XPORT_EXPIRES"
+EOF
+chmod +x "$FAKE_BIN/security"
+xport_out=$(export_token xkeychain --to "$XPORT/keychain" --min-seconds 1800)
+assert test "$xport_out" = "source=keychain-access-token expires_at_ms=$XPORT_EXPIRES"
+assert test "$(cat "$XPORT/keychain")" = 'sk-ant-oat01-access-placeholder'
+assert_fails grep -q refresh "$XPORT/keychain"
+XPORT_EXPIRES=$(( ($(date +%s) + 60) * 1000 ))
+xport_rc=0
+export_token xkeychain --to "$XPORT/soon" --min-seconds 1800 >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 4
+assert_fails test -e "$XPORT/soon"
+
+# A wiped keychain blob is a logged-out account, not a bearer of length zero.
+cat >"$FAKE_BIN/security" <<'EOF'
+#!/usr/bin/env bash
+printf '{"claudeAiOauth":{"accessToken":"","refreshToken":"","expiresAt":0}}\n'
+EOF
+chmod +x "$FAKE_BIN/security"
+xport_rc=0
+export_token xwiped --to "$XPORT/wiped" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 3
+printf '#!/usr/bin/env bash\nexit 44\n' >"$FAKE_BIN/security"
+chmod +x "$FAKE_BIN/security"
+xport_rc=0
+export_token xnone --to "$XPORT/none" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 3
+assert_fails test -e "$XPORT/none"
+assert test "$(cat "$tokens_dir/xsetup")" = 'sk-ant-oat01-setup-placeholder'
+printf '#!/usr/bin/env bash\nexit 97\n' >"$FAKE_BIN/security"
+chmod +x "$FAKE_BIN/security"
+
+echo "PASS: $asserts asserts; profile-required launch guard, reset tiers and empty input, null-safe usage merges, snapshot provenance and auth, the wall standing at worker-pick's 100 on both buckets and the all-walled warning naming the reset of a bucket that is actually walling, OAuth weather/backoff and lock behavior, creation-only reserved names and leading-hyphen rejection, disabled-account timeline, disabled profile launch proceeds direct with inherited routing stripped, generic lock contention/stale-retake, heal backoff isolates warm from token-endpoint state, oauth_refresh lock release, revocation escape, concurrent token adoption, capacity weather clears stale expired auth for valid tokens, warm-first heal ordering and fallback, warm auth verdicts require current-run refresh evidence, start-windows opens a fresh window and reconcile locks the new resets_at without regressing it, start-windows skips a disabled account with an explicit cause, warm --start-window opens only an expired window for the explicit account (live window and flagless runs never ping; ping weather warns without an auth verdict), the paid haiku warm fallback stays off unless opted in, regular probes never warm, heal_expired covers disabled accounts with actionable causes, and heal_one writes expired only on current-run evidence (stale-token 401 defers to the token endpoint's verdict, fresh-token 401 is affirmative, weather never re-stamps a prior expired), and no-refresh probes plus messages-probe 401s defer to the refresh outcome (stale token → weather no-write / invalid_grant expired, fresh token → affirmative), and interactive status account-row selection (bounded up/down navigation, name-stable across re-sort), Enter resolving to a \`claudeb profile <name>\` exec, row-scoped reverse-video highlight, and the non-tty path staying plain with no key loop or launch, status defaulting to cached (zero network; --live still probes), the PICK star naming worker-pick's chat answer rather than the last-used account (selection() names nobody, an unselectable pool or a missing worker-pick leaves every row bare, in the plain table and the interactive one alike), and the async refresh outcome summary (✓ when all enabled accounts are live/live*, else names stale accounts with a cause and excludes disabled ones, raw probe stderr confined to the log), refresh cancellation killing the probe process group, first-pass results publishing in completion order, unknown profiles rejected, and reserved legacy profiles removable, headless runs routed through worker-pick without restamping current (an interactive session opened by machinery holds the marker too; arguments alone still demand a profile; an unselectable pool or a missing worker-pick refuses instead of launching), and \`use\` writing the worker pin in place with an out-of-pool direct-pin note, a clear, and a refusal on an unroutable name, and the session-account ledger recording each profile's session markers once, keeping a line after its marker is pruned, recording both accounts when one session ran under two profiles, and staying silent for a profile that never ran, and snapshot-rewriting verbs announcing one passive collect with collector children suppressed, and revive refusing unknown/logged-out-auth_needed accounts without driving a session while an out-of-pool account refreshes like any other and an auth_needed account with a live token self-heals through the probe, token-fresh answering per account and refusing an unknown one, rotating an expired token through the session driver on a robot path and never touching the token endpoint, no robot path POSTing the OAuth token endpoint with no marker file left to gate it while the user-explicit path still refreshes, landing five_hour/seven_day/fable through the shared usage probe, skipping the session for a still-valid token, and mapping driver exits to auth_needed (4), weather (5) and a no-rotation verdict, with a usage 401 against a token the run just proved live earning the same login verdict, and export-token writing a 0600 bearer for a sandboxed cell (a setup token verbatim, a keychain login stripped to its access token, no overwrite, no main, and refusals for a wiped blob, an absent account and a token too close to expiry to outlast the run)"

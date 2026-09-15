@@ -21,6 +21,7 @@ claudeb_root=$(resolve_root)
 . "$claudeb_root/share/account-status-tui.sh"
 
 accounts_vendor=claudeb
+CLAUDEB_CLAUDE_MODEL='fable[1m]'
 accounts_store_vendor=claude
 accounts_rows=selection
 accounts_pick_resolver=worker_pick_cmd
@@ -1484,7 +1485,7 @@ reconcile_window() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|enable|disable|remove|use|accounts|status|st|profile|p|run|warm|token-upkeep) return 0 ;;
+    .*|*/*|help|add|enable|disable|remove|use|accounts|status|st|profile|p|run|warm|token-upkeep|export-token) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -1798,6 +1799,9 @@ show_help() {
   printf '                                          %s--start-window pings an expired 5h window after a good warm.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb revive <name>%s                   %sRotate an expired token in a real session (no model tokens), then refresh limits.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
   printf '  %s%sclaudeb token-fresh <name>%s              %sExit 0 while the keychain token would still carry a request, 1 otherwise.%s\n' "$bold" "$cyan" "$reset" "$dim" "$reset"
+  printf '  %s%sclaudeb export-token <name> --to <path> [--min-seconds <n>]%s\n' "$bold" "$cyan" "$reset"
+  printf '                                          %sWrite this account'"'"'s bearer to a 0600 file for a sandboxed run;%s\n' "$dim" "$reset"
+  printf '                                          %sno refresh token leaves here and nothing is written back.%s\n' "$dim" "$reset"
   printf '  %s%sclaudeb status [--live] [--plain] [--spend] [--start-windows] [--heal]%s\n' "$bold" "$cyan" "$reset"
   printf '                                          %sShow cached limits (no network); --live probes now. Aliases: st, accounts.%s\n' "$dim" "$reset"
   printf '                                          %sPICK marks the account worker-pick would give this chat.%s\n' "$dim" "$reset"
@@ -1964,6 +1968,17 @@ profile_command() {
   case "${CLAUDEB_NO_STATE_STAMP:-}" in 1|true|TRUE|yes|YES|on|ON) stamp_state=false ;; esac
   if args_are_headless "$@"; then worker_env=(CLAUDEB_WORKER=1)
   elif [ "$stamp_state" = true ]; then write_state_file "$profile"; fi
+  local model_arg has_model=false settings_model
+  for model_arg in "$@"; do
+    case "$model_arg" in --model|--model=*) has_model=true; break ;; esac
+  done
+  # Shared settings.json can inherit a CCR alias from a gateway chat.
+  if [ "$has_model" = false ]; then
+    settings_model=$(jq -r '.model // empty' "$dir/settings.json" 2>/dev/null) || settings_model=''
+    if [[ "$settings_model" =~ ^anthropic\.ccr\. ]]; then
+      set -- --model "$CLAUDEB_CLAUDE_MODEL" "$@"
+    fi
+  fi
   # Interactive launches leave worker_env empty; bash 3.2 (`env bash` where /bin precedes Homebrew) aborts on a bare "${arr[@]}" of an empty array under set -u.
   exec env -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_OAUTH_TOKEN \
     CLAUDE_CONFIG_DIR="$dir" CLAUDE_LIMITS_ACCOUNT="$profile" \
@@ -2468,6 +2483,76 @@ claudeb_status_age() {
 
 show_accounts() { account_status_show "$@"; }
 
+# Deliberately lossy, and nothing is written back: a throwaway runtime holding a REFRESH token could
+# rotate the credentials this machine is logged in with, and a rotation nobody reads logs the
+# account out. What leaves is a setup token, or a keychain login reduced to its access token — which
+# cannot be renewed on the far side, so --min-seconds is how the caller says how long the run needs
+# it to last rather than discovering mid-review that it did not.
+export_token() {
+  local name="${1:-}" target='' min_seconds=0 source='' token='' credentials='' expires_at=0 now_ms limit_ms
+  if [ "$#" -gt 0 ]; then shift; fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --to) target="${2:-}"; shift 2 || return 2 ;;
+      --min-seconds) min_seconds="${2:-}"; shift 2 || return 2 ;;
+      *) break ;;
+    esac
+  done
+  if [ "$#" -gt 0 ] || [ -z "$name" ] || [ -z "$target" ] || ! [[ "$min_seconds" =~ ^[0-9]+$ ]]; then
+    printf 'usage: claudeb export-token <name> --to <path> [--min-seconds <n>]\n' >&2
+    return 2
+  fi
+  if [ "$name" = main ] || ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+    printf 'claudeb: export-token needs a profile name, not %s\n' "$name" >&2
+    return 2
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    printf 'claudeb: export-token will not overwrite %s\n' "$target" >&2
+    return 2
+  fi
+  if [ -s "$tokens_dir/$name" ]; then
+    source=setup-token
+    token=$(cat "$tokens_dir/$name")
+  else
+    credentials=$(security find-generic-password -s "$(keychain_service "$name")" -w 2>/dev/null) || credentials=''
+    if [ -z "$credentials" ]; then
+      printf 'claudeb: %s has no exportable credentials; refusing a login or a live-profile fallback\n' "$name" >&2
+      return 3
+    fi
+    source=keychain-access-token
+    token=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null) || token=''
+    expires_at=$(printf '%s' "$credentials" | jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || expires_at=0
+    credentials=''
+    [[ "$expires_at" =~ ^[0-9]+$ ]] || expires_at=0
+  fi
+  # A logged-out wipe leaves this field an empty string rather than removing the item.
+  case "$token" in
+    ''|*[![:print:]]*)
+      token=''
+      printf 'claudeb: %s stores no usable bearer to export\n' "$name" >&2
+      return 3
+      ;;
+  esac
+  if [ "$expires_at" -gt 0 ]; then
+    now_ms=$(($(date +%s) * 1000))
+    limit_ms=$((now_ms + min_seconds * 1000))
+    if [ "$expires_at" -le "$limit_ms" ]; then
+      token=''
+      printf 'claudeb: %s access token expires %s, short of the %ss asked for; refusing (this command never refreshes)\n' \
+        "$name" "$(format_time "$((expires_at / 1000))")" "$min_seconds" >&2
+      return 4
+    fi
+  fi
+  if ! (set -C; umask 077; printf '%s' "$token" >"$target"); then
+    token=''
+    printf 'claudeb: export-token could not write %s\n' "$target" >&2
+    return 2
+  fi
+  token=''
+  chmod 600 "$target"
+  printf 'source=%s expires_at_ms=%s\n' "$source" "$expires_at"
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 case "${1:-}" in
   --direct)
@@ -2512,6 +2597,12 @@ case "${1:-}" in
     token_fresh_rc=0
     token_fresh "${1:-}" || token_fresh_rc=$?
     exit "$token_fresh_rc"
+    ;;
+  export-token)
+    shift
+    export_token_rc=0
+    export_token "$@" || export_token_rc=$?
+    exit "$export_token_rc"
     ;;
   add)
     shift

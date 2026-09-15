@@ -98,6 +98,7 @@ cat >"$WORK/fake-quota" <<'EOF'
 #!/usr/bin/env bash
 account=main
 case "$HOME" in */.gemini-profiles/*) account=$(basename "$HOME") ;; esac
+printf '%s\n' "${AGY_QUOTA_TIMEOUT-unset}" >>"${GEMINI_TIMEOUT_LOG:-/dev/null}"
 if [ -n "${GEMINI_PROBE_LOG:-}" ]; then
   printf 'START %s\n' "$account" >>"$GEMINI_PROBE_LOG"
   sleep 1
@@ -486,7 +487,10 @@ bash "$SCRIPT" list >/dev/null || fail "parallel list failed"
 assert test "$(awk '/^END / {print NR; exit}' "$GEMINI_PROBE_LOG")" -gt 4
 unset GEMINI_PROBE_LOG
 
-status_output=$(bash "$SCRIPT" status) || fail "status failed"
+# The helper caps its own run through AGY_QUOTA_TIMEOUT and reads no other name; a probe that
+# passes a retired one waits the helper's default instead of the bound asked for here.
+status_output=$(GEMINI_TIMEOUT_LOG="$WORK/quota-timeout" bash "$SCRIPT" status) || fail "status failed"
+assert grep -qx 8 "$WORK/quota-timeout"
 assert grep -Eq '^main: Logged in \| 5H 30% reset .+ \| WEEKLY 20% reset .+$' <<<"$status_output"
 assert grep -Eq '^alpha: Logged in \| 5H 60% reset .+ \| WEEKLY 45% reset .+$' <<<"$status_output"
 assert grep -Eq '^beta: Not logged in \| 5H - reset unknown \| WEEKLY - reset unknown$' <<<"$status_output"
@@ -731,13 +735,18 @@ for argument in "$@"; do
   [ "$argument" = --print-timeout ] && timeout_next=true
 done
 printf '%s' "$previous" >"$IMAGE_PROMPT"
+# The launch asks for --output-format stream-json, so the reader parses stdout as one JSON event
+# per line and never as prose: a plain-text answer here leaves it with no response at all.
+result() { jq -cn --arg r "$1" '{event:"result",result:{response:$r,conversation_id:"fixture-session"}}'; }
+failure() { jq -cn --arg e "$1" '{event:"result",result:{error:$e}}'; }
 case "${IMAGE_MODE:-reply}" in
   limit)
-    printf 'RESOURCE_EXHAUSTED\n'
+    failure RESOURCE_EXHAUSTED
     exit 1
     ;;
   quota)
-    printf 'status\nQUOTA\n'
+    result 'status
+QUOTA'
     exit 1
     ;;
   rescue)
@@ -746,11 +755,13 @@ case "${IMAGE_MODE:-reply}" in
     image_name=$(printf '%s' "$previous" | sed -n 's/^ImageName: //p')
     mkdir -p "$(dirname "$IMAGE_RESCUE_FILE")"
     printf 'rescued\n' >"$(dirname "$IMAGE_RESCUE_FILE")/${image_name:-rescued}.jpg"
-    printf 'status\n/nonexistent/generated.jpg\n'
+    result 'status
+/nonexistent/generated.jpg'
     ;;
   *)
     printf 'generated:%s\n' "$2" >"$IMAGE_REPLY"
-    printf 'status\n%s\n' "$IMAGE_REPLY"
+    result "status
+$IMAGE_REPLY"
     ;;
 esac
 EOF
@@ -913,7 +924,7 @@ IMAGE_PICK_ACCOUNT=poolacct
 export IMAGE_PICK_MODE IMAGE_PICK_ACCOUNT
 assert image_run --dest "$WORK/image-output/picked.jpg" --prompt landscape
 assert grep -qx 'account=poolacct' "$IMAGE_OUT"
-assert grep -qx -- '--account gemini' "$IMAGE_PICK_CALLS"
+assert grep -qx -- '--account gemini --role image' "$IMAGE_PICK_CALLS"
 assert_fails grep -q -- '--claim' "$IMAGE_PICK_CALLS"
 assert test -e "$IMAGE_CLAIMS/gemini/poolacct"
 assert grep -qx 'generated:poolacct' "$WORK/image-output/picked.jpg"
@@ -1170,6 +1181,12 @@ xport_rc=0
 /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/soon" --min-seconds 1800 >/dev/null 2>&1 || xport_rc=$?
 assert test "$xport_rc" -eq 4
 assert_fails test -e "$XPORT_OUT/soon"
+printf '{"access_token":"ya29-access-placeholder","expiry":"%s"}\n' \
+  "$(TZ=UTC date -v-1M '+%Y-%m-%dT%H:%M:%SZ')" >"$XPORT_TOKEN"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/expired" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 4
+assert_fails test -e "$XPORT_OUT/expired"
 printf 'ya29.opaque-bearer-placeholder\n' >"$XPORT_TOKEN"
 xport_rc=0
 /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/opaque" --min-seconds 1800 >/dev/null 2>&1 || xport_rc=$?

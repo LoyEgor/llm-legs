@@ -95,7 +95,7 @@ account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -333,7 +333,81 @@ show_help() {
     'grokb disable <name>|--all           Exclude an account (or every account) from the worker pool.' \
     'grokb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
     'grokb list                           List profiles with login state.' \
-    'grokb status                         Per-account login state and quota.'
+    'grokb status                         Per-account login state and quota.' \
+    'grokb export-token <name> --to <path> [--min-seconds N]  Write a renewal-free copy of the saved session for a confined run.'
+}
+
+# grok's own auth.json keeps a refresh_token beside the access key, and a confined runtime holding
+# one can rotate the login this machine signs in with. What leaves is the same document with every
+# renewal credential deleted: 1.0.13 reads a session from $GROK_HOME/auth.json and nowhere else, so a
+# run that outlives its access token gets a 401 it cannot heal rather than a fresh pair of tokens.
+# --min-seconds is the caller saying how long the run needs, because nothing on the far side renews.
+export_token() {
+  local name="${1:-}" target='' min_seconds=0 auth='' expires_at='' stamp='' epoch=0 now remaining document
+  if [ "$#" -gt 0 ]; then shift; fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --to) target="${2:-}"; shift 2 || return 2 ;;
+      --min-seconds) min_seconds="${2:-}"; shift 2 || return 2 ;;
+      *) break ;;
+    esac
+  done
+  if [ "$#" -gt 0 ] || [ -z "$name" ] || [ -z "$target" ] || ! [[ "$min_seconds" =~ ^[0-9]+$ ]] \
+     || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: grokb export-token <name> --to <path> [--min-seconds N]\n' >&2
+    return 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'grokb: unknown account: %s\n' "$name" >&2
+    return 2
+  fi
+  if [ -e "$target" ]; then
+    printf 'grokb: %s already exists\n' "$target" >&2
+    return 2
+  fi
+  auth="$(account_home "$name")/auth.json"
+  expires_at=$(jq -r '
+    def entry:
+      if type != "object" then empty
+      elif (.key | type) == "string" then .
+      else first(.[]? | select(type == "object" and (.key | type) == "string"))
+      end;
+    entry.expires_at // empty' "$auth" 2>/dev/null) || expires_at=''
+  # Any key whose name mentions renewal goes, not just the one shape seen today: an unrecognised
+  # renewal field reaching a throwaway runtime is exactly the rotation this export exists to prevent.
+  document=$(jq -c '
+    def strip: with_entries(select(.key | test("refresh"; "i") | not));
+    if type != "object" then empty
+    elif (.key | type) == "string" then strip
+    else with_entries(if (.value | type) == "object" and (.value.key | type) == "string"
+                      then .value |= strip else . end)
+    end
+    | select(any(.. | objects; (.key | type) == "string"))' "$auth" 2>/dev/null) || document=''
+  if [ -z "$document" ]; then
+    printf 'grokb: %s is not signed in; refusing a login or a live-profile fallback\n' "$name" >&2
+    return 3
+  fi
+  stamp="${expires_at%Z}"
+  stamp="${stamp%%.*}"
+  epoch=$(TZ=UTC date -j -f '%Y-%m-%dT%H:%M:%S' "$stamp" +%s 2>/dev/null) || epoch=0
+  now=$(date +%s)
+  remaining=$((epoch - now))
+  # No readable expiry is the same answer as too little of it: the cell would use the token until a
+  # 401 it has no way to recover from.
+  if [ "$epoch" -le 0 ] || [ "$remaining" -lt "$min_seconds" ]; then
+    document=''
+    printf "grokb: %s's access token does not outlast the run (%s seconds left, %s needed)\n" \
+      "$name" "$remaining" "$min_seconds" >&2
+    return 4
+  fi
+  if ! (set -C; umask 077; printf '%s\n' "$document" >"$target"); then
+    document=''
+    printf 'grokb: %s could not be written\n' "$target" >&2
+    return 2
+  fi
+  document=''
+  chmod 600 "$target"
+  printf 'source=auth.json expires_at=%s\n' "$expires_at"
 }
 
 if [ "${2:-}" = exec ] && [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]] && account_exists "${1:-}"; then
@@ -372,6 +446,12 @@ case "${1:-}" in
   status)
     [ "$#" -eq 1 ] || { printf 'usage: grokb status\n' >&2; exit 2; }
     show_status
+    ;;
+  export-token)
+    shift
+    export_token_rc=0
+    export_token "$@" || export_token_rc=$?
+    exit "$export_token_rc"
     ;;
   profile|p|run)
     shift

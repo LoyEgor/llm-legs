@@ -136,6 +136,7 @@ usage() {
 Usage:
   opencode-go profile <name>  Open a profile; creates it if missing. Alias: p.
   opencode-go key
+  opencode-go export-key --to <path>  Write this account's key to a private file.
   opencode-go models [--json]
   opencode-go wall-check [--all] [--probe-clear]
   opencode-go run <model> (<prompt...> | --prompt-file <path>) [--system <text>] [--max-tokens N] [--effort low|medium|high | --no-reasoning] [--prefill <text>] [--answer-must-match <ere>] [--retries N] [--stream] [--json]
@@ -191,6 +192,42 @@ go_key() {
     fi
   fi
   return 1
+}
+# Hands a private review runtime the key this leg's own request would have used, and learns no new
+# place to look: go_key decides, so a cell can never end up authenticated as a different account
+# than the wrapper is. Nothing is written back — the key is long-lived and there is nothing to rotate.
+export_key() {
+  local target= key=
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --to) [[ $# -ge 2 ]] || return 2; target=$2; shift 2 ;;
+      *) return 2 ;;
+    esac
+  done
+  [[ -n $target ]] || return 2
+  if [[ -e $target ]]; then
+    printf 'opencode-go: %s already exists\n' "$target" >&2
+    return 2
+  fi
+  if ! key=$(go_key); then
+    printf 'opencode-go: no API key for %s\n' "$KEY_SERVICE" >&2
+    return 3
+  fi
+  case $key in
+    ''|*[![:print:]]*)
+      key=
+      printf 'opencode-go: the stored key for %s is not one printable line\n' "$KEY_SERVICE" >&2
+      return 3
+      ;;
+  esac
+  if ! (set -C; umask 077; printf '%s' "$key" >"$target"); then
+    key=
+    printf 'opencode-go: %s could not be written\n' "$target" >&2
+    return 2
+  fi
+  key=
+  chmod 600 "$target"
+  printf 'source=%s\n' "$KEY_SERVICE"
 }
 require_key() {
   local key
@@ -745,6 +782,7 @@ wall_check_all() {
 case ${1:-} in
   profile|p) shift; ensure_profile "$@" ;;
   key) shift; [[ $# -eq 0 ]] || usage; store_key ;;
+  export-key) shift; export_key "$@" ;;
   models) shift; models "$@" ;;
   wall-check)
     shift

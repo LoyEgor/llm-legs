@@ -269,7 +269,7 @@ quota_snapshot() {
     return
   fi
   output=$(env HOME="$home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$(resolve_root)}" \
-    AGY_QUOTA_STARTUP_TIMEOUT="${GEMINIB_QUOTA_TIMEOUT:-8}" "$quota_helper" 2>/dev/null) || rc=$?
+    AGY_QUOTA_TIMEOUT="${GEMINIB_QUOTA_TIMEOUT:-8}" "$quota_helper" 2>/dev/null) || rc=$?
   if ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$output"; then
     output='{"error":"quota unavailable"}'
     rc=1
@@ -594,7 +594,7 @@ def export():
     if not isinstance(token, dict) or not text(token.get("access_token")):
         refuse(3, "stores its sign-in in a shape this export does not recognise")
     expiry = expiry_epoch(token.get("expiry", token.get("expires_at", token.get("access_token_expires_at"))))
-    if minimum and expiry <= time.time() + minimum:
+    if expiry <= time.time() + minimum:
         refresh = token.get("refresh_token")
         if source != "keychain" or not text(refresh):
             refuse(4, "refresh_unavailable: no keychain refresh material for the requested lifetime")
