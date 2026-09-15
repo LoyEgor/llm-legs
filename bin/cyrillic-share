@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""How Russian a piece of model-to-model text is. Reads stdin, prints `<share> <letters>`.
+
+Quoted spans «...» are Egor's own words, which every English report is allowed to carry verbatim,
+and code is not prose at all: both are removed before anything is counted, so the share answers
+for what the model WROTE.
+"""
+import re
+import sys
+
+CYRILLIC_RANGES = (
+    (0x0400, 0x04FF),
+    (0x0500, 0x052F),
+    (0x1C80, 0x1C8F),
+    (0x2DE0, 0x2DFF),
+    (0xA640, 0xA69F),
+)
+
+FENCE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
+INLINE = re.compile(r"`[^`]*`")
+# Unterminated by design: a report cut mid-quote would otherwise count the whole tail as prose.
+QUOTED = re.compile(r"«.*?(?:»|\Z)", re.DOTALL)
+
+
+def is_cyrillic(ch):
+    point = ord(ch)
+    return any(low <= point <= high for low, high in CYRILLIC_RANGES)
+
+
+def main():
+    text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    for pattern in (FENCE, INLINE, QUOTED):
+        text = pattern.sub(" ", text)
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        print("0 0")
+        return 0
+    cyrillic = sum(1 for ch in letters if is_cyrillic(ch))
+    print("%d %d" % ((cyrillic * 100 + len(letters) // 2) // len(letters), len(letters)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

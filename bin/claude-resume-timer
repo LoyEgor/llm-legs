@@ -54,6 +54,36 @@ case $custom_message in
     ;;
 esac
 
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+legs_root=$(resolve_root) || legs_root=""
+
+# Whatever is typed into a chat is read by the model sitting in it, never by Egor, so the message
+# is measured exactly as every other model-to-model channel is.
+CYRILLIC_MAX="${RESUME_TIMER_CYRILLIC_PCT:-15}"
+CYRILLIC_SHARE="${RESUME_TIMER_CYRILLIC_SHARE:-$(command -v cyrillic-share 2>/dev/null)}"
+[ -n "$CYRILLIC_SHARE" ] || CYRILLIC_SHARE="$legs_root/bin/cyrillic-share"
+if [ -n "$custom_message" ] && [ -x "$CYRILLIC_SHARE" ]; then
+  message_cyrillic=$(printf '%s' "$custom_message" | "$CYRILLIC_SHARE" 2>/dev/null) || message_cyrillic=''
+  message_cyrillic=${message_cyrillic%% *}
+  case $message_cyrillic in
+    ''|*[!0-9]*) ;;
+    *)
+      [ "$message_cyrillic" -le "$CYRILLIC_MAX" ] || {
+        echo "claude-resume-timer: text is in Russian ($message_cyrillic% Cyrillic outside «…»/code) but its reader is a model: write it in English, quote Egor's words only inside «…»" >&2
+        exit 2
+      }
+      ;;
+  esac
+fi
+
 surface=${surface:-auto}
 extra=${extra:-10}
 
@@ -113,17 +143,6 @@ detect_controlling_tty() {
 }
 
 cache="$HOME/.llm-limits.json"
-
-resolve_root() {
-  local source="${BASH_SOURCE[0]}" directory
-  while [ -L "$source" ]; do
-    directory=$(cd -P "$(dirname "$source")" && pwd)
-    source=$(readlink "$source")
-    [[ "$source" = /* ]] || source="$directory/$source"
-  done
-  cd -P "$(dirname "$source")/.." && pwd
-}
-legs_root=$(resolve_root) || legs_root=""
 
 # WHICH quota this chat is waiting on, from the one resolver every surface asks (share/chat-account.sh):
 # a `claudegpt` chat spends `vendors.codex` under CLAUDEGPT_ACCOUNT, and timing it off a Claude
