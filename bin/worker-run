@@ -11,7 +11,7 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
@@ -71,7 +71,22 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
 # both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
-BRIEF_PREAMBLE='TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work.'
+BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work.'
+
+# Cyrillic share outside «…»/code past which the text is written for Egor, not for the model reading it.
+CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-15}
+CYRILLIC_SHARE=${WORKER_RUN_CYRILLIC_SHARE:-$SCRIPT_DIRECTORY/cyrillic-share}
+
+# The share alone, or nothing where the tool cannot answer: a measurement that failed must never
+# refuse a launch or stamp a report.
+cyrillic_share() { # <stdin
+  local answer
+  [ -x "$CYRILLIC_SHARE" ] || return 1
+  answer=$("$CYRILLIC_SHARE" 2>/dev/null) || return 1
+  answer=${answer%% *}
+  [[ "$answer" =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$answer"
+}
 
 # Wall-clock ceiling per vendor invocation, and only the last resort: a wedged CLI is normally
 # reclaimed by the idle watchdog below in half an hour, and the ceiling is what catches one that
@@ -438,10 +453,11 @@ vendor_name() {
   esac
 }
 
+# The worker model is the allow-list's, never ~/.codex/config.toml's: that file is symlinked into
+# every codexb profile and rewritten by Egor's interactive Codex picks, which must neither switch
+# nor refuse a worker launch.
 codex_config_model() {
-  local value
-  value=$(sed -n 's/^[[:space:]]*model[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$CODEX_CONFIG" 2>/dev/null | head -n1)
-  printf '%s' "${value:-gpt-6-astra}"
+  worker_model_allowed_models codex | head -n1
 }
 
 # Every terminal outcome leaves worker-run through this one line, so a report reaches Egor from
@@ -488,7 +504,7 @@ outcome_line() (
   fi
   [ -n "$report_id" ] || report_id="${vendor:-worker}-$(date +%s)-$$-$RANDOM"
   if printf 'OUTCOME: %s\n%s · wall-clock: %ss\nfiles: %s\n' "$outcome" "$details" "$elapsed" "$files" |
-    report-bus post --kind worker --id "$report_id" --session "${launcher:-_orphan}" >/dev/null; then
+    report-bus post --kind notice --id "$report_id" --session "${launcher:-_orphan}" >/dev/null; then
     [ -z "$marker" ] || : >"$report_directory/report-posted"
   fi
   return 0
@@ -501,23 +517,22 @@ outcome_line() (
 refuse_cheap_model() { # vendor offered-model [resume-id]
   local vendor="$1" offered="$2" resume="${3:-}" effective
   case "$vendor" in
-    claudeb) effective=${offered:-$(config_value claudeb_model)}; effective=${effective:-opus} ;;
+    claudeb) effective=${offered:-$(config_value claudeb_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
     codex)
       # `exec resume` re-runs the session's own model and config.toml's never travels with it
       # (start_run sends `-m` only for an explicit one), so a Terra sitting in that file refuses
       # nothing here — the resumed session is not the run it names.
       [ -z "$resume" ] || [ -n "$offered" ] || return 0
-      # `default` names the config's own model rather than a model, so a Terra written there is
-      # the same cheap run as one asked for by name.
+      # `default` names the worker model rather than a model.
       effective=$offered
       [ -n "$effective" ] && [ "$effective" != default ] || effective=$(codex_config_model)
       ;;
-    gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-flash38} ;;
-    grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-auto} ;;
+    gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
+    grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
   esac
   worker_model_allows "$vendor" "$effective" && return 0
   outcome_line MODEL_REFUSED
-  fail "$vendor workers run $(worker_model_allowed_list "$vendor") only and $effective is not one of them: an implementation worker never runs a cheap model. Nothing was launched and no account was spent — drop the MODEL: line, or ask Egor."
+  fail "$vendor models are $(worker_model_allowed_list "$vendor"); offered model $effective is not among them. Nothing was launched and no account was spent — drop the MODEL: line, or ask Egor."
 }
 
 failure_outcome() {
@@ -664,10 +679,11 @@ meta_update() {
 
 run_picker() {
   local picker="$1" vendor="$2" exclude="$3" errors="$4"
+  local role_arg=${WORKER_RUN_ROLE:-workers}
   if [ -n "$exclude" ]; then
-    "$picker" --account "$vendor" --claim --exclude "$exclude" 2>"$errors"
+    if [ "$role_arg" = workers ]; then "$picker" --account "$vendor" --claim --exclude "$exclude" 2>"$errors"; else "$picker" --account "$vendor" --role "$role_arg" --claim --exclude "$exclude" 2>"$errors"; fi
   else
-    "$picker" --account "$vendor" --claim 2>"$errors"
+    if [ "$role_arg" = workers ]; then "$picker" --account "$vendor" --claim 2>"$errors"; else "$picker" --account "$vendor" --role "$role_arg" --claim 2>"$errors"; fi
   fi
 }
 
@@ -698,6 +714,9 @@ pick_account() {
   # pin-lapse clause before it and, on older builds, a vendor prefix (`grok: unavailable`).
   ! grep -Eq 'no selectable [a-z]+ account \(([a-z]+: )?([^)]*[|—] )?(unavailable|no( [A-Za-z]+)* quota data|no accounts)\)' "$errors" ||
     PICKED_NO_DATA=true
+  if [ "${WORKER_RUN_ROLE:-workers}" = research ] && ! grep -Eq '(^|[^[:alnum:]_])WALLED([^[:alnum:]_]|$)' "$errors"; then
+    PICKED_NO_DATA=true
+  fi
   rm -f "$errors"
   PICKED_ACCOUNT=${PICKED_ACCOUNT%%$'\n'*}
 }
@@ -780,6 +799,10 @@ supervise_codex() {
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
   for value in "${images[@]}"; do command+=(-i "$value"); done
   if [ "$(jq -r '.web_search' "$meta")" = true ]; then command+=(-c web_search=live); fi
+  if value=$(codex_fast_tier "$account"); then
+    if [ "$value" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
+    else command+=(--disable fast_mode -c 'service_tier="default"'); fi
+  fi
   command+=(-o "$directory/out" -)
   codex_attempt "$directory" "$account" "${command[@]}"
   rc=$?
@@ -899,11 +922,16 @@ reroute_walled() {
   # (--account or the pin fallback) is spent first, then the pool; only a resumed
   # session stays, because that session lives inside one profile.
   local directory="$1" vendor="$2" walled tag
-  has_limit_signature "$directory" "$vendor" || return 1
+  # The research leg reads the quota out of the answer stream and the agy log too, which
+  # has_limit_signature deliberately never scans; its own verdict is the wall for that run.
+  if ! has_limit_signature "$directory" "$vendor"; then
+    [ "$(cat "$directory/research-outcome" 2>/dev/null)" = GEMINI_USAGE_LIMIT ] || return 1
+  fi
   record_run_wall "$directory" "$vendor"
   # An account-bound browser preamble cannot follow the ordinary pool reroute.
   if [ "$vendor" = claudeb ] && jq -e '.browser == true' "$directory/meta.json" >/dev/null; then return 1; fi
   [ -z "$(jq -r '.resume // empty' "$directory/meta.json")" ] || return 1
+  if jq -e '.role == "research" and .explicit_account != ""' "$directory/meta.json" >/dev/null; then return 1; fi
   walled=$(jq -r '((.walled_accounts // []) + [.account]) | join(",")' "$directory/meta.json")
   pick_account "$vendor" "$walled"
   [ "$PICKED_RC" -eq 0 ] && [ -n "$PICKED_ACCOUNT" ] || return 1
@@ -949,7 +977,14 @@ supervise() {
     case "$vendor" in
       claudeb) supervise_claudeb "$directory" ;;
       codex) supervise_codex "$directory" ;;
-      gemini) supervise_gemini "$directory" ;;
+      gemini)
+        if [ "$(jq -r '.role // "workers"' "$directory/meta.json")" = research ]; then
+          . "$SCRIPT_DIRECTORY/../share/gemini-research.sh"
+          supervise_gemini_research "$directory"
+        else
+          supervise_gemini "$directory"
+        fi
+        ;;
       grok) supervise_grok "$directory" ;;
       *) return 4 ;;
     esac
@@ -971,7 +1006,7 @@ supervise() {
 }
 
 persist_run_files() {
-  local directory="$1" workdir snapshot reason
+  local directory="$1" workdir snapshot reason top path
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   if snapshot_workdir "$directory" "$workdir" after; then
     compute_snapshot_files "$directory" "$workdir"
@@ -986,25 +1021,45 @@ persist_run_files() {
   fi
   snapshot=$RUN_FILES_LIST
   reason=$RUN_FILES_REASON
-  # The snapshot says what CHANGED in the shared checkout, the transcript what THIS RUN wrote; only a
-  # readable, complete listing may narrow the snapshot, else a co-tenant's edit becomes this run's.
+  # A snapshot detects change, never its author; an unreadable transcript names no owner.
   compute_transcript_files "$directory"
   RUN_LISTING_LIST=$RUN_FILES_LIST
   RUN_LISTING_REASON=$RUN_FILES_REASON
   RUN_LISTING_PARTIAL=$RUN_FILES_PARTIAL
+  RUN_FILES_EXTERNAL=''
+  top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || top=''
+  while IFS= read -r path; do
+    case "$path" in
+      /*)
+        [ -z "$top" ] || [[ "$path" != "$top"/* ]] || continue
+        RUN_FILES_EXTERNAL+="$path"$'\n'
+        ;;
+    esac
+  done <<<"$RUN_LISTING_LIST"
   record_workdir_escape "$directory"
   RUN_FILES_LIST=$snapshot
   RUN_FILES_REASON=$reason
   RUN_FILES_COTENANT=''
-  if [ -z "$reason" ] && [ -z "$RUN_LISTING_REASON" ] && [ -z "$RUN_LISTING_PARTIAL" ]; then
-    RUN_FILES_COTENANT=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
-                                  <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
+  RUN_FILES_UNNAMED=''
+  if [ -z "$reason" ]; then
     RUN_FILES_LIST=$(comm -12 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
                               <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
+    if [ -z "$RUN_LISTING_REASON" ] && [ -z "$RUN_LISTING_PARTIAL" ]; then
+      RUN_FILES_COTENANT=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
+                                    <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
+    else
+      RUN_FILES_UNNAMED=$(comm -23 <(sed '/^$/d' <<<"$snapshot" | sort -u) \
+                                   <(sed '/^$/d' <<<"$RUN_LISTING_LIST" | sort -u))
+    fi
   fi
   {
     [ -z "$workdir" ] || [ "$workdir" = null ] || printf 'WORKDIR: %s\n' "$workdir"
     [ -z "$RUN_FILES_REASON" ] || printf 'UNKNOWN: %s\n' "$RUN_FILES_REASON"
+    if [ -z "$RUN_FILES_REASON" ] && { [ -n "$RUN_LISTING_REASON" ] || [ -n "$RUN_LISTING_PARTIAL" ]; }; then
+      printf 'PARTIAL: %s\n' "${RUN_LISTING_REASON:-$RUN_LISTING_PARTIAL}"
+    fi
+    [ -z "$RUN_FILES_EXTERNAL" ] ||
+      printf 'PARTIAL: transcript names writes outside the snapshotted repository; see files-note\n'
     [ -z "$RUN_FILES_LIST" ] || printf '%s\n' "$RUN_FILES_LIST"
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
@@ -1301,9 +1356,18 @@ produced_commit_rows() { # top rel head-before
 record_workdir_dirt() { # directory workdir
   local directory="$1" workdir="$2" top gained
   [ -z "$RUN_FILES_REASON" ] || return 0
-  [ ! -s "$directory/launcher" ] || return 0
+  # A run answering to a chat records dirt for exactly what its own listing could not answer for:
+  # the rest of its window is already that chat's by the listing, and a run whose listing is whole
+  # leaves nothing here at all.
+  if [ -s "$directory/launcher" ] && [ -z "${RUN_FILES_UNNAMED:-}" ]; then
+    return 0
+  fi
   top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || return 0
   gained=$(snapshot_changed_paths "$directory" "$top") || return 0
+  if [ -s "$directory/launcher" ]; then
+    gained=$(comm -23 <(sed '/^$/d' <<<"$gained" | sort -u) \
+                      <(listing_top_paths "$directory" "$top" "$workdir"))
+  fi
   [ -n "$gained" ] || [ -f "$directory/dirty" ] || return 0
   { printf 'WORKDIR: %s\n' "$top"; [ -z "$gained" ] || printf '%s\n' "$gained"; } \
     >"$directory/dirty.tmp.$$" 2>/dev/null &&
@@ -1374,11 +1438,11 @@ refuse_live_run() { # brief resume
 
 start_run() {
   [ "$#" -ge 1 ] || usage
-  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line=''
+  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' role='workers' research_timeout='' sandbox_exec=''
   local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
-  local web_search=false
+  local web_search=false brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
   local browser_target=''
   local -a add_dirs images command_meta command
@@ -1400,6 +1464,8 @@ start_run() {
       --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
       --web-search) web_search=true; shift ;;
       --chrome) chrome=true; shift ;;
+      --role) [ "$#" -ge 2 ] || usage; role="$2"; shift 2 ;;
+      --research-timeout) [ "$#" -ge 2 ] || usage; research_timeout="$2"; shift 2 ;;
       --browser) browser=true; shift ;;
       --target)
         [ "$#" -ge 2 ] || usage
@@ -1411,6 +1477,20 @@ start_run() {
     esac
   done
   [ -n "$brief" ] || usage
+  [ "$role" = workers ] || { [ "$vendor" = gemini ] && [ "$role" = research ] || usage; }
+  if [ "$role" = research ]; then
+    [ -z "$resume" ] && [ "$browser" = false ] && [ "$chrome" = false ] || fail 'research does not support resume or browser flags'
+    [ -z "$model" ] || [ "$model" = flash38 ] || fail 'research requires flash38'
+    [ -z "$effort" ] || [ "$effort" = high ] || fail 'research requires high effort'
+    model=flash38; effort=high
+    [ -n "$research_timeout" ] || research_timeout=360m
+    . "$SCRIPT_DIRECTORY/../share/gemini-research.sh"
+    value=$(research_duration_seconds "$research_timeout") && [ "$value" -gt 0 ] || usage
+    sandbox_exec="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}"
+    export WORKER_RUN_ROLE=research
+  elif [ -n "$research_timeout" ]; then
+    usage
+  fi
   [ -r "$brief" ] || fail "brief is not readable: $brief"
   # The first line is the run's handle: the spawn gate and the relay agents read `RESUME <id>:` and
   # `ATTACH <id>:` off the top of it, and every reader that falls back to a prefix of the brief
@@ -1422,6 +1502,9 @@ start_run() {
     *[![:space:]]*) ;;
     *) fail "brief starts with a blank line: $brief — the first line is the run's handle (RESUME/ATTACH) and what a reader identifies it by" ;;
   esac
+  brief_cyrillic=$(cyrillic_share <"$brief") || brief_cyrillic=''
+  [ -z "$brief_cyrillic" ] || [ "$brief_cyrillic" -le "$CYRILLIC_MAX" ] ||
+    fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
   case "$vendor" in
@@ -1456,6 +1539,23 @@ start_run() {
     esac
   fi
   refuse_cheap_model "$vendor" "$model" "$resume"
+  explicit_effort=$effort
+  if [ "$vendor" = codex ]; then
+    config_model=$(codex_config_model)
+    [ "$model" != default ] || model=$config_model
+    explicit_model=$model
+    model=${model:-$config_model}
+  else
+    model=${model:-$(config_value "${vendor}_model")}
+    model=${model:-$(worker_model_default_model "$vendor")}
+  fi
+  effort=${effort:-$(config_value "${vendor}_effort")}
+  effort=${effort:-$(worker_model_default_effort "$vendor" "$model")}
+  if { [ "$vendor" != codex ] || [ -z "$resume" ] || [ -n "$explicit_effort" ]; } &&
+     ! worker_model_effort_allowed "$vendor" "$model" "$effort"; then
+    outcome_line EFFORT_REFUSED
+    fail "$vendor model $model does not allow effort $effort; allowed efforts: $(worker_model_effort_list "$vendor" "$model"). Nothing was launched and no account was spent."
+  fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
@@ -1530,7 +1630,7 @@ start_run() {
   # The role switch walls the vendor exactly the way the pool walls an account: an explicit
   # --account, a resumed session or the pin fallback cannot get in under it, and the vendor pin is
   # the one override, because naming it there is the deliberate "use this one anyway".
-  if [ "$(config_value "${vendor}_workers")" = off ] &&
+  if [ "$role" = workers ] && [ "$(config_value "${vendor}_workers")" = off ] &&
      ! worker_model_pin_has "$vendor" "$account"; then
     outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
@@ -1553,25 +1653,13 @@ start_run() {
 
   case "$vendor" in
     claudeb)
-      model=${model:-$(config_value claudeb_model)}; model=${model:-opus}
-      effort=${effort:-$(config_value claudeb_effort)}; effort=${effort:-high}
       cli="${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}"
       command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
       [ "$chrome" = false ] || command_meta+=(--chrome)
       ;;
     codex)
-      config_model=$(codex_config_model)
-      [ "$model" != default ] || model=$config_model
-      explicit_model=$model
-      explicit_effort=$effort
-      model=${model:-$config_model}
-      effort=${effort:-$(config_value codex_effort)}; effort=${effort:-medium}
-      if [ "$model" = default ]; then
-        model_label=${config_model##*-}
-      else
-        model_label=${model##*-}
-      fi
+      model_label=${model##*-}
       [[ "$model_label" =~ ^[A-Za-z0-9]+$ ]] || model_label=astra
       cli="${WORKER_RUN_CODEX:-codex}"
       if [ -n "$resume" ]; then
@@ -1586,13 +1674,14 @@ start_run() {
       for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
       for value in "${images[@]}"; do command+=(-i "$value"); done
       [ "$web_search" = false ] || command+=(-c web_search=live)
+      if fast_tier=$(codex_fast_tier "$account"); then
+        if [ "$fast_tier" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
+        else command+=(--disable fast_mode -c 'service_tier="default"'); fi
+      fi
       command+=(-o OUT -)
       if [ "$account" = main ]; then command_meta=("${command[@]}"); else command_meta=(env "CODEX_HOME=$(codex_home "$account")" "${command[@]}"); fi
       ;;
     gemini)
-      model=${model:-$(config_value gemini_model)}; model=${model:-flash38}
-      effort=${effort:-$(config_value gemini_effort)}; effort=${effort:-high}
-      case "$effort" in xhigh|max|ultra) effort=high ;; esac
       # The effort rides in the agy slug and never in an `--effort` flag (shared-invariants row h).
       case "$model:$effort" in
         flash38:high | flash38:medium | flash38:low) agy_model="gemini-3.8-flash-$effort" ;;
@@ -1614,15 +1703,7 @@ start_run() {
       command_meta+=(--print BRIEF_TEXT)
       ;;
     grok)
-      model=${model:-$(config_value grok_model)}; model=${model:-auto}
-      effort=${effort:-$(config_value grok_effort)}; effort=${effort:-high}
       case "$model" in auto|grok-4.6) model_label=grok ;; *) model_label=$model ;; esac
-      # `xhigh` exists on grok-4.6 alone; the CLI refuses it on the others, and silently clamping it
-      # here would spend the run at an effort the brief did not ask for.
-      case "$effort" in
-        low|medium|high|xhigh) ;;
-        *) outcome_line GROK_UNAVAILABLE; fail "grok effort must be low, medium, high or xhigh (got: $effort)" ;;
-      esac
       # No turn cap unless one is asked for: an implementation brief is bounded by the wall-clock
       # deadline like every other vendor's, and a cap ends a run the vendor was still serving.
       grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}
@@ -1686,12 +1767,14 @@ start_run() {
   jq -cn --arg vendor "$vendor" --arg account "$account" --arg model "$model" --arg effort "$effort" \
     --arg agy_model "$agy_model" --arg grok_turns "$grok_turns" \
     --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
-    --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" \
+    --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" --arg role "$role" --arg explicit_account "$explicit_account" \
+    --arg research_timeout "$research_timeout" --arg sandbox_exec "$sandbox_exec" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
-    '{vendor:$vendor,account:$account,model:$model,effort:$effort,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
+    '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
+     + {explicit_account:$explicit_account}
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
@@ -1964,6 +2047,10 @@ print_outcome() {
     return 0
   fi
   if [ "$code" = 0 ]; then outcome_line DONE "$directory" >/dev/null; return 0; fi
+  if [ "$(jq -r '.role // "workers"' "$directory/meta.json" 2>/dev/null)" = research ] && [ -s "$directory/research-outcome" ]; then
+    outcome_line "$(cat "$directory/research-outcome")" "$directory"
+    return 0
+  fi
   killed_line "$directory" "$code"
   if has_limit_signature "$directory" "$vendor"; then
     outcome_line "$(vendor_name "$vendor")_USAGE_LIMIT" "$directory"
@@ -1990,15 +2077,66 @@ print_outcome() {
   fi
 }
 
-# Transcript evidence is diagnostic and drives the watchdog, never file ownership.
+# The allowlist below treats test entry points as read-only; unclassified shell programs are a floor.
 SHELL_FLOOR_PARTIAL='the run also ran shell commands, whose edits no transcript records'
 
-WRITE_SHELL_PATTERN='(^|[^0-9<>&=])([0-9]+|&)?>>?([^=&]|$)|(^|[[:space:]])(sed|perl|ruby)[[:space:]]+[^|;&]*-i|(^|[[:space:]])(tee|mv|cp|rm|rmdir|touch|ln|truncate|dd|patch)([[:space:]]|$)|(^|[[:space:]])git[[:space:]]+(apply|checkout|restore|stash|clean|reset|mv|rm)([[:space:]]|$)'
-
 writes_through_shell() { # command-line
-  printf '%s' "$1" |
-    sed -E 's/2>&1|>&2/ /g; s/(([0-9]+|&)?>+)[[:space:]]*\/dev\/null([[:space:];|&]|$)/ \3/g' |
-    grep -Eq "$WRITE_SHELL_PATTERN"
+  python3 - "$1" <<'PY'
+import re
+import shlex
+import sys
+
+command = sys.argv[1]
+# Empty is a poll (codex write_stdin chars:""), not an unclassified write.
+if command == "":
+    sys.exit(1)
+if not command.strip() or any(token in command for token in ("$", "`", "\\", "<<")):
+    sys.exit(0)
+try:
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|<>\n()")
+    lexer.whitespace = " \t\r"
+    # shlex's comment reader consumes the newline that separates the next command.
+    lexer.commenters = ""
+    tokens = list(lexer)
+except ValueError:
+    sys.exit(0)
+
+def readonly(words):
+    if not words:
+        return True
+    name, *args = words
+    if name in {"bash", "sh", "python3"}:
+        return len(args) == 1 and ".." not in args[0].split("/") and re.fullmatch(r"(?:\./)?tests/[\w./-]+\.(?:sh|py)", args[0]) is not None
+    if name == "git":
+        return bool(args) and args[0] in {"diff", "status", "show", "log", "ls-files", "rev-parse"} and not any(
+            arg.startswith(("--output", "--ext-diff", "--textconv")) for arg in args)
+    if name == "sed":
+        return len(args) >= 2 and args[0] == "-n" and re.fullmatch(r"[0-9]+(?:,[0-9]+)?p", args[1]) is not None and not any(arg.startswith("-") for arg in args[2:])
+    if name in {"grep", "egrep", "fgrep", "rg"}:
+        return not any(arg.startswith(("--pre", "--hostname-bin")) for arg in args)
+    return name in {"cat", "head", "tail", "wc", "pwd", "ls", "stat", "readlink", "basename", "dirname", "echo", "printf", "true", "false", "test", "[", "cd"}
+
+words = []
+tokens = iter(tokens + [";"])
+for token in tokens:
+    if token in {">", ">>", ">&"}:
+        target = next(tokens, "")
+        if (token in {">", ">>"} and target == "/dev/null") or (token == ">&" and target in {"1", "2"}):
+            if words and words[-1].isdigit():
+                words.pop()
+            continue
+        sys.exit(0)
+    if token in {";", "&&", "||", "|", "\n"}:
+        if not readonly(words):
+            sys.exit(0)
+        words = []
+    elif set(token) <= set(";&|<>()\n"):
+        sys.exit(0)
+    else:
+        words.append(token)
+sys.exit(1)
+PY
+  [ "$?" -ne 1 ]
 }
 
 resolve_tool_path() { # path workdir
@@ -2050,6 +2188,7 @@ classify_tool_rows() { # rows workdir
         places+="$value"$'\n'
         ;;
       C)
+        [ -n "$value" ] || continue
         shell=true
         if writes_through_shell "$value"; then
           [ -n "$RUN_FILES_REASON" ] ||
@@ -2337,7 +2476,7 @@ transcript_files() {
   # calls, so the cut is a per-line select ahead of the descent, not a filter on the paths it yields.
   # `fromdateiso8601` refuses the milliseconds every real transcript writes, hence the sub() — parsed
   # without it, every line reads as epoch 0 and a resumed run reports nothing at all.
-  local transcript="$1" workdir="$2" since="${3:-0}" failed paths dir=''
+  local transcript="$1" workdir="$2" since="${3:-0}" failed paths path dir=''
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
   failed=$(jq -r '.. | objects
            | select((.type? == "tool_result") and (.is_error? == true))
@@ -2353,10 +2492,12 @@ transcript_files() {
   # A trailing slash makes the prefix double-slashed and silently stops matching; an absent workdir
   # would strip the leading `/` off every absolute path, so it strips nothing at all.
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
-  AWK_DIR=$dir awk \
+  while IFS= read -r path; do
+    [ -z "$path" ] || resolve_tool_path "$path" "$workdir"
+  done <<<"$paths" | AWK_DIR=$dir awk \
     'BEGIN { dir = ENVIRON["AWK_DIR"] }
      { if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
-    <<<"$paths" | sort -u
+    | sort -u
 }
 
 compute_transcript_files() {
@@ -2435,20 +2576,45 @@ cotenant_note() { # paths
     "$count" "$listed"
 }
 
+# The same for the paths NOBODY answers for: the run's own listing is a floor or unreadable, so the
+# window holds changes it may or may not have made, and neither answer may be invented. They are in
+# the dirt record, which is what the UNNAMED line offers the launching chat to claim.
+unattributed_note() { # paths reason
+  local paths="$1" count listed
+  count=$(grep -c '' <<<"$paths")
+  listed=$paths
+  [ "$count" -le "$UNNAMED_INLINE_MAX" ] || listed=$(head -n "$UNNAMED_INLINE_MAX" <<<"$paths")
+  listed=$(tr '\n' ' ' <<<"$listed")
+  listed=${listed% }
+  if [ "$count" -gt "$UNNAMED_INLINE_MAX" ]; then
+    printf '%s path(s) changed in the run'"'"'s window that its own listing does not name and nobody answers for (%s); the first %s: %s\n' \
+      "$count" "$2" "$UNNAMED_INLINE_MAX" "$listed"
+    return 0
+  fi
+  printf '%s path(s) changed in the run'"'"'s window that its own listing does not name and nobody answers for (%s): %s\n' \
+    "$count" "$2" "$listed"
+}
+
 # The caveat the launching chat reads beside the file list, from what `persist_run_files` already
-# resolved. Where the intersection stood, what the run does NOT answer for is the whole of the
-# caveat; where it could not, the snapshot is still the attribution and the reader is told so.
+# resolved: what the run does NOT answer for. A listing that answered for the whole run names a
+# co-tenant's paths as a co-tenant's; one that could not leaves them owned by nobody, which is a
+# different sentence — and never "the snapshot stands", which is the claim that handed a run eight
+# files for the two it wrote (live 2026-09-11).
 transcript_crosscheck() ( # directory
-  local directory="$1" listed
+  local directory="$1" path
   {
-    if [ -n "${RUN_LISTING_REASON:-}" ]; then
-      printf 'transcript cross-check unavailable: %s\n' "$RUN_LISTING_REASON"
-    elif [ -n "${RUN_FILES_COTENANT:-}" ]; then
+    if [ -n "${RUN_FILES_COTENANT:-}" ]; then
       cotenant_note "$RUN_FILES_COTENANT"
-    elif [ -n "${RUN_LISTING_PARTIAL:-}" ] || [ -n "$RUN_FILES_REASON" ]; then
-      listed=$(grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null)
-      [ "$listed" = "${RUN_LISTING_LIST:-}" ] && [ -z "${RUN_LISTING_PARTIAL:-}" ] ||
-        printf 'transcript listing disagrees with the workdir snapshot; snapshot attribution stands\n'
+    fi
+    if [ -n "${RUN_FILES_UNNAMED:-}" ]; then
+      unattributed_note "$RUN_FILES_UNNAMED" "${RUN_LISTING_REASON:-${RUN_LISTING_PARTIAL:-the listing is incomplete}}"
+    fi
+    while IFS= read -r path; do
+      [ -z "$path" ] || printf 'UNKNOWN: transcript names a write outside the snapshotted repository; no content baseline was recorded: %s\n' "$path"
+    done <<<"${RUN_FILES_EXTERNAL:-}"
+    if [ -n "${RUN_LISTING_REASON:-}" ]; then
+      printf 'transcript cross-check unavailable: %s; changed paths remain unnamed\n' \
+        "$RUN_LISTING_REASON"
     fi
   } >"$directory/files-note"
   if [ -n "${RUN_FOREIGN_NOTE:-}" ]; then
@@ -2471,20 +2637,26 @@ compute_run_files() {
   compute_snapshot_files "$directory" "$workdir"
 }
 
-# Whether any Bash call in this run's window wrote. Not "ran a command at all": a worker that runs
-# its own suite trips that on every serious run, and a listing doubted there can never narrow the
-# workdir snapshot to what the run itself wrote. 0 = wrote, 1 = did not, 2 = unreadable.
+# 1 requires every Bash call in the window to be classified read-only; 0 is a floor, 2 unreadable.
 transcript_wrote_through_shell() { # transcript since
-  local transcript="$1" since="${2:-0}" commands
+  local transcript="$1" since="${2:-0}" commands command
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
-  commands=$(jq -r --argjson since "$since" '
-           select(((((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
-                    | fromdateiso8601? // 0)) >= $since)
+  commands=$(jq -c --argjson since "$since" '
+           (((.timestamp? // "") | tostring | sub("\\.[0-9]+"; ""))
+             | fromdateiso8601? // null) as $stamp
            | .. | objects
            | select((.type? == "tool_use") and ((.name? // "") == "Bash"))
-           | (.input.command? // "") | tostring' "$transcript" 2>/dev/null) || return 2
+           | if $stamp == null then "__unclassified_shell_call__"
+             elif $stamp < $since then empty
+             else (.input.command? // "") | tostring
+               | if length == 0 then "__unclassified_shell_call__" else . end
+             end' "$transcript" 2>/dev/null) || return 2
   [ -n "$commands" ] || return 1
-  writes_through_shell "$commands"
+  while IFS= read -r command; do
+    command=$(jq -r . <<<"$command") || return 2
+    writes_through_shell "$command" && return 0
+  done <<<"$commands"
+  return 1
 }
 
 run_files() {
@@ -2573,6 +2745,26 @@ memguard_lines() { # directory
   }' "$1/memguard"
 }
 
+# A result written for Egor rather than for the model that has to read it. Stamped once, when the
+# run's result lands, because the text is what is measured and `worker-run report` must say the same
+# thing about it a week later; no re-ask follows — the vendors that cannot run a Stop hook are
+# exactly the ones this flag is for.
+stamp_result_language() { # directory
+  local share
+  [ -s "$1/result" ] || return 0
+  [ ! -e "$1/lang" ] || return 0
+  share=$(cyrillic_share <"$1/result") || return 0
+  [ "$share" -gt "$CYRILLIC_MAX" ] || return 0
+  printf 'cyrillic %s\n' "$share" >"$1/lang" 2>/dev/null || :
+}
+
+lang_line() { # directory
+  local share
+  share=$(sed -n 's/^cyrillic //p' "$1/lang" 2>/dev/null | head -n1)
+  case "$share" in ''|*[!0-9]*) return 0 ;; esac
+  printf 'LANG: cyrillic %s%%\n' "$share"
+}
+
 denied_tools_line() {
   local denied
   denied=$(jq -r '.denied_tools // empty' "$1/meta.json")
@@ -2600,6 +2792,7 @@ terminal_report() {
   memguard_lines "$directory"
   print_outcome "$directory" "$vendor" "$code"
   denied_tools_line "$directory"
+  lang_line "$directory"
   unnamed_line "$directory"
   result_pointer "$directory"
   if [ "$code" != 0 ]; then
@@ -2773,6 +2966,7 @@ report_run() {
     fi
   fi
   denied_tools_line "$directory"
+  lang_line "$directory"
   if [ "$vendor" = claudeb ]; then
     cost=$(jq -r '.total_cost_usd // empty' "$directory/out" 2>/dev/null)
     # The $2/M base permanently defines one Sonnet-5-equivalent token; after the public rate
@@ -3239,7 +3433,9 @@ complete_run() {
       fi
     fi
   fi
+  stamp_result_language "$directory"
   print_outcome "$directory" "$vendor" "$code"
+  lang_line "$directory"
 }
 
 browse_run() {

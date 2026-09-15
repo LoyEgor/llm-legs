@@ -56,224 +56,30 @@ for repo in "${resolved_repos[@]}"; do
   case "$out" in "$repo"|"$repo"/*) usage ;; esac
 done
 
-geminib_bin=$(command -v geminib 2>/dev/null) || {
-  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-  printf 'gemini-research: geminib is missing\n'
-  exit 4
-}
 root=$(resolve_root)
-gemini_base_home=$HOME
-gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
-. "$root/share/gemini-accounts.sh"
-
-research_exit() {
-  [ -z "$tmp_dir" ] || rm -rf "$tmp_dir"
-}
-
-tmp_dir=''
-trap research_exit EXIT
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-research.XXXXXX") || exit 4
-
-explicit_account=false
-if [ -n "$account" ]; then
-  explicit_account=true
-else
-  picker=$(command -v worker-pick 2>/dev/null) || {
-    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-    printf 'gemini-research: worker-pick is missing\n'
-    exit 4
-  }
-fi
-
-pick_account() {
-  local exclude=${1:-} error_file="$tmp_dir/pick.err"
-  local -a args
-  args=(--account gemini --role research)
-  [ -z "$exclude" ] || args+=(--exclude "$exclude")
-  args+=(--claim)
-  PICK_RC=0
-  PICK_ACCOUNT=$("$picker" "${args[@]}" 2>"$error_file") || PICK_RC=$?
-  PICK_LINE=$(sed -n '1p' "$error_file")
-}
-
-picker_line_is_wall() { printf '%s\n' "$1" | grep -Eq '(^|[^[:alnum:]_])WALLED([^[:alnum:]_]|$)|ALL WALLED'; }
-account_known() { grep -Fqx -- "$1" <<<"$(gemini_account_names)"; }
-
-if [ "$explicit_account" = false ]; then
-  pick_account
-  if [ "$PICK_RC" -eq 3 ]; then
-    if picker_line_is_wall "$PICK_LINE"; then outcome=GEMINI_USAGE_LIMIT; code=3
-    else outcome=GEMINI_UNAVAILABLE; code=4
-    fi
-    printf 'OUTCOME: %s\n' "$outcome"
-    printf '%s\n' "$PICK_LINE"
-    exit "$code"
-  fi
-  if [ "$PICK_RC" -ne 0 ] || ! [[ "$PICK_ACCOUNT" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-    printf '%s\n' "$PICK_LINE"
-    exit 4
-  fi
-  account=$PICK_ACCOUNT
-fi
-if ! account_known "$account"; then
-  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-  printf 'gemini-research: unknown account: %s\n' "$account"
-  exit 4
-fi
-
-resolve_path() {
-  if [ -e "$1" ]; then readlink -f "$1"; else printf '%s\n' "$1"; fi
-}
-
-sandbox_profile() {
-  local path resolved escaped profile_home
-  local -a writable
-  writable=()
-  if [ "$account" != main ]; then
-    profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
-    writable+=("$profile_home")
-  fi
-  writable+=("$HOME/.gemini" "${TMPDIR:-/tmp}" /private/tmp
-    "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$log_dir")
-  printf '(version 1)\n(allow default)\n(deny file-write*)\n'
-  for path in "${writable[@]}"; do
-    [ -n "$path" ] || return 1
-    resolved=$(resolve_path "$path") || return 1
-    escaped=${resolved//\\/\\\\}; escaped=${escaped//\"/\\\"}
-    escaped=${escaped//$'\n'/\\n}; escaped=${escaped//$'\r'/\\r}
-    printf '(allow file-write* (subpath "%s"))\n' "$escaped"
-  done
-  printf '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/stdin") (literal "/dev/stdout") (literal "/dev/stderr"))\n'
-  # A checkout inside an allowed temp root must still be read-only.
-  for path in "${resolved_repos[@]}" "$HOME/.claude"; do
-    resolved=$(resolve_path "$path") || return 1
-    escaped=${resolved//\\/\\\\}; escaped=${escaped//\"/\\\"}
-    escaped=${escaped//$'\n'/\\n}; escaped=${escaped//$'\r'/\\r}
-    printf '(deny file-write* (subpath "%s"))\n' "$escaped"
-  done
-}
-
-sandbox_exec=${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}
-if [ ! -x "$sandbox_exec" ]; then
-  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-  printf 'gemini-research: sandbox-exec is missing or not executable: %s\n' "$sandbox_exec"
-  exit 4
-fi
-
-cache_dir="$HOME/.cache/gemini-research"
-mkdir -p "$cache_dir" || {
-  printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-  printf 'gemini-research: could not create %s\n' "$cache_dir"
-  exit 4
-}
-timestamp=$(date +%Y%m%dT%H%M%S)-$$
-started=$(date +%s)
-attempt=0
-tried=''
-result_code=0
-result_outcome=''
-result_line=''
-log=''
-error_file=''
-quota_pattern='RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota[[:space:]_-]*(exhausted|exceeded|reached)|rate.?limit|rateLimiter|HTTP[[:space:]]+429|(^|[^[:alnum:]_.])429([^[:alnum:]_.]|$)'
-
+worker_run="$root/bin/worker-run"
+. "$root/share/gemini-research.sh"
+timeout_seconds=$(research_duration_seconds "$timeout_value") && [ "$timeout_seconds" -gt 0 ] || usage
+args=(start gemini --role research --brief "$prompt_file" --workdir "${resolved_repos[0]}" --research-timeout "$timeout_value")
+[ -z "$account" ] || args+=(--account "$account")
+for ((i=1; i<${#resolved_repos[@]}; i++)); do args+=(--add-dir "${resolved_repos[$i]}"); done
+start_rc=0
+geminib_bin=$(command -v geminib 2>/dev/null) || { printf 'OUTCOME: GEMINI_UNAVAILABLE\ngeminib is missing\n'; exit 4; }
+launch=$(WORKER_RUN_GEMINIB="$geminib_bin" GEMINI_RESEARCH_SANDBOX_EXEC="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}" \
+  "$worker_run" "${args[@]}") || start_rc=$?
+printf '%s\n' "$launch"
+[ "$start_rc" -eq 0 ] || exit "$start_rc"
+run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
+run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
+[ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || exit 4
 while :; do
-  attempt=$((attempt + 1))
-  log_dir="$cache_dir/$timestamp-$attempt"
-  mkdir -p "$log_dir" || exit 4
-  log="$log_dir/$account.log"
-  cli_log="$log_dir/cli.log"
-  profile=$(sandbox_profile) || {
-    printf 'OUTCOME: GEMINI_UNAVAILABLE\n'
-    printf 'gemini-research: could not resolve sandbox write paths\n'
-    exit 4
-  }
-  printf 'SANDBOX PROFILE:\n%s\nEND SANDBOX PROFILE\n' "$profile" >"$log"
-  error_file="$tmp_dir/geminib-$attempt.err"
-  command=("$geminib_bin" profile "$account" --model gemini-3.8-flash-high)
-  for repo in "${resolved_repos[@]}"; do command+=(--add-dir "$repo"); done
-  command+=(--print-timeout "$timeout_value" --dangerously-skip-permissions --log-file "$cli_log" --print "$(<"$prompt_file")")
-  run_rc=0
-  if ! "$sandbox_exec" -p "$profile" /usr/bin/true 2>"$error_file"; then
-    cat "$error_file" >>"$log"
-    result_code=4
-    result_outcome=GEMINI_UNAVAILABLE
-    result_line="gemini-research: sandbox-exec refused the profile: $(sed -n '1p' "$error_file")"
-    break
-  fi
-  (cd "$tmp_dir" && "$sandbox_exec" -p "$profile" "${command[@]}" >"$out" 2>"$error_file") || run_rc=$?
-  [ ! -f "$cli_log" ] || cat "$cli_log" >>"$log"
-  cat "$error_file" >>"$log"
-  if grep -Eq '^sandbox-exec:' "$error_file"; then
-    result_code=4
-    result_outcome=GEMINI_UNAVAILABLE
-    result_line=$(sed -n '1p' "$error_file")
-    break
-  fi
-  denied_lines=$(grep -Eih 'Operation not permitted|sandbox[^[:cntrl:]]*deny' "$error_file" 2>/dev/null) || :
-  if [ -n "$denied_lines" ]; then
-    result_code=5
-    result_outcome=GEMINI_RESEARCH_WRITE_DENIED
-    result_line=$denied_lines
-    break
-  fi
-
-  quota_line=''
-  if [ "$run_rc" -ne 0 ] || [ ! -s "$out" ]; then
-    quota_line=$(grep -Eih "$quota_pattern" "$cli_log" "$out" "$error_file" 2>/dev/null | head -n 1) || :
-  fi
-  if [ -n "$quota_line" ]; then
-    result_line=$quota_line
-    if [ "$explicit_account" = true ]; then
-      result_code=3
-      result_outcome=GEMINI_USAGE_LIMIT
-      break
-    fi
-    if [ -n "$tried" ]; then tried="$tried,$account"; else tried=$account; fi
-    pick_account "$tried"
-    if [ "$PICK_RC" -eq 0 ] && [[ "$PICK_ACCOUNT" =~ ^[a-z0-9][a-z0-9-]*$ ]] && \
-        account_known "$PICK_ACCOUNT" && ! [[ ",$tried," = *",$PICK_ACCOUNT,"* ]]; then
-      account=$PICK_ACCOUNT
-      continue
-    fi
-    if [ "$PICK_RC" -eq 3 ]; then
-      result_line=$PICK_LINE
-      result_code=3
-      result_outcome=GEMINI_USAGE_LIMIT
-    else
-      result_line=$PICK_LINE
-      [ -n "$result_line" ] || result_line='gemini-research: worker-pick returned no usable account'
-      result_code=4
-      result_outcome=GEMINI_UNAVAILABLE
-    fi
-    break
-  fi
-  if [ "$run_rc" -eq 0 ] && [ -s "$out" ]; then break; fi
-  result_outcome=GEMINI_UNAVAILABLE
-  if [ "$run_rc" -eq 124 ]; then
-    result_code=124
-    result_line='gemini-research: Gemini research timed out'
-  else
-    result_code=4
-    result_line=$(sed -n '1p' "$error_file")
-    [ -n "$result_line" ] || result_line='gemini-research: Gemini returned an empty answer'
-  fi
-  break
+  state=$("$worker_run" wait "$run_id" --max 540) || { printf '%s\n' "$state"; exit 4; }
+  case "$state" in *'STATUS: running'*) continue ;; *) break ;; esac
 done
-ended=$(date +%s)
-
-printf 'ACCOUNT: %s (gemini)\n' "$account"
-printf 'ANSWER: %s\n' "$out"
-printf 'LOG: %s\n' "$log"
-printf 'ELAPSED: %s\n' "$((ended - started))"
-for error_file in "$tmp_dir"/geminib-*.err; do
-  [ ! -s "$error_file" ] || sed -n '1,40p' "$error_file" >&2
-done
-
-if [ -n "$result_outcome" ]; then
-  printf 'OUTCOME: %s\n' "$result_outcome"
-  [ -z "$result_line" ] || printf '%s\n' "$result_line"
-fi
-
-exit "$result_code"
+printf '%s\n' "$state"
+account=$(jq -r .account "$run_dir/meta.json")
+printf 'ACCOUNT: %s (gemini)\nANSWER: %s\nLOG: %s/log\n' "$account" "$out" "$run_dir"
+[ ! -f "$run_dir/out" ] || cp "$run_dir/out" "$out" || exit 4
+code=$(cat "$run_dir/exit_code" 2>/dev/null) || exit 4
+[[ "$code" =~ ^[0-9]+$ ]] || exit 4
+exit "$code"
