@@ -14,7 +14,7 @@ report-bus list [--session <uuid>] [--last N]
 report-bus doctor
 ```
 
-Kinds are `review`, `commit`, `push`, `pool-run`, `notice`. Other kinds and bad
+Kinds are `review`, `commit`, `push`, `notice`. Other kinds and bad
 arguments exit 2. Session IDs contain only letters, digits, `.`, `_`, `-`; empty sessions, `.` and `..`
 are invalid. Report IDs replace other characters with `-`; `.` and `..` gain a `report-` prefix. The default ID is the first 12 hex digits of the body's
 SHA256. The dedup key is `<kind>/<id>` within a session, checked against pending, delivered

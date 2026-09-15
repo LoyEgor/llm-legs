@@ -64,7 +64,7 @@ assert doc_has '`GATEWAY_SWITCH_ALIAS`'
 
 REPORT_BUS="$ROOT/bin/report-bus"
 REPORT_DOC="$ROOT/docs/report-bus.md"
-REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/stop.d/notice-run-consume.sh"
+REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/stop.d/ask-run-unfinished.sh"
 REPORT_TAG="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/worker-tag-hook.sh"
 assert grep -Fq 'ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"' "$REPORT_BUS"
 for site in "$REPORT_DOC" "$ROOT/docs/DIAGNOSTICS.md"; do
@@ -1092,7 +1092,7 @@ assert grep -Fq 'rj_launch_chain_of() { # session -> RJ_LAUNCH_CHAIN' "$RJOURNAL
 # record: a fresh relay's own session id is not printed until its CLI exits, so the record's
 # pairing lands after every row the worker journaled while it ran (live run
 # claudeb-1788388059-13078-3ffd, 2026-09-03). One stamping point for every relay, since each
-# inherits the export — an image script, a pool-run cell and a nested worker-run included.
+# inherits the export — an image script, a review-bench cell and a nested worker-run included.
 assert grep -Fq 'export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID"' "$WORKER_RUN"
 assert grep -Fq 'rj_env_launcher() { # session' "$RJOURNAL"
 assert grep -Fq 'hop=$(rj_env_launcher "$id") || {' "$RJOURNAL"

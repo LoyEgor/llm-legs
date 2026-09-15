@@ -5562,7 +5562,7 @@ assert await_done
 # the worker journaled while it ran, and each of those rows landed under an id no chat on this
 # machine answers for (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
 # into the launched process's ENVIRONMENT, which every relay inherits whatever the vendor and
-# whatever it goes on to launch — an image script, a pool-run cell, a nested worker-run — and the
+# whatever it goes on to launch — an image script, a review-bench cell, a nested worker-run — and the
 # ledger writer reads it for the first hop of the launch chain.
 #
 # One case per relay type, each end to end: worker-run launches the stubbed CLI under a fake

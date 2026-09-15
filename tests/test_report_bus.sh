@@ -82,7 +82,7 @@ assert jq -e --arg m "$block" '. == {systemMessage:("\n" + $m)}' <<<"$output" >/
 assert test "$("$BUS" list)" = "$block"
 assert test "$(count "$STORE/emitted/pending")" = 0
 assert test -z "$("$BUS" emit --kind commit --id commit "$WORK/body")"
-for kind in review push pool-run notice; do
+for kind in review push notice; do
   assert test -n "$(printf body | "$BUS" emit --kind "$kind")"
 done
 unset CLAUDE_CODE_SESSION_ID

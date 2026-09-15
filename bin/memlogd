@@ -44,7 +44,7 @@ sync_writes="${MEMLOGD_SYNC:-1}"
 memguard_avail_mb=3072
 memguard_tree_mb=1536
 # The two registries, read through the seams their own writers already use rather than seams of the
-# guard's own: worker-run's run dirs and review-bench's bench/pool run dirs.
+# guard's own: worker-run's run dirs and review-bench's bench run dirs.
 worker_runs_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
 bench_runs_root="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
 
@@ -146,7 +146,7 @@ memguard_registry() { # now
     memguard_verified "$table" "$now" "$pid" "$stamp" || continue
     printf '%s %s %s\n' "$pid" "${directory##*/}" "$directory"
   done
-  for file in "$bench_runs_root"/benches/*/pid-* "$bench_runs_root"/pool-runs/*/pid-*; do
+  for file in "$bench_runs_root"/benches/*/pid-*; do
     [ -f "$file" ] || continue
     directory=${file%/*}
     pid=$(head -n1 "$file" 2>/dev/null | tr -dc '0-9')

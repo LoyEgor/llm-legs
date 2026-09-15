@@ -554,7 +554,7 @@ assert_fails test -e "$LOCK_DIR/memlogd.lock"
 # Every case here registers a REAL process tree and asserts against real signals: a fixture process
 # table cannot be killed, and the whole point of the rule is which processes are still alive after.
 GUARD_ROOT="$WORK/guard"
-mkdir -p "$GUARD_ROOT/runs" "$GUARD_ROOT/stats/benches" "$GUARD_ROOT/stats/pool-runs"
+mkdir -p "$GUARD_ROOT/runs" "$GUARD_ROOT/stats/benches"
 
 # A root that outlives its children, holding two descendants that sleep until something kills them.
 # The root is a bash that waits, so it is the tree's root by ancestry and never exits on its own.

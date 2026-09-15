@@ -86,7 +86,7 @@ to go stale.
    reader that assumed `"pid":N` shipped in round 1, passed a suite whose fixtures were hand-typed
    JSON, and matched nothing at all on a real `meta.json`. Every fixture here is written through
    `jq`, exactly as `worker-run` writes it.
-2. **review-bench cells** — `<state_dir>/{benches,pool-runs}/<run-id>/pid-<cell artifact>`, one file
+2. **review-bench cells** — `<state_dir>/benches/<run-id>/pid-<cell artifact>`, one file
    per launched cell, holding the cell's process-group leader pid. `<state_dir>` is
    `${WORKER_STATS_DIR:-${CLAUDEB_DIR:-~/.claude-profiles/.claudeb}/worker-stats}`. The name follows
    the run dir's existing flat per-cell convention (`raw-<artifact>.json`,
