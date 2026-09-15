@@ -55,6 +55,13 @@ done
 assert test "$(grep -c -- '--account .*--role chat' "$ROOT/share/account-status-tui.sh")" = 1
 assert doc_has '`share/account-status-tui.sh`'
 
+# Row `cj`: the alias a hand-driven jump onto an OpenAI account opens on, spelled once per
+# language — a picker pinning one and a chat switch pinning the other would land the same
+# user on two different models depending on which surface he came from.
+assert test "$(grep -c '^GATEWAY_SWITCH_ALIAS = "astra"$' "$ROOT/share/chat_resume.py")" = 1
+assert test "$(grep -c '^codexb_status_model=astra$' "$ROOT/bin/codexb")" = 1
+assert doc_has '`GATEWAY_SWITCH_ALIAS`'
+
 REPORT_BUS="$ROOT/bin/report-bus"
 REPORT_DOC="$ROOT/docs/report-bus.md"
 REPORT_NOTICE="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/stop.d/notice-run-consume.sh"
@@ -75,12 +82,6 @@ for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker clau
   assert doc_has "$marker"
   assert grep -Fq "$marker" "$REPORT_DOC"
 done
-assert grep -Fq '"▌ " + .kind + (if .repo == "" then "" else " · " + .repo end) +' "$REPORT_BUS"
-assert grep -Fq '" · " + .clock + (if .title == "" then "" else " · " + .title end) + "\n" +' "$REPORT_BUS"
-assert grep -Fq -- '--arg clock "$(date +%H:%M)"' "$REPORT_BUS"
-assert grep -Fq 'repo=${2%/}; repo=${repo##*/}' "$REPORT_BUS"
-assert doc_has '▌ <kind> · <repo or account> · HH:MM[ · <title>]'
-assert grep -Fq '▌ <kind> · <repo or account> · HH:MM[ · <title>]' "$REPORT_DOC"
 
 # --- Row a: staleness/dim thresholds -----------------------------------------
 FIVE=1800; WEEK=21600; FABLE=21600; ROUTING=7200
@@ -459,7 +460,16 @@ assert test "$(grep -Ec 'flash3[0-79]:(high|medium|low)' "$WORKER_RUN")" -eq 0
 assert grep -Fq '`gemini_model=flash38`, and `gemini_effort=high`' "$WORKER_COMMAND"
 assert grep -Fq 'The only valid combinations are flash38 low/medium/high' "$WORKER_COMMAND"
 assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-flash38}' "$WORKERPICK"
-assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-high}' "$WORKERPICK"
+assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_effort gemini "$gm_model")}' "$WORKERPICK"
+assert eq "$(bash -c '. "$1"; worker_model_default_effort gemini "$(worker_model_default_model gemini)"' _ "$ROOT/share/worker-model.sh")" high
+# A missing `<vendor>_effort` has ONE reading: the table default of the STORED model, which is what
+# `worker-run` resolves from `$model`. A picker falling back to the VENDOR's default model instead
+# reports `fable · high` for a row the table says is low, and the two disagree about the launch.
+assert grep -Fq 'cb_effort=${cb_effort:-$(worker_model_default_effort claudeb "$cb_model")}' "$WORKERPICK"
+assert grep -Fq 'cx_effort=${cx_effort:-$(worker_model_default_effort codex "$cx_model")}' "$WORKERPICK"
+assert grep -Fq 'gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
+assert test "$(grep -c 'worker_model_default_effort [a-z]* "$(worker_model_default_model' "$WORKERPICK")" -eq 0
+assert eq "$(bash -c '. "$1"; worker_model_default_effort claudeb fable' _ "$ROOT/share/worker-model.sh")" low
 assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
 assert doc_has 'Gemini worker knobs'
 
@@ -469,17 +479,17 @@ assert doc_has 'Gemini worker knobs'
 WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
-for arm in \
-  "claudeb) printf 'opus\\n' ;;" \
-  "codex) printf 'gpt-6-astra\\n' ;;" \
-  "gemini) printf 'flash38\\n' ;;" \
-  "grok) printf 'auto\\ngrok-4.6\\n' ;;"; do
-  assert test "$(grep -Fc -- "$arm" "$WORKER_MODEL_SH")" -eq 1
-done
+assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
+claudeb fable low low,medium,high xhigh,max yes
+codex gpt-6-astra low low,medium,high xhigh no
+codex gpt-5.6-sol medium medium,high low,xhigh yes
+gemini flash38 high low,medium,high - no
+grok auto high high,xhigh - no
+grok grok-4.6 high high,xhigh - no'
 # Neither refusal spells a model of its own: both read the list through these functions.
 assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
-# One printer for every outcome (`outcome_line`, which also posts the worker report), so the
+# One printer for every outcome (`outcome_line`), so the
 # literal is its format string and each site names only the outcome.
 assert grep -Fq "printf 'OUTCOME: %s\\n' \"\$outcome\"" "$WORKER_RUN"
 assert grep -Fq 'outcome_line MODEL_REFUSED' "$WORKER_RUN"
@@ -506,7 +516,7 @@ done
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test -r "$agent"
   # The frontmatter `model:` is the RELAY's own model, not a model it may ask a worker to run.
-  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|fable|flash3[0-79]|gpt-5\.6-(terra|luna))')" -eq 0
+  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-79]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
 assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini `flash38`, grok `auto`'
@@ -534,14 +544,14 @@ assert doc_has 'Worker account resolution'
 # A hit turn cap is the vendor serving, so it may never share a name with the outcomes the routers
 # read as "no capacity here": folded back into GROK_UNAVAILABLE the relay hunts a pool problem that
 # does not exist and reroutes a brief that outruns the same cap wherever it lands.
-assert grep -Fq 'outcome_line GROK_MAX_TURNS "$directory"' "$WORKER_RUN"
+assert grep -Fq 'outcome_line GROK_MAX_TURNS' "$WORKER_RUN"
 assert grep -Fq 'grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}' "$WORKER_RUN"
 assert grep -Fq -- '[ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")' "$WORKER_RUN"
 assert grep -Fq -- '[ -z "$turns" ] || command+=(--max-turns "$turns")' "$WORKER_RUN"
 assert doc_has '`OUTCOME: GROK_MAX_TURNS`, never `_UNAVAILABLE` and never `_USAGE_LIMIT`'
 assert doc_has 'only when `WORKER_RUN_GROK_MAX_TURNS` sets one'
 # A session cancelled before its first turn is not a finished run: exit 0 alone said `done`.
-assert grep -Fq 'outcome_line "GROK_CANCELLED ${directory##*/}" "$directory"' "$WORKER_RUN"
+assert grep -Fq 'outcome_line "GROK_CANCELLED ${directory##*/}"' "$WORKER_RUN"
 assert grep -Fq 'grok_cancelled_start "$1"' "$WORKER_RUN"
 assert doc_has '`OUTCOME: GROK_CANCELLED <run-id>` with `STATUS: failed`'
 assert grep -Fq 'OUTCOME: GROK_CANCELLED <run-id>' "$ROOT/docs/DIAGNOSTICS.md"
@@ -573,7 +583,7 @@ assert doc_has 'Gemini profile discovery and HOME mapping'
 
 # Review keeps Sol; implementation runs Astra independently (Egor, 2026-09-05).
 assert grep -Fq '"-m", "gpt-5.6-sol"' "$ROOT/../review-bench/share/rbench/launch.py"
-assert eq "$(bash -c ' . "$1"; worker_model_allowed_models codex' _ "$WORKER_MODEL_SH")" 'gpt-6-astra'
+assert eq "$(bash -c ' . "$1"; worker_model_default_model codex' _ "$WORKER_MODEL_SH")" 'gpt-6-astra'
 assert eq "$(grep -c worker_model_allowed_models "$ROOT/../review-bench/share/rbench/launch.py")" 0
 
 # --- Row n: weekly bucket provenance ----------------------------------------
@@ -686,33 +696,37 @@ assert grep -Fq 'hard `100`% wall' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
 # --- Row bt: native agent types on a Fable session ---------------------------
-# The two lists live once in the gate; the doc and routing-contract prose repeat them in words,
+# The lists live once in the gate; the doc and routing-contract prose repeat them in words,
 # and a list that grows in one place and not the others is a rule nobody can read off any of them.
 ROUTING_DOC="$ROOT/docs/routing-contract.md"
 native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$WORKER_GATE" | head -n1; }
-assert eq "$(native_list NATIVE_ALLOWLIST)" 'Explore Plan claude-code-guide statusline-setup gemini-research'
-assert eq "$(native_list NATIVE_CHEAP)" 'Explore claude-code-guide gemini-research'
+assert eq "$(native_list NATIVE_ALLOWLIST)" 'Plan claude-code-guide gemini-research'
 for native in $(native_list NATIVE_ALLOWLIST); do
   assert grep -Fq "\`$native\`" "$ROOT/$DOC"
   assert grep -Fq "\`$native\`" "$ROUTING_DOC"
 done
-for cheap in $(native_list NATIVE_CHEAP); do
-  assert grep -Fq "\`$cheap\`" "$ROOT/$DOC"
+# There is no cheap-rewrite tier and no walled-Gemini escape left: an allowlisted type keeps the
+# session model, and a list the gate no longer carries must not survive in prose either.
+assert test "$(grep -Ec '^NATIVE_(CHEAP|EXPLORE_ESCAPE)=' "$WORKER_GATE")" -eq 0
+for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
+  assert test "$(grep -Fc 'NATIVE_EXPLORE_ESCAPE' "$retired_doc")" -eq 0
 done
 # Read-only fan-out is not merely repriced but re-aimed, and the escape from a walled Gemini is a
 # literal line the gate, the row and the contract all have to spell identically.
 assert eq "$(native_list NATIVE_RESEARCH)" 'Explore general-purpose'
-ESCAPE_LINE=$(native_list NATIVE_EXPLORE_ESCAPE)
-assert eq "$ESCAPE_LINE" 'NATIVE_EXPLORE: gemini walled'
 for research_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
-  assert grep -Fq "\`$ESCAPE_LINE\`" "$research_doc"
   assert grep -Fq 'Repositories:' "$research_doc"
 done
 assert grep -Fq '.subagent_type = "gemini-research"' "$WORKER_GATE"
 
-# The rewrite target and the refusal are the row's other two halves.
-assert grep -Fq '.model = "sonnet"' "$WORKER_GATE"
+# The rewrite target and the refusal are the row's other two halves: an explicit tool model is
+# stripped rather than honoured, since it would put the spawn back on the session's own quota.
+assert grep -Fq 'del(.model)' "$WORKER_GATE"
+assert test "$(grep -Fc '.model = "sonnet"' "$WORKER_GATE")" -eq 0
 assert grep -Fq "native \$native runs on this session's own quota" "$WORKER_GATE"
+# The whole branch hangs off the session-model predicate: off an orchestrator session nothing is
+# judged, and a gate that cannot read the model must not block ordinary work.
+assert grep -Fq 'if orchestrator_model "$current_session_model"; then' "$WORKER_GATE"
 # The doctrine binds one class of session models, and the shape lives in the gate alone: Fable and
 # the claudegpt gateway aliases, both spelled in row bt and in the routing contract.
 assert grep -Fq 'claude-fable-*|anthropic.ccr.*) return 0 ;;' "$WORKER_GATE"
@@ -720,7 +734,7 @@ assert eq "$(grep -c 'claude-fable-\*' "$WORKER_GATE")" 1
 for model_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert grep -Fq 'anthropic.ccr.' "$model_doc"
 done
-assert grep -Fq 'model: sonnet' "$ROUTING_DOC"
+assert grep -Fq 'explicit tool models' "$ROUTING_DOC"
 assert doc_has 'Native agent types on an orchestrator session'
 
 # --- Rows bu/bv: worker-run deadlines and the launched brief -----------------
@@ -988,7 +1002,10 @@ assert eq "$(grep -c 'used_pct' "$STATUSLINE")" 0
 assert eq "$(grep -cE '"\$(h5|wk)_reset" -lt "\$now"' "$STATUSLINE")" 0
 # the menu stays flag-driven off the collector's fields (never re-derives pct semantics)
 assert grep -Fq 'tonumber(bucket.effective_pct)' "$HAMMER"
-assert eq "$(grep -c 'used_percentage' "$HAMMER")" 0
+# Counted as OCCURRENCES, not lines: the one permitted mention is the absent-check, and a line
+# count would let a re-derivation ride along on the very line that guard sits on.
+assert eq "$(grep -o 'used_percentage' "$HAMMER" | wc -l | tr -d ' ')" 1
+assert grep -Fq 'bucket.used_pct == nil and bucket.used_percentage == nil and bucket.resets_at == nil' "$HAMMER"
 # probes/warms fold fresh snapshots into the merged cache; the collector's own
 # child invocations are suppressed so a refresh never recurses or double-writes
 assert grep -Fq 'announce_limits_probed' "$CLAUDEB"
@@ -1945,11 +1962,17 @@ WORKER_RUN="$ROOT/bin/worker-run"
 assert grep -Fq '>"$directory/launcher"' "$WORKER_RUN"
 assert grep -Fq "printf 'WORKDIR: %s\\n' \"\$workdir\"" "$WORKER_RUN"
 assert grep -Fq "printf 'UNKNOWN: %s\\n' \"\$RUN_FILES_REASON\"" "$WORKER_RUN"
-# The files are the before/after content diff of the workdir, never a vendor transcript: a run that
-# edited through the shell alone is fully attributed, so no PARTIAL row exists to fall through.
+# The candidate set is the before/after content diff of the workdir and never a vendor transcript;
+# the transcript answers the other question, WHOSE those paths are, and the listing is the two
+# agreeing. Both PARTIAL rows say the narrowing did not happen, so a reader never mistakes a whole
+# repository's dirt for one run's work.
 assert grep -Fq 'snapshot_workdir "$directory" "$workdir" after' "$WORKER_RUN"
 assert grep -Fq 'compute_snapshot_files "$directory" "$workdir"' "$WORKER_RUN"
-assert eq "$(grep -c "printf 'PARTIAL: " "$WORKER_RUN")" 0
+assert eq "$(grep -c "printf 'PARTIAL: " "$WORKER_RUN")" 2
+assert grep -Fq "printf 'PARTIAL: %s\\n' \"\${RUN_LISTING_REASON:-\$RUN_LISTING_PARTIAL}\"" "$WORKER_RUN"
+assert grep -Fq 'PARTIAL: transcript names writes outside the snapshotted repository; see files-note' "$WORKER_RUN"
+assert doc_has 'the candidates its own transcript also names'
+assert doc_has 'can never add a path the snapshot does not hold'
 assert grep -Fq 'mv -f "$directory/files.tmp.$$" "$directory/files"' "$WORKER_RUN"
 # The other half of the record, and the one that answers for a run which edited through the shell
 # alone: the worker's own session, whose hooks journaled those edits under an id no chat in the
@@ -2430,19 +2453,24 @@ assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)"
 # substitutes one, answers for a choice nobody made.
 GROK_TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
 assert grep -Fq 'gr_model=$(conf grok_model); gr_model=${gr_model:-auto}' "$WORKERPICK"
-assert grep -Fq 'gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-high}' "$WORKERPICK"
-assert grep -Fq 'model=${model:-$(config_value grok_model)}; model=${model:-auto}' "$WORKER_RUN"
-assert grep -Fq 'effort=${effort:-$(config_value grok_effort)}; effort=${effort:-high}' "$WORKER_RUN"
+assert grep -Fq 'gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
+assert grep -Fq 'model=${model:-$(worker_model_default_model "$vendor")}' "$WORKER_RUN"
+assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$model")}' "$WORKER_RUN"
 assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"
-assert grep -Fq 'low|medium|high|xhigh) ;;' "$WORKER_RUN"
-assert grep -Fq 'grok effort must be low, medium, high or xhigh' "$WORKER_RUN"
+assert grep -Fq 'worker_model_effort_allowed "$vendor" "$model" "$effort"' "$WORKER_RUN"
+assert grep -Fq 'outcome_line EFFORT_REFUSED' "$WORKER_RUN"
 for grok_knob_hook in "$SPAWN_HOOK" "$GROK_TAG_HOOK"; do
   assert grep -Fq 'worker_conf grok_model' "$grok_knob_hook"
   assert grep -Fq 'worker_conf grok_effort' "$grok_knob_hook"
 done
-assert grep -Fq 'wv_model=${grok_model:-auto}; [ "$wv_model" != auto ] || wv_model=""' "$STATUSLINE"
-assert grep -Fq 'wv_effort=${grok_effort:-high}' "$STATUSLINE"
-assert grep -Fq '`grok_model=auto` and `grok_effort=low|medium|high|xhigh`' "$WORKER_COMMAND"
+assert grep -Fq 'gr) wv_model=${grok_model:-auto}' "$STATUSLINE"
+assert grep -Fq '[ "$wv_model" != auto ] || wv_model=""' "$STATUSLINE"
+# `auto` is blanked for the label only after the effort has been derived from it; reorder the two
+# and grok's default effort is resolved off an empty model name.
+assert eq "$(grep -F -A1 'gr) wv_model=${grok_model:-auto}' "$STATUSLINE" | tail -n1 | sed 's/^ *//')" 'wv_effort=${grok_effort:-$(worker_model_default_effort grok "$wv_model")}'
+# Every reader of a missing effort resolves it from the STORED model; see row bk's worker-pick pair.
+assert test "$(grep -c 'worker_model_default_effort [a-z]* "$(worker_model_default_model' "$STATUSLINE")" -eq 0
+assert grep -Fq '`grok_model=auto` and `grok_effort=high|xhigh`' "$WORKER_COMMAND"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
 
@@ -2518,9 +2546,12 @@ assert grep -Fq 'worker_claims_fresh' "$WORKERPICK"
 # without --claim, validate the profile, then call the same recorder so a ghost account does not burn the TTL.
 assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
 assert eq "$(grep -c 'worker-claims.sh' "$ROOT/bin/worker-run")" 0
-assert grep -Fq 'command -v worker-pick' "$ROOT/bin/gemini-research"
-assert grep -Fq -- 'args=(--account gemini --role research)' "$ROOT/bin/gemini-research"
-assert grep -Fq -- 'args+=(--claim)' "$ROOT/bin/gemini-research"
+# Research picks for itself nowhere any more: the compatibility entrypoint submits a tracked
+# worker-run, and that run claims through the same picker flag every other relay uses.
+assert grep -Fq -- 'args=(start gemini --role research' "$ROOT/bin/gemini-research"
+assert eq "$(grep -c 'worker-pick' "$ROOT/bin/gemini-research")" 0
+assert grep -Fq 'local role_arg=${WORKER_RUN_ROLE:-workers}' "$ROOT/bin/worker-run"
+assert grep -Fq 'export WORKER_RUN_ROLE=research' "$ROOT/bin/worker-run"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-image"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-video"
 # Both grok media wrappers route through one selector, so the claim and the pick are asserted
@@ -2533,10 +2564,10 @@ assert grep -Fq 'worker_claims_record grok "$grok_media_account"' "$ROOT/share/g
 assert grep -Fq 'grok_media_account=$("$worker_pick_cmd" --account grok --role image 2>/dev/null)' "$ROOT/share/grok-media.sh"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/codex-image"
 assert grep -Fq 'worker_claims_record codex "$account"' "$ROOT/bin/codex-image"
-assert grep -Fq 'account=$(worker-pick --account codex 2>/dev/null)' "$ROOT/bin/codex-image"
+assert grep -Fq 'account=$(worker-pick --account codex --role image 2>/dev/null)' "$ROOT/bin/codex-image"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/gemini-image"
 assert grep -Fq 'worker_claims_record gemini "$account"' "$ROOT/bin/gemini-image"
-assert grep -Fq 'account=$(worker-pick --account gemini 2>/dev/null)' "$ROOT/bin/gemini-image"
+assert grep -Fq 'account=$(worker-pick --account gemini --role image 2>/dev/null)' "$ROOT/bin/gemini-image"
 assert test -r "$ROOT/tests/test_worker_claims.sh"
 assert doc_has 'Worker claims ledger'
 

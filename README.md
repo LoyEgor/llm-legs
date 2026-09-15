@@ -41,6 +41,10 @@ decision-support) as a git submodule. One fix here propagates to every consumer 
 - **Receipts where possible:** claude's served model is verified from `.modelUsage` (auxiliary
   haiku entries do not poison the guard); codex's from the CLI banner. agy does NOT report the
   served model — its audit rows record the pin, marked unverified.
+- **English between models:** `bin/cyrillic-share` reads text on stdin and prints the share of
+  Cyrillic letters outside «…» quotes and code; `worker-run` refuses a brief over 15%, prepends an
+  AUDIENCE line telling the worker its reader is a model, and stamps a Russian result
+  `LANG: cyrillic N%`; `claude-resume-timer -m` refuses Russian too.
 
 ## Knobs
 
@@ -115,7 +119,7 @@ vendor whose five-hour window has already reset it issues one minimal model call
 `--refresh --start-windows`, a one-word `codex exec`, a one-word `agy --print`) to start a fresh
 window, then re-reads the free usage endpoints. Vendors that cannot be started are reported on
 stderr, never skipped silently.
-The Gemini request is the machine-readable equivalent of `/usage`; it consumes no model tokens.
+The Gemini request is `/usage` itself in print mode; it consumes no model tokens.
 The `main` profile keeps the legacy cache `~/.llm-limits-gemini.json`; named profiles use
 `~/.llm-limits-gemini/<name>.json`. `--gemini-remove` is the menubar's spelling of `geminib
 remove main`: both write `~/.llm-limits-gemini.json.removed`, which takes `main` out of every
@@ -171,12 +175,13 @@ local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 |--------|-----------------|
 | Claude | Per-account claudeb file mtime; status-line snapshot fallback |
 | Codex | Live app-server rate-limits RPC on refresh; last rollout event otherwise |
-| Gemini | Per-profile last successful manual Get Data & Refresh through agy's localhost quota RPC |
+| Gemini | Per-profile last successful manual Get Data & Refresh through agy's print-mode `/usage` |
 
-Gemini refresh launches `agy` under each profile's `HOME`, waits for normal authenticated startup,
-finds its localhost listener, and calls
-`LanguageServerService/RetrieveUserQuotaSummary`. Set `AGY_WORKDIR` to an already trusted folder
-if the repository itself has not been opened in agy. Overrides for tests or alternate installs:
+Gemini refresh runs `agy -p /usage --output-format json` under each profile's `HOME`, which
+answers the read-only usage command without a model turn, quota spend or conversation. `BROWSER`
+is muzzled so a logged-out profile cannot open an OAuth page, and the `Authentication required`
+line on stderr ends the run as `login needed`. Set `AGY_WORKDIR` to the folder agy should run in.
+Overrides for tests or alternate installs:
 `AGY_BIN`, `LLM_LIMITS_GEMINI_CMD`, `LLM_LIMITS_GEMINI_CACHE`,
 `GEMINIB_PROFILES_DIR`, and `LLM_LIMITS_GEMINI_ACCOUNTS_DIR`.
 
