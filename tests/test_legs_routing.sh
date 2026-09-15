@@ -19,7 +19,7 @@ mkdir -p "$STUB_BIN" "$BARE_BIN" "$PICK_BARE_BIN"
 
 cat >"$STUB_BIN/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-printf 'cache=%s args=%s\n' "${WORKER_PICK_CACHE_DIR:-unset}" "$*" >>"$PICK_LOG"
+printf 'args=%s\n' "$*" >>"$PICK_LOG"
 case "${STUB_PICK_RC:-0}" in
   0) printf '%s\n' "${STUB_PICK_ACCOUNT:-main}" ;;
   2) exit 2 ;;
@@ -134,7 +134,7 @@ for spec in \
     gemini) assert grep -q $'^geminib\tprofile\tgemini-worker\t--print\t' "$CALL_LOG" ;;
     claude) assert grep -q $'^claudeb\t-p\troute claude\t' "$CALL_LOG" ;;
   esac
-  assert grep -q "cache=/dev/null args=--account $leg" "$PICK_LOG"
+  assert grep -q "args=--account $leg" "$PICK_LOG"
   assert jq -e --arg account "$account" '.account == $account' \
     "$data/served-models.jsonl" >/dev/null
   # A routed leg never reaches the bare CLI: for Gemini that CLI runs under the real HOME, the

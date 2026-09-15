@@ -21,6 +21,7 @@ agent_id=$(field '.agent_id' | tr -cd 'A-Za-z0-9_-')
 [ -n "$agent_id" ] || exit 0
 session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
 [ -n "$session_id" ] || session_id=_
+[ "$session_id" = _ ] || export CLAUDE_CODE_SESSION_ID="$session_id"
 
 command=$(field '.tool_input.command')
 description=$(field '.tool_input.description')

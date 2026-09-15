@@ -57,7 +57,7 @@ fi
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
 if command -v worker-pick >/dev/null 2>&1; then
   pick_rc=0
-  account="$(WORKER_PICK_CACHE_DIR=/dev/null worker-pick --account gemini)" || pick_rc=$?
+  account="$(worker-pick --account gemini)" || pick_rc=$?
   if [ "$pick_rc" -eq 3 ]; then
     # Falling back here would spend quota the router deliberately reserved.
     echo "ask_gemini.sh: no selectable Gemini account — leg unavailable" >&2

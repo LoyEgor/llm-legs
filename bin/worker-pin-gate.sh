@@ -105,6 +105,83 @@ grant_path() {
 
 fresh() { [ -n "$(find "$(grant_path)" -mmin "-$GRANT_TTL_MIN" 2>/dev/null)" ]; }
 
+chat_pins_dir() { printf '%s' "${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}"; }
+
+# Cyrillic stays out of bracket expressions and `?`: a C-locale hook reads them byte by byte.
+chat_pin_target() { # prompt → target
+  local msg tok
+  msg=${1#"${1%%[![:space:]]*}"}
+  msg=${msg%"${msg##*[![:space:]]}"}
+  case "$msg" in '' | *$'\n'*) return 1 ;; esac
+  msg=$(printf '%s\n' "$msg" |
+    sed -E 's/^([[:space:].,!?;:"'\'']|«|»)+//; s/([[:space:].,!?;:"'\'']|«|»)+$//' |
+    LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]') || return 1
+  if [[ "$msg" =~ ^(workers|worker|воркеры|воркер)[[:space:]]+(авто|auto)$ ]]; then
+    printf 'auto'
+    return 0
+  fi
+  [[ "$msg" =~ ^(workers|worker|воркеры|воркер)[[:space:]]+(на|on)[[:space:]]+([^[:space:]]+)$ ]] ||
+    return 1
+  tok=${BASH_REMATCH[3]}
+  case "$tok" in
+    codex | кодекс) printf 'codex' ;;
+    claude | cloud | клод | клауд) printf 'claudeb' ;;
+    gemini | джемини | джеминай) printf 'gemini' ;;
+    grok | грок | grock | groq) printf 'grok' ;;
+    auto | авто) printf 'auto' ;;
+    *) [[ "$tok" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1; printf '%s' "$tok" ;;
+  esac
+}
+
+# The longest existing ancestor resolved, the rest kept as typed: the chat-pins dir usually does
+# not exist yet, and `/var` → `/private/var` must not separate a file from its own directory.
+deep_canonical() {
+  local path="$1" rest=''
+  case "$path" in '~') path="$HOME" ;; '~/'*) path="$HOME/${path#\~/}" ;; esac
+  [[ "$path" = /* ]] || path="$PWD/$path"
+  path=$(sed -E 's#/+#/#g; s#/$##' <<<"$path")
+  while [ -n "$path" ] && [ ! -d "$path" ]; do
+    rest="/${path##*/}$rest"
+    path=${path%/*}
+  done
+  printf '%s%s' "$(cd -- "${path:-/}" 2>/dev/null && pwd -P)" "$rest"
+}
+
+under_chat_pins() {
+  local dir
+  case "$1" in *"$(basename -- "$(chat_pins_dir)")"*) ;; *) return 1 ;; esac
+  dir=$(deep_canonical "$(chat_pins_dir)")
+  case "$(deep_canonical "$1")" in "$dir" | "$dir"/*) return 0 ;; esac
+  return 1
+}
+
+CHAT_DENY_REASON="Blocked: the chat pin under $(chat_pins_dir) is Egor's to move, and only through \`chat-pin <vendor|account|auto>\`, which checks the grant his own words wrote. Do not write, copy over or delete that file another way. If he asked for workers on a vendor or an account in this chat, run \`chat-pin\`; otherwise ask him in one line."
+
+# The copy verbs deny on the name alone: a backup of a chat pin is a thing no session needs, and
+# false-deny is this door's side.
+CHAT_VERB_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown|cp|mv|ln|install|touch|truncate|tee|dd)([[:space:]]|$)'
+
+chat_pins_written() { # command → 0 when it writes, copies over or deletes under the chat-pins dir
+  local names scan segment
+  names='claude-chat-pins'
+  [ -z "${CHAT_PINS_DIR:-}" ] ||
+    names="$names|$(basename -- "$CHAT_PINS_DIR" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+  grep -Eq "$names" <<<"$1" || return 1
+  load_share instruction-files.sh instruction_write_targets || return 1
+  scan=$(printf '%s' "$1" | instruction_shell_scan 2>/dev/null) || scan=''
+  [ -n "$scan" ] || scan=$1
+  grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE|$PIN_LANG_RE" <<<"$scan" &&
+    scan=$1
+  [ -z "$(instruction_write_targets "$scan" "[^[:space:]]*($names)(/[^[:space:]]*)?")" ] || return 0
+  while IFS= read -r -d '' segment; do
+    grep -Eq "$names" <<<"$segment" || continue
+    grep -Eq "$CHAT_VERB_RE|-i([[:space:]]|$)" <<<"$segment" && return 0
+  done < <(instruction_split_commands "$scan")
+  grep -Eq "[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*($names)" <<<"$scan" || return 1
+  instruction_write_targets "$scan" '[^[:space:]]+' |
+    awk -F '\t' '$2 != "unknown" && $4 != "" && $4 != "/dev/null" { found = 1 } END { exit !found }'
+}
+
 # `$HOME/.claude//worker-model`, a `..` hop and a tilde all name the one file; comparing the
 # spelling instead of the file is a gate a session opens by typing the path differently.
 canonical_path() {
@@ -160,6 +237,17 @@ case "$MODE" in
   prompt)
     printf '%s' "$input" | jq -e '.hook_event_name == "UserPromptSubmit"' >/dev/null 2>&1 || exit 0
     prompt=$(printf '%s' "$input" | jq -r '.prompt // empty') || exit 0
+    if target=$(chat_pin_target "$prompt"); then
+      sid=$(printf '%s' "$input" | jq -r '.session_id // empty') || exit 0
+      case "$sid" in '' | */* | *..*) exit 0 ;; esac
+      chat_grant="$(dirname "$(grant_path)")/chat-$sid"
+      mkdir -p "$(dirname "$chat_grant")" 2>/dev/null || exit 0
+      printf '%s\n' "$target" >"$chat_grant.tmp.$$" 2>/dev/null &&
+        mv -f "$chat_grant.tmp.$$" "$chat_grant" 2>/dev/null || { rm -f "$chat_grant.tmp.$$"; exit 0; }
+      jq -cn --arg c "Egor asked: workers on $target for this chat. Run \`chat-pin $target\` unless the conversation says otherwise — a grant only unblocks." \
+        '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null
+      exit 0
+    fi
     # Both directions grant: asking for a pin and asking to drop one are the same hand on the same
     # switch. The bare noun «пин» needs a verb beside it, because it also arrives inside pasted
     # logs and diffs, and a grant handed out by quoted text is the door standing open by itself.
@@ -185,6 +273,7 @@ case "$MODE" in
         >/dev/null 2>&1 || exit 0
     path=$(printf '%s' "$input" | jq -r '.tool_input.file_path // empty') || exit 0
     [ -n "$path" ] || exit 0
+    ! under_chat_pins "$path" || deny "$CHAT_DENY_REASON"
     is_pin_file "$path" || exit 0
     tool=$(printf '%s' "$input" | jq -r '.tool_name') || exit 0
     if [ "$tool" = Write ]; then
@@ -220,6 +309,7 @@ case "$MODE" in
     printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Bash"' \
       >/dev/null 2>&1 || exit 0
     cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty') || exit 0
+    ! chat_pins_written "$cmd" || deny "$CHAT_DENY_REASON"
     # The pin file, not every name starting with it: `share/worker-model.sh` is a source file, and
     # gating commands that merely name it made ordinary work argue with this door. Cheap and on the
     # raw text, so the shared module is read only for a command that could be about the pin at all;

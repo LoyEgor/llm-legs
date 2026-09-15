@@ -106,10 +106,13 @@ SHORT_SHA=$(git -C "$REPO_K" rev-parse --short HEAD)
 DIM=$'\033[2m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; RED=$'\033[31m'; MAGENTA=$'\033[35m'; RESET=$'\033[0m'
 BLUE=$'\033[34m'; CYAN=$'\033[36m'
 STATE_DIR="$HOME/.cache/claude-statusline"
-# The worker segment the ordering cases below anchor the end of the line on. A pinned grok account
-# on the knob's `auto` model is the shortest candidate the segment can render (`@a·hi`), which is
-# what keeps the width-fit fixtures honest now that there is no Sonnet candidate.
-WORKER_MARK="${MAGENTA}@a${RESET}"
+CHAT_PINS_DIR="$WORK/chat-pins"
+export CHAT_PINS_DIR
+mkdir -p "$CHAT_PINS_DIR"
+# The pin segment the ordering cases below anchor the end of the line on. A one-letter account
+# pin is the shortest the slot can render (`a`), which is what keeps the width-fit fixtures honest.
+PIN_MARK="${MAGENTA}a${RESET}"
+write_chat_pin() { printf '%s\n' "$2" > "$CHAT_PINS_DIR/$1"; }
 
 workdir_payload() {
   jq -cn --arg event PostToolUse --arg tool "$1" --arg session "$2" --arg cwd "$3" \
@@ -1389,6 +1392,7 @@ run_statusline() {
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
     CODEXB_PROFILES_DIR="$CODEX_FIX" \
     COLUMNS="${FIT_COLUMNS:-}" \
+    CHAT_PINS_DIR="$CHAT_PINS_DIR" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
     STATUSLINE_CODEX_REFRESH_CMD="${CODEX_REFRESH_CMD:-/usr/bin/true}" \
@@ -1562,233 +1566,57 @@ assert test "${fast_output#*⚡}" = "$fast_output"
 assert test "${fast_output#*Fast Mode}" = "$fast_output"
 
 
-# There is no native Sonnet worker any more, so neither a missing file nor a `worker=sonnet` line
-# left behind in one names a candidate of its own: both route like `auto`, and the account rendered
-# is worker-pick's — never the session's own, which no implementation run may spend.
+# Pin segment: this session's chat file only. No file → nothing; * → vendor word; else account.
+# Global worker-model pin is never shown. claudeb_profile=* renders `claude`, not `claudeb`.
 worker_file="$HOME/.claude/worker-model"
-mkdir -p "$HOME/.cache"
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
 rm -f "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-def)")
-assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-# The `w:<name>` label is gone at every width: one candidate needs no vendor caption.
-assert test "${worker_out#*w:}" = "$worker_out"
-assert test "${worker_out#*SN}" = "$worker_out"
+rm -f "$CHAT_PINS_DIR"/*
 
-printf 'worker=codex\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-default-effort)")
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·low${RESET}" <<< "$worker_out"
+pin_out=$(run_statusline "$(statusline_payload status-pin-none)")
+assert test "${pin_out#*codex}" = "$pin_out"
+assert test "${pin_out#*claude}" = "$pin_out"
+assert test "${pin_out#*⏸off}" = "$pin_out"
+
+printf 'claudeb_profile=globpin\nworker=claudeb\n' > "$worker_file"
+pin_out=$(run_statusline "$(statusline_payload status-pin-global)")
+assert test "${pin_out#*globpin}" = "$pin_out"
+assert test "${pin_out#*claude}" = "$pin_out"
 rm -f "$worker_file"
 
-# A gateway chat spends a CODEX account, so the prediction it reads is the file worker-pick wrote
-# for that vendor; `worker-pick.line.main` above belongs to the Claude profile of that name and
-# would render a candidate this chat never asked for (shared-invariants row `c`).
-printf 'cx✓gwcodex·astra·med cb~gateway·opus·hi\n' >"$HOME/.cache/worker-pick.line.codex@work4"
-gw_worker_out=$(CLAUDEGPT_ACCOUNT=work4 run_statusline "$(statusline_payload status-w-gateway)")
-assert grep -Fq "${MAGENTA}gateway${RESET}${DIM}·OP·hi${RESET}" <<< "$gw_worker_out"
-assert test "${gw_worker_out#*notcom}" = "$gw_worker_out"
-rm -f "$HOME/.cache/worker-pick.line.codex@work4"
+write_chat_pin status-pin-star-codex 'codex_profile=*'
+pin_out=$(run_statusline "$(statusline_payload status-pin-star-codex)")
+assert grep -Fq "${MAGENTA}codex${RESET}" <<< "$pin_out"
 
-printf 'worker=sonnet\nsonnet_effort=high\ncodex_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-son-eff)")
-assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-assert test "${worker_out#*SN}" = "$worker_out"
+write_chat_pin status-pin-star-claude 'claudeb_profile=*'
+pin_out=$(run_statusline "$(statusline_payload status-pin-star-claude)")
+assert grep -Fq "${MAGENTA}claude${RESET}" <<< "$pin_out"
+assert test "${pin_out#*claudeb}" = "$pin_out"
 
-printf 'worker=codex\ncodex_effort=medium\ncodex_profile=alt\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex)")
-assert grep -Fq "${MAGENTA}@alt${RESET}${DIM}·AS·med${RESET}" <<< "$worker_out"
+write_chat_pin status-pin-star-gemini 'gemini_profile=*'
+pin_out=$(run_statusline "$(statusline_payload status-pin-star-gemini)")
+assert grep -Fq "${MAGENTA}gemini${RESET}" <<< "$pin_out"
 
-# No prediction to read: one candidate or none — never a `?` standing in for an account.
-rm -f "$HOME/.cache/worker-pick.line.main"
-printf 'worker=codex\ncodex_effort=xhigh\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-unres)")
-assert test "${worker_out#*·AS}" = "$worker_out"
-worker_line1="${worker_out%%$'\n'*}"
-assert test "${worker_line1#*'?'}" = "$worker_line1"
+write_chat_pin status-pin-star-grok 'grok_profile=*'
+pin_out=$(run_statusline "$(statusline_payload status-pin-star-grok)")
+assert grep -Fq "${MAGENTA}grok${RESET}" <<< "$pin_out"
 
-printf 'worker=claudeb\ncodex_effort=high\nclaudeb_profile=notcom\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb)")
-assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
+write_chat_pin status-pin-acct 'codex_profile=alt'
+pin_out=$(run_statusline "$(statusline_payload status-pin-acct)")
+assert grep -Fq "${MAGENTA}alt${RESET}" <<< "$pin_out"
 
-printf 'worker=claudeb\ncodex_effort=high\nclaudeb_model=haiku\nclaudeb_effort=xhigh\n' > "$worker_file"
-mkdir -p "$HOME/.cache"
-printf 'cx✓alt·astra·med cb~notcom·hai·xh gx✓work·flash·med\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-model)")
-assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·HK·xhi${RESET}" <<< "$worker_out"
+: > "$CHAT_PINS_DIR/status-pin-empty"
+pin_out=$(run_statusline "$(statusline_payload status-pin-empty)")
+assert test "${pin_out#*codex}" = "$pin_out"
+assert test "${pin_out#*alt}" = "$pin_out"
 
-# `cb~?` names no account, so claudeb has no candidate — and the vendor beside it is not promoted:
-# a fixed vendor answers for itself alone.
-printf 'cx✓alt·astra·med cb~? gx✓work·flash·med\n' >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-unres)")
-assert test "${worker_out#*·OP}" = "$worker_out"
-assert test "${worker_out#*alt}" = "$worker_out"
+write_chat_pin other-session 'grok_profile=*'
+pin_out=$(run_statusline "$(statusline_payload status-pin-other)")
+assert test "${pin_out#*grok}" = "$pin_out"
 
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=gemini\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-gemini)")
-assert grep -Fq "${MAGENTA}work${RESET}${DIM}·FL·med${RESET}" <<< "$worker_out"
-
-printf 'worker=gemini\ngemini_profile=work\ngemini_model=flash\ngemini_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-gemini-pin)")
-assert grep -Fq "${MAGENTA}@work${RESET}${DIM}·FL·med${RESET}" <<< "$worker_out"
-
-# Auto renders ONE candidate — worker-pick's own order, claudeb first — never the three-vendor line.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-printf 'worker=auto\nclaudeb_model=fable\nclaudeb_effort=high\ngemini_model=flash38\ngemini_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto)" main)
-assert grep -Fq "${MAGENTA}notcom${RESET}${DIM}·FB·hi${RESET}" <<< "$worker_out"
-assert test "${worker_out#*gx}" = "$worker_out"
-assert test "${worker_out#*alt}" = "$worker_out"
-
-# Claudeb walled: the next vendor in that order carries the candidate, with ITS model and effort.
-printf 'cx✓alt·astra·med cb~? gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-cx)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·low${RESET}" <<< "$worker_out"
-
-# A vendor switched off for workers is skipped in auto, and gemini answers instead.
-printf 'cx⏸off·astra·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-off)" main)
-assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_out"
-
-# Every vendor unusable: no candidate at all rather than a guess.
-printf 'cx✗·? cb~? gx✗?·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-walled)" main)
-assert test "${worker_out#*·PR}" = "$worker_out"
-assert test "${worker_out#*·AS}" = "$worker_out"
-
-# The unusable fields carry `?`, so splitting the prediction must not glob against the CWD the
-# render happens to run in — a file there would be read as the account of a walled vendor.
-glob_bait="$WORK/glob-bait"
-mkdir -p "$glob_bait"
-: > "$glob_bait/cb~z"
-: > "$glob_bait/cx✗·z"
-worker_out=$(cd "$glob_bait" && run_statusline "$(statusline_payload status-w-auto-glob)" main)
-assert test "${worker_out#*"${MAGENTA}z"}" = "$worker_out"
-assert test "${worker_out#*·FB}" = "$worker_out"
-assert test "${worker_out#*·AS}" = "$worker_out"
-
-# A fixed vendor switched off keeps saying so — a parked switch is not a walled account.
-printf 'cx⏸off·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-printf 'worker=claudeb\nclaudeb_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-off)")
-assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
-# A usable pin outranks the switch.
-printf 'worker=claudeb\nclaudeb_effort=high\nclaudeb_profile=notcom\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-off-pin)")
-assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-
-# A prediction older than 10 minutes: worker-pick has stopped answering and the account it names is
-# no longer evidence of anything.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-pick_stale_stamp=$(date -v-15M +%Y%m%d%H%M.%S 2>/dev/null || date -d '15 minutes ago' +%Y%m%d%H%M.%S)
-touch -t "$pick_stale_stamp" "$HOME/.cache/worker-pick.line.main"
-printf 'worker=auto\nclaudeb_model=opus\nclaudeb_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-stale)" main)
-assert test "${worker_out#*notcom}" = "$worker_out"
-rm -f "$HOME/.cache/worker-pick.line.main"
-
-printf 'worker=frobnicate\ncodex_effort=high\ncodex_profile=alt\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-bad)")
-assert test "${worker_out#*@alt}" = "$worker_out"
-
-# grok reads its own knobs off the same file, and `gr` is its field of worker-pick's line.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med gr✓supergrok·grok-4.6·hi\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=grok\ngrok_model=grok-4.5\ngrok_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok)")
-assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·GR4.5·med${RESET}" <<< "$worker_out"
-
-# `auto` is not a model id — it is "whatever the account defaults to" — so the segment names the
-# effort alone rather than printing a version the CLI never promised.
-printf 'worker=grok\ngrok_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-auto)")
-assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·hi${RESET}" <<< "$worker_out"
-assert test "${worker_out#*AT}" = "$worker_out"
-
-printf 'worker=grok\ngrok_profile=pinnedgrok\ngrok_model=grok-4.6\ngrok_effort=xhigh\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-pin)")
-assert grep -Fq "${MAGENTA}@pinnedgrok${RESET}${DIM}·GR4.6·xhi${RESET}" <<< "$worker_out"
-
-# grok is last in worker-pick's order: it answers in auto only once every vendor above it is out.
-printf 'cx⏸off·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=auto\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr)" main)
-assert grep -Fq "${MAGENTA}supergrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-printf 'cx⏸off·astra·med cb⏸off·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=auto\ngemini_model=flash38\ngemini_effort=high\ngrok_model=grok-4.6\ngrok_effort=high\n' \
-  > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-gr-order)" main)
-assert grep -Fq "${MAGENTA}main${RESET}${DIM}·FL38·hi${RESET}" <<< "$worker_out"
-assert test "${worker_out#*supergrok}" = "$worker_out"
-
-# The field is optional: a prediction written before grok existed renders exactly as it did.
-printf 'cx✓alt·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' >"$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-auto-nogr)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·low${RESET}" <<< "$worker_out"
-
-# A role switched off is a parked switch, not a walled account, for grok as for everyone.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med gr⏸off·grok-4.6·hi\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=grok\ngrok_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-off)")
-assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
-# A parked grok row carries no account of its own, so the leak worth guarding is another vendor's.
-assert test "${worker_out#*alt}" = "$worker_out"
-rm -f "$HOME/.cache/worker-pick.line.main"
-
-# A PAUSED vendor is absent from worker-pick's line altogether (no `gr` field at all, unlike the
-# `⏸off` role switch), so a pin over it names an account no dispatch can reach.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gx✓work·flash·med\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=grok\ngrok_profile=pausedgrok\ngrok_paused=on\ngrok_model=grok-4.6\ngrok_effort=high\n' \
-  > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-paused-pin)")
-assert test "${worker_out#*pausedgrok}" = "$worker_out"
-assert test "${worker_out#*alt}" = "$worker_out"
-
-# No line at all is worker-pick not having answered yet, not a pause: the pin still renders.
-rm -f "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-paused-pin-noline)")
-assert grep -Fq "${MAGENTA}@pausedgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-
-# A vendor that is present in the line keeps its pin.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gr✓supergrok·grok-4.6·hi\n' \
-  >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=grok\ngrok_profile=pausedgrok\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-live-pin)")
-assert grep -Fq "${MAGENTA}@pausedgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-rm -f "$HOME/.cache/worker-pick.line.main"
-
-# ABSENCE is the pause, and nothing else is: a field that is PRESENT but unusable — `gr~?` for a
-# walled account, `gr✗?` for one the pick could not read — is a vendor that is still there, and the
-# pin over it still names where the next dispatch lands.
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gr~?\n' >"$HOME/.cache/worker-pick.line.main"
-printf 'worker=grok\ngrok_profile=walledgrok\ngrok_model=grok-4.6\ngrok_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-walled-pin)")
-assert grep -Fq "${MAGENTA}@walledgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-printf 'cx✓alt·astra·med cb~notcom·opus·hi gr✗?·grok-4.6·hi\n' >"$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-grok-unreadable-pin)")
-assert grep -Fq "${MAGENTA}@walledgrok${RESET}${DIM}·GR4.6·hi${RESET}" <<< "$worker_out"
-rm -f "$HOME/.cache/worker-pick.line.main"
-
-printf 'worker=auto\n' > "$worker_file"
-printf 'cx✓candidate·astra·med cb~?\n' > "$HOME/.cache/worker-pick.line.main"
-run_dir="$HOME/.cache/claude-worker-runs/candidate-only"
-mkdir -p "$run_dir" "$HOME/.cache/claude-worker-tags/status-candidate-only"
-printf 'status-candidate-only\n' > "$run_dir/launcher"
-printf '{"pid":%s,"pid_started_at":%s}\n' "$$" "$(date +%s)" > "$run_dir/meta.json"
-printf 'running · opus · high\n' > "$run_dir/tag"
-printf 'running · opus · high\n' > "$HOME/.cache/claude-worker-tags/status-candidate-only/1"
-worker_out=$(run_statusline "$(statusline_payload status-candidate-only)")
-assert grep -Fq 'candidate' <<< "$worker_out"
-assert test "${worker_out#*▶}" = "$worker_out"
-assert test "${worker_out#*running}" = "$worker_out"
-rm -f "$worker_file" "$HOME/.cache/worker-pick.line.main"
+# The live-worker tag (`▶ running`) stays gone.
+tag_out=$(run_statusline "$(statusline_payload status-no-tag)")
+assert test "${tag_out#*▶}" = "$tag_out"
+assert test "${tag_out#*running}" = "$tag_out"
 
 # --- Progressive width fit ----------------------------------------------------------------
 # Line 1 is built to $COLUMNS by shrinking segments in a fixed order; every step is exercised on
@@ -1812,8 +1640,6 @@ printf 'two\nthree\n' >> "$FIT_REPO/tracked.txt"
 printf 'fresh\n' > "$FIT_REPO/untracked.txt"
 FIT_TOP=$(git -C "$FIT_REPO" rev-parse --show-toplevel)
 FIT_FOREIGN_TOP=$(git -C "$FIT_FOREIGN" rev-parse --show-toplevel)
-printf 'worker=grok\ngrok_profile=a\ngrok_effort=high\n' > "$worker_file"
-
 fit_visible() {
   local s="${1%%$'\n'*}"
   s=${s//"$RESET"/}; s=${s//"$CYAN"/}; s=${s//"$BLUE"/}; s=${s//"$DIM"/}
@@ -1822,6 +1648,7 @@ fit_visible() {
 }
 fit_render() { # session cols [cwd] [account]
   local out
+  write_chat_pin "$1" 'grok_profile=a'
   out=$(FIT_COLUMNS="$2" run_statusline \
     "$(statusline_payload "$1" '{"model":{"display_name":"Fable 5"},"effort":{"level":"xhigh"}}' \
        "${3:-$FIT_REPO}")" "${4:-fitaccount}") || fail "fit render failed: $1 at $2"
@@ -1851,38 +1678,38 @@ for fit_cols in 200 120 100 90 80 70 60 40; do
   fit_prev=${#fit_line}
 done
 
-# The full form is 91 cells wide, and each width below is the first one that needs the next step.
-assert_eq 91 "$fit_full_len"
+# The full form is 87 cells wide, and each width below is the first one that needs the next step.
+assert_eq 87 "$fit_full_len"
 
 # Step 1 then 2: the files counter goes before the diff signs, and the slash survives both.
-fit_step1=$(fit_render fit-step1 90)
+fit_step1=$(fit_render fit-step1 86)
 assert test "${fit_step1#*~1f}" = "$fit_step1"
 assert grep -Fq '+3/-0' <<< "$fit_step1"
-fit_step2=$(fit_render fit-step2 84)
+fit_step2=$(fit_render fit-step2 80)
 assert grep -Fq '3/0' <<< "$fit_step2"
 assert test "${fit_step2#*+3}" = "$fit_step2"
 
 # Step 3 then 4: the branch glyph goes, then the branch keeps its ticket prefix alone.
-fit_step3=$(fit_render fit-step3 82)
+fit_step3=$(fit_render fit-step3 78)
 assert test "${fit_step3#*⎇}" = "$fit_step3"
 assert grep -Fq 'WUT-421_fit_bench_branch' <<< "$fit_step3"
-fit_step4=$(fit_render fit-step4 79)
+fit_step4=$(fit_render fit-step4 75)
 assert grep -Fq 'WUT-421' <<< "$fit_step4"
 assert test "${fit_step4#*WUT-421_}" = "$fit_step4"
 
 # Steps 5, 6, 8, 9 and 11: directory names to eight characters, then the head model abbreviated,
-# then the directory to initials, then the worker segment, then the directory itself.
-fit_step5=$(fit_render fit-step5 63)
+# then the directory to initials, then the pin segment, then the directory itself.
+fit_step5=$(fit_render fit-step5 59)
 assert grep -Fq 'fit-benc' <<< "$fit_step5"
 assert grep -Fq 'Fable 5 xhigh' <<< "$fit_step5"
-fit_step6=$(fit_render fit-step6 51)
+fit_step6=$(fit_render fit-step6 47)
 assert grep -Fq 'FB5 xhi' <<< "$fit_step6"
 assert grep -Fq 'fit-benc' <<< "$fit_step6"
-fit_step8=$(fit_render fit-step8 47)
+fit_step8=$(fit_render fit-step8 43)
 assert grep -Fq 'fbp' <<< "$fit_step8"
 assert test "${fit_step8#*fit-benc}" = "$fit_step8"
-fit_step9=$(fit_render fit-step9 42)
-assert test "${fit_step9#*@a·hi}" = "$fit_step9"
+fit_step9=$(fit_render fit-step9 38)
+assert test "${fit_step9#*"│ a"}" = "$fit_step9"
 assert grep -Fq 'fbp' <<< "$fit_step9"
 fit_step11=$(fit_render fit-step11 34)
 assert test "${fit_step11#*fbp}" = "$fit_step11"
@@ -1893,9 +1720,9 @@ assert grep -Fq 'WUT-421' <<< "$fit_step11"
 printf '%s\n' "$FIT_FOREIGN_TOP" > "$STATE_DIR/workdir-fit-arrow"
 fit_arrow=$(fit_render fit-arrow "")
 assert grep -Fq 'fit-bench-project » other-side-repo' <<< "$fit_arrow"
-assert_eq 97 "${#fit_arrow}"
+assert_eq 93 "${#fit_arrow}"
 printf '%s\n' "$FIT_FOREIGN_TOP" > "$STATE_DIR/workdir-fit-arrow-ini"
-fit_arrow_ini=$(fit_render fit-arrow-ini 51)
+fit_arrow_ini=$(fit_render fit-arrow-ini 47)
 assert grep -Fq 'fbp»osr' <<< "$fit_arrow_ini"
 printf '%s\n' "$FIT_FOREIGN_TOP" > "$STATE_DIR/workdir-fit-arrow-active"
 fit_arrow_active=$(fit_render fit-arrow-active 35)
@@ -1905,12 +1732,12 @@ assert test "${fit_arrow_active#*fbp}" = "$fit_arrow_active"
 # The worktree label shrinks with the directory names it sits beside, but a ticket-named one stops
 # at its ticket: `wut-25`, never `w2p`, and the parent dir goes to initials around it.
 fit_wt=$(fit_render fit-wt "" "$REPO_J")
-assert_eq 57 "${#fit_wt}"
+assert_eq 53 "${#fit_wt}"
 assert grep -Fq "⧉ wut-25-portal" <<< "$fit_wt"
-fit_wt_short=$(fit_render fit-wt-short 56 "$REPO_J")
+fit_wt_short=$(fit_render fit-wt-short 52 "$REPO_J")
 assert grep -Fq "⧉ wut-25 " <<< "$fit_wt_short"
 assert test "${fit_wt_short#*wut-25-}" = "$fit_wt_short"
-fit_wt_ini=$(fit_render fit-wt-ini 42 "$REPO_J")
+fit_wt_ini=$(fit_render fit-wt-ini 38 "$REPO_J")
 assert grep -Fq "rep ⧉ wut-25" <<< "$fit_wt_ini"
 assert test "${fit_wt_ini#*w2p}" = "$fit_wt_ini"
 
@@ -1918,19 +1745,19 @@ assert test "${fit_wt_ini#*w2p}" = "$fit_wt_ini"
 # and the separator of the match is printed as written.
 fit_ticket=$(fit_render fit-ticket "" "$REPO_L")
 assert grep -Fq "⧉ WUT-12345-fix-header" <<< "$fit_ticket"
-fit_ticket_short=$(fit_render fit-ticket-short 60 "$REPO_L")
+fit_ticket_short=$(fit_render fit-ticket-short 56 "$REPO_L")
 assert grep -Fq "⧉ WUT-12345 " <<< "$fit_ticket_short"
 assert test "${fit_ticket_short#*WUT-1234 }" = "$fit_ticket_short"
-fit_ticket_ini=$(fit_render fit-ticket-ini 42 "$REPO_L")
+fit_ticket_ini=$(fit_render fit-ticket-ini 38 "$REPO_L")
 assert grep -Fq "rep ⧉ WUT-12345" <<< "$fit_ticket_ini"
-fit_ticket_us=$(fit_render fit-ticket-us 50 "$REPO_M")
+fit_ticket_us=$(fit_render fit-ticket-us 46 "$REPO_M")
 assert grep -Fq "⧉ WUT_12345 " <<< "$fit_ticket_us"
 assert test "${fit_ticket_us#*WUT_1234 }" = "$fit_ticket_us"
 
 # A worktree with no ticket in its name keeps the old ladder: 8 characters, then initials.
-fit_wt_plain=$(fit_render fit-wt-plain 50 "$REPO_E")
+fit_wt_plain=$(fit_render fit-wt-plain 46 "$REPO_E")
 assert grep -Fq "⧉ feature- " <<< "$fit_wt_plain"
-fit_wt_plain_ini=$(fit_render fit-wt-plain-ini 44 "$REPO_E")
+fit_wt_plain_ini=$(fit_render fit-wt-plain-ini 40 "$REPO_E")
 assert grep -Fq "⧉ fy" <<< "$fit_wt_plain_ini"
 
 # Step 12: the account is cut from the right and never below four characters, and the line is left
@@ -1943,13 +1770,13 @@ assert test "${fit_floor#*fitac}" = "$fit_floor"
 # would be dropped at a width its truncated form fits.
 fit_many_full=$(fit_render fit-many "" "$FIT_MANY")
 assert grep -Fq 'a-b-c-d-e-f-g-h-i-j' <<< "$fit_many_full"
-for many_cols in 60 55 50 44 40 34; do
+for many_cols in 56 51 46 40 36 30; do
   many_line=$(fit_render "fit-many-$many_cols" "$many_cols" "$FIT_MANY")
   asserts=$((asserts + 1))
   [ "${many_line#*abcdefghij}" = "$many_line" ] ||
     fail "fit width $many_cols took the dir to longer initials: $many_line"
 done
-fit_many_cut=$(fit_render fit-many-cut 50 "$FIT_MANY")
+fit_many_cut=$(fit_render fit-many-cut 46 "$FIT_MANY")
 assert grep -Fq 'a-b-c-d- main' <<< "$fit_many_cut"
 
 # Fast Mode is a worker launch setting and is intentionally absent from the shared statusline.
@@ -2053,73 +1880,6 @@ run_statusline "$measured_payload" acctgen >/dev/null || fail "statusline measur
 assert jq -e '.seven_day.used_percentage == 76 and .seven_day.origin == "session"' "$CLAUDEB_FIX/limits/acctgen.json" >/dev/null
 bucket_json 44 22 > "$CLAUDEB_FIX/limits/acctgen.json"
 
-# The unpinned claudeb candidate must come from the worker-pick cache, never from
-# .claudeb-state (the last profile launched): the two are seeded to different accounts
-# here so a regression back to the state file fails instead of silently going stale.
-printf 'acctgen\n' > "$CLAUDEB_FIX/.claudeb-state"
-printf 'cx✓alt·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-pick '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
-assert grep -Fq "${MAGENTA}acctpick${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-assert test "${worker_out#*acctgen}" = "$worker_out"
-assert test "${worker_out#*acctfab}" = "$worker_out"
-
-# Profile names may hold underscores, dots and capitals (claudeb's own add rule), so the
-# extractor must not be narrower than the names it can receive.
-printf 'cx✓alt·astra·med cb~My_acct.2·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-oddname '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
-assert grep -Fq "${MAGENTA}My_acct.2${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-
-# No parsable cache → no candidate, never a stale account from the state file.
-printf 'cx✓alt·astra·med gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-nocache '{"model":{"id":"claude-fable-5","display_name":"Fable"}}')" main)
-assert test "${worker_out#*·OP}" = "$worker_out"
-assert test "${worker_out#*acctgen}" = "$worker_out"
-printf 'cx✓alt·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-
-printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-pick)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·med${RESET}" <<< "$worker_out"
-
-# codexb only ever creates lowercase-and-hyphen names, so a line carrying anything else is a
-# corrupt cache and must read as unknown rather than as a confident prediction.
-printf 'cx✓My_acct.2·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-oddname)" main)
-assert test "${worker_out#*·AS}" = "$worker_out"
-assert test "${worker_out#*My_acct}" = "$worker_out"
-
-printf 'cx✗·? cb~? gx✗?·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-nocache)" main)
-assert test "${worker_out#*·AS}" = "$worker_out"
-
-# A vendor switched off for workers is parked, not spent: it arrives in the cache as its own
-# `⏸off` shape and must not render as a walled vendor Egor would go chasing limits over, nor as
-# an account literally named `off`.
-printf 'cx⏸off·astra·med cb⏸off·opus·hi gx⏸off·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-roleoff)" main)
-assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
-assert test "${worker_out#*off·}" = "$worker_out"
-printf 'worker=claudeb\ncodex_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff)" main)
-assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
-printf 'worker=gemini\ngemini_model=flash38\ngemini_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-gem-roleoff)" main)
-assert grep -Fq "${DIM}⏸off${RESET}" <<< "$worker_out"
-# The pin outranks the switch (routing-contract Roles), so a pinned vendor still names its account.
-printf 'worker=claudeb\nclaudeb_profile=notcom\ncodex_effort=high\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-cb-roleoff-pin)" main)
-assert grep -Fq "${MAGENTA}@notcom${RESET}${DIM}·OP·hi${RESET}" <<< "$worker_out"
-# One vendor parked leaves the others predicted as usual.
-printf 'cx✓alt·astra·med cb⏸off·opus·hi gx✓main·flash38·hi\n' > "$HOME/.cache/worker-pick.line.main"
-printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
-worker_out=$(run_statusline "$(statusline_payload status-w-codex-beside-roleoff)" main)
-assert grep -Fq "${MAGENTA}alt${RESET}${DIM}·AS·med${RESET}" <<< "$worker_out"
-
-printf 'worker=codex\ncodex_effort=medium\n' > "$worker_file"
-# Every vendor is present in the line the rest of the suite inherits: a missing field now means a
-# paused vendor, and later cases pin grok expecting it to render.
-printf 'cx✓alt·astra·med cb~acctpick·opus·hi gx✓main·flash38·hi gr✓supergrok·grok-4.6·hi\n' \
-  > "$HOME/.cache/worker-pick.line.main"
 rm -f "$WORK/limits.json" "$worker_file"
 
 cache_rl="$HOME/.claude/statusline-cache-rl"
@@ -3765,7 +3525,7 @@ for config_model in gpt-9-zenith gpt-5.6-terra; do
   seed_default=$(worker_payload codex-worker worker/default 'Optimize compute' "codex exec -c model_reasoning_effort=high 'go'")
   seed_default_out=$(printf '%s' "$seed_default" | "$WORKER_HOOK") || fail "default model seed exited nonzero"
   assert_eq 'main · astra · high' "$(cat "$TAGDIR/workerdefault")"
-  for label_script in "$ROOT/bin/statusline.sh" "$WORKER_HOOK" "$SPAWN_HOOK"; do
+  for label_script in "$WORKER_HOOK" "$SPAWN_HOOK"; do
     label=$(
       . "$ROOT/share/worker-model.sh"
       eval "$(sed -n '/^codex_model_short_label() {/,/^}/p' "$label_script")"
@@ -4437,19 +4197,16 @@ asserts=$((asserts + 1))
 test -z "$(ls "$HOME/.cache/claude-statusline"/review-tier-* 2>/dev/null)" ||
   fail "the review segment still spawned a probe: $(ls "$HOME/.cache/claude-statusline")"
 
-# The label sits after the repository cluster and before the workers.
+# The label sits after the repository cluster and before the pin.
 GATE_ANSWER='bright rev 3'
-worker_order_file="$HOME/.claude/worker-model"
-worker_order_saved=$(cat "$worker_order_file" 2>/dev/null)
-printf 'worker=grok\ngrok_profile=a\n' > "$worker_order_file"
+write_chat_pin review-order 'grok_profile=a'
 review_order_line=$(review_render review-order "$REVIEW_DIRTY")
 review_order_line="${review_order_line%%$'\n'*}"
 review_before="${review_order_line%%"$review_rev_delimited"*}"
 review_after="${review_order_line#*"$review_rev_delimited"}"
 assert grep -Fq "$(basename "$REVIEW_DIRTY")" <<< "$review_before"
-assert test "${review_before#*"$WORKER_MARK"}" = "$review_before"
-assert grep -Fq "$WORKER_MARK" <<< "$review_after"
-printf '%s' "$worker_order_saved" > "$worker_order_file"
+assert test "${review_before#*"$PIN_MARK"}" = "$review_before"
+assert grep -Fq "$PIN_MARK" <<< "$review_after"
 
 # A port belongs to the project and its diff, not to a review of it, so it takes the slot right
 # after the repository cluster and the review label follows it.
@@ -4695,8 +4452,8 @@ printf 'ahead\n' > "$AHEAD_REPO/ahead.txt"
 git -C "$AHEAD_REPO" add ahead.txt
 git -C "$AHEAD_REPO" commit -q -m "ahead of the upstream"
 : > "$GATE_LOG"
-worker_order_saved=$(cat "$worker_order_file" 2>/dev/null)
-printf 'worker=grok\ngrok_profile=a\n' > "$worker_order_file"
+write_chat_pin unpushed-ahead 'grok_profile=a'
+write_chat_pin unpushed-fit 'grok_profile=a'
 unpushed_ahead_out=$(PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
   unpushed_render unpushed-ahead "$AHEAD_REPO")
 assert grep -Fq "$UNPUSHED_MARK" <<< "$unpushed_ahead_out"
@@ -4705,16 +4462,15 @@ assert_eq "10 $UNPUSHED_STUB unpushed $AHEAD_TOP unpushed-ahead" \
   "$(grep -m1 -F "$UNPUSHED_STUB unpushed " "$UNPUSHED_TIMEOUT_LOG")"
 # Never dimmed: the commit is this chat's own to act on.
 assert test "${unpushed_ahead_out#*"${DIM}unpushed"}" = "$unpushed_ahead_out"
-# After the verdict and before the workers, where the rest of the repository cluster ends.
+# After the verdict and before the pin, where the rest of the repository cluster ends.
 unpushed_order_line="${unpushed_ahead_out%%$'\n'*}"
-assert grep -Fq "$WORKER_MARK" <<< "${unpushed_order_line#*"$UNPUSHED_MARK"}"
+assert grep -Fq "$PIN_MARK" <<< "${unpushed_order_line#*"$UNPUSHED_MARK"}"
 assert test "${unpushed_order_line%%"$UNPUSHED_MARK"*}" != "$unpushed_order_line"
 # Fit step 9: the marker shortens to a red `↑!` rather than leaving the line, whatever the width.
 : > "$GATE_LOG"
 unpushed_fit_out=$(FIT_COLUMNS=20 PATH="$UNPUSHED_TIMEOUT_BIN:$PATH" \
   unpushed_render unpushed-fit "$AHEAD_REPO")
 assert grep -Fq "${RED}↑!${RESET}" <<< "$unpushed_fit_out"
-printf '%s' "$worker_order_saved" > "$worker_order_file"
 
 # A gate naming no commit is a branch ahead of its upstream by nobody's work here — a co-tenant's
 # commits are theirs — and the marker says nothing rather than pointing at the count.
@@ -5785,4 +5541,4 @@ assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run in flight — over this tree or over another one this chat launched — and nothing else once it ends, an ATOMIC middle block computed from ONE shown tree that MOVES to the tree of this chat's own live run or unanswered round and comes home when home works, owes a review or that round is answered, with no repository name inside the counter slot and one word carried once between counter and verdict, the gate's verdict vocabulary rendered with only same-repository rev-label deduplication, the verdict asked about the shown tree, cached per tree and keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with red kept for a word this build does not know, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line, a chat-pin segment that names this session's vendor word or account in magenta and is silent without a chat file, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

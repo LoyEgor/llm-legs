@@ -1,4 +1,5 @@
 . "${BASH_SOURCE[0]%/*}/worker-pool.sh"
+. "${BASH_SOURCE[0]%/*}/worker-walls.sh"
 
 worker_model_file() {
   printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
@@ -100,6 +101,35 @@ worker_model_pin_grant() {
   printf '%s/pin-grants/pin' "$state"
 }
 
+worker_model_chat_session() {
+  local sid="${CLAUDE_CODE_SESSION_ID:-}"
+  worker_pool_valid_name "$sid" || return 1
+  printf '%s' "$sid"
+}
+
+worker_model_chat_pin_grant() {
+  local sid
+  sid=$(worker_model_chat_session) || return 1
+  printf '%s/chat-%s' "$(dirname "$(worker_model_pin_grant)")" "$sid"
+}
+
+worker_model_chat_pin_file() {
+  local sid
+  sid=$(worker_model_chat_session) || return 1
+  printf '%s/%s' "${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}" "$sid"
+}
+
+# A non-empty chat file replaces the global pin tier whole — a vendor it does not name is unpinned
+# for that chat, never filled in from the global file.
+worker_model_pin_file() {
+  local chat
+  if chat=$(worker_model_chat_pin_file) && [ -s "$chat" ]; then
+    printf '%s' "$chat"
+  else
+    worker_model_file
+  fi
+}
+
 worker_model_canonical_path() {
   local path="$1" dir base
   case "$path" in '~') path="$HOME" ;; '~/'*) path="$HOME/${path#\~/}" ;; esac
@@ -122,13 +152,20 @@ worker_model_pin_allowed() {
   [ -n "$(find "$(worker_model_pin_grant)" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ]
 }
 
+worker_model_pin_line() { # file key
+  [ -f "$1" ] || return 0
+  [ -r "$1" ] || return 1
+  awk -v prefix="$2=" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' \
+    "$1" 2>/dev/null
+}
+
 worker_model_pinned_account() {
   local key="$1" file
-  file=$(worker_model_file)
-  [ -f "$file" ] || return 0
-  [ -r "$file" ] || return 1
-  awk -v prefix="$key=" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' \
-    "$file" 2>/dev/null
+  case "$key" in
+    *_profile) file=$(worker_model_pin_file) ;;
+    *) file=$(worker_model_file) ;;
+  esac
+  worker_model_pin_line "$file" "$key"
 }
 
 worker_model_pin_key() {
@@ -141,12 +178,8 @@ worker_model_pin_key() {
   esac
 }
 
-worker_model_pins() {
-  local key val name rest
-  key=$(worker_model_pin_key "${1-}") || return 2
-  val=$(worker_model_pinned_account "$key") || return 1
-  [ -n "$val" ] || return 0
-  rest=$val
+worker_model_pin_split() { # raw value -> one name per line
+  local name rest="${1-}"
   while [ -n "$rest" ]; do
     name=${rest%%,*}
     if [ "$name" = "$rest" ]; then rest=
@@ -157,6 +190,47 @@ worker_model_pins() {
     [ -n "$name" ] || continue
     printf '%s\n' "$name"
   done
+}
+
+# The accounts a `*` pin covers: every account the limits store carries for the vendor that the
+# pool admits. Out-of-pool accounts stay out — only an account pin overrides the pool.
+worker_model_pool_accounts() {
+  local vendor="${1-}" store_vendor dir name
+  dir=$(worker_pool_dir "$vendor") || return 2
+  store_vendor=$vendor
+  [ "$store_vendor" != claudeb ] || store_vendor=claude
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    worker_pool_is_disabled "$dir" "$name" || printf '%s\n' "$name"
+  done < <(jq -r --arg v "$store_vendor" '
+    .vendors[$v] | select(type == "object" and .removed != true) |
+    if (.accounts | type) == "array" then .accounts[] | select(.removed != true) | (.account // "main")
+    else "main" end' "${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}" 2>/dev/null | awk '!seen[$0]++')
+}
+
+worker_model_pin_scope() {
+  local key val names
+  key=$(worker_model_pin_key "${1-}") || return 2
+  val=$(worker_model_pinned_account "$key") || return 1
+  names=$(worker_model_pin_split "$val")
+  case "$names" in
+    '') printf 'none' ;;
+    '*') printf 'vendor' ;;
+    *) printf 'account' ;;
+  esac
+}
+
+worker_model_pins() {
+  local key val names
+  key=$(worker_model_pin_key "${1-}") || return 2
+  val=$(worker_model_pinned_account "$key") || return 1
+  names=$(worker_model_pin_split "$val")
+  [ -n "$names" ] || return 0
+  if [ "$names" = '*' ]; then
+    worker_model_pool_accounts "$1"
+  else
+    printf '%s\n' "$names"
+  fi
 }
 
 worker_model_pin_first() {
@@ -181,20 +255,22 @@ worker_model_pin_csv() {
 }
 
 # The list is read and rewritten inside ONE critical section: a read outside the lock lets two
-# concurrent adds each write a list missing the other's name.
-worker_model_pin_write() { # vendor key op(set|add|remove) argument
-  local vendor="$1" key="$2" op="$3" arg="$4" file
-  file=$(worker_model_file)
+# concurrent adds each write a list missing the other's name. `*` never shares the line with a name.
+worker_model_pin_write() { # vendor key op(set|add|remove) argument [file]
+  local key="$2" op="$3" arg="$4" file="${5:-$(worker_model_file)}"
   mkdir -p "$(dirname "$file")" || return 2
   (
-    local csv tmp
+    local names csv tmp
     if ! "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9; then return 2; fi
+    names=$(worker_model_pin_split "$(worker_model_pin_line "$file" "$key")")
     case "$op" in
       set) csv="$arg" ;;
-      add) csv=$( { worker_model_pins "$vendor"
-                    printf '%s\n' "$arg"
-                  } | awk 'NF && !seen[$0]++' | worker_model_pin_csv ) ;;
-      remove) csv=$( worker_model_pins "$vendor" |
+      add) if [ "$arg" = '*' ] || [ "$names" = '*' ]; then csv=$arg
+           else csv=$( { [ -z "$names" ] || printf '%s\n' "$names"
+                         printf '%s\n' "$arg"
+                       } | awk 'NF && !seen[$0]++' | worker_model_pin_csv )
+           fi ;;
+      remove) csv=$( printf '%s\n' "$names" |
                      awk -v drop="$arg" 'NF && $0 != drop' | worker_model_pin_csv ) ;;
       *) return 2 ;;
     esac
@@ -205,7 +281,6 @@ worker_model_pin_write() { # vendor key op(set|add|remove) argument
       [ -z "$csv" ] || printf '%s=%s\n' "$key" "$csv"
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
-    worker_pool_invalidate_cache
     trap - EXIT
   ) 9>"$file.lock"
 }
@@ -215,26 +290,40 @@ worker_model_pin_store() {
   worker_model_pin_write '' "$1" set "$2"
 }
 
-worker_model_pin_add() {
+worker_model_pin_add() { # vendor name [file]
   local vendor="${1-}" name="${2-}" key
   key=$(worker_model_pin_key "$vendor") || return 2
   [ -n "$name" ] || return 2
-  worker_model_pin_write "$vendor" "$key" add "$name"
+  worker_model_pin_write "$vendor" "$key" add "$name" "${3-}"
 }
 
-worker_model_pin_remove() {
+worker_model_pin_remove() { # vendor name [file]
   local vendor="${1-}" name="${2-}" key
   key=$(worker_model_pin_key "$vendor") || return 2
   [ -n "$name" ] || return 2
-  worker_model_pin_write "$vendor" "$key" remove "$name"
+  worker_model_pin_write "$vendor" "$key" remove "$name" "${3-}"
 }
 
-# A met wall drops one name. No grant: the account spent itself. Empty list deletes the key.
-worker_model_clear_walled_pin() {
-  local vendor="${1-}" name="${2-}"
+# A met wall drops one name, and a `*` pin only once every account it covers has an unexpired
+# observed wall. No grant: the accounts spent themselves. The file edited is the one the pin came
+# from — the chat file or the global one.
+worker_model_clear_walled_pin() { # vendor name [now]
+  local vendor="${1-}" name="${2-}" file key walls acct
   [ -n "$vendor" ] && [ -n "$name" ] || return 2
   worker_model_pin_has "$vendor" "$name" || return 1
-  worker_model_pin_remove "$vendor" "$name" || return 1
+  key=$(worker_model_pin_key "$vendor") || return 2
+  file=$(worker_model_pin_file)
+  if [ "$(worker_model_pin_scope "$vendor")" = vendor ]; then
+    walls=$(worker_walls_fresh "$vendor" "${3:-$(date +%s)}") || return 1
+    while IFS= read -r acct; do
+      [ -n "$acct" ] || continue
+      grep -qxF -- "$acct" <<<"$walls" || return 1
+    done < <(worker_model_pins "$vendor")
+    worker_model_pin_write "$vendor" "$key" set '' "$file" || return 1
+    printf 'pin * (every %s account) hit its wall — cleared\n' "$vendor" >&2
+    return 0
+  fi
+  worker_model_pin_remove "$vendor" "$name" "$file" || return 1
   printf 'pin %s hit its wall — cleared\n' "$name" >&2
 }
 
@@ -310,7 +399,6 @@ worker_model_set_role() {
       [ "$state" = on ] || printf '%s=off\n' "$key"
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
-    worker_pool_invalidate_cache
     trap - EXIT
   ) 9>"$file.lock"
 }
@@ -349,7 +437,6 @@ worker_model_set_paused() {
       [ "$state" = off ] || printf '%s=on\n' "$key"
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
-    worker_pool_invalidate_cache
     trap - EXIT
   ) 9>"$file.lock"
 }
@@ -370,11 +457,13 @@ worker_model_pin_account() {
   action=add
   case "$name" in
     '')
-      if ! current=$(worker_model_pinned_account "$key"); then
+      if ! current=$(worker_model_pin_line "$file" "$key"); then
         printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
         return 2
       fi
-      if [ -n "$current" ]; then
+      if [ "$(worker_model_pin_split "$current")" = '*' ]; then
+        printf '%s: workers are pinned to every %s pool account (*)\n' "$vendor" "$pin_vendor"
+      elif [ -n "$current" ]; then
         printf '%s: workers are pinned to %s\n' "$vendor" "$current"
       else
         printf '%s: no pin — workers follow worker-pick\n' "$vendor"
@@ -387,6 +476,7 @@ worker_model_pin_account() {
       else name=$drop; action=unpin
       fi
       ;;
+    '*') ;;
     *)
       if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
         printf '%s: unknown account: %s\n' "$vendor" "$name" >&2
@@ -407,7 +497,7 @@ worker_model_pin_account() {
       "$vendor" >&2
     return 3
   fi
-  if ! current=$(worker_model_pinned_account "$key"); then
+  if ! current=$(worker_model_pin_line "$file" "$key"); then
     printf '%s: %s exists but cannot be read; refusing to touch the pin\n' "$vendor" "$file" >&2
     return 2
   fi
@@ -418,7 +508,11 @@ worker_model_pin_account() {
     return 0
   fi
   if [ "$action" = unpin ]; then
-    worker_model_pin_has "$pin_vendor" "$name" || {
+    if [ "$(worker_model_pin_split "$current")" = '*' ]; then
+      printf '%s: the whole vendor is pinned (*), not %s alone; use --clear\n' "$vendor" "$name" >&2
+      return 1
+    fi
+    worker_model_pin_split "$current" | grep -qxF -- "$name" || {
       printf '%s: %s is not pinned\n' "$vendor" "$name" >&2
       return 1
     }
@@ -427,6 +521,10 @@ worker_model_pin_account() {
     return 0
   fi
   worker_model_pin_add "$pin_vendor" "$name" || return 2
+  if [ "$name" = '*' ]; then
+    printf '%s: pinned workers to every %s pool account (*)\n' "$vendor" "$pin_vendor"
+    return 0
+  fi
   printf '%s: pinned workers to %s\n' "$vendor" "$name"
   if "$disabled_fn" "$name"; then
     printf '%s: note: %s is out of the worker pool; the pin is the one override, so workers will still run on it\n' \

@@ -11,6 +11,8 @@ input=$(cat) || exit 0
 WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"
 
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
+hook_session=$(field '.session_id')
+[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"
 
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 subagent=$(field '.tool_input.subagent_type')

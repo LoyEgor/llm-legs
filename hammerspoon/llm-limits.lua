@@ -471,7 +471,7 @@ local function defaultWorkerRoles()
 end
 
 local function readWorkerModel()
-  local pins, roles, paused = {}, defaultWorkerRoles(), {}
+  local pins, roles, paused, vendorPins = {}, defaultWorkerRoles(), {}, {}
   pcall(function()
     local file = io.open(M.workerModelPath, "r")
     if not file then return end
@@ -490,12 +490,18 @@ local function readWorkerModel()
         end
         for vendor, prefix in pairs(WORKER_MODEL_PREFIX) do
           if key == prefix .. "_profile" then
-            local set = {}
-            for name in string.gmatch(value, "[^,]+") do
-              name = name:match("^%s*(.-)%s*$")
-              if name ~= "" then set[name] = true end
+            local trimmed = (value or ""):match("^%s*(.-)%s*$") or ""
+            -- `*` pins the vendor, not an account named star; leftover rows would invent a `*` row.
+            if trimmed == "*" then
+              vendorPins[vendor] = true
+            else
+              local set = {}
+              for name in string.gmatch(value, "[^,]+") do
+                name = name:match("^%s*(.-)%s*$")
+                if name ~= "" and name ~= "*" then set[name] = true end
+              end
+              pins[vendor] = set
             end
-            pins[vendor] = set
           else
             for _, role in ipairs(WORKER_ROLES) do
               -- Only the literal "off" is a veto, which is what worker-pick and review-bench read.
@@ -506,7 +512,7 @@ local function readWorkerModel()
       end
     end
   end)
-  return pins, roles, paused
+  return pins, roles, paused, vendorPins
 end
 
 local function baseEnvironment()
@@ -688,11 +694,7 @@ function M.refreshRouting()
     notifyRefreshState()
     return
   end
-  local environment = baseEnvironment()
-  -- worker-pick writes its short-lived routing line; /dev/null is not a directory and makes
-  -- every post-toggle refresh report a false failure.
-  environment.WORKER_PICK_CACHE_DIR = home .. "/.cache"
-  task:setEnvironment(environment)
+  task:setEnvironment(baseEnvironment())
   routingTask = task
   local ok, started = pcall(task.start, task)
   if not ok or not started then
@@ -1035,6 +1037,18 @@ function M.pinGrok(name, currentlyPinned)
     runGrokb({ "use", "--clear" }, "pin failed")
   else
     runGrokb({ "use", name }, "pin failed")
+  end
+end
+
+local function pinVendor(vendor, currentlyPinned)
+  if vendor == "claude" then
+    M.pinClaude("*", currentlyPinned)
+  elseif vendor == "codex" then
+    M.pinCodex("*", currentlyPinned)
+  elseif vendor == "gemini" then
+    M.pinGemini("*", currentlyPinned)
+  elseif vendor == "grok" then
+    M.pinGrok("*", currentlyPinned)
   end
 end
 
@@ -1564,7 +1578,7 @@ function M.menuItems()
   })
   table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
-    local pins, roles, paused = readWorkerModel()
+    local pins, roles, paused, vendorPins = readWorkerModel()
     local function roleItems(vendorKey)
       local items = {}
       for _, role in ipairs(WORKER_ROLES) do
@@ -1575,6 +1589,12 @@ function M.menuItems()
           fn = function() M.setWorkerRole(vendorKey, role, not on) end,
         })
       end
+      local vendorPinned = vendorPins[vendorKey] == true
+      table.insert(items, {
+        title = "Pin for workers",
+        checked = vendorPinned,
+        fn = function() pinVendor(vendorKey, vendorPinned) end,
+      })
       table.insert(items, {
         title = "Pause",
         fn = function() M.setWorkerPaused(vendorKey, true) end,
@@ -1640,11 +1660,17 @@ function M.menuItems()
             vendor.age_alarm == true)
           if pinSet["main"] then renderedPins["main"] = true end
         else
-          unavailableRow = {
-            title = authNeeded and loginNeededTitle(entry.label, false,
+          local unavailableTitle
+          if authNeeded then
+            unavailableTitle = loginNeededTitle(entry.label, vendorPins[entry.key] == true,
               formatAccountAge(vendor.as_of), vendor.needs_user_entry == true, roleOff,
               vendor.age_alarm == true)
-              or infoTitle(string.format("%-6s  no live data", entry.label)),
+          else
+            unavailableTitle = infoTitle(string.format("%-6s  no live data", entry.label))
+            if vendorPins[entry.key] then unavailableTitle = unavailableTitle .. pinTitle() end
+          end
+          unavailableRow = {
+            title = unavailableTitle,
             disabled = true,
           }
           if entry.key == "gemini" or entry.key == "grok" then
@@ -1695,7 +1721,9 @@ function M.menuItems()
           for _, item in ipairs(roleItems(entry.key)) do table.insert(sectionMenu, item) end
           table.insert(sectionMenu, { title = "Refresh",
             fn = function() M.refreshVendor(entry.key) end })
-          table.insert(menu, { title = infoTitle(entry.label), menu = sectionMenu })
+          local headerTitle = infoTitle(entry.label)
+          if vendorPins[entry.key] then headerTitle = headerTitle .. pinTitle() end
+          table.insert(menu, { title = headerTitle, menu = sectionMenu })
           appendRefreshErrorRows(menu, vendorErrs, entry.key)
         else
           -- Gemini's pin has to be known before the row is built now that the mark lives inside
@@ -1703,7 +1731,8 @@ function M.menuItems()
           local geminiPinned = entry.key == "gemini" and pinSet["main"] == true
           local fallbackRow = {
             title = accountTitle(entry.label, formatAccountAge(vendor.as_of), false,
-              vendor.needs_user_entry == true, geminiPinned, nil, roleOff,
+              vendor.needs_user_entry == true,
+              geminiPinned or vendorPins[entry.key] == true, nil, roleOff,
               vendor.age_alarm == true),
             disabled = true,
           }

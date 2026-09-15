@@ -1501,13 +1501,14 @@ for _, case in ipairs(loginCases) do
   local row = rowContaining(menu, case.needle)
   assert(titleText(row):find("login needed", 1, true),
     "logged-out " .. case.vendor .. " row did not render a login-needed row")
-  assert(#row.menu == (case.roleSwitches and 6 or 3),
+  assert(#row.menu == (case.roleSwitches and 7 or 3),
     case.vendor .. " login row is not exactly {Log in…, Hard refresh, Remove <label>}"
-      .. (case.roleSwitches and " plus the two role switches and Pause" or ""))
+      .. (case.roleSwitches and " plus the two role switches, vendor pin and Pause" or ""))
   if case.roleSwitches then
     assert(titleText(row.menu[4]) == "For workers" and titleText(row.menu[5]) == "For reviewers"
-        and titleText(row.menu[6]) == "Pause",
-      case.vendor .. " login row lost the vendor's role switches or its Pause")
+        and titleText(row.menu[6]) == "Pin for workers"
+        and titleText(row.menu[7]) == "Pause",
+      case.vendor .. " login row lost the vendor's role switches, pin or Pause")
   end
   assert(titleText(row.menu[1]) == "Log in…", case.vendor .. " first submenu item is not Log in…")
   assert(titleText(row.menu[2]) == "Hard refresh", case.vendor .. " second submenu item is not Hard refresh")
@@ -1971,8 +1972,6 @@ assert(watchModule.workerModelWatcher ~= nil,
   "worker-model watcher must be module-scoped so it is not GC'd")
 assert(#watchTasks == 1 and watchStarts == 1, "startup did not refresh routing exactly once")
 assert(watchTasks[1].path == watchModule.workerPickPath, "startup launched the wrong routing command")
-assert(watchTasks[1].env.WORKER_PICK_CACHE_DIR == os.getenv("HOME") .. "/.cache",
-  "routing refresh did not suppress worker-pick cache writes")
 
 local watchNotifies = 0
 watchModule.onRefreshStateChanged = function() watchNotifies = watchNotifies + 1 end
@@ -1999,7 +1998,12 @@ assert(#watchTasks == 3 and watchStarts == 3, "worker-model watcher did not refr
 -- is per account only — a whole-vendor switch was one click from emptying the pool by accident.
 local function headerRow(menu, label)
   for _, item in ipairs(menu) do
-    if titleText(item) == label then return item end
+    local text = titleText(item)
+    if text == label then return item end
+    -- vendor pin paints ● after the name; paused rows are "Label — paused" and must not match
+    if text:sub(1, #label) == label and text:sub(#label + 1):find("^%s+●") then
+      return item
+    end
   end
   error("vendor section header missing: " .. label)
 end
@@ -2045,6 +2049,9 @@ do
   for _, case in ipairs(cases) do
     local header = headerRow(mod.menuItems(), case.label)
     assert(header.disabled ~= true, case.label .. " header stayed disabled with a submenu")
+    local vendorPin = submenuItem(header, "Pin for workers")
+    assert(vendorPin and vendorPin.checked ~= true,
+      case.label .. " header lost the vendor Pin for workers, or checked it with no * pin")
     -- A whole-vendor pool switch is gone for good: an accidental Disable all emptied the pool,
     -- and nothing else in the menu can do that in one click.
     for _, title in ipairs({ "Enable all", "Disable all" }) do
@@ -2061,6 +2068,64 @@ do
       case.label .. " header Refresh lost the user-explicit warm signal")
     refresh.callback(0, "", "")
   end
+end
+
+do
+  local starMenu = loadModule(pinFixture, nil, nil, nil, nil, "codex_profile=*").menuItems()
+  local starHeader = headerRow(starMenu, "Codex")
+  local starPin = submenuItem(starHeader, "Pin for workers")
+  assert(starPin and starPin.checked == true,
+    "codex_profile=* did not check the vendor Pin for workers")
+  assert(titleText(starHeader):find("●", 1, true),
+    "codex_profile=* did not put ● on the Codex vendor row")
+  assert(not accountHasMarker(starMenu, "codex-pin"),
+    "codex_profile=* painted ● on an account row")
+  assert(not accountHasMarker(starMenu, "codex-current"),
+    "codex_profile=* painted ● on the other account row")
+  local starAccount = submenuItem(accountItem(starMenu, "codex-pin"), "Pin for workers")
+  local starCurrent = submenuItem(accountItem(starMenu, "codex-current"), "Pin for workers")
+  assert(starAccount and starAccount.checked ~= true,
+    "codex_profile=* checked an account Pin for workers")
+  assert(starCurrent and starCurrent.checked ~= true,
+    "codex_profile=* checked the other account Pin for workers")
+  for _, item in ipairs(starMenu) do
+    local text = titleText(item)
+    assert(not (text:sub(1, 1) == "*" or text:match("^%s*%*")),
+      "codex_profile=* invented a leftover * account row")
+  end
+
+  local namedHeader = headerRow(pinMenu, "Codex")
+  local namedVendorPin = submenuItem(namedHeader, "Pin for workers")
+  assert(namedVendorPin and namedVendorPin.checked ~= true,
+    "codex_profile=name checked the vendor Pin for workers")
+  assert(not titleText(namedHeader):find("●", 1, true),
+    "codex_profile=name painted ● on the Codex vendor row")
+  assert(accountHasMarker(pinMenu, "codex-pin"),
+    "codex_profile=name lost ● on the pinned account")
+  assert(submenuItem(accountItem(pinMenu, "codex-pin"), "Pin for workers").checked == true,
+    "codex_profile=name did not keep the account pin checked")
+  assert(not accountHasMarker(pinMenu, "codex-current"),
+    "codex_profile=name painted ● on an unpinned account")
+
+  local starTasks = {}
+  local starMod = loadModule(pinFixture, captureTasks(starTasks), nil, nil, nil, "codex_profile=*")
+  local starClear = submenuItem(headerRow(starMod.menuItems(), "Codex"), "Pin for workers")
+  while #starTasks > 0 do table.remove(starTasks) end
+  starClear.fn()
+  assert(starTasks[1] and starTasks[1].path:find("codexb", 1, true)
+      and starTasks[1].args[1] == "use" and starTasks[1].args[2] == "--clear"
+      and starTasks[1].args[3] == nil,
+    "vendor pin clear launched the wrong command")
+
+  local setTasks = {}
+  local setMod = loadModule(pinFixture, captureTasks(setTasks), nil, nil, nil,
+    "codex_profile=codex-pin")
+  local setPin = submenuItem(headerRow(setMod.menuItems(), "Codex"), "Pin for workers")
+  while #setTasks > 0 do table.remove(setTasks) end
+  setPin.fn()
+  assert(setTasks[1] and setTasks[1].path:find("codexb", 1, true)
+      and setTasks[1].args[1] == "use" and setTasks[1].args[2] == "*",
+    "vendor pin set launched the wrong command")
 end
 
 do
@@ -2391,8 +2456,10 @@ do
     assert(reviewers and reviewers.checked == case.reviewers,
       case.label .. " For reviewers did not read the role flag")
     assert(submenuIndex(header, "For workers") < submenuIndex(header, "For reviewers")
-        and submenuIndex(header, "For reviewers") < submenuIndex(header, "Refresh"),
-      case.label .. " role switches did not sit above Refresh")
+        and submenuIndex(header, "For reviewers") < submenuIndex(header, "Pin for workers")
+        and submenuIndex(header, "Pin for workers") < submenuIndex(header, "Pause")
+        and submenuIndex(header, "Pause") < submenuIndex(header, "Refresh"),
+      case.label .. " role switches or vendor pin did not sit above Refresh")
   end
 
   for _, label in ipairs({ "Claude", "Codex", "Gemini" }) do

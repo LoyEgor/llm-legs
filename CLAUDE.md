@@ -23,8 +23,8 @@ Cardinal rules:
 
 Suites: `bash tests/run-all` (`--all` adds the live ones). Cross-implementation invariants
 (bash/jq/Lua/prose) are guarded by `docs/shared-invariants.md` + `bash tests/test_consistency.sh` —
-run it after touching a staleness threshold, the keychain service formula, the worker-pick cache
-format or the weather HTTP class lists.
+run it after touching a staleness threshold, the keychain service formula, the pin file paths or
+the weather HTTP class lists.
 
 ## launchd / autostart jobs
 Every LaunchAgent created or modified for Egor must be identifiable in macOS Login Items by a

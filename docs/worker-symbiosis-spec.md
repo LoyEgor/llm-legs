@@ -106,7 +106,7 @@ exists; "prefer codex less as it nears limits" becomes a score, not prose.
 - Editing this file is the ONLY place routing prose changes; CLAUDE.md never grows
   for policy reasons again (the instruction-bloat gate enforces the budget).
 - Output contract stays: NEXT / per-account data / POLICY; existing consumers
-  (statusline prediction, hooks) must keep parsing.
+  (hooks) must keep parsing.
 
 ## 4. Optional: session-side suggestion
 

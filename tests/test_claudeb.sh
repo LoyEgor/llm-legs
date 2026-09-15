@@ -2406,11 +2406,6 @@ EOF
   mkdir -p "$CLAUDEB_DIR/limits/rmv.json.lock" "$CLAUDEB_DIR/limits/keep.json.lock"
   printf '%s\n' '{"claude":{"attempts":{"rmv":11,"keep":12}},"vendors":{"claude":{"attempts":{"rmv":21,"keep":22}}}}' \
     >"$HOME/.llm-limits-refresh.state"
-  # The prediction cache lives where WORKER_PICK_CACHE_DIR says, and a sweep that reads only
-  # ~/.cache leaves a removed account predicting in every surface that reads the line.
-  export WORKER_PICK_CACHE_DIR="$HOME/.my-cache"
-  mkdir -p "$WORKER_PICK_CACHE_DIR"
-  touch "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv" "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
 
   assert "$SCRIPT" remove rmv
   assert test ! -e "$CLAUDEB_DIR/tokens/rmv"
@@ -2436,11 +2431,9 @@ EOF
   assert test -e "$CLAUDEB_DIR/limits/keep.json.lock"
   assert jq -e '.claude.attempts == {"keep":12} and .vendors.claude.attempts == {"keep":22}' \
     "$HOME/.llm-limits-refresh.state"
-  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
   assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/limits/keep.json.tmp.123"
-  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
   # Removal announces a passive collect (no args) so the menu's cached row drops
   # without a manual refresh.
   assert wait_announce ''
@@ -2448,7 +2441,7 @@ EOF
   # Leftovers of an account whose four stores are already gone are still that account: a metadata
   # row is what `remove` exists to sweep, so the retry finds work and reports it like any removal.
   touch "$CLAUDEB_DIR/session-logs/rmv.retry" "$CLAUDEB_DIR/warm-logs/rmv.retry" \
-    "$CLAUDEB_DIR/limits/rmv.json.tmp.456" "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
+    "$CLAUDEB_DIR/limits/rmv.json.tmp.456"
   retry_announce_before=$(wc -l <"$ANNOUNCE_LOG" 2>/dev/null | tr -d ' ')
   printf '%s\n' '{"claude":{"attempts":{"rmv":31,"keep":32}}}' >"$HOME/.llm-limits-refresh.state"
   repeat_out=$("$SCRIPT" remove rmv 2>&1)
@@ -2459,10 +2452,8 @@ EOF
   assert test ! -e "$CLAUDEB_DIR/warm-logs/rmv.retry"
   assert test ! -e "$CLAUDEB_DIR/limits/rmv.json.tmp.456"
   assert jq -e '.claude.attempts == {"keep":32}' "$HOME/.llm-limits-refresh.state"
-  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
   assert test -e "$CLAUDEB_DIR/session-logs/keep.log"
   assert test -e "$CLAUDEB_DIR/warm-logs/keep.log"
-  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.keep"
   assert wait_announce_grew "$retry_announce_before"
   # Nothing of it left anywhere: a mistyped name, answered the way codexb, geminib and grokb
   # answer it, and no announce for a removal that removed nothing.
@@ -2473,11 +2464,8 @@ EOF
   assert test "$gone_rc" -eq 2
   assert grep -qx 'claudeb: unknown account: rmv' <<<"$gone_out"
   assert test "$(wc -l <"$ANNOUNCE_LOG" | tr -d ' ')" -eq "$announce_count"
-  # Each leftover on its own is still the account: a prediction line under the configured cache
-  # dir, and a dot-prefixed temporary of claudeb's own, each answer `remove` rather than "unknown".
-  touch "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
-  assert "$SCRIPT" remove rmv
-  assert test ! -e "$WORKER_PICK_CACHE_DIR/worker-pick.line.rmv"
+  # A leftover on its own is still the account: a dot-prefixed temporary of claudeb's own answers
+  # `remove` rather than "unknown".
   touch "$CLAUDEB_DIR/limits/.rmv.json.777"
   assert "$SCRIPT" remove rmv
   assert test ! -e "$CLAUDEB_DIR/limits/.rmv.json.777"
