@@ -1,62 +1,56 @@
 #!/usr/bin/env bash
-# agy-quota.py against a stub agy: the login chooser flashes for a logged-in profile too, so it is
-# a verdict only once it outlives the confirm window without the ready footer.
+# agy-quota.py against a stub agy: quota comes from print mode `/usage`, and a logged-out leg is
+# the stderr line, read before the timeout, never a browser window.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$ROOT/agy-quota.py"
 WORK="$(mktemp -d)"
-trap 'pkill -f "$WORK/agy" 2>/dev/null; rm -rf "$WORK"' EXIT
+trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
 
 cat >"$WORK/agy" <<'STUB'
-#!/usr/bin/env python3
-import http.server, json, os, sys, time
+#!/usr/bin/env bash
+{
+  printf 'ARG %s\n' "$@"
+  printf 'BROWSER=%s\n' "${BROWSER-}"
+  printf 'ANTIGRAVITY_BROWSER=%s\n' "${ANTIGRAVITY_BROWSER-}"
+  printf 'CWD=%s\n' "$PWD"
+} >"$STUB_LOG"
 
-RPC_PATH = "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary"
-QUOTA = {"response": {"groups": [{"displayName": "Gemini Models", "buckets": [
-    {"window": "5h", "remainingFraction": 0.9, "resetTime": "2026-09-10T00:00:00Z"},
-    {"window": "weekly", "remainingFraction": 0.5, "resetTime": "2026-09-14T00:00:00Z"}]}]}}
+usage_payload='{"conversation_id":"","status":"SUCCESS","response":"Gemini Models\tWeekly Limit Remaining\t70%","duration_seconds":0,"num_turns":0,"usage":{"total_tokens":0},"command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit.","groups":[{"name":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","description":"","window":"weekly","remaining_fraction":0.7032511234283447,"reset_time":"2026-09-17T19:00:30Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","description":"","window":"5h","remaining_fraction":0.013935700058937073,"reset_time":"2026-09-12T16:41:01Z"}]},{"name":"Claude and GPT models","description":"Third-party models","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":1,"reset_time":"2026-09-19T12:35:05Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"2026-09-12T17:35:05Z"}]}]}}}'
 
-
-def say(text):
-    sys.stdout.write(text)
-    sys.stdout.flush()
-
-
-mode = os.environ.get("STUB_MODE", "stuck")
-if mode == "exit":
-    sys.exit(0)
-say(" Welcome to the Antigravity CLI. You are currently not signed in.\n\n"
-    " ⢷  Signing in...\n Select login method:\n\n > 1. Google OAuth\n"
-    "2. Use a Google Cloud project\n\n↑/↓ Navigate · enter Select\n")
-if mode == "stuck":
-    while True:
-        time.sleep(1)
-time.sleep(0.4)
-if mode == "cleared":
-    say("\x1b[2J\x1b[H Loading workspace...\n")
-    time.sleep(4)
-say("\x1b[2J\x1b[H Gemini 3.8 Flash · ? for shortcuts\n")
-
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        body = json.dumps(QUOTA if self.path == RPC_PATH else {"error": "unknown rpc"}).encode()
-        self.send_response(200 if self.path == RPC_PATH else 404)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, *args):
-        pass
-
-
-http.server.HTTPServer(("127.0.0.1", 0), Handler).serve_forever()
+case "${STUB_MODE:-ok}" in
+  ok)
+    printf '%s\n' "$usage_payload"
+    ;;
+  nogemini)
+    printf '%s\n' "${usage_payload//Gemini Models/Other Models}"
+    ;;
+  nologin)
+    echo "$$" >"$STUB_PIDS"
+    printf 'Authentication required. Please visit the URL to log in:\n' >&2
+    printf 'https://accounts.google.com/o/oauth2/auth?client_id=stub\n' >&2
+    sleep 60 &
+    echo "$!" >>"$STUB_PIDS"
+    wait
+    ;;
+  error)
+    printf '%s\n' '{"conversation_id":"","status":"ERROR","response":"","error":"language server unavailable","duration_seconds":1,"num_turns":0}'
+    ;;
+  autherror)
+    printf '%s\n' '{"conversation_id":"","status":"ERROR","response":"","error":"authentication failed or timed out","duration_seconds":1,"num_turns":0}'
+    ;;
+  garbage)
+    printf 'Antigravity CLI starting...\nnot json at all\n'
+    ;;
+  dies)
+    printf 'boom\n' >&2
+    exit 3
+    ;;
+esac
 STUB
 chmod +x "$WORK/agy"
 
@@ -66,44 +60,77 @@ within() { python3 -c 'import sys; v, lo, hi = map(float, sys.argv[1:]); sys.exi
 
 run_helper() {
   local mode=$1; shift
+  : >"$WORK/stub.log"
+  : >"$WORK/stub.pids"
   started=$(now)
   rc=0
-  env STUB_MODE="$mode" AGY_BIN="$WORK/agy" AGY_WORKDIR="$WORK" "$@" \
+  env STUB_MODE="$mode" STUB_LOG="$WORK/stub.log" STUB_PIDS="$WORK/stub.pids" \
+    AGY_BIN="$WORK/agy" AGY_WORKDIR="$WORK" "$@" \
     python3 "$HELPER" >"$WORK/out" 2>"$WORK/err" || rc=$?
   took=$(elapsed "$started" "$(now)")
 }
 
-# A chooser that gives way to the ready footer is startup, not a logout: the RPC answers.
-run_helper transient
+# Print mode answers with the structured /usage payload; the cache shape is the helper's own.
+run_helper ok
 assert test "$rc" -eq 0
-assert jq -e '(.groups[0].buckets | length) == 2 and .groups[0].displayName == "Gemini Models"' "$WORK/out" >/dev/null
-assert within "$took" 0 15
-transient_took=$took
+assert jq -e '.description == "Within each group, models share a weekly limit." and
+  (.groups | length) == 2 and .groups[0].displayName == "Gemini Models" and
+  .groups[0].description == "Models within this group: Gemini Flash, Gemini Pro" and
+  ([.groups[0].buckets[] | select(.window == "5h")][0] |
+    .remainingFraction == 0.013935700058937073 and .resetTime == "2026-09-12T16:41:01Z" and
+    .name == "Five Hour Limit Remaining") and
+  ([.groups[0].buckets[] | select(.window == "weekly")][0].remainingFraction) == 0.7032511234283447 and
+  .groups[1].displayName == "Claude and GPT models"' "$WORK/out" >/dev/null
 
-# A chooser cleared off the screen stops the confirm clock even when the ready footer is late.
-run_helper cleared AGY_QUOTA_STARTUP_TIMEOUT=30 AGY_QUOTA_LOGIN_CONFIRM_TIMEOUT=2
-assert test "$rc" -eq 0
-assert jq -e '(.groups[0].buckets | length) == 2' "$WORK/out" >/dev/null
-assert within "$took" 4 20
+# The argv and the browser muzzle are the contract with agy itself.
+assert grep -qxF 'ARG -p' "$WORK/stub.log"
+assert grep -qxF 'ARG /usage' "$WORK/stub.log"
+assert grep -qxF 'ARG --output-format' "$WORK/stub.log"
+assert grep -qxF 'ARG json' "$WORK/stub.log"
+assert grep -qxF 'BROWSER=/usr/bin/true' "$WORK/stub.log"
+assert grep -qxF 'ANTIGRAVITY_BROWSER=/usr/bin/true' "$WORK/stub.log"
 
-# A chooser still standing after the confirm window is the verdict, well before the startup timeout.
-run_helper stuck AGY_QUOTA_STARTUP_TIMEOUT=30 AGY_QUOTA_LOGIN_CONFIRM_TIMEOUT=2
-assert test "$rc" -eq 2
-assert jq -e '.auth_needed == true and .detail == "login screen" and .source == "agy-local-rpc"' "$WORK/out" >/dev/null
-assert within "$took" 2 15
-stuck_took=$took
-
-# The confirm window never outlives the startup deadline.
-run_helper stuck AGY_QUOTA_STARTUP_TIMEOUT=3 AGY_QUOTA_LOGIN_CONFIRM_TIMEOUT=60
-assert test "$rc" -eq 2
-assert jq -e '.auth_needed == true and .detail == "login screen"' "$WORK/out" >/dev/null
-assert within "$took" 3 12
-capped_took=$took
-
-# An agy that dies on start is a failed query, never a login verdict.
-run_helper exit
+# A payload without a usable Gemini group is an unexpected response, never a quota.
+run_helper nogemini
 assert test "$rc" -eq 1
 assert test ! -s "$WORK/out"
-assert jq -e '.error | test("agy exited during startup")' "$WORK/err" >/dev/null
+assert jq -e '.error | test("unexpected /usage response")' "$WORK/err" >/dev/null
 
-echo "PASS: $asserts asserts; a flashed login chooser yields to the ready footer and the RPC answers (${transient_took%.*}s), a chooser cleared off the screen stops the confirm clock, a standing chooser is the login verdict once the confirm window passes (${stuck_took%.*}s) and never later than the startup deadline (${capped_took%.*}s), an agy dead on start is a failed query"
+# The login line on stderr is the verdict at once: waiting for the timeout would leave agy
+# holding an OAuth prompt open for the whole window.
+run_helper nologin AGY_QUOTA_TIMEOUT=60
+assert test "$rc" -eq 2
+assert jq -e '.auth_needed == true and .source == "agy-print-usage" and
+  (.detail | test("Authentication required"))' "$WORK/out" >/dev/null
+assert within "$took" 0 5
+nologin_took=$took
+stub_dead=1
+while read -r pid; do
+  [ -n "$pid" ] || continue
+  kill -0 "$pid" 2>/dev/null && stub_dead=0
+done <"$WORK/stub.pids"
+assert test "$stub_dead" -eq 1
+
+# An authentication failure reported inside the JSON is the same verdict.
+run_helper autherror
+assert test "$rc" -eq 2
+assert jq -e '.auth_needed == true and (.detail | test("authentication"))' "$WORK/out" >/dev/null
+
+# Any other reported error is a failed query, not a logout.
+run_helper error
+assert test "$rc" -eq 1
+assert test ! -s "$WORK/out"
+assert jq -e '.error == "language server unavailable" and .source == "agy-print-usage"' "$WORK/err" >/dev/null
+
+# Output that is not JSON stays a failed query.
+run_helper garbage
+assert test "$rc" -eq 1
+assert jq -e '.error | test("not JSON")' "$WORK/err" >/dev/null
+
+# An agy that dies is a failed query, never a login verdict.
+run_helper dies
+assert test "$rc" -eq 1
+assert test ! -s "$WORK/out"
+assert jq -e '.error | test("agy exited with status 3")' "$WORK/err" >/dev/null
+
+echo "PASS: $asserts asserts; print-mode /usage yields the cache shape with the browser muzzled, a login line on stderr is the verdict in ${nologin_took%.*}s and kills agy with it, and an unusable payload, a reported error, non-JSON output or a dead agy all stay failed queries"

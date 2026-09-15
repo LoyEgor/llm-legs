@@ -1,22 +1,14 @@
 #!/usr/bin/env python3
-"""Fetch Antigravity quota through agy's authenticated localhost Connect RPC."""
+"""Fetch Antigravity quota from agy's print-mode `/usage` command."""
 
 from __future__ import annotations
 
-import fcntl
-import http.client
 import json
 import os
-import pty
-import re
-import select
+import selectors
 import signal
-import shutil
-import ssl
-import struct
 import subprocess
 import sys
-import termios
 import time
 from typing import Any
 
@@ -25,215 +17,170 @@ AGY = os.path.expanduser(os.environ.get("AGY_BIN", "~/.local/bin/agy"))
 WORKDIR = os.path.expanduser(
     os.environ.get("AGY_WORKDIR", os.path.dirname(os.path.abspath(__file__)))
 )
-STARTUP_TIMEOUT = float(os.environ.get("AGY_QUOTA_STARTUP_TIMEOUT", "30"))
-RPC_TIMEOUT = float(os.environ.get("AGY_QUOTA_RPC_TIMEOUT", "12"))
-RPC_PATH = (
-    "/exa.language_server_pb.LanguageServerService/"
-    "RetrieveUserQuotaSummary"
-)
-
-ANSI = re.compile(
-    rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
-    rb"|\x1bP.*?\x1b\\"
-    rb"|\x1b\[[0-?]*[ -/]*[@-~]"
-    rb"|\x1b[@-_]",
-    re.S,
-)
-
-# Neither "not signed in" nor the login chooser is a verdict on sight: a logged-in agy paints
-# both ("Signing in... / Select login method") for the fraction of a second before its keyring
-# token is applied (2026-09-09: seven legs marked logged-out that way). Login-needed is the
-# chooser still standing, with no ready footer, once LOGIN_CONFIRM_TIMEOUT has passed.
-LOGIN_SCREEN_MARKER = "Select login method"
-READY_MARKER = "? for shortcuts"
-CLEAR_SCREEN = b"\x1b[2J"
-LOGIN_CONFIRM_TIMEOUT = float(os.environ.get("AGY_QUOTA_LOGIN_CONFIRM_TIMEOUT", "8"))
-NOT_SIGNED_IN = re.compile(r"\bnot signed in\b", re.IGNORECASE)
-LOGIN_PROBE_WINDOW = 4096
+TIMEOUT = float(os.environ.get("AGY_QUOTA_TIMEOUT", "45"))
+SOURCE = "agy-print-usage"
 AUTH_EXIT = 2
+AUTH_STDERR_MARKER = "Authentication required"
 
 
 class AuthRequired(Exception):
     pass
 
 
-def clean_terminal(data: bytes) -> str:
-    return ANSI.sub(b"", data).decode("utf-8", "replace").replace("\r", "\n")
+def first_line(text: str) -> str:
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            return line
+    return ""
 
 
-def listening_ports(pid: int) -> list[int]:
-    lsof = shutil.which("lsof")
-    if not lsof and os.path.isfile("/usr/sbin/lsof"):
-        lsof = "/usr/sbin/lsof"
-    if not lsof:
-        raise FileNotFoundError("lsof not found")
-    result = subprocess.run(
-        [lsof, "-nP", "-a", "-p", str(pid), "-iTCP", "-sTCP:LISTEN"],
-        text=True,
-        capture_output=True,
-        timeout=2,
-        check=False,
-    )
-    return sorted({
-        int(value)
-        for value in re.findall(r"127\.0\.0\.1:(\d+)", result.stdout)
-    })
-
-
-def call_rpc(port: int, use_tls: bool) -> tuple[dict[str, Any] | None, str | None]:
-    if use_tls:
-        connection: http.client.HTTPConnection = http.client.HTTPSConnection(
-            "127.0.0.1",
-            port,
-            timeout=RPC_TIMEOUT,
-            context=ssl._create_unverified_context(),
-        )
-    else:
-        connection = http.client.HTTPConnection(
-            "127.0.0.1", port, timeout=RPC_TIMEOUT
-        )
-
-    body = json.dumps({"request": {}, "forceRefresh": True})
-    try:
-        connection.request(
-            "POST",
-            RPC_PATH,
-            body=body,
-            headers={
-                "Content-Type": "application/json",
-                "Connect-Protocol-Version": "1",
-            },
-        )
-        response = connection.getresponse()
-        payload = response.read()
-    finally:
-        connection.close()
-
-    if response.status != 200:
-        detail = payload.decode("utf-8", "replace")[:300]
-        return None, f"HTTP {response.status}: {detail}"
-
-    decoded = json.loads(payload)
-    quota = decoded.get("response")
-    if not isinstance(quota, dict) or not isinstance(quota.get("groups"), list):
-        return None, "unexpected RetrieveUserQuotaSummary response"
-    return quota, None
-
-
-def terminate(pid: int, master_fd: int) -> None:
-    for data in (b"\x1b", b"\x03"):
-        try:
-            os.write(master_fd, data)
-            time.sleep(0.15)
-        except OSError:
-            break
-
+def kill_group(process: subprocess.Popen[bytes]) -> None:
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
-            os.killpg(pid, sig)
+            os.killpg(process.pid, sig)
         except (ProcessLookupError, PermissionError):
             try:
-                os.kill(pid, sig)
-            except ProcessLookupError:
+                process.send_signal(sig)
+            except (ProcessLookupError, ValueError):
                 pass
-        time.sleep(0.25)
+        try:
+            process.wait(timeout=2)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
-    try:
-        os.waitpid(pid, os.WNOHANG)
-    except ChildProcessError:
-        pass
 
-
-def fetch() -> dict[str, Any]:
+def run_usage() -> tuple[str, str]:
     if not os.path.isfile(AGY) or not os.access(AGY, os.X_OK):
         raise RuntimeError(f"agy executable not found: {AGY}")
     if not os.path.isdir(WORKDIR):
         raise RuntimeError(f"AGY_WORKDIR does not exist: {WORKDIR}")
 
-    pid, master_fd = pty.fork()
-    if pid == 0:
-        os.chdir(WORKDIR)
-        os.environ.update({
-            "TERM": "xterm-256color",
-            "COLUMNS": "120",
-            "LINES": "40",
-            "LANG": "en_US.UTF-8",
-        })
-        os.execv(AGY, [AGY])
+    env = dict(os.environ)
+    # A logged-out leg tries to open the OAuth page in the user's real browser.
+    env["BROWSER"] = "/usr/bin/true"
+    env["ANTIGRAVITY_BROWSER"] = "/usr/bin/true"
 
-    fcntl.ioctl(
-        master_fd,
-        termios.TIOCSWINSZ,
-        struct.pack("HHHH", 40, 120, 0, 0),
-    )
-    transcript = bytearray()
-    deadline = time.monotonic() + STARTUP_TIMEOUT
-    login_deadline: float | None = None
-    signed_out_seen = False
+    with open(os.devnull, "rb") as devnull:
+        process = subprocess.Popen(
+            [AGY, "-p", "/usage", "--output-format", "json"],
+            cwd=WORKDIR,
+            env=env,
+            stdin=devnull,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
 
+    out = bytearray()
+    err = bytearray()
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, out)
+    selector.register(process.stderr, selectors.EVENT_READ, err)
+    deadline = time.monotonic() + TIMEOUT
     try:
-        while True:
-            now = time.monotonic()
-            if login_deadline is not None and now >= login_deadline:
-                raise AuthRequired("login screen")
-            if now >= deadline:
-                if signed_out_seen:
-                    raise AuthRequired("not signed in (auto-sign-in never completed)")
-                raise TimeoutError("agy startup timed out")
-            readable, _, _ = select.select([master_fd], [], [], 0.25)
-            if not readable:
-                continue
-            try:
-                chunk = os.read(master_fd, 65536)
-            except OSError as error:
-                raise RuntimeError(f"agy exited during startup: {error}") from error
-            if not chunk:
-                raise RuntimeError("agy exited during startup")
-            transcript += chunk
-            transcript = transcript[-1_000_000:]
-
-            screen = clean_terminal(transcript)
-            if "Do you trust the contents" in screen:
-                raise RuntimeError(
-                    f"agy workdir is not trusted: {WORKDIR}; open agy there once manually"
-                )
-            if READY_MARKER in screen:
-                break
-            # The transcript is history, not the screen: the chooser counts only while it is still
-            # on the frame painted since the last clear.
-            frame = clean_terminal(transcript.rsplit(CLEAR_SCREEN, 1)[-1])
-            if LOGIN_SCREEN_MARKER not in frame:
-                login_deadline = None
-            elif login_deadline is None:
-                login_deadline = min(deadline, now + LOGIN_CONFIRM_TIMEOUT)
-            if NOT_SIGNED_IN.search(screen[:LOGIN_PROBE_WINDOW]):
-                signed_out_seen = True
-
-        ports_deadline = time.monotonic() + 5
-        ports: list[int] = []
-        while time.monotonic() < ports_deadline:
-            ports = listening_ports(pid)
-            if ports:
-                break
-            time.sleep(0.2)
-        if not ports:
-            raise RuntimeError("agy opened no localhost listeners")
-
-        errors: list[str] = []
-        for port in ports:
-            for use_tls in (False, True):
-                try:
-                    quota, error = call_rpc(port, use_tls)
-                except Exception as exc:  # Probe the other protocol/port.
-                    errors.append(f"{port} tls={use_tls}: {exc}")
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(f"agy /usage timed out after {TIMEOUT:g}s")
+            for key, _ in selector.select(min(remaining, 0.5)):
+                chunk = key.fileobj.read1(65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
                     continue
-                if quota is not None:
-                    return quota
-                errors.append(f"{port} tls={use_tls}: {error}")
-
-        raise RuntimeError("; ".join(errors))
+                key.data.extend(chunk)
+            if AUTH_STDERR_MARKER in err.decode("utf-8", "replace"):
+                raise AuthRequired(
+                    first_line(err.decode("utf-8", "replace")) or AUTH_STDERR_MARKER
+                )
+        remaining = deadline - time.monotonic()
+        try:
+            process.wait(timeout=max(remaining, 0))
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"agy /usage timed out after {TIMEOUT:g}s") from None
     finally:
-        terminate(pid, master_fd)
+        selector.close()
+        if process.poll() is None:
+            kill_group(process)
+        for stream in (process.stdout, process.stderr):
+            stream.close()
+
+    stdout = out.decode("utf-8", "replace")
+    stderr = err.decode("utf-8", "replace")
+    if process.returncode != 0:
+        detail = first_line(stderr) or first_line(stdout) or "no output"
+        raise RuntimeError(f"agy exited with status {process.returncode}: {detail}")
+    return stdout, stderr
+
+
+def parse_payload(stdout: str) -> dict[str, Any]:
+    candidates = [stdout.strip()]
+    candidates += [line for line in reversed(stdout.splitlines()) if line.strip()]
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            return decoded
+    raise RuntimeError(f"agy /usage output is not JSON: {stdout.strip()[:200] or 'empty'}")
+
+
+def convert(data: dict[str, Any]) -> dict[str, Any]:
+    groups = []
+    for group in data.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        buckets = [
+            {
+                "window": bucket.get("window"),
+                "remainingFraction": bucket.get("remaining_fraction"),
+                "resetTime": bucket.get("reset_time"),
+                "name": bucket.get("name"),
+            }
+            for bucket in group.get("buckets") or []
+            if isinstance(bucket, dict)
+        ]
+        groups.append({
+            "displayName": group.get("name"),
+            "description": group.get("description"),
+            "buckets": buckets,
+        })
+
+    def usable(group: dict[str, Any]) -> bool:
+        windows = {
+            bucket["window"]: bucket["remainingFraction"]
+            for bucket in group["buckets"]
+        }
+        return all(
+            isinstance(windows.get(window), (int, float))
+            and not isinstance(windows.get(window), bool)
+            for window in ("5h", "weekly")
+        )
+
+    if not any(
+        "gemini" in (group["displayName"] or "").lower() and usable(group)
+        for group in groups
+    ):
+        raise RuntimeError("unexpected /usage response: no Gemini group with 5h and weekly fractions")
+
+    return {"description": data.get("description"), "groups": groups}
+
+
+def fetch() -> dict[str, Any]:
+    stdout, stderr = run_usage()
+    payload = parse_payload(stdout)
+    if payload.get("status") == "ERROR":
+        error = str(payload.get("error") or "agy reported an error")
+        if "authentication" in error.lower():
+            raise AuthRequired(first_line(stderr) or error)
+        raise RuntimeError(error)
+    command = payload.get("command")
+    data = command.get("data") if isinstance(command, dict) else None
+    if not isinstance(data, dict):
+        raise RuntimeError("unexpected /usage response: no command payload")
+    return convert(data)
 
 
 def main() -> int:
@@ -243,16 +190,13 @@ def main() -> int:
     except AuthRequired as exc:
         print(
             json.dumps(
-                {"auth_needed": True, "source": "agy-local-rpc", "detail": str(exc)},
+                {"auth_needed": True, "source": SOURCE, "detail": str(exc)},
                 separators=(",", ":"),
             )
         )
         return AUTH_EXIT
     except Exception as exc:
-        print(
-            json.dumps({"error": str(exc), "source": "agy-local-rpc"}),
-            file=sys.stderr,
-        )
+        print(json.dumps({"error": str(exc), "source": SOURCE}), file=sys.stderr)
         return 1
 
 

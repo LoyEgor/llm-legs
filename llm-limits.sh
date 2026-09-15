@@ -1787,7 +1787,7 @@ while IFS= read -r gemini_account; do
       def used($remaining):
         ((1 - $remaining) * 100) |
         (if . < 0 then 0 elif . > 100 then 100 else . end) | round;
-      {account:$account,enabled:$enabled,source:"agy-local-rpc",group:$d.group,
+      {account:$account,enabled:$enabled,source:"agy-print-usage",group:$d.group,
        five_hour:{used_pct:used($d.five.remainingFraction),resets_at:$d.five.resetTime,
                   as_of:$as_of_epoch,origin:"usage",stale:($stale > $thr5)},
        weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
@@ -1798,7 +1798,7 @@ while IFS= read -r gemini_account; do
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
       '{account:$account,enabled:$enabled,auth_needed:true,
-        status:"login needed",source:"agy-local-rpc",as_of:$as_of,as_of_epoch:$as_of_epoch}')
+        status:"login needed",source:"agy-print-usage",as_of:$as_of,as_of_epoch:$as_of_epoch}')
   else
     # No cache and no auth marker = the account has never been refreshed. Emit
     # nothing, matching claude/codex: accounts exist for the menu only via their
@@ -1814,7 +1814,7 @@ while IFS= read -r gemini_account; do
     else
       gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
         '{account:$account,enabled:$enabled,removed:true,
-          status:"removed",source:"agy-local-rpc"}')
+          status:"removed",source:"agy-print-usage"}')
     fi
   fi
   [ -n "$gemini_account_json" ] || continue
@@ -1898,7 +1898,7 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
     # no profile beside it the vendor states its removal HERE — it is the one thing that tells a
     # store Egor emptied on purpose from one whose accounts have simply never been refreshed, and
     # the menubar skips a removed vendor whole where it renders the other as "no live data".
-    {available:false,source:"agy-local-rpc",last_wall:$wall} +
+    {available:false,source:"agy-print-usage",last_wall:$wall} +
     (if $main_removed then {removed:true,status:"removed"}
      else {status:"no quota snapshot"} end)
   # The flat shape is what a store holding nothing but the base profile has always been; every
@@ -1911,7 +1911,7 @@ gemini=$(jq -cn --argjson accounts "$gemini_accounts" --argjson wall "$gemini_wa
     | .last_wall = $wall
   else
     ({available:(($usable | length) > 0),accounts:$accounts,
-      source:"agy-local-rpc",last_wall:$wall} +
+      source:"agy-print-usage",last_wall:$wall} +
      (if $current == null then {} else {current_account:$current.account} end) +
      (if ($usable | length) == 0 and any($visible[]; .auth_needed == true)
       then {auth_needed:true} else {} end) +
@@ -2168,7 +2168,7 @@ if ! result=$(jq -cn --arg fetched_at "$(local_iso)" --argjson experiments "$exp
     elif ($roster | index($a)) != null then $a
     else null end;
   # "; " starts a new error when the next fragment is an account prefix; free prose with ": "
-  # ("agy exited during startup: broken pipe") and HTTP bodies must stay one cause.
+  # ("agy exited with status 1: broken pipe") and HTTP bodies must stay one cause.
   def split_legacy_cause($roster):
     if type != "string" or . == "" then []
     else
