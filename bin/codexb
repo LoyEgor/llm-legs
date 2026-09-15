@@ -29,6 +29,9 @@ pool_suffix() { if is_disabled "$1"; then printf ' (out of pool)'; fi; }
 
 quota_helper="${CODEXB_QUOTA_CMD:-$codexb_root/codex-quota.py}"
 codex_cache="${LLM_LIMITS_CODEX_CACHE:-$HOME/.llm-limits-codex.json}"
+# The alias every hand-driven jump onto an OpenAI account opens on; share/chat_resume.py
+# spells the same one as GATEWAY_SWITCH_ALIAS (docs/shared-invariants.md row `cj`).
+codexb_status_model=astra
 
 # A live token can be locally present yet invalidated; llm-limits.sh records that as an
 # auth-needed marker in the codex cache. Trust the marker over `codex login status`.
@@ -58,7 +61,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -274,9 +277,28 @@ codexb_status_pick_cmd() {
 
 codexb_status_now() { date +%s; }
 
+codexb_status_claudegpt_cmd() {
+  local candidate
+  if [ -n "${CODEXB_CLAUDEGPT_CMD:-}" ]; then candidate="$CODEXB_CLAUDEGPT_CMD"
+  elif [ -x "$codexb_root/bin/claudegpt" ]; then candidate="$codexb_root/bin/claudegpt"
+  else candidate=$(command -v claudegpt 2>/dev/null) || return 1
+  fi
+  [ -x "$candidate" ] || return 1
+  printf '%s' "$candidate"
+}
+
+# The picker's Enter opens Claude Code on this OpenAI account, not the Codex CLI, and names the
+# alias rather than taking the launcher's default. Falling back to `codex` when the launcher is
+# missing would open the wrong tool, so an absent launcher is a refusal.
 codexb_status_launch() {
+  local launcher
   [ -n "${accounts_launch:-}" ] || return 0
-  run_account true "$accounts_launch"
+  launcher=$(codexb_status_claudegpt_cmd) || launcher=''
+  if [ -z "$launcher" ]; then
+    printf 'codexb: claudegpt is not installed; status opens Claude Code on a Codex account and will not start Codex instead\n' >&2
+    exit 2
+  fi
+  exec "$launcher" p "$accounts_launch" --model "$codexb_status_model"
 }
 
 codexb_status_refresh() {
@@ -393,6 +415,51 @@ pick_account() {
     awk -F '\t' 'NR == 1 {print $1}'
 }
 
+fast_mode() {
+  local name="${1:-}" mode="${2:-status}"
+  account_exists "$name" || { printf 'codexb: unknown account: %s\n' "$name" >&2; return 2; }
+  python3 "$codexb_root/share/codex_fast_mode.py" "$profiles_dir" "$name" "$mode"
+}
+
+codex_launch_needs_default_model() {
+  local command_seen=false launch=true
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -m|--model|--model=*) return 1 ;;
+      -h|--help|-V|--version) return 1 ;;
+      --) break ;;
+      -c|--config|-p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
+        [ "$#" -lt 2 ] || shift ;;
+      -*) ;;
+      *)
+        if [ "$command_seen" = false ]; then
+          command_seen=true
+          case "$1" in
+            login|logout|mcp|mcp-server|app|app-server|resume|fork|review|debug|completion|cloud|apply|features|help) launch=false ;;
+          esac
+        fi ;;
+    esac
+    shift
+  done
+  [ "$launch" = true ]
+}
+
+codex_launch_needs_fast_mode_off() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h|--help|-V|--version) return 1 ;;
+      --) return 0 ;;
+      -c|--config|-m|--model|-p|--profile|-C|--cd|-s|--sandbox|-a|--ask-for-approval|-i|--image|--enable|--disable|--add-dir|--local-provider)
+        [ "$#" -lt 2 ] || shift ;;
+      -*) ;;
+      login|logout|mcp|mcp-server|app|app-server|debug|completion|cloud|apply|features|help) return 1 ;;
+      *) return 0 ;;
+    esac
+    shift
+  done
+  return 0
+}
+
 run_account() {
   local allow_create="$1" name="${2:-}" directory created=false
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
@@ -441,13 +508,26 @@ run_account() {
     printf "codexb: new profile '%s' created at %s — Codex will ask you to log in once.\n" "$name" "$directory" >&2
   fi
   ensure_profile "$directory"
+  if codex_launch_needs_default_model "$@"; then
+    set -- -m "$(worker_model_allowed_models codex | head -n1)" "$@"
+  fi
+  if codex_launch_needs_fast_mode_off "$@"; then
+    # Past a `--` codex reads everything as prompt text, so the flags go in ahead of it.
+    local before=() after=() terminated=false argument
+    for argument in "$@"; do
+      if [ "$terminated" = false ] && [ "$argument" = -- ]; then terminated=true; fi
+      if [ "$terminated" = true ]; then after+=("$argument"); else before+=("$argument"); fi
+    done
+    set -- ${before[@]+"${before[@]}"} --disable fast_mode --config 'service_tier="default"' \
+      ${after[@]+"${after[@]}"}
+  fi
   [ "$created" != true ] || announce_account_added "$codexb_root" codex "$name"
   exec env CODEX_HOME="$directory" codex "$@"
 }
 
 show_help() {
   printf '%s\n' \
-    'codexb profile <name> [codex args...]  Open an isolated profile; creates it if missing (Codex asks you to log in once). Aliases: p, run.' \
+    'codexb profile <name> [codex args...]  Open an isolated profile; chats default to the worker allow-list model; creates it if missing (Codex asks you to log in once). Aliases: p, run.' \
     'codexb profile <name> login            Browser OAuth login for that account (menu Codex login uses this).' \
     'codexb <name> exec [args...]' \
     'codexb add <name>                      Create a profile without launching; prints the login command.' \
@@ -455,11 +535,84 @@ show_help() {
     'codexb enable <name>|--all             Return an account (or every account) to worker selection.' \
     'codexb disable <name>|--all            Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'codexb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
+    'codexb fast-mode <name> [on|off|status]  Set Fast Mode for worker-run launches on that account; existing sessions are unchanged.' \
     'codexb list                            List profiles with login state.' \
-    'codexb status                          Per-account login state and quota.' \
-    'codexb pick                            Print the highest-priority usable account.'
+    'codexb status                          Per-account login state and quota; on a TTY, Enter opens Claude Code on the selected account (claudegpt p <name> --model astra).' \
+    'codexb pick                            Print the highest-priority usable account.' \
+    'codexb export-auth <name> --to <path> [--min-seconds N]  Write an access-only auth.json for a confined run.'
 }
 
+# The saved login carries a refresh_token, and a confined runtime holding one can rotate the
+# credential this machine is signed in with — a rotation nobody reads logs the account out. The
+# native client will not load an auth.json that omits the field, so it leaves as an empty string:
+# the run authenticates with the access token it was handed and can mint no other.
+export_auth() {
+  local name="${1:-}" target='' min_seconds=0
+  if [ "$#" -gt 0 ]; then shift; fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --to) target="${2:-}"; shift 2 || return 2 ;;
+      --min-seconds) min_seconds="${2:-}"; shift 2 || return 2 ;;
+      *) break ;;
+    esac
+  done
+  if [ "$#" -gt 0 ] || [ -z "$name" ] || [ -z "$target" ] || ! [[ "$min_seconds" =~ ^[0-9]+$ ]] \
+     || ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    printf 'usage: codexb export-auth <name> --to <path> [--min-seconds N]\n' >&2
+    return 2
+  fi
+  CODEXB_SHARE="$codexb_root/share" python3 - "$name" "$target" "$min_seconds" <<'PYTHON'
+import calendar, json, os, sys, time
+from pathlib import Path
+
+sys.path.insert(0, os.environ["CODEXB_SHARE"])
+import gateway_auth
+
+name, target, min_seconds = sys.argv[1], Path(sys.argv[2]), int(sys.argv[3])
+
+
+def refuse(code, message):
+    print(f"codexb: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+if target.exists():
+    refuse(2, f"{target} already exists")
+# The shared resolver owns what counts as a usable login, including the JWT expiry this wrapper
+# would otherwise re-derive. Its REFRESH verdict is a renewal this export must never perform.
+payload, status, detail = gateway_auth.read_codex_auth(name)
+if not payload or status != gateway_auth.READY:
+    refuse(3, f"{name}: {status}" + (f" ({detail})" if detail else ""))
+source = Path(gateway_auth.codex_auth_path(name))
+try:
+    saved = json.loads(source.read_text())["tokens"]
+except (OSError, ValueError, KeyError, TypeError):
+    refuse(3, f"unreadable codex auth: {source}")
+identity = saved.get("id_token")
+if not isinstance(identity, str) or identity.count(".") != 2:
+    refuse(3, f"{name}: saved login carries no id_token to project")
+expiry = calendar.timegm(time.strptime(payload["expired"], "%Y-%m-%dT%H:%M:%SZ"))
+remaining = int(expiry - time.time())
+if remaining < min_seconds:
+    refuse(4, f"{name}'s access token does not outlast the run "
+              f"({remaining} seconds left, {min_seconds} needed)")
+document = {"OPENAI_API_KEY": None,
+            "tokens": {"id_token": identity, "access_token": payload["access_token"],
+                       "refresh_token": "", "account_id": payload["account_id"]},
+            "last_refresh": time.strftime("%Y-%m-%dT%H:%M:%S.000000000Z", time.gmtime())}
+descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(descriptor, "w") as stream:
+    json.dump(document, stream)
+print(f"source=auth.json expires_at={payload['expired']}")
+PYTHON
+}
+
+if [ "${1:-}" = fast-mode ]; then
+  shift
+  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { printf 'usage: codexb fast-mode <name> [on|off|status]\n' >&2; exit 2; }
+  fast_mode "$@"
+  exit
+fi
 ensure_profiles
 if [ "${2:-}" = exec ] && [ "${1:-}" != main ] \
    && [[ "${1:-}" =~ ^[a-z0-9-]+$ ]] \
@@ -513,6 +666,12 @@ case "${1:-}" in
       selection=main
     fi
     printf '%s\n' "$selection"
+    ;;
+  export-auth)
+    shift
+    export_auth_rc=0
+    export_auth "$@" || export_auth_rc=$?
+    exit "$export_auth_rc"
     ;;
   profile|p|run)
     shift

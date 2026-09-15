@@ -13,3 +13,26 @@ codex_removal_marker() {
 }
 
 codex_main_removed() { [ -e "$(codex_removal_marker main)" ]; }
+
+codex_fast_mode_helper() {
+  local share_dir
+  share_dir=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  printf '%s\n' "${CODEXB_FAST_MODE_HELPER:-$share_dir/codex_fast_mode.py}"
+}
+
+codex_fast_tier() {
+  local file tier
+  file="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb/fast-mode/$1"
+  [ -f "$file" ] && [ -r "$file" ] || { printf 'default\n'; return; }
+  IFS= read -r tier <"$file" || [ -n "$tier" ] || { printf 'default\n'; return; }
+  case "$tier" in
+    fast|priority) printf 'fast\n' ;;
+    default) printf '%s\n' "$tier" ;;
+    *) printf 'default\n' ;;
+  esac
+}
+
+codex_fast_mode_state() {
+  local profiles="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+  python3 "$(codex_fast_mode_helper)" "$profiles" "$1" state
+}

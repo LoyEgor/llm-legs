@@ -329,26 +329,47 @@ assert grep -Eq '^beta: Not logged in( \||$)' <<<"$status_output"
 (
   export LLM_LIMITS_CACHE="$WORK/codex-tui.json" CODEXB_WORKER_PICK="$WORK/status-pick"
   export CODEXB_PROFILES_DIR="$HOME/.codex-profiles"
+  # Enter on a status row opens Claude Code on that OpenAI account, never the Codex CLI.
+  export CODEXB_CLAUDEGPT_CMD="$WORK/status-claudegpt" GPT_CALLS="$WORK/claudegpt-calls"
+  printf '#!/usr/bin/env bash\nprintf "LAUNCH argc=%%s %%s\\n" "$#" "$*" >>"$GPT_CALLS"\n' >"$CODEXB_CLAUDEGPT_CMD"
+  chmod +x "$CODEXB_CLAUDEGPT_CMD"
+  # The Claude block shares the store; a codex picker that reads it would offer an Anthropic
+  # account to a launcher that can only open an OpenAI one.
   jq -n --argjson now "$(date +%s)" '{vendors:{codex:{accounts:[
     {account:"alpha",five_hour:{used_pct:10,as_of:$now},weekly:{used_pct:20,as_of:$now}},
     {account:"beta",five_hour:{used_pct:30,as_of:$now},weekly:{used_pct:15,as_of:$now}},
-    {account:"main",enabled:false,five_hour:{used_pct:90,as_of:$now}}]}}}' >"$LLM_LIMITS_CACHE"
+    {account:"main",enabled:false,five_hour:{used_pct:90,as_of:$now}}]},
+    claude:{accounts:[{account:"anthroponly",five_hour:{used_pct:5,as_of:$now},
+      weekly:{used_pct:5,as_of:$now},fable:{used_pct:5,as_of:$now}}]}}}' >"$LLM_LIMITS_CACHE"
   printf '#!/usr/bin/env bash\n[ "$*" = "--account codex --role chat" ] || exit 2\n[ -z "${PICK_NONE:-}" ] || exit 3\nprintf beta\n' >"$CODEXB_WORKER_PICK"
   chmod +x "$CODEXB_WORKER_PICK"
   for spec in '0d beta' '1b5b410d alpha' '1b5b420d main' '1b5b431b5b440d beta' '71 none' '1b none'; do
     read -r keys expected <<<"$spec"
     : >"$CODEX_CALLS"
+    : >"$GPT_CALLS"
     tty_out=$(python3 "$ROOT/tests/fixtures/account-status-pty.py" "$keys" "$SCRIPT") || fail "codexb TTY keys $keys failed"
     assert grep -qF $'\033[7m* beta' <<<"$tty_out"
     assert grep -qF '↑/↓ select  ⏎ launch  ←/→ sort  r refresh  q/Esc exit' <<<"$tty_out"
     assert_fails grep -qF FABLE <<<"$tty_out"
-    if [ "$expected" = none ]; then assert test ! -s "$CODEX_CALLS"
-    else assert grep -q "^CALL account=$expected .* argc=0$" "$CODEX_CALLS"; fi
+    assert_fails grep -qF anthroponly <<<"$tty_out"
+    assert test ! -s "$CODEX_CALLS"
+    if [ "$expected" = none ]; then assert test ! -s "$GPT_CALLS"
+    else assert grep -qx "LAUNCH argc=4 p $expected --model astra" "$GPT_CALLS"; fi
   done
   : >"$CODEX_CALLS"
+  : >"$GPT_CALLS"
   tty_out=$(PICK_NONE=1 python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT") || fail "codexb TTY fallback failed"
   assert grep -qF $'\033[7m  alpha' <<<"$tty_out"
-  assert grep -q '^CALL account=alpha .* argc=0$' "$CODEX_CALLS"
+  assert grep -qx 'LAUNCH argc=4 p alpha --model astra' "$GPT_CALLS"
+  assert test ! -s "$CODEX_CALLS"
+  # No launcher is a refusal: falling back to `codex` would open the wrong tool on Enter.
+  : >"$CODEX_CALLS"
+  status_rc=0
+  CODEXB_CLAUDEGPT_CMD="$WORK/absent-claudegpt" \
+    python3 "$ROOT/tests/fixtures/account-status-pty.py" 0d "$SCRIPT" >"$WORK/no-launcher.out" 2>&1 || status_rc=$?
+  assert test "$status_rc" = 2
+  assert grep -qF 'claudegpt is not installed' "$WORK/no-launcher.out"
+  assert test ! -s "$CODEX_CALLS"
   export LLM_LIMITS_CMD="$WORK/status-refresh"
   printf '#!/usr/bin/env bash\nexit 0\n' >"$LLM_LIMITS_CMD"
   chmod +x "$LLM_LIMITS_CMD"
@@ -366,10 +387,67 @@ assert grep -qx "ARG=''" "$CODEX_CALLS"
 
 : >"$CODEX_CALLS"
 bash "$SCRIPT" alpha exec --json 'two words' || fail "profile shorthand failed"
-assert grep -qx "CALL account=alpha home=$HOME/.codex-profiles/alpha argc=3" "$CODEX_CALLS"
-assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=exec'
-assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=--json'
-assert test "$(sed -n '4p' "$CODEX_CALLS")" = 'ARG=two\ words'
+assert grep -qx "CALL account=alpha home=$HOME/.codex-profiles/alpha argc=9" "$CODEX_CALLS"
+assert test "$(sed -n '4p' "$CODEX_CALLS")" = 'ARG=exec'
+assert test "$(sed -n '5p' "$CODEX_CALLS")" = 'ARG=--json'
+assert test "$(sed -n '6p' "$CODEX_CALLS")" = 'ARG=two\ words'
+
+assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=-m'
+assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=gpt-6-astra'
+assert test "$(sed -n '7p' "$CODEX_CALLS")" = 'ARG=--disable'
+assert test "$(sed -n '8p' "$CODEX_CALLS")" = 'ARG=fast_mode'
+assert test "$(sed -n '9p' "$CODEX_CALLS")" = 'ARG=--config'
+assert test "$(sed -n '10p' "$CODEX_CALLS")" = 'ARG=service_tier=\"default\"'
+
+: >"$CODEX_CALLS"
+bash "$SCRIPT" profile alpha -- 'two words' || fail "terminated launch failed"
+assert test "$(sed -n '4p' "$CODEX_CALLS")" = 'ARG=--disable'
+assert test "$(sed -n '5p' "$CODEX_CALLS")" = 'ARG=fast_mode'
+assert test "$(sed -n '7p' "$CODEX_CALLS")" = 'ARG=service_tier=\"default\"'
+assert test "$(sed -n '8p' "$CODEX_CALLS")" = 'ARG=--'
+assert test "$(sed -n '9p' "$CODEX_CALLS")" = 'ARG=two\ words'
+
+for subcommand in mcp-server app-server completion cloud apply features help; do
+  : >"$CODEX_CALLS"
+  bash "$SCRIPT" profile alpha "$subcommand" || fail "$subcommand launch failed"
+  assert_fails grep -qx 'ARG=fast_mode' "$CODEX_CALLS"
+done
+
+assert bash "$SCRIPT" fast-mode alpha on
+: >"$CODEX_CALLS"
+assert bash "$SCRIPT" profile alpha
+assert grep -qx 'ARG=--disable' "$CODEX_CALLS"
+assert grep -qx 'ARG=fast_mode' "$CODEX_CALLS"
+assert grep -qx 'ARG=--config' "$CODEX_CALLS"
+assert grep -Fqx 'ARG=service_tier=\"default\"' "$CODEX_CALLS"
+FAST_TIER_PROFILES="$WORK/fast-tier-profiles"
+mkdir -p "$FAST_TIER_PROFILES/alpha"
+printf 'service_tier = "fast"\n' >"$FAST_TIER_PROFILES/alpha/config.toml"
+fast_tier=$(CODEXB_PROFILES_DIR="$FAST_TIER_PROFILES" bash -c \
+  '. "$1/share/codex-accounts.sh" && codex_fast_tier alpha' _ "$ROOT")
+assert test "$fast_tier" = default
+for model_flag in -m --model --model=gpt-5.6-sol; do
+  : >"$CODEX_CALLS"
+  if [ "$model_flag" = --model=gpt-5.6-sol ]; then
+    bash "$SCRIPT" profile alpha "$model_flag" || fail "explicit model failed"
+  else
+    bash "$SCRIPT" profile alpha "$model_flag" gpt-5.6-sol || fail "explicit model failed"
+  fi
+  assert test "$(grep -Ec '^ARG=(-m|--model|--model=)' "$CODEX_CALLS")" -eq 1
+  assert grep -q 'gpt-5.6-sol' "$CODEX_CALLS"
+done
+for command in login logout --version --help mcp; do
+  : >"$CODEX_CALLS"
+  bash "$SCRIPT" profile alpha "$command" || fail "$command passthrough failed"
+  assert grep -qx "CALL account=alpha home=$HOME/.codex-profiles/alpha argc=1" "$CODEX_CALLS"
+  assert grep -qx "ARG=$command" "$CODEX_CALLS"
+done
+: >"$CODEX_CALLS"
+bash "$SCRIPT" profile alpha resume || fail "resume passthrough failed"
+assert grep -qx "CALL account=alpha home=$HOME/.codex-profiles/alpha argc=5" "$CODEX_CALLS"
+assert grep -qx 'ARG=resume' "$CODEX_CALLS"
+assert grep -qx 'ARG=--disable' "$CODEX_CALLS"
+assert grep -qx 'model = "fixture"' "$HOME/.codex/config.toml"
 
 # One-step profile: an unknown name is auto-created (mirrors claudeb profile) and codex launches.
 : >"$CODEX_CALLS"
@@ -377,7 +455,9 @@ fresh_output=$(bash "$SCRIPT" profile fresh 2>&1) || fail "profile fresh failed"
 assert test -d "$HOME/.codex-profiles/fresh"
 assert grep -q "new profile 'fresh' created" <<<"$fresh_output"
 assert wait_announce '--refresh-account codex/fresh'
-assert grep -qx "CALL account=fresh home=$HOME/.codex-profiles/fresh argc=0" "$CODEX_CALLS"
+assert grep -qx "CALL account=fresh home=$HOME/.codex-profiles/fresh argc=6" "$CODEX_CALLS"
+assert grep -qx 'ARG=-m' "$CODEX_CALLS"
+assert grep -qx 'ARG=gpt-6-astra' "$CODEX_CALLS"
 for item in config.toml AGENTS.md skills plugins; do
   assert test -L "$HOME/.codex-profiles/fresh/$item"
 done
@@ -448,14 +528,14 @@ mkdir -p "$HOME/.codex-profiles/pick"
 for route in profile p run; do
   : >"$CODEX_CALLS"
   bash "$SCRIPT" "$route" pick --reserved >/dev/null 2>&1 || fail "$route pick failed"
-  assert grep -qx "CALL account=pick home=$HOME/.codex-profiles/pick argc=1" "$CODEX_CALLS"
+  assert grep -qx "CALL account=pick home=$HOME/.codex-profiles/pick argc=7" "$CODEX_CALLS"
   assert grep -qx 'ARG=--reserved' "$CODEX_CALLS"
 done
 : >"$CODEX_CALLS"
 bash "$SCRIPT" pick exec --reserved >/dev/null 2>&1 || fail "pick exec failed"
-assert grep -qx "CALL account=pick home=$HOME/.codex-profiles/pick argc=2" "$CODEX_CALLS"
-assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=exec'
-assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=--reserved'
+assert grep -qx "CALL account=pick home=$HOME/.codex-profiles/pick argc=8" "$CODEX_CALLS"
+assert test "$(sed -n '4p' "$CODEX_CALLS")" = 'ARG=exec'
+assert test "$(sed -n '5p' "$CODEX_CALLS")" = 'ARG=--reserved'
 assert bash "$SCRIPT" remove pick
 assert test ! -e "$HOME/.codex-profiles/pick"
 # Removal announces a passive collect (no args) so the menu row drops without a
