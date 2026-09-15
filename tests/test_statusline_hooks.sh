@@ -4391,6 +4391,30 @@ assert_eq 3 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
 # only thing that will ever ask again.
 assert_eq 1 "$(grep -c '^autonomous ' "$GATE_LOG" | tr -d ' ')"
 assert_eq 0 "$(grep -c '^debt-total ' "$GATE_LOG" | tr -d ' ')"
+# The verdict is the session's sum over every repository its .repos list names, so a journal or
+# clock moving in one the block does not show re-asks it as well; the list alone moves nothing.
+review_side="$FIXTURES/review-side"
+mkdir -p "$review_side"
+git -C "$review_side" init -q
+review_side_gitdir=$(git -C "$review_side" rev-parse --absolute-git-dir)
+review_repos="$HOME/.cache/claude/review-journal/review-cache.repos"
+mkdir -p "${review_repos%/*}"
+printf '%s\n' "$review_side" > "$review_repos"
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review side-list render failed"
+review_await_verdict review-cache
+assert_eq 3 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
+printf 'review-cache\t1750000000\tside.txt\0' > "$review_side_gitdir/claude-commit-journal"
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review side-journal render failed"
+review_await_verdict review-cache
+assert_eq 4 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
+touch -t 202001010000 "$review_side_gitdir/claude-review-clock"
+run_statusline "$(statusline_payload review-cache "" "$REVIEW_DIRTY")" >/dev/null ||
+  fail "review side-clock render failed"
+review_await_verdict review-cache
+assert_eq 5 "$(grep -c '^verdict ' "$GATE_LOG" | tr -d ' ')"
+rm -f "$review_repos"
 rm -f "$review_gitdir/claude-commit-journal" "$review_clock"
 
 # Nothing is spawned behind the label beyond that one read-only ask: a background review-bench per

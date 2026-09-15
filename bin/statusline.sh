@@ -223,13 +223,13 @@ review_gate_verdict() { # toplevel session
   local gate="${STATUSLINE_REVIEW_GATE:-$HOME/.claude/hooks/review-flow-gate.sh}"
   local timeout_bin
   [ -x "$gate" ] || return 1
-  # Cheap for a hook is not cheap for a render: the gate forks python and git several times over
-  # and answers in about a second on a real checkout. It runs off the render path (below), and a
-  # wedged git must not leave the refresh holding the lock until the 120s staleness sweep.
+  # Off the render path (below), so the budget is the 120s lock sweep, not a prompt: the verdict
+  # sums every repository the session owes and review-bench spends 6–17s per repository (measured
+  # 2026-09-15), which a 10s kill turned into a false `off` on every render.
   timeout_bin=$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)
   # The gate exits 2 when it would block, which is an answer and not a failure.
   if [ -n "$timeout_bin" ]; then
-    "$timeout_bin" 10 "$gate" verdict "$1" "$2" 2>/dev/null | head -1
+    "$timeout_bin" 60 "$gate" verdict "$1" "$2" 2>/dev/null | head -1
   else
     "$gate" verdict "$1" "$2" 2>/dev/null | head -1
   fi
@@ -258,6 +258,7 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}${tag:+-$tag}"
   local lock="$cache.lock"
   local key cached_key cached cache_mtime journal_mtime clock_mtime commondir lock_mtime
+  local repos_file side_top side_dir side_mtime side_journal=0 side_clock=0
   commondir=$(journal_dir "$top")
   journal_mtime=""
   [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
@@ -265,7 +266,25 @@ review_verdict_line() { # toplevel session status_key now [cache_tag]
   clock_mtime=""
   [ -n "$commondir" ] && clock_mtime=$(file_mtime "$commondir/claude-review-clock" 2>/dev/null)
   [[ "$clock_mtime" =~ ^[0-9]+$ ]] || clock_mtime=0
-  key="$top|$status_key|$journal_mtime|$clock_mtime"
+  # The verdict is the session's debt summed over every repository its .repos list names, so a
+  # write journalled in any of them has to move this key too.
+  repos_file=""
+  [[ "$sid" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$sid" != . ] && [ "$sid" != .. ] &&
+    repos_file="$HOME/.cache/claude/review-journal/$sid.repos"
+  if [ -n "$repos_file" ] && [ -f "$repos_file" ]; then
+    while IFS= read -r side_top; do
+      [ -n "$side_top" ] && [ "$side_top" != "$top" ] && [ -d "$side_top" ] || continue
+      side_dir=$(journal_dir "$side_top")
+      [ -n "$side_dir" ] || continue
+      side_mtime=$(file_mtime "$side_dir/claude-commit-journal" 2>/dev/null)
+      [[ "$side_mtime" =~ ^[0-9]+$ ]] && [ "$side_mtime" -gt "$side_journal" ] &&
+        side_journal=$side_mtime
+      side_mtime=$(file_mtime "$side_dir/claude-review-clock" 2>/dev/null)
+      [[ "$side_mtime" =~ ^[0-9]+$ ]] && [ "$side_mtime" -gt "$side_clock" ] &&
+        side_clock=$side_mtime
+    done < "$repos_file"
+  fi
+  key="$top|$status_key|$side_journal|$side_clock|$journal_mtime|$clock_mtime"
   cache_mtime=$(file_mtime "$cache" 2>/dev/null)
   cached_key=""
   cached=""
