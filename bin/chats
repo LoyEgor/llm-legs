@@ -22,7 +22,6 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
-from chat_ask import awaiting_answer  # noqa: E402
 from chat_names import project_label  # noqa: E402
 import chat_resume  # noqa: E402
 
@@ -38,14 +37,10 @@ WINDOWS = (7, 30, 120, 0)
 # project, model, context — capped so a deep worktree name cannot push the
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
-# The row mark for a chat that stopped on a question to him: one column, ahead of everything
-# else on the line, because it is the only field that says the chat needs him rather than
-# describing what it was.
-ASK_MARK = "?"
 USAGE = ("usage: chats [--days N | --all] [--print]\n"
          "  ↑↓ chat · ←→ claudeb account · type to filter · enter opens it here\n"
          "  the account follows the chat's live cache, else the optimal one\n"
-         "  " + ASK_MARK + " marks a chat waiting on your answer\n"
+         "  mouse: click row · click again opens\n"
          "  scrolling past the last row loads more history")
 
 
@@ -68,76 +63,7 @@ def load_chats(days):
         rows = json.loads(out)
     except ValueError:
         die("chat-find returned no usable listing")
-    for row in rows:
-        row["asking"] = bool(row.get("path")) and asking(row["path"])
-    # Rows of chats that are gone stay until a listing no longer lists them: the picker widens as
-    # he scrolls, and a cache holding only the last window would re-read what it just discarded.
-    save_ask_cache()
     return rows
-
-
-# One answer per version of a transcript, kept ACROSS launches like chat-find keeps its own
-# measurements: the mark costs a tail read of every listed transcript, and the last window has no
-# horizon at all, so an in-process cache alone would re-read the whole corpus on every launch.
-ASK_CACHE = os.environ.get("CHATS_ASK_CACHE") or os.path.join(
-    PROFILES, ".claudeb", "chat-ask-cache.json")
-ASK_CACHE_VERSION = 1
-_ASKED = None
-_ASKED_DIRTY = False
-
-
-def load_ask_cache():
-    global _ASKED
-    if _ASKED is not None:
-        return _ASKED
-    _ASKED = {}
-    try:
-        with open(ASK_CACHE, encoding="utf-8") as handle:
-            data = json.load(handle)
-    except (OSError, ValueError):
-        return _ASKED
-    if isinstance(data, dict) and data.get("version") == ASK_CACHE_VERSION:
-        rows = data.get("rows")
-        if isinstance(rows, dict):
-            _ASKED = rows
-    return _ASKED
-
-
-def save_ask_cache():
-    """Best effort: a listing that cannot write its cache is slow, never wrong."""
-    global _ASKED_DIRTY
-    if not _ASKED_DIRTY or _ASKED is None:
-        return
-    _ASKED_DIRTY = False
-    tmp = "%s.tmp.%d" % (ASK_CACHE, os.getpid())
-    try:
-        os.makedirs(os.path.dirname(ASK_CACHE) or ".", exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump({"version": ASK_CACHE_VERSION, "rows": _ASKED}, handle)
-        os.replace(tmp, ASK_CACHE)
-    except OSError:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-
-
-def asking(path):
-    """Whether this transcript stopped on a question, answered once per version of it."""
-    global _ASKED_DIRTY
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return False
-    version = "%d:%r" % (stat.st_size, stat.st_mtime)
-    cache = load_ask_cache()
-    cached = cache.get(path)
-    if isinstance(cached, list) and cached[0] == version:
-        return bool(cached[1])
-    verdict = awaiting_answer(path, stat.st_size)
-    cache[path] = [version, verdict]
-    _ASKED_DIRTY = True
-    return verdict
 
 
 def limits():
@@ -371,10 +297,6 @@ def columns(row, now, dated=False):
             said if name else ""]
 
 
-def ask_mark(row):
-    return ASK_MARK if row.get("asking") else " "
-
-
 def matches(row, needle):
     if not needle:
         return True
@@ -408,6 +330,16 @@ def draw(screen, rows, view, names, profile, needle, used, note):
         pass
 
 
+def account_tail(names, used, profile):
+    tail = []
+    for position, entry in enumerate(names):
+        percent = used.get(entry)
+        shown = account_label(entry)
+        label = " %s %d%% " % (shown, percent) if percent is not None else " %s " % shown
+        tail.append((label, curses.A_REVERSE if position == profile else curses.A_DIM))
+    return tail
+
+
 def paint(screen, rows, view, names, profile, needle, used, note):
     screen.erase()
     height, span = screen.getmaxyx()
@@ -427,7 +359,7 @@ def paint(screen, rows, view, names, profile, needle, used, note):
             break
         cells = columns(rows[index], view["now"], view.get("dated", False))
         chosen = index == view["cursor"]
-        fields = ["▸ " if chosen else "  ", ask_mark(rows[index]) + " ", cells[0]]
+        fields = ["▸ " if chosen else "  ", cells[0]]
         for cell, size in zip(cells[1:3], sizes[:2]):
             fields.append(pad(cell, size))
         fields.append(pad(cells[3], sizes[2], right=True))
@@ -445,12 +377,7 @@ def paint(screen, rows, view, names, profile, needle, used, note):
             screen.addstr(line + 1, column, clip(" · " + cells[5], span - 1 - column),
                           curses.A_DIM)
 
-    tail = []
-    for position, entry in enumerate(names):
-        percent = used.get(entry)
-        shown = account_label(entry)
-        label = " %s %d%% " % (shown, percent) if percent is not None else " %s " % shown
-        tail.append((label, curses.A_REVERSE if position == profile else curses.A_DIM))
+    tail = account_tail(names, used, profile)
     screen.addstr(height - 1, 0, " " * (span - 1))
     column = 0
     for label, attribute in tail:
@@ -459,8 +386,8 @@ def paint(screen, rows, view, names, profile, needle, used, note):
         label = clip(label, span - 1 - column)
         screen.addstr(height - 1, column, label, attribute)
         column += width(label)
-    hint = ("   ↵ open · %s waits on you · ^C quit · esc clear · "
-            "account: chat's cache, else optimal" % ASK_MARK)
+    hint = ("   ↵ open · ^C quit · esc clear · "
+            "account: chat's cache, else optimal")
     if column < span - 1:
         screen.addstr(height - 1, column, clip(hint, span - 1 - column))
     screen.refresh()
@@ -469,6 +396,11 @@ def paint(screen, rows, view, names, profile, needle, used, note):
 def run(screen, chats, names, used, profile, level, windows):
     try:
         curses.curs_set(0)
+    except curses.error:
+        pass
+    try:
+        curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+        curses.mouseinterval(0)
     except curses.error:
         pass
     # Draw on whatever background the terminal already has, so the picker is
@@ -515,6 +447,48 @@ def run(screen, chats, names, used, profile, level, windows):
             return None
         except curses.error:
             continue
+
+        if key == curses.KEY_MOUSE:
+            scrolled = False
+            try:
+                _, x, y, _, bstate = curses.getmouse()
+            except curses.error:
+                continue
+            if bstate & curses.BUTTON4_PRESSED:
+                view["cursor"] -= 3
+                continue
+            # Builds whose ncurses encodes four buttons have no wheel-down bit at all, and
+            # the five-button spelling of it is BUTTON4_DOUBLE_CLICKED there — a literal
+            # fallback scrolls the list the wrong way on a doubled wheel-up.
+            if bstate & getattr(curses, "BUTTON5_PRESSED", 0):
+                view["cursor"] += 3
+                scrolled = True
+                continue
+            # Ignore RELEASED so a press/release pair cannot also open the landed row.
+            if not bstate & (curses.BUTTON1_PRESSED | curses.BUTTON1_CLICKED |
+                             curses.BUTTON1_DOUBLE_CLICKED):
+                continue
+            screen_height, span = screen.getmaxyx()
+            if y == screen_height - 1:
+                column = 0
+                for position, (text, _) in enumerate(account_tail(names, used, profile)):
+                    end = column + width(clip(text, span - 1 - column))
+                    if column <= x < end:
+                        profile = position
+                        break
+                    column = end
+                continue
+            index = view["top"] + y - 1
+            if not (1 <= y < screen_height - 1 and 0 <= x < span - 1
+                    and 0 <= index < len(rows)):
+                continue
+            if index != view["cursor"]:
+                view["cursor"] = index
+                if not bstate & curses.BUTTON1_DOUBLE_CLICKED:
+                    continue
+                landed = rows[index].get("session")
+                profile = held = account_for(rows[index], view["now"], names, default)
+            key = curses.KEY_ENTER
 
         # End goes to the last row he has; only stepping PAST it asks for more.
         scrolled = key in (curses.KEY_DOWN, "\x0e", curses.KEY_NPAGE)

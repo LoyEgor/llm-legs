@@ -89,7 +89,7 @@ disable_account() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -487,6 +487,205 @@ run_account() {
   exec env HOME="$directory" GEMINIB_BASE_HOME="$base_home" "$agy_bin" "$@"
 }
 
+export_token() {
+  local name="${1:-}" target='' min_seconds=0 projection='' source_line stripped
+  if [ "$#" -gt 0 ]; then shift; fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --to) target="${2:-}"; shift 2 || return 2 ;;
+      --min-seconds) min_seconds="${2:-}"; shift 2 || return 2 ;;
+      *) break ;;
+    esac
+  done
+  if [ "$#" -gt 0 ] || [ -z "$name" ] || [ -z "$target" ] || ! [[ "$min_seconds" =~ ^[0-9]+$ ]]; then
+    printf 'usage: geminib export-token <name> --to <path> [--min-seconds <n>]\n' >&2
+    return 2
+  fi
+  if [ "$name" != main ] && ! gemini_profile_name_valid "$name"; then
+    printf "geminib: invalid profile name '%s'\n" "$name" >&2
+    return 2
+  fi
+  if ! account_exists "$name"; then
+    printf 'geminib: unknown account: %s\n' "$name" >&2
+    return 2
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    printf 'geminib: export-token will not overwrite %s\n' "$target" >&2
+    return 2
+  fi
+  projection=$(python3 - "$(gemini_account_home "$name")" "$min_seconds" "$agy_bin" \
+    "${GEMINIB_SECURITY_CMD:-/usr/bin/security}" "${GEMINIB_TOKEN_ENDPOINT:-https://oauth2.googleapis.com/token}" <<'PY'
+import base64
+import datetime as dt
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+
+profile, minimum, binary, security, endpoint = sys.argv[1:]
+minimum = int(minimum)
+
+def refuse(code, reason):
+    print("geminib: " + reason, file=sys.stderr)
+    raise SystemExit(code)
+
+def expiry_epoch(value):
+    try:
+        if str(value).isdigit():
+            epoch = int(value)
+            return epoch // 1000 if epoch >= 10**12 else epoch
+        stamp = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return int(stamp.timestamp()) if stamp.tzinfo else 0
+    except (ValueError, TypeError, AttributeError, OverflowError):
+        return 0
+
+def text(value):
+    return isinstance(value, str) and bool(value)
+
+def export():
+    if minimum > 3540:
+        refuse(4, "requested lifetime exceeds the fresh-token ceiling of 3540s")
+    home = Path(profile).resolve()
+    keychain = (home / "Library/Keychains/gemini.keychain-db").resolve()
+    # HOME selects the keychain domain even when security receives an absolute database path.
+    security_env = dict(os.environ, HOME=str(home))
+    source = "antigravity-oauth-token"
+    blob = None
+    if keychain.exists():
+        command = [security, "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", str(keychain)]
+        result = subprocess.run(command, env=security_env, capture_output=True)
+        if result.returncode not in (0, 44):
+            try:
+                password = (home / ".keychain-password").read_text().rstrip("\n")
+            except OSError:
+                password = ""
+            if not password or subprocess.run(
+                [security, "unlock-keychain", "-p", password, str(keychain)],
+                env=security_env, capture_output=True,
+            ).returncode:
+                refuse(3, "keychain is unavailable; refusing a legacy fallback")
+            result = subprocess.run(command, env=security_env, capture_output=True)
+        if result.returncode == 0:
+            source = "keychain"
+            blob = result.stdout.strip()
+            prefix = b"go-keyring-base64:"
+            if not blob.startswith(prefix):
+                refuse(3, "stores its sign-in in a shape this export does not recognise")
+            try:
+                blob = base64.b64decode(blob[len(prefix):], validate=True)
+            except ValueError:
+                refuse(3, "stores its sign-in in a shape this export does not recognise")
+        elif result.returncode != 44:
+            refuse(3, "keychain is unavailable; refusing a legacy fallback")
+    if blob is None:
+        try:
+            blob = (home / ".gemini/antigravity-cli/antigravity-oauth-token").read_bytes()
+        except FileNotFoundError:
+            refuse(3, "is not signed in; refusing a login or a live-profile fallback")
+    try:
+        saved = json.loads(blob)
+    except (ValueError, UnicodeError):
+        saved = None
+    token = saved.get("token", saved) if isinstance(saved, dict) else None
+    if not isinstance(token, dict) or not text(token.get("access_token")):
+        refuse(3, "stores its sign-in in a shape this export does not recognise")
+    expiry = expiry_epoch(token.get("expiry", token.get("expires_at", token.get("access_token_expires_at"))))
+    if minimum and expiry <= time.time() + minimum:
+        refresh = token.get("refresh_token")
+        if source != "keychain" or not text(refresh):
+            refuse(4, "refresh_unavailable: no keychain refresh material for the requested lifetime")
+        try:
+            payload = saved["id_token"].split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+            client_id = claims["aud"]
+            if not text(client_id):
+                raise ValueError()
+        except (KeyError, IndexError, ValueError, TypeError, AttributeError):
+            refuse(4, "refresh_unavailable: invalid ID token audience")
+        # Go packs adjacent strings together: the binary carries one 35-byte secret per embedded
+        # client id, back to back, and nothing says which secret pairs with the ID token's audience,
+        # so a wrong pairing (invalid_client) moves on to the next candidate.
+        try:
+            found = subprocess.run(["grep", "-a", "-o", "-E", "GOCSPX-[A-Za-z0-9_-]{28}", binary],
+                                   env=dict(os.environ, LC_ALL="C"), capture_output=True)
+        except OSError:
+            refuse(4, "refresh_unavailable: client secret lookup failed")
+        secrets = list(dict.fromkeys(found.stdout.decode("ascii").splitlines()))
+        if found.returncode or not 1 <= len(secrets) <= 4:
+            refuse(4, "refresh_unavailable: client secret lookup failed")
+        # Both the grant and its response stay off argv and disk; only the projection leaves here.
+        for secret in secrets:
+            body = urllib.parse.urlencode({"grant_type": "refresh_token", "refresh_token": refresh,
+                                          "client_id": client_id, "client_secret": secret})
+            issued_at = int(time.time())
+            try:
+                response = subprocess.run(
+                    ["curl", "--disable", "--silent", "--max-time", "30", "--request", "POST",
+                     "--header", "Content-Type: application/x-www-form-urlencoded", "--data-binary", "@-",
+                     "--write-out", "\n%{http_code}", endpoint],
+                    input=body, capture_output=True, text=True,
+                )
+            except OSError:
+                refuse(4, "refresh_failed: transport_error")
+            if response.returncode:
+                refuse(4, "refresh_failed: transport_error")
+            raw, _, http = response.stdout.rpartition("\n")
+            try:
+                grant = json.loads(raw)
+            except ValueError:
+                grant = {}
+            if not isinstance(grant, dict):
+                grant = {}
+            if grant.get("error") in ("invalid_client", "unauthorized_client") and secret != secrets[-1]:
+                continue
+            break
+        if http != "200" or "error" in grant:
+            error = grant.get("error")
+            error = error if error in {"invalid_grant", "invalid_client", "invalid_request",
+                                      "unauthorized_client", "unsupported_grant_type", "invalid_scope",
+                                      "access_denied", "temporarily_unavailable", "server_error"} else "refresh_failed"
+            code = http if re.fullmatch(r"[0-9]{3}", http) else "unknown"
+            refuse(4, f"{error}: HTTP {code}")
+        lifetime = grant.get("expires_in")
+        if not text(grant.get("access_token")) or isinstance(lifetime, bool) or not str(lifetime).isdigit():
+            refuse(4, "refresh_failed: invalid_response")
+        expiry = issued_at + int(lifetime)
+        if expiry <= time.time() + minimum:
+            refuse(4, "refresh_failed: minted token does not meet the requested lifetime")
+        token = dict(token, access_token=grant["access_token"], token_type=grant.get("token_type", "Bearer"))
+        if text(grant.get("id_token")):
+            saved["id_token"] = grant["id_token"]
+        source = "refresh"
+    # Unknown fields cannot cross the boundary: some may be future renewal material.
+    projected = {"token": {"access_token": token["access_token"],
+                           "token_type": token.get("token_type") or "Bearer",
+                           "expiry": dt.datetime.fromtimestamp(expiry, dt.timezone.utc).isoformat().replace("+00:00", "Z")},
+                 "auth_method": saved.get("auth_method") or "consumer"}
+    if text(saved.get("id_token")):
+        projected["id_token"] = saved["id_token"]
+    print(f"source={source} expires_at={expiry}")
+    print(json.dumps(projected, separators=(",", ":")))
+
+try:
+    export()
+except (OSError, ValueError, TypeError, OverflowError):
+    refuse(3, "credential export failed; refusing to disclose credential details")
+PY
+  ) || return $?
+  source_line=${projection%%$'\n'*}
+  stripped=${projection#*$'\n'}
+  if ! (set -C; umask 077; printf '%s\n' "$stripped" >"$target"); then
+    printf 'geminib: export-token could not write %s\n' "$target" >&2
+    return 2
+  fi
+  chmod 600 "$target"
+  printf '%s\n' "$source_line"
+}
+
 show_help() {
   printf '%s\n' \
     'geminib profile <name> [agy args...]  Open an isolated profile; creates it if missing (Antigravity asks you to log in once). Aliases: p, run.' \
@@ -497,7 +696,8 @@ show_help() {
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
     'geminib list                          List profiles with login state.' \
-    'geminib status                        Per-account login state and quota.'
+    'geminib status                        Per-account login state and quota.' \
+    'geminib export-token <name> --to <path> [--min-seconds <n>]  Export a keychain-first access-only sign-in to a new 0600 file; refresh here if needed, with no profile writes.'
 }
 
 if [ "${2:-}" = exec ] && [ "${1:-}" != main ] \
@@ -537,6 +737,10 @@ case "${1:-}" in
   status)
     [ "$#" -eq 1 ] || { printf 'usage: geminib status\n' >&2; exit 2; }
     show_status
+    ;;
+  export-token)
+    shift
+    export_token "$@"
     ;;
   profile|p|run)
     shift

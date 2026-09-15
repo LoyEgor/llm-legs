@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the parts of bin/chats that are not curses: the row a chat becomes,
-# the column widths, the filter, the one-column ask mark, and argument handling.
+# the column widths, the filter, and argument handling.
 # The picker's drawing is left to a terminal; what breaks silently is the data
 # underneath it — including the track line it shares with the statusline.
 set -u
@@ -153,11 +153,6 @@ print("label0:", chats.label(0, chats.WINDOWS))
 print("label-last:", chats.label(len(chats.WINDOWS) - 1, chats.WINDOWS))
 print("label-pinned:", chats.label(0, (7,)))
 
-# The mark is one column wide whether it is there or not: a row that widens when a chat
-# starts waiting would move every field to its right.
-print("mark-asking:", repr(chats.ask_mark(dict(row, asking=True))))
-print("mark-plain:", repr(chats.ask_mark(row)))
-
 # --- the track line is ONE format, written there and read here ---------------
 # The reader counts fields by position, so reordering that printf keeps every suite green while
 # the picker names the wrong account. Pin the two to each other rather than to a literal line.
@@ -229,8 +224,6 @@ assert grep -qx "blank-name: \['claude: done, the header holds', ''\]" <<<"$OUT"
 assert grep -q 'label0: last 7d · ↓ for more' <<<"$OUT"
 assert test -z "$(grep -o 'label-last:.*more' <<<"$OUT")"
 assert grep -qx 'label-pinned: last 7d' <<<"$OUT"
-assert grep -qx "mark-asking: '?'" <<<"$OUT"
-assert grep -qx "mark-plain: ' '" <<<"$OUT"
 assert grep -qx 'writer-fields: True 9' <<<"$OUT"
 assert grep -qx 'pinned-ts: rec_ts' <<<"$OUT"
 assert grep -qx 'pinned-account: rec_acct' <<<"$OUT"
@@ -300,7 +293,6 @@ run() { OUT=$("$SCRIPT" "$@" </dev/null 2>&1); RC=$?; }
 run --help
 assert test "$RC" -eq 0
 assert grep -q 'usage: chats' <<<"$OUT"
-assert grep -q '? marks a chat waiting' <<<"$OUT"
 
 run --days abc
 assert test "$RC" -ne 0
@@ -320,203 +312,74 @@ run --days 7
 assert test "$RC" -ne 0
 assert grep -q 'full-screen picker' <<<"$OUT"
 
-# --- share/chat_ask.py: the chat that stopped on a question to him -----------
-# Read backwards from the end, so what must not be mistaken for his answer is everything the
-# harness writes under the user's role — a tool result, a system reminder — and everything said
-# in a conversation of its own: a subagent's turn. What must not be mistaken for a question is
-# everything a REPORT ends on: the same verbs in the past tense, a `?` in code he was handed or
-# in a quoted hook line, and an ask a screen above the conclusion.
-ASK=$(python3 - "$ROOT/share/chat_ask.py" "$WORK" <<'PY'
-import importlib.machinery, importlib.util, json, os, sys
-
-loader = importlib.machinery.SourceFileLoader("chat_ask", sys.argv[1])
-spec = importlib.util.spec_from_loader("chat_ask", loader)
-ask = importlib.util.module_from_spec(spec)
-loader.exec_module(ask)
-work = sys.argv[2]
-
-
-def transcript(name, *entries):
-    path = os.path.join(work, name + ".jsonl")
-    with open(path, "w", encoding="utf-8") as handle:
-        for entry in entries:
-            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    return path
-
-
-def said(role, text, **extra):
-    content = text if role == "user" else [{"type": "text", "text": text}]
-    return dict({"type": role, "message": {"role": role, "content": content}}, **extra)
-
-
-def tool_result(text):
-    return {"type": "user", "message": {"role": "user", "content": [
-        {"type": "tool_result", "content": text}]}}
-
-
-ASKED = "Патчи готовы, дерево чистое. Скажи, коммитить?"
-REPORTED = "Патчи в дереве, тесты зелёные."
-cases = [
-    ("ask", transcript("ask", said("user", "почини гейт"), said("assistant", ASKED))),
-    # His word came in: the chat is answered whatever it was asked.
-    ("answered", transcript("answered", said("user", "почини гейт"), said("assistant", ASKED),
-                            said("user", "ок, го"))),
-    # A tool result is the middle of the assistant's own turn, so the question still stands.
-    ("under-tool-result", transcript("under-tool-result", said("user", "почини гейт"),
-                                     said("assistant", ASKED), tool_result("дай ок"))),
-    # ...and its CONTENT is not a message: a file the chat read that asks for an ok says
-    # nothing about whether this chat is waiting.
-    ("tool-result-only-ask", transcript("tool-result-only-ask", said("user", "почини гейт"),
-                                        said("assistant", REPORTED),
-                                        tool_result("скажи «го» — жду подтверждения"))),
-    # A reminder arrives under his role and would otherwise read as an answer.
-    ("under-reminder", transcript("under-reminder", said("user", "почини гейт"),
-                                  said("assistant", ASKED),
-                                  said("user", "<system-reminder>гейт</system-reminder>"))),
-    # A subagent asks its own supervisor, never Egor.
-    ("sidechain", transcript("sidechain", said("user", "почини гейт"),
-                             said("assistant", REPORTED),
-                             said("assistant", "Скажи, продолжать?", isSidechain=True))),
-    # A message of tool calls alone has not ended the turn it belongs to.
-    ("under-tool-call", transcript("under-tool-call", said("user", "почини гейт"),
-                                   said("assistant", ASKED),
-                                   {"type": "assistant", "message": {"role": "assistant",
-                                    "content": [{"type": "tool_use", "name": "Bash",
-                                                 "input": {}}]}})),
-    # The stub an API error leaves behind says nothing about who spoke last.
-    ("under-synthetic", transcript("under-synthetic", said("user", "почини гейт"),
-                                   said("assistant", ASKED),
-                                   {"type": "assistant", "message": {
-                                       "role": "assistant", "model": "<synthetic>",
-                                       "content": [{"type": "text", "text": "API Error"}]}})),
-    # A word for his word, with no question mark anywhere near it.
-    ("word", transcript("word", said("user", "почини гейт"),
-                        said("assistant", "Тесты зелёные.\n\nКоммит нужен твоим словом."))),
-    # The ask is what the CLOSING paragraph says: an ask a screen above the end has been
-    # answered by everything written after it.
-    ("ask-then-report", transcript("ask-then-report", said("user", "почини гейт"),
-                                   said("assistant", "Скажи, коммитить?\n\n" + REPORTED))),
-    # The verbs of a report are the verbs of a request in the past tense.
-    ("report", transcript("report", said("user", "закоммить"),
-                          said("assistant", "Закоммитил и запушил (`4e9ae8c`). "
-                                            "Действий не требуется."))),
-    # A subordinate clause is not an ask: nothing is expected of him now.
-    ("later", transcript("later", said("user", "почини гейт"),
-                         said("assistant", "Правку можно влить мелким PR, когда скажешь."))),
-    # A `?` inside a command he was handed, and one inside a quoted hook line.
-    ("code-question", transcript("code-question", said("user", "почини гейт"),
-                                 said("assistant", REPORTED + "\n\n```\ngit log -1 --format=%h?\n```"))),
-    ("quoted-question", transcript("quoted-question", said("user", "почини гейт"),
-                                   said("assistant", REPORTED + "\n\n> Гейт спросил: продолжать?"))),
-    # A `?` that ends no sentence is a glob, not a question.
-    ("glob", transcript("glob", said("user", "почини гейт"),
-                        said("assistant", "Файлы a?.txt на месте, дерево чистое."))),
-    # A closing `?` is still one under whatever punctuation trails it: an interrobang, a
-    # typographic quote. The listing marks by the mark, not by the character after it.
-    ("bang-question", transcript("bang-question", said("user", "почини гейт"),
-                                 said("assistant", "Тесты зелёные. Мне продолжать?!"))),
-    ("curly-question", transcript("curly-question", said("user", "почини гейт"),
-                                  said("assistant", "Тесты зелёные. Он спросил: \u201cпродолжать?\u201d"))),
-    # The ask is what a message ENDS on: a chat that merely quoted the word once, a screen
-    # above its own conclusion, is not waiting on anybody.
-    ("quoted-far-above", transcript("quoted-far-above", said("user", "почини гейт"),
-                                    said("assistant", "Скажи. " + "И дальше по делу. " * 200))),
-    # A tail window that holds nothing but one huge tool result widens instead of answering.
-    ("wide-window", transcript("wide-window", said("user", "почини гейт"),
-                               said("assistant", ASKED),
-                               tool_result("x" * (400 * 1024)))),
-    ("missing", os.path.join(work, "nobody.jsonl")),
-]
-for label, path in cases:
-    print("%s: %s" % (label, ask.awaiting_answer(path)))
-PY
-) || fail "chat_ask probe failed"
-
-assert grep -qx 'ask: True' <<<"$ASK"
-assert grep -qx 'answered: False' <<<"$ASK"
-assert grep -qx 'under-tool-result: True' <<<"$ASK"
-assert grep -qx 'tool-result-only-ask: False' <<<"$ASK"
-assert grep -qx 'under-reminder: True' <<<"$ASK"
-assert grep -qx 'sidechain: False' <<<"$ASK"
-assert grep -qx 'under-tool-call: True' <<<"$ASK"
-assert grep -qx 'under-synthetic: True' <<<"$ASK"
-assert grep -qx 'word: True' <<<"$ASK"
-assert grep -qx 'ask-then-report: False' <<<"$ASK"
-assert grep -qx 'report: False' <<<"$ASK"
-assert grep -qx 'later: False' <<<"$ASK"
-assert grep -qx 'code-question: False' <<<"$ASK"
-assert grep -qx 'quoted-question: False' <<<"$ASK"
-assert grep -qx 'glob: False' <<<"$ASK"
-assert grep -qx 'bang-question: True' <<<"$ASK"
-assert grep -qx 'curly-question: True' <<<"$ASK"
-assert grep -qx 'quoted-far-above: False' <<<"$ASK"
-assert grep -qx 'wide-window: True' <<<"$ASK"
-assert grep -qx 'missing: False' <<<"$ASK"
-
-# --- the ask column is answered once per version of a transcript -------------
-# Scrolling past the last row reloads the WHOLE listing a window wider, and this column reads the
-# tail of every transcript in it: a month of history paid those seconds again for an answer it
-# already had.
-CACHE=$(CHATS_ASK_CACHE="$WORK/ask-cache.json" python3 - "$SCRIPT" "$WORK" <<'PY'
-import importlib.machinery, importlib.util, json, os, sys
+python3 - "$SCRIPT" "$WORK" <<'PYMOUSE' || fail "mouse probe failed"
+import importlib.machinery, importlib.util, sys
+from unittest.mock import patch
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
 spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+c = chats.curses
+names = [("claudeb", "alpha"), ("gpt", "beta")]
+rows = [dict(session=str(i), cwd=sys.argv[2]) for i in range(10)]
 
 
-def fresh():
-    module = importlib.util.module_from_spec(spec)
-    loader.exec_module(module)
-    return module
+class Screen:
+    def __init__(self, events):
+        self.events = iter(events)
+        self.frames = []
+
+    def getmaxyx(self):
+        return 6, 80
+
+    def get_wch(self):
+        event = next(self.events)
+        if isinstance(event, tuple):
+            self.mouse = (0, event[0], event[1], 0, event[2])
+            return c.KEY_MOUSE
+        return event
 
 
-chats = fresh()
-work = sys.argv[2]
-path = os.path.join(work, "cached.jsonl")
+def play(events, initial=None, windows=(7,)):
+    screen = Screen(events)
+    def draw(_, visible, view, accounts, profile, *rest):
+        screen.frames.append((view["cursor"], view["top"], profile))
+    with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
+                        use_default_colors=lambda: None, mouseinterval=lambda _: None), \
+            patch.object(c, "mousemask") as mask, \
+            patch.object(c, "getmouse", side_effect=lambda: screen.mouse), \
+            patch.object(chats, "draw", side_effect=draw), \
+            patch.object(chats, "account_for", return_value=0), \
+            patch.object(chats, "load_chats", return_value=rows) as load, \
+            patch.object(chats, "annotate", side_effect=lambda rows: rows):
+        result = chats.run(screen, rows if initial is None else initial, names, {}, 0, 0, windows)
+        mask.assert_called_once_with(c.ALL_MOUSE_EVENTS | c.REPORT_MOUSE_POSITION)
+        return result, screen.frames, load.call_count
 
 
-def rewrite(text):
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps({"type": "user", "message": {
-            "role": "user", "content": "почини гейт"}}, ensure_ascii=False) + "\n")
-        handle.write(json.dumps({"type": "assistant", "message": {
-            "role": "assistant", "content": [{"type": "text", "text": text}]}},
-            ensure_ascii=False) + "\n")
-
-
-reads = []
-tail = chats.awaiting_answer
-chats.awaiting_answer = lambda p, size=None: (reads.append(p), tail(p, size))[1]
-
-rewrite("Патчи готовы. Скажи, коммитить?")
-print("first:", chats.asking(path), len(reads))
-print("again:", chats.asking(path), len(reads))
-os.utime(path, (0, 0))
-print("touched:", chats.asking(path), len(reads))
-rewrite("Патчи в дереве, тесты зелёные.")
-print("rewritten:", chats.asking(path), len(reads))
-print("missing:", chats.asking(os.path.join(work, "nobody.jsonl")), len(reads))
-chats.save_ask_cache()
-# A second launch is where the mark costs the most: with nothing on disk it re-reads the tail of
-# every transcript the listing names, and the last window names all of them.
-later = fresh()
-later_reads = []
-later_tail = later.awaiting_answer
-later.awaiting_answer = lambda p, size=None: (later_reads.append(p), later_tail(p, size))[1]
-print("relaunched:", later.asking(path), len(later_reads))
-PY
-) || fail "ask cache probe failed"
-
-assert grep -qx 'first: True 1' <<<"$CACHE"
-assert grep -qx 'again: True 1' <<<"$CACHE"
-# The version is the file's own mtime and size: a transcript that moved is read again.
-assert grep -qx 'touched: True 2' <<<"$CACHE"
-assert grep -qx 'rewritten: False 3' <<<"$CACHE"
-# A path that cannot be stat-ed answers without a read at all.
-assert grep -qx 'missing: False 3' <<<"$CACHE"
-# The answer survives the process that produced it.
-assert grep -qx 'relaunched: False 0' <<<"$CACHE"
-assert test -s "$WORK/ask-cache.json"
+press, release = c.BUTTON1_PRESSED, c.BUTTON1_RELEASED
+result, frames, _ = play([(0, 2, press), (0, 2, release), (0, 2, press)])
+assert result[1] == rows[1] and len(frames) == 3
+assert play([(0, 3, c.BUTTON1_DOUBLE_CLICKED)])[0][1] == rows[2]
+assert play([(0, 1, c.BUTTON1_CLICKED)])[0][1] == rows[0]
+x = chats.width(chats.account_tail(names, {}, 0)[0][0])
+assert play([(x, 5, press), "\n"])[0][0] == names[1]
+# Wheel-down exists only where ncurses encodes five buttons; where it does not, the bit that
+# spells it there is this build's BUTTON4_DOUBLE_CLICKED, and scrolling on it would answer a
+# doubled wheel-UP by walking the list down.
+down = getattr(c, "BUTTON5_PRESSED", 0)
+if down:
+    assert play([(0, 1, down), "\n"])[0][1] == rows[3]
+    assert play([(0, 1, down), (0, 1, c.BUTTON4_PRESSED), "\n"])[0][1] == rows[0]
+    assert play([(0, 1, down), "\n"], rows[:2], (7, 30))[2] == 1
+assert play([(0, 1, c.BUTTON4_DOUBLE_CLICKED), "\n"])[0][1] == rows[0]
+assert play([c.KEY_NPAGE, (0, 2, press), "\n"])[0][1] == rows[2]
+assert play([(0, 0, press), (79, 5, press), "\n"])[0][0] == names[0]
+assert play([c.KEY_RIGHT, "\n"])[0][0] == names[1]
+assert play(["z", "\x1b", "\n"])[0][1] == rows[0]
+print("PASS: chats mouse smoke (11 scenarios)")
+PYMOUSE
 
 # --- a worker session's launcher comes off the run record --------------------
 # The env stamp `worker-run` exports into a worker is one of two sides, and the one a sub-shell, a

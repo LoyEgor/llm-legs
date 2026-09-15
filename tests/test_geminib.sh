@@ -1033,4 +1033,158 @@ empty_roster_status=$(HOME="$EMPTY_HOME" GEMINIB_PROFILES_DIR="$EMPTY_HOME/.gemi
   /bin/bash "$SCRIPT" status 2>&1) || fail "an empty Gemini roster took status down"
 assert test -z "$empty_roster_status"
 
-echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion"
+XPORT_HOME="$HOME/.gemini-profiles/xport"
+XPORT_DIR="$XPORT_HOME/.gemini/antigravity-cli"
+XPORT_OUT="$WORK/export"
+mkdir -p "$XPORT_DIR" "$XPORT_HOME/Library/Keychains" "$XPORT_OUT"
+XPORT_HOME="$(cd "$XPORT_HOME" && pwd -P)"
+XPORT_TOKEN="$XPORT_DIR/antigravity-oauth-token"
+export XPORT_HOME XPORT_OUT PATH="$FAKE_BIN:$PATH"
+export XPORT_BLOB="$XPORT_OUT/keychain-blob" XPORT_LOG="$XPORT_OUT/security-log"
+export GEMINIB_SECURITY_CMD="$XPORT_OUT/security" GEMINIB_TOKEN_ENDPOINT='https://fixture.invalid/token'
+export AGY_BIN="$XPORT_OUT/agy" XPORT_REFRESH_LOG="$XPORT_OUT/refresh-log"
+printf 'GOCSPX-fixture-wrong-placeholder000GOCSPX-fixture-secret-placeholder00adjacentGoConstant\n' >"$AGY_BIN"
+printf 'fixture-password' >"$XPORT_HOME/.keychain-password"
+touch "$XPORT_HOME/Library/Keychains/gemini.keychain-db"
+cat >"$GEMINIB_SECURITY_CMD" <<'PYSEC'
+#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["XPORT_LOG"], "a") as log:
+    log.write(json.dumps({"home": os.environ["HOME"], "args": args}) + "\n")
+assert os.environ["HOME"] == os.environ["XPORT_HOME"]
+keychain = str(Path(os.environ["XPORT_HOME"]) / "Library/Keychains/gemini.keychain-db")
+if args == ["unlock-keychain", "-p", "fixture-password", keychain]:
+    Path(os.environ["XPORT_OUT"], "unlocked").touch()
+    sys.exit(0)
+assert args == ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", keychain]
+if os.environ.get("XPORT_LOCKED") and not Path(os.environ["XPORT_OUT"], "unlocked").exists():
+    sys.exit(36)
+blob = Path(os.environ["XPORT_BLOB"])
+if not blob.exists():
+    sys.exit(44)
+sys.stdout.write(blob.read_text())
+PYSEC
+cat >"$FAKE_BIN/curl" <<'PYCURL'
+#!/usr/bin/env python3
+import json, os, sys, urllib.parse
+from pathlib import Path
+args = sys.argv[1:]
+assert args[-1] == os.environ["GEMINIB_TOKEN_ENDPOINT"]
+assert args[args.index("--data-binary") + 1] == "@-"
+assert args[args.index("--request") + 1] == "POST"
+assert not any("placeholder" in arg for arg in args)
+body = urllib.parse.parse_qs(sys.stdin.read())
+secret = body.pop("client_secret")
+assert body == {"grant_type": ["refresh_token"], "refresh_token": ["refresh-placeholder"],
+                "client_id": ["fixture-client"]}
+with open(os.environ["XPORT_REFRESH_LOG"], "a") as log:
+    log.write("refresh " + secret[0] + "\n")
+if secret == ["GOCSPX-fixture-wrong-placeholder000"]:
+    print(json.dumps({"error": "invalid_client", "error_description": "Unauthorized"}))
+    print("401", end="")
+elif os.environ.get("XPORT_GRANT_FAIL"):
+    print(json.dumps({"error": "invalid_grant", "error_description": "must-not-escape-placeholder"}))
+    print("400", end="")
+else:
+    print(json.dumps({"access_token": "minted-placeholder", "expires_in": 3600,
+                      "id_token": "minted-id-placeholder", "refresh_token": "discard-placeholder"}))
+    print("200", end="")
+PYCURL
+chmod +x "$GEMINIB_SECURITY_CMD" "$FAKE_BIN/curl"
+python3 - <<'PYSEED'
+import base64, datetime as dt, json, os
+from pathlib import Path
+payload = base64.urlsafe_b64encode(json.dumps({"aud": "fixture-client"}).encode()).decode().rstrip("=")
+saved = {"token": {"access_token": "keychain-placeholder", "refresh_token": "refresh-placeholder",
+                   "token_type": "Bearer", "expiry": (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=2)).isoformat()},
+         "auth_method": "consumer", "id_token": "header." + payload + ".signature"}
+Path(os.environ["XPORT_BLOB"]).write_text("go-keyring-base64:" + base64.b64encode(json.dumps(saved).encode()).decode())
+PYSEED
+printf 'opaque legacy remnant\n' >"$XPORT_TOKEN"
+xport_before=$(shasum "$XPORT_BLOB")
+xport_line=$(XPORT_LOCKED=1 /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/token" --min-seconds 1800)
+assert expr "$xport_line" : '^source=keychain expires_at=[0-9][0-9]*$' >/dev/null
+assert jq -e '.token.access_token == "keychain-placeholder" and .token.token_type == "Bearer"
+  and .auth_method == "consumer" and (.id_token | startswith("header."))
+  and ([.. | objects | has("refresh_token")] | any | not)' "$XPORT_OUT/token" >/dev/null
+assert test "$(stat -f '%Sp' "$XPORT_OUT/token")" = '-rw-------'
+assert test "$(shasum "$XPORT_BLOB")" = "$xport_before"
+assert_fails /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/token" 2>/dev/null
+assert test "$(wc -l <"$XPORT_LOG" | tr -d ' ')" = 3
+
+python3 - <<'PYSOON'
+import base64, datetime as dt, json, os
+from pathlib import Path
+path = Path(os.environ["XPORT_BLOB"])
+saved = json.loads(base64.b64decode(path.read_text().split(":", 1)[1]))
+saved["token"]["expiry"] = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=60)).isoformat()
+path.write_text("go-keyring-base64:" + base64.b64encode(json.dumps(saved).encode()).decode())
+PYSOON
+xport_before=$(shasum "$XPORT_BLOB")
+xport_line=$(/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/refreshed" --min-seconds 1800)
+assert expr "$xport_line" : '^source=refresh expires_at=[0-9][0-9]*$' >/dev/null
+assert jq -e '.token.access_token == "minted-placeholder" and .id_token == "minted-id-placeholder"
+  and ([.. | objects | has("refresh_token")] | any | not)' "$XPORT_OUT/refreshed" >/dev/null
+assert test "$(stat -f '%Sp' "$XPORT_OUT/refreshed")" = '-rw-------'
+assert test "$(shasum "$XPORT_BLOB")" = "$xport_before"
+xport_rc=0
+XPORT_GRANT_FAIL=1 /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/failed" --min-seconds 1800 >"$XPORT_OUT/error" 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 4
+assert grep -qx 'geminib: invalid_grant: HTTP 400' "$XPORT_OUT/error"
+assert_fails test -e "$XPORT_OUT/failed"
+assert test "$(shasum "$XPORT_BLOB")" = "$xport_before"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/too-long" --min-seconds 3541 >"$XPORT_OUT/error" 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 4
+assert grep -q 'fresh-token ceiling' "$XPORT_OUT/error"
+assert_fails test -e "$XPORT_OUT/too-long"
+assert test "$(wc -l <"$XPORT_REFRESH_LOG" | tr -d ' ')" = 4
+assert test "$(grep -c 'wrong' "$XPORT_REFRESH_LOG")" = 2
+
+printf '{"token":{"access_token":"legacy-placeholder","refresh_token":"legacy-refresh-placeholder","expiry":"%s"},"auth_method":"consumer","id_token":"legacy-id-placeholder"}\n' \
+  "$(TZ=UTC date -v+2H '+%Y-%m-%dT%H:%M:%SZ')" >"$XPORT_TOKEN"
+printf 'go-keyring-base64:e30=' >"$XPORT_BLOB"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/bad-keychain" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 3
+assert_fails test -e "$XPORT_OUT/bad-keychain"
+rm "$XPORT_BLOB"
+xport_line=$(/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/nested" --min-seconds 1800)
+assert expr "$xport_line" : '^source=antigravity-oauth-token expires_at=[0-9][0-9]*$' >/dev/null
+assert jq -e '.token.access_token == "legacy-placeholder" and .id_token == "legacy-id-placeholder"
+  and (.token | has("refresh_token") | not)' "$XPORT_OUT/nested" >/dev/null
+assert jq -e '.token | has("refresh_token")' "$XPORT_TOKEN" >/dev/null
+printf '{"access_token":"ya29-access-placeholder","token_type":"Bearer","refresh_token":"1//refresh-placeholder","id_token":"id-placeholder","expiry":"%s"}\n' \
+  "$(TZ=UTC date -v+2H '+%Y-%m-%dT%H:%M:%SZ')" >"$XPORT_TOKEN"
+xport_line=$(/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/flat" --min-seconds 1800)
+assert expr "$xport_line" : '^source=antigravity-oauth-token expires_at=[0-9][0-9]*$' >/dev/null
+assert jq -e '.token.access_token == "ya29-access-placeholder" and .token.token_type == "Bearer"
+  and .id_token == "id-placeholder" and (.token | has("refresh_token") | not)' "$XPORT_OUT/flat" >/dev/null
+assert test "$(stat -f '%Sp' "$XPORT_OUT/flat")" = '-rw-------'
+assert jq -e 'has("refresh_token") and has("id_token")' "$XPORT_TOKEN" >/dev/null
+printf '{"access_token":"ya29-access-placeholder","expiry":"%s"}\n' \
+  "$(TZ=UTC date -v+1M '+%Y-%m-%dT%H:%M:%SZ')" >"$XPORT_TOKEN"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/soon" --min-seconds 1800 >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 4
+assert_fails test -e "$XPORT_OUT/soon"
+printf 'ya29.opaque-bearer-placeholder\n' >"$XPORT_TOKEN"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/opaque" --min-seconds 1800 >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 3
+assert_fails test -e "$XPORT_OUT/opaque"
+rm -f "$XPORT_TOKEN"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/absent" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 3
+assert_fails test -e "$XPORT_OUT/absent"
+xport_rc=0
+/bin/bash "$SCRIPT" export-token nosuchaccount --to "$XPORT_OUT/unknown" >/dev/null 2>&1 || xport_rc=$?
+assert test "$xport_rc" -eq 2
+assert_fails test -e "$XPORT_OUT/unknown"
+assert jq -se --arg home "$XPORT_HOME" 'all(.[]; .home == $home)
+  and (.[0:3] | map(.args[0])) == ["find-generic-password", "unlock-keychain", "find-generic-password"]' "$XPORT_LOG" >/dev/null
+
+echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"
