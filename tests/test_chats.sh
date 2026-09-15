@@ -39,7 +39,9 @@ printf 'v2 1785996700 alona 0 3600 anthropic.ccr.astra reply-1 872000 1785996700
   > "$TRACKS/cache-ttl-track-gw1"
 # Never his real gateway store: the picker reads stamps out of it.
 export CLAUDEGPT_HOME="$WORK/claudegpt"
-mkdir -p "$CLAUDEGPT_HOME/accounts"
+mkdir -p "$CLAUDEGPT_HOME/accounts" "$CLAUDEGPT_HOME/sessions"
+# A Claude chat once reopened through claudegpt keeps that launch's stamp for good.
+printf 'v1 borodatch astra\n' > "$CLAUDEGPT_HOME/sessions/6ebc3bbe-66ec-498e-9f3d-736e61eed0ba"
 
 OUT=$(STATUSLINE_CACHE_DIR="$TRACKS" python3 - "$SCRIPT" "$STATUSLINE" <<'PY'
 import importlib.machinery, importlib.util, inspect, re, sys
@@ -78,6 +80,11 @@ both = [("claudeb", "alona"), ("gpt", "alona"), ("claudeb", "com")]
 print("gateway-model:", chats.columns(gateway, now)[2])
 print("gateway-account:", chats.account_for(gateway, now, both, 2))
 print("gateway-label:", chats.account_label(("gpt", "notcom")), chats.account_label(("claudeb", "notcom")))
+# Only a live cache moves the account: the stamp of an old claudegpt reopen does not.
+stamped = dict(row, session="6ebc3bbe-66ec-498e-9f3d-736e61eed0ba", model="claude-fable-5-1")
+chats.annotate([stamped])
+print("stamp-read:", chats.chat_resume.read_stamp(stamped["session"])["account"])
+print("stamp-ignored:", chats.account_for(stamped, now, [("claudeb", "alona"), ("gpt", "borodatch")], 0))
 print("gateway-open:", chats.chat_resume.switch_argv(
     "gw1", "notcom", model_id=gateway["model"], gateway=True))
 print("claudeb-open:", chats.chat_resume.switch_argv(
@@ -175,6 +182,8 @@ assert grep -qx 'account-absent: 1' <<<"$OUT"
 assert grep -qx 'gateway-model: Astra' <<<"$OUT"
 assert grep -qx 'gateway-account: 1' <<<"$OUT"
 assert grep -qx 'gateway-label: gpt:notcom notcom' <<<"$OUT"
+assert grep -qx 'stamp-read: borodatch' <<<"$OUT"
+assert grep -qx 'stamp-ignored: 0' <<<"$OUT"
 assert grep -qx "gateway-open: \['claudegpt', 'p', 'notcom', '--model', 'astra', '--resume', 'gw1'\]" <<<"$OUT"
 assert grep -qx "claudeb-open: \['claudeb', 'profile', 'com', '--resume', 'abc123'\]" <<<"$OUT"
 assert grep -qx 'refollow: True False True' <<<"$OUT"
@@ -256,20 +265,21 @@ chats.STATE = sys.argv[2]
 names = [("claudeb", "alpha"), ("claudeb", "beta"), ("claudeb", "gamma"),
          ("gpt", "gamma")]
 os.environ["PICK_ANSWER"] = "gamma"
-print("pick:", chats.current_profile(names, None))
-print("pick-over-announced:", chats.current_profile(names, "beta"))
+print("pick:", chats.current_profile(names, chats.chat_account(), None))
+print("pick-over-announced:", chats.current_profile(names, chats.chat_account(), "beta"))
 os.environ["PICK_ANSWER"] = "ghost"
-print("pick-unknown:", chats.current_profile(names, None))
+print("pick-unknown:", chats.current_profile(names, chats.chat_account(), None))
 del os.environ["PICK_ANSWER"]
-print("none-announced:", chats.current_profile(names, "alpha"))
-print("none-state:", chats.current_profile(names, None))
+print("none-announced:", chats.current_profile(names, chats.chat_account(), "alpha"))
+print("none-state:", chats.current_profile(names, chats.chat_account(), None))
 chats.STATE = sys.argv[2] + "-absent"
-print("none-nothing:", chats.current_profile(names, None))
+print("none-nothing:", chats.current_profile(names, chats.chat_account(), None))
 # The selector is the one beside this script, so a checkout answers with its own
 # halves; the override is what a test — and an install that split them — has.
 # A gateway account of the same name never answers for a claudeb one.
 os.environ["PICK_ANSWER"] = "gamma"
-print("pick-not-gateway:", chats.current_profile([("gpt", "gamma"), ("claudeb", "gamma")], None))
+print("pick-not-gateway:", chats.current_profile([("gpt", "gamma"), ("claudeb", "gamma")],
+                                                  chats.chat_account(), None))
 print("pick-binary:", chats.worker_pick())
 del os.environ["CLAUDEB_WORKER_PICK"]
 print("pick-sibling:", chats.worker_pick() == os.path.join(chats.HERE, "worker-pick"))
@@ -286,6 +296,64 @@ assert grep -qx 'none-state: 1' <<<"$OUT"
 assert grep -qx "pick-binary: $STUB/worker-pick" <<<"$OUT"
 assert grep -qx 'pick-sibling: True' <<<"$OUT"
 assert grep -qx 'none-nothing: 0' <<<"$OUT"
+
+# --- a gateway reply names no cache bucket, so the listing gives it a nominal one ---
+REPLIES="$WORK/replies.jsonl"
+cat >"$REPLIES" <<'EOF'
+{"type":"user","timestamp":"2026-09-14T10:00:00.000Z","message":{"role":"user","content":"go"}}
+{"type":"assistant","timestamp":"2026-09-14T10:00:05.000Z","uuid":"gw-reply","message":{"role":"assistant","model":"anthropic.ccr.astra","content":[{"type":"text","text":"done"}],"usage":{"input_tokens":900,"cache_read_input_tokens":40000}}}
+EOF
+OUT=$(python3 - "$ROOT/bin/chat-find" "$REPLIES" <<'PY'
+import importlib.machinery, importlib.util, os, sys
+
+loader = importlib.machinery.SourceFileLoader("chat_find", sys.argv[1])
+spec = importlib.util.spec_from_loader("chat_find", loader)
+chat_find = importlib.util.module_from_spec(spec)
+loader.exec_module(chat_find)
+
+size = os.path.getsize(sys.argv[2])
+print("gateway-ttl:", chat_find.tail_speech(sys.argv[2], size, size)["ttl"])
+print("claude-bare-ttl:", chat_find.reply_ttl({"model": "claude-fable-5-1", "usage": {}}))
+print("gateway-bucket-ttl:", chat_find.reply_ttl({"model": "anthropic.ccr.sol", "usage": {
+    "cache_creation": {"ephemeral_5m_input_tokens": 10}}}))
+PY
+) || fail "gateway ttl probe failed"
+assert grep -qx 'gateway-ttl: 3600' <<<"$OUT"
+assert grep -qx 'claude-bare-ttl: 0' <<<"$OUT"
+assert grep -qx 'gateway-bucket-ttl: 300' <<<"$OUT"
+
+# --- an account llm-limits calls `login needed` is not offered ----------------
+mkdir -p "$WORK/profiles/alpha" "$WORK/profiles/beta" "$WORK/profiles/zeta" "$STUB/limits"
+cat >"$STUB/limits/llm-limits" <<'EOF'
+#!/usr/bin/env bash
+[ "$*" = "--json --no-write" ] || exit 2
+cat <<'JSON'
+{"vendors":{"claude":{"accounts":[
+  {"account":"alpha","auth":{"status":"ok"},"weekly":{"effective_pct":40}},
+  {"account":"beta","auth":{"status":"expired"}}]},
+ "codex":{"accounts":[{"account":"gamma","auth_needed":true},{"account":"delta","auth":null}]}}}
+JSON
+EOF
+chmod +x "$STUB/limits/llm-limits"
+OUT=$(PATH="$STUB/limits:$PATH" python3 - "$SCRIPT" "$WORK/profiles" <<'PY'
+import importlib.machinery, importlib.util, sys
+from unittest.mock import patch
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+chats.PROFILES = sys.argv[2]
+
+used, _, hidden = chats.limits()
+with patch.object(chats.chat_resume, "gateway_accounts", return_value=["gamma", "delta"]):
+    print("offered:", " ".join(chats.account_label(entry) for entry in chats.profiles(hidden)))
+print("used:", used[("claudeb", "alpha")])
+PY
+) || fail "logged-out probe failed"
+# zeta has no row in the table at all: no data is not a logout.
+assert grep -qx 'offered: alpha zeta gpt:delta' <<<"$OUT"
+assert grep -qx 'used: 40' <<<"$OUT"
 
 # --- arguments are answered without a terminal ------------------------------
 run() { OUT=$("$SCRIPT" "$@" </dev/null 2>&1); RC=$?; }
@@ -313,7 +381,7 @@ assert test "$RC" -ne 0
 assert grep -q 'full-screen picker' <<<"$OUT"
 
 python3 - "$SCRIPT" "$WORK" <<'PYMOUSE' || fail "mouse probe failed"
-import importlib.machinery, importlib.util, sys
+import importlib.machinery, importlib.util, json, os, sys, time
 from unittest.mock import patch
 
 loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
@@ -323,39 +391,60 @@ loader.exec_module(chats)
 c = chats.curses
 names = [("claudeb", "alpha"), ("gpt", "beta")]
 rows = [dict(session=str(i), cwd=sys.argv[2]) for i in range(10)]
+TICK = object()
 
 
 class Screen:
     def __init__(self, events):
-        self.events = iter(events)
         self.frames = []
+        self.events = iter(events(self) if callable(events) else events)
+        self.cells = {}
 
     def getmaxyx(self):
-        return 6, 80
+        return 7, 80
+
+    def timeout(self, delay):
+        self.delay = delay
 
     def get_wch(self):
         event = next(self.events)
+        if event is TICK:
+            time.sleep(0.02)
+            raise c.error("no input")
         if isinstance(event, tuple):
             self.mouse = (0, event[0], event[1], 0, event[2])
             return c.KEY_MOUSE
         return event
 
+    def erase(self):
+        self.cells = {}
 
-def play(events, initial=None, windows=(7,)):
+    def addstr(self, y, x, text, attribute=0):
+        line = self.cells.get(y, "").ljust(x)
+        self.cells[y] = line[:x] + text + line[x + len(text):]
+
+    def refresh(self):
+        pass
+
+
+def play(events, initial=None, windows=(7,), accounts=names, load=True):
     screen = Screen(events)
     def draw(_, visible, view, accounts, profile, *rest):
-        screen.frames.append((view["cursor"], view["top"], profile))
+        screen.frames.append((view["cursor"], view["top"], profile, len(visible), view["window"]))
+    fetch = patch.object(chats, "fetch_chats", return_value=rows) if load \
+        else patch.object(chats, "HERE", sys.argv[2])
     with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
                         use_default_colors=lambda: None, mouseinterval=lambda _: None), \
             patch.object(c, "mousemask") as mask, \
             patch.object(c, "getmouse", side_effect=lambda: screen.mouse), \
             patch.object(chats, "draw", side_effect=draw), \
             patch.object(chats, "account_for", return_value=0), \
-            patch.object(chats, "load_chats", return_value=rows) as load, \
+            fetch as loads, \
             patch.object(chats, "annotate", side_effect=lambda rows: rows):
-        result = chats.run(screen, rows if initial is None else initial, names, {}, 0, 0, windows)
+        result = chats.run(screen, rows if initial is None else initial, accounts, {}, 0, 0, windows)
         mask.assert_called_once_with(c.ALL_MOUSE_EVENTS | c.REPORT_MOUSE_POSITION)
-        return result, screen.frames, load.call_count
+        assert screen.delay == 100
+        return result, screen.frames, getattr(loads, "call_count", None)
 
 
 press, release = c.BUTTON1_PRESSED, c.BUTTON1_RELEASED
@@ -363,8 +452,30 @@ result, frames, _ = play([(0, 2, press), (0, 2, release), (0, 2, press)])
 assert result[1] == rows[1] and len(frames) == 3
 assert play([(0, 3, c.BUTTON1_DOUBLE_CLICKED)])[0][1] == rows[2]
 assert play([(0, 1, c.BUTTON1_CLICKED)])[0][1] == rows[0]
-x = chats.width(chats.account_tail(names, {}, 0)[0][0])
-assert play([(x, 5, press), "\n"])[0][0] == names[1]
+
+# Seven rows: header, four body rows, the claudeb line at 5 and the gateway line at 6.
+screen = Screen([])
+assert chats.body_rows(screen) == 4
+wide = [("claudeb", "alpha"), ("claudeb", "gamma"), ("gpt", "beta"), ("gpt", "delta")]
+chats.paint(screen, [dict(row, at=0) for row in rows], {"cursor": 0, "top": 0, "now": 0, "window": "w"},
+            wide, 2, "", {}, "")
+assert [screen.cells[y][:2] for y in range(1, 5)] == ["▸ "] + ["  "] * 3, screen.cells
+assert screen.cells[5].split() == ["alpha", "gamma"], screen.cells[5]
+assert screen.cells[6].split()[:2] == ["gpt:beta", "gpt:delta"] and "↵ open" in screen.cells[6]
+# A click lands on the label under it on either line; the body ends above the bar.
+assert play([(len(" alpha "), 5, press), "\n"], accounts=wide)[0][0] == wide[1]
+assert play([(len(" alpha "), 6, press), "\n"], accounts=wide)[0][0] == wide[2]
+assert play([(len(" gpt:beta "), 6, press), "\n"], accounts=wide)[0][0] == wide[3]
+assert play([(0, 5, press), (0, 6, press), "\n"], accounts=wide)[0][0] == wide[2]
+assert play([(0, 4, press), (0, 4, press)])[0][1] == rows[3]
+# ←→ is one ring over both lines; shift+↑↓ keeps the place within the line, clamped.
+three = [("claudeb", "a"), ("claudeb", "b"), ("claudeb", "c"), ("gpt", "x"), ("gpt", "y")]
+assert [chats.line_jump(three, p, 1) for p in range(5)] == [3, 4, 4, 3, 4]
+assert [chats.line_jump(three, p, -1) for p in range(5)] == [0, 1, 2, 0, 1]
+assert chats.line_jump([("claudeb", "a"), ("claudeb", "b")], 1, 1) == 1
+assert play([c.KEY_SF, "\n"])[0][0] == names[1]
+assert play([c.KEY_SF, c.KEY_SR, "\n"])[0][0] == names[0]
+assert play([c.KEY_LEFT, c.KEY_RIGHT, c.KEY_RIGHT, "\n"])[0][0] == names[1]
 # Wheel-down exists only where ncurses encodes five buttons; where it does not, the bit that
 # spells it there is this build's BUTTON4_DOUBLE_CLICKED, and scrolling on it would answer a
 # doubled wheel-UP by walking the list down.
@@ -378,8 +489,193 @@ assert play([c.KEY_NPAGE, (0, 2, press), "\n"])[0][1] == rows[2]
 assert play([(0, 0, press), (79, 5, press), "\n"])[0][0] == names[0]
 assert play([c.KEY_RIGHT, "\n"])[0][0] == names[1]
 assert play(["z", "\x1b", "\n"])[0][1] == rows[0]
-print("PASS: chats mouse smoke (11 scenarios)")
+
+# A filter widens the history in the background: keys keep answering, the header says so, and
+# the wider listing replaces the narrower one when it lands — painted once, not on every tick.
+calls = os.path.join(sys.argv[2], "chat-find.calls")
+finder = os.path.join(sys.argv[2], "chat-find")
+with open(finder, "w") as handle:
+    handle.write("#!/usr/bin/env python3\nimport json, sys, time\n"
+                 "open(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\ntime.sleep(0.3)\n"
+                 "print(json.dumps([{'session': 'q-new-%%d' %% i, 'cwd': '/'} for i in range(5)]))\n"
+                 % calls)
+os.chmod(finder, 0o755)
+narrow = [dict(session="q-%d" % i, cwd="/") for i in range(3)] + [dict(session="z", cwd="/")]
+
+
+def typed(*keys):
+    def events(screen):
+        yield from keys
+        for _ in range(500):
+            if len(screen.frames) >= 3:
+                break
+            yield TICK
+        yield from [TICK] * 5 + ["\x04"]
+    return events
+
+
+result, frames, _ = play(typed("q"), narrow, (7, 30), load=False)
+assert result is None and len(frames) == 3, frames
+assert frames[0][3:] == (4, "last 7d · ↓ for more"), frames[0]
+assert frames[1][3] == 3 and frames[1][4].endswith("· searching…"), frames[1]
+assert frames[2][3:] == (5, "last 30d"), frames[2]
+assert open(calls).read() == "--recent --json --days 30\n"
+# Scrolling past the end while that load is in flight waits for it instead of loading twice.
+os.unlink(calls)
+result, frames, _ = play(typed("q", c.KEY_END, c.KEY_DOWN), narrow, (7, 30), load=False)
+assert frames[-1][3:] == (5, "last 30d") and frames[-1][0] == 3, frames
+assert open(calls).read() == "--recent --json --days 30\n"
+print("PASS: chats mouse smoke (32 checks)")
 PYMOUSE
+
+# --- the screen is up before any subprocess, and the three land together -----
+# The picker used to run chat-find, llm-limits and worker-pick one after another before
+# curses opened, so Egor waited seconds on a blank terminal. Each stub here sleeps a
+# second: a first paint that waits for any of them, or three loads run in sequence,
+# shows up as time on the clock rather than as a wrong-looking screen.
+FAST="$WORK/fast"
+mkdir -p "$FAST/bin" "$FAST/profiles/alpha" "$FAST/profiles/beta" "$FAST/profiles/gamma"
+cat >"$FAST/bin/chat-find" <<'EOF'
+#!/usr/bin/env python3
+import json, time
+time.sleep(1)
+print(json.dumps([{"session": "s%d" % i, "cwd": "/", "at": 0, "ctx": 1000} for i in range(3)]))
+EOF
+cat >"$FAST/bin/llm-limits" <<'EOF'
+#!/usr/bin/env bash
+sleep 1
+cat <<'JSON'
+{"vendors":{"claude":{"accounts":[
+  {"account":"alpha","auth":{"status":"ok"},"weekly":{"effective_pct":40}},
+  {"account":"beta","auth":{"status":"expired"}},
+  {"account":"gamma","auth":{"status":"ok"},"weekly":{"effective_pct":10}}]}}}
+JSON
+EOF
+cat >"$FAST/bin/worker-pick" <<'EOF'
+#!/usr/bin/env bash
+sleep 1
+printf 'gamma\n'
+EOF
+chmod +x "$FAST/bin/chat-find" "$FAST/bin/llm-limits" "$FAST/bin/worker-pick"
+printf 'beta\n' >"$FAST/claudeb-state"
+
+cat >"$FAST/probe.py" <<'PYFAST'
+"""Run the picker headless over the sleeping stubs: argv is the script, the fixture
+root, the account the bar must settle on, and optionally a key pressed before anything
+has landed."""
+import importlib.machinery, importlib.util, os, sys, time
+from unittest.mock import patch
+
+START = time.monotonic()
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+c = chats.curses
+chats.PROFILES = os.path.join(sys.argv[2], "profiles")
+chats.STATE = os.path.join(sys.argv[2], "claudeb-state")
+WANT = sys.argv[3]
+KEYS = [c.KEY_LEFT] if sys.argv[4:] == ["left"] else []
+
+frames = []
+
+
+def done():
+    last = frames[-1] if frames else None
+    return bool(last and last["rows"] and last["used"] and last["account"] == WANT)
+
+
+class Screen:
+    def getmaxyx(self):
+        return 10, 80
+
+    def timeout(self, delay):
+        self.delay = delay
+
+    def get_wch(self):
+        if KEYS:
+            return KEYS.pop(0)
+        if done():
+            return "\x04"
+        if time.monotonic() - START > 10:
+            raise AssertionError("nothing landed: %r" % frames)
+        time.sleep(0.01)
+        raise c.error("no input")
+
+    def erase(self):
+        pass
+
+    def addstr(self, *rest):
+        pass
+
+    def refresh(self):
+        pass
+
+
+def record(_, visible, view, accounts, profile, needle, used, note):
+    frames.append({"at": time.monotonic() - START, "rows": len(visible), "used": len(used),
+                   "accounts": " ".join(chats.account_label(e) for e in accounts),
+                   "account": chats.account_label(accounts[profile]),
+                   "window": view["window"]})
+
+
+with patch.multiple(c, curs_set=lambda _: None, start_color=lambda: None,
+                    use_default_colors=lambda: None, mouseinterval=lambda _: None,
+                    mousemask=lambda _: None), \
+        patch.object(chats, "draw", side_effect=record), \
+        patch.object(chats.chat_resume, "gateway_accounts", return_value=["delta"]), \
+        patch.object(chats, "HERE", os.path.join(sys.argv[2], "bin")):
+    result = chats.run(Screen(), None, None, None, None, 0, chats.WINDOWS)
+
+first, full = frames[0], frames[-1]
+print("quit:", result)
+print("timing: first paint %.3fs, full data %.3fs" % (first["at"], full["at"]))
+print("first-paint-fast:", first["at"] < 0.5)
+# Three one-second stubs in parallel land inside two seconds; run one after another they
+# could not land before three.
+print("loads-concurrent:", 1.0 <= full["at"] < 2.0)
+print("first-window:", first["window"])
+print("first-empty:", first["rows"], first["used"])
+print("first-accounts:", first["accounts"])
+print("first-account:", first["account"])
+print("full-window:", full["window"])
+print("full-rows:", full["rows"])
+print("full-accounts:", full["accounts"])
+print("full-account:", full["account"])
+# The 100ms poll paints on a key or a landed load and on nothing else; an idle picker
+# redrawing every tick would leave dozens of frames behind in this second.
+print("idle-quiet:", len(frames) <= 6)
+PYFAST
+
+OUT=$(PATH="$FAST/bin:$PATH" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" gamma) \
+  || fail "startup probe failed"
+
+echo "$OUT" | grep '^timing:'
+assert grep -qx 'quit: None' <<<"$OUT"
+assert grep -qx 'first-paint-fast: True' <<<"$OUT"
+assert grep -qx 'loads-concurrent: True' <<<"$OUT"
+# Before anything lands: the header says so, the body is empty, the bar carries every
+# account the two stores know without a subprocess — no percentage, nothing hidden — and
+# it opens on the last profile launched.
+assert grep -qx 'first-window: loading…' <<<"$OUT"
+assert grep -qx 'first-empty: 0 0' <<<"$OUT"
+assert grep -qx 'first-accounts: alpha beta gamma gpt:delta' <<<"$OUT"
+assert grep -qx 'first-account: beta' <<<"$OUT"
+# Once they land: rows, the window they came from, the logged-out account gone, and the
+# account worker-pick named.
+assert grep -qx 'full-window: last 7d · ↓ for more' <<<"$OUT"
+assert grep -qx 'full-rows: 3' <<<"$OUT"
+assert grep -qx 'full-accounts: alpha gamma gpt:delta' <<<"$OUT"
+assert grep -qx 'full-account: gamma' <<<"$OUT"
+assert grep -qx 'idle-quiet: True' <<<"$OUT"
+
+# ←→ works while the screen is still empty, and the account landing a second later does
+# not take that choice back.
+OUT=$(PATH="$FAST/bin:$PATH" python3 "$FAST/probe.py" "$SCRIPT" "$FAST" alpha left) \
+  || fail "early-key probe failed"
+assert grep -qx 'first-account: beta' <<<"$OUT"
+assert grep -qx 'full-account: alpha' <<<"$OUT"
+assert grep -qx 'full-rows: 3' <<<"$OUT"
 
 # --- a worker session's launcher comes off the run record --------------------
 # The env stamp `worker-run` exports into a worker is one of two sides, and the one a sub-shell, a

@@ -339,13 +339,13 @@ def tail_speech(path, size, window):
                     when = stamp(entry)
                     spec = {"model": message.get("model"), "ctx": context_tokens(usage),
                             "spoke": when.timestamp() if when else None,
-                            "uuid": entry.get("uuid"), "ttl": ttl_bucket(usage)}
+                            "uuid": entry.get("uuid"), "ttl": reply_ttl(message)}
                     # A reply that only read the cache refreshed an entry it did not
                     # create, so its lifetime is the one the nearest older reply of
                     # the same model declared.
                     ttl_settled = bool(spec["ttl"]) or not usage.get("cache_read_input_tokens")
                 elif not ttl_settled and message.get("model") == spec["model"]:
-                    spec["ttl"] = ttl_bucket(usage)
+                    spec["ttl"] = reply_ttl(message)
                     ttl_settled = bool(spec["ttl"])
         if said is None:
             text = visible_text(entry, False)
@@ -379,6 +379,13 @@ def ttl_bucket(usage):
         if found and isinstance(tokens, (int, float)) and tokens > 0:
             ttls.append(int(found.group(1)) * (60 if found.group(2) == "m" else 3600))
     return min(ttls) if ttls else 0
+
+
+def reply_ttl(message):
+    ttl = ttl_bucket(message.get("usage") or {})
+    if not ttl and chat_resume.gateway_alias(message.get("model")):
+        return chat_resume.GATEWAY_CACHE_TTL
+    return ttl
 
 
 def context_tokens(usage):

@@ -17,6 +17,10 @@ GATEWAY_PREFIX = "anthropic.ccr."
 # The launcher's two aliases and the label a model column shows for them; bin/statusline.sh
 # carries the same pair (docs/shared-invariants.md row `cc`).
 GATEWAY_LABELS = {"sol": "Sol", "astra": "Astra"}
+# A gateway reply names no cache bucket, so its lifetime is nominal: OpenAI clears a prefix after
+# 5-10 idle minutes and keeps it an hour at most, and a wrong guess costs the same re-read either
+# way (invariant row `bj`).
+GATEWAY_CACHE_TTL = 3600
 # "Switch chat to this" onto an OpenAI row is a target he picked, not a chat to reproduce, so
 # that surface names this alias instead of inheriting the old chat's. Only the CLI modes below
 # apply it: a library caller reopening a chat (`bin/chats`) is an ordinary reopen and must keep

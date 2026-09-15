@@ -2412,6 +2412,16 @@ sw2_out=$(run_statusline "$(statusline_payload ctx-swacct "$(warm_extra "$TRANSC
 assert grep -Fq "${DIM}→" <<< "$sw2_out"
 assert test "${sw2_out#*111k}" = "$sw2_out"
 assert grep -q '^v2 [0-9]* acctgen ' "$STATE_DIR/cache-ttl-track-ctx-swacct"
+# A gateway chat's reply went through the Codex account CLAUDEGPT_ACCOUNT names, not the claudeb
+# profile the session also carries: the picker reads field 2 as the account holding the cache.
+gw_render() {
+  CLAUDEGPT_ACCOUNT=gwacct run_statusline "$(statusline_payload ctx-gateway "$(jq -cn --arg tp "$TRANSCRIPT" '
+    {transcript_path:$tp,model:{id:"anthropic.ccr.astra"},
+     context_window:{used_percentage:20,current_usage:{input_tokens:0,cache_read_input_tokens:50000}}}')")" >/dev/null
+}
+t_reset; t_assist $((NOW - 60)) anthropic.ccr.astra 50000 500 none; gw_render
+t_assist $((NOW - 20)) anthropic.ccr.astra 50000 500 none; gw_render
+assert grep -q '^v2 [0-9]* gwacct .* gwacct$' "$STATE_DIR/cache-ttl-track-ctx-gateway"
 
 t_reset; t_assist $((NOW - 600))
 noattr_out=$(run_statusline "$(statusline_payload ctx-noattr "$(warm_extra "$TRANSCRIPT" 55 111000)")")

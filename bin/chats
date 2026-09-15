@@ -17,6 +17,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 
@@ -32,38 +33,82 @@ TRACKS = os.environ.get("STATUSLINE_CACHE_DIR") or os.path.expanduser("~/.cache/
 # (invariant row `bj`).
 TRACK_TS, TRACK_ACCOUNT = 1, 2
 # A week covers what he is usually looking for; the rest loads when he scrolls
-# past it, so opening the picker never pays for a corpus he will not read.
+# past it or filters, so opening the picker never pays for a corpus he will not read.
 WINDOWS = (7, 30, 120, 0)
 # project, model, context — capped so a deep worktree name cannot push the
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
+FOOTER = ("claudeb", "gpt")
 USAGE = ("usage: chats [--days N | --all] [--print]\n"
-         "  ↑↓ chat · ←→ claudeb account · type to filter · enter opens it here\n"
+         "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
+         "  type to filter · enter opens it here\n"
          "  the account follows the chat's live cache, else the optimal one\n"
          "  mouse: click row · click again opens\n"
-         "  scrolling past the last row loads more history")
+         "  scrolling past the last row, or filtering, loads more history")
+
+
+class Fatal(Exception):
+    """A message for the terminal, raised rather than printed: inside curses it has to
+    travel out through the wrapper, which restores the screen, before it can be read."""
 
 
 def die(message):
-    print("chats: " + message, file=sys.stderr)
-    raise SystemExit(1)
+    raise Fatal(message)
 
 
-def load_chats(days):
+def fetch_chats(days):
     command = [os.path.join(HERE, "chat-find"), "--recent", "--json"]
     if days:
         command += ["--days", str(days)]
     try:
         out = subprocess.run(command, capture_output=True, text=True, check=True).stdout
     except OSError as error:
-        die("cannot run chat-find: %s" % error)
+        raise RuntimeError("cannot run chat-find: %s" % error)
     except subprocess.CalledProcessError as error:
-        die("chat-find failed: %s" % (error.stderr or "").strip())
+        raise RuntimeError("chat-find failed: %s" % (error.stderr or "").strip())
     try:
-        rows = json.loads(out)
+        return json.loads(out)
     except ValueError:
-        die("chat-find returned no usable listing")
-    return rows
+        raise RuntimeError("chat-find returned no usable listing")
+
+
+def fetcher(days):
+    """One history window as a callable, bound to the days it asks for."""
+    return lambda: fetch_chats(days)
+
+
+class Job:
+    """A call run off the key loop — one in flight at a time, its answer taken once.
+
+    Every subprocess the picker needs goes through this, so the screen is painted
+    before any of them and each lands into the loop on its own.
+    """
+
+    def __init__(self):
+        self.thread = None
+        self.result = None
+
+    def start(self, work):
+        if self.thread:
+            return
+        def run():
+            try:
+                self.result = work()
+            except RuntimeError as error:
+                self.result = error
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def landed(self):
+        return self.thread is not None and not self.thread.is_alive()
+
+    def take(self, wait=False):
+        """The answer (or the RuntimeError) of the finished call, else None."""
+        if not self.thread or not (wait or self.landed()):
+            return None
+        self.thread.join()
+        self.thread, result, self.result = None, self.result, None
+        return result
 
 
 def limits():
@@ -72,14 +117,15 @@ def limits():
 
     A gateway account spends the Codex subscription behind it, so its share comes from
     that vendor's block — the same store the statusline reads for a `claudegpt` chat.
+    The third answer is every account the table's STATUS column calls `login needed`.
     """
     try:
         out = subprocess.run(["llm-limits", "--json", "--no-write"],
                              capture_output=True, text=True, timeout=10).stdout
         vendors = json.loads(out)["vendors"]
     except Exception:
-        return {}, None
-    used = {}
+        return {}, None, set()
+    used, out = {}, set()
     for vendor, block in (("claudeb", vendors.get("claude")), ("gpt", vendors.get("codex"))):
         for row in (block or {}).get("accounts", []):
             name = row.get("account")
@@ -88,10 +134,19 @@ def limits():
             week = (row.get("weekly") or {}).get("effective_pct")
             usable = isinstance(week, (int, float)) and not isinstance(week, bool)
             used[(vendor, name)] = int(round(week)) if usable else None
-    return used, (vendors.get("claude") or {}).get("current_account")
+            if logged_out(row):
+                out.add((vendor, name))
+    return used, (vendors.get("claude") or {}).get("current_account"), out
 
 
-def profiles():
+def logged_out(row):
+    """llm-limits.sh `account_status` for a claude or codex row."""
+    auth = row.get("auth")
+    status = auth.get("status") if isinstance(auth, dict) else None
+    return row.get("auth_needed") is True or (isinstance(status, str) and status != "ok")
+
+
+def profiles(hidden=()):
     """Every account a chat can be reopened under, as (launcher, name).
 
     Two stores, and one name can be in both — `com` is a claudeb profile AND a gateway
@@ -107,6 +162,7 @@ def profiles():
              if not entry.startswith(".") and entry != "main"
              and os.path.isdir(os.path.join(PROFILES, entry))]
     names += [("gpt", name) for name in chat_resume.gateway_accounts()]
+    names = [entry for entry in names if entry not in hidden]
     if not names:
         die("no claudeb profiles under %s and no claudegpt account" % PROFILES)
     return names
@@ -119,7 +175,7 @@ def account_label(entry):
 
 
 def warm_account(row):
-    """The claudeb account whose prompt cache still holds this chat, or None.
+    """The account, claudeb or gateway, whose prompt cache still holds this chat, or None.
 
     A transcript never says which account a reply went through; the statusline
     learns that while the chat is open and leaves it in its track file, stamped
@@ -187,8 +243,10 @@ def chat_account():
     return done.stdout.strip() or None
 
 
-def current_profile(names, announced):
-    chosen = chat_account()
+def current_profile(names, chosen, announced):
+    """The account to open on, given whatever the background calls have answered:
+    `chat_account()`'s pick, else the announced one, else the last profile launched —
+    the last of which is a file read, so it stands in before either call lands."""
     try:
         with open(STATE, encoding="utf-8") as handle:
             state = handle.readline().strip()
@@ -200,6 +258,13 @@ def current_profile(names, announced):
     return 0
 
 
+def restack(names, kept, positions):
+    """The bar's positions after the logged-out accounts go: each follows the entry it
+    named, and one whose account is gone falls back to the first."""
+    return [kept.index(names[position]) if names[position] in kept else 0
+            for position in positions]
+
+
 def refollow(row, landed, profile, held):
     """Whether the account should be asked of this row again: on every new
     landing, and on a row already landed on as long as ←→ has not moved the
@@ -209,15 +274,25 @@ def refollow(row, landed, profile, held):
 
 def account_for(row, now, names, default):
     """The account a landed row implies: the one whose cache still holds this
-    chat, else the account it was launched under, else back to the account the
-    picker opened on."""
+    chat, else back to the account the picker opened on.
+
+    Never the claudegpt launch stamp: it outlives the one reopen it recorded, so a
+    Claude chat once reopened through the gateway would resolve to gpt forever.
+    """
     vendor = "gpt" if chat_resume.gateway_alias(row.get("model")) else "claudeb"
-    warm = warm_name(row, now)
-    stamp = chat_resume.read_stamp(row.get("session") or "") or {}
-    for entry in ((vendor, warm), ("gpt", stamp.get("account"))):
-        if entry[1] and entry in names:
-            return names.index(entry)
-    return default
+    warm = (vendor, warm_name(row, now))
+    return names.index(warm) if warm[1] and warm in names else default
+
+
+def widen(result, asked, level, chats, windows):
+    """A landed load of window `asked`: the wider listing supersedes the narrower one,
+    and a failed load leaves no wider window to ask for, or every keystroke would rerun
+    it. A first load that fails has nothing to fall back on and ends the picker."""
+    if isinstance(result, RuntimeError):
+        if not chats:
+            die(str(result))
+        return level, chats, windows[:asked], str(result)
+    return asked, annotate(result), windows, ""
 
 
 def label(level, windows):
@@ -330,20 +405,35 @@ def draw(screen, rows, view, names, profile, needle, used, note):
         pass
 
 
-def account_tail(names, used, profile):
-    tail = []
+def body_rows(screen):
+    return max(1, screen.getmaxyx()[0] - 1 - len(FOOTER))
+
+
+def account_lines(names, used, profile):
+    """The account bar, one line per store in FOOTER order, as (position, label, attribute)."""
+    lines = [[] for _ in FOOTER]
     for position, entry in enumerate(names):
         percent = used.get(entry)
         shown = account_label(entry)
         label = " %s %d%% " % (shown, percent) if percent is not None else " %s " % shown
-        tail.append((label, curses.A_REVERSE if position == profile else curses.A_DIM))
-    return tail
+        attribute = curses.A_REVERSE if position == profile else curses.A_DIM
+        lines[FOOTER.index(entry[0])].append((position, label, attribute))
+    return lines
+
+
+def line_jump(names, profile, step):
+    """Shift+↑↓: the same place on the neighbouring line, clamped to that line's length."""
+    lines = [line for line in ([position for position, entry in enumerate(names)
+                                if entry[0] == vendor] for vendor in FOOTER) if line]
+    here = next(number for number, line in enumerate(lines) if profile in line)
+    there = lines[max(0, min(here + step, len(lines) - 1))]
+    return there[min(lines[here].index(profile), len(there) - 1)]
 
 
 def paint(screen, rows, view, names, profile, needle, used, note):
     screen.erase()
     height, span = screen.getmaxyx()
-    body = max(1, height - 2)
+    body = body_rows(screen)
     header = "%d chats · %s · ↑↓ chat · ←→ account · type to filter" % (
         len(rows), view["window"])
     if needle:
@@ -377,15 +467,16 @@ def paint(screen, rows, view, names, profile, needle, used, note):
             screen.addstr(line + 1, column, clip(" · " + cells[5], span - 1 - column),
                           curses.A_DIM)
 
-    tail = account_tail(names, used, profile)
-    screen.addstr(height - 1, 0, " " * (span - 1))
-    column = 0
-    for label, attribute in tail:
-        if column >= span - 1:
-            break
-        label = clip(label, span - 1 - column)
-        screen.addstr(height - 1, column, label, attribute)
-        column += width(label)
+    top = height - len(FOOTER)
+    for number, line in enumerate(account_lines(names, used, profile)):
+        screen.addstr(top + number, 0, " " * (span - 1))
+        column = 0
+        for _, label, attribute in line:
+            if column >= span - 1:
+                break
+            label = clip(label, span - 1 - column)
+            screen.addstr(top + number, column, label, attribute)
+            column += width(label)
     hint = ("   ↵ open · ^C quit · esc clear · "
             "account: chat's cache, else optimal")
     if column < span - 1:
@@ -394,6 +485,8 @@ def paint(screen, rows, view, names, profile, needle, used, note):
 
 
 def run(screen, chats, names, used, profile, level, windows):
+    """The picker. Whatever is handed in as None is not known yet: it is loaded in the
+    background and lands into the loop, so the first paint waits for no subprocess."""
     try:
         curses.curs_set(0)
     except curses.error:
@@ -411,24 +504,73 @@ def run(screen, chats, names, used, profile, level, windows):
         curses.use_default_colors()
     except curses.error:
         pass
-    view = {"cursor": 0, "top": 0, "now": time.time(), "window": label(level, windows),
-            "dated": not windows[level]}
-    needle, note, scrolled, landed, default, held = "", "", False, None, profile, profile
+    screen.timeout(100)
+    view = {"cursor": 0, "top": 0, "now": time.time()}
+    needle, note, scrolled, landed = "", "", False, None
+    listing, limiting, picking = Job(), Job(), Job()
+    ready, pending, pinned, chosen, announced = chats is not None, None, False, None, None
+    if not ready:
+        chats, pending = [], 0
+        listing.start(fetcher(windows[0]))
+    if used is None:
+        used = {}
+        limiting.start(limits)
+    if names is None:
+        names = profiles()
+    if profile is None:
+        # The last profile launched is a file read, so the bar opens on a plausible
+        # account instead of an arbitrary one while worker-pick is still answering.
+        profile = current_profile(names, None, None)
+        picking.start(chat_account)
+    default = held = profile
     while True:
         view["now"] = time.time()
+        got = listing.take()
+        if got is not None:
+            level, chats, windows, note = widen(got, pending, level, chats, windows)
+            pending, ready = None, ready or bool(chats)
+            # An empty first window is not an empty history: widen until something is
+            # there, so a week away from the machine does not look like no chats at all.
+            if not ready:
+                if level + 1 >= len(windows):
+                    die("no chat found in that window (try: chats --all)")
+                pending = level + 1
+                listing.start(fetcher(windows[pending]))
+        settled = False
+        if limiting.landed():
+            used, announced, hidden = limiting.take()
+            kept = profiles(hidden)
+            profile, held, default = restack(names, kept, (profile, held, default))
+            names, settled = kept, True
+        if picking.landed():
+            chosen, settled = picking.take(), True
+        if settled and not pinned:
+            default = current_profile(names, chosen, announced)
         rows = [row for row in chats if matches(row, needle)]
-        # Scrolling past the end is the ask for more history, and only scrolling:
-        # a filter that matches nothing also leaves the cursor past the last row,
-        # and widening on that would load the whole corpus over one typo.
-        if scrolled and view["cursor"] >= len(rows) and level + 1 < len(windows):
+        # ←→ before the listing lands is a choice of the DEFAULT itself: no row has
+        # spoken about its cache yet, so the account landing later must not take it back.
+        if not ready and profile != held:
+            default = held = profile
+            pinned = True
+        # Scrolling past the end is the ask for more history; a filter that matches
+        # nothing also leaves the cursor past the last row, and it widens in the
+        # background below instead of blocking on every keystroke.
+        if scrolled and ready and view["cursor"] >= len(rows) and level + 1 < len(windows):
             view["window"] = "loading…"
             draw(screen, rows, view, names, profile, needle, used, note)
-            level += 1
-            chats = annotate(load_chats(windows[level]))
-            view["window"] = label(level, windows)
-            view["dated"] = not windows[level]
-            scrolled = False
+            if pending is None:
+                pending = level + 1
+                listing.start(fetcher(windows[pending]))
+            level, chats, windows, note = widen(listing.take(wait=True), pending,
+                                                level, chats, windows)
+            pending, scrolled = None, False
             continue
+        if needle and ready and pending is None and level + 1 < len(windows):
+            pending = level + 1
+            listing.start(fetcher(windows[pending]))
+        view["window"] = "loading…" if not ready else \
+            label(level, windows) + (" · searching…" if pending is not None else "")
+        view["dated"] = not windows[level]
         view["cursor"] = max(0, min(view["cursor"], len(rows) - 1))
         # ←→ overrides only while the cursor stays put: the next landing re-asks
         # account_for, so a row with no live cache returns to the optimal account
@@ -436,16 +578,23 @@ def run(screen, chats, names, used, profile, level, windows):
         if rows and refollow(rows[view["cursor"]], landed, profile, held):
             landed = rows[view["cursor"]].get("session")
             profile = held = account_for(rows[view["cursor"]], view["now"], names, default)
-        height = max(1, screen.getmaxyx()[0] - 2)
+        height = body_rows(screen)
         view["top"] = max(min(view["top"], view["cursor"]), view["cursor"] - height + 1)
         view["top"] = max(0, min(view["top"], max(0, len(rows) - height)))
         draw(screen, rows, view, names, profile, needle, used, note)
         note = ""
-        try:
-            key = screen.get_wch()
-        except KeyboardInterrupt:
-            return None
-        except curses.error:
+        # The 100ms timeout exists only to notice a landed load; repainting on every
+        # empty tick would redraw an idle picker ten times a second for nothing.
+        key = None
+        while key is None:
+            try:
+                key = screen.get_wch()
+            except KeyboardInterrupt:
+                return None
+            except curses.error:
+                if listing.landed() or limiting.landed() or picking.landed():
+                    break
+        if key is None:
             continue
 
         if key == curses.KEY_MOUSE:
@@ -469,9 +618,10 @@ def run(screen, chats, names, used, profile, level, windows):
                              curses.BUTTON1_DOUBLE_CLICKED):
                 continue
             screen_height, span = screen.getmaxyx()
-            if y == screen_height - 1:
+            footer = screen_height - len(FOOTER)
+            if footer <= y < screen_height:
                 column = 0
-                for position, (text, _) in enumerate(account_tail(names, used, profile)):
+                for position, text, _ in account_lines(names, used, profile)[y - footer]:
                     end = column + width(clip(text, span - 1 - column))
                     if column <= x < end:
                         profile = position
@@ -479,7 +629,7 @@ def run(screen, chats, names, used, profile, level, windows):
                     column = end
                 continue
             index = view["top"] + y - 1
-            if not (1 <= y < screen_height - 1 and 0 <= x < span - 1
+            if not (1 <= y <= body_rows(screen) and 0 <= x < span - 1
                     and 0 <= index < len(rows)):
                 continue
             if index != view["cursor"]:
@@ -508,6 +658,10 @@ def run(screen, chats, names, used, profile, level, windows):
             profile = (profile - 1) % len(names)
         elif key == curses.KEY_RIGHT:
             profile = (profile + 1) % len(names)
+        elif key == curses.KEY_SR:
+            profile = line_jump(names, profile, -1)
+        elif key == curses.KEY_SF:
+            profile = line_jump(names, profile, 1)
         elif key == "\x1b":
             # Never an exit: a terminal that is not in application-keypad mode
             # delivers arrow keys as a bare ESC followed by letters, and quitting
@@ -561,20 +715,10 @@ def main():
         die("this is a full-screen picker; run it from a terminal prompt "
             "(inside a chat: /exit first, then `chats`)")
 
-    level = 0
-    chats = load_chats(windows[level])
-    # An empty first window is not an empty history: widen until something is
-    # there, so a week away from the machine does not look like no chats at all.
-    while not chats and level + 1 < len(windows):
-        level += 1
-        chats = load_chats(windows[level])
-    if not chats:
-        die("no chat found in that window (try: chats --all)")
-    names = profiles()
-    used, announced = limits()
-    profile = current_profile(names, announced)
-
-    chosen = curses.wrapper(run, annotate(chats), names, used, profile, level, windows)
+    # Nothing is loaded before the screen: the listing, the limits table and the chat
+    # account are handed in as None and run() loads all three in the background, so the
+    # picker is up in milliseconds instead of after three sequential subprocesses.
+    chosen = curses.wrapper(run, None, None, None, None, 0, windows)
     if not chosen:
         return
     (vendor, account), row, cwd = chosen
@@ -596,4 +740,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Fatal as reason:
+        print("chats: %s" % reason, file=sys.stderr)
+        raise SystemExit(1)

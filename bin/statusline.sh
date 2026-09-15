@@ -1465,7 +1465,7 @@ ev_valid=0; ev_ts=0; ev_gap=0; ev_cr=0; ev_cc=0
 fork_anchor_uuid="-"; fork_own_ts=0
 latest_ts=0; latest_model="-"; latest_ttl=0; latest_uuid="-"; latest_fork="-"
 learned_file="${STATUSLINE_CACHE_TTL_LEARNED:-$statusline_cache_dir/cache-ttl-learned}"
-warm_acct="$acct"; track_acct=""; learned_upto=0
+warm_acct="${CLAUDEGPT_ACCOUNT:-$acct}"; track_acct=""; learned_upto=0
 rec_ts=0; rec_acct=""; rec_ttl=0; rec_model="-"; rec_uuid="-"; rec_scan=262144
 seen_upto=0; seen_acct=""; track_ready=0
 track=""; t1=""; t2=""; t3=""; t4=""; t5=""; t6=""; t7=""; t8=""; t9=""; t10=""
