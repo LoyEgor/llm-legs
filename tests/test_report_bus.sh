@@ -15,11 +15,11 @@ post() { printf '%s' "${3:-body}" | "$BUS" post --kind notice --id "$2" --sessio
 flush() { printf '{"session_id":"%s"}\n' "$1" | "$BUS" flush --event "${2:-PostToolUse}"; }
 message() { jq -r .systemMessage; }
 
-post basic one 'first  '
+post basic one $'\n\nfirst  \n\n'
 assert test "$(count "$STORE/basic/pending")" = 1
 post basic one changed
 assert test "$(count "$STORE/basic/pending")" = 1
-assert test "$(jq -r .body "$STORE/basic/pending/"*.txt)" = 'first  '
+assert jq -e '.body == "\n\nfirst  \n\n"' "$STORE/basic/pending/"*.txt >/dev/null
 rc=0
 printf body | "$BUS" post --kind bogus --session basic 2>"$WORK/error" || rc=$?
 assert test "$rc" = 2
@@ -34,11 +34,9 @@ first=$(find "$STORE/basic/pending" -name '*__one.txt')
 second=$(find "$STORE/basic/pending" -name '*__two.txt')
 touch -t 202001010001 "$first"
 touch -t 202001010002 "$second"
-clock=$(jq -r .clock "$first")
-clock2=$(jq -r .clock "$second")
 output=$(flush basic)
-expected=$(printf '▌ notice · %s\nfirst\n\n▌ notice · %s\nsecond' "$clock" "$clock2")
-assert test "$(message <<<"$output")" = "$expected"
+expected=$(printf 'first  \n\nsecond')
+assert jq -e --arg m "$expected" '. == {systemMessage:("\n" + $m)}' <<<"$output" >/dev/null
 assert test "$(count "$STORE/basic/pending")" = 0
 assert test "$(count "$STORE/basic/delivered")" = 2
 assert test "$(jq -s length "$STORE/history.log")" = 2
@@ -46,8 +44,15 @@ assert jq -e 'select(.id == "one") | .session == "basic" and .kind == "notice" a
 post basic one again
 assert test "$(count "$STORE/basic/pending")" = 0
 assert test "$("$BUS" list --session basic)" = "$expected"
-assert test "$("$BUS" list --session basic --last 1)" = "$(printf '▌ notice · %s\nsecond' "$clock")"
+assert test "$("$BUS" list --session basic --last 1)" = 'second'
 assert test -z "$("$BUS" list --session basic --last 0)"
+
+# A body of nothing but blank lines renders to the empty string, and a delivery gated on that
+# text alone never moved the file out of pending.
+post blank only $'\n\n'
+flush blank >/dev/null
+assert test "$(count "$STORE/blank/pending")" = 0
+assert test "$(count "$STORE/blank/delivered")" = 1
 
 for event in PostToolUse SubagentStop Stop UserPromptSubmit; do
   post "event-$event" item
@@ -69,16 +74,15 @@ for payload in '{"agent_id":"child"}' '{"transcript_path":"/tmp/subagents/child.
 done
 assert test -n "$(flush skipped Stop)"
 
-printf 'line 1\n  line 2\t\n' >"$WORK/body"
+printf '\n\nline 1\n  line 2\t\n\n' >"$WORK/body"
 export CLAUDE_CODE_SESSION_ID=emitted
-output=$("$BUS" emit --kind commit --repo /some/project/ --title 'Done' --id commit "$WORK/body")
-clock=$(date +%H:%M)
-block=$(printf '▌ commit · project · %s · Done\nline 1\n  line 2' "$clock")
-assert test "$(message <<<"$output")" = "$(printf '\n%s' "$block")"
+output=$("$BUS" emit --kind commit --id commit "$WORK/body")
+block=$(printf 'line 1\n  line 2\t')
+assert jq -e --arg m "$block" '. == {systemMessage:("\n" + $m)}' <<<"$output" >/dev/null
 assert test "$("$BUS" list)" = "$block"
 assert test "$(count "$STORE/emitted/pending")" = 0
 assert test -z "$("$BUS" emit --kind commit --id commit "$WORK/body")"
-for kind in review push pool-run worker notice; do
+for kind in review push pool-run notice; do
   assert test -n "$(printf body | "$BUS" emit --kind "$kind")"
 done
 unset CLAUDE_CODE_SESSION_ID
@@ -105,7 +109,7 @@ broken=$(find "$STORE/broken/pending" -name '*.txt')
 printf 'not JSON\n' >"$broken"
 assert test -z "$(flush broken)"
 output=$(flush broken Stop)
-assert test "$(message <<<"$output")" = "report-bus: 1 report(s) undelivered — $STORE/broken/pending"
+assert test "$(message <<<"$output")" = "$(printf '\nreport-bus: 1 report(s) undelivered — %s' "$STORE/broken/pending")"
 assert test -f "$broken"
 assert test "$(count "$STORE/broken/delivered")" = 0
 post broken valid 'still deliverable'
@@ -132,12 +136,12 @@ printf 'inner-session\n' >"$WORKER_RUN_DIR/inner/worker-session"
 export CLAUDE_CODE_SESSION_ID=inner-session CLAUDE_LAUNCHER_SESSION=outer-session
 post explicit wins
 assert test "$(count "$STORE/explicit/pending")" = 1
-printf chain | "$BUS" post --kind worker --id chain
+printf chain | "$BUS" post --kind review --id chain
 assert test "$(count "$STORE/launch-chat/pending")" = 1
-WORKER_RUN_DIR="$WORKER_RUN_DIR/inner" CLAUDE_LAUNCHER_SESSION=wrong "$BUS" post --kind worker --id direct <<<direct
+WORKER_RUN_DIR="$WORKER_RUN_DIR/inner" CLAUDE_LAUNCHER_SESSION=wrong "$BUS" post --kind review --id direct <<<direct
 assert test "$(count "$STORE/launch-chat/pending")" = 2
 unset CLAUDE_LAUNCHER_SESSION
-printf chain | "$BUS" post --kind worker --id env-chain
+printf chain | "$BUS" post --kind review --id env-chain
 assert test "$(count "$STORE/launch-chat/pending")" = 3
 export CLAUDE_CODE_SESSION_ID=plain-chat
 printf plain | "$BUS" post --kind notice --id plain
@@ -166,7 +170,7 @@ real_jq=$(command -v jq)
 cat >"$WORK/bin/jq" <<'JQ'
 #!/usr/bin/env bash
 for arg in "$@"; do
-  case "$arg" in '{systemMessage:$m}') exit 1 ;; esac
+  case "$arg" in *'{systemMessage:'*) exit 1 ;; esac
 done
 exec "$REAL_JQ" "$@"
 JQ
@@ -221,7 +225,7 @@ assert test -n "$("$BUS" list --session pruned)"
 printf orphan | "$BUS" post --kind notice --id adopted-once
 post resolved adopted-once
 output=$(flush resolved)
-assert test "$(message <<<"$output" | grep -c '^▌')" = 1
+assert jq -e '. == {systemMessage:"\nchat: unknown\norphan"}' <<<"$output" >/dev/null
 post unrelated history-tail
 flush unrelated >/dev/null
 post resolved adopted-once
@@ -238,7 +242,7 @@ done
 output=$(printf context | "$BUS" emit --kind notice --id contextual --context 'model directive' --event Stop)
 assert jq -e '.hookSpecificOutput == {hookEventName:"Stop",additionalContext:"model directive"} and (.systemMessage | endswith("context"))' <<<"$output" >/dev/null
 output=$(printf push | "$BUS" emit --kind push --id 'abc@origin/main')
-assert jq -e '.systemMessage | startswith("\n▌ push ") and endswith("push")' <<<"$output" >/dev/null
+assert jq -e '.systemMessage | . == "\nchat: unknown\npush"' <<<"$output" >/dev/null
 lines=$(jq -s length "$STORE/history.log")
 rc=0
 repeat=$(printf push | "$BUS" emit --kind push --id 'abc@origin/main') || rc=$?

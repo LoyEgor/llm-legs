@@ -7,14 +7,14 @@ Requires Bash, jq and shasum.
 ## CLI
 
 ```text
-report-bus post --kind <kind> [--id <id>] [--session <uuid>] [--repo <path-or-name>] [--title <text>] [FILE]
-report-bus emit --kind <kind> [--id <id>] [--repo <path-or-name>] [--title <text>] [--context <text>] [--event <event>] [FILE]
+report-bus post --kind <kind> [--id <id>] [--session <uuid>] [FILE]
+report-bus emit --kind <kind> [--id <id>] [--context <text>] [--event <event>] [FILE]
 report-bus flush --event <PostToolUse|SubagentStop|Stop|UserPromptSubmit> [--session <uuid>]
 report-bus list [--session <uuid>] [--last N]
 report-bus doctor
 ```
 
-Kinds are `review`, `commit`, `push`, `pool-run`, `worker`, `notice`. Other kinds and bad
+Kinds are `review`, `commit`, `push`, `pool-run`, `notice`. Other kinds and bad
 arguments exit 2. Session IDs contain only letters, digits, `.`, `_`, `-`; empty sessions, `.` and `..`
 are invalid. Report IDs replace other characters with `-`; `.` and `..` gain a `report-` prefix. The default ID is the first 12 hex digits of the body's
 SHA256. The dedup key is `<kind>/<id>` within a session, checked against pending, delivered
@@ -34,7 +34,7 @@ field `sessionId`. Inferred sessions follow `worker-session` → `launcher` reco
 or ambiguous ownership. Explicit sessions win unchanged.
 
 `emit` is the hook producer path: the same renderer prints one `{"systemMessage":"…"}`
-(the message opens with a newline, as the producer fallbacks do) and appends its text to
+and appends its text to
 history, with no pending file. Optional `--context` adds
 `hookSpecificOutput.additionalContext` with `hookEventName` from `--event` (default
 `PostToolUse`), preserving model directives alongside the user-facing report. `flush` reads hook JSON from stdin
@@ -45,14 +45,8 @@ the worker-tag agent types `codex-worker`, `claudeb-worker`, `gemini-worker`, `g
 
 ## Rendering and storage
 
-```text
-▌ <kind> · <repo or account> · HH:MM[ · <title>]
-<body verbatim, trailing whitespace trimmed>
-```
-
-The repo is the basename of `--repo`; without it the entire repo segment is omitted.
-The clock is local posting time. Orphan reports include `chat: unknown` below the header.
-Bodies retain internal whitespace and line breaks. Blocks are separated by one blank line.
+Bodies are delivered verbatim except for boundary newlines; orphan reports start with `chat: unknown`.
+Both `emit` and `flush` start systemMessage with exactly one newline, separate blocks by exactly one blank line, and add no trailing blank line.
 
 Root: `${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports`.
 
@@ -102,12 +96,3 @@ pins event draining; hook registration is verified in that repository.
 No hook fires while a chat is idle with no turn in progress. A background report produced
 then waits for the next prompt. A broken renderer or unavailable filesystem remains visible as undelivered rather than
 causing a report to be truncated.
-
-`worker-run` posts on every terminal outcome through `outcome_line`, including detached
-completion, killed runs, unknown exits and launch refusals. The body has three lines:
-OUTCOME, vendor/account/model/effort and wall-clock, files count. Missing `report-bus` is a
-silent no-op. A per-run receipt prevents repeated wait/report calls from posting again. The posting marker
-records its PID, is removed on exit, and is recovered after 60 seconds or when its owner dies.
-A refused launch reports under a run ID of its own and never the id of the run it names, so its
-report cannot dedup away that run's own completion; the id stays internal, because a printed `RUN:`
-line means a run directory exists.

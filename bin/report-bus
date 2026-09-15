@@ -89,16 +89,18 @@ skip_flush() {
 }
 render() {
   jq -er '
-    if type != "object" or (.body | type) != "string" or
-       (.kind | type) != "string" or (.clock | type) != "string" or
-       (.repo | type) != "string" or (.title | type) != "string"
+    if type != "object" or (.body | type) != "string"
     then error("invalid report") else
-      "▌ " + .kind + (if .repo == "" then "" else " · " + .repo end) +
-      " · " + .clock + (if .title == "" then "" else " · " + .title end) + "\n" +
       (if .session == "_orphan" then "chat: unknown\n" else "" end) +
-      (.body | sub("\\s+$"; ""))
+      (.body | sub("^\n+"; "") | sub("\n+$"; ""))
     end' "$1"
 }
+hook_output() {
+  jq -cn --arg m "$1" --arg c "${2:-}" --arg e "${3:-PostToolUse}" '
+    {systemMessage:("\n" + $m)} + (if $c == "" then {} else
+      {hookSpecificOutput:{hookEventName:$e,additionalContext:$c}} end)'
+}
+
 duplicate() {
   local entry
   for entry in "$ROOT/$session/pending/"*"__${kind}__${id}.txt" "$ROOT/$session/delivered/"*"__${kind}__${id}.txt" "$ROOT/_orphan/pending/"*"__${kind}__${id}.txt" "$ROOT/_orphan/delivered/"*"__${kind}__${id}.txt"; do
@@ -136,17 +138,15 @@ prune() {
   done | LC_ALL=C sort -rn -k1,1 -k2 | cut -f2-)
 }
 verb=${1:-}; [ "$#" -gt 0 ] || usage; shift
-kind='' id='' session='' repo='' title='' file='' event='' context='' last=10
+kind='' id='' session='' file='' event='' context='' last=10
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --kind|--id|--session|--repo|--title|--event|--context|--last)
+    --kind|--id|--session|--event|--context|--last)
       [ "$#" -ge 2 ] && [ -n "$2" ] || usage
       case "$verb:$1" in
         post:--kind|emit:--kind) kind=$2 ;;
         post:--id|emit:--id) id=$2 ;;
         post:--session|flush:--session|list:--session) session=$2; valid_name "$session" || usage ;;
-        post:--repo|emit:--repo) repo=${2%/}; repo=${repo##*/} ;;
-        post:--title|emit:--title) title=$2 ;;
         flush:--event|emit:--event) event=$2 ;;
         emit:--context) context=$2 ;;
         list:--last) last=$2; [[ "$last" =~ ^[0-9]+$ ]] || usage ;;
@@ -159,7 +159,7 @@ while [ "$#" -gt 0 ]; do
 done
 case "$verb" in
   post|emit)
-    case "$kind" in review|commit|push|pool-run|worker|notice) ;; *) usage ;; esac
+    case "$kind" in review|commit|push|pool-run|notice) ;; *) usage ;; esac
     id=$(printf '%s' "$id" | LC_ALL=C tr -c 'A-Za-z0-9._-\n' '-' | tr '\n' '-')
     case "$id" in .|..) id="report-$id" ;; esac
     body=$(if [ -n "$file" ]; then cat "$file"; else cat; fi; rc=$?; printf '\001'; exit "$rc") || problem 'cannot read body'
@@ -172,8 +172,7 @@ case "$verb" in
     mkdir -p "$ROOT/$session/pending" "$ROOT/$session/delivered" 2>/dev/null || problem 'cannot create queue'
     tmp=$(mktemp "$ROOT/.post.XXXXXX") || problem 'cannot create temporary report'
     printf '%s' "$body" | jq -Rs --arg kind "$kind" --arg id "$id" --arg session "$session" \
-      --arg repo "$repo" --arg title "$title" --arg clock "$(date +%H:%M)" \
-      '{kind:$kind,id:$id,session:$session,repo:$repo,title:$title,clock:$clock,body:.,epoch:now}' \
+      '{kind:$kind,id:$id,session:$session,body:.,epoch:now}' \
       >"$tmp" 2>/dev/null || problem 'cannot encode report'
     if [ "$verb" = post ]; then
       stamp=$(jq -r '.epoch * 1000000000 | floor' "$tmp") || problem 'cannot timestamp report'
@@ -181,9 +180,7 @@ case "$verb" in
       tmp=''
     else
       block=$(render "$tmp" 2>/dev/null) || problem 'cannot render report'
-      output=$(jq -cn --arg m "$block" --arg c "$context" --arg e "${event:-PostToolUse}" \
-        '{systemMessage:("\n" + $m)} + (if $c == "" then {} else
-          {hookSpecificOutput:{hookEventName:$e,additionalContext:$c}} end)') || problem 'cannot encode hook output'
+      output=$(hook_output "$block" "$context" "${event:-PostToolUse}") || problem 'cannot encode hook output'
       event=emit
       row=$(history_row "$tmp" "$block") || problem 'cannot encode history'
       printf '%s\n' "$row" >>"$ROOT/history.log" || problem 'cannot append history'
@@ -217,7 +214,7 @@ case "$verb" in
       block=$(render "$entry" 2>/dev/null) || continue
       candidate="$blocks${blocks:+$'\n\n'}$block"
       bytes=$(printf '%s' "$candidate" | wc -c | tr -d ' ')
-      [ "$((bytes + reserve))" -le "$CAP" ] || [ "${#selected[@]}" -eq 0 ] || break
+      [ "$((bytes + reserve + 1))" -le "$CAP" ] || [ "${#selected[@]}" -eq 0 ] || break
       row=$(history_row "$entry" "$block" 2>/dev/null) || continue
       selected+=("$entry"); rows+=("$row")
       blocks=$candidate
@@ -227,8 +224,10 @@ case "$verb" in
     if [ "$event" = Stop ] && [ "$remaining" -gt 0 ]; then
       blocks="$blocks${blocks:+$'\n\n'}report-bus: $remaining report(s) undelivered — $ROOT/$session/pending"
     fi
-    if [ -n "$blocks" ]; then
-      output=$(jq -cn --arg m "$blocks" '{systemMessage:$m}') || exit 0
+    # A body that renders to nothing is still a delivered report: gating on the text alone
+    # left it pending forever, re-read by every later flush and counted undelivered.
+    if [ "${#selected[@]}" -gt 0 ] || [ -n "$blocks" ]; then
+      output=$(hook_output "$blocks") || exit 0
       printf '%s\n' "$output" || exit 0
       for ((index=0; index<${#selected[@]}; index++)); do
         entry=${selected[index]}
