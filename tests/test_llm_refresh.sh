@@ -47,7 +47,8 @@ if [ "${STUB_REFRESH_SUCCEED:-1}" = 1 ]; then
   jq --arg vendor "$vendor" --arg account "$account" --argjson now "$LLM_REFRESH_NOW" '
     .vendors[$vendor].accounts |= map(
       if .account == $account then
-        .five_hour.as_of=$now | .weekly.as_of=$now | del(.refresh_error)
+        .five_hour.as_of=$now | .weekly.as_of=$now |
+        del(.refresh_error, .auth_needed, .auth_checked_at)
       else . end) |
     .vendors[$vendor] |= del(.refresh_error)' "$LLM_LIMITS_CACHE" >"$tmp" && \
     mv -f "$tmp" "$LLM_LIMITS_CACHE"
@@ -768,9 +769,13 @@ pass
 case_dir="$WORK/blocked-account"
 mkdir -p "$case_dir/home"
 write_store "$case_dir/store.json" "$NOW" 60 60 60
-jq --argjson now "$NOW" '.vendors.gemini.accounts += [{account:"delta",auth_needed:true,
-  five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
-  "$case_dir/store.json" >"$case_dir/store.tmp" && mv "$case_dir/store.tmp" "$case_dir/store.json"
+seed_gemini_login() { # <dir> <seconds since the login verdict>
+  jq --argjson now "$NOW" --argjson age "$2" '.vendors.gemini.accounts += [{account:"delta",
+    auth_needed:true,auth_checked_at:($now - $age),
+    five_hour:{used_pct:10,as_of:($now - 7200)},weekly:{used_pct:20,as_of:($now - 7200)}}]' \
+    "$1/store.json" >"$1/store.tmp" && mv "$1/store.tmp" "$1/store.json"
+}
+seed_gemini_login "$case_dir" 600
 write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
 run_refresh "$case_dir" "$NOW" || fail 'blocked-account run failed'
 grep -q -- '--refresh-account' "$case_dir/calls.log" && \
@@ -779,6 +784,41 @@ jq -eRn '[inputs | fromjson | .vendor == "gemini" and .outcome == "fresh-passive
   (.accounts_tried | length) == 0 and (.detail | test("; unrefreshable: delta$"))] | any' \
   "$case_dir/journal.jsonl" >/dev/null || \
   fail 'blocked account missing from the gemini journal detail'
+pass
+
+# A Gemini login verdict can be one contended keychain read, and the probe that overturns it is
+# free, so a verdict older than the re-check age is asked again on the vendor's tick.
+case_dir="$WORK/gemini-login-recheck"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+seed_gemini_login "$case_dir" 1800
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+run_refresh "$case_dir" "$NOW" || fail 'gemini login re-check run failed'
+[ "$(grep -c -- '--refresh-account' "$case_dir/calls.log")" -eq 1 ] && \
+  grep -qx -- '--refresh-account gemini/delta' "$case_dir/calls.log" || \
+  fail 'a stale Gemini login verdict was not re-probed exactly once'
+jq -e '[.vendors.gemini.accounts[] | select(.account == "delta")][0] | has("auth_needed") | not' \
+  "$case_dir/store.json" >/dev/null || fail 'the re-check stub did not clear the verdict'
+jq -eRn '[inputs | fromjson | .vendor == "gemini" and .step == 1 and .outcome == "refreshed" and
+  .accounts_tried == ["delta"] and
+  (.detail | startswith("login re-checked: delta (cleared: delta); ") and
+   (test("unrefreshable") | not))] | any' "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'the cleared Gemini login verdict was not journaled as a refresh'
+pass
+
+case_dir="$WORK/gemini-login-confirmed"
+mkdir -p "$case_dir/home"
+write_store "$case_dir/store.json" "$NOW" 60 60 60
+seed_gemini_login "$case_dir" 7200
+write_state "$case_dir/state.json" 30 30 30 0 "$NOW"
+STUB_REFRESH_SUCCEED=0 run_refresh "$case_dir" "$NOW" || fail 'gemini login confirm run failed'
+grep -qx -- '--refresh-account gemini/delta' "$case_dir/calls.log" || \
+  fail 'a stale Gemini login verdict was not re-probed'
+jq -eRn '[inputs | fromjson | .vendor == "gemini" and .outcome == "fresh-passive" and
+  .accounts_tried == ["delta"] and
+  (.detail | startswith("login re-checked: delta; ") and test("; unrefreshable: delta$"))] | any' \
+  "$case_dir/journal.jsonl" >/dev/null || \
+  fail 'a Gemini login the re-check confirmed was journaled as cleared'
 pass
 
 # Grok rides the normal cadence: the billing read is a usage query, so a stale account is

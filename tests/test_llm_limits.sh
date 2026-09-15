@@ -3362,5 +3362,74 @@ else
   echo "SKIP (hs unavailable): Hammerspoon projection contract"
 fi
 
+# agy's keychain read times out under parallel probes and answers "Authentication required" for a
+# healthy token, so one auth_needed answer is never the verdict: it is re-asked once, alone under
+# the shared probe lock, and only a second one records "login needed". Kept last and on its own
+# HOME and store: the lock waits here must not age the fixtures the clock-bound checks above read.
+GEMINI_FLAKY_HELPER="$WORK/fake-agy-flaky"
+GEMINI_FLAKY_COUNT="$WORK/fake-agy-flaky.count"
+GEMINI_FLAKY_DIR="$WORK/gemini-flaky-accounts"
+GEMINI_FLAKY_HOME="$WORK/gemini-flaky-home"
+GEMINI_FLAKY_CACHE="$WORK/gemini-flaky.json"
+GEMINI_FLAKY_STORE="$WORK/gemini-flaky-store.json"
+cat >"$GEMINI_FLAKY_HELPER" <<'EOF'
+#!/usr/bin/env bash
+calls=$(( $(cat "$GEMINI_FLAKY_COUNT" 2>/dev/null || printf 0) + 1 ))
+printf '%s\n' "$calls" >"$GEMINI_FLAKY_COUNT"
+if /usr/bin/lockf -k -t 0 "$GEMINI_FLAKY_DIR/.auth-probe.lock" true 2>/dev/null; then
+  printf 'free\n' >>"$GEMINI_FLAKY_COUNT.lock"
+else
+  printf 'held\n' >>"$GEMINI_FLAKY_COUNT.lock"
+fi
+if [ "$calls" -le "$GEMINI_FLAKY_AUTH_CALLS" ]; then
+  printf '%s\n' '{"auth_needed":true,"source":"agy-print-usage","detail":"Authentication required"}'
+  exit 2
+fi
+printf '{"groups":[{"displayName":"Gemini Models","buckets":[{"window":"weekly","remainingFraction":0.75,"resetTime":"%s"},{"window":"5h","remainingFraction":0.995,"resetTime":"%s"}]}]}\n' \
+  "$GEMINI_WEEK_RESET" "$GEMINI_FIVE_RESET"
+EOF
+chmod +x "$GEMINI_FLAKY_HELPER"
+mkdir -p "$GEMINI_FLAKY_DIR" "$GEMINI_FLAKY_HOME"
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_FLAKY_CACHE"
+run_gemini_flaky() {
+  rm -f "$GEMINI_FLAKY_COUNT" "$GEMINI_FLAKY_COUNT.lock"
+  GEMINI_FLAKY_COUNT="$GEMINI_FLAKY_COUNT" GEMINI_FLAKY_DIR="$GEMINI_FLAKY_DIR" \
+    GEMINI_FLAKY_AUTH_CALLS="$1" LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$GEMINI_FLAKY_DIR" \
+    LLM_LIMITS_GEMINI_AUTH_LOCK_WAIT="${2:-60}" \
+    LLM_LIMITS_GEMINI_REFRESH=1 LLM_LIMITS_GEMINI_CMD="$GEMINI_FLAKY_HELPER" \
+    LLM_LIMITS_GEMINI_CACHE="$GEMINI_FLAKY_CACHE" HOME="$GEMINI_FLAKY_HOME" \
+    LLM_LIMITS_CACHE="$GEMINI_FLAKY_STORE" \
+    /bin/bash "$SCRIPT" --refresh-account gemini --json 2>/dev/null
+}
+gemini_flaky=$(run_gemini_flaky 1) || fail "Gemini refresh with a contended first probe failed"
+[ "$(cat "$GEMINI_FLAKY_COUNT")" = 2 ] || fail "a first auth_needed answer was not re-asked exactly once"
+[ "$(tr '\n' ' ' <"$GEMINI_FLAKY_COUNT.lock")" = "free held " ] \
+  || fail "the confirming Gemini probe did not run under the shared probe lock"
+jq -e '.vendors.gemini.available == true and (.vendors.gemini | has("auth_needed") | not) and
+  .vendors.gemini.status != "login needed" and (.vendors.gemini | has("refresh_error") | not) and
+  .vendors.gemini.weekly.used_pct == 25' <<<"$gemini_flaky" >/dev/null \
+  || fail "one contended Gemini probe still produced a login-needed verdict"
+jq -e 'has("auth_needed") or has("auth_checked_at") | not' "$GEMINI_FLAKY_CACHE" >/dev/null \
+  || fail "the Gemini cache kept an auth verdict the confirming probe overturned"
+# This HOME holds no other vendor, so a Gemini with no usable account is the documented exit 3.
+gemini_confirmed=$(run_gemini_flaky 2) || [ $? -eq 3 ] || fail "Gemini refresh with a confirmed logout failed"
+[ "$(cat "$GEMINI_FLAKY_COUNT")" = 2 ] || fail "a confirmed Gemini logout took other than two probes"
+jq -e '.vendors.gemini.auth_needed == true and .vendors.gemini.status == "login needed" and
+  (.vendors.gemini.auth_checked_at | type) == "number"' <<<"$gemini_confirmed" >/dev/null \
+  || fail "two auth_needed answers did not record login needed with its verdict time"
+jq -e '.auth_needed == true and (.auth_checked_at | type) == "number" and
+  (.groups[0].buckets | length) == 2' "$GEMINI_FLAKY_CACHE" >/dev/null \
+  || fail "the confirmed Gemini logout lost its verdict time or the prior buckets"
+printf '%s\n' "$gemini_cache_saved" >"$GEMINI_FLAKY_CACHE"
+/usr/bin/lockf -k "$GEMINI_FLAKY_DIR/.auth-probe.lock" sleep 5 &
+gemini_lock_holder=$!
+sleep 0.5
+gemini_busy=$(run_gemini_flaky 2 1) || [ $? -eq 3 ] || fail "Gemini refresh with a busy probe lock failed"
+kill "$gemini_lock_holder" 2>/dev/null; wait "$gemini_lock_holder" 2>/dev/null
+[ "$(cat "$GEMINI_FLAKY_COUNT")" = 1 ] || fail "a busy probe lock did not stop the confirming probe"
+jq -e '(.vendors.gemini | has("auth_needed") | not) and
+  .vendors.gemini.refresh_error.cause == "login unconfirmed (auth probe lock busy)"' \
+  <<<"$gemini_busy" >/dev/null || fail "an unconfirmed Gemini logout became a verdict: $gemini_busy"
+
 echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
 exit 0

@@ -474,6 +474,8 @@ grok_wall=$(wall_for grok)
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 gemini_accounts_cache_dir="${LLM_LIMITS_GEMINI_ACCOUNTS_DIR:-$HOME/.llm-limits-gemini}"
+gemini_auth_lock_wait=${LLM_LIMITS_GEMINI_AUTH_LOCK_WAIT:-60}
+case "$gemini_auth_lock_wait" in ''|*[!0-9]*) gemini_auth_lock_wait=60 ;; esac
 gemini_main_cache=${LLM_LIMITS_GEMINI_CACHE:-$HOME/.llm-limits-gemini.json}
 agy_bin=${AGY_BIN:-$HOME/.local/bin/agy}
 . "$script_dir/share/gemini-accounts.sh"
@@ -825,10 +827,26 @@ refresh_gemini_quota() {
   env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" \
     "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
   if [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' "$gemini_tmp" >/dev/null 2>&1; then
+    rc=0
+    # agy's keychain read times out when several profiles probe at once and then reports a
+    # healthy token as logged out, so the confirming probe must never run beside another one.
+    if [ -x /usr/bin/lockf ] && mkdir -p "$gemini_accounts_cache_dir" 2>/dev/null; then
+      /usr/bin/lockf -k -t "$gemini_auth_lock_wait" "$gemini_accounts_cache_dir/.auth-probe.lock" \
+        env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" \
+        "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
+    else
+      env HOME="$gemini_home" AGY_BIN="$agy_bin" AGY_WORKDIR="${AGY_WORKDIR:-$script_dir}" \
+        "$gemini_cmd" >"$gemini_tmp" 2>"$gemini_err" || rc=$?
+    fi
+  fi
+  if [ "$rc" -eq 2 ] && jq -e '.auth_needed == true' "$gemini_tmp" >/dev/null 2>&1; then
     auth_detail=$(jq -r '.detail // empty' "$gemini_tmp" 2>/dev/null || true)
     if [ -r "$gemini_cache" ] && jq -e '(.groups | type) == "array"' "$gemini_cache" >/dev/null 2>&1 &&
-      jq -e --arg detail "$auth_detail" '. + {auth_needed:true, detail:$detail}' "$gemini_cache" >"$gemini_tmp.auth" 2>/dev/null; then
+      jq -e --arg detail "$auth_detail" --argjson at "$now_epoch" \
+        '. + {auth_needed:true, detail:$detail, auth_checked_at:$at}' "$gemini_cache" >"$gemini_tmp.auth" 2>/dev/null; then
       touch -r "$gemini_cache" "$gemini_tmp.auth" 2>/dev/null || true
+      mv -f "$gemini_tmp.auth" "$gemini_tmp"
+    elif jq -e --argjson at "$now_epoch" '. + {auth_checked_at:$at}' "$gemini_tmp" >"$gemini_tmp.auth" 2>/dev/null; then
       mv -f "$gemini_tmp.auth" "$gemini_tmp"
     fi
     if mv -f "$gemini_tmp" "$gemini_cache"; then
@@ -862,6 +880,7 @@ refresh_gemini_quota() {
     fi
   else
     detail=$(jq -r '.error // empty' "$gemini_err" 2>/dev/null || true)
+    [ "$rc" -ne 75 ] || [ -n "$detail" ] || detail='login unconfirmed (auth probe lock busy)'
     [ -n "$detail" ] || detail='live query failed'
     rm -f "$gemini_tmp" "$gemini_err"
     record_gemini_refresh "$result_file" "$account" true false "$detail"
@@ -1764,10 +1783,12 @@ while IFS= read -r gemini_account; do
   gemini_enabled=true
   if worker_pool_is_disabled "$gemini_pool_dir" "$gemini_account"; then gemini_enabled=false; fi
   gemini_auth=''
+  gemini_auth_checked=''
   gemini_data=''
   gemini_mtime=$now_epoch
   if [ -r "$gemini_cache" ]; then
     gemini_auth=$(jq -r 'if .auth_needed == true then "1" else "" end' "$gemini_cache" 2>/dev/null || true)
+    gemini_auth_checked=$(int_or_empty "$(jq -r '.auth_checked_at // empty' "$gemini_cache" 2>/dev/null || true)")
     gemini_data=$(jq -c '
       [.groups[]? | select((.displayName // "") | ascii_downcase | contains("gemini"))][0] as $group |
       [$group.buckets[]? | select(.window == "5h")][0] as $five |
@@ -1783,7 +1804,7 @@ while IFS= read -r gemini_account; do
     stale=$((now_epoch - gemini_mtime)); [ "$stale" -ge 0 ] || stale=0
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" --argjson d "$gemini_data" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
-      --argjson stale "$stale" --arg auth "$gemini_auth" \
+      --argjson stale "$stale" --arg auth "$gemini_auth" --arg checked "$gemini_auth_checked" \
       --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" '
       def used($remaining):
         ((1 - $remaining) * 100) |
@@ -1794,12 +1815,15 @@ while IFS= read -r gemini_account; do
        weekly:{used_pct:used($d.week.remainingFraction),resets_at:$d.week.resetTime,
                as_of:$as_of_epoch,origin:"usage",stale:($stale > $thrw)},
        as_of:$as_of,stale_seconds:$stale}
-      | if $auth == "1" then . + {auth_needed:true,status:"login needed"} else . end')
+      | if $auth == "1" then . + {auth_needed:true,status:"login needed"} +
+          (if $checked == "" then {} else {auth_checked_at:($checked | tonumber)} end) else . end')
   elif [ "$gemini_auth" = 1 ]; then
     gemini_account_json=$(jq -cn --arg account "$gemini_account" --argjson enabled "$gemini_enabled" \
       --arg as_of "$(epoch_iso "$gemini_mtime")" --argjson as_of_epoch "$gemini_mtime" \
+      --arg checked "$gemini_auth_checked" \
       '{account:$account,enabled:$enabled,auth_needed:true,
-        status:"login needed",source:"agy-print-usage",as_of:$as_of,as_of_epoch:$as_of_epoch}')
+        status:"login needed",source:"agy-print-usage",as_of:$as_of,as_of_epoch:$as_of_epoch} +
+       (if $checked == "" then {} else {auth_checked_at:($checked | tonumber)} end)')
   else
     # No cache and no auth marker = the account has never been refreshed. Emit
     # nothing, matching claude/codex: accounts exist for the menu only via their

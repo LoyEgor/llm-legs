@@ -99,6 +99,8 @@ revive_timeout=${LLM_LIMITS_REFRESH_REVIVE_TIMEOUT:-240}
 case "$revive_timeout" in ''|*[!0-9]*|0) revive_timeout=240 ;; esac
 probe_timeout=${LLM_LIMITS_REFRESH_PROBE_TIMEOUT:-90}
 case "$probe_timeout" in ''|*[!0-9]*|0) probe_timeout=90 ;; esac
+login_recheck=${LLM_LIMITS_REFRESH_LOGIN_RECHECK_SECONDS:-1800}
+case "$login_recheck" in ''|*[!0-9]*) login_recheck=1800 ;; esac
 store=${LLM_LIMITS_CACHE:-$HOME/.llm-limits.json}
 state_file=${LLM_LIMITS_REFRESH_STATE:-${LLM_REFRESH_STATE:-$HOME/.llm-limits-refresh.state}}
 journal_file=${LLM_LIMITS_REFRESH_JOURNAL:-${LLM_REFRESH_JOURNAL:-$HOME/.llm-limits-refresh.jsonl}}
@@ -244,6 +246,40 @@ timeout_command() {
 
 blocked_accounts_json() {
   stale_rows_json "$1" "$2" 1
+}
+
+# The one blocked state a free probe can overturn: agy reports a healthy Gemini token as logged out
+# when its keychain read times out, so a login verdict is asked again once it is old enough.
+gemini_login_needed_json() {
+  [ -r "$store" ] || { printf '[]\n'; return 0; }
+  jq -c --argjson now "$now" --argjson age "${1:-0}" '
+    [.vendors.gemini.accounts[]? | select(.auth_needed == true and .removed != true) |
+     select($now - ((.auth_checked_at | numbers) // 0) >= $age) | .account]' "$store" 2>/dev/null ||
+    printf '[]\n'
+}
+
+# One targeted collector refresh for run_tick: it updates the tick's own locals (tried, pushback,
+# pushback_note, wall_note, target_rc) through bash's dynamic scope.
+collector_probe() {
+  local vendor=$1 account=$2 refresh_log rc=0 errors signals stderr_hit
+  tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
+  refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
+  tick_tmp=$refresh_log
+  # An expired grok token is refreshable work: the collector's targeted refresh rotates it
+  # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
+  "$collector" --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
+  errors=$(recorded_errors "$vendor" "$account" "$now")
+  signals=$({ cat "$refresh_log"; printf '%s\n' "$errors"; })
+  stderr_hit=$(pushback_hit <<<"$signals")
+  if [ -n "$stderr_hit" ]; then
+    pushback=1
+    [ -n "$pushback_note" ] || pushback_note=$stderr_hit
+  elif [ -z "$wall_note" ]; then
+    wall_note=$(wall_hit <<<"$signals")
+  fi
+  if [ "$rc" -ne 0 ]; then target_rc=$rc; fi
+  rm -f "$refresh_log"
+  tick_tmp=''
 }
 
 # OpenCode is the inverted vendor. The other four refresh by reading a free usage endpoint; the Go
@@ -454,7 +490,7 @@ run_tick() {
   local pushback next_interval new_clean lock_dir state_tmp refresh_log rc account blocked
   local opencode_result lock_lost=0 reserved='[]'
   local direct expired probed session_account claude_touched
-  local pushback_note wall_note stderr_hit signals
+  local pushback_note wall_note stderr_hit signals rechecked cleared
 
   command -v jq >/dev/null 2>&1 || { echo 'llm-refresh: jq is required' >&2; return 3; }
   [ -x "$collector" ] || { echo "llm-refresh: collector is not executable: $collector" >&2; return 3; }
@@ -521,6 +557,15 @@ run_tick() {
     probe_verdicts=''
     pushback_note=''
     wall_note=''
+    rechecked='[]'
+    if [ "$vendor" = gemini ]; then
+      rechecked=$(gemini_login_needed_json "$login_recheck")
+      while IFS= read -r account; do
+        [ -n "$account" ] || continue
+        step=1
+        collector_probe "$vendor" "$account" || return 5
+      done < <(jq -r '.[]' <<<"$rechecked")
+    fi
 
     if [ "$(jq 'length' <<<"$stale")" -gt 0 ]; then
       if [ "$vendor" = claude ]; then
@@ -631,25 +676,7 @@ run_tick() {
       else
         while IFS= read -r account; do
           step=1
-          tried=$(jq -c --arg account "$account" '. + [$account]' <<<"$tried")
-          refresh_log=$(mktemp "${TMPDIR:-/tmp}/llm-refresh.XXXXXX") || return 5
-          tick_tmp=$refresh_log
-          rc=0
-          # An expired grok token is refreshable work: the collector's targeted refresh rotates it
-          # through the vendor CLI before polling (row ak), so the tick only asks for the re-poll.
-          "$collector" --refresh-account "$vendor/$account" >/dev/null 2>>"$refresh_log" || rc=$?
-          errors=$(recorded_errors "$vendor" "$account" "$now")
-          signals=$({ cat "$refresh_log"; printf '%s\n' "$errors"; })
-          stderr_hit=$(pushback_hit <<<"$signals")
-          if [ -n "$stderr_hit" ]; then
-            pushback=1
-            [ -n "$pushback_note" ] || pushback_note=$stderr_hit
-          elif [ -z "$wall_note" ]; then
-            wall_note=$(wall_hit <<<"$signals")
-          fi
-          if [ "$rc" -ne 0 ]; then target_rc=$rc; fi
-          rm -f "$refresh_log"
-          tick_tmp=''
+          collector_probe "$vendor" "$account" || return 5
         done < <(jq -r '.[]' <<<"$stale")
       fi
 
@@ -709,6 +736,19 @@ run_tick() {
       fi
     fi
 
+    if [ "$(jq 'length' <<<"$rechecked")" -gt 0 ]; then
+      blocked=$(blocked_accounts_json "$vendor" "$interval")
+      cleared=$(jq -c --argjson still "$(gemini_login_needed_json)" '. - $still' <<<"$rechecked")
+      if [ "$pushback" -eq 1 ] && [ "$outcome" != pushback ]; then
+        outcome=pushback
+        detail="refresh path reported a 429 or rate-limit signal${pushback_note:+: $pushback_note}"
+      elif [ "$outcome" = fresh-passive ] && [ "$(jq 'length' <<<"$cleared")" -gt 0 ]; then
+        outcome=refreshed
+        detail='all stale accounts refreshed'
+      fi
+      detail="login re-checked: $(jq -r 'join(",")' <<<"$rechecked")$(jq -r \
+        'if length > 0 then " (cleared: " + join(",") + ")" else "" end' <<<"$cleared"); $detail"
+    fi
     blocked=$(jq -c --argjson reserved "$reserved" '. + $reserved | unique' <<<"$blocked")
     if [ "$(jq 'length' <<<"$blocked")" -gt 0 ]; then
       detail="${detail:+$detail; }unrefreshable: $(jq -r 'join(",")' <<<"$blocked")"
