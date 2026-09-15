@@ -1043,7 +1043,8 @@ assert grep -Fq 'unknown) ;;' "$STATUSLINE"
 assert grep -Fq 'review_text=${review_text#rev }' "$STATUSLINE"
 assert grep -Fq 'print("split %d %d %d" % debt_split(repo, paths, session))' "$RB_DEBT"
 assert grep -Fq 'parts.append(f"debt {len(owed)} mine")' "$RB_DEBT"
-assert grep -Fq 'print(" · ".join(parts) if parts else "none")' "$RB_DEBT"
+assert grep -Fq 'print(" · ".join((parts or ["none"]) + ([f"settled by decision {settled}"] if settled else [])))' "$RB_DEBT"
+assert doc_has 'the unit is the session, never «chat + folder»'
 assert grep -Fq 'review-bench debt --repo "$v_top" --session "$v_session" --split' "$FLOW_GATE"
 assert grep -Fq 'echo "bright rev $own"' "$FLOW_GATE"
 assert grep -Fq "printf '%s' unknown" "$STATUSLINE"
@@ -1057,6 +1058,18 @@ assert test -z "$(grep -E 'debt-total|review_total|foreign=|echo "split rev' "$F
 assert test -z "$(grep -E 'debt-total|review_total|review_foreign|debt_foreign|/\$\{?foreign' "$STATUSLINE")"
 assert grep -Fq '"$gate" autonomous "$sid"' "$STATUSLINE"
 assert grep -Fq 'review-autonomy-$sid' "$STATUSLINE"
+
+# --- Row ck: a worker run carries the review round it fixes -------------------
+# One id shape on both sides: a launch that stores an id the bench cannot read closes nothing, and
+# the fix the chat paid a worker for stays debt.
+assert doc_has 'A worker run carries the review round it fixes'
+assert test "$(grep -c "^REVIEW_ROUND_RE='^\[0-9\]{8}T\[0-9\]{6}Z-\[0-9a-f\]{7}(-\[0-9\]+)?\$'$" "$ROOT/bin/worker-run")" = 1
+assert grep -Fq 'ROUND_ID_RE = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}(-[0-9]+)?")' "$RB_STORE"
+assert grep -Fq 'WORKER_ROUND_FIELD = "review_round"' "$RB_STORE"
+assert grep -Fq '+ if $review_round != "" then {review_round:$review_round} else {} end' "$ROOT/bin/worker-run"
+assert grep -Fq 'ROUND_BRIEF_PREFIX = "ROUND:"' "$RB_ROUND"
+assert grep -Fq '    ROUND:*) ;;' "$ROOT/bin/worker-run"
+assert grep -Fq 'review_round=$(brief_review_round "$brief" "$first_line") || exit 4' "$ROOT/bin/worker-run"
 
 # --- Row ao: the review debt journal -------------------------------------------
 # One record format for both journals in the git dir, one writer for the debt one, and a reader
@@ -2232,12 +2245,13 @@ assert doc_has '`chat_display`'
 assert doc_has '`chat_suffix`'
 assert grep -Fq 'def chat_display(session, launchers=None, store=None):' "$RB_STORE"
 assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STORE"
-# `debt` prices this chat's own lines and nobody else's, so pricing names no chat; the one chat the
-# module prints is the doctor's round-overflow row, and it goes through `chat_display`, never a
-# resolver call of its own.
+# `debt` prices this chat's own lines and nobody else's, so pricing names no chat; the two chats the
+# module prints — the doctor's round-overflow row and the chat a settle record closes — go through
+# `chat_display`, never a resolver call of its own.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
-assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 1
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 2
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
+assert grep -Fq '{_store.chat_display(session)} in {repo}")' "$RB_DEBT"
 # The foreign-chat refusal names the chat: it exists to send a reader to another conversation.
 assert eq "$(grep -c '_store.chat_suffix(' "$RB_REPORT")" 1
 
@@ -2502,6 +2516,11 @@ assert grep -Fq 'row["until"] = max(spoke, seen) + ttl' "$CHATS"
 assert doc_has '`ephemeral_<n><m\|h>_`'
 assert eq "$(grep -c 'capture("ephemeral_(?<n>\[0-9\]+)(?<u>\[mh\])_")' "$STATUSLINE")" 2
 assert grep -Fq 're.match(r"ephemeral_(\d+)([mh])_", key)' "$CHATFIND_LEGS"
+# A gateway chat stamps its Codex account and gets a nominal lifetime, both named once.
+assert doc_has 'For a gateway chat field 2 is the Codex account (`CLAUDEGPT_ACCOUNT`)'
+assert grep -Fq 'warm_acct="${CLAUDEGPT_ACCOUNT:-$acct}"' "$STATUSLINE"
+assert eq "$(grep -rc 'GATEWAY_CACHE_TTL = ' "$ROOT/bin" "$ROOT/share" | awk -F: '{n += $NF} END {print n}')" 1
+assert grep -Fq 'return chat_resume.GATEWAY_CACHE_TTL' "$CHATFIND_LEGS"
 
 # --- Row bl: the daily budget formula ----------------------------------------
 # The metric that ranks accounts and vendors is defined once. A consumer that re-derives either
@@ -2738,4 +2757,4 @@ assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
 assert test -r "$ROOT/tests/test_instruction_gate.sh"
 assert doc_has 'Instruction-file classes and the one span'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose envelope the menubar reads with no class left to name, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose envelope the menubar reads with no class left to name, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

@@ -4930,7 +4930,41 @@ assert test "$(awk 'NR == 1 {print $2}' "$DELEG_BENCHES/20260801T120000Z-abc123f
 # brief that delegates no triage stamps nothing at all.
 assert test ! -e "$DELEG_BENCHES/20260801T990000Z-fffffff"
 assert test ! -e "$DELEG_BENCHES/20260801T130000Z-def4560/delegated"
+assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 await_done || fail "the delegated run never finished"
+
+# A fixing worker's brief names the review round it fixes — line 1, or line 2 under a RESUME/ATTACH
+# line — and the run record keeps it: review-bench closes the round on what that run produced.
+clear_stub
+mkdir -p "$DELEG_BENCHES/20260801T140000Z-0a1b2c3"
+round_start() {
+  "$RUNNER" start codex --brief "$WORK/round-brief" --workdir "$WORK/workdir" "$@" \
+    >"$WORK/round.out" 2>"$WORK/round.err"
+}
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix the confirmed findings.\n' >"$WORK/round-brief"
+round_start || fail "round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
+await_done || fail "the round run never finished"
+clear_stub
+printf 'RESUME codex-resume:\nROUND: 20260801T140000Z-0a1b2c3\nFix the rest.\n' >"$WORK/round-brief"
+round_start --account main --resume codex-resume || fail "resumed round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
+await_done || fail "the resumed round run never finished"
+for bad_round in 'ROUND: 20260801T140000Z-0A1B2C3' 'ROUND: 20260801T140000Z-0a1b2c' \
+  'ROUND: 20260801T150000Z-0a1b2c3' 'ROUND: 20260801T140000Z- 0a1b2c3'; do
+  clear_stub
+  printf '%s\nFix it.\n' "$bad_round" >"$WORK/round-brief"
+  rc=0
+  round_start || rc=$?
+  assert test "$rc" -eq 4
+  assert test "$(wc -l <"$WORK/round.err" | tr -d ' ')" = 1
+  assert grep -Fq "the shape is 'ROUND: <review-bench run id YYYYMMDDTHHMMSSZ-<7 hex>>'" "$WORK/round.err"
+  assert_fails grep -q '^RUN: ' "$WORK/round.out"
+done
 
 
 # --- grok ----------------------------------------------------------------------------------------

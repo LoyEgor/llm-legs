@@ -24,6 +24,26 @@ fail() {
   exit 4
 }
 
+REVIEW_ROUND_RE='^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}(-[0-9]+)?$'
+
+brief_review_round() {
+  local brief="$1" line="$2" round
+  case "$line" in
+    RESUME\ *:* | ATTACH\ *:*) line=$(sed -n '2p' "$brief") ;;
+  esac
+  case "$line" in
+    ROUND:*) ;;
+    *) return 0 ;;
+  esac
+  round=${line#ROUND:}
+  round=${round#"${round%%[![:space:]]*}"}
+  round=${round%"${round##*[![:space:]]}"}
+  [[ "$round" =~ $REVIEW_ROUND_RE ]] &&
+    [ -d "${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/benches/$round" ] ||
+    fail "brief names no review round on record: '$line' — the shape is 'ROUND: <review-bench run id YYYYMMDDTHHMMSSZ-<7 hex>>'"
+  printf '%s\n' "$round"
+}
+
 # The symlink walk the self-edit guard needs anyway, hoisted here so the include below resolves
 # against the same root instead of a second copy of the same loop.
 SCRIPT_PATH=${BASH_SOURCE[0]}
@@ -1438,7 +1458,7 @@ refuse_live_run() { # brief resume
 
 start_run() {
   [ "$#" -ge 1 ] || usage
-  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' role='workers' research_timeout='' sandbox_exec=''
+  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' role='workers' research_timeout='' sandbox_exec=''
   local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
@@ -1502,6 +1522,7 @@ start_run() {
     *[![:space:]]*) ;;
     *) fail "brief starts with a blank line: $brief — the first line is the run's handle (RESUME/ATTACH) and what a reader identifies it by" ;;
   esac
+  review_round=$(brief_review_round "$brief" "$first_line") || exit 4
   brief_cyrillic=$(cyrillic_share <"$brief") || brief_cyrillic=''
   [ -z "$brief_cyrillic" ] || [ "$brief_cyrillic" -le "$CYRILLIC_MAX" ] ||
     fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
@@ -1768,13 +1789,14 @@ start_run() {
     --arg agy_model "$agy_model" --arg grok_turns "$grok_turns" \
     --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" --arg role "$role" --arg explicit_account "$explicit_account" \
-    --arg research_timeout "$research_timeout" --arg sandbox_exec "$sandbox_exec" \
+    --arg research_timeout "$research_timeout" --arg sandbox_exec "$sandbox_exec" --arg review_round "$review_round" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
+     + if $review_round != "" then {review_round:$review_round} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
