@@ -14,10 +14,6 @@
 
 WORKER_POOL_SHIELD_PER_DAY=${WORKER_POOL_SHIELD_PER_DAY:-3}
 
-worker_pool_invalidate_cache() {
-  rm -f -- "${WORKER_PICK_CACHE_DIR:-$HOME/.cache}"/worker-pick.line.*
-}
-
 worker_pool_file() { printf '%s/disabled\n' "$1"; }
 
 worker_pool_valid_name() {
@@ -93,7 +89,6 @@ worker_pool_set_disabled() {
     if [ "$mode" = on ]; then printf '%s\n' "$name"; fi
   } > "$tmp"
   mv "$tmp" "$file" || return 1
-  worker_pool_invalidate_cache
 }
 
 # The vendor-wide switch behind the menu's "Enable all"/"Disable all": every account the tool's own
@@ -184,7 +179,6 @@ worker_pool_marker_set() {
     rm -f -- "$tmp"
     return 1
   fi
-  worker_pool_invalidate_cache
 }
 
 worker_pool_marker_clear() {
@@ -192,11 +186,7 @@ worker_pool_marker_clear() {
   case "$kind" in shielded|shield-override) ;; *) return 1 ;; esac
   worker_pool_valid_name "$account" || return 1
   dir=$(worker_pool_dir "$vendor") || return 1
-  # Every account of every vendor is cleared on each collector write; invalidating the candidate
-  # cache for a marker that was never there would wipe it on every plain `llm-limits.sh` run.
-  [ -e "$dir/$kind/$account" ] || return 0
-  rm -f -- "$dir/$kind/$account" || return 1
-  worker_pool_invalidate_cache
+  rm -f -- "$dir/$kind/$account"
 }
 
 worker_pool_shield_set() { worker_pool_marker_set "$1" shielded "$2" "$3"; }

@@ -19,7 +19,6 @@ WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 
 CONSISTENCY_CACHE=$(mktemp -d)
 trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
-export WORKER_PICK_CACHE_DIR="$CONSISTENCY_CACHE"
 export WORKER_PICK_CONFIG_FILE="$CONSISTENCY_CACHE/worker-model"
 
 asserts=0
@@ -219,35 +218,6 @@ assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$DRIV
 assert grep -Fq '"Claude Code-credentials-"' "$DRIVER"
 assert grep -Fq '".claude-profiles"' "$DRIVER"
 assert doc_has 'bin/claude-session-driver'
-
-# --- Row c: worker-pick cache line format ------------------------------------
-# Per-field producer printfs and cb prefixes.
-assert grep -Fq "'cx%s%s·%s·%s'" "$WORKERPICK"
-assert grep -Fq "'gx%s%s·%s·%s'" "$WORKERPICK"
-assert grep -Fq "'gr%s%s·%s·%s'" "$WORKERPICK"
-assert grep -Eq 'cb_cache="cb~\$' "$WORKERPICK"
-assert grep -Eq 'cb_cache="cb@\$' "$WORKERPICK"
-assert grep -Fq 'cb_cache="cb~?"' "$WORKERPICK"
-# Producer and consumer must name the same cache file.
-assert grep -q 'worker-pick.line' "$WORKERPICK"
-assert grep -q 'worker-pick.line' "$STATUSLINE"
-# Every field is optional, and only the vendors the store carries contribute one: an absent vendor
-# is absent from the line rather than rendered as a failed lookup.
-for cache_tag in cx cb gm gr; do
-  assert grep -Eq "^\[ \"\\\$${cache_tag}_known\" = (false|true) \]" "$WORKERPICK"
-done
-assert grep -Fq 'gr_mark="⏸"; gr_acct=off' "$WORKERPICK"
-# The consumer finds a vendor by scanning for its tag, which is what makes a missing field legible
-# as "no prediction" rather than shifting every field after it onto the wrong vendor.
-assert grep -Fq 'for field in "$@"; do' "$STATUSLINE"
-assert grep -Fq 'case "$field" in "$tag"*) ;; *) continue ;; esac' "$STATUSLINE"
-# Doc records the format.
-assert doc_has 'cx%s%s·%s·%s'
-assert doc_has 'gr%s%s·%s·%s'
-assert doc_has 'EVERY field is optional and the order never moves'
-# Prose that respells the order is prose that can respell it wrong: the contract names the tags in
-# the order the line writes them.
-assert grep -Fq '`cx`/`cb`/`gx`' "$ROOT/docs/routing-contract.md"
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -660,7 +630,7 @@ printf '%s' "$EDGE_JSON" >"$EDGE_PICK"
 printf 'worker=auto\n' >"$EDGE_MODEL"
 edge_pick() {
   env HOME="$EDGE_HOME" CLAUDEB_DIR="$EDGE_STORE" LLM_LIMITS_FILE="$EDGE_PICK" WORKER_PICK_CONFIG_FILE="$EDGE_MODEL" \
-    WORKER_PICK_CACHE_DIR="$EDGE_WORK/cache" WORKER_CLAIMS_DIR="$EDGE_WORK/claims" \
+    WORKER_CLAIMS_DIR="$EDGE_WORK/claims" \
     CLAUDE_LIMITS_ACCOUNT=missing-five "$WORKERPICK" --account claudeb 2>/dev/null
 }
 assert test "$(edge_pick)" != disabled
@@ -1410,6 +1380,28 @@ assert grep -Fq 'worker_model_pins()' "$WORKER_MODEL_SH"
 assert grep -Fq 'worker_model_pin_add()' "$WORKER_MODEL_SH"
 assert grep -Fq 'worker_model_pin_remove()' "$WORKER_MODEL_SH"
 assert grep -Fq 'worker_model_pin_first()' "$WORKER_MODEL_SH"
+# Row ca's vendor pin: `*` is expanded by the one parser and ranked as its own tier.
+assert doc_has '`<vendor>_profile=*`'
+assert grep -Fq 'worker_model_pin_scope()' "$WORKER_MODEL_SH"
+assert grep -Fq 'worker_model_pool_accounts()' "$WORKER_MODEL_SH"
+assert grep -Fq 'elif $scope == "vendor" then "1" else "0" end' "$ROOT/bin/worker-pick"
+
+# --- Rows ck, cl: chat pin file and its grant ---------------------------------
+# One resolver: a second spelling of the path is a chat whose pin half the readers never see.
+assert doc_has '`${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/<session_id>`'
+assert grep -Fq "printf '%s/%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pins}\" \"\$sid\"" "$WORKER_MODEL_SH"
+assert grep -Fq "chat_pins_dir() { printf '%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pins}\"; }" "$PIN_GATE"
+assert grep -Fq 'pin_file="${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/$session_id"' "$STATUSLINE"
+assert doc_has '`bin/worker-pin-gate.sh` `chat_pins_dir`'
+assert doc_has '`bin/statusline.sh` `pin` segment'
+assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-limits.sh" | sed "s|^$ROOT/||" | sort | tr '\n' ' ')" 'bin/statusline.sh bin/worker-pin-gate.sh share/worker-model.sh '
+assert doc_has '`<state_dir>/pin-grants/chat-<session_id>`'
+assert grep -Fq "printf '%s/chat-%s' \"\$(dirname \"\$(worker_model_pin_grant)\")\" \"\$sid\"" "$WORKER_MODEL_SH"
+assert grep -Fq 'chat_grant="$(dirname "$(grant_path)")/chat-$sid"' "$PIN_GATE"
+assert doc_has '`bin/worker-pin-gate.sh` prompt branch'
+assert grep -Fq '[ -z "$sid" ] || export CLAUDE_CODE_SESSION_ID="$sid"' "$ROOT/bin/worker-limit-gate.sh"
+assert grep -Fq '[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"' "$ROOT/bin/worker-spawn-hook.sh"
+assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
 
 # --- Row ai: usage wall record ------------------------------------------------
 # Two processes write this file in two languages — bin/opencode-go at the 429 it sees, bin/review-bench
@@ -1547,7 +1539,7 @@ ROLE_WORK=$(mktemp -d)
 ROLE_MODEL="$ROLE_WORK/worker-model"
 # The writer refuses a session outright, and this suite usually runs inside one.
 set_role() {
-  env -u CLAUDECODE WORKER_PICK_CACHE_DIR="$ROLE_WORK/cache" WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
+  env -u CLAUDECODE WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
     bash -c '. "$1"; worker_model_set_role "$2" "$3" "$4"' _ "$WORKER_MODEL_SH" "$1" "$2" "$3"
 }
 # The writer, asked for every pair the readers know.
@@ -1565,7 +1557,7 @@ done
 printf '{}\n' >"$ROLE_WORK/limits.json"
 role_pick() {
   env HOME="$ROLE_WORK/home" LLM_LIMITS_FILE="$ROLE_WORK/limits.json" WORKER_PICK_CONFIG_FILE="$ROLE_MODEL" \
-    WORKER_PICK_TIERS_FILE="$ROLE_WORK/tiers" WORKER_PICK_CACHE_DIR="$ROLE_WORK/cache" \
+    WORKER_PICK_TIERS_FILE="$ROLE_WORK/tiers" \
     WORKER_PICK_NOW=1000000 CLAUDEB_DIR="$ROLE_WORK/claudeb" \
     "$WORKERPICK" --account "$1" --role "$2" 2>&1 >/dev/null
 }
@@ -1676,11 +1668,11 @@ PAUSE_MODEL="$PAUSE_WORK/worker-model"
 # an absent key is the running state on every reader, so an `=off` spelling would be a second one.
 for vendor in $PAUSE_VENDORS; do
   rm -f "$PAUSE_MODEL"
-  env -u CLAUDECODE "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
     bash -c '. "$1"; worker_model_set_paused "$2" on' _ "$WORKER_MODEL_SH" "$vendor" ||
     fail "row bp: share/worker-model.sh refuses ${vendor}, a vendor llm-limits.sh and bin/llm-refresh both key on"
   assert eq "$(cat "$PAUSE_MODEL")" "${vendor}_paused=on"
-  env -u CLAUDECODE "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  env -u CLAUDECODE "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
     bash -c '. "$1"; worker_model_set_paused "$2" off' _ "$WORKER_MODEL_SH" "$vendor"
   assert eq "$(cat "$PAUSE_MODEL")" ""
 done
@@ -1690,7 +1682,7 @@ done
 printf '{}\n' >"$PAUSE_WORK/limits.json"
 pause_pick() {
   env "HOME=$PAUSE_WORK/home" "LLM_LIMITS_FILE=$PAUSE_WORK/limits.json" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
-    "WORKER_PICK_TIERS_FILE=$PAUSE_WORK/tiers" "WORKER_PICK_CACHE_DIR=$PAUSE_WORK/cache" \
+    "WORKER_PICK_TIERS_FILE=$PAUSE_WORK/tiers" \
     WORKER_PICK_NOW=1000000 "CLAUDEB_DIR=$PAUSE_WORK/claudeb" \
     "$WORKERPICK" --account "$1" 2>&1 >/dev/null
 }
@@ -1731,7 +1723,6 @@ assert grep -Fq 'def drop_paused_specs' "$RB_ACCOUNTS"
 assert doc_has 'Per-vendor pause'
 assert doc_has '`<vendor>_paused=on`'
 assert doc_has 'worker_model_set_paused'
-assert doc_has '`cb⏸off`/`cx⏸off`/`gx⏸off`/`gr⏸off`'
 
 # --- Row ak: auto-refresh vendor roster --------------------------------------
 # The roster is spelled ONCE, in `live_vendors`, and the seed, the tick loop and the state validator
@@ -2450,7 +2441,7 @@ assert eq "$(grep -o '_G\.ClaudeChatSwitch\.cancel([^)]*)' "$HAMMER" | sort -u)"
 
 
 # --- Row bk: grok worker knobs ------------------------------------------------
-# One default pair spelled in six places, and the one rule that is not a default: `auto` is the
+# One default pair spelled in five places, and the one rule that is not a default: `auto` is the
 # ABSENCE of a model override, so a surface that renders it as a version, or a launcher that
 # substitutes one, answers for a choice nobody made.
 GROK_TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
@@ -2465,13 +2456,6 @@ for grok_knob_hook in "$SPAWN_HOOK" "$GROK_TAG_HOOK"; do
   assert grep -Fq 'worker_conf grok_model' "$grok_knob_hook"
   assert grep -Fq 'worker_conf grok_effort' "$grok_knob_hook"
 done
-assert grep -Fq 'gr) wv_model=${grok_model:-auto}' "$STATUSLINE"
-assert grep -Fq '[ "$wv_model" != auto ] || wv_model=""' "$STATUSLINE"
-# `auto` is blanked for the label only after the effort has been derived from it; reorder the two
-# and grok's default effort is resolved off an empty model name.
-assert eq "$(grep -F -A1 'gr) wv_model=${grok_model:-auto}' "$STATUSLINE" | tail -n1 | sed 's/^ *//')" 'wv_effort=${grok_effort:-$(worker_model_default_effort grok "$wv_model")}'
-# Every reader of a missing effort resolves it from the STORED model; see row bk's worker-pick pair.
-assert test "$(grep -c 'worker_model_default_effort [a-z]* "$(worker_model_default_model' "$STATUSLINE")" -eq 0
 assert grep -Fq '`grok_model=auto` and `grok_effort=high|xhigh`' "$WORKER_COMMAND"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
@@ -2738,4 +2722,4 @@ assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
 assert test -r "$ROOT/tests/test_instruction_gate.sh"
 assert doc_has 'Instruction-file classes and the one span'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, worker-pick cache format, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose envelope the menubar reads with no class left to name, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the journal that records whose debt a commit landed, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the journal of the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot whose envelope the menubar reads with no class left to name, the one resolver every surface names a chat through, the launchers a headless vendor run may reach the machine through, the one journal ledger per git family both languages resolve with the same command and fold under one lock, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s\n' "$asserts" "$DOC"

@@ -1626,11 +1626,10 @@ disable_account() {
 
 # Every trace of an account outside the stores account_names reads. A name that reaches only these
 # is still known: `remove` is the one broom for all of them, and answering "unknown account" to it
-# would leave leftovers no command can reach — a tiers row, a pool entry, a stale pick cache.
+# would leave leftovers no command can reach — a tiers row, a pool entry.
 account_leftovers() {
   local name=$1
   is_disabled "$name" && return 0
-  [ -e "${WORKER_PICK_CACHE_DIR:-$HOME/.cache}/worker-pick.line.$name" ] && return 0
   [ -n "$(find "$base_dir/session-logs" "$base_dir/warm-logs" -maxdepth 1 \
             \( -name "$name.*" -o -name ".$name.log.*" \) -print -quit 2>/dev/null)" ] && return 0
   [ -n "$(find "$limits_dir" -maxdepth 1 \
@@ -1646,7 +1645,7 @@ account_leftovers() {
 
 remove_account() {
   local name='' force=false arg service creds tmp state sec_rc=0 existed=false alive=false attempts_lock
-  local refresh_state refresh_lock cache_file
+  local refresh_state refresh_lock
   local tiers_file="$base_dir/account-tiers"
   local fable_state_file="$base_dir/.claudeb-state-fable"
   for arg in "$@"; do
@@ -1767,8 +1766,6 @@ remove_account() {
     fi
     store_lock_release "$refresh_lock"
   fi
-  cache_file="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}/worker-pick.line.$name"
-  rm -f "$cache_file"
 
   if [ -r "$state_file" ]; then
     IFS= read -r state < "$state_file" || state=''

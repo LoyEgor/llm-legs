@@ -39,12 +39,13 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    ranked by its budget like any other, and no answer is marked `SESSION RESERVE`. The
    pool toggle is the only consent gate, and it applies to every consumer identically —
    worker dispatch, review-bench, the chat picker, anything else that asks.
-2. **Selection.** The vendor pin tier wins when usable — usable here being auth alive, a numeric
-   budget and no run-observed wall, and nothing else: a pin overrides the pool toggle (rule 4), so pool
-   membership is no part of that test. It is the top override of worker routing, so every usable
+2. **Selection.** The pin tiers win when usable — usable here being auth alive, a numeric
+   budget and no run-observed wall, and nothing else: an account pin overrides the pool toggle (rule 4),
+   so pool membership is no part of that test. It is the top override of worker routing, so every usable
    pinned account leads the ranked NEXT rows (and the `--account` answer for that vendor is that
-   vendor's rank-1 tier member) whatever budget an unpinned account holds; pins among themselves
-   share the same vector, and every unpinned account ranks after the whole tier. Limits at
+   vendor's rank-1 tier member) whatever budget an unpinned account holds; account pins rank above
+   vendor pins, pins within one tier share the same vector, and every unpinned account ranks after
+   both tiers. Limits at
    100% do not skip a pin. A run-observed wall or dead auth lapses that one name loudly for this query
    and leaves the rest of the ranking.
    Otherwise the candidates are ranked on one key vector, ascending, identical for all four
@@ -85,18 +86,30 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    beside `WALLED`/`PINNED`. No third softening may be added beside them. A caller that watches an account
    wall mid-task re-queries with `--exclude`; when every candidate is walled the answer
    is exit 3 / `ALL WALLED` and the orchestrator asks the owner.
-   A pin names an **account**, never a vendor, and is a tier: Egor may pin any number of
-   accounts across vendors (`<vendor>_profile=<name>[,<name>...]`). Every pinned account ranks
-   first (among themselves on the same vector as the pool), then everyone else. A pin is always
+   A pin names **accounts or a whole vendor**, and is a tier. `<vendor>_profile=<name>[,<name>...]`
+   pins those accounts (tier 0); `<vendor>_profile=*` pins every account of that vendor's live pool —
+   each account the limits store carries that the pool admits (tier 1). `*` stands alone, never
+   beside a name, and unlike an account pin it reaches no out-of-pool account. Egor may pin any
+   number of accounts and vendors. Tier 0 ranks first, then tier 1, then everyone else — an account
+   pin beats a vendor pin even across vendors — each tier on the same vector as the pool. A pin is always
    tried first — stale usage at 100% does not skip it, because the owner knows more than stale
    data. The only skip is a run-observed wall record (`claude-worker-runs/walls/<vendor>-<account>`)
    whose reset has not passed and that no llm-limits reading newer than the record has shown open. A wall that was actually MET — the run launched on that pinned
-   account and the vendor answered limit — writes that record and removes that one name from
-   `~/.claude/worker-model`; `worker-pick` clears a still-present pin the same way once when it
-   finds an unexpired record. Stale llm-limits data never skips or clears a pin. Dead auth still
+   account and the vendor answered limit — writes that record and removes that one name from the
+   pin; a `*` pin is removed only once every pool account it covers holds an unexpired record.
+   `worker-pick` clears a still-present pin the same way once when it finds an unexpired record.
+   The removal edits the file the pin was read from, a chat pin file included (below). Stale
+   llm-limits data never skips or clears a pin. Dead auth still
    lapses it as a login to fix. `worker-run` continues a walled pin or `--account` on the next
    account of the ranking (the next pinned name if any, else the pool); only `--resume` stays,
    because the session lives there.
+   **Chat pin.** One chat may carry its own pin tier: `${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`
+   holds the same `<vendor>_profile=<name>|*` lines, and when that file exists and is non-empty it
+   REPLACES the global pin tier for that session — every `*_profile=` line of the global file is
+   ignored there, and every other chat keeps the global pins. The session id is
+   `CLAUDE_CODE_SESSION_ID`; the Agent hooks export it from their stdin `.session_id` before asking
+   `worker-pick`. No session id, no file or an empty file means the global pins. Resolution lives in
+   `share/worker-model.sh` alone (`worker_model_pin_file`), and every reader takes pins through it.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
@@ -121,15 +134,8 @@ the shared `~/.claude` names no account, and what stands in there is the caller'
 `main` for `worker-pick`, `notcom` for `claude-resume-timer`, an openly-labelled `.claudeb-state`
 guess for `workflow-burn-gate.sh`. The answer is a vendor AND an account, because the same name
 lives in both stores (`com` is a claudeb profile and a gateway login), and it decides which
-`.vendors.<vendor>.accounts[]` row a surface reads: `bin/worker-pick` (the `*` own-row marker and
-its prediction file), `bin/claude-resume-timer`, `bin/workflow-burn-gate.sh` and the
+`.vendors.<vendor>.accounts[]` row a surface reads: `bin/worker-pick` (the `*` own-row marker), `bin/claude-resume-timer`, `bin/workflow-burn-gate.sh` and the
 `resume-timer-nudge` hook.
-
-`worker-pick`'s prediction file follows that answer: `worker-pick.line.<account>` for a Claude
-chat, `worker-pick.line.codex@<account>` for a gateway one — `@` is the one character no account
-name in either store admits, and the Claude form is the name `bin/claudeb` prunes when a profile is
-removed. `bin/statusline.sh` builds the same two names from the same fact, so a gateway chat reads
-the prediction it owns and nothing writes into a Claude account's file (shared-invariants row `c`).
 
 ## Claims
 
@@ -146,8 +152,8 @@ is the entire state. A claim nobody renews simply ages out; nothing releases it 
 `--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
 `worker-run` and `gemini-research` are those callers. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
 without `--claim`, validate the profile they would launch, then call `worker_claims_record` themselves
-so a missing account directory does not burn the TTL. The human table and the statusline prediction
-**never** claim: they report a decision, they do not take one. A query that cannot read the claims
+so a missing account directory does not burn the TTL. The human table
+**never** claims: it reports a decision, it does not take one. A query that cannot read the claims
 directory answers as if there were no claims rather than refusing to route.
 
 ## The main-account shield
@@ -246,7 +252,7 @@ In the human table — the workers view — a workers-off vendor with no pin ser
 all and states the switch in place of its rows: `<vendor>: off for workers`. A closed role is a
 setting, not a reading, and what those accounts hold is for the vendor's own menu section to show,
 not for the router. `worker-run` refuses a closed vendor for explicit accounts and pin fallbacks alike,
-the vendor pin excepted, and reports it the way it reports an empty pool —
+an account the pin covers (by name or by `*`) excepted, and reports it the way it reports an empty pool —
 `OUTCOME: <VENDOR>_UNAVAILABLE`, never as a usage limit.
 
 ## Pause
@@ -266,7 +272,7 @@ no collector for a parked vendor (zero network: no OAuth or usage call, no `grok
 helper, no `opencode-go` probe), reconciles none of its worker-pool shields, and deletes its entry
 after the merge, so a reading the previous snapshot carried cannot survive the pause. Every render
 path then simply has nothing to print — `--table`, `--plain`, the menu, the statusline, the
-worker-pick cache line — and `vendors.claude` is as deletable as any other. `worker-pick` adds three answers of its own on top of that absence: a pin on a parked vendor is ignored rather than honoured (pause stands above the pin, the inverse of the roles ladder), a global `worker=<parked vendor>` reads as `auto` with no warning, and only when EVERY vendor is parked does it say why nothing routes — `NEXT: nothing routable — every vendor is paused`, exit 0, an empty cache line — since a bare `NEXT:` names no reason. `worker-pick --account <parked vendor>` refuses at exit 3 with the `is paused` line below, the shape `worker-run` and review-bench parse. `bin/llm-refresh` gives
+worker-pick table — and `vendors.claude` is as deletable as any other. `worker-pick` adds three answers of its own on top of that absence: a pin on a parked vendor is ignored rather than honoured (pause stands above the pin, the inverse of the roles ladder), a global `worker=<parked vendor>` reads as `auto` with no warning, and only when EVERY vendor is parked does it say why nothing routes — `NEXT: nothing routable — every vendor is paused`, exit 0 — since a bare `NEXT:` names no reason. `worker-pick --account <parked vendor>` refuses at exit 3 with the `is paused` line below, the shape `worker-run` and review-bench parse. `bin/llm-refresh` gives
 a parked vendor no cadence entry, no tick and no journal line, so no account of it is ever revived,
 probed or token-touched.
 
@@ -342,9 +348,8 @@ routing-math paragraph the rules above replace.
   per vendor carrying that vendor's rows with the exact reset (`↺ Mon 09:30`), then `DATA:`. A run
   that ranked nothing prints one `NEXT: <reason>` line instead of the table. The session account
   is marked `*` with a footnote under its vendor — there is no `SESSION:` line, and `--fable` is
-  the query that asks for the fable pick. The statusline cache line keeps its format
-  (model·effort sourced from worker-model only). Grok appends a fourth cache field tagged `gr` after `cx`/`cb`/`gx`, and a store
-  carrying no `vendors.grok` at all produces no grok segment, line or field: a vendor this
+  the query that asks for the fable pick. Model·effort come from worker-model only, and a store
+  carrying no `vendors.grok` at all produces no grok row or section: a vendor this
   machine has not installed is absent from the answer, never walled and never a failed
   lookup.
 - `worker-pick --account <vendor> [--exclude a,b] [--claim]` keeps its contract: bare account
@@ -378,4 +383,4 @@ routing-math paragraph the rules above replace.
 - review-bench affordability derives from worker-pick's answer under these same rules —
   it keeps no thresholds of its own.
 
-Pool membership is read from the live vendor pool files on every pick; snapshot `.enabled` is the fallback only when the live pool cannot be read. Pool, role, pause and pin writes invalidate the statusline candidate cache, and successful menu toggles refresh Routing immediately.
+Pool membership is read from the live vendor pool files on every pick; snapshot `.enabled` is the fallback only when the live pool cannot be read. Successful menu toggles refresh Routing immediately.

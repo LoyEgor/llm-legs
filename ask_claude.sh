@@ -116,7 +116,7 @@ if [ "${CLAUDE_ALLOW_WEB:-1}" != "0" ]; then ALLOW_ARGS=(--allowedTools "$ALLOWE
 set +e
 # --setting-sources project: skip user-level settings/CLAUDE.md so personal preferences
 # (language, hooks) never leak into a judgment call. --strict-mcp-config: no MCP servers.
-OUT="$(WORKER_PICK_CACHE_DIR=/dev/null "${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
+OUT="$("${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
         --strict-mcp-config --setting-sources project \
         --disallowedTools "$DISALLOWED_TOOLS" \
         ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} </dev/null 2>"$ERRF")"

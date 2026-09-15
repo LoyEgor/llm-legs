@@ -397,6 +397,120 @@ touch -t 202601010000 "$GRANT"
 assert denied "$(write_event "$PIN_FILE")"
 rm -f "$GRANT"
 
+# --- «Workers on <target>» grants this chat's pin, and only as the whole message ----------------
+CHAT_GRANT="$CLAUDEB_DIR/worker-stats/pin-grants/chat-s"
+chat_granted() { [ "$(cat "$CHAT_GRANT" 2>/dev/null)" = "$1" ]; }
+context_of() { jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$1"; }
+while IFS='|' read -r phrase target; do
+  rm -f "$CHAT_GRANT" "$GRANT"
+  out=$(prompt_event "$phrase")
+  assert chat_granted "$target"
+  assert [ "$(context_of "$out")" = "Egor asked: workers on $target for this chat. Run \`chat-pin $target\` unless the conversation says otherwise — a grant only unblocks." ]
+  assert_fails granted
+done <<'CASES'
+воркеры на кодекс|codex
+воркер на codex|codex
+Workers on Codex|codex
+worker on КОДЕКС!|codex
+workers on claude|claudeb
+workers on cloud|claudeb
+Воркеры на клод.|claudeb
+воркеры на клауд|claudeb
+workers on gemini|gemini
+воркеры на джемини|gemini
+воркеры на джеминай|gemini
+workers on grok|grok
+воркеры на грок|grok
+workers on grock|grok
+workers on groq?|grok
+«Воркеры на кодекс»|codex
+"workers on codex";|codex
+'workers on gemini'|gemini
+  workers   on   grok  |grok
+воркеры авто|auto
+Workers auto!|auto
+worker auto|auto
+воркер авто|auto
+workers on rudolfelijah|rudolfelijah
+workers on Main|main
+воркеры на rawilimo481|rawilimo481
+CASES
+
+for sentence in \
+  'please workers on codex' \
+  'workers on codex please' \
+  'можешь запустить воркеры на codex?' \
+  'воркеры на кодекс, а ревьюеры на gemini' \
+  'workers on codex, gemini' \
+  'воркеры на опенкод' \
+  'workers on кодексе' \
+  'workers at codex' \
+  'workers on' \
+  'workers' \
+  'воркеры' \
+  $'workers on codex\nи ещё задача'
+do
+  rm -f "$CHAT_GRANT"
+  assert [ -z "$(prompt_event "$sentence")" ]
+  assert_fails test -e "$CHAT_GRANT"
+done
+
+# The grant is keyed by the chat; no session id on stdin is no chat to grant.
+rm -f "$CHAT_GRANT"
+out=$(jq -cn '{hook_event_name: "UserPromptSubmit", prompt: "workers on codex"}' | "$GATE" prompt)
+assert [ -z "$out" ]
+out=$(jq -cn '{hook_event_name: "UserPromptSubmit", session_id: "../x", prompt: "workers on codex"}' \
+  | "$GATE" prompt)
+assert [ -z "$out" ]
+assert_fails test -e "$CLAUDEB_DIR/worker-stats/pin-grants/chat-../x"
+rm -f "$CHAT_GRANT"
+
+# --- The chat pin file is chat-pin's alone ------------------------------------------------------
+CHAT_DIR="$HOME/.cache/claude-chat-pins"
+for spelling in "$CHAT_DIR/s" '~/.cache/claude-chat-pins/s' "$HOME/.cache//claude-chat-pins/s" "$CHAT_DIR"; do
+  assert denied "$(write_event "$spelling" 'codex_profile=*')"
+done
+assert denied "$(edit_event "$CHAT_DIR/s" 'codex_profile=*' 'grok_profile=*')"
+assert contains "$(write_event "$CHAT_DIR/s")" 'chat-pin <vendor|account|auto>'
+assert allowed "$(read_event "$CHAT_DIR/s")"
+assert allowed "$(write_event "$HOME/.cache/other-pins/s")"
+for chat_write in \
+  "printf 'codex_profile=*\\n' > ~/.cache/claude-chat-pins/s" \
+  "echo grok_profile=alpha >> \"\$HOME/.cache/claude-chat-pins/\$CLAUDE_CODE_SESSION_ID\"" \
+  "echo codex_profile=beta | tee ~/.cache/claude-chat-pins/s" \
+  "rm -f ~/.cache/claude-chat-pins/s" \
+  "cp /tmp/pin ~/.cache/claude-chat-pins/s" \
+  "mkdir -p ~/.cache/claude-chat-pins && printf 'codex_profile=*\\n' > ~/.cache/claude-chat-pins/s" \
+  "f=~/.cache/claude-chat-pins/\$CLAUDE_CODE_SESSION_ID; echo codex_profile=beta > \"\$f\"" \
+  "sed -i '' 's/codex/grok/' ~/.cache/claude-chat-pins/s"
+do
+  assert denied "$(bash_event "$chat_write")"
+done
+for chat_read in \
+  'cat ~/.cache/claude-chat-pins/s' \
+  'ls -la ~/.cache/claude-chat-pins' \
+  "grep -h _profile= ~/.cache/claude-chat-pins/* > /dev/null" \
+  'chat-pin codex' \
+  'chat-pin auto'
+do
+  assert allowed "$(bash_event "$chat_read")"
+done
+
+# No grant opens the direct write: his words unblock `chat-pin`, which checks what he named.
+mkdir -p "$(dirname "$GRANT")"
+touch "$GRANT"
+printf 'codex\n' >"$CHAT_GRANT"
+assert denied "$(write_event "$CHAT_DIR/s" 'codex_profile=*')"
+assert denied "$(bash_event "printf 'codex_profile=*\\n' > ~/.cache/claude-chat-pins/s")"
+rm -f "$GRANT" "$CHAT_GRANT"
+
+# The directory is the one the module reads, CHAT_PINS_DIR included.
+export CHAT_PINS_DIR="$WORK/pins-fixture"
+assert denied "$(write_event "$WORK/pins-fixture/s")"
+assert denied "$(bash_event "echo codex_profile=beta > $WORK/pins-fixture/s")"
+assert allowed "$(bash_event "cat $WORK/pins-fixture/s")"
+unset CHAT_PINS_DIR
+
 # --- The command path: worker_model_pin_account refuses at the same door ------------------------
 # The hook cannot see `claudeb use`, and a gate that only watched the file would be walked around
 # by the command it exists to gate.

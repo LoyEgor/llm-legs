@@ -108,7 +108,6 @@ worker_pick_share="$(worker_pick_root)/share"
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
-CACHE_DIR="${WORKER_PICK_CACHE_DIR:-$HOME/.cache}"
 now="${WORKER_PICK_NOW:-$(date +%s)}"
 
 # The codex worker model's short alias comes from the allow-list, never from ~/.codex/config.toml:
@@ -164,7 +163,6 @@ gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_e
 # and this line only reports the knob.
 gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
 gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}
-case "$gm_effort" in medium) gm_eff_abbr=med ;; high) gm_eff_abbr=hi ;; *) gm_eff_abbr=$gm_effort ;; esac
 
 # What the `model·eff` column says a dispatch would launch. The model is the short alias of the one
 # model that vendor's workers run, never a version: grok's `auto` IS `grok-4.6` (shared-invariants
@@ -215,16 +213,6 @@ fi
 chat_account_resolve
 own_vendor=$CHAT_ACCOUNT_VENDOR
 own=${CHAT_ACCOUNT_NAME:-main}
-# A gateway chat spends a CODEX account under a name that may also be a claudeb profile
-# (`com` is both), and `claudeb remove <name>` deletes this file by that bare name — so the
-# vendor is part of it, in the one character neither store admits inside an account name.
-# The Claude name is unchanged: `bin/statusline.sh` reads it and `bin/claudeb` prunes it.
-if [ "$own_vendor" = claude ]; then
-  cache_file="$CACHE_DIR/worker-pick.line.$own"
-else
-  cache_file="$CACHE_DIR/worker-pick.line.$own_vendor@$own"
-fi
-mkdir -p "$CACHE_DIR" 2>/dev/null || true
 
 # The contract's first soft rule: an account this deep into its five-hour window walls after the
 # first task, so it ranks behind everything below the threshold — and no further, since below
@@ -289,7 +277,7 @@ clear_observed_pins() {
   while IFS= read -r acct; do
     [ -n "$acct" ] || continue
     printf '%s\n' "$walls" | grep -qxF -- "$acct" || continue
-    worker_model_clear_walled_pin "$vendor" "$acct" || true
+    worker_model_clear_walled_pin "$vendor" "$acct" "$now" || true
   done < <(worker_model_pins "$vendor" 2>/dev/null)
 }
 # The pin is workers-only, so only a workers query may spend one on a wall: a chat, research or
@@ -320,29 +308,17 @@ gr_pins=$(pins_json grok)
 case "$query_role" in
   reviewers|chat|research|image) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
 esac
+pin_scope() {
+  if [ "$2" = '[]' ]; then printf none; else worker_model_pin_scope "$1" 2>/dev/null || printf none; fi
+}
+cb_scope=$(pin_scope claudeb "$cb_pins")
+cx_scope=$(pin_scope codex "$cx_pins")
+gm_scope=$(pin_scope gemini "$gm_pins")
+gr_scope=$(pin_scope grok "$gr_pins")
 cb_pin=$(jq -r '.[0] // empty' <<<"$cb_pins")
 cx_pin=$(jq -r '.[0] // empty' <<<"$cx_pins")
 gm_pin=$(jq -r '.[0] // empty' <<<"$gm_pins")
 gr_pin=$(jq -r '.[0] // empty' <<<"$gr_pins")
-
-write_cache_file() {
-  # The statusline polls this file concurrently and must never observe a torn prediction.
-  tmp="$1.tmp.$$"
-  printf '%s\n' "$2" >"$tmp" 2>/dev/null && mv -f "$tmp" "$1" 2>/dev/null
-  rm -f "$tmp" 2>/dev/null
-}
-
-write_cache() {
-  # A query answers a caller; it does not announce a routing decision, so it leaves the
-  # statusline's prediction to the real invocation that owns that file.
-  [ -z "$query_vendor" ] || return 0
-  write_cache_file "$cache_file" "$1"
-  # These files are predictions, not records: only their producer runs, so a sibling nobody has
-  # rewritten for a day belongs to an account that was renamed or removed. The name exclusion is
-  # for a clock that jumped backwards, which would age the line just written.
-  find "$CACHE_DIR" -maxdepth 1 -type f -name 'worker-pick.line.*' \
-    ! -name "${cache_file##*/}" -mmin +1440 -delete 2>/dev/null || true
-}
 
 fail_safe() {
   # A query has no fail-safe: printing a guessed account would send a caller at an account this
@@ -373,11 +349,6 @@ fail_safe() {
   [ "$gr_paused" = true ] || printf 'grok: unavailable\n'
   [ "$cb_paused" = true ] || printf 'claude: unavailable\n'
   printf 'DATA: unavailable\n'
-  fs_cache=""
-  [ "$cx_paused" = true ] || fs_cache="cx✗·?"
-  [ "$cb_paused" = true ] || fs_cache="${fs_cache:+$fs_cache }cb~?"
-  [ "$gm_paused" = true ] || fs_cache="${fs_cache:+$fs_cache }gx✗?·${gm_model}·${gm_eff_abbr}"
-  write_cache "$fs_cache"
   exit 0
 }
 
@@ -408,6 +379,8 @@ summary=$(jq -r \
   --arg cx_pin "$cx_pin" --arg gm_pin "$gm_pin" --arg gr_pin "$gr_pin" \
   --argjson cb_pins "$cb_pins" --argjson cx_pins "$cx_pins" \
   --argjson gm_pins "$gm_pins" --argjson gr_pins "$gr_pins" \
+  --arg cb_scope "$cb_scope" --arg cx_scope "$cx_scope" \
+  --arg gm_scope "$gm_scope" --arg gr_scope "$gr_scope" \
   --arg cb_off "$cb_role_off" --arg cx_off "$cx_role_off" --arg gm_off "$gm_role_off" \
   --arg gr_off "$gr_role_off" \
   --arg cb_par "$cb_paused" --arg cx_par "$cx_paused" --arg gm_par "$gm_paused" \
@@ -544,14 +517,16 @@ summary=$(jq -r \
     $note + (if $state != "" then [$state] else ($rows | map(table_row)) end) | join("\u001e");
   # The NEXT table ranks ACCOUNTS across the vendors, so a vendor contributes every candidate it
   # holds and not only the one it would answer with. Each row travels with the keys that ordered it
-  # inside its vendor — the rank vector of rule 2, plus whether the pin is what chose it — so the
-  # shell merges four such lists under the same rule instead of re-deriving any of it. The selected
-  # account leads its list, because a pin outside the pool is a candidate no ranking carries.
-  def next_cells($cells; $best; $pin_tier; $order; $vendor):
+  # inside its vendor — the rank vector of rule 2, plus which pin tier chose it (0 account pin,
+  # 1 vendor pin, 2 none) — so the shell merges four such lists under the same rule instead of
+  # re-deriving any of it. The selected account leads its list, because a pin outside the pool is a
+  # candidate no ranking carries.
+  def next_cells($cells; $best; $pin_tier; $scope; $order; $vendor):
     if $best == null then ""
     else (($pin_tier) + ($order | map(select(.name as $n | ($pin_tier | map(.name) | index($n)) == null)))) |
       map(. as $a |
-        [(if ($pin_tier | map(.name) | index($a.name)) != null then "0" else "1" end),
+        [(if ($pin_tier | map(.name) | index($a.name)) == null then "2"
+          elif $scope == "vendor" then "1" else "0" end),
          (if $a.defer5h then "1" else "0" end),
          (if $a.claimed then "1" else "0" end),
          (if $a.auth_late then "1" else "0" end),
@@ -698,7 +673,7 @@ summary=$(jq -r \
    {selected:($cx_best != null),acct:$sel,pct:(($cx_best.spend // 0) | round),
     pinned:($cx_pinned != null),budget:(($cx_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $cx_best; $cx_pin_tier; $cx_eligible; "codex"),
+    next:next_cells($rows; $cx_best; $cx_pin_tier; $cx_scope; $cx_eligible; "codex"),
     line:reason($rows; $state; $note)}) as $codex |
 
   ([$gm_source[] | select(.removed != true and gemini_group) |
@@ -729,7 +704,7 @@ summary=$(jq -r \
    {selected:($gm_best != null),acct:$sel,pinned:($gm_pinned != null),
     budget:(($gm_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $gm_best; $gm_pin_tier; $gm_eligible; "gemini"),
+    next:next_cells($rows; $gm_best; $gm_pin_tier; $gm_scope; $gm_eligible; "gemini"),
     line:reason($rows; $state; $note)}) as $gemini |
 
   # Weekly is the only bucket grok measures, so `spending` finds no five-hour reading to fall back
@@ -758,7 +733,7 @@ summary=$(jq -r \
    {selected:($gr_best != null),acct:$sel,pct:(($gr_best.spend // 0) | round),
     pinned:($gr_pinned != null),budget:(($gr_best.budget // 0)),
     rows:section($rows; $state; $note),state:$state,
-    next:next_cells($rows; $gr_best; $gr_pin_tier; $gr_eligible; "grok"),
+    next:next_cells($rows; $gr_best; $gr_pin_tier; $gr_scope; $gr_eligible; "grok"),
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
@@ -806,7 +781,7 @@ summary=$(jq -r \
    (section($rows; $state; $note) as $body |
     if $state == "" and ($rows | any(.name | endswith("*")))
     then $body + "\u001e* = this session account" else $body end) as $cl_rows |
-   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $cb_pin_tier; $cl_eligible; "claude"),
+   {rows:$cl_rows,state:$state,next:next_cells($rows; $cl_best; $cb_pin_tier; $cb_scope; $cl_eligible; "claude"),
     line:reason($rows; $state; $note)}) as $claude |
 
   # Only pool members count: an out-of-pool account that happens to be at 0% would otherwise
@@ -976,50 +951,6 @@ if [ -n "$query_vendor" ]; then
   printf 'worker-pick: no selectable %s account (%s)\n' "$query_vendor" "$query_reason" >&2
   exit 3
 fi
-# A parked vendor gets its own cache shape: `~?` is the statusline's word for a prediction it
-# could not make, and rendering a switch Egor flipped as a failed lookup is what sends him
-# looking at limits. Marks, `off` and `?` here are the CACHE's alphabet (shared-invariants row
-# `c`) and not the table's: the statusline reads this line, a human reads the rows below.
-cx_mark="✗"; gm_mark="✗"; gr_mark="✗"
-if [ "$cb_role_off" = true ]; then cb_cache="cb⏸off"
-elif [ "$cl_pinned" = yes ]; then cb_cache="cb@$cl_acct"
-elif [ -n "$cl_acct" ]; then cb_cache="cb~$cl_acct"
-else cb_cache="cb~?"
-fi
-[ "$cb_known" = true ] || cb_cache=""
-if [ "$cx_role_off" = true ]; then cx_mark="⏸"; cx_acct=off
-elif [ "$cx_selected" = yes ]; then cx_mark="✓"
-fi
-if [ "$gm_role_off" = true ]; then gm_mark="⏸"; gm_acct=off
-elif [ "$gm_selected" = yes ]; then gm_mark="✓"
-fi
-if [ "$gr_role_off" = true ]; then gr_mark="⏸"; gr_acct=off
-elif [ "$gr_selected" = yes ]; then gr_mark="✓"
-fi
-
-case "$cx_effort" in medium) cx_eff_abbr=med ;; high) cx_eff_abbr=hi ;; xhigh) cx_eff_abbr=xh ;; *) cx_eff_abbr=$cx_effort ;; esac
-case "$cb_effort" in medium) cb_eff_abbr=med ;; high) cb_eff_abbr=hi ;; xhigh) cb_eff_abbr=xh ;; *) cb_eff_abbr=$cb_effort ;; esac
-case "$cb_model" in sonnet) cb_model_abbr=son ;; haiku) cb_model_abbr=hai ;; fable) cb_model_abbr=fab ;; *) cb_model_abbr=$cb_model ;; esac
-case "$gr_effort" in medium) gr_eff_abbr=med ;; high) gr_eff_abbr=hi ;; xhigh) gr_eff_abbr=xh ;; *) gr_eff_abbr=$gr_effort ;; esac
-# Every field is optional and the order never moves, which is what lets the consumer find a vendor
-# by its tag alone: a vendor absent from the store contributes no field, and the statusline's
-# reader answers "no prediction" for a tag it does not find, exactly as it does for `cb~?`.
-cx_cache=""; gm_cache=""; gr_cache=""
-[ "$cx_known" = false ] ||
-  cx_cache=$(printf 'cx%s%s·%s·%s' "$cx_mark" "$cx_acct" "$codex_model" "$cx_eff_abbr")
-[ "$cb_known" = false ] ||
-  cb_cache=$(printf '%s·%s·%s' "$cb_cache" "$cb_model_abbr" "$cb_eff_abbr")
-[ "$gm_known" = false ] ||
-  gm_cache=$(printf 'gx%s%s·%s·%s' "$gm_mark" "${gm_acct:-?}" "$gm_model" "$gm_eff_abbr")
-[ "$gr_known" = false ] ||
-  gr_cache=$(printf 'gr%s%s·%s·%s' "$gr_mark" "${gr_acct:-?}" "$gr_model" "$gr_eff_abbr")
-cache_line=""
-for cache_field in "$cx_cache" "$cb_cache" "$gm_cache" "$gr_cache"; do
-  [ -n "$cache_field" ] || continue
-  cache_line="${cache_line:+$cache_line }$cache_field"
-done
-write_cache "$cache_line"
-
 # The table is one flat ranking of ACCOUNTS across the vendors — several rows of one vendor are
 # ordinary, since what a reader needs is where the next runs go, not one nominee per leg — and row
 # 1 IS the answer: `ACCOUNT:` under it is the same value printed a second time for a brief to copy,

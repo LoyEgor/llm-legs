@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code status line: model | dir/branch/uncommitted-diff | ports | worker ‖ ctx % | 5h/weekly/fable limits | cost.
+# Claude Code status line: model | dir/branch/uncommitted-diff | ports | pin ‖ ctx % | 5h/weekly/fable limits | cost.
 # rate_limits is absent from some renders and idle sessions re-send their last
 # copy forever; every path renders from a stamped merged cache (statusline-cache-rl
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
@@ -30,7 +30,6 @@ statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="
 statusline_dir=$(dirname "$statusline_self")
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
-. "$statusline_dir/../share/worker-model.sh"
 
 file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
@@ -2049,30 +2048,6 @@ if [ -n "$acct" ] && [ "$acct" != main ]; then
   cb_show=1
 fi
 
-worker=""; codex_effort=""; codex_profile=""; claudeb_profile=""; gemini_profile=""
-claudeb_model=""; claudeb_effort=""; gemini_model=""; gemini_effort=""
-grok_profile=""; grok_model=""; grok_effort=""
-worker_file="$HOME/.claude/worker-model"
-if [ -f "$worker_file" ]; then
-  while IFS='=' read -r wkey wval; do
-    case "$wkey" in
-      worker) worker=$wval ;;
-      codex_effort) codex_effort=$wval ;;
-      codex_profile) codex_profile=$wval ;;
-      claudeb_profile) claudeb_profile=$wval ;;
-      gemini_profile) gemini_profile=$wval ;;
-      claudeb_model) claudeb_model=$wval ;;
-      claudeb_effort) claudeb_effort=$wval ;;
-      gemini_model) gemini_model=$wval ;;
-      gemini_effort) gemini_effort=$wval ;;
-      grok_profile) grok_profile=$wval ;;
-      grok_model) grok_model=$wval ;;
-      grok_effort) grok_effort=$wval ;;
-    esac
-  done < "$worker_file"
-else
-  worker=auto
-fi
 # Unified short forms for every model and effort this line prints: first letter plus the first
 # consonant after it, uppercased, with the version digits glued on (Fable 5 → FB5, astra → AS). A
 # name with no consonant to take has no short form and is printed whole.
@@ -2106,156 +2081,26 @@ abbrev_model() {
   printf '%s%s' "$(printf '%s%s' "$first" "$second" | tr '[:lower:]' '[:upper:]')" "$version"
 }
 
-codex_model_short_label() {
-  local model
-  model=$(worker_model_allowed_models codex | head -n1)
-  printf '%s' "${model##*-}"
-}
-
-worker_pick_fresh=0
-wp_line_loaded=no
-wp_present=0
-load_worker_pick_prediction() {
-  local pick_acct=$acct pick_cache pick_mtime
-  { [ "$pick_acct" = "-" ] || [ -z "$pick_acct" ]; } && pick_acct=main
-  # A gateway chat spends a CODEX account, so its prediction lives under worker-pick's
-  # vendor-qualified name and never under a Claude profile's (share/chat-account.sh).
-  [ -z "${CLAUDEGPT_ACCOUNT:-}" ] || pick_acct="codex@$CLAUDEGPT_ACCOUNT"
-  pick_cache="$HOME/.cache/worker-pick.line.$pick_acct"
-  pick_mtime=$(file_mtime "$pick_cache" 2>/dev/null)
-  if ! [[ "$pick_mtime" =~ ^[0-9]+$ ]] || [ "$((now - pick_mtime))" -gt 90 ]; then
-    ("$HOME/.local/bin/worker-pick" >/dev/null 2>&1 &)
-  fi
-  # A prediction this old means worker-pick itself stopped answering, and the account it names is
-  # no longer evidence of anything — naming no candidate at all is the honest render.
-  if [[ "$pick_mtime" =~ ^[0-9]+$ ]] && [ "$((now - pick_mtime))" -le 600 ]; then
-    worker_pick_fresh=1
-  fi
-  worker_pick_prediction=""
-  wp_line_loaded=no
-  if [ -r "$pick_cache" ]; then
-    IFS= read -r worker_pick_prediction <"$pick_cache"
-    [ -n "$worker_pick_prediction" ] && [ "$worker_pick_fresh" = 1 ] && wp_line_loaded=yes
-  fi
-  return 0
-}
-
-# One vendor's field of worker-pick's line: `ok` plus the account it would hand out, `off` for a
-# vendor switched off for workers, `no` for anything unusable (walled, `?`, absent). `⏸off` is read
-# before the account itself, which would otherwise take the literal `off` for a prediction. Marks
-# are matched as whole literals: cutting one leading character off a multibyte mark would depend on
-# the render's locale.
-#
-# `wp_present` answers a different question from `wp_state`: whether the line carried a field for
-# this vendor AT ALL. Absence is how a paused vendor is spelled (row `bp`), while `gr~?` is a
-# vendor that is present and merely unusable — reading `wp_state=no` as the pause would hide a pin
-# over any walled vendor.
-worker_pick_vendor() {
-  local tag=$1 field acct name_ok
-  wp_acct=""; wp_state=no; wp_pinned=0; wp_present=0
-  [ "$worker_pick_fresh" = 1 ] || return
-  # claudeb profiles may hold underscores, dots and capitals (claudeb's own add rule); codexb and
-  # geminib only ever create lowercase-and-hyphen names, so anything else in their field is a
-  # corrupt cache and must read as unknown rather than as a confident prediction.
-  case "$tag" in
-    cb) name_ok='^[A-Za-z0-9_][A-Za-z0-9._-]*$' ;;
-    *) name_ok='^[a-z0-9][a-z0-9-]*$' ;;
-  esac
-  # A vendor field carries `?` (`cb~?`), which the split would expand against the render's CWD.
-  set -f
-  set -- $worker_pick_prediction
-  set +f
-  for field in "$@"; do
-    case "$field" in "$tag"*) ;; *) continue ;; esac
-    wp_present=1
-    case "$field" in
-      "$tag"⏸*) wp_state=off; return ;;
-      "$tag"✓*) acct=${field#"$tag"✓} ;;
-      "$tag"~*) acct=${field#"$tag"~} ;;
-      "$tag"@*) acct=${field#"$tag"@}; wp_pinned=1 ;;
-      *) return ;;
+# Chat file only (global pin is the menu's); claudeb_profile=* renders `claude`.
+pin_body=""
+if [ -n "$session_id" ]; then
+  pin_file="${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/$session_id"
+  if [ -s "$pin_file" ]; then
+    pin_line=$(sed -n '1p' "$pin_file")
+    case "$pin_line" in
+      claudeb_profile=*|codex_profile=*|gemini_profile=*|grok_profile=*)
+        pin_vendor=${pin_line%%_profile=*}
+        pin_val=${pin_line#*_profile=}
+        pin_label=$pin_val
+        if [ "$pin_val" = '*' ]; then
+          case "$pin_vendor" in
+            claudeb) pin_label=claude ;;
+            *) pin_label=$pin_vendor ;;
+          esac
+        fi
+        [ -n "$pin_label" ] && pin_body="${MAGENTA}${pin_label}${RESET}"
+        ;;
     esac
-    acct=${acct%%·*}
-    [[ "$acct" =~ $name_ok ]] || return
-    [ "$acct" = off ] && return
-    wp_acct=$acct
-    wp_state=ok
-    return
-  done
-}
-
-# Model and effort come from the same worker-model keys worker-pick reads, with its defaults: this
-# segment names what a dispatch would launch, and a second reading of that is one reading too many.
-worker_vendor_knobs() {
-  case "$1" in
-    cx) wv_model=$(worker_model_allowed_models codex | head -n1)
-        wv_effort=${codex_effort:-$(worker_model_default_effort codex "$wv_model")}
-        wv_model=$(codex_model_short_label) ;;
-    cb) wv_model=${claudeb_model:-opus}; wv_effort=${claudeb_effort:-$(worker_model_default_effort claudeb "$wv_model")} ;;
-    gx) wv_model=${gemini_model:-flash38}; wv_effort=${gemini_effort:-$(worker_model_default_effort gemini "$wv_model")} ;;
-    # `auto` names no model: it means whichever one the account defaults to, so the candidate
-    # carries the effort alone rather than a version nobody chose.
-    gr) wv_model=${grok_model:-auto}
-        wv_effort=${grok_effort:-$(worker_model_default_effort grok "$wv_model")}
-        [ "$wv_model" != auto ] || wv_model="" ;;
-  esac
-}
-
-worker_candidate() {
-  local mark=$1 acct=$2 model=$3 effort=$4 tail=""
-  [ -n "$model" ] && tail="·$(abbrev_model "$model")"
-  [ -n "$effort" ] && tail="${tail}·$(abbrev_effort "$effort")"
-  printf '%s' "${MAGENTA}${mark}${acct}${RESET}${tail:+${DIM}${tail}${RESET}}"
-}
-
-case "$worker" in
-  codex) wvendor=cx; wpin=$codex_profile ;;
-  # The account a spawn will use is worker-pick's choice, not .claudeb-state (which
-  # only records the last profile launched and would render a stale prediction).
-  claudeb) wvendor=cb; wpin=$claudeb_profile ;;
-  gemini) wvendor=gx; wpin=$gemini_profile ;;
-  grok) wvendor=gr; wpin=$grok_profile ;;
-  # A `worker=sonnet` line is a toggle value that no longer exists; worker-pick reads it as auto
-  # and the candidate must not disagree with the account the next dispatch will actually use.
-  sonnet|auto) wvendor=auto ;;
-  *) wvendor="" ;;
-esac
-
-# ONE candidate, never a three-vendor forecast: the vendor+account the next dispatch would land on.
-# In auto that is the first vendor worker-pick's line leaves usable, in worker-pick's own order
-# (docs/routing-contract.md) — claudeb, then codex, then gemini, then grok. The cache is per own-account
-# because routing excludes the session's own account.
-worker_body=""
-if [ "$wvendor" = auto ]; then
-  load_worker_pick_prediction
-  for wtag in cb cx gx gr; do
-    worker_pick_vendor "$wtag"
-    [ "$wp_state" = ok ] || continue
-    worker_vendor_knobs "$wtag"
-    wmark=""
-    [ "$wp_pinned" = 1 ] && wmark="@"
-    worker_body=$(worker_candidate "$wmark" "$wp_acct" "$wv_model" "$wv_effort")
-    break
-  done
-elif [ -n "$wvendor" ]; then
-  worker_vendor_knobs "$wvendor"
-  load_worker_pick_prediction
-  worker_pick_vendor "$wvendor"
-  if [ -n "$wpin" ]; then
-    # A loaded line with no field at all for this vendor means the vendor is PAUSED — worker-pick
-    # omits a paused vendor entirely, where a role switched off still emits `⏸off` — so no dispatch
-    # can land on the pin and it names nothing. Absence is the whole test: a field that is present
-    # but unusable (`gr~?`, a walled or corrupt account) is a vendor a pin still routes to, and
-    # reading it as a pause would blank a legitimate pin. No line loaded is not that evidence
-    # either, only worker-pick not having written yet.
-    if [ "$wp_line_loaded" != yes ] || [ "$wp_present" = 1 ]; then
-      worker_body=$(worker_candidate "@" "$wpin" "$wv_model" "$wv_effort")
-    fi
-  elif [ "$wp_state" = off ]; then
-    # Dim, not magenta: nothing is routed here, and the vendor is parked rather than failing.
-    worker_body="${DIM}⏸off${RESET}"
-  elif [ "$wp_state" = ok ]; then
-    worker_body=$(worker_candidate "" "$wp_acct" "$wv_model" "$wv_effort")
   fi
 fi
 
@@ -2368,7 +2213,7 @@ fit_branch_short=0
 fit_dir_mode=full
 fit_model_short=0
 fit_rev_short=0
-fit_worker=1
+fit_pin=1
 fit_unpushed_short=0
 fit_dir_active_only=0
 fit_dir_off=0
@@ -2585,14 +2430,14 @@ fit_unpushed_part() {
   fi
 }
 
-fit_worker_part() {
-  worker_part=""
-  [ "$fit_worker" = 1 ] || return
-  [ -n "$worker_body" ] || return
-  worker_part=" ${sep} ${worker_body}"
+fit_pin_part() {
+  pin_part=""
+  [ "$fit_pin" = 1 ] || return
+  [ -n "$pin_body" ] || return
+  pin_part=" ${sep} ${pin_body}"
 }
 
-# Two lines: identity/work (model, account, dir/branch/diff, workers) on top,
+# Two lines: identity/work (model, account, dir/branch/diff, pin) on top,
 # usage (ctx, 5h, weekly, fable, cost) below.
 fit_compose() {
   local work
@@ -2603,12 +2448,12 @@ fit_compose() {
   fit_review_part
   fit_verdict_part
   fit_unpushed_part
-  fit_worker_part
+  fit_pin_part
   work="${dir_part}${branch_part}${ports_part}"
   work=${work# }
   line1="${head_part}${cb_part}"
   [ -n "$work" ] && line1="${line1} ${sep} ${work}"
-  line1="${line1}${review_part}${verdict_part}${unpushed_part}${worker_part}"
+  line1="${line1}${review_part}${verdict_part}${unpushed_part}${pin_part}"
 }
 
 model_abbrev=$(abbrev_model "$model")
@@ -2631,7 +2476,7 @@ if [ -n "$fit_cols" ]; then
       6) fit_model_short=1 ;;
       7) fit_rev_short=1 ;;
       8) fit_dir_mode=initials ;;
-      9) fit_worker=0; fit_unpushed_short=1 ;;
+      9) fit_pin=0; fit_unpushed_short=1 ;;
       10) fit_dir_active_only=1 ;;
       11) fit_dir_off=1 ;;
       12) # The floor is four characters: below that an account name stops identifying anything.

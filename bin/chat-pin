@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -u
+
+resolve_root() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")/.." && pwd
+}
+
+chat_pin_root=$(resolve_root) || exit 2
+. "$chat_pin_root/share/worker-model.sh" || exit 2
+
+VENDORS='claudeb codex gemini grok'
+USAGE='usage: chat-pin [claudeb|claude|codex|gemini|grok|<account>|auto]'
+
+die() { printf 'chat-pin: %s\n' "$1" >&2; exit "${2:-2}"; }
+
+lower() { LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]' <<<"$1"; }
+
+show_state() {
+  local file="$1" line key value vendor
+  line=$(grep -E '^(claudeb|codex|gemini|grok)_profile=' "$file" 2>/dev/null | head -n1)
+  if [ -z "$line" ]; then
+    printf 'chat-pin: no chat pin — this chat follows the global pin and worker-pick\n'
+    return 0
+  fi
+  key=${line%%=*}
+  value=${line#*=}
+  vendor=${key%_profile}
+  if [ "$value" = '*' ]; then
+    printf 'chat-pin: this chat pins workers to every %s pool account (*)\n' "$vendor"
+  else
+    printf 'chat-pin: this chat pins workers to %s (%s)\n' "$value" "$vendor"
+  fi
+}
+
+account_vendors() { # name → every vendor whose live pool holds it, one per line
+  local vendor
+  for vendor in $VENDORS; do
+    worker_model_pool_accounts "$vendor" 2>/dev/null | grep -qxF -- "$1" && printf '%s\n' "$vendor"
+  done
+}
+
+granted() { # target
+  local grant content
+  [ -n "${CLAUDECODE:-}" ] || return 0
+  grant=$(worker_model_chat_pin_grant) || return 1
+  [ -n "$(find "$grant" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ] || return 1
+  content=$(head -n1 "$grant" 2>/dev/null) || return 1
+  [ "$(lower "$content")" = "$(lower "$1")" ]
+}
+
+store() { # file line-or-empty
+  local file="$1" line="$2"
+  mkdir -p "$(dirname "$file")" || return 2
+  (
+    local tmp="$file.tmp.$$"
+    "${WORKER_MODEL_LOCKF:-/usr/bin/lockf}" -s 9 || exit 2
+    trap 'rm -f "$tmp"' EXIT
+    if [ -z "$line" ]; then
+      rm -f -- "$file" || exit 2
+    else
+      printf '%s\n' "$line" >"$tmp" && mv -f -- "$tmp" "$file" || exit 2
+    fi
+    trap - EXIT
+  ) 9>"$file.lock" || return 2
+}
+
+[ "$#" -le 1 ] || die "$USAGE"
+case "${1-}" in -h | --help) printf '%s\n' "$USAGE"; exit 0 ;; esac
+
+worker_model_chat_session >/dev/null ||
+  die 'no session id (CLAUDE_CODE_SESSION_ID) — a chat pin belongs to one chat, and this shell names none'
+file=$(worker_model_chat_pin_file) || die 'cannot resolve the chat pin file'
+
+[ "$#" -eq 1 ] || { show_state "$file"; exit 0; }
+
+arg=$1
+case "$arg" in
+  auto) target=auto line='' ;;
+  claude | claudeb) target=claudeb line='claudeb_profile=*' ;;
+  codex | gemini | grok) target=$arg line="${arg}_profile=*" ;;
+  *)
+    [[ "$arg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || die "unknown account: $arg"
+    vendors=$(account_vendors "$arg")
+    case "$(grep -c . <<<"$vendors")" in
+      0) die "unknown account: $arg is in no vendor's live worker pool" ;;
+      1) ;;
+      *) die "ambiguous account: $arg is in the pools of $(tr '\n' ' ' <<<"$vendors" | sed 's/ $//'); pin the vendor or rename one" ;;
+    esac
+    target=$arg line="${vendors}_profile=$arg"
+    ;;
+esac
+
+if [ -z "$line" ] && [ ! -e "$file" ]; then show_state "$file"; exit 0; fi
+
+granted "$target" ||
+  die "no fresh grant for '$target': the chat pin is Egor's to move — it opens when he says «workers on ${target}» ($(worker_model_chat_pin_grant) holding '$target', younger than ${WORKER_MODEL_PIN_TTL_MIN}m); ask him in one line" 3
+
+store "$file" "$line" || die "failed to write $file"
+if [ -z "$line" ]; then
+  printf 'chat-pin: chat pin removed — this chat follows the global pin and worker-pick\n'
+else
+  show_state "$file"
+fi

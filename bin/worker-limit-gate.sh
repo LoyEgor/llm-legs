@@ -47,6 +47,7 @@ $token"
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
+[ -z "$sid" ] || export CLAUDE_CODE_SESSION_ID="$sid"
 
 # Stamped from warn() because every allowed spawn leaves through it and no refused one does: a
 # denied spawn, a fork or a plain agent quoting `record <id>` must not silence the triage Stop

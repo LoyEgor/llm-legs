@@ -127,7 +127,7 @@ assert test -z "$(find "$TMPDIR" -name 'gemini-image.*' -print -quit)"
 
 mkdir -p "$WORK/repo/bin" "$WORK/repo/share/image-caps"
 cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
-cp "$ROOT/share/"{image-caps,image-chroma,gemini-accounts,worker-model,worker-pool,worker-claims}.sh "$WORK/repo/share/"
+cp "$ROOT/share/"{image-caps,image-chroma,gemini-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
 jq '.refs.max=1 | .aspects.generate=["5:4"] | .aspects.edit=["5:4"] | .aspects.default="5:4"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 SCRIPT="$WORK/repo/bin/gemini-image"
 assert image_run "${args[@]}" --ref "$ref" --account explicit

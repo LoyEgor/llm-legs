@@ -36,6 +36,7 @@ export XDG_CACHE_HOME="$WORK/cache"
 export WORKER_RUN_ALLOW_DUPLICATE=1
 export WORKER_RUN_DIR="$WORK/runs"
 export WORKER_WALLS_DIR="$WORK/walls"
+export CHAT_PINS_DIR="$WORK/chat-pins"
 export WORKER_RUN_CONFIG_FILE="$WORK/worker-model"
 # A worker harness exports WORKER_PICK_CONFIG_FILE at Egor's real toggle, and worker-run reads the
 # pin through it: inherited, every case here would be judged on whatever he has pinned today.
@@ -2130,6 +2131,37 @@ for vendor in claudeb codex gemini; do
   assert meta_account_is explicit
   assert await_done
 done
+
+# A vendor pin (`*`) covers every pool account the limits store carries, and a chat's own pin file
+# replaces the global pin for that session — both open the role wall exactly like an account pin.
+printf '%s\n' '{"vendors":{"codex":{"available":true,"accounts":[{"account":"explicit"},{"account":"other"}]}}}' \
+  >"$HOME/.llm-limits.json"
+clear_stub
+set_config 'codex_workers=off' 'codex_profile=*' 'codex_effort=medium'
+export PICK_ACCOUNT=ignored PICK_RC=2
+start_ok codex --account explicit
+assert meta_account_is explicit
+assert await_done
+clear_stub
+rc=0
+"$RUNNER" start codex --brief "$WORK/brief" --account ghost \
+  >"$WORK/role-star.out" 2>"$WORK/role-star.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'codex is switched off for workers' "$WORK/role-star.err"
+mkdir -p "$CHAT_PINS_DIR"
+printf 'codex_profile=other\n' >"$CHAT_PINS_DIR/chat-pin-test"
+set_config 'codex_workers=off' 'codex_profile=explicit' 'codex_effort=medium'
+clear_stub
+rc=0
+CLAUDE_CODE_SESSION_ID=chat-pin-test "$RUNNER" start codex --brief "$WORK/brief" --account explicit \
+  >"$WORK/role-chat.out" 2>"$WORK/role-chat.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'codex is switched off for workers' "$WORK/role-chat.err"
+clear_stub
+CLAUDE_CODE_SESSION_ID=chat-pin-test start_ok codex --account other
+assert meta_account_is other
+assert await_done
+rm -rf "$CHAT_PINS_DIR" "$HOME/.llm-limits.json"
 
 # A missing wall is loud: worker-run must refuse to launch rather than read every account as
 # excluded because its include went missing.
