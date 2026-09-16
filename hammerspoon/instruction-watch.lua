@@ -20,6 +20,8 @@
 local M = {}
 local CHARS_PER_TOKEN = 3.2
 local FILE_WIDTH = 32
+local TOP_FILES = 10
+local MODES = { always_on = "always", on_demand = "demand", agent_brief = "brief" }
 local ROOT = debug.getinfo(1, "S").source:match("^@(.+)/hammerspoon/instruction%-watch%.lua$")
 local DEFAULT_RATES = (os.getenv("HOME") or "") .. "/.local/share/tokenmap/read-rates.json"
 local ratesPath, ratesStamp, ratesCache = DEFAULT_RATES, nil, nil
@@ -266,7 +268,24 @@ local function rates()
         return ar > br
     end)
     for rank, path in ipairs(paths) do ranks[path] = rank end
-    ratesCache, ratesStamp = { entries = entries, ranks = ranks }, stamp
+    local top, measured = {}, false
+    local function readTokens(path)
+        local weekly = entries[path].weekly
+        return type(weekly) == "table" and tonumber(weekly.read_tokens) or nil
+    end
+    for _, path in ipairs(paths) do
+        local tokens = readTokens(path)
+        if tokens then measured = true end
+        local markdown = path:sub(-3) == ".md" or path:sub(-9) == ".markdown"
+        if tokens and tokens > 0 and markdown then top[#top + 1] = path end
+    end
+    table.sort(top, function(a, b)
+        local at, bt = readTokens(a), readTokens(b)
+        if at == bt then return a < b end
+        return at > bt
+    end)
+    for index = #top, TOP_FILES + 1, -1 do top[index] = nil end
+    ratesCache, ratesStamp = { entries = entries, ranks = ranks, top = top, measured = measured }, stamp
     return ratesCache
 end
 
@@ -437,6 +456,39 @@ local function dimColor()
     return dimColorName
 end
 
+local function alignedTitles(rows, columns, style)
+    local widths = {}
+    for c = 1, #columns do
+        widths[c] = 0
+        for _, row in ipairs(rows) do widths[c] = math.max(widths[c], cells(row[c] or "")) end
+    end
+    local titles = {}
+    for index, row in ipairs(rows) do
+        local last, segments = 0, {}
+        for c = 1, #columns do if (row[c] or "") ~= "" then last = c end end
+        local function add(text, dim)
+            local tail = segments[#segments]
+            if tail and tail.dim == dim then
+                tail.text = tail.text .. text
+            else
+                segments[#segments + 1] = { text = text, dim = dim }
+            end
+        end
+        for c = 1, last do
+            if widths[c] > 0 then
+                local cell, column = row[c] or "", columns[c]
+                if #segments > 0 then add("  ", segments[#segments].dim) end
+                local right = column.right == true
+                add((c == last and not right) and cell or pad(cell, widths[c], right), column.dim == true)
+            end
+        end
+        local title = style(segments[1] and segments[1].text or "", segments[1] and segments[1].dim)
+        for s = 2, #segments do title = title .. style(segments[s].text, segments[s].dim) end
+        titles[index] = title
+    end
+    return titles
+end
+
 local function renderStyle()
     local color = dimColor()
     return function(text, dim)
@@ -450,20 +502,21 @@ end
 
 local function eventMenu(event, receipt, cache, style)
     local items = { { title = style(chatLabel(event)), disabled = true } }
-    local bytes, verb = deltas(event), verbs(event)
-    local modes = { always_on = "always", on_demand = "demand", agent_brief = "brief" }
+    local bytes, verb, rows = deltas(event), verbs(event), {}
     for index, file in ipairs(event.files or {}) do
-        local parts = { file }
-        if verb[index] and verb[index] ~= "changed" then parts[#parts + 1] = verb[index] end
-        if bytes[index] ~= nil then parts[#parts + 1] = signed(bytes[index]) end
-        local price = filePrice(cache, file, bytes[index])
-        if price ~= nil then parts[#parts + 1] = priceText(price) end
         local key = rateKey(cache, file)
-        if key and cache.ranks[key] then parts[#parts + 1] = "#" .. cache.ranks[key] end
-        local title = style(table.concat(parts, "  "))
         local entry = key and cache.entries[key]
-        local mode = type(entry) == "table" and modes[entry.mode]
-        if mode then title = title .. style("  " .. mode, true) end
+        rows[#rows + 1] = {
+            file,
+            (verb[index] and verb[index] ~= "changed") and verb[index] or "",
+            signed(bytes[index]),
+            priceText(filePrice(cache, file, bytes[index])),
+            (key and cache.ranks[key]) and ("#" .. cache.ranks[key]) or "",
+            type(entry) == "table" and MODES[entry.mode] or "",
+        }
+    end
+    local columns = { {}, {}, { right = true }, { right = true }, { right = true }, { dim = true } }
+    for _, title in ipairs(alignedTitles(rows, columns, style)) do
         items[#items + 1] = { title = title, disabled = true }
     end
     items[#items + 1] = { title = "-" }
@@ -488,6 +541,55 @@ local function eventMenu(event, receipt, cache, style)
             end)
         end,
     }
+    return items
+end
+
+local function distinctShortPaths(paths)
+    local depth, names = {}, {}
+    for index in ipairs(paths) do depth[index] = 2 end
+    for _ = 1, 8 do
+        local seen, clash = {}, false
+        for index, path in ipairs(paths) do
+            local parts = {}
+            for part in tostring(path):gmatch("[^/]+") do parts[#parts + 1] = part end
+            names[index] = table.concat(parts, "/", math.max(1, #parts - depth[index] + 1))
+            seen[names[index]] = (seen[names[index]] or 0) + 1
+        end
+        for index in ipairs(paths) do
+            if seen[names[index]] > 1 then depth[index], clash = depth[index] + 1, true end
+        end
+        if not clash then break end
+    end
+    return names
+end
+
+local function tokenText(value)
+    if value >= 999950 then return string.format("%.1fM tok", value / 1e6) end
+    if value >= 1000 then return string.format("%.1fk tok", value / 1000) end
+    return math.floor(value) .. " tok"
+end
+
+local function topMenu(cache, style)
+    if not cache.measured then
+        return { { title = style("read_tokens missing — regenerate read-rates.json", true), disabled = true } }
+    end
+    local items = { { title = style("tokens read this week · from Read/@ loads", true), disabled = true },
+                    { title = "-" } }
+    local rows, names = {}, distinctShortPaths(cache.top)
+    for index, path in ipairs(cache.top) do
+        local weekly = cache.entries[path].weekly
+        local loads = tonumber(weekly.read_loads)
+        rows[index] = { clip(names[index], FILE_WIDTH), tokenText(tonumber(weekly.read_tokens)),
+                        loads and ("×" .. math.floor(loads)) or "", MODES[cache.entries[path].mode] or "" }
+    end
+    local columns = { {}, { right = true }, { right = true }, { dim = true } }
+    for index, title in ipairs(alignedTitles(rows, columns, style)) do
+        local path = cache.top[index]
+        items[#items + 1] = { title = title, fn = function() pasteboardFn(path) end }
+    end
+    if #rows == 0 then
+        items[#items + 1] = { title = style("no markdown read this week", true), disabled = true }
+    end
     return items
 end
 
@@ -541,6 +643,7 @@ function M.menuItems()
         items[#items + 1] = { title = "No changes recorded", disabled = true }
     end
     items[#items + 1] = { title = "-" }
+    items[#items + 1] = { title = "Top MD files this week", menu = topMenu(cache, style) }
     local ranked = M.rankedPaths()
     local coverage = { { title = "~/.claude: settings.json and every guarded markdown",
                          disabled = true } }

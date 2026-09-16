@@ -212,12 +212,21 @@ local ok, err = pcall(function()
     local other = "/tmp/x/a.md"
     local unknown = "/tmp/unlisted/missing.md"
     local zero = "/tmp/zero/CLAUDE.md"
+    local rateEntries = {
+        [indexed] = { mode = "always_on", weekly = { loads = 100, reads = 900, read_tokens = 1234567, read_loads = 7 } },
+        [other] = { mode = "on_demand", weekly = { loads = 50, reads = 100, read_tokens = 999960, read_loads = 12 } },
+        [zero] = { mode = "always_on", weekly = { loads = 100, reads = 50, read_tokens = 0 } },
+        ["/tmp/project/settings.json"] = { mode = "always_on", weekly = { loads = 1, reads = 1, read_tokens = 9999999 } },
+    }
+    for i = 1, 9 do
+        rateEntries[i == 2 and "/tmp/alt/x/a.md" or i == 3 and "/tmp/top/f03.markdown" or string.format("/tmp/top/f%02d.md", i)] = {
+            mode = i ~= 1 and "agent_brief" or nil,
+            weekly = { loads = i, reads = 1, read_tokens = i == 1 and 999 or i == 9 and 500 or (1000 * i + 234),
+                       read_loads = i ~= 5 and (i == 1 and 1 or 10 * i) or nil },
+        }
+    end
     local handle = assert(io.open(ratesPath, "w"))
-    handle:write(hs.json.encode({ paths = { entries = {
-        [indexed] = { mode = "always_on", weekly = { loads = 100, reads = 900 } },
-        [other] = { mode = "on_demand", weekly = { loads = 50, reads = 100 } },
-        [zero] = { mode = "always_on", weekly = { loads = 100, reads = 50 } },
-    } } }))
+    handle:write(hs.json.encode({ paths = { entries = rateEntries } }))
     handle:close()
     M.setRatesPath(ratesPath)
     appendEvent("columns1", now, "unused; summary", { indexed, other, unknown },
@@ -297,6 +306,57 @@ local ok, err = pcall(function()
     local bad = M.menuItems()[1]
     check(not plain(bad.title):find("tok/wk", 1, true), "mismatched bytes produced a price")
     check(not plain(bad.menu[2].title):find("tok/wk", 1, true), "mismatched bytes produced a file price")
+
+    local function column(text, needle, atEnd)
+        local start, finish = text:find(needle, 1, true)
+        if not start then return nil end
+        return utf8.len(text:sub(1, (atEnd and finish or start) - 1))
+    end
+    appendEvent("aligned", now, "unused", { indexed, "/tmp/top/f09.md" }, { -32000, 5 })
+    local alignedMenu = M.menuItems()[1].menu
+    local lineA, lineB = plain(alignedMenu[2].title), plain(alignedMenu[3].title)
+    check(lineA:find("-32k", 1, true) and lineB:find("+5", 1, true) and lineA:find("#1 ", 1, true)
+        and lineB:find("#13", 1, true), "aligned fixture lines lack their cells: [" .. lineA .. "] [" .. lineB .. "]")
+    check(column(lineA, "-32k", true) == column(lineB, "+5", true), "submenu delta column is misaligned")
+    check(column(lineA, " tok/wk") == column(lineB, " tok/wk"), "submenu price column is misaligned")
+    check(column(lineA, "#1", true) == column(lineB, "#13", true), "submenu rank column is misaligned")
+    check(column(lineA, "always") ~= nil and column(lineA, "always") == column(lineB, "brief"),
+        "submenu mode column is misaligned")
+    for index = 2, 3 do
+        check(plain(alignedMenu[index].title):match("%s$") == nil, "a submenu file line ends with a space")
+    end
+
+    local topItems, topIndex, coverageIndex = M.menuItems(), nil, nil
+    for index, item in ipairs(topItems) do
+        if plain(item.title) == "Top MD files this week" then topIndex = index end
+        if plain(item.title) == "Coverage" then coverageIndex = index end
+    end
+    check(topIndex ~= nil and coverageIndex == topIndex + 1, "Top MD files is not right before Coverage")
+    local top = topIndex and topItems[topIndex].menu or {}
+    local expected = {
+        "tokens read this week · from Read/@ loads",
+        "-",
+        "project/CLAUDE.md  1.2M tok   ×7  always",
+        "tmp/x/a.md         1.0M tok  ×12  demand",
+        "top/f08.md         8.2k tok  ×80  brief",
+        "top/f07.md         7.2k tok  ×70  brief",
+        "top/f06.md         6.2k tok  ×60  brief",
+        "top/f05.md         5.2k tok       brief",
+        "top/f04.md         4.2k tok  ×40  brief",
+        "top/f03.markdown   3.2k tok  ×30  brief",
+        "alt/x/a.md         2.2k tok  ×20  brief",
+        "top/f01.md          999 tok   ×1",
+    }
+    check(#top == #expected, "Top MD files has " .. #top .. " items, expected " .. #expected)
+    for index, want in ipairs(expected) do
+        local got = top[index] and plain(top[index].title) or "<missing>"
+        check(got == want, "Top MD files item " .. index .. " is [" .. got .. "], expected [" .. want .. "]")
+    end
+    check(top[1] and top[1].disabled == true and type(top[1].title) == "userdata", "Top header is not a disabled styled line")
+    local topCopied = {}
+    M.setPasteboard(function(text) topCopied[#topCopied + 1] = text end)
+    if top[3] and top[3].fn then top[3].fn() end
+    check(topCopied[1] == indexed, "clicking a Top line did not copy its absolute path")
 
     for _, item in ipairs(menus) do
         if type(item.menu) == "table" then
@@ -389,7 +449,12 @@ local ok, err = pcall(function()
     linkHandle:close()
     M.setRatesPath(linkRates)
     appendEvent("symlinked", now, "unused", { link }, { 32 })
-    local linkedRow = findRow(M.menuItems(), "linked/CLAUDE.md")
+    local linkedMenu = M.menuItems()
+    local linkedRow = findRow(linkedMenu, "linked/CLAUDE.md")
+    local placeholder = findRow(linkedMenu, "Top MD files this week")
+    check(placeholder ~= nil and #placeholder.menu == 1 and placeholder.menu[1].disabled == true
+        and plain(placeholder.menu[1].title) == "read_tokens missing — regenerate read-rates.json",
+        "a rates export without read_tokens does not show the regenerate placeholder")
     check(linkedRow ~= nil, "symlinked row is missing")
     if linkedRow then
         check(plain(linkedRow.title):find("tok/wk", 1, true) ~= nil, "symlinked path has no top-row price")
