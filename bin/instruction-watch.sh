@@ -209,18 +209,26 @@ log_line() {
 
 journal_event() { # sent id summary
   local sent=$1 id=$2 summary=$3 line n
-  local files='' vis k
+  local files='' vis k chat='' resolver=''
+  if [ -n "${sid:-}" ]; then
+    resolver=$(command -v chat-name 2>/dev/null) || resolver=''
+    [ -n "$resolver" ] || { [ ! -x "$HOME/.local/bin/chat-name" ] || resolver=$HOME/.local/bin/chat-name; }
+    [ -z "$resolver" ] || chat=$("$resolver" "$sid" 2>/dev/null) || true
+  fi
   local lock="$STATE_DIR/journal.lock" i=0 born now
   for k in "${keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
   mkdir -p "$STATE_DIR" 2>/dev/null || return 1
   line=$(jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sid "${sid:-}" --arg summary "$summary" --arg sent "$sent" \
+    --arg chat "$chat" --arg bytes "$(printf '%s\n' ${deltas[@]+"${deltas[@]}"})" \
     --arg files "$files" --arg restores "$(printf '%s\n' ${restores[@]+"${restores[@]}"})" \
     --arg reverted "$(printf '%s\n' ${reverted[@]+"${reverted[@]}"})" \
     '{id:$id,at:$at,sid:$sid,summary:$summary,sent:$sent,
       files:($files|split("\n")|map(select(length>0))),
+      bytes:($bytes|split("\n")|map(select(length>0)|tonumber)),
       restores:($restores|split("\n")|map(select(length>0))),
-      reverted:($reverted|split("\n")|map(select(length>0)))}' 2>/dev/null) || return 1
+      reverted:($reverted|split("\n")|map(select(length>0)))} +
+      (if $chat != "" then {chat:$chat} else {} end)' 2>/dev/null) || return 1
   [ -n "$line" ] || return 1
   # tail-then-mv of the journal drops a line another session appends between the two;
   # that session has already claimed its marker, so the record would vanish.
@@ -324,6 +332,7 @@ report() {
   local rate
   reports+=("$1")
   keys+=("$2$_watch_nl${3:-}")
+  deltas+=("${4:-0}")
   moved=1
   rate=$(instruction_read_rate "$2" "$HOME")
   [ -n "$rate" ] || return 0
@@ -444,7 +453,7 @@ revert_growth() {
   parked=$(park_current "$real") || return 1
   cp "$src" "$real" 2>/dev/null || return 1
   reverted+=("$vis (+$delta bytes; what it wrote is parked at $parked)")
-  report "REVERTED $vis (+$delta bytes)" "$vis" "${b_hash[$i]}"
+  report "REVERTED $vis (+$delta bytes)" "$vis" "${b_hash[$i]}" 0
 }
 
 cmd_check() {
@@ -494,7 +503,7 @@ cmd_check() {
     s_path+=("$n_path"); s_val+=("$n_rest")
   done <<<"$stat_out"
 
-  local -a reports=() keys=() restores=() reverted=()
+  local -a reports=() keys=() deltas=() restores=() reverted=()
   local ranked_set='' ranked_loaded='' ranked_p
   local cur cur_mtime cur_size cur_ino cur_link cur_hash delta moved=0 top_rate=''
   local relay_revert=''
@@ -527,10 +536,10 @@ cmd_check() {
       # A recorded target that is gone under a name that still resolves is a retarget, not a
       # deletion: bytes restored at a path the name no longer means would restore nothing.
       if [ "$vis" != "$real" ] && [ -n "$vis_seen" ]; then
-        report "RETARGETED $vis (its recorded target is gone)" "$vis" gone
+        report "RETARGETED $vis (its recorded target is gone)" "$vis" gone 0
         continue
       fi
-      report "DELETED $vis" "$vis" absent
+      report "DELETED $vis" "$vis" absent "$((0 - ${b_size[$i]}))"
       offer_restore "$i"
       continue
     fi
@@ -539,12 +548,12 @@ cmd_check() {
       # name sits there untouched, reporting nothing. Restoring bytes would answer a question
       # nobody asked, so both of these report and neither offers an undo.
       if [ -z "$vis_seen" ]; then
-        report "DELETED $vis" "$vis" absent
+        report "DELETED $vis" "$vis" absent "$((0 - ${b_size[$i]}))"
         continue
       fi
       # stat prints nothing for a name that is not a symlink, which is the baseline's `-`.
       if [ "${cur_link:--}" != "${b_link[$i]}" ]; then
-        report "RETARGETED $vis -> ${cur_link:-not a symlink any more}" "$vis" "${cur_link:--}"
+        report "RETARGETED $vis -> ${cur_link:-not a symlink any more}" "$vis" "${cur_link:--}" 0
         continue
       fi
     fi
@@ -554,7 +563,7 @@ cmd_check() {
     # target disagreeing on inode is the one trace that leaves.
     if [ "$vis" != "$real" ] && [ "${b_link[$i]}" = '-' ] && [ -n "$vis_ino" ] &&
        [ "$vis_ino" != "$cur_ino" ]; then
-      report "RETARGETED $vis (the name resolves to a different file)" "$vis" "$vis_ino"
+      report "RETARGETED $vis (the name resolves to a different file)" "$vis" "$vis_ino" 0
       continue
     fi
     # Fractional mtime and the inode, not whole seconds and a size: a same-size rewrite landing
@@ -576,7 +585,7 @@ cmd_check() {
         continue
       fi
       [ "$delta" -ge 0 ] && delta="+$delta"
-      report "CHANGED $vis ($delta bytes)" "$vis" "$cur_hash"
+      report "CHANGED $vis ($delta bytes)" "$vis" "$cur_hash" "${delta#+}"
       offer_restore "$i"
     fi
   done
@@ -596,7 +605,7 @@ cmd_check() {
       moved=1
       continue
     fi
-    report "ADDED $vis" "$vis" "$(hash_of "$vis" "$vis")"
+    report "ADDED $vis" "$vis" "$(hash_of "$vis" "$vis")" "$(stat -L -f %z "$vis" 2>/dev/null || printf 0)"
     clear_gone_marks "$vis"
   done < <(visible_paths)
 

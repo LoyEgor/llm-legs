@@ -709,7 +709,7 @@ assert grep -qx 'full-note: no logged-in account to open it under' <<<"$OUT"
 # prices as the chat that asked for it.
 RUNS="$WORK/worker-runs"
 mkdir -p "$RUNS/claudeb-1-1-aaaa" "$RUNS/claudeb-2-2-bbbb" "$RUNS/claudeb-3-3-cccc" \
-  "$RUNS/claudeb-4-4-dddd"
+  "$RUNS/claudeb-4-4-dddd" "$RUNS/claudeb-5-5-eeee"
 printf 'chat-one\n' >"$RUNS/claudeb-1-1-aaaa/launcher"
 printf 'worker-paired\n' >"$RUNS/claudeb-1-1-aaaa/worker-session"
 # One worker id two CHATS resumed divides between neither of them.
@@ -736,5 +736,84 @@ MAP
 assert grep -qx 'worker-paired: chat-one' <<<"$LAUNCHERS"
 assert grep -qx 'worker-shared: -' <<<"$LAUNCHERS"
 assert grep -qx 'worker-orphan: -' <<<"$LAUNCHERS"
+
+echo "== non-interactive open command"
+OPEN_HOME="$WORK/open-home"
+OPEN_SID=12345678-1234-1234-1234-123456789abc
+NO_CWD_SID=22345678-1234-1234-1234-123456789abc
+GONE_CWD_SID=32345678-1234-1234-1234-123456789abc
+UNKNOWN_GATEWAY_SID=42345678-1234-1234-1234-123456789abc
+mkdir -p "$OPEN_HOME/.claude/projects/project" "$OPEN_HOME/.claude-profiles/picked" \
+  "$OPEN_HOME/.claude-profiles/last" "$OPEN_HOME/.claude-profiles/.claudeb" "$WORK/open-bin"
+printf 'last\n' > "$OPEN_HOME/.claude-profiles/.claudeb/.claudeb-state"
+python3 - "$OPEN_HOME/.claude/projects/project" "$OPEN_SID" "$NO_CWD_SID" \
+  "$GONE_CWD_SID" "$UNKNOWN_GATEWAY_SID" "$WORK" <<'PYOPEN'
+import datetime, json, sys
+root, open_sid, no_cwd_sid, gone_cwd_sid, gateway_sid, cwd = sys.argv[1:]
+def write(session, directory, model="claude-sonnet-4-6"):
+    row = {"type": "assistant", "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+           "cwd": directory, "uuid": "reply-" + session,
+           "message": {"role": "assistant", "model": model,
+                       "content": [{"type": "text", "text": "A fixture reply"}],
+                       "usage": {"input_tokens": 10, "cache_creation_input_tokens": 10,
+                                 "cache_creation": {"ephemeral_1h_input_tokens": 10}}}}
+    with open(root + "/" + session + ".jsonl", "w") as handle:
+        handle.write(json.dumps(row) + "\n")
+write(open_sid, cwd)
+write(no_cwd_sid, None)
+write(gone_cwd_sid, cwd + "/missing")
+write(gateway_sid, cwd, "anthropic.ccr.astra")
+PYOPEN
+printf '%s\n' "$OPEN_SID" >"$RUNS/claudeb-5-5-eeee/launcher"
+printf 'worker-open\n' >"$RUNS/claudeb-5-5-eeee/worker-session"
+cat > "$WORK/open-bin/worker-pick" <<'PICK'
+#!/bin/sh
+printf 'NEXT\tclaudeb\tpicked\n'
+PICK
+chmod +x "$WORK/open-bin/worker-pick"
+open_command_test() {
+  HOME="$OPEN_HOME" PATH="$WORK/open-bin:$PATH" CLAUDEB_DIR="$OPEN_HOME/.claude-profiles/.claudeb" \
+    CHAT_FIND_ROOT="$OPEN_HOME/.claude/projects" \
+    WORKER_RUN_DIR="$RUNS" \
+    CLAUDEB_WORKER_PICK=worker-pick CHAT_FIND_CACHE="$WORK/open-cache.json" \
+    STATUSLINE_CACHE_DIR="$WORK/open-tracks" "$SCRIPT" --open-command "$@"
+}
+OPEN=$(open_command_test "$OPEN_SID")
+assert [ "$?" -eq 0 ]
+assert [ "$(printf '%s\n' "$OPEN" | wc -l | tr -d ' ')" = 2 ]
+assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=picked source=pick' ]
+assert test "${OPEN#*"$OPEN_SID"}" != "$OPEN"
+assert test "${OPEN#*"$ROOT/bin/claudeb"}" != "$OPEN"
+OPEN=$(open_command_test worker-open)
+assert test "${OPEN#*"--resume $OPEN_SID"}" != "$OPEN"
+case "$OPEN" in *worker-open*) fail "worker session was not folded in open command" ;; esac
+open_command_test "$NO_CWD_SID" > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx 'chats: no such directory: ?' "$WORK/open-error"
+open_command_test "$GONE_CWD_SID" > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx "chats: no such directory: $WORK/missing" "$WORK/open-error"
+open_command_test "$UNKNOWN_GATEWAY_SID" > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert grep -qx 'chats: gateway account unknown for this chat' "$WORK/open-error"
+cat > "$WORK/open-bin/worker-pick" <<'PICK'
+#!/bin/sh
+exec sleep 2
+PICK
+OPEN=$(open_command_test "$OPEN_SID" --timeout 0.05)
+assert [ "$?" -eq 0 ]
+assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=last source=fallback' ]
+mkdir -p "$WORK/open-tracks"
+printf 'v2 %s picked\n' "$(date +%s)" > "$WORK/open-tracks/cache-ttl-track-$OPEN_SID"
+OPEN=$(open_command_test "$OPEN_SID" --timeout 0.05)
+assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=picked source=cache' ]
+printf 'v1 gateway-test astra\n' > "$CLAUDEGPT_HOME/sessions/$OPEN_SID"
+OPEN=$(open_command_test "$OPEN_SID" --timeout 0.05)
+assert test "${OPEN#*"$ROOT/bin/claudegpt"}" != "$OPEN"
+assert [ "$(printf '%s\n' "$OPEN" | tail -1)" = 'account=gateway-test source=cache' ]
+open_command_test unknown > "$WORK/open-out" 2> "$WORK/open-error"
+assert [ "$?" -eq 1 ]
+assert [ ! -s "$WORK/open-out" ]
+assert [ "$(wc -l < "$WORK/open-error" | tr -d ' ')" = 1 ]
 
 echo "PASS: chats ($asserts assertions)"

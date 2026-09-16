@@ -1,7 +1,3 @@
--- Runs INSIDE the real Hammerspoon (`hs -c "dofile(...)"`), which is the only place `hs.pathwatcher`,
--- `hs.json` and the menu builder exist. Everything it touches is the fixture directory the shell
--- suite prepared with the real hook, and the screen is swapped for a recorder: proving the
--- transport may not put a line on Egor's display or a receipt in his cache.
 local source = debug.getinfo(1, "S").source
 local root = source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
@@ -9,19 +5,32 @@ assert(root, "harness path is unavailable")
 local fixture = _G.INSTRUCTION_WATCH_FIXTURE
 assert(type(fixture) == "string" and fixture ~= "", "no fixture state directory was passed")
 
-package.path = package.path .. ";" .. root .. "/hammerspoon/?.lua"
+local savedPath = package.path
+local existing = package.loaded["instruction-watch"]
+local savedGlobal = _G.InstructionWatch
+package.path = root .. "/hammerspoon/?.lua;" .. package.path
 -- `require` caches, and this harness runs inside a Hammerspoon that may have loaded the module
 -- hours ago: without dropping the cache first, every run after the first one checks the version
 -- that was on disk THEN, and an edit to the module could never fail it. The live instance is
 -- stopped rather than abandoned, or its watcher and timer outlive it.
 do
-    local existing = package.loaded["instruction-watch"]
     if type(existing) == "table" and type(existing.stop) == "function" then
         pcall(existing.stop)
     end
     package.loaded["instruction-watch"] = nil
 end
-local M = require("instruction-watch")
+local savedWatcher = hs.pathwatcher
+-- nil would trigger Hammerspoon's extension autoloader and start the module against live state.
+hs.pathwatcher = false
+local loaded, M = pcall(require, "instruction-watch")
+hs.pathwatcher = savedWatcher
+if not loaded then
+    package.path = savedPath
+    package.loaded["instruction-watch"] = existing
+    _G.InstructionWatch = savedGlobal
+    if type(existing) == "table" and type(existing.start) == "function" then pcall(existing.start) end
+    error(M)
+end
 
 local failures = {}
 local function check(ok, message)
@@ -30,11 +39,22 @@ end
 
 local alerts = {}
 local savedDir = M.stateDir()
+local savedWatcherNew = hs.pathwatcher.new
+check(debug.getinfo(M.pump, "S").source:sub(1, #root + 1) == "@" .. root,
+    "the harness loaded instruction-watch outside its root")
 
 local function restore()
+    hs.pathwatcher.new = savedWatcherNew
+    M.stop()
     M.setAlert(nil)
+    M.setPasteboard(nil)
+    M.setOpenCommand(nil)
+    M.setRatesPath(nil)
     M.setStateDir(nil)
-    pcall(M.start)
+    package.path = savedPath
+    package.loaded["instruction-watch"] = existing
+    _G.InstructionWatch = savedGlobal
+    if type(existing) == "table" and type(existing.start) == "function" then pcall(existing.start) end
 end
 
 local function readFile(path)
@@ -45,13 +65,13 @@ local function readFile(path)
     return body
 end
 
-local function appendEvent(id, isoStamp, summary, files)
+local function appendEvent(id, isoStamp, summary, files, bytes, chat)
     local handle = io.open(fixture .. "/events.jsonl", "a")
     if not handle then return false end
     handle:write(hs.json.encode({
         id = id, at = isoStamp, sid = "harness", summary = summary,
         sent = "attempted", files = files or { "/tmp/" .. id .. ".md" },
-        restores = {}, reverted = {},
+        restores = {}, reverted = {}, bytes = bytes, chat = chat,
     }) .. "\n")
     handle:close()
     return true
@@ -64,9 +84,13 @@ local function describe(result)
         tostring(result.delivered), tostring(result.alerted), tostring(result.stale))
 end
 
+local function plain(title)
+    return type(title) == "userdata" and title:getString() or tostring(title or "")
+end
+
 local function findRow(items, needle)
     for _, item in ipairs(items or {}) do
-        local title = tostring(item.title or "")
+        local title = plain(item.title)
         if title:find(needle, 1, true) then return item end
     end
     return nil
@@ -77,17 +101,12 @@ local ok, err = pcall(function()
     M.setStateDir(fixture)
     M.setAlert(function(text) alerts[#alerts + 1] = text end)
 
-    -- 1. What the collector actually wrote. The shell suite ran the real hook against a real file
-    --    change to produce this, so what is being read here is the hook's own record, not a mock.
     local body = readFile(fixture .. "/events.jsonl")
     check(body ~= nil and body ~= "", "the collector left no journal to read")
-    -- The FIRST record, not the last: the burst bound below the third collapses later ones into
-    -- one line, and a record that was deliberately not alerted is the wrong one to ask about here.
     local seeded = hs.json.decode(body:match("^([^\n]+)"))
     check(type(seeded) == "table" and type(seeded.id) == "string",
         "the collector's record does not decode")
 
-    -- 2. One pump delivers it, and says so.
     local first = M.pump()
     check(first.delivered >= 1, "the pump delivered nothing: " .. describe(first))
     check(first.alerted >= 1, "the pump wrote a receipt without showing anything")
@@ -95,26 +114,22 @@ local ok, err = pcall(function()
     check(tostring(alerts[1]):find("Instruction file changed", 1, true) ~= nil,
         "the alert does not name what happened: " .. tostring(alerts[1]))
 
-    -- 3. The receipt is the proof the other end woke up — and it claims that and nothing more.
     local receipt = hs.json.decode(readFile(fixture .. "/receipts/" .. seeded.id) or "{}")
     check(receipt.alerted == true, "the receipt does not record that an alert was shown")
     check(type(receipt.at) == "string" and receipt.at ~= "", "the receipt carries no timestamp")
 
-    -- 4. Idempotent: the watcher, the timer, the hook's poke and a menu click all reach this.
     local alertsBefore = #alerts
     local second = M.pump()
     check(second.delivered == 0, "a receipted change was delivered twice")
     check(#alerts == alertsBefore, "a receipted change was alerted twice")
 
-    -- 5. The menu is the durable half. The row for the collector's change is there, marked as
-    --    shown, and it offers the restore command to COPY — never to run.
     local items = M.menuItems()
     local row = findRow(items, "●")
     check(row ~= nil, "no delivered row in the menu")
     if row then
         check(type(row.menu) == "table", "the row has no detail submenu")
-        local restoreRow = findRow(row.menu, "Copy restore command")
-        check(restoreRow ~= nil, "the row offers no restore command to copy")
+        check(findRow(row.menu, "Copy command to open this chat") ~= nil, "the row offers no chat command")
+        check(findRow(row.menu, "Copy restore command") == nil, "the row still offers a restore command")
         check(findRow(row.menu, "Run ") == nil, "the menu offers to RUN a restore")
     end
     check(findRow(items, "Coverage") ~= nil, "the menu does not show what is covered")
@@ -122,13 +137,10 @@ local ok, err = pcall(function()
     if coverage then
         check(findRow(coverage.menu, "CLAUDE.md") ~= nil,
             "the coverage submenu does not list the ranked project file")
-        -- The cache's first line is a format stamp, not a path somebody is watching.
         check(findRow(coverage.menu, "#") == nil,
             "the cache's version stamp was shown as a watched file")
     end
 
-    -- 6. A Hammerspoon that was off for a day must not open with a wall of alerts: old records
-    --    land in the menu unannounced, and a burst past the third collapses into one line.
     local stale = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 3 * 24 * 3600)
     appendEvent("stale0001", stale, "CHANGED /tmp/old.md (+1 bytes)")
     alertsBefore = #alerts
@@ -178,9 +190,100 @@ local ok, err = pcall(function()
     local spaceRow = findRow(spaceItems, "My repo/CLAUDE.md")
     check(spaceRow ~= nil, "a path with spaces was not shortened to parent/base")
     if spaceRow then
-        check(tostring(spaceRow.title):find("Users/me/My ", 1, true) == nil,
-            "a path with spaces was split: " .. tostring(spaceRow.title))
+        check(plain(spaceRow.title):find("Users/me/My ", 1, true) == nil,
+            "a path with spaces was split: " .. plain(spaceRow.title))
     end
+
+    local ratesPath = fixture .. "/read-rates.json"
+    local indexed = "/tmp/project/CLAUDE.md"
+    local other = "/tmp/x/a.md"
+    local unknown = "/tmp/unlisted/missing.md"
+    local zero = "/tmp/zero/CLAUDE.md"
+    local handle = assert(io.open(ratesPath, "w"))
+    handle:write(hs.json.encode({ paths = { entries = {
+        [indexed] = { mode = "always_on", weekly = { loads = 100, reads = 900 } },
+        [other] = { mode = "on_demand", weekly = { loads = 50, reads = 100 } },
+        [zero] = { mode = "always_on", weekly = { loads = 100, reads = 50 } },
+    } } }))
+    handle:close()
+    M.setRatesPath(ratesPath)
+    appendEvent("columns1", now, "unused; summary", { indexed, other, unknown },
+        { -320, 0, 0 }, "Named chat (1234abcd)")
+    appendEvent("columns2", now, "unused", { other }, { -640 })
+    appendEvent("unknownprice", now, "unused", { unknown }, { 184 })
+    appendEvent("zerodelta", now, "REVERTED " .. zero .. " (+20 bytes)", { zero }, { 0 })
+    local menus = M.menuItems()
+    local multiple, single, absent = findRow(menus, " +2 more"), findRow(menus, "x/a.md"),
+        findRow(menus, "unlisted/missing.md")
+    check(multiple ~= nil, "a three-file event has no +2 more row")
+    check(single ~= nil and absent ~= nil, "fixture rows are missing")
+    if multiple and single and absent then
+        local multiText, singleText = plain(multiple.title), plain(single.title)
+        check(type(multiple.title) == "userdata", "top row is not styled text")
+        check(multiText:find("project/CLAUDE.md", 1, true) ~= nil
+            and not multiText:find(";", 1, true), "multi-file row is not one shortened path")
+        local function offset(text, needle)
+            local start = text:find(needle, 1, true)
+            return start and utf8.len(text:sub(1, start - 1))
+        end
+        check(offset(multiText, "-320") == offset(singleText, "-640"), "byte columns are misaligned")
+        check(offset(multiText, "-10000") == nil, "large price did not use k formatting")
+        check(offset(multiText, "-10.0k tok/wk") == offset(singleText, "-10.0k tok/wk"),
+            "price columns are misaligned")
+        local header = plain(multiple.menu[1].title)
+        check(header:find("Named chat (1234abcd)", 1, true) ~= nil
+            and not header:find("harness", 1, true), "resolved chat header exposes the sid or omits the name")
+        check(plain(single.menu[1].title):find("harness", 1, true) ~= nil,
+            "unresolved chat header omits the sid")
+        local detail = plain(multiple.menu[2].title)
+        check(detail:find("-10.0k tok/wk", 1, true) ~= nil, "negative delta has no negative price")
+        check(detail:find("#1", 1, true) ~= nil, "highest weekly reads entry is not rank #1")
+        check(detail:find("always", 1, true) ~= nil, "indexed file mode is missing")
+        check(not plain(absent.title):find("tok/wk", 1, true), "unindexed path has a top-row price")
+        local absentDetail = plain(absent.menu[2].title)
+        check(not absentDetail:find("tok/wk", 1, true) and not absentDetail:find("#", 1, true),
+            "unindexed path has a price or rank")
+        local zeroRow = findRow(menus, "zero/CLAUDE.md")
+        check(zeroRow ~= nil, "zero-delta row is missing")
+        if zeroRow then
+            local zeroTop, zeroDetail = plain(zeroRow.title), plain(zeroRow.menu[2].title)
+            check(zeroTop:find(" 0", 1, true) ~= nil and not zeroTop:find("+0", 1, true),
+                "zero delta is not rendered as 0 in the top row")
+            check(zeroDetail:find("  0", 1, true) ~= nil and not zeroDetail:find("+0", 1, true),
+                "zero delta is not rendered as 0 in the file row")
+            check(not zeroTop:find("tok/wk", 1, true) and not zeroDetail:find("tok/wk", 1, true),
+                "zero delta has a price")
+        end
+        check(findRow(multiple.menu, "sent:") == nil, "pending row still shows sent status")
+        check(findRow(multiple.menu, "Copy summary") == nil, "submenu still offers Copy summary")
+        local copied = {}
+        M.setPasteboard(function(text) copied[#copied + 1] = text end)
+        local action = findRow(multiple.menu, "Copy command to open this chat")
+        check(action ~= nil, "chat copy action is missing")
+        if action then
+            M.setOpenCommand(function(sid, done)
+                check(sid == "harness", "chat runner received the wrong sid")
+                done(0, "claudeb profile fixture --resume harness\naccount=fixture source=pick\n", "")
+            end)
+            action.fn()
+            check(copied[1] == "claudeb profile fixture --resume harness", "copy action did not copy only line one")
+            check(alerts[#alerts] == "copied", "pick copy did not report copied")
+            M.setOpenCommand(function(_, done)
+                done(0, "fallback command\naccount=fixture source=fallback\n", "")
+            end)
+            action.fn()
+            check(alerts[#alerts] == "copied · account fixture = last launched, pick unreachable",
+                "fallback alert does not name the last-launched account")
+            M.setOpenCommand(function(_, done) done(1, "do not copy", "fixture error\nmore detail") end)
+            action.fn()
+            check(#copied == 2, "failed command wrote to the pasteboard")
+            check(alerts[#alerts] == "no command: fixture error", "command error did not use first stderr line")
+        end
+    end
+    appendEvent("badbytes", now, "unused", { indexed }, { 1, 2 })
+    local bad = M.menuItems()[1]
+    check(not plain(bad.title):find("tok/wk", 1, true), "mismatched bytes produced a price")
+    check(not plain(bad.menu[2].title):find("tok/wk", 1, true), "mismatched bytes produced a file price")
 
     local created = 0
     local savedNew = hs.pathwatcher.new
