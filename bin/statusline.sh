@@ -1225,11 +1225,8 @@ if [ -n "$active_top" ]; then
   fi
 fi
 
-h5_arrow=""
-if [ -n "$h5_reset" ]; then
-  h5_time=$(TZ=Europe/Kyiv date -r "$h5_reset" +%H:%M 2>/dev/null)
-  [ -n "$h5_time" ] && h5_arrow=" ${DIM}${h5_time}${RESET}"
-fi
+h5_time=""
+[ -n "$h5_reset" ] && h5_time=$(TZ=Europe/Kyiv date -r "$h5_reset" +%H:%M 2>/dev/null)
 
 wk_arrow_txt=""
 if [ -n "$wk_reset" ]; then
@@ -1248,16 +1245,13 @@ if [ -n "$wk_reset" ]; then
     wk_arrow_txt="$(( (rem + 30) / 60 ))m"
   fi
 fi
-wk_arrow=""
-[ -n "$wk_arrow_txt" ] && wk_arrow=" ${DIM}${wk_arrow_txt}${RESET}"
 
 sep="${DIM}│${RESET}"
 
-h5_part=""
-if [ "$h5_absent" != true ]; then
-  h5_part=" ${sep} 5h $(pct_colored "$h5_pct" "$h5_dim")${h5_arrow}"
-fi
-fable_part=""
+h5_pct_part=""
+[ "$h5_absent" != true ] && h5_pct_part=$(pct_colored "$h5_pct" "$h5_dim")
+fable_pct_part=""
+fable_reset_txt=""
 fable_account="$acct"
 if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
   # The collector's own `effective_pct`/`stale`/`expired` fields, as the menubar renders them.
@@ -1274,7 +1268,6 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_accou
     # age is the backstop.
     limits_mtime=$(file_mtime "$limits_file")
     [[ "$limits_mtime" =~ ^[0-9]+$ ]] && [ $((now - limits_mtime)) -gt "$LIMITS_STALE_FABLE" ] && fable_dim=1
-    fable_reset_txt=""
     if [ -n "$fable_reset" ]; then
       case "$fable_reset" in
         *Z) fable_ts="${fable_reset%Z}+0000" ;;
@@ -1305,9 +1298,7 @@ if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_accou
         fi
       fi
     fi
-    fable_reset_part=""
-    [ -n "$fable_reset_txt" ] && fable_reset_part=" ${DIM}${fable_reset_txt}${RESET}"
-    fable_part=" ${sep} fb $(pct_colored "$fable_pct" "$fable_dim")${fable_reset_part}"
+    fable_pct_part=$(pct_colored "$fable_pct" "$fable_dim")
   fi
 fi
 
@@ -1895,11 +1886,12 @@ else
 fi
 
 ctx_tokens_part=""
+ctx_warn_part=""
 if [ "$cache_state" = warm ]; then
   death_time=$(TZ=Europe/Kyiv date -r "$((warm_ts + warm_ttl))" +%H:%M 2>/dev/null)
   if [ -n "$death_time" ]; then
     ctx_tokens_part=" ${DIM}→${death_time}${RESET}"
-    [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_tokens_part="${ctx_tokens_part}${YELLOW}↓5m${RESET}"
+    [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_warn_part="${YELLOW}↓5m${RESET}"
   fi
 elif [ -n "$ctx_tokens" ] && [ "$ctx_tokens" -ge 0 ] 2>/dev/null; then
   ctx_tokens_k=$(( (ctx_tokens + 500) / 1000 ))
@@ -2054,11 +2046,17 @@ if [ -n "$active_top" ]; then
   [ "$(unpushed_marker "$active_top" "$session_id" "$now")" = unpushed ] && unpushed_show=1
 fi
 
-# Line 1 is built to the terminal's width, not printed once: the harness exports COLUMNS, and a
-# line wider than that wraps and pushes line 2 out of view. Every shrinkable segment has full /
+# Both lines are built to the terminal's width, not printed once: the harness exports COLUMNS and
+# cuts a row at the right edge, a few cells before COLUMNS. Every shrinkable segment has full /
 # short / off forms; the steps below are applied in a fixed order, re-measuring after each
 # (docs/statusline-contract.md "Progressive fit"). The red alarm blocks and `↓N↑N` have no `off`
 # form at all — a width small enough to need them gone is a width that keeps them.
+STATUSLINE_FIT_MARGIN=${STATUSLINE_FIT_MARGIN:-3}
+if [[ "$STATUSLINE_FIT_MARGIN" =~ ^[0-9]+$ ]]; then
+  STATUSLINE_FIT_MARGIN=$((10#$STATUSLINE_FIT_MARGIN))
+else
+  STATUSLINE_FIT_MARGIN=3
+fi
 fit_files=1
 fit_diff_sign=1
 fit_branch_glyph=1
@@ -2071,6 +2069,10 @@ fit_unpushed_short=0
 fit_dir_active_only=0
 fit_dir_off=0
 fit_acct_max=0
+fit2_cost=1
+fit2_tokens=1
+fit2_labels=full
+fit2_sep=1
 
 # Bash patterns have no quantifier — `*` after a bracket expression matches anything, not "more of
 # the class" — so the escapes are removed as the literal color strings that produced them.
@@ -2102,8 +2104,8 @@ fit_initials() {
       ;;
   esac
   [ -n "$out" ] || out=${1:0:3}
-  # Initials of a many-word name are longer than step 5's cut, so this step would GROW the line and
-  # cost the directory its place further down the ladder.
+  # Initials of a many-word name can be longer than step 5's cut, so this step would GROW the line
+  # and cost the directory its place further down the ladder.
   fit_trunc "$1" "$fit_dir_short_len"
   [ "${#out}" -le "${#fit_out}" ] || out=$fit_out
   fit_out=$out
@@ -2111,10 +2113,14 @@ fit_initials() {
 
 fit_dir_name() {
   # A worktree folder is `<TICKET>-junk` and the digits ARE its identity, so — as in
-  # fit_branch_part — the ticket prefix is the floor: no 8-char cut into the digits, no initials.
+  # fit_branch_part — the ticket prefix is the floor: no cut into the digits, no initials.
   if [[ "$1" =~ ^([A-Za-z]+[-_][0-9]+) ]]; then
     case "$fit_dir_mode" in
       full) fit_out=$1 ;;
+      short)
+        fit_trunc "$1" "$fit_dir_short_len"
+        [ "${#fit_out}" -ge "${#BASH_REMATCH[1]}" ] || fit_out="${BASH_REMATCH[1]}"
+        ;;
       *) fit_out="${BASH_REMATCH[1]}" ;;
     esac
     return
@@ -2302,12 +2308,56 @@ fit_compose() {
   line1="${line1}${review_part}${verdict_part}${unpushed_part}${pin_part}"
 }
 
+fit_label() {
+  fit_out=""
+  [ -n "$1" ] || return
+  case "$fit2_labels" in
+    off) return ;;
+    short)
+      if [[ "$1" =~ ^([A-Z][a-z][a-z])\ [0-9][0-9]:[0-9][0-9]$ ]]; then
+        fit_out=" ${DIM}${BASH_REMATCH[1]}${RESET}"
+        return
+      elif [[ "$1" =~ ^([0-9][0-9]):[0-9][0-9]$ ]]; then
+        fit_out=" ${DIM}${BASH_REMATCH[1]}h${RESET}"
+        return
+      fi
+      ;;
+  esac
+  fit_out=" ${DIM}${1}${RESET}"
+}
+
+fit_compose2() {
+  local gap=" ${sep} "
+  [ "$fit2_sep" = 1 ] || gap=" "
+  line2="ctx ${ctx_pct_part}"
+  if [ "$fit2_tokens" = 1 ]; then
+    line2="${line2}${ctx_tokens_part}${ctx_warn_part}"
+  elif [ -n "$ctx_warn_part" ]; then
+    line2="${line2} ${ctx_warn_part}"
+  fi
+  if [ "$h5_absent" != true ]; then
+    fit_label "$h5_time"
+    line2="${line2}${gap}5h ${h5_pct_part}${fit_out}"
+  fi
+  fit_label "$wk_arrow_txt"
+  line2="${line2}${gap}wk ${wk_pct_part}${fit_out}"
+  if [ -n "$fable_pct_part" ]; then
+    fit_label "$fable_reset_txt"
+    line2="${line2}${gap}fb ${fable_pct_part}${fit_out}"
+  fi
+  [ "$fit2_cost" = 1 ] && [ -n "$cost_part" ] && line2="${line2}${gap}${cost_part}"
+}
+
 model_abbrev=$(abbrev_model "$model")
 effort_abbrev=""
 [ -n "$effort" ] && effort_abbrev=$(abbrev_effort "$effort")
 
 fit_cols=${COLUMNS:-}
-[[ "$fit_cols" =~ ^[0-9]+$ ]] && [ "$fit_cols" -gt 0 ] || fit_cols=""
+if [[ "$fit_cols" =~ ^[0-9]+$ ]] && [ "$fit_cols" -gt 0 ]; then
+  fit_cols=$((fit_cols - STATUSLINE_FIT_MARGIN))
+else
+  fit_cols=""
+fi
 fit_compose
 if [ -n "$fit_cols" ]; then
   for fit_step in 1 2 3 4 5 6 7 8 9 10 11 12; do
@@ -2318,32 +2368,53 @@ if [ -n "$fit_cols" ]; then
       2) fit_diff_sign=0 ;;
       3) fit_branch_glyph=0 ;;
       4) fit_branch_short=1 ;;
-      5) fit_dir_mode=short ;;
+      5)
+        fit_acct_max=7
+        fit_dir_short_len=${#dir}
+        [ "$dir_foreign" = 1 ] && [ "${#active_name}" -gt "$fit_dir_short_len" ] &&
+          fit_dir_short_len=${#active_name}
+        [ "$wt_show" = 1 ] && [ "${#wt_name}" -gt "$fit_dir_short_len" ] &&
+          fit_dir_short_len=${#wt_name}
+        fit_dir_mode=short
+        fit_compose
+        fit_width "$line1"
+        while [ "$fit_len" -gt "$fit_cols" ] && [ "$fit_dir_short_len" -gt 8 ]; do
+          fit_dir_short_len=$((fit_dir_short_len - 1))
+          fit_compose
+          fit_width "$line1"
+        done
+        [ "$fit_dir_short_len" -ge 8 ] || fit_dir_short_len=8
+        ;;
       6) fit_model_short=1 ;;
       7) fit_rev_short=1 ;;
-      8) fit_dir_mode=initials ;;
+      8) fit_acct_max=4; fit_dir_mode=initials ;;
       9) fit_pin=0; fit_unpushed_short=1 ;;
       10) fit_dir_active_only=1 ;;
       11) fit_dir_off=1 ;;
-      12) # The floor is four characters: below that an account name stops identifying anything.
-        fit_acct_name=${CLAUDEGPT_ACCOUNT:-$acct}
-        fit_acct_max=${#fit_acct_name}
-        while [ "$fit_acct_max" -gt 4 ]; do
-          fit_acct_max=$((fit_acct_max - 1))
-          fit_compose
-          fit_width "$line1"
-          [ "$fit_len" -le "$fit_cols" ] && break
-        done
-        ;;
+      12) fit_acct_max=3 ;;
     esac
     fit_compose
   done
 fi
 
-line2="ctx $(pct_colored "$ctx_pct" "$ctx_dim" 40)${ctx_tokens_part}${h5_part} ${sep} wk $(pct_colored "$wk_pct" "$wk_dim")${wk_arrow}${fable_part}"
-
-if [ -n "$cost_raw" ]; then
-  line2="${line2} ${sep} ${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
+ctx_pct_part=$(pct_colored "$ctx_pct" "$ctx_dim" 40)
+wk_pct_part=$(pct_colored "$wk_pct" "$wk_dim")
+cost_part=""
+[ -n "$cost_raw" ] && cost_part="${DIM}\$$(LC_ALL=C printf '%.2f' "$cost_raw")${RESET}"
+fit_compose2
+if [ -n "$fit_cols" ]; then
+  for fit_step in 1 2 3 4 5; do
+    fit_width "$line2"
+    [ "$fit_len" -le "$fit_cols" ] && break
+    case "$fit_step" in
+      1) fit2_cost=0 ;;
+      2) fit2_tokens=0 ;;
+      3) fit2_labels=short ;;
+      4) fit2_labels=off ;;
+      5) fit2_sep=0 ;;
+    esac
+    fit_compose2
+  done
 fi
 
 printf '%s\n%s' "$line1" "$line2"

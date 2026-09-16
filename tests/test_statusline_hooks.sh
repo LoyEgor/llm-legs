@@ -1160,7 +1160,7 @@ run_statusline() {
   # from whatever terminal runs the suite would shrink lines every other case measures at full width.
   printf '%s' "$1" | CLAUDE_LIMITS_ACCOUNT="${2:-${RUN_STATUSLINE_DEFAULT_ACCOUNT:-main}}" CLAUDEB_DIR="$CLAUDEB_FIX" \
     CODEXB_PROFILES_DIR="$CODEX_FIX" \
-    COLUMNS="${FIT_COLUMNS:-}" \
+    COLUMNS="${FIT_COLUMNS:-}" STATUSLINE_FIT_MARGIN="${FIT_MARGIN:-}" \
     CHAT_PINS_DIR="$CHAT_PINS_DIR" \
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
@@ -1397,8 +1397,8 @@ assert test "${tag_out#*▶}" = "$tag_out"
 assert test "${tag_out#*running}" = "$tag_out"
 
 # --- Progressive width fit ----------------------------------------------------------------
-# Line 1 is built to $COLUMNS by shrinking segments in a fixed order; every step is exercised on
-# one fixture whose full form overflows every width below.
+# Both lines are built to $COLUMNS minus the margin by shrinking segments in a fixed order; every
+# step is exercised on one fixture whose full form overflows every width below.
 FIT_REPO="$FIXTURES/fit-bench-project"
 FIT_FOREIGN="$FIXTURES/other-side-repo"
 mkdir -p "$FIT_REPO" "$FIT_FOREIGN"
@@ -1419,7 +1419,7 @@ printf 'fresh\n' > "$FIT_REPO/untracked.txt"
 FIT_TOP=$(git -C "$FIT_REPO" rev-parse --show-toplevel)
 FIT_FOREIGN_TOP=$(git -C "$FIT_FOREIGN" rev-parse --show-toplevel)
 fit_visible() {
-  local s="${1%%$'\n'*}"
+  local s=$1
   s=${s//"$RESET"/}; s=${s//"$CYAN"/}; s=${s//"$BLUE"/}; s=${s//"$DIM"/}
   s=${s//"$GREEN"/}; s=${s//"$YELLOW"/}; s=${s//"$RED"/}; s=${s//"$MAGENTA"/}
   printf '%s' "$s"
@@ -1428,12 +1428,30 @@ fit_render() { # session cols [cwd] [account]
   local out
   write_chat_pin "$1" 'grok_profile=a'
   out=$(FIT_COLUMNS="$2" run_statusline \
-    "$(statusline_payload "$1" '{"model":{"display_name":"Fable 5"},"effort":{"level":"xhigh"}}' \
+    "$(statusline_payload "$1" '{"model":{"display_name":"Fable 5"},"effort":{"level":"xhigh"},"cost":{"total_cost_usd":1.5}}' \
        "${3:-$FIT_REPO}")" "${4:-fitaccount}") || fail "fit render failed: $1 at $2"
   fit_visible "$out"
 }
 
-fit_full=$(fit_render fit-full "")
+FIT_NOW=$(date +%s)
+jq -cn --argjson now "$FIT_NOW" '
+  {five_hour:{used_percentage:44,resets_at:($now+3600),as_of:$now,origin:"session"},
+   seven_day:{used_percentage:22,resets_at:($now+259200),as_of:$now,origin:"session"},
+   auth:{status:"ok",checked_at:$now}}' > "$CLAUDEB_FIX/limits/fitaccount.json"
+jq -cn --arg reset "$(date -u -r $((FIT_NOW + 172800)) +%Y-%m-%dT%H:%M:%SZ)" '
+  {vendors:{claude:{accounts:[{account:"fitaccount",five_hour:{stale:false},weekly:{stale:false},
+    fable:{used_pct:55,effective_pct:55,expired:false,stale:false,resets_at:$reset}}]}}}' \
+  > "$WORK/limits.json"
+fit_h5_time=$(TZ=Europe/Kyiv date -r $((FIT_NOW + 3600)) +%H:%M)
+fit_wk_label=$(LC_ALL=C TZ=Europe/Kyiv date -r $((FIT_NOW + 259200)) '+%a %H:%M')
+fit_fb_label=$(LC_ALL=C TZ=Europe/Kyiv date -r $((FIT_NOW + 172800)) '+%a %H:%M')
+
+fit_both=$(fit_render fit-full "")
+fit_line2() { printf '%s' "${1#*$'\n'}"; }
+
+fit_both=$(fit_render fit-full "")
+fit_full=${fit_both%%$'\n'*}
+fit_full2=$(fit_line2 "$fit_both")
 # Nothing shrinks with no width to shrink to.
 assert grep -Fq 'Fable 5 xhigh' <<< "$fit_full"
 assert grep -Fq 'fit-bench-project' <<< "$fit_full"
@@ -1441,121 +1459,193 @@ assert grep -Fq '⎇ WUT-421_fit_bench_branch' <<< "$fit_full"
 assert grep -Fq '+3/-0' <<< "$fit_full"
 assert grep -Fq '+1~1f' <<< "$fit_full"
 assert grep -Fq 'fitaccount' <<< "$fit_full"
+assert_eq "ctx 12% ? 1k │ 5h 44% $fit_h5_time │ wk 22% $fit_wk_label │ fb 55% $fit_fb_label │ \$1.50" "$fit_full2"
 fit_full_len=${#fit_full}
+fit_full2_len=${#fit_full2}
 
-# Every width the line is asked to fit into, it fits into — and the step order is what gives way.
+# Every width either line is asked to fit into, it fits into, three cells inside COLUMNS where the
+# harness cuts the row — and neither line grows as the width falls.
 fit_prev=$fit_full_len
+fit_prev2=$fit_full2_len
 for fit_cols in 200 120 100 90 80 70 60 40; do
-  fit_line=$(fit_render "fit-w$fit_cols" "$fit_cols")
+  fit_both=$(fit_render "fit-w$fit_cols" "$fit_cols")
+  fit_line=${fit_both%%$'\n'*}
+  fit_line2=$(fit_line2 "$fit_both")
   asserts=$((asserts + 1))
-  [ "${#fit_line}" -le "$fit_cols" ] || [ "$fit_cols" -ge "$fit_full_len" ] ||
+  [ "${#fit_line}" -le $((fit_cols - 3)) ] || [ $((fit_cols - 3)) -ge "$fit_full_len" ] ||
     fail "fit width $fit_cols: ${#fit_line} cells: $fit_line"
+  asserts=$((asserts + 1))
+  [ "${#fit_line2}" -le $((fit_cols - 3)) ] || [ $((fit_cols - 3)) -ge "$fit_full2_len" ] ||
+    fail "fit width $fit_cols line 2: ${#fit_line2} cells: $fit_line2"
   asserts=$((asserts + 1))
   [ "${#fit_line}" -le "$fit_prev" ] ||
     fail "fit width $fit_cols grew: ${#fit_line} > $fit_prev"
+  asserts=$((asserts + 1))
+  case "$fit_line" in
+    *fit-bench-project*) [[ "$fit_line" == *fitacco* ]] ;;
+    *fit-benc*) [[ "$fit_line" == *fitacco\ * ]] ;;
+    *fbp*) [[ "$fit_line" == *fita\ * ]] ;;
+  esac || fail "fit width $fit_cols: account shorter than the directory stage: $fit_line"
+  asserts=$((asserts + 1))
+  [ "${#fit_line2}" -le "$fit_prev2" ] ||
+    fail "fit width $fit_cols line 2 grew: ${#fit_line2} > $fit_prev2"
   fit_prev=${#fit_line}
+  fit_prev2=${#fit_line2}
 done
 
-# The full form is 87 cells wide, and each width below is the first one that needs the next step.
+# The margin is an environment override: at 0 both lines may use every column, and no more.
+for fit_cols in 80 74 70; do
+  fit_both=$(FIT_MARGIN=0 fit_render "fit-margin0-$fit_cols" "$fit_cols")
+  fit_line=${fit_both%%$'\n'*}
+  fit_line2=$(fit_line2 "$fit_both")
+  assert test "${#fit_line}" -le "$fit_cols"
+  assert test "${#fit_line2}" -le "$fit_cols"
+done
+assert_eq "$fit_full2" "$(fit_line2 "$(FIT_MARGIN=0 fit_render fit-margin0-full 74)")"
+fit_both=$(FIT_MARGIN=08 fit_render fit-margin08 60 2> "$WORK/fit-margin08.err")
+fit_line=${fit_both%%$'\n'*}
+assert test "${#fit_line}" -le 52
+assert grep -Fq 'fit-bench-pr ' <<< "$fit_line"
+assert test ! -s "$WORK/fit-margin08.err"
+
+# Line 2 is 73 cells wide; each width below, less the margin, is the first one that needs the next
+# step: cost, then the ctx tokens part, then the reset labels short, then gone, then separators.
+assert_eq 73 "$fit_full2_len"
+fit_l2_keep=$(fit_line2 "$(fit_render fit-l2-keep 76)")
+assert_eq "$fit_full2" "$fit_l2_keep"
+fit_l2_step1=$(fit_line2 "$(fit_render fit-l2-step1 75)")
+assert_eq "ctx 12% ? 1k │ 5h 44% $fit_h5_time │ wk 22% $fit_wk_label │ fb 55% $fit_fb_label" "$fit_l2_step1"
+fit_l2_step2=$(fit_line2 "$(fit_render fit-l2-step2 67)")
+assert_eq "ctx 12% │ 5h 44% $fit_h5_time │ wk 22% $fit_wk_label │ fb 55% $fit_fb_label" "$fit_l2_step2"
+fit_l2_step3=$(fit_line2 "$(fit_render fit-l2-step3 62)")
+assert_eq "ctx 12% │ 5h 44% ${fit_h5_time%%:*}h │ wk 22% ${fit_wk_label%% *} │ fb 55% ${fit_fb_label%% *}" "$fit_l2_step3"
+fit_l2_step4=$(fit_line2 "$(fit_render fit-l2-step4 48)")
+assert_eq "ctx 12% │ 5h 44% │ wk 22% │ fb 55%" "$fit_l2_step4"
+fit_l2_step5=$(fit_line2 "$(fit_render fit-l2-step5 36)")
+assert_eq "ctx 12% 5h 44% wk 22% fb 55%" "$fit_l2_step5"
+fit_l2_floor=$(fit_line2 "$(fit_render fit-l2-floor 12)")
+assert_eq "ctx 12% 5h 44% wk 22% fb 55%" "$fit_l2_floor"
+
+# The full form of line 1 is 87 cells wide, and each width below, less the margin, is the first one
+# that needs the next step.
 assert_eq 87 "$fit_full_len"
 
 # Step 1 then 2: the files counter goes before the diff signs, and the slash survives both.
-fit_step1=$(fit_render fit-step1 86)
+fit_step1=$(fit_render fit-step1 89)
 assert test "${fit_step1#*~1f}" = "$fit_step1"
 assert grep -Fq '+3/-0' <<< "$fit_step1"
-fit_step2=$(fit_render fit-step2 80)
+fit_step2=$(fit_render fit-step2 83)
 assert grep -Fq '3/0' <<< "$fit_step2"
 assert test "${fit_step2#*+3}" = "$fit_step2"
 
 # Step 3 then 4: the branch glyph goes, then the branch keeps its ticket prefix alone.
-fit_step3=$(fit_render fit-step3 78)
+fit_step3=$(fit_render fit-step3 81)
 assert test "${fit_step3#*⎇}" = "$fit_step3"
 assert grep -Fq 'WUT-421_fit_bench_branch' <<< "$fit_step3"
-fit_step4=$(fit_render fit-step4 75)
+fit_step4=$(fit_render fit-step4 78)
 assert grep -Fq 'WUT-421' <<< "$fit_step4"
 assert test "${fit_step4#*WUT-421_}" = "$fit_step4"
 
-# Steps 5, 6, 8, 9 and 11: directory names to eight characters, then the head model abbreviated,
-# then the directory to initials, then the pin segment, then the directory itself.
-fit_step5=$(fit_render fit-step5 59)
-assert grep -Fq 'fit-benc' <<< "$fit_step5"
-assert grep -Fq 'Fable 5 xhigh' <<< "$fit_step5"
-fit_step6=$(fit_render fit-step6 47)
-assert grep -Fq 'FB5 xhi' <<< "$fit_step6"
-assert grep -Fq 'fit-benc' <<< "$fit_step6"
-fit_step8=$(fit_render fit-step8 43)
-assert grep -Fq 'fbp' <<< "$fit_step8"
-assert test "${fit_step8#*fit-benc}" = "$fit_step8"
-fit_step9=$(fit_render fit-step9 38)
-assert test "${fit_step9#*"│ a"}" = "$fit_step9"
-assert grep -Fq 'fbp' <<< "$fit_step9"
-fit_step11=$(fit_render fit-step11 34)
-assert test "${fit_step11#*fbp}" = "$fit_step11"
-assert grep -Fq 'WUT-421' <<< "$fit_step11"
+# Step 5 takes the account to 7 characters and cuts every directory name to one shared length, one
+# character at a time from the longest name down to 8, stopping at the first that fits; the model is
+# untouched meanwhile, and the account stays whole while the directory is.
+fit_step4=$(fit_render fit-step4-whole 65)
+assert grep -Fq 'Fable 5 xhigh fitaccount │ fit-bench-project WUT-421' <<< "$fit_step4"
+fit_step5=$(fit_render fit-step5 62)
+assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench-project WUT-421' <<< "$fit_step5"
+fit_step5=$(fit_render fit-step5-cut 57)
+assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench-proj WUT-421' <<< "$fit_step5"
+fit_step5=$(fit_render fit-step5-last 52)
+assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench WUT-421' <<< "$fit_step5"
 
-# Steps 10 and 11 on the `»` pair: the active side alone, then no directory at all. Both sides
-# wear the initials form first, and the arrow loses its spaces with them.
+# Step 6: the cut has reached 8 before the head model is abbreviated, and the account holds at 7
+# until the directories go to initials.
+fit_step6=$(fit_render fit-step6 50)
+assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step6"
+fit_step6=$(fit_render fit-step6-hold 46)
+assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step6"
+
+# Steps 8, 9, 11 and 12: the account to 4 with the initials, the pin, the directory itself, the
+# account to 3 — and never shorter than 3, however narrow.
+fit_step8=$(fit_render fit-step8 44)
+assert grep -Fq 'FB5 xhi fita │ fbp WUT-421 3/0 │ a' <<< "$fit_step8"
+fit_step9=$(fit_render fit-step9 36)
+assert test "${fit_step9#*"│ a"}" = "$fit_step9"
+assert grep -Fq 'fita │ fbp' <<< "$fit_step9"
+fit_step11=$(fit_render fit-step11 32)
+assert test "${fit_step11#*fbp}" = "$fit_step11"
+assert grep -Fq 'FB5 xhi fita │ WUT-421' <<< "$fit_step11"
+fit_step12=$(fit_render fit-step12 28)
+assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_step12"
+fit_floor=$(fit_render fit-floor 15)
+assert grep -Fq 'FB5 xhi fit │ WUT-421' <<< "$fit_floor"
+
+# Steps 10 and 11 on the `»` pair: both sides share the cut, then wear initials with the arrow's
+# spaces gone, then the active side alone, then no directory at all.
 place_set fit-arrow "$FIT_FOREIGN_TOP"
 fit_arrow=$(fit_render fit-arrow "")
 assert grep -Fq 'fit-bench-project » other-side-repo' <<< "$fit_arrow"
+fit_arrow=${fit_arrow%%$'\n'*}
 assert_eq 93 "${#fit_arrow}"
+place_set fit-arrow-cut "$FIT_FOREIGN_TOP"
+fit_arrow_cut=$(fit_render fit-arrow-cut 70)
+assert grep -Fq 'fitacco │ fit-bench-proj » other-side-rep ' <<< "$fit_arrow_cut"
 place_set fit-arrow-ini "$FIT_FOREIGN_TOP"
-fit_arrow_ini=$(fit_render fit-arrow-ini 47)
-assert grep -Fq 'fbp»osr' <<< "$fit_arrow_ini"
+fit_arrow_ini=$(fit_render fit-arrow-ini 50)
+assert grep -Fq 'fita │ fbp»osr' <<< "$fit_arrow_ini"
 place_set fit-arrow-active "$FIT_FOREIGN_TOP"
-fit_arrow_active=$(fit_render fit-arrow-active 35)
-assert grep -Fq 'osr' <<< "$fit_arrow_active"
+fit_arrow_active=$(fit_render fit-arrow-active 30)
+assert grep -Fq 'fita │ osr' <<< "$fit_arrow_active"
 assert test "${fit_arrow_active#*fbp}" = "$fit_arrow_active"
 
-# The worktree label shrinks with the directory names it sits beside, but a ticket-named one stops
+# The worktree label shares the cut with the directory names beside it, but a ticket-named one stops
 # at its ticket: `wut-25`, never `w2p`, and the parent dir goes to initials around it.
 fit_wt=$(fit_render fit-wt "" "$REPO_J")
+fit_wt=${fit_wt%%$'\n'*}
 assert_eq 53 "${#fit_wt}"
 assert grep -Fq "⧉ wut-25-portal" <<< "$fit_wt"
-fit_wt_short=$(fit_render fit-wt-short 52 "$REPO_J")
-assert grep -Fq "⧉ wut-25 " <<< "$fit_wt_short"
-assert test "${fit_wt_short#*wut-25-}" = "$fit_wt_short"
-fit_wt_ini=$(fit_render fit-wt-ini 38 "$REPO_J")
-assert grep -Fq "rep ⧉ wut-25" <<< "$fit_wt_ini"
+fit_wt_short=$(fit_render fit-wt-short 55 "$REPO_J")
+assert grep -Fq "fitacco │ repo a ⧉ wut-25-portal " <<< "$fit_wt_short"
+fit_wt_short=$(fit_render fit-wt-short-cut 52 "$REPO_J")
+assert grep -Fq "fitacco │ repo a ⧉ wut-25-porta " <<< "$fit_wt_short"
+fit_wt_eight=$(fit_render fit-wt-eight 48 "$REPO_J")
+assert grep -Fq "⧉ wut-25-p " <<< "$fit_wt_eight"
+fit_wt_ini=$(fit_render fit-wt-ini 41 "$REPO_J")
+assert grep -Fq "fita │ rep ⧉ wut-25 " <<< "$fit_wt_ini"
 assert test "${fit_wt_ini#*w2p}" = "$fit_wt_ini"
 
-# The digits are the identity, so neither the 8-character cut nor the initials step may touch them,
-# and the separator of the match is printed as written.
+# The digits are the identity, so neither the shared cut nor the initials step may touch them, and
+# the separator of the match is printed as written.
 fit_ticket=$(fit_render fit-ticket "" "$REPO_L")
 assert grep -Fq "⧉ WUT-12345-fix-header" <<< "$fit_ticket"
-fit_ticket_short=$(fit_render fit-ticket-short 56 "$REPO_L")
-assert grep -Fq "⧉ WUT-12345 " <<< "$fit_ticket_short"
-assert test "${fit_ticket_short#*WUT-1234 }" = "$fit_ticket_short"
-fit_ticket_ini=$(fit_render fit-ticket-ini 38 "$REPO_L")
+fit_ticket_cut=$(fit_render fit-ticket-cut 54 "$REPO_L")
+assert grep -Fq "⧉ WUT-12345-fix- " <<< "$fit_ticket_cut"
+fit_ticket_short=$(fit_render fit-ticket-short 48 "$REPO_L")
+assert grep -Fq "FB5 xhi fitacco │ repo a ⧉ WUT-12345 " <<< "$fit_ticket_short"
+fit_ticket_ini=$(fit_render fit-ticket-ini 41 "$REPO_L")
 assert grep -Fq "rep ⧉ WUT-12345" <<< "$fit_ticket_ini"
 fit_ticket_us=$(fit_render fit-ticket-us 46 "$REPO_M")
 assert grep -Fq "⧉ WUT_12345 " <<< "$fit_ticket_us"
-assert test "${fit_ticket_us#*WUT_1234 }" = "$fit_ticket_us"
 
-# A worktree with no ticket in its name keeps the old ladder: 8 characters, then initials.
-fit_wt_plain=$(fit_render fit-wt-plain 46 "$REPO_E")
+# A worktree with no ticket in its name keeps the plain ladder: the cut down to 8, then initials.
+fit_wt_plain=$(fit_render fit-wt-plain 48 "$REPO_E")
 assert grep -Fq "⧉ feature- " <<< "$fit_wt_plain"
 fit_wt_plain_ini=$(fit_render fit-wt-plain-ini 40 "$REPO_E")
 assert grep -Fq "⧉ fy" <<< "$fit_wt_plain_ini"
-
-# Step 12: the account is cut from the right and never below four characters, and the line is left
-# overflowing rather than losing anything the floor protects.
-fit_floor=$(fit_render fit-floor 12)
-assert grep -Fq 'fita' <<< "$fit_floor"
-assert test "${fit_floor#*fitac}" = "$fit_floor"
 
 # Initials longer than the 8-character cut would make step 8 GROW the line, and the directory
 # would be dropped at a width its truncated form fits.
 fit_many_full=$(fit_render fit-many "" "$FIT_MANY")
 assert grep -Fq 'a-b-c-d-e-f-g-h-i-j' <<< "$fit_many_full"
-for many_cols in 56 51 46 40 36 30; do
+for many_cols in 59 54 49 43 39 33; do
   many_line=$(fit_render "fit-many-$many_cols" "$many_cols" "$FIT_MANY")
   asserts=$((asserts + 1))
   [ "${many_line#*abcdefghij}" = "$many_line" ] ||
     fail "fit width $many_cols took the dir to longer initials: $many_line"
 done
-fit_many_cut=$(fit_render fit-many-cut 46 "$FIT_MANY")
+fit_many_cut=$(fit_render fit-many-cut 43 "$FIT_MANY")
 assert grep -Fq 'a-b-c-d- main' <<< "$fit_many_cut"
+printf '{}' > "$WORK/limits.json"
 
 # Fast Mode is a worker launch setting and is intentionally absent from the shared statusline.
 
@@ -2537,6 +2627,12 @@ bk5_out=$(run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIP
 bk5_death=$(TZ=Europe/Kyiv date -r $((NOW - 30 + 300)) +%H:%M)
 assert grep -Fq "${DIM}→${bk5_death}${RESET}${YELLOW}↓5m${RESET}" <<< "$bk5_out"
 assert test "${bk5_out#*100k}" = "$bk5_out"
+# The cache warning is an alarm: it outlives the death time it rides on, down to the line-2 floor.
+for bk5_cols in 45 30 12; do
+  bk5_fit=$(FIT_COLUMNS=$bk5_cols run_statusline "$(statusline_payload ctx-bk5 "$(warm_extra "$TRANSCRIPT" 20 100000)")")
+  assert grep -Fq "ctx ${GREEN}20%${RESET} ${YELLOW}↓5m${RESET}" <<< "$bk5_fit"
+  assert test "${bk5_fit#*→}" = "$bk5_fit"
+done
 
 t_reset; t_assist $((NOW - 30)) fixmodel 100000 500 mixed; t_stamp ctx-mixed
 mixed_out=$(run_statusline "$(statusline_payload ctx-mixed "$(warm_extra "$TRANSCRIPT" 20 100000)")")
