@@ -5665,36 +5665,37 @@ assert await_done
 
 # --- One stamping point: every relay's rows reach the LAUNCHING chat ------------------------------
 # The launcher is known at `start` and nowhere else: a fresh relay's own session id is not printed
-# until its CLI exits, so the `worker-session` pairing beside the run record arrives AFTER every row
-# the worker journaled while it ran, and each of those rows landed under an id no chat on this
-# machine answers for (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
-# into the launched process's ENVIRONMENT, which every relay inherits whatever the vendor and
-# whatever it goes on to launch — an image script, a review-bench cell, a nested worker-run — and the
-# ledger writer reads it for the first hop of the launch chain.
+# until its CLI exits, so a pairing read off the run record arrives AFTER every touch the worker
+# made while it ran (live run claudeb-1788388059-13078-3ffd, 2026-09-03). So the chat is stamped
+# into the launched process's ENVIRONMENT as CLAUDE_DEBT_OWNER, which every relay inherits whatever
+# the vendor and whatever it goes on to launch, and the touch writer charges the anchors store to it.
 #
 # One case per relay type, each end to end: worker-run launches the stubbed CLI under a fake
-# launching chat, a process inside that CLI edits a file in a git fixture and journals it exactly
-# as the relay's own PostToolUse hook would, and the row that reaches the ledger must carry the
+# launching chat, a process inside that CLI edits a file in a git fixture and records it exactly as
+# the relay's own PostToolUse hook would, and the touch that reaches the store must carry the
 # LAUNCHER's id. Break the stamp for one relay and only that relay's case fails.
 STAMP_HOOK="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/commit-journal.sh"
 STAMP_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journal.sh"
-if [ -r "$STAMP_HOOK" ] && [ -r "$STAMP_LIB" ]; then
+STAMP_ANCHORS="${REVIEW_BENCH_ROOT:-$ROOT/../review-bench}/bin/review-anchors"
+if [ -r "$STAMP_HOOK" ] && [ -r "$STAMP_LIB" ] && [ -x "$STAMP_ANCHORS" ]; then
   STAMP_REPO="$WORK/stamp-repo"
-  mkdir -p "$STAMP_REPO"
+  mkdir -p "$STAMP_REPO" "$WORK/stamp-bin"
+  ln -sf "$STAMP_ANCHORS" "$WORK/stamp-bin/review-anchors"
   git -C "$STAMP_REPO" init -q -b main
   git -C "$STAMP_REPO" config user.email t@example.test
   git -C "$STAMP_REPO" config user.name t
   printf 'base\n' >"$STAMP_REPO/base.txt"
   git -C "$STAMP_REPO" add base.txt
   git -C "$STAMP_REPO" commit -q -m base
-  STAMP_LEDGER=$(git -C "$STAMP_REPO" rev-parse --absolute-git-dir)/claude-commit-journal
+  STAMP_STORE=$(git -C "$STAMP_REPO" rev-parse --path-format=absolute --git-common-dir)/review-anchors.json
+  STAMP_KEY=$(cd "$(git -C "$STAMP_REPO" rev-parse --absolute-git-dir)" && pwd -P)
   # The hook skips anything under TMPDIR and this suite's fixtures live there: it is pinned to a
   # directory no fixture sits under, or the paths asserted on here are silenced by where the suite
   # happens to run.
   STAMP_HOME="$WORK/stamp-home"
   mkdir -p "$STAMP_HOME" "$WORK/stamp-tmpdir"
-  # The relay's own hook pair, both halves: the PreToolUse content snapshot the ledger writer
-  # measures a link against, then the PostToolUse payload naming the file the relay just wrote.
+  # The relay's own hook pair, both halves: the PreToolUse content snapshot the touch writer
+  # measures a change against, then the PostToolUse payload naming the file the relay just wrote.
   # `$1` is the worker's OWN session id — the only one a relay's hook ever knows.
   cat >"$STUB_DIR/relay_hook" <<STAMPEOF
 #!/usr/bin/env bash
@@ -5702,7 +5703,7 @@ worker=\$1
 tag=\$(cat "$STUB_DIR/relay_tag" 2>/dev/null) || tag=untagged
 path="$STAMP_REPO/relay-\$tag.txt"
 export HOME="$STAMP_HOME" TMPDIR="$WORK/stamp-tmpdir" WORKER_RUN_DIR="$WORKER_RUN_DIR"
-export GIT_CEILING_DIRECTORIES="$WORK"
+export GIT_CEILING_DIRECTORIES="$WORK" PATH="$WORK/stamp-bin:\$PATH"
 . "$STAMP_LIB" || exit 0
 rj_snapshot_content "\$worker" "call-\$tag" "$STAMP_REPO" "" "relay-\$tag.txt"
 printf 'written by %s\n' "\$worker" >"\$path"
@@ -5713,10 +5714,10 @@ jq -cn --arg s "\$worker" --arg p "\$path" --arg c "$STAMP_REPO" --arg call "cal
 printf '%s\n' "\$?" >"$STUB_DIR/relay_hook_rc"
 STAMPEOF
   chmod +x "$STUB_DIR/relay_hook"
-  # Who owns a path in the ledger, one id per line.
+  # Who holds a touch on a path in the store, one id per line.
   stamp_owners() { # tag
-    tr '\0' '\n' <"$STAMP_LEDGER" 2>/dev/null |
-      awk -F'\t' -v p="relay-$1.txt" '$NF == p { print $1 }' | sort -u
+    jq -r --arg k "$STAMP_KEY" --arg p "relay-$1.txt" '(.touches[$k][$p] // {}) | keys[]' \
+      "$STAMP_STORE" 2>/dev/null | sort -u
   }
   stamp_relay() { # tag vendor [start-args...]
     local tag="$1" vendor="$2" keep_session="${STUB_SESSION-}"
@@ -5733,10 +5734,8 @@ STAMPEOF
     unset CLAUDE_CODE_SESSION_ID
     assert test "$(cat "$STUB_DIR/relay_hook_rc" 2>/dev/null)" = 0
     assert grep -qx "stamp-chat-$tag" <<<"$(stamp_owners "$tag")"
-    # The worker's own id stays on its own row beside the launcher's: the gate inside the live
-    # worker asks about the work under that id, and answered `other` it could not settle what it
-    # had just done.
-    assert test "$(stamp_owners "$tag" | grep -c .)" -eq 2
+    # The launcher alone: a touch under the worker's own id is debt no chat on this machine reads.
+    assert test "$(stamp_owners "$tag" | grep -c .)" -eq 1
   }
   set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
     'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high'
@@ -5745,70 +5744,37 @@ STAMPEOF
   stamp_relay codex codex
   stamp_relay gemini gemini --account main
   stamp_relay grok grok
-  # A RE-ATTACHED run: a `--resume` launch repeats the id the worker session already had, so its
-  # rows carry the launcher from the run's first token rather than from the moment it ends — which
-  # is the whole window the run record could never answer for.
+  # A RE-ATTACHED run: a `--resume` launch repeats the id the worker session already had, and its
+  # touches still reach the launcher rather than that resumed id.
   export STUB_SESSION=reattached-session
   stamp_relay reattach claudeb --account stampacct --resume reattached-session
   assert grep -qx 'reattached-session' "$RUN_DIR/worker-session"
-  # The stamp the LIVE worker writes carries the resumed id, not the id a fresh launch would have
-  # minted: this is the only case where the two differ, and the ledger is read by that id.
-  assert grep -qx 'reattached-session' <<<"$(stamp_owners reattach)"
+  assert_fails grep -qx 'reattached-session' <<<"$(stamp_owners reattach)"
   unset STUB_SESSION
   # An IMAGE SCRIPT and a POOL-RUN CELL are processes a relay starts, not relays of their own: they
-  # journal through whoever ran them, so the one thing they must not do is drop the stamp. Stood in
+  # record through whoever ran them, so the one thing they must not do is drop the stamp. Stood in
   # for here by a bare shell — which is what both are to the environment — launched with the
   # environment worker-run exported.
   printf '%s\n' image-cell >"$STUB_DIR/relay_tag"
   rm -f "$STUB_DIR/relay_hook_rc"
-  ( export CLAUDE_LAUNCHER_SESSION=stamp-chat-image-cell CLAUDE_CODE_SESSION_ID=some-worker
+  ( export CLAUDE_DEBT_OWNER=stamp-chat-image-cell CLAUDE_CODE_SESSION_ID=some-worker
     "$STUB_DIR/relay_hook" nested-image-worker )
   assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
   assert grep -qx 'stamp-chat-image-cell' <<<"$(stamp_owners image-cell)"
-  # And the stamp is read for the row of the session the process IS and for no other. A hook that
-  # SWEEPS a finished run of another chat writes that run's rows under ITS launcher, and read
-  # against this process's environment instead they would land under the sweeper's own chat — one
-  # chat handed a waiver over a stranger's work.
-  swept=$WORKER_RUN_DIR/claudeb-swept-by-a-worker
-  mkdir -p "$swept"
-  printf 'sweep-other-chat\n' >"$swept/launcher"
-  printf 'written by nobody here\n' >"$STAMP_REPO/relay-swept.txt"
-  printf '%s\n' "WORKDIR: $STAMP_REPO" relay-swept.txt >"$swept/files"
-  printf -- '-\t%s\trelay-swept.txt\n' \
-    "$(git -C "$STAMP_REPO" hash-object -w "$STAMP_REPO/relay-swept.txt")" >"$swept/produced"
-  printf '0\n' >"$swept/exit_code"
-  printf '%s\n' sweeper >"$STUB_DIR/relay_tag"
+  assert_fails grep -qx 'nested-image-worker' <<<"$(stamp_owners image-cell)"
+  # A worker with no stamp at all charges its own session id: the touch is still a fact, and the
+  # hook stays quiet inside a worker.
+  printf '%s\n' unstamped >"$STUB_DIR/relay_tag"
   rm -f "$STUB_DIR/relay_hook_rc"
-  ( export CLAUDE_LAUNCHER_SESSION=stamp-chat-sweeper CLAUDEB_WORKER=1
-    "$STUB_DIR/relay_hook" a-sweeping-worker )
-  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
-  assert grep -qx 'sweep-other-chat' <<<"$(stamp_owners swept)"
-  assert_fails grep -qx 'stamp-chat-sweeper' <<<"$(stamp_owners swept)"
-  # Its own row, made in the same call, still reaches its own launcher.
-  assert grep -qx 'stamp-chat-sweeper' <<<"$(stamp_owners sweeper)"
-  rm -rf "$swept"
-  # An orphan a chat launched is impossible and LOUD. A relay worker whose stamp is missing — no
-  # environment, no run record pairing its session with a launcher — writes a row no chat answers
-  # for, and that is the one ledger state nothing downstream repairs: the content is priced as owed
-  # by nobody for as long as it stands. So the hook says it on stderr under a NON-ZERO exit, the one
-  # channel a PostToolUse reaches a model through, on every such call rather than once a session.
-  printf '%s\n' loud >"$STUB_DIR/relay_tag"
-  rm -f "$STUB_DIR/relay_hook_rc"
-  ( unset CLAUDE_LAUNCHER_SESSION
+  ( unset CLAUDE_DEBT_OWNER
     export CLAUDEB_WORKER=1
     "$STUB_DIR/relay_hook" unstamped-worker )
-  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 2
-  assert grep -q 'no chat above it' "$STUB_DIR/relay_hook_err"
-  assert grep -q 'the launcher stamp is missing' "$STUB_DIR/relay_hook_err"
-  # The row is still written — a fact stays a fact, and the fault belongs in front of a model
-  # rather than in a number — under the worker's own id and under no chat.
-  assert grep -qx 'unstamped-worker' <<<"$(stamp_owners loud)"
-  assert test "$(stamp_owners loud | grep -c .)" -eq 1
-  # And a chat's own shell is no relay worker: the same missing stamp there is Egor editing by hand,
-  # which owns its rows outright and is nobody's fault to report.
+  assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
+  assert test "$(stamp_owners unstamped)" = unstamped-worker
+  # And a chat's own shell is no relay worker: its touches are its own outright.
   printf '%s\n' quiet >"$STUB_DIR/relay_tag"
   rm -f "$STUB_DIR/relay_hook_rc"
-  ( unset CLAUDE_LAUNCHER_SESSION CLAUDEB_WORKER GROK_WORKER
+  ( unset CLAUDE_DEBT_OWNER CLAUDEB_WORKER GROK_WORKER
     "$STUB_DIR/relay_hook" a-chat-of-its-own )
   assert test "$(cat "$STUB_DIR/relay_hook_rc")" = 0
   assert grep -qx 'a-chat-of-its-own' <<<"$(stamp_owners quiet)"
@@ -5816,7 +5782,7 @@ STAMPEOF
   unset PICK_RC PICK_ACCOUNT
   clear_stub
 else
-  fail "the ledger writer of ../claude-setup is unreadable (set CLAUDE_SETUP_ROOT)"
+  fail "the touch writer of ../claude-setup or ../review-bench's review-anchors is unreadable (set CLAUDE_SETUP_ROOT / REVIEW_BENCH_ROOT)"
 fi
 
 # Snapshot attribution P1/P2 (after-snapshot UNKNOWN, first-row-wins, foreign HEAD, path shape, symlink, claim).
@@ -6168,7 +6134,40 @@ ANCHORS
   assert grep -qF -- "--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" <<<"$fold"
   assert grep -qF -- "--session${anchors_tab}anchors-chat" <<<"$fold"
   assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
+  assert grep -qF -- "--after=./bin/heredoc-only=$(git -C "$repo" hash-object bin/heredoc-only)" <<<"$fold"
+  assert grep -qF -- "--after=./bin/doomed=$empty_blob" <<<"$fold"
   assert test ! -e "$gaps"
+
+  # A run that also writes in another repository the launching chat works in is folded there too,
+  # or a fix it makes there is never anchored and the launcher owes the fix itself.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  other="$WORK/anchors-other"
+  mkdir -p "$other"
+  git -C "$other" init -q .
+  printf 'base\n' >"$other/kept"
+  git -C "$other" add -A >/dev/null
+  git -C "$other" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+  other=$(cd "$other" && pwd -P)
+  mkdir -p "$HOME/.cache/claude/review-journal"
+  printf '%s\n%s\n' "$repo" "$other" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
+  kept_base=$(git -C "$other" rev-parse HEAD:kept)
+  export STUB_SLEEP=3
+  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
+    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
+    fail "two-family start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
+  printf 'fixed\n' >>"$other/kept"
+  assert await_done
+  fold=$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG" | tail -n 1)
+  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
+  assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
+  assert grep -qF -- "--changed${anchors_tab}./kept${anchors_tab}" <<<"$fold"
+  assert grep -qF -- "--base=./kept=$kept_base" <<<"$fold"
+  assert grep -qF -- "--after=./kept=$(git -C "$other" hash-object kept)" <<<"$fold"
+  assert test "$(grep -c "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = 1
+  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
 
   # A run that failed is folded like any other — the store's question is what content moved, never
   # how the vendor ended — and a run that moved nothing carries no `--changed` at all. The paths
