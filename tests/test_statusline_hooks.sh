@@ -1035,6 +1035,57 @@ assert_eq "$TOP_E" "$(last_tree session-ss-empty)"
 run_workdir_hook "$(session_start_payload startup session-ss-nogit "$NON_GIT")"
 assert test ! -e "$STATE_DIR/place-session-ss-nogit"
 
+# A /branch fork inherits its parent's journal whole; without a parent journal it seeds.
+fork_transcript="$WORK/fork-transcript.jsonl"
+printf '%s\n' '{"type":"system","forkedFrom":{"sessionId":"session-fork-parent","messageUuid":"m1"}}' \
+  '{"type":"user"}' > "$fork_transcript"
+place_set session-fork-parent "$TOP_A"
+place_set session-fork-parent "$TOP_E" "$TOP_A" edit
+run_workdir_hook "$(session_start_payload startup session-fork-child "$REPO_D" |
+  jq -c --arg t "$fork_transcript" '. + {transcript_path:$t}')"
+assert_eq "$(cat "$STATE_DIR/place-session-fork-parent")" "$(cat "$STATE_DIR/place-session-fork-child")"
+assert_eq 600 "$(stat -f %Lp "$STATE_DIR/place-session-fork-child" 2>/dev/null || stat -c %a "$STATE_DIR/place-session-fork-child")"
+rm -f "$STATE_DIR/place-session-fork-parent"
+run_workdir_hook "$(session_start_payload startup session-fork-orphan "$REPO_D" |
+  jq -c --arg t "$fork_transcript" '. + {transcript_path:$t}')"
+assert_eq "1 seed $TOP_D" "$(place_count session-fork-orphan) $(last_kind session-fork-orphan) $(last_tree session-fork-orphan)"
+run_workdir_hook "$(session_start_payload startup session-fork-notranscript "$REPO_D" |
+  jq -c '. + {transcript_path:"/nonexistent/t.jsonl"}')"
+assert_eq "seed $TOP_D" "$(last_kind session-fork-notranscript) $(last_tree session-fork-notranscript)"
+
+# Bash writes move the folder like an Edit: `sed -i`, `tee`, `cp`… and `>`/`>>` targets, through the
+# command's own leading assignments; reads and discard-only redirects move nothing.
+S="session-bash-writes"
+place_set "$S" "$TOP_A"
+run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_A" "W=$REPO_D; sed -i '' 's/other/x/' \$W/other.txt")"
+assert_eq "edit $TOP_D" "$(last_kind "$S") $(last_tree "$S")"
+for read_cmd in "grep -rn fixture \"$REPO_E\"" "sed -n 1p \"$REPO_E/tracked.txt\"" \
+  "cat \"$REPO_E/tracked.txt\" >/dev/null 2>&1"; do
+  run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_A" "$read_cmd")"
+  assert_eq "2 $TOP_D" "$(place_count "$S") $(last_tree "$S")"
+done
+run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_A" "E=\"$REPO_E\" && printf x > \"\${E}/new-file.txt\"")"
+assert_eq "edit $TOP_E" "$(last_kind "$S") $(last_tree "$S")"
+bash_write_moves() { # expected-tree command
+  run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_A" "$2")"
+  assert_eq "edit $1" "$(last_kind "$S") $(last_tree "$S")"
+}
+bash_write_still() { # command
+  local before
+  before=$(place_count "$S")
+  run_workdir_hook "$(workdir_payload Bash "$S" "$REPO_A" "$1")"
+  assert_eq "$before" "$(place_count "$S")"
+}
+# cp/mv/ln write their LAST operand; a moved-away source is never walked up from.
+bash_write_moves "$TOP_B" "cp $REPO_D/other.txt $REPO_B/copied.txt"
+bash_write_moves "$TOP_C" "mv -f $REPO_D/gone.txt $REPO_C/moved.txt"
+bash_write_moves "$TOP_D" "if true; then mkdir -p $REPO_D/newdir/sub; fi"
+bash_write_moves "$TOP_B" "for f in a b; do rm $REPO_B/\$f; done"
+bash_write_still "W=$REPO_C; W=\$(pwd); echo x > \$W/f"
+bash_write_moves "$TOP_D" "echo x 1> $REPO_D/one.txt"
+bash_write_still "echo x 2> $REPO_C/err.txt"
+bash_write_moves "$TOP_A" "touch ${REPO_A// /\\ }/tracked.txt"
+
 # `main` is the checkout owning the worktree, and a main checkout is its own.
 S="session-main-field"
 run_workdir_hook "$(workdir_payload Edit "$S" "$REPO_A" "$REPO_E/f.txt")"
@@ -3088,6 +3139,7 @@ cat <<'SNAP'
 1010 1 node /main/server.js
 1011 1 node /wt/server.js
 1012 1 node /sibling/server.js
+1013 1 node /gone/server.js
 SNAP
 PSEOFW
 chmod +x "$FAKE_PS_TREES"
@@ -3105,6 +3157,8 @@ p1011
 n$TOP_E/deep/inside
 p1012
 n$SIB_A
+p1013
+n$TOP_A/.claude/worktrees/gone-wt/apps/portal
 CWD
   exit 0
 done
@@ -3114,13 +3168,16 @@ node     1001 u   20u  IPv4  0t0      TCP *:5173 (LISTEN)
 node     1010 u   30u  IPv4  0t0      TCP *:4001 (LISTEN)
 node     1011 u   31u  IPv4  0t0      TCP *:4002 (LISTEN)
 node     1012 u   32u  IPv4  0t0      TCP *:4003 (LISTEN)
+node     1013 u   33u  IPv4  0t0      TCP *:4004 (LISTEN)
 OUT
 LSEOFW
 chmod +x "$FAKE_LSOF_TREES"
 run_probe_trees() {
   STATUSLINE_PS="$FAKE_PS_TREES" STATUSLINE_LSOF="$FAKE_LSOF_TREES" "$PORTS_PROBE" "$1" 1001 "$2"
 }
-trees_expected=$(printf '5173\t%s\n4001\t%s\n4002\t%s' "$TOP_A" "$TOP_A" "$TOP_E")
+# A server started in a worktree that was later removed keeps the gone worktree's path, not the root.
+trees_expected=$(printf '5173\t%s\n4001\t%s\n4002\t%s\n4004\t%s' "$TOP_A" "$TOP_A" "$TOP_E" \
+  "$TOP_A/.claude/worktrees/gone-wt")
 run_probe_trees pp-trees "$TOP_A"
 assert_eq "$trees_expected" "$(cat "$STATE_DIR/ports-pp-trees")"
 # The tree list is the whole project whichever of its trees the probe was given, so the records do

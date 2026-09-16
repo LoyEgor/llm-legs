@@ -126,12 +126,19 @@ ports=$(awk -v root="$root" '
   # directory boundary, so a sibling checkout named after one of them is not read as being inside
   # it, and the LONGEST match wins — a worktree at `<root>/.claude/worktrees/x` is inside the root
   # too, and the root answering first would hand every port under a worktree to the main checkout.
-  function tree_of(path,   i, best) {
+  # A cwd under the worktree home of the root that no listed tree holds belongs to a removed
+  # worktree: the root claiming it would render that server bright as the main checkout.
+  function tree_of(path,   i, best, home, name) {
     best = ""
     if (path == "") return ""
     for (i = 1; i <= tn; i++)
       if (path == tree[i] || index(path, tree[i] "/") == 1)
         if (length(tree[i]) > length(best)) best = tree[i]
+    home = tree[1] "/.claude/worktrees/"
+    if (best != "" && best == tree[1] && index(path, home) == 1) {
+      name = substr(path, length(home) + 1); sub(/\/.*/, "", name)
+      if (name != "") best = home name
+    }
     return best
   }
   # The segment answers "where do I go to look at the work", so a port earns a place only if a

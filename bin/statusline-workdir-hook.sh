@@ -9,7 +9,8 @@ place="$bin_dir/statusline-place"
 input=$(cat) || exit 0
 parsed=$(printf '%s' "$input" | jq -r -f "$bin_dir/../share/statusline-workdir.jq") || exit 0
 IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate bash_subshell \
-  bash_read_only bash_worktree bash_worktree_base bash_cd_hit tool_use_id dispatch <<< "$parsed"
+  bash_read_only bash_worktree bash_worktree_base bash_cd_hit tool_use_id dispatch bash_writes \
+  transcript <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
@@ -39,7 +40,16 @@ resolve_dir() { # token [base] -> physical directory
 
 # SessionStart's agent_type is a top-level `claude --agent` session, not a subagent.
 if [ "$hook_event" = SessionStart ]; then
-  [ -s "$journal" ] || add seed "$base_dir"
+  [ -s "$journal" ] && exit 0
+  # A /branch fork is a new session id whose transcript opens with the parent it was forked from.
+  parent=$([ -r "$transcript" ] && head -n 1 "$transcript" | jq -r '.forkedFrom.sessionId // empty')
+  parent=${parent//[^A-Za-z0-9_-]/}
+  if [ -n "$parent" ] && [ "$parent" != "$session_id" ] && [ -s "$cache_dir/place-$parent" ]; then
+    umask 077
+    cp "$cache_dir/place-$parent" "$journal.tmp.$$" && mv -f "$journal.tmp.$$" "$journal" && exit 0
+    rm -f "$journal.tmp.$$"
+  fi
+  add seed "$base_dir"
   exit 0
 fi
 # Subagent events carry the PARENT session_id: only their edits are the chat's changes.
@@ -112,6 +122,12 @@ case "$hook_event:$tool_name" in
       dir=$(resolve_dir "$candidate") && add cd "$dir"
     elif [ -n "$candidate" ] && [ -z "$bash_read_only" ]; then
       dir=$(resolve_dir "$candidate") && add git "$dir"
+    elif [ -n "$bash_writes" ]; then
+      IFS=$'\x1e' read -r -a write_paths <<< "$bash_writes"
+      for p in "${write_paths[@]}"; do
+        while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
+        add edit "$p" && break
+      done
     fi
     ;;
 esac

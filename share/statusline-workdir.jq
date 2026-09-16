@@ -69,6 +69,51 @@ def bash_hit:
   | if $last.worktree == "1" and $last.worktree_base == "" then
       $last + {worktree_base: ([$hits[] | select(.cd_hit == "1" and .at < $last.at) | .path] | last // "")}
     else $last end;
+def unquote_word:
+  gsub("\"(?<d>(?:\\\\.|[^\"])*)\"|'(?<s>[^']*)'|\\\\(?<e>.)";
+    if .d != null then (.d | gsub("\\\\(?<c>.)"; .c)) elif .s != null then .s else .e end);
+def write_verbs: ["tee","rm","touch","mkdir","truncate"];
+def dest_verbs: ["cp","mv","ln"];
+def end_command:
+  (if .dest | startswith("/") then .paths += [.dest] else . end)
+  | .cmd = null | .write = false | .redirect = "" | .dest = "";
+# The command's own `NAME=value` words are expanded first: chats name a worktree once
+# (`W=/…/worktrees/x; sed -i '' … $W/f`) and then write only through the variable.
+def bash_write_paths:
+  ((.tool_input.command // "") | mask_heredocs | mask_quoted_spans)
+  | [match("[0-9]*>>?&[0-9-]+|&?[0-9]*>>?|<<?-?|[;&|()\\n]|(?:\"(?:\\\\.|[^\"])*\"|'[^']*'|\\\\.|[^[:space:];&|()<>\"'\\\\])+"; "g").string]
+  | reduce .[] as $t ({vars: [], cmd: null, write: false, redirect: "", dest: "", paths: []};
+      if ($t | test("^[;&|()\\n]$")) then end_command
+      elif ($t | test("^[0-9]*>>?&")) then .
+      elif ($t | test("^&?[0-9]*>>?$")) then .redirect = (if ($t | test("^[02-9]")) then "skip" else "take" end)
+      elif ($t | startswith("<")) then .redirect = "skip"
+      else
+        (reduce (.vars | reverse[]) as $v ($t;
+           if startswith("'") then .
+           else gsub("\\$(?:\\{" + $v.n + "\\}|" + $v.n + "(?![A-Za-z0-9_]))"; $v.v) end)
+         | unquote_word) as $w
+        | if .redirect != "" then
+            (if .redirect == "take" and ($w | startswith("/")) and ($w | startswith("/dev/") | not)
+             then .paths += [$w] else . end)
+            | .redirect = ""
+          elif .cmd == null then
+            if ($w | test("^[A-Za-z_][A-Za-z0-9_]*=")) then
+              ($w | capture("^(?<n>[A-Za-z_][A-Za-z0-9_]*)=(?<v>.*)$"; "s")) as $a
+              | .vars |= (map(select(.n != $a.n)) + (if $a.v | test("[$`]") then [] else [$a] end))
+            elif (["export","sudo","command","env","nohup","time","then","do","else","elif","{","}","!","fi","done","if","while","until"] | index($w)) != null then .
+            elif (["for","case","select"] | index($w)) != null then .cmd = $w
+            else ($w | sub(".*/"; "")) as $c | .cmd = $c | .write = ((write_verbs | index($c)) != null)
+            end
+          elif .cmd as $c | (dest_verbs | index($c)) != null then
+            if $w | startswith("-") then . else .dest = $w end
+          else
+            (if .cmd == "sed" and ($w | test("^(-[A-Za-z]*i|--in-place)")) then .write = true else . end)
+            | if .write and ($w | startswith("/")) then .paths += [$w] else . end
+          end
+      end)
+  | end_command
+  | .paths[0:10]
+  | join("");
 def read_tools: ["cd","pushd","popd","cat","head","tail","less","ls","wc","grep","rg","find","stat","file","du","df","jq","awk","cut","sort","uniq","tr","basename","dirname","realpath","pwd","echo","printf","test","[","which","type","date","diff","cmp","tree","nl","column","git"];
 def read_git_subs: ["log","show","status","diff","blame","shortlog","describe","rev-parse","rev-list","ls-files","ls-tree","grep","reflog","cat-file"];
 def git_read($t):
@@ -136,5 +181,7 @@ def dispatch_paths:
  ($bash.worktree_base // ""),
  ($bash.cd_hit // ""),
  (.tool_use_id | value | gsub("[^A-Za-z0-9_-]"; "")),
- (if .tool_name == "Task" or .tool_name == "Agent" then dispatch_paths else "" end)]
+ (if .tool_name == "Task" or .tool_name == "Agent" then dispatch_paths else "" end),
+ (if .tool_name == "Bash" and $bash.path == "" then bash_write_paths else "" end),
+ (if .hook_event_name == "SessionStart" then (.transcript_path | value) else "" end)]
 | join("")
