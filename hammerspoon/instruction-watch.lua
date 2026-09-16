@@ -19,7 +19,7 @@
 
 local M = {}
 local CHARS_PER_TOKEN = 3.2
-local FILE_WIDTH, BYTE_WIDTH, PRICE_WIDTH = 28, 8, 16
+local FILE_WIDTH = 32
 local ROOT = debug.getinfo(1, "S").source:match("^@(.+)/hammerspoon/instruction%-watch%.lua$")
 local DEFAULT_RATES = (os.getenv("HOME") or "") .. "/.local/share/tokenmap/read-rates.json"
 local ratesPath, ratesStamp, ratesCache = DEFAULT_RATES, nil, nil
@@ -54,7 +54,7 @@ local stateDir = DEFAULT_STATE
 local watcher = nil
 local timer = nil
 local lastSeen = nil        -- journal size+mtime, so a write anywhere else in the dir costs a stat
-local ensureWatcher, onChange
+local ensureWatcher, onChange, resolveChatNames
 
 local alertFn = function(text, duration)
     hs.alert.show(text, duration or 6)
@@ -178,6 +178,7 @@ function M.pump()
     local events = readJournal()
     if #events == 0 then return result end
     if not ensureReceiptDir() then return result end
+    pcall(resolveChatNames, events)
     local now = os.time()
     local pending = {}
     for _, event in ipairs(events) do
@@ -269,13 +270,128 @@ local function rates()
     return ratesCache
 end
 
+-- Records written before `bytes` existed carry the delta only inside the summary text
+-- (`CHANGED <path> (+184 bytes)`); a REVERTED report there names growth already put back.
+-- Anchored on the verb: `/a/path/x.md` is a suffix of `/sub/a/path/x.md`, and only the verb
+-- and its space in front say which record a delta belongs to.
+local function segment(summary, file)
+    local plain = file:gsub("(%W)", "%%%1")
+    local verb, delta = summary:match("(%u+) " .. plain .. " %(([%+%-]%d+) bytes%)")
+    if not verb then verb = summary:match("(%u+) " .. plain .. "%f[^%w/%.%-_]") or summary:match("(%u+) " .. plain .. "$") end
+    return verb, delta
+end
+
+local function verbs(event)
+    local summary, out = tostring(event.summary or ""), {}
+    for index, file in ipairs(event.files or {}) do
+        if type(file) == "string" then
+            local verb = segment(summary, file)
+            if verb then out[index] = verb:lower() end
+        end
+    end
+    return out
+end
+
+local function deltasFromSummary(event)
+    local summary, out = tostring(event.summary or ""), {}
+    for index, file in ipairs(event.files or {}) do
+        if type(file) == "string" then
+            local verb, delta = segment(summary, file)
+            if verb == "REVERTED" then out[index] = 0
+            elseif delta then out[index] = tonumber(delta) end
+        end
+    end
+    return out
+end
+
 local function deltas(event)
-    if type(event.bytes) ~= "table" or #event.bytes ~= #(event.files or {}) then return {} end
+    if type(event.bytes) ~= "table" or #event.bytes ~= #(event.files or {}) then
+        return deltasFromSummary(event)
+    end
     for key, value in pairs(event.bytes) do
         if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #event.bytes
-            or type(value) ~= "number" or value % 1 ~= 0 then return {} end
+            or type(value) ~= "number" or value % 1 ~= 0 then return deltasFromSummary(event) end
     end
     return event.bytes
+end
+
+-- Records written before the hook stored `chat` are named here through the same resolver,
+-- `chat-name`, one call per pump for every unnamed sid on show; the answers persist beside the
+-- receipts so a restart does not ask again. An id the resolver cannot name is retried hourly:
+-- a chat gains its title after its first turn, which is often after its first edit.
+local CHAT_RETRY = 3600
+local chatNames, chatPending, chatRerun = nil, false, false
+local function chatCachePath() return stateDir .. "/chat-names.json" end
+local function loadChatNames()
+    if chatNames then return chatNames end
+    local ok, decoded = pcall(hs.json.decode, readFile(chatCachePath()) or "{}")
+    chatNames = ok and type(decoded) == "table" and decoded or {}
+    return chatNames
+end
+local function resolverPath()
+    local own = ROOT and (ROOT .. "/bin/chat-name")
+    if own and hs.fs.attributes(own, "mode") == "file" then return own end
+    return (os.getenv("HOME") or "") .. "/.local/bin/chat-name"
+end
+local function runChatResolver(sids, onDone)
+    local task
+    task = hs.task.new(resolverPath(), function(_, stdout)
+        task = nil
+        onDone(stdout or "")
+    end, sids)
+    if not task or not task:start() then
+        task = nil
+        onDone("")
+    end
+end
+local chatResolverFn = runChatResolver
+resolveChatNames = function(events)
+    if chatPending then chatRerun = true; return end
+    local names, now, ask, asked = loadChatNames(), os.time(), {}, {}
+    for index = #events, math.max(1, #events - MENU_ROWS + 1), -1 do
+        local event = events[index]
+        local sid = type(event.sid) == "string" and event.sid or ""
+        local known = type(event.chat) == "string" and event.chat ~= ""
+        local row = names[sid]
+        local stale = type(row) ~= "table" or (row.name == "" and now - (tonumber(row.at) or 0) > CHAT_RETRY)
+        if sid ~= "" and not known and stale and not asked[sid] then
+            asked[sid] = true
+            ask[#ask + 1] = sid
+        end
+    end
+    if #ask == 0 then return end
+    chatPending = true
+    chatResolverFn(ask, function(stdout)
+        chatPending = false
+        local found = {}
+        for line in stdout:gmatch("[^\r\n]+") do
+            local name, short = line:match("^(.-) %((%x+)%)$")
+            if name and short then found[short] = line end
+        end
+        for _, sid in ipairs(ask) do
+            names[sid] = { name = found[sid:sub(1, 8)] or "", at = now }
+        end
+        writeFile(chatCachePath(), hs.json.encode(names))
+        if chatRerun then
+            chatRerun = false
+            resolveChatNames(readJournal())
+        end
+    end)
+end
+local function chatLabel(event)
+    if type(event.chat) == "string" and event.chat ~= "" then return event.chat end
+    local sid = type(event.sid) == "string" and event.sid or ""
+    local row = loadChatNames()[sid]
+    if type(row) == "table" and row.name ~= "" then return row.name end
+    return "unnamed chat (" .. (sid ~= "" and sid:sub(1, 8) or "?") .. ")"
+end
+
+-- The watched `~/.claude/...` names are symlinks into claude-setup and tokenmap indexes what the
+-- sessions actually read, so a miss on the recorded name is retried on the resolved one.
+local function rateKey(cache, path)
+    if cache.entries[path] then return path end
+    local ok, resolved = pcall(hs.fs.pathToAbsolute, path)
+    if ok and type(resolved) == "string" and cache.entries[resolved] then return resolved end
 end
 
 local function signed(value, price)
@@ -294,7 +410,8 @@ local function priceText(value)
 end
 
 local function filePrice(cache, path, delta)
-    local entry = cache.entries[path]
+    local key = rateKey(cache, path)
+    local entry = key and cache.entries[key]
     local loads = type(entry) == "table" and type(entry.weekly) == "table" and entry.weekly.loads
     if delta ~= nil and delta ~= 0 and type(loads) == "number" then
         return delta / CHARS_PER_TOKEN * loads
@@ -332,28 +449,22 @@ local function eventTime(event)
 end
 
 local function eventMenu(event, receipt, cache, style)
-    local identity = type(event.chat) == "string" and event.chat ~= "" and event.chat or event.sid or "?"
-    local items = { { title = style(eventTime(event) .. " · " .. identity), disabled = true } }
-    local bytes = deltas(event)
+    local items = { { title = style(chatLabel(event)), disabled = true } }
+    local bytes, verb = deltas(event), verbs(event)
     local modes = { always_on = "always", on_demand = "demand", agent_brief = "brief" }
     for index, file in ipairs(event.files or {}) do
         local parts = { file }
+        if verb[index] and verb[index] ~= "changed" then parts[#parts + 1] = verb[index] end
         if bytes[index] ~= nil then parts[#parts + 1] = signed(bytes[index]) end
         local price = filePrice(cache, file, bytes[index])
         if price ~= nil then parts[#parts + 1] = priceText(price) end
-        if cache.ranks[file] then parts[#parts + 1] = "#" .. cache.ranks[file] end
+        local key = rateKey(cache, file)
+        if key and cache.ranks[key] then parts[#parts + 1] = "#" .. cache.ranks[key] end
         local title = style(table.concat(parts, "  "))
-        local entry = cache.entries[file]
+        local entry = key and cache.entries[key]
         local mode = type(entry) == "table" and modes[entry.mode]
         if mode then title = title .. style("  " .. mode, true) end
         items[#items + 1] = { title = title, disabled = true }
-    end
-    if receipt then
-        items[#items + 1] = { title = "-" }
-        items[#items + 1] = {
-            title = style((receipt.alerted and "alert shown " or "recorded ") .. tostring(receipt.at or "?")),
-            disabled = true,
-        }
     end
     items[#items + 1] = { title = "-" }
     items[#items + 1] = {
@@ -384,6 +495,9 @@ function M.menuItems()
     local events = readJournal()
     local cache, style = rates(), renderStyle()
     local items = {}
+    -- Widths follow this render's content: a column nobody fills takes no room and leaves no
+    -- blank tail, while every row still lands on the same offsets.
+    local rows, fileWidth, byteWidth, priceWidth = {}, 0, 0, 0
     for index = #events, math.max(1, #events - MENU_ROWS + 1), -1 do
         local event = events[index]
         local receipt = receiptFor(event.id)
@@ -392,20 +506,36 @@ function M.menuItems()
         local files, bytes = event.files or {}, deltas(event)
         local more = #files > 1 and (" +" .. (#files - 1) .. " more") or ""
         local path = clip(shortPath(files[1] or "?"), FILE_WIDTH - cells(more))
-        local fileTitle = style(path) .. style(more, true)
-            .. style(string.rep(" ", math.max(0, FILE_WIDTH - cells(path) - cells(more))))
         local totalBytes, totalPrice
         for i, file in ipairs(files) do
             if bytes[i] ~= nil then totalBytes = (totalBytes or 0) + bytes[i] end
             local price = filePrice(cache, file, bytes[i])
             if price ~= nil then totalPrice = (totalPrice or 0) + price end
         end
-        items[#items + 1] = {
-            title = style(mark .. " " .. pad(eventTime(event), 12) .. "  ") .. fileTitle
-                .. style("  " .. pad(signed(totalBytes), BYTE_WIDTH, true)
-                    .. "  " .. pad(priceText(totalPrice), PRICE_WIDTH, true)),
-            menu = eventMenu(event, receipt, cache, style),
-        }
+        -- A legacy ADDED/DELETED record carries no number; the verb says what the blank would not.
+        local row = { event = event, receipt = receipt, mark = mark, path = path, more = more,
+                      bytes = signed(totalBytes), price = priceText(totalPrice) }
+        local verb = verbs(event)[1]
+        for _, other in pairs(verbs(event)) do if other ~= verb then verb = nil end end
+        if verb and verb ~= "changed" and (totalBytes == nil or totalBytes == 0) then
+            row.bytes, row.verb = verb, true
+        end
+        fileWidth = math.max(fileWidth, cells(path) + cells(more))
+        byteWidth = math.max(byteWidth, cells(row.bytes))
+        priceWidth = math.max(priceWidth, cells(row.price))
+        rows[#rows + 1] = row
+    end
+    for _, row in ipairs(rows) do
+        local title = style(row.mark .. " " .. pad(eventTime(row.event), 12) .. "  " .. row.path)
+            .. style(row.more, true)
+        local tail = string.rep(" ", fileWidth - cells(row.path) - cells(row.more))
+        if byteWidth > 0 and (row.bytes ~= "" or row.price ~= "") then
+            title = title .. style(tail .. "  " .. string.rep(" ", byteWidth - cells(row.bytes)))
+                .. style(row.bytes, row.verb)
+            tail = ""
+        end
+        if priceWidth > 0 and row.price ~= "" then title = title .. style(tail .. "  " .. pad(row.price, priceWidth, true)) end
+        items[#items + 1] = { title = title, menu = eventMenu(row.event, row.receipt, cache, style) }
     end
     if #items == 0 then
         items[#items + 1] = { title = "No changes recorded", disabled = true }
@@ -482,6 +612,12 @@ function M.setStateDir(dir)
     if watcher then watcher:stop(); watcher = nil end
     stateDir = dir or DEFAULT_STATE
     lastSeen = nil
+    chatNames, chatPending, chatRerun = nil, false, false
+end
+
+function M.setChatResolver(fn)
+    chatResolverFn = fn or runChatResolver
+    chatNames, chatPending, chatRerun = nil, false, false
 end
 
 function M.setAlert(fn)

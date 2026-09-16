@@ -49,6 +49,7 @@ local function restore()
     M.setAlert(nil)
     M.setPasteboard(nil)
     M.setOpenCommand(nil)
+    M.setChatResolver(nil)
     M.setRatesPath(nil)
     M.setStateDir(nil)
     package.path = savedPath
@@ -65,11 +66,11 @@ local function readFile(path)
     return body
 end
 
-local function appendEvent(id, isoStamp, summary, files, bytes, chat)
+local function appendEvent(id, isoStamp, summary, files, bytes, chat, sid)
     local handle = io.open(fixture .. "/events.jsonl", "a")
     if not handle then return false end
     handle:write(hs.json.encode({
-        id = id, at = isoStamp, sid = "harness", summary = summary,
+        id = id, at = isoStamp, sid = sid or "harness", summary = summary,
         sent = "attempted", files = files or { "/tmp/" .. id .. ".md" },
         restores = {}, reverted = {}, bytes = bytes, chat = chat,
     }) .. "\n")
@@ -100,6 +101,18 @@ local ok, err = pcall(function()
     M.stop()
     M.setStateDir(fixture)
     M.setAlert(function(text) alerts[#alerts + 1] = text end)
+    local namedSid, silentSid, chatSid = "aaaa1111-0000-4000-8000-000000000001",
+        "bbbb2222-0000-4000-8000-000000000002", "cccc3333-0000-4000-8000-000000000003"
+    local resolverLine = "Named by resolver (aaaa1111)"
+    local askedSids = {}
+    M.setChatResolver(function(sids, onDone)
+        local lines = {}
+        for _, sid in ipairs(sids) do
+            askedSids[sid] = (askedSids[sid] or 0) + 1
+            if sid == namedSid then lines[#lines + 1] = resolverLine end
+        end
+        onDone(table.concat(lines, "\n"))
+    end)
 
     local body = readFile(fixture .. "/events.jsonl")
     check(body ~= nil and body ~= "", "the collector left no journal to read")
@@ -247,8 +260,8 @@ local ok, err = pcall(function()
         check(zeroRow ~= nil, "zero-delta row is missing")
         if zeroRow then
             local zeroTop, zeroDetail = plain(zeroRow.title), plain(zeroRow.menu[2].title)
-            check(zeroTop:find(" 0", 1, true) ~= nil and not zeroTop:find("+0", 1, true),
-                "zero delta is not rendered as 0 in the top row")
+            check((zeroTop:match("zero/CLAUDE%.md%s+(%S+)%s*$")) == "reverted",
+                "a reverted zero delta does not show the verb in the top row: " .. zeroTop)
             check(zeroDetail:find("  0", 1, true) ~= nil and not zeroDetail:find("+0", 1, true),
                 "zero delta is not rendered as 0 in the file row")
             check(not zeroTop:find("tok/wk", 1, true) and not zeroDetail:find("tok/wk", 1, true),
@@ -284,6 +297,133 @@ local ok, err = pcall(function()
     local bad = M.menuItems()[1]
     check(not plain(bad.title):find("tok/wk", 1, true), "mismatched bytes produced a price")
     check(not plain(bad.menu[2].title):find("tok/wk", 1, true), "mismatched bytes produced a file price")
+
+    for _, item in ipairs(menus) do
+        if type(item.menu) == "table" then
+            check(findRow(item.menu, "alert shown") == nil and findRow(item.menu, "recorded ") == nil,
+                "a submenu still carries the receipt line")
+        end
+    end
+    if row then
+        check(findRow(row.menu, "alert shown") == nil and findRow(row.menu, "recorded ") == nil,
+            "a delivered submenu still carries the receipt line")
+    end
+    if multiple and single then
+        check(plain(multiple.menu[1].title) == "Named chat (1234abcd)",
+            "resolved chat header is not exactly the chat name: " .. plain(multiple.menu[1].title))
+        check(plain(single.menu[1].title) == "unnamed chat (harness)",
+            "unresolved chat header is not the unnamed label: " .. plain(single.menu[1].title))
+    end
+
+    appendEvent("resolvednamed", now, "CHANGED /tmp/resolver/named.md (+1 bytes)",
+        { "/tmp/resolver/named.md" }, { 1 }, nil, namedSid)
+    appendEvent("resolvedsilent", now, "CHANGED /tmp/resolver/silent.md (+1 bytes)",
+        { "/tmp/resolver/silent.md" }, { 1 }, nil, silentSid)
+    appendEvent("resolvedchat", now, "CHANGED /tmp/resolver/chat.md (+1 bytes)",
+        { "/tmp/resolver/chat.md" }, { 1 }, "Recorded chat (cccc3333)", chatSid)
+    M.pump()
+    M.pump()
+    local resolvedMenu = M.menuItems()
+    local namedRow, silentRow, chatRow = findRow(resolvedMenu, "resolver/named.md"),
+        findRow(resolvedMenu, "resolver/silent.md"), findRow(resolvedMenu, "resolver/chat.md")
+    check(namedRow ~= nil and silentRow ~= nil and chatRow ~= nil, "resolver rows are missing")
+    if namedRow and silentRow and chatRow then
+        check(plain(namedRow.menu[1].title) == resolverLine,
+            "resolver line is not the header: " .. plain(namedRow.menu[1].title))
+        check(plain(silentRow.menu[1].title) == "unnamed chat (bbbb2222)",
+            "unanswered sid header is not the unnamed label: " .. plain(silentRow.menu[1].title))
+        check(plain(chatRow.menu[1].title) == "Recorded chat (cccc3333)", "recorded chat header was replaced")
+    end
+    check(askedSids[namedSid] == 1 and askedSids[silentSid] == 1, "unnamed sids were not asked exactly once")
+    check(askedSids[chatSid] == nil, "an event with a recorded chat reached the resolver")
+    for sid, count in pairs(askedSids) do
+        check(count == 1, "the resolver was asked " .. count .. " times for " .. sid)
+    end
+    local namesOk, names = pcall(hs.json.decode, readFile(fixture .. "/chat-names.json") or "")
+    check(namesOk and type(names) == "table" and type(names[namedSid]) == "table"
+        and names[namedSid].name == resolverLine, "chat-names.json does not hold the answered sid")
+
+    appendEvent("legacychanged", now, "CHANGED /tmp/legacy/changed.md (-42 bytes)", { "/tmp/legacy/changed.md" })
+    appendEvent("legacyreverted", now, "REVERTED /tmp/legacy/reverted.md (+9 bytes)", { "/tmp/legacy/reverted.md" })
+    appendEvent("legacyadded", now, "ADDED /tmp/legacy/added.md", { "/tmp/legacy/added.md" })
+    local legacy = M.menuItems()
+    local changedRow, revertedRow, addedRow = findRow(legacy, "legacy/changed.md"),
+        findRow(legacy, "legacy/reverted.md"), findRow(legacy, "legacy/added.md")
+    check(changedRow ~= nil and revertedRow ~= nil and addedRow ~= nil, "legacy rows are missing")
+    if changedRow and revertedRow and addedRow then
+        local function after(text, needle)
+            local _, finish = text:find(needle, 1, true)
+            return finish and text:sub(finish + 1) or ""
+        end
+        check(after(plain(changedRow.title), "changed.md"):find("-42", 1, true) ~= nil,
+            "legacy CHANGED summary delta is missing from the top row")
+        check(after(plain(changedRow.menu[2].title), "changed.md"):find("-42", 1, true) ~= nil,
+            "legacy CHANGED summary delta is missing from the file line")
+        local revertedTop = after(plain(revertedRow.title), "reverted.md")
+        check(revertedTop:match("^%s*reverted%s*$") ~= nil,
+            "legacy REVERTED top row does not show the verb: " .. revertedTop)
+        check(after(plain(revertedRow.menu[2].title), "reverted.md"):match("^%s*reverted  0%s*$") ~= nil,
+            "legacy REVERTED file line is not reverted  0")
+        check(not after(plain(addedRow.title), "added.md"):find("%d"), "legacy ADDED row shows a delta")
+        check(not after(plain(addedRow.menu[2].title), "added.md"):find("%d"), "legacy ADDED file line shows a delta")
+        check(type(addedRow.title) == "userdata" and after(addedRow.title:getString(), "added.md"):find("added", 1, true),
+            "legacy ADDED top row does not show the verb")
+        check(after(plain(addedRow.menu[2].title), "added.md"):find("added", 1, true) ~= nil,
+            "legacy ADDED file line does not show the verb")
+    end
+
+    local linkDir = fixture .. "/linked"
+    local target, link = linkDir .. "/target.md", linkDir .. "/CLAUDE.md"
+    local linkRates = fixture .. "/linked-rates.json"
+    hs.fs.mkdir(linkDir)
+    local targetHandle = assert(io.open(target, "w"))
+    targetHandle:write("linked\n")
+    targetHandle:close()
+    check(hs.fs.link(target, link, true), "the fixture symlink was not created")
+    local resolved = hs.fs.pathToAbsolute(target)
+    check(type(resolved) == "string" and resolved ~= link, "the fixture target does not resolve")
+    local linkHandle = assert(io.open(linkRates, "w"))
+    linkHandle:write(hs.json.encode({ paths = { entries = {
+        [resolved or target] = { mode = "agent_brief", weekly = { loads = 10, reads = 10 } },
+    } } }))
+    linkHandle:close()
+    M.setRatesPath(linkRates)
+    appendEvent("symlinked", now, "unused", { link }, { 32 })
+    local linkedRow = findRow(M.menuItems(), "linked/CLAUDE.md")
+    check(linkedRow ~= nil, "symlinked row is missing")
+    if linkedRow then
+        check(plain(linkedRow.title):find("tok/wk", 1, true) ~= nil, "symlinked path has no top-row price")
+        local linkedDetail = plain(linkedRow.menu[2].title)
+        check(linkedDetail:find("tok/wk", 1, true) ~= nil, "symlinked path has no file price")
+        check(linkedDetail:find("#%d") ~= nil, "symlinked path has no rank")
+        check(linkedDetail:find("brief", 1, true) ~= nil, "symlinked path has no mode")
+    end
+    os.remove(link)
+    os.remove(target)
+    os.remove(linkRates)
+    hs.fs.rmdir(linkDir)
+
+    local blankDir = fixture .. "-blank-render"
+    hs.fs.mkdir(blankDir)
+    local blankHandle = assert(io.open(blankDir .. "/events.jsonl", "w"))
+    for i, file in ipairs({ "/tmp/blank/one.md", "/tmp/blank/two.md" }) do
+        blankHandle:write(hs.json.encode({
+            id = "blank" .. i, at = now, sid = "harness", summary = "unused", files = { file },
+        }) .. "\n")
+    end
+    blankHandle:close()
+    M.setStateDir(blankDir)
+    local blank = M.menuItems()
+    M.setStateDir(fixture)
+    os.remove(blankDir .. "/events.jsonl")
+    hs.fs.rmdir(blankDir)
+    check(#blank >= 2 and findRow(blank, "blank/one.md") ~= nil, "blank render rows are missing")
+    for _, item in ipairs(blank) do
+        if plain(item.title):find("blank/", 1, true) then
+            check(type(item.title) == "userdata" and item.title:getString():match("%s+$") == nil,
+                "a render without byte data left trailing spaces: [" .. plain(item.title) .. "]")
+        end
+    end
 
     local created = 0
     local savedNew = hs.pathwatcher.new
