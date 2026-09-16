@@ -162,13 +162,10 @@ def warm_account(row):
         return None
     seen = fields[TRACK_TS]
     seen = int(seen) if seen.isdigit() else 0
-    # The statusline stamps the newest reply of ANY kind, this row the newest one that SPOKE, so
-    # the two name the same reply only until a chat ends on a tool call. A track that has moved
-    # PAST this row is later knowledge of the same chat and refreshed the cache with it; one that
-    # stands behind it proves nothing about whatever account answered since.
-    if seen + 1 < spoke:
-        return None
-    row["until"] = max(spoke, seen) + ttl
+    # The cache the stamp names lives until stamp + ttl whatever was said since: a chat mid-turn
+    # speaks before the statusline stamps the reply, and a track behind the row is the same account
+    # still answering, not an unknown one. A newer account would have stamped over it by now.
+    row["until"] = seen + ttl
     return fields[TRACK_ACCOUNT]
 
 

@@ -28,7 +28,7 @@ printf 'v2 1785996700 alona 0 3600 claude-haiku-4-5 reply-1 262144 1785996700 co
 # A chat left open: the statusline went on to a reply this listing has not seen.
 printf 'v2 1785996760 alona 0 3600 claude-haiku-4-5 reply-2 262144 1785996760 alona\n' \
   > "$TRACKS/cache-ttl-track-ahead"
-# A track that stopped before this row's reply: whatever answered since is unproven.
+# A track that stopped before this row's reply: the chat spoke, the statusline has not stamped yet.
 printf 'v2 1785996640 alona 0 3600 claude-haiku-4-5 reply-0 262144 1785996640 alona\n' \
   > "$TRACKS/cache-ttl-track-behind"
 printf 'v2 1785996700 ? 0 3600 claude-haiku-4-5 reply-9 262144 1785996700 com\n' \
@@ -94,12 +94,14 @@ print("claudeb-open:", chats.chat_resume.switch_argv(
 print("refollow:", chats.refollow(row, "abc123", 0, 0), chats.refollow(row, "abc123", 1, 0),
       chats.refollow(row, "other", 1, 0))
 # The statusline stamps the newest reply of any kind and this listing the newest one that SPOKE,
-# so a chat ending on a tool call leaves the two naming different replies. A track AHEAD of the
-# row is later knowledge and counts the lifetime from its own stamp; one behind it proves nothing.
+# so the two name different replies whenever a chat ends on a tool call or is mid-turn. The
+# lifetime counts from the track's own stamp either way: a track AHEAD of the row extends it, one
+# BEHIND the row (the chat spoke, the statusline has not stamped yet) still names the account
+# holding the cache, and only that stamp's expiry cools it.
 ahead = dict(row, session="ahead"); chats.annotate([ahead])
 behind = dict(row, session="behind"); chats.annotate([behind])
 print("ahead:", chats.columns(ahead, now)[3], chats.warm_name(ahead, now + 330))
-print("behind:", chats.columns(behind, now)[3])
+print("behind:", chats.columns(behind, now)[3], chats.warm_name(behind, now + 300))
 # A reply that cached nothing, and a track the statusline could not attribute.
 none = dict(row, ttl=0); chats.annotate([none])
 lost = dict(row, session="unknown", uuid="reply-9"); chats.annotate([lost])
@@ -189,7 +191,7 @@ assert grep -qx "claudeb-open: \['claudeb', 'profile', 'com', '--resume', 'abc12
 assert grep -qx 'refollow: True False True' <<<"$OUT"
 # The minute past this row's own expiry is still warm on the track's later stamp.
 assert grep -qx 'ahead: alona alona' <<<"$OUT"
-assert grep -qx 'behind: 42k' <<<"$OUT"
+assert grep -qx 'behind: alona None' <<<"$OUT"
 assert grep -qx 'cold: 42k 42k' <<<"$OUT"
 assert grep -qx 'project: llm-legs' <<<"$OUT"
 assert grep -qx 'name: Header and shadows' <<<"$OUT"
