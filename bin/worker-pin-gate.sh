@@ -117,6 +117,8 @@ fresh() { # call
       # read, and «воркеры на codex» — a CHAT pin — must not move the account pin through it.
       3) return 0 ;;
       0) [ "$(jq -r '.scope // empty' <<<"$grant" 2>/dev/null)" = account ]; return ;;
+      1) [ "$(words_attested_scope "$sid" "${1:-}" "$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" \
+           2>/dev/null)" = account ]; return ;;
       *) return 1 ;;
     esac
   fi

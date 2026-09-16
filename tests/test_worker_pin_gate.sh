@@ -372,9 +372,15 @@ assert denied "$(bash_event "printf 'codex_profile=x\\n' > ~/.claude/worker-mode
 # quote of his that names IT, so the chat pin quoted here moves nothing global.
 rm -f "$WORDS_DIR/s/grant.pin"
 printf 'воркеры на codex\n' >"$WORDS_DIR/s/last.txt"
-cp "$WORDS_DIR/s/last.txt" "$WORDS_DIR/s/last.full"
 assert denied "$(bash_event "WORD='воркеры на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
-rm -f "$WORDS_DIR/s/last.txt" "$WORDS_DIR/s/last.full" "$WORDS_DIR/s"/attest.* "$WORDS_DIR/s"/claim.*
+quoted_event() { # call command
+  jq -cn --arg u "$1" --arg c "$2" '{hook_event_name: "PreToolUse", session_id: "s", tool_use_id: $u,
+    tool_name: "Bash", tool_input: {command: $c}}' | "$GATE" bash
+}
+assert denied "$(quoted_event toolu_pin1 "WORD='воркеры на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
+printf 'закрепи аккаунт на codex\n' >"$WORDS_DIR/s/last.txt"
+assert allowed "$(quoted_event toolu_pin2 "WORD='закрепи аккаунт на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
+rm -f "$WORDS_DIR/s/last.txt" "$WORDS_DIR/s"/attest.* "$WORDS_DIR/s"/claim.*
 pin_grant account
 touch -t 202601010000 "$WORDS_DIR/s/grant.pin"
 assert denied "$(write_event "$PIN_FILE")"
