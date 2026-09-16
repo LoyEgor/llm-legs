@@ -216,6 +216,15 @@ def launch_argv(account, gateway=False, model=None):
     return claudeb_argv(account, None)
 
 
+def argv_account(argv):
+    """The explicit account named by argv built in this module, or None."""
+    if len(argv) >= 3 and os.path.basename(argv[0]) == "claudegpt" and argv[1] == "p":
+        return argv[2]
+    if len(argv) >= 3 and os.path.basename(argv[0]) == "claudeb" and argv[1] == "profile":
+        return argv[2]
+    return None
+
+
 def shell_quote(value):
     return "'" + value.replace("'", "'\\''") + "'"
 

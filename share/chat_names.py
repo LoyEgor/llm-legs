@@ -296,6 +296,25 @@ def resolve_session(token):
     return session_prefix_matches(token) or [token]
 
 
+def fold_session(session, launchers=None):
+    """Fold an unambiguous worker session to the conversation that launched it."""
+    session = str(session or "")
+    if launchers is None:
+        launchers = worker_run_launchers()
+    for _ in range(FOLD_HOPS):
+        owners = launchers.get(session)
+        if owners is None:
+            return session
+        # Ambiguous means two chats resumed one worker session: shown under either name it hands the
+        # reader the wrong conversation, so it is shown under none.
+        if len(owners) != 1:
+            return None
+        session = next(iter(owners))
+    # Every hop spent and the walk is still on a worker: a record that names itself would spin
+    # here, and the chat at the end of a chain this long is a guess.
+    return None if session in launchers else session
+
+
 def store_names():
     """`{session id: name}` off the live session records, the derived placeholders left out.
 
@@ -420,20 +439,11 @@ def chat_name(session, name=_UNSET, headless=False, launchers=None, store=None):
         return None
     if launchers is None:
         launchers = worker_run_launchers()
-    for _ in range(FOLD_HOPS):
-        owners = launchers.get(session)
-        if owners is None:
-            break
-        # Ambiguous means two chats resumed one worker session: shown under either name it hands the
-        # reader the wrong conversation, so it is shown under none.
-        if len(owners) != 1:
-            return None
-        session, name, headless = next(iter(owners)), _UNSET, False
-    else:
-        # Every hop spent and the walk is still on a worker: a record that names itself would
-        # spin here, and the chat at the end of a chain this long is a guess.
-        if session in launchers:
-            return None
+    folded = fold_session(session, launchers)
+    if folded is None:
+        return None
+    if folded != session:
+        session, name, headless = folded, _UNSET, False
     if headless:
         return None
     if name is _UNSET:

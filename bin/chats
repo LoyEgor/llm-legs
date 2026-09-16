@@ -12,6 +12,7 @@ import curses
 import datetime
 import json
 import locale
+import math
 import os
 import re
 import shlex
@@ -23,7 +24,7 @@ import unicodedata
 
 HERE = os.path.dirname(os.path.realpath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "share"))
-from chat_names import project_label  # noqa: E402
+from chat_names import fold_session, project_label, resolve_session  # noqa: E402
 import chat_resume  # noqa: E402
 
 PROFILES = os.path.expanduser("~/.claude-profiles")
@@ -39,7 +40,8 @@ WINDOWS = (7, 30, 120, 0)
 # conversation itself off the right edge.
 CAPS = (22, 12, 10)
 FOOTER = ("claudeb", "gpt")
-USAGE = ("usage: chats [--days N | --all] [--print]\n"
+USAGE = ("usage: chats --open-command SESSION [--timeout SECONDS]\n"
+         "usage: chats [--days N | --all] [--print]\n"
          "  ↑↓ chat · ←→ account (one ring over both lines) · shift+↑↓ line\n"
          "  type to filter · enter opens it here\n"
          "  the account follows the chat's live cache, else the optimal one\n"
@@ -191,7 +193,7 @@ def worker_pick():
     return sibling if os.access(sibling, os.X_OK) else "worker-pick"
 
 
-def ranking():
+def ranking(timeout=10):
     """`worker-pick --list --role chat`, the one ranking the bar shows, as (order, used,
     hidden, chosen): every account in its order, the label each one's usage adds, the
     logged-out ones, and the claudeb account a chat would be given.
@@ -202,7 +204,7 @@ def ranking():
     order, used, hidden, chosen = [], {}, set(), None
     try:
         done = subprocess.run([worker_pick(), "--list", "--role", "chat"],
-                              capture_output=True, text=True, timeout=10)
+                              capture_output=True, text=True, timeout=timeout)
     except Exception:
         return order, used, hidden, chosen
     if done.returncode != 0:
@@ -681,7 +683,62 @@ def run(screen, chats, names, used, profile, level, windows):
         # the top of the loop reads as "widen the window". It clamps there.
 
 
+def open_command(session, timeout):
+    candidates = resolve_session(session)
+    if len(candidates) != 1:
+        die("session id is ambiguous: %s" % session)
+    session = fold_session(candidates[0])
+    if not session:
+        die("no chat found for %s" % candidates[0])
+    try:
+        row = next((row for row in fetch_chats(0) if row["session"] == session), None)
+    except RuntimeError as error:
+        die(str(error).replace("\n", " "))
+    if row is None:
+        die("no chat found for %s" % session)
+    cwd = row.get("cwd")
+    if not cwd or not os.path.isdir(cwd):
+        die("no such directory: %s" % (cwd or "?"))
+    annotate([row])
+    names = profiles()
+    order, _, hidden, chosen = ranking(timeout)
+    names = arrange(names, order, hidden)
+    default = current_profile(names, chosen)
+    position = account_for(row, time.time(), names, None)
+    source = "cache" if position is not None else (
+        "pick" if ("claudeb", chosen) in names else "fallback")
+    position = default if position is None else position
+    if position is None:
+        die("no logged-in account to open it under")
+    vendor, account = names[position]
+    if chat_resume.is_gateway_chat(session, row.get("model")) and vendor != "gpt":
+        command = chat_resume.resume_argv(session, account, row.get("model"))
+        source = "cache"
+    else:
+        command = chat_resume.switch_argv(session, account, model_id=row.get("model"),
+                                          gateway=vendor == "gpt")
+    account = chat_resume.argv_account(command) or account
+    if account == chat_resume.UNKNOWN_ACCOUNT:
+        die("gateway account unknown for this chat")
+    command[0] = os.path.join(HERE, command[0])
+    command += ["--permission-mode", "bypassPermissions"]
+    print(chat_resume.resume_line([shlex.quote(word) for word in command], cwd))
+    print("account=%s source=%s" % (account, source))
+
+
 def main():
+    if sys.argv[1:2] == ["--open-command"]:
+        args = sys.argv[2:]
+        if len(args) not in (1, 3) or (len(args) == 3 and args[1] != "--timeout"):
+            die("usage: chats --open-command SESSION [--timeout SECONDS]")
+        try:
+            timeout = float(args[2]) if len(args) == 3 else 1
+            if not math.isfinite(timeout) or timeout <= 0:
+                raise ValueError
+        except ValueError:
+            die("--timeout must be a positive number of seconds")
+        open_command(args[0], timeout)
+        return
     locale.setlocale(locale.LC_ALL, "")
     # A window asked for by name is the whole list he wants: widening on scroll
     # would quietly override it.

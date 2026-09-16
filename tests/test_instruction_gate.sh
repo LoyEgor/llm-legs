@@ -1666,6 +1666,7 @@ printf 'a line no human asked for\n' >> "$DOC"
 ctx=$(span_check sid-revert Bash command "echo a line no human asked for >> $DOC" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
 assert_contains "PUT BACK" "$ctx"
+assert_eq 0 "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq '.bytes[0]')"
 assert_eq "tier doc" "$(cat "$DOC")"
 # Nothing this hook does may be unrecoverable: what it overwrote is parked, and the report says
 # where.
@@ -2062,6 +2063,15 @@ assert_eq "" "$(raw_check sid-off Bash command "echo another line no human asked
 assert_eq "tier doc" "$(cat "$DOC")"
 export INSTRUCTION_WATCH_CHAT=all
 
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/chat-name" <<'STUB'
+#!/bin/sh
+printf 'Stub chat (abcdef12)\n'
+STUB
+chmod +x "$HOME/.local/bin/chat-name"
+PATH="$HOME/.local/bin:$PATH"
+export PATH
+
 echo "== journal: one durable record per change, machine-wide, with what a menu needs"
 J="$INSTRUCTION_WATCH_STATE/events.jsonl"
 rm -f "$J"
@@ -2069,7 +2079,9 @@ rm -rf "$INSTRUCTION_WATCH_STATE/alerts"
 printf 'tier doc\n' > "$DOC"
 span_base sid-j1 >/dev/null
 span_base sid-j2 >/dev/null
+journal_before=$(wc -c < "$DOC")
 printf 'a tier line nobody approved\n' > "$DOC"
+journal_delta=$(( $(wc -c < "$DOC") - journal_before ))
 raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 raw_check sid-j2 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 assert_eq 1 "$(grep -c . "$J")"
@@ -2080,6 +2092,11 @@ assert_contains "cp " "$(printf '%s' "$rec" | jq -r '.restores[0] // ""')"
 assert [ -n "$(printf '%s' "$rec" | jq -r '.id')" ]
 assert_contains "sid-j" "$(printf '%s' "$rec" | jq -r '.sid')"
 assert_eq attempted "$(printf '%s' "$rec" | jq -r '.sent')"
+assert_eq true "$(printf '%s' "$rec" | jq '(.bytes | type == "array" and all(.[]; type == "number" and . == floor)) and ((.bytes | length) == (.files | length))')"
+assert_eq "$journal_delta" "$(printf '%s' "$rec" | jq '.bytes[0]')"
+assert_eq 'Stub chat (abcdef12)' "$(printf '%s' "$rec" | jq -r '.chat')"
+printf '#!/bin/sh\nexit 1\n' > "$HOME/.local/bin/chat-name"
+
 
 echo "== journal: a delivery that could not even be attempted says so"
 saved_alert=$INSTRUCTION_WATCH_ALERT
@@ -2088,6 +2105,7 @@ export INSTRUCTION_WATCH_ALERT
 printf 'a second tier line nobody approved\n' > "$DOC"
 raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 assert_eq unsent "$(tail -1 "$J" | jq -r '.sent')"
+assert_eq false "$(tail -1 "$J" | jq 'has("chat")')"
 INSTRUCTION_WATCH_ALERT=$saved_alert
 export INSTRUCTION_WATCH_ALERT
 
@@ -2226,10 +2244,12 @@ span_base sid-delrep >/dev/null
 rm -f "$DOC"
 raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 assert_contains "DELETED" "$(tail -1 "$J" | jq -r '.summary')"
+assert_eq true "$(tail -1 "$J" | jq '.bytes[0] < 0')"
 dels_before=$(grep -c '"DELETED' "$J" || true)
 printf 'del-restore\n' > "$DOC"
 raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 assert_contains "ADDED" "$(tail -1 "$J" | jq -r '.summary')"
+assert_eq true "$(tail -1 "$J" | jq '.bytes[0] > 0')"
 rm -f "$DOC"
 raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 assert_contains "DELETED" "$(tail -1 "$J" | jq -r '.summary')"

@@ -18,6 +18,31 @@
 -- change written while Hammerspoon was down is delivered when it comes back rather than lost.
 
 local M = {}
+local CHARS_PER_TOKEN = 3.2
+local FILE_WIDTH, BYTE_WIDTH, PRICE_WIDTH = 28, 8, 16
+local ROOT = debug.getinfo(1, "S").source:match("^@(.+)/hammerspoon/instruction%-watch%.lua$")
+local DEFAULT_RATES = (os.getenv("HOME") or "") .. "/.local/share/tokenmap/read-rates.json"
+local ratesPath, ratesStamp, ratesCache = DEFAULT_RATES, nil, nil
+local menuFont = { name = "Menlo", size = 13 }
+local dimColorName = { list = "System", name = "tertiaryLabelColor" }
+local pasteboardFn = function(text) hs.pasteboard.setContents(text) end
+local function runOpenCommand(sid, onDone)
+    if not ROOT then
+        onDone(1, "", "instruction-watch: repository root unresolved")
+        return
+    end
+    local task
+    -- Break the callback/task cycle so completed tasks can be collected.
+    task = hs.task.new(ROOT .. "/bin/chats", function(code, stdout, stderr)
+        task = nil
+        onDone(code, stdout, stderr)
+    end, { "--open-command", sid, "--timeout", "1" })
+    if not task or not task:start() then
+        task = nil
+        onDone(1, "", "could not start chats")
+    end
+end
+local openCommandFn = runOpenCommand
 
 local DEFAULT_STATE = (os.getenv("HOME") or "") .. "/.cache/claude-instruction-watch"
 local JOURNAL_TAIL = 200    -- records kept in memory; the writer trims the file to the same order
@@ -31,8 +56,8 @@ local timer = nil
 local lastSeen = nil        -- journal size+mtime, so a write anywhere else in the dir costs a stat
 local ensureWatcher, onChange
 
-local alertFn = function(text)
-    hs.alert.show(text, 6)
+local alertFn = function(text, duration)
+    hs.alert.show(text, duration or 6)
 end
 
 local function journalPath() return stateDir .. "/events.jsonl" end
@@ -219,61 +244,167 @@ function M.rankedPaths()
     return paths
 end
 
-local function copyItem(title, text)
-    return {
-        title = title,
-        fn = function()
-            hs.pasteboard.setContents(text)
-            hs.alert.show("copied", 1)
-        end,
-    }
+local function rates()
+    local attrs = hs.fs.attributes(ratesPath)
+    local stamp = attrs and (tostring(attrs.size) .. "/" .. tostring(attrs.modification)) or "missing"
+    if ratesCache and stamp == ratesStamp then return ratesCache end
+    local ok, decoded = pcall(hs.json.decode, readFile(ratesPath) or "{}")
+    local entries = ok and type(decoded) == "table" and type(decoded.paths) == "table"
+        and type(decoded.paths.entries) == "table" and decoded.paths.entries or {}
+    local paths, ranks = {}, {}
+    for path, entry in pairs(entries) do
+        if type(entry) == "table" then paths[#paths + 1] = path end
+    end
+    local function reads(path)
+        local weekly = entries[path].weekly
+        return type(weekly) == "table" and tonumber(weekly.reads) or 0
+    end
+    table.sort(paths, function(a, b)
+        local ar, br = reads(a) or 0, reads(b) or 0
+        if ar == br then return a < b end
+        return ar > br
+    end)
+    for rank, path in ipairs(paths) do ranks[path] = rank end
+    ratesCache, ratesStamp = { entries = entries, ranks = ranks }, stamp
+    return ratesCache
 end
 
-local function eventMenu(event, receipt)
-    local items = {}
-    items[#items + 1] = { title = tostring(event.at or "?") .. " · " .. tostring(event.sid or "?"),
-                          disabled = true }
-    for _, file in ipairs(event.files or {}) do
-        items[#items + 1] = { title = file, disabled = true }
+local function deltas(event)
+    if type(event.bytes) ~= "table" or #event.bytes ~= #(event.files or {}) then return {} end
+    for key, value in pairs(event.bytes) do
+        if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #event.bytes
+            or type(value) ~= "number" or value % 1 ~= 0 then return {} end
     end
-    for _, line in ipairs(event.reverted or {}) do
-        items[#items + 1] = { title = "put back: " .. line, disabled = true }
+    return event.bytes
+end
+
+local function signed(value, price)
+    if value == nil then return "" end
+    if value == 0 then return "0" end
+    local sign = value < 0 and "-" or "+"
+    local magnitude = math.abs(value)
+    if magnitude >= 10000 then
+        return sign .. string.format(price and "%.1fk" or "%.0fk", magnitude / 1000)
     end
-    items[#items + 1] = { title = "-" }
+    return sign .. string.format("%.0f", magnitude)
+end
+
+local function priceText(value)
+    return value ~= nil and (signed(value, true) .. " tok/wk") or ""
+end
+
+local function filePrice(cache, path, delta)
+    local entry = cache.entries[path]
+    local loads = type(entry) == "table" and type(entry.weekly) == "table" and entry.weekly.loads
+    if delta ~= nil and delta ~= 0 and type(loads) == "number" then
+        return delta / CHARS_PER_TOKEN * loads
+    end
+end
+
+local function cells(text) return utf8.len(text) or #text end
+local function pad(text, width, right)
+    local spaces = string.rep(" ", math.max(0, width - cells(text)))
+    return right and (spaces .. text) or (text .. spaces)
+end
+local function clip(text, width)
+    if cells(text) <= width then return text end
+    return "…" .. text:sub(utf8.offset(text, -(width - 1)))
+end
+local function dimColor()
+    local drawing = hs.drawing
+    local palette = type(drawing) == "table" and drawing.color
+    local asRGB = type(palette) == "table" and palette.asRGB
+    if type(asRGB) ~= "function" then return dimColorName end
+    local ok, resolved = pcall(asRGB, dimColorName)
+    if ok and type(resolved) == "table" then return resolved end
+    return dimColorName
+end
+
+local function renderStyle()
+    local color = dimColor()
+    return function(text, dim)
+        return hs.styledtext.new(text, { font = menuFont, color = dim and color or nil })
+    end
+end
+local function eventTime(event)
+    local stamp = parseIso(event.at)
+    return stamp and os.date("%d %b %H:%M", stamp) or "?"
+end
+
+local function eventMenu(event, receipt, cache, style)
+    local identity = type(event.chat) == "string" and event.chat ~= "" and event.chat or event.sid or "?"
+    local items = { { title = style(eventTime(event) .. " · " .. identity), disabled = true } }
+    local bytes = deltas(event)
+    local modes = { always_on = "always", on_demand = "demand", agent_brief = "brief" }
+    for index, file in ipairs(event.files or {}) do
+        local parts = { file }
+        if bytes[index] ~= nil then parts[#parts + 1] = signed(bytes[index]) end
+        local price = filePrice(cache, file, bytes[index])
+        if price ~= nil then parts[#parts + 1] = priceText(price) end
+        if cache.ranks[file] then parts[#parts + 1] = "#" .. cache.ranks[file] end
+        local title = style(table.concat(parts, "  "))
+        local entry = cache.entries[file]
+        local mode = type(entry) == "table" and modes[entry.mode]
+        if mode then title = title .. style("  " .. mode, true) end
+        items[#items + 1] = { title = title, disabled = true }
+    end
     if receipt then
+        items[#items + 1] = { title = "-" }
         items[#items + 1] = {
-            title = (receipt.alerted and "alert shown " or "recorded ") .. tostring(receipt.at or "?"),
+            title = style((receipt.alerted and "alert shown " or "recorded ") .. tostring(receipt.at or "?")),
             disabled = true,
         }
-    else
-        items[#items + 1] = { title = "sent: " .. tostring(event.sent or "?") .. ", not yet shown",
-                              disabled = true }
     end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = copyItem("Copy summary", tostring(event.summary or ""))
-    local restores = event.restores or {}
-    if #restores > 0 then
-        -- COPIED, never run. The writer is as often another chat or a worker as this machine's
-        -- owner, and a rollback nobody asked for eats somebody's live work; the command is Egor's
-        -- to paste when he has decided that is what he wants.
-        items[#items + 1] = copyItem("Copy restore command", table.concat(restores, "\n"))
-    end
+    items[#items + 1] = {
+        title = "Copy command to open this chat",
+        fn = function()
+            openCommandFn(tostring(event.sid or ""), function(code, stdout, stderr)
+                if code ~= 0 then
+                    alertFn("no command: " .. ((stderr or ""):match("[^\r\n]+") or "unknown error"), 3)
+                    return
+                end
+                local command, metadata = (stdout or ""):match("^([^\r\n]+)\r?\n([^\r\n]*)")
+                command = command or (stdout or ""):match("^[^\r\n]+")
+                if not command then alertFn("no command: empty output", 3); return end
+                pasteboardFn(command)
+                local account = (metadata or ""):match("^account=(%S+) source=fallback$")
+                if account then
+                    alertFn("copied · account " .. account .. " = last launched, pick unreachable", 2)
+                else
+                    alertFn("copied", 1)
+                end
+            end)
+        end,
+    }
     return items
 end
 
 function M.menuItems()
     local events = readJournal()
+    local cache, style = rates(), renderStyle()
     local items = {}
     for index = #events, math.max(1, #events - MENU_ROWS + 1), -1 do
         local event = events[index]
         local receipt = receiptFor(event.id)
         local mark = "○"
         if receipt then mark = receipt.alerted and "●" or "◦" end
-        local stamp = parseIso(event.at)
-        local when = stamp and os.date("%d %b %H:%M", stamp) or tostring(event.at or "?")
+        local files, bytes = event.files or {}, deltas(event)
+        local more = #files > 1 and (" +" .. (#files - 1) .. " more") or ""
+        local path = clip(shortPath(files[1] or "?"), FILE_WIDTH - cells(more))
+        local fileTitle = style(path) .. style(more, true)
+            .. style(string.rep(" ", math.max(0, FILE_WIDTH - cells(path) - cells(more))))
+        local totalBytes, totalPrice
+        for i, file in ipairs(files) do
+            if bytes[i] ~= nil then totalBytes = (totalBytes or 0) + bytes[i] end
+            local price = filePrice(cache, file, bytes[i])
+            if price ~= nil then totalPrice = (totalPrice or 0) + price end
+        end
         items[#items + 1] = {
-            title = mark .. " " .. when .. "  " .. shortSummary(event),
-            menu = eventMenu(event, receipt),
+            title = style(mark .. " " .. pad(eventTime(event), 12) .. "  ") .. fileTitle
+                .. style("  " .. pad(signed(totalBytes), BYTE_WIDTH, true)
+                    .. "  " .. pad(priceText(totalPrice), PRICE_WIDTH, true)),
+            menu = eventMenu(event, receipt, cache, style),
         }
     end
     if #items == 0 then
@@ -354,7 +485,19 @@ function M.setStateDir(dir)
 end
 
 function M.setAlert(fn)
-    alertFn = fn or function(text) hs.alert.show(text, 6) end
+    alertFn = fn or function(text, duration) hs.alert.show(text, duration or 6) end
+end
+
+function M.setPasteboard(fn)
+    pasteboardFn = fn or function(text) hs.pasteboard.setContents(text) end
+end
+
+function M.setOpenCommand(fn)
+    openCommandFn = fn or runOpenCommand
+end
+
+function M.setRatesPath(path)
+    ratesPath, ratesStamp, ratesCache = path or DEFAULT_RATES, nil, nil
 end
 
 function M.stateDir() return stateDir end
