@@ -150,6 +150,40 @@ assert chat_is 'grok_profile=*'
 rm -f "$GRANT"
 assert contains "$("$PIN")" 'every grok pool account (*)'
 
+# --- With the words library, the grant is the pin grant claude-setup's word intake wrote ---------
+export WORDS_LIB="$ROOT/../claude-setup/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
+[ -r "$WORDS_LIB" ] || fail "the words library is missing: $WORDS_LIB"
+words_grant() { # target [session]
+  mkdir -p "$WORDS_DIR/${2:-sess-1}"
+  jq -nc --arg t "$1" '{family: "pin", turn: 1, at: 0, excerpt: "x", lifetime: "ttl:30m",
+    source: "stem", target: $t, scope: "chat"}' >"$WORDS_DIR/${2:-sess-1}/grant.pin"
+}
+grant codex
+assert exits 3 "$PIN" codex
+words_grant gemini
+assert exits 3 "$PIN" codex
+assert "$PIN" gemini
+assert chat_is 'gemini_profile=*'
+words_grant BETA
+assert "$PIN" beta
+assert chat_is 'codex_profile=beta'
+assert exits 3 "$PIN" auto
+# A vendor grant also lets the chat drop its pin.
+words_grant codex
+assert "$PIN" auto
+assert_fails test -e "$CHAT"
+rm -f "$WORDS_DIR/sess-1/grant.pin"
+words_grant codex sess-2
+assert exits 3 "$PIN" codex
+words_grant codex
+touch -t 202601010000 "$WORDS_DIR/sess-1/grant.pin"
+assert exits 3 "$PIN" codex
+words_grant grok
+assert "$PIN" grok
+assert chat_is 'grok_profile=*'
+unset WORDS_LIB WORDS_DIR
+rm -f "$GRANT"
+
 # --- The pin reaches the one resolver every reader uses -----------------------------------------
 . "$ROOT/share/worker-model.sh"
 assert [ "$(worker_model_pin_scope grok)" = vendor ]

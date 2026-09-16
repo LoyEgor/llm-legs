@@ -1380,7 +1380,7 @@ assert grep -Fq 'if ! worker_model_pin_allowed; then' "$WORKER_MODEL_SH"
 # half a gate is a gate that is off, and a gate over the whole file is one that gets worked around.
 assert grep -Fq 'canonical_path "$HOME/.claude/worker-model"' "$PIN_GATE"
 assert grep -Fq "PIN_KEY_RE='^(claudeb|codex|gemini|grok)_profile='" "$PIN_GATE"
-assert grep -Fq 'worker-pin-gate.sh prompt' "$WORKER_GATE_SETTINGS"
+assert grep -Fq 'hooks/word-intake.sh' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh write' "$WORKER_GATE_SETTINGS"
 assert grep -Fq 'worker-pin-gate.sh bash' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Account pin ownership'
@@ -1410,8 +1410,9 @@ assert doc_has '`bin/statusline.sh` `pin` segment'
 assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-limits.sh" | sed "s|^$ROOT/||" | sort | tr '\n' ' ')" 'bin/statusline.sh bin/worker-pin-gate.sh share/worker-model.sh '
 assert doc_has '`<state_dir>/pin-grants/chat-<session_id>`'
 assert grep -Fq "printf '%s/chat-%s' \"\$(dirname \"\$(worker_model_pin_grant)\")\" \"\$sid\"" "$WORKER_MODEL_SH"
-assert grep -Fq 'chat_grant="$(dirname "$(grant_path)")/chat-$sid"' "$PIN_GATE"
-assert doc_has '`bin/worker-pin-gate.sh` prompt branch'
+assert doc_has '`${WORDS_DIR:-$HOME/.cache/claude/words}/<session_id>/grant.pin`'
+assert grep -Fq 'words_grant_target "$(worker_model_chat_session)" pin' "$ROOT/bin/chat-pin"
+assert doc_has 'claude-setup `hooks/word-intake.sh` (writer)'
 assert grep -Fq '[ -z "$sid" ] || export CLAUDE_CODE_SESSION_ID="$sid"' "$ROOT/bin/worker-limit-gate.sh"
 assert grep -Fq '[ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"' "$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq "CLAUDE_CODE_SESSION_ID='' worker_model_pin_first grok" "$ROOT/llm-limits.sh"
@@ -2719,7 +2720,7 @@ done
 # One definition of the span, in the journal library, reached from exactly one place in this
 # repository — the call and the comment naming it. Nothing here re-spells his phrase.
 assert grep -Fq 'rj_autonomous() {' "$RJOURNAL"
-assert grep -q '^RJ_AUTONOMY_PHRASE=' "$RJOURNAL"
+assert grep -Fq 'words_span_on' "$RJOURNAL"
 assert grep -Fq 'rj_autonomous "$sid" "$transcript"' "$INSTR_MOD"
 assert eq "$(grep -c 'rj_autonomous' "$INSTR_MOD")" 2
 assert eq "$(grep -rlE 'RJ_AUTONOMY_PHRASE' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d '[:space:]')" 0

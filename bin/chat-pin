@@ -46,8 +46,16 @@ account_vendors() { # name → every vendor whose live pool holds it, one per li
 }
 
 granted() { # target
-  local grant content
+  local grant content lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}
   [ -n "${CLAUDECODE:-}" ] || return 0
+  if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v words_grant_target >/dev/null 2>&1; then
+    content=$(words_grant_target "$(worker_model_chat_session)" pin) || return 1
+    content=$(lower "$content")
+    [ -n "$content" ] || return 1
+    [ "$content" = "$(lower "$1")" ] && return 0
+    [ "$1" = auto ] && [[ " $VENDORS " = *" $content "* ]]
+    return
+  fi
   grant=$(worker_model_chat_pin_grant) || return 1
   [ -n "$(find "$grant" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ] || return 1
   content=$(head -n1 "$grant" 2>/dev/null) || return 1
@@ -99,7 +107,7 @@ esac
 if [ -z "$line" ] && [ ! -s "$file" ]; then show_state "$file"; exit 0; fi
 
 granted "$target" ||
-  die "no fresh grant for '$target': the chat pin is Egor's to move — it opens when he says «workers on ${target}» ($(worker_model_chat_pin_grant) holding '$target', younger than ${WORKER_MODEL_PIN_TTL_MIN}m); ask him in one line" 3
+  die "no fresh grant for '$target': the chat pin is Egor's to move — it opens when he says «workers on ${target}» (a pin grant of his words naming '$target', younger than ${WORKER_MODEL_PIN_TTL_MIN}m); ask him in one line" 3
 
 store "$file" "$line" || die "failed to write $file"
 if [ -z "$line" ]; then

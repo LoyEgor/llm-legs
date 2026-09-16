@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The account pin is Egor's own override above the pool, and a session that moves it silently
-# redirects every later worker. Three modes, deliberately with no cleverness between them: `prompt`
-# (UserPromptSubmit) touches a grant when HIS message names the pin, and `write` / `bash`
-# (PreToolUse) deny a session moving the pin inside ~/.claude/worker-model — through Edit/Write and
-# through a shell redirect alike, since a door on one of them is a door around the other. The
+# redirects every later worker. Two modes, `write` / `bash` (PreToolUse), deny a session moving the
+# pin inside ~/.claude/worker-model — through Edit/Write and through a shell redirect alike, since a
+# door on one of them is a door around the other — unless HIS words granted the pin: claude-setup
+# hooks/word-intake.sh writes `grant.pin`, read here through words.sh (word_gate_allow). The
 # command path — `claudeb use|codexb use|geminib use|grokb use` — is refused inside worker_model_pin_account itself,
 # the one chokepoint every spelling of that command reaches.
 #
@@ -103,37 +103,27 @@ grant_path() {
   printf '%s/pin-grants/pin' "$state"
 }
 
-fresh() { [ -n "$(find "$(grant_path)" -mmin "-$GRANT_TTL_MIN" 2>/dev/null)" ]; }
+# Without the words library this door keeps its older grant, the file the intake still touches for
+# worker_model_pin_allowed; with it, the words store decides and an unreadable store waves it on.
+fresh() { # call
+  local lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh} sid grant
+  if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v word_gate_allow >/dev/null 2>&1; then
+    sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+    word_gate_allow "$sid" pin "$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" \
+      "${1:-}" "$(pin_file)" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" || return 1
+    grant=$(words_grant_fresh "$sid" pin)
+    case $? in
+      # An unreadable store waves this door on; a door opened by a WORD= quote has no grant file to
+      # read, and «воркеры на codex» — a CHAT pin — must not move the account pin through it.
+      3) return 0 ;;
+      0) [ "$(jq -r '.scope // empty' <<<"$grant" 2>/dev/null)" = account ]; return ;;
+      *) return 1 ;;
+    esac
+  fi
+  [ -n "$(find "$(grant_path)" -mmin "-$GRANT_TTL_MIN" 2>/dev/null)" ]
+}
 
 chat_pins_dir() { printf '%s' "${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}"; }
-
-# Cyrillic stays out of bracket expressions and `?`: a C-locale hook reads them byte by byte.
-chat_pin_target() { # prompt → target
-  local raw msg tok
-  raw=${1#"${1%%[![:space:]]*}"}
-  raw=${raw%"${raw##*[![:space:]]}"}
-  case "$raw" in '' | *$'\n'*) return 1 ;; esac
-  raw=$(printf '%s\n' "$raw" |
-    sed -E 's/^([[:space:].,!?;:"'\'']|«|»)+//; s/([[:space:].,!?;:"'\'']|«|»)+$//') || return 1
-  msg=$(printf '%s\n' "$raw" | LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]') || return 1
-  if [[ "$msg" =~ ^(workers|worker|воркеры|воркер)[[:space:]]+(авто|auto)$ ]]; then
-    printf 'auto'
-    return 0
-  fi
-  [[ "$msg" =~ ^(workers|worker|воркеры|воркер)[[:space:]]+(на|on)[[:space:]]+([^[:space:]]+)$ ]] ||
-    return 1
-  tok=${BASH_REMATCH[3]}
-  # Pool names are case-sensitive: an account is granted as typed, only aliases are folded.
-  raw=${raw##*[[:space:]]}
-  case "$tok" in
-    codex | кодекс) printf 'codex' ;;
-    claude | cloud | клод | клауд) printf 'claudeb' ;;
-    gemini | джемини | джеминай) printf 'gemini' ;;
-    grok | грок | grock | groq) printf 'grok' ;;
-    auto | авто) printf 'auto' ;;
-    *) [[ "$raw" =~ ^[A-Za-z0-9_.-]+$ ]] || return 1; printf '%s' "$raw" ;;
-  esac
-}
 
 # The longest existing ancestor resolved, the rest kept as typed: the chat-pins dir usually does
 # not exist yet, and `/var` → `/private/var` must not separate a file from its own directory.
@@ -236,39 +226,6 @@ command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat) || exit 0
 
 case "$MODE" in
-  prompt)
-    printf '%s' "$input" | jq -e '.hook_event_name == "UserPromptSubmit"' >/dev/null 2>&1 || exit 0
-    prompt=$(printf '%s' "$input" | jq -r '.prompt // empty') || exit 0
-    if target=$(chat_pin_target "$prompt"); then
-      sid=$(printf '%s' "$input" | jq -r '.session_id // empty') || exit 0
-      case "$sid" in '' | */* | *..*) exit 0 ;; esac
-      chat_grant="$(dirname "$(grant_path)")/chat-$sid"
-      mkdir -p "$(dirname "$chat_grant")" 2>/dev/null || exit 0
-      printf '%s\n' "$target" >"$chat_grant.tmp.$$" 2>/dev/null &&
-        mv -f "$chat_grant.tmp.$$" "$chat_grant" 2>/dev/null || { rm -f "$chat_grant.tmp.$$"; exit 0; }
-      jq -cn --arg c "Egor asked: workers on $target for this chat. Run \`chat-pin $target\` unless the conversation says otherwise — a grant only unblocks." \
-        '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null
-      exit 0
-    fi
-    # Both directions grant: asking for a pin and asking to drop one are the same hand on the same
-    # switch. The bare noun «пин» needs a verb beside it, because it also arrives inside pasted
-    # logs and diffs, and a grant handed out by quoted text is the door standing open by itself.
-    # Endings are enumerated rather than swallowed by a trailing [а-яё]*, which reads «пингани» and
-    # «пинать» as the pin, and the English side takes no `pinned`/`pinning`: those describe rather
-    # than ask, and «в логе pinned workers to alpha» is a paste, not an instruction. Both alphabets
-    # share the boundary classes — a rule that fires on pin but not on "pin" is a rule with a hole.
-    open='(^|[[:space:]«"'\''(,])'
-    close='([[:space:]»"'\'').,:;!?]|$)'
-    verb='(сними|снять|убери|убрать|поставь|ставь|сделай|нужен|нужн[оа]|поменяй|смени)'
-    grep -Eiq \
-      "$open((за|от|рас)пин(ь|и|ил[аи]?|ить|им|ите|ишь)|открепи(те|ть)?|закрепи(те|ть)?)$close|$open$verb[[:space:]]+(этот[[:space:]]+)?пин(а|у|ом|е|ы|ов|ам|ами)?$close|${open}пин(а|у|ом|е|ы|ов|ам|ами)?[[:space:]]+(на|с|со|для|у)[[:space:]]|$open(un)?pins?$close|(закрепи|зафиксируй)[а-яё]*[[:space:]]+(аккаунт|акк|профил)" \
-      <<<"$prompt" || exit 0
-    mkdir -p "$(dirname "$(grant_path)")" 2>/dev/null || exit 0
-    touch "$(grant_path)" 2>/dev/null || exit 0
-    jq -cn --arg c "Egor named the account pin: moving it is unblocked for the next $GRANT_TTL_MIN minutes. Move it only if he actually asked — the pin is his override, not a routing convenience, and worker-pick already answers which account to use without one." \
-      '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $c}}' 2>/dev/null
-    exit 0
-    ;;
   write)
     printf '%s' "$input" \
       | jq -e '.hook_event_name == "PreToolUse" and (.tool_name == "Write" or .tool_name == "Edit")' \
@@ -526,7 +483,7 @@ $(cat "$(pin_file)" 2>/dev/null)")
     # The raw command, and only while nothing in it is a runtime: matched around one, the shape is
     # a guess, and a guess is exactly what may not open this door.
     if [ -z "$ambiguous" ] && pin_untouched_write "$cmd"; then exit 0; fi
-    fresh && exit 0
+    fresh "$(jq -r '.tool_use_id // empty' <<<"$input" 2>/dev/null)" && exit 0
     deny "$DENY_REASON"
     ;;
 esac
