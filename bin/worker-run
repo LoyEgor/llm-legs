@@ -11,7 +11,7 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
@@ -25,12 +25,47 @@ fail() {
 }
 
 REVIEW_ROUND_RE='^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{7}(-[0-9]+)?$'
+# git's empty blob, which is what a path the run CREATED was before it: the store reads a base to
+# anchor a path it has never seen, and no base at all would leave that path's whole content owed.
+EMPTY_BLOB=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+
+review_bench_dir() { # round
+  printf '%s/benches/%s' \
+    "${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}" "$1"
+}
+
+# A round is an id review-bench holds a bench for, whichever door it arrived through: the flag and
+# the brief header are one answer, so no run is bound to a round that never ran.
+review_round_ok() { # round
+  [[ "$1" =~ $REVIEW_ROUND_RE ]] && [ -d "$(review_bench_dir "$1")" ]
+}
+
+# The anchors store's CLI, resolved off PATH: a machine without it has no store to write to, and
+# every caller here answers that with a gap line rather than a failure.
+review_anchors() { # subcommand argument...
+  local anchors
+  anchors=$(command -v review-anchors 2>/dev/null) && [ -x "$anchors" ] || return 127
+  "$anchors" "$@"
+}
+
+debt_gap() { # session kind detail
+  local gaps="$HOME/.cache/claude/review-debt/gaps"
+  [ -n "$1" ] || return 0
+  mkdir -p "$gaps" 2>/dev/null || return 0
+  printf '%s\t%s\t%s\n' "$(date +%s)" "$2" "$3" >>"$gaps/$1" 2>/dev/null || :
+}
 
 brief_review_round() {
-  local brief="$1" line="$2" round
-  case "$line" in
-    RESUME\ *:* | ATTACH\ *:*) line=$(sed -n '2p' "$brief") ;;
-  esac
+  local brief="$1" line='' round=''
+  # The header is every KEY: line the brief opens with (a RESUME/ATTACH handle among them), and
+  # ROUND: may stand after ACCOUNT:/EFFORT: there; a ROUND: past the first body line is prose.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ROUND:*) break ;;
+      RESUME\ *:* | ATTACH\ *:*) continue ;;
+    esac
+    [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || return 0
+  done <"$brief"
   case "$line" in
     ROUND:*) ;;
     *) return 0 ;;
@@ -38,8 +73,7 @@ brief_review_round() {
   round=${line#ROUND:}
   round=${round#"${round%%[![:space:]]*}"}
   round=${round%"${round##*[![:space:]]}"}
-  [[ "$round" =~ $REVIEW_ROUND_RE ]] &&
-    [ -d "${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/benches/$round" ] ||
+  review_round_ok "$round" ||
     fail "brief names no review round on record: '$line' — the shape is 'ROUND: <review-bench run id YYYYMMDDTHHMMSSZ-<7 hex>>'"
   printf '%s\n' "$round"
 }
@@ -1467,7 +1501,7 @@ refuse_live_run() { # brief resume
 
 start_run() {
   [ "$#" -ge 1 ] || usage
-  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' role='workers' research_timeout='' sandbox_exec=''
+  local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
   local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
@@ -1493,6 +1527,7 @@ start_run() {
       --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
       --web-search) web_search=true; shift ;;
       --chrome) chrome=true; shift ;;
+      --round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;
       --role) [ "$#" -ge 2 ] || usage; role="$2"; shift 2 ;;
       --research-timeout) [ "$#" -ge 2 ] || usage; research_timeout="$2"; shift 2 ;;
       --browser) browser=true; shift ;;
@@ -1531,7 +1566,15 @@ start_run() {
     *[![:space:]]*) ;;
     *) fail "brief starts with a blank line: $brief — the first line is the run's handle (RESUME/ATTACH) and what a reader identifies it by" ;;
   esac
-  review_round=$(brief_review_round "$brief" "$first_line") || exit 4
+  # The flag is `review-bench fix`'s own composition and outranks the header, which stays the
+  # fallback for a brief a chat wrote by hand.
+  if [ -n "$round_flag" ]; then
+    review_round_ok "$round_flag" ||
+      fail "--round names no review round on record: '$round_flag' — the shape is <review-bench run id YYYYMMDDTHHMMSSZ-<7 hex>> and $(review_bench_dir "$round_flag") must exist"
+    review_round=$round_flag
+  else
+    review_round=$(brief_review_round "$brief") || exit 4
+  fi
   brief_cyrillic=$(cyrillic_share <"$brief") || brief_cyrillic=''
   [ -z "$brief_cyrillic" ] || [ "$brief_cyrillic" -le "$CYRILLIC_MAX" ] ||
     fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
@@ -1825,8 +1868,16 @@ start_run() {
       printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher"
       "$SCRIPT_DIRECTORY/statusline-place" add --session "$CLAUDE_CODE_SESSION_ID" --kind worker-start \
         --path "$workdir" >/dev/null 2>&1 || :
-      export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID" ;;
+      export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID"
+      # The anchors store's own name for the same fact: every touch a hook inside this worker
+      # records is the LAUNCHER's, whatever session id the vendor journals under.
+      export CLAUDE_DEBT_OWNER="$CLAUDE_CODE_SESSION_ID" ;;
   esac
+  # The run's own directory, which a fixing worker writes its verdict rows into. Not
+  # `WORKER_RUN_DIR`: that name is the store ROOT everywhere on this machine (claude-setup's
+  # hooks, `share/chat_names.py`), and overwritten here every reader inside the worker would look
+  # for run records under one run.
+  export WORKER_RUN_RECORD="$directory"
   # What was already uncommitted here before this run touched anything. It is the floor the dirt
   # snapshot at the end is measured against: without it, every file Egor or a co-tenant chat had
   # open would be evidence produced by whichever run happened to finish beside them.
@@ -1842,6 +1893,15 @@ start_run() {
   git -C "$workdir" rev-parse --verify --quiet HEAD >"$directory/head-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/head-before.tmp.$$" "$directory/head-before" 2>/dev/null ||
     rm -f "$directory/head-before.tmp.$$" 2>/dev/null
+  # The anchors store hears about the run while it is still open, so the launching chat's verdict
+  # says `?run` rather than a confident number about a tree a worker is writing in.
+  if [ -s "$directory/launcher" ] && git -C "$workdir" rev-parse --show-toplevel >/dev/null 2>&1; then
+    git -C "$workdir" rev-parse --path-format=absolute --git-common-dir >"$directory/anchors-common" 2>/dev/null ||
+      rm -f "$directory/anchors-common" 2>/dev/null
+    review_anchors run-start --repo "$workdir" --run "$run_id" \
+      --session "$(cat "$directory/launcher")" >/dev/null 2>&1 ||
+      debt_gap "$(cat "$directory/launcher")" run-start "$run_id"
+  fi
 
   supervisor_body='ticks=0
 while [ ! -e "$2/.ready" ]; do
@@ -3338,7 +3398,15 @@ claim_run() {
             case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
           done))
   fi
-  rm -f "$directory/journaled"
+  if [ -n "$top" ]; then
+    local -a touched=()
+    for absolute in "${resolved[@]}"; do
+      case "$absolute" in ("$top"/*) touched+=("./${absolute#"$top"/}") ;; esac
+    done
+    [ "${#touched[@]}" -eq 0 ] ||
+      review_anchors touch --repo "$top" --session "$launcher" -- "${touched[@]}" >/dev/null 2>&1 ||
+      debt_gap "$launcher" claim-touch "$run_id"
+  fi
   printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "${#resolved[@]}" "$run_id"
   head -n 20 "$directory/files" 2>/dev/null
 }
@@ -3445,9 +3513,68 @@ run_result_text() {
   esac
 }
 
+# What this run changed, told to the anchors store from the one path that runs whatever the run's
+# end was — a clean exit, a nonzero one, an operator's kill, the launch timeout. The changed set is
+# the run's OWN before/after listings and never the transcript's `files`/`produced`: a heredoc no
+# tool call names still moved content, and those lines are the launching chat's to answer for.
+fold_run_anchors() { # directory
+  local directory="$1" launcher workdir top round changed entry base common
+  local -a fold paths
+  launcher=''
+  [ -f "$directory/launcher" ] && IFS= read -r launcher <"$directory/launcher"
+  [ -n "$launcher" ] || return 0
+  workdir=$(jq -r '.workdir // empty' "$directory/meta.json" 2>/dev/null) || workdir=''
+  [ "$workdir" != null ] || workdir=''
+  top=''
+  [ -z "$workdir" ] || top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || top=''
+  if [ -z "$top" ]; then
+    # The run was opened in the family's store; a workdir gone since must still close it there.
+    [ -f "$directory/anchors-common" ] || return 0
+    IFS= read -r common <"$directory/anchors-common" 2>/dev/null || common=''
+    workdir=''
+    case "$common" in */.git) workdir=$(git -C "${common%/.git}" rev-parse --show-toplevel 2>/dev/null) ;; esac
+    [ -z "$workdir" ] ||
+      review_anchors run-fold --repo "$workdir" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 || :
+    debt_gap "$launcher" run-fold "${directory##*/}"
+    return 0
+  fi
+  round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
+  fold=(run-fold --repo "$workdir" --run "${directory##*/}" --session "$launcher")
+  [ -z "$round" ] || fold+=(--round "$round")
+  paths=()
+  if changed=$(snapshot_changed_paths "$directory" "$top" 2>/dev/null); then
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      paths+=("$entry")
+    done <<<"$changed"
+    if [ "${#paths[@]}" -ne 0 ]; then
+      fold+=(--changed)
+      for entry in "${paths[@]}"; do
+        fold+=("./$entry")
+      done
+      # What each path stood at before this run: its own dirty-before blob, else the content the
+      # HEAD it started from held, else nothing at all. Only a path the store has no anchor for
+      # reads it, so a wrong base cannot move a path a review already knows.
+      for entry in "${paths[@]}"; do
+        base=$(snapshot_blob "$directory" "$top" before "$entry")
+        [ "$base" = - ] && base=$EMPTY_BLOB
+        fold+=("--base=./$entry=$base")
+      done
+    fi
+    review_anchors "${fold[@]}" >/dev/null 2>&1 && return 0
+  else
+    # The snapshots are what a changed set can be read from at all. Unreadable, the run is still
+    # folded — left open it would say `?run` about this chat forever — and the gap line beside it
+    # is what keeps that fold from reading as "nothing changed".
+    review_anchors "${fold[@]}" >/dev/null 2>&1 || :
+  fi
+  debt_gap "$launcher" run-fold "${directory##*/}"
+}
+
 complete_run() {
   local directory="$1" code="$2" vendor
   local -a result_status
+  fold_run_anchors "$directory"
   vendor=$(jq -r .vendor "$directory/meta.json")
   if [ ! -f "$directory/result" ]; then
     if jq -e '.browser == true or .chrome == true' "$directory/meta.json" >/dev/null 2>&1; then

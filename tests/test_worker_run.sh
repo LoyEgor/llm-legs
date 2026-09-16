@@ -104,6 +104,10 @@ cat >"$WORK/bin/claudeb" <<'EOF'
 # Beside the argv, because the launching chat reaches the worker only through the environment:
 # inside the CLI, CLAUDE_CODE_SESSION_ID is the worker's own chat.
 printf '%s\n' "${CLAUDE_LAUNCHER_SESSION-}" >"$STUB_DIR/launcher_env"
+# The anchors store's two names for the same run: who owes what this worker writes, and where the
+# worker's own verdict rows go.
+printf '%s\n' "${CLAUDE_DEBT_OWNER-}" >"$STUB_DIR/debt_owner_env"
+printf '%s\n' "${WORKER_RUN_RECORD-}" >"$STUB_DIR/run_record_env"
 # What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
 # chat through the environment and through nothing else.
 [ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" "${STUB_SESSION-claude-session}"
@@ -5009,6 +5013,20 @@ RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
 await_done || fail "the resumed round run never finished"
+clear_stub
+printf 'ACCOUNT: main\nEFFORT: high\nROUND: 20260801T140000Z-0a1b2c3\n\nFix the findings.\n' >"$WORK/round-brief"
+round_start || fail "header round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
+await_done || fail "the header round run never finished"
+clear_stub
+printf 'ACCOUNT: main\n\nThe brief must carry the line\nROUND: 20260801T140000Z-0a1b2c3\n' >"$WORK/round-brief"
+round_start || fail "prose round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
+await_done || fail "the prose round run never finished"
 for bad_round in 'ROUND: 20260801T140000Z-0A1B2C3' 'ROUND: 20260801T140000Z-0a1b2c' \
   'ROUND: 20260801T150000Z-0a1b2c3' 'ROUND: 20260801T140000Z- 0a1b2c3'; do
   clear_stub
@@ -5894,18 +5912,6 @@ assert test ! -e "$RUN_DIR/produced"
 rm -f "$ATTR_REPO/-odd-name"
 
 clear_stub
-TOOL_TS=$(iso $(($(date +%s) + 60)))
-tool_call Edit file_path "$ATTR_TOP/bin/claim-clear" \
-  >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
-export STUB_SLEEP=1
-start_ok claudeb --workdir "$ATTR_REPO"
-printf 'claim-me\n' >"$ATTR_REPO/bin/claim-clear"
-assert await_done
-: >"$RUN_DIR/journaled"
-assert "$RUNNER" claim "$RUN_ID" --paths bin/claim-clear >/dev/null
-assert test ! -e "$RUN_DIR/journaled"
-
-clear_stub
 mkdir -p "$ATTR_REPO/target-dir"
 printf 'old-target\n' >"$ATTR_REPO/old-file"
 printf 'new-target\n' >"$ATTR_REPO/new-file"
@@ -6058,6 +6064,180 @@ assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 2
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
 
+# --- the anchors store ---------------------------------------------------------------------------
+# `review-anchors` belongs to another repository; here it is a PATH shim logging one tab-separated
+# line per call, so what worker-run promises the store is checked without the store existing.
+anchors_store_tests() {
+  local repo bench gaps rc bad changed fold bases saved_path
+  local dirty_base doomed_base empty_blob=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+  local anchors_tab=$'\t'
+  ANCHOR_LOG="$WORK/anchors.log"
+  export ANCHOR_LOG
+  cat >"$WORK/bin/review-anchors" <<'ANCHORS'
+#!/usr/bin/env bash
+{ printf '%s' "$1"; shift; [ "$#" -eq 0 ] || printf '\t%s' "$@"; printf '\n'; } >>"$ANCHOR_LOG"
+[ -z "${ANCHORS_FAIL:-}" ] || exit 3
+ANCHORS
+  chmod +x "$WORK/bin/review-anchors"
+  : >"$ANCHOR_LOG"
+
+  anchors_line() { grep "^$1$anchors_tab" "$ANCHOR_LOG" | tail -n 1; }
+  anchors_changed() {
+    anchors_line run-fold | tr '\t' '\n' |
+      awk '/^--/ { listing = 0 } listing { sub(/^\.\//, ""); print } $0 == "--changed" { listing = 1 }'
+  }
+  anchors_bases() {
+    anchors_line run-fold | tr '\t' '\n' | awk 'sub(/^--base=\.\//, "") { print }'
+  }
+
+  repo="$WORK/anchors-repo"
+  mkdir -p "$repo/bin"
+  git -C "$repo" init -q .
+  printf 'base\n' >"$repo/bin/keep"
+  printf 'gone\n' >"$repo/bin/doomed"
+  git -C "$repo" add -A >/dev/null
+  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+  repo=$(cd "$repo" && pwd -P)
+  bench="${CLAUDEB_DIR}/worker-stats/benches"
+  mkdir -p "$bench/20260901T100000Z-aaaaaaa" "$bench/20260901T110000Z-bbbbbbb"
+  gaps="$HOME/.cache/claude/review-debt/gaps/anchors-chat"
+
+  set_config 'codex_model=default' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=anchors-chat
+
+  # An id of the wrong shape and an id no bench holds are refused at LAUNCH and alike: a run bound
+  # to a round nothing recorded would anchor its fix against nothing at all.
+  for bad in 20260901T100000Z-AAAAAAA 20260901T100000Z-aaaaaa 20260901T990000Z-fffffff; do
+    clear_stub
+    rc=0
+    "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" --round "$bad" \
+      >"$WORK/anchors.out" 2>"$WORK/anchors.err" || rc=$?
+    assert test "$rc" -eq 4
+    assert test "$(wc -l <"$WORK/anchors.err" | tr -d ' ')" = 1
+    assert grep -Fq -- '--round names no review round on record' "$WORK/anchors.err"
+    assert_fails grep -q '^RUN: ' "$WORK/anchors.out"
+  done
+  assert test ! -s "$ANCHOR_LOG"
+
+  # The flag is the binding review-bench composes; the header it also writes is the fallback, so a
+  # brief naming another round loses to it.
+  clear_stub
+  printf 'ROUND: 20260901T110000Z-bbbbbbb\nFix the confirmed findings.\n' >"$WORK/anchors-brief"
+  # Left dirty BEFORE the launch, so the base the fold reports for it can only have come from the
+  # run's own before-listing and not from the commit the run started on.
+  printf 'first\n' >"$repo/bin/dirty-first"
+  dirty_base=$(git -C "$repo" hash-object "$repo/bin/dirty-first")
+  doomed_base=$(git -C "$repo" rev-parse HEAD:bin/doomed)
+  export STUB_SLEEP=3
+  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
+    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
+    fail "round start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
+  assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260901T100000Z-aaaaaaa
+  # Opened while it runs, so the launching chat's verdict says `?run` instead of a confident number
+  # about a tree a worker is writing in.
+  assert test "$(anchors_line run-start)" = \
+    "run-start${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat"
+  # Every kind of change the run's own listings can see, and nothing the transcript has to name: a
+  # file written through a heredoc, a file deleted, a file committed inside the run.
+  printf 'heredoc\n' >"$repo/bin/heredoc-only"
+  printf 'second\n' >>"$repo/bin/dirty-first"
+  rm "$repo/bin/doomed"
+  printf 'committed\n' >"$repo/bin/committed"
+  git -C "$repo" add bin/committed >/dev/null
+  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm inside >/dev/null
+  assert await_done
+  changed=$(anchors_changed)
+  assert grep -qx 'bin/heredoc-only' <<<"$changed"
+  assert grep -qx 'bin/doomed' <<<"$changed"
+  assert grep -qx 'bin/committed' <<<"$changed"
+  assert grep -qx 'bin/dirty-first' <<<"$changed"
+  assert_fails grep -qx 'bin/keep' <<<"$changed"
+  # Every changed path carries what it stood at before the run, which is the only thing that lets
+  # the store anchor a path no review has ever read: the path's own before-content where it had
+  # one, the HEAD it started from where it was clean, and the empty blob where the run made it.
+  bases=$(anchors_bases)
+  assert test "$(grep -c . <<<"$bases")" = "$(grep -c . <<<"$changed")"
+  assert grep -qx "bin/dirty-first=$dirty_base" <<<"$bases"
+  assert grep -qx "bin/doomed=$doomed_base" <<<"$bases"
+  assert grep -qx "bin/heredoc-only=$empty_blob" <<<"$bases"
+  assert grep -qx "bin/committed=$empty_blob" <<<"$bases"
+  assert test "$(git -C "$repo" hash-object -t blob /dev/null)" = "$empty_blob"
+  fold=$(anchors_line run-fold)
+  assert grep -qF -- "--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" <<<"$fold"
+  assert grep -qF -- "--session${anchors_tab}anchors-chat" <<<"$fold"
+  assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
+  assert test ! -e "$gaps"
+
+  # A run that failed is folded like any other — the store's question is what content moved, never
+  # how the vendor ended — and a run that moved nothing carries no `--changed` at all. The paths
+  # the case above left dirty stand in both snapshots and are not this run's.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  export STUB_SLEEP=1 STUB_CODE=3
+  "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" \
+    >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "failing start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  assert await_done
+  assert grep -q '^STATUS: failed' "$WORK/wait.out"
+  fold=$(anchors_line run-fold)
+  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
+  assert_fails grep -qF -- '--changed' <<<"$fold"
+  assert_fails grep -qF -- '--round' <<<"$fold"
+
+  # No binary is not silence: the fact goes to the gaps file, which needs no repository, no lock
+  # and no python, and the launching chat's verdict reads `?gap` until somebody looks.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  mv "$WORK/bin/review-anchors" "$WORK/bin/review-anchors.off"
+  # A machine with no store to write to, which is not the machine the suite runs on: a real
+  # `review-anchors` is installed beside it, and every directory holding one leaves the path.
+  saved_path=$PATH
+  PATH=$(IFS=:; keep=''
+    for entry in $PATH; do
+      { [ -z "$entry" ] || [ -x "$entry/review-anchors" ]; } && continue
+      keep="${keep:+$keep:}$entry"
+    done
+    printf '%s' "$keep")
+  export PATH
+  export STUB_SLEEP=1
+  start_ok codex --workdir "$repo"
+  printf 'gap\n' >"$repo/bin/gap-file"
+  assert await_done
+  PATH=$saved_path
+  export PATH
+  assert test ! -s "$ANCHOR_LOG"
+  assert grep -qF -- "${anchors_tab}run-fold${anchors_tab}${RUN_ID}" "$gaps"
+  assert test "$(awk -F'\t' 'END { print ($1 ~ /^[0-9]+$/) }' "$gaps")" = 1
+  mv "$WORK/bin/review-anchors.off" "$WORK/bin/review-anchors"
+
+  # And a binary that refuses is the same case: the call is made, the failure is recorded.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  : >"$gaps"
+  export STUB_SLEEP=1 ANCHORS_FAIL=1
+  start_ok codex --workdir "$repo"
+  assert await_done
+  assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
+  assert grep -qF -- "${anchors_tab}run-fold${anchors_tab}${RUN_ID}" "$gaps"
+  unset ANCHORS_FAIL
+
+  # The vendor process is told both: whose debt what it writes is, and where its own run record is.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  export STUB_SLEEP=1
+  start_ok claudeb --workdir "$repo"
+  assert await_done
+  assert test "$(cat "$STUB_DIR/debt_owner_env")" = anchors-chat
+  assert test "$(cat "$STUB_DIR/run_record_env")" = "$RUN_DIR"
+
+  clear_stub
+  unset CLAUDE_CODE_SESSION_ID
+}
+
+anchors_store_tests
+
 attribution_repair_tests
 
-echo "PASS: $asserts asserts; worker-run lifecycle, routing, snapshot attribution, transcript diagnostics, legacy claims and launcher journal integration"
+echo "PASS: $asserts asserts; worker-run lifecycle, routing, snapshot attribution, transcript diagnostics, legacy claims, the review-anchors store and launcher journal integration"

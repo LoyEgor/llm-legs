@@ -241,6 +241,49 @@ journal_dir() { # toplevel
 # a sibling worktree moves this key too — as it moves the gate's own answer. Everything the key
 # cannot see — a second edit to an already-modified file or another chat's commit landing — is
 # bounded by the TTL.
+# The gate's one line — `STATUS=… LINES=… FILES=… FIX=… WHY=… [BOUND=…]`, the debt protocol of
+# `../review-bench/docs/review-anchors-contract.md` — turned into the style and text this segment
+# renders. Every unknown carries its reason, and a line this build cannot parse is an unknown too:
+# a number invented over an answer nobody could read is the silent zero the redesign exists to end.
+verdict_form() { # gate-line
+  local line="$1" field status='' lines='' files='' fix='' why='' bound=''
+  local -a fields
+  case "$line" in
+    ''|off) printf 'off'; return 0 ;;
+    STATUS=*) ;;
+    *) printf 'dim ?err'; return 0 ;;
+  esac
+  read -ra fields <<< "$line"
+  for field in "${fields[@]}"; do
+    case "$field" in
+      STATUS=*) status=${field#*=} ;;
+      LINES=*) lines=${field#*=} ;;
+      FILES=*) files=${field#*=} ;;
+      FIX=*) fix=${field#*=} ;;
+      WHY=*) why=${field#*=} ;;
+      BOUND=*) bound=${field#*=} ;;
+    esac
+  done
+  # `FILES` is read and never rendered: the protocol's own fields are what makes a line parsable,
+  # and one missing is an answer this build does not understand.
+  [[ "$lines" =~ ^[0-9]+$ ]] && [[ "$files" =~ ^[0-9]+$ ]] && [[ "$fix" =~ ^[0-9]+$ ]] &&
+    [[ "$why" =~ ^[a-z]+$ ]] || { printf 'dim ?err'; return 0; }
+  case "$status" in
+    closed) printf 'off' ;;
+    open)
+      # Lines first: owed lines are what a reader acts on, and open findings are already inside
+      # the tree they would be fixed in.
+      if [ "$lines" -gt 0 ]; then printf 'bright %s' "$lines"
+      elif [ "$fix" -gt 0 ]; then printf 'dim fix %s' "$fix"
+      else printf 'dim ?err'; fi ;;
+    unknown)
+      if [ "$why" = ledger ] && [[ "$bound" =~ ^[0-9]+$ ]]; then printf 'bright ~%s' "$bound"
+      elif [ "$why" = ledger ]; then printf 'dim ?err'
+      else printf 'dim ?%s' "$why"; fi ;;
+    *) printf 'dim ?err' ;;
+  esac
+}
+
 review_verdict_line() { # toplevel session status_key now
   local top="$1" sid="$2" status_key="$3" now="$4"
   local cache="$statusline_cache_dir/review-class-${sid:-unknown}"
@@ -249,7 +292,7 @@ review_verdict_line() { # toplevel session status_key now
   local repos_file side_top side_dir side_mtime side_journal=0 side_clock=0
   commondir=$(journal_dir "$top")
   journal_mtime=""
-  [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
+  [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
   [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
   clock_mtime=""
   [ -n "$commondir" ] && clock_mtime=$(file_mtime "$commondir/claude-review-clock" 2>/dev/null)
@@ -264,7 +307,7 @@ review_verdict_line() { # toplevel session status_key now
       [ -n "$side_top" ] && [ "$side_top" != "$top" ] && [ -d "$side_top" ] || continue
       side_dir=$(journal_dir "$side_top")
       [ -n "$side_dir" ] || continue
-      side_mtime=$(file_mtime "$side_dir/claude-commit-journal" 2>/dev/null)
+      side_mtime=$(file_mtime "$side_dir/review-anchors.json" 2>/dev/null)
       [[ "$side_mtime" =~ ^[0-9]+$ ]] && [ "$side_mtime" -gt "$side_journal" ] &&
         side_journal=$side_mtime
       side_mtime=$(file_mtime "$side_dir/claude-review-clock" 2>/dev/null)
@@ -296,18 +339,10 @@ review_verdict_line() { # toplevel session status_key now
         snapshot_lock_acquire "$lock" || exit 0
         trap 'rmdir "$lock" 2>/dev/null' EXIT
         answer=$(review_gate_verdict "$top" "$sid") || answer=""
-        # No gate reachable is no answer, and a label invented where the gate is silent is the fork
-        # this segment exists to end. An answer whose style this build does not know is still an
-        # answer, and it is shown loud rather than swallowed.
-        # `unknown` is the gate saying nobody could read the repository, which fit_verdict_part
-        # renders as the dim `rev ?`. Loud like an unclassifiable word it would be red over an
-        # outage the reader can do nothing about.
-        case "$answer" in
-          ''|off) answer=off ;;
-          unknown) ;;
-          "bright "*) ;;
-          *) answer="loud $answer" ;;
-        esac
+        # No gate reachable is no answer at all, and a label invented where the gate is silent is
+        # the fork this segment exists to end. Everything the gate does say is read by one
+        # parser, so nothing in the render path decides a class of its own.
+        answer=$(verdict_form "$answer")
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -402,8 +437,8 @@ unpushed_marker() { # toplevel session now
   commit_mtime=""
   debt_mtime=""
   if [ -n "$commondir" ]; then
-    commit_mtime=$(file_mtime "$commondir/claude-commit-journal" 2>/dev/null)
-    debt_mtime=$(file_mtime "$commondir/claude-review-debt" 2>/dev/null)
+    commit_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
+    debt_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
   fi
   [[ "$commit_mtime" =~ ^[0-9]+$ ]] || commit_mtime=0
   [[ "$debt_mtime" =~ ^[0-9]+$ ]] || debt_mtime=0
@@ -866,11 +901,11 @@ tree_status_key() { # status rc
 # Only a run over the SHOWN tree can hold the slot, whoever started it; a run elsewhere moves
 # nothing — review-bench journals its own start, and that line is what moves the block.
 ph_started=""; ph_done=""; ph_total=""; ph_tier=""; ph_max=""; ph_late=""
-ph_session=""; ph_pid=""; ph_class=""; ph_file=""; ph_foreign=0; ph_rank=3
-# Every run another chat left unconsumed over this repository, kept for the count that stands
-# beside the rendered one: the block shows ONE run, and the rest would otherwise be reviews this
-# statusline never mentions until their results arrive.
-fg_files=(); fg_tops=(); fg_commons=()
+ph_class=""; ph_file=""; ph_rank=3
+# How many unconsumed runs of this chat's this repository holds, the rendered one included: the
+# block shows ONE run, and a second review of this chat's own would otherwise be invisible until
+# its result arrived.
+own_runs=0
 progress_dir="$worker_stats_dir/progress"
 if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
   # Every file is read and matched on the repository recorded inside it, never on its name:
@@ -912,7 +947,7 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
                    > ([3 * $expected_ms, 120000] | max)))
         ] | length > 0) as $late
       | (if $run.state == "failed" then "dead"
-         elif (["running", "done", "dead"] | index($run.state)) != null
+         elif (["running", "done", "dead", "cancelled"] | index($run.state)) != null
          then $run.state else "" end) as $state
       | (if (($run.heartbeat_epoch | type) == "number"
                  and ($run.heartbeat_epoch | floor) == $run.heartbeat_epoch
@@ -940,6 +975,9 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
     # the segment for a day.
     progress_run_class=""
     case "$progress_run_state" in
+      # `review-bench cancel` is Egor's decision that the run is over and answers for nothing: it
+      # seals no round and leaves no counter behind to be acted on.
+      cancelled) continue ;;
       "")
         [ "$((now - progress_mtime))" -le 7200 ] || continue
         kill -0 "$progress_pid" 2>/dev/null || continue
@@ -980,20 +1018,30 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
       T[0-3]) ;;
       *) progress_run_tier="" ;;
     esac
-    # The count beside the rendered run reads the RECORDED launcher only: the parent walk is a
-    # fallback for a document written before review-bench recorded one, and a run whose launcher
-    # cannot be named is never counted as somebody else's — the doctrine that leaves such a run
-    # bright is the same one that keeps it out of a number about other chats.
-    progress_run_foreign=0
+    # Another chat's review is that chat's news and is not shown here at all (Egor, 2026-09-16):
+    # the dim `+N` that used to count them is gone with them. The RECORDED launcher is what
+    # decides — a run whose launcher cannot be named is never taken for somebody else's, the same
+    # doctrine that leaves such a run bright.
     if [ -n "$session_id" ] && [ -n "$progress_run_session" ] &&
       [ "${progress_run_session//[^A-Za-z0-9_-]/}" != "$session_id" ]; then
-      progress_run_foreign=1
-      fg_files+=("$progress_file")
-      fg_tops+=("$progress_run_top")
-      fg_commons+=("$progress_run_common")
+      continue
+    fi
+    # No recorded launcher: the parent walk is the only thing that can still name another chat,
+    # asked before the run counts or ranks so this chat's own run keeps the slot.
+    if [ -n "$session_id" ] && [ -z "$progress_run_session" ] &&
+      { [ "$progress_run_top" = "$active_top" ] ||
+        { [ -n "$active_common" ] && [ "$progress_run_common" = "$active_common" ]; }; }; then
+      progress_owner=$(review_run_owner "" "$progress_pid")
+      [ -n "$progress_owner" ] && [ "$progress_owner" != "$session_id" ] && continue
+    fi
+    # This chat's other unconsumed runs of the same repository, the count that rides beside the
+    # one rendered: a sibling worktree's run is this repository's news without being this tree's.
+    if [ "$progress_run_top" = "$active_top" ] ||
+      { [ -n "$active_common" ] && [ "$progress_run_common" = "$active_common" ]; }; then
+      own_runs=$((own_runs + 1))
     fi
     # WORKING outranks OVER, and a run still speaking outranks one that stopped speaking: with
-    # finished documents surviving for a day, `started` alone handed the one slot to a `rev ✓ 12/12`
+    # finished documents surviving for a day, `started` alone handed the one slot to a `✓ 12/12`
     # from this morning while a review of the same tree was mid-flight. Newest wins inside a class,
     # never across one.
     case "$progress_run_class" in
@@ -1002,17 +1050,9 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
       *) progress_run_rank=2 ;;
     esac
     if [ "$progress_run_top" = "$active_top" ]; then
-      # This chat's own run holds the slot against any other chat's, however much newer that one
-      # is: a stranger's finished document now survives for a day, and the newest-started rule
-      # alone let it take the one slot from a run of this chat's still working — which then
-      # rendered nowhere, a foreign run being only ever the dim `+N` beside it.
       if [ -z "$ph_started" ] ||
-        { [ "$ph_foreign" = 1 ] && [ "$progress_run_foreign" = 0 ]; } ||
-        { [ "$ph_foreign" = "$progress_run_foreign" ] &&
-          { [ "$progress_run_rank" -lt "$ph_rank" ] ||
-            { [ "$progress_run_rank" = "$ph_rank" ] &&
-              [[ "$progress_started" > "$ph_started" ]]; }; }; }; then
-        ph_foreign=$progress_run_foreign
+        [ "$progress_run_rank" -lt "$ph_rank" ] ||
+        { [ "$progress_run_rank" = "$ph_rank" ] && [[ "$progress_started" > "$ph_started" ]]; }; then
         ph_rank=$progress_run_rank
         ph_started=$progress_started
         ph_done=$progress_run_done
@@ -1020,8 +1060,6 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
         ph_tier=$progress_run_tier
         ph_max=$progress_run_max
         ph_late=$progress_run_late
-        ph_session=$progress_run_session
-        ph_pid=$progress_pid
         ph_class=$progress_run_class
         ph_file=$progress_file
       fi
@@ -1037,54 +1075,30 @@ progress_late=""
 progress_label=""
 progress_color=""
 progress_class=""
-progress_foreign=0
-# Every other chat's unconsumed run over the SHOWN tree's repository, counted and never named: the
-# block renders one tree and one run, so a second name here is the answer the move exists to
-# remove — but a review nobody here can see is a review whose result arrives unannounced. Sibling
-# worktrees count, since a run there is this repository's news even where it is not this tree's.
-rev_extra=0
-if [ "${#fg_files[@]}" -gt 0 ] && [ -n "$active_top" ]; then
-  fg_rendered=$ph_file
-  for fg_i in "${!fg_files[@]}"; do
-    [ "${fg_files[$fg_i]}" = "$fg_rendered" ] && continue
-    if [ "${fg_tops[$fg_i]}" != "$active_top" ]; then
-      [ -n "$active_common" ] || continue
-      # The repository each document resolved to came back with its tree, in the one rev-parse the
-      # scan already spends on it: the shown tree's own identity is likewise long since known.
-      [ "${fg_commons[$fg_i]}" = "$active_common" ] || continue
-    fi
-    rev_extra=$((rev_extra + 1))
-  done
-fi
+run_extra=0
 if [ -n "$ph_started" ]; then
   progress_done=$ph_done; progress_total=$ph_total; progress_tier=$ph_tier
   progress_max=$ph_max; progress_late=$ph_late; progress_class=$ph_class
-  # A run another chat started over this tree is this chat's background news, not its call to
-  # action: dim, and not red either, since being late is that chat's problem to see.
-  progress_owner=$(review_run_owner "$ph_session" "$ph_pid")
-  if [ -n "$progress_owner" ] && [ -n "$session_id" ] && [ "$progress_owner" != "$session_id" ]; then
-    progress_foreign=1
-    progress_color="$DIM"
-  fi
 fi
 if [ -n "$progress_total" ]; then
-  progress_label="rev"
   # The max panel is a variant of a tier, never a run of its own: --max is refused without
   # --tier, so an untiered run carrying it is a corrupt file and its mark is dropped with the
   # tier rather than rendered as a panel size nothing names.
   if [ -n "$progress_tier" ]; then
-    progress_label="${progress_label} ${progress_tier}"
+    progress_label="$progress_tier"
     [ -n "$progress_max" ] && progress_label="${progress_label} ${progress_max}"
   fi
+  # The state is a mark and never a word (Egor, 2026-09-16): `✓` is a report waiting to be taken,
+  # `✗` a run that has to be finished or cancelled before it stops asking.
   case "$progress_class" in
-    done) progress_label="${progress_label} ✓" ;;
-    dead) progress_label="${progress_label} dead" ;;
+    done) progress_label="${progress_label:+${progress_label} }✓" ;;
+    dead) progress_label="${progress_label:+${progress_label} }✗" ;;
   esac
-  progress_label="${progress_label} ${progress_done}/${progress_total}"
-  [ "$progress_class" = wedged ] && progress_label="${progress_label}?"
+  progress_label="${progress_label:+${progress_label} }${progress_done}/${progress_total}"
+  [ "$own_runs" -gt 1 ] && run_extra=$((own_runs - 1))
   case "$progress_class" in
     done|dead|wedged) progress_color="$DIM" ;;
-    *) [ -z "$progress_color" ] && [ -n "$progress_late" ] && progress_color="$RED" ;;
+    *) [ -n "$progress_late" ] && progress_color="$RED" ;;
   esac
 fi
 
@@ -2022,20 +2036,11 @@ if [ -n "$active_top" ]; then
     "$(tree_status_key "$git_status" "$git_status_rc")" "$now")
   review_style=${review_verdict%% *}
   case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
-  # Truncated and nothing else: the words are the gate's, and a segment that rewrites them is the
+  # Truncated and nothing else: the form is the parser's, and a segment that rewrites it is the
   # second opinion this design removed.
   [ "${#review_text}" -gt 20 ] && review_text="${review_text:0:19}…"
 fi
 
-
-# One tree, so one word for both: the counter in flight already says `rev` and the verdict beside it
-# prints its numbers alone — the block being atomic, they can no longer be about two places. The
-# verdict is never taken away — any review over this tree, this chat's or another's, used to blank
-# the debt the reader acts on (Egor, 2026-08-24) — and a style word this build does not know is
-# printed whole, never trimmed.
-if { [ -n "$progress_total" ] || [ "$rev_extra" -gt 0 ]; } && [ "${review_style:-}" != loud ]; then
-  review_text=${review_text#rev }
-fi
 
 review_autonomous=no
 if [ -n "$session_id" ]; then
@@ -2214,30 +2219,24 @@ fit_branch_part() {
 }
 
 fit_review_part() {
-  local label extra=""
+  local extra=""
   review_part=""
-  # The other chats' runs ride with the rendered one and never take a slot of their own — the
-  # segment is one tree's, and this is how many more reviews of it are still out.
-  [ "$rev_extra" -gt 0 ] && extra=" ${DIM}+${rev_extra}${RESET}"
-  if [ -n "$progress_total" ]; then
-    label=$progress_label
-    [ "$fit_rev_short" = 1 ] && label="r${label#rev }"
-    if [ -n "$progress_color" ]; then
-      review_part=" ${sep} ${progress_color}${label}${RESET}${extra}"
-    else
-      review_part=" ${sep} ${label}${extra}"
-    fi
-  elif [ "$rev_extra" -gt 0 ]; then
-    label=rev
-    [ "$fit_rev_short" = 1 ] && label=r
-    review_part=" ${sep} ${DIM}${label} +${rev_extra}${RESET}"
+  # This chat's other reviews of this repository ride with the rendered one and never take a slot
+  # of their own; alone they would be a number about no tree and no progress, so a count with no
+  # counter to ride on is not rendered at all.
+  [ "$run_extra" -gt 0 ] && extra=" ${DIM}+${run_extra}${RESET}"
+  [ -n "$progress_total" ] || return
+  if [ -n "$progress_color" ]; then
+    review_part=" ${sep} ${progress_color}${progress_label}${RESET}${extra}"
+  else
+    review_part=" ${sep} ${progress_label}${extra}"
   fi
 }
 
 # Autonomy is a chat fact, not a verdict prefix: `off` would otherwise swallow the mark,
 # and wrapping it in the loud colour would paint the gate's sentence.
 fit_verdict_part() {
-  local sp=" " word=rev text dot="" body=""
+  local dot=""
   verdict_part=""
   if [ "${review_style:-}" = loud ]; then
     if [ "$review_autonomous" = yes ]; then
@@ -2247,21 +2246,20 @@ fit_verdict_part() {
     fi
     return
   fi
-  [ "$fit_rev_short" = 1 ] && { sp=""; word=r; }
+  [ "$review_autonomous" = yes ] && dot="●"
+  [ -n "$dot" ] && [ "$fit_rev_short" != 1 ] && dot="${dot} "
+  # `unknown` without a reason is this render's own: a cached answer that outlived the tree it was
+  # read from. The gate's own unknowns arrive as `dim ?<why>`.
   if [ "${review_style:-}" = unknown ]; then
-    if [ "$review_autonomous" = yes ]; then dot="●${sp}"; else body="${word}${sp}"; fi
-    verdict_part=" ${sep} ${dot}${DIM}${body}?${RESET}"
+    verdict_part=" ${sep} ${dot}${DIM}?${RESET}"
+    return
+  fi
+  if [ "${review_style:-}" = dim ]; then
+    verdict_part=" ${sep} ${dot}${DIM}${review_text}${RESET}"
     return
   fi
   if [ "${review_style:-}" = bright ]; then
-    text=$review_text
-    if [ "$review_autonomous" = yes ]; then
-      dot="●${sp}"
-      text=${text#rev }
-    elif [ "$fit_rev_short" = 1 ]; then
-      case "$text" in "rev "*) text="${word}${sp}${text#rev }" ;; esac
-    fi
-    verdict_part=" ${sep} ${dot}${text}"
+    verdict_part=" ${sep} ${dot}${review_text}"
     return
   fi
   [ "$review_autonomous" = yes ] || return
