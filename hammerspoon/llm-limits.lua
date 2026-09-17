@@ -348,11 +348,7 @@ local function bucketAtLimit(bucket)
 end
 
 -- The bench's own store, spelled the way bin/review-bench spells it: a menu reading a different
--- one would report on records nobody is writing. Held equal by docs/shared-invariants.md, which
--- also fixes the document's schema — the class names below exist nowhere else on this side.
-local DOCTOR_CLASSES = {
-  "untriaged", "undelivered", "stuck_fixes", "orphan_debt", "kill_asymmetry",
-}
+-- one would report on records nobody is writing. Class names are the snapshot's own keys.
 local DOCTOR_STALE_S = 24 * 3600
 
 local function doctorSnapshotPath()
@@ -386,34 +382,6 @@ local function doctorStaleSuffix(asOf)
   return string.format(" · snapshot %dd old", math.floor(age / 86400))
 end
 
--- Absent means the collector was never installed, and a line saying so would be one more thing to
--- read past in a menu about limits.
-local function appendDoctor(menu)
-  local snapshot = readDoctorSnapshot()
-  if not snapshot then return end
-  local total = tonumber(snapshot.total) or 0
-  local title = total > 0
-    and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
-    or "review doctor: OK"
-  local row = {
-    title = infoTitle(title .. doctorStaleSuffix(snapshot.as_of), false, total == 0),
-    disabled = true,
-  }
-  local items = {}
-  for _, name in ipairs(DOCTOR_CLASSES) do
-    local count = tonumber(snapshot.anomalies[name]) or 0
-    if count > 0 then
-      table.insert(items, { title = string.format("%s: %d", name, count), disabled = true })
-    end
-  end
-  if #items > 0 then
-    row.disabled = nil
-    row.menu = items
-  end
-  table.insert(menu, row)
-  table.insert(menu, { title = "-" })
-end
-
 local function geminiWeatherPath()
   if M.geminiWeatherPath then return M.geminiWeatherPath end
   local override = os.getenv("GEMINI_WEATHER_DIR")
@@ -442,16 +410,21 @@ local function weatherAge(seconds)
 end
 
 -- One row per model family from gemini-weather's cache; states and thresholds are decided there.
+local WEATHER_RANK = { ["no-data"] = 0, ok = 1, slow = 2, starved = 3 }
+
 local function appendGeminiWeather(menu)
   local weather = readGeminiWeather()
   if not weather then
     table.insert(menu, { title = infoTitle("models  no data", false, true), disabled = true })
-    return nil
+    return nil, "no data"
   end
+  local worst
   local generated = tonumber(weather.generated_at) or 0
   local stale = os.time() >= (tonumber(weather.valid_until) or 0)
   for _, family in ipairs(weather.families) do
     if type(family) == "table" and type(family.label) == "string" then
+      local rank = WEATHER_RANK[family.state]
+      if rank and (not worst or rank > WEATHER_RANK[worst]) then worst = family.state end
       local ageShift = math.max(0, os.time() - generated)
       local parts = { family.label }
       local row
@@ -490,7 +463,8 @@ local function appendGeminiWeather(menu)
       table.insert(menu, { title = row, disabled = true })
     end
   end
-  return weather
+  if stale then return weather, "stale" end
+  return weather, worst and worst:gsub("-", " ") or "no data"
 end
 
 local function readLlmLimits()
@@ -628,17 +602,32 @@ local GEMINI_WEATHER_FRESH_S = 60
 local lastWeatherKick = 0
 
 -- The rows render the cache as it is; this refreshes it for the next open, off the menu thread.
-local function kickGeminiWeather(weather)
+local function weatherSummaryLine(weather)
+  if type(weather) ~= "table" or type(weather.families) ~= "table" then return "gemini weather: no data" end
+  local parts = {}
+  for _, family in ipairs(weather.families) do
+    if type(family) == "table" and family.label then
+      table.insert(parts, family.label .. " " .. tostring(family.state or "?"))
+    end
+  end
+  return "gemini weather: " .. table.concat(parts, " · ")
+end
+
+local function kickGeminiWeather(weather, force)
   local now = os.time()
   local generated = type(weather) == "table" and tonumber(weather.generated_at) or 0
-  if now - generated < GEMINI_WEATHER_FRESH_S or now - lastWeatherKick < GEMINI_WEATHER_FRESH_S then
+  if not force and (now - generated < GEMINI_WEATHER_FRESH_S
+      or now - lastWeatherKick < GEMINI_WEATHER_FRESH_S) then
     return
   end
   if M.weatherTask and M.weatherTask:isRunning() then return end
   local path = M.geminiWeatherCmd or (repoRoot and repoRoot .. "/bin/gemini-weather")
   if not path then return end
   lastWeatherKick = now
-  local task = hs.task.new(path, function() M.weatherTask = nil end, {})
+  local task = hs.task.new(path, function()
+    M.weatherTask = nil
+    if force then hs.alert.show(weatherSummaryLine(readGeminiWeather()), 2.5) end
+  end, {})
   if not task then return end
   local environment = baseEnvironment()
   local override = os.getenv("GEMINI_WEATHER_DIR")
@@ -944,6 +933,138 @@ end
 
 local function resolveGrokb()
   return resolveCommand(M.grokbCmd or "grokb")
+end
+
+local function taskRunning(task)
+  if not task then return false end
+  local ok, running = pcall(task.isRunning, task)
+  return ok and running == true
+end
+
+local function startDiagnosticsTask(field, path, args, onExit)
+  if taskRunning(M[field]) then return end
+  local task = hs.task.new(path, function(exitCode)
+    M[field] = nil
+    logAction("diagnostics-exit", path .. " exit=" .. tostring(exitCode))
+    if onExit then onExit() end
+  end, args)
+  if not task then return end
+  local environment = baseEnvironment()
+  for _, name in ipairs({ "GEMINI_WEATHER_DIR", "WORKER_STATS_DIR" }) do
+    local override = os.getenv(name)
+    if override and override ~= "" then environment[name] = override end
+  end
+  task:setEnvironment(environment)
+  M[field] = task
+  logAction("diagnostics-start", path .. " " .. table.concat(args, " "))
+  task:start()
+end
+
+function M.rescanDoctor()
+  startDiagnosticsTask("doctorRescanTask", resolveCommand(M.reviewBenchCmd or "review-bench"),
+    { "doctor", "--snapshot" }, function()
+      local snapshot = readDoctorSnapshot()
+      local total = snapshot and tonumber(snapshot.total) or nil
+      hs.alert.show(total and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
+        or "review doctor: rescan failed", 2.5)
+    end)
+end
+
+local function geminiProbePath()
+  local path = M.geminiProbeCmd or (repoRoot and repoRoot .. "/bin/gemini-probe")
+  if path and hs.fs and hs.fs.attributes(path) then return path end
+  return nil
+end
+
+function M.runGeminiProbe()
+  local path = geminiProbePath()
+  if not path then return end
+  startDiagnosticsTask("geminiProbeTask", path, {}, function()
+    kickGeminiWeather(nil, true)
+  end)
+end
+
+local function doctorDetailTitle(row)
+  local parts = {}
+  for _, key in ipairs({ "id", "age", "where", "label" }) do
+    if type(row[key]) == "string" and row[key] ~= "" then table.insert(parts, row[key]) end
+  end
+  return table.concat(parts, " · ")
+end
+
+local function appendDoctor(menu)
+  local snapshot = readDoctorSnapshot()
+  local items = {}
+  local total = snapshot and tonumber(snapshot.total) or 0
+  if snapshot then
+    local names, clean = {}, {}
+    for name in pairs(snapshot.anomalies) do
+      if type(name) == "string" then table.insert(names, name) end
+    end
+    table.sort(names)
+    local rows = type(snapshot.rows) == "table" and snapshot.rows or {}
+    for _, name in ipairs(names) do
+      local count = tonumber(snapshot.anomalies[name]) or 0
+      if count > 0 then
+        table.insert(items, { title = infoTitle(string.format("%s: %d", name, count), true),
+          disabled = true })
+        local shown = 0
+        for _, row in ipairs(type(rows[name]) == "table" and rows[name] or {}) do
+          if type(row) == "table" then
+            local copy = tostring(row.id or "")
+            table.insert(items, {
+              title = infoTitle("  " .. doctorDetailTitle(row)),
+              fn = function()
+                hs.pasteboard.setContents(copy)
+                hs.alert.show("copied " .. copy)
+              end,
+            })
+            shown = shown + 1
+          end
+        end
+        if count > shown then
+          table.insert(items, { title = infoTitle(string.format("  … %d more: review-bench doctor --json",
+            count - shown), false, true), disabled = true })
+        end
+      else
+        table.insert(clean, name)
+      end
+    end
+    if #clean > 0 then
+      table.insert(items, { title = infoTitle("ok: " .. table.concat(clean, ", "), false, true),
+        disabled = true })
+    end
+  else
+    table.insert(items, { title = infoTitle("no doctor snapshot yet", false, true), disabled = true })
+  end
+  if taskRunning(M.doctorRescanTask) then
+    table.insert(items, { title = infoTitle("rescanning…", false, true), disabled = true })
+  else
+    table.insert(items, { title = infoTitle("Rescan now"), fn = function() M.rescanDoctor() end })
+  end
+  table.insert(items, { title = "-" })
+  table.insert(items, { title = infoTitle("gemini weather", false, true), disabled = true })
+  local weather, weatherState = appendGeminiWeather(items)
+  kickGeminiWeather(weather)
+  table.insert(items, { title = infoTitle("Refresh weather"),
+    fn = function() kickGeminiWeather(readGeminiWeather(), true) end })
+  if geminiProbePath() then
+    if taskRunning(M.geminiProbeTask) then
+      table.insert(items, { title = infoTitle("Gemini probe running…", false, true), disabled = true })
+    else
+      table.insert(items, { title = infoTitle("Run Gemini probe (~3 min, costs Gemini tokens)"),
+        fn = function() M.runGeminiProbe() end })
+    end
+  end
+
+  local doctorText = not snapshot and "review doctor: no snapshot"
+    or total > 0 and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
+    or "review doctor: OK"
+  local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
+    .. " · gemini " .. weatherState
+  local quiet = total == 0 and weatherState ~= "starved" and weatherState ~= "slow"
+  table.insert(menu, { title = infoTitle(title, false, quiet), menu = items })
+  table.insert(menu, { title = "-" })
 end
 
 -- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
@@ -2089,7 +2210,6 @@ function M.menuItems()
           menu = {{ title = "Pin for workers", checked = true, fn = clearPin }},
         })
       end
-      if entry.key == "gemini" then kickGeminiWeather(appendGeminiWeather(menu)) end
       if renderedAccountRows then
         table.insert(menu, { title = "-" })
       end

@@ -18,6 +18,7 @@ SCHEMA = 1
 
 CAPACITY_PHRASE = "No capacity available for model"
 STEP_MARK = "streamGenerateContent"
+SENDING_MARK = "Print mode: conversation="
 STAMP_RE = re.compile(r"\b[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?\b")
 LABEL_RE = re.compile(r'label="([^"]+)"')
 RESOLVING_RE = re.compile(r"Resolving model (.+?)\s*$")
@@ -113,7 +114,7 @@ def stamp_epoch(match, mtime):
 def parse_log(path, mtime):
     """Segments of one log: geminib appends a capacity relaunch to the log the first attempt used."""
     segments = []
-    current = {"family": None, "steps": [], "errors": []}
+    current = {"family": None, "steps": [], "errors": [], "sent": None}
     segments.append(current)
     last_stamp = None
     first_response = None
@@ -131,10 +132,14 @@ def parse_log(path, mtime):
             if "Print mode: starting" in line:
                 print_mode = PRINT_MODE_RE.search(line)
                 if current["steps"] or current["errors"]:
-                    current = {"family": None, "steps": [], "errors": []}
+                    current = {"family": None, "steps": [], "errors": [], "sent": None}
                     segments.append(current)
                 if print_mode and family_of(print_mode.group(1)):
                     current["family"] = family_of(print_mode.group(1))
+                continue
+            if SENDING_MARK in line:
+                if current["sent"] is None:
+                    current["sent"] = last_stamp
                 continue
             if "label=" in line:
                 label = LABEL_RE.search(line)
@@ -166,13 +171,49 @@ def percentile(values, fraction):
     return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
 
 
+def state_of(errors, median, has_runs):
+    if errors > 0:
+        return "starved"
+    if median is not None and median >= SLOW_STEP_S:
+        return "slow"
+    return "ok" if has_runs else "no-data"
+
+
+PROBE_LOG_PREFIX = "probe-"
+
+
+def is_probe_log(path):
+    return os.path.basename(path).startswith(PROBE_LOG_PREFIX)
+
+
+def log_summary(path):
+    """One log read whole: steps, per-step seconds and 503s of every segment, for gemini-probe."""
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return {"family": None, "steps": 0, "step_s": [], "errors": 0}
+    _, segments = parse_log(path, mtime)
+    family, steps, step_s, errors = None, 0, [], 0
+    for segment in segments:
+        family = segment["family"] or family
+        stamps = segment["steps"]
+        steps += len(stamps)
+        # The step line carries the ResponseID, so it is logged when the answer arrives: the first
+        # step is timed from the message send, not from nothing.
+        if stamps and segment["sent"] is not None and stamps[0] >= segment["sent"]:
+            step_s.append(stamps[0] - segment["sent"])
+        step_s += [b - a for a, b in zip(stamps, stamps[1:]) if b >= a]
+        errors += len(segment["errors"])
+    return {"family": family, "steps": steps, "step_s": step_s, "errors": errors}
+
+
 def collect(window_min, now):
     cutoff = now - window_min * 60
     stats = {}
 
     def family_stats(family):
         return stats.setdefault(family, {
-            "runs": set(), "steps": 0, "intervals": [], "errors": 0,
+            "runs": set(), "probe_runs": set(), "steps": 0, "intervals": [], "errors": 0,
             "last_error": None, "last_step": None, "hold": None,
         })
 
@@ -197,6 +238,8 @@ def collect(window_min, now):
             if segment["family"] and steps:
                 entry = family_stats(segment["family"])
                 entry["runs"].add(run_key)
+                if is_probe_log(path):
+                    entry["probe_runs"].add(run_key)
                 entry["steps"] += len(steps)
                 entry["intervals"] += [b - a for a, b in zip(steps, steps[1:]) if b >= a]
                 entry["last_step"] = max(entry["last_step"] or 0, steps[-1])
@@ -205,6 +248,8 @@ def collect(window_min, now):
                     continue
                 entry = family_stats(family)
                 entry["runs"].add(run_key)
+                if is_probe_log(path):
+                    entry["probe_runs"].add(run_key)
                 entry["errors"] += 1
                 entry["last_error"] = max(entry["last_error"] or 0, stamp)
 
@@ -228,14 +273,7 @@ def collect(window_min, now):
         median = round(percentile(intervals, 0.5), 1) if intervals else None
         p90 = round(percentile(intervals, 0.9), 1) if intervals else None
         hold_in_window = entry["hold"] is not None and entry["hold"] >= cutoff
-        if entry["errors"] > 0 or hold_in_window:
-            state = "starved"
-        elif median is not None and median >= SLOW_STEP_S:
-            state = "slow"
-        elif entry["runs"]:
-            state = "ok"
-        else:
-            state = "no-data"
+        state = state_of(entry["errors"] + (1 if hold_in_window else 0), median, bool(entry["runs"]))
         if family not in KNOWN_FAMILIES and state == "no-data":
             continue
         families.append({
@@ -244,6 +282,7 @@ def collect(window_min, now):
             "short": family_short(family),
             "state": state,
             "runs": len(entry["runs"]),
+            "probe_runs": len(entry["probe_runs"]),
             "steps": entry["steps"],
             "median_step_s": median,
             "p90_step_s": p90,
@@ -282,7 +321,9 @@ def render_table(report, cache_path):
     rows = [header]
     for entry in report["families"]:
         rows.append((
-            entry["family"], entry["state"], str(entry["runs"]), str(entry["steps"]),
+            entry["family"], entry["state"],
+            "%d (%d probe)" % (entry["runs"], entry["probe_runs"]) if entry["probe_runs"] else str(entry["runs"]),
+            str(entry["steps"]),
             number(entry["median_step_s"]), number(entry["p90_step_s"]), str(entry["errors_503"]),
             short_age(entry["last_503_age_s"]), short_age(entry["last_step_age_s"]),
             short_age(entry["hold_age_s"]),

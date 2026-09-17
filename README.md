@@ -263,6 +263,9 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
   profile and launches agy for its one-time login, `add <name>` creates without launching,
   `remove <name>` forgets any named profile but never `main`, and `list`/`status` report every
   profile.
+- `bin/gemini-probe` → `~/.local/bin/gemini-probe` — by-hand active check of Gemini serving per model
+  family (a short and a long request each, capacity fallback off); `docs/DIAGNOSTICS.md` has the
+  reading.
 - `bin/gemini-research` → `~/.local/bin/gemini-research` — read-only multi-repository research on
   Gemini 3.8 Flash with account selection through role `research`, automatic rotation after a quota
   wall, and before/after repository checks. Its terminal exits are 3 for usage limit, 4 for

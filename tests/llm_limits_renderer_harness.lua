@@ -79,6 +79,7 @@ function Styled.__concat(left, right)
 end
 
 local WEATHER_CONTENTS = "<gemini-weather>"
+local pasteboardContents = nil
 
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
     workerModel, fsAttributes, interfaceStyle, doctorSnapshot, geminiWeather)
@@ -114,6 +115,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       return type(fixture) == "function" and fixture() or fixture
     end },
     osascript = { applescript = osascriptFn or function() return true, true, {} end },
+    pasteboard = { setContents = function(value) pasteboardContents = value; return true end },
     styledtext = { new = styled },
     task = { new = taskFactory or function() return nil end },
   }
@@ -2362,9 +2364,8 @@ for _, item in ipairs(loadModule(quietFixture).menuItems()) do
   assert(not titleText(item):match("EXPERIMENT"), "no experiment reported, yet the menu announced one")
 end
 
--- The review doctor's own line. Its counts come from the collector's snapshot; this renderer
--- never scans a store itself, and a missing snapshot means the collector was never installed —
--- one more line to read past in a menu about limits.
+-- The diagnostics row: review-bench doctor's snapshot, its rescan, and the Gemini weather. Class
+-- names come from the snapshot alone, so a class this renderer never heard of still opens.
 local function doctorRow(menu)
   for _, item in ipairs(menu) do
     if titleText(item):find("review doctor", 1, true) then return item end
@@ -2372,49 +2373,94 @@ local function doctorRow(menu)
   return nil
 end
 
+local function submenuTitles(row)
+  local titles = {}
+  for _, item in ipairs(row.menu or {}) do table.insert(titles, titleText(item)) end
+  return titles
+end
+
 local doctorFixture = {
   schema = 1,
   vendors = { claude = { available = false }, codex = { available = false }, gemini = { available = false } },
 }
-assert(not doctorRow(loadModule(doctorFixture).menuItems()),
-  "the menu announced a review doctor with no snapshot on disk")
 
 do
-  local clean = { as_of = os.time(), total = 0, anomalies = {
-    untriaged = 0, undelivered = 0, stuck_fixes = 0,
-    orphan_debt = 0, kill_asymmetry = 0,
-  }}
+  local row = doctorRow(loadModule(doctorFixture).menuItems())
+  assert(row, "the diagnostics row vanished with no snapshot on disk")
+  assert(titleText(row) == "review doctor: no snapshot · gemini no data", titleText(row))
+  assert(row.disabled == nil and type(row.menu) == "table", "the diagnostics row cannot be opened")
+  local titles = submenuTitles(row)
+  assert(titles[1] == "no doctor snapshot yet" and titles[2] == "Rescan now", table.concat(titles, "|"))
+end
+
+do
+  local clean = { as_of = os.time(), total = 0, anomalies = { anchors = 0, closure_pending = 0 }}
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     clean).menuItems())
-  assert(row, "a clean doctor snapshot rendered no line")
-  assert(titleText(row) == "review doctor: OK", titleText(row))
-  assert(row.disabled == true, "the clean doctor line is clickable")
-  assert(row.menu == nil, "the clean doctor line carries a submenu of nothing")
+  assert(titleText(row) == "review doctor: OK · gemini no data", titleText(row))
+  assert(row.disabled == nil and #row.menu > 0, "the clean diagnostics row carries an empty submenu")
+  assert(titleText(row.menu[1]) == "ok: anchors, closure_pending", titleText(row.menu[1]))
   assert(isDimmed(row.title.runs[1].attributes, 0), "the clean doctor line is not dimmed")
 end
 
 do
-  local dirty = { as_of = os.time(), total = 4, anomalies = {
-    untriaged = 1, undelivered = 0, stuck_fixes = 3,
-    orphan_debt = 0, kill_asymmetry = 0,
-  }}
-  local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
-    dirty).menuItems())
-  assert(titleText(row) == "review doctor: 4 issues", titleText(row))
+  local tasks = {}
+  local dirty = { as_of = os.time(), total = 14,
+    anomalies = { anchors = 3, closure_pending = 11, debt_line = 0 },
+    rows = {
+      anchors = {
+        { id = "a.txt", age = "", where = "/repo · chat-a", label = "warn claim-expired" },
+        { id = "RUN-b", age = "", where = "/repo", label = "warn run-dead" },
+        { id = "chat-c", age = "2h", where = "/repo", label = "warn gap-stale" },
+      },
+      closure_pending = {
+        { id = "20260917T050013Z-1111111", age = "7h", where = "/repo · chat-a", label = "T0 double" },
+      },
+      debt_line = {},
+    }}
+  local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, dirty)
+  local row = doctorRow(module.menuItems())
+  assert(titleText(row) == "review doctor: 14 issues · gemini no data", titleText(row))
   assert(row.disabled == nil, "the doctor line with findings cannot be opened")
-  -- Only the classes that fired, in the order the snapshot spells them: a submenu listing every
-  -- class with a zero beside it is a wall of nothing to read past.
-  assert(#row.menu == 2, "the doctor submenu named " .. #row.menu .. " classes")
-  assert(titleText(row.menu[1]) == "untriaged: 1", titleText(row.menu[1]))
-  assert(titleText(row.menu[2]) == "stuck_fixes: 3", titleText(row.menu[2]))
+  local titles = submenuTitles(row)
+  assert(titles[1] == "anchors: 3", titles[1])
+  assert(titles[2] == "  a.txt · /repo · chat-a · warn claim-expired", titles[2])
+  assert(titles[4] == "  chat-c · 2h · /repo · warn gap-stale", titles[4])
+  assert(titles[5] == "closure_pending: 11", titles[5])
+  assert(titles[6] == "  20260917T050013Z-1111111 · 7h · /repo · chat-a · T0 double", titles[6])
+  assert(titles[7] == "  … 10 more: review-bench doctor --json", titles[7])
+  assert(titles[8] == "ok: debt_line", titles[8])
+  assert(titles[9] == "Rescan now", titles[9])
   assert(row.menu[1].disabled == true, "a doctor class row is clickable")
+  row.menu[6].fn()
+  assert(pasteboardContents == "20260917T050013Z-1111111",
+    "a doctor detail row did not copy its id: " .. tostring(pasteboardContents))
+  for index = #tasks, 1, -1 do
+    if tasks[index].path:match("/bin/gemini%-weather$") then table.remove(tasks, index) end
+  end
+  assert(#tasks == 0, "rendering the diagnostics row started a task")
+  row.menu[9].fn()
+  assert(#tasks == 1 and tasks[1].path:match("/review%-bench$")
+    and table.concat(tasks[1].args, " ") == "doctor --snapshot",
+    "Rescan now did not launch review-bench doctor --snapshot in the background")
+end
+
+do
+  local running = loadModule(doctorFixture, function(path)
+    return { setEnvironment = function() end, start = function() end,
+      isRunning = function() return true end }
+  end)
+  running.rescanDoctor()
+  assert(submenuTitles(doctorRow(running.menuItems()))[2] == "rescanning…",
+    "a running rescan still offers Rescan now")
 end
 
 do
   local single = { as_of = os.time(), total = 1, anomalies = { orphan_debt = 1 }}
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     single).menuItems())
-  assert(titleText(row) == "review doctor: 1 issue", titleText(row))
+  assert(titleText(row) == "review doctor: 1 issue · gemini no data", titleText(row))
+  assert(titleText(row.menu[1]) == "orphan_debt: 1", titleText(row.menu[1]))
 end
 
 -- A collector that stopped running is the finding: the counts read clean off a document nothing
@@ -2424,28 +2470,27 @@ do
   local stale = { as_of = now - 3 * 86400, total = 0, anomalies = { untriaged = 0 }}
   local row = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     stale).menuItems())
-  assert(titleText(row) == "review doctor: OK · snapshot 3d old", titleText(row))
+  assert(titleText(row) == "review doctor: OK · snapshot 3d old · gemini no data", titleText(row))
   local fresh = { as_of = now - 3600, total = 0, anomalies = { untriaged = 0 }}
   local freshRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     fresh).menuItems())
-  assert(titleText(freshRow) == "review doctor: OK", titleText(freshRow))
-  -- The instant is parsed rather than type-checked: an as_of the decoder hands over as text is
-  -- still an instant, and rejected for its type it hides exactly the silence this line exists for.
+  assert(titleText(freshRow) == "review doctor: OK · gemini no data", titleText(freshRow))
   local text = { as_of = tostring(now - 3 * 86400), total = 0, anomalies = { untriaged = 0 }}
   local textRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     text).menuItems())
-  assert(titleText(textRow) == "review doctor: OK · snapshot 3d old", titleText(textRow))
-  -- And one that is no instant at all says nothing rather than dating the snapshot to 1970.
+  assert(titleText(textRow) == "review doctor: OK · snapshot 3d old · gemini no data", titleText(textRow))
   local junk = { as_of = "whenever", total = 0, anomalies = { untriaged = 0 }}
   local junkRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     junk).menuItems())
-  assert(titleText(junkRow) == "review doctor: OK", titleText(junkRow))
+  assert(titleText(junkRow) == "review doctor: OK · gemini no data", titleText(junkRow))
 end
 
--- A document that is not the one review-bench writes says nothing at all, rather than rendering a
--- line off keys it guessed.
-assert(not doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
-  { total = 3 }).menuItems()), "the menu rendered a doctor line off a schema-less document")
+do
+  local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
+    { total = 3 }).menuItems())
+  assert(titleText(row) == "review doctor: no snapshot · gemini no data",
+    "the menu rendered doctor counts off a schema-less document: " .. titleText(row))
+end
 
 -- Which roles may use a vendor at all is a per-vendor switch, so it belongs on the vendor header
 -- beside the pool switches; the file spells it as a veto, and only the literal "off" is one.
@@ -3198,17 +3243,24 @@ do
   end
 end
 
--- Gemini model weather: one row per family off gemini-weather's cache, closing the Gemini section
--- and read from that file alone; the states arrive decided.
+-- Gemini model weather: one row per family off gemini-weather's cache, inside the diagnostics
+-- submenu and read from that file alone; the states arrive decided.
 do
   local now = 1800000000
   local weatherFixture = { schema = 1, vendors = {
     claude = { available = false }, codex = { available = false },
     gemini = { available = true, accounts = { { account = "gem-a", five_hour = bucket(10) } } },
   }}
+  local function isWeatherRow(item)
+    local text = titleText(item)
+    return text:match("^%d+%.%d+ %a+ · ") or text:match("^models ")
+  end
   local function weatherRows(menu)
     local rows = {}
     for _, item in ipairs(menu) do
+      assert(not isWeatherRow(item), "a weather row rendered outside the diagnostics submenu")
+    end
+    for _, item in ipairs(doctorRow(menu).menu) do
       local text = titleText(item)
       if text:match("^%d+%.%d+ %a+ · ") or text:match("^models ") then table.insert(rows, item) end
     end
@@ -3238,11 +3290,21 @@ do
   assert(titleText(rows[4]) == "3.1 pro · no data", titleText(rows[4]))
   assert(isDimmed(rows[4].title.attributes, 0), "a no-data family is not dimmed")
   assert(rows[1].disabled == true, "a weather row is clickable")
-  local gemIndex = accountIndex(menu, "gem-a")
-  local lastRow
-  for index, item in ipairs(menu) do if item == rows[4] then lastRow = index end end
-  assert(lastRow > gemIndex and menu[lastRow + 1].title == "-",
-    "the weather rows do not close the Gemini section")
+  accountIndex(menu, "gem-a")
+  local sub = doctorRow(menu).menu
+  local firstRow, lastRow
+  for index, item in ipairs(sub) do
+    if item == rows[1] then firstRow = index end
+    if item == rows[4] then lastRow = index end
+  end
+  assert(sub[firstRow - 1] and titleText(sub[firstRow - 1]) == "gemini weather"
+    and sub[firstRow - 2].title == "-", "the weather rows are not under the gemini weather separator")
+  assert(titleText(sub[lastRow + 1]) == "Refresh weather", "Refresh weather does not follow the families")
+  assert(titleText(doctorRow(menu)) == "review doctor: no snapshot · gemini starved",
+    titleText(doctorRow(menu)))
+  for _, item in ipairs(sub) do
+    assert(not titleText(item):find("Gemini probe", 1, true), "the probe row rendered without its binary")
+  end
 
   local held = { schema = 1, generated_at = now, valid_until = now + 3600, families = {
     { family = "gemini-3.8-flash", label = "3.8 flash", state = "starved", runs = 0, steps = 0,
@@ -3284,6 +3346,26 @@ do
   assert(kickEnv and kickEnv.HOME == os.getenv("HOME"), "the gemini-weather task lost HOME")
   assert(#kicks(nil, now) == 1, "a missing weather cache did not launch a refresh")
   assert(#kicks(held, now) == 0, "a fresh weather cache launched a refresh")
+
+  local forced = {}
+  local forcedModule = loadModule(weatherFixture, captureTasks(forced), now, nil, nil, nil, nil, nil,
+    nil, held)
+  local refresh = submenuItem(doctorRow(forcedModule.menuItems()), "Refresh weather")
+  assert(#forced == 0, "a fresh weather cache launched a refresh on render")
+  refresh.fn()
+  assert(#forced == 1 and forced[1].path:match("/bin/gemini%-weather$"),
+    "Refresh weather did not launch gemini-weather regardless of age")
+
+  local probes = {}
+  local probeModule = loadModule(weatherFixture, captureTasks(probes), now, nil, nil, nil,
+    function(path) return path:match("/bin/gemini%-probe$") and { mode = "file" } or nil end,
+    nil, nil, held)
+  local probeRow = submenuItem(doctorRow(probeModule.menuItems()),
+    "Run Gemini probe (~3 min, costs Gemini tokens)")
+  assert(probeRow, "the probe row is missing with the binary present")
+  probeRow.fn()
+  assert(#probes == 1 and probes[1].path:match("/bin/gemini%-probe$") and #probes[1].args == 0,
+    "the probe row did not launch gemini-probe in the background")
 end
 
 return "PASS: Hammerspoon projection contract"

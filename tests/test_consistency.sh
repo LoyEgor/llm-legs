@@ -462,6 +462,9 @@ assert grep -Fq 'os.path.join(base_home(), ".cache", "gemini-weather")' "$WEATHE
 assert grep -Fq 'return home .. "/.cache/gemini-weather/latest.json"' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'os.getenv("GEMINI_WEATHER_DIR")' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq 'os.time() >= (tonumber(weather.valid_until) or 0)' "$ROOT/hammerspoon/llm-limits.lua"
+assert test "$(grep -Ec 'streamGenerateContent|SLOW_FACTOR|HEALTHY_STEP_S|SLOW_STEP_S|>= *9' "$ROOT/bin/gemini-probe")" -eq 0
+assert grep -Fq 'weather.state_of(' "$ROOT/bin/gemini-probe"
+assert grep -Fq '"3.1p": ("gemini-3.1-pro", "Gemini 3.1 Pro (High)")' "$ROOT/bin/gemini-probe"
 for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
   assert test "$(grep -Ec 'median_step_s *(>=|>) *[0-9]|SLOW_STEP|slow_step_s' "$weather_reader")" -eq 0
 done
@@ -482,7 +485,7 @@ assert grep -Fq "printf 'geminib: capacity %s after %s steps, not relaunched" "$
 assert grep -Fq "capacity_step_mark='streamGenerateContent'" "$GEMINIB_BIN"
 assert grep -Fq 'STEP_MARK = "streamGenerateContent"' "$ROOT/bin/gemini-weather"
 assert doc_has 'geminib: capacity <family> after N steps, not relaunched'
-for consumer in "$WORKER_RUN" "$ROOT/share/gemini-research.sh" "$ROOT/bin/gemini-image"; do
+for consumer in "$WORKER_RUN" "$ROOT/share/gemini-research.sh" "$ROOT/bin/gemini-image" "$ROOT/bin/gemini-probe"; do
   assert test "$(grep -Fc 'No capacity available for model' "$consumer")" -eq 0
 done
 assert doc_has 'Gemini capacity fallback'
@@ -1051,7 +1054,7 @@ assert grep -Fq "''|off) printf 'off'; return 0 ;;" "$STATUSLINE"
 assert grep -Fq "STATUS=*) ;;" "$STATUSLINE"
 assert grep -Fq "closed) printf 'off' ;;" "$STATUSLINE"
 assert grep -Fq "printf 'dim fix %s' \"\$fix\"" "$STATUSLINE"
-assert grep -Fq "printf 'bright ~%s' \"\$bound\"" "$STATUSLINE"
+assert grep -Fq "printf 'bright ~%s ?%s' \"\$bound\" \"\$why\"" "$STATUSLINE"
 assert grep -Fq "printf 'dim ?%s' \"\$why\"" "$STATUSLINE"
 assert eq 1 "$(grep -c '^verdict_form() {' "$STATUSLINE" | tr -d ' ')"
 assert eq 1 "$(grep -c 'answer=$(verdict_form "$answer")' "$STATUSLINE" | tr -d ' ')"
@@ -1063,7 +1066,7 @@ assert grep -Fq '0:STATUS=*) printf' "$FLOW_GATE"
 assert grep -Fq "printf '%s' unknown" "$STATUSLINE"
 assert grep -Fq '[ "${review_style:-}" = unknown ]; then' "$STATUSLINE"
 assert grep -Fq 'verdict_part=" ${sep} ${dot}${DIM}?${RESET}"' "$STATUSLINE"
-assert doc_has 'a dim `?<why>`'
+assert doc_has 'followed by a dim `?<why>`'
 # Nothing prices another chat's debt any more: the gate answers one number and the render shows it
 # alone. Spelled per file — the statusline's own `ph_foreign`/`dir_foreign` are a run in flight and
 # a foreign checkout, neither of which is debt.
@@ -1084,7 +1087,8 @@ assert grep -Fq 'review_round=$(brief_review_round "$brief") || exit 4' "$ROOT/b
 # The flag and the header name one round through one validator, and the id reaches the store that
 # closes the round: a launch that carries it no further leaves the fix unattributed.
 assert grep -Fq -e '--round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;' "$ROOT/bin/worker-run"
-assert grep -Fq 'fold+=(--round "$round")' "$ROOT/bin/worker-run"
+assert grep -Fq '[ -z "$6" ] || fold+=(--round "$6")' "$ROOT/bin/worker-run"
+assert grep -Fq 'fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"' "$ROOT/bin/worker-run"
 assert grep -Fq 'f"fix:{a.round}:{a.run}"' "$RB_ANCHORS"
 
 # --- Row ar: worker run liveness identity --------------------------------------
@@ -1792,11 +1796,11 @@ assert grep -Fq 'mv -f "$directory/dirty.tmp.$$" "$directory/dirty"' "$WORKER_RU
 # The reader of those two listings is the run's OWN fold, and no second walk of the records: the
 # changed set is their difference, each path carrying the blob it stood on, and the store takes both
 # through the flags it documents. Read anywhere else, a shared checkout's dirt is one chat's work.
-assert grep -Fq 'changed=$(snapshot_changed_paths "$directory" "$top" 2>/dev/null)' "$WORKER_RUN"
+assert grep -Fq 'changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null)' "$WORKER_RUN"
 assert grep -Fq 'fold+=("./$entry")' "$WORKER_RUN"
-assert grep -Fq 'fold+=("--base=./$entry=$base")' "$WORKER_RUN"
+assert grep -Fq 'fold+=("--base=./$entry=$base" "--after=./$entry=$after")' "$WORKER_RUN"
 assert grep -Fq "p.add_argument(\"--changed\", nargs=\"*\", default=[])" "$RB_ANCHORS"
-assert grep -Fq 'raise Fail(f"--base wants PATH=SHA: {pair}")' "$RB_ANCHORS"
+assert grep -Fq 'raise Fail(f"{flag} wants PATH=SHA: {pair}")' "$RB_ANCHORS"
 assert test -z "$(grep -rl 'worker-runs' --include='*.py' "$RB_PKG")"
 assert doc_has '`<run-dir>/dirty`'
 assert doc_has '`<run-dir>/dirty-before`'
@@ -1885,10 +1889,13 @@ sys.path.insert(0, os.environ["RBENCH_SHARE"])
 import rbench
 document = rbench.doctor_snapshot_document({}, datetime.fromtimestamp(0, timezone.utc))
 print(json.dumps([sorted(document), document["as_of"], document["total"],
-                  sum(document["anomalies"].values())]))
+                  sum(document["anomalies"].values()),
+                  sorted(document["rows"]) == sorted(document["anomalies"])]))
 DOCTORPY
 )
-assert eq "$doctor_snapshot" '[["anomalies", "as_of", "total"], 0, 0, 0]'
+assert eq "$doctor_snapshot" '[["anomalies", "as_of", "rows", "total"], 0, 0, 0, true]'
+assert grep -Fq 'DOCTOR_SNAPSHOT_ROWS = 12' "$RB_DEBT"
+assert grep -Fq 'for name in pairs(snapshot.anomalies) do' "$HAMMER"
 # One store, spelled the same way on both sides: a menu reading another one reports on records
 # nobody is writing.
 assert grep -Fq 'os.environ.get("WORKER_STATS_DIR")' "$RB_STORE"
