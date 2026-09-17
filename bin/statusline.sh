@@ -243,8 +243,9 @@ journal_dir() { # toplevel
 # bounded by the TTL.
 # The gate's one line — `STATUS=… LINES=… FILES=… FIX=… WHY=… [BOUND=…]`, the debt protocol of
 # `../review-bench/docs/review-anchors-contract.md` — turned into the style and text this segment
-# renders. Every unknown carries its reason, and a line this build cannot parse is an unknown too:
-# a number invented over an answer nobody could read is the silent zero the redesign exists to end.
+# renders. An unknown is the known number followed by a dim `?<why>`, never a replacement of it, and a
+# line this build cannot parse is `?err`: a number invented over an answer nobody could read is the
+# silent zero the redesign exists to end.
 verdict_form() { # gate-line
   local line="$1" field status='' lines='' files='' fix='' why='' bound=''
   local -a fields
@@ -277,8 +278,10 @@ verdict_form() { # gate-line
       elif [ "$fix" -gt 0 ]; then printf 'dim fix %s' "$fix"
       else printf 'dim ?err'; fi ;;
     unknown)
-      if [ "$why" = ledger ] && [[ "$bound" =~ ^[0-9]+$ ]]; then printf 'bright ~%s' "$bound"
-      elif [ "$why" = ledger ]; then printf 'dim ?err'
+      [ "$why" = none ] && why=err
+      if [ "$why" = ledger ] && [[ "$bound" =~ ^[0-9]+$ ]]; then printf 'bright ~%s ?%s' "$bound" "$why"
+      elif [ "$lines" -gt 0 ]; then printf 'bright %s ?%s' "$lines" "$why"
+      elif [ "$fix" -gt 0 ]; then printf 'dim fix %s ?%s' "$fix" "$why"
       else printf 'dim ?%s' "$why"; fi ;;
     *) printf 'dim ?err' ;;
   esac
@@ -2262,8 +2265,8 @@ fit_verdict_part() {
   fi
   [ "$review_autonomous" = yes ] && dot="●"
   [ -n "$dot" ] && [ "$fit_rev_short" != 1 ] && dot="${dot} "
-  # `unknown` without a reason is this render's own: a cached answer that outlived the tree it was
-  # read from. The gate's own unknowns arrive as `dim ?<why>`.
+  # `unknown` style is this render's own: a cached answer that outlived the tree it was read from.
+  # The gate's own unknowns arrive as `?<why>`.
   if [ "${review_style:-}" = unknown ]; then
     verdict_part=" ${sep} ${dot}${DIM}?${RESET}"
     return
@@ -2273,7 +2276,10 @@ fit_verdict_part() {
     return
   fi
   if [ "${review_style:-}" = bright ]; then
-    verdict_part=" ${sep} ${dot}${review_text}"
+    case "$review_text" in
+      *' ?'*) verdict_part=" ${sep} ${dot}${review_text% \?*} ${DIM}?${review_text##* \?}${RESET}" ;;
+      *) verdict_part=" ${sep} ${dot}${review_text}" ;;
+    esac
     return
   fi
   [ "$review_autonomous" = yes ] || return

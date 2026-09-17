@@ -66,6 +66,12 @@ body=$(cat)
 jq -cn --arg body "$body" --args '{argv:$ARGS.positional,body:$body}' -- "$@" >>"$REPORT_BUS_LOG"
 REPORTBUS
 chmod +x "$WORK/bin/report-bus"
+cat >"$WORK/bin/review-bench" <<'REVIEWBENCH'
+#!/usr/bin/env bash
+[ -z "${REVIEW_BENCH_STUB_FAIL:-}" ] || exit 3
+[ -n "${REVIEW_BENCH_STUB_EMPTY:-}" ] || printf 'STUB FIX RULE %s\nwrite verdicts.jsonl rows\n' "$*"
+REVIEWBENCH
+chmod +x "$WORK/bin/review-bench"
 printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
 printf 'test brief\nsecond line\n' >"$WORK/brief"
 printf 'image\n' >"$WORK/image.png"
@@ -5103,7 +5109,37 @@ round_start || fail "round start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
+# A round brief a chat wrote by hand carries no fixer-row rule; the launch gets review-bench's.
+assert test "$(sed '/^AUDIENCE: /,$d' "$RUN_DIR/brief.launch")" = "ROUND: 20260801T140000Z-0a1b2c3
+Fix the confirmed findings.
+
+STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print
+write verdicts.jsonl rows"
+assert test "$(sed -n '7p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
+assert cmp -s "$WORK/round-brief" "$RUN_DIR/brief"
 await_done || fail "the round run never finished"
+clear_stub
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nWrite one row per finding into $WORKER_RUN_RECORD/verdicts.jsonl.\n' >"$WORK/round-brief"
+round_start || fail "verdicts round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
+await_done || fail "the verdicts round run never finished"
+clear_stub
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nNothing is left.\n' >"$WORK/round-brief"
+REVIEW_BENCH_STUB_EMPTY=1 round_start || fail "fixed round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(sed -n '4p' "$RUN_DIR/brief.launch" | cut -c1-10)" = "AUDIENCE: "
+await_done || fail "the fixed round run never finished"
+clear_stub
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix it.\n' >"$WORK/round-brief"
+rc=0
+REVIEW_BENCH_STUB_FAIL=1 round_start || rc=$?
+assert test "$rc" -eq 4
+assert test "$(wc -l <"$WORK/round.err" | tr -d ' ')" = 1
+assert grep -Fq 'review-bench fix 20260801T140000Z-0a1b2c3 --print failed' "$WORK/round.err"
+assert_fails grep -q '^RUN: ' "$WORK/round.out"
 clear_stub
 printf 'RESUME codex-resume:\nROUND: 20260801T140000Z-0a1b2c3\nFix the rest.\n' >"$WORK/round-brief"
 round_start --account main --resume codex-resume || fail "resumed round start failed: $(<"$WORK/round.err")"
@@ -6140,7 +6176,7 @@ anchors_store_tests() {
   cat >"$WORK/bin/review-anchors" <<'ANCHORS'
 #!/usr/bin/env bash
 { printf '%s' "$1"; shift; [ "$#" -eq 0 ] || printf '\t%s' "$@"; printf '\n'; } >>"$ANCHOR_LOG"
-[ -z "${ANCHORS_FAIL:-}" ] || exit 3
+[ -z "${ANCHORS_FAIL:-}" ] || { printf 'store locked\nsecond line\n' >&2; exit 3; }
 ANCHORS
   chmod +x "$WORK/bin/review-anchors"
   : >"$ANCHOR_LOG"
@@ -6305,7 +6341,8 @@ ANCHORS
   PATH=$saved_path
   export PATH
   assert test ! -s "$ANCHOR_LOG"
-  assert grep -qF -- "${anchors_tab}run-fold${anchors_tab}${RUN_ID}" "$gaps"
+  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
+  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
   assert test "$(awk -F'\t' 'END { print ($1 ~ /^[0-9]+$/) }' "$gaps")" = 1
   mv "$WORK/bin/review-anchors.off" "$WORK/bin/review-anchors"
 
@@ -6317,8 +6354,28 @@ ANCHORS
   start_ok codex --workdir "$repo"
   assert await_done
   assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
-  assert grep -qF -- "${anchors_tab}run-fold${anchors_tab}${RUN_ID}" "$gaps"
+  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
+  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
   unset ANCHORS_FAIL
+
+  # A workdir that became a repository during the run has nothing to fold; its families still do.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  : >"$gaps"
+  born="$WORK/anchors-born"
+  mkdir -p "$born"
+  born=$(cd "$born" && pwd -P)
+  printf '%s\n' "$repo" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
+  export STUB_SLEEP=3
+  WORKER_TEST_WORKDIR=$born start_ok codex
+  git -C "$born" init -q .
+  git -C "$born" -c user.email=t@t -c user.name=t commit -q --allow-empty -m born
+  assert await_done
+  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
+  assert_fails grep -qF "${anchors_tab}run-fold${anchors_tab}" "$gaps"
+  assert_fails grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${born}${anchors_tab}" "$ANCHOR_LOG"
+  assert test ! -e "$born/.git/review-anchors.json"
+  assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
 
   # The vendor process is told both: whose debt what it writes is, and where its own run record is.
   clear_stub

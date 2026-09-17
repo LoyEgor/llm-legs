@@ -3981,7 +3981,7 @@ GATE_ANSWER=off
 review_off_out=$(review_render review-off "$REVIEW_DIRTY")
 assert review_slot_silent "$review_off_out"
 
-# A line this build cannot read is an unknown like any other and carries `err` for its reason: the
+# A line this build cannot read is an unknown like any other, `?err`: the
 # one thing the segment may never do is stand a number over an answer nobody could parse, and a
 # sentence shown whole in red was that same guess wearing a colour.
 GATE_ANSWER='held because'
@@ -4168,11 +4168,11 @@ assert test "${review_bare_unknown_out#*"rev ?"}" = "$review_bare_unknown_out"
 GATE_AUTONOMOUS=
 GATE_ANSWER=off
 
-# --- the third state: a number, `off`, and `?<why>` --------------------------------------------
+# --- the third state: a number, `off`, and `?` ------------------------------------------------
 # `closed` is the gate answering "nothing is owed"; an unknown is nobody having answered — its
 # library down, a member repository that failed, a `timeout` kill, an answer that outlived the 120s
 # sweep. Rendered as `off`, or as no segment at all, an outage reaches Egor as a clean bill, so
-# every unknown is shown and shown with the reason that tells him where to look.
+# every unknown is shown as `?<why>`, the word Egor brings to that chat.
 GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap'
 GATE_AUTONOMOUS=no
 review_unknown_out=$(review_session_render review-unknown-total "$REVIEW_DIRTY")
@@ -4268,25 +4268,40 @@ assert grep -Fq "${review_seg}●" <<< "$form_closed_auto_out"
 GATE_AUTONOMOUS=no
 
 # The ledger is behind: the number is a BOUND on what may be owed, and `~` is the whole difference
-# between it and a count — a bound rendered bare would be a number Egor acts on.
+# between it and a count — a bound rendered bare would be a number Egor acts on; the `?` in front
+# says the store is broken.
 GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=ledger BOUND=120'
 form_bound_out=$(review_session_render review-form-bound "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}~120" <<< "$form_bound_out"
+assert grep -Fq "${review_seg}~120 ${DIM}?ledger${RESET}" <<< "$form_bound_out"
 GATE_AUTONOMOUS=yes
 form_bound_auto_out=$(review_session_render review-form-bound-auto "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}● ~120" <<< "$form_bound_auto_out"
+assert grep -Fq "${review_seg}● ~120 ${DIM}?ledger${RESET}" <<< "$form_bound_auto_out"
 GATE_AUTONOMOUS=no
-# A ledger unknown with no bound is a mark about nothing.
+# A ledger unknown with no bound is `?ledger` alone.
 GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=ledger'
 form_bound_missing_out=$(review_session_render review-form-bound-missing "$REVIEW_DIRTY")
-assert grep -Fq "${review_seg}${DIM}?err${RESET}" <<< "$form_bound_missing_out"
+assert grep -Fq "${review_seg}${DIM}?ledger${RESET}" <<< "$form_bound_missing_out"
 
-# Every other unknown carries its reason, which is what says which machine to go and look at.
+# Every other unknown carries its reason word, which Egor brings to the chat.
 for form_why in gap run err nobase; do
   GATE_ANSWER="STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=$form_why"
   form_why_out=$(review_session_render "review-form-why-$form_why" "$REVIEW_DIRTY")
   assert grep -Fq "${review_seg}${DIM}?${form_why}${RESET}" <<< "$form_why_out"
 done
+# An unknown is a number with a flag, never a replacement of it.
+GATE_ANSWER='STATUS=unknown LINES=29 FILES=2 FIX=3 WHY=gap'
+form_lines_flag_out=$(review_session_render review-form-lines-flag "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}29 ${DIM}?gap${RESET}" <<< "$form_lines_flag_out"
+GATE_AUTONOMOUS=yes
+form_lines_flag_auto_out=$(review_session_render review-form-lines-flag-auto "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}● 29 ${DIM}?gap${RESET}" <<< "$form_lines_flag_auto_out"
+GATE_AUTONOMOUS=no
+GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=3 WHY=gap'
+form_fix_flag_out=$(review_session_render review-form-fix-flag "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}${DIM}fix 3 ?gap${RESET}" <<< "$form_fix_flag_out"
+GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=run'
+form_run_alone_out=$(review_session_render review-form-run-alone "$REVIEW_DIRTY")
+assert grep -Fq "${review_seg}${DIM}?run${RESET}" <<< "$form_run_alone_out"
 GATE_ANSWER=off
 
 # --- the real gate, so the two answers cannot drift apart -----------------------------------
@@ -4327,12 +4342,12 @@ RD
   assert grep -Fq " ${DIM}│${RESET} ${DIM}fix 3${RESET}" <<< "$review_real_fix_out"
   review_real_bound_out=$(review_real_render review-real-bound \
     'STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=ledger BOUND=90')
-  assert grep -Fq " ${DIM}│${RESET} ~90" <<< "$review_real_bound_out"
+  assert grep -Fq " ${DIM}│${RESET} ~90 ${DIM}?ledger${RESET}" <<< "$review_real_bound_out"
   review_real_gap_out=$(review_real_render review-real-gap \
     'STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=gap')
   assert grep -Fq " ${DIM}│${RESET} ${DIM}?gap${RESET}" <<< "$review_real_gap_out"
   # A reader that fails is the gate's own unknown, and it reaches the strip as one: the outage the
-  # render may never show as a clean bill is the reason both sides carry a reason at all.
+  # render may never show as a clean bill.
   review_real_err_out=$(review_real_render review-real-err \
     'STATUS=open LINES=9 FILES=1 FIX=0 WHY=none' 1)
   assert grep -Fq " ${DIM}│${RESET} ${DIM}?err${RESET}" <<< "$review_real_err_out"

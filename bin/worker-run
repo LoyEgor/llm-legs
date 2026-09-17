@@ -48,6 +48,19 @@ review_anchors() { # subcommand argument...
   "$anchors" "$@"
 }
 
+# review-anchors with stdout discarded; on failure ANCHORS_WHY says why, for the gap line.
+anchors_why() { # subcommand argument...
+  local err rc
+  err=$(review_anchors "$@" 2>&1 >/dev/null) && return 0
+  rc=$?
+  if [ "$rc" = 127 ] && ! command -v review-anchors >/dev/null 2>&1; then
+    ANCHORS_WHY='review-anchors not on PATH'
+  else
+    ANCHORS_WHY="review-anchors exited $rc: ${err%%$'\n'*}"
+  fi
+  return "$rc"
+}
+
 debt_gap() { # session kind detail
   local gaps="$HOME/.cache/claude/review-debt/gaps"
   [ -n "$1" ] || return 0
@@ -190,7 +203,12 @@ launch_attempt() { # directory
       cat "$directory/browser-preamble" || return 1
       printf '\n'
     fi
-    cat "$directory/brief" && printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
+    cat "$directory/brief" || return 1
+    if [ -s "$directory/fix-rule" ]; then
+      printf '\n'
+      cat "$directory/fix-rule" || return 1
+    fi
+    printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
     >"$directory/brief.launch.tmp.$$" &&
     mv -f "$directory/brief.launch.tmp.$$" "$directory/brief.launch" || return 1
   printf '%s\n' "$attempt" >"$directory/attempt" 2>/dev/null || :
@@ -1580,7 +1598,7 @@ start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
   local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
-  local explicit_model='' explicit_effort='' research_model=''
+  local explicit_model='' explicit_effort='' research_model='' fix_rule='' anchors_top=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
   local web_search=false brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
@@ -1653,6 +1671,11 @@ start_run() {
   else
     review_round=$(brief_review_round "$brief") || exit 4
   fi
+  if [ -n "$review_round" ] && ! grep -Fq verdicts.jsonl "$brief"; then
+    # Composed once at start: a relaunch or an ATTACH must hand the worker the same rule text.
+    fix_rule=$(review-bench fix "$review_round" --print 2>/dev/null) ||
+      fail "review-bench fix $review_round --print failed: a round-tagged brief without the verdicts.jsonl rule cannot launch"
+  fi
   brief_cyrillic=$(cyrillic_share <"$brief") || brief_cyrillic=''
   [ -z "$brief_cyrillic" ] || [ "$brief_cyrillic" -le "$CYRILLIC_MAX" ] ||
     fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
@@ -1672,7 +1695,7 @@ start_run() {
       # agy has no stdin mode — the brief travels on argv, and past the kernel's
       # per-argument ceiling execve fails with a bare E2BIG long after start.
       # 128 for the RUN-TOKEN line launch_attempt appends, whose run id is not known yet.
-      [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
+      [ "$(($(wc -c <"$brief" | tr -d '[:space:]') + ${#fix_rule} + ${#BRIEF_PREAMBLE} + 128))" -le 131072 ] || fail 'gemini takes the brief on argv; briefs over 128KB cannot launch — shorten it or use another vendor'
       ;;
     grok)
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
@@ -1907,6 +1930,7 @@ start_run() {
     [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
   done
   cp "$brief" "$directory/brief" || fail 'could not copy brief'
+  [ -z "$fix_rule" ] || printf '%s\n' "$fix_rule" >"$directory/fix-rule" || fail 'could not write the fix rule'
   if [ "$browser" = true ]; then
     cp "$browser_preamble" "$directory/browser-preamble" || fail 'could not copy browser preamble'
     rm -f "$browser_preamble"
@@ -1992,12 +2016,11 @@ start_run() {
     rm -f "$directory/head-before.tmp.$$" 2>/dev/null
   # The anchors store hears about the run while it is still open, so the launching chat's verdict
   # says `?run` rather than a confident number about a tree a worker is writing in.
-  if [ -s "$directory/launcher" ] && git -C "$workdir" rev-parse --show-toplevel >/dev/null 2>&1; then
+  if [ -s "$directory/launcher" ] && anchors_top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null); then
     git -C "$workdir" rev-parse --path-format=absolute --git-common-dir >"$directory/anchors-common" 2>/dev/null ||
       rm -f "$directory/anchors-common" 2>/dev/null
-    review_anchors run-start --repo "$workdir" --run "$run_id" \
-      --session "$(cat "$directory/launcher")" >/dev/null 2>&1 ||
-      debt_gap "$(cat "$directory/launcher")" run-start "$run_id"
+    anchors_why run-start --repo "$workdir" --run "$run_id" --session "$(cat "$directory/launcher")" ||
+      debt_gap "$(cat "$directory/launcher")" run-start "$run_id $anchors_top: $ANCHORS_WHY"
   fi
   [ ! -s "$directory/launcher" ] ||
     snapshot_other_families "$directory" "$workdir" "$(cat "$directory/launcher")" ${add_dirs[@]+"${add_dirs[@]}"}
@@ -3648,8 +3671,8 @@ snapshot_other_families() { # directory workdir launcher add-dir...
     sub="$directory/families/$n"
     mkdir -p "$sub" 2>/dev/null && printf '%s\n' "$top" >"$sub/top" 2>/dev/null || continue
     snapshot_workdir "$sub" "$top" before 2>/dev/null || continue
-    review_anchors run-start --repo "$top" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 ||
-      debt_gap "$launcher" run-start "${directory##*/}"
+    anchors_why run-start --repo "$top" --run "${directory##*/}" --session "$launcher" ||
+      debt_gap "$launcher" run-start "${directory##*/} $top: $ANCHORS_WHY"
   done < <(printf '%s\n' "$@"; cat "$HOME/.cache/claude/review-journal/$launcher.repos" 2>/dev/null)
 }
 
@@ -3682,14 +3705,15 @@ fold_family_anchors() { # directory snap repo top launcher round
         fold+=("--base=./$entry=$base" "--after=./$entry=$after")
       done
     fi
-    review_anchors "${fold[@]}" >/dev/null 2>&1 && return 0
+    anchors_why "${fold[@]}" && return 0
+    debt_gap "$5" run-fold "${directory##*/} $4: $ANCHORS_WHY"
   else
     # The snapshots are what a changed set can be read from at all. Unreadable, the run is still
     # folded — left open it would say `?run` about this chat forever — and the gap line beside it
     # is what keeps that fold from reading as "nothing changed".
     review_anchors "${fold[@]}" >/dev/null 2>&1 || :
+    debt_gap "$5" run-fold "${directory##*/} $4: snapshots unreadable"
   fi
-  debt_gap "$5" run-fold "${directory##*/}"
 }
 
 # What this run changed, told to the anchors store from the one path that runs whatever the run's
@@ -3697,7 +3721,7 @@ fold_family_anchors() { # directory snap repo top launcher round
 # the run's OWN before/after listings and never the transcript's `files`/`produced`: a heredoc no
 # tool call names still moved content, and those lines are the launching chat's to answer for.
 fold_run_anchors() { # directory
-  local directory="$1" launcher workdir top round common sub
+  local directory="$1" launcher workdir top round common sub gone
   launcher=''
   [ -f "$directory/launcher" ] && IFS= read -r launcher <"$directory/launcher"
   [ -n "$launcher" ] || return 0
@@ -3706,22 +3730,27 @@ fold_run_anchors() { # directory
   round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
   top=''
   [ -z "$workdir" ] || top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) || top=''
-  if [ -n "$top" ]; then
+  if [ -n "$top" ] && [ ! -e "$directory/head-before" ] && [ ! -e "$directory/dirty-before-shas" ] &&
+    [ ! -e "$directory/anchors-common" ]; then
+    # Born during the run: nothing in it predates the run and no review anchors it.
+    :
+  elif [ -n "$top" ]; then
     fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"
   elif [ -f "$directory/anchors-common" ]; then
     # The run was opened in the family's store; a workdir gone since must still close it there.
     IFS= read -r common <"$directory/anchors-common" 2>/dev/null || common=''
+    gone=$workdir
     workdir=''
     case "$common" in */.git) workdir=$(git -C "${common%/.git}" rev-parse --show-toplevel 2>/dev/null) ;; esac
     [ -z "$workdir" ] ||
       review_anchors run-fold --repo "$workdir" --run "${directory##*/}" --session "$launcher" >/dev/null 2>&1 || :
-    debt_gap "$launcher" run-fold "${directory##*/}"
+    debt_gap "$launcher" run-fold "${directory##*/} $gone: not a repository"
   fi
   for sub in "$directory"/families/*; do
     [ -f "$sub/top" ] || continue
     IFS= read -r top <"$sub/top" 2>/dev/null || continue
     if ! git -C "$top" rev-parse --show-toplevel >/dev/null 2>&1; then
-      debt_gap "$launcher" run-fold "${directory##*/}"
+      debt_gap "$launcher" run-fold "${directory##*/} $top: not a repository"
       continue
     fi
     [ -f "$sub/dirty-after-shas" ] || snapshot_workdir "$sub" "$top" after 2>/dev/null || :
