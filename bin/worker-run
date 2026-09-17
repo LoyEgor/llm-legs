@@ -91,6 +91,15 @@ brief_review_round() {
   printf '%s\n' "$round"
 }
 
+# Every round-shaped WHOLE token of the brief, deduplicated: a longer token that merely contains a
+# round id names no round, and one id repeated in the prose must not read as two rounds.
+brief_text_rounds() { # brief
+  # The validator's own shape, unanchored for grep -x: a second copy here drifts, which is how the
+  # scan came to miss the member suffix the header and the flag both accept.
+  local shape=${REVIEW_ROUND_RE#^}
+  tr -c '0-9A-Za-z-' '\n' <"$1" | grep -xE "${shape%'$'}" | awk '!seen[$0]++'
+}
+
 # The symlink walk the self-edit guard needs anyway, hoisted here so the include below resolves
 # against the same root instead of a second copy of the same loop.
 SCRIPT_PATH=${BASH_SOURCE[0]}
@@ -135,10 +144,10 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # Every launched brief carries this, so the loop rule cannot depend on an orchestrator remembering
 # to type it: serial full-suite reruns were 54-75% of the wall clock of every run that passed an
 # hour, and two of them died on the ceiling below with the work unfinished. Appended rather than
-# prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
+BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work.'
 # both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
-BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work.'
+BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
 # Cyrillic share outside «…»/code past which the text is written for Egor, not for the model reading it.
 CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-15}
@@ -1597,6 +1606,8 @@ refuse_live_run() { # brief resume
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
+  local round_source='' text_rule='' candidate='' rule=''
+  local -a text_rounds=()
   local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort='' research_model='' fix_rule='' anchors_top=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
@@ -1668,13 +1679,44 @@ start_run() {
     review_round_ok "$round_flag" ||
       fail "--round names no review round on record: '$round_flag' — the shape is <review-bench run id YYYYMMDDTHHMMSSZ-<7 hex>> and $(review_bench_dir "$round_flag") must exist"
     review_round=$round_flag
+    round_source=flag
   else
     review_round=$(brief_review_round "$brief") || exit 4
+    if [ -n "$review_round" ]; then
+      round_source=header
+    else
+      # No line named a round, so the prose is read: an id on record whose `fix --print` still
+      # prints a rule is a round with a confirmed finding left, and that is the round this run
+      # fixes. A settled round prints nothing and an unknown one fails, so neither answers here.
+      while IFS= read -r candidate; do
+        review_round_ok "$candidate" || continue
+        rule=$(review-bench fix "$candidate" --print 2>/dev/null) ||
+          fail "review-bench fix $candidate --print failed: the brief names that round and a round whose open findings cannot be read cannot be fixed"
+        [ -n "$rule" ] || continue
+        text_rounds+=("$candidate")
+        text_rule=$rule
+      done < <(brief_text_rounds "$brief")
+      case "${#text_rounds[@]}" in
+        0) text_rule='' ;;
+        1)
+          review_round=${text_rounds[0]}
+          round_source=brief-text
+          printf 'round %s taken from the brief text (no ROUND: line)\n' "$review_round" >&2
+          ;;
+        *)
+          fail "brief names ${#text_rounds[@]} open review rounds (${text_rounds[*]}): add a 'ROUND: <id>' line naming the one this run fixes"
+          ;;
+      esac
+    fi
   fi
   if [ -n "$review_round" ] && ! grep -Fq verdicts.jsonl "$brief"; then
     # Composed once at start: a relaunch or an ATTACH must hand the worker the same rule text.
-    fix_rule=$(review-bench fix "$review_round" --print 2>/dev/null) ||
-      fail "review-bench fix $review_round --print failed: a round-tagged brief without the verdicts.jsonl rule cannot launch"
+    if [ -n "$text_rule" ]; then
+      fix_rule=$text_rule
+    else
+      fix_rule=$(review-bench fix "$review_round" --print 2>/dev/null) ||
+        fail "review-bench fix $review_round --print failed: a round-tagged brief without the verdicts.jsonl rule cannot launch"
+    fi
   fi
   brief_cyrillic=$(cyrillic_share <"$brief") || brief_cyrillic=''
   [ -z "$brief_cyrillic" ] || [ "$brief_cyrillic" -le "$CYRILLIC_MAX" ] ||
@@ -1960,13 +2002,14 @@ start_run() {
     --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" --arg role "$role" --arg explicit_account "$explicit_account" \
     --arg research_timeout "$research_timeout" --arg sandbox_exec "$sandbox_exec" --arg review_round "$review_round" \
+    --arg round_source "$round_source" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
-     + if $review_round != "" then {review_round:$review_round} else {} end
+     + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'

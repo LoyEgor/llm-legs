@@ -1117,10 +1117,18 @@ assert grep -Fq 'review-autonomy-$sid' "$STATUSLINE"
 # the fix the chat paid a worker for stays debt.
 assert doc_has 'A worker run carries the review round it fixes'
 assert test "$(grep -c "^REVIEW_ROUND_RE='^\[0-9\]{8}T\[0-9\]{6}Z-\[0-9a-f\]{7}(-\[0-9\]+)?\$'$" "$ROOT/bin/worker-run")" = 1
-assert grep -Fq '+ if $review_round != "" then {review_round:$review_round} else {} end' "$ROOT/bin/worker-run"
+assert grep -Fq '+ if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end' "$ROOT/bin/worker-run"
 assert grep -Fq 'ROUND_BRIEF_PREFIX = "ROUND:"' "$RB_ROUND"
 assert grep -Fq '    ROUND:*) ;;' "$ROOT/bin/worker-run"
 assert grep -Fq 'review_round=$(brief_review_round "$brief") || exit 4' "$ROOT/bin/worker-run"
+# Neither door named one, so the prose is read: the text scan is what keeps a hand-written fix
+# brief from landing as debt.
+assert grep -Fq 'local shape=${REVIEW_ROUND_RE#^}' "$ROOT/bin/worker-run"
+assert grep -Fq 'grep -xE "${shape%'"'"'$'"'"'}"' "$ROOT/bin/worker-run"
+# One shape, one place: a second copy of the id pattern is how the scan lost the `-<n>` member
+# suffix the validator accepts.
+assert test "$(grep -c '\[0-9a-f\]{7}' "$ROOT/bin/worker-run")" = 1
+assert grep -Fq 'done < <(brief_text_rounds "$brief")' "$ROOT/bin/worker-run"
 # The flag and the header name one round through one validator, and the id reaches the store that
 # closes the round: a launch that carries it no further leaves the fix unattributed.
 assert grep -Fq -e '--round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;' "$ROOT/bin/worker-run"
@@ -1994,7 +2002,7 @@ assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STO
 # module does print goes through `chat_display`, never a resolver call of its own. The count is
 # exact so a new naming site is read here before it ships.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
-assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 5
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 9
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
 assert grep -Fq 'chat = _store.chat_display(session)' "$RB_DEBT"
 # The foreign-chat refusal names the chat: it exists to send a reader to another conversation.
