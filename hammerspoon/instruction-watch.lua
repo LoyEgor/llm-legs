@@ -603,8 +603,6 @@ function M.menuItems()
     for index = #events, math.max(1, #events - MENU_ROWS + 1), -1 do
         local event = events[index]
         local receipt = receiptFor(event.id)
-        local mark = "○"
-        if receipt then mark = receipt.alerted and "●" or "◦" end
         local files, bytes = event.files or {}, deltas(event)
         local more = #files > 1 and (" +" .. (#files - 1) .. " more") or ""
         local path = clip(shortPath(files[1] or "?"), FILE_WIDTH - cells(more))
@@ -615,7 +613,7 @@ function M.menuItems()
             if price ~= nil then totalPrice = (totalPrice or 0) + price end
         end
         -- A legacy ADDED/DELETED record carries no number; the verb says what the blank would not.
-        local row = { event = event, receipt = receipt, mark = mark, path = path, more = more,
+        local row = { event = event, receipt = receipt, path = path, more = more,
                       bytes = signed(totalBytes), price = priceText(totalPrice) }
         local verb = verbs(event)[1]
         for _, other in pairs(verbs(event)) do if other ~= verb then verb = nil end end
@@ -628,7 +626,7 @@ function M.menuItems()
         rows[#rows + 1] = row
     end
     for _, row in ipairs(rows) do
-        local title = style(row.mark .. " " .. pad(eventTime(row.event), 12) .. "  " .. row.path)
+        local title = style(pad(eventTime(row.event), 12) .. "  " .. row.path)
             .. style(row.more, true)
         local tail = string.rep(" ", fileWidth - cells(row.path) - cells(row.more))
         if byteWidth > 0 and (row.bytes ~= "" or row.price ~= "") then

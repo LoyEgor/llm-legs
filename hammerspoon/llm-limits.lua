@@ -982,8 +982,8 @@ function M.rescanDoctor()
     { "doctor", "--snapshot" }, function()
       local snapshot = readDoctorSnapshot()
       local total = snapshot and tonumber(snapshot.total) or nil
-      hs.alert.show(total and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
-        or "review doctor: rescan failed", 2.5)
+      hs.alert.show(total and string.format("LLM doctor: %d issue%s", total, total == 1 and "" or "s")
+        or "LLM doctor: rescan failed", 2.5)
     end)
 end
 
@@ -1001,12 +1001,212 @@ function M.runGeminiProbe()
   end)
 end
 
-local function doctorDetailTitle(row)
+local DOCTOR_ID_WIDTH, DOCTOR_REPO_WIDTH, DOCTOR_CHAT_WIDTH = 24, 20, 16
+
+local function cells(text) return utf8.len(text) or #text end
+local function padCells(text, width, right)
+  local spaces = string.rep(" ", math.max(0, width - cells(text)))
+  return right and (spaces .. text) or (text .. spaces)
+end
+local function clipHead(text, width)
+  if cells(text) <= width then return text end
+  return text:sub(1, utf8.offset(text, width) - 1) .. "…"
+end
+local function clipTail(text, width)
+  if cells(text) <= width then return text end
+  return "…" .. text:sub(utf8.offset(text, -(width - 1)))
+end
+local function shortRepo(path)
+  local parent, base = path:match("([^/]+)/([^/]+)$")
+  if parent and base then return parent .. "/" .. base end
+  return path
+end
+
+local function doctorDetailRows(rows)
+  local cellsOf, widths = {}, { 0, 0, 0, 0 }
+  for _, row in ipairs(rows) do
+    local where = tostring(row.where or "")
+    local repo, chat = where:match("^(.-) · (.*)$")
+    if not repo then
+      if where:sub(1, 1) == "/" or where:sub(1, 1) == "~" then repo, chat = where, "" else repo, chat = "", where end
+    end
+    local line = {
+      clipHead(tostring(row.id or ""), DOCTOR_ID_WIDTH),
+      tostring(row.age or ""),
+      clipTail(shortRepo(repo), DOCTOR_REPO_WIDTH),
+      clipHead(chat, DOCTOR_CHAT_WIDTH),
+      tostring(row.label or ""),
+    }
+    for c = 1, 4 do widths[c] = math.max(widths[c], cells(line[c])) end
+    table.insert(cellsOf, line)
+  end
+  local titles = {}
+  for _, line in ipairs(cellsOf) do
+    local title = infoTitle("  " .. padCells(line[1], widths[1]))
+    if widths[2] > 0 then title = title .. infoTitle("  " .. padCells(line[2], widths[2], true), false, true) end
+    if widths[3] > 0 then title = title .. infoTitle("  " .. padCells(line[3], widths[3]), false, true) end
+    if widths[4] > 0 then title = title .. infoTitle("  " .. padCells(line[4], widths[4])) end
+    if line[5] ~= "" then title = title .. infoTitle("  " .. line[5]) end
+    table.insert(titles, title)
+  end
+  return titles
+end
+
+local LLM_WEATHER_FRESH_S = 300
+local LLM_WEATHER_INCIDENTS = 5
+local lastLlmWeatherKick = 0
+
+local function llmWeatherPath()
+  if M.llmWeatherPath then return M.llmWeatherPath end
+  local override = os.getenv("LLM_WEATHER_DIR")
+  if override and override ~= "" then return override .. "/latest.json" end
+  return home .. "/.cache/llm-weather/latest.json"
+end
+
+local function readLlmWeather()
+  local ok, decoded = pcall(function()
+    local file = io.open(llmWeatherPath(), "r")
+    if not file then return nil end
+    local contents = file:read("*a")
+    file:close()
+    return hs.json.decode(contents)
+  end)
+  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" then return nil end
+  return decoded
+end
+
+local function kickLlmWeather(weather, force)
+  local now = os.time()
+  local asOf = type(weather) == "table" and tonumber(weather.as_of) or 0
+  if not force and (now - asOf < LLM_WEATHER_FRESH_S or now - lastLlmWeatherKick < LLM_WEATHER_FRESH_S) then
+    return
+  end
+  if M.llmWeatherTask and M.llmWeatherTask:isRunning() then return end
+  local path = M.llmWeatherCmd or (repoRoot and repoRoot .. "/bin/llm-weather")
+  if not path then return end
+  lastLlmWeatherKick = now
+  local task = hs.task.new(path, function()
+    M.llmWeatherTask = nil
+    if force then
+      local fresh = readLlmWeather()
+      hs.alert.show("LLM weather: " .. (fresh and (fresh.worst ~= "" and fresh.worst or "OK") or "no data"), 2.5)
+    end
+  end, {})
+  if not task then return end
+  local environment = baseEnvironment()
+  for _, name in ipairs({ "LLM_WEATHER_DIR", "WORKER_STATS_DIR", "WORKER_RUN_DIR" }) do
+    local value = os.getenv(name)
+    if value and value ~= "" then environment[name] = value end
+  end
+  task:setEnvironment(environment)
+  M.llmWeatherTask = task
+  task:start()
+end
+
+local TREND_MARK = { up = "↑", down = "↓" }
+
+local function llmWeatherClasses(classes)
+  local names = {}
+  for name, count in pairs(type(classes) == "table" and classes or {}) do
+    if (tonumber(count) or 0) > 0 then table.insert(names, name) end
+  end
+  table.sort(names, function(a, b)
+    local ca, cb = tonumber(classes[a]) or 0, tonumber(classes[b]) or 0
+    if ca ~= cb then return ca > cb end
+    return a < b
+  end)
   local parts = {}
-  for _, key in ipairs({ "id", "age", "where", "label" }) do
-    if type(row[key]) == "string" and row[key] ~= "" then table.insert(parts, row[key]) end
+  for _, name in ipairs(names) do
+    table.insert(parts, string.format("%s %d", name, tonumber(classes[name]) or 0))
   end
   return table.concat(parts, " · ")
+end
+
+local function llmWeatherIncidents(model)
+  local rows = {}
+  for index, incident in ipairs(type(model.incidents) == "table" and model.incidents or {}) do
+    if index > LLM_WEATHER_INCIDENTS then break end
+    if type(incident) == "table" then
+      rows[#rows + 1] = {
+        tostring(incident.age or ""),
+        tostring(incident.class or ""),
+        tostring(incident.project or ""),
+        tostring(incident.surface or ""),
+        tostring(incident.detail or ""),
+      }
+    end
+  end
+  local widths = { 0, 0, 0, 0 }
+  for _, row in ipairs(rows) do
+    for c = 1, 4 do widths[c] = math.max(widths[c], cells(row[c])) end
+  end
+  local items = {}
+  for _, row in ipairs(rows) do
+    local title = infoTitle(padCells(row[1], widths[1], true), false, true)
+      .. infoTitle("  " .. padCells(row[2], widths[2]))
+      .. infoTitle("  " .. padCells(row[3], widths[3]))
+      .. infoTitle("  " .. padCells(row[4], widths[4]), false, true)
+    if row[5] ~= "" then title = title .. infoTitle("  " .. row[5], false, true) end
+    items[#items + 1] = { title = title, disabled = true }
+  end
+  if #items == 0 then items[1] = { title = infoTitle("no incidents", false, true), disabled = true } end
+  return items
+end
+
+-- One row per model with trouble in the window, columns at shared offsets: model · legs · the
+-- non-zero classes · trend. The clean models share one dim line so "not seen" and "seen and
+-- fine" stay apart.
+local function appendLlmWeather(menu)
+  local weather = readLlmWeather()
+  kickLlmWeather(weather)
+  local items, clean, rows = {}, {}, {}
+  local models = weather and weather.models or {}
+  for _, model in ipairs(models) do
+    if type(model) == "table" and type(model.model) == "string" then
+      if (tonumber(model.bad) or 0) > 0 then
+        rows[#rows + 1] = { model = model, name = model.model,
+          legs = string.format("%d legs", tonumber(model.legs) or 0),
+          classes = llmWeatherClasses(model.classes), trend = TREND_MARK[model.trend] or "" }
+      else
+        table.insert(clean, model.model)
+      end
+    end
+  end
+  local widths = { 0, 0, 0 }
+  for _, row in ipairs(rows) do
+    widths[1] = math.max(widths[1], cells(row.name))
+    widths[2] = math.max(widths[2], cells(row.legs))
+    widths[3] = math.max(widths[3], cells(row.classes))
+  end
+  for _, row in ipairs(rows) do
+    local title = infoTitle(padCells(row.name, widths[1]), true)
+      .. infoTitle("  " .. padCells(row.legs, widths[2], true), false, true)
+      .. infoTitle("  " .. (row.trend ~= "" and padCells(row.classes, widths[3]) or row.classes))
+    if row.trend ~= "" then title = title .. infoTitle("  " .. row.trend, row.trend == "↑") end
+    items[#items + 1] = { title = title, menu = llmWeatherIncidents(row.model) }
+  end
+  if #clean > 0 then
+    items[#items + 1] = { title = infoTitle("ok: " .. table.concat(clean, ", "), false, true), disabled = true }
+  end
+  if not weather then
+    items[#items + 1] = { title = infoTitle("no weather yet", false, true), disabled = true }
+  elseif #rows == 0 and #clean == 0 then
+    items[#items + 1] = { title = infoTitle("no legs in the window", false, true), disabled = true }
+  end
+  local window = weather and tonumber(weather.window_h) or 24
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = { title = infoTitle(string.format("window %d h · trend vs %d d · walled killed stalled empty slow strayed",
+    window, weather and tonumber(weather.trend_d) or 7), false, true), disabled = true }
+  if taskRunning(M.llmWeatherTask) then
+    items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
+  else
+    items[#items + 1] = { title = infoTitle("Refresh weather"), fn = function() kickLlmWeather(readLlmWeather(), true) end }
+  end
+  local worst = weather and tostring(weather.worst or "") or ""
+  local text = not weather and "LLM weather: no data" or (worst ~= "" and ("LLM weather: " .. worst) or "LLM weather: OK")
+  local age = weather and (os.time() - (tonumber(weather.as_of) or 0)) or 0
+  if weather and age >= 86400 then text = text .. string.format(" · stale %dd", math.floor(age / 86400)) end
+  table.insert(menu, { title = infoTitle(text, false, worst == ""), menu = items })
 end
 
 local function appendDoctor(menu)
@@ -1025,19 +1225,20 @@ local function appendDoctor(menu)
       if count > 0 then
         table.insert(items, { title = infoTitle(string.format("%s: %d", name, count), true),
           disabled = true })
-        local shown = 0
+        local detail = {}
         for _, row in ipairs(type(rows[name]) == "table" and rows[name] or {}) do
-          if type(row) == "table" then
-            local copy = tostring(row.id or "")
-            table.insert(items, {
-              title = infoTitle("  " .. doctorDetailTitle(row)),
-              fn = function()
-                hs.pasteboard.setContents(copy)
-                hs.alert.show("copied " .. copy)
-              end,
-            })
-            shown = shown + 1
-          end
+          if type(row) == "table" then table.insert(detail, row) end
+        end
+        local shown = #detail
+        for index, title in ipairs(doctorDetailRows(detail)) do
+          local copy = tostring(detail[index].id or "")
+          table.insert(items, {
+            title = title,
+            fn = function()
+              hs.pasteboard.setContents(copy)
+              hs.alert.show("copied " .. copy)
+            end,
+          })
         end
         if count > shown then
           table.insert(items, { title = infoTitle(string.format("  … %d more: review-bench doctor --json",
@@ -1092,9 +1293,9 @@ local function appendDoctor(menu)
     .. (taskRunning(M.weatherTask) and " · weather refreshing" or "")
   table.insert(items, { title = infoTitle("gemini · " .. weatherState .. geminiRunning), menu = geminiItems })
 
-  local doctorText = not snapshot and "review doctor: no snapshot"
-    or total > 0 and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
-    or "review doctor: OK"
+  local doctorText = not snapshot and "LLM doctor: no snapshot"
+    or total > 0 and string.format("LLM doctor: %d issue%s", total, total == 1 and "" or "s")
+    or "LLM doctor: OK"
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
     .. " · gemini " .. weatherState
     .. (taskRunning(M.doctorRescanTask) and " · rescanning" or "") .. geminiRunning
@@ -1832,6 +2033,8 @@ function M.menuItems()
     if announced then table.insert(menu, { title = "-" }) end
   end
   appendDoctor(menu)
+  appendLlmWeather(menu)
+  table.insert(menu, { title = "-" })
   table.insert(menu, {
     title = infoTitle("Routing"),
     menu = routingSubmenu(),

@@ -137,8 +137,12 @@ local ok, err = pcall(function()
     check(#alerts == alertsBefore, "a receipted change was alerted twice")
 
     local items = M.menuItems()
-    local row = findRow(items, "●")
+    local seededFile = type(seeded.files) == "table" and tostring(seeded.files[1] or "") or ""
+    local row = findRow(items, seededFile:match("[^/]+$") or seededFile)
     check(row ~= nil, "no delivered row in the menu")
+    for _, item in ipairs(items) do
+        check(not plain(item.title):find("^[●◦○]"), "a row still starts with a receipt mark: " .. plain(item.title))
+    end
     if row then
         check(type(row.menu) == "table", "the row has no detail submenu")
         check(findRow(row.menu, "Copy command to open this chat") ~= nil, "the row offers no chat command")
