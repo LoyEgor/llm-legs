@@ -11,39 +11,6 @@ WORKER_PICK="${WORKER_GATE_WORKER_PICK:-/Volumes/Work/Projects/llm-legs/bin/work
 
 STAMP_DIR="${WORKER_GATE_STAMPS:-$HOME/.cache/claude-worker-gate}"
 
-# Native context helpers and the research relay are the only exceptions to worker routing.
-NATIVE_ALLOWLIST='Plan claude-code-guide gemini-research'
-# Fan-out enters the research relay even when its prompt or tool model asks for a native fallback.
-NATIVE_RESEARCH='Explore general-purpose'
-
-# `gemini-research` runs outside the session and is told which trees to read, so the rewritten
-# prompt has to name them: the spawn's cwd, then every absolute directory the caller already
-# pointed at. A prompt path whose last segment carries a dot is read as a file and contributes its
-# directory; the cwd is taken verbatim, since a repository may well be named `foo.bar`.
-research_repos() {
-  local cwd=$1 prompt=$2 list='' seen='' token
-  cwd=${cwd%/}
-  if [ -n "$cwd" ]; then list=$cwd; seen=$cwd; fi
-  while IFS= read -r token; do
-    token=${token%/}
-    while : ; do
-      case "$token" in *.|*-|*+|*_) token=${token%?} ;; *) break ;; esac
-    done
-    [ -n "$token" ] || continue
-    if [ ! -d "$token" ]; then
-      case "$token" in */*.*) token=${token%/*} ;; esac
-      [ -f "$token" ] && token=${token%/*}
-    fi
-    case "$token" in /*/*) ;; *) continue ;; esac
-    printf '%s\n' "$seen" | grep -Fxq "$token" && continue
-    seen="$seen
-$token"
-    list="${list:+$list, }$token"
-  done < <(printf '%s' "$prompt" | grep -oE "(/Volumes|$HOME)/[A-Za-z0-9._/@+-]+" 2>/dev/null)
-  printf '%s\n' "$list"
-}
-
-
 input=$(cat) || exit 0
 worker=$(printf '%s' "$input" | jq -r '.tool_input.subagent_type // empty' 2>/dev/null) || exit 0
 sid=$(printf '%s' "$input" | jq -r '.session_id // ""' 2>/dev/null) || sid=''
@@ -167,59 +134,11 @@ session_model() {
 case "$worker" in
   claudeb-worker|codex-worker|gemini-worker|grok-worker) ;;
   *)
-    # Workers are unified: every run that edits, reviews, verifies or scans is a relay worker, and a
-    # NATIVE agent type — general-purpose, claude, fork, anything custom — runs on the session's own
-    # model instead. On an orchestrator session that is the one quota the relay design exists to
-    # spare, and it is the spawn shape no other gate sees (live: four read-only general-purpose checks, 35-45k
-    # tokens each, on a Fable chat), and a gateway chat spends its OpenAI subscription the same
-    # way. A fork is judged here too: it always inherits the parent model, which is exactly the
-    # problem rather than an exemption.
-    native=${worker:-general-purpose}
+    # Which native types may spawn at all is worker-spawn-hook.sh's decision alone; a deny here
+    # would outrank its allow, so this branch only prices a model override on the session account.
+    [ "$worker" = image-gen ] || exit 0
     current_session_model=$(session_model)
-    explicit_model=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || explicit_model=''
-    if [ "$native" != image-gen ]; then
-      if orchestrator_model "$current_session_model"; then
-        # Read-only fan-out is the research leg's work, and prose asking for it lost every time
-        # to `Explore` being the harness's own type: the spawn is rewritten here instead.
-        case " $NATIVE_RESEARCH " in
-          *" $native "*)
-            research_prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // ""' 2>/dev/null) ||
-              research_prompt=''
-            research_cwd=$(printf '%s' "$input" | jq -r '.cwd // ""' 2>/dev/null) || research_cwd=''
-            [ -n "$research_cwd" ] || research_cwd=$PWD
-            printf '%s' "$input" | jq -c \
-              --arg p "$(printf 'Repositories: %s\n%s' \
-                "$(research_repos "$research_cwd" "$research_prompt")" "$research_prompt")" \
-              --arg r "Read-only research on an orchestrator session is routed through the tracked Gemini worker-run compatibility entrypoint; explicit tool models do not authorize a native bypass." \
-              '. as $in | {hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "allow",
-                  permissionDecisionReason: $r,
-                  additionalContext: $r,
-                  updatedInput: ($in.tool_input | .subagent_type = "gemini-research" | .prompt = $p | del(.model))}}' 2>/dev/null || true
-            exit 0
-            ;;
-        esac
-        case " $NATIVE_ALLOWLIST " in
-          *" $native "*)
-            if [ -n "$explicit_model" ]; then
-              printf '%s' "$input" | jq -c '{hookSpecificOutput: {
-                hookEventName: "PreToolUse", permissionDecision: "allow",
-                updatedInput: (.tool_input | del(.model))}}'
-            fi
-            exit 0
-            ;;
-        esac
-        deny "native $native runs on this session's own quota: every run that edits, reviews, verifies or scans is a relay worker via worker-run (see ~/.claude/CLAUDE.md, Model routing); context-dependent planning and documentation use Plan/claude-code-guide."
-      fi
-    fi
-    # A fork ignores the override field entirely, so off an orchestrator session there is nothing
-    # left to price.
-    [ "$native" != fork ] || exit 0
-    # Only image-gen reaches here now, and only on an orchestrator session — every other native type
-    # was answered above. A model override still runs it on the SESSION account, which is what the
-    # pool exists to prevent; the one-shot retry below is the escape this older rule keeps.
-    model_override=$explicit_model
+    model_override=$(printf '%s' "$input" | jq -r '.tool_input.model // empty' 2>/dev/null) || model_override=''
     [ -n "$model_override" ] || exit 0
     orchestrator_model "$current_session_model" || exit 0
     tool_fingerprint=$(printf '%s' "$input" | jq -cS '.tool_input' 2>/dev/null) ||

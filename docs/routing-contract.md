@@ -191,18 +191,21 @@ the operand it is. It fails open on its own errors. Interactive launches — no 
 `--prompt`, no `exec`, no `run` — are the user, not a worker, and are never gated.
 
 The other half of the same rule is the Agent tool, and the gate there is
-`bin/worker-limit-gate.sh`. Workers are unified: every run that edits, reviews, verifies or scans
-is a relay worker through `worker-run`, so on an **orchestrator** session a NATIVE agent type —
-`general-purpose`, `claude`, `fork`, anything custom — is refused outright, because it runs on the
+`bin/worker-spawn-hook.sh`, the one owner of the native-type policy (shared-invariants row `bt`).
+Workers are unified: every run that edits, reviews, verifies or scans is a relay worker through
+`worker-run`, so on every session a NATIVE agent type is refused outright, because it runs on the
 session's own model, which is the one quota the whole relay design exists to spare. Four
 `general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. An orchestrator session is Fable **or** a `claudegpt` gateway chat (`anthropic.ccr.sol` /
-`anthropic.ccr.astra`) — Claude Code on an OpenAI subscription, spending the one session quota the
-relay design exists to spare, so it is the same rule and not a second one. The shape of that model
-list lives in `orchestrator_model` in the gate and nowhere else (shared-invariants row `bt`). The allowlist is `Plan`, `claude-code-guide`, `gemini-research`
-(shared-invariants row `bt`): `claude-code-guide` is a narrow documentation lookup exception and `Plan` is the context-dependent planning exception. Research is rewritten into `gemini-research` with its prompt prefixed by one `Repositories:` line; explicit tool models and prose escape phrases cannot bypass this routing. The compatibility entrypoint submits a tracked read-only Gemini worker-run. No broad native read-only exception exists. Relay types and `image-gen` are untouched, off Fable nothing is judged at all,
-and a session whose model cannot be read fails open. The refusal carries no retry: a stamped
-one-shot deny is a rule a model walks through by calling twice.
+closes. The allowlist is `fork` (Egor's word only), `review-waiter`, `gemini-research` and
+`image-gen`; `Explore`, `Plan`, `general-purpose`, `claude-code-guide` and anything custom are
+denied with the ask to use a relay worker instead — read-only research goes to `gemini-research`
+by name. The refusal carries no retry and does not depend on the session model: a stamped
+one-shot deny is a rule a model walks through by calling twice. `bin/worker-limit-gate.sh` judges
+no native type, since a deny there would outrank the spawn hook's allow; it keeps only `image-gen`'s
+older session-account rule, scoped to an orchestrator session — Fable **or** a `claudegpt` gateway
+chat (`anthropic.ccr.sol` / `anthropic.ccr.astra`), Claude Code on an OpenAI subscription — whose
+model list lives in `orchestrator_model` in that gate and nowhere else; explicit tool models on a
+native spawn buy no bypass.
 
 ## Roles
 

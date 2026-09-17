@@ -68,4 +68,22 @@ assert test "$(cat "$WORK/answer")" = 'tracked Gemini answer'
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e '.walled_accounts == ["researcher"] and .account == "rescuer"' "$RUNS/$run_id/meta.json"
 
-printf 'PASS: tracked research runner, Gemini selection/model, sandbox denial, a log-only quota walling the account, outcomes and non-recursive CLI\n'
+# One wait round per call: a run still going hands back its id, and --attach waits one more round
+# and lands the answer with the run's own exit code.
+printf '#!/usr/bin/env bash\nif [ "$1" = list ]; then printf "researcher: ready\\n"; exit 0; fi\nsleep 3\nprintf "slow Gemini answer\\n"\n' >"$BIN/geminib"
+rm -f "$WORK/answer"
+GEMINI_RESEARCH_WAIT_MAX=0 run; rc=$?; assert test "$rc" -eq 0
+assert grep -q '^STATUS: running$' "$WORK/out"; assert test ! -e "$WORK/answer"
+assert grep -qx "OUT: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
+slow_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1); assert test -d "$RUNS/$slow_run"
+attach(){ env HOME="$HOME" PATH="$BIN:/usr/bin:/bin" TMPDIR="$WORK" WORKER_RUN_DIR="$RUNS" GEMINI_RESEARCH_WAIT_MAX="${GEMINI_RESEARCH_WAIT_MAX:-540}" \
+  "$ROOT/bin/gemini-research" "$@" >"$WORK/out" 2>"$WORK/err"; }
+assert test ! -e "$REPO/answer-in-repo"
+attach --attach "$slow_run" --out "$REPO/answer-in-repo"; rc=$?; assert test "$rc" -eq 2
+assert test ! -e "$REPO/answer-in-repo"
+attach --attach "$slow_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 0
+assert test "$(cat "$WORK/answer")" = 'slow Gemini answer'; assert grep -q '^ACCOUNT: researcher (gemini)$' "$WORK/out"
+attach --attach "$slow_run" --out "$WORK/answer" --repo "$REPO"; rc=$?; assert test "$rc" -eq 2
+attach --attach codex-1-2-none --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
+
+printf 'PASS: tracked research runner, Gemini selection/model, sandbox denial, a log-only quota walling the account, outcomes, non-recursive CLI, and one wait round per call with --attach continuing a running run\n'

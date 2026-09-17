@@ -72,6 +72,12 @@ OWNED_RUN_RE="${VENDOR_WORD}worker-run[[:space:]]+(start|wait)${EDGE}"
 # a launch inside a launch nobody can see.
 OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|image-fanout)${EDGE}"
 
+# A review run's wait is owned the same way, by the `review-waiter` agent, and gemini-research by its
+# own agent type: from the chat's Bash neither has a row nor anything that wakes the chat.
+OWNED_REVIEW_WAIT_RE="${VENDOR_WORD}review-bench[[:space:]]+wait${EDGE}"
+OWNED_RESEARCH_RE="${VENDOR_WORD}gemini-research${EDGE}"
+WAIT_ASK="wait through the ATTACH relay / review-waiter agent so the run has a magenta row"
+
 SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|gemini-research)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
 
 deny() {
@@ -83,8 +89,9 @@ deny() {
 
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat) || exit 0
-printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Bash"' \
-  >/dev/null 2>&1 || exit 0
+tool=$(printf '%s' "$input" | jq -r 'select(.hook_event_name == "PreToolUse") | .tool_name // empty' 2>/dev/null) ||
+  exit 0
+case "$tool" in Bash | Monitor) ;; *) exit 0 ;; esac
 cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -n "$cmd" ] || exit 0
 
@@ -236,12 +243,41 @@ first_hit() { # regex
   grep -Eo "$1" <<<"$scan" 2>/dev/null | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
 }
+# A Monitor is a background command like any other, so every check below reads it too.
+if [ "$tool" = Monitor ]; then
+  monitor_hit=$(first_hit "${VENDOR_WORD}(worker-run|review-bench)[[:space:]]+wait${EDGE}")
+  [ -z "$monitor_hit" ] || deny "Blocked: a Monitor on \`${monitor_hit}\` owns no task row — ${WAIT_ASK}."
+fi
 case "$agent_type" in
   image-gen) ;;
   *)
     image_hit=$(first_hit "$OWNED_IMAGE_RE")
     [ -z "$image_hit" ] ||
       deny "Blocked: \`${image_hit}\` generates an image from this chat's own Bash, where the account it spends renders as nothing — no tagged row, no notification when it lands. Spawn the \`image-gen\` Agent instead and put the description, the absolute destination path, the format, transparency yes/no and the size in its brief; it owns these five scripts and is the only agent type that may run them — a relay worker may not either. Quoting one inside a heredoc body is not running it."
+    ;;
+esac
+case "$agent_type" in
+  review-waiter) ;;
+  *)
+    # Inside a headless worker process no task row exists to give the wait to.
+    if [ -z "$agent_type" ] && [ "${CLAUDEB_WORKER:-}" = 1 ]; then :; else
+      review_wait_hit=$(first_hit "$OWNED_REVIEW_WAIT_RE")
+      if [ -n "$review_wait_hit" ]; then
+        recovery=$(grep -Eo -e '--(relaunch|finish-partial)' <<<"$scan" 2>/dev/null | head -n1)
+        if [ -n "$recovery" ]; then
+          deny "Blocked: \`${review_wait_hit} ${recovery}\` from this Bash owns no task row — ${WAIT_ASK}. Spawn \`review-waiter\` with the brief \`ATTACH <run-id>: ${recovery}\`; it runs the recovery itself and waits the run out."
+        fi
+        deny "Blocked: \`${review_wait_hit}\` from this Bash owns no task row — ${WAIT_ASK}. \`review-bench review\` returns at once and stays sanctioned; spawn \`review-waiter\` with a brief \`WAIT <run-id>: <what>\`, or \`ATTACH <run-id>: --relaunch\` / \`ATTACH <run-id>: --finish-partial\` for a dead or interrupted run."
+      fi
+    fi
+    ;;
+esac
+case "$agent_type" in
+  gemini-research) ;;
+  *)
+    research_hit=$(first_hit "$OWNED_RESEARCH_RE")
+    [ -z "$research_hit" ] ||
+      deny "Blocked: \`${research_hit}\` runs a research leg from this chat's own Bash, where it has no tagged row and nothing wakes the chat when it lands. Spawn the \`gemini-research\` Agent with the question, the absolute repository paths and the wanted answer shape; it runs the launcher itself."
     ;;
 esac
 case "$agent_type" in

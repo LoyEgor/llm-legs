@@ -1461,6 +1461,80 @@ record_worker_session() {
   return 0
 }
 
+# The task row the chat paints for this run reads this file, so every transition rewrites it whole.
+write_run_state() { # directory phase [exit-code]
+  local directory="$1" phase="$2" code="${3:-}" tag='' rest round agent session tmp
+  [ -d "$directory" ] || return 0
+  round=$(jq -r '.round // 0' "$directory/state.json" 2>/dev/null) || round=0
+  [[ "$round" =~ ^[0-9]+$ ]] || round=0
+  [ "$phase" != wait ] || round=$((round + 1))
+  agent=$(jq -r '.agent_task_id // empty' "$directory/state.json" 2>/dev/null) || agent=''
+  [ -n "$agent" ] || agent=$(cat "$directory/agent-task" 2>/dev/null) || agent=''
+  [ -n "$agent" ] || agent=${CLAUDE_AGENT_ID:-}
+  IFS= read -r tag <"$directory/tag" 2>/dev/null || :
+  rest=${tag#* · }
+  session=$(cat "$directory/launcher" 2>/dev/null) || session=''
+  tmp="$directory/state.json.tmp.$$"
+  if jq -n --arg phase "$phase" --argjson round "$round" --arg code "$code" --arg agent "$agent" \
+    --arg session "$session" --arg account "${tag%% · *}" --arg model "${rest%% · *}" --arg effort "${rest##* · }" \
+    --arg round_id "$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null)" \
+    --arg started "$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)" \
+    'def opt: if . == "" then null else . end;
+     {phase: $phase, round: $round, exit_code: ($code | opt | if . == null then . else (tonumber? // .) end),
+      agent_task_id: ($agent | opt), session: ($session | opt), account: ($account | opt),
+      model: ($model | opt), effort: ($effort | opt), round_id: ($round_id | opt),
+      started_epoch: ($started | opt | if . == null then . else (tonumber? // null) end),
+      ts: (now | floor | todate)}' >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$directory/state.json" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+# The agent whose task row shows this run: CLAUDE_AGENT_ID where the harness sets it, else the tag file
+# worker-tag-hook marked `start=` for this very launch in the launching chat's tag cache. The claim
+# swaps that mark for `run=<id>` and the tag for the one this launch resolved.
+claim_agent_tag() { # directory launcher
+  local directory="$1" dir="$HOME/.cache/claude-worker-tags/$2" lock waited=0
+  [ -n "$2" ] && [ -d "$dir" ] || return 0
+  # Select and swap under one lock: two launches of one chat that both read the newest `start=`
+  # before either swaps it claim ONE agent's row for two runs. A holder that died is outwaited.
+  lock="$dir/.claim.lock"
+  while ! mkdir "$lock" 2>/dev/null; do
+    if [ "$waited" -ge 50 ]; then
+      [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock" 2>/dev/null
+      lock=''
+      break
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  claim_agent_tag_locked "$directory" "$dir"
+  [ -z "$lock" ] || rmdir "$lock" 2>/dev/null || :
+}
+
+claim_agent_tag_locked() { # directory tag-dir
+  local directory="$1" dir="$2" file best='' best_mark=0 mark now tag tmp
+  if [ -n "${CLAUDE_AGENT_ID:-}" ] && [ -f "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" ]; then
+    best="$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}"
+  else
+    now=$(date +%s)
+    for file in "$dir"/*; do
+      case "${file##*/}" in pending-* | git-unlock-* | *.tmp.* | *.claim.*) continue ;; esac
+      [ -f "$file" ] || continue
+      mark=$(sed -n 's/^start=//p' "$file" 2>/dev/null | tail -n1)
+      [[ "$mark" =~ ^[0-9]+$ ]] && [ $((now - mark)) -le 120 ] && [ "$mark" -gt "$best_mark" ] || continue
+      best=$file best_mark=$mark
+    done
+  fi
+  [ -n "$best" ] || return 0
+  printf '%s\n' "${best##*/}" >"$directory/agent-task" 2>/dev/null || :
+  IFS= read -r tag <"$directory/tag" 2>/dev/null || IFS= read -r tag <"$best" 2>/dev/null || tag=''
+  tmp="$best.tmp.$$"
+  { printf '%s\n' "$tag"; tail -n +2 "$best" | grep -vE '^(start|run)='; printf 'run=%s\n' "${directory##*/}"; } \
+    >"$tmp" 2>/dev/null && mv -f "$tmp" "$best" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+}
+
 refuse_live_run() { # brief resume
   local brief="$1" resume="$2" root entry directory pid now started sha other_sha owner
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
@@ -1993,6 +2067,8 @@ exit "$rc"'
   # Before the run is readable and not only when it ends: a resumed session journals under an id
   # this launch already knows, and the gate that prices a live run's worker work reads this file.
   record_worker_session "$directory"
+  [ ! -s "$directory/launcher" ] || claim_agent_tag "$directory" "$(cat "$directory/launcher")"
+  write_run_state "$directory" start
   : >"$directory/.ready"
   printf 'RUN: %s\nTAG: %s · %s · %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$directory"
 }
@@ -2920,6 +2996,13 @@ terminal_report() {
   fi
 }
 
+run_state_terminal() { # directory
+  local code
+  code=$(tr -d '[:space:]' <"$1/exit_code" 2>/dev/null)
+  [[ "$code" =~ ^[0-9]+$ ]] || code=unknown
+  write_run_state "$1" "$(terminal_status "$1" "$(jq -r '.vendor' "$1/meta.json" 2>/dev/null)" "$code")" "$code"
+}
+
 unknown_report() {
   local directory="$1" vendor
   vendor=$(jq -r '.vendor' "$directory/meta.json")
@@ -3032,14 +3115,21 @@ wait_run() {
   directory=$(run_path "$run_id")
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $run_id"
   wait_started=$(date +%s)
+  write_run_state "$directory" wait
   while :; do
-    if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; return 0; fi
+    if [ -f "$directory/exit_code" ]; then run_state_terminal "$directory"; terminal_report "$directory"; return 0; fi
     pid=$(jq -r '.pid' "$directory/meta.json")
     # pid 0 is the pre-launch placeholder, and a probe of it would answer for our own
     # process group and report a never-started run as alive.
     if ! supervisor_running "$directory" "$pid" || run_overdue "$directory"; then
       sleep 0.1
-      if [ -f "$directory/exit_code" ]; then terminal_report "$directory"; else unknown_report "$directory"; fi
+      if [ -f "$directory/exit_code" ]; then
+        run_state_terminal "$directory"
+        terminal_report "$directory"
+      else
+        write_run_state "$directory" failed unknown
+        unknown_report "$directory"
+      fi
       return 0
     fi
     now=$(date +%s)
@@ -3664,6 +3754,7 @@ complete_run() {
   stamp_result_language "$directory"
   print_outcome "$directory" "$vendor" "$code"
   lang_line "$directory"
+  write_run_state "$directory" "$(terminal_status "$directory" "$vendor" "$code")" "$code"
 }
 
 browse_run() {

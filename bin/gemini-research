@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  printf 'usage: gemini-research --prompt-file <f> --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 360m]\n' >&2
+  printf 'usage: gemini-research --prompt-file <f> --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 360m]\n       gemini-research --attach <run-id> --out <answer-file>\n' >&2
   exit 2
 }
 
@@ -20,6 +20,7 @@ prompt_file=''
 out=''
 account=''
 timeout_value='360m'
+attach=''
 repos=()
 
 while [ "$#" -gt 0 ]; do
@@ -29,14 +30,51 @@ while [ "$#" -gt 0 ]; do
     --repo) [ "$#" -ge 2 ] || usage; repos+=("$2"); shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
     --timeout) [ "$#" -ge 2 ] || usage; timeout_value=$2; shift 2 ;;
+    --attach) [ "$#" -ge 2 ] || usage; attach=$2; shift 2 ;;
     *) usage ;;
   esac
 done
 
-[ -r "$prompt_file" ] && [ -n "$out" ] && [ "${#repos[@]}" -gt 0 ] && [ -n "$timeout_value" ] || usage
-[ -d "$(dirname "$out")" ] || usage
+[ -n "$out" ] && [ -d "$(dirname "$out")" ] || usage
 out_dir=$(cd "$(dirname "$out")" && pwd -P) || usage
 out="$out_dir/${out##*/}"
+root=$(resolve_root)
+worker_run="$root/bin/worker-run"
+# One round per call: the agent's Bash call must return inside the tool's 10-minute cap, and a run
+# still going is handed back as `RUN:`/`STATUS: running` for `--attach` to continue.
+wait_max=${GEMINI_RESEARCH_WAIT_MAX:-540}
+
+finish_round() { # run-id run-dir
+  local state account code
+  state=$("$worker_run" wait "$1" --max "$wait_max") || { printf '%s\n' "$state"; exit 4; }
+  case "$state" in
+    *'STATUS: running'*) printf 'RUN: %s\nSTATUS: running\nOUT: %s\n' "$1" "$out"; exit 0 ;;
+  esac
+  printf '%s\n' "$state"
+  account=$(jq -r .account "$2/meta.json")
+  printf 'ACCOUNT: %s (gemini)\nANSWER: %s\nLOG: %s/log\n' "$account" "$out" "$2"
+  [ ! -f "$2/out" ] || cp "$2/out" "$out" || exit 4
+  code=$(cat "$2/exit_code" 2>/dev/null) || exit 4
+  [[ "$code" =~ ^[0-9]+$ ]] || exit 4
+  exit "$code"
+}
+
+if [ -n "$attach" ]; then
+  [ -z "$prompt_file" ] && [ "${#repos[@]}" -eq 0 ] && [ -z "$account" ] && [[ "$attach" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+  run_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach"
+  [ "$(jq -r '.role // empty' "$run_dir/meta.json" 2>/dev/null)" = research ] || {
+    printf 'OUTCOME: GEMINI_UNAVAILABLE\ngemini-research: no research run %s\n' "$attach"
+    exit 4
+  }
+  while IFS= read -r repo; do
+    [ -n "$repo" ] || continue
+    resolved=$(cd "$repo" 2>/dev/null && pwd -P) || resolved=$repo
+    case "$out" in "$resolved"|"$resolved"/*) usage ;; esac
+  done < <(jq -r '(.workdir // empty), ((.add_dirs // [])[])' "$run_dir/meta.json" 2>/dev/null)
+  finish_round "$attach" "$run_dir"
+fi
+
+[ -r "$prompt_file" ] && [ "${#repos[@]}" -gt 0 ] && [ -n "$timeout_value" ] || usage
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; fi
 
 resolved_repos=()
@@ -56,8 +94,6 @@ for repo in "${resolved_repos[@]}"; do
   case "$out" in "$repo"|"$repo"/*) usage ;; esac
 done
 
-root=$(resolve_root)
-worker_run="$root/bin/worker-run"
 . "$root/share/gemini-research.sh"
 timeout_seconds=$(research_duration_seconds "$timeout_value") && [ "$timeout_seconds" -gt 0 ] || usage
 args=(start gemini --role research --brief "$prompt_file" --workdir "${resolved_repos[0]}" --research-timeout "$timeout_value")
@@ -72,14 +108,4 @@ printf '%s\n' "$launch"
 run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
 run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
 [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || exit 4
-while :; do
-  state=$("$worker_run" wait "$run_id" --max 540) || { printf '%s\n' "$state"; exit 4; }
-  case "$state" in *'STATUS: running'*) continue ;; *) break ;; esac
-done
-printf '%s\n' "$state"
-account=$(jq -r .account "$run_dir/meta.json")
-printf 'ACCOUNT: %s (gemini)\nANSWER: %s\nLOG: %s/log\n' "$account" "$out" "$run_dir"
-[ ! -f "$run_dir/out" ] || cp "$run_dir/out" "$out" || exit 4
-code=$(cat "$run_dir/exit_code" 2>/dev/null) || exit 4
-[[ "$code" =~ ^[0-9]+$ ]] || exit 4
-exit "$code"
+finish_round "$run_id" "$run_dir"

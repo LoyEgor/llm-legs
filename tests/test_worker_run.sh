@@ -2936,11 +2936,70 @@ start_ok claudeb
 assert await_done
 assert test "$(cat "$RUN_DIR/launcher")" = chat-abc
 assert test "$(cat "$STUB_DIR/launcher_env")" = chat-abc
+# The task row's state file ends where the run ended, rounds counted by the waits.
+assert jq -e '.phase == "done" and .exit_code == 0 and .session == "chat-abc" and .account == "recordacct"
+  and .model == "opus" and .effort == "high" and .round >= 1 and (.started_epoch | type) == "number"' \
+  "$RUN_DIR/state.json" >/dev/null
 assert test "$(cat "$RUN_DIR/worker-session")" = claude-session
 printf 'walled-session\n' >>"$RUN_DIR/worker-session"
 "$RUNNER" _supervise "$RUN_DIR" >/dev/null 2>&1
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 2
 assert_fails grep -q '^PARTIAL: ' "$RUN_DIR/files"
+
+# Started inside a relay agent, the run claims the tag file its launch marked in the LAUNCHER's tag
+# cache — the main chat's, not the session id the worker process journals under — and every
+# transition rewrites the state the task row reads.
+clear_stub
+export STUB_SLEEP=2
+TR_TAGS="$HOME/.cache/claude-worker-tags/chat-main"
+mkdir -p "$TR_TAGS"
+printf 'seed · opus · high\nstart=%s\nedit=1\n' "$(date +%s)" >"$TR_TAGS/agent-x"
+printf 'other · opus · high\nstart=%s\n' "$(($(date +%s) - 600))" >"$TR_TAGS/agent-stale"
+CLAUDE_LAUNCHER_SESSION=chat-main start_ok claudeb
+assert test "$(cat "$RUN_DIR/launcher")" = chat-main
+assert jq -e --arg run "$RUN_ID" '.phase == "start" and .round == 0 and .agent_task_id == "agent-x" and .session == "chat-main"' \
+  "$RUN_DIR/state.json" >/dev/null
+assert test "$(head -n1 "$TR_TAGS/agent-x")" = "recordacct · opus · high"
+assert test "$(grep -c '^start=' "$TR_TAGS/agent-x")" = 0
+assert grep -qx "run=$RUN_ID" "$TR_TAGS/agent-x"
+assert grep -qx 'edit=1' "$TR_TAGS/agent-x"
+assert grep -q '^start=' "$TR_TAGS/agent-stale"
+"$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
+assert jq -e '.phase == "wait" and .round == 1 and .agent_task_id == "agent-x"' "$RUN_DIR/state.json" >/dev/null
+assert await_done
+assert jq -e '.phase == "done" and .exit_code == 0 and .round >= 2' "$RUN_DIR/state.json" >/dev/null
+unset STUB_SLEEP
+# Two launches of one chat claiming at once take two rows, never the newest one twice; the sed shim
+# widens the read-then-swap window so the race is not left to timing.
+RACE_TAGS="$HOME/.cache/claude-worker-tags/chat-race"
+mkdir -p "$RACE_TAGS" "$WORK/race-a" "$WORK/race-b" "$WORK/slow-sed"
+printf 'a · opus · high\n' >"$WORK/race-a/tag"
+printf 'b · opus · high\n' >"$WORK/race-b/tag"
+printf 'a · opus · high\nstart=%s\n' "$(($(date +%s) - 5))" >"$RACE_TAGS/agent-old"
+printf 'b · opus · high\nstart=%s\n' "$(date +%s)" >"$RACE_TAGS/agent-new"
+printf '#!/bin/bash\nsleep 0.5\nexec /usr/bin/sed "$@"\n' >"$WORK/slow-sed/sed"
+chmod +x "$WORK/slow-sed/sed"
+claim_race() (
+  eval "$(sed -n '/^claim_agent_tag() {/,/^}/p' "$RUNNER")"
+  eval "$(sed -n '/^claim_agent_tag_locked() {/,/^}/p' "$RUNNER")"
+  PATH="$WORK/slow-sed:$PATH"
+  unset CLAUDE_AGENT_ID
+  claim_agent_tag "$1" chat-race
+)
+claim_race "$WORK/race-a" & race_a=$!
+claim_race "$WORK/race-b" & race_b=$!
+wait "$race_a" "$race_b"
+assert test "$(cat "$WORK/race-a/agent-task" "$WORK/race-b/agent-task" | sort | tr '\n' ,)" = 'agent-new,agent-old,'
+assert test ! -e "$RACE_TAGS/.claim.lock"
+# A launch that outwaits a live holder leaves that holder's lock alone; a lock a dead holder left
+# more than a minute ago is cleared on the way in.
+printf 'c · opus · high\nstart=%s\n' "$(date +%s)" >"$RACE_TAGS/agent-live"
+mkdir "$RACE_TAGS/.claim.lock"
+claim_race "$WORK/race-a"
+assert test -d "$RACE_TAGS/.claim.lock"
+touch -t 202001010000 "$RACE_TAGS/.claim.lock"
+claim_race "$WORK/race-b"
+assert test ! -e "$RACE_TAGS/.claim.lock"
 
 clear_stub
 DIRT_REPO="$WORK/dirt-repo"

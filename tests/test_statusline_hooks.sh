@@ -3364,6 +3364,13 @@ place_set r-tree-foreign "$TOP_D"
 rtforeign_out=$(run_statusline "$(statusline_payload r-tree-foreign '' "$TOP_A")")
 assert test "${rtforeign_out#*⇢}" = "$rtforeign_out"
 
+# One seed per spawn: the newest `pending-<type>-<key>` file the spawn hook left in that session.
+seed_of() { # session agent-type
+  local seed
+  seed=$(ls -t "$HOME/.cache/claude-worker-tags/$1/pending-$2"-* 2>/dev/null | head -n1)
+  [ -n "$seed" ] && head -n1 "$seed"
+}
+
 worker_payload() {
   jq -cn --arg type "$1" --arg id "$2" --arg description "$3" --arg command "$4" --arg session "${5:-wt}" '
     {hook_event_name:"PreToolUse",tool_name:"Bash",session_id:$session,agent_type:$type,agent_id:$id,
@@ -3383,7 +3390,7 @@ printf '%s' "$default_effort_seed" | "$WORKER_HOOK" >/dev/null || fail "default-
 assert_eq 'main · astra · low' "$(cat "$TAGDIR/workerdefault-effort")"
 default_effort_claudeb=$(worker_payload claudeb-worker worker/default-effort-claudeb 'Use table defaults' 'claudeb --model opus -p task')
 printf '%s' "$default_effort_claudeb" | "$WORKER_HOOK" >/dev/null || fail "default-effort claudeb tag exited nonzero"
-assert_eq 'opus · high' "$(cat "$TAGDIR/workerdefault-effort-claudeb")"
+assert_eq '? · opus · high' "$(cat "$TAGDIR/workerdefault-effort-claudeb")"
 
 # A later non-launch command reuses the stored tag to prefix its description.
 later=$(worker_payload codex-worker worker/one 'Run focused tests' 'bash tests/focused.sh')
@@ -3425,7 +3432,8 @@ printf 'work6 · astra · high\n' > "$WRDIR/tag"
 wr_wait=$(worker_payload codex-worker worker/wrun 'Wait for the run' 'worker-run wait codex-1-2-abcd --max 500')
 wr_out=$(printf '%s' "$wr_wait" | "$WORKER_HOOK") || fail "worker-run wait exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "work6 · astra · high — Wait for the run"' <<< "$wr_out" >/dev/null
-assert_eq 'work6 · astra · high' "$(cat "$TAGDIR/workerwrun")"
+assert_eq 'work6 · astra · high' "$(head -n1 "$TAGDIR/workerwrun")"
+assert_eq 'run=codex-1-2-abcd' "$(sed -n 2p "$TAGDIR/workerwrun")"
 printf 'work3 · astra · high\n' > "$WRDIR/tag"
 wr_report=$(worker_payload codex-worker worker/wrun 'Collect the report' 'worker-run report codex-1-2-abcd')
 wr_report_out=$(printf '%s' "$wr_report" | "$WORKER_HOOK") || fail "worker-run report exited nonzero"
@@ -3483,7 +3491,7 @@ assert_eq 'alt · astra · low' "$(cat "$TAGDIR/workercenv")"
 printf 'claudeb_model=opus\nclaudeb_effort=high\n' > "$HOME/.claude/worker-model"
 malformed=$(worker_payload claudeb-worker worker/malformed 'Run it' 'claudeb profile --resume abc123 -p x')
 printf '%s' "$malformed" | "$WORKER_HOOK" >/dev/null || fail "malformed-profile launch exited nonzero"
-assert_eq 'opus · high' "$(cat "$TAGDIR/workermalformed")"
+assert_eq '? · opus · high' "$(cat "$TAGDIR/workermalformed")"
 
 # Heredoc bodies are quoted text, not commands: neither a launch named mid-prose
 # nor one at the start of a body line may derive a tag. The pre-seeded pending
@@ -3520,10 +3528,10 @@ unknown_spawn=$(jq -cn '{
   tool_input:{subagent_type:"claudeb-worker",description:"Implement fixture",
               prompt:"MODEL: opus\nEFFORT: high\nWorking directory: /tmp"}}')
 unknown_spawn_out=$(printf '%s' "$unknown_spawn" | "$SPAWN_HOOK") || fail "unknown-account spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "opus · high: Implement fixture"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "? · opus · high: Implement fixture"' \
   <<<"$unknown_spawn_out" >/dev/null
-assert_eq 'opus · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-claudeb-unknown/pending-claudeb-worker")"
+assert_eq '? · opus · high' \
+  "$(seed_of spawn-claudeb-unknown claudeb-worker)"
 
 rm -f "$HOME/.claude/worker-model"
 default_effort_spawn=$(jq -cn '{
@@ -3533,18 +3541,18 @@ default_effort_spawn_out=$(printf '%s' "$default_effort_spawn" | WORKER_SPAWN_WO
 assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · low: Implement fixture"' \
   <<<"$default_effort_spawn_out" >/dev/null
 assert_eq 'main · astra · low' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-codex-default-effort/pending-codex-worker")"
+  "$(seed_of spawn-codex-default-effort codex-worker)"
 default_effort_claudeb_spawn=$(jq -cn '{
   hook_event_name:"PreToolUse",session_id:"spawn-claudeb-default-effort",
   tool_input:{subagent_type:"claudeb-worker",description:"Implement fixture",prompt:"Working directory: /tmp"}}')
 printf '%s' "$default_effort_claudeb_spawn" | WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK" >/dev/null || fail "default-effort claudeb spawn exited nonzero"
-assert_eq 'opus · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-claudeb-default-effort/pending-claudeb-worker")"
+assert_eq '? · opus · high' \
+  "$(seed_of spawn-claudeb-default-effort claudeb-worker)"
 
 unknown_tag=$(worker_payload claudeb-worker worker/unknown 'Run it' 'claudeb --model opus -p task')
 unknown_tag_out=$(printf '%s' "$unknown_tag" | "$WORKER_HOOK") || fail "unknown-account tag hook exited nonzero"
-assert_eq 'opus · high' "$(cat "$TAGDIR/workerunknown")"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "opus · high — Run it"' \
+assert_eq '? · opus · high' "$(cat "$TAGDIR/workerunknown")"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "? · opus · high — Run it"' \
   <<<"$unknown_tag_out" >/dev/null
 
 gemini_seed=$(worker_payload gemini-worker worker/gemini 'Implement it' \
@@ -3626,7 +3634,7 @@ grok_spawn_output=$(printf '%s' "$grok_spawn" | "$SPAWN_HOOK") || fail "grok spa
 assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.5 · high: Implement fixture"' \
   <<< "$grok_spawn_output" >/dev/null
 assert_eq 'supergrok · grok-4.5 · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-grok/pending-grok-worker")"
+  "$(seed_of spawn-grok grok-worker)"
 
 # No MODEL: line and grok_model=auto — the row says the vendor, not the knob word.
 grok_auto_spawn=$(jq -cn '{
@@ -3637,7 +3645,7 @@ grok_auto_output=$(printf '%s' "$grok_auto_spawn" | "$SPAWN_HOOK") || fail "grok
 assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · high: Implement fixture"' \
   <<< "$grok_auto_output" >/dev/null
 assert_eq 'supergrok · grok · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-grok-auto/pending-grok-worker")"
+  "$(seed_of spawn-grok-auto grok-worker)"
 
 printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 spawn_payload=$(jq -cn '{
@@ -3645,13 +3653,15 @@ spawn_payload=$(jq -cn '{
   tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
               prompt:"ACCOUNT: second\nMODEL: flash\nEFFORT: medium\nWorking directory: /tmp"}}')
 spawn_output=$(printf '%s' "$spawn_payload" | "$SPAWN_HOOK") || fail "gemini spawn hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "second · flash36 · medium: Implement fixture"' \
+# `EFFORT: medium` in the brief is not what will be spent: worker-run raises every Gemini run to
+# high, and the row names the launch rather than the ask.
+assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · 3.6-flash · second: Implement fixture"' \
   <<< "$spawn_output" >/dev/null
-assert_eq 'second · flash36 · medium' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-gemini/pending-gemini-worker")"
+assert_eq 'light edit · 3.6-flash · second' \
+  "$(seed_of spawn-gemini gemini-worker)"
 
-# gemini-research is not a worker: `flash38 · high` are the launcher's own hardcoded
-# `--model gemini-3.8-flash-high` and never the worker-model knobs. The account IS predicted — a
+# gemini-research is not a worker: its row is `light research · <model>`, the model the table's
+# gemini default and never the worker-model knobs. The account IS predicted — a
 # pin first, then the router under `--role research`, the role this leg spends under, so a gemini
 # parked for workers alone still answers — and `?` only where nothing answers at all.
 research_spawn() { # session prompt [worker-pick]
@@ -3668,31 +3678,31 @@ chmod +x "$RESEARCH_PICK"
 # A knob that must not reach this row: worker-model says flash36/medium, the launcher says otherwise.
 printf 'gemini_model=flash36\ngemini_effort=medium\n' > "$HOME/.claude/worker-model"
 research_routed=$(research_spawn spawn-research 'Where is the tag written?' "$RESEARCH_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "routedaccount · flash38 · high: Map the hooks"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "light research · 3.7-flash · routedaccount: Map the hooks"' \
   <<< "$research_routed" >/dev/null
-assert_eq 'routedaccount · flash38 · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research/pending-gemini-research")"
+assert_eq 'light research · 3.7-flash · routedaccount' \
+  "$(seed_of spawn-research gemini-research)"
 # The role travels with the query: the plain `--account gemini` reads the workers switch and
 # answers `off` for a vendor open to research.
 assert_eq '--account gemini --role research' "$(cat "$WORK/research-pick.log")"
 
 : > "$WORK/research-pick.log"
 research_pinned=$(research_spawn spawn-research-pin $'ACCOUNT: pinned\nWhere is the tag written?' "$RESEARCH_PICK")
-assert_eq 'pinned · flash38 · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-pin/pending-gemini-research")"
+assert_eq 'light research · 3.7-flash · pinned' \
+  "$(seed_of spawn-research-pin gemini-research)"
 
 # An `--account` the brief spells on the launch line is the same pin by another spelling.
 research_flag=$(research_spawn spawn-research-flag \
   $'Run gemini-research --account flagged --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' "$RESEARCH_PICK")
-assert_eq 'flagged · flash38 · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-flag/pending-gemini-research")"
+assert_eq 'light research · 3.7-flash · flagged' \
+  "$(seed_of spawn-research-flag gemini-research)"
 
 quoted_failures=0
 for quoted_account in '"quoted"' "'quoted'"; do
   research_quoted=$(research_spawn spawn-research-quoted \
     "Run gemini-research --account $quoted_account --prompt-file /tmp/q" "$RESEARCH_PICK")
   asserts=$((asserts + 1))
-  if [ "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-quoted/pending-gemini-research")" != 'quoted · flash38 · high' ]; then
+  if [ "$(seed_of spawn-research-quoted gemini-research)" != 'light research · 3.7-flash · quoted' ]; then
     printf 'FAIL: quoted research account %s\n' "$quoted_account" >&2
     quoted_failures=$((quoted_failures + 1))
   fi
@@ -3707,32 +3717,32 @@ SILENT_PICK="$WORK/silent-worker-pick"
 printf '#!/usr/bin/env bash\nexit 3\n' > "$SILENT_PICK"
 chmod +x "$SILENT_PICK"
 research_silent=$(research_spawn spawn-research-none 'Where is the tag written?' "$SILENT_PICK")
-assert_eq '? · flash38 · high' \
-  "$(cat "$HOME/.cache/claude-worker-tags/spawn-research-none/pending-gemini-research")"
+assert_eq 'light research · 3.7-flash · ?' \
+  "$(seed_of spawn-research-none gemini-research)"
 printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 
 # In flight, `--account` on the launch line is the account being spent.
 research_tag=$(worker_payload gemini-research worker/research 'Search the tree' \
   'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r --account rawilimo')
 research_tag_out=$(printf '%s' "$research_tag" | "$WORKER_HOOK") || fail "research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash38 · high — Search the tree"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash37 · high — Search the tree"' \
   <<< "$research_tag_out" >/dev/null
-assert_eq 'rawilimo · flash38 · high' "$(cat "$TAGDIR/workerresearch")"
+assert_eq 'rawilimo · flash37 · high' "$(cat "$TAGDIR/workerresearch")"
 # A relay worker already bypasses permissions, so `allow` there only spares it a second prompt;
 # gemini-research runs INSIDE this session, where the same word would grant a call nobody granted.
 assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<< "$research_tag_out" >/dev/null
 assert jq -e '.hookSpecificOutput.permissionDecision == "allow"' <<< "$seed_output" >/dev/null
 
 # Without one the script asks worker-pick at run time, so the spawn seed is the better answer.
-printf 'seeded · flash38 · high\n' > "$TAGDIR/pending-gemini-research"
+printf 'seeded · flash37 · high\n' > "$TAGDIR/pending-gemini-research"
 research_seeded=$(worker_payload gemini-research worker/researchseed 'Search the tree' \
   'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r')
 research_seeded_out=$(printf '%s' "$research_seeded" | "$WORKER_HOOK") \
   || fail "seeded research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38 · high — Search the tree"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash37 · high — Search the tree"' \
   <<< "$research_seeded_out" >/dev/null
 
-# image-gen is a relay too, so its row is tagged like the workers': `<account> · image · <vendor>`,
+# image-gen is a relay too, so its row is tagged like the workers': `<account> · <image model> · <vendor>`,
 # vendor from the brief's VENDOR: line (codex by default), account from a pin in the brief — an
 # `ACCOUNT:` line or an `--account` on the launch line — else the router's `--role image` answer,
 # else the word `pool`; never `?`. A FANOUT: brief is `<all|pool> · image · fanout`.
@@ -3750,37 +3760,37 @@ chmod +x "$IMAGE_PICK"
 # Unpinned: the router's `--role image` answer is the prediction, and the tag keeps its shape so
 # the renderer still colours the row.
 image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · image · codex: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · gpt-image-2 · codex: Draw the icon"' \
   <<< "$image_routed" >/dev/null
-assert_eq 'cxroute · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-routed/pending-image-gen")"
+assert_eq 'cxroute · gpt-image-2 · codex' "$(seed_of img-routed image-gen)"
 
 image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · image · gemini: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · gemini-3.1-flash-image · gemini: Draw the icon"' \
   <<< "$image_vendor" >/dev/null
-assert_eq 'gmroute · image · gemini' "$(cat "$HOME/.cache/claude-worker-tags/img-vendor/pending-image-gen")"
+assert_eq 'gmroute · gemini-3.1-flash-image · gemini' "$(seed_of img-vendor image-gen)"
 
 # A fan-out spends every vendor: the vendor slot says so, the account slot says how many accounts.
 image_fanout=$(image_spawn img-fanout $'FANOUT: all\nACCOUNTS: all\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'all · image · fanout' "$(cat "$HOME/.cache/claude-worker-tags/img-fanout/pending-image-gen")"
+assert_eq 'all · image · fanout' "$(seed_of img-fanout image-gen)"
 image_fanout_pick=$(image_spawn img-fanout-pick $'FANOUT: codex|grok\nACCOUNTS: pick\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'pool · image · fanout' "$(cat "$HOME/.cache/claude-worker-tags/img-fanout-pick/pending-image-gen")"
+assert_eq 'pool · image · fanout' "$(seed_of img-fanout-pick image-gen)"
 
 # The brief's own ACCOUNT: line is the pin the script will be given, so it is the one prediction
 # this hook may make — and `--account` on the launch line spelled in the brief is the same pin.
 image_acct=$(image_spawn img-acct $'ACCOUNT: pinned\nVENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · image · grok: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · grok-imagine-image-quality · grok: Draw the icon"' \
   <<< "$image_acct" >/dev/null
-assert_eq 'pinned · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-acct/pending-image-gen")"
+assert_eq 'pinned · grok-imagine-image-quality · grok' "$(seed_of img-acct image-gen)"
 
 image_flag=$(image_spawn img-flag \
   $'VENDOR: codex\nRun codex-image --account alt2 --dest /tmp/a.png --prompt "a cat"' "$IMAGE_PICK")
-assert_eq 'alt2 · image · codex' "$(cat "$HOME/.cache/claude-worker-tags/img-flag/pending-image-gen")"
+assert_eq 'alt2 · gpt-image-2 · codex' "$(seed_of img-flag image-gen)"
 
 # Router silent (exit 3 for grok in the fake) or absent: `pool` — the script will pick from it.
 image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'pool · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-unknown/pending-image-gen")"
+assert_eq 'pool · grok-imagine-image-quality · grok' "$(seed_of img-unknown image-gen)"
 image_nopick=$(image_spawn img-nopick $'VENDOR: grok\nDraw a cat.')
-assert_eq 'pool · image · grok' "$(cat "$HOME/.cache/claude-worker-tags/img-nopick/pending-image-gen")"
+assert_eq 'pool · grok-imagine-image-quality · grok' "$(seed_of img-nopick image-gen)"
 
 # An image brief edits no instruction file, so the MD guard is not injected into it.
 assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' \
@@ -3790,14 +3800,14 @@ assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not
 image_tag=$(worker_payload image-gen worker/img 'Generate the icon' \
   'codex-image --dest /tmp/icon.png --prompt "an icon" --account alt')
 image_tag_out=$(printf '%s' "$image_tag" | "$WORKER_HOOK") || fail "image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · image · codex — Generate the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · gpt-image-2 · codex — Generate the icon"' \
   <<< "$image_tag_out" >/dev/null
-assert_eq 'alt · image · codex' "$(cat "$TAGDIR/workerimg")"
+assert_eq 'alt · gpt-image-2 · codex' "$(cat "$TAGDIR/workerimg")"
 
 image_grok_tag=$(worker_payload image-gen worker/imggrok 'Generate the icon' \
   '/usr/local/bin/grok-image --account sg1 --dest /tmp/icon.png --prompt "an icon"')
 image_grok_out=$(printf '%s' "$image_grok_tag" | "$WORKER_HOOK") || fail "grok image tag hook exited nonzero"
-assert_eq 'sg1 · image · grok' "$(cat "$TAGDIR/workerimggrok")"
+assert_eq 'sg1 · grok-imagine-image-quality · grok' "$(cat "$TAGDIR/workerimggrok")"
 
 # The image scripts are called with every argument quoted, so a quoted account is the ORDINARY
 # spelling here, not an edge case — read past the quote as the vendor branches above do.
@@ -3805,16 +3815,16 @@ for image_quoted in '--account "alt2"' "--account 'alt2'" '--account="alt2"'; do
   image_quoted_tag=$(worker_payload image-gen worker/imgq 'Generate the icon' \
     "codex-image ${image_quoted} --dest /tmp/icon.png --prompt \"an icon\"")
   printf '%s' "$image_quoted_tag" | "$WORKER_HOOK" >/dev/null || fail "quoted image tag hook exited nonzero"
-  assert_eq 'alt2 · image · codex' "$(cat "$TAGDIR/workerimgq")"
+  assert_eq 'alt2 · gpt-image-2 · codex' "$(cat "$TAGDIR/workerimgq")"
   rm -f "$TAGDIR/workerimgq"
 done
 
 # No `--account`: the script routes itself at run time, so the seed the spawn hook wrote stands.
-printf 'gmroute · image · gemini\n' > "$TAGDIR/pending-image-gen"
+printf 'gmroute · gemini-3.1-flash-image · gemini\n' > "$TAGDIR/pending-image-gen"
 image_seeded=$(worker_payload image-gen worker/imgseed 'Generate the icon' \
   'gemini-image --dest /tmp/icon.png --prompt "an icon"')
 image_seeded_out=$(printf '%s' "$image_seeded" | "$WORKER_HOOK") || fail "seeded image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · image · gemini — Generate the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · gemini-3.1-flash-image · gemini — Generate the icon"' \
   <<< "$image_seeded_out" >/dev/null
 
 # A stored tag carrying regex-special chars is matched literally, so an
@@ -5334,4 +5344,309 @@ assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown carrying the reason it is unknown for, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image·vendor from the launch line, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+# --- Task rows: spawn gate, per-spawn seeds, run/review/light state, the renderer's fit -----------
+TR_HOME_CACHE="$HOME/.cache/claude-worker-tags"
+tr_spawn() { # session type prompt [tool_use_id] [model]
+  jq -cn --arg session "$1" --arg type "$2" --arg prompt "$3" --arg use "${4:-}" --arg model "${5:-}" '
+    {hook_event_name:"PreToolUse",tool_name:"Agent",session_id:$session,
+     tool_input:({subagent_type:$type,description:"Do the task",prompt:$prompt}
+       + (if $model == "" then {} else {model:$model} end))}
+    + (if $use == "" then {} else {tool_use_id:$use} end)' |
+    WORKER_SPAWN_WORKER_PICK=/nonexistent "$SPAWN_HOOK"
+}
+
+# Every native type off the allowlist is refused with the limit gate's deny shape; the relay path is named in it.
+for tr_native in Explore Plan general-purpose claude-code-guide statusline-setup some-new-type ''; do
+  tr_out=$(tr_spawn tr-native "$tr_native" 'look around') || fail "native spawn exited nonzero"
+  assert_eq deny "$(printf '%s' "$tr_out" | gate_decision)"
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("use a relay worker [(]worker-run[)] instead")' <<<"$tr_out" >/dev/null
+done
+assert test ! -e "$TR_HOME_CACHE/tr-native"
+tr_wf=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Workflow",session_id:"tr-wf",tool_input:{script:"x"}}' |
+  "$SPAWN_HOOK") || fail "Workflow spawn exited nonzero"
+assert_eq "" "$tr_wf"
+
+# fork is tagged `fork · <model> · <session account>`, and gets no MD guard: it is his word, not a worker.
+tr_fork=$(CLAUDE_LIMITS_ACCOUNT=forkacct tr_spawn tr-fork fork 'Refactor the parser' '' claude-opus-5) || fail "fork spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · opus · forkacct: Do the task"' <<<"$tr_fork" >/dev/null
+assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' <<<"$tr_fork" >/dev/null
+assert_eq 'fork · opus · forkacct' "$(seed_of tr-fork fork)"
+printf '%s\n' '{"type":"assistant","message":{"model":"claude-fable-5-1"}}' > "$WORK/tr-fork.jsonl"
+tr_fork_inherit=$(jq -cn --arg t "$WORK/tr-fork.jsonl" '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"tr-fork2",
+  transcript_path:$t,tool_input:{subagent_type:"fork",description:"Look",prompt:"x"}}' |
+  CLAUDE_LIMITS_ACCOUNT=forkacct "$SPAWN_HOOK") || fail "fork spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · fable · forkacct: Look"' <<<"$tr_fork_inherit" >/dev/null
+
+# The codex row names the brief's MODEL: line.
+tr_codex=$(tr_spawn tr-codex codex-worker $'ACCOUNT: alt\nMODEL: gpt-5.6-terra\nEFFORT: high\nx') || fail "codex spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · terra · high: Do the task"' <<<"$tr_codex" >/dev/null
+
+# A review-waiter row reads tier, composition and lens off the run's progress document and seeds `review=`.
+TR_STATS="$WORK/tr-stats"
+mkdir -p "$TR_STATS/progress"
+TR_REVIEW=20260916T223010Z-e66f8e6
+jq -cn --arg run "$TR_REVIEW" '{run_id:$run,tier:"T2",composition:"double",kind:"task",state:"running",phase:"review",
+  cells:["claude-opus-high","codex-sol-high","agy-flash38-high","grok-grok-high"],
+  done:["agy-flash38-high","grok-grok-high"],failed_cells:["grok-grok-high"],
+  accounts:{"claude-opus-high":"locomthebest"}}' > "$TR_STATS/progress/llm-legs__x-1.json"
+tr_waiter=$(WORKER_STATS_DIR="$TR_STATS" tr_spawn tr-rev review-waiter "WAIT $TR_REVIEW: task hunt") ||
+  fail "review-waiter spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "T2 · double · task: Do the task"' <<<"$tr_waiter" >/dev/null
+tr_rev_seed=$(ls "$TR_HOME_CACHE/tr-rev"/pending-review-waiter-*)
+assert_eq "review=$TR_REVIEW" "$(grep '^review=' "$tr_rev_seed")"
+tr_waiter_nodoc=$(WORKER_STATS_DIR="$TR_STATS" tr_spawn tr-rev-nodoc review-waiter "WAIT 20260101T000000Z-abcdef1: gone") ||
+  fail "review-waiter spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "review · abcdef1: Do the task"' <<<"$tr_waiter_nodoc" >/dev/null
+
+# Two spawns of one type in one turn each keep a seed, and the agents claim them oldest first.
+tr_spawn tr-pair claudeb-worker $'ACCOUNT: first\nx' toolu_first >/dev/null
+tr_spawn tr-pair claudeb-worker $'ACCOUNT: second\nx' toolu_second >/dev/null
+touch -t "$(date -v-5S +%Y%m%d%H%M.%S)" "$TR_HOME_CACHE/tr-pair/pending-claudeb-worker-toolu_first"
+assert_eq 2 "$(ls "$TR_HOME_CACHE/tr-pair" | grep -c '^pending-claudeb-worker-')"
+printf '%s' "$(worker_payload claudeb-worker agentA 'Save brief' 'true' tr-pair)" | "$WORKER_HOOK" >/dev/null
+printf '%s' "$(worker_payload claudeb-worker agentB 'Save brief' 'true' tr-pair)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'first · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pair/agentA")"
+assert_eq 'second · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pair/agentB")"
+assert_eq 0 "$(ls "$TR_HOME_CACHE/tr-pair" | grep -c '^pending-')"
+assert_fails grep -q '^spawn=' "$TR_HOME_CACHE/tr-pair/agentA"
+
+# A denied spawn's seed is never another spawn's: the agent's transcript names its prompt, and
+# without one a seed past the age limit is left alone.
+tr_spawn tr-stale claudeb-worker $'ACCOUNT: denied\nx' toolu_denied >/dev/null
+touch -t 202601010000 "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
+tr_spawn tr-stale claudeb-worker $'ACCOUNT: live\nx' toolu_live >/dev/null
+touch -t "$(date -v-5S +%Y%m%d%H%M.%S)" "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_live"
+tr_stale_transcript="$WORK/tr-stale-parent.jsonl"
+mkdir -p "$WORK/tr-stale-parent/subagents"
+jq -cn '{type:"user",message:{role:"user",content:"ACCOUNT: live\nx"}}' > "$WORK/tr-stale-parent/subagents/agent-agentL.jsonl"
+printf '%s' "$(worker_payload claudeb-worker agentL 'Save brief' 'true' tr-stale | jq -c --arg t "$tr_stale_transcript" '.transcript_path = $t')" |
+  WORKER_TAG_SEED_MAX_AGE_S=999999999 "$WORKER_HOOK" >/dev/null
+assert_eq 'live · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-stale/agentL")"
+assert test -f "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
+printf '%s' "$(worker_payload claudeb-worker agentN 'Save brief' 'true' tr-stale)" | "$WORKER_HOOK" >/dev/null
+assert test ! -e "$TR_HOME_CACHE/tr-stale/agentN"
+assert test -f "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
+
+# The review-waiter's wait writes the run's tag and `review=`, names itself to review-bench through
+# `--waiter <agent id>`, and is granted nothing.
+tr_rev_out=$(printf '%s' "$(worker_payload review-waiter waiter1 'Wait' "review-bench wait $TR_REVIEW --max 540 | tail -n 3" tr-rev)" |
+  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK") || fail "review-waiter tag exited nonzero"
+assert_eq 'T2 · double · task' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiter1")"
+assert_eq "review=$TR_REVIEW" "$(sed -n 2p "$TR_HOME_CACHE/tr-rev/waiter1")"
+assert jq -e --arg c "review-bench wait $TR_REVIEW --waiter waiter1 --max 540 | tail -n 3" '.hookSpecificOutput.updatedInput.command == $c' <<<"$tr_rev_out" >/dev/null
+assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<<"$tr_rev_out" >/dev/null
+tr_rev_again=$(printf '%s' "$(worker_payload review-waiter waiter1 'Wait' "review-bench wait $TR_REVIEW --waiter waiter1 --max 540" tr-rev)" |
+  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK") || fail "review-waiter tag exited nonzero"
+assert jq -e --arg c "review-bench wait $TR_REVIEW --waiter waiter1 --max 540" '(.hookSpecificOutput.updatedInput.command // $c) == $c' <<<"$tr_rev_again" >/dev/null
+printf '%s' "$(worker_payload review-waiter waiter2 'Wait' 'review-bench wait 20260101T000000Z-abcdef1 --max 540' tr-rev)" |
+  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK" >/dev/null
+assert_eq 'review · abcdef1' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiter2")"
+
+# A launch after a heredoc is still the launch; the heredoc body is not.
+tr_after=$(worker_payload claudeb-worker traft 'Ship it' $'cat > /tmp/brief <<EOF\nclaudeb profile fake --model opus -p x\nEOF\nclaudeb profile real --model sonnet -p "$(cat /tmp/brief)"' tr-after)
+printf '%s' "$tr_after" | "$WORKER_HOOK" >/dev/null || fail "after-heredoc launch exited nonzero"
+assert_eq 'real · sonnet · high' "$(head -n1 "$TR_HOME_CACHE/tr-after/traft")"
+
+# No account in the launch text: the agent's own earlier tag, then worker-pick, then `?`.
+TR_PICK="$WORK/tr-worker-pick"
+printf '#!/usr/bin/env bash\necho pickedacct\n' > "$TR_PICK"; chmod +x "$TR_PICK"
+printf '%s' "$(worker_payload claudeb-worker trpick 'Go' 'claudeb --model opus -p x' tr-pick)" |
+  WORKER_TAG_WORKER_PICK="$TR_PICK" "$WORKER_HOOK" >/dev/null
+assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpick")"
+printf '%s' "$(worker_payload claudeb-worker trpick 'Go' 'claudeb --model opus -p x' tr-pick)" |
+  WORKER_TAG_WORKER_PICK=/nonexistent "$WORKER_HOOK" >/dev/null
+assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpick")"
+
+# grok-video and image-fanout are launches too.
+printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-video --account sg2 --dest /tmp/a.mp4' tr-media)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'sg2 · grok-imagine-video-1.5 · grok' "$(head -n1 "$TR_HOME_CACHE/tr-media/trvid")"
+printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest /tmp/a.png --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'pool · image · fanout' "$(head -n1 "$TR_HOME_CACHE/tr-media/trfan")"
+
+# worker-run start marks the agent's tag file; wait names the run, by literal id or through the state
+# file that names this agent when the id is a shell variable.
+tr_runs="$HOME/.cache/claude-worker-runs"
+mkdir -p "$TR_HOME_CACHE/tr-run"
+printf 'seed · opus · high\n' > "$TR_HOME_CACHE/tr-run/pending-claudeb-worker-a"
+printf '%s' "$(worker_payload claudeb-worker trrun 'Launch' 'worker-run start claudeb --brief /tmp/b --workdir /tmp' tr-run)" | "$WORKER_HOOK" >/dev/null
+assert grep -Eq '^start=[0-9]+$' "$TR_HOME_CACHE/tr-run/trrun"
+mkdir -p "$tr_runs/claudeb-1-2-lit" "$tr_runs/claudeb-1-3-var"
+printf 'runacct · opus · high\n' > "$tr_runs/claudeb-1-2-lit/tag"
+printf '%s' "$(worker_payload claudeb-worker trrun 'Wait' 'worker-run wait claudeb-1-2-lit --max 540' tr-run)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'runacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-run/trrun")"
+assert_eq 'run=claudeb-1-2-lit' "$(grep '^run=' "$TR_HOME_CACHE/tr-run/trrun")"
+printf 'varacct · opus · high\n' > "$tr_runs/claudeb-1-3-var/tag"
+printf '{"phase":"wait","round":1,"agent_task_id":"trvar"}\n' > "$tr_runs/claudeb-1-3-var/state.json"
+printf '%s' "$(worker_payload claudeb-worker trvar 'Wait' 'worker-run wait "$RUN_ID" --max 540' tr-run)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'varacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-run/trvar")"
+assert_eq 'run=claudeb-1-3-var' "$(grep '^run=' "$TR_HOME_CACHE/tr-run/trvar")"
+
+# A subagent's edit is counted into its own tag file, the tag line kept.
+mkdir -p "$TR_HOME_CACHE/tr-edit"
+printf 'fork · opus · acct\n' > "$TR_HOME_CACHE/tr-edit/a1"
+run_workdir_hook "$(agent_payload Edit tr-edit "$REPO_A" "$REPO_A/one.txt")"
+run_workdir_hook "$(agent_payload Write tr-edit "$REPO_A" "$REPO_A/two.txt")"
+assert_eq 'fork · opus · acct' "$(head -n1 "$TR_HOME_CACHE/tr-edit/a1")"
+assert_eq 'edit=2' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
+run_workdir_hook "$(agent_payload Read tr-edit "$REPO_A" "$REPO_A/one.txt")"
+assert_eq 'edit=2' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
+# Two writers racing on one tag file serialize through the directory's `.claim.lock`: no count is
+# lost and the other writer's key survives.
+tr_edit_payload=$(agent_payload Write tr-edit "$REPO_A" "$REPO_A/two.txt")
+tr_start_payload=$(worker_payload claudeb-worker a1 'Launch' 'worker-run start codex --brief /tmp/b --workdir /tmp' tr-edit)
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  printf '%s' "$tr_edit_payload" | "$WORKDIR_HOOK" >/dev/null 2>&1 &
+  printf '%s' "$tr_start_payload" | "$WORKER_HOOK" >/dev/null 2>&1 &
+done
+wait
+assert_eq 'edit=12' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
+assert grep -q '^start=[0-9]*$' "$TR_HOME_CACHE/tr-edit/a1"
+assert test ! -e "$TR_HOME_CACHE/tr-edit/.claim.lock"
+
+# The gate: a Monitor on a wait is refused, and so is a review wait from the chat's own Bash.
+monitor_payload() { jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Monitor",tool_input:{command:$command}}'; }
+for tr_monitored in 'worker-run wait cb-1-2-abc --max 540' "review-bench wait $TR_REVIEW" 'until review-bench  wait x; do sleep 5; done'; do
+  gate_out=$(monitor_payload "$tr_monitored" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("ATTACH relay / review-waiter agent so the run has a magenta row")' <<<"$gate_out" >/dev/null
+done
+gate_out=$(monitor_payload 'tail -f /tmp/server.log' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+# The Monitor branch reads the masked scan: a quoted mention is an operand, and every owned spelling behind it is judged.
+gate_out=$(monitor_payload "grep -n 'review-bench wait' /tmp/notes.txt" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+for tr_monitor_owned in 'worker-run start codex --brief /tmp/b --workdir /tmp' 'codex-image --dest /tmp/a.png --prompt cat' \
+  'gemini-research --prompt-file /tmp/q --out /tmp/a'; do
+  gate_out=$(monitor_payload "$tr_monitor_owned" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
+# Recovery of a dead review run goes through the review-waiter too, and the denial names the brief.
+for tr_recovery in --relaunch --finish-partial; do
+  gate_out=$(gate_payload "review-bench wait $TR_REVIEW $tr_recovery" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  assert jq -e --arg want "Spawn \`review-waiter\` with the brief \`ATTACH <run-id>: $tr_recovery\`" \
+    '.hookSpecificOutput.permissionDecisionReason | contains($want)' <<<"$gate_out" >/dev/null
+done
+gate_out=$(gate_payload "review-bench wait $TR_REVIEW --max 540" | env -u CLAUDEB_WORKER "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("review-waiter")' <<<"$gate_out" >/dev/null
+# A headless worker process has no task list to give the wait to.
+gate_out=$(gate_payload "review-bench wait $TR_REVIEW --max 540" | CLAUDEB_WORKER=1 "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+for tr_review_ok in 'review-bench review --tier T2' "review-bench report $TR_REVIEW" 'review-bench findings'; do
+  gate_out=$(gate_payload "$tr_review_ok" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+done
+gate_out=$(gate_agent_payload review-waiter "review-bench wait $TR_REVIEW --max 540" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(gate_payload 'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+gate_out=$(gate_agent_payload gemini-research '~/.local/bin/gemini-research --prompt-file /tmp/q --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(gate_agent_payload gemini-research 'gemini-research --attach gemini-1-2-abcd --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(gate_payload 'gemini-research --attach gemini-1-2-abcd --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+
+# The renderer paints every local_agent task, state from the run's files, and fits `columns`.
+RENDER_BIN="$ROOT/bin/subagent-statusline.sh"
+TR_RSESS=tr-render
+mkdir -p "$TR_HOME_CACHE/$TR_RSESS" "$tr_runs/codex-9-9-wait" "$tr_runs/codex-9-9-done" "$tr_runs/codex-9-9-fail" "$tr_runs/codex-9-9-live" \
+  "$tr_runs/codex-9-9-fix" "$tr_runs/gemini-9-9-res"
+printf 'acc · astra · high\nrun=codex-9-9-wait\n' > "$TR_HOME_CACHE/$TR_RSESS/w1"
+printf '{"phase":"wait","round":3}\n' > "$tr_runs/codex-9-9-wait/state.json"
+printf 'acc · astra · high\nrun=codex-9-9-done\n' > "$TR_HOME_CACHE/$TR_RSESS/w2"
+printf '{"phase":"done","round":4,"exit_code":0}\n' > "$tr_runs/codex-9-9-done/state.json"; printf '0\n' > "$tr_runs/codex-9-9-done/exit_code"
+printf 'acc · astra · high\nrun=codex-9-9-fail\n' > "$TR_HOME_CACHE/$TR_RSESS/w3"
+printf '{"phase":"wait","round":2}\n' > "$tr_runs/codex-9-9-fail/state.json"; printf '7\n' > "$tr_runs/codex-9-9-fail/exit_code"
+printf 'acc · astra · high\nrun=codex-9-9-live\n' > "$TR_HOME_CACHE/$TR_RSESS/w4"
+printf '{"phase":"wait","round":6}\n' > "$tr_runs/codex-9-9-live/state.json"
+printf 'T2 · double · task\nreview=%s\n' "$TR_REVIEW" > "$TR_HOME_CACHE/$TR_RSESS/r1"
+printf 'fork · inherit · acc\nedit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/l1"
+printf 'acc · astra · high\nrun=codex-9-9-fix\n' > "$TR_HOME_CACHE/$TR_RSESS/f1"
+printf 'acc · astra · high\nrun=codex-9-9-fix\n' > "$TR_HOME_CACHE/$TR_RSESS/f2"
+printf '{"phase":"wait","round":1,"round_id":"%s"}\n' "$TR_REVIEW" > "$tr_runs/codex-9-9-fix/state.json"
+printf 'rawilimo · flash38 · high\nlight=research\nrun=gemini-9-9-res\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
+printf '{"phase":"wait","round":2}\n' > "$tr_runs/gemini-9-9-res/state.json"
+tr_render() { # columns
+  local start=$(( ($(date +%s) - 65) * 1000 ))
+  jq -cn --argjson cols "$1" --argjson start "$start" --arg sess "$TR_RSESS" --arg rev "$TR_REVIEW" '{session_id:$sess,columns:$cols,tasks:[
+    {id:"w1",type:"local_agent",status:"running",description:"acc · astra · high: Implement the parser fix",label:"Running suites",startTime:$start,tokenCount:12345,model:"claude-sonnet-5"},
+    {id:"w2",type:"local_agent",status:"completed",description:"Done run",label:"Done",startTime:$start},
+    {id:"w3",type:"local_agent",status:"completed",description:"Failed run",startTime:$start},
+    {id:"w4",type:"local_agent",status:"completed",description:"Checkpointed run",startTime:$start},
+    {id:"r1",type:"local_agent",status:"running",description:("T2 · double · task: WAIT " + $rev + ": hunt over the task rows"),startTime:$start,tokenCount:500},
+    {id:"l1",type:"local_agent",status:"running",description:"Refactor",startTime:$start,model:"claude-fable-5-1"},
+    {id:"n1",type:"local_agent",status:"running",description:"Look around",startTime:$start,model:"claude-haiku-4-5-20251001"},
+    {id:"f1",type:"local_agent",status:"running",description:"acc · astra · high — Patch the gate",label:"Reading files",startTime:$start},
+    {id:"f2",type:"local_agent",status:"running",description:"fix: e66f8e6 Patch again",startTime:$start},
+    {id:"g1",type:"local_agent",status:"running",description:"light research · 3.8-flash · rawilimo: Map the hooks",startTime:$start,model:"claude-sonnet-5"},
+    {id:"b1",type:"local_bash",status:"running",label:"sleep"}]}' |
+    WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
+}
+# A second may tick between the fixture's clock and the renderer's; both spell the same width.
+tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/1m [5-9]s/1m 5s/'; }
+tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
+assert_eq 10 "$(grep -c . <<<"$tr_wide")"
+assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
+assert_eq 'acc · astra · high — Done run · ✓ done · 1m 5s' "$(tr_row "$tr_wide" w2)"
+assert_eq 'acc · astra · high — Failed run · ✗ failed 7 · 1m 5s' "$(tr_row "$tr_wide" w3)"
+assert_eq 'acc · astra · high — Checkpointed run · ⏸ checkpoint · 1m 5s' "$(tr_row "$tr_wide" w4)"
+assert_eq 'T2 · double · task — hunt over the task rows · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s · ↓ 500 tok' "$(tr_row "$tr_wide" r1)"
+assert_eq 'fork · fable · acc — Refactor · edit 3 · 1m 5s' "$(tr_row "$tr_wide" l1)"
+assert_eq 'agent · haiku · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wide" n1)"
+assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
+# A fix run of a review round reads differently from a plain one, without stacking the prefix.
+assert_eq 'acc · astra · high — fix: e66f8e6 Patch the gate · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f1)"
+assert_eq 'acc · astra · high — fix: e66f8e6 Patch again · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f2)"
+# The light leg names the model doing the work and never the relay agent's shell model.
+assert_eq 'light research · 3.8-flash · rawilimo — Map the hooks · wait 2 · 1m 5s' "$(tr_row "$tr_wide" g1)"
+assert grep -Fq "${MAGENTA}T2 · double · task${RESET}" <<<"$(jq -r 'select(.id == "r1") | .content' <<<"$tr_wide")"
+assert grep -Fq "${GREEN}✓${RESET}" <<<"$(jq -r 'select(.id == "w2") | .content' <<<"$tr_wide")"
+assert grep -Fq "${RED}✗${RESET}" <<<"$(jq -r 'select(.id == "w3") | .content' <<<"$tr_wide")"
+# Narrower: tok goes first, then the title tail down to 20 characters, then the cell detail (counts
+# stay) with the whole title back, then the rest of the title.
+assert_eq 'T2 · double · task — hunt over the task rows · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s' "$(tr_row "$(tr_render 87)" r1)"
+assert_eq 'T2 · double · task — hunt over the task ro… · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s' "$(tr_row "$(tr_render 86)" r1)"
+assert_eq 'T2 · double · task — hunt over the task r… · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s' "$(tr_row "$(tr_render 85)" r1)"
+assert_eq 'T2 · double · task — hunt over the task rows · review 2/4 · 1m 5s' "$(tr_row "$(tr_render 84)" r1)"
+assert_eq 'T2 · double · task — hunt over the tas… · review 2/4 · 1m 5s' "$(tr_row "$(tr_render 60)" r1)"
+assert_eq 'T2 · double · task · review 2/4 · 1m 5s' "$(tr_row "$(tr_render 20)" r1)"
+# Review end states.
+jq '.state = "done" | .confirmed = 17' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+assert grep -Fq '· ✓ report 17 ·' <<<"$(tr_row "$(tr_render 300)" r1)"
+jq '.state = "running" | .phase = "judge"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+assert grep -Fq '· judge ·' <<<"$(tr_row "$(tr_render 300)" r1)"
+jq '.state = "dead"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+assert grep -Fq '· ✗ dead ·' <<<"$(tr_row "$(tr_render 300)" r1)"
+# A document with no tier keeps the `T?` default through the sanitizer.
+jq '.tier = null' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+assert grep -Fq 'T? · double · task — ' <<<"$(tr_row "$(tr_render 300)" r1)"
+printf '%s' "$(worker_payload review-waiter waiterT 'Wait' "review-bench wait $TR_REVIEW --max 540" tr-rev)" |
+  WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK" >/dev/null
+assert_eq 'T? · double · task' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiterT")"
+tr_waiter_tierless=$(WORKER_STATS_DIR="$TR_STATS" tr_spawn tr-rev-tierless review-waiter "WAIT $TR_REVIEW: hunt") ||
+  fail "review-waiter spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description | startswith("T? · double · task: ")' <<<"$tr_waiter_tierless" >/dev/null
+# A review whose progress document is gone keeps the tag it had.
+rm -f "$TR_STATS/progress/llm-legs__x-1.json"
+assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 300)" r1)"
+
+# A finished review whose report was taken is consumed: the line-1 review segment lets it go even
+# though review-bench keeps the document (phase report, its write lock beside it) for the task row.
+progress_doc done-reported "$$" T2 8 8 done 0
+jq '.phase = "report" | .confirmed = 3' "$PROGRESS_DIR/${progress_prefix}state-done-reported.json" > "$WORK/tr-reported.json" &&
+  mv "$WORK/tr-reported.json" "$PROGRESS_DIR/${progress_prefix}state-done-reported.json"
+: > "$PROGRESS_DIR/${progress_prefix}state-done-reported.json.lock"
+assert grep -Fq " ${DIM}│${RESET} ${DIM}T2 ✓ 8/8${RESET}" <<< "$(progress_render state-done-unreported)"
+mkdir -p "$CLAUDEB_FIX/worker-stats/benches/progress-state-fixture"
+printf '{"reported_at":"2026-09-16T23:49:16+00:00"}\n' > "$CLAUDEB_FIX/worker-stats/benches/progress-state-fixture/reported.json"
+assert review_slot_silent "$(progress_render state-done-reported)"
+rm -rf "$CLAUDEB_FIX/worker-stats/benches/progress-state-fixture" "$PROGRESS_DIR/${progress_prefix}state-done-reported.json.lock"
+progress_doc_clear
+
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown the known number followed by its dim \`?<why>\`, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image-model·vendor from the launch line, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

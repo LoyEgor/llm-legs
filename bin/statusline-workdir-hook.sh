@@ -55,6 +55,34 @@ fi
 # Subagent events carry the PARENT session_id: only their edits are the chat's changes.
 if [ -n "$agent_flag" ]; then
   case "$tool_name" in Edit|Write|NotebookEdit) ;; *) exit 0 ;; esac
+  # The agent's task row reads `edit=N` off its tag file (bin/subagent-statusline.sh).
+  agent_id=$(printf '%s' "$input" | jq -r '.agent_id // empty' | tr -cd 'A-Za-z0-9_-')
+  if [ "$hook_event" = PostToolUse ] && [ -n "$agent_id" ]; then
+    tag_file="$HOME/.cache/claude-worker-tags/${session_id//[^A-Za-z0-9_-]/}/$agent_id"
+    # The same `.claim.lock` worker-tag-hook.sh and worker-run take: a rewrite racing this one loses the count.
+    tag_lock="${tag_file%/*}/.claim.lock" tries=0 broke=0 locked=0
+    if mkdir -p "${tag_file%/*}"; then
+      until mkdir "$tag_lock" 2>/dev/null && locked=1; do
+        if [ "$tries" -ge 30 ]; then
+          [ "$broke" = 0 ] && [ -n "$(find "$tag_lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] || break
+          rmdir "$tag_lock" 2>/dev/null
+          broke=1 tries=0
+          continue
+        fi
+        sleep 0.1
+        tries=$((tries + 1))
+      done
+    fi
+    if [ "$locked" = 1 ]; then
+      umask 077
+      edits=$(sed -n 's/^edit=//p' "$tag_file" | tail -n 1)
+      [[ "$edits" =~ ^[0-9]+$ ]] || edits=0
+      { if [ -f "$tag_file" ]; then grep -v '^edit=' "$tag_file"; else printf '\n'; fi
+        printf 'edit=%s\n' "$((edits + 1))"; } > "$tag_file.tmp.$$" && mv -f "$tag_file.tmp.$$" "$tag_file"
+      rm -f "$tag_file.tmp.$$"
+      rmdir "$tag_lock" 2>/dev/null
+    fi
+  fi
 fi
 
 # A worktree add/move is heard twice: PreToolUse snapshots the worktree lists its PostToolUse

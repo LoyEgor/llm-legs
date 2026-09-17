@@ -713,38 +713,28 @@ assert grep -Fq '`95`% is the protective block only when worker-pick is unavaila
 assert grep -Fq 'hard `100`% wall' "$ROOT/$DOC"
 assert doc_has 'Worker spawn pressure gate'
 
-# --- Row bt: native agent types on a Fable session ---------------------------
-# The lists live once in the gate; the doc and routing-contract prose repeat them in words,
-# and a list that grows in one place and not the others is a rule nobody can read off any of them.
+# --- Row bt: native agent types --------------------------------------------------
+# One owner: the spawn hook's lists; the doc and routing-contract prose repeat them in words. A deny
+# from a second gate on the same Agent call outranks the owner's allow, so the limit gate carries none.
 ROUTING_DOC="$ROOT/docs/routing-contract.md"
-native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$WORKER_GATE" | head -n1; }
-assert eq "$(native_list NATIVE_ALLOWLIST)" 'Plan claude-code-guide gemini-research'
+SPAWN_HOOK_BIN="$ROOT/bin/worker-spawn-hook.sh"
+native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$SPAWN_HOOK_BIN" | head -n1; }
+assert eq "$(native_list RELAY_TYPES)" 'claudeb-worker codex-worker gemini-worker grok-worker'
+assert eq "$(native_list NATIVE_ALLOWLIST)" 'fork review-waiter gemini-research image-gen'
 for native in $(native_list NATIVE_ALLOWLIST); do
   assert grep -Fq "\`$native\`" "$ROOT/$DOC"
   assert grep -Fq "\`$native\`" "$ROUTING_DOC"
 done
-# There is no cheap-rewrite tier and no walled-Gemini escape left: an allowlisted type keeps the
-# session model, and a list the gate no longer carries must not survive in prose either.
-assert test "$(grep -Ec '^NATIVE_(CHEAP|EXPLORE_ESCAPE)=' "$WORKER_GATE")" -eq 0
+assert grep -Fq 'use a relay worker (worker-run) instead' "$SPAWN_HOOK_BIN"
+assert test "$(grep -Ec '^NATIVE_[A-Z_]+=' "$WORKER_GATE")" -eq 0
+assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 0
+assert test "$(grep -Fc 'gemini-research' "$WORKER_GATE")" -eq 0
 for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert test "$(grep -Fc 'NATIVE_EXPLORE_ESCAPE' "$retired_doc")" -eq 0
+  assert test "$(grep -Fc 'NATIVE_RESEARCH' "$retired_doc")" -eq 0
 done
-# Read-only fan-out is not merely repriced but re-aimed, and the escape from a walled Gemini is a
-# literal line the gate, the row and the contract all have to spell identically.
-assert eq "$(native_list NATIVE_RESEARCH)" 'Explore general-purpose'
-for research_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
-  assert grep -Fq 'Repositories:' "$research_doc"
-done
-assert grep -Fq '.subagent_type = "gemini-research"' "$WORKER_GATE"
-
-# The rewrite target and the refusal are the row's other two halves: an explicit tool model is
-# stripped rather than honoured, since it would put the spawn back on the session's own quota.
-assert grep -Fq 'del(.model)' "$WORKER_GATE"
-assert test "$(grep -Fc '.model = "sonnet"' "$WORKER_GATE")" -eq 0
-assert grep -Fq "native \$native runs on this session's own quota" "$WORKER_GATE"
-# The whole branch hangs off the session-model predicate: off an orchestrator session nothing is
-# judged, and a gate that cannot read the model must not block ordinary work.
-assert grep -Fq 'if orchestrator_model "$current_session_model"; then' "$WORKER_GATE"
+assert grep -Fq '[ "$worker" = image-gen ] || exit 0' "$WORKER_GATE"
+assert grep -Fq 'orchestrator_model "$current_session_model" || exit 0' "$WORKER_GATE"
 # The doctrine binds one class of session models, and the shape lives in the gate alone: Fable and
 # the claudegpt gateway aliases, both spelled in row bt and in the routing contract.
 assert grep -Fq 'claude-fable-*|anthropic.ccr.*) return 0 ;;' "$WORKER_GATE"
@@ -753,7 +743,7 @@ for model_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert grep -Fq 'anthropic.ccr.' "$model_doc"
 done
 assert grep -Fq 'explicit tool models' "$ROUTING_DOC"
-assert doc_has 'Native agent types on an orchestrator session'
+assert doc_has 'Native agent types'
 
 # --- Rows bu/bv: worker-run deadlines and the launched brief -----------------
 WORKER_RUN="$ROOT/bin/worker-run"
@@ -2439,5 +2429,5 @@ assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
 assert test -r "$ROOT/tests/test_instruction_gate.sh"
 assert doc_has 'Instruction-file classes and the one span'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types a Fable session may still spawn, the ones a lookup is dropped to sonnet for and the ones a read-only fan-out is re-aimed at the Gemini research leg from, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
 ' "$asserts" "$DOC"

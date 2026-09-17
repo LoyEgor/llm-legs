@@ -957,12 +957,13 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
          (.done | length | tostring), (.cells | length | tostring), .started,
          (if $late then "late" else "" end),
          (if (.session | type) == "string" then .session else "" end),
-         $state, $heartbeat]
+         $state, $heartbeat,
+         (if (.run_id | type) == "string" then .run_id else "" end)]
       | join("")
     ' "$progress_file" 2>/dev/null) || continue
     IFS=$'\x1f' read -r progress_repo progress_pid progress_run_tier progress_run_max \
       progress_run_done progress_run_total progress_started progress_run_late \
-      progress_run_session progress_run_state progress_run_heartbeat <<< "$progress_values"
+      progress_run_session progress_run_state progress_run_heartbeat progress_run_id <<< "$progress_values"
     # What the run is: what review-bench declared it to be, crossed with what this render can still
     # verify about it. The writer alone knows a finished run from an abandoned one — the document is
     # no longer unlinked at the end, and outliving its process is now the normal case, not the
@@ -978,6 +979,13 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
       # `review-bench cancel` is Egor's decision that the run is over and answers for nothing: it
       # seals no round and leaves no counter behind to be acted on.
       cancelled) continue ;;
+      # A report already taken is consumed even while its document lingers for the task row.
+      done|dead)
+        [[ "$progress_run_id" =~ ^[A-Za-z0-9_-]+$ ]] &&
+          [ -e "$worker_stats_dir/benches/$progress_run_id/reported.json" ] && continue
+        ;;
+    esac
+    case "$progress_run_state" in
       "")
         [ "$((now - progress_mtime))" -le 7200 ] || continue
         kill -0 "$progress_pid" 2>/dev/null || continue
