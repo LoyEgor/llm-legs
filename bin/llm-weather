@@ -65,9 +65,6 @@ USAGE_LIMIT_RE = re.compile(r"^OUTCOME: \w*_USAGE_LIMIT\b", re.MULTILINE)
 OUTSIDE_WRITE_RE = re.compile(
     r"^UNKNOWN: transcript names a write outside the snapshotted repository[^\n]*?: (/[^\n]*)$",
     re.MULTILINE)
-UNREPORTED_RE = re.compile(r"^(\d+) path\(s\) changed in the run's window that its own listing does not name",
-                           re.MULTILINE)
-UNREPORTED_STRAYED = 3
 TIMEOUT_RE = re.compile(r"print timeout|timed out", re.IGNORECASE)
 PRINT_TIMEOUT_RE = re.compile(r"print timeout after (?:(\d+)m)?(?:(\d+)s)?")
 TIMED_OUT_RE = re.compile(r"timed out after (\d+)\s*(?:s\b|seconds)")
@@ -310,9 +307,6 @@ def classify_worker(run_dir, killed, exit_code):
     note = read_text(os.path.join(run_dir, "files-note")) or ""
     if any(not is_scratch_path(path.strip()) for path in OUTSIDE_WRITE_RE.findall(note)):
         return "strayed", "outside write"
-    unreported = max((int(n) for n in UNREPORTED_RE.findall(note)), default=0)
-    if unreported >= UNREPORTED_STRAYED:
-        return "strayed", "%d unreported paths" % unreported
     if kill_word in ("silent", "idle"):
         return "stalled", kill_detail(killed)
     if kill_word in ("deadline", "term", "signal"):

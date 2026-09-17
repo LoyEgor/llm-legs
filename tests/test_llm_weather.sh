@@ -124,7 +124,7 @@ assert_eq "$(jq -c 'keys' <<<"$json")" '["as_of","models","trend_d","window_h","
 assert_eq "$(jq -r '"\(.as_of - '"$NOW"') \(.window_h) \(.trend_d)"' <<<"$json")" '0 24 7'
 assert_eq "$(jq -c '[.models[0] | keys[]]' <<<"$json")" '["bad","classes","incidents","legs","model","surfaces","trend"]'
 assert_eq "$(jq -r '[.models[] | "\(.model):\(.legs)/\(.bad)"] | join(",")' <<<"$json")" \
-  'grok:5/5,flash38:3/3,opus:2/2,pro:2/2,sol:6/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,kimik3:1/1,haiku:2/0'
+  'grok:5/5,flash38:3/3,pro:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,kimik3:1/1,haiku:2/0'
 assert_eq "$(jq -r '.worst' <<<"$json")" 'grok strayed ×3 · flash38 walled ×3'
 
 assert_eq "$(model grok .classes)" '{"strayed":3,"killed":1,"empty":1}'
@@ -141,8 +141,7 @@ assert_eq "$(model flash37 '.incidents[0] | "\(.class) \(.detail) \(.age)"')" '"
 assert_eq "$(model sol '.incidents[0] | "\(.class) \(.detail)"')" '"slow 5m vs 2m median"'
 assert_eq "$(model sol .trend)" '""'
 assert_eq "$(model opus '.incidents[0] | "\(.class) \(.detail)"')" '"stalled silent 300s"'
-assert_eq "$(model opus .classes)" '{"strayed":1,"stalled":1}'
-assert_eq "$(model opus '.incidents[1] | "\(.class) \(.detail)"')" '"strayed 9 unreported paths"'
+assert_eq "$(model opus .classes)" '{"stalled":1}'
 assert_eq "$(model astra '.incidents[0] | "\(.class) \(.detail)"')" '"walled usage limit"'
 assert_eq "$(model kimik3 '.incidents[0] | "\(.class) \(.detail)"')" '"empty bad output"'
 assert_eq "$(model flash36 '.incidents[0] | "\(.class) \(.detail)"')" '"killed print timeout 16m"'
