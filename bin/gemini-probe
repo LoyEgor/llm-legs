@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Active, on-demand Gemini serving probe: a short and a long agy request per model family, right now."""
+import argparse
+import concurrent.futures
+import importlib.machinery
+import importlib.util
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_weather():
+    loader = importlib.machinery.SourceFileLoader("gemini_weather", os.path.join(BIN_DIR, "gemini-weather"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+weather = load_weather()
+
+FAMILIES = {
+    "3.8": ("gemini-3.8-flash", "gemini-3.8-flash-high"),
+    "3.7": ("gemini-3.7-flash", "gemini-3.7-flash-high"),
+    "3.6": ("gemini-3.6-flash", "gemini-3.6-flash-high"),
+    "3.1p": ("gemini-3.1-pro", "Gemini 3.1 Pro (High)"),
+}
+DEFAULT_TIMEOUT_S = 180
+KILL_GRACE_S = 3
+SHORT_PROMPT = "Reply with exactly one word: pong. Do not use any tools."
+PROBE_FILES = {
+    "alpha.txt": "Alpha is a small mountain village known for its cheese market and a stone bridge.\n",
+    "beta.txt": "Beta describes a river ferry that crosses twice a day and carries bicycles for free.\n",
+    "gamma.txt": "Gamma lists three lighthouse keepers who each served for more than twenty years.\n",
+}
+LONG_PROMPT = (
+    "Read the files alpha.txt, beta.txt and gamma.txt in the directory %s with your file-reading "
+    "tool, one tool call per file, one file at a time. Then answer with one line per file: the file "
+    "name and a summary of at most eight words. Do not create, modify or delete anything."
+)
+
+
+def pick_account():
+    command = os.environ.get("GEMINI_PROBE_PICK_CMD") or os.path.join(BIN_DIR, "worker-pick")
+    # Gemini is switched off for `workers` by routing policy; a probe is no code work, so it takes the
+    # research role's answer (pool, login and walls still apply).
+    result = subprocess.run([command, "--account", "gemini", "--role", "research"],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return result.returncode, result.stdout.strip(), result.stderr.strip()
+
+
+def stop_group(process):
+    for sig, grace in ((signal.SIGTERM, KILL_GRACE_S), (signal.SIGKILL, None)):
+        try:
+            os.killpg(process.pid, sig)
+        except OSError:
+            return
+        try:
+            process.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def run_request(account, slug, kind, log, workdir, timeout):
+    prompt = SHORT_PROMPT if kind == "short" else LONG_PROMPT % workdir
+    command = [
+        os.path.join(BIN_DIR, "geminib"), "profile", account, "--model", slug, "--log-file", log,
+        "--add-dir", workdir, "--print-timeout", "%ds" % timeout, "--sandbox",
+        "--dangerously-skip-permissions", "--disable-slash-commands", "--print", prompt,
+    ]
+    env = dict(os.environ, GEMINIB_CAPACITY_FALLBACK="0")
+    started = time.time()
+    timed_out = False
+    with open(log + ".out", "w") as stdout, open(log + ".err", "w") as stderr:
+        process = subprocess.Popen(command, cwd=workdir, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=stdout, stderr=stderr, start_new_session=True)
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            stop_group(process)
+    summary = weather.log_summary(log)
+    summary.update({"kind": kind, "rc": process.returncode, "timed_out": timed_out,
+                    "wall_s": time.time() - started})
+    return summary
+
+
+def probe_family(key, account, kinds, log_prefix, timeout):
+    family, slug = FAMILIES[key]
+    workdir = tempfile.mkdtemp(prefix="gemini-probe.")
+    try:
+        for name, text in PROBE_FILES.items():
+            with open(os.path.join(workdir, name), "w") as handle:
+                handle.write(text)
+        requests = [run_request(account, slug, kind, "%s-%s-%s.log" % (log_prefix, key, kind), workdir, timeout)
+                    for kind in kinds]
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    return family, requests
+
+
+def seconds(value):
+    return "%.1fs" % value
+
+
+def request_cell(request):
+    steps, step_s = request["steps"], request["step_s"]
+    if request["timed_out"]:
+        return "%d step%s, timeout" % (steps, "" if steps == 1 else "s")
+    if steps == 1 and step_s:
+        text = "1 step %s" % seconds(step_s[0])
+    elif step_s:
+        text = "%d steps med %s p90 %s" % (steps, seconds(weather.percentile(step_s, 0.5)),
+                                           seconds(weather.percentile(step_s, 0.9)))
+    else:
+        text = "%d step%s" % (steps, "" if steps == 1 else "s")
+    if request["rc"] != 0:
+        text += ", exit %d" % request["rc"]
+    return text
+
+
+def family_state(requests):
+    if any(request["errors"] for request in requests):
+        return "starved"
+    if any(request["timed_out"] or request["rc"] != 0 or request["steps"] == 0 for request in requests):
+        return "failed"
+    step_s = [value for request in requests for value in request["step_s"]]
+    median = round(weather.percentile(step_s, 0.5), 1) if step_s else None
+    return weather.state_of(0, median, True)
+
+
+def render(results, kinds):
+    header = ["FAMILY"] + [kind.upper() for kind in kinds] + ["WALL", "503", "STATE"]
+    rows = [header]
+    for family, requests, state in results:
+        rows.append([family] + [request_cell(request) for request in requests]
+                    + ["+".join("%ds" % round(request["wall_s"]) for request in requests),
+                       str(sum(request["errors"] for request in requests)), state])
+    widths = [max(len(row[column]) for row in rows) for column in range(len(header))]
+    lines = ["  ".join(cell.ljust(widths[column]) for column, cell in enumerate(row)).rstrip() for row in rows]
+    lines += ["state: %s %s" % (family, state) for family, _, state in results]
+    return lines
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="gemini-probe", description=__doc__)
+    parser.add_argument("--families", default=",".join(FAMILIES), metavar="LIST",
+                        help="comma-separated, from %s" % ",".join(FAMILIES))
+    parser.add_argument("--short-only", action="store_true")
+    parser.add_argument("--account", metavar="NAME")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S, metavar="SEC")
+    args = parser.parse_args(argv)
+    keys = [key.strip() for key in args.families.split(",") if key.strip()]
+    unknown = [key for key in keys if key not in FAMILIES]
+    if not keys or unknown:
+        parser.error("--families takes %s (got %s)" % (",".join(FAMILIES), args.families))
+    if len(set(keys)) != len(keys):
+        parser.error("--families lists a family twice")
+    if args.timeout <= 0:
+        parser.error("--timeout must be a positive number of seconds")
+
+    account = args.account
+    if not account:
+        rc, account, error = pick_account()
+        if rc == 3:
+            print("gemini-probe: no Gemini account to probe: %s" % (error or "worker-pick exit 3"), file=sys.stderr)
+            print("OUTCOME: GEMINI_USAGE_LIMIT")
+            return 3
+        if rc != 0 or not account:
+            print("gemini-probe: worker-pick failed (exit %d): %s" % (rc, error), file=sys.stderr)
+            return 1
+
+    kinds = ["short"] if args.short_only else ["short", "long"]
+    log_dir = os.path.join(weather.geminib_cache_dir(), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_prefix = os.path.join(log_dir, "%s%s-%d" % (
+        weather.PROBE_LOG_PREFIX, time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()), os.getpid()))
+    print("account: %s" % account)
+    print("families: %s" % ", ".join(FAMILIES[key][1] for key in keys))
+    sys.stdout.flush()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(keys)) as pool:
+        futures = [pool.submit(probe_family, key, account, kinds, log_prefix, args.timeout) for key in keys]
+        results = []
+        for future in futures:
+            family, requests = future.result()
+            results.append((family, requests, family_state(requests)))
+
+    for line in render(results, kinds):
+        print(line)
+    print("logs: %s-*" % log_prefix)
+    healthy = sum(1 for _, _, state in results if state == "ok")
+    print("verdict: %d of %d families ok" % (healthy, len(results)))
+    return 0 if healthy == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
