@@ -20,7 +20,8 @@ export CLAUDEB_DIR="$HOME/claudeb" WORKER_RUN_DIR="$HOME/runs" GEMINIB_PROFILES_
 export GEMINIB_CACHE_DIR="$HOME/geminib" GEMINI_WEATHER_DIR="$HOME/weather"
 NOW=$(( $(date +%s) / 60 * 60 ))
 export GEMINI_WEATHER_NOW="$NOW"
-BENCH="$CLAUDEB_DIR/worker-stats/benches/20260917T000000Z-abc1234"
+export WORKER_STATS_DIR="$WORK/stats"
+BENCH="$WORKER_STATS_DIR/benches/20260917T000000Z-abc1234"
 mkdir -p "$BENCH" "$WORKER_RUN_DIR" "$GEMINIB_CACHE_DIR/logs" "$GEMINIB_CACHE_DIR/capacity" \
   "$GEMINIB_PROFILES_DIR/alpha/.gemini/antigravity-cli/log"
 
@@ -70,6 +71,27 @@ cp -p "$BENCH/agy-agy-flash37-high.log" "$GEMINIB_CACHE_DIR/logs/copy.log"
 # A quota poll: agy's own log with no model and no step belongs to no family.
 mklog "$GEMINIB_PROFILES_DIR/alpha/.gemini/antigravity-cli/log/cli-2.log" ''
 
+python3 - "$BENCH/meta.json" "$NOW" <<'PYFIX'
+import json, sys
+from datetime import datetime, timezone
+now = int(sys.argv[2])
+def run(offset, **fields):
+    return dict(killed="panel", finished_at=datetime.fromtimestamp(now-offset, timezone.utc).isoformat(), **fields)
+with open(sys.argv[1], "w") as handle:
+    json.dump({"rater_runs": [
+        run(600, rater="agy-flash37-high", served_model="gemini-3.7-flash-high", model="agy-flash38"),
+        run(10800, rater="agy-flash37-high", served_model="gemini-3.7-flash-high"),
+        run(600, model="agy-flash38"), run(600, model="agy-flash36"),
+        run(1800, model="agy-pro"), run(600, model="agy-flash37"),
+        dict(killed="panel", model="agy-pro",
+             finished_at=datetime.fromtimestamp(now - 1200, timezone.utc).replace(tzinfo=None).isoformat()),
+        run(-600, model="agy-flash37"),
+        dict(run(600, model="agy-flash37"), killed="timeout"),
+        {"killed":"panel", "model":"agy-flash37", "finished_at":"bad-date"},
+        run(600, model=None),
+    ]}, handle)
+PYFIX
+
 json=$("$WEATHER" --json) || fail "gemini-weather --json exited nonzero"
 family() { jq -r --arg f "$1" --arg k "$2" '.families[] | select(.family == $f) | .[$k] | tostring' <<<"$json"; }
 
@@ -79,6 +101,10 @@ assert_eq "$(jq -r '.schema, .window_min, (.valid_until - .generated_at), .thres
   '1 60 3600 9 '
 assert_eq "$(family gemini-3.7-flash state)" ok
 assert_eq "$(family gemini-3.7-flash runs)" 2
+assert_eq "$(family gemini-3.7-flash cut)" 2
+assert_eq "$(family gemini-3.8-flash cut)" 1
+assert_eq "$(family gemini-3.6-flash cut)" 1
+assert_eq "$(family gemini-3.1-pro cut)" 2
 assert_eq "$(family gemini-3.7-flash steps)" 7
 assert_eq "$(family gemini-3.7-flash median_step_s)" 3.0
 assert_eq "$(family gemini-3.7-flash last_step_age_s)" 294
@@ -106,6 +132,14 @@ assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.1-pro") | .state' 
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.8-flash") | .errors_503' <<<"$narrow")" 1
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.8-flash") | .median_step_s' <<<"$narrow")" null
 
+assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.1-pro") | .cut' <<<"$narrow")" 0
+fallback=$(WORKER_STATS_DIR="$CLAUDEB_DIR/worker-stats" "$WEATHER" --json --no-write)
+assert_eq "$(jq -r '[.families[].cut] | add' <<<"$fallback")" 0
+mkdir -p "$CLAUDEB_DIR/worker-stats/benches/fallback"
+cp "$BENCH/meta.json" "$CLAUDEB_DIR/worker-stats/benches/fallback/meta.json"
+fallback=$(env -u WORKER_STATS_DIR "$WEATHER" --json --no-write)
+assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.7-flash") | .cut' <<<"$fallback")" 2
+
 # The hold marker alone starves a family with no traffic, and only while it is inside the window.
 : >"$GEMINIB_CACHE_DIR/capacity/gemini-3.7-flash"
 touch -r "$BENCH/agy-agy-flash37-high.log" "$GEMINIB_CACHE_DIR/capacity/gemini-3.7-flash"
@@ -127,18 +161,18 @@ rm -f "$GEMINIB_CACHE_DIR/logs/relaunch.log" "$GEMINIB_CACHE_DIR/capacity/gemini
 
 # The table: one header, one row per family, and one state line per family.
 table=$("$WEATHER" --no-write)
-assert grep -Eq '^FAMILY +STATE +RUNS +STEPS +MED S +P90 S +503 +LAST 503 +LAST STEP +HOLD$' <<<"$table"
-assert grep -Eq '^gemini-3\.8-flash +starved +1 +3 +3\.0 +3\.0 +2 +8m +19m +-$' <<<"$table"
-assert grep -Eq '^gemini-3\.6-flash +slow +1 +4 +20\.0 +20\.0 +0 +- +14m +-$' <<<"$table"
+assert grep -Eq '^FAMILY +STATE +RUNS +CUT +STEPS +MED S +P90 S +503 +LAST 503 +LAST STEP +HOLD$' <<<"$table"
+assert grep -Eq '^gemini-3\.8-flash +starved +1 +1 +3 +3\.0 +3\.0 +2 +8m +19m +-$' <<<"$table"
+assert grep -Eq '^gemini-3\.6-flash +slow +1 +1 +4 +20\.0 +20\.0 +0 +- +14m +-$' <<<"$table"
 assert_eq "$(grep '^state: ' <<<"$table" | tr '\n' ';')" \
   'state: gemini-3.8-flash starved;state: gemini-3.7-flash ok;state: gemini-3.6-flash slow;state: gemini-3.1-pro ok;'
 assert grep -Fq 'cache not written' <<<"$table"
 
 # Nothing on disk at all reads no-data for every known family.
 empty=$(HOME="$WORK/empty" CLAUDEB_DIR="$WORK/empty" WORKER_RUN_DIR="$WORK/empty" GEMINIB_PROFILES_DIR="$WORK/empty" \
-  GEMINIB_CACHE_DIR="$WORK/empty" "$WEATHER" --json --no-write)
+  GEMINIB_CACHE_DIR="$WORK/empty" WORKER_STATS_DIR="$WORK/empty" "$WEATHER" --json --no-write)
 assert_eq "$(jq -r '[.families[].state] | unique | join(",")' <<<"$empty")" no-data
 "$WEATHER" --window 0 >/dev/null 2>&1 && fail "a zero window was accepted"
 asserts=$((asserts + 1))
 
-printf 'PASS: %s asserts; gemini-weather (healthy, slow, starved, hold marker, window cut-off, relaunch segments, dedup, table, JSON, cache)\n' "$asserts"
+printf 'PASS: %s asserts; gemini-weather (healthy, slow, starved, hold marker, window cut-off, relaunch segments, dedup, panel cuts, table, JSON, cache)\n' "$asserts"

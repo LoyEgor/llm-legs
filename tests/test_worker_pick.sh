@@ -68,8 +68,16 @@ write_config() {
     'gemini_model=flash38' 'gemini_effort=high' "$@" >"$CONFIG"
 }
 write_config
+mkdir -p "$WORK/bin"
+cat >"$WORK/bin/security" <<'SECURITY'
+#!/usr/bin/env bash
+[ "$1" = find-generic-password ] && [ "$2" = -s ] && [ "$4" = -w ] || exit 1
+[ -r "$CLAUDEB_DIR/expiry-fixture.json" ] || exit 1
+jq -e --arg service "$3" '.[$service] | select(. != null) | {claudeAiOauth:{expiresAt:.}}' "$CLAUDEB_DIR/expiry-fixture.json"
+SECURITY
+chmod +x "$WORK/bin/security"
 
-run_env=(TZ=UTC "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
+run_env=(TZ=UTC "PATH=$WORK/bin:$PATH" "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
   "WORKER_PICK_TIERS_FILE=$TIERS" WORKER_PICK_NOW=2000000000
   "CLAUDEB_DIR=$HOME_FIXTURE/.claude-profiles/.claudeb"
   "CODEXB_PROFILES_DIR=$HOME_FIXTURE/.codex-profiles"
@@ -1158,6 +1166,44 @@ query --account gemini --role image
 assert test "$query_rc" -eq 0
 assert test "$query_out" = work
 write_config
+
+write_config
+query_case claude_pool --account claudeb --role reviewers
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
+expiry_fixture="$HOME_FIXTURE/.claude-profiles/.claudeb/expiry-fixture.json"
+expiry_service="Claude Code-credentials-$(printf '%s' "$HOME_FIXTURE/.claude-profiles/session" | shasum -a 256 | awk '{print substr($1, 1, 8)}')"
+for seconds_left in -1 1 1919 1920; do
+  jq -n --arg service "$expiry_service" --argjson expiry "$(((2000000000 + seconds_left) * 1000))" \
+    '{($service):$expiry}' >"$expiry_fixture"
+  query --account claudeb --role reviewers
+  assert test "$query_rc" -eq 0
+  assert test "$query_out" != session
+  query --list --role reviewers
+  assert test "$query_rc" -eq 0
+  assert test "$(awk -F '\t' '$1 == "claudeb" && $2 == "session" {print $4}' <<<"$query_out")" = token-expiry
+  for role in workers chat research; do
+    query --account claudeb --role "$role"
+    assert test "$query_rc" -eq 0
+    assert test "$query_out" = session
+  done
+done
+mkdir -p "$HOME_FIXTURE/.claude-profiles/.claudeb/tokens"
+printf fixture >"$HOME_FIXTURE/.claude-profiles/.claudeb/tokens/session"
+query --account claudeb --role reviewers
+assert test "$query_rc" -eq 0
+assert test "$query_out" = session
+rm "$HOME_FIXTURE/.claude-profiles/.claudeb/tokens/session"
+for seconds_left in 1921 7200 0; do
+  expiry_ms=$(((2000000000 + seconds_left) * 1000))
+  [ "$seconds_left" -ne 0 ] || expiry_ms=0
+  jq -n --arg service "$expiry_service" --argjson expiry "$expiry_ms" \
+    '{($service):$expiry}' >"$expiry_fixture"
+  query --account claudeb --role reviewers
+  assert test "$query_rc" -eq 0
+  assert test "$query_out" = session
+done
+rm "$expiry_fixture"
 
 # Roles are walls layered over the pool: a vendor closed for a role may not serve that work at
 # all, so the query never reaches the question of which account.

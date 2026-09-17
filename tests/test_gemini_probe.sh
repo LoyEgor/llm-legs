@@ -103,7 +103,7 @@ assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.8-flash") | "\(.st
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.7-flash") | .state' <<<"$weather")" slow
 assert_eq "$(jq -r '.families[] | select(.family == "gemini-3.6-flash") | "\(.state) \(.errors_503)"' <<<"$weather")" 'starved 2'
 table=$("$ROOT/bin/gemini-weather" --window 5 --no-write)
-assert grep -Eq '^gemini-3\.8-flash +ok +2 \(2 probe\) +7 ' <<<"$table"
+assert grep -Eq '^gemini-3\.8-flash +ok +2 \(2 probe\) +0 +7 ' <<<"$table"
 
 # --- --families and --short-only: one family, one request ---
 probe --account alpha --families 3.8 --short-only

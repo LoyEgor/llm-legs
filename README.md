@@ -171,6 +171,25 @@ local limits = require("llm-limits")
 local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 ```
 
+The `review doctor: N issues · gemini <state>` menu keeps review classes and `Rescan now`,
+then opens Gemini diagnostics in a nested submenu:
+
+```text
+review doctor: 2 issues · gemini slow
+  gemini · slow
+    weather · last 2 h
+    3.7 flash · 12 s/step · cut ×1 · no 503
+    window: 2 h → 1 h / 2 h / 3 h / 6 h / 12 h / 24 h
+    Refresh weather
+    Run Gemini probe
+```
+
+The checked window selection lasts for this module session and forces a collection; the weather
+heading reports the cached window. CUT counts panel-killed bench cells within that window.
+The doctor row appends ` · rescanning` during rescans; both parent rows append ` · probe running`
+or ` · weather refreshing` while those tasks run. Their action rows are disabled and read
+`rescanning…`, `probe running…` or `refreshing…`. Forced weather completion shows an alert.
+
 | Vendor | Limit freshness |
 |--------|-----------------|
 | Claude | Per-account claudeb file mtime; status-line snapshot fallback |

@@ -2373,6 +2373,13 @@ local function doctorRow(menu)
   return nil
 end
 
+local function geminiRow(menu)
+  for _, item in ipairs(doctorRow(menu).menu) do
+    if titleText(item):match("^gemini · ") then return item end
+  end
+  error("the Gemini submenu is missing")
+end
+
 local function submenuTitles(row)
   local titles = {}
   for _, item in ipairs(row.menu or {}) do table.insert(titles, titleText(item)) end
@@ -2451,7 +2458,10 @@ do
       isRunning = function() return true end }
   end)
   running.rescanDoctor()
-  assert(submenuTitles(doctorRow(running.menuItems()))[2] == "rescanning…",
+  local runningRow = doctorRow(running.menuItems())
+  assert(titleText(runningRow):find(" · rescanning", 1, true), titleText(runningRow))
+  assert(runningRow.menu[2].disabled == true)
+  assert(submenuTitles(runningRow)[2] == "rescanning…",
     "a running rescan still offers Rescan now")
 end
 
@@ -3261,6 +3271,9 @@ do
       assert(not isWeatherRow(item), "a weather row rendered outside the diagnostics submenu")
     end
     for _, item in ipairs(doctorRow(menu).menu) do
+      assert(not isWeatherRow(item), "a weather row rendered outside the Gemini submenu")
+    end
+    for _, item in ipairs(geminiRow(menu).menu) do
       local text = titleText(item)
       if text:match("^%d+%.%d+ %a+ · ") or text:match("^models ") then table.insert(rows, item) end
     end
@@ -3269,37 +3282,33 @@ do
   local weather = { schema = 1, generated_at = now - 60, valid_until = now + 3540, window_min = 60,
     families = {
       { family = "gemini-3.8-flash", label = "3.8 flash", short = "3.8", state = "starved",
-        runs = 3, steps = 90, median_step_s = 20.4, errors_503 = 12,
+        runs = 3, cut = 2, steps = 90, median_step_s = 20.4, errors_503 = 12,
         last_step_age_s = 420, last_503_age_s = 480 },
       { family = "gemini-3.7-flash", label = "3.7 flash", short = "3.7", state = "ok",
         runs = 2, steps = 40, median_step_s = 3.1, errors_503 = 0, last_step_age_s = 60 },
       { family = "gemini-3.6-flash", label = "3.6 flash", short = "3.6", state = "slow",
         runs = 1, steps = 4, median_step_s = 9.5, errors_503 = 0, last_step_age_s = 3000 },
       { family = "gemini-3.1-pro", label = "3.1 pro", short = "3.1p", state = "no-data",
-        runs = 0, steps = 0, errors_503 = 0 },
+        runs = 0, cut = 1, steps = 0, errors_503 = 0 },
     }}
   local menu = loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil, weather).menuItems()
   local rows = weatherRows(menu)
   assert(#rows == 4, "gemini weather rendered " .. #rows .. " rows")
-  assert(titleText(rows[1]) == "3.8 flash · 20 s/step · 503 ×12, last 9m ago  ⛔", titleText(rows[1]))
+  assert(titleText(rows[1]) == "3.8 flash · 20 s/step · cut ×2 · 503 ×12, last 9m ago  ⛔", titleText(rows[1]))
   assert(rows[1].title.attributes.color and rows[1].title.attributes.color.red == 0.9,
     "a starved family is not red")
   assert(titleText(rows[2]) == "3.7 flash · 3.1 s/step · no 503", titleText(rows[2]))
   assert(rows[2].title.attributes.color == nil, "an ok family is coloured")
   assert(titleText(rows[3]) == "3.6 flash · 9.5 s/step · no 503  🐢", titleText(rows[3]))
-  assert(titleText(rows[4]) == "3.1 pro · no data", titleText(rows[4]))
+  assert(titleText(rows[4]) == "3.1 pro · no data · cut ×1", titleText(rows[4]))
   assert(isDimmed(rows[4].title.attributes, 0), "a no-data family is not dimmed")
   assert(rows[1].disabled == true, "a weather row is clickable")
   accountIndex(menu, "gem-a")
-  local sub = doctorRow(menu).menu
-  local firstRow, lastRow
-  for index, item in ipairs(sub) do
-    if item == rows[1] then firstRow = index end
-    if item == rows[4] then lastRow = index end
-  end
-  assert(sub[firstRow - 1] and titleText(sub[firstRow - 1]) == "gemini weather"
-    and sub[firstRow - 2].title == "-", "the weather rows are not under the gemini weather separator")
-  assert(titleText(sub[lastRow + 1]) == "Refresh weather", "Refresh weather does not follow the families")
+  local sub = geminiRow(menu).menu
+  assert(titleText(geminiRow(menu)) == "gemini · starved")
+  assert(titleText(sub[1]) == "weather · last 1 h" and sub[1].disabled == true)
+  assert(titleText(sub[6]) == "window: 1 h")
+  assert(titleText(sub[7]) == "Refresh weather")
   assert(titleText(doctorRow(menu)) == "review doctor: no snapshot · gemini starved",
     titleText(doctorRow(menu)))
   for _, item in ipairs(sub) do
@@ -3319,7 +3328,7 @@ do
   }}
   local staleRows = weatherRows(loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil,
     stale).menuItems())
-  assert(titleText(staleRows[1]) == "3.8 flash · 20 s/step · 503 ×12, last 2h ago · stale",
+  assert(titleText(staleRows[1]) == "3.8 flash · 20 s/step · cut ×2 · 503 ×12, last 2h ago · stale",
     titleText(staleRows[1]))
   assert(isDimmed(staleRows[1].title.attributes, 0), "a stale weather row is not dimmed")
 
@@ -3350,7 +3359,7 @@ do
   local forced = {}
   local forcedModule = loadModule(weatherFixture, captureTasks(forced), now, nil, nil, nil, nil, nil,
     nil, held)
-  local refresh = submenuItem(doctorRow(forcedModule.menuItems()), "Refresh weather")
+  local refresh = submenuItem(geminiRow(forcedModule.menuItems()), "Refresh weather")
   assert(#forced == 0, "a fresh weather cache launched a refresh on render")
   refresh.fn()
   assert(#forced == 1 and forced[1].path:match("/bin/gemini%-weather$"),
@@ -3360,12 +3369,75 @@ do
   local probeModule = loadModule(weatherFixture, captureTasks(probes), now, nil, nil, nil,
     function(path) return path:match("/bin/gemini%-probe$") and { mode = "file" } or nil end,
     nil, nil, held)
-  local probeRow = submenuItem(doctorRow(probeModule.menuItems()),
-    "Run Gemini probe (~3 min, costs Gemini tokens)")
+  local probeRow = submenuItem(geminiRow(probeModule.menuItems()), "Run Gemini probe")
   assert(probeRow, "the probe row is missing with the binary present")
   probeRow.fn()
   assert(#probes == 1 and probes[1].path:match("/bin/gemini%-probe$") and #probes[1].args == 0,
     "the probe row did not launch gemini-probe in the background")
+
+  ;(function()
+    local active, alerts = {}, {}
+    local function activeTask(path, callback, args)
+      local task = { path = path, callback = callback, args = args, running = true }
+      function task:setEnvironment(env) self.env = env end
+      function task:start() end
+      function task:isRunning() return self.running end
+      function task:finish() self.running = false; self.callback(0) end
+      table.insert(active, task)
+      return task
+    end
+    held.window_min = 120
+    local selected = loadModule(weatherFixture, activeTask, function() return now end,
+      function(message) table.insert(alerts, message) end, nil, nil,
+      function(path) return path:match("/bin/gemini%-probe$") and { mode = "file" } or nil end,
+      nil, nil, held)
+    local initial = geminiRow(selected.menuItems())
+    assert(titleText(initial.menu[1]) == "weather · last 2 h")
+    local choices = submenuItem(initial, "window: 1 h")
+    for index, hours in ipairs({ 1, 2, 3, 6, 12, 24 }) do
+      assert(titleText(choices.menu[index]) == hours .. " h")
+      assert(choices.menu[index].checked == (hours == 1))
+    end
+    choices.menu[4].fn()
+    assert(selected.weatherWindowMin == 360)
+    assert(#active == 1 and table.concat(active[1].args, " ") == "--window 360")
+    local refreshingMenu = selected.menuItems()
+    assert(titleText(doctorRow(refreshingMenu)):match(" · weather refreshing$"))
+    assert(titleText(geminiRow(refreshingMenu)) == "gemini · starved · weather refreshing")
+    assert(submenuItem(geminiRow(refreshingMenu), "refreshing…").disabled == true)
+    assert(titleText(geminiRow(refreshingMenu).menu[1]) == "weather · last 2 h")
+    local selectedChoices = submenuItem(geminiRow(refreshingMenu), "window: 6 h")
+    for index, choice in ipairs(selectedChoices.menu) do assert(choice.checked == (index == 4)) end
+    active[1]:finish()
+    assert(#alerts == 1 and alerts[1]:match("^gemini weather:"))
+    submenuItem(geminiRow(selected.menuItems()), "Run Gemini probe").fn()
+    local probingMenu = selected.menuItems()
+    assert(titleText(doctorRow(probingMenu)):match(" · probe running$"))
+    assert(titleText(geminiRow(probingMenu)) == "gemini · starved · probe running")
+    assert(submenuItem(geminiRow(probingMenu), "probe running…").disabled == true)
+    selected.runGeminiProbe()
+    assert(#active == 2, "a duplicate probe was launched")
+    active[2]:finish()
+    assert(#active == 3 and table.concat(active[3].args, " ") == "--window 360")
+    active[3]:finish()
+    now = now + 61
+    selected.menuItems()
+    assert(#active == 4 and table.concat(active[4].args, " ") == "--window 360")
+    active[4]:finish()
+    assert(#alerts == 2, "a passive refresh displayed an alert")
+    submenuItem(geminiRow(selected.menuItems()), "Refresh weather").fn()
+    local changing = submenuItem(geminiRow(selected.menuItems()), "window: 6 h")
+    changing.menu[5].fn()
+    assert(#active == 5, "changing the window started overlapping collectors")
+    active[5]:finish()
+    assert(#active == 6 and table.concat(active[6].args, " ") == "--window 720")
+    active[6]:finish()
+    assert(#alerts == 3, "the queued forced refresh did not show its completion alert")
+
+    local reset = loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil, held)
+    assert(reset.weatherWindowMin == nil and submenuItem(geminiRow(reset.menuItems()), "window: 1 h"))
+  end)()
+
 end
 
 return "PASS: Hammerspoon projection contract"

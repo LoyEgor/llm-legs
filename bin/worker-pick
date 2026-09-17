@@ -115,6 +115,7 @@ worker_pick_share="$(worker_pick_root)/share"
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
 now="${WORKER_PICK_NOW:-$(date +%s)}"
+REVIEWERS_TOKEN_HORIZON_S=1920
 
 # The codex worker model's short alias comes from the allow-list, never from ~/.codex/config.toml:
 # that file is Egor's interactive pick and would make the column promise a model no worker runs.
@@ -383,7 +384,28 @@ for pool_vendor in claudeb codex gemini grok; do
     --argjson out "$pool_out" '$pools + {($key):$out}')
 done
 
+reviewer_token_expiry='[]'
+if [ "$query_role" = reviewers ] && [ "$cb_paused" = false ] &&
+   { [ -z "$query_vendor" ] || [ "$query_vendor" = claudeb ]; }; then
+  reviewer_token_expiry=$(
+    while IFS= read -r token_account; do
+      [[ "$token_account" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || continue
+      [ ! -s "${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/tokens/$token_account" ] || continue
+      token_profile="$HOME/.claude-profiles/$token_account"
+      token_hash=$(printf '%s' "$token_profile" | shasum -a 256 | awk '{print substr($1, 1, 8)}')
+      token_expiry=$(security find-generic-password -s "Claude Code-credentials-$token_hash" -w 2>/dev/null |
+        jq -r '.claudeAiOauth.expiresAt // 0 | floor' 2>/dev/null) || token_expiry=0
+      [[ "$token_expiry" =~ ^[0-9]+$ ]] || token_expiry=0
+      if [ "$token_expiry" -gt 0 ] && [ "$token_expiry" -le "$(((now + REVIEWERS_TOKEN_HORIZON_S) * 1000))" ]; then
+        printf '%s\n' "$token_account"
+      fi
+    done < <(jq -r '.vendors.claude.accounts[]? | .account' "$LIMITS_FILE" 2>/dev/null) |
+      jq -Rsc 'split("\n") | map(select(length > 0))'
+  )
+fi
+
 summary=$(jq -r \
+  --argjson reviewer_token_expiry "$reviewer_token_expiry" \
   --argjson live_pools "$live_pools" \
   --argjson now "$now" --arg own "$own" --arg own_vendor "$own_vendor" --arg pin "$cb_pin" \
   --arg cb_disp "$cb_display" --arg cx_disp "$cx_display" \
@@ -491,6 +513,7 @@ summary=$(jq -r \
      (if .defer5h then "5h!" else empty end),
      (if .auth_ok then empty else "login needed" end),
      (if .auth_late then "auth expired" else empty end),
+     (if .token_expiry then "token-expiry" else empty end),
      (if .blocked then "blocked" else empty end),
      (if .enabled then empty else "off" end)] | join(" ");
   # One cell set per account, rendered two ways below: the aligned table a human reads and the
@@ -556,6 +579,7 @@ summary=$(jq -r \
       (if (.auth_ok | not) then "login"
        elif $paused == "true" then "paused"
        elif ($off == "true" and $pinned == null) or (.enabled == false and .name != $sel) then "off"
+       elif .token_expiry then "token-expiry"
        elif .walled then "walled"
        else "ok" end)] | join("\t")) | join("\u001e");
   # The one-line face of the same rows, for the stderr of a query that could not answer.
@@ -763,7 +787,8 @@ summary=$(jq -r \
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
-    {name:.account,own:($own_vendor == "claude" and .account == $own),
+    {token_expiry:(.account | IN($reviewer_token_expiry[])),
+     name:.account,own:($own_vendor == "claude" and .account == $own),
      enabled:(.enabled == true),auth_ok:auth_ok,
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),
@@ -777,11 +802,11 @@ summary=$(jq -r \
     .claimed = claimed_in($cb_claims) |
     .observed = (.name | IN($cb_walls[])) |
     .walled = (usage_walled(.spend) or .observed) | eligibility |
-    .eligible = (.eligible and (.blocked | not)) |
+    .eligible = (.eligible and (.blocked | not) and (.token_expiry | not)) |
     # Fable exhaustion never disqualifies ordinary work, so the fable bucket carries its own
     # candidacy: the account must be able to run Fable at all and have a measured fable window.
     # A run-observed wall still counts here — it is the whole account that is out, not a bucket.
-    .fable_pinnable = (.auth_ok and .fable_capable and (.fb | type) == "number" and
+    .fable_pinnable = ((.token_expiry | not) and .auth_ok and .fable_capable and (.fb | type) == "number" and
                        (usage_walled(.fb) | not) and (.observed | not) and (excluded | not)) |
     .fable_ok = (.enabled and .fable_pinnable)]) as $cl_accounts |
   ($cl_accounts | map(select(.eligible)) | rank) as $cl_eligible |

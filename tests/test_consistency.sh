@@ -318,6 +318,21 @@ RB_REPORT="$RB_PKG/report.py"
 RB_CLI="$RB_PKG/cli.py"
 RB_ANCHORS="$REVIEW_ROOT/bin/review-anchors"
 
+assert grep -Fq 'REVIEWERS_TOKEN_HORIZON_S=1920' "$ROOT/bin/worker-pick"
+assert python3 - "$RB_PKG" "$ROOT/bin/worker-pick" <<'HORIZONPY'
+import re
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+from rbench import catalog, cell_runtime, judge
+horizon = int(re.search(r"^REVIEWERS_TOKEN_HORIZON_S=(\d+)$", Path(sys.argv[2]).read_text(), re.M)[1])
+assert horizon == catalog.RATER_TIMEOUT_S + cell_runtime._TOKEN_MARGIN_S
+assert horizon >= judge.JUDGE_TIMEOUT_S + cell_runtime._TOKEN_MARGIN_S
+HORIZONPY
+assert doc_has 'Gemini review cell lifetime'
+assert doc_has 'REVIEW_TIERS[tier]["budget_min"] * 60'
+assert grep -Fq 'GEMINI_CELL_GRACE_S = 60' "$RB_CATALOG"
+
 # A pin over a package needs both of these. `grep -Fq a.py b.py` is OR — it exits at the first
 # match — so a value spelled in two modules keeps passing after one of them drops it; and a count
 # taken in one module says nothing about the copy the split made possible in a sibling.
@@ -470,6 +485,24 @@ for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
 done
 assert doc_has 'Gemini model weather cache'
 assert doc_has '`SLOW_FACTOR = 3`'
+assert doc_has '`gemini · <state>`'
+assert doc_has '`window: <N> h`'
+assert doc_has '`weather · last <N> h`'
+assert doc_has '`Run Gemini probe`'
+for weather_text in 'weather · last %g h' 'window: %g h' 'Run Gemini probe' 'cut ×%d'; do
+  assert grep -Fq "$weather_text" "$ROOT/hammerspoon/llm-limits.lua"
+done
+assert grep -Fq '{ 1, 2, 3, 6, 12, 24 }' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq '{ "--window", tostring(M.weatherWindowMin) }' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq '"RUNS", "CUT", "STEPS"' "$WEATHER_BIN"
+assert grep -Fq 'os.environ.get("WORKER_STATS_DIR")' "$WEATHER_BIN"
+assert grep -Fq '"cut": entry["cut"]' "$WEATHER_BIN"
+for doctor_state in ' · rescanning' ' · probe running' ' · weather refreshing'; do
+  assert grep -Fq "$doctor_state" "$ROOT/hammerspoon/llm-limits.lua"
+  assert doc_has "$doctor_state"
+done
+assert test "$(grep -Fc 'Run Gemini probe (~3 min, costs Gemini tokens)' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
+
 
 # --- Row cn: Gemini capacity fallback ----------------------------------------
 # One mechanism, one file: a second copy in a consumer would fall back on a different chain, or on

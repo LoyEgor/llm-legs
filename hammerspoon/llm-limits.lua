@@ -414,6 +414,8 @@ local WEATHER_RANK = { ["no-data"] = 0, ok = 1, slow = 2, starved = 3 }
 
 local function appendGeminiWeather(menu)
   local weather = readGeminiWeather()
+  table.insert(menu, { title = infoTitle(string.format("weather · last %g h",
+    (weather and tonumber(weather.window_min) or 60) / 60), false, true), disabled = true })
   if not weather then
     table.insert(menu, { title = infoTitle("models  no data", false, true), disabled = true })
     return nil, "no data"
@@ -430,6 +432,9 @@ local function appendGeminiWeather(menu)
       local row
       if family.state == "no-data" then
         table.insert(parts, "no data")
+        if (tonumber(family.cut) or 0) > 0 then
+          table.insert(parts, string.format("cut ×%d", family.cut))
+        end
         row = infoTitle(table.concat(parts, " · "), false, true)
       else
         local median = tonumber(family.median_step_s)
@@ -437,6 +442,9 @@ local function appendGeminiWeather(menu)
           table.insert(parts, string.format(median >= 10 and "%.0f s/step" or "%.1f s/step", median))
         elseif (tonumber(family.steps) or 0) > 0 then
           table.insert(parts, "– s/step")
+        end
+        if (tonumber(family.cut) or 0) > 0 then
+          table.insert(parts, string.format("cut ×%d", family.cut))
         end
         local errors = tonumber(family.errors_503) or 0
         local errorAge = tonumber(family.last_503_age_s)
@@ -620,14 +628,23 @@ local function kickGeminiWeather(weather, force)
       or now - lastWeatherKick < GEMINI_WEATHER_FRESH_S) then
     return
   end
-  if M.weatherTask and M.weatherTask:isRunning() then return end
+  if M.weatherTask and M.weatherTask:isRunning() then
+    if force then M.weatherRefreshPending = true end
+    return
+  end
   local path = M.geminiWeatherCmd or (repoRoot and repoRoot .. "/bin/gemini-weather")
   if not path then return end
   lastWeatherKick = now
+  local args = M.weatherWindowMin and { "--window", tostring(M.weatherWindowMin) } or {}
   local task = hs.task.new(path, function()
     M.weatherTask = nil
-    if force then hs.alert.show(weatherSummaryLine(readGeminiWeather()), 2.5) end
-  end, {})
+    if M.weatherRefreshPending then
+      M.weatherRefreshPending = nil
+      kickGeminiWeather(nil, true)
+    elseif force then
+      hs.alert.show(weatherSummaryLine(readGeminiWeather()), 2.5)
+    end
+  end, args)
   if not task then return end
   local environment = baseEnvironment()
   local override = os.getenv("GEMINI_WEATHER_DIR")
@@ -1043,25 +1060,44 @@ local function appendDoctor(menu)
     table.insert(items, { title = infoTitle("Rescan now"), fn = function() M.rescanDoctor() end })
   end
   table.insert(items, { title = "-" })
-  table.insert(items, { title = infoTitle("gemini weather", false, true), disabled = true })
-  local weather, weatherState = appendGeminiWeather(items)
+  local geminiItems = {}
+  local weather, weatherState = appendGeminiWeather(geminiItems)
   kickGeminiWeather(weather)
-  table.insert(items, { title = infoTitle("Refresh weather"),
-    fn = function() kickGeminiWeather(readGeminiWeather(), true) end })
+  local windows = {}
+  local selectedWindow = M.weatherWindowMin or 60
+  for _, hours in ipairs({ 1, 2, 3, 6, 12, 24 }) do
+    table.insert(windows, { title = string.format("%d h", hours), checked = selectedWindow == hours * 60,
+      fn = function()
+        M.weatherWindowMin = hours * 60
+        kickGeminiWeather(readGeminiWeather(), true)
+      end })
+  end
+  table.insert(geminiItems, { title = infoTitle(string.format("window: %g h", selectedWindow / 60)),
+    menu = windows })
+  if taskRunning(M.weatherTask) then
+    table.insert(geminiItems, { title = infoTitle("refreshing…", false, true), disabled = true })
+  else
+    table.insert(geminiItems, { title = infoTitle("Refresh weather"),
+      fn = function() kickGeminiWeather(readGeminiWeather(), true) end })
+  end
   if geminiProbePath() then
     if taskRunning(M.geminiProbeTask) then
-      table.insert(items, { title = infoTitle("Gemini probe running…", false, true), disabled = true })
+      table.insert(geminiItems, { title = infoTitle("probe running…", false, true), disabled = true })
     else
-      table.insert(items, { title = infoTitle("Run Gemini probe (~3 min, costs Gemini tokens)"),
+      table.insert(geminiItems, { title = infoTitle("Run Gemini probe"),
         fn = function() M.runGeminiProbe() end })
     end
   end
+  local geminiRunning = (taskRunning(M.geminiProbeTask) and " · probe running" or "")
+    .. (taskRunning(M.weatherTask) and " · weather refreshing" or "")
+  table.insert(items, { title = infoTitle("gemini · " .. weatherState .. geminiRunning), menu = geminiItems })
 
   local doctorText = not snapshot and "review doctor: no snapshot"
     or total > 0 and string.format("review doctor: %d issue%s", total, total == 1 and "" or "s")
     or "review doctor: OK"
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
     .. " · gemini " .. weatherState
+    .. (taskRunning(M.doctorRescanTask) and " · rescanning" or "") .. geminiRunning
   local quiet = total == 0 and weatherState ~= "starved" and weatherState ~= "slow"
   table.insert(menu, { title = infoTitle(title, false, quiet), menu = items })
   table.insert(menu, { title = "-" })

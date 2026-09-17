@@ -8,6 +8,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 
 HEALTHY_STEP_S = 3
 SLOW_FACTOR = 3
@@ -27,6 +28,9 @@ CAPACITY_MODEL_RE = re.compile(re.escape(CAPACITY_PHRASE) + r" (\S+)")
 RESPONSE_ID_RE = re.compile(r"ResponseID: (\S+)")
 LABEL_FAMILY_RE = re.compile(r"(?i)^gemini (\d+(?:\.\d+)?) (.+?)(?: \((?:high|medium|low)\))?$")
 SLUG_FAMILY_RE = re.compile(r"^(gemini-\d+(?:\.\d+)?-[a-z0-9-]+?)(?:-(?:high|medium|low))?$")
+RATER_MODEL_RE = re.compile(r"^(?:agy-)?(flash38|flash37|flash36|pro)(?:-(?:high|medium|low))?$")
+RATER_MODEL_FAMILY = {"flash38": "gemini-3.8-flash", "flash37": "gemini-3.7-flash",
+                      "flash36": "gemini-3.6-flash", "pro": "gemini-3.1-pro"}
 
 
 def family_of(name):
@@ -75,13 +79,19 @@ def worker_run_log(run_dir):
     return os.path.join(run_dir, "log")
 
 
-def candidate_logs():
+def bench_directories():
+    claudeb = os.environ.get("CLAUDEB_DIR") or os.path.join(base_home(), ".claude-profiles", ".claudeb")
+    stats = os.environ.get("WORKER_STATS_DIR") or os.path.join(claudeb, "worker-stats")
+    return glob.glob(os.path.join(stats, "benches", "*"))
+
+
+def candidate_logs(benches):
     home = base_home()
-    claudeb = os.environ.get("CLAUDEB_DIR") or os.path.join(home, ".claude-profiles", ".claudeb")
     runs = os.environ.get("WORKER_RUN_DIR") or os.path.join(home, ".cache", "claude-worker-runs")
     profiles = os.environ.get("GEMINIB_PROFILES_DIR") or os.path.join(home, ".gemini-profiles")
     paths = []
-    paths += glob.glob(os.path.join(claudeb, "worker-stats", "benches", "*", "agy-agy-*.log"))
+    for bench in benches:
+        paths += glob.glob(os.path.join(bench, "agy-agy-*.log"))
     paths += [worker_run_log(run) for run in glob.glob(os.path.join(runs, "gemini-*"))]
     paths += glob.glob(os.path.join(geminib_cache_dir(), "logs", "*.log"))
     paths += glob.glob(os.path.join(profiles, "*", ".gemini", "antigravity-cli", "log", "*.log"))
@@ -93,6 +103,37 @@ def candidate_logs():
             seen.add(real)
             unique.append(path)
     return unique
+
+
+def panel_cuts(bench, cutoff, now):
+    try:
+        with open(os.path.join(bench, "meta.json"), encoding="utf-8") as handle:
+            meta = json.load(handle)
+    except (OSError, ValueError):
+        return
+    runs = meta.get("rater_runs") if isinstance(meta, dict) else None
+    for run in runs if isinstance(runs, list) else []:
+        if not isinstance(run, dict) or run.get("killed") != "panel":
+            continue
+        try:
+            stamp = datetime.fromisoformat(run["finished_at"].replace("Z", "+00:00"))
+        except (KeyError, AttributeError, TypeError, ValueError, OverflowError):
+            continue
+        # A stamp without a zone is review-bench's older spelling and always meant UTC; read as
+        # local time it lands hours outside the window and silently drops the cut.
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        finished = stamp.timestamp()
+        if not cutoff <= finished <= now:
+            continue
+        served = run.get("served_model")
+        family = family_of(served) if isinstance(served, str) else None
+        if family is None:
+            slug = run.get("model")
+            match = RATER_MODEL_RE.match(slug) if isinstance(slug, str) else None
+            family = RATER_MODEL_FAMILY[match.group(1)] if match else None
+        if family:
+            yield family
 
 
 def stamp_epoch(match, mtime):
@@ -214,12 +255,16 @@ def collect(window_min, now):
     def family_stats(family):
         return stats.setdefault(family, {
             "runs": set(), "probe_runs": set(), "steps": 0, "intervals": [], "errors": 0,
-            "last_error": None, "last_step": None, "hold": None,
+            "last_error": None, "last_step": None, "hold": None, "cut": 0,
         })
 
     scanned = 0
     responses = set()
-    for path in candidate_logs():
+    benches = bench_directories()
+    for bench in benches:
+        for family in panel_cuts(bench, cutoff, now):
+            family_stats(family)["cut"] += 1
+    for path in candidate_logs(benches):
         try:
             mtime = os.stat(path).st_mtime
         except OSError:
@@ -274,7 +319,7 @@ def collect(window_min, now):
         p90 = round(percentile(intervals, 0.9), 1) if intervals else None
         hold_in_window = entry["hold"] is not None and entry["hold"] >= cutoff
         state = state_of(entry["errors"] + (1 if hold_in_window else 0), median, bool(entry["runs"]))
-        if family not in KNOWN_FAMILIES and state == "no-data":
+        if family not in KNOWN_FAMILIES and state == "no-data" and not entry["cut"]:
             continue
         families.append({
             "family": family,
@@ -282,6 +327,7 @@ def collect(window_min, now):
             "short": family_short(family),
             "state": state,
             "runs": len(entry["runs"]),
+            "cut": entry["cut"],
             "probe_runs": len(entry["probe_runs"]),
             "steps": entry["steps"],
             "median_step_s": median,
@@ -317,13 +363,13 @@ def number(value):
 
 
 def render_table(report, cache_path):
-    header = ("FAMILY", "STATE", "RUNS", "STEPS", "MED S", "P90 S", "503", "LAST 503", "LAST STEP", "HOLD")
+    header = ("FAMILY", "STATE", "RUNS", "CUT", "STEPS", "MED S", "P90 S", "503", "LAST 503", "LAST STEP", "HOLD")
     rows = [header]
     for entry in report["families"]:
         rows.append((
             entry["family"], entry["state"],
             "%d (%d probe)" % (entry["runs"], entry["probe_runs"]) if entry["probe_runs"] else str(entry["runs"]),
-            str(entry["steps"]),
+            str(entry["cut"]), str(entry["steps"]),
             number(entry["median_step_s"]), number(entry["p90_step_s"]), str(entry["errors_503"]),
             short_age(entry["last_503_age_s"]), short_age(entry["last_step_age_s"]),
             short_age(entry["hold_age_s"]),
