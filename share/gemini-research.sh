@@ -18,7 +18,8 @@ research_sandbox_profile() {
     profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
     writable+=("$profile_home")
   fi
-  writable+=("$HOME/.gemini" "${TMPDIR:-/tmp}" /private/tmp
+  mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
+  writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" "${TMPDIR:-/tmp}" /private/tmp
     "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
   printf '(version 1)\n(allow default)\n(deny file-write*)\n'
   for path in "${writable[@]}"; do

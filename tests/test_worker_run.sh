@@ -41,6 +41,8 @@ export WORKER_RUN_CONFIG_FILE="$WORK/worker-model"
 # A worker harness exports WORKER_PICK_CONFIG_FILE at Egor's real toggle, and worker-run reads the
 # pin through it: inherited, every case here would be judged on whatever he has pinned today.
 unset WORKER_PICK_CONFIG_FILE
+# Inherited from a worker harness, the launcher would be that harness's chat in every case below.
+unset CLAUDE_LAUNCHER_SESSION
 export WORKER_RUN_CODEX_CONFIG="$WORK/config.toml"
 export WORKER_RUN_WORKER_PICK="$WORK/bin/worker-pick"
 export WORKER_RUN_CLAUDEB="$WORK/bin/claudeb"
@@ -396,13 +398,15 @@ model_effort_tests() {
   assert await_done
   assert grep -qx 'ARG=fable' "$CALL_LOG"
   assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = low
-  for spec in codex:gpt-6-astra:max codex:gpt-5.6-sol:max claudeb:opus:ultra gemini:flash38:xhigh grok:auto:low grok:grok-4.6:medium; do
+  # `gemini:flash38:ultra` and not `xhigh`: every effort the table knows is RAISED to high on a
+  # Gemini leg, so only a word that is no effort at all can be refused there.
+  for spec in codex:gpt-6-astra:max codex:gpt-5.6-sol:max claudeb:opus:ultra gemini:flash38:ultra grok:auto:low grok:grok-4.6:medium; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     effort_refused "$vendor" "$model" "$effort"
   done
   effort_refused codex gpt-6-astra max --account main --resume codex-resume
   effort_refused claudeb opus ultra --account main --resume claude-resume
-  effort_refused gemini flash38 xhigh --account main --resume gemini-resume
+  effort_refused gemini flash38 ultra --account main --resume gemini-resume
   effort_refused grok auto low --account main --resume grok-resume
   set_config 'codex_effort=max'
   clear_stub
@@ -657,6 +661,11 @@ EOF
     assert grep -qx 'STATUS: done' "$WORK/wait.out"
     CLAUDE_CODE_SESSION_ID=another-launcher WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate
     assert await_done
+    rc=0
+    CLAUDE_CODE_SESSION_ID=nested-worker CLAUDE_LAUNCHER_SESSION=reliability-launcher WORKER_RUN_ALLOW_DUPLICATE=0 \
+      "$RUNNER" start codex --brief "$WORK/brief" --account duplicate >"$WORK/duplicate.out" 2>&1 || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/duplicate.out"
     printf 'different brief\n' >"$WORK/different-brief"
     WORKER_RUN_ALLOW_DUPLICATE=0 start_ok codex --account duplicate --brief "$WORK/different-brief"
     assert await_done
@@ -2014,6 +2023,10 @@ assert grep -q '^STATUS: running$' <<<"$running_report"
 assert grep -q '^SESSION: gemini-conversation$' <<<"$running_report"
 assert await_done
 unset STUB_SLEEP
+printf 'server.go:1017] Created conversation relaunched-conversation\n' >>"$RUN_DIR/log"
+assert grep -q '^SESSION: relaunched-conversation$' <<<"$("$RUNNER" report "$RUN_ID")"
+printf 'printmode.go:174] Print mode: starting (conversationID="resumed-conversation")\n' >>"$RUN_DIR/log"
+assert grep -q '^SESSION: resumed-conversation$' <<<"$("$RUNNER" report "$RUN_ID")"
 
 for vendor in claudeb codex gemini; do
   clear_stub
@@ -2247,15 +2260,41 @@ export PICK_RC=2
 start_ok gemini --account main
 assert meta_agy_is 'gemini-3.8-flash-high'
 assert await_done
-start_ok gemini --account main --model flash38 --effort low
-assert meta_agy_is 'gemini-3.8-flash-low'
+# Every Gemini leg runs high: an effort below it is RAISED with one note on stderr, never refused,
+# and an effort above it is the same word for the same tier.
+for forced in low medium xhigh max; do
+  clear_stub
+  start_ok gemini --account main --model flash38 --effort "$forced"
+  assert meta_agy_is 'gemini-3.8-flash-high'
+  assert grep -qx 'gemini effort forced to high' "$WORK/start.err"
+  assert await_done
+done
+# The knob is raised the same way the flag is.
+clear_stub
+set_config 'gemini_model=flash38' 'gemini_effort=low'
+start_ok gemini --account main
+assert meta_agy_is 'gemini-3.8-flash-high'
 assert await_done
-# Unlike the Pro this leg used to run, 3.8 Flash serves `medium` too, so it is a launch and not
-# the refusal the pair used to be.
-start_ok gemini --account main --model flash38 --effort medium
-assert meta_agy_is 'gemini-3.8-flash-medium'
+set_config 'gemini_model=flash38' 'gemini_effort=high'
+# The other families and Pro, each at the one effort they run. Pro takes the row `h` label: agy
+# still serves the `-high` Pro slug as Flash.
+for pair in 'flash37:gemini-3.7-flash-high' 'flash36:gemini-3.6-flash-high' 'pro:Gemini 3.1 Pro (High)'; do
+  clear_stub
+  start_ok gemini --account main --model "${pair%%:*}"
+  assert meta_agy_is "${pair#*:}"
+  assert await_done
+done
+# No model named anywhere: the table's first gemini row is the default, and it is the one place
+# the incident's temporary 3.7 default lives.
+clear_stub
+set_config 'gemini_effort=high'
+assert test "$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")" = flash37
+start_ok gemini --account main
+assert meta_agy_is 'gemini-3.7-flash-high'
 assert await_done
-for bad_effort in xhigh max ultra tiny; do
+set_config 'gemini_model=flash38' 'gemini_effort=high'
+# A word the table knows nothing of is a typo, and a typo is still refused rather than raised.
+for bad_effort in ultra tiny; do
   clear_stub
   rc=0
   "$RUNNER" start gemini --brief "$WORK/brief" --account main --model flash38 --effort "$bad_effort" >"$WORK/reject.out" 2>&1 || rc=$?
@@ -5609,15 +5648,15 @@ set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium' \
 export PICK_RC=0 PICK_ACCOUNT=picked
 printf 'picked\n' >"$STUB_DIR/gemini_profiles"
 for spec in 'claudeb:sonnet' 'claudeb:haiku' 'codex:gpt-5.6-terra' \
-            'codex:gpt-5.6-luna' 'codex:gpt-5.6' 'gemini:flash' 'gemini:flash36' \
-            'gemini:flash35' 'gemini:flash37' 'gemini:pro' 'grok:grok-4.5'; do
+            'codex:gpt-5.6-luna' 'codex:gpt-5.6' 'gemini:flash' \
+            'gemini:flash35' 'gemini:flash39' 'grok:grok-4.5'; do
   vendor=${spec%%:*}
   bad=${spec#*:}
   assert model_refused "$vendor" "$bad" --model "$bad"
 done
 
 # The same refusal when the toggle file carries it and no brief names a model at all.
-for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=pro' 'grok:grok_model=grok-4.5'; do
+for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-4.5'; do
   vendor=${spec%%:*}
   key=${spec#*:}
   set_config "$key" 'claudeb_effort=high' 'codex_effort=medium' 'gemini_effort=high' 'grok_effort=high'

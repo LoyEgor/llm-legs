@@ -414,6 +414,85 @@ local function appendDoctor(menu)
   table.insert(menu, { title = "-" })
 end
 
+local function geminiWeatherPath()
+  if M.geminiWeatherPath then return M.geminiWeatherPath end
+  local override = os.getenv("GEMINI_WEATHER_DIR")
+  if override and override ~= "" then return override .. "/latest.json" end
+  return home .. "/.cache/gemini-weather/latest.json"
+end
+
+local function readGeminiWeather()
+  local ok, decoded = pcall(function()
+    local file = io.open(geminiWeatherPath(), "r")
+    if not file then return nil end
+    local contents = file:read("*a")
+    file:close()
+    return hs.json.decode(contents)
+  end)
+  if not ok or type(decoded) ~= "table" or type(decoded.families) ~= "table" then return nil end
+  return decoded
+end
+
+local function weatherAge(seconds)
+  seconds = tonumber(seconds)
+  if not seconds then return nil end
+  if seconds < 60 then return string.format("%ds", seconds) end
+  if seconds < 3600 then return string.format("%dm", math.floor(seconds / 60)) end
+  return string.format("%dh", math.floor(seconds / 3600))
+end
+
+-- One row per model family from gemini-weather's cache; states and thresholds are decided there.
+local function appendGeminiWeather(menu)
+  local weather = readGeminiWeather()
+  if not weather then
+    table.insert(menu, { title = infoTitle("models  no data", false, true), disabled = true })
+    return nil
+  end
+  local generated = tonumber(weather.generated_at) or 0
+  local stale = os.time() >= (tonumber(weather.valid_until) or 0)
+  for _, family in ipairs(weather.families) do
+    if type(family) == "table" and type(family.label) == "string" then
+      local ageShift = math.max(0, os.time() - generated)
+      local parts = { family.label }
+      local row
+      if family.state == "no-data" then
+        table.insert(parts, "no data")
+        row = infoTitle(table.concat(parts, " · "), false, true)
+      else
+        local median = tonumber(family.median_step_s)
+        if median then
+          table.insert(parts, string.format(median >= 10 and "%.0f s/step" or "%.1f s/step", median))
+        elseif (tonumber(family.steps) or 0) > 0 then
+          table.insert(parts, "– s/step")
+        end
+        local errors = tonumber(family.errors_503) or 0
+        local errorAge = tonumber(family.last_503_age_s)
+        local holdAge = tonumber(family.hold_age_s)
+        if errors > 0 then
+          table.insert(parts, string.format("503 ×%d", errors)
+            .. (errorAge and ", last " .. weatherAge(errorAge + ageShift) .. " ago" or ""))
+        elseif family.state == "starved" then
+          table.insert(parts, "hold" .. (holdAge and " " .. weatherAge(holdAge + ageShift) .. " ago" or ""))
+        else
+          table.insert(parts, "no 503")
+        end
+        local text = table.concat(parts, " · ")
+        if stale then
+          row = infoTitle(text .. " · stale", false, true)
+        elseif family.state == "starved" then
+          row = infoTitle(text .. "  ⛔", true)
+        elseif family.state == "slow" then
+          row = infoTitle(text .. "  🐢")
+        else
+          row = infoTitle(text)
+        end
+      end
+      table.insert(menu, { title = row, disabled = true })
+    end
+  end
+  return weather
+end
+
 local function readLlmLimits()
   local ok, result, reason = pcall(function()
     local file = io.open(M.cachePath, "r")
@@ -543,6 +622,30 @@ local function newCollectorTask(callback, args, envExtra)
     task:setEnvironment(environment)
   end
   return task
+end
+
+local GEMINI_WEATHER_FRESH_S = 60
+local lastWeatherKick = 0
+
+-- The rows render the cache as it is; this refreshes it for the next open, off the menu thread.
+local function kickGeminiWeather(weather)
+  local now = os.time()
+  local generated = type(weather) == "table" and tonumber(weather.generated_at) or 0
+  if now - generated < GEMINI_WEATHER_FRESH_S or now - lastWeatherKick < GEMINI_WEATHER_FRESH_S then
+    return
+  end
+  if M.weatherTask and M.weatherTask:isRunning() then return end
+  local path = M.geminiWeatherCmd or (repoRoot and repoRoot .. "/bin/gemini-weather")
+  if not path then return end
+  lastWeatherKick = now
+  local task = hs.task.new(path, function() M.weatherTask = nil end, {})
+  if not task then return end
+  local environment = baseEnvironment()
+  local override = os.getenv("GEMINI_WEATHER_DIR")
+  if override and override ~= "" then environment.GEMINI_WEATHER_DIR = override end
+  task:setEnvironment(environment)
+  M.weatherTask = task
+  task:start()
 end
 
 local actionLogPath = os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
@@ -1986,6 +2089,7 @@ function M.menuItems()
           menu = {{ title = "Pin for workers", checked = true, fn = clearPin }},
         })
       end
+      if entry.key == "gemini" then kickGeminiWeather(appendGeminiWeather(menu)) end
       if renderedAccountRows then
         table.insert(menu, { title = "-" })
       end

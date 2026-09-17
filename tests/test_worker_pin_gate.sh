@@ -520,7 +520,7 @@ assert allowed "$(jq -cn --arg p "$PIN_FILE" \
 # The same door refuses storing a model no implementation worker may run. Unlike the pin this one
 # takes no grant: a cheap default here silently downgrades every worker after it.
 rm -f "$GRANT"
-for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 gemini_model=pro grok_model=grok-4.5 codex_model=gpt-5.6-terra; do
+for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 gemini_model=flash39 grok_model=grok-4.5 codex_model=gpt-5.6-terra; do
   assert denied "$(write_event "$PIN_FILE" "worker=auto
 $bad
 ")"
@@ -530,7 +530,7 @@ done
 # The deny names the offender and the allowed list, and says nothing about the pin.
 model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
-assert contains "$model_deny" 'claudeb opus|fable; codex gpt-6-astra|gpt-5.6-sol; gemini flash38; grok auto|grok-4.6'
+assert contains "$model_deny" 'claudeb opus|fable; codex gpt-6-astra|gpt-5.6-sol; gemini flash37|flash38|flash36|pro; grok auto|grok-4.6'
 assert lacks "$model_deny" 'is Egor'
 # A grant unblocks the pin and never the model.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
@@ -540,7 +540,7 @@ claudeb_model=sonnet
 # The Bash door's own model refusal, proved on an OPEN door: with no grant the pin rule denies
 # every write here, so the shell cases above stay green even if the model check never ran.
 assert allowed "$(bash_event "printf 'claudeb_profile=beta\n' >> $PIN_FILE")"
-for bad in claudeb_model=sonnet gemini_model=pro; do
+for bad in claudeb_model=sonnet gemini_model=flash35; do
   bash_model_deny=$(bash_event "printf '$bad\n' >> $PIN_FILE")
   assert denied "$bash_model_deny"
   assert contains "$bash_model_deny" "${bad/_model=/=}"
@@ -590,10 +590,10 @@ assert allowed "$(bash_event "grep claudeb_model=sonnet $PIN_FILE")"
 # door judged the presence of the text and refused a command storing an allowed model. Proved on an
 # OPEN pin door, since with no grant the pin rule denies every write here whatever it carries.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
-assert allowed "$(bash_event "sed -i '' 's/gemini_model=pro/gemini_model=flash38/' $PIN_FILE")"
-sed_model_deny=$(bash_event "sed -i '' 's/gemini_model=flash38/gemini_model=pro/' $PIN_FILE")
+assert allowed "$(bash_event "sed -i '' 's/gemini_model=flash35/gemini_model=flash38/' $PIN_FILE")"
+sed_model_deny=$(bash_event "sed -i '' 's/gemini_model=flash38/gemini_model=flash35/' $PIN_FILE")
 assert denied "$sed_model_deny"
-assert contains "$sed_model_deny" 'gemini=pro'
+assert contains "$sed_model_deny" 'gemini=flash35'
 # The pin lines stay the pin's: the same shape over a `*_profile=` line is refused by its own rule.
 rm -f "$GRANT"
 profile_sed_deny=$(bash_event "sed -i '' 's/claudeb_profile=alpha/claudeb_profile=beta/' $PIN_FILE")

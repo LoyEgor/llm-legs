@@ -89,7 +89,7 @@ disable_account() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -433,6 +433,260 @@ show_status() {
   parallel_account_output status_account_line
 }
 
+# --- Capacity fallback, the one mechanism every Gemini consumer gets ---
+# Google answers an overloaded Flash family with a 503 `No capacity available for model …`, and agy
+# retries that in process with a long backoff: a starved family reads as a stall, never as an exit.
+# So the launch watches agy's log instead — first sight of the phrase ends the attempt and relaunches
+# the identical command one family down at the same effort. Workers, the research leg and
+# review-bench cells all reach agy through here, so none of them carries a fallback of its own.
+capacity_phrase='No capacity available for model'
+capacity_step_mark='streamGenerateContent'
+capacity_chain='gemini-3.8-flash gemini-3.7-flash gemini-3.6-flash'
+agy_env=()
+
+capacity_state_dir() { printf '%s' "${GEMINIB_CACHE_DIR:-$base_home/.cache/geminib}"; }
+
+capacity_hold_seconds() {
+  local value="${GEMINIB_CAPACITY_HOLD_S:-600}"
+  [[ "$value" =~ ^[0-9]+$ ]] || value=600
+  printf '%s' "$value"
+}
+
+file_stamp() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || printf '0'; }
+file_bytes() { stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || printf '0'; }
+
+capacity_in_chain() { case " $capacity_chain " in *" ${1:-} "*) return 0 ;; esac; return 1; }
+
+capacity_next() { # family → the family below it; fails at the end of the chain
+  local member seen=false
+  for member in $capacity_chain; do
+    if [ "$seen" = true ]; then printf '%s' "$member"; return 0; fi
+    [ "$member" != "$1" ] || seen=true
+  done
+  return 1
+}
+
+capacity_family() { # slug → the slug without its effort suffix
+  case "$1" in
+    *-high) printf '%s' "${1%-high}" ;;
+    *-medium) printf '%s' "${1%-medium}" ;;
+    *-low) printf '%s' "${1%-low}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+capacity_effort() { # slug → its effort suffix, empty when the slug carries none
+  case "$1" in
+    *-high) printf -- '-high' ;;
+    *-medium) printf -- '-medium' ;;
+    *-low) printf -- '-low' ;;
+  esac
+}
+
+capacity_held() { # family
+  local marker age
+  marker="$(capacity_state_dir)/capacity/$1"
+  [ -f "$marker" ] || return 1
+  age=$(($(date +%s) - $(file_stamp "$marker")))
+  [ "$age" -ge 0 ] && [ "$age" -lt "$(capacity_hold_seconds)" ]
+}
+
+capacity_mark() { # family
+  local dir="$(capacity_state_dir)/capacity"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  : >"$dir/$1" 2>/dev/null || return 0
+}
+
+# Only what THIS attempt wrote: the phrase that sent the previous attempt down the chain is still
+# in the log the next one appends to. A log agy truncated reads from its own start.
+capacity_seen() { # log offset
+  local log="$1" offset="$2"
+  [ -e "$log" ] || return 1
+  [ "$(file_bytes "$log")" -ge "$offset" ] || offset=0
+  LC_ALL=C grep -Fq "$capacity_phrase" < <(tail -c "+$((offset + 1))" "$log" 2>/dev/null)
+}
+
+capacity_steps() { # log offset → model steps this attempt has taken
+  local log="$1" offset="$2" count
+  [ -e "$log" ] || { printf '0'; return; }
+  [ "$(file_bytes "$log")" -ge "$offset" ] || offset=0
+  count=$(LC_ALL=C grep -Fc "$capacity_step_mark" < <(tail -c "+$((offset + 1))" "$log" 2>/dev/null)) || :
+  printf '%s' "${count:-0}"
+}
+
+# A relaunch re-feeds the brief from scratch, which is only safe before the model took a step: past
+# that the workdir holds half-finished edits, so the attempt is left to agy's own retry.
+capacity_watch() { # log offset sentinel agy-pgid
+  while :; do
+    [ "$(capacity_steps "$1" "$2")" -eq 0 ] || return 0
+    if capacity_seen "$1" "$2"; then
+      [ "$(capacity_steps "$1" "$2")" -eq 0 ] || return 0
+      : >"$3" 2>/dev/null || :
+      capacity_end "$4" TERM
+      sleep 2
+      capacity_end "$4" KILL
+      return 0
+    fi
+    sleep 1
+  done
+}
+
+# Job control gives each background job a group of its own, so the group is the whole tree agy
+# built; the bare pid is the fallback for a job that somehow leads none.
+capacity_end() { # pgid signal
+  [ -n "${1:-}" ] || return 0
+  kill -"$2" "-$1" 2>/dev/null || kill -"$2" "$1" 2>/dev/null || :
+}
+
+capacity_group_alive() { # pgid
+  [ -n "${1:-}" ] && kill -0 "-$1" 2>/dev/null
+}
+
+# agy's group is out of reach of a group kill aimed at this wrapper, so the wrapper is the one that
+# ends it. The grace stays under worker-run's 5 s TERM→KILL escalation on the wrapper itself.
+capacity_stop() { # signal exit-code
+  local ticks=0
+  capacity_end "$watcher" TERM
+  capacity_end "$pid" "$1"
+  while capacity_group_alive "$pid" && [ "$ticks" -lt 30 ]; do
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  exit "$2"
+}
+
+capacity_cleanup() {
+  capacity_group_alive "$watcher" && capacity_end "$watcher" KILL
+  capacity_group_alive "$pid" && capacity_end "$pid" KILL
+  rm -f "$sentinel"
+  [ -z "$stdin_file" ] || rm -f "$stdin_file"
+}
+
+launch_agy() { # agy's own arguments; env assignments come from agy_env
+  local -a args
+  args=(${@+"$@"})
+  local headless=false argument index slug='' family='' effort='' log='' next=''
+  local model_index=-1 model_inline=false
+  local stdin_file='' sentinel='' offset=0 rc=0 pid='' watcher='' monitor=false steps=0
+  for argument in ${args[@]+"${args[@]}"}; do
+    case "$argument" in --print | --print=*) headless=true ;; esac
+  done
+  for ((index = 0; index < ${#args[@]}; index++)); do
+    case "${args[$index]}" in
+      --model) model_index=$index; slug="${args[$((index + 1))]:-}" ;;
+      --model=*) model_index=$index; model_inline=true; slug="${args[$index]#--model=}" ;;
+      --log-file) log="${args[$((index + 1))]:-}" ;;
+      --log-file=*) log="${args[$index]#--log-file=}" ;;
+    esac
+  done
+  family=$(capacity_family "$slug")
+  effort=$(capacity_effort "$slug")
+  if [ "${GEMINIB_CAPACITY_FALLBACK:-1}" = 0 ] || [ "$headless" != true ] ||
+     ! capacity_in_chain "$family" || ! capacity_next "$family" >/dev/null; then
+    [ -z "$slug" ] || printf 'geminib: model %s\n' "$slug" >&2
+    exec env ${agy_env[@]+"${agy_env[@]}"} "$agy_bin" ${args[@]+"${args[@]}"}
+  fi
+  # A family that answered 503 inside the hold window is skipped before the first launch; once the
+  # hold lapses it is tried again, which is the whole of "back up when it is served again".
+  while capacity_held "$family" && next=$(capacity_next "$family"); do
+    printf 'geminib: capacity hold %s -> %s\n' "$slug" "$next$effort" >&2
+    family=$next
+    slug="$next$effort"
+  done
+  if [ -z "$log" ]; then
+    mkdir -p "$(capacity_state_dir)/logs" 2>/dev/null || :
+    log="$(capacity_state_dir)/logs/$(date -u '+%Y%m%dT%H%M%SZ')-$$.log"
+    # Prepended, never appended: a caller that reads its own launch line off the tail — the image
+    # leg takes the prompt from the last argument — must find it where it put it.
+    args=(--log-file "$log" ${args[@]+"${args[@]}"})
+    model_index=$((model_index + 2))
+  fi
+  # A relaunch re-feeds whatever the first attempt was given. A character device — a tty, or the
+  # /dev/null a detached supervisor hands down — carries no prompt worth saving, and draining one
+  # that never closes would hang the launch before agy ever ran.
+  if [ -f /dev/stdin ] || [ -p /dev/stdin ]; then
+    stdin_file="${TMPDIR:-/tmp}/geminib-stdin.$$"
+    cat >"$stdin_file" 2>/dev/null || :
+  fi
+  sentinel="${TMPDIR:-/tmp}/geminib-capacity.$$"
+  trap capacity_cleanup EXIT
+  trap 'capacity_stop TERM 143' TERM
+  trap 'capacity_stop INT 130' INT
+  case "$-" in *m*) monitor=true ;; esac
+  set -m
+  while :; do
+    if [ "$model_inline" = true ]; then args[$model_index]="--model=$slug"; else args[$((model_index + 1))]="$slug"; fi
+    offset=0
+    [ ! -e "$log" ] || offset=$(file_bytes "$log")
+    rm -f "$sentinel"
+    if [ -n "$stdin_file" ]; then
+      env ${agy_env[@]+"${agy_env[@]}"} "$agy_bin" ${args[@]+"${args[@]}"} <"$stdin_file" &
+    else
+      env ${agy_env[@]+"${agy_env[@]}"} "$agy_bin" ${args[@]+"${args[@]}"} &
+    fi
+    pid=$!
+    watcher=''
+    next=$(capacity_next "$family") || next=''
+    if [ -n "$next" ]; then
+      capacity_watch "$log" "$offset" "$sentinel" "$pid" &
+      watcher=$!
+    fi
+    rc=0
+    wait "$pid" || rc=$?
+    [ -z "$watcher" ] || capacity_end "$watcher" TERM
+    [ -z "$watcher" ] || wait "$watcher" 2>/dev/null || :
+    [ -n "$next" ] || break
+    # The sentinel is the watcher's verdict; the log is re-read for the attempt that printed the
+    # phrase and died between two polls. A run that ended WELL after agy retried past one is not a
+    # capacity failure, so a clean exit ends the chain.
+    if [ ! -e "$sentinel" ] && { [ "$rc" -eq 0 ] || ! capacity_seen "$log" "$offset"; }; then
+      break
+    fi
+    steps=$(capacity_steps "$log" "$offset")
+    if [ "$steps" -gt 0 ]; then
+      capacity_mark "$family"
+      printf 'geminib: capacity %s after %s steps, not relaunched\n' "$family" "$steps" >&2
+      [ "$rc" -ne 0 ] || rc=1
+      break
+    fi
+    capacity_mark "$family"
+    printf 'geminib: capacity fallback %s -> %s\n' "$slug" "$next$effort" >&2
+    family=$next
+    slug="$next$effort"
+  done
+  [ "$monitor" = true ] || set +m
+  printf 'geminib: model %s\n' "$slug" >&2
+  exit "$rc"
+}
+
+# A review-bench cell resolves agy itself and runs it under a private sandbox HOME the account's auth
+# is already seeded into, so `profile` — which would point HOME somewhere else — can never sit in its
+# tree. This is the same launch with the caller's environment left exactly as it is.
+agy_launch() {
+  local binary=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --agy)
+        binary="${2:-}"
+        shift
+        [ "$#" -eq 0 ] || shift
+        ;;
+      --) shift; break ;;
+      *)
+        printf 'usage: geminib agy-launch --agy <path> -- <agy args...>\n' >&2
+        exit 2
+        ;;
+    esac
+  done
+  if [ -z "$binary" ] || [ ! -x "$binary" ]; then
+    printf 'geminib: agy-launch needs an executable agy binary (--agy)\n' >&2
+    exit 2
+  fi
+  agy_bin="$binary"
+  agy_env=()
+  launch_agy "$@"
+}
+
 run_account() {
   local allow_create="$1" name="${2:-}" directory created=false arg
   if [ "$allow_create" = true ] && { [ "$name" = -h ] || [ "$name" = --help ]; }; then
@@ -462,7 +716,8 @@ run_account() {
       printf 'geminib: unknown account: %s\n' "$name" >&2
       exit 2
     fi
-    exec env HOME="$base_home" "$agy_bin" "$@"
+    agy_env=(HOME="$base_home")
+    launch_agy "$@"
   fi
   directory="$profiles_dir/$name"
   if [ ! -d "$directory" ]; then
@@ -484,7 +739,8 @@ run_account() {
   fi
   ensure_profile "$directory"
   [ "$created" != true ] || announce_account_added "$geminib_root" gemini "$name"
-  exec env HOME="$directory" GEMINIB_BASE_HOME="$base_home" "$agy_bin" "$@"
+  agy_env=(HOME="$directory" GEMINIB_BASE_HOME="$base_home")
+  launch_agy "$@"
 }
 
 export_token() {
@@ -690,6 +946,7 @@ show_help() {
   printf '%s\n' \
     'geminib profile <name> [agy args...]  Open an isolated profile; creates it if missing (Antigravity asks you to log in once). Aliases: p, run.' \
     'geminib <name> exec [args...]' \
+    'geminib agy-launch --agy <path> -- <agy args...>  Run an already-resolved agy binary with the capacity fallback, leaving the environment (its HOME) untouched; for a sandboxed consumer that seeds its own auth.' \
     'geminib add <name>                    Create a profile without launching; prints the login command.' \
     'geminib remove <name>                 Forget a profile and prune its cached quota; main leaves only a marker.' \
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
@@ -741,6 +998,10 @@ case "${1:-}" in
   export-token)
     shift
     export_token "$@"
+    ;;
+  agy-launch)
+    shift
+    agy_launch "$@"
     ;;
   profile|p|run)
     shift

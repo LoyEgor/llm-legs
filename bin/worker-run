@@ -1462,7 +1462,7 @@ record_worker_session() {
 }
 
 refuse_live_run() { # brief resume
-  local brief="$1" resume="$2" root entry directory pid now started sha other_sha
+  local brief="$1" resume="$2" root entry directory pid now started sha other_sha owner
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
   if [ -n "$resume" ]; then
     for entry in "$root"/*/worker-session; do
@@ -1477,12 +1477,15 @@ refuse_live_run() { # brief resume
     done
   fi
   [ "${WORKER_RUN_ALLOW_DUPLICATE:-0}" != 1 ] || return 0
-  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] || return 0
+  # The same owner start_run writes into `launcher`: inside a worker CLAUDE_CODE_SESSION_ID is the
+  # worker's own chat and never matches, so a nested duplicate would slip through.
+  owner=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}
+  [ -n "$owner" ] || return 0
   sha=$(shasum -a 256 "$brief" | awk '{print $1}')
   [ -n "$sha" ] || return 0
   now=$(date +%s)
   for entry in "$root"/*/launcher; do
-    [ -f "$entry" ] && grep -qxF -- "$CLAUDE_CODE_SESSION_ID" "$entry" || continue
+    [ -f "$entry" ] && grep -qxF -- "$owner" "$entry" || continue
     directory=${entry%/launcher}
     [ ! -e "$directory/exit_code" ] || continue
     started=$(jq -r '.pid_started_at // .started_at // 0' "$directory/meta.json" 2>/dev/null)
@@ -1503,8 +1506,8 @@ start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
   local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
-  local explicit_model='' explicit_effort=''
-  local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc
+  local explicit_model='' explicit_effort='' research_model=''
+  local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
   local web_search=false brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
   local browser_target=''
@@ -1544,9 +1547,10 @@ start_run() {
   [ "$role" = workers ] || { [ "$vendor" = gemini ] && [ "$role" = research ] || usage; }
   if [ "$role" = research ]; then
     [ -z "$resume" ] && [ "$browser" = false ] && [ "$chrome" = false ] || fail 'research does not support resume or browser flags'
-    [ -z "$model" ] || [ "$model" = flash38 ] || fail 'research requires flash38'
+    research_model=$(worker_model_default_model gemini) || fail 'no gemini model table'
+    [ -z "$model" ] || [ "$model" = "$research_model" ] || fail "research requires $research_model"
     [ -z "$effort" ] || [ "$effort" = high ] || fail 'research requires high effort'
-    model=flash38; effort=high
+    model=$research_model; effort=high
     [ -n "$research_timeout" ] || research_timeout=360m
     . "$SCRIPT_DIRECTORY/../share/gemini-research.sh"
     value=$(research_duration_seconds "$research_timeout") && [ "$value" -gt 0 ] || usage
@@ -1624,6 +1628,17 @@ start_run() {
   fi
   effort=${effort:-$(config_value "${vendor}_effort")}
   effort=${effort:-$(worker_model_default_effort "$vendor" "$model")}
+  # Gemini is raised, never refused: Egor's rule is high on every Gemini leg, and a brief asking for
+  # less is asking for a cheaper model than the vendor has, not for a different run. A word the
+  # table knows nothing of is still a typo and still refused below.
+  if [ "$vendor" = gemini ] && [ "$effort" != high ]; then
+    case "$effort" in
+      low | medium | xhigh | max)
+        printf 'gemini effort forced to high\n' >&2
+        effort=high
+        ;;
+    esac
+  fi
   if { [ "$vendor" != codex ] || [ -z "$resume" ] || [ -n "$explicit_effort" ]; } &&
      ! worker_model_effort_allowed "$vendor" "$model" "$effort"; then
     outcome_line EFFORT_REFUSED
@@ -1757,7 +1772,12 @@ start_run() {
     gemini)
       # The effort rides in the agy slug and never in an `--effort` flag (shared-invariants row h).
       case "$model:$effort" in
-        flash38:high | flash38:medium | flash38:low) agy_model="gemini-3.8-flash-$effort" ;;
+        flash38:high) agy_model="gemini-3.8-flash-$effort" ;;
+        flash37:high) agy_model="gemini-3.7-flash-$effort" ;;
+        flash36:high) agy_model="gemini-3.6-flash-$effort" ;;
+        # agy still serves the `gemini-3.1-pro-high` slug as Flash (shared-invariants row h), so the
+        # one effort Pro may run here launches under the label instead.
+        pro:high) agy_model='Gemini 3.1 Pro (High)' ;;
         *) outcome_line GEMINI_UNAVAILABLE; exit 4 ;;
       esac
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
@@ -1862,16 +1882,19 @@ start_run() {
   # produces has no other way to name the chat it belongs to and lands in its own outbox. The
   # supervisor spawned below inherits this export, and `claudeb` passes the environment through
   # untouched.
-  case "${CLAUDE_CODE_SESSION_ID:-}" in
+  # Launched from inside a worker, CLAUDE_CODE_SESSION_ID is that worker's own chat, while the chat
+  # that owns the whole chain — and whose tag cache the task rows read — arrives as the launcher.
+  launcher_session=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-}}
+  case "$launcher_session" in
     ''|.|..|*[!A-Za-z0-9._-]*) ;;
     *)
-      printf '%s\n' "$CLAUDE_CODE_SESSION_ID" >"$directory/launcher"
-      "$SCRIPT_DIRECTORY/statusline-place" add --session "$CLAUDE_CODE_SESSION_ID" --kind worker-start \
+      printf '%s\n' "$launcher_session" >"$directory/launcher"
+      "$SCRIPT_DIRECTORY/statusline-place" add --session "$launcher_session" --kind worker-start \
         --path "$workdir" >/dev/null 2>&1 || :
-      export CLAUDE_LAUNCHER_SESSION="$CLAUDE_CODE_SESSION_ID"
+      export CLAUDE_LAUNCHER_SESSION="$launcher_session"
       # The anchors store's own name for the same fact: every touch a hook inside this worker
       # records is the LAUNCHER's, whatever session id the vendor journals under.
-      export CLAUDE_DEBT_OWNER="$CLAUDE_CODE_SESSION_ID" ;;
+      export CLAUDE_DEBT_OWNER="$launcher_session" ;;
   esac
   # The run's own directory, which a fixing worker writes its verdict rows into. Not
   # `WORKER_RUN_DIR`: that name is the store ROOT everywhere on this machine (claude-setup's
@@ -1992,9 +2015,10 @@ session_id() {
       ;;
     gemini)
       # Live agy v1.1.9 log shapes: 'Created conversation <id>' on a fresh run,
-      # 'conversationID="<id>"' (non-empty) when resuming.
-      session=$(grep -Eo 'Created conversation [A-Za-z0-9._-]+' "$directory/log" 2>/dev/null | head -n1 | awk '{print $3}')
-      [ -n "$session" ] || session=$(grep -Eo 'conversationID="[A-Za-z0-9._-]+"' "$directory/log" 2>/dev/null | head -n1 | sed -E 's/.*"([^"]*)"/\1/')
+      # 'conversationID="<id>"' (non-empty) when resuming. The LAST one: a geminib capacity
+      # relaunch appends a new conversation to the same log after the killed one.
+      session=$(grep -Eo 'Created conversation [A-Za-z0-9._-]+|conversationID="[A-Za-z0-9._-]+"' "$directory/log" 2>/dev/null |
+        tail -n1 | sed -E 's/^Created conversation //; s/^conversationID="([^"]*)"$/\1/')
       ;;
     grok) session=$(grok_end_field "$directory" '.sessionId // empty') ;;
   esac

@@ -369,10 +369,10 @@ for mapping in \
   '"agy-flash36": "gemini-3.6-flash"'; do
   assert grep -Fq -- "$mapping" "$RB_CATALOG"
 done
-assert grep -Fq '"agy-pro": ("low", "high")' "$RB_CATALOG"
-assert grep -Fq '"agy-flash38": ("low", "medium", "high")' "$RB_CATALOG"
-assert grep -Fq '"agy-flash37": ("low", "medium", "high")' "$RB_CATALOG"
-assert grep -Fq '"agy-flash36": ("low", "medium", "high")' "$RB_CATALOG"
+assert grep -Fq '"agy-pro": ("high",)' "$RB_CATALOG"
+assert grep -Fq '"agy-flash38": ("high",)' "$RB_CATALOG"
+assert grep -Fq '"agy-flash37": ("high",)' "$RB_CATALOG"
+assert grep -Fq '"agy-flash36": ("high",)' "$RB_CATALOG"
 # The retired 3.5 Flash family, pinned as ABSENT: the server answers a dropped id
 # `invalid model selection`, so a spelling that creeps back into the roster, the raters' grammar
 # or the tiers is a panel of cells that cannot answer. Prose about the retirement is allowed to
@@ -383,10 +383,10 @@ assert test "$(grep -Fc 'agy-flash35-' "$RB_CATALOG")" -eq 0
 # stays a flat grep; a rater alternative reintroduced the same way is what it must still catch.
 assert test "$(grep -v 'retired_flash' "$RB_RATERS" | grep -Fc 'flash35')" -eq 0
 assert test "$(grep -Fc 'agy-flash35' "$REVIEW_ROOT/docs/DIAGNOSTICS.md")" -eq 0
-assert grep -Fq 'agy-pro-<low|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash38-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash37-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'agy-flash36-<low|medium|high>' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-pro-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash38-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash37-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
+assert grep -Fq 'agy-flash36-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
 assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$RB_LAUNCH"
 assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
@@ -420,17 +420,24 @@ assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
-assert test "$(grep -Fc -- "flash38:high | flash38:medium | flash38:low) agy_model=\"gemini-3.8-flash-\$effort\" ;;" "$WORKER_RUN")" -eq 1
-# No `pro` arm survives on the WORKER leg: since 2026-09-04 Pro is a model no worker may run
-# (row bq), and an arm nothing can reach is an arm the next reader takes for a supported pair.
-# The `Gemini 3.1 Pro (High)` label workaround belongs to the review cells alone.
-assert test "$(grep -Ec 'pro:(high|medium|low)|Gemini 3\.1 Pro' "$WORKER_RUN")" -eq 0
-# Nor any OTHER flash family: `agy models` serves 3.6 and 3.7 too, and an arm for one of them
-# would launch a model the allowed list refuses upstream of this case.
-assert test "$(grep -Ec 'flash3[0-79]:(high|medium|low)' "$WORKER_RUN")" -eq 0
-assert grep -Fq '`gemini_model=flash38`, and `gemini_effort=high`' "$WORKER_COMMAND"
-assert grep -Fq 'The only valid combinations are flash38 low/medium/high' "$WORKER_COMMAND"
-assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-flash38}' "$WORKERPICK"
+for agy_arm in 3.8:flash38 3.7:flash37 3.6:flash36; do
+  assert test "$(grep -Fc -- "${agy_arm##*:}:high) agy_model=\"gemini-${agy_arm%%:*}-flash-\$effort\" ;;" "$WORKER_RUN")" -eq 1
+done
+# Pro reaches the worker leg at `high` and at nothing else, and it launches under the row `h`
+# label: the `-high` Pro slug is still served as Flash, so the slug spelling would run the
+# wrong model on every Pro worker.
+assert test "$(grep -Fc -- "pro:high) agy_model='Gemini 3.1 Pro (High)' ;;" "$WORKER_RUN")" -eq 1
+assert test "$(grep -Ec 'pro:(medium|low)' "$WORKER_RUN")" -eq 0
+# No arm below `high` for any Gemini model, and none for a family outside the table: the effort
+# is RAISED before this case is read, so a lower arm is an arm nothing can reach.
+assert test "$(grep -Ec 'flash3[0-9]:(medium|low)' "$WORKER_RUN")" -eq 0
+assert test "$(grep -Ec 'flash3[0-59]:(high|medium|low)' "$WORKER_RUN")" -eq 0
+assert grep -Fq 'printf '\''gemini effort forced to high\n'\'' >&2' "$WORKER_RUN"
+gemini_default_model=$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")
+assert grep -Fq "\`gemini_model=$gemini_default_model\`, and \`gemini_effort=high\`" "$WORKER_COMMAND"
+assert grep -Fq 'Gemini runs at `high` only' "$WORKER_COMMAND"
+assert test "$(grep -Ec 'flash3[0-9] low/medium/high|gemini_effort=low\|medium\|high' "$WORKER_COMMAND")" -eq 0
+assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-$(worker_model_default_model gemini)}' "$WORKERPICK"
 assert grep -Fq 'gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_effort gemini "$gm_model")}' "$WORKERPICK"
 assert eq "$(bash -c '. "$1"; worker_model_default_effort gemini "$(worker_model_default_model gemini)"' _ "$ROOT/share/worker-model.sh")" high
 # A missing `<vendor>_effort` has ONE reading: the table default of the STORED model, which is what
@@ -444,6 +451,43 @@ assert eq "$(bash -c '. "$1"; worker_model_default_effort claudeb fable' _ "$ROO
 assert grep -Fq 'canonical knob-to-agy mapping lives in `worker-run`' "$POLICY"
 assert doc_has 'Gemini worker knobs'
 
+# --- Row co: Gemini model weather cache ---------------------------------------
+# The states are decided once: a reader holding a step threshold would disagree with the table the
+# collector prints the moment either side is retuned.
+WEATHER_BIN="$ROOT/bin/gemini-weather"
+assert grep -Fqx 'HEALTHY_STEP_S = 3' "$WEATHER_BIN"
+assert grep -Fqx 'SLOW_FACTOR = 3' "$WEATHER_BIN"
+assert grep -Fqx 'DEFAULT_WINDOW_MIN = 60' "$WEATHER_BIN"
+assert grep -Fq 'os.path.join(base_home(), ".cache", "gemini-weather")' "$WEATHER_BIN"
+assert grep -Fq 'return home .. "/.cache/gemini-weather/latest.json"' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'os.getenv("GEMINI_WEATHER_DIR")' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'os.time() >= (tonumber(weather.valid_until) or 0)' "$ROOT/hammerspoon/llm-limits.lua"
+for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
+  assert test "$(grep -Ec 'median_step_s *(>=|>) *[0-9]|SLOW_STEP|slow_step_s' "$weather_reader")" -eq 0
+done
+assert doc_has 'Gemini model weather cache'
+assert doc_has '`SLOW_FACTOR = 3`'
+
+# --- Row cn: Gemini capacity fallback ----------------------------------------
+# One mechanism, one file: a second copy in a consumer would fall back on a different chain, or on
+# a chain that no longer matches the families agy serves.
+GEMINIB_BIN="$ROOT/bin/geminib"
+assert grep -Fq "capacity_phrase='No capacity available for model'" "$GEMINIB_BIN"
+assert grep -Fq "capacity_chain='gemini-3.8-flash gemini-3.7-flash gemini-3.6-flash'" "$GEMINIB_BIN"
+assert grep -Fq 'GEMINIB_CAPACITY_HOLD_S:-600' "$GEMINIB_BIN"
+assert grep -Fq 'GEMINIB_CAPACITY_FALLBACK:-1' "$GEMINIB_BIN"
+assert grep -Fq "printf 'geminib: model %s" "$GEMINIB_BIN"
+assert grep -Fq "printf 'geminib: capacity fallback %s -> %s" "$GEMINIB_BIN"
+assert grep -Fq "printf 'geminib: capacity %s after %s steps, not relaunched" "$GEMINIB_BIN"
+assert grep -Fq "capacity_step_mark='streamGenerateContent'" "$GEMINIB_BIN"
+assert grep -Fq 'STEP_MARK = "streamGenerateContent"' "$ROOT/bin/gemini-weather"
+assert doc_has 'geminib: capacity <family> after N steps, not relaunched'
+for consumer in "$WORKER_RUN" "$ROOT/share/gemini-research.sh" "$ROOT/bin/gemini-image"; do
+  assert test "$(grep -Fc 'No capacity available for model' "$consumer")" -eq 0
+done
+assert doc_has 'Gemini capacity fallback'
+assert doc_has 'geminib: model <slug>'
+
 # --- Row bq: allowed worker models -------------------------------------------
 # The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
 # after a model `worker-run` will refuse.
@@ -454,7 +498,10 @@ assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claude
 claudeb fable low low,medium,high xhigh,max yes
 codex gpt-6-astra low low,medium,high xhigh no
 codex gpt-5.6-sol medium medium,high low,xhigh yes
-gemini flash38 high low,medium,high - no
+gemini flash37 high high - no
+gemini flash38 high high - no
+gemini flash36 high high - no
+gemini pro high high - yes
 grok auto high high,xhigh - no
 grok grok-4.6 high high,xhigh - no'
 # Neither refusal spells a model of its own: both read the list through these functions.
@@ -466,9 +513,9 @@ assert grep -Fq "printf 'OUTCOME: %s\\n' \"\$outcome\"" "$WORKER_RUN"
 assert grep -Fq 'outcome_line MODEL_REFUSED' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allows "$vendor" "$value"' "$PIN_GATE"
 assert grep -Fq 'worker_model_allowed_summary' "$PIN_GATE"
-# `flash3[0-79]` and not `flash3[0-9]`: 38 is the one flash family a worker may run, so a site
-# naming it is naming the allowed model, not smuggling a cheap one past the list.
-assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-79]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
+# `flash3[0-59]` and not `flash3[0-9]`: 3.6, 3.7 and 3.8 are the flash families a worker may run,
+# so a site naming one is naming an allowed model, not smuggling a cheap one past the list.
+assert test "$(grep -Ec '(sonnet|haiku|fable|flash3[0-59]|gpt-5\.6-(terra|luna))' "$PIN_GATE")" -eq 0
 # Refused BEFORE the account is resolved: a pick already made is quota already claimed.
 assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | cut -d: -f1)" \
   -lt "$(grep -n 'warn_cold_resume "$vendor" "$account" "$resume"' "$WORKER_RUN" | cut -d: -f1)"
@@ -487,10 +534,10 @@ done
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test -r "$agent"
   # The frontmatter `model:` is the RELAY's own model, not a model it may ask a worker to run.
-  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-79]|gpt-5\.6-(terra|luna))')" -eq 0
+  assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-59]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini `flash38`, grok `auto`'
+assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini `flash37` (also `flash38`, `flash36`, `pro`), grok `auto`'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'acct=$(worker_model_pin_first gemini' "$SPAWN_HOOK"

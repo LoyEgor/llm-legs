@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Per-model-family Gemini serving weather, read passively off the agy logs already on disk."""
+import argparse
+import glob
+import json
+import math
+import os
+import re
+import sys
+import time
+
+HEALTHY_STEP_S = 3
+SLOW_FACTOR = 3
+SLOW_STEP_S = HEALTHY_STEP_S * SLOW_FACTOR
+DEFAULT_WINDOW_MIN = 60
+KNOWN_FAMILIES = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro")
+SCHEMA = 1
+
+CAPACITY_PHRASE = "No capacity available for model"
+STEP_MARK = "streamGenerateContent"
+STAMP_RE = re.compile(r"\b[IWEF](\d{2})(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?\b")
+LABEL_RE = re.compile(r'label="([^"]+)"')
+RESOLVING_RE = re.compile(r"Resolving model (.+?)\s*$")
+PRINT_MODE_RE = re.compile(r'Print mode: starting \(.*?model="([^"]*)"')
+CAPACITY_MODEL_RE = re.compile(re.escape(CAPACITY_PHRASE) + r" (\S+)")
+RESPONSE_ID_RE = re.compile(r"ResponseID: (\S+)")
+LABEL_FAMILY_RE = re.compile(r"(?i)^gemini (\d+(?:\.\d+)?) (.+?)(?: \((?:high|medium|low)\))?$")
+SLUG_FAMILY_RE = re.compile(r"^(gemini-\d+(?:\.\d+)?-[a-z0-9-]+?)(?:-(?:high|medium|low))?$")
+
+
+def family_of(name):
+    name = (name or "").strip()
+    match = LABEL_FAMILY_RE.match(name)
+    if match:
+        return "gemini-%s-%s" % (match.group(1), "-".join(match.group(2).lower().split()))
+    match = SLUG_FAMILY_RE.match(name.lower())
+    return match.group(1) if match else None
+
+
+def family_label(family):
+    return family[len("gemini-"):].replace("-", " ") if family.startswith("gemini-") else family
+
+
+def family_short(family):
+    parts = family_label(family).split(" ")
+    if len(parts) < 2 or parts[1] == "flash":
+        return parts[0]
+    return parts[0] + parts[1][0]
+
+
+def base_home():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def geminib_cache_dir():
+    return os.environ.get("GEMINIB_CACHE_DIR") or os.path.join(base_home(), ".cache", "geminib")
+
+
+def weather_dir():
+    return os.environ.get("GEMINI_WEATHER_DIR") or os.path.join(base_home(), ".cache", "gemini-weather")
+
+
+def worker_run_log(run_dir):
+    try:
+        with open(os.path.join(run_dir, "meta.json"), encoding="utf-8") as handle:
+            command = json.load(handle).get("cmd") or []
+        for index, argument in enumerate(command):
+            if argument == "--log-file" and index + 1 < len(command):
+                return command[index + 1]
+            if isinstance(argument, str) and argument.startswith("--log-file="):
+                return argument.split("=", 1)[1]
+    except (OSError, ValueError, AttributeError):
+        pass
+    return os.path.join(run_dir, "log")
+
+
+def candidate_logs():
+    home = base_home()
+    claudeb = os.environ.get("CLAUDEB_DIR") or os.path.join(home, ".claude-profiles", ".claudeb")
+    runs = os.environ.get("WORKER_RUN_DIR") or os.path.join(home, ".cache", "claude-worker-runs")
+    profiles = os.environ.get("GEMINIB_PROFILES_DIR") or os.path.join(home, ".gemini-profiles")
+    paths = []
+    paths += glob.glob(os.path.join(claudeb, "worker-stats", "benches", "*", "agy-agy-*.log"))
+    paths += [worker_run_log(run) for run in glob.glob(os.path.join(runs, "gemini-*"))]
+    paths += glob.glob(os.path.join(geminib_cache_dir(), "logs", "*.log"))
+    paths += glob.glob(os.path.join(profiles, "*", ".gemini", "antigravity-cli", "log", "*.log"))
+    paths += glob.glob(os.path.join(home, ".gemini", "antigravity-cli", "log", "*.log"))
+    seen, unique = set(), []
+    for path in paths:
+        real = os.path.realpath(path)
+        if real not in seen:
+            seen.add(real)
+            unique.append(path)
+    return unique
+
+
+def stamp_epoch(match, mtime):
+    month, day, hour, minute, second = (int(match.group(i)) for i in range(1, 6))
+    fraction = float("0." + match.group(6)) if match.group(6) else 0.0
+    # glog stamps carry no year: the file's own mtime supplies it, and a stamp landing after the
+    # mtime belongs to the year before (a log written across New Year).
+    year = time.localtime(mtime).tm_year
+    for candidate in (year, year - 1):
+        try:
+            epoch = time.mktime((candidate, month, day, hour, minute, second, 0, 0, -1)) + fraction
+        except (OverflowError, ValueError):
+            return None
+        if epoch <= mtime + 86400:
+            return epoch
+    return None
+
+
+def parse_log(path, mtime):
+    """Segments of one log: geminib appends a capacity relaunch to the log the first attempt used."""
+    segments = []
+    current = {"family": None, "steps": [], "errors": []}
+    segments.append(current)
+    last_stamp = None
+    first_response = None
+    try:
+        handle = open(path, "r", encoding="utf-8", errors="replace")
+    except OSError:
+        return None, []
+    with handle:
+        for line in handle:
+            match = STAMP_RE.search(line)
+            if match:
+                stamped = stamp_epoch(match, mtime)
+                if stamped is not None:
+                    last_stamp = stamped
+            if "Print mode: starting" in line:
+                print_mode = PRINT_MODE_RE.search(line)
+                if current["steps"] or current["errors"]:
+                    current = {"family": None, "steps": [], "errors": []}
+                    segments.append(current)
+                if print_mode and family_of(print_mode.group(1)):
+                    current["family"] = family_of(print_mode.group(1))
+                continue
+            if "label=" in line:
+                label = LABEL_RE.search(line)
+                if label and family_of(label.group(1)):
+                    current["family"] = family_of(label.group(1))
+                continue
+            if "Resolving model" in line:
+                resolving = RESOLVING_RE.search(line)
+                if resolving and family_of(resolving.group(1)):
+                    current["family"] = family_of(resolving.group(1))
+                continue
+            if STEP_MARK in line:
+                if first_response is None:
+                    response = RESPONSE_ID_RE.search(line)
+                    if response:
+                        first_response = response.group(1)
+                if last_stamp is not None and current["family"]:
+                    current["steps"].append(last_stamp)
+                continue
+            if CAPACITY_PHRASE in line and last_stamp is not None:
+                named = CAPACITY_MODEL_RE.search(line)
+                family = family_of(named.group(1)) if named else None
+                current["errors"].append((family or current["family"], last_stamp))
+    return first_response, segments
+
+
+def percentile(values, fraction):
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(fraction * len(ordered)) - 1)]
+
+
+def collect(window_min, now):
+    cutoff = now - window_min * 60
+    stats = {}
+
+    def family_stats(family):
+        return stats.setdefault(family, {
+            "runs": set(), "steps": 0, "intervals": [], "errors": 0,
+            "last_error": None, "last_step": None, "hold": None,
+        })
+
+    scanned = 0
+    responses = set()
+    for path in candidate_logs():
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if mtime < cutoff:
+            continue
+        scanned += 1
+        first_response, segments = parse_log(path, mtime)
+        if first_response is not None:
+            if first_response in responses:
+                continue
+            responses.add(first_response)
+        for index, segment in enumerate(segments):
+            run_key = (path, index)
+            steps = [stamp for stamp in segment["steps"] if cutoff <= stamp]
+            if segment["family"] and steps:
+                entry = family_stats(segment["family"])
+                entry["runs"].add(run_key)
+                entry["steps"] += len(steps)
+                entry["intervals"] += [b - a for a, b in zip(steps, steps[1:]) if b >= a]
+                entry["last_step"] = max(entry["last_step"] or 0, steps[-1])
+            for family, stamp in segment["errors"]:
+                if not family or stamp < cutoff:
+                    continue
+                entry = family_stats(family)
+                entry["runs"].add(run_key)
+                entry["errors"] += 1
+                entry["last_error"] = max(entry["last_error"] or 0, stamp)
+
+    for marker in glob.glob(os.path.join(geminib_cache_dir(), "capacity", "*")):
+        try:
+            marked = os.stat(marker).st_mtime
+        except OSError:
+            continue
+        family_stats(os.path.basename(marker))["hold"] = marked
+
+    def age(stamp):
+        return None if stamp is None else max(0, int(round(now - stamp)))
+
+    families = []
+    ordered = list(KNOWN_FAMILIES) + sorted(name for name in stats if name not in KNOWN_FAMILIES)
+    for family in ordered:
+        entry = stats.get(family)
+        if entry is None:
+            entry = family_stats(family)
+        intervals = entry["intervals"]
+        median = round(percentile(intervals, 0.5), 1) if intervals else None
+        p90 = round(percentile(intervals, 0.9), 1) if intervals else None
+        hold_in_window = entry["hold"] is not None and entry["hold"] >= cutoff
+        if entry["errors"] > 0 or hold_in_window:
+            state = "starved"
+        elif median is not None and median >= SLOW_STEP_S:
+            state = "slow"
+        elif entry["runs"]:
+            state = "ok"
+        else:
+            state = "no-data"
+        if family not in KNOWN_FAMILIES and state == "no-data":
+            continue
+        families.append({
+            "family": family,
+            "label": family_label(family),
+            "short": family_short(family),
+            "state": state,
+            "runs": len(entry["runs"]),
+            "steps": entry["steps"],
+            "median_step_s": median,
+            "p90_step_s": p90,
+            "errors_503": entry["errors"],
+            "last_503_age_s": age(entry["last_error"]),
+            "last_step_age_s": age(entry["last_step"]),
+            "hold_age_s": age(entry["hold"]),
+        })
+    return {
+        "schema": SCHEMA,
+        "generated_at": int(now),
+        "window_min": window_min,
+        "valid_until": int(now + window_min * 60),
+        "thresholds": {"healthy_step_s": HEALTHY_STEP_S, "slow_step_s": SLOW_STEP_S},
+        "logs_scanned": scanned,
+        "families": families,
+    }
+
+
+def short_age(seconds):
+    if seconds is None:
+        return "-"
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm" % (seconds // 60)
+    return "%dh" % (seconds // 3600)
+
+
+def number(value):
+    return "-" if value is None else "%.1f" % value
+
+
+def render_table(report, cache_path):
+    header = ("FAMILY", "STATE", "RUNS", "STEPS", "MED S", "P90 S", "503", "LAST 503", "LAST STEP", "HOLD")
+    rows = [header]
+    for entry in report["families"]:
+        rows.append((
+            entry["family"], entry["state"], str(entry["runs"]), str(entry["steps"]),
+            number(entry["median_step_s"]), number(entry["p90_step_s"]), str(entry["errors_503"]),
+            short_age(entry["last_503_age_s"]), short_age(entry["last_step_age_s"]),
+            short_age(entry["hold_age_s"]),
+        ))
+    widths = [max(len(row[column]) for row in rows) for column in range(len(header))]
+    lines = ["  ".join(cell.ljust(widths[column]) for column, cell in enumerate(row)).rstrip() for row in rows]
+    lines.append("window %dm · %d logs · slow at median step >= %gs · cache %s" % (
+        report["window_min"], report["logs_scanned"], report["thresholds"]["slow_step_s"],
+        cache_path or "not written"))
+    lines += ["state: %s %s" % (entry["family"], entry["state"]) for entry in report["families"]]
+    return "\n".join(lines) + "\n"
+
+
+def write_cache(report):
+    directory = weather_dir()
+    os.makedirs(directory, exist_ok=True)
+    target = os.path.join(directory, "latest.json")
+    temporary = "%s.tmp.%d" % (target, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, ensure_ascii=False, indent=1)
+        handle.write("\n")
+    os.replace(temporary, target)
+    return target
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="gemini-weather", description=__doc__.splitlines()[0])
+    parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_MIN, metavar="MIN")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--no-write", action="store_true", help="do not refresh the cached latest.json")
+    args = parser.parse_args(argv)
+    if args.window <= 0:
+        parser.error("--window must be a positive number of minutes")
+    now_override = os.environ.get("GEMINI_WEATHER_NOW")
+    now = float(now_override) if now_override else time.time()
+    report = collect(args.window, now)
+    cache_path = None
+    if not args.no_write:
+        try:
+            cache_path = write_cache(report)
+        except OSError as error:
+            print("gemini-weather: cache not written: %s" % error, file=sys.stderr)
+    if args.json:
+        sys.stdout.write(json.dumps(report, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(render_table(report, cache_path))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

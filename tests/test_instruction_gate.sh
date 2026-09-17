@@ -64,7 +64,13 @@ for cand in "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/review-journa
   [ -r "$cand" ] && { JOURNAL_LIB=$cand; break; }
 done
 [ -n "$JOURNAL_LIB" ] || fail "review-journal.sh not readable (set CLAUDE_SETUP_ROOT)"
-ln -s "$JOURNAL_LIB" "$HOME/.claude/hooks/lib/review-journal.sh"
+# The whole library, not its head file: the span moved into `words.sh`, which review-journal.sh
+# sources from its OWN directory — deployed alone, every in-span row of the matrix below silently
+# answers out-span.
+for part in review-journal.sh words.sh words.py word-families.json; do
+  [ -r "${JOURNAL_LIB%/*}/$part" ] || fail "$part not readable beside review-journal.sh"
+  ln -s "${JOURNAL_LIB%/*}/$part" "$HOME/.claude/hooks/lib/$part"
+done
 
 # Two transcripts: one whose last turn of Egor's arms the span, one whose does not. The phrase is
 # his own trigger wording, which is the only reason a file here carries Cyrillic — and it stands
@@ -79,6 +85,17 @@ span_turn() {
 }
 span_turn 'tidy the instruction docs, максимально автономно' > "$SPAN_T"
 span_turn 'tidy the instruction docs' > "$NOSPAN_T"
+# A transcript no longer arms anything by itself: the word intake reads his newest turn once and
+# writes the span markers `rj_autonomous` answers from. The fixture arms through that same intake,
+# so the phrase above is still what decides, and the two states are checked here rather than being
+# discovered as a whole matrix answering out-span.
+arm_span() { # session transcript
+  bash -c '. "$1"; words_sync "$2" "$3"' _ "$JOURNAL_LIB" "$1" "$2"
+}
+arm_span matrix-span "$SPAN_T"
+arm_span matrix-plain "$NOSPAN_T"
+assert bash -c '. "$1"; rj_autonomous matrix-span' _ "$JOURNAL_LIB" >/dev/null
+assert_fails bash -c '. "$1"; rj_autonomous matrix-plain' _ "$JOURNAL_LIB" >/dev/null
 
 # A transcript belongs to a session, so each span state answers under its own id — which is also
 # what keeps one state's denial from handing the other the retry the gate grants on a repeat.
@@ -1655,19 +1672,24 @@ echo "== tripwire: growth this session's own call produced is put back inside th
 # this hook's to measure. Inside the span growth goes back rather than being reported: Egor is
 # away, and the span's rule is the only arbiter left in the room.
 span_check() { # sid tool key value transcript
+  arm_span "$1" "$5"
   jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "$5" --arg c "$WORK" \
     '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
       tool_input:{($k):$v}}' | bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
 }
 span_base() { jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" baseline; }
-printf 'tier doc\n' > "$DOC"
+# The bytes this case goes back to are its own: the machine-wide marker is named for the file and
+# what it now holds, so a revert landing on content some earlier case already had Egor told about
+# wins no claim and writes no journal entry — the put-back itself still happens and still reaches
+# the model.
+printf 'tier doc before the revert case\n' > "$DOC"
 span_base sid-revert >/dev/null
 printf 'a line no human asked for\n' >> "$DOC"
 ctx=$(span_check sid-revert Bash command "echo a line no human asked for >> $DOC" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
 assert_contains "PUT BACK" "$ctx"
 assert_eq 0 "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq '.bytes[0]')"
-assert_eq "tier doc" "$(cat "$DOC")"
+assert_eq "tier doc before the revert case" "$(cat "$DOC")"
 # Nothing this hook does may be unrecoverable: what it overwrote is parked, and the report says
 # where.
 parked=$(printf '%s' "$ctx" | sed -n 's/.*parked at \([^ )]*\).*/\1/p')
@@ -1956,6 +1978,7 @@ echo "== tripwire: inside a relay a worker's growth is put back with Egor in the
 # hook's. A worker's write is refused whether or not the span stands, which is why the condition
 # here is the relay and not only the span.
 relay_check() { # sid tool key value [transcript]
+  arm_span "$1" "${5:-$NOSPAN_T}"
   jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "${5:-$NOSPAN_T}" --arg c "$WORK" \
     '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
       tool_input:{($k):$v}}' \
@@ -2020,6 +2043,7 @@ ALERT_REC="$WORK/alert-calls"
 printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$ALERT_REC" > "$WORK/alert-stub"
 chmod +x "$WORK/alert-stub"
 raw_check() { # sid tool key value transcript
+  arm_span "$1" "$5"
   jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "$5" --arg c "$WORK" \
     '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
       tool_input:{($k):$v}}' | bash "$WATCH" check

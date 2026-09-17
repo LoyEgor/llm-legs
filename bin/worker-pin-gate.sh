@@ -59,8 +59,8 @@ disallowed_models() { # text
 }
 
 # The SEARCH side of a substitution names the value being REPLACED, so the pairs left after this
-# are the ones a command would STORE: `sed -i s/gemini_model=pro/gemini_model=flash38/` writes the
-# allowed model and was refused for spelling the cheap one it removes (live 2026-09-04). The same
+# are the ones a command would STORE: `sed -i s/gemini_model=flash/gemini_model=flash38/` writes the
+# allowed model and was refused for spelling the bare one it removes (live 2026-09-04). The same
 # reading the Edit door already takes on `old_string` — a write is judged by what it leaves behind.
 # Only the `/` delimiter, which is the one a substitution over this file is typed with and the only
 # one that reaches here: with the quotes already resolved, a `|` delimiter cuts the command into

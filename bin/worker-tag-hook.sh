@@ -131,7 +131,7 @@ elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
   [ -n "$effort" ] || effort=$(printf '%s' "$agy_model" | grep -oE '(high|medium|low)$')
   [ -n "$model" ] || model=$(worker_conf gemini_model)
   [ "$model" = flash ] && model=flash36
-  [ -n "$model" ] || model=flash38
+  [ -n "$model" ] || model=$(worker_model_default_model gemini)
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
   [ -n "$effort" ] || effort=$(worker_model_default_effort gemini "$(worker_model_default_model gemini)")
   tag="$acct · $model · $effort"
@@ -150,10 +150,10 @@ elif is_grokb_launch &&
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   if [ -n "$acct" ]; then tag="$acct · $model · $effort"; else tag="$model · $effort"; fi
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'gemini-research([[:space:]]|$)'; then
-  # `flash38 · high` is the launcher's own hardcoded `--model gemini-3.8-flash-high` and never a
-  # knob; `--account` is read for the reason the image branch below reads it.
+  # The model is the table's gemini default and the effort always high — the launcher's own words,
+  # never a knob; `--account` is read for the reason the image branch below reads it.
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
-  [ -z "$acct" ] || tag="$acct · flash38 · high"
+  [ -z "$acct" ] || tag="$acct · $(worker_model_default_model gemini) · high"
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'(codex|gemini|grok)-image([[:space:]]|$)'; then
   # `--account` is the only account this text can vouch for: without it the script asks worker-pick
   # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.

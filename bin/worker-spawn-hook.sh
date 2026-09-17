@@ -119,8 +119,8 @@ elif [ "$subagent" = image-gen ]; then
   fi
   prefix="$acct · image · $vendor"
 elif [ "$subagent" = gemini-research ]; then
-  # The launcher hardcodes `--model gemini-3.8-flash-high`: model and effort are fixed words here,
-  # never the worker-model knobs. A pin answers first, then the router — with `--role research`,
+  # The launcher takes the research model from the table's gemini default and always high effort:
+  # neither is a worker-model knob. A pin answers first, then the router — with `--role research`,
   # which is the role this leg spends under: the plain query reads the workers switch and would
   # answer `off` for a vendor parked for workers alone, and a row saying nobody knows tells Egor
   # less than the account the run is about to land on.
@@ -128,7 +128,7 @@ elif [ "$subagent" = gemini-research ]; then
   [ -n "$acct" ] || acct=$(flag_account)
   [ -n "$acct" ] || acct=$(route_account gemini --role research)
   [ -n "$acct" ] || acct='?'
-  prefix="$acct · flash38 · high"
+  prefix="$acct · $(worker_model_default_model gemini) · high"
 else
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account gemini)
@@ -136,11 +136,11 @@ else
   [ -n "$acct" ] || acct=main
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf gemini_model)
-  [ -n "$model" ] || model=flash38
+  [ -n "$model" ] || model=$(worker_model_default_model gemini)
   [ "$model" = flash ] && model=flash36
-  effort=$(brief_line EFFORT)
-  [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
-  [ -n "$effort" ] || effort=$(worker_model_default_effort gemini "$(worker_model_default_model gemini)")
+  # `worker-run` raises every Gemini run to high, so the row names what will be spent rather than
+  # what the brief or the knob asked for.
+  effort=high
   prefix="$acct · $model · $effort"
 fi
 

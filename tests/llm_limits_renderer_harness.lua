@@ -78,8 +78,10 @@ function Styled.__concat(left, right)
   return result
 end
 
+local WEATHER_CONTENTS = "<gemini-weather>"
+
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
-    workerModel, fsAttributes, interfaceStyle, doctorSnapshot)
+    workerModel, fsAttributes, interfaceStyle, doctorSnapshot, geminiWeather)
   local mock = {
     alert = { show = alertFn or function() end },
     dialog = { blockAlert = function(...)
@@ -108,6 +110,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     -- chosen by what the fake io.open handed back rather than by call order.
     json = { decode = function(text)
       if text == DOCTOR_CONTENTS then return doctorSnapshot end
+      if text == WEATHER_CONTENTS then return geminiWeather end
       return type(fixture) == "function" and fixture() or fixture
     end },
     osascript = { applescript = osascriptFn or function() return true, true, {} end },
@@ -143,6 +146,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if path:match("/doctor%-snapshot%.json$") then
         if doctorSnapshot == nil then return nil end
         contents = DOCTOR_CONTENTS
+      end
+      if path:match("/gemini%-weather/latest%.json$") then
+        if geminiWeather == nil then return nil end
+        contents = WEATHER_CONTENTS
       end
       if path:match("/%.claude/worker%-model$") then
         if workerModel == nil then return nil end
@@ -1659,6 +1666,9 @@ do
     "menu Hard refresh did not inject CLAUDEB_WARM_USER_EXPLICIT=true")
   while #tasks > 0 do table.remove(tasks) end
   local menu = mod.menuItems()
+  for index = #tasks, 1, -1 do
+    if tasks[index].path:match("/bin/gemini%-weather$") then table.remove(tasks, index) end
+  end
   assert(#tasks == 0, "menu construction started a collector task")
   for _, item in ipairs(menu) do
     if titleText(item) == "Refresh" or titleText(item) == "Refresh + Start Windows" then
@@ -3186,6 +3196,94 @@ do
     walkColors(loadModule(roleFixture, nil, nil, nil, nil, roleOff, nil, style).menuItems())
     walkColors(loadModule(routingFixture, nil, routingNow, nil, nil, nil, nil, style).menuItems())
   end
+end
+
+-- Gemini model weather: one row per family off gemini-weather's cache, closing the Gemini section
+-- and read from that file alone; the states arrive decided.
+do
+  local now = 1800000000
+  local weatherFixture = { schema = 1, vendors = {
+    claude = { available = false }, codex = { available = false },
+    gemini = { available = true, accounts = { { account = "gem-a", five_hour = bucket(10) } } },
+  }}
+  local function weatherRows(menu)
+    local rows = {}
+    for _, item in ipairs(menu) do
+      local text = titleText(item)
+      if text:match("^%d+%.%d+ %a+ · ") or text:match("^models ") then table.insert(rows, item) end
+    end
+    return rows
+  end
+  local weather = { schema = 1, generated_at = now - 60, valid_until = now + 3540, window_min = 60,
+    families = {
+      { family = "gemini-3.8-flash", label = "3.8 flash", short = "3.8", state = "starved",
+        runs = 3, steps = 90, median_step_s = 20.4, errors_503 = 12,
+        last_step_age_s = 420, last_503_age_s = 480 },
+      { family = "gemini-3.7-flash", label = "3.7 flash", short = "3.7", state = "ok",
+        runs = 2, steps = 40, median_step_s = 3.1, errors_503 = 0, last_step_age_s = 60 },
+      { family = "gemini-3.6-flash", label = "3.6 flash", short = "3.6", state = "slow",
+        runs = 1, steps = 4, median_step_s = 9.5, errors_503 = 0, last_step_age_s = 3000 },
+      { family = "gemini-3.1-pro", label = "3.1 pro", short = "3.1p", state = "no-data",
+        runs = 0, steps = 0, errors_503 = 0 },
+    }}
+  local menu = loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil, weather).menuItems()
+  local rows = weatherRows(menu)
+  assert(#rows == 4, "gemini weather rendered " .. #rows .. " rows")
+  assert(titleText(rows[1]) == "3.8 flash · 20 s/step · 503 ×12, last 9m ago  ⛔", titleText(rows[1]))
+  assert(rows[1].title.attributes.color and rows[1].title.attributes.color.red == 0.9,
+    "a starved family is not red")
+  assert(titleText(rows[2]) == "3.7 flash · 3.1 s/step · no 503", titleText(rows[2]))
+  assert(rows[2].title.attributes.color == nil, "an ok family is coloured")
+  assert(titleText(rows[3]) == "3.6 flash · 9.5 s/step · no 503  🐢", titleText(rows[3]))
+  assert(titleText(rows[4]) == "3.1 pro · no data", titleText(rows[4]))
+  assert(isDimmed(rows[4].title.attributes, 0), "a no-data family is not dimmed")
+  assert(rows[1].disabled == true, "a weather row is clickable")
+  local gemIndex = accountIndex(menu, "gem-a")
+  local lastRow
+  for index, item in ipairs(menu) do if item == rows[4] then lastRow = index end end
+  assert(lastRow > gemIndex and menu[lastRow + 1].title == "-",
+    "the weather rows do not close the Gemini section")
+
+  local held = { schema = 1, generated_at = now, valid_until = now + 3600, families = {
+    { family = "gemini-3.8-flash", label = "3.8 flash", state = "starved", runs = 0, steps = 0,
+      errors_503 = 0, hold_age_s = 300 },
+  }}
+  local heldRows = weatherRows(loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil,
+    held).menuItems())
+  assert(titleText(heldRows[1]) == "3.8 flash · hold 5m ago  ⛔", titleText(heldRows[1]))
+
+  local stale = { schema = 1, generated_at = now - 7200, valid_until = now - 3600, families = {
+    weather.families[1],
+  }}
+  local staleRows = weatherRows(loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil,
+    stale).menuItems())
+  assert(titleText(staleRows[1]) == "3.8 flash · 20 s/step · 503 ×12, last 2h ago · stale",
+    titleText(staleRows[1]))
+  assert(isDimmed(staleRows[1].title.attributes, 0), "a stale weather row is not dimmed")
+
+  local missing = weatherRows(loadModule(weatherFixture, nil, now).menuItems())
+  assert(#missing == 1 and titleText(missing[1]) == "models  no data", "no cache rendered no no-data row")
+
+  local kickEnv
+  local function kicks(cache, clock)
+    local launched = {}
+    local module = loadModule(weatherFixture, function(path)
+      table.insert(launched, path)
+      return { setEnvironment = function(_, env) kickEnv = env end, start = function() end,
+        isRunning = function() return true end }
+    end, clock, nil, nil, nil, nil, nil, nil, cache)
+    module.menuItems()
+    module.menuItems()
+    return launched
+  end
+  local staleKick = kicks(stale, now)
+  assert(#staleKick == 1 and staleKick[1]:match("/bin/gemini%-weather$"),
+    "a stale weather cache did not launch one gemini-weather refresh: " .. table.concat(staleKick, ","))
+  -- gemini-weather derives the run store, geminib cache and profiles from HOME when their variables
+  -- are unset, which is how they reach it from here.
+  assert(kickEnv and kickEnv.HOME == os.getenv("HOME"), "the gemini-weather task lost HOME")
+  assert(#kicks(nil, now) == 1, "a missing weather cache did not launch a refresh")
+  assert(#kicks(held, now) == 0, "a fresh weather cache launched a refresh")
 end
 
 return "PASS: Hammerspoon projection contract"

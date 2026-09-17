@@ -47,8 +47,10 @@ run
 rc=$?; assert test "$rc" -eq 0; assert test "$(cat "$WORK/answer")" = 'tracked Gemini answer'
 assert grep -q '^ACCOUNT: researcher (gemini)$' "$WORK/out"; assert grep -q '^RUN: gemini-' "$WORK/out"
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1); assert test -d "$RUNS/$run_id"; assert test -f "$RUNS/$run_id/meta.json"
-assert jq -e '.role == "research" and .account == "researcher" and .agy_model == "gemini-3.8-flash-high"' "$RUNS/$run_id/meta.json"
+assert jq -e '.role == "research" and .account == "researcher" and .agy_model == "gemini-3.7-flash-high"' "$RUNS/$run_id/meta.json"
 assert grep -q -- '--role research' "$WORK/picks"; assert grep -q '^profile=researcher$' "$WORK/gemini.log"
+# geminib's capacity markers live in the cache every other Gemini launch reads, so research may write there.
+assert grep -qxF "(allow file-write* (subpath \"$(readlink -f "$HOME/.cache/geminib")\"))" "$RUNS/$run_id/sandbox.sb"
 FAKE_EDIT="$REPO/blocked" run; rc=$?; assert test "$rc" -eq 5; assert grep -q 'GEMINI_RESEARCH_WRITE_DENIED' "$WORK/out"; assert test ! -e "$REPO/blocked"
 # The compatibility entrypoint must never call itself: worker-run records geminib as the CLI.
 assert jq -e --arg fake "$ROOT/bin/gemini-research" '.cli != $fake' "$RUNS/$run_id/meta.json"

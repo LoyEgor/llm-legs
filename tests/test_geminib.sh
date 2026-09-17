@@ -527,11 +527,13 @@ if grep -q "new profile" <<<"$reopen_output"; then fail "reopen reprinted the cr
 sleep 0.3
 assert test "$(grep -cxF -- '--refresh-account gemini/alpha' "$ANNOUNCE_LOG")" = 1
 
-for reserved in profile p run add remove list status pick help login; do
+for reserved in profile p run add remove list status pick help login agy-launch; do
   assert_fails bash "$SCRIPT" profile "$reserved" </dev/null >/dev/null 2>&1
   assert_fails bash "$SCRIPT" add "$reserved" </dev/null >/dev/null 2>&1
 done
 assert test ! -d "$HOME/.gemini-profiles/status"
+assert test ! -d "$HOME/.gemini-profiles/agy-launch"
+assert grep -qx "geminib: invalid profile name 'agy-launch'" <<<"$(bash "$SCRIPT" profile agy-launch </dev/null 2>&1)"
 reserved_err=$(bash "$SCRIPT" profile add </dev/null 2>&1); reserved_rc=$?
 assert test "$reserved_rc" -eq 2
 assert grep -qx "geminib: invalid profile name 'add'" <<<"$reserved_err"

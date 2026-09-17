@@ -8,13 +8,20 @@ worker_model_file() {
 # Egor's per-model call: brief efforts need no extra word; word efforts and word-only
 # models require his explicit request in orchestrator policy. The union of both effort
 # columns is the mechanical rule; the first row of each vendor is its default model.
+# Gemini runs at `high` and nothing else, on every leg (Egor, 2026-09-16), so its rows offer no
+# other effort and `worker-run` raises a lower one instead of refusing the run.
+# TEMP-GEMINI37(default): flash37 leads the gemini rows only for Google's 3.8 Flash capacity
+# incident; EXPERIMENTS.json carries the revert.
 worker_model_table() {
   cat <<'TABLE'
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
 codex gpt-6-astra low low,medium,high xhigh no
 codex gpt-5.6-sol medium medium,high low,xhigh yes
-gemini flash38 high low,medium,high - no
+gemini flash37 high high - no
+gemini flash38 high high - no
+gemini flash36 high high - no
+gemini pro high high - yes
 grok auto high high,xhigh - no
 grok grok-4.6 high high,xhigh - no
 TABLE

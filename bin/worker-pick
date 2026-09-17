@@ -163,8 +163,11 @@ cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
 cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-$(worker_model_default_effort claudeb "$cb_model")}
 cx_model=$(worker_model_allowed_models codex | head -n1)
 cx_effort=$(conf codex_effort); cx_effort=${cx_effort:-$(worker_model_default_effort codex "$cx_model")}
-gm_model=$(conf gemini_model); gm_model=${gm_model:-flash38}
+gm_model=$(conf gemini_model); gm_model=${gm_model:-$(worker_model_default_model gemini)}
 gm_effort=$(conf gemini_effort); gm_effort=${gm_effort:-$(worker_model_default_effort gemini "$gm_model")}
+# worker-run raises a stored Gemini effort the table does not offer, so the column shows what launches.
+worker_model_effort_allowed gemini "$gm_model" "$gm_effort" ||
+  gm_effort=$(worker_model_default_effort gemini "$gm_model") || gm_effort=$(conf gemini_effort)
 # `auto` is a real value here, not a missing one: resolving it to a model id is worker-run's job,
 # and this line only reports the knob.
 gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
@@ -178,7 +181,7 @@ eff_display() { case "$1" in medium) printf med ;; *) printf '%s' "$1" ;; esac; 
 case "$gr_model" in auto | grok-*) gr_model_display=grok ;; *) gr_model_display=$gr_model ;; esac
 # The column is padded to a fixed width, and the family name spelled out costs it four characters
 # every vendor row pays for; `f38` keeps it exactly as wide as the `pro` it replaced.
-case "$gm_model" in flash38) gm_model_display=f38 ;; *) gm_model_display=$gm_model ;; esac
+case "$gm_model" in flash38) gm_model_display=f38 ;; flash37) gm_model_display=f37 ;; flash36) gm_model_display=f36 ;; *) gm_model_display=$gm_model ;; esac
 cb_display="${cb_model}·$(eff_display "$cb_effort")"
 cx_display="${codex_model}·$(eff_display "$cx_effort")"
 gm_display="${gm_model_display}·$(eff_display "$gm_effort")"
