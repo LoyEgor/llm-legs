@@ -105,6 +105,43 @@ grok_media_model_override() { # grok-home key
   printf '%s\n' "$value"
 }
 
+grok_media_sync_model_override() { # grok-home key model
+  [ -n "$1" ] && [ -d "$1" ] && [ -n "$3" ] || return 1
+  python3 - "$1/config.toml" "$2" "$3" <<'PY'
+import os, re, sys, tempfile
+path, key, model = sys.argv[1:4]
+want = f'{key} = "{model}"\n'
+lines = open(path).read().splitlines(True) if os.path.exists(path) else []
+table, header, found = None, None, None
+for i, line in enumerate(lines):
+    m = re.match(r'\s*\[([^\[\]]+)\]\s*(#.*)?$', line)
+    if m:
+        table = m.group(1).strip()
+        if table == "features":
+            header = i
+        continue
+    m = re.match(r'\s*(features\.)?' + re.escape(key) + r'\s*=\s*["\']([^"\']*)["\']', line)
+    if m and ((table == "features" and not m.group(1)) or (table is None and m.group(1))):
+        found = (i, m.group(2), bool(m.group(1)))
+if found:
+    if found[1] == model:
+        sys.exit(0)
+    lines[found[0]] = ("features." if found[2] else "") + want
+elif header is not None:
+    lines.insert(header + 1, want)
+else:
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    lines += (["\n"] if lines else []) + ["[features]\n", want]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".config.toml.")
+with os.fdopen(fd, "w") as out:
+    out.writelines(lines)
+if os.path.exists(path):
+    os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+os.replace(tmp, path)
+PY
+}
+
 # One long generation per account at a time. Grok itself tolerates concurrent sessions in one
 # GROK_HOME, but two media runs stacked on one account race the same quota and the same parallel
 # media-call cap, and the loser pays for a refusal.

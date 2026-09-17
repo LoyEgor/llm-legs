@@ -357,4 +357,74 @@ stale_line=$(grep '^STALE:' "$FANOUT_OUT" || true)
 assert grep -Fq 'STALE: grok staleacct model_caps=stale' <<<"$stale_line"
 assert_fails "$stale_line" '/image-fanout.'
 
-printf 'PASS: %s asserts; dry-run plans/adaptations (refs, aspect auto, Codex prose, size, video skip/ref), tsv columns, dest spaces, login-needed skip, dry-run dest-dir untouched, exit 0/3/1/2, STALE value, pick without --account\n' "$asserts"
+# --- fanout.state.json: the task row's live cells, rewritten on every change ---
+cat >"$FAKE_LIST/grokb" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = list ] || exit 2
+printf 'delta: Logged in\nslow: Logged in\nbroken: Logged in\nwalled: Logged in\n'
+EOF
+chmod +x "$FAKE_LIST/grokb"
+cat >"$FAKE_BIN/grok-image-slow" <<'EOF'
+#!/usr/bin/env bash
+case " $* " in *' --account slow '*) while [ ! -e "${FANOUT_RELEASE:?}" ]; do sleep 0.05; done ;; esac
+exec "$(dirname "$0")/fake-image" "$@"
+EOF
+chmod +x "$FAKE_BIN/grok-image-slow"
+rm "$FAKE_BIN/grok-image"
+ln -s "$FAKE_BIN/grok-image-slow" "$FAKE_BIN/grok-image"
+STATE_DEST="$WORK/state dest"
+mkdir -p "$STATE_DEST"
+state_cells() { jq -c '[.kind, [.cells[] | [.vendor, .account, .status, .exit]]]' "$STATE_DEST/fanout.state.json" 2>/dev/null; }
+env IMAGE_FANOUT_BIN_DIR="$FAKE_BIN" IMAGE_FANOUT_LISTER_DIR="$FAKE_LIST" FANOUT_CALLS="$CALLS" PICK_CALLS="$PICK_CALLS" \
+  FANOUT_RELEASE="$WORK/release" bash "$SCRIPT" --dest-dir "$STATE_DEST" --prompt 'badge' --vendors grok \
+  >"$FANOUT_OUT" 2>"$FANOUT_ERR" &
+fanout_pid=$!
+state_live='["image",[["grok","delta","done",0],["grok","slow","running",null],["grok","broken","failed",1],["grok","walled","failed",3]]]'
+for _ in $(seq 1 200); do
+  [ "$(state_cells)" = "$state_live" ] && break
+  sleep 0.05
+done
+assert test "$(state_cells)" = "$state_live"
+: >"$WORK/release"
+wait "$fanout_pid"
+assert test "$(state_cells)" = '["image",[["grok","delta","done",0],["grok","slow","done",0],["grok","broken","failed",1],["grok","walled","failed",3]]]'
+assert test "$(find "$STATE_DEST" -name 'fanout.state.json.tmp*' | wc -l | tr -d ' ')" = 0
+
+# A cell holding for a parallel slot has no process yet: `waiting`, never `running`, so the row
+# does not count queued accounts as work in flight.
+rm -f "$STATE_DEST/fanout.state.json" "$WORK/release"
+env IMAGE_FANOUT_BIN_DIR="$FAKE_BIN" IMAGE_FANOUT_LISTER_DIR="$FAKE_LIST" FANOUT_CALLS="$CALLS" PICK_CALLS="$PICK_CALLS" \
+  FANOUT_RELEASE="$WORK/release" bash "$SCRIPT" --dest-dir "$STATE_DEST" --prompt 'badge' --vendors grok \
+  --max-parallel 1 >"$FANOUT_OUT" 2>"$FANOUT_ERR" &
+fanout_pid=$!
+state_queued='["image",[["grok","delta","done",0],["grok","slow","running",null],["grok","broken","waiting",null]]]'
+for _ in $(seq 1 200); do
+  [ "$(state_cells)" = "$state_queued" ] && break
+  sleep 0.05
+done
+assert test "$(state_cells)" = "$state_queued"
+: >"$WORK/release"
+wait "$fanout_pid"
+assert test "$(state_cells)" = '["image",[["grok","delta","done",0],["grok","slow","done",0],["grok","broken","failed",1],["grok","walled","failed",3]]]'
+rm -f "$STATE_DEST/fanout.state.json"
+rc=0
+fanout --dest-dir "$STATE_DEST" --prompt 'motion' --video --ref "$WORK/refs/r1.png" --vendors grok --dry-run || rc=$?
+assert test "$rc" -eq 0
+assert test ! -e "$STATE_DEST/fanout.state.json"
+
+# --- a manifest kind with a model and no short name is stale caps -------------
+CAPS_ROOT="$WORK/caps-root"
+mkdir -p "$CAPS_ROOT/share/image-caps"
+jq 'del(.short.video)' "$ROOT/share/image-caps/grok.json" >"$CAPS_ROOT/share/image-caps/grok.json"
+# shellcheck source=share/image-caps.sh
+. "$ROOT/share/image-caps.sh"
+video_model=$(jq -r '.model.video' "$ROOT/share/image-caps/grok.json")
+assert test "$(image_caps_model_check "$CAPS_ROOT" grok video "$video_model")" = "model=$video_model model_caps=stale short=missing"
+assert test "$(image_caps_model_check "$CAPS_ROOT" grok video '')" = 'model=unknown model_caps=stale short=missing'
+assert test "$(image_caps_model_check "$ROOT" grok video "$video_model")" = "model=$video_model model_caps=fresh"
+for caps_vendor in codex gemini grok; do
+  assert jq -e '[.model | to_entries[] | select(.value != null) | .key] - (.short | keys) == []' \
+    "$ROOT/share/image-caps/$caps_vendor.json" >/dev/null
+done
+
+printf 'PASS: %s asserts; dry-run plans/adaptations (refs, aspect auto, Codex prose, size, video skip/ref), tsv columns, dest spaces, login-needed skip, dry-run dest-dir untouched, exit 0/3/1/2, STALE value, pick without --account, live fanout.state.json cells (none on dry-run, a queued cell waiting), short-name caps check\n' "$asserts"

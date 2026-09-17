@@ -70,7 +70,7 @@ _load_worker_model() {
 _load_worker_model || true
 media_model() { # vendor image|video
   local model
-  model=$(jq -r --arg kind "$2" '.model[$kind] // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
+  model=$(jq -r --arg kind "$2" '.short[$kind] // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
   printf '%s' "${model:-$2}"
 }
 SEED_MAX_AGE_S=${WORKER_TAG_SEED_MAX_AGE_S:-600}
@@ -87,11 +87,11 @@ agent_prompt_key() {
   [ -r "$own" ] || return 0
   first=$(head -n 5 "$own" | jq -rR 'fromjson? | select(type == "object" and .type == "user") | .message.content
     | if type == "string" then . else ([.[]? | select(.type? == "text") | .text] | join("\n")) end
-    | split("\n")[0]' 2>/dev/null | head -n1)
-  [ -z "$first" ] || printf '%s\n' "$first" | prompt_key
+    | "k:" + (split("\n")[0] // "")' 2>/dev/null | head -n1)
+  [ -z "$first" ] || printf '%s\n' "${first#k:}" | prompt_key
 }
-# A seed whose spawn key names another prompt is another spawn's, and a denied or cancelled spawn
-# leaves its seed behind: without a key to compare, only a fresh seed is taken.
+# An agent that knows its spawn key takes only the seed carrying that key, and a denied or cancelled
+# spawn leaves its seed behind: an agent without a key takes only a fresh seed.
 pick_seed() {
   local key seed seed_key mtime now
   key=$(agent_prompt_key)
@@ -99,7 +99,7 @@ pick_seed() {
   while IFS= read -r seed; do
     [ -f "$seed" ] || continue
     seed_key=$(sed -n 's/^spawn=//p' "$seed" 2>/dev/null | head -n1)
-    if [ -n "$key" ] && [ -n "$seed_key" ]; then
+    if [ -n "$key" ]; then
       [ "$key" = "$seed_key" ] && { printf '%s' "$seed"; return 0; }
       continue
     fi
@@ -312,12 +312,14 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|g
   script=$(grab "${cmd_word}"'((codex|gemini|grok)-image|grok-video)' | grep -oE '(codex|gemini|grok)-(image|video)$')
   vendor=${script%-*}
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
-  [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · $(media_model "$vendor" "${script##*-}") · $vendor"
+  [ -z "$acct" ] || [ -z "$vendor" ] || tag="$acct · $(media_model "$vendor" "${script##*-}")"
+  if printf '%s' "$launch" | grep -qE -- '--(ref|resume)([=[:space:]]|$)'; then extra+=(media=edit); else extra+=(media=gen); fi
+  extra+=(exit=)
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'image-fanout([[:space:]]|$)'; then
-  case "$(tag_line)" in
-    *' · fanout') ;;
-    *) tag="pool · image · fanout" ;;
-  esac
+  if printf '%s' "$launch" | grep -qE -- '--video([[:space:]]|$)'; then tag="fanout · video"; else tag="fanout · image"; fi
+  dest_dir=$(grab '\-\-dest-dir[= ]+("[^"]+"|'\''[^'\'']+'\''|[^[:space:];&|]+)' | sed -E 's/^--dest-dir[= ]+//; s/^["'\'']//; s/["'\'']$//')
+  [ -z "$dest_dir" ] || [[ "$dest_dir" = /* ]] || dest_dir="$(field '.cwd')/$dest_dir"
+  if printf '%s' "$launch" | grep -qE -- '--dry-run([[:space:]]|$)'; then extra+=(image=); else extra+=("image=$dest_dir"); fi
 fi
 
 umask 077
@@ -331,24 +333,21 @@ else
   # agent type — one seed per spawn, moved away so a sibling spawn claims its own; the legacy
   # per-type seed is only read. The real launch re-derives over it.
   mkdir -p "$cache_dir" 2>/dev/null || exit 0
-  claimed="$tag_file.claim.$$"
-  trap 'rm -f "$claimed" 2>/dev/null' EXIT
+  tag_lock || exit 0
+  seed=$(pick_seed)
   seed_lines=''
-  for _ in 1 2 3; do
-    seed=$(pick_seed)
-    [ -n "$seed" ] || break
-    mv "$seed" "$claimed" 2>/dev/null || continue
-    seed_lines=$(cat "$claimed")
-    break
-  done
-  [ -n "$seed_lines" ] || { [ -f "$cache_dir/pending-$agent_type" ] && seed_lines=$(cat "$cache_dir/pending-$agent_type"); }
+  [ -z "$seed" ] || seed_lines=$(cat "$seed" 2>/dev/null)
+  [ -n "$seed_lines" ] || { seed=''; [ -f "$cache_dir/pending-$agent_type" ] && seed_lines=$(cat "$cache_dir/pending-$agent_type"); }
   tag=${seed_lines%%$'\n'*}
-  [ -n "$tag" ] || exit 0
   seed_extra=()
   while IFS= read -r kv; do
     case "$kv" in ''|spawn=*) ;; *) seed_extra+=("$kv") ;; esac
   done < <(printf '%s\n' "$seed_lines" | tail -n +2)
-  write_tag_file "$tag" ${seed_extra[@]+"${seed_extra[@]}"} ${extra[@]+"${extra[@]}"} || exit 0
+  written=1
+  [ -z "$tag" ] || { write_tag_file_locked "$tag" ${seed_extra[@]+"${seed_extra[@]}"} ${extra[@]+"${extra[@]}"} && written=0; }
+  [ "$written" != 0 ] || [ -z "$seed" ] || rm -f "$seed" 2>/dev/null
+  rmdir "$cache_dir/.claim.lock" 2>/dev/null
+  [ "$written" = 0 ] || exit 0
 fi
 
 prune() {

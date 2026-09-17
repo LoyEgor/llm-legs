@@ -1,8 +1,9 @@
 {
   "vendor": "grok",
-  "verified": "2026-09-11",
-  "cli": {"name": "grok", "version": "1.0.13", "version_args": ["--version"]},
-  "model": {"image": "grok-imagine-image-quality", "video": "grok-imagine-video-1.5"},
+  "verified": "2026-09-17",
+  "cli": {"name": "grok", "version": "1.0.34", "version_args": ["--version"]},
+  "model": {"image": "grok-imagine-image-2.0", "video": "grok-imagine-video-1.5"},
+  "short": {"image": "imagine-image-2.0", "video": "imagine-video-1.5"},
   "refs": {"max": 3, "verified_max": true},
   "aspects": {
     "generate": ["1:1", "16:9", "9:16", "3:2", "2:3", "auto"],
@@ -15,7 +16,7 @@
   "tools": {"generate": "image_gen", "edit": "image_edit"},
   "video": {
     "tools": {"single_ref": "image_to_video", "multi_ref": "reference_to_video"},
-    "refs_max": 7,
+    "refs_max": 14,
     "voices_max": 3,
     "voices": null,
     "voices_examples": ["ara", "eve", "leo", "rex"],
@@ -27,6 +28,7 @@
     "container": "mp4",
     "session_folder": "videos"
   },
+  "api_only": ["quality", "resolution_1k_2k", "background_removal", "n", "seed"],
   "unsupported": [
     "n",
     "resolution",
@@ -41,8 +43,9 @@
     "image_to_video_aspect"
   ],
   "field_sources": {
-    "cli.version": "B0 `grok --version` prints `grok 1.0.13 (5e9a58528b76) [alpha]`.",
-    "model.image": "B5 ImageGenClient's compiled-in Imagine model id. `features.image_gen_model_override` documents that an empty override 'defers to the remotely configured default', so this id is the binary's fallback, not a promise about which model served a given call.",
+    "cli.version": "B0 `grok --version` prints `grok 1.0.34 (3736acbc8658) [alpha]` (re-verified 2026-09-17; first verified on 1.0.13).",
+    "model.image": "D4 x.ai/news/grok-imagine-image-2 and the docs.x.ai release notes: `grok-imagine-image-2.0` GA since 2026-08-07; `grok-imagine-image-quality` (still the 1.0.34 binary's compiled-in default) retires 2026-11-02. B8 1.0.34 documents `features.image_gen_model_override` ('Empty defers to the remotely configured default') and `features.image_edit_model_override`; one Imagine image model serves both tools, so grok-image writes this id into BOTH overrides before every launch and the manifest is what the CLI sends on a generation and on an edit alike.",
+    "api_only": "D4 Image 2.0 adds quality low|medium|auto, 1K/2K resolutions, background removal with transparent output; B1/B2 in 1.0.34 ImageGenInput is still {prompt, aspect_ratio} and ImageEditInput {prompt, image, aspect_ratio}, so none of these reach the CLI. Multi-reference edits (up to 5 on the API) and smart resize ride the existing `image` and `aspect_ratio` fields.",
     "model.video": "B4 `grok-imagine-video-1.5`, adjacent to video_gen/mod.rs in the binary; the same id in the vendor reference-to-video documentation. No `video_gen_model_override` knob exists, so this one is pinned by the CLI version.",
     "refs.max": "D2 docs.x.ai multi-image editing: 'Use up to five source images for a single image edit.' B2 the CLI's own `image` schema states no cap, so five is the endpoint's documented limit rather than a CLI-verified one — hence verified_max false.",
     "aspects.generate": "B1 ImageGenInput.aspect_ratio: \"Aspect ratio of the generated image... Defaults to 'auto'. 1:1 for square (icons, profiles), 16:9 for wide (landscapes, cinematic), 9:16 for tall (phone wallpapers, stories), 3:2 for horizontal photos, 2:3 for vertical (portraits, posters).\"",
@@ -52,7 +55,7 @@
     "transparent": "B2 no alpha/background parameter on either tool; B5 the image client writes `jpg`. Alpha comes from share/image-chroma.sh keying a green plate.",
     "resume": "B6 `-r/--resume <SESSION_ID_OR_TITLE>`; D1 headless documentation resumes by the `sessionId` reported on the terminal event.",
     "video.tools": "B3 image_to_video 'Generate a video from a single source image'; reference_to_video 'Generate a video from reference images and/or preset voices, guided by a required text prompt'.",
-    "video.refs_max": "B3 reference_to_video.images: 'Reference images, up to 7 entries'; the runtime error '`images` must contain at most N image references.' guards it.",
+    "video.refs_max": "B3 reference_to_video.images: 'Reference images, up to 14 entries' in 1.0.34 (7 in 1.0.13), which also adds first_frame, last_frame and up to 4 keyframes; the runtime error '`images` must contain at most N image references.' guards it.",
     "video.voices_max": "B3 reference_to_video.voices: 'up to 3 entries'; runtime error '`voices` must contain at most N preset voices.'",
     "video.voices": "B3 the roster is not enumerated by the CLI: 'each a voice identifier from the built-in roster (e.g. \"ara\", \"eve\", \"leo\", \"rex\"; same voices as the xAI text-to-speech API; an unknown identifier fails with the list of available voices)'. null because no complete list is available offline; the four examples are the schema's own.",
     "video.durations": "B3 image_to_video.duration: 'either 6 or 10 seconds. Default to 6 unless the user requests longer.'; runtime error '`duration` must be either 6 or 10 seconds.'",

@@ -54,7 +54,7 @@ chmod +x "$FAKE_BIN/worker-pick"
 
 cat >"$FAKE_BIN/grok" <<'EOF'
 #!/usr/bin/env bash
-printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.13}"
+printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.34}"
 EOF
 chmod +x "$FAKE_BIN/grok"
 
@@ -87,7 +87,7 @@ video_run() {
   env PATH="$FAKE_BIN:$PATH" TMPDIR="$TMP_ROOT" \
     GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
     GROKB_GROK_BIN="$FAKE_BIN/grok" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
-    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.13}" \
+    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.34}" \
     GROK_VIDEO_GROKB="$FIXTURE" GROK_VIDEO_WORKER_PICK="$FAKE_BIN/worker-pick" \
     GROK_VIDEO_FFPROBE="${GROK_VIDEO_FFPROBE:-ffprobe}" GROK_VIDEO_MDLS="${GROK_VIDEO_MDLS:-$FAKE_BIN/fake-mdls}" \
     FAKE_MDLS_MODE="${FAKE_MDLS_MODE:-ok}" \
@@ -403,7 +403,7 @@ assert video_run --dest "$OUTPUT_DIR/staleversion.$CONTAINER" --prompt 'push in'
   --ref "$WORK/ref-a.jpg" --account explicit
 assert grep -qx "caps=stale cli=9.9.9 verified=$(jq -r '.cli.version' "$MANIFEST")" "$VIDEO_OUT"
 assert grep -qx 'model=unknown model_caps=unknown' "$VIDEO_OUT"
-FAKE_GROK_VERSION=1.0.13
+FAKE_GROK_VERSION=1.0.34
 export FAKE_GROK_VERSION
 
 # Whatever a media script writes is journalled by the agent that ran it, so the one thing it owes

@@ -32,6 +32,43 @@ actual_format() { # path
   case "$value" in jpeg) printf 'jpg' ;; *) printf '%s' "$value" ;; esac
 }
 
+# The C2PA manifest's CBOR `softwareAgent {name, version}` is the only place the model names itself.
+c2pa_model() { # path -> gpt-image-2 | gpt-image-2.5 | nothing
+  python3 - "$1" <<'PY' 2>/dev/null || true
+import re, sys
+data = open(sys.argv[1], "rb").read()
+def text(at):
+    head = data[at]
+    if head >> 5 != 3:
+        raise ValueError
+    size = head & 31
+    if size == 24:
+        return data[at + 2:at + 2 + data[at + 1]].decode(), at + 2 + data[at + 1]
+    if size > 23:
+        raise ValueError
+    return data[at + 1:at + 1 + size].decode(), at + 1 + size
+at = data.find(b"softwareAgent")
+while at >= 0:
+    pos = at + len(b"softwareAgent")
+    try:
+        pairs = data[pos] - 0xA0
+        if not 0 < pairs < 24:
+            raise ValueError
+        pos += 1
+        agent = {}
+        for _ in range(pairs):
+            key, pos = text(pos)
+            value, pos = text(pos)
+            agent[key] = value
+        if agent.get("name") and agent.get("version"):
+            print(agent["name"] + "-" + re.sub(r"\.0$", "", agent["version"]))
+            break
+    except (IndexError, ValueError, UnicodeDecodeError):
+        pass
+    at = data.find(b"softwareAgent", at + 1)
+PY
+}
+
 # `%A` alone reports the channel, not its contents: a PNG carrying a fully opaque alpha channel
 # answers `Blend` and would be delivered as a transparent asset that is nothing of the kind.
 has_usable_alpha() { # path
@@ -423,7 +460,5 @@ format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
 }
 printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
   "$dest" "$width" "$height" "$format" "$account" "${session:-none}"
-# The built-in tool names its model nowhere in a `codex exec` run, so the observation is empty and
-# the line says so; the manifest's `gpt-image-2` is guarded by the CLI version instead.
-image_caps_model_check "$root" codex image ''
+image_caps_model_check "$root" codex image "$(c2pa_model "$generated")"
 image_caps_check "$root" codex "$codex_cmd"

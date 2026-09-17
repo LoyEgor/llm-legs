@@ -26,7 +26,9 @@ image_caps_check() { # root vendor binary -> "caps=fresh" | "caps=stale cli=<liv
 image_caps_model_check() { # root vendor kind observed -> "model=<observed> model_caps=fresh|stale|unknown"
   local root=$1 vendor=$2 kind=$3 observed=$4 expected
   expected=$(image_caps_get "$root" "$vendor" ".model.$kind // empty")
-  if [ -z "$observed" ]; then
+  if [ -n "$expected" ] && [ -z "$(image_caps_get "$root" "$vendor" ".short.$kind // empty")" ]; then
+    printf 'model=%s model_caps=stale short=missing\n' "${observed:-unknown}"
+  elif [ -z "$observed" ]; then
     printf 'model=unknown model_caps=unknown\n'
   elif [ "$observed" = "$expected" ]; then
     printf 'model=%s model_caps=fresh\n' "$observed"

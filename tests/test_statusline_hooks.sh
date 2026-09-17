@@ -3660,6 +3660,25 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · 3.8
 assert_eq 'light edit · 3.8-flash · second' \
   "$(seed_of spawn-gemini gemini-worker)"
 
+# `geminib families` is a hook-time call, and the hook runs where geminib may be missing: the row
+# still names the model, read off the slug's own shape rather than a family literal (those live in
+# geminib alone, tests/test_consistency.sh).
+NO_GEMINIB="$WORK/no-geminib"
+mkdir -p "$NO_GEMINIB/bin"
+cp -R "$ROOT/share" "$NO_GEMINIB/share"
+cp "$SPAWN_HOOK" "$NO_GEMINIB/bin/"
+assert test ! -e "$NO_GEMINIB/bin/geminib"
+offline_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-gemini-offline",
+  tool_input:{subagent_type:"gemini-worker",description:"Implement fixture",
+              prompt:"ACCOUNT: second\nMODEL: flash38\nEFFORT: high\nWorking directory: /tmp"}}')
+offline_output=$(printf '%s' "$offline_spawn" | "$NO_GEMINIB/bin/worker-spawn-hook.sh") \
+  || fail "offline gemini spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · 3.8-flash · second: Implement fixture"' \
+  <<< "$offline_output" >/dev/null
+assert_eq 'light edit · 3.8-flash · second' \
+  "$(seed_of spawn-gemini-offline gemini-worker)"
+
 # gemini-research is not a worker: its row is `light research · <model>`, the model the table's
 # gemini default and never the worker-model knobs. The account IS predicted — a
 # pin first, then the router under `--role research`, the role this leg spends under, so a gemini
@@ -3742,10 +3761,10 @@ research_seeded_out=$(printf '%s' "$research_seeded" | "$WORKER_HOOK") \
 assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38 · high — Search the tree"' \
   <<< "$research_seeded_out" >/dev/null
 
-# image-gen is a relay too, so its row is tagged like the workers': `<account> · <image model> · <vendor>`,
-# vendor from the brief's VENDOR: line (codex by default), account from a pin in the brief — an
-# `ACCOUNT:` line or an `--account` on the launch line — else the router's `--role image` answer,
-# else the word `pool`; never `?`. A FANOUT: brief is `<all|pool> · image · fanout`.
+# image-gen is a relay too: `<account> · <short model>`, the short name from the vendor's caps
+# manifest (VENDOR: line, codex by default), account from a pin in the brief — an `ACCOUNT:` line or
+# an `--account` on the launch line — else the router's `--role image` answer, else the word `pool`;
+# never `?`. A FANOUT: brief is `fanout · image`.
 image_spawn() { # session prompt [worker-pick]
   jq -cn --arg session "$1" --arg prompt "$2" '{
     hook_event_name:"PreToolUse",session_id:$session,
@@ -3760,37 +3779,36 @@ chmod +x "$IMAGE_PICK"
 # Unpinned: the router's `--role image` answer is the prediction, and the tag keeps its shape so
 # the renderer still colours the row.
 image_routed=$(image_spawn img-routed $'Draw a cat.\nsize: model\'s choice' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · gpt-image-2 · codex: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "cxroute · gpt-image-2: Draw the icon"' \
   <<< "$image_routed" >/dev/null
-assert_eq 'cxroute · gpt-image-2 · codex' "$(seed_of img-routed image-gen)"
+assert_eq 'cxroute · gpt-image-2' "$(seed_of img-routed image-gen)"
 
 image_vendor=$(image_spawn img-vendor $'VENDOR: gemini\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · gemini-3.1-flash-image · gemini: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · flash-image-3.1: Draw the icon"' \
   <<< "$image_vendor" >/dev/null
-assert_eq 'gmroute · gemini-3.1-flash-image · gemini' "$(seed_of img-vendor image-gen)"
+assert_eq 'gmroute · flash-image-3.1' "$(seed_of img-vendor image-gen)"
 
-# A fan-out spends every vendor: the vendor slot says so, the account slot says how many accounts.
 image_fanout=$(image_spawn img-fanout $'FANOUT: all\nACCOUNTS: all\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'all · image · fanout' "$(seed_of img-fanout image-gen)"
+assert_eq 'fanout · image' "$(seed_of img-fanout image-gen)"
 image_fanout_pick=$(image_spawn img-fanout-pick $'FANOUT: codex|grok\nACCOUNTS: pick\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'pool · image · fanout' "$(seed_of img-fanout-pick image-gen)"
+assert_eq 'fanout · image' "$(seed_of img-fanout-pick image-gen)"
 
 # The brief's own ACCOUNT: line is the pin the script will be given, so it is the one prediction
 # this hook may make — and `--account` on the launch line spelled in the brief is the same pin.
 image_acct=$(image_spawn img-acct $'ACCOUNT: pinned\nVENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · grok-imagine-image-quality · grok: Draw the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "pinned · imagine-image-2.0: Draw the icon"' \
   <<< "$image_acct" >/dev/null
-assert_eq 'pinned · grok-imagine-image-quality · grok' "$(seed_of img-acct image-gen)"
+assert_eq 'pinned · imagine-image-2.0' "$(seed_of img-acct image-gen)"
 
 image_flag=$(image_spawn img-flag \
   $'VENDOR: codex\nRun codex-image --account alt2 --dest /tmp/a.png --prompt "a cat"' "$IMAGE_PICK")
-assert_eq 'alt2 · gpt-image-2 · codex' "$(seed_of img-flag image-gen)"
+assert_eq 'alt2 · gpt-image-2' "$(seed_of img-flag image-gen)"
 
 # Router silent (exit 3 for grok in the fake) or absent: `pool` — the script will pick from it.
 image_unknown=$(image_spawn img-unknown $'VENDOR: grok\nDraw a cat.' "$IMAGE_PICK")
-assert_eq 'pool · grok-imagine-image-quality · grok' "$(seed_of img-unknown image-gen)"
+assert_eq 'pool · imagine-image-2.0' "$(seed_of img-unknown image-gen)"
 image_nopick=$(image_spawn img-nopick $'VENDOR: grok\nDraw a cat.')
-assert_eq 'pool · grok-imagine-image-quality · grok' "$(seed_of img-nopick image-gen)"
+assert_eq 'pool · imagine-image-2.0' "$(seed_of img-nopick image-gen)"
 
 # An image brief edits no instruction file, so the MD guard is not injected into it.
 assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not' \
@@ -3800,14 +3818,14 @@ assert jq -e '(.hookSpecificOutput.updatedInput.prompt | test("MD-GUARD")) | not
 image_tag=$(worker_payload image-gen worker/img 'Generate the icon' \
   'codex-image --dest /tmp/icon.png --prompt "an icon" --account alt')
 image_tag_out=$(printf '%s' "$image_tag" | "$WORKER_HOOK") || fail "image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · gpt-image-2 · codex — Generate the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · gpt-image-2 — Generate the icon"' \
   <<< "$image_tag_out" >/dev/null
-assert_eq 'alt · gpt-image-2 · codex' "$(cat "$TAGDIR/workerimg")"
+assert_eq $'alt · gpt-image-2\nmedia=gen' "$(cat "$TAGDIR/workerimg")"
 
 image_grok_tag=$(worker_payload image-gen worker/imggrok 'Generate the icon' \
   '/usr/local/bin/grok-image --account sg1 --dest /tmp/icon.png --prompt "an icon"')
 image_grok_out=$(printf '%s' "$image_grok_tag" | "$WORKER_HOOK") || fail "grok image tag hook exited nonzero"
-assert_eq 'sg1 · grok-imagine-image-quality · grok' "$(cat "$TAGDIR/workerimggrok")"
+assert_eq 'sg1 · imagine-image-2.0' "$(head -n1 "$TAGDIR/workerimggrok")"
 
 # The image scripts are called with every argument quoted, so a quoted account is the ORDINARY
 # spelling here, not an edge case — read past the quote as the vendor branches above do.
@@ -3815,16 +3833,16 @@ for image_quoted in '--account "alt2"' "--account 'alt2'" '--account="alt2"'; do
   image_quoted_tag=$(worker_payload image-gen worker/imgq 'Generate the icon' \
     "codex-image ${image_quoted} --dest /tmp/icon.png --prompt \"an icon\"")
   printf '%s' "$image_quoted_tag" | "$WORKER_HOOK" >/dev/null || fail "quoted image tag hook exited nonzero"
-  assert_eq 'alt2 · gpt-image-2 · codex' "$(cat "$TAGDIR/workerimgq")"
+  assert_eq 'alt2 · gpt-image-2' "$(head -n1 "$TAGDIR/workerimgq")"
   rm -f "$TAGDIR/workerimgq"
 done
 
 # No `--account`: the script routes itself at run time, so the seed the spawn hook wrote stands.
-printf 'gmroute · gemini-3.1-flash-image · gemini\n' > "$TAGDIR/pending-image-gen"
+printf 'gmroute · flash-image-3.1\n' > "$TAGDIR/pending-image-gen"
 image_seeded=$(worker_payload image-gen worker/imgseed 'Generate the icon' \
   'gemini-image --dest /tmp/icon.png --prompt "an icon"')
 image_seeded_out=$(printf '%s' "$image_seeded" | "$WORKER_HOOK") || fail "seeded image tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · gemini-3.1-flash-image · gemini — Generate the icon"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · flash-image-3.1 — Generate the icon"' \
   <<< "$image_seeded_out" >/dev/null
 
 # A stored tag carrying regex-special chars is matched literally, so an
@@ -3860,7 +3878,7 @@ printf 'line\n%.0s' {1..21} > "$REVIEW_DIRTY/change.txt"
 TOP_REVIEW_DIRTY=$(cd "$REVIEW_DIRTY" && pwd -P)
 review_verdict_delimited=" ${DIM}│${RESET} 3"
 # Neither slot carries a word any more, so silence is the absence of every shape the two can take:
-# the run's counter in its colourings, and the verdict's number, `~`, `fix` or `?<why>`. Asked of
+# the run's counter in its colourings, and the verdict's number, `~`, `fix` or `?`. Asked of
 # line 1 alone, because line 2 opens segments with digits (`5h`).
 review_slot_silent() { # rendered
   case "${1%%$'\n'*}" in
@@ -5442,6 +5460,32 @@ printf '%s' "$(worker_payload claudeb-worker agentN 'Save brief' 'true' tr-stale
 assert test ! -e "$TR_HOME_CACHE/tr-stale/agentN"
 assert test -f "$TR_HOME_CACHE/tr-stale/pending-claudeb-worker-toolu_denied"
 
+# Every seed carries a spawn key, an empty first line included, and an agent that knows its key never
+# takes a keyless seed.
+tr_spawn tr-keyless claudeb-worker $'\nACCOUNT: blank' toolu_blank >/dev/null
+assert grep -q '^spawn=[0-9a-f]\{16\}$' "$TR_HOME_CACHE/tr-keyless/pending-claudeb-worker-toolu_blank"
+printf 'other · opus · high\n' > "$TR_HOME_CACHE/tr-keyless/pending-claudeb-worker-legacy"
+mkdir -p "$WORK/tr-keyless-parent/subagents"
+jq -cn '{type:"user",message:{role:"user",content:"ACCOUNT: mine\nx"}}' > "$WORK/tr-keyless-parent/subagents/agent-agentK.jsonl"
+printf '%s' "$(worker_payload claudeb-worker agentK 'Save brief' 'true' tr-keyless | jq -c --arg t "$WORK/tr-keyless-parent.jsonl" '.transcript_path = $t')" |
+  "$WORKER_HOOK" >/dev/null
+assert test ! -e "$TR_HOME_CACHE/tr-keyless/agentK" -a -f "$TR_HOME_CACHE/tr-keyless/pending-claudeb-worker-legacy"
+
+# A seed claim that cannot take `.claim.lock` leaves the seed in place for the next call.
+tr_spawn tr-locked claudeb-worker $'ACCOUNT: kept\nx' toolu_kept >/dev/null
+mkdir "$TR_HOME_CACHE/tr-locked/.claim.lock"
+printf '%s' "$(worker_payload claudeb-worker agentS 'Save brief' 'true' tr-locked)" | "$WORKER_HOOK" >/dev/null
+assert test ! -e "$TR_HOME_CACHE/tr-locked/agentS" -a -f "$TR_HOME_CACHE/tr-locked/pending-claudeb-worker-toolu_kept"
+rmdir "$TR_HOME_CACHE/tr-locked/.claim.lock"
+
+# review-waiter, gemini-research and image-gen run on their own frontmatter model: a tool-call model is
+# stripped; a fork keeps it.
+for tr_pinned in review-waiter gemini-research image-gen; do
+  tr_spawn tr-pinned "$tr_pinned" 'WAIT 20260101T000000Z-abcdef1: x' '' opus > "$WORK/tr-pinned-$tr_pinned.json"
+done
+assert jq -se 'length == 3 and all(.[]; .hookSpecificOutput.updatedInput | has("model") | not)' \
+  "$WORK/tr-pinned-review-waiter.json" "$WORK/tr-pinned-gemini-research.json" "$WORK/tr-pinned-image-gen.json" >/dev/null
+
 # The review-waiter's wait writes the run's tag and `review=`, names itself to review-bench through
 # `--waiter <agent id>`, and is granted nothing.
 tr_rev_out=$(printf '%s' "$(worker_payload review-waiter waiter1 'Wait' "review-bench wait $TR_REVIEW --max 540 | tail -n 3" tr-rev)" |
@@ -5472,11 +5516,18 @@ printf '%s' "$(worker_payload claudeb-worker trpick 'Go' 'claudeb --model opus -
   WORKER_TAG_WORKER_PICK=/nonexistent "$WORKER_HOOK" >/dev/null
 assert_eq 'pickedacct · opus · high' "$(head -n1 "$TR_HOME_CACHE/tr-pick/trpick")"
 
-# grok-video and image-fanout are launches too.
-printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-video --account sg2 --dest /tmp/a.mp4' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'sg2 · grok-imagine-video-1.5 · grok' "$(head -n1 "$TR_HOME_CACHE/tr-media/trvid")"
-printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest /tmp/a.png --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
-assert_eq 'pool · image · fanout' "$(head -n1 "$TR_HOME_CACHE/tr-media/trfan")"
+# grok-video and image-fanout are launches too. A launch with `--ref` or `--resume` is an edit and
+# clears the last launch's `exit=`; a fan-out names its dest dir unless it is a dry run.
+mkdir -p "$TR_HOME_CACHE/tr-media"
+printf 'old · x\nexit=3\n' > "$TR_HOME_CACHE/tr-media/trvid"
+printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-video --account sg2 --dest /tmp/a.mp4 --ref /tmp/a.png' tr-media)" | "$WORKER_HOOK" >/dev/null
+assert_eq $'sg2 · imagine-video-1.5\nmedia=edit' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
+printf '%s' "$(worker_payload image-gen trvid 'Clip' 'grok-image --dest /tmp/a.png --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
+assert_eq $'sg2 · imagine-video-1.5\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-media/trvid")"
+printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest-dir "/tmp/fan out" --prompt x' tr-media)" | "$WORKER_HOOK" >/dev/null
+assert_eq $'fanout · image\nimage=/tmp/fan out' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
+printf '%s' "$(worker_payload image-gen trfan 'Fan' 'image-fanout --dest-dir /tmp/v --video --ref /tmp/a.png --prompt x --dry-run' tr-media)" | "$WORKER_HOOK" >/dev/null
+assert_eq 'fanout · video' "$(cat "$TR_HOME_CACHE/tr-media/trfan")"
 
 # worker-run start marks the agent's tag file; wait names the run, by literal id or through the state
 # file that names this agent when the id is a shell variable.
@@ -5517,6 +5568,24 @@ wait
 assert_eq 'edit=12' "$(grep '^edit=' "$TR_HOME_CACHE/tr-edit/a1")"
 assert grep -q '^start=[0-9]*$' "$TR_HOME_CACHE/tr-edit/a1"
 assert test ! -e "$TR_HOME_CACHE/tr-edit/.claim.lock"
+# An image script's Bash call stamps `exit=N`: PostToolUse means 0, PostToolUseFailure carries it.
+media_payload() { # event command [extra-json]
+  local extra=${3:-'{}'}
+  jq -cn --arg event "$1" --arg command "$2" --argjson extra "$extra" '{hook_event_name:$event,tool_name:"Bash",
+    session_id:"tr-exit",agent_id:"m1",agent_type:"image-gen",cwd:"/tmp",tool_input:{command:$command}} + $extra'
+}
+mkdir -p "$TR_HOME_CACHE/tr-exit"
+printf 'notcom · gpt-image-2\nmedia=gen\n' > "$TR_HOME_CACHE/tr-exit/m1"
+run_workdir_hook "$(media_payload PostToolUse 'ls /tmp')"
+run_workdir_hook "$(media_payload PostToolUse 'codex-image --dest /tmp/a.png --prompt x' '{"tool_input":{"command":"codex-image --dest /tmp/a.png","run_in_background":true}}')"
+assert_eq $'notcom · gpt-image-2\nmedia=gen' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
+run_workdir_hook "$(media_payload PostToolUse '/opt/bin/codex-image --dest /tmp/a.png --prompt x')"
+assert_eq $'notcom · gpt-image-2\nmedia=gen\nexit=0' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
+run_workdir_hook "$(media_payload PostToolUseFailure 'grok-video --dest /tmp/a.mp4' '{"error":"Exit code 3\nUSAGE_LIMIT"}')"
+assert_eq $'notcom · gpt-image-2\nmedia=gen\nexit=3' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
+printf 'acct · opus · high\n' > "$TR_HOME_CACHE/tr-exit/m1"
+run_workdir_hook "$(media_payload PostToolUse 'codex-image --dest /tmp/a.png --prompt x')"
+assert_eq 'acct · opus · high' "$(cat "$TR_HOME_CACHE/tr-exit/m1")"
 
 # The gate: a Monitor on a wait is refused, and so is a review wait from the chat's own Bash.
 monitor_payload() { jq -cn --arg command "$1" '{hook_event_name:"PreToolUse",tool_name:"Monitor",tool_input:{command:$command}}'; }
@@ -5563,17 +5632,16 @@ assert_eq "" "$gate_out"
 gate_out=$(gate_payload 'gemini-research --attach gemini-1-2-abcd --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
-# The renderer paints every local_agent task, state from the run's files, and fits `columns`.
+# The renderer paints every running local_agent task, state from the run's files, and fits `columns`.
 RENDER_BIN="$ROOT/bin/subagent-statusline.sh"
 TR_RSESS=tr-render
-mkdir -p "$TR_HOME_CACHE/$TR_RSESS" "$tr_runs/codex-9-9-wait" "$tr_runs/codex-9-9-done" "$tr_runs/codex-9-9-fail" "$tr_runs/codex-9-9-live" \
+mkdir -p "$TR_HOME_CACHE/$TR_RSESS" "$tr_runs/codex-9-9-wait" "$tr_runs/codex-9-9-done" "$tr_runs/codex-9-9-live" \
   "$tr_runs/codex-9-9-fix" "$tr_runs/gemini-9-9-res"
 printf 'acc · astra · high\nrun=codex-9-9-wait\n' > "$TR_HOME_CACHE/$TR_RSESS/w1"
 printf '{"phase":"wait","round":3}\n' > "$tr_runs/codex-9-9-wait/state.json"
 printf 'acc · astra · high\nrun=codex-9-9-done\n' > "$TR_HOME_CACHE/$TR_RSESS/w2"
 printf '{"phase":"done","round":4,"exit_code":0}\n' > "$tr_runs/codex-9-9-done/state.json"; printf '0\n' > "$tr_runs/codex-9-9-done/exit_code"
-printf 'acc · astra · high\nrun=codex-9-9-fail\n' > "$TR_HOME_CACHE/$TR_RSESS/w3"
-printf '{"phase":"wait","round":2}\n' > "$tr_runs/codex-9-9-fail/state.json"; printf '7\n' > "$tr_runs/codex-9-9-fail/exit_code"
+printf 'acc · astra · high\nrun=codex-9-9-live\n' > "$TR_HOME_CACHE/$TR_RSESS/w3"
 printf 'acc · astra · high\nrun=codex-9-9-live\n' > "$TR_HOME_CACHE/$TR_RSESS/w4"
 printf '{"phase":"wait","round":6}\n' > "$tr_runs/codex-9-9-live/state.json"
 printf 'T2 · double · task\nreview=%s\n' "$TR_REVIEW" > "$TR_HOME_CACHE/$TR_RSESS/r1"
@@ -5583,64 +5651,258 @@ printf 'acc · astra · high\nrun=codex-9-9-fix\n' > "$TR_HOME_CACHE/$TR_RSESS/f
 printf '{"phase":"wait","round":1,"round_id":"%s"}\n' "$TR_REVIEW" > "$tr_runs/codex-9-9-fix/state.json"
 printf 'rawilimo · flash38 · high\nlight=research\nrun=gemini-9-9-res\n' > "$TR_HOME_CACHE/$TR_RSESS/g1"
 printf '{"phase":"wait","round":2}\n' > "$tr_runs/gemini-9-9-res/state.json"
+mkdir -p "$WORK/tr fan"
+printf 'fanout · image\nimage=%s\n' "$WORK/tr fan" > "$TR_HOME_CACHE/$TR_RSESS/i1"
+jq -cn '{kind:"image",cells:[{vendor:"codex",account:"notcom",status:"done",exit:0},{vendor:"gemini",account:"a",status:"running"},
+  {vendor:"gemini",account:"b",status:"done",exit:0},{vendor:"grok",account:"c",status:"failed",exit:1}]}' > "$WORK/tr fan/fanout.state.json"
+printf 'notcom · gpt-image-2\nmedia=gen\n' > "$TR_HOME_CACHE/$TR_RSESS/i2"
+printf 'notcom · gpt-image-2\nmedia=edit\n' > "$TR_HOME_CACHE/$TR_RSESS/i3"
+printf 'notcom · gpt-image-2\nmedia=gen\nexit=0\n' > "$TR_HOME_CACHE/$TR_RSESS/i4"
+printf 'rawilimo · imagine-video-1.5\nmedia=edit\nexit=3\n' > "$TR_HOME_CACHE/$TR_RSESS/i5"
 tr_render() { # columns
   local start=$(( ($(date +%s) - 65) * 1000 ))
   jq -cn --argjson cols "$1" --argjson start "$start" --arg sess "$TR_RSESS" --arg rev "$TR_REVIEW" '{session_id:$sess,columns:$cols,tasks:[
     {id:"w1",type:"local_agent",status:"running",description:"acc · astra · high: Implement the parser fix",label:"Running suites",startTime:$start,tokenCount:12345,model:"claude-sonnet-5"},
-    {id:"w2",type:"local_agent",status:"completed",description:"Done run",label:"Done",startTime:$start},
-    {id:"w3",type:"local_agent",status:"completed",description:"Failed run",startTime:$start},
-    {id:"w4",type:"local_agent",status:"completed",description:"Checkpointed run",startTime:$start},
+    {id:"w2",type:"local_agent",status:"running",description:"Done run",label:"Done",startTime:$start},
+    {id:"w3",type:"local_agent",status:"completed",description:"Finished run",startTime:$start},
+    {id:"w4",type:"local_agent",status:"killed",description:"Killed run",startTime:$start},
     {id:"r1",type:"local_agent",status:"running",description:("T2 · double · task: WAIT " + $rev + ": hunt over the task rows"),startTime:$start,tokenCount:500},
     {id:"l1",type:"local_agent",status:"running",description:"Refactor",startTime:$start,model:"claude-fable-5-1"},
     {id:"n1",type:"local_agent",status:"running",description:"Look around",startTime:$start,model:"claude-haiku-4-5-20251001"},
-    {id:"f1",type:"local_agent",status:"running",description:"acc · astra · high — Patch the gate",label:"Reading files",startTime:$start},
+    {id:"f1",type:"local_agent",status:"running",description:"acc · astra · high — Patch the gate",label:"Reading files",startTime:$start,tokenCount:900},
     {id:"f2",type:"local_agent",status:"running",description:"fix: e66f8e6 Patch again",startTime:$start},
     {id:"g1",type:"local_agent",status:"running",description:"light research · 3.8-flash · rawilimo: Map the hooks",startTime:$start,model:"claude-sonnet-5"},
+    {id:"i1",type:"local_agent",status:"running",description:"fanout · image: Draw the menubar icon",startTime:$start},
+    {id:"i2",type:"local_agent",status:"running",description:"Draw one icon",startTime:$start},
+    {id:"i3",type:"local_agent",status:"running",description:"Edit one icon",startTime:$start},
+    {id:"i4",type:"local_agent",status:"running",description:"Draw one icon",startTime:$start},
+    {id:"i5",type:"local_agent",status:"completed",description:"Animate one icon",startTime:$start},
     {id:"b1",type:"local_bash",status:"running",label:"sleep"}]}' |
     WORKER_STATS_DIR="$TR_STATS" SUBAGENT_ROW_RESERVE=0 CLAUDE_LIMITS_ACCOUNT=rowacct "$RENDER_BIN"
 }
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
 tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/1m [5-9]s/1m 5s/'; }
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
-assert_eq 10 "$(grep -c . <<<"$tr_wide")"
+assert_eq 12 "$(grep -c . <<<"$tr_wide")"
 assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
-assert_eq 'acc · astra · high — Done run · ✓ done · 1m 5s' "$(tr_row "$tr_wide" w2)"
-assert_eq 'acc · astra · high — Failed run · ✗ failed 7 · 1m 5s' "$(tr_row "$tr_wide" w3)"
-assert_eq 'acc · astra · high — Checkpointed run · ⏸ checkpoint · 1m 5s' "$(tr_row "$tr_wide" w4)"
-assert_eq 'T2 · double · task — hunt over the task rows · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s · ↓ 500 tok' "$(tr_row "$tr_wide" r1)"
+# Only running tasks have rows; a run that ended under a running agent shows no state.
+assert_eq 'acc · astra · high — Done run · 1m 5s' "$(tr_row "$tr_wide" w2)"
+assert_eq '' "$(tr_row "$tr_wide" w3)$(tr_row "$tr_wide" w4)$(tr_row "$tr_wide" i5)"
+assert_eq 'T2 · double · task — hunt over the task rows · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$tr_wide" r1)"
 assert_eq 'fork · fable · acc — Refactor · edit 3 · 1m 5s' "$(tr_row "$tr_wide" l1)"
 assert_eq 'agent · haiku · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wide" n1)"
 assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
-# A fix run of a review round reads differently from a plain one, without stacking the prefix.
-assert_eq 'acc · astra · high — fix: e66f8e6 Patch the gate · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f1)"
-assert_eq 'acc · astra · high — fix: e66f8e6 Patch again · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f2)"
+# Review, fix and image rows carry no title; worker and light rows keep theirs. A fix row is
+# `fix: <tag> · <round hash> · <state>`.
+assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s · ↓ 900 tok' "$(tr_row "$tr_wide" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f2)"
+assert grep -Fq "${MAGENTA}fix: acc · astra · high${RESET} ${DIM}· e66f8e6${RESET}" <<<"$(jq -r 'select(.id == "f1") | .content' <<<"$tr_wide")"
+assert_fails grep -Fq 'Patch again' <<<"$(tr_row "$tr_wide" f2)"
+assert_eq 'fanout · image · all 3/4 codex ✓ gemini 1/2 grok ✗1 · 1m 5s' "$(tr_row "$tr_wide" i1)"
+assert_eq 'notcom · gpt-image-2 · gen · 1m 5s' "$(tr_row "$tr_wide" i2)"
+assert_eq 'notcom · gpt-image-2 · edit · 1m 5s' "$(tr_row "$tr_wide" i3)"
+assert_eq 'notcom · gpt-image-2 · 1m 5s' "$(tr_row "$tr_wide" i4)"
+assert_fails grep -Fq 'one icon' <<<"$(tr_row "$tr_wide" i2)$(tr_row "$tr_wide" i4)"
+assert_fails grep -Fq 'WAIT' <<<"$(tr_row "$tr_wide" r1)"
+assert_fails grep -Fq 'Patch the gate' <<<"$(tr_row "$tr_wide" f1)"
+assert_fails grep -Fq 'menubar icon' <<<"$(tr_row "$tr_wide" i1)"
+assert grep -Fq 'Implement the parser fix' <<<"$(tr_row "$tr_wide" w1)"
 # The light leg names the model doing the work and never the relay agent's shell model.
 assert_eq 'light research · 3.8-flash · rawilimo — Map the hooks · wait 2 · 1m 5s' "$(tr_row "$tr_wide" g1)"
 assert grep -Fq "${MAGENTA}T2 · double · task${RESET}" <<<"$(jq -r 'select(.id == "r1") | .content' <<<"$tr_wide")"
-assert grep -Fq "${GREEN}✓${RESET}" <<<"$(jq -r 'select(.id == "w2") | .content' <<<"$tr_wide")"
-assert grep -Fq "${RED}✗${RESET}" <<<"$(jq -r 'select(.id == "w3") | .content' <<<"$tr_wide")"
-# Narrower: tok goes first, then the title tail down to 20 characters, then the cell detail (counts
-# stay) with the whole title back, then the rest of the title.
-assert_eq 'T2 · double · task — hunt over the task rows · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s' "$(tr_row "$(tr_render 87)" r1)"
-assert_eq 'T2 · double · task — hunt over the task ro… · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s' "$(tr_row "$(tr_render 86)" r1)"
-assert_eq 'T2 · double · task — hunt over the task r… · review 2/4 ●opus ●sol ✓agy ✗grok · 1m 5s' "$(tr_row "$(tr_render 85)" r1)"
-assert_eq 'T2 · double · task — hunt over the task rows · review 2/4 · 1m 5s' "$(tr_row "$(tr_render 84)" r1)"
-assert_eq 'T2 · double · task — hunt over the tas… · review 2/4 · 1m 5s' "$(tr_row "$(tr_render 60)" r1)"
-assert_eq 'T2 · double · task · review 2/4 · 1m 5s' "$(tr_row "$(tr_render 20)" r1)"
+assert grep -Fq "${GREEN}✓${RESET}" <<<"$(jq -r 'select(.id == "i1") | .content' <<<"$tr_wide")"
+assert grep -Fq "${RED}✗${RESET}" <<<"$(jq -r 'select(.id == "i1") | .content' <<<"$tr_wide")"
+assert_fails grep -Fq 'done' <<<"$(tr_row "$tr_wide" w2)$(tr_row "$tr_wide" i4)"
+# Narrower: the title goes first, then tok, elapsed, a fix row's hash, and the cell detail last (counts stay); the state never.
+assert_eq 'T2 · double · task — hunt ov… · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 90)" r1)"
+assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 78)" r1)"
+assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 67)" r1)"
+assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "$(tr_row "$(tr_render 66)" r1)"
+assert_eq 'T2 · double · task · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1' "$(tr_row "$(tr_render 59)" r1)"
+assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58)" r1)"
+assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 30)" r1)"
+assert_eq 'fanout · image · all 3/4 codex ✓ gemini 1/2 grok ✗1' "$(tr_row "$(tr_render 51)" i1)"
+assert_eq 'fanout · image · all 3/4' "$(tr_row "$(tr_render 40)" i1)"
+tr_60=$(tr_render 60) tr_40=$(tr_render 40) tr_30=$(tr_render 30)
+assert_eq 'acc · astra · high — Impleme… · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_60" w1)"
+assert_eq 'acc · astra · high · wait 3 · 1m 5s' "$(tr_row "$tr_40" w1)"
+assert_eq 'acc · astra · high · wait 3' "$(tr_row "$tr_30" w1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s · ↓ 900 tok' "$(tr_row "$(tr_render 62)" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s' "$(tr_row "$tr_60" f1)"
+assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1' "$(tr_row "$(tr_render 45)" f1)"
+assert_eq 'fix: acc · astra · high · wait 1' "$(tr_row "$tr_40" f1)"
+assert_eq 'fix: acc · astra · high · wait 1' "$(tr_row "$tr_30" f1)"
+assert_eq 'light research · 3.8-flash · rawilimo · wait 2' "$(tr_row "$tr_40" g1)"
+# A chunked panel's fraction counts chunk passes; the row total stays cells.
+jq '.chunks = {"claude-opus-high":[2,5],"codex-sol-high":[1,5],"agy-flash38-high":[5,5]}' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+assert_eq 'T2 · double · task · all 2/4 opus 2/5 sol 1/5 agy ✓ grok ✗1 · 1m 5s' "$(tr_row "$(tr_render 67)" r1)"
+assert_eq 'T2 · double · task · all 2/4' "$(tr_row "$(tr_render 58)" r1)"
+jq 'del(.chunks)' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+# Cells group by label, so a panel of eight keeps them at an ordinary width.
+TR_REVIEW8=20260917T010000Z-a8c3d21
+jq -cn --arg run "$TR_REVIEW8" '{run_id:$run,tier:"T0",composition:"double",lens:"bugs",state:"running",phase:"review",
+  cells:["agy-flash37-high#1","agy-flash37-high#2","agy-flash37-high#3","agy-flash37-high#4",
+         "claude-opus-low#1","claude-opus-low#2","codex-sol-low#1","codex-sol-low#2"],
+  done:["agy-flash37-high#1","agy-flash37-high#4","claude-opus-low#1","codex-sol-low#1","codex-sol-low#2"],
+  failed_cells:["agy-flash37-high#4"]}' \
+  > "$TR_STATS/progress/llm-legs__x-8.json"
+printf 'T0 · double · bugs\nreview=%s\n' "$TR_REVIEW8" > "$TR_HOME_CACHE/$TR_RSESS/r8"
+tr8_row() { # columns
+  jq -cn --argjson cols "$1" --argjson start "$(( ($(date +%s) - 300) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
+    tasks:[{id:"r8",type:"local_agent",status:"running",description:"T0 debt review of chunk rows and the post-round delta",startTime:$start}]}' |
+    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content' | perl -pe 's/\e\[[0-9;]*m//g; s/5m [0-9]s/5m 0s/'
+}
+assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' "$(tr8_row 200)"
+# The default reserve is the top statusline's fit margin, 3: 62 cells fit in 65 columns.
+assert_eq "$(sed -nE 's/^STATUSLINE_FIT_MARGIN=\$\{STATUSLINE_FIT_MARGIN:-([0-9]+)\}$/\1/p' "$ROOT/bin/statusline.sh")" \
+  "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
+assert_eq 3 "$(sed -nE 's/^reserve=\$\{SUBAGENT_ROW_RESERVE:-([0-9]+)\}$/\1/p' "$RENDER_BIN")"
+assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' "$(tr8_row 65)"
+assert_eq 'T0 · double · bugs · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓' "$(tr8_row 64)"
+# Claude Code hands an ~80-column chat `columns: 67`: this row renders whole, and elapsed goes before any group.
+TR_REVIEWMC=20260917T120000Z-b1c2d3e
+jq -cn --arg run "$TR_REVIEWMC" '{run_id:$run,tier:"T1",composition:"standard",lens:"md-compact",state:"running",phase:"review",
+  cells:["agy-flash37-high#1","agy-flash37-high#2","claude-opus-high#1","claude-opus-high#2"],
+  done:["agy-flash37-high#1","claude-opus-high#1"],failed_cells:[]}' > "$TR_STATS/progress/llm-legs__x-mc.json"
+printf 'T1 · standard · md-compact\nreview=%s\n' "$TR_REVIEWMC" > "$TR_HOME_CACHE/$TR_RSESS/mc"
+trmc_row() { # columns
+  jq -cn --argjson cols "$1" --argjson start "$(( ($(date +%s) - 54) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
+    tasks:[{id:"mc",type:"local_agent",status:"running",description:"x",startTime:$start}]}' |
+    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content' | perl -pe 's/\e\[[0-9;]*m//g; s/5[4-9]s$/54s/'
+}
+for trmc_cols in 67 62; do
+  assert_eq 'T1 · standard · md-compact · all 2/4 agy 1/2 opus 1/2 · 54s' "$(trmc_row "$trmc_cols")"
+done
+for trmc_cols in 61 60 56; do
+  assert_eq 'T1 · standard · md-compact · all 2/4 agy 1/2 opus 1/2' "$(trmc_row "$trmc_cols")"
+done
+for trmc_cols in 55 50; do
+  assert_eq 'T1 · standard · md-compact · all 2/4' "$(trmc_row "$trmc_cols")"
+done
+rm -f "$TR_STATS/progress/llm-legs__x-mc.json"
+# The judge phase freezes the panel row at `✓ done` and puts the judge in a second row of the same
+# content: `judge: <account> · <model> · <effort> · <hash> · <elapsed>`, shedding hash, effort, model,
+# elapsed in that order; `SUBAGENT_JUDGE_ROW=inline` folds it back into the single row.
+TR_REVIEWJ=20260917T130000Z-c0ffee1
+TRJ_NOW=$(date +%s)
+trj_doc() { # jq filter
+  jq -cn --arg run "$TR_REVIEWJ" --argjson at "$((TRJ_NOW - 65))" '{run_id:$run,tier:"T0",composition:"double",lens:"bugs",state:"running",phase:"judge",
+    cells:["agy-flash37-high#1","claude-opus-high#1"],done:["agy-flash37-high#1","claude-opus-high#1"],
+    phase_at:$at,judge:{model:"opus",effort:"high",account:"locomthebest"}}' |
+    jq -c "$1" > "$TR_STATS/progress/llm-legs__x-j.json"
+}
+trj_row() { # columns
+  jq -cn --argjson cols "$1" --argjson start "$(( (TRJ_NOW - 245) * 1000 ))" --arg sess "$TR_RSESS" '{session_id:$sess,columns:$cols,
+    tasks:[{id:"j1",type:"local_agent",status:"running",description:"x",startTime:$start,tokenCount:2400}]}' |
+    WORKER_STATS_DIR="$TR_STATS" SUBAGENT_JUDGE_ROW="${TRJ_MODE:-}" "$RENDER_BIN" | jq -r '.content' |
+    perl -pe 's/\e\[[0-9;]*m//g; s/1m [0-9]+s/1m 5s/; s/4m [4-9]s/4m 5s/'
+}
+printf 'T0 · double · bugs\nreview=%s\n' "$TR_REVIEWJ" > "$TR_HOME_CACHE/$TR_RSESS/j1"
+trj_doc .
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
+judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done
+judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 54)"
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done
+judge: locomthebest · opus · high · 1m 5s' "$(trj_row 53)"
+assert_eq 'T0 · double · bugs · all 2/2 · ✓ done
+judge: locomthebest · opus · 1m 5s' "$(trj_row 43)"
+assert_eq 'T0 · double · bugs · all 2/2 · ✓ done
+judge: locomthebest · 1m 5s' "$(trj_row 35)"
+assert_eq 'T0 · double · bugs · all 2/2 · ✓ done
+judge: locomthebest' "$(trj_row 28)"
+TRJ_MODE=inline
+assert_eq 'T0 · double · bugs · judge: locomthebest · opus · high · c0ffee1 · 1m 5s · ↓ 2.4k tok' "$(trj_row 100)"
+TRJ_MODE=
+trj_doc 'del(.judge)'
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
+judge: c0ffee1 · 1m 5s' "$(trj_row 100)"
+trj_doc '.judge = {account:"rawilimo"}'
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 3m 0s · ↓ 2.4k tok
+judge: rawilimo · c0ffee1 · 1m 5s' "$(trj_row 100)"
+# No timestamp in the document: the first sighting of the phase is cached next to the tag.
+rm -f "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
+trj_doc 'del(.phase_at)'
+assert_eq 'T0 · double · bugs · all 2/2 agy ✓ opus ✓ · ✓ done · 4m 5s · ↓ 2.4k tok
+judge: locomthebest · opus · high · c0ffee1 · 0s' "$(trj_row 100)"
+assert test -s "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
+rm -f "$TR_HOME_CACHE/$TR_RSESS/j1.judge"
+# Rows appear in sequence: no judge row before the judge phase, and it stays through the report.
+trj_doc '.phase = "review" | .done = ["agy-flash37-high#1"]'
+assert_eq 'T0 · double · bugs · all 1/2 agy ✓ opus 0/1 · 4m 5s · ↓ 2.4k tok' "$(trj_row 100)"
+trj_doc '.state = "done" | .phase = "report" | .confirmed = 17'
+assert_eq 'T0 · double · bugs · ✓ report 17 · 3m 0s · ↓ 2.4k tok
+judge: locomthebest · opus · high · c0ffee1 · 1m 5s' "$(trj_row 100)"
+rm -f "$TR_STATS/progress/llm-legs__x-j.json"
+tr8_narrow=$(tr8_row 120)
+assert grep -Fq ' · all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓ · 5m 0s' <<<"$tr8_narrow"
+assert_fails grep -Fq 'post-round delta' <<<"$tr8_narrow"
+jq '.done += ["agy-flash37-high#2","agy-flash37-high#3"]' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert grep -Fq ' · all 7/8 agy 4/4 ✗1 opus 1/2 sol ✓ · ' <<<"$(tr8_row 200)"
+jq '.done = ["agy-flash37-high#1","claude-opus-low#1","claude-opus-low#2"] | .failed_cells = [] |
+  .chunks = {"agy-flash37-high#1":[5,5],"agy-flash37-high#2":[2,5],"agy-flash37-high#3":[0,5],"agy-flash37-high#4":[0,5],
+             "codex-sol-low#1":[3,5],"codex-sol-low#2":[0,5]}' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert grep -Fq ' · all 3/8 agy 7/20 opus ✓ sol 3/10 · 5m 0s' <<<"$(tr8_row 200)"
+# A group holding a late pending cell (the top statusline's rule) is red for the launching chat alone.
+jq --arg sess "$TR_RSESS" --argjson began "$(( $(date +%s) - 400 ))" '.done = ["agy-flash37-high#1","claude-opus-low#1"] |
+  .failed_cells = [] | del(.chunks) | .session = $sess | .started_epoch = $began |
+  .expected = {"agy-flash37-high#2":50000,"claude-opus-low#2":200000}' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+tr8_raw() { # session
+  mkdir -p "$TR_HOME_CACHE/$1" && cp "$TR_HOME_CACHE/$TR_RSESS/r8" "$TR_HOME_CACHE/$1/r8"
+  jq -cn --arg sess "$1" '{session_id:$sess,columns:200,tasks:[{id:"r8",type:"local_agent",status:"running",description:"x"}]}' |
+    WORKER_STATS_DIR="$TR_STATS" "$RENDER_BIN" | jq -r '.content'
+}
+tr8_own=$(tr8_raw "$TR_RSESS")
+assert grep -Fq "${RED}agy 1/4${RESET}" <<<"$tr8_own"
+assert_eq 'T0 · double · bugs · all 2/8 agy 1/4 opus 1/2 sol 0/2' "$(perl -pe 's/\e\[[0-9;]*m//g' <<<"$tr8_own")"
+assert_fails grep -Fq "${RED}opus" <<<"$tr8_own"
+assert_fails grep -Fq "${RED}sol" <<<"$tr8_own"
+assert_fails grep -Fq "$RED" <<<"$(tr8_raw tr-other)"
+jq '.session = "tr-launcher" | .waiter = {session:"tr-other",task_id:"r8"}' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert grep -Fq "${RED}agy 1/4${RESET}" <<<"$(tr8_raw tr-other)"
+assert_fails grep -Fq "$RED" <<<"$(tr8_raw "$TR_RSESS")"
+jq '.expected = {} | .started_epoch = 1' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert_fails grep -Fq "$RED" <<<"$(tr8_raw tr-other)"
+# A group whose cell's verifier runs says `verify` after its fraction and earns `✓` only once it is collected.
+jq '.done = .cells | .failed_cells = [] | .phase = "verify" |
+  .verifying = {"agy-flash37-high#1":"done","agy-flash37-high#2":"running","claude-opus-low#1":"done"}' \
+  "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" && mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert_eq 'T0 · double · bugs · all 8/8 agy 4/4 verify opus ✓ sol ✓ · 5m 0s' "$(tr8_row 200)"
+jq '.verifying["agy-flash37-high#2"] = "done"' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert_eq 'T0 · double · bugs · all 8/8 agy ✓ opus ✓ sol ✓ · 5m 0s' "$(tr8_row 200)"
+jq 'del(.verifying)' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+assert_eq 'T0 · double · bugs · all 8/8 agy ✓ opus ✓ sol ✓ · 5m 0s' "$(tr8_row 200)"
+rm -f "$TR_STATS/progress/llm-legs__x-8.json"
 # Review end states.
 jq '.state = "done" | .confirmed = 17' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
 assert grep -Fq '· ✓ report 17 ·' <<<"$(tr_row "$(tr_render 300)" r1)"
 jq '.state = "running" | .phase = "judge"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert grep -Fq '· judge ·' <<<"$(tr_row "$(tr_render 300)" r1)"
+tr_judge=$(tr_row "$(tr_render 300)" r1)
+assert grep -Fq '· ✓ done ·' <<<"$tr_judge"
+assert grep -q '^judge: ' <<<"$(sed -n 2p <<<"$tr_judge")"
 jq '.state = "dead"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
 assert grep -Fq '· ✗ dead ·' <<<"$(tr_row "$(tr_render 300)" r1)"
+jq '.state = "cancelled"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
+assert_eq 'T2 · double · task — hunt over the task rows · 1m 5s · ↓ 500 tok' "$(tr_row "$(tr_render 300)" r1)"
+jq '.state = "dead"' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
 # A document with no tier keeps the `T?` default through the sanitizer.
 jq '.tier = null' "$TR_STATS/progress/llm-legs__x-1.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-1.json"
-assert grep -Fq 'T? · double · task — ' <<<"$(tr_row "$(tr_render 300)" r1)"
+assert grep -Fq 'T? · double · task — hunt over the task rows · ' <<<"$(tr_row "$(tr_render 300)" r1)"
 printf '%s' "$(worker_payload review-waiter waiterT 'Wait' "review-bench wait $TR_REVIEW --max 540" tr-rev)" |
   WORKER_STATS_DIR="$TR_STATS" "$WORKER_HOOK" >/dev/null
 assert_eq 'T? · double · task' "$(head -n1 "$TR_HOME_CACHE/tr-rev/waiterT")"
@@ -5664,4 +5926,7 @@ assert review_slot_silent "$(progress_render state-done-reported)"
 rm -rf "$CLAUDEB_FIX/worker-stats/benches/progress-state-fixture" "$PROGRESS_DIR/${progress_prefix}state-done-reported.json.lock"
 progress_doc_clear
 
-echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown the known number followed by its dim \`?<why>\`, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·image-model·vendor from the launch line, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"
+# A payload whose tasks carry no status field is a running list (the harness omits the field on older builds).
+no_status=$(printf '{"session_id":"x","columns":80,"tasks":[{"id":"ns1","type":"local_agent","description":"acc · astra · high: No status","startTime":1789600000000}]}' | bash "$RENDER_BIN")
+assert grep -q 'acc · astra · high' <<<"$no_status"
+echo "PASS: $asserts asserts; workdir tracking, worktree/agent filtering, statusline segments, a review slot that carries a run over the shown tree, an ATOMIC middle block computed from ONE shown tree — the tree of the last line of this chat's place journal — a counter that is this chat's own run alone — its tier, its state as a mark and its cells — and one rendered form for every state the gate's debt line can name, the verdict asked about the shown tree, keyed on the checkout family's commit journal and review decision clock, this chat's own unread lines and nobody else's, with every unknown the known number followed by its dim \`?<why>\`, keyed on the commit journal and asked once per key with nothing else probed behind it, an unpushed marker that is the same gate's \`unpushed\` answer word for word — never dimmed, never shown for a branch level with its upstream or for commits the gate names none of, silent with no gate to ask, and re-asked the moment the FAMILY's debt journal that decides whose the commit is moves — main-last and Gemini account predictions, and Codex/claudeb/Gemini/grok worker tag propagation with the bare-launch gate that denies the spellings they replace, image-gen rows tagged account·short-model from the launch line with gen/edit/exit states and fan-out cells, task rows painted for every agent with run/review/light state fitted to the columns, native agent spawns refused but fork, Monitor and chat-Bash waits refused, an explicit-vendor pin hidden only by that vendor's ABSENCE from a loaded pick line and never by a field that is merely unusable, and a run's start/wait reserved to the relay agent that owns it through every wrapper, keyword and sh -c string that spells one, while a read-only report and a heredoc body quoting the spelling are not gated"

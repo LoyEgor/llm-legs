@@ -50,7 +50,7 @@ _load_worker_model() {
 _load_worker_model || true
 image_model() { # vendor
   local model
-  model=$(jq -r '.model.image // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
+  model=$(jq -r '.short.image // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
   printf '%s' "${model:-image}"
 }
 session_account() {
@@ -60,11 +60,13 @@ session_account() {
   fi
   printf '%s' "${acct:-main}"
 }
-# The row names the model, not the table's key.
+# The row names the model, not the table's key. A hook runs where `geminib families` may be
+# unreachable, so the slug's own shape is the offline label: the version digits are its tail.
 gemini_label() { # table slug or agy id → the family without `gemini-`
   local family
   family=$(worker_model_gemini_family "$1" | cut -f1)
-  [ -n "$family" ] || family=$1
+  [ -n "$family" ] || family=$(printf '%s' "$1" |
+    sed -E 's/-(high|medium|low)$//; s/^([a-z]+)([0-9])([0-9]+)$/\2.\3-\1/; s/^([a-z]+)([0-9]+)$/\2-\1/')
   printf '%s' "${family#gemini-}"
 }
 model_short() { # model id
@@ -131,15 +133,11 @@ elif [ "$subagent" = grok-worker ]; then
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   prefix="${acct:-?} · $model · $effort"
 elif [ "$subagent" = image-gen ]; then
-  # An image run has no effort knob: the middle segment is the vendor's image model from its
-  # capability manifest and the third the vendor whose quota it spends; a `FANOUT:` brief spends
-  # every vendor at once and keeps the word `image`.
+  # An image run has no effort knob: the second segment is the `short` model name from the vendor's
+  # capability manifest; a `FANOUT:` brief spends every vendor at once.
   fanout=$(printf '%s' "$prompt" | grep -m1 -oE '^FANOUT:[[:space:]]*[A-Za-z,|]+' || true)
   if [ -n "$fanout" ]; then
-    vendor=fanout
-    acct=$(printf '%s' "$prompt" | grep -m1 -oE '^ACCOUNTS:[[:space:]]*(all|pick)' | grep -oE '(all|pick)$')
-    [ "$acct" = pick ] && acct=pool
-    [ -n "$acct" ] || acct=all
+    acct=fanout
     media=image
   else
     vendor=$(printf '%s' "$prompt" | grep -m1 -oE '^VENDOR:[[:space:]]*(codex|gemini|grok)' |
@@ -155,7 +153,7 @@ elif [ "$subagent" = image-gen ]; then
     [ -n "$acct" ] || acct=pool
     media=$(image_model "$vendor")
   fi
-  prefix="$acct · $media · $vendor"
+  prefix="$acct · $media"
 elif [ "$subagent" = fork ]; then
   model=$(field '.tool_input.model')
   if [ -z "$model" ]; then
@@ -225,7 +223,7 @@ if mkdir -p "$pending_dir" 2>/dev/null; then
   umask 077
   tmp_pending="$pending_dir/.pending-$subagent.tmp.$$"
   first_line=${prompt%%$'\n'*}
-  { printf '%s\n' "$prefix"; [ -z "$first_line" ] || printf 'spawn=%s\n' "$(printf '%s\n' "$first_line" | shasum -a 256 2>/dev/null | cut -c1-16)"
+  { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "$(printf '%s\n' "$first_line" | shasum -a 256 2>/dev/null | cut -c1-16)"
     [ -z "${review_run:-}" ] || printf 'review=%s\n' "$review_run"
     [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"; } > "$tmp_pending" 2>/dev/null &&
     mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
@@ -259,17 +257,24 @@ if [ "$subagent" != image-gen ] && [ "$subagent" != fork ] && [ "$subagent" != r
   md_guard="MD-GUARD (hook-injected): CLAUDE.md / CLAUDE.local.md / MEMORY.md / files in memory/ dirs / anything under ~/.claude are READ-ONLY for this task. If your change makes one of them stale, return a DOCS IMPACT note proposing the edit instead of applying it. Only an explicit 'MD-EDIT: allowed' line in the brief unlocks them. The checkout is SHARED: uncommitted or untracked changes you did not make this run are other agents' live work — never git checkout/restore/reset/clean/stash over them, whatever git status suggests about authorship; report unexpected tree state in your OUTCOME and leave it in place."
 fi
 
-[ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && exit 0
+# These types are pinned to their frontmatter model, which a tool-call model would override.
+strip_model=''
+case "$subagent" in
+  review-waiter|gemini-research|image-gen) [ -z "$(field '.tool_input.model')" ] || strip_model=1 ;;
+esac
+
+[ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && [ -z "$strip_model" ] && exit 0
 
 printf '%s' "$input" | jq -c --arg description "$updated" --arg guard "$md_guard" \
-  --arg cleanup "$cleanup_note" '
+  --arg cleanup "$cleanup_note" --arg strip "$strip_model" '
   {hookSpecificOutput: {
     hookEventName: "PreToolUse",
     permissionDecision: "allow",
     updatedInput: (.tool_input
       | .description = $description
       | if $guard != "" then .prompt = (.prompt + "\n\n" + $guard) else . end
-      | if $cleanup != "" then .prompt = (.prompt + "\n\n" + $cleanup) else . end)
+      | if $cleanup != "" then .prompt = (.prompt + "\n\n" + $cleanup) else . end
+      | if $strip != "" then del(.model) else . end)
   }}
 ' 2>/dev/null
 exit 0

@@ -79,6 +79,18 @@ case "${FAKE_CODEX_IMAGE_FORMAT:-png}" in
     "$REAL_MAGICK" -size 64x64 'xc:#00FF00' -fill blue -draw 'circle 32,32 32,14' "PNG24:$image_path"
     ;;
 esac
+if [ -n "${FAKE_CODEX_AGENT_VERSION:-}" ]; then
+  python3 - "$image_path" "$FAKE_CODEX_AGENT_VERSION" <<'PY'
+import struct, sys, zlib
+path, version = sys.argv[1], sys.argv[2].encode()
+cbor = (b"\x78\x0ddigitalSourceType\x61x" + b"softwareAgent\xa2\x64name\x69gpt-image\x67version"
+        + bytes([0x60 + len(version)]) + version)
+data = open(path, "rb").read()
+end = data.rindex(b"IEND") - 4
+chunk = struct.pack(">I", len(cbor)) + b"caBX" + cbor + struct.pack(">I", zlib.crc32(b"caBX" + cbor))
+open(path, "wb").write(data[:end] + chunk + data[end:])
+PY
+fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
 

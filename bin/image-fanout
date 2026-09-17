@@ -248,6 +248,7 @@ count_live() {
 
 wait_slot() {
   while [ "$(count_live)" -ge "$max_parallel" ]; do
+    refresh_state
     sleep 0.05
   done
 }
@@ -257,6 +258,43 @@ job_n=0
 live_pids=''
 cleanup() { rm -rf "$jobs_dir"; }
 trap cleanup EXIT
+
+# Read by the launching agent's task row (bin/subagent-statusline.sh) while the cells run.
+state_file="$dest_dir/fanout.state.json"
+state_sig=''
+write_state() {
+  local i=1 dir rc kind=image
+  [ "$video" = true ] && kind=video
+  while [ "$i" -le "$job_n" ]; do
+    dir="$jobs_dir/$(printf '%03d' "$i")"
+    i=$((i + 1))
+    if [ -f "$dir/skipped" ]; then
+      awk -F'\t' '$3 == "usage_limit" { print $1 "\t" $2 "\tfailed\t3" } $3 == "failed" { print $1 "\t" $2 "\tfailed\t1" }' "$dir/row.tsv"
+    elif [ -f "$dir/rc" ]; then
+      rc=$(cat "$dir/rc")
+      case "$rc" in
+        0) printf '%s\t%s\tdone\t0\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")" ;;
+        4) ;;
+        *) printf '%s\t%s\tfailed\t%s\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")" "$rc" ;;
+      esac
+    elif [ -f "$dir/waiting" ]; then
+      printf '%s\t%s\twaiting\t\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")"
+    elif [ -f "$dir/vendor" ]; then
+      printf '%s\t%s\trunning\t\n' "$(cat "$dir/vendor")" "$(cat "$dir/account")"
+    fi
+  done | jq -Rn --arg kind "$kind" '{kind: $kind, cells: [inputs | split("\t")
+    | {vendor: .[0], account: .[1], status: .[2]} + (if .[3] == "" then {} else {exit: (.[3] | tonumber)} end)]}' \
+    >"$state_file.tmp.$$" && mv -f "$state_file.tmp.$$" "$state_file"
+}
+refresh_state() {
+  [ "$dry_run" = false ] || return 0
+  local rcs=("$jobs_dir"/*/rc) waits=("$jobs_dir"/*/waiting) sig
+  [ -e "${rcs[0]}" ] || rcs=()
+  [ -e "${waits[0]}" ] || waits=()
+  sig="$job_n:${#rcs[@]}:${#waits[@]}"
+  [ "$sig" != "$state_sig" ] || return 0
+  if write_state; then state_sig=$sig; else rm -f "$state_file.tmp.$$"; fi
+}
 
 write_row() { # file vendor account status reason dest size session model model_caps caps
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -287,6 +325,7 @@ queue_limit() { # vendor account reason
   if [ "$dry_run" = true ]; then
     printf '%s %s\tusage_limit: %s\n' "$1" "$2" "$3"
   fi
+  refresh_state
 }
 
 queue_fail() { # vendor account reason
@@ -300,6 +339,7 @@ queue_fail() { # vendor account reason
   if [ "$dry_run" = true ]; then
     printf '%s %s\tfailed: %s\n' "$1" "$2" "$3"
   fi
+  refresh_state
 }
 
 # NUL-separated: a prompt newline must not split flags.
@@ -330,7 +370,9 @@ launch_job() { # vendor account reason dest argv-file
     : >"$dir/skipped"
     return
   fi
+  : >"$dir/waiting"
   wait_slot
+  rm -f "$dir/waiting"
   (
     args=()
     while IFS= read -r -d '' item; do
@@ -338,9 +380,10 @@ launch_job() { # vendor account reason dest argv-file
     done <"$dir/argv"
     rc=0
     "${args[@]}" >"$dir/out" 2>"$dir/err" || rc=$?
-    printf '%s\n' "$rc" >"$dir/rc"
+    printf '%s\n' "$rc" >"$dir/rc.tmp" && mv -f "$dir/rc.tmp" "$dir/rc"
   ) &
   live_pids="${live_pids:+$live_pids }$!"
+  refresh_state
 }
 
 print_plan() { # vendor account reason quoted-cmd
@@ -361,6 +404,7 @@ if [ "$video" = true ] && [ ${#refs[@]} -eq 0 ]; then
   exit 2
 fi
 
+refresh_state
 for vendor in $vendors; do
   manifest=$(image_caps_file "$root" "$vendor")
   if [ ! -r "$manifest" ]; then
@@ -534,9 +578,14 @@ for vendor in $vendors; do
 done
 
 if [ "$dry_run" = false ]; then
+  while [ "$(count_live)" -gt 0 ]; do
+    refresh_state
+    sleep 0.05
+  done
   for pid in ${live_pids:-}; do
     wait "$pid" || true
   done
+  refresh_state
 fi
 
 ok_n=0

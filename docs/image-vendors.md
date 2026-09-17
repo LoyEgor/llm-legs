@@ -12,6 +12,23 @@ under [`docs/image-vendors/`](image-vendors/):
 Runtime limits are the JSON manifests in [`share/image-caps/`](../share/image-caps/README.md),
 not these pages. Re-verify a manifest when a run prints `caps=stale` or `model_caps=stale`.
 
+## Capability matrix
+
+Route a request by this table; every cell follows from the vendor's manifest (`api_only` names what the
+vendor API has and its CLI does not carry). No vendor has a mask, a fidelity flag or a seed.
+
+| Capability | codex | gemini | grok |
+| --- | --- | --- | --- |
+| Extend / outpaint the frame | ref + "extend the scene"; ratio as prose only | ref + a wider `--aspect` (7 ratios) | `--ref` ×2+ with a wider `--aspect`; a single-ref edit keeps the source ratio |
+| Edit a region | prompt only | prompt only | prompt only (`image_edit`) |
+| Keep identity across edits | ref + "preserve identity", `--resume` | ref, `--resume` needs `--account` | first choice: `image_edit` + `--resume` |
+| References max | 5 (unverified) | 3 | 3 (API: 5) |
+| Transparency | native alpha, chroma fallback | chroma | chroma (API background removal: `api_only`) |
+| Quality control | none | none | none (API `low\|medium\|auto`: `api_only`) |
+| Exact size | no (size as prose) | no | no |
+| 1K / 2K | no | no | no (`api_only`) |
+| Video | no | no | `grok-video`: 1 ref → 6/10 s, up to 14 refs → 1–15 s, 480p/720p |
+
 ## Soft vs hard fan-out adaptations
 
 `bin/image-fanout` takes one request and runs every selected vendor × account in parallel,

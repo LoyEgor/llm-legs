@@ -177,6 +177,15 @@ select_rc=0
 grok_media_select_account grok-image "$root" "$worker_pick_cmd" "$grok_profiles_dir" "$account" || select_rc=$?
 [ "$select_rc" -eq 0 ] || exit "$select_rc"
 account=$grok_media_account
+grok_home=$main_grok_home
+[ "$account" = main ] || grok_home="$grok_profiles_dir/$account"
+# One Imagine image model serves both tools, and the CLI has a separate override per tool: an
+# unpinned edit knob would leave every --ref/--resume run on the compiled-in default.
+pin_model=$(caps '.model.image')
+for pin_key in image_gen_model_override image_edit_model_override; do
+  grok_media_sync_model_override "$grok_home" "$pin_key" "$pin_model" ||
+    printf 'grok-image: could not pin %s in %s/config.toml\n' "$pin_key" "$grok_home" >&2
+done
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-image.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -259,16 +268,11 @@ format=$(awk '/format:/ {print $2; exit}' <<<"$sips_output")
 }
 
 caps_line=$(image_caps_check "$root" grok "$(grok_media_grok_bin || true)")
-grok_home=$main_grok_home
-[ "$account" = main ] || grok_home="$grok_profiles_dir/$account"
 override_key=image_gen_model_override
 [ "$editing" = false ] || override_key=image_edit_model_override
 observed_model=$(grok_media_model_override "$grok_home" "$override_key")
-# Without an override the CLI defers to a remotely configured default it never reports back, so
-# the compiled-in id is only an observation while the binary is the verified one.
-if [ -z "$observed_model" ] && [ "$caps_line" = 'caps=fresh' ]; then
-  observed_model=$(caps '.model.image')
-fi
+# An unverified CLI may no longer read the override knob at all.
+[ "$caps_line" = 'caps=fresh' ] || observed_model=''
 
 printf 'dest=%s\nsize=%sx%s\nformat=%s\naccount=%s\nsession=%s\n' \
   "$dest" "$width" "$height" "$format" "$account" "$(grok_media_session_id "$stream_file")"

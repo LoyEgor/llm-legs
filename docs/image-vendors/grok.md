@@ -1,7 +1,9 @@
 # Grok images and video through the Grok Build CLI
 
-Verified on 2026-09-11 against **grok 1.0.13 (5e9a58528b76)**, launched by `grokb` on a
-SuperGrok subscription. The runtime contract is [grok.json](../../share/image-caps/grok.json);
+Verified on 2026-09-11 against **grok 1.0.13 (5e9a58528b76)** and re-verified on 2026-09-17
+against **grok 1.0.34 (3736acbc8658)** (image tool schemas unchanged; `grok-imagine-image-2.0`
+pinned through `features.image_gen_model_override` and `features.image_edit_model_override`),
+launched by `grokb` on a SuperGrok subscription. The runtime contract is [grok.json](../../share/image-caps/grok.json);
 its `field_sources` maps each capability to the evidence below. This page concerns the
 subscription CLI's Imagine tools, not the xAI Imagine REST API, whose parameter surface is
 strictly wider.
@@ -25,7 +27,7 @@ Two wrappers read that one manifest: [`bin/grok-image`](../../bin/grok-image) fo
 | Exact dimensions / resolution / quality | No such parameter on either tool | B1, B2 |
 | Multiple outputs | No `n`: “To produce multiple images, emit multiple tool calls with distinct prompts.” | B1 |
 | Transparency | Wrapper chroma key onto a `.png`; no alpha or background parameter, the client writes `jpg` | B2, B5, [chroma implementation](../../share/image-chroma.sh) |
-| Image model | `grok-imagine-image-quality` compiled in; `features.image_gen_model_override` / `image_edit_model_override` may pin another | B5, B8 |
+| Image model | `grok-imagine-image-quality` compiled in; `grok-image` pins the manifest's `grok-imagine-image-2.0` in `features.image_gen_model_override` AND `image_edit_model_override`, so generation and editing run on the same model | B5, B8 |
 | Parallelism | `tools.media_gen.max_parallel_image_gen_calls` (default 8, also `GROK_MAX_PARALLEL_IMAGE_GEN_CALLS`) caps image calls per model step; the wrapper asks for one image | B8 |
 | Resume | `--resume <UUID>` → `grok -r`; the id is the terminal event's `sessionId` | B6, D1 |
 | Generated file | `tool_call_update` with `rawOutput.type` `ImageGen` or `ImageEdit`, absolute `.path` | B5 |
@@ -144,9 +146,10 @@ image_gen. Empty defers to the remotely configured default.”),
 `features.image_edit_model_override`, and
 `tools.media_gen.max_parallel_image_gen_calls` (“Cap parallel image_gen/image_edit calls in one
 model step. Also `GROK_MAX_PARALLEL_IMAGE_GEN_CALLS`.”, sample config shows `8`). Because an
-empty override defers to a remote default the CLI never reports back, `grok-image` prints the
-compiled-in id only while `caps=fresh`; otherwise `model=unknown model_caps=unknown`. A set
-override is reported verbatim and compared against the manifest.
+empty override defers to a remote default the CLI never reports back, `grok-image` writes the
+manifest id into both keys before every launch and reports the override it finds back, compared
+against the manifest; an unverified CLI may no longer read the knob at all, so there the run
+prints `model=unknown model_caps=unknown`.
 
 **D1 — headless documentation.** docs.x.ai's headless/output-format pages describe
 `--output-format streaming-json` and resuming by the reported session id.

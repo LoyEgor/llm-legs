@@ -54,7 +54,7 @@ chmod +x "$FAKE_BIN/worker-pick"
 
 cat >"$FAKE_BIN/grok" <<'EOF'
 #!/usr/bin/env bash
-printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.13}"
+printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.34}"
 EOF
 chmod +x "$FAKE_BIN/grok"
 
@@ -76,7 +76,7 @@ image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" \
     GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
     GROKB_GROK_BIN="${GROKB_GROK_BIN:-$FAKE_BIN/grok}" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
-    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.13}" \
+    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.34}" \
     GROK_IMAGE_GROKB="$FIXTURE" GROK_IMAGE_WORKER_PICK="$FAKE_BIN/worker-pick" \
     FAKE_GROKB_MODE="${FAKE_GROKB_MODE:-image}" PICK_MODE="${PICK_MODE:-ok}" \
     PICK_ACCOUNT="${PICK_ACCOUNT:-picked}" FAKE_GROKB_IMAGE_FORMAT="${FAKE_GROKB_IMAGE_FORMAT:-jpg}" \
@@ -308,18 +308,27 @@ export FAKE_GROK_VERSION
 assert image_run --dest "$OUTPUT_DIR/staleversion.jpg" --prompt badge --account explicit
 assert grep -qx "caps=stale cli=9.9.9 verified=$(jq -r '.cli.version' "$MANIFEST")" "$IMAGE_OUT"
 assert grep -qx 'model=unknown model_caps=unknown' "$IMAGE_OUT"
-FAKE_GROK_VERSION=1.0.13
+FAKE_GROK_VERSION=1.0.34
 export FAKE_GROK_VERSION
 
-# An account that pins its own Imagine model is the one case the CLI does report, and a pin the
-# manifest was never verified against is exactly what model_caps exists to flag.
-cat >"$GROK_PROFILES/explicit/config.toml" <<'EOF'
-[features]
-image_gen_model_override = "grok-imagine-image-fast"
-EOF
-assert image_run --dest "$OUTPUT_DIR/pinnedmodel.jpg" --prompt badge --account explicit
-assert grep -qx "model=grok-imagine-image-fast model_caps=stale verified=$(jq -r '.model.image' "$MANIFEST")" "$IMAGE_OUT"
-rm -f "$GROK_PROFILES/explicit/config.toml"
+# The manifest's model is pinned into the account's config.toml before the launch: a missing table
+# is added, a different pin replaced, everything else kept, and an equal pin never rewritten. Both
+# tool knobs carry it, the edit one included — an unpinned edit runs on the compiled-in default.
+manifest_model=$(jq -r '.model.image' "$MANIFEST")
+explicit_config="$GROK_PROFILES/explicit/config.toml"
+printf 'model = "grok-4.6"\n\n[ui]\ntheme = "dark"\n' >"$explicit_config"
+assert image_run --dest "$OUTPUT_DIR/pinmissing.jpg" --prompt badge --account explicit
+assert test "$(cat "$explicit_config")" = "$(printf 'model = "grok-4.6"\n\n[ui]\ntheme = "dark"\n\n[features]\nimage_edit_model_override = "%s"\nimage_gen_model_override = "%s"' "$manifest_model" "$manifest_model")"
+assert grep -qx "model=$manifest_model model_caps=fresh" "$IMAGE_OUT"
+printf '[features]\nimage_gen_model_override = "grok-imagine-image-fast"\nimage_edit_model_override = "grok-imagine-image-quality"\n[ui]\ntheme = "dark"\n' >"$explicit_config"
+assert image_run --dest "$OUTPUT_DIR/pindifferent.jpg" --prompt badge --account explicit
+assert test "$(cat "$explicit_config")" = "$(printf '[features]\nimage_gen_model_override = "%s"\nimage_edit_model_override = "%s"\n[ui]\ntheme = "dark"' "$manifest_model" "$manifest_model")"
+assert grep -qx "model=$manifest_model model_caps=fresh" "$IMAGE_OUT"
+touch -t 202001010000 "$explicit_config"
+pin_mtime=$(stat -f %m "$explicit_config")
+assert image_run --dest "$OUTPUT_DIR/pinequal.jpg" --prompt badge --account explicit
+assert test "$(stat -f %m "$explicit_config")" = "$pin_mtime"
+rm -f "$explicit_config"
 
 : >"$MAGICK_CALLS"
 FAKE_GROKB_IMAGE_FORMAT=jpg
@@ -339,6 +348,9 @@ assert grep -qx 'ARG=image_edit' "$FAKE_GROKB_CALLS"
 assert grep -q "^- $WORK/reference.jpg$" "$FAKE_GROKB_PROMPT"
 assert grep -q 'Use image_edit' "$FAKE_GROKB_PROMPT"
 assert cmp "$FAKE_GROKB_SESSION_ROOT/fake-session/images/1.jpg" "$OUTPUT_DIR/edited.jpg"
+# An edit reads the edit knob, so the run reports the manifest model rather than `unknown`.
+assert test "$(cat "$explicit_config")" = "$(printf '[features]\nimage_edit_model_override = "%s"\nimage_gen_model_override = "%s"' "$manifest_model" "$manifest_model")"
+assert grep -qx "model=$manifest_model model_caps=fresh" "$IMAGE_OUT"
 
 : >"$MAGICK_CALLS"
 assert image_run --dest "$OUTPUT_DIR/transparent.png" \

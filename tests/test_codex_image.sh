@@ -196,12 +196,20 @@ assert test "$(sed -n 2p "$IMAGE_OUT")" = 'size=64x64'
 assert test "$(sed -n 3p "$IMAGE_OUT")" = 'format=png'
 assert test "$(sed -n 4p "$IMAGE_OUT")" = 'account=picked'
 assert test "$(sed -n 5p "$IMAGE_OUT")" = "session=$THREAD"
-# The built-in tool names its model nowhere in a codex exec run, so the observation is empty and
-# the line says unknown rather than echoing the manifest back as a verified reading.
+# A PNG without a C2PA softwareAgent says unknown rather than echoing the manifest back.
 assert test "$(sed -n 6p "$IMAGE_OUT")" = 'model=unknown model_caps=unknown'
 assert test "$(sed -n 7p "$IMAGE_OUT")" = 'caps=fresh'
 assert test "$(wc -l <"$IMAGE_OUT")" -eq 7
 assert test -z "$(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -name 'codex-image.*' -print -quit)"
+
+# The model names itself in the PNG's C2PA softwareAgent; `2.0` is the manifest's `gpt-image-2`.
+export FAKE_CODEX_AGENT_VERSION=2.0
+assert image_run --dest "$OUTPUT_DIR/agent.png" --prompt badge --account explicit
+assert grep -qx 'model=gpt-image-2 model_caps=fresh' "$IMAGE_OUT"
+FAKE_CODEX_AGENT_VERSION=2.5
+assert image_run --dest "$OUTPUT_DIR/agent25.png" --prompt badge --account explicit
+assert grep -qx 'model=gpt-image-2.5 model_caps=stale verified=gpt-image-2' "$IMAGE_OUT"
+unset FAKE_CODEX_AGENT_VERSION
 
 # The tool schema lives in the binary, so a CLI other than the verified one may promise the wrong
 # limits — said out loud, never fatal.

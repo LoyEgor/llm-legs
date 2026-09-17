@@ -54,11 +54,22 @@ if [ "$hook_event" = SessionStart ]; then
 fi
 # Subagent events carry the PARENT session_id: only their edits are the chat's changes.
 if [ -n "$agent_flag" ]; then
-  case "$tool_name" in Edit|Write|NotebookEdit) ;; *) exit 0 ;; esac
-  # The agent's task row reads `edit=N` off its tag file (bin/subagent-statusline.sh).
+  # The agent's task row reads `edit=N` and `exit=N` off its tag file (bin/subagent-statusline.sh).
   agent_id=$(printf '%s' "$input" | jq -r '.agent_id // empty' | tr -cd 'A-Za-z0-9_-')
-  if [ "$hook_event" = PostToolUse ] && [ -n "$agent_id" ]; then
-    tag_file="$HOME/.cache/claude-worker-tags/${session_id//[^A-Za-z0-9_-]/}/$agent_id"
+  tag_file="$HOME/.cache/claude-worker-tags/${session_id//[^A-Za-z0-9_-]/}/$agent_id"
+  case "$hook_event:$tool_name" in
+    PostToolUse:Edit|PostToolUse:Write|PostToolUse:NotebookEdit) stamp=edit ;;
+    PostToolUse:Bash|PostToolUseFailure:Bash)
+      # Claude Code fires PostToolUse only for exit 0; a non-zero exit arrives as PostToolUseFailure
+      # with `error: "Exit code N…"`; a backgrounded launch has not exited yet.
+      [ -n "$agent_id" ] && grep -q '^media=' "$tag_file" 2>/dev/null || exit 0
+      printf '%s' "$input" | jq -e '(.tool_input.run_in_background // false) != true and
+        (.tool_input.command // "" | test("(^|[;&|(/[:space:]])((codex|gemini|grok)-image|grok-video)([[:space:]]|$)"))' >/dev/null || exit 0
+      stamp=exit ;;
+    *:Edit|*:Write|*:NotebookEdit) stamp='' ;;
+    *) exit 0 ;;
+  esac
+  if [ -n "$stamp" ] && [ -n "$agent_id" ]; then
     # The same `.claim.lock` worker-tag-hook.sh and worker-run take: a rewrite racing this one loses the count.
     tag_lock="${tag_file%/*}/.claim.lock" tries=0 broke=0 locked=0
     if mkdir -p "${tag_file%/*}"; then
@@ -75,14 +86,23 @@ if [ -n "$agent_flag" ]; then
     fi
     if [ "$locked" = 1 ]; then
       umask 077
-      edits=$(sed -n 's/^edit=//p' "$tag_file" | tail -n 1)
-      [[ "$edits" =~ ^[0-9]+$ ]] || edits=0
-      { if [ -f "$tag_file" ]; then grep -v '^edit=' "$tag_file"; else printf '\n'; fi
-        printf 'edit=%s\n' "$((edits + 1))"; } > "$tag_file.tmp.$$" && mv -f "$tag_file.tmp.$$" "$tag_file"
+      if [ "$stamp" = edit ]; then
+        value=$(sed -n 's/^edit=//p' "$tag_file" | tail -n 1)
+        [[ "$value" =~ ^[0-9]+$ ]] || value=0
+        value=$((value + 1))
+      elif [ "$hook_event" = PostToolUse ]; then
+        value=0
+      else
+        value=$(printf '%s' "$input" | jq -r '.error // "" | tostring' | sed -nE '1s/^Exit code ([0-9]+).*/\1/p')
+        value=${value:-1}
+      fi
+      { if [ -f "$tag_file" ]; then grep -v "^$stamp=" "$tag_file"; else printf '\n'; fi
+        printf '%s=%s\n' "$stamp" "$value"; } > "$tag_file.tmp.$$" && mv -f "$tag_file.tmp.$$" "$tag_file"
       rm -f "$tag_file.tmp.$$"
       rmdir "$tag_lock" 2>/dev/null
     fi
   fi
+  [ "$stamp" = exit ] && exit 0
 fi
 
 # A worktree add/move is heard twice: PreToolUse snapshots the worktree lists its PostToolUse

@@ -3,6 +3,7 @@
   "verified": "2026-09-11",
   "cli": {"name": "codex", "version": "0.153.4", "version_args": ["--version"]},
   "model": {"image": "gpt-image-2", "video": null},
+  "short": {"image": "gpt-image-2"},
   "refs": {"max": 5, "verified_max": false},
   "aspects": null,
   "exact_size": false,

@@ -248,8 +248,18 @@ the URLs behind that decision are in `docs/claudegpt.md`.
 ## Task rows (subagentStatusLine, `bin/subagent-statusline.sh`)
 
 The harness hands the renderer only `local_agent` tasks (never background Bash or Monitor) and lets it
-rewrite the body of each id it received. Every such task is painted:
-`<tag> — <title> · <state> · <elapsed>[ · ↓ tok]` — tag magenta, state dim with `✓` green and `✗` red.
+rewrite the body of each id it received. A row exists only while the harness lists the task as
+`running`: a completed, failed, killed or otherwise finished task produces no row whatever its run
+files say (the harness keeps finished agents listed for hours; the rows show only what is going on),
+so there is no `✓ done` / `✗ failed` / `⏸ checkpoint` / `cancelled` row state. Every running task is painted:
+`<tag> — <title> · <state> · <elapsed>[ · ↓ tok]` — tag magenta, state dim with `✓` green and `✗` red;
+review, fix and image rows carry no title: `<tag> · <state> · <elapsed>[ · ↓ tok]`, except a
+review of lens `task` (a hunt), which keeps its title without the `WAIT|ATTACH <run-id>: ` prefix. A
+fix row is `fix: <tag> · <hash> · <state> · <elapsed>[ · ↓ tok]` (`fix: locomthebest · opus · high ·
+7aebd92 · wait 1 · 24m`): `fix: ` leads the magenta tag, the round's short hash is its own dim field,
+never part of a title and never the state. A number always
+stands right of its element (`wait 2`, `agy 2/4`, `✗1`; only `↓ 12k tok` leads), spaces
+separate groups inside a field and ` · ` only separates fields.
 The tag comes from `~/.cache/claude-worker-tags/<sid>/<task-id>` line 1, else the tag prefix of the
 hook-rewritten description, else `agent · <model-short> · <account>` from the harness `model` and the
 session account (`CLAUDE_LIMITS_ACCOUNT`, else the `CLAUDE_CONFIG_DIR` basename, else `main`). The
@@ -259,14 +269,14 @@ agent's momentary activity) is never read, so concurrent workers stay distinguis
 
 | kind | tag (writer) | state (source) |
 |---|---|---|
-| relay worker run, ATTACH | `<acct> · <model> · <effort>` (`worker-spawn-hook` seed, `worker-tag-hook`, `worker-run` claim) | tag line `run=<id>` → `$WORKER_RUN_DIR/<id>/state.json` `phase`: `start`, `wait N` (`round`), `✓ done`, `✗ failed <exit>`; `⏸ checkpoint` when the run has no `exit_code` but the task is no longer running |
-| fix run of a review round | the worker tag; the title gets `fix: <last 7 of round_id> ` unless it already starts with `fix:` | as a relay worker run; `round_id` from `state.json` |
-| review-bench run (`review-waiter`) | `<tier> · <composition> · <lens>` from the progress doc's `tier`, `composition` (default `standard`), `lens` (`task` for a hunt); `review · <last 7 of run id>` while no doc names the run; never `rev`, never task text (`worker-spawn-hook` seed, `worker-tag-hook` on `review-bench wait <run-id>`, re-read by the renderer) | `review=<run-id>` (or `WAIT`/`ATTACH <run-id>` in the description) → progress doc `$(state dir)/progress/*.json` (`run_id`): `review n/m` (`done`/`cells`) + one cell per `cells` entry (`✓` in `done`, `✗` in `failed_cells`, else `●`; label = the short model name, the first cell segment with a `claude-`/`codex-`/`oc-`/`opencode-`/`gemini-` prefix dropped, no account), then `phase` `judge`/`verify`/`report`; `state` `done` → `✓ report <confirmed>`, `dead` (legacy `failed`) → `✗ dead`, `cancelled` |
-| image-gen | `<acct> · <image model> · <vendor>` (model from `share/image-caps/<vendor>.json`); fanout `<all or pool> · image · fanout` | `image=<run>` → `$IMAGE_RUN_DIR/<run>/state.json` `cells` {vendor: state}: `gen` while any runs, else `✓ n/m`, per-vendor cells |
+| relay worker run, ATTACH | `<acct> · <model> · <effort>` (`worker-spawn-hook` seed, `worker-tag-hook`, `worker-run` claim) | tag line `run=<id>` → `$WORKER_RUN_DIR/<id>/state.json` `phase`: `start`, `wait N` (`round`); no state once the run has an `exit_code` |
+| fix run of a review round | `fix: ` + the worker tag | the hash field (last 7 of `state.json` `round_id`), then as a relay worker run |
+| review-bench run (`review-waiter`) | `<tier> · <composition> · <lens>` from the progress doc's `tier`, `composition` (default `standard`), `lens` (`task` for a hunt); `review · <last 7 of run id>` while no doc names the run; never `rev`, never task text (`worker-spawn-hook` seed, `worker-tag-hook` on `review-bench wait <run-id>`, re-read by the renderer) | `review=<run-id>` (or `WAIT`/`ATTACH <run-id>` in the description) → progress doc `$(state dir)/progress/*.json` (`run_id`): `all n/m` (finished/`cells`; a cell in `done` or `failed_cells` is finished) + one group per label in first-appearance order: `label done/total`, `label ✓` when all finished and none failed, ` ✗N` after the fraction for N failed (`✗N` alone when all failed): `all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓` (label = the short model name, the first cell segment with a `claude-`/`codex-`/`oc-`/`opencode-`/`gemini-` prefix dropped, no account; a group with any `chunks` entry `[read, total]` of total > 1 counts chunk passes instead, a finished cell as total/total and one without an entry as 1/1 or 0/1: `all 3/8 agy 7/20 opus ✓ sol 3/10`; a group with a cell in the doc's `verifying` map (`{cell: "running"\|"done"}`, review-bench's opencode/agy verifiers) at `running` says `verify` after its fraction, `agy 4/4 verify`, and gets `✓` only when every cell is finished and none is verifying — a doc without `verifying` renders as before, and the panel phase `verify` shows the groups, no word of its own), then `phase` `report`, while `judge` leaves the panel row's cells in place and adds a judge row below it (see "The judge row"); `state` `done` → `✓ report <confirmed>`, `dead` (legacy `failed`) → `✗ dead`, `cancelled` → no state |
+| image-gen | `<acct> · <short>` (`short.<kind>` of `share/image-caps/<vendor>.json`: `notcom · gpt-image-2`); `image-fanout` → `fanout · image` or `fanout · video` | `media=gen` (`edit` with `--ref`/`--resume`) while the script runs, no state once `exit=N` is stamped (`statusline-workdir-hook` PostToolUse Bash → 0, PostToolUseFailure `Exit code N` → N); fan-out: `image=<dest-dir>` → `<dest-dir>/fanout.state.json` `{kind, cells: [{vendor, account, status, exit}]}` (`image-fanout` rewrites it on every cell change, none on `--dry-run`; `status` is `waiting` while the cell holds for a `--max-parallel` slot with no process of its own, then `running`, then `done`/`failed` — the renderer counts anything but `done`/`failed` as pending, so a queued account is never read as work in flight) through the review cell code, label = vendor: `all 2/3 codex ✓ gemini 0/1 grok ✗1` |
 | gemini-research (light research) | `light research · <model> · <acct>` (`3.8-flash` from `flash38`); the seed carries `light=research`, and a run tag written over line 1 is recast by the renderer | as a relay worker run |
 | gemini-worker (light edit) | `light edit · <model> · <acct>`, seed key `light=edit` | as a relay worker run |
 | fork | `fork · <model> · <account>` (tool model, else the parent transcript's; the renderer shows the harness model) | `explore`, then `edit N` from the tag line `edit=N` (`statusline-workdir-hook` PostToolUse Edit/Write/NotebookEdit of that agent) |
-| Workflow agent, teammate, anything untagged | `agent · <model> · <account>` | `edit N` when counted, else the harness status when not `running` |
+| Workflow agent, teammate, anything untagged | `agent · <model> · <account>` | `edit N` when counted, else none |
 
 State files: `worker-run` rewrites `state.json` (tmp + rename) on start, on every `wait` (round + 1)
 and at the end: `{phase, round, exit_code, agent_task_id, session, account, model, effort, round_id,
@@ -279,7 +289,7 @@ hex of the SHA-256 of the brief's first line), claimed by the agent's first Bash
 key matches the first prompt line of the agent's own transcript (`<parent>/subagents/agent-<id>.jsonl`),
 else — no key on either side — the oldest seed no older than `WORKER_TAG_SEED_MAX_AGE_S` (600), so a
 denied or cancelled spawn's seed is never another spawn's tag; `spawn=` never reaches the tag file.
-Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, `worker-run`'s claim — holds the
+Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, the `exit=N` stamp, `worker-run`'s claim — holds the
 session directory's `.claim.lock` (mkdir lock; one older than a minute is broken once, a live one
 outwaited ~3 s and the write skipped). A `review-waiter`'s `review-bench wait <run-id>` is rewritten (`updatedInput`) to carry
 `--waiter <agent id>` — the id the tag cache is keyed on — so review-bench records the doc's
@@ -288,12 +298,43 @@ a run still going prints `RUN: <id>` and `STATUS: running` and exits 0, and
 `gemini-research --attach <run-id> --out <answer>` waits the next round (allowed only inside the
 `gemini-research` agent).
 
-A review row's title drops a leading `WAIT <run-id>: ` / `ATTACH <run-id>: ` (the tag already names
-the run). Fit: budget = `columns − SUBAGENT_ROW_RESERVE` (default 24, the tree glyph and type label).
-Over budget the row drops, in order: the token count; the title tail (`…`) down to `TITLE_FLOOR` (20)
-characters; if that still does not fit, the cell detail (counts stay) with the whole title restored;
-then the title tail again, to nothing. The cells go last because they are the state Egor reads most;
-the tag, the state and the elapsed time are never dropped.
+Fit: budget = `columns − SUBAGENT_ROW_RESERVE` (default 3, the same margin as the top statusline's
+`STATUSLINE_FIT_MARGIN`, pinned equal by `tests/test_statusline_hooks.sh`; the harness passes `columns: 67` for an
+~80-column chat). Over budget a row drops, in order: the title tail (`…`) down to `TITLE_FLOOR` (20)
+characters, then the title tail to nothing (the `—` with it); the token count; the elapsed time; a fix
+row's hash; the per-group detail, last (the `all n/m` total stays). A judge row fits on its own, dropping
+the hash, then the effort, the model and the elapsed; its `judge:` prefix and the account always stay. The tag and the state are never dropped, and a state word never
+loses its number: `wait 1` stays `wait 1` (never `start`) at any width.
+
+The judge row: from the moment the progress doc's `phase` is `judge` until the task ends, a review task's
+`content` holds TWO rows joined by a single `"\n"` — the panel row, then the judge row:
+
+```
+T0 · double · bugs · all 8/8 agy ✓ opus ✓ · ✓ done · 4m
+judge: locomthebest · opus · high · 7aebd92 · 1m
+```
+
+The panel row keeps its cells, its state becomes `✓ done` and its elapsed FREEZES at the phase change:
+the judge-phase start is the doc's `phase_at` (epoch seconds or an ISO timestamp), else `judge.ts`, else
+the moment the renderer first saw the phase, cached per task in `<tag cache file>.judge`. The words
+`judge` and `verify` never appear on the panel row; `✓ report <confirmed>` replaces the cells from the
+report phase on and the judge row stays under it (finished sub-rows of a live task stay; a task the
+harness no longer lists as running has no rows at all). The judge row is `judge: ` and then the doc's
+`judge` `{account, model, effort}` as `·` fields in the shape of a worker tag, the round's short hash
+(last 7 of the run id) as a dim field, and the judge's own elapsed; a document without `judge` degrades
+to `judge: 7aebd92 · 1m`, never to empty fields. A judge row is never rendered before the judge phase.
+
+`SUBAGENT_JUDGE_ROW=inline` is the fallback for a harness that renders only the first line of a
+multi-line `content`: one row, the judge's fields replacing the cells —
+`T0 · double · bugs · judge: locomthebest · opus · high · 7aebd92 · 1m`.
+
+Late groups: a review group (`agy 2/4`) holding at least one pending cell that is late by the top
+statusline's rule (review run segment above; shared-invariants row `u`: elapsed since the doc's
+`started_epoch` over both 3 × the cell's `expected` median and 120 s) renders that group token plain
+red (`\033[31m`), and only in the chat that launched the run — the row's `session_id` equals the doc's
+`session` or its `waiter.session`; every other chat's row stays uncoloured. A group with no `expected`
+entry for its pending cells is never red; a missing or malformed `started_epoch` disables it. Fan-out
+rows are never red: `fanout.state.json` carries no expected timings.
 
 Gates bound to these rows: `worker-spawn-hook` is the one owner of the native-type policy and denies
 (`permissionDecision: "deny"`) every type outside `RELAY_TYPES` and `NATIVE_ALLOWLIST` (`fork`,
