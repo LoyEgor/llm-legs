@@ -125,29 +125,29 @@ assert_eq "$(jq -r '"\(.as_of - '"$NOW"') \(.window_h) \(.trend_d)"' <<<"$json")
 assert_eq "$(jq -c '[.models[0] | keys[]]' <<<"$json")" '["bad","classes","incidents","legs","model","surfaces","trend"]'
 assert_eq "$(jq -r '[.models[] | "\(.model):\(.legs)/\(.bad)"] | join(",")' <<<"$json")" \
   'grok:5/5,flash38:3/3,pro:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,kimik3:1/1,haiku:2/0'
-assert_eq "$(jq -r '.worst' <<<"$json")" 'grok strayed ×3 · flash38 walled ×3'
+assert_eq "$(jq -r '.worst' <<<"$json")" 'grok escaped ×3 · flash38 walled ×3'
 
-assert_eq "$(model grok .classes)" '{"strayed":3,"killed":1,"empty":1}'
+assert_eq "$(model grok .classes)" '{"escaped":3,"cap":1,"failed":1}'
 assert_eq "$(model grok .surfaces)" '["review","worker"]'
 assert_eq "$(model grok '[.incidents[].detail]')" '["exit 2","deadline 1800s","outside write","workdir-escape","outside write"]'
 assert_eq "$(model grok '[.incidents[].project]')" '["proj/fix-b","llm-legs","llm-legs","llm-legs","llm-legs/feat-a"]'
 assert_eq "$(model grok '[.incidents[].age_s] == ([.incidents[].age_s] | sort)')" 'true'
-assert_eq "$(model grok '.incidents[0] | "\(.age_s) \(.age) \(.surface) \(.class)"')" '"400 6m worker empty"'
+assert_eq "$(model grok '.incidents[0] | "\(.age_s) \(.age) \(.surface) \(.class)"')" '"400 6m worker failed"'
 assert_eq "$(model flash38 .classes)" '{"walled":3}'
 assert_eq "$(model flash38 .surfaces)" '["review","worker"]'
 assert_eq "$(model flash38 '[.incidents[].detail]')" '["wall","walled","throttled"]'
 assert_eq "$(model flash38 .trend)" '"up"'
-assert_eq "$(model flash37 '.incidents[0] | "\(.class) \(.detail) \(.age)"')" '"killed watchdog 407s 1h"'
+assert_eq "$(model flash37 '.incidents[0] | "\(.class) \(.detail) \(.age)"')" '"cap watchdog 407s 1h"'
 assert_eq "$(model sol '.incidents[0] | "\(.class) \(.detail)"')" '"slow 5m vs 2m median"'
 assert_eq "$(model sol .trend)" '""'
 assert_eq "$(model opus '.incidents[0] | "\(.class) \(.detail)"')" '"stalled silent 300s"'
 assert_eq "$(model opus .classes)" '{"stalled":1}'
 assert_eq "$(model astra '.incidents[0] | "\(.class) \(.detail)"')" '"walled usage limit"'
-assert_eq "$(model kimik3 '.incidents[0] | "\(.class) \(.detail)"')" '"empty bad output"'
-assert_eq "$(model flash36 '.incidents[0] | "\(.class) \(.detail)"')" '"killed print timeout 16m"'
-assert_eq "$(model glm '.incidents[0] | "\(.class) \(.detail)"')" '"killed timeout 600s"'
+assert_eq "$(model kimik3 '.incidents[0] | "\(.class) \(.detail)"')" '"failed bad output"'
+assert_eq "$(model flash36 '.incidents[0] | "\(.class) \(.detail)"')" '"cap print timeout 16m"'
+assert_eq "$(model glm '.incidents[0] | "\(.class) \(.detail)"')" '"cap timeout 600s"'
 assert_eq "$(model pro '.incidents[0] | "\(.class) \(.detail)"')" '"stalled stall 300s"'
-assert_eq "$(model pro '.incidents[1] | "\(.class) \(.detail)"')" '"strayed outside write"'
+assert_eq "$(model pro '.incidents[1] | "\(.class) \(.detail)"')" '"escaped outside write"'
 assert_eq "$(model haiku '"\(.classes) \(.trend) \(.incidents)"')" '"{} down []"'
 assert_eq "$(jq '[.models[] | select(.model == "fable")] | length' <<<"$json")" 0
 assert_eq "$(jq '[.. | strings | select(test("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^/"))] | length' <<<"$json")" 0
@@ -155,7 +155,7 @@ assert_eq "$(jq '[.models[].incidents[].detail | select(length > 40)] | length' 
 
 # The default run writes the cache atomically and it is the document --json printed.
 summary=$("$WEATHER") || fail "llm-weather exited nonzero"
-assert_eq "$summary" 'llm-weather: 11 models · grok strayed ×3 · flash38 walled ×3'
+assert_eq "$summary" 'llm-weather: 11 models · grok escaped ×3 · flash38 walled ×3'
 assert_eq "$(jq -c . "$LLM_WEATHER_DIR/latest.json")" "$(jq -c . <<<"$json")"
 assert_eq "$(ls -A "$LLM_WEATHER_DIR" | tr '\n' ' ')" 'latest.json '
 

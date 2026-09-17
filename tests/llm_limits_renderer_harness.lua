@@ -2370,8 +2370,9 @@ for _, item in ipairs(loadModule(quietFixture).menuItems()) do
   assert(not titleText(item):match("EXPERIMENT"), "no experiment reported, yet the menu announced one")
 end
 
--- The diagnostics row: review-bench doctor's snapshot, its rescan, and the Gemini weather. Class
--- names come from the snapshot alone, so a class this renderer never heard of still opens.
+-- The diagnostics entry: review-bench doctor's snapshot and its rescan, the model weather and the
+-- Gemini weather as three sections of ONE submenu. Class names come from the snapshot alone, so
+-- a class this renderer never heard of still opens.
 local function doctorRow(menu)
   for _, item in ipairs(menu) do
     if titleText(item):find("LLM doctor", 1, true) then return item end
@@ -2379,12 +2380,25 @@ local function doctorRow(menu)
   return nil
 end
 
-local function geminiRow(menu)
-  for _, item in ipairs(doctorRow(menu).menu) do
-    if titleText(item):match("^gemini · ") then return item end
+-- A section: its header item and the items after it up to the next separator, as a pseudo-row
+-- so the submenu helpers read it like the nested submenu it replaced.
+local function section(menu, pattern)
+  local items = doctorRow(menu).menu
+  for index, item in ipairs(items) do
+    if titleText(item):match(pattern) then
+      local body = {}
+      for rest = index + 1, #items do
+        if titleText(items[rest]) == "-" then break end
+        table.insert(body, items[rest])
+      end
+      return { title = item.title, menu = body }
+    end
   end
-  error("the Gemini submenu is missing")
+  error("no section matches " .. pattern)
 end
+
+local function geminiRow(menu) return section(menu, "^Gemini: ") end
+local function llmWeatherRow(menu) return section(menu, "^Weather: ") end
 
 local function submenuTitles(row)
   local titles = {}
@@ -2400,19 +2414,28 @@ local doctorFixture = {
 do
   local row = doctorRow(loadModule(doctorFixture).menuItems())
   assert(row, "the diagnostics row vanished with no snapshot on disk")
-  assert(titleText(row) == "LLM doctor: no snapshot · gemini no data", titleText(row))
+  assert(titleText(row) == "LLM doctor: no snapshot", titleText(row))
   assert(row.disabled == nil and type(row.menu) == "table", "the diagnostics row cannot be opened")
   local titles = submenuTitles(row)
-  assert(titles[1] == "no doctor snapshot yet" and titles[2] == "Rescan now", table.concat(titles, "|"))
+  assert(titles[1] == "Review" and titles[2] == "no doctor snapshot yet" and titles[3] == "Rescan now",
+    table.concat(titles, "|"))
+  assert(titles[4] == "-" and titles[5] == "Weather: no data" and titles[6] == "window: 24 h"
+    and titles[7] == "Refresh weather" and titles[8] == "-" and titles[9] == "Gemini: no data"
+    and titles[10] == "no data" and titles[11] == "window: 1 h" and titles[12] == "Refresh Gemini"
+    and #titles == 12, table.concat(titles, "|"))
+  for _, item in ipairs(menu or {}) do
+    assert(not titleText(item):find("^LLM weather") and not titleText(item):find("^gemini · "),
+      "a diagnostics surface rendered outside LLM doctor: " .. titleText(item))
+  end
 end
 
 do
   local clean = { as_of = os.time(), total = 0, anomalies = { anchors = 0, closure_pending = 0 }}
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     clean).menuItems())
-  assert(titleText(row) == "LLM doctor: OK · gemini no data", titleText(row))
+  assert(titleText(row) == "LLM doctor: OK", titleText(row))
   assert(row.disabled == nil and #row.menu > 0, "the clean diagnostics row carries an empty submenu")
-  assert(titleText(row.menu[1]) == "ok: anchors, closure_pending", titleText(row.menu[1]))
+  assert(titleText(row.menu[2]) == "ok: anchors, closure_pending", titleText(row.menu[2]))
   assert(isDimmed(row.title.runs[1].attributes, 0), "the clean doctor line is not dimmed")
 end
 
@@ -2422,41 +2445,54 @@ do
     anomalies = { anchors = 3, closure_pending = 11, debt_line = 0 },
     rows = {
       anchors = {
-        { id = "a.txt", age = "", where = "/repo · chat-a", label = "warn claim-expired" },
-        { id = "RUN-b", age = "", where = "/repo", label = "warn run-dead" },
-        { id = "chat-c", age = "2h", where = "/repo", label = "warn gap-stale" },
+        { id = "a.txt", age = "", where = "/Users/x/proj/repo · chat-a", label = "warn claim-expired" },
+        { id = "RUN-b", age = "", where = "/Users/x/proj/repo", label = "warn run-dead" },
+        { id = "chat-c", age = "2h", where = "/Users/x/proj/repo", label = "warn gap-stale" },
       },
       closure_pending = {
-        { id = "20260917T050013Z-1111111", age = "7h", where = "/repo · chat-a", label = "T0 double" },
+        { id = "20260917T050013Z-1111111", age = "7h", session = "0a0b0c0d-1111-4222-8333-444444444444",
+          where = "/Users/x/.claude-profiles/.claudeb/worker-stats/merged/e66f8e62d863c593 · Workers unification", label = "T0 double" },
       },
       debt_line = {},
     }}
   local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, dirty)
   local row = doctorRow(module.menuItems())
-  assert(titleText(row) == "LLM doctor: 14 issues · gemini no data", titleText(row))
+  assert(titleText(row) == "LLM doctor: 14 issues", titleText(row))
   assert(row.disabled == nil, "the doctor line with findings cannot be opened")
   local titles = submenuTitles(row)
-  assert(titles[1] == "anchors: 3", titles[1])
-  assert(titles[2] == "  a.txt       /repo  chat-a  warn claim-expired", titles[2])
-  assert(titles[3] == "  RUN-b       /repo          warn run-dead", titles[3])
-  assert(titles[4] == "  chat-c  2h  /repo          warn gap-stale", titles[4])
-  assert(titles[5] == "closure_pending: 11", titles[5])
-  assert(titles[6] == "  20260917T050013Z-1111111  7h  /repo  chat-a  T0 double", titles[6])
-  assert(not titleText(row.menu[2]):find("^%s*[●◦○]"), "a doctor row starts with a mark")
-  assert(titles[7] == "  … 10 more: review-bench doctor --json", titles[7])
-  assert(titles[8] == "ok: debt_line", titles[8])
-  assert(titles[9] == "Rescan now", titles[9])
-  assert(row.menu[1].disabled == true, "a doctor class row is clickable")
-  row.menu[6].fn()
-  assert(pasteboardContents == "20260917T050013Z-1111111",
-    "a doctor detail row did not copy its id: " .. tostring(pasteboardContents))
+  assert(titles[1] == "Review", titles[1])
+  assert(titles[2] == "anchors: 3", titles[2])
+  assert(titles[3] == "      repo  chat-a  warn claim-expired", titles[3])
+  assert(titles[4] == "      repo          warn run-dead", titles[4])
+  assert(titles[5] == "  2h  repo          warn gap-stale", titles[5])
+  assert(titles[6] == "closure_pending: 11", titles[6])
+  assert(titles[7] == "  7h  merged  Workers unification  T0 double", titles[7])
+  for index = 3, 7 do
+    local text = titles[index]
+    assert(not text:find("^%s*[●◦○]"), "a doctor row starts with a mark")
+    assert(not text:find("20260917T050013Z", 1, true) and not text:find("/Users/", 1, true)
+      and not text:find("0a0b0c0d", 1, true) and not text:find("e66f8e62", 1, true),
+      "a doctor row shows an id or a path: " .. text)
+  end
+  assert(titles[8] == "  … 10 more: review-bench doctor --json", titles[8])
+  assert(titles[9] == "ok: debt_line", titles[9])
+  assert(titles[10] == "Rescan now", titles[10])
+  assert(row.menu[2].disabled == true, "a doctor class row is clickable")
   for index = #tasks, 1, -1 do
     if tasks[index].path:match("/bin/gemini%-weather$") or tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "rendering the diagnostics row started a task")
-  row.menu[9].fn()
-  assert(#tasks == 1 and tasks[1].path:match("/review%-bench$")
-    and table.concat(tasks[1].args, " ") == "doctor --snapshot",
+  row.menu[7].fn()
+  assert(#tasks == 1 and tasks[1].path:match("/bin/chats$")
+    and table.concat(tasks[1].args, " ") == "--open-command 0a0b0c0d-1111-4222-8333-444444444444 --timeout 1",
+    "a doctor row with a chat did not ask bin/chats for the open command")
+  row.menu[3].fn()
+  assert(pasteboardContents == "a.txt",
+    "a doctor row without a chat did not copy its id: " .. tostring(pasteboardContents))
+  assert(#tasks == 1, "a doctor row without a chat launched a task")
+  row.menu[10].fn()
+  assert(#tasks == 2 and tasks[2].path:match("/review%-bench$")
+    and table.concat(tasks[2].args, " ") == "doctor --snapshot",
     "Rescan now did not launch review-bench doctor --snapshot in the background")
 end
 
@@ -2468,8 +2504,8 @@ do
   running.rescanDoctor()
   local runningRow = doctorRow(running.menuItems())
   assert(titleText(runningRow):find(" · rescanning", 1, true), titleText(runningRow))
-  assert(runningRow.menu[2].disabled == true)
-  assert(submenuTitles(runningRow)[2] == "rescanning…",
+  assert(runningRow.menu[3].disabled == true)
+  assert(submenuTitles(runningRow)[3] == "rescanning…",
     "a running rescan still offers Rescan now")
 end
 
@@ -2477,8 +2513,8 @@ do
   local single = { as_of = os.time(), total = 1, anomalies = { orphan_debt = 1 }}
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     single).menuItems())
-  assert(titleText(row) == "LLM doctor: 1 issue · gemini no data", titleText(row))
-  assert(titleText(row.menu[1]) == "orphan_debt: 1", titleText(row.menu[1]))
+  assert(titleText(row) == "LLM doctor: 1 issue", titleText(row))
+  assert(titleText(row.menu[2]) == "orphan_debt: 1", titleText(row.menu[2]))
 end
 
 -- A collector that stopped running is the finding: the counts read clean off a document nothing
@@ -2488,81 +2524,92 @@ do
   local stale = { as_of = now - 3 * 86400, total = 0, anomalies = { untriaged = 0 }}
   local row = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     stale).menuItems())
-  assert(titleText(row) == "LLM doctor: OK · snapshot 3d old · gemini no data", titleText(row))
+  assert(titleText(row) == "LLM doctor: OK · snapshot 3d old", titleText(row))
   local fresh = { as_of = now - 3600, total = 0, anomalies = { untriaged = 0 }}
   local freshRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     fresh).menuItems())
-  assert(titleText(freshRow) == "LLM doctor: OK · gemini no data", titleText(freshRow))
+  assert(titleText(freshRow) == "LLM doctor: OK", titleText(freshRow))
   local text = { as_of = tostring(now - 3 * 86400), total = 0, anomalies = { untriaged = 0 }}
   local textRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     text).menuItems())
-  assert(titleText(textRow) == "LLM doctor: OK · snapshot 3d old · gemini no data", titleText(textRow))
+  assert(titleText(textRow) == "LLM doctor: OK · snapshot 3d old", titleText(textRow))
   local junk = { as_of = "whenever", total = 0, anomalies = { untriaged = 0 }}
   local junkRow = doctorRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil,
     junk).menuItems())
-  assert(titleText(junkRow) == "LLM doctor: OK · gemini no data", titleText(junkRow))
+  assert(titleText(junkRow) == "LLM doctor: OK", titleText(junkRow))
 end
 
 do
   local row = doctorRow(loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil,
     { total = 3 }).menuItems())
-  assert(titleText(row) == "LLM doctor: no snapshot · gemini no data",
+  assert(titleText(row) == "LLM doctor: no snapshot",
     "the menu rendered doctor counts off a schema-less document: " .. titleText(row))
 end
 
--- LLM weather: one row per model with trouble, read off bin/llm-weather's cache and nothing else.
-local function llmWeatherRow(menu)
-  for _, item in ipairs(menu) do
-    if titleText(item):find("LLM weather", 1, true) then return item end
-  end
-  return nil
-end
-
+-- Weather: a table with a column per class in the report's words, read off bin/llm-weather's
+-- cache and nothing else; the header names the two worst models.
 do
   local row = llmWeatherRow(loadModule(doctorFixture).menuItems())
-  assert(row and titleText(row) == "LLM weather: no data", row and titleText(row))
-  assert(submenuTitles(row)[1] == "no weather yet", table.concat(submenuTitles(row), "|"))
+  assert(titleText(row) == "Weather: no data", titleText(row))
+  assert(submenuTitles(row)[1] == "window: 24 h", table.concat(submenuTitles(row), "|"))
 end
 
 do
   local tasks = {}
   local weather = { as_of = os.time(), window_h = 24, trend_d = 7,
-    worst = "flash38 walled ×3 · grok killed ×2",
+    worst = "flash38 walled ×3 · grok cap ×2",
     models = {
-      { model = "flash38", legs = 41, bad = 5, classes = { walled = 3, killed = 2 }, trend = "up",
+      { model = "flash38", legs = 41, bad = 5, classes = { walled = 3, cap = 2 }, trend = "up",
         incidents = {
           { age_s = 120, age = "2m", surface = "review", project = "llm-legs", class = "walled",
             detail = "usage limit", ref = "20260917T140428Z-6934908" },
-          { age_s = 10800, age = "3h", surface = "worker", project = "claude-setup/span", class = "killed",
+          { age_s = 10800, age = "3h", surface = "worker", project = "claude-setup/span", class = "cap",
             detail = "deadline 900s", ref = "claudeb-1789655328-96905-222a" },
         } },
-      { model = "grok", legs = 12, bad = 2, classes = { killed = 2 }, trend = "", incidents = {} },
+      { model = "grok", legs = 12, bad = 2, classes = { cap = 2 }, trend = "", incidents = {} },
+      { model = "sol", legs = 9, bad = 1, classes = { slow = 1 }, trend = "", incidents = {} },
       { model = "opus", legs = 30, bad = 0, classes = {}, trend = "", incidents = {} },
     } }
   local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, nil, nil, weather)
-  local row = llmWeatherRow(module.menuItems())
-  assert(titleText(row) == "LLM weather: flash38 walled ×3 · grok killed ×2", titleText(row))
+  local menu = module.menuItems()
+  local row = llmWeatherRow(menu)
+  assert(titleText(row) == "Weather: flash38 walled ×3 · grok cap ×2", titleText(row))
   assert(not isDimmed(row.title.runs[1].attributes, 0), "a troubled weather line is dimmed")
+  assert(not isDimmed(doctorRow(menu).title.runs[1].attributes, 0), "the doctor line is dimmed over bad weather")
   local titles = submenuTitles(row)
-  assert(titles[1] == "flash38  41 legs  walled 3 · killed 2  ↑", titles[1])
-  assert(titles[2] == "grok     12 legs  killed 2", titles[2])
-  assert(titles[3] == "ok: opus", titles[3])
-  assert(titles[4] == "-" and titles[5]:find("^window 24 h · trend vs 7 d · walled killed stalled empty slow strayed"), titles[5])
-  assert(titles[6] == "Refresh weather", titles[6])
-  local incidents = submenuTitles(row.menu[1])
+  assert(titles[1] == "model    legs  walled  cap  stalled  failed  slow  escaped", titles[1])
+  assert(titles[2] == "flash38    41       3    2                                  ↑", titles[2])
+  assert(titles[3] == "grok       12            2", titles[3])
+  assert(titles[4] == "sol         9                                   1", titles[4])
+  assert(titles[5] == "ok: opus", titles[5])
+  assert(titles[6] == "window: 24 h", titles[6])
+  assert(titles[7] == "Refresh weather" and #titles == 7, table.concat(titles, "|"))
+  assert(row.menu[1].disabled == true, "the weather table header is clickable")
+  local incidents = submenuTitles(row.menu[2])
   assert(incidents[1] == "2m  walled  llm-legs           review  usage limit", incidents[1])
-  assert(incidents[2] == "3h  killed  claude-setup/span  worker  deadline 900s", incidents[2])
+  assert(incidents[2] == "3h  cap     claude-setup/span  worker  deadline 900s", incidents[2])
   for _, text in ipairs(incidents) do
     assert(not text:find("20260917T140428Z", 1, true) and not text:find("claudeb-1789", 1, true),
       "an incident row shows a run id: " .. text)
   end
-  assert(#submenuTitles(row.menu[2]) == 1 and submenuTitles(row.menu[2])[1] == "no incidents")
+  assert(#submenuTitles(row.menu[3]) == 1 and submenuTitles(row.menu[3])[1] == "no incidents")
   for index = #tasks, 1, -1 do
     if tasks[index].path:match("/bin/gemini%-weather$") or tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "a fresh weather cache still launched the collector")
-  row.menu[6].fn()
-  assert(#tasks == 1 and tasks[1].path:match("/bin/llm%-weather$"), "Refresh weather did not launch bin/llm-weather")
+  row.menu[7].fn()
+  assert(#tasks == 1 and tasks[1].path:match("/bin/llm%-weather$")
+    and table.concat(tasks[1].args, " ") == "--window 24", "Refresh weather did not launch bin/llm-weather over the window")
+  local choices = row.menu[6].menu
+  assert(#choices == 4 and titleText(choices[1]) == "6 h" and titleText(choices[2]) == "24 h"
+    and titleText(choices[3]) == "3 d" and titleText(choices[4]) == "7 d", "the weather window choices changed")
+  assert(choices[2].checked == true and choices[3].checked == false)
+  choices[3].fn()
+  assert(module.llmWeatherWindowH == 72 and #tasks == 2 and table.concat(tasks[2].args, " ") == "--window 72",
+    "choosing 3 d did not recollect over 72 h")
+  local chosen = llmWeatherRow(module.menuItems())
+  assert(submenuTitles(chosen)[6] == "window: 3 d" and chosen.menu[6].menu[3].checked == true,
+    table.concat(submenuTitles(chosen), "|"))
 end
 
 do
@@ -2570,7 +2617,7 @@ do
   local quiet = { as_of = now - 2 * 86400, window_h = 24, trend_d = 7, worst = "",
     models = { { model = "opus", legs = 3, bad = 0, classes = {}, trend = "", incidents = {} } } }
   local row = llmWeatherRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil, nil, nil, quiet).menuItems())
-  assert(titleText(row) == "LLM weather: OK · stale 2d", titleText(row))
+  assert(titleText(row) == "Weather: OK · stale 2d", titleText(row))
   assert(isDimmed(row.title.runs[1].attributes, 0), "the clean weather line is not dimmed")
   assert(submenuTitles(row)[1] == "ok: opus", submenuTitles(row)[1])
 end
@@ -3336,19 +3383,15 @@ do
   }}
   local function isWeatherRow(item)
     local text = titleText(item)
-    return text:match("^%d+%.%d+ %a+ · ") or text:match("^models ")
+    return text:match("^%d+%.%d+ %a+  ") or text:match("^models ")
   end
   local function weatherRows(menu)
     local rows = {}
     for _, item in ipairs(menu) do
       assert(not isWeatherRow(item), "a weather row rendered outside the diagnostics submenu")
     end
-    for _, item in ipairs(doctorRow(menu).menu) do
-      assert(not isWeatherRow(item), "a weather row rendered outside the Gemini submenu")
-    end
     for _, item in ipairs(geminiRow(menu).menu) do
-      local text = titleText(item)
-      if text:match("^%d+%.%d+ %a+ · ") or text:match("^models ") then table.insert(rows, item) end
+      if isWeatherRow(item) then table.insert(rows, item) end
     end
     return rows
   end
@@ -3367,23 +3410,22 @@ do
   local menu = loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil, weather).menuItems()
   local rows = weatherRows(menu)
   assert(#rows == 4, "gemini weather rendered " .. #rows .. " rows")
-  assert(titleText(rows[1]) == "3.8 flash · 20 s/step · cut ×2 · 503 ×12, last 9m ago  ⛔", titleText(rows[1]))
+  assert(titleText(rows[1]) == "3.8 flash  20 s/step   cut ×2  503 ×12, last 9m ago  ⛔", titleText(rows[1]))
   assert(rows[1].title.attributes.color and rows[1].title.attributes.color.red == 0.9,
     "a starved family is not red")
-  assert(titleText(rows[2]) == "3.7 flash · 3.1 s/step · no 503", titleText(rows[2]))
+  assert(titleText(rows[2]) == "3.7 flash  3.1 s/step          no 503", titleText(rows[2]))
   assert(rows[2].title.attributes.color == nil, "an ok family is coloured")
-  assert(titleText(rows[3]) == "3.6 flash · 9.5 s/step · no 503  🐢", titleText(rows[3]))
-  assert(titleText(rows[4]) == "3.1 pro · no data · cut ×1", titleText(rows[4]))
+  assert(titleText(rows[3]) == "3.6 flash  9.5 s/step          no 503  🐢", titleText(rows[3]))
+  assert(titleText(rows[4]) == "3.1 pro    no data     cut ×1", titleText(rows[4]))
   assert(isDimmed(rows[4].title.attributes, 0), "a no-data family is not dimmed")
   assert(rows[1].disabled == true, "a weather row is clickable")
   accountIndex(menu, "gem-a")
   local sub = geminiRow(menu).menu
-  assert(titleText(geminiRow(menu)) == "gemini · starved")
-  assert(titleText(sub[1]) == "weather · last 1 h" and sub[1].disabled == true)
-  assert(titleText(sub[6]) == "window: 1 h")
-  assert(titleText(sub[7]) == "Refresh weather")
-  assert(titleText(doctorRow(menu)) == "LLM doctor: no snapshot · gemini starved",
-    titleText(doctorRow(menu)))
+  assert(titleText(geminiRow(menu)) == "Gemini: starved")
+  assert(titleText(sub[5]) == "window: 1 h")
+  assert(titleText(sub[6]) == "Refresh Gemini")
+  assert(titleText(doctorRow(menu)) == "LLM doctor: no snapshot", titleText(doctorRow(menu)))
+  assert(not isDimmed(doctorRow(menu).title.runs[1].attributes, 0), "the doctor line is dimmed over a starved Gemini")
   for _, item in ipairs(sub) do
     assert(not titleText(item):find("Gemini probe", 1, true), "the probe row rendered without its binary")
   end
@@ -3394,19 +3436,20 @@ do
   }}
   local heldRows = weatherRows(loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil,
     held).menuItems())
-  assert(titleText(heldRows[1]) == "3.8 flash · hold 5m ago  ⛔", titleText(heldRows[1]))
+  assert(titleText(heldRows[1]) == "3.8 flash  hold 5m ago  ⛔", titleText(heldRows[1]))
 
   local stale = { schema = 1, generated_at = now - 7200, valid_until = now - 3600, families = {
     weather.families[1],
   }}
   local staleRows = weatherRows(loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil,
     stale).menuItems())
-  assert(titleText(staleRows[1]) == "3.8 flash · 20 s/step · cut ×2 · 503 ×12, last 2h ago · stale",
+  assert(titleText(staleRows[1]) == "3.8 flash  20 s/step  cut ×2  503 ×12, last 2h ago  stale",
     titleText(staleRows[1]))
   assert(isDimmed(staleRows[1].title.attributes, 0), "a stale weather row is not dimmed")
 
   local missing = weatherRows(loadModule(weatherFixture, nil, now).menuItems())
-  assert(#missing == 1 and titleText(missing[1]) == "models  no data", "no cache rendered no no-data row")
+  assert(#missing == 0 and titleText(geminiRow(loadModule(weatherFixture, nil, now).menuItems()).menu[1]) == "no data",
+    "no cache rendered no no-data row")
 
   local kickEnv
   local function kicks(cache, clock)
@@ -3435,7 +3478,7 @@ do
   local forced = {}
   local forcedModule = loadModule(weatherFixture, captureTasks(forced), now, nil, nil, nil, nil, nil,
     nil, held)
-  local refresh = submenuItem(geminiRow(forcedModule.menuItems()), "Refresh weather")
+  local refresh = submenuItem(geminiRow(forcedModule.menuItems()), "Refresh Gemini")
   for index = #forced, 1, -1 do
     if forced[index].path:match("/bin/llm%-weather$") then table.remove(forced, index) end
   end
@@ -3474,7 +3517,6 @@ do
       function(path) return path:match("/bin/gemini%-probe$") and { mode = "file" } or nil end,
       nil, nil, held)
     local initial = geminiRow(selected.menuItems())
-    assert(titleText(initial.menu[1]) == "weather · last 2 h")
     local choices = submenuItem(initial, "window: 1 h")
     for index, hours in ipairs({ 1, 2, 3, 6, 12, 24 }) do
       assert(titleText(choices.menu[index]) == hours .. " h")
@@ -3487,18 +3529,15 @@ do
     end
     assert(#active == 1 and table.concat(active[1].args, " ") == "--window 360")
     local refreshingMenu = selected.menuItems()
-    assert(titleText(doctorRow(refreshingMenu)):match(" · weather refreshing$"))
-    assert(titleText(geminiRow(refreshingMenu)) == "gemini · starved · weather refreshing")
+    assert(titleText(geminiRow(refreshingMenu)) == "Gemini: starved · weather refreshing")
     assert(submenuItem(geminiRow(refreshingMenu), "refreshing…").disabled == true)
-    assert(titleText(geminiRow(refreshingMenu).menu[1]) == "weather · last 2 h")
     local selectedChoices = submenuItem(geminiRow(refreshingMenu), "window: 6 h")
     for index, choice in ipairs(selectedChoices.menu) do assert(choice.checked == (index == 4)) end
     active[1]:finish()
     assert(#alerts == 1 and alerts[1]:match("^gemini weather:"))
     submenuItem(geminiRow(selected.menuItems()), "Run Gemini probe").fn()
     local probingMenu = selected.menuItems()
-    assert(titleText(doctorRow(probingMenu)):match(" · probe running$"))
-    assert(titleText(geminiRow(probingMenu)) == "gemini · starved · probe running")
+    assert(titleText(geminiRow(probingMenu)) == "Gemini: starved · probe running")
     assert(submenuItem(geminiRow(probingMenu), "probe running…").disabled == true)
     selected.runGeminiProbe()
     assert(#active == 2, "a duplicate probe was launched")
@@ -3510,7 +3549,7 @@ do
     assert(#active == 4 and table.concat(active[4].args, " ") == "--window 360")
     active[4]:finish()
     assert(#alerts == 2, "a passive refresh displayed an alert")
-    submenuItem(geminiRow(selected.menuItems()), "Refresh weather").fn()
+    submenuItem(geminiRow(selected.menuItems()), "Refresh Gemini").fn()
     local changing = submenuItem(geminiRow(selected.menuItems()), "window: 6 h")
     changing.menu[5].fn()
     assert(#active == 5, "changing the window started overlapping collectors")

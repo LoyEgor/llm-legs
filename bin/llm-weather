@@ -16,7 +16,7 @@ SLOW_MIN_LEGS = 5
 TREND_MIN_BAD = 3
 MAX_INCIDENTS = 5
 DETAIL_MAX = 40
-CLASS_ORDER = ("walled", "strayed", "stalled", "killed", "empty", "slow")
+CLASS_ORDER = ("walled", "escaped", "stalled", "cap", "failed", "slow")
 
 # Copied from review-bench share/rbench/panel.py FAILURE_REASONS (and catalog.py's status anchors);
 # review-bench is not importable from here, so the two tables drift unless both are edited.
@@ -223,20 +223,20 @@ def classify_bench(cell, escaped):
     if failed and reason in WALL_REASONS:
         return "walled", reason
     if escaped:
-        return "strayed", "outside write"
+        return "escaped", "outside write"
     stalled_s = cell.get("stalled_s")
     if killed == "stall" or (isinstance(stalled_s, (int, float)) and stalled_s > 0):
         seconds = stalled_s if isinstance(stalled_s, (int, float)) and stalled_s > 0 else duration_s
         return "stalled", ("stall " + seconds_text(seconds)).strip()
     if killed in ("watchdog", "panel", "memory") or exit_code == 124:
-        return "killed", ("%s %s" % (killed or "exit 124", seconds_text(duration_s))).strip()
+        return "cap", ("%s %s" % (killed or "exit 124", seconds_text(duration_s))).strip()
     if failed and TIMEOUT_RE.search(stderr):
-        return "killed", timeout_detail(stderr, cell.get("timeout_s"))
+        return "cap", timeout_detail(stderr, cell.get("timeout_s"))
     if cell.get("errored") or exit_code not in (0, None):
-        return "empty", reason
+        return "failed", reason
     if cell.get("findings") == 0 and exit_code == 0 and stderr.strip() \
             and reason in EMPTY_ZERO_FINDING_REASONS:
-        return "empty", reason
+        return "failed", reason
     return None, ""
 
 
@@ -303,18 +303,18 @@ def classify_worker(run_dir, killed, exit_code):
     if USAGE_LIMIT_RE.search(result):
         return "walled", "usage limit"
     if os.path.exists(os.path.join(run_dir, "workdir-escape")):
-        return "strayed", "workdir-escape"
+        return "escaped", "workdir-escape"
     note = read_text(os.path.join(run_dir, "files-note")) or ""
     if any(not is_scratch_path(path.strip()) for path in OUTSIDE_WRITE_RE.findall(note)):
-        return "strayed", "outside write"
+        return "escaped", "outside write"
     if kill_word in ("silent", "idle"):
         return "stalled", kill_detail(killed)
     if kill_word in ("deadline", "term", "signal"):
-        return "killed", kill_detail(killed)
+        return "cap", kill_detail(killed)
     if exit_code in (137, 143):
-        return "killed", "exit %d" % exit_code
+        return "cap", "exit %d" % exit_code
     if exit_code not in (0, None):
-        return "empty", "exit %d" % exit_code
+        return "failed", "exit %d" % exit_code
     return None, ""
 
 

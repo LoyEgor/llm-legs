@@ -488,11 +488,10 @@ for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
 done
 assert doc_has 'Gemini model weather cache'
 assert doc_has '`SLOW_FACTOR = 3`'
-assert doc_has '`gemini · <state>`'
+assert doc_has '`Gemini: <state>`'
 assert doc_has '`window: <N> h`'
-assert doc_has '`weather · last <N> h`'
 assert doc_has '`Run Gemini probe`'
-for weather_text in 'weather · last %g h' 'window: %g h' 'Run Gemini probe' 'cut ×%d'; do
+for weather_text in 'window: %g h' 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d'; do
   assert grep -Fq "$weather_text" "$ROOT/hammerspoon/llm-limits.lua"
 done
 assert grep -Fq '{ 1, 2, 3, 6, 12, 24 }' "$ROOT/hammerspoon/llm-limits.lua"
