@@ -332,6 +332,9 @@ HORIZONPY
 assert doc_has 'Gemini review cell lifetime'
 assert doc_has 'REVIEW_TIERS[tier]["budget_min"] * 60'
 assert grep -Fq 'GEMINI_CELL_GRACE_S = 60' "$RB_CATALOG"
+assert grep -Fq 'started + _catalog.REVIEW_TIERS[self.tier]["budget_min"] * 60' "$RB_LAUNCH"
+assert grep -Fq '_launch.bind_gemini_lifetime(run_dir, submitted_raters, tier_name)' "$RB_CLI"
+assert grep -Fq 'previous.tier if previous is not None else None' "$RB_LAUNCH"
 
 # A pin over a package needs both of these. `grep -Fq a.py b.py` is OR — it exits at the first
 # match — so a value spelled in two modules keeps passing after one of them drops it; and a count
@@ -977,6 +980,8 @@ sl_late_floor_ms=$(grep -oE '[0-9]+' <<<"$sl_late_pair" | tail -n1)
 assert test "$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$STATUSLINE" | wc -l | tr -d ' ')" -eq 1
 assert eq "$sl_late_multiplier" 3
 assert eq "$sl_late_floor_ms" 120000
+assert eq "$(grep -oE '\[[0-9]+ \* \$expected_ms, [0-9]+\]' "$ROOT/bin/subagent-statusline.sh")" "$sl_late_pair"
+assert grep -Fq 'shared-invariants row `u`' "$ROOT/docs/statusline-contract.md"
 # The bench stopped reporting a late review; the statusline judges one alone, and only the
 # `expected` map the bench still writes makes that judgement possible.
 assert eq "$(grep -c 'REVIEW_LATE' "$RB_REPORT")" 0
