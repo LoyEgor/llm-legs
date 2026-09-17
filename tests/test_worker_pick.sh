@@ -1467,7 +1467,7 @@ printf '%s\n' 'worker=auto' >"$CONFIG"
 grok_case "$GROK_PAIR"
 assert contains "$(vsection codex)" 'astra·low'
 assert contains "$(vsection claude)" 'opus·high'
-assert contains "$(vsection gemini)" 'f37·high'
+assert contains "$(vsection gemini)" 'f38·high'
 assert contains "$(vsection grok)" 'grok·high'
 printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_effort=xhigh' \
   'gemini_effort=low' 'grok_effort=xhigh' >"$CONFIG"
@@ -1475,8 +1475,8 @@ grok_case "$GROK_PAIR"
 assert contains "$(vsection codex)" 'astra·high'
 assert contains "$(vsection claude)" 'opus·xhigh'
 # worker-run raises a stored Gemini effort below high, so the column prints the high that launches.
-assert contains "$(vsection gemini)" 'f37·high'
-assert not_contains "$(vsection gemini)" 'f37·low'
+assert contains "$(vsection gemini)" 'f38·high'
+assert not_contains "$(vsection gemini)" 'f38·low'
 assert contains "$(vsection grok)" 'grok·xhigh'
 
 # Model and effort are read from worker-model and printed verbatim: quota state never

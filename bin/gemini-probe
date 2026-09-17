@@ -25,12 +25,22 @@ def load_weather():
 
 weather = load_weather()
 
-FAMILIES = {
-    "3.8": ("gemini-3.8-flash", "gemini-3.8-flash-high"),
-    "3.7": ("gemini-3.7-flash", "gemini-3.7-flash-high"),
-    "3.6": ("gemini-3.6-flash", "gemini-3.6-flash-high"),
-    "3.1p": ("gemini-3.1-pro", "Gemini 3.1 Pro (High)"),
-}
+
+def probe_families():
+    families = {}
+    for family in weather.geminib_families():
+        # agy still serves the Pro high slug as Flash, so Pro is asked for by its label.
+        model = family["label"] + " (High)" if family["slug"] == "pro" else family["agy_prefix"] + "-high"
+        families[weather.family_short(family["family"])] = (family["family"], model)
+    if not families:
+        # `geminib families` answers from its built-in list when it has nothing else, so an empty
+        # result is a broken reader: probing nothing would report every family healthy.
+        sys.stderr.write("gemini-probe: `geminib families` returned no family; nothing to probe\n")
+        sys.exit(1)
+    return families
+
+
+FAMILIES = probe_families()
 DEFAULT_TIMEOUT_S = 180
 KILL_GRACE_S = 3
 SHORT_PROMPT = "Reply with exactly one word: pong. Do not use any tools."

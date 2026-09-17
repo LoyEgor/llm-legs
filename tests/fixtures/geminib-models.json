@@ -1,0 +1,10 @@
+{
+  "fetched_at": 0,
+  "attempted_at": 0,
+  "families": [
+    {"family": "gemini-3.8-flash", "slug": "flash38", "agy_prefix": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+    {"family": "gemini-3.7-flash", "slug": "flash37", "agy_prefix": "gemini-3.7-flash", "label": "Gemini 3.7 Flash"},
+    {"family": "gemini-3.6-flash", "slug": "flash36", "agy_prefix": "gemini-3.6-flash", "label": "Gemini 3.6 Flash"},
+    {"family": "gemini-3.1-pro", "slug": "pro", "agy_prefix": "gemini-3.1-pro", "label": "Gemini 3.1 Pro"}
+  ]
+}

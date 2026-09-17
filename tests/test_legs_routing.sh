@@ -3,6 +3,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
+export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
+. "$ROOT/tests/fixtures/geminib-families.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { echo "FAIL: $*" >&2; exit 1; }

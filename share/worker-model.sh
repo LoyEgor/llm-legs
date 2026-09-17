@@ -10,21 +10,35 @@ worker_model_file() {
 # columns is the mechanical rule; the first row of each vendor is its default model.
 # Gemini runs at `high` and nothing else, on every leg (Egor, 2026-09-16), so its rows offer no
 # other effort and `worker-run` raises a lower one instead of refusing the run.
-# TEMP-GEMINI37(default): flash37 leads the gemini rows only for Google's 3.8 Flash capacity
-# incident; EXPERIMENTS.json carries the revert.
 worker_model_table() {
   cat <<'TABLE'
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
 codex gpt-6-astra low low,medium,high xhigh no
 codex gpt-5.6-sol medium medium,high low,xhigh yes
-gemini flash37 high high - no
-gemini flash38 high high - no
-gemini flash36 high high - no
-gemini pro high high - yes
+TABLE
+  # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
+  # Pro newer than every Flash would otherwise make the word-gated model everyone's default.
+  worker_model_gemini_families | awk -F'\t' '
+    $2 == "pro" { pro = pro sprintf("gemini %s high high - yes\n", $2); next }
+    { printf "gemini %s high high - no\n", $2 }
+    END { printf "%s", pro }'
+  cat <<'TABLE'
 grok auto high high,xhigh - no
 grok grok-4.6 high high,xhigh - no
 TABLE
+}
+
+worker_model_gemini_families() {
+  "${BASH_SOURCE[0]%/*}/../bin/geminib" families 2>/dev/null
+}
+
+# `flash` predates versioned slugs and names the newest Flash family on the list.
+worker_model_gemini_family() { # table slug, agy id or `flash` → its `geminib families` row
+  worker_model_gemini_families | awk -F'\t' -v name="${1-}" '
+    name == "flash" && $1 ~ /-flash$/ && legacy == "" { legacy = $0 }
+    $2 == name || $3 == name || index(name, $3 "-") == 1 { print; found = 1; exit }
+    END { if (!found && legacy != "") print legacy }'
 }
 
 worker_model_allowed_models() {

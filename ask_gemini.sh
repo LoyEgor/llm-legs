@@ -19,8 +19,8 @@
 #     we exit 5 (with the reset hint) — the orchestrator then drops the leg for the day.
 #
 # Model chain (same Google family only — this leg must stay vendor-pure for cross-checking):
-#   1) AGY_MODEL          (default "Gemini 3.1 Pro (High)")
-#   2) AGY_MODEL_FALLBACK (default "Gemini 3.1 Pro (Low)" — same pro tier, lower reasoning)
+#   1) AGY_MODEL          (default "<Pro label> (High)", the `pro` row of `geminib families`)
+#   2) AGY_MODEL_FALLBACK (default "<Pro label> (Low)" — same pro tier, lower reasoning)
 # Flash/lite tiers are WEAK and never used in a judgment seat (GEMINI_ALLOW_WEAK=1 overrides).
 #
 # Every call logs {transport:"agy", requested, served(pinned, unverified)} to
@@ -32,8 +32,11 @@ set -uo pipefail
 DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
-AGY_MODEL="${AGY_MODEL:-Gemini 3.1 Pro (High)}"
-AGY_MODEL_FALLBACK="${AGY_MODEL_FALLBACK:-Gemini 3.1 Pro (Low)}"
+pro_label=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null | awk -F'\t' '$2 == "pro" { print $4; exit }')
+if [ -n "$pro_label" ]; then
+  AGY_MODEL="${AGY_MODEL:-$pro_label (High)}"
+  AGY_MODEL_FALLBACK="${AGY_MODEL_FALLBACK:-$pro_label (Low)}"
+fi
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-5m}"
 WEAK_RE='(^|[^a-z])(flash|lite|nano|mini|small|tiny)([^a-z]|$)'
 # Broad, for stderr only (legacy behavior): stderr is terse, so false positives are unlikely.
@@ -53,6 +56,13 @@ GEMINI_CMD=(agy)
 # Listing model labels spends no quota and must not depend on a selectable account.
 if [ "${1:-}" = --list-models ]; then
   agy models; exit $?
+fi
+# `geminib families` answers from its built-in list when it has nothing else, so a missing `pro` row
+# is a broken reader: the default would pin the nameless model " (High)". `--list-models` above
+# stays reachable — it is how an empty list is diagnosed.
+if [ -z "${AGY_MODEL:-}" ] || [ -z "${AGY_MODEL_FALLBACK:-}" ]; then
+  printf 'ask_gemini: `geminib families` printed no `pro` row; name AGY_MODEL and AGY_MODEL_FALLBACK to run anyway\n' >&2
+  exit 1
 fi
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
 if command -v worker-pick >/dev/null 2>&1; then

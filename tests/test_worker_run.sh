@@ -2290,13 +2290,12 @@ for pair in 'flash37:gemini-3.7-flash-high' 'flash36:gemini-3.6-flash-high' 'pro
   assert meta_agy_is "${pair#*:}"
   assert await_done
 done
-# No model named anywhere: the table's first gemini row is the default, and it is the one place
-# the incident's temporary 3.7 default lives.
+# No model named anywhere: the newest Flash family is the default, never `pro` however new it is.
 clear_stub
 set_config 'gemini_effort=high'
-assert test "$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")" = flash37
+assert test "$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")" = flash38
 start_ok gemini --account main
-assert meta_agy_is 'gemini-3.7-flash-high'
+assert meta_agy_is 'gemini-3.8-flash-high'
 assert await_done
 set_config 'gemini_model=flash38' 'gemini_effort=high'
 # A word the table knows nothing of is a typo, and a typo is still refused rather than raised.

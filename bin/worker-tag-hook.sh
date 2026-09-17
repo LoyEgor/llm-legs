@@ -276,18 +276,12 @@ elif { printf '%s' "$launch" | grep -qE "${cmd_word}"'agy([[:space:]]|$)' ||
     grep -oE '[a-z0-9][a-z0-9-]*' | tail -n2 | head -n1)
   [ -n "$acct" ] || acct=main
   agy_model=$(grab '\-\-model(=|[[:space:]])gemini-[0-9.]+-(pro|flash)(-(high|medium|low))?')
-  case "$agy_model" in
-    *gemini-3.8-flash*) model=flash38 ;;
-    *gemini-3.7-flash*) model=flash37 ;;
-    *gemini-3.6-flash*) model=flash36 ;;
-    *-pro*) model=pro ;;
-    *) model='' ;;
-  esac
+  model=$(worker_model_gemini_family "$(printf '%s' "$agy_model" | sed -E 's/^--model(=|[[:space:]])//')" | cut -f2)
   effort=$(grab '\-\-effort(=|[[:space:]])(high|medium|low)' | grep -oE '(high|medium|low)$')
   # Versioned Gemini ids carry effort; the pro-high label falls back to the configured high tier.
   [ -n "$effort" ] || effort=$(printf '%s' "$agy_model" | grep -oE '(high|medium|low)$')
   [ -n "$model" ] || model=$(worker_conf gemini_model)
-  [ "$model" = flash ] && model=flash36
+  [ "$model" != flash ] || model=$(worker_model_gemini_family flash | cut -f2)
   [ -n "$model" ] || model=$(worker_model_default_model gemini)
   [ -n "$effort" ] || effort=$(worker_conf gemini_effort)
   [ -n "$effort" ] || effort=$(worker_model_default_effort gemini "$(worker_model_default_model gemini)")

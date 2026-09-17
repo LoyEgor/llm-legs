@@ -3655,9 +3655,9 @@ spawn_payload=$(jq -cn '{
 spawn_output=$(printf '%s' "$spawn_payload" | "$SPAWN_HOOK") || fail "gemini spawn hook exited nonzero"
 # `EFFORT: medium` in the brief is not what will be spent: worker-run raises every Gemini run to
 # high, and the row names the launch rather than the ask.
-assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · 3.6-flash · second: Implement fixture"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · 3.8-flash · second: Implement fixture"' \
   <<< "$spawn_output" >/dev/null
-assert_eq 'light edit · 3.6-flash · second' \
+assert_eq 'light edit · 3.8-flash · second' \
   "$(seed_of spawn-gemini gemini-worker)"
 
 # gemini-research is not a worker: its row is `light research · <model>`, the model the table's
@@ -3678,9 +3678,9 @@ chmod +x "$RESEARCH_PICK"
 # A knob that must not reach this row: worker-model says flash36/medium, the launcher says otherwise.
 printf 'gemini_model=flash36\ngemini_effort=medium\n' > "$HOME/.claude/worker-model"
 research_routed=$(research_spawn spawn-research 'Where is the tag written?' "$RESEARCH_PICK")
-assert jq -e '.hookSpecificOutput.updatedInput.description == "light research · 3.7-flash · routedaccount: Map the hooks"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "light research · 3.8-flash · routedaccount: Map the hooks"' \
   <<< "$research_routed" >/dev/null
-assert_eq 'light research · 3.7-flash · routedaccount' \
+assert_eq 'light research · 3.8-flash · routedaccount' \
   "$(seed_of spawn-research gemini-research)"
 # The role travels with the query: the plain `--account gemini` reads the workers switch and
 # answers `off` for a vendor open to research.
@@ -3688,13 +3688,13 @@ assert_eq '--account gemini --role research' "$(cat "$WORK/research-pick.log")"
 
 : > "$WORK/research-pick.log"
 research_pinned=$(research_spawn spawn-research-pin $'ACCOUNT: pinned\nWhere is the tag written?' "$RESEARCH_PICK")
-assert_eq 'light research · 3.7-flash · pinned' \
+assert_eq 'light research · 3.8-flash · pinned' \
   "$(seed_of spawn-research-pin gemini-research)"
 
 # An `--account` the brief spells on the launch line is the same pin by another spelling.
 research_flag=$(research_spawn spawn-research-flag \
   $'Run gemini-research --account flagged --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' "$RESEARCH_PICK")
-assert_eq 'light research · 3.7-flash · flagged' \
+assert_eq 'light research · 3.8-flash · flagged' \
   "$(seed_of spawn-research-flag gemini-research)"
 
 quoted_failures=0
@@ -3702,7 +3702,7 @@ for quoted_account in '"quoted"' "'quoted'"; do
   research_quoted=$(research_spawn spawn-research-quoted \
     "Run gemini-research --account $quoted_account --prompt-file /tmp/q" "$RESEARCH_PICK")
   asserts=$((asserts + 1))
-  if [ "$(seed_of spawn-research-quoted gemini-research)" != 'light research · 3.7-flash · quoted' ]; then
+  if [ "$(seed_of spawn-research-quoted gemini-research)" != 'light research · 3.8-flash · quoted' ]; then
     printf 'FAIL: quoted research account %s\n' "$quoted_account" >&2
     quoted_failures=$((quoted_failures + 1))
   fi
@@ -3717,7 +3717,7 @@ SILENT_PICK="$WORK/silent-worker-pick"
 printf '#!/usr/bin/env bash\nexit 3\n' > "$SILENT_PICK"
 chmod +x "$SILENT_PICK"
 research_silent=$(research_spawn spawn-research-none 'Where is the tag written?' "$SILENT_PICK")
-assert_eq 'light research · 3.7-flash · ?' \
+assert_eq 'light research · 3.8-flash · ?' \
   "$(seed_of spawn-research-none gemini-research)"
 printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 
@@ -3725,21 +3725,21 @@ printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-mode
 research_tag=$(worker_payload gemini-research worker/research 'Search the tree' \
   'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r --account rawilimo')
 research_tag_out=$(printf '%s' "$research_tag" | "$WORKER_HOOK") || fail "research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash37 · high — Search the tree"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash38 · high — Search the tree"' \
   <<< "$research_tag_out" >/dev/null
-assert_eq 'rawilimo · flash37 · high' "$(cat "$TAGDIR/workerresearch")"
+assert_eq 'rawilimo · flash38 · high' "$(cat "$TAGDIR/workerresearch")"
 # A relay worker already bypasses permissions, so `allow` there only spares it a second prompt;
 # gemini-research runs INSIDE this session, where the same word would grant a call nobody granted.
 assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<< "$research_tag_out" >/dev/null
 assert jq -e '.hookSpecificOutput.permissionDecision == "allow"' <<< "$seed_output" >/dev/null
 
 # Without one the script asks worker-pick at run time, so the spawn seed is the better answer.
-printf 'seeded · flash37 · high\n' > "$TAGDIR/pending-gemini-research"
+printf 'seeded · flash38 · high\n' > "$TAGDIR/pending-gemini-research"
 research_seeded=$(worker_payload gemini-research worker/researchseed 'Search the tree' \
   'gemini-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r')
 research_seeded_out=$(printf '%s' "$research_seeded" | "$WORKER_HOOK") \
   || fail "seeded research tag hook exited nonzero"
-assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash37 · high — Search the tree"' \
+assert jq -e '.hookSpecificOutput.updatedInput.description == "seeded · flash38 · high — Search the tree"' \
   <<< "$research_seeded_out" >/dev/null
 
 # image-gen is a relay too, so its row is tagged like the workers': `<account> · <image model> · <vendor>`,

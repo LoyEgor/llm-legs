@@ -181,8 +181,8 @@ codex_model=$(codex_model_short_label)
 eff_display() { case "$1" in medium) printf med ;; *) printf '%s' "$1" ;; esac; }
 case "$gr_model" in auto | grok-*) gr_model_display=grok ;; *) gr_model_display=$gr_model ;; esac
 # The column is padded to a fixed width, and the family name spelled out costs it four characters
-# every vendor row pays for; `f38` keeps it exactly as wide as the `pro` it replaced.
-case "$gm_model" in flash38) gm_model_display=f38 ;; flash37) gm_model_display=f37 ;; flash36) gm_model_display=f36 ;; *) gm_model_display=$gm_model ;; esac
+# every vendor row pays for; `f` and the version digits keep it as wide as the `pro` it replaced.
+case "$gm_model" in flash[0-9]*) gm_model_display="f${gm_model#flash}" ;; *) gm_model_display=$gm_model ;; esac
 cb_display="${cb_model}·$(eff_display "$cb_effort")"
 cx_display="${codex_model}·$(eff_display "$cx_effort")"
 gm_display="${gm_model_display}·$(eff_display "$gm_effort")"

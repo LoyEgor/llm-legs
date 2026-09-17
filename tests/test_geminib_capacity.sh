@@ -25,6 +25,8 @@ mkdir -p "$HOME/.gemini/antigravity-cli" "$HOME/.gemini-profiles/alpha" "$FAKE_B
 export GEMINIB_PROFILES_DIR="$HOME/.gemini-profiles"
 export XDG_CACHE_HOME="$HOME/.cache"
 MARKERS="$HOME/.cache/geminib/capacity"
+export GEMINIB_CACHE_DIR="$HOME/.cache/geminib"
+. "$ROOT/tests/fixtures/geminib-families.sh"
 
 # Records the model and log it was launched with, then answers as the incident does: a family named
 # in STARVED prints the 503 into the log agy was handed. STALL mimics agy's in-process retry — a
@@ -215,6 +217,7 @@ agy_run() { # agy arguments
   : >"$CALLS"
   : >"$CALLS-home"
   rm -f "$WORK/log"
+  geminib_families_seed "$CELL_CACHE"
   env HOME="$CELL_HOME" GEMINIB_CACHE_DIR="$CELL_CACHE" \
     bash "$SCRIPT" agy-launch --agy "$FAKE_BIN/agy" -- "$@" >"$WORK/out" 2>"$WORK/err"
 }

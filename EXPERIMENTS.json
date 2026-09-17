@@ -1,10 +1,1 @@
-[
-  {
-    "id": "gemini-flash37-default",
-    "what": "Workers and the Gemini research leg default to gemini-3.7-flash instead of gemini-3.8-flash while Google's 3.8 Flash capacity incident lasts (per-step latency 3 s to 20 s, 503 'No capacity available for model gemini-3.8-flash-*' since 2026-09-14). 3.7 and 3.6 Flash are served normally.",
-    "started": "2026-09-17",
-    "review_by": "2026-09-30",
-    "tag": "TEMP-GEMINI37(default)",
-    "how_to_remove": "revert default to gemini-3.8-flash when per-step latency is back to ~3 s: put the `gemini flash38` row first again in share/worker-model.sh and drop the TEMP-GEMINI37(default) comment, then follow the flash37 literals out of share/worker-policy.md, docs/shared-invariants.md rows i/bq, docs/DIAGNOSTICS.md, docs/routing-contract.md and tests/test_{consistency,worker_run,gemini_research,statusline_hooks,worker_pick}.sh. The capacity fallback in bin/geminib is permanent and stays whatever the default is."
-  }
-]
+[]

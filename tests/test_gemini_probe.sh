@@ -131,4 +131,13 @@ for bad in '--families 3.9' '--families 3.8,3.8' '--timeout 0' '--bogus'; do
 done
 assert_eq "$(wc -c <"$CALLS" | tr -d ' ')" 0
 
-printf 'PASS: %s asserts; gemini-probe (ok, slow, 503, timeout, fallback off, weather sees probe runs, --families, --short-only, account pick, usage)\n' "$asserts"
+# `geminib families` always prints rows, so an empty list is a broken reader: probing nothing would
+# otherwise end in a clean report saying every family is healthy.
+mkdir -p "$WORK/no-families"
+printf '{"fetched_at": 9999999999, "attempted_at": 9999999999, "families": [{"family": ""}]}\n' >"$WORK/no-families/models.json"
+GEMINIB_CACHE_DIR="$WORK/no-families" probe --account alpha
+assert_eq "$?" 1
+assert grep -Fq 'geminib families' "$WORK/err"
+assert_eq "$(wc -c <"$CALLS" | tr -d ' ')" 0
+
+printf 'PASS: %s asserts; gemini-probe (ok, slow, 503, timeout, fallback off, weather sees probe runs, --families, --short-only, account pick, usage, no families)\n' "$asserts"

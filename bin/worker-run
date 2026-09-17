@@ -1608,7 +1608,7 @@ start_run() {
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
   local round_source='' text_rule='' candidate='' rule=''
   local -a text_rounds=()
-  local account pin config_model model_label agy_model='' grok_turns='' root epoch suffix run_id directory
+  local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root epoch suffix run_id directory
   local explicit_model='' explicit_effort='' research_model='' fix_rule='' anchors_top=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
   local web_search=false brief_cyrillic=''
@@ -1910,15 +1910,16 @@ start_run() {
       ;;
     gemini)
       # The effort rides in the agy slug and never in an `--effort` flag (shared-invariants row h).
-      case "$model:$effort" in
-        flash38:high) agy_model="gemini-3.8-flash-$effort" ;;
-        flash37:high) agy_model="gemini-3.7-flash-$effort" ;;
-        flash36:high) agy_model="gemini-3.6-flash-$effort" ;;
-        # agy still serves the `gemini-3.1-pro-high` slug as Flash (shared-invariants row h), so the
-        # one effort Pro may run here launches under the label instead.
-        pro:high) agy_model='Gemini 3.1 Pro (High)' ;;
-        *) outcome_line GEMINI_UNAVAILABLE; exit 4 ;;
-      esac
+      [ "$effort" = high ] &&
+        gemini_family=$(worker_model_gemini_families | awk -F'\t' -v slug="$model" '$2 == slug { print; exit }') &&
+        [ -n "$gemini_family" ] || { outcome_line GEMINI_UNAVAILABLE; exit 4; }
+      # agy still serves the Pro high slug as Flash (shared-invariants row h), so the one effort Pro
+      # may run here launches under the label instead.
+      if [ "$model" = pro ]; then
+        agy_model="$(cut -f4 <<<"$gemini_family") (High)"
+      else
+        agy_model="$(cut -f3 <<<"$gemini_family")-$effort"
+      fi
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
       if [ "$account" != main ]; then
         list_output=$("$cli" list 2>/dev/null)

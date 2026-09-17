@@ -20,6 +20,8 @@ WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 CONSISTENCY_CACHE=$(mktemp -d)
 trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
 export WORKER_PICK_CONFIG_FILE="$CONSISTENCY_CACHE/worker-model"
+export GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/geminib"
+. "$ROOT/tests/fixtures/geminib-families.sh"
 
 asserts=0
 fail() { printf 'FAIL: %s\n  (canonical values live in %s)\n' "$*" "$DOC" >&2; exit 1; }
@@ -380,17 +382,13 @@ print("\n".join(bad) if bad else "ok")
 PATCHPY
 )
 assert eq "$rb_patch_audit" ok
-for mapping in \
-  '"agy-pro": "gemini-3.1-pro"' \
-  '"agy-flash38": "gemini-3.8-flash"' \
-  '"agy-flash37": "gemini-3.7-flash"' \
-  '"agy-flash36": "gemini-3.6-flash"'; do
-  assert grep -Fq -- "$mapping" "$RB_CATALOG"
-done
-assert grep -Fq '"agy-pro": ("high",)' "$RB_CATALOG"
-assert grep -Fq '"agy-flash38": ("high",)' "$RB_CATALOG"
-assert grep -Fq '"agy-flash37": ("high",)' "$RB_CATALOG"
-assert grep -Fq '"agy-flash36": ("high",)' "$RB_CATALOG"
+# The cell tables are the families `geminib families` prints (row `cr`), each at `high` alone.
+assert grep -Fq 'AGY_MODEL_IDS = {f"agy-{family['"'"'slug'"'"']}": family["agy_prefix"] for family in GEMINI_FAMILIES}' "$RB_CATALOG"
+assert grep -Fq 'AGY_EFFORTS = {f"agy-{family['"'"'slug'"'"']}": ("high",) for family in GEMINI_FAMILIES}' "$RB_CATALOG"
+assert eq "$(PYTHONPATH="$RBENCH_SHARE" python3 -c 'import json, rbench.catalog as c; print(json.dumps([c.AGY_MODEL_IDS, c.AGY_EFFORTS], sort_keys=True))')" \
+  "$(jq -c '[(.families | map({key: ("agy-" + .slug), value: .agy_prefix}) | from_entries),
+            (.families | map({key: ("agy-" + .slug), value: ["high"]}) | from_entries)]' "$GEMINIB_CACHE_DIR/models.json" |
+     python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))')"
 # The retired 3.5 Flash family, pinned as ABSENT: the server answers a dropped id
 # `invalid model selection`, so a spelling that creeps back into the roster, the raters' grammar
 # or the tiers is a panel of cells that cannot answer. Prose about the retirement is allowed to
@@ -405,7 +403,7 @@ assert grep -Fq 'agy-pro-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash38-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash37-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
-assert grep -Fq 'return f"{model}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
+assert grep -Fq 'return f"{_catalog.AGY_MODEL_IDS[rater['\''model'\'']]}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
 assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$RB_LAUNCH"
 assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
 assert doc_has '`agy-pro-high` → `--model "Gemini 3.1 Pro (High)"`'
@@ -417,11 +415,13 @@ assert doc_has '`agy-flash35`/`gemini-3.5-flash` went that way'
 assert doc_has 'historical rows are keyed `flash35-<effort>`'
 assert grep -Fq 'retired_flash = "agy-" + "flash35-"' "$RB_RATERS"
 assert grep -Fq 'return "flash35-" + rater[len(retired_flash):]' "$RB_RATERS"
-# Every live Flash family the bench can launch has a tag arm: a family the statusline cannot name
-# shows the configured default instead of the model the run is actually spending.
-for agy_family in 3.8-flash:flash38 3.7-flash:flash37 3.6-flash:flash36; do
-  assert grep -Fq "*gemini-${agy_family%%:*}*) model=${agy_family##*:}" "$ROOT/bin/worker-tag-hook.sh"
-done
+# Every family the bench can launch resolves to its slug in the tag hook: a family the statusline
+# cannot name shows the configured default instead of the model the run is actually spending.
+assert grep -Fq 'model=$(worker_model_gemini_family "$(printf' "$ROOT/bin/worker-tag-hook.sh"
+while IFS=$'\t' read -r fam_family fam_slug fam_prefix _; do
+  assert eq "$(bash -c '. "$1"; worker_model_gemini_family "$2" | cut -f2' _ "$ROOT/share/worker-model.sh" "$fam_prefix-high")" "$fam_slug"
+  assert eq "$(bash -c '. "$1"; worker_model_gemini_family "$2" | cut -f1' _ "$ROOT/share/worker-model.sh" "$fam_slug")" "$fam_family"
+done < <("$ROOT/bin/geminib" families)
 assert doc_has 'Every cell omits `--effort`'
 assert test "$(sed -n '/^def run_agy(/,/^def /p' "$RB_LAUNCH" | grep -Fc '"--effort"')" -eq 0
 assert doc_has 'Antigravity review cell invocation mapping'
@@ -438,13 +438,13 @@ assert test -r "$CLAUDEB_AGENT"
 assert test -r "$WORKER_COMMAND"
 WORKER_RUN="${WORKER_RUN_BIN:-$ROOT/bin/worker-run}"
 assert test -x "$WORKER_RUN"
-for agy_arm in 3.8:flash38 3.7:flash37 3.6:flash36; do
-  assert test "$(grep -Fc -- "${agy_arm##*:}:high) agy_model=\"gemini-${agy_arm%%:*}-flash-\$effort\" ;;" "$WORKER_RUN")" -eq 1
-done
+assert test "$(grep -Fc -- 'awk -F'"'"'\t'"'"' -v slug="$model" '"'"'$2 == slug { print; exit }'"'"')' "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- 'agy_model="$(cut -f3 <<<"$gemini_family")-$effort"' "$WORKER_RUN")" -eq 1
 # Pro reaches the worker leg at `high` and at nothing else, and it launches under the row `h`
 # label: the `-high` Pro slug is still served as Flash, so the slug spelling would run the
 # wrong model on every Pro worker.
-assert test "$(grep -Fc -- "pro:high) agy_model='Gemini 3.1 Pro (High)' ;;" "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- '[ "$effort" = high ] &&' "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- 'agy_model="$(cut -f4 <<<"$gemini_family") (High)"' "$WORKER_RUN")" -eq 1
 assert test "$(grep -Ec 'pro:(medium|low)' "$WORKER_RUN")" -eq 0
 # No arm below `high` for any Gemini model, and none for a family outside the table: the effort
 # is RAISED before this case is read, so a lower arm is an arm nothing can reach.
@@ -452,7 +452,8 @@ assert test "$(grep -Ec 'flash3[0-9]:(medium|low)' "$WORKER_RUN")" -eq 0
 assert test "$(grep -Ec 'flash3[0-59]:(high|medium|low)' "$WORKER_RUN")" -eq 0
 assert grep -Fq 'printf '\''gemini effort forced to high\n'\'' >&2' "$WORKER_RUN"
 gemini_default_model=$(bash -c '. "$1"; worker_model_default_model gemini' _ "$ROOT/share/worker-model.sh")
-assert grep -Fq "\`gemini_model=$gemini_default_model\`, and \`gemini_effort=high\`" "$WORKER_COMMAND"
+assert grep -Fq "\`gemini_model=<slug>\` (a slug \`geminib families\` prints), and \`gemini_effort=high\`" "$WORKER_COMMAND"
+assert eq "$gemini_default_model" "$("$ROOT/bin/geminib" families | awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }')"
 assert grep -Fq 'Gemini runs at `high` only' "$WORKER_COMMAND"
 assert test "$(grep -Ec 'flash3[0-9] low/medium/high|gemini_effort=low\|medium\|high' "$WORKER_COMMAND")" -eq 0
 assert grep -Fq 'gm_model=$(conf gemini_model); gm_model=${gm_model:-$(worker_model_default_model gemini)}' "$WORKERPICK"
@@ -482,7 +483,7 @@ assert grep -Fq 'os.getenv("GEMINI_WEATHER_DIR")' "$ROOT/hammerspoon/llm-limits.
 assert grep -Fq 'os.time() >= (tonumber(weather.valid_until) or 0)' "$ROOT/hammerspoon/llm-limits.lua"
 assert test "$(grep -Ec 'streamGenerateContent|SLOW_FACTOR|HEALTHY_STEP_S|SLOW_STEP_S|>= *9' "$ROOT/bin/gemini-probe")" -eq 0
 assert grep -Fq 'weather.state_of(' "$ROOT/bin/gemini-probe"
-assert grep -Fq '"3.1p": ("gemini-3.1-pro", "Gemini 3.1 Pro (High)")' "$ROOT/bin/gemini-probe"
+assert grep -Fq 'model = family["label"] + " (High)" if family["slug"] == "pro" else family["agy_prefix"] + "-high"' "$ROOT/bin/gemini-probe"
 for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
   assert test "$(grep -Ec 'median_step_s *(>=|>) *[0-9]|SLOW_STEP|slow_step_s' "$weather_reader")" -eq 0
 done
@@ -511,7 +512,7 @@ assert test "$(grep -Fc 'Run Gemini probe (~3 min, costs Gemini tokens)' "$ROOT/
 # a chain that no longer matches the families agy serves.
 GEMINIB_BIN="$ROOT/bin/geminib"
 assert grep -Fq "capacity_phrase='No capacity available for model'" "$GEMINIB_BIN"
-assert grep -Fq "capacity_chain='gemini-3.8-flash gemini-3.7-flash gemini-3.6-flash'" "$GEMINIB_BIN"
+assert grep -Fq 'capacity_chain=$(capacity_flash_chain)' "$GEMINIB_BIN"
 assert grep -Fq 'GEMINIB_CAPACITY_HOLD_S:-600' "$GEMINIB_BIN"
 assert grep -Fq 'GEMINIB_CAPACITY_FALLBACK:-1' "$GEMINIB_BIN"
 assert grep -Fq "printf 'geminib: model %s" "$GEMINIB_BIN"
@@ -526,6 +527,90 @@ done
 assert doc_has 'Gemini capacity fallback'
 assert doc_has 'geminib: model <slug>'
 
+# --- Row cr: Gemini model families -------------------------------------------
+# ONE list: a family literal in a production file is a second copy a rollout has to find. The
+# built-in fallback in geminib is the only one; a registered experiment's tagged block and the
+# bench's legacy rater renames name a family on purpose.
+family_literals() { # legs-root bench-root setup-root
+  python3 - "$@" <<'FAMPY'
+import json, os, re, sys
+legs, bench, setup = sys.argv[1:4]
+literal = re.compile(r"gemini-3\.[0-9]+-(flash|pro)(?!-image)|flash3[0-9]")
+tag = re.compile(r"TEMP-[A-Z][A-Z0-9_-]*\([a-z0-9_-]+\)")
+experiment_ids = []
+for root in (legs, bench):
+    try:
+        experiment_ids += [entry[key] for entry in json.load(open(os.path.join(root, "EXPERIMENTS.json")))
+                           for key in ("id", "tag") if entry.get(key)]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+hits = []
+for root, tops in ((legs, ("bin", "share", "hammerspoon")), (bench, ("share/rbench",)),
+                   (setup, ("agents", "commands", "hooks"))):
+    for top in tops:
+        for directory, subdirs, files in os.walk(os.path.join(root, top)):
+            subdirs[:] = [d for d in subdirs if d != "__pycache__"]
+            for name in files:
+                path = os.path.join(directory, name)
+                if os.path.islink(path):
+                    continue
+                try:
+                    lines = open(path, encoding="utf-8").read().split("\n")
+                except (OSError, UnicodeDecodeError):
+                    continue
+                relative = os.path.relpath(path, root)
+                tagged = builtin = legacy = False
+                for number, line in enumerate(lines, 1):
+                    stripped = line.strip()
+                    if relative == "bin/geminib":
+                        builtin = stripped.startswith("families_builtin()") or (builtin and stripped != "}")
+                    if relative == "share/rbench/raters.py":
+                        legacy = line.startswith("def normalize_legacy_rater(") or (legacy and not line.startswith("def "))
+                    tagged = tagged or bool(tag.search(line))
+                    text = line
+                    for word in experiment_ids:
+                        text = text.replace(word, "")
+                    if literal.search(text) and not (tagged or builtin or legacy):
+                        hits.append("%s:%d" % (relative, number))
+                    if tagged and not tag.search(line) and not stripped.startswith("#"):
+                        tagged = False
+print(" ".join(hits))
+FAMPY
+}
+FAMILY_SETUP_ROOT="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}"
+assert test -r "$FAMILY_SETUP_ROOT/commands/worker.md"
+assert eq "$(family_literals "$ROOT" "$REVIEW_ROOT" "$FAMILY_SETUP_ROOT")" ''
+family_probe="$CONSISTENCY_CACHE/family-probe"
+mkdir -p "$family_probe/bin" "$family_probe/share" "$family_probe/bench/share/rbench" "$family_probe/agents"
+printf 'x\n# TEMP-%s(default): lead\n# more\nlead=flash37\nnext=flash37\n' PROBE >"$family_probe/share/tagged.sh"
+printf 'def normalize_legacy_rater(r):\n    return "agy-flash36-"\n\ndef other():\n    return "agy-flash38"\n' >"$family_probe/bench/share/rbench/raters.py"
+printf 'families_builtin() {\n  printf x gemini-3.8-flash\n}\nchain=gemini-3.7-flash\n' >"$family_probe/bin/geminib"
+printf 'model gemini-3.1-flash-image\n' >"$family_probe/share/image.json"
+printf 'Gemini on gemini-3.6-flash-high\n' >"$family_probe/agents/a.md"
+assert eq "$(family_literals "$family_probe" "$family_probe/bench" "$family_probe")" \
+  'bin/geminib:4 share/tagged.sh:5 share/rbench/raters.py:5 agents/a.md:1'
+# The built-in list, both fixtures and what `geminib families` prints share one column format.
+family_rows_ok() {
+  awk -F'\t' 'NF != 4 || $1 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $2 !~ /^(flash[0-9]+|pro)$/ ||
+              $3 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $4 !~ /^Gemini [0-9]+\.[0-9]+ / { bad = 1 }
+              END { exit (bad || NR == 0) }'
+}
+builtin_rows=$(bash -c 'eval "$(sed -n "/^families_builtin() {/,/^}/p" "$1")"; families_builtin' _ "$GEMINIB_BIN")
+assert family_rows_ok <<<"$builtin_rows"
+assert eq "$(jq -r '.families[] | [.family, .slug, .agy_prefix, .label] | @tsv' "$ROOT/tests/fixtures/geminib-models.json")" "$builtin_rows"
+assert eq "$(jq -c '.families' "$REVIEW_ROOT/tests/fixtures/review-bench/geminib-models.json")" \
+  "$(jq -c '.families' "$ROOT/tests/fixtures/geminib-models.json")"
+assert eq "$(AGY_BIN="$CONSISTENCY_CACHE/no-agy" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" families)" "$builtin_rows"
+assert family_rows_ok < <("$GEMINIB_BIN" families)
+assert eq "$("$GEMINIB_BIN" families --json | jq -r '.[] | [.family, .slug, .agy_prefix, .label] | @tsv')" \
+  "$("$GEMINIB_BIN" families)"
+printf '#!/usr/bin/env bash\ncat "%s"\n' "$ROOT/tests/fixtures/agy-models.txt" >"$CONSISTENCY_CACHE/agy-models"
+chmod +x "$CONSISTENCY_CACHE/agy-models"
+assert eq "$(AGY_BIN="$CONSISTENCY_CACHE/agy-models" GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/fixture-fetch" "$GEMINIB_BIN" families --refresh)" "$builtin_rows"
+assert doc_has 'Gemini model families'
+assert doc_has '`families_builtin`'
+assert doc_has '`geminib families [--json] [--refresh]`'
+
 # --- Row bq: allowed worker models -------------------------------------------
 # The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
 # after a model `worker-run` will refuse.
@@ -536,12 +621,27 @@ assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claude
 claudeb fable low low,medium,high xhigh,max yes
 codex gpt-6-astra low low,medium,high xhigh no
 codex gpt-5.6-sol medium medium,high low,xhigh yes
-gemini flash37 high high - no
 gemini flash38 high high - no
+gemini flash37 high high - no
 gemini flash36 high high - no
 gemini pro high high - yes
 grok auto high high,xhigh - no
 grok grok-4.6 high high,xhigh - no'
+# A Pro newer than every Flash tops `geminib families`, and the table still ends with `pro`: the
+# first gemini row is the vendor default and `pro` is word-gated, so a Pro-first table would hand
+# the gated model to every worker that names no model.
+pro_newest_cache="$CONSISTENCY_CACHE/geminib-pro-newest"
+mkdir -p "$pro_newest_cache"
+jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now |
+  .families = ([{family: "gemini-3.9-pro", slug: "pro", agy_prefix: "gemini-3.9-pro", label: "Gemini 3.9 Pro"}] +
+    (.families | map(select(.slug != "pro"))))' \
+  "$ROOT/tests/fixtures/geminib-models.json" >"$pro_newest_cache/models.json"
+assert eq "$(GEMINIB_CACHE_DIR="$pro_newest_cache" bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH" |
+  awk '$1 == "gemini" { print $2 }')" 'flash38
+flash37
+flash36
+pro'
+assert eq "$(GEMINIB_CACHE_DIR="$pro_newest_cache" bash -c '. "$1"; worker_model_default_model gemini' _ "$WORKER_MODEL_SH")" flash38
 # Neither refusal spells a model of its own: both read the list through these functions.
 assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
@@ -575,7 +675,7 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-59]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini `flash37` (also `flash38`, `flash36`, `pro`), grok `auto`'
+assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto`'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'acct=$(worker_model_pin_first gemini' "$SPAWN_HOOK"
@@ -2481,5 +2581,5 @@ assert eq "$(grep -c '\*settings\.json\*' "$INSTR_GATE")" 0
 assert test -r "$ROOT/tests/test_instruction_gate.sh"
 assert doc_has 'Instruction-file classes and the one span'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
 ' "$asserts" "$DOC"

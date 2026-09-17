@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -14,7 +15,6 @@ HEALTHY_STEP_S = 3
 SLOW_FACTOR = 3
 SLOW_STEP_S = HEALTHY_STEP_S * SLOW_FACTOR
 DEFAULT_WINDOW_MIN = 60
-KNOWN_FAMILIES = ("gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro")
 SCHEMA = 1
 
 CAPACITY_PHRASE = "No capacity available for model"
@@ -28,9 +28,7 @@ CAPACITY_MODEL_RE = re.compile(re.escape(CAPACITY_PHRASE) + r" (\S+)")
 RESPONSE_ID_RE = re.compile(r"ResponseID: (\S+)")
 LABEL_FAMILY_RE = re.compile(r"(?i)^gemini (\d+(?:\.\d+)?) (.+?)(?: \((?:high|medium|low)\))?$")
 SLUG_FAMILY_RE = re.compile(r"^(gemini-\d+(?:\.\d+)?-[a-z0-9-]+?)(?:-(?:high|medium|low))?$")
-RATER_MODEL_RE = re.compile(r"^(?:agy-)?(flash38|flash37|flash36|pro)(?:-(?:high|medium|low))?$")
-RATER_MODEL_FAMILY = {"flash38": "gemini-3.8-flash", "flash37": "gemini-3.7-flash",
-                      "flash36": "gemini-3.6-flash", "pro": "gemini-3.1-pro"}
+RATER_MODEL_RE = re.compile(r"^(?:agy-)?([a-z0-9]+)(?:-(?:high|medium|low))?$")
 
 
 def family_of(name):
@@ -59,6 +57,25 @@ def base_home():
 
 def geminib_cache_dir():
     return os.environ.get("GEMINIB_CACHE_DIR") or os.path.join(base_home(), ".cache", "geminib")
+
+
+def geminib_families():
+    try:
+        with open(os.path.join(geminib_cache_dir(), "models.json"), encoding="utf-8") as handle:
+            families = json.load(handle)["families"]
+    except (OSError, ValueError, KeyError, TypeError):
+        families = None
+    if not families:
+        try:
+            result = subprocess.run(
+                [os.path.join(os.path.dirname(os.path.realpath(__file__)), "geminib"), "families", "--json"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=120)
+            families = json.loads(result.stdout)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            families = []
+    return [family for family in families if isinstance(family, dict)
+            and all(isinstance(family.get(key), str) and family[key]
+                    for key in ("family", "slug", "agy_prefix", "label"))]
 
 
 def weather_dir():
@@ -105,7 +122,7 @@ def candidate_logs(benches):
     return unique
 
 
-def panel_cuts(bench, cutoff, now):
+def panel_cuts(bench, cutoff, now, rater_families):
     try:
         with open(os.path.join(bench, "meta.json"), encoding="utf-8") as handle:
             meta = json.load(handle)
@@ -131,7 +148,7 @@ def panel_cuts(bench, cutoff, now):
         if family is None:
             slug = run.get("model")
             match = RATER_MODEL_RE.match(slug) if isinstance(slug, str) else None
-            family = RATER_MODEL_FAMILY[match.group(1)] if match else None
+            family = rater_families.get(match.group(1)) if match else None
         if family:
             yield family
 
@@ -260,9 +277,12 @@ def collect(window_min, now):
 
     scanned = 0
     responses = set()
+    listed = geminib_families()
+    known = tuple(family["family"] for family in listed)
+    rater_families = {family["slug"]: family["family"] for family in listed}
     benches = bench_directories()
     for bench in benches:
-        for family in panel_cuts(bench, cutoff, now):
+        for family in panel_cuts(bench, cutoff, now, rater_families):
             family_stats(family)["cut"] += 1
     for path in candidate_logs(benches):
         try:
@@ -309,7 +329,7 @@ def collect(window_min, now):
         return None if stamp is None else max(0, int(round(now - stamp)))
 
     families = []
-    ordered = list(KNOWN_FAMILIES) + sorted(name for name in stats if name not in KNOWN_FAMILIES)
+    ordered = list(known) + sorted(name for name in stats if name not in known)
     for family in ordered:
         entry = stats.get(family)
         if entry is None:
@@ -319,7 +339,7 @@ def collect(window_min, now):
         p90 = round(percentile(intervals, 0.9), 1) if intervals else None
         hold_in_window = entry["hold"] is not None and entry["hold"] >= cutoff
         state = state_of(entry["errors"] + (1 if hold_in_window else 0), median, bool(entry["runs"]))
-        if family not in KNOWN_FAMILIES and state == "no-data" and not entry["cut"]:
+        if family not in known and state == "no-data" and not entry["cut"]:
             continue
         families.append({
             "family": family,

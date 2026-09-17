@@ -89,7 +89,7 @@ disable_account() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch|families) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -441,10 +441,110 @@ show_status() {
 # review-bench cells all reach agy through here, so none of them carries a fallback of its own.
 capacity_phrase='No capacity available for model'
 capacity_step_mark='streamGenerateContent'
-capacity_chain='gemini-3.8-flash gemini-3.7-flash gemini-3.6-flash'
+capacity_chain=''
 agy_env=()
 
 capacity_state_dir() { printf '%s' "${GEMINIB_CACHE_DIR:-$base_home/.cache/geminib}"; }
+
+# --- Model families: the one list every consumer reads (shared-invariants row `cr`) ---
+families_ttl_s=86400
+
+families_builtin() {
+  printf '%s\t%s\t%s\t%s\n' \
+    gemini-3.8-flash flash38 gemini-3.8-flash 'Gemini 3.8 Flash' \
+    gemini-3.7-flash flash37 gemini-3.7-flash 'Gemini 3.7 Flash' \
+    gemini-3.6-flash flash36 gemini-3.6-flash 'Gemini 3.6 Flash' \
+    gemini-3.1-pro pro gemini-3.1-pro 'Gemini 3.1 Pro'
+}
+
+families_parse() { # `agy models` output → family rows, newest version first
+  awk -F'\t' '
+    NF >= 2 && $2 != "" && $1 ~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)(-(high|medium|low))?$/ {
+      family = $1
+      sub(/-(high|medium|low)$/, "", family)
+      split(family, part, "-")
+      split(part[2], version, ".")
+      slug = part[3] == "pro" ? "pro" : part[3] version[1] version[2]
+      label = $2
+      sub(/ \((High|Medium|Low)\)$/, "", label)
+      printf "%d\t%d\t%d\t%s\t%s\t%s\n", version[1], version[2], NR, family, slug, label
+    }' | sort -t "$(printf '\t')" -k1,1nr -k2,2nr -k3,3n |
+    awk -F'\t' '!seen[$5]++ { printf "%s\t%s\t%s\t%s\n", $4, $5, $4, $6 }'
+}
+
+families_write() { # fetched-at attempted-at rows
+  local cache tmp
+  cache="$(capacity_state_dir)/models.json"
+  mkdir -p "$(capacity_state_dir)" 2>/dev/null || return 0
+  tmp="$cache.tmp.$$"
+  if printf '%s' "$3" | jq -Rn --argjson fetched "$1" --argjson attempted "$2" '
+       {fetched_at: $fetched, attempted_at: $attempted,
+        families: [inputs | select(length > 0) | split("\t")
+                   | {family: .[0], slug: .[1], agy_prefix: .[2], label: .[3]}]}' >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+families_fresh() { [ "$(($1 - $2))" -ge 0 ] && [ "$(($1 - $2))" -lt "$families_ttl_s" ]; } # now stamp
+
+# A failed refresh stamps attempted_at, so a broken agy is asked once per TTL and not by every hook.
+families_rows() { # refresh(true|false)
+  local cache now fetched=0 attempted=0 rows='' cached='' output fresh
+  cache="$(capacity_state_dir)/models.json"
+  now=$(date +%s)
+  if [ -r "$cache" ] && cached=$(jq -r '
+       [((.fetched_at // 0) | floor), ((.attempted_at // 0) | floor)] as $stamps
+       | ($stamps | map(tostring) | join("\t")),
+         (.families[]? | [.family, .slug, .agy_prefix, .label]
+          | select(all(type == "string" and length > 0)) | @tsv)' "$cache" 2>/dev/null); then
+    IFS=$'\t' read -r fetched attempted <<<"${cached%%$'\n'*}"
+    [ "${cached#*$'\n'}" = "$cached" ] || rows=${cached#*$'\n'}
+  fi
+  [[ "$fetched" =~ ^[0-9]+$ ]] || fetched=0
+  [[ "$attempted" =~ ^[0-9]+$ ]] || attempted=0
+  if [ "$1" = true ] || { ! families_fresh "$now" "$fetched" && ! families_fresh "$now" "$attempted"; }; then
+    if output=$(perl -e 'alarm shift; exec @ARGV or exit 127' 30 "$agy_bin" models 2>/dev/null) &&
+       output=$(families_parse <<<"$output") && [ -n "$output" ]; then
+      families_write "$now" "$now" "$output"
+      printf '%s\n' "$output"
+      return 0
+    fi
+    families_write "$fetched" "$now" "$rows"
+  fi
+  if [ -z "$rows" ]; then
+    families_builtin
+    return 0
+  fi
+  families_fresh "$now" "$fetched" ||
+    printf 'geminib: agy models failed; using the families cached at %s\n' \
+      "$(date -u -r "$fetched" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "$fetched")" >&2
+  printf '%s\n' "$rows"
+}
+
+show_families() {
+  local json=false refresh=false rows
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true ;;
+      --refresh) refresh=true ;;
+      *) printf 'usage: geminib families [--json] [--refresh]\n' >&2; exit 2 ;;
+    esac
+    shift
+  done
+  rows=$(families_rows "$refresh")
+  if [ "$json" = true ]; then
+    printf '%s\n' "$rows" | jq -Rn '[inputs | select(length > 0) | split("\t")
+      | {family: .[0], slug: .[1], agy_prefix: .[2], label: .[3]}]'
+  else
+    printf '%s\n' "$rows"
+  fi
+}
+
+capacity_flash_chain() {
+  families_rows false | awk -F'\t' '$1 ~ /-flash$/ { printf "%s%s", sep, $1; sep = " " }'
+}
 
 capacity_hold_seconds() {
   local value="${GEMINIB_CAPACITY_HOLD_S:-600}"
@@ -581,6 +681,9 @@ launch_agy() { # agy's own arguments; env assignments come from agy_env
   done
   family=$(capacity_family "$slug")
   effort=$(capacity_effort "$slug")
+  if [ "${GEMINIB_CAPACITY_FALLBACK:-1}" != 0 ] && [ "$headless" = true ]; then
+    capacity_chain=$(capacity_flash_chain)
+  fi
   if [ "${GEMINIB_CAPACITY_FALLBACK:-1}" = 0 ] || [ "$headless" != true ] ||
      ! capacity_in_chain "$family" || ! capacity_next "$family" >/dev/null; then
     [ -z "$slug" ] || printf 'geminib: model %s\n' "$slug" >&2
@@ -952,6 +1055,7 @@ show_help() {
     'geminib enable <name>|--all           Return an account (or every account) to worker selection.' \
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
+    'geminib families [--json] [--refresh]  Gemini model families newest first (family, slug, agy id prefix, label), from agy models cached for 24 h.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.' \
     'geminib export-token <name> --to <path> [--min-seconds <n>]  Export a keychain-first access-only sign-in to a new 0600 file; refresh here if needed, with no profile writes.'
@@ -1002,6 +1106,10 @@ case "${1:-}" in
   agy-launch)
     shift
     agy_launch "$@"
+    ;;
+  families)
+    shift
+    show_families "$@"
     ;;
   profile|p|run)
     shift

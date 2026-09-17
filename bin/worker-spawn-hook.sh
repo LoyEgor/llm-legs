@@ -60,9 +60,12 @@ session_account() {
   fi
   printf '%s' "${acct:-main}"
 }
-# flash38 / gemini-3.8-flash-high → 3.8-flash: the row names the model, not the table's key.
-gemini_label() {
-  printf '%s' "$1" | sed -E 's/^flash([0-9])([0-9])$/\1.\2-flash/; s/^gemini-([0-9.]+)-(flash|pro)(-(high|medium|low))?$/\1-\2/'
+# The row names the model, not the table's key.
+gemini_label() { # table slug or agy id → the family without `gemini-`
+  local family
+  family=$(worker_model_gemini_family "$1" | cut -f1)
+  [ -n "$family" ] || family=$1
+  printf '%s' "${family#gemini-}"
 }
 model_short() { # model id
   local model=${1#claude-}
@@ -198,7 +201,6 @@ else
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf gemini_model)
   [ -n "$model" ] || model=$(worker_model_default_model gemini)
-  [ "$model" = flash ] && model=flash36
   # `worker-run` raises every Gemini run to high, so the row names what will be spent rather than
   # what the brief or the knob asked for.
   effort=high

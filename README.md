@@ -12,7 +12,7 @@ decision-support) as a git submodule. One fix here propagates to every consumer 
 | Script | Vendor | Transport | Default model |
 |--------|--------|-----------|---------------|
 | `ask_codex.sh` | OpenAI | `codex exec` (read-only sandbox) | CLI flagship (auto-tracked, no pin) |
-| `ask_gemini.sh` | Google | Antigravity `agy --print` | `Gemini 3.1 Pro (High)` → in-family fallback `(Low)` |
+| `ask_gemini.sh` | Google | Antigravity `agy --print` | the Pro label `geminib families` prints, `(High)` → in-family fallback `(Low)` |
 | `ask_claude.sh` | Anthropic | `claude -p --output-format json` | `opus` alias (cost ceiling: Opus — Mythos-class refused) |
 
 ## Contract (what consumers may rely on)
@@ -286,7 +286,7 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
   family (a short and a long request each, capacity fallback off); `docs/DIAGNOSTICS.md` has the
   reading.
 - `bin/gemini-research` → `~/.local/bin/gemini-research` — read-only multi-repository research on
-  Gemini 3.8 Flash with account selection through role `research`, automatic rotation after a quota
+  Gemini Flash with account selection through role `research`, automatic rotation after a quota
   wall, and before/after repository checks. Its terminal exits are 3 for usage limit, 4 for
   unavailable, 5 for a read-only violation, and 124 for timeout.
 

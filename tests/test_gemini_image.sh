@@ -15,6 +15,8 @@ export LLM_LIMITS_GEMINI_CACHE="$WORK/main-cache" LLM_LIMITS_GEMINI_REMOVED="$WO
 export LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$WORK/account-caches" TMPDIR="$WORK/tmp"
 export FAKE_GEMINIB_CALLS="$WORK/calls" FAKE_GEMINIB_PROMPT="$WORK/prompt"
 export PICK_CALLS="$WORK/picks" AGY_BIN="$WORK/bin/agy"
+export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
+. "$ROOT/tests/fixtures/geminib-families.sh"
 mkdir -p "$HOME" "$WORK/bin" "$TMPDIR" "$WORK/output" "$GEMINIB_PROFILES_DIR/explicit" "$GEMINIB_PROFILES_DIR/picked"
 ln -s "$ROOT/tests/fixtures/fake-geminib-image.sh" "$WORK/bin/geminib"
 cat >"$WORK/bin/agy" <<'STUB'
@@ -127,6 +129,8 @@ assert test -z "$(find "$TMPDIR" -name 'gemini-image.*' -print -quit)"
 
 mkdir -p "$WORK/repo/bin" "$WORK/repo/share/image-caps"
 cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
+printf '#!/usr/bin/env bash\nexec bash "%s" "$@"\n' "$ROOT/bin/geminib" >"$WORK/repo/bin/geminib"
+chmod +x "$WORK/repo/bin/geminib"
 cp "$ROOT/share/"{image-caps,image-chroma,gemini-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
 jq '.refs.max=1 | .aspects.generate=["5:4"] | .aspects.edit=["5:4"] | .aspects.default="5:4"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 SCRIPT="$WORK/repo/bin/gemini-image"
@@ -137,4 +141,15 @@ expect_rc 2 "${args[@]}" --aspect 1:1 --account explicit
 jq '.transparent="native"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 expect_rc 1 "${args[@]}" --transparent --account explicit
 
-printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, and output contract\n' "$asserts"
+# A Flash-less family list is a broken reader — `geminib families` answers from its built-in list
+# when it has nothing else — and the launch would pin the nameless model `-low`.
+noflash="$WORK/geminib-no-flash"
+mkdir -p "$noflash"
+jq '.families = (.families | map(select(.family | endswith("-flash") | not)))' \
+  "$GEMINIB_CACHE_DIR/models.json" >"$noflash/models.json"
+GEMINIB_CACHE_DIR="$noflash" image_run "${args[@]}" --account explicit
+noflash_rc=$?
+assert test "$noflash_rc" -eq 1
+assert grep -q 'no Flash row' "$WORK/err"
+
+printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, and output contract\n' "$asserts"

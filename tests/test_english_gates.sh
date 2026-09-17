@@ -7,6 +7,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/bin/worker-run"
 SHARE="$ROOT/bin/cyrillic-share"
 WORK="$(mktemp -d)"
+export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
+. "$ROOT/tests/fixtures/geminib-families.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-${BASH_LINENO[0]-?}}" "$*" >&2; exit 1; }

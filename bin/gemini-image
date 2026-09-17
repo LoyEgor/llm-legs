@@ -227,7 +227,14 @@ resume_args=()
 if [ -n "$resume" ]; then
   resume_args+=("$(image_caps_get "$root" gemini '.resume.flag')" "$resume")
 fi
-geminib profile "$account" --model gemini-3.6-flash-low --print-timeout 180s \
+text_family=$("$root/bin/geminib" families 2>/dev/null | awk -F'\t' '$1 ~ /-flash$/ { prefix = $3 } END { print prefix }')
+if [ -z "$text_family" ]; then
+  # `geminib families` answers from its built-in list when it has nothing else, so no Flash row is a
+  # broken reader; launching would pin the nameless model `-low`.
+  printf 'gemini-image: `geminib families` printed no Flash row; no text model to drive the tool\n' >&2
+  exit 1
+fi
+geminib profile "$account" --model "$text_family-low" --print-timeout 180s \
   ${resume_args[@]+"${resume_args[@]}"} --output-format stream-json \
   --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" \
   >"$stdout_file" 2>"$tmp_dir/stderr" || generation_rc=$?

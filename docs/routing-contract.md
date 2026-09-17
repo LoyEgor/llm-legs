@@ -296,7 +296,7 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 `worker-pick` answers which ACCOUNT. `share/worker-model.sh` (`worker_model_table`) is the
 source for allowed models, default efforts, brief efforts and efforts requiring Egor's word
 (`docs/shared-invariants.md` row `bq`; policy table in `share/worker-policy.md`). Default models
-are claudeb `opus`, codex `gpt-6-astra`, gemini `flash37` (also `flash38`, `flash36`, `pro`), grok `auto` (`grok-4.6` also allowed).
+are claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (`grok-4.6` also allowed).
 Opus defaults to `high`; brief efforts are `high`, `xhigh`, and word efforts are `low`, `medium`, `max`.
 claudeb `fable`, codex `gpt-5.6-sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts.
 Gemini is the exception to the effort refusal: every Gemini leg runs `high`, and a lower effort is raised rather than refused.
