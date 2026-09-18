@@ -16,15 +16,15 @@ local dialogCalls = {}
 local fastModeMarkers = {}
 local profileFastModeConfigs = {}
 
--- What the fake hs.execute answers the two `geminib` reads the Gemini submenu makes with; nil is
--- the command failing, which is what the `review flash: unavailable` row is rendered off.
-local reviewFlashOutput = "flash38\tdefault\n"
-local geminiFamiliesOutput = table.concat({
-  "gemini-3.8-flash\tflash38\tgemini-3.8-flash\tGemini 3.8 Flash",
-  "gemini-3.7-flash\tflash37\tgemini-3.7-flash\tGemini 3.7 Flash",
-  "gemini-3.6-flash\tflash36\tgemini-3.6-flash\tGemini 3.6 Flash",
-  "gemini-3.1-pro\tpro\tgemini-3.1-pro\tGemini 3.1 Pro",
-}, "\n") .. "\n"
+-- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
+-- the Gemini submenu reads; nil is the file being absent — no cache is what the
+-- `review flash: unavailable` row is rendered off.
+local geminibFiles = { reviewFlash = nil, MODELS = "<geminib-models>", models = { families = {
+  { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash", label = "Gemini 3.8 Flash" },
+  { family = "gemini-3.7-flash", slug = "flash37", agy_prefix = "gemini-3.7-flash", label = "Gemini 3.7 Flash" },
+  { family = "gemini-3.6-flash", slug = "flash36", agy_prefix = "gemini-3.6-flash", label = "Gemini 3.6 Flash" },
+  { family = "gemini-3.1-pro", slug = "pro", agy_prefix = "gemini-3.1-pro", label = "Gemini 3.1 Pro" },
+} } }
 
 -- What AppKit resolves {System, tertiaryLabelColor} to, the tone the renderer dims with. The two
 -- levels are the two appearances: black on a light menu, white on a dark one.
@@ -110,14 +110,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       return dimTone(interfaceStyle == "Dark" and 1 or 0)
     end } },
     execute = function(command)
-      if tostring(command):match("review%-flash$") then
-        if reviewFlashOutput == nil then return "", false end
-        return reviewFlashOutput, true
-      end
-      if tostring(command):match("families$") then
-        if geminiFamiliesOutput == nil then return "", false end
-        return geminiFamiliesOutput, true
-      end
       local account = tostring(command):match("fast%-mode%s+[\"']?([^%s\"']+)[\"']?%s+status")
       local value = account and fastModeMarkers[account]
       if value then
@@ -132,6 +124,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if text == DOCTOR_CONTENTS then return doctorSnapshot end
       if text == WEATHER_CONTENTS then return geminiWeather end
       if text == LLM_WEATHER_CONTENTS then return llmWeather end
+      if text == geminibFiles.MODELS then return geminibFiles.models end
       return type(fixture) == "function" and fixture() or fixture
     end },
     osascript = { applescript = osascriptFn or function() return true, true, {} end },
@@ -176,6 +169,14 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if path:match("/llm%-weather/latest%.json$") then
         if llmWeather == nil then return nil end
         contents = LLM_WEATHER_CONTENTS
+      end
+      if path:match("/geminib/models%.json$") then
+        if geminibFiles.models == nil then return nil end
+        contents = geminibFiles.MODELS
+      end
+      if path:match("/geminib/review%-flash$") then
+        if geminibFiles.reviewFlash == nil then return nil end
+        contents = geminibFiles.reviewFlash
       end
       if path:match("/%.claude/worker%-model$") then
         if workerModel == nil then return nil end
@@ -3520,8 +3521,8 @@ do
   assert(#probes == 1 and probes[1].path:match("/bin/gemini%-probe$") and #probes[1].args == 0,
     "the probe row did not launch gemini-probe in the background")
 
-  -- The review Flash pin (shared-invariants row `cs`): the row and its choices are read back from
-  -- geminib, and a click writes through geminib rather than touching the file.
+  -- The review Flash pin (shared-invariants row `cs`): the row and its choices are read off the pin
+  -- file and geminib's family cache, and a click writes through geminib rather than touching the file.
   ;(function()
     local flashTasks = {}
     local flashModule = loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil, nil, nil,
@@ -3541,7 +3542,7 @@ do
         and flashTasks[1].args[3] == nil,
       "choosing a Flash family did not pin it through geminib")
 
-    reviewFlashOutput = "flash37\tpinned\n"
+    geminibFiles.reviewFlash = "flash37\n"
     local pinnedModule = loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil, nil,
       nil, nil, nil, held)
     local pinnedRow = submenuItem(geminiRow(pinnedModule.menuItems()), "review flash: 3.7 · pinned")
@@ -3557,13 +3558,15 @@ do
         and flashTasks[1].args[3] == nil,
       "the default choice did not clear the pin through geminib")
 
-    reviewFlashOutput = nil
+    geminibFiles.reviewFlash = nil
+    local brokenModels = geminibFiles.models
+    geminibFiles.models = nil
     local brokenSub = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil,
       nil, nil, nil, nil, held).menuItems())
     local brokenRow = submenuItem(brokenSub, "review flash: unavailable")
     assert(brokenRow and brokenRow.disabled == true and brokenRow.menu == nil,
-      "a failing `geminib review-flash` still offered a submenu")
-    reviewFlashOutput = "flash38\tdefault\n"
+      "a missing geminib family cache still offered a submenu")
+    geminibFiles.models = brokenModels
   end)()
 
   ;(function()

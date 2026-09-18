@@ -942,14 +942,21 @@ function M.runGeminiProbe()
   end)
 end
 
--- The review Flash pin (shared-invariants row `cs`): geminib owns the file and the family list, so
--- the menu reads both back through it rather than spelling a family or a path of its own.
-local function geminibLines(argument)
-  local output, ok = hs.execute(shellQuote(resolveGeminib()) .. " " .. argument, true)
-  if not ok or type(output) ~= "string" then return nil end
-  local lines = {}
-  for line in output:gmatch("[^\r\n]+") do lines[#lines + 1] = line end
-  return lines
+-- The review Flash pin (shared-invariants row `cs`): the pin file and geminib's family cache are
+-- read as files. A shell-out here runs in Hammerspoon's interactive login shell, ~1 s each, and the
+-- menu is built on every open.
+local function geminibCacheDir()
+  local override = os.getenv("GEMINIB_CACHE_DIR")
+  if override and override ~= "" then return override end
+  return home .. "/.cache/geminib"
+end
+
+local function readTextFile(path)
+  local file = io.open(path, "r")
+  if not file then return nil end
+  local contents = file:read("*a")
+  file:close()
+  return contents
 end
 
 local function flashLabel(slug)
@@ -957,20 +964,24 @@ local function flashLabel(slug)
   return major and (major .. "." .. minor) or tostring(slug)
 end
 
-local function reviewFlash()
-  local lines = geminibLines("review-flash")
-  local slug, state = tostring(lines and lines[1] or ""):match("^([^\t]+)\t([^\t]+)$")
-  if not slug then return nil end
-  return slug, state
+local function geminiFlashSlugs() -- newest first, from geminib's models.json; nil without the cache
+  local ok, decoded = pcall(function()
+    local contents = readTextFile(geminibCacheDir() .. "/models.json")
+    return contents and hs.json.decode(contents) or nil
+  end)
+  if not ok or type(decoded) ~= "table" or type(decoded.families) ~= "table" then return nil end
+  local slugs = {}
+  for _, family in ipairs(decoded.families) do
+    if tostring(family.family or ""):match("%-flash$") and family.slug then slugs[#slugs + 1] = family.slug end
+  end
+  if #slugs == 0 then return nil end
+  return slugs
 end
 
-local function reviewFlashChoices()
-  local slugs = {}
-  for _, line in ipairs(geminibLines("families") or {}) do
-    local family, slug = line:match("^([^\t]+)\t([^\t]+)")
-    if family and family:match("%-flash$") then slugs[#slugs + 1] = slug end
-  end
-  return slugs
+local function reviewFlash(slugs)
+  local pinned = (readTextFile(geminibCacheDir() .. "/review-flash") or ""):match("^%s*(%S+)")
+  if pinned then return pinned, "pinned" end
+  return slugs[1], "default"
 end
 
 local DOCTOR_REPO_WIDTH, DOCTOR_CHAT_WIDTH = 20, 24
@@ -1368,12 +1379,13 @@ local function appendDoctor(menu)
       end })
   end
   items[#items + 1] = { title = infoTitle(string.format("window: %g h", selectedWindow / 60)), menu = windows }
-  local flashSlug, flashState = reviewFlash()
-  if not flashSlug then
+  local flashSlugs = geminiFlashSlugs()
+  if not flashSlugs then
     items[#items + 1] = { title = infoTitle("review flash: unavailable", false, true), disabled = true }
   else
+    local flashSlug, flashState = reviewFlash(flashSlugs)
     local flashes = {}
-    for _, slug in ipairs(reviewFlashChoices()) do
+    for _, slug in ipairs(flashSlugs) do
       flashes[#flashes + 1] = { title = flashLabel(slug),
         checked = flashState == "pinned" and slug == flashSlug,
         fn = function() M.setReviewFlash(slug) end }

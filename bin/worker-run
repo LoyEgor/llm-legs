@@ -1787,9 +1787,10 @@ start_run() {
       ;;
     grok)
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
-      # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), and it takes no
-      # image attachment.
-      { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
+      # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), so research gets no
+      # exemption here the way claudeb's read-only mode does: the extra trees would reach neither the
+      # CLI nor the run, and the answer would be about repositories nobody read. No image either.
+      [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image; a run over several repositories needs another vendor, or one run per repository'
       ;;
   esac
   [ -z "$browser_target" ] || [ "$browser" = true ] || usage

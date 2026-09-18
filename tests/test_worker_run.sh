@@ -5357,6 +5357,16 @@ for grok_flag in "--add-dir $WORK/extra" "--image $WORK/image.png"; do
   assert test ! -s "$CALL_LOG"
 done
 
+# A research run is refused with them: grok reads the one tree `--cwd` names, so a brief over
+# several repositories would be answered from the only one the run could open.
+clear_stub
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" --role research --add-dir "$WORK/extra" \
+  >"$WORK/grok-research.out" 2>"$WORK/grok-research.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'grok does not support --add-dir or --image' "$WORK/grok-research.err"
+assert test ! -s "$CALL_LOG"
+
 # A continued session rides `-r`: `-s` only ever CREATES and rejects an id that already exists, so
 # handing it the session to continue ends the run before the brief is read.
 clear_stub
