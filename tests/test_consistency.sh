@@ -2098,11 +2098,12 @@ assert doc_has '`chat_display`'
 assert doc_has '`chat_suffix`'
 assert grep -Fq 'def chat_display(session, launchers=None, store=None):' "$RB_STORE"
 assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STORE"
-# `debt` prices this chat's own lines and nobody else's, so pricing names no chat; every chat the
-# module does print goes through `chat_display`, never a resolver call of its own. The count is
-# exact so a new naming site is read here before it ships.
+# Pricing names no chat — a session's own line and the repository's alike are numbers, not people;
+# every chat the module does print, the repository listing's base and touchers included, goes
+# through `chat_display`, never a resolver call of its own. The count is exact so a new naming site
+# is read here before it ships.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
-assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 9
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 11
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
 assert grep -Fq 'chat = _store.chat_display(session)' "$RB_DEBT"
 # The foreign-chat refusal names the chat: it exists to send a reader to another conversation.

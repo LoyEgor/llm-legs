@@ -1165,7 +1165,8 @@ run_statusline() {
     LLM_LIMITS_FILE="$WORK/limits.json" STATUSLINE_PS=true STATUSLINE_LSOF=true \
     STATUSLINE_STORE_MERGE_CMD="${STORE_MERGE_CMD:-/usr/bin/true}" \
     STATUSLINE_CODEX_REFRESH_CMD="${CODEX_REFRESH_CMD:-/usr/bin/true}" \
-    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" "$STATUSLINE"
+    STATUSLINE_REVIEW_GATE="${GATE_CMD:-}" STATUSLINE_REVIEW_DEBT="${DEBT_CMD:-}" \
+    env ${NO_TIMEOUT_BIN:+STATUSLINE_TIMEOUT_BIN=} "$STATUSLINE"
 }
 
 
@@ -4321,6 +4322,122 @@ GATE_ANSWER='STATUS=unknown LINES=0 FILES=0 FIX=0 WHY=run'
 form_run_alone_out=$(review_session_render review-form-run-alone "$REVIEW_DIRTY")
 assert grep -Fq "${review_seg}${DIM}?run${RESET}" <<< "$form_run_alone_out"
 GATE_ANSWER=off
+
+# --- the FOLDER's debt beside the folder's diff ------------------------------------------------
+# A second number about the same tree and a different question: what the whole repository owes,
+# whoever wrote it. It follows the folder, never the chat, and renders nothing it cannot read.
+DEBT_STUB="$FIXTURES/repo-debt-stub.sh"
+cat > "$DEBT_STUB" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$DEBT_LOG"
+[ -n "${DEBT_SLEEP:-}" ] && sleep "$DEBT_SLEEP"
+printf '%s\n' "$DEBT_ANSWER"
+STUB
+chmod +x "$DEBT_STUB"
+DEBT_LOG="$WORK/repo-debt.log"
+export DEBT_LOG DEBT_ANSWER DEBT_SLEEP
+DEBT_ANSWER='LINES=0 FILES=0'
+DEBT_SLEEP=
+REVIEW_OTHER="$FIXTURES/review-other-folder"
+mkdir -p "$REVIEW_OTHER"
+git -C "$REVIEW_OTHER" init -q -b main
+printf 'other\n' > "$REVIEW_OTHER/tracked.txt"
+git -C "$REVIEW_OTHER" add tracked.txt
+git -C "$REVIEW_OTHER" -c user.name=Fixture -c user.email=fixture@example.com commit -qm initial
+TOP_REVIEW_OTHER=$(cd "$REVIEW_OTHER" && pwd -P)
+# Both renders of a case go through the same background-then-read shape the verdict uses.
+debt_render() { # session repo
+  local payload cache i
+  cache="$STATE_DIR/repo-debt-$(printf '%s' "$2" | cksum | tr ' ' -)"
+  rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
+  rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
+  rm -f "$STATE_DIR/review-class-$1"
+  payload=$(statusline_payload "$1" "" "$2")
+  run_statusline "$payload" >/dev/null || fail "repo debt render failed: $1"
+  for i in $(seq 1 100); do
+    compgen -G "$STATE_DIR/repo-debt-*" >/dev/null 2>&1 &&
+      ! compgen -G "$STATE_DIR/repo-debt-*.lock" >/dev/null 2>&1 && break
+    sleep 0.05
+  done
+  run_statusline "$payload" || fail "repo debt render failed: $1"
+}
+DEBT_CMD="$DEBT_STUB"
+: > "$DEBT_LOG"
+DEBT_ANSWER='LINES=153 FILES=16'
+debt_mark_out=$(debt_render repo-debt-shown "$REVIEW_DIRTY")
+assert grep -Fq "${DIM}⟟153${RESET}" <<< "$debt_mark_out"
+assert grep -Fqx -e "--repo $TOP_REVIEW_DIRTY" "$DEBT_LOG"
+# It follows the FOLDER: a render of another tree asks about that tree and shows its number.
+DEBT_ANSWER='LINES=4 FILES=2'
+debt_other_out=$(debt_render repo-debt-shown "$REVIEW_OTHER")
+assert grep -Fq "${DIM}⟟4${RESET}" <<< "$debt_other_out"
+assert test "${debt_other_out#*⟟153}" = "$debt_other_out"
+assert grep -Fqx -e "--repo $TOP_REVIEW_OTHER" "$DEBT_LOG"
+# A row too narrow to hold it drops it: the fit ladder sheds the folder debt at its first step,
+# beside the files counter, so the cells it takes are never cells the harness has to cut.
+DEBT_ANSWER='LINES=153 FILES=16'
+debt_render repo-debt-narrow "$REVIEW_DIRTY" >/dev/null
+debt_narrow_out=$(FIT_COLUMNS=24 run_statusline "$(statusline_payload repo-debt-narrow "" "$REVIEW_DIRTY")")
+assert test "${debt_narrow_out#*⟟}" = "$debt_narrow_out"
+# Nothing owed is nothing rendered, and so is every answer this build cannot read.
+for debt_quiet in 'LINES=0 FILES=0' 'LINES=0 FILES=0 WHY=err' 'off' '' 'LINES=x FILES=1'; do
+  DEBT_ANSWER="$debt_quiet"
+  debt_quiet_out=$(debt_render repo-debt-quiet "$REVIEW_DIRTY")
+  assert test "${debt_quiet_out#*⟟}" = "$debt_quiet_out"
+done
+# A binary that is gone, and one too slow to answer, are both silence in the line — never an error
+# in it and never a number left over from the tree before.
+DEBT_ANSWER='LINES=9 FILES=1'
+DEBT_CMD="$FIXTURES/no-such-review-debt"
+debt_gone_out=$(debt_render repo-debt-gone "$REVIEW_DIRTY")
+assert test "${debt_gone_out#*⟟}" = "$debt_gone_out"
+DEBT_CMD="$DEBT_STUB"
+DEBT_SLEEP=0.4
+debt_slow_out=$(run_statusline "$(statusline_payload repo-debt-slow "" "$REVIEW_DIRTY")")
+assert test "${debt_slow_out#*⟟}" = "$debt_slow_out"
+DEBT_SLEEP=
+# A machine with neither `timeout` nor `gtimeout` bounds the walk itself: the render is as silent as
+# with one, and the probe still frees its lock, so the next render is never blocked by a dead one.
+DEBT_CMD="$DEBT_STUB"
+DEBT_ANSWER='LINES=21 FILES=5'
+DEBT_SLEEP=0.4
+debt_cache="$STATE_DIR/repo-debt-$(printf '%s' "$TOP_REVIEW_DIRTY" | cksum | tr ' ' -)"
+debt_lock="$debt_cache.lock"
+rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
+rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
+debt_nt_out=$(NO_TIMEOUT_BIN=1 run_statusline \
+  "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")
+assert test "${debt_nt_out#*⟟}" = "$debt_nt_out"
+for debt_wait in $(seq 1 100); do
+  [ -d "$debt_lock" ] || break
+  sleep 0.05
+done
+assert test ! -d "$debt_lock"
+assert grep -Fq "⟟21" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
+  "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")"
+# The lock a probe removes is the one it made. A walk still running when its lock is swept as dead
+# leaves the sweeper's own lock standing, or two full walks run over the same tree at once.
+rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
+DEBT_SLEEP=0.8
+NO_TIMEOUT_BIN=1 run_statusline \
+  "$(statusline_payload repo-debt-lock-owner "" "$REVIEW_DIRTY")" >/dev/null
+for debt_wait in $(seq 1 100); do
+  [ -d "$debt_lock" ] && break
+  sleep 0.05
+done
+assert test -d "$debt_lock"
+rmdir "$debt_lock" && mkdir "$debt_lock"
+for debt_wait in $(seq 1 100); do
+  [ -s "$debt_cache" ] && break
+  sleep 0.05
+done
+sleep 0.2
+assert test -d "$debt_lock"
+rmdir "$debt_lock" 2>/dev/null
+DEBT_SLEEP=
+DEBT_ANSWER='LINES=0 FILES=0'
+DEBT_CMD=
+rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 
 # --- the real gate, so the two answers cannot drift apart -----------------------------------
 # The stub above proves the rendering; this proves the wiring against the hook that actually

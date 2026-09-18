@@ -35,6 +35,30 @@ file_mtime() {
   stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
 }
 
+file_inode() {
+  stat -f %i "$1" 2>/dev/null || stat -c %i "$1" 2>/dev/null
+}
+
+# Stock macOS ships neither `timeout` nor `gtimeout`, and a probe with no deadline outlives the 120s
+# after which its lock counts as dead — so a second probe starts while the first still walks. An
+# EMPTY STATUSLINE_TIMEOUT_BIN forces the watchdog branch; unset means "find one".
+run_bounded() { # seconds command...
+  local secs="$1" bin pid killer
+  shift
+  bin="${STATUSLINE_TIMEOUT_BIN-$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null)}"
+  if [ -n "$bin" ]; then
+    "$bin" "$secs" "$@"
+    return 0
+  fi
+  "$@" &
+  pid=$!
+  ( sleep "$secs"; kill "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  killer=$!
+  wait "$pid" 2>/dev/null
+  kill "$killer" 2>/dev/null
+  return 0
+}
+
 snapshot_lock_acquire() {
   local lock="$1" now mtime
   mkdir "$lock" 2>/dev/null && return 0
@@ -366,6 +390,67 @@ review_verdict_line() { # toplevel session status_key now
     printf '%s' unknown
   else
     printf '%s' off
+  fi
+}
+
+# Keyed per TOP and never per session: unlike the `rev` segment above, this one follows the shown
+# tree. Off the render path with the same 15s/120s cache as the verdict: pricing walks every diff.
+repo_debt_lines() { # toplevel now
+  local top="$1" now="$2"
+  # The install path of the contract, never `command -v`: a PATH lookup makes the segment depend on
+  # whatever shell started the harness, and makes every render of a test suite reach the real one.
+  local debt="${STATUSLINE_REVIEW_DEBT:-$HOME/.local/bin/review-debt}"
+  local cache lock key cached_key cached cache_mtime commondir journal_mtime lock_mtime top_key
+  [ -n "$top" ] && [ -x "$debt" ] || return 0
+  top_key=$(printf '%s' "$top" | cksum 2>/dev/null)
+  cache="$statusline_cache_dir/repo-debt-${top_key// /-}"
+  lock="$cache.lock"
+  commondir=$(journal_dir "$top")
+  journal_mtime=""
+  [ -n "$commondir" ] && journal_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
+  [[ "$journal_mtime" =~ ^[0-9]+$ ]] || journal_mtime=0
+  key="$top|$journal_mtime"
+  cache_mtime=$(file_mtime "$cache" 2>/dev/null)
+  cached_key=""
+  cached=""
+  if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
+    IFS= read -r cached_key < "$cache" 2>/dev/null
+    cached=$(tail -n +2 "$cache" 2>/dev/null)
+  fi
+  if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 15 ]; then
+    printf '%s' "$cached"
+    return 0
+  fi
+  if mkdir -p "$statusline_cache_dir" 2>/dev/null; then
+    lock_mtime=$(file_mtime "$lock" 2>/dev/null)
+    if [ ! -d "$lock" ] ||
+      { [[ "$lock_mtime" =~ ^[0-9]+$ ]] && [ "$((now - lock_mtime))" -gt 120 ]; }; then
+      (
+        snapshot_lock_acquire "$lock" || exit 0
+        # Only the lock this probe made: one reclaimed as dead while the walk ran belongs to the
+        # probe that reclaimed it, and a blind rmdir here would let a third start beside it.
+        lock_id="$(file_inode "$lock"):$(file_mtime "$lock")"
+        trap '[ "$(file_inode "$lock"):$(file_mtime "$lock")" = "$lock_id" ] &&
+          rmdir "$lock" 2>/dev/null' EXIT
+        answer=$(run_bounded 60 "$debt" --repo "$top" 2>/dev/null | head -1)
+        # Only a whole line this build understands becomes a number; anything else is no answer,
+        # and no answer renders nothing — a folder debt is never worth a wrong digit.
+        case "$answer" in
+          LINES=*\ FILES=*) answer=${answer#LINES=}; answer=${answer%% *} ;;
+          *) answer="" ;;
+        esac
+        [[ "$answer" =~ ^[0-9]+$ ]] || answer=""
+        tmp="$cache.tmp.${BASHPID:-$$}"
+        printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
+          mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+      ) >/dev/null 2>&1 &
+    fi
+  fi
+  [ "${cached_key%%|*}" = "$top" ] || cached=""
+  if [ -n "$cached" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
+    [ "$((now - cache_mtime))" -le 120 ]; then
+    printf '%s' "$cached"
   fi
 }
 
@@ -2034,9 +2119,11 @@ fi
 # the two answer for one place or the block is a lie about both.
 review_style=""
 review_text=""
+repo_debt=""
 if [ -n "$active_top" ]; then
   review_verdict=$(review_verdict_line "$active_top" "$session_id" \
     "$(tree_status_key "$git_status" "$git_status_rc")" "$now")
+  repo_debt=$(repo_debt_lines "$active_top" "$now")
   review_style=${review_verdict%% *}
   case "$review_verdict" in *' '*) review_text=${review_verdict#* } ;; esac
   # Truncated and nothing else: the form is the parser's, and a segment that rewrites it is the
@@ -2069,6 +2156,7 @@ else
   STATUSLINE_FIT_MARGIN=3
 fi
 fit_files=1
+fit_repo_debt=1
 fit_diff_sign=1
 fit_branch_glyph=1
 fit_branch_short=0
@@ -2229,6 +2317,8 @@ fit_branch_part() {
     # The only evidence the tree is dirty at all, so it outlives the counter beside the numbers.
     branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
   fi
+  [ "$fit_repo_debt" = 1 ] && [ -n "$repo_debt" ] && [ "$repo_debt" -gt 0 ] 2>/dev/null &&
+    branch_part="${branch_part} ${DIM}⟟${repo_debt}${RESET}"
   [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null &&
     branch_part="${branch_part} ${MAGENTA}↓${behind}${RESET}"
   [ -n "$ahead" ] && [ "$ahead" -gt 0 ] 2>/dev/null &&
@@ -2378,7 +2468,7 @@ if [ -n "$fit_cols" ]; then
     fit_width "$line1"
     [ "$fit_len" -le "$fit_cols" ] && break
     case "$fit_step" in
-      1) fit_files=0 ;;
+      1) fit_files=0; fit_repo_debt=0 ;;
       2) fit_diff_sign=0 ;;
       3) fit_branch_glyph=0 ;;
       4) fit_branch_short=1 ;;
