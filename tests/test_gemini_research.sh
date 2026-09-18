@@ -87,3 +87,17 @@ attach --attach "$slow_run" --out "$WORK/answer" --repo "$REPO"; rc=$?; assert t
 attach --attach codex-1-2-none --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
 
 printf 'PASS: tracked research runner, Gemini selection/model, sandbox denial, a log-only quota walling the account, outcomes, non-recursive CLI, and one wait round per call with --attach continuing a running run\n'
+# A research brief names a round to read its logs, never to fix it: the prose scan that binds a
+# hand-written fix brief to an open round is a workers-role door, and a ROUND: line here is refused.
+mkdir -p "$HOME/.claude-profiles/.claudeb/worker-stats/benches/20260801T140000Z-0a1b2c3"
+printf '#!/usr/bin/env bash\nprintf "STUB FIX RULE %%s\\nwrite verdicts.jsonl rows\\n" "$*"\n' >"$BIN/review-bench"; chmod +x "$BIN/review-bench"
+printf 'Read the cell logs of round 20260801T140000Z-0a1b2c3 and report how many steps each took.\n' >"$WORK/prompt"
+run; rc=$?; assert test "$rc" -eq 0
+run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
+assert test "$(jq 'has("review_round") or has("round_source")' "$RUNS/$run_id/meta.json")" = false
+assert test ! -e "$RUNS/$run_id/fix-rule"
+if grep -q 'STUB FIX RULE\|taken from the brief text' "$WORK/err" "$WORK/out" "$RUNS/$run_id/brief.launch" 2>/dev/null; then fail "a research run was bound to the round its brief only reads"; fi
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nRead the cell logs.\n' >"$WORK/prompt"
+run; rc=$?; assert test "$rc" -ne 0
+assert grep -q 'a research run fixes nothing' "$WORK/err" "$WORK/out"
+printf 'Research the repository.\n' >"$WORK/prompt"

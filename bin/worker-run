@@ -144,7 +144,7 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # Every launched brief carries this, so the loop rule cannot depend on an orchestrator remembering
 # to type it: serial full-suite reruns were 54-75% of the wall clock of every run that passed an
 # hour, and two of them died on the ceiling below with the work unfinished. Appended rather than
-BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work.'
+# prepended — the brief's own first line is load-bearing (`RESUME <id>:`, `ATTACH <id>:`, which
 # both the relay agents and the spawn gate read off the top), and a rule a model must still obey at
 # edit 60 belongs where it read last.
 BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
@@ -1684,10 +1684,11 @@ start_run() {
     review_round=$(brief_review_round "$brief") || exit 4
     if [ -n "$review_round" ]; then
       round_source=header
-    else
+    elif [ "$role" = workers ]; then
       # No line named a round, so the prose is read: an id on record whose `fix --print` still
       # prints a rule is a round with a confirmed finding left, and that is the round this run
       # fixes. A settled round prints nothing and an unknown one fails, so neither answers here.
+      # A research run only reads a round's logs and edits nothing, so its prose names no round.
       while IFS= read -r candidate; do
         review_round_ok "$candidate" || continue
         rule=$(review-bench fix "$candidate" --print 2>/dev/null) ||
@@ -1709,6 +1710,8 @@ start_run() {
       esac
     fi
   fi
+  [ -z "$review_round" ] || [ "$role" = workers ] ||
+    fail "a research run fixes nothing: drop --round / the ROUND: line, or launch it as a worker"
   if [ -n "$review_round" ] && ! grep -Fq verdicts.jsonl "$brief"; then
     # Composed once at start: a relaunch or an ATTACH must hand the worker the same rule text.
     if [ -n "$text_rule" ]; then

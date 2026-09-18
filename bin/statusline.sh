@@ -436,11 +436,11 @@ repo_debt_lines() { # toplevel now
         answer=$(run_bounded 60 "$debt" --repo "$top" 2>/dev/null | head -1)
         # Only a whole line this build understands becomes a number; anything else is no answer,
         # and no answer renders nothing — a folder debt is never worth a wrong digit.
-        case "$answer" in
-          LINES=*\ FILES=*) answer=${answer#LINES=}; answer=${answer%% *} ;;
-          *) answer="" ;;
-        esac
-        [[ "$answer" =~ ^[0-9]+$ ]] || answer=""
+        if [[ "$answer" =~ ^LINES=([0-9]+)[[:space:]]FILES=[0-9]+$ ]]; then
+          answer=${BASH_REMATCH[1]}
+        else
+          answer=""
+        fi
         tmp="$cache.tmp.${BASHPID:-$$}"
         printf '%s\n%s' "$key" "$answer" > "$tmp" 2>/dev/null &&
           mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp" 2>/dev/null
@@ -2155,8 +2155,8 @@ if [[ "$STATUSLINE_FIT_MARGIN" =~ ^[0-9]+$ ]]; then
 else
   STATUSLINE_FIT_MARGIN=3
 fi
-fit_files=1
 fit_repo_debt=1
+fit_repo_debt_glyph=1
 fit_diff_sign=1
 fit_branch_glyph=1
 fit_branch_short=0
@@ -2203,7 +2203,7 @@ fit_initials() {
       ;;
   esac
   [ -n "$out" ] || out=${1:0:3}
-  # Initials of a many-word name can be longer than step 5's cut, so this step would GROW the line
+  # Initials of a many-word name can be longer than step 4's cut, so this step would GROW the line
   # and cost the directory its place further down the ladder.
   fit_trunc "$1" "$fit_dir_short_len"
   [ "${#out}" -le "${#fit_out}" ] || out=$fit_out
@@ -2311,14 +2311,16 @@ fit_branch_part() {
     else
       branch_part="${branch_part} ${GREEN}${udiff_add}${RESET}/${RED}${udiff_del}${RESET}"
     fi
-    [ "$fit_files" = 1 ] && [ -n "$fparts" ] &&
-      branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
   elif [ "$diff_show" = files ]; then
-    # The only evidence the tree is dirty at all, so it outlives the counter beside the numbers.
     branch_part="${branch_part} ${DIM}${fparts}f${RESET}"
   fi
-  [ "$fit_repo_debt" = 1 ] && [ -n "$repo_debt" ] && [ "$repo_debt" -gt 0 ] 2>/dev/null &&
-    branch_part="${branch_part} ${DIM}⟟${repo_debt}${RESET}"
+  if [ "$fit_repo_debt" = 1 ] && [ -n "$repo_debt" ] && [ "$repo_debt" -gt 0 ] 2>/dev/null; then
+    if [ "$fit_repo_debt_glyph" = 1 ]; then
+      branch_part="${branch_part} ${DIM}∑${repo_debt}${RESET}"
+    else
+      branch_part="${branch_part} ${DIM}${repo_debt}${RESET}"
+    fi
+  fi
   [ -n "$behind" ] && [ "$behind" -gt 0 ] 2>/dev/null &&
     branch_part="${branch_part} ${MAGENTA}↓${behind}${RESET}"
   [ -n "$ahead" ] && [ "$ahead" -gt 0 ] 2>/dev/null &&
@@ -2468,11 +2470,10 @@ if [ -n "$fit_cols" ]; then
     fit_width "$line1"
     [ "$fit_len" -le "$fit_cols" ] && break
     case "$fit_step" in
-      1) fit_files=0; fit_repo_debt=0 ;;
-      2) fit_diff_sign=0 ;;
-      3) fit_branch_glyph=0 ;;
-      4) fit_branch_short=1 ;;
-      5)
+      1) fit_diff_sign=0; fit_repo_debt_glyph=0 ;;
+      2) fit_branch_glyph=0 ;;
+      3) fit_branch_short=1 ;;
+      4)
         fit_acct_max=7
         fit_dir_short_len=${#dir}
         [ "$dir_foreign" = 1 ] && [ "${#active_name}" -gt "$fit_dir_short_len" ] &&
@@ -2489,9 +2490,10 @@ if [ -n "$fit_cols" ]; then
         done
         [ "$fit_dir_short_len" -ge 8 ] || fit_dir_short_len=8
         ;;
-      6) fit_model_short=1 ;;
-      7) fit_rev_short=1 ;;
-      8) fit_acct_max=4; fit_dir_mode=initials ;;
+      5) fit_model_short=1 ;;
+      6) fit_rev_short=1 ;;
+      7) fit_acct_max=4; fit_dir_mode=initials ;;
+      8) fit_repo_debt=0 ;;
       9) fit_pin=0; fit_unpushed_short=1 ;;
       10) fit_dir_active_only=1 ;;
       11) fit_dir_off=1 ;;

@@ -64,7 +64,7 @@ done < <(jq -r '.[] | [(.id // ""), (.started // ""), (.review_by // "")] | @tsv
 # The registry is excluded, or its own entries would satisfy the round-trip below.
 registered_tags=$(jq -r '.[] | select(.tag) | .tag' "$REGISTRY")
 code_tags=$(grep -rhoE 'TEMP-[A-Z][A-Z0-9_-]*\([a-z0-9_-]+\)' "$ROOT" \
-  --exclude-dir=.git --exclude=EXPERIMENTS.json 2>/dev/null | sort -u || true)
+  --exclude-dir=.git --exclude-dir=.claude --exclude=EXPERIMENTS.json 2>/dev/null | sort -u || true)
 while IFS= read -r tag; do
   [ -n "$tag" ] || continue
   printf '%s\n' "$registered_tags" | grep -qxF "$tag" \

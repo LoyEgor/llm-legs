@@ -1279,7 +1279,7 @@ place_set status-wt-detached "$TOP_C"
 wt_det_output=$(run_statusline "$(statusline_payload status-wt-detached)") || fail "statusline detached worktree failed"
 assert grep -Fq "⧉ $(basename "$TOP_C")" <<< "$wt_det_output"
 assert test "${wt_det_output#*⎇}" = "$wt_det_output"
-assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$wt_det_output"
+assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET}" <<< "$wt_det_output"
 rm -f "$TOP_C/wt-det-junk.txt"
 
 # Same worktree, chat launched inside it: the project it belongs to stays visible.
@@ -1458,7 +1458,9 @@ assert grep -Fq 'Fable 5 xhigh' <<< "$fit_full"
 assert grep -Fq 'fit-bench-project' <<< "$fit_full"
 assert grep -Fq '⎇ WUT-421_fit_bench_branch' <<< "$fit_full"
 assert grep -Fq '+3/-0' <<< "$fit_full"
-assert grep -Fq '+1~1f' <<< "$fit_full"
+# No dim `+N~M-Kf` block beside the numbers at any width (Egor, 2026-09-18): file counts render
+# only for a tree with no countable line diff, and then alone.
+assert test "${fit_full#*~1f}" = "$fit_full"
 assert grep -Fq 'fitaccount' <<< "$fit_full"
 assert_eq "ctx 12% ? 1k │ 5h 44% $fit_h5_time │ wk 22% $fit_wk_label │ fb 55% $fit_fb_label │ \$1.50" "$fit_full2"
 fit_full_len=${#fit_full}
@@ -1527,49 +1529,46 @@ assert_eq "ctx 12% 5h 44% wk 22% fb 55%" "$fit_l2_step5"
 fit_l2_floor=$(fit_line2 "$(fit_render fit-l2-floor 12)")
 assert_eq "ctx 12% 5h 44% wk 22% fb 55%" "$fit_l2_floor"
 
-# The full form of line 1 is 87 cells wide, and each width below, less the margin, is the first one
+# The full form of line 1 is 81 cells wide, and each width below, less the margin, is the first one
 # that needs the next step.
-assert_eq 87 "$fit_full_len"
+assert_eq 81 "$fit_full_len"
 
-# Step 1 then 2: the files counter goes before the diff signs, and the slash survives both.
-fit_step1=$(fit_render fit-step1 89)
-assert test "${fit_step1#*~1f}" = "$fit_step1"
-assert grep -Fq '+3/-0' <<< "$fit_step1"
-fit_step2=$(fit_render fit-step2 83)
-assert grep -Fq '3/0' <<< "$fit_step2"
-assert test "${fit_step2#*+3}" = "$fit_step2"
+# Step 1: the diff signs go first, and the slash survives.
+fit_step1=$(fit_render fit-step1 83)
+assert grep -Fq '3/0' <<< "$fit_step1"
+assert test "${fit_step1#*+3}" = "$fit_step1"
 
-# Step 3 then 4: the branch glyph goes, then the branch keeps its ticket prefix alone.
-fit_step3=$(fit_render fit-step3 81)
-assert test "${fit_step3#*⎇}" = "$fit_step3"
-assert grep -Fq 'WUT-421_fit_bench_branch' <<< "$fit_step3"
-fit_step4=$(fit_render fit-step4 78)
-assert grep -Fq 'WUT-421' <<< "$fit_step4"
-assert test "${fit_step4#*WUT-421_}" = "$fit_step4"
+# Step 2 then 3: the branch glyph goes, then the branch keeps its ticket prefix alone.
+fit_step2=$(fit_render fit-step2 81)
+assert test "${fit_step2#*⎇}" = "$fit_step2"
+assert grep -Fq 'WUT-421_fit_bench_branch' <<< "$fit_step2"
+fit_step3=$(fit_render fit-step3 78)
+assert grep -Fq 'WUT-421' <<< "$fit_step3"
+assert test "${fit_step3#*WUT-421_}" = "$fit_step3"
 
-# Step 5 takes the account to 7 characters and cuts every directory name to one shared length, one
+# Step 4 takes the account to 7 characters and cuts every directory name to one shared length, one
 # character at a time from the longest name down to 8, stopping at the first that fits; the model is
 # untouched meanwhile, and the account stays whole while the directory is.
-fit_step4=$(fit_render fit-step4-whole 65)
-assert grep -Fq 'Fable 5 xhigh fitaccount │ fit-bench-project WUT-421' <<< "$fit_step4"
-fit_step5=$(fit_render fit-step5 62)
-assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench-project WUT-421' <<< "$fit_step5"
-fit_step5=$(fit_render fit-step5-cut 57)
-assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench-proj WUT-421' <<< "$fit_step5"
-fit_step5=$(fit_render fit-step5-last 52)
-assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench WUT-421' <<< "$fit_step5"
+fit_step3=$(fit_render fit-step4-whole 65)
+assert grep -Fq 'Fable 5 xhigh fitaccount │ fit-bench-project WUT-421' <<< "$fit_step3"
+fit_step4=$(fit_render fit-step4 62)
+assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench-project WUT-421' <<< "$fit_step4"
+fit_step4=$(fit_render fit-step4-cut 57)
+assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench-proj WUT-421' <<< "$fit_step4"
+fit_step4=$(fit_render fit-step4-last 52)
+assert grep -Fq 'Fable 5 xhigh fitacco │ fit-bench WUT-421' <<< "$fit_step4"
 
-# Step 6: the cut has reached 8 before the head model is abbreviated, and the account holds at 7
+# Step 5: the cut has reached 8 before the head model is abbreviated, and the account holds at 7
 # until the directories go to initials.
-fit_step6=$(fit_render fit-step6 50)
-assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step6"
-fit_step6=$(fit_render fit-step6-hold 46)
-assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step6"
+fit_step5=$(fit_render fit-step5 50)
+assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step5"
+fit_step5=$(fit_render fit-step5-hold 46)
+assert grep -Fq 'FB5 xhi fitacco │ fit-benc ' <<< "$fit_step5"
 
-# Steps 8, 9, 11 and 12: the account to 4 with the initials, the pin, the directory itself, the
+# Steps 7, 9, 11 and 12: the account to 4 with the initials, the pin, the directory itself, the
 # account to 3 — and never shorter than 3, however narrow.
-fit_step8=$(fit_render fit-step8 44)
-assert grep -Fq 'FB5 xhi fita │ fbp WUT-421 3/0 │ a' <<< "$fit_step8"
+fit_step7=$(fit_render fit-step7 44)
+assert grep -Fq 'FB5 xhi fita │ fbp WUT-421 3/0 │ a' <<< "$fit_step7"
 fit_step9=$(fit_render fit-step9 36)
 assert test "${fit_step9#*"│ a"}" = "$fit_step9"
 assert grep -Fq 'fita │ fbp' <<< "$fit_step9"
@@ -1634,7 +1633,7 @@ assert grep -Fq "⧉ feature- " <<< "$fit_wt_plain"
 fit_wt_plain_ini=$(fit_render fit-wt-plain-ini 40 "$REPO_E")
 assert grep -Fq "⧉ fy" <<< "$fit_wt_plain_ini"
 
-# Initials longer than the 8-character cut would make step 8 GROW the line, and the directory
+# Initials longer than the 8-character cut would make step 7 GROW the line, and the directory
 # would be dropped at a width its truncated form fits.
 fit_many_full=$(fit_render fit-many "" "$FIT_MANY")
 assert grep -Fq 'a-b-c-d-e-f-g-h-i-j' <<< "$fit_many_full"
@@ -2967,24 +2966,28 @@ assert test "${dclean_out#*"f${RESET}"}" = "$dclean_out"
 printf 'l1\nL2\nl3\nl4\n' > "$REPO_D/tracked.txt"
 printf 'n1\nn2\nn3\n' > "$REPO_D/new.txt"
 dmix_out=$(run_statusline "$(statusline_payload diff-mixed "$diff_extra")")
-assert grep -Fq "${GREEN}+5${RESET}/${RED}-1${RESET} ${DIM}+1~1f${RESET}" <<< "$dmix_out"
+assert grep -Fq "${GREEN}+5${RESET}/${RED}-1${RESET}" <<< "$dmix_out"
+assert test "${dmix_out#*"f${RESET}"}" = "$dmix_out"
 
 # Staging is still uncommitted: nothing moves.
 dgit add tracked.txt
 dstage_out=$(run_statusline "$(statusline_payload diff-staged "$diff_extra")")
-assert grep -Fq "${GREEN}+5${RESET}/${RED}-1${RESET} ${DIM}+1~1f${RESET}" <<< "$dstage_out"
+assert grep -Fq "${GREEN}+5${RESET}/${RED}-1${RESET}" <<< "$dstage_out"
+assert test "${dstage_out#*"f${RESET}"}" = "$dstage_out"
 
 # A commit (by any session/agent) drops its part on the very next render.
 dgit commit -qm second
 dcommit_out=$(run_statusline "$(statusline_payload diff-committed "$diff_extra")")
-assert grep -Fq "${GREEN}+3${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dcommit_out"
+assert grep -Fq "${GREEN}+3${RESET}/${RED}-0${RESET}" <<< "$dcommit_out"
+assert test "${dcommit_out#*"f${RESET}"}" = "$dcommit_out"
 
-# Deleting a tracked file: negative lines plus -1f.
+# Deleting a tracked file: negative lines, and no file count beside them.
 dgit add new.txt
 dgit commit -qm third
 dgit rm -q new.txt
 ddel_out=$(run_statusline "$(statusline_payload diff-deleted "$diff_extra")")
-assert grep -Fq "${GREEN}+0${RESET}/${RED}-3${RESET} ${DIM}-1f${RESET}" <<< "$ddel_out"
+assert grep -Fq "${GREEN}+0${RESET}/${RED}-3${RESET}" <<< "$ddel_out"
+assert test "${ddel_out#*"f${RESET}"}" = "$ddel_out"
 dgit checkout -q HEAD -- new.txt
 
 # Rename-only: zero countable lines, so the dim file counts render alone.
@@ -3014,7 +3017,8 @@ assert test "${dfeat_out#*"${GREEN}+"}" = "$dfeat_out"
 # the very next render diffs against the NEW HEAD.
 git -C "$REPO_D" reset -q --soft HEAD~1
 dsoft_out=$(run_statusline "$(statusline_payload diff-soft "$diff_extra")")
-assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}~1f${RESET}" <<< "$dsoft_out"
+assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET}" <<< "$dsoft_out"
+assert test "${dsoft_out#*"f${RESET}"}" = "$dsoft_out"
 dgit commit -qm feat-version-again
 dgit checkout -q main
 
@@ -3023,7 +3027,7 @@ printf 'w1\nw2\n' > "$TOP_B/wt-junk.txt"
 place_set diff-workdir "$TOP_B"
 dwd_out=$(run_statusline "$(statusline_payload diff-workdir "$diff_extra")")
 assert grep -Fq "⧉ $(basename "$TOP_B")" <<< "$dwd_out"
-assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dwd_out"
+assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET}" <<< "$dwd_out"
 rm -f "$TOP_B/wt-junk.txt" "$STATE_DIR/place-diff-workdir"
 
 # Detached HEAD still measures the diff (vs the detached commit).
@@ -3031,7 +3035,7 @@ printf 'd1\n' > "$TOP_K/det-junk.txt"
 det_extra=$(jq -cn --arg d "$TOP_K" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
 ddet_out=$(run_statusline "$(statusline_payload diff-detached "$det_extra")")
 assert grep -Fq "@$SHORT_SHA" <<< "$ddet_out"
-assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$ddet_out"
+assert grep -Fq "${GREEN}+1${RESET}/${RED}-0${RESET}" <<< "$ddet_out"
 rm -f "$TOP_K/det-junk.txt"
 
 # Unborn HEAD (no commits yet): staged lines count via the --cached fallback.
@@ -3042,13 +3046,13 @@ printf 'x\ny\n' > "$REPO_E/f.txt"
 git -C "$REPO_E" add f.txt
 unborn_extra=$(jq -cn --arg d "$REPO_E" '{cwd:$d,workspace:{current_dir:$d,project_dir:$d}}')
 dunborn_out=$(run_statusline "$(statusline_payload diff-unborn "$unborn_extra")")
-assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dunborn_out"
+assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET}" <<< "$dunborn_out"
 
 # Unborn HEAD, staged file modified again in the worktree: the worktree is the
 # truth — no double count of the staged intermediate.
 printf 'p\nq\n' > "$REPO_E/f.txt"
 dunborn2_out=$(run_statusline "$(statusline_payload diff-unborn-mod "$unborn_extra")")
-assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET} ${DIM}+1f${RESET}" <<< "$dunborn2_out"
+assert grep -Fq "${GREEN}+2${RESET}/${RED}-0${RESET}" <<< "$dunborn2_out"
 
 # --- statusline-ports-probe.sh ---
 PORTS_PROBE="$ROOT/bin/statusline-ports-probe.sh"
@@ -4365,36 +4369,53 @@ DEBT_CMD="$DEBT_STUB"
 : > "$DEBT_LOG"
 DEBT_ANSWER='LINES=153 FILES=16'
 debt_mark_out=$(debt_render repo-debt-shown "$REVIEW_DIRTY")
-assert grep -Fq "${DIM}⟟153${RESET}" <<< "$debt_mark_out"
+assert grep -Fq "${DIM}∑153${RESET}" <<< "$debt_mark_out"
 assert grep -Fqx -e "--repo $TOP_REVIEW_DIRTY" "$DEBT_LOG"
 # It follows the FOLDER: a render of another tree asks about that tree and shows its number.
 DEBT_ANSWER='LINES=4 FILES=2'
 debt_other_out=$(debt_render repo-debt-shown "$REVIEW_OTHER")
-assert grep -Fq "${DIM}⟟4${RESET}" <<< "$debt_other_out"
-assert test "${debt_other_out#*⟟153}" = "$debt_other_out"
+assert grep -Fq "${DIM}∑4${RESET}" <<< "$debt_other_out"
+assert test "${debt_other_out#*∑153}" = "$debt_other_out"
 assert grep -Fqx -e "--repo $TOP_REVIEW_OTHER" "$DEBT_LOG"
-# A row too narrow to hold it drops it: the fit ladder sheds the folder debt at its first step,
-# beside the files counter, so the cells it takes are never cells the harness has to cut.
+# The folder debt outlives every name abbreviation: it is still there while the model, the account
+# and the directory are already being cut (steps 5-7), and only step 8 takes it off the line.
 DEBT_ANSWER='LINES=153 FILES=16'
 debt_render repo-debt-narrow "$REVIEW_DIRTY" >/dev/null
 debt_narrow_out=$(FIT_COLUMNS=24 run_statusline "$(statusline_payload repo-debt-narrow "" "$REVIEW_DIRTY")")
-assert test "${debt_narrow_out#*⟟}" = "$debt_narrow_out"
+assert test "${debt_narrow_out#*153}" = "$debt_narrow_out"
+debt_fit() { FIT_COLUMNS="$1" run_statusline "$(statusline_payload repo-debt-narrow "" "$REVIEW_DIRTY")"; }
+# Step 1 takes the mark off with the diff signs: the debt is then the only dim number on the strip.
+debt_short_out=$(debt_fit 48)
+assert grep -Fq "${GREEN}21${RESET}/${RED}0${RESET}" <<< "$debt_short_out"
+assert grep -Fq "${DIM}153${RESET}" <<< "$debt_short_out"
+assert test "${debt_short_out#*∑}" = "$debt_short_out"
+debt_model_out=$(debt_fit 39)
+assert grep -Fq 'FX hi' <<< "$debt_model_out"
+assert grep -Fq "${DIM}153${RESET}" <<< "$debt_model_out"
+debt_initials_out=$(debt_fit 32)
+assert grep -Fq 'rd' <<< "$debt_initials_out"
+assert test "${debt_initials_out#*review-d}" = "$debt_initials_out"
+assert grep -Fq "${DIM}153${RESET}" <<< "$debt_initials_out"
+debt_step8_out=$(debt_fit 26)
+assert grep -Fq 'rd' <<< "$debt_step8_out"
+assert test "${debt_step8_out#*153}" = "$debt_step8_out"
 # Nothing owed is nothing rendered, and so is every answer this build cannot read.
-for debt_quiet in 'LINES=0 FILES=0' 'LINES=0 FILES=0 WHY=err' 'off' '' 'LINES=x FILES=1'; do
+for debt_quiet in 'LINES=0 FILES=0' 'LINES=0 FILES=0 WHY=err' 'LINES=153 FILES=16 WHY=err' 'off' '' \
+    'LINES=x FILES=1'; do
   DEBT_ANSWER="$debt_quiet"
   debt_quiet_out=$(debt_render repo-debt-quiet "$REVIEW_DIRTY")
-  assert test "${debt_quiet_out#*⟟}" = "$debt_quiet_out"
+  assert test "${debt_quiet_out#*∑}" = "$debt_quiet_out"
 done
 # A binary that is gone, and one too slow to answer, are both silence in the line — never an error
 # in it and never a number left over from the tree before.
 DEBT_ANSWER='LINES=9 FILES=1'
 DEBT_CMD="$FIXTURES/no-such-review-debt"
 debt_gone_out=$(debt_render repo-debt-gone "$REVIEW_DIRTY")
-assert test "${debt_gone_out#*⟟}" = "$debt_gone_out"
+assert test "${debt_gone_out#*∑}" = "$debt_gone_out"
 DEBT_CMD="$DEBT_STUB"
 DEBT_SLEEP=0.4
 debt_slow_out=$(run_statusline "$(statusline_payload repo-debt-slow "" "$REVIEW_DIRTY")")
-assert test "${debt_slow_out#*⟟}" = "$debt_slow_out"
+assert test "${debt_slow_out#*∑}" = "$debt_slow_out"
 DEBT_SLEEP=
 # A machine with neither `timeout` nor `gtimeout` bounds the walk itself: the render is as silent as
 # with one, and the probe still frees its lock, so the next render is never blocked by a dead one.
@@ -4407,13 +4428,13 @@ rm -f "$STATE_DIR/repo-debt-"* 2>/dev/null
 rmdir "$STATE_DIR/repo-debt-"*.lock 2>/dev/null
 debt_nt_out=$(NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")
-assert test "${debt_nt_out#*⟟}" = "$debt_nt_out"
+assert test "${debt_nt_out#*∑}" = "$debt_nt_out"
 for debt_wait in $(seq 1 100); do
   [ -d "$debt_lock" ] || break
   sleep 0.05
 done
 assert test ! -d "$debt_lock"
-assert grep -Fq "⟟21" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
+assert grep -Fq "∑21" <<< "$(NO_TIMEOUT_BIN=1 run_statusline \
   "$(statusline_payload repo-debt-no-timeout "" "$REVIEW_DIRTY")")"
 # The lock a probe removes is the one it made. A walk still running when its lock is swept as dead
 # leaves the sweeper's own lock standing, or two full walks run over the same tree at once.
@@ -4716,7 +4737,7 @@ progress_live_out=$(progress_render live)
 assert grep -Fq " ${DIM}│${RESET} T2 3/8" <<< "$progress_live_out"
 assert test "${progress_live_out#*"T2 max"}" = "$progress_live_out"
 
-# Fit step 7 has nothing to take from the counter: it carries no word any more, and its tier and
+# Fit step 6 has nothing to take from the counter: it carries no word any more, and its tier and
 # numbers are the whole of what it says.
 progress_fit_out=$(FIT_COLUMNS=24 progress_render fit)
 assert grep -Fq 'T2 3/8' <<< "$progress_fit_out"
