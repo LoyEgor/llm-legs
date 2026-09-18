@@ -242,7 +242,7 @@ covered by it: `bin/statusline.sh` (its own `CLAUDEGPT_ACCOUNT` branch and the C
 Doctrine follows the same line: `anthropic.ccr.sol` / `anthropic.ccr.astra` is a session model the
 orchestrator rules bind exactly as they bind Fable — implementation through `worker-run` relay
 workers, native agents only for read-only helpers, read-only fan-out rewritten onto
-`gemini-research` — enforced by `orchestrator_model` in `bin/worker-limit-gate.sh`
+`light-research` — enforced by `orchestrator_model` in `bin/worker-limit-gate.sh`
 (`docs/shared-invariants.md` row `bt`).
 
 ## Reopening a gateway chat

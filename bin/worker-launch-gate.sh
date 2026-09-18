@@ -72,13 +72,13 @@ OWNED_RUN_RE="${VENDOR_WORD}worker-run[[:space:]]+(start|wait)${EDGE}"
 # a launch inside a launch nobody can see.
 OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|image-fanout)${EDGE}"
 
-# A review run's wait is owned the same way, by the `review-waiter` agent, and gemini-research by its
+# A review run's wait is owned the same way, by the `review-waiter` agent, and light-research by its
 # own agent type: from the chat's Bash neither has a row nor anything that wakes the chat.
 OWNED_REVIEW_WAIT_RE="${VENDOR_WORD}review-bench[[:space:]]+wait${EDGE}"
-OWNED_RESEARCH_RE="${VENDOR_WORD}gemini-research${EDGE}"
+OWNED_RESEARCH_RE="${VENDOR_WORD}light-research${EDGE}"
 WAIT_ASK="wait through the ATTACH relay / review-waiter agent so the run has a magenta row"
 
-SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|gemini-research)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
+SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
 
 deny() {
   jq -cn --arg r "$1" \
@@ -273,19 +273,19 @@ case "$agent_type" in
     ;;
 esac
 case "$agent_type" in
-  gemini-research) ;;
+  light-research) ;;
   *)
     research_hit=$(first_hit "$OWNED_RESEARCH_RE")
     [ -z "$research_hit" ] ||
-      deny "Blocked: \`${research_hit}\` runs a research leg from this chat's own Bash, where it has no tagged row and nothing wakes the chat when it lands. Spawn the \`gemini-research\` Agent with the question, the absolute repository paths and the wanted answer shape; it runs the launcher itself."
+      deny "Blocked: \`${research_hit}\` runs a research leg from this chat's own Bash, where it has no tagged row and nothing wakes the chat when it lands. Spawn the \`light-research\` Agent with the question, the absolute repository paths and the wanted answer shape; it runs the launcher itself."
     ;;
 esac
 case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | image-gen) ;;
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | image-gen) ;;
   *)
     owned_hit=$(first_hit "$OWNED_RUN_RE")
     [ -z "$owned_hit" ] ||
-      deny "Blocked: \`${owned_hit}\` runs the worker from this chat's own Bash. A worker run must be owned by a relay agent for its whole life — that ownership is what renders it as a magenta tagged row in the task list and what wakes the chat when the run ends, while a Bash wait owns nothing and dies with the turn. Launch it by spawning the matching Agent (\`claudeb-worker\`, \`codex-worker\`, \`gemini-worker\`, \`grok-worker\`), which does the \`worker-run start\` itself; to re-attach to a run already in flight, spawn THE SAME agent type again with a brief starting \`ATTACH <run-id>:\` — never a background Bash wait. \`worker-run report\` (it only prints a record), \`worker-run claim\`, a bare \`worker-run\` and the test suites are not gated."
+      deny "Blocked: \`${owned_hit}\` runs the worker from this chat's own Bash. A worker run must be owned by a relay agent for its whole life — that ownership is what renders it as a magenta tagged row in the task list and what wakes the chat when the run ends, while a Bash wait owns nothing and dies with the turn. Launch it by spawning the matching Agent (\`claudeb-worker\`, \`codex-worker\`, \`gemini-worker\`, \`grok-worker\`, \`light-worker\`), which does the \`worker-run start\` itself; to re-attach to a run already in flight, spawn THE SAME agent type again with a brief starting \`ATTACH <run-id>:\` — never a background Bash wait. \`worker-run report\` (it only prints a record), \`worker-run claim\`, a bare \`worker-run\` and the test suites are not gated."
     ;;
 esac
 
@@ -303,7 +303,7 @@ wait_default=$(grep -m1 -Eo 'run_id="\$1" max=[0-9]+' \
 [[ "$wait_default" =~ ^[0-9]+$ ]] || wait_default=100
 
 case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | image-gen)
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | image-gen)
     wait_lines=$(grep -E "${VENDOR_WORD}worker-run[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null)
     if [ -n "$wait_lines" ]; then
       wait_max=$(grep -Eo -- '--max[[:space:]]+[0-9]+' <<<"$wait_lines" 2>/dev/null |

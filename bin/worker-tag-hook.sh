@@ -14,7 +14,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research) ;;
   fork|review-waiter) ;;
   *) exit 0 ;;
 esac
@@ -301,11 +301,12 @@ elif is_grokb_launch &&
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")
   tag="$acct · $model · $effort"
-elif printf '%s' "$launch" | grep -qE "${cmd_word}"'gemini-research([[:space:]]|$)'; then
-  # The model is the table's gemini default and the effort always high — the launcher's own words,
-  # never a knob; `--account` is read for the reason the image branch below reads it.
+elif printf '%s' "$launch" | grep -qE "${cmd_word}"'light-research([[:space:]]|$)'; then
+  # Model and effort are the light_research row's, the launcher's own source; `--account` is read
+  # for the reason the image branch below reads it.
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
-  [ -z "$acct" ] || tag="$acct · $(worker_model_default_model gemini) · high"
+  model=$(worker_light_model research 2>/dev/null) || model=''
+  [ -z "$acct" ] || [ -z "$model" ] || tag="$acct · $model · $(worker_light_effort research)"
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|grok-video)([[:space:]]|$)'; then
   # `--account` is the only account this text can vouch for: without it the script asks worker-pick
   # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.
@@ -373,11 +374,11 @@ if [ -n "$description" ]; then
 else
   updated_description=$tag
 fi
-# Worker sessions already bypass permissions; allow avoids a redundant prompt. gemini-research does
+# Worker sessions already bypass permissions; allow avoids a redundant prompt. light-research does
 # NOT: it is a native in-session agent, so an `allow` here would grant a call nobody granted it —
 # the tag is a rewrite and never a permission.
 decision=allow
-case "$agent_type" in gemini-research|fork|review-waiter) decision='' ;; esac
+case "$agent_type" in light-research|fork|review-waiter) decision='' ;; esac
 printf '%s' "$input" | jq -c --arg description "$updated_description" --arg decision "$decision" \
   --arg command "$waiter_command" '
   {hookSpecificOutput: ({

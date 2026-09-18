@@ -83,7 +83,7 @@ skip_flush() {
   [ -z "$agent" ] || return 0
   case "$transcript" in */subagents/*) return 0 ;; esac
   case "$agent_type" in
-    codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research) return 0 ;;
+    codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research) return 0 ;;
   esac
   return 1
 }

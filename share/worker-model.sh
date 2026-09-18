@@ -41,8 +41,20 @@ worker_model_gemini_family() { # table slug, agy id or `flash` → its `geminib 
     END { if (!found && legacy != "") print legacy }'
 }
 
-worker_model_allowed_models() {
-  worker_model_table | awk -v vendor="${1-}" '
+# Models only a light row may name: cheap enough to be refused on the full worker leg.
+worker_model_light_table() {
+  cat <<'TABLE'
+claudeb sonnet medium low,medium,high - no
+TABLE
+}
+
+worker_model_rows() { # [workers|light]
+  worker_model_table
+  [ "${1-}" != light ] || worker_model_light_table
+}
+
+worker_model_allowed_models() { # vendor [class]
+  worker_model_rows "${2-}" | awk -v vendor="${1-}" '
     $1 == vendor { print $2; found = 1 }
     END { if (!found) exit 2 }
   '
@@ -50,19 +62,19 @@ worker_model_allowed_models() {
 
 worker_model_default_model() {
   local models
-  models=$(worker_model_allowed_models "${1-}") || return 2
+  models=$(worker_model_allowed_models "${1-}" "${2-}") || return 2
   printf '%s\n' "${models%%$'\n'*}"
 }
 
-worker_model_default_effort() {
-  worker_model_table | awk -v vendor="${1-}" -v model="${2-}" '
+worker_model_default_effort() { # vendor model [class]
+  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="${2-}" '
     $1 == vendor && $2 == model { print $3; found = 1; exit }
     END { if (!found) exit 2 }
   '
 }
 
-worker_model_effort_list() {
-  worker_model_table | awk -v vendor="${1-}" -v model="${2-}" '
+worker_model_effort_list() { # vendor model [class]
+  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="${2-}" '
     $1 == vendor && $2 == model {
       found = 1; sep = ""
       for (col = 4; col <= 5; col++) {
@@ -80,7 +92,7 @@ worker_model_effort_list() {
 
 worker_model_effort_allowed() {
   local efforts allowed
-  efforts=$(worker_model_effort_list "${1-}" "${2-}") || return 2
+  efforts=$(worker_model_effort_list "${1-}" "${2-}" "${4-}") || return 2
   [ -n "${3-}" ] || return 1
   while IFS= read -r allowed; do
     [ "$allowed" != "$3" ] || return 0
@@ -88,17 +100,17 @@ worker_model_effort_allowed() {
   return 1
 }
 
-worker_model_allows() { # vendor model
+worker_model_allows() { # vendor model [class]
   local allowed
-  allowed=$(worker_model_allowed_models "${1-}") || return 2
+  allowed=$(worker_model_allowed_models "${1-}" "${3-}") || return 2
   [ -n "${2-}" ] || return 1
   grep -qxF -- "${2-}" <<<"$allowed"
 }
 
 # The vendor's allowed ids as one phrase a refusal can quote, so no consumer respells the list.
-worker_model_allowed_list() { # vendor
+worker_model_allowed_list() { # vendor [class]
   local allowed
-  allowed=$(worker_model_allowed_models "${1-}") || return 2
+  allowed=$(worker_model_allowed_models "${1-}" "${2-}") || return 2
   printf '%s' "$(tr '\n' '|' <<<"$allowed" | sed 's/|$//')"
 }
 
@@ -108,6 +120,44 @@ worker_model_allowed_summary() { # every vendor, as one phrase
     out="${out:+$out; }$vendor $(worker_model_allowed_list "$vendor")"
   done < <(worker_model_table | awk '!seen[$1]++ { print $1 }')
   printf '%s' "$out"
+}
+
+worker_light_row() { # research|edit
+  case "${1-}" in research | edit) ;; *) return 2 ;; esac
+  worker_model_pin_line "$(worker_model_file)" "light_$1"
+}
+
+# An absent row is the gemini default, which is what the Light leg ran on before the rows existed.
+worker_light_vendor() { # research|edit
+  local row vendor
+  row=$(worker_light_row "${1-}") || return 2
+  vendor=${row%%:*}
+  case "${vendor:-gemini}" in
+    claudeb | codex | gemini | grok) printf '%s\n' "${vendor:-gemini}" ;;
+    *) printf 'worker-model: light_%s names no vendor of claudeb|codex|gemini|grok: %s\n' "$1" "$row" >&2
+       return 2 ;;
+  esac
+}
+
+worker_light_model() { # research|edit
+  local row vendor model=''
+  vendor=$(worker_light_vendor "${1-}") || return 2
+  row=$(worker_light_row "$1")
+  case "$row" in *:*) model=${row#*:} ;; esac
+  [ -n "$model" ] || model=$(worker_model_default_model "$vendor") || return 2
+  if ! worker_model_allows "$vendor" "$model" light; then
+    printf 'worker-model: light_%s model %s is not among %s models %s\n' "$1" "$model" "$vendor" \
+      "$(worker_model_allowed_list "$vendor" light)" >&2
+    return 2
+  fi
+  printf '%s\n' "$model"
+}
+
+worker_light_effort() { # research|edit
+  local vendor model
+  vendor=$(worker_light_vendor "${1-}") || return 2
+  model=$(worker_light_model "$1") || return 2
+  worker_model_default_effort "$vendor" "$model" light
 }
 
 # The pin is the ONE override above the pool, and a session that sets or clears it silently

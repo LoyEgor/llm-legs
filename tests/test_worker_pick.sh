@@ -32,7 +32,7 @@ acct_line() { grep -m1 -- '^ACCOUNT: ' <<<"$output"; }
 # Every ranked row in order, for a case about the ORDER rather than about one row.
 next_block() { grep -E -- '^ [0-9]+  ' <<<"$output" | squeeze; }
 # The vendor labels in the order their sections print.
-section_order() { grep -o -- '^[a-z]*:' <<<"$output" | tr -d ':' | tr '\n' ' ' | squeeze; }
+section_order() { grep -v '^light:' <<<"$output" | grep -o -- '^[a-z]*:' | tr -d ':' | tr '\n' ' ' | squeeze; }
 # The one-line NEXT of a run that picked nothing: no ranking rows, only the reason.
 next_fail() { grep -m1 -- '^NEXT: ' <<<"$output"; }
 # Every row of one vendor section as its own line, the label and the continuation indent dropped.
@@ -655,7 +655,7 @@ GROK_PAIR_JSON='{"available":true,"accounts":[
 # vendor is simply absent from the render, never a wall and never a failed lookup.
 run_case golden
 assert not_contains "$output" grok
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 12
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 14
 query_case golden --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -670,7 +670,7 @@ assert contains "$(section_order)" 'grok claude'
 # budget of the six, is the one left to its own section.
 assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 5
 assert not_contains "$(next_block)" 'codex/main'
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 15
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 17
 write_config 'grok_model=grok-4.5' 'grok_effort=medium'
 grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·med'
@@ -1523,6 +1523,17 @@ printf '%s\n' 'worker=auto' 'codex_effort=high' 'claudeb_model=sonnet' 'claudeb_
 run_case claude_pool
 assert contains "$(nrow 1)" 'sonnet·xhigh PINNED'
 write_config
+run_case golden
+assert contains "$output" 'light:   research gemini  f38·high'
+assert contains "$output" '         edit     gemini  f38·high'
+write_config 'light_research=claudeb:sonnet' 'light_edit=codex'
+run_case golden
+assert contains "$output" 'light:   research claudeb sonnet·med'
+assert contains "$output" '         edit     codex   astra·low'
+write_config 'light_edit=grok:opus'
+run_case golden
+assert contains "$output" '         edit     invalid light_edit row'
+write_config
 
 # The golden output is the whole contract in one store: line order, the session-account footnote,
 # and no POLICY prose anywhere.
@@ -1538,7 +1549,7 @@ assert not_contains "$output" 'RESERVE'
 assert test "$(sed -n '1p' <<<"$output" | cut -c1-4)" = NEXT
 assert test "$(section_order)" = 'codex gemini claude'
 assert test "$(grep -c -- '^DATA: ' <<<"$output")" -eq 1
-assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 12
+assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 14
 assert not_contains "$output" '# Worker routing policy'
 assert cmp -s <(printf '%s\n' "$output") "$GOLDEN"
 # Display bands are render-only: an unreachable account stays visible, below the candidates.

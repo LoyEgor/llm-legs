@@ -16,8 +16,8 @@ hook_session=$(field '.session_id')
 
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 [ "$(field '.tool_name')" != Workflow ] || exit 0
-RELAY_TYPES='claudeb-worker codex-worker gemini-worker grok-worker'
-NATIVE_ALLOWLIST='fork review-waiter gemini-research image-gen'
+RELAY_TYPES='claudeb-worker codex-worker gemini-worker grok-worker light-worker'
+NATIVE_ALLOWLIST='fork review-waiter light-research image-gen'
 subagent=$(field '.tool_input.subagent_type')
 case " $RELAY_TYPES $NATIVE_ALLOWLIST " in
   *" ${subagent:-general-purpose} "*) ;;
@@ -87,6 +87,15 @@ flag_account() {
 route_account() {
   [ -x "$WORKER_PICK" ] || return 0
   "$WORKER_PICK" --account "$@" 2>/dev/null || true
+}
+
+light_label() { # vendor model
+  case "$1:$2" in
+    gemini:*) gemini_label "$2" ;;
+    codex:*) printf '%s' "${2##*-}" ;;
+    grok:auto | grok:grok-*) printf grok ;;
+    *) printf '%s' "$2" ;;
+  esac
 }
 
 codex_model_short_label() {
@@ -179,18 +188,20 @@ elif [ "$subagent" = review-waiter ]; then
   fi
   [ -n "$prefix" ] || prefix="review · ${review_run: -7}"
   [ -n "$review_run" ] || prefix="review · ?"
-elif [ "$subagent" = gemini-research ]; then
-  # The launcher takes the research model from the table's gemini default and always high effort:
-  # neither is a worker-model knob. A pin answers first, then the router — with `--role research`,
-  # which is the role this leg spends under: the plain query reads the workers switch and would
-  # answer `off` for a vendor parked for workers alone, and a row saying nobody knows tells Egor
-  # less than the account the run is about to land on.
+elif [ "$subagent" = light-research ] || [ "$subagent" = light-worker ]; then
+  # A pin answers first, then the router under the role the leg spends: the plain query reads the
+  # workers switch and would answer `off` for a vendor parked for workers alone.
+  role=edit route_role=workers
+  [ "$subagent" = light-worker ] || role=research route_role=research
+  vendor=$(worker_light_vendor "$role" 2>/dev/null) || vendor=gemini
+  model=$(worker_light_model "$role" 2>/dev/null) || model=$(worker_model_default_model "$vendor")
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(flag_account)
-  [ -n "$acct" ] || acct=$(route_account gemini --role research)
+  [ -n "$acct" ] || acct=$(route_account "$vendor" --role "$route_role")
+  [ -n "$acct" ] || acct=$(worker_model_pin_first "$vendor" 2>/dev/null || true)
   [ -n "$acct" ] || acct='?'
-  prefix="light research · $(gemini_label "$(worker_model_default_model gemini)") · $acct"
-  seed_extra=light=research
+  prefix="light $role · $(light_label "$vendor" "$model") · $acct"
+  seed_extra=light=$role
 else
   acct=$(brief_line ACCOUNT)
   [ -n "$acct" ] || acct=$(route_account gemini)
@@ -201,9 +212,7 @@ else
   [ -n "$model" ] || model=$(worker_model_default_model gemini)
   # `worker-run` raises every Gemini run to high, so the row names what will be spent rather than
   # what the brief or the knob asked for.
-  effort=high
-  prefix="light edit · $(gemini_label "$model") · $acct"
-  seed_extra=light=edit
+  prefix="$acct · $(gemini_label "$model") · high"
 fi
 
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}(: | — )//')
@@ -260,7 +269,7 @@ fi
 # These types are pinned to their frontmatter model, which a tool-call model would override.
 strip_model=''
 case "$subagent" in
-  review-waiter|gemini-research|image-gen) [ -z "$(field '.tool_input.model')" ] || strip_model=1 ;;
+  review-waiter|light-research|image-gen) [ -z "$(field '.tool_input.model')" ] || strip_model=1 ;;
 esac
 
 [ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && [ -z "$strip_model" ] && exit 0

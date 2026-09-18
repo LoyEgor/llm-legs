@@ -11,7 +11,7 @@ field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
 [ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
 agent_type=$(field '.agent_type')
 case "$agent_type" in
-  codex-worker|claudeb-worker|gemini-worker|grok-worker) ;;
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker) ;;
   # A headless claudeb run is a worker session itself, not a subagent of one, so its
   # agent_type is empty; claudeb marks it so the guard still covers it, and grokb marks a
   # headless grok run the same way.

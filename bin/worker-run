@@ -11,7 +11,7 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
@@ -604,8 +604,8 @@ outcome_line() (
 # would be wasted, and the name reaches here by three roads that all end at the same list: the
 # brief's `MODEL:` line (relays forward it as `--model`), `--model` itself, and the vendor's own
 # `*_model=` key in the toggle file — including the default a missing key falls back to.
-refuse_cheap_model() { # vendor offered-model [resume-id]
-  local vendor="$1" offered="$2" resume="${3:-}" effective
+refuse_cheap_model() { # vendor offered-model [resume-id] [class]
+  local vendor="$1" offered="$2" resume="${3:-}" class="${4:-}" effective
   case "$vendor" in
     claudeb) effective=${offered:-$(config_value claudeb_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
     codex)
@@ -620,9 +620,9 @@ refuse_cheap_model() { # vendor offered-model [resume-id]
     gemini) effective=${offered:-$(config_value gemini_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
     grok) effective=${offered:-$(config_value grok_model)}; effective=${effective:-$(worker_model_default_model "$vendor")} ;;
   esac
-  worker_model_allows "$vendor" "$effective" && return 0
+  worker_model_allows "$vendor" "$effective" "$class" && return 0
   outcome_line MODEL_REFUSED
-  fail "$vendor models are $(worker_model_allowed_list "$vendor"); offered model $effective is not among them. Nothing was launched and no account was spent — drop the MODEL: line, or ask Egor."
+  fail "$vendor models are $(worker_model_allowed_list "$vendor" "$class"); offered model $effective is not among them. Nothing was launched and no account was spent — drop the MODEL: line, or ask Egor."
 }
 
 failure_outcome() {
@@ -819,21 +819,28 @@ read_json_array() {
 }
 
 supervise_claudeb() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli rc chrome
-  local -a command retry
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc chrome value
+  local -a command retry access
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
   effort=$(jq -r '.effort' "$meta")
   resume=$(jq -r '.resume' "$meta")
   cli=$(jq -r '.cli' "$meta")
   chrome=$(jq -r '.chrome // false' "$meta")
-  command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
+  access=(--dangerously-skip-permissions)
+  if [ "$(jq -r '.role // "workers"' "$meta")" = research ]; then
+    access=(--permission-mode plan)
+    REPLY_ARRAY=()
+    read_json_array '.add_dirs[]' "$meta"
+    for value in "${REPLY_ARRAY[@]}"; do access+=(--add-dir "$value"); done
+  fi
+  command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
   [ -z "$resume" ] || command+=(--resume "$resume")
   [ "$chrome" = false ] || command+=(--chrome)
   run_with_deadline "${command[@]}" <"$directory/brief.launch" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "$rc" -ne 0 ] && grep -Eiq -- '((unknown|unrecognized|invalid|unexpected|unsupported|not supported).{0,80}--effort|--effort.{0,80}(unknown|unrecognized|invalid|unexpected|unsupported|not supported))' "$directory/err"; then
-    retry=("$cli" profile "$account" -p --model "$model" --output-format json --dangerously-skip-permissions)
+    retry=("$cli" profile "$account" -p --model "$model" --output-format json "${access[@]}")
     [ -z "$resume" ] || retry+=(--resume "$resume")
     [ "$chrome" = false ] || retry+=(--chrome)
     meta_update "$directory" '.effort_flag_dropped = true' || return 4
@@ -886,6 +893,7 @@ supervise_codex() {
   else
     command=("$cli" exec -C "$(jq -r '.workdir' "$meta")" -m "$model" -c "model_reasoning_effort=$effort" --color never)
   fi
+  [ "$(jq -r '.role // "workers"' "$meta")" != research ] || command+=(--sandbox read-only)
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
   for value in "${images[@]}"; do command+=(-i "$value"); done
   if [ "$(jq -r '.web_search' "$meta")" = true ]; then command+=(-c web_search=live); fi
@@ -946,9 +954,31 @@ supervise_gemini() {
   return "$rc"
 }
 
+research_tree_digest() { # root...
+  local root
+  for root in "$@"; do
+    printf '%s\n' "$root"
+    git -C "$root" rev-parse --verify --quiet HEAD || return 1
+    workdir_dirty_shas "$root" || return 1
+  done
+}
+
+# Grok has no read-only mode, so a research run is checked from outside: the trees it may read are
+# digested before and after, and any difference fails the run.
 supervise_grok() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied
-  local -a command
+  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied before=''
+  local -a command roots
+  roots=()
+  if [ "$(jq -r '.role // "workers"' "$meta")" = research ]; then
+    REPLY_ARRAY=()
+    read_json_array '.add_dirs[]' "$meta"
+    roots=("$(jq -r '.workdir' "$meta")" "${REPLY_ARRAY[@]}")
+    before=$(research_tree_digest "${roots[@]}") || {
+      printf 'research: the tree digest a read-only grok run is checked against could not be taken\n' >"$directory/err"
+      printf 'READ_ONLY_VIOLATION\n' >"$directory/research-outcome"
+      return 5
+    }
+  fi
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
   effort=$(jq -r '.effort' "$meta")
@@ -967,6 +997,11 @@ supervise_grok() {
   [ "$(jq -r '.web_search' "$meta")" = true ] || command+=(--disable-web-search)
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
   rc=$?
+  if [ "${#roots[@]}" -gt 0 ] && [ "$(research_tree_digest "${roots[@]}")" != "$before" ]; then
+    printf 'research: the tree changed during a read-only grok run\n' >>"$directory/err"
+    printf 'READ_ONLY_VIOLATION\n' >"$directory/research-outcome"
+    return 5
+  fi
   served=$(grok_end_field "$directory" '((.modelUsage // {}) | keys_unsorted[0]) // empty')
   [ -z "$served" ] || meta_update "$directory" '.served_model = $model' --arg model "$served" || :
   # A tool the permission policy refused is neither a wall nor a failed run — 1.0.13 ends such a run
@@ -1069,7 +1104,7 @@ supervise() {
       codex) supervise_codex "$directory" ;;
       gemini)
         if [ "$(jq -r '.role // "workers"' "$directory/meta.json")" = research ]; then
-          . "$SCRIPT_DIRECTORY/../share/gemini-research.sh"
+          . "$SCRIPT_DIRECTORY/../share/light-research.sh"
           supervise_gemini_research "$directory"
         else
           supervise_gemini "$directory"
@@ -1609,7 +1644,7 @@ start_run() {
   local round_source='' text_rule='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root epoch suffix run_id directory
-  local explicit_model='' explicit_effort='' research_model='' fix_rule='' anchors_top=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top=''
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
   local web_search=false brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
@@ -1620,7 +1655,7 @@ start_run() {
   command_meta=()
   command=()
   shift
-  case "$vendor" in claudeb|codex|gemini|grok) ;; *) usage ;; esac
+  case "$vendor" in claudeb|codex|gemini|grok|light) ;; *) usage ;; esac
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --brief) [ "$#" -ge 2 ] || usage; brief="$2"; shift 2 ;;
@@ -1647,17 +1682,25 @@ start_run() {
     esac
   done
   [ -n "$brief" ] || usage
-  [ "$role" = workers ] || { [ "$vendor" = gemini ] && [ "$role" = research ] || usage; }
+  [ "$role" = workers ] || [ "$role" = research ] || usage
+  if [ "$role" = research ]; then light=research; elif [ "$vendor" = light ]; then light=edit; fi
+  if [ -n "$light" ]; then
+    model_class=light
+    if [ "$vendor" = light ] || [ "$(worker_light_vendor "$light" 2>/dev/null)" = "$vendor" ]; then
+      if ! vendor=$(worker_light_vendor "$light") || ! light_model=$(worker_light_model "$light"); then
+        outcome_line MODEL_REFUSED
+        fail "the light_$light row in $CONFIG_FILE names no vendor/model of the table. Nothing was launched and no account was spent."
+      fi
+    fi
+    model=${model:-${light_model:-$(worker_model_default_model "$vendor")}}
+    effort=${effort:-$(worker_model_default_effort "$vendor" "$model" light)}
+  fi
   if [ "$role" = research ]; then
     [ -z "$resume" ] && [ "$browser" = false ] && [ "$chrome" = false ] || fail 'research does not support resume or browser flags'
-    research_model=$(worker_model_default_model gemini) || fail 'no gemini model table'
-    [ -z "$model" ] || [ "$model" = "$research_model" ] || fail "research requires $research_model"
-    [ -z "$effort" ] || [ "$effort" = high ] || fail 'research requires high effort'
-    model=$research_model; effort=high
     [ -n "$research_timeout" ] || research_timeout=360m
-    . "$SCRIPT_DIRECTORY/../share/gemini-research.sh"
+    . "$SCRIPT_DIRECTORY/../share/light-research.sh"
     value=$(research_duration_seconds "$research_timeout") && [ "$value" -gt 0 ] || usage
-    sandbox_exec="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}"
+    [ "$vendor" != gemini ] || sandbox_exec="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}"
     export WORKER_RUN_ROLE=research
   elif [ -n "$research_timeout" ]; then
     usage
@@ -1728,7 +1771,7 @@ start_run() {
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
   case "$vendor" in
     claudeb)
-      [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'claudeb does not support --add-dir, --image, or --web-search'
+      { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'claudeb does not support --add-dir, --image, or --web-search'
       ;;
     codex)
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
@@ -1746,7 +1789,7 @@ start_run() {
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
       # `--cwd` is the whole of grok's directory grant (1.0.13 has no --add-dir), and it takes no
       # image attachment.
-      [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
+      { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image'
       ;;
   esac
   [ -z "$browser_target" ] || [ "$browser" = true ] || usage
@@ -1757,7 +1800,7 @@ start_run() {
       *) printf 'REASON: %s does not support --browser\n' "$vendor"; return 2 ;;
     esac
   fi
-  refuse_cheap_model "$vendor" "$model" "$resume"
+  refuse_cheap_model "$vendor" "$model" "$resume" "$model_class"
   explicit_effort=$effort
   if [ "$vendor" = codex ]; then
     config_model=$(codex_config_model)
@@ -1769,7 +1812,7 @@ start_run() {
     model=${model:-$(worker_model_default_model "$vendor")}
   fi
   effort=${effort:-$(config_value "${vendor}_effort")}
-  effort=${effort:-$(worker_model_default_effort "$vendor" "$model")}
+  effort=${effort:-$(worker_model_default_effort "$vendor" "$model" "$model_class")}
   # Gemini is raised, never refused: Egor's rule is high on every Gemini leg, and a brief asking for
   # less is asking for a cheaper model than the vendor has, not for a different run. A word the
   # table knows nothing of is still a typo and still refused below.
@@ -1782,9 +1825,9 @@ start_run() {
     esac
   fi
   if { [ "$vendor" != codex ] || [ -z "$resume" ] || [ -n "$explicit_effort" ]; } &&
-     ! worker_model_effort_allowed "$vendor" "$model" "$effort"; then
+     ! worker_model_effort_allowed "$vendor" "$model" "$effort" "$model_class"; then
     outcome_line EFFORT_REFUSED
-    fail "$vendor model $model does not allow effort $effort; allowed efforts: $(worker_model_effort_list "$vendor" "$model"). Nothing was launched and no account was spent."
+    fail "$vendor model $model does not allow effort $effort; allowed efforts: $(worker_model_effort_list "$vendor" "$model" "$model_class"). Nothing was launched and no account was spent."
   fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
@@ -1901,6 +1944,7 @@ start_run() {
       else
         command=("$cli" exec -C "$workdir" -m "$model" -c "model_reasoning_effort=$effort" --color never)
       fi
+      [ "$role" != research ] || command+=(--sandbox read-only)
       for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
       for value in "${images[@]}"; do command+=(-i "$value"); done
       [ "$web_search" = false ] || command+=(-c web_search=live)
@@ -2011,8 +2055,10 @@ start_run() {
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
+    --arg light "$light" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
+     + if $light != "" then {light:$light} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end

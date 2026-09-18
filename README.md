@@ -285,9 +285,10 @@ has to sign in once more. macOS refuses `security unlock-keychain` on anything n
 - `bin/gemini-probe` → `~/.local/bin/gemini-probe` — by-hand active check of Gemini serving per model
   family (a short and a long request each, capacity fallback off); `docs/DIAGNOSTICS.md` has the
   reading.
-- `bin/gemini-research` → `~/.local/bin/gemini-research` — read-only multi-repository research on
-  Gemini Flash with account selection through role `research`, automatic rotation after a quota
-  wall, and before/after repository checks. Its terminal exits are 3 for usage limit, 4 for
+- `bin/light-research` → `~/.local/bin/light-research` — read-only multi-repository research on
+  the `light_research` row's vendor and model (default the table's first gemini row) with account
+  selection through role `research`, automatic rotation after a quota wall, and a per-vendor
+  read-only guard. Its terminal exits are 3 for usage limit, 4 for
   unavailable, 5 for a read-only violation, and 124 for timeout.
 
 Adding an account: `geminib profile work` opens an isolated, logged-out Antigravity profile and

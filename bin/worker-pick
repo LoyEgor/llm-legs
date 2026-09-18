@@ -1134,4 +1134,22 @@ print_section() {
 [ "$gm_known" = false ] || print_section gemini "$gm_rows"
 [ "$gr_known" = false ] || print_section grok "$gr_rows"
 [ "$cb_known" = false ] || print_section claude "$cl_rows"
+light_rows=''
+for light_role in research edit; do
+  if light_vendor=$(worker_light_vendor "$light_role" 2>/dev/null) &&
+     light_model=$(worker_light_model "$light_role" 2>/dev/null) &&
+     light_effort=$(worker_light_effort "$light_role" 2>/dev/null); then
+    ! vendor_paused "$light_vendor" || continue
+    case "$light_vendor:$light_model" in
+      gemini:flash3[0-9]) light_model="f${light_model#flash}" ;;
+      grok:auto | grok:grok-*) light_model=grok ;;
+      codex:*) light_model=${light_model##*-} ;;
+    esac
+    light_row=$(printf '%-9s%-8s%s' "$light_role" "$light_vendor" "${light_model}·$(eff_display "$light_effort")")
+  else
+    light_row=$(printf '%-9s%s' "$light_role" "invalid light_$light_role row")
+  fi
+  light_rows="${light_rows:+$light_rows$'\x1e'}$light_row"
+done
+print_section light "$light_rows"
 printf 'DATA: %s\n' "$age"

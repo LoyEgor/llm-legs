@@ -420,14 +420,14 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "agents").mkdir()
-            (root / "agents/gemini-research.md").write_text(
-                "---\nname: gemini-research\ndescription: Research relay\n"
+            (root / "agents/light-research.md").write_text(
+                "---\nname: light-research\ndescription: Research relay\n"
                 "tools: Read, Bash\nmodel: sonnet\n---\nRelay contract.\n")
             (root / "agents/image-gen.md").write_text(
                 "---\nname: image-gen\ndescription: Image relay\n"
                 "tools: Read, Write, Bash\nmodel: sonnet\n---\nRelay contract.\n")
             agents = app.relay_agents(root)
-            self.assertEqual(sorted(agents), ["gemini-research", "image-gen"])
+            self.assertEqual(sorted(agents), ["image-gen", "light-research"])
             for agent in agents.values():
                 self.assertEqual(agent["model"], "inherit")
 

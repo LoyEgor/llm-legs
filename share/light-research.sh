@@ -55,12 +55,12 @@ supervise_gemini_research() {
   read_json_array '.add_dirs[]' "$meta"
   resolved_repos=("$(jq -r .workdir "$meta")" "${REPLY_ARRAY[@]}")
   profile=$(research_sandbox_profile) || {
-    printf 'gemini-research: could not resolve sandbox write paths\n' >"$directory/err"
+    printf 'light-research: could not resolve sandbox write paths\n' >"$directory/err"
     research_failure "$directory" GEMINI_UNAVAILABLE 4; return $?
   }
   printf '%s\n' "$profile" >"$directory/sandbox.sb"
   if [ ! -x "$sandbox_exec" ] || ! "$sandbox_exec" -p "$profile" /usr/bin/true 2>"$directory/err"; then
-    printf 'gemini-research: sandbox-exec unavailable or refused profile\n' >>"$directory/err"
+    printf 'light-research: sandbox-exec unavailable or refused profile\n' >>"$directory/err"
     research_failure "$directory" GEMINI_UNAVAILABLE 4; return $?
   fi
   mkdir -p "$directory/scratch" || return 4
@@ -80,7 +80,7 @@ supervise_gemini_research() {
     research_failure "$directory" GEMINI_UNAVAILABLE 4; return $?
   fi
   if grep -Eiq 'Operation not permitted|sandbox[^[:cntrl:]]*deny' "$directory/err"; then
-    research_failure "$directory" GEMINI_RESEARCH_WRITE_DENIED 5; return $?
+    research_failure "$directory" READ_ONLY_VIOLATION 5; return $?
   fi
   if [ "$rc" -ne 0 ] || [ ! -s "$directory/out" ]; then
     if grep -Eiq 'RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota[[:space:]_-]*(exhausted|exceeded|reached)|rate.?limit|rateLimiter|HTTP[[:space:]]+429|(^|[^[:alnum:]_.])429([^[:alnum:]_.]|$)' \

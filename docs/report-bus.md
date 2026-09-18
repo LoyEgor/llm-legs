@@ -41,7 +41,7 @@ history, with no pending file. Optional `--context` adds
 when `--session` is absent: `session_id`, `agent_id`, `transcript_path`, `agent_type`.
 It skips `CLAUDEB_WORKER=1`, nonempty `agent_id`, `/subagents/` in the transcript path, and
 the worker-tag agent types `codex-worker`, `claudeb-worker`, `gemini-worker`, `grok-worker`,
-`image-gen`, `gemini-research`. Skipped queues stay pending.
+`light-worker`, `image-gen`, `light-research`. Skipped queues stay pending.
 
 ## Rendering and storage
 

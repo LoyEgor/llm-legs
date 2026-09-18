@@ -77,9 +77,9 @@ for site in "$REPORT_BUS" "$REPORT_NOTICE"; do
   assert grep -Fq '[ -z "$agent" ] ||' "$site"
   assert grep -Fq '*/subagents/*)' "$site"
 done
-report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|image-gen|gemini-research'
+report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research'
 for site in "$REPORT_BUS" "$REPORT_TAG"; do assert grep -Fq "$report_types)" "$site"; done
-for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker image-gen gemini-research; do
+for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker light-worker image-gen light-research; do
   assert doc_has "$marker"
   assert grep -Fq "$marker" "$REPORT_DOC"
 done
@@ -521,7 +521,7 @@ assert grep -Fq "printf 'geminib: capacity %s after %s steps, not relaunched" "$
 assert grep -Fq "capacity_step_mark='streamGenerateContent'" "$GEMINIB_BIN"
 assert grep -Fq 'STEP_MARK = "streamGenerateContent"' "$ROOT/bin/gemini-weather"
 assert doc_has 'geminib: capacity <family> after N steps, not relaunched'
-for consumer in "$WORKER_RUN" "$ROOT/share/gemini-research.sh" "$ROOT/bin/gemini-image" "$ROOT/bin/gemini-probe"; do
+for consumer in "$WORKER_RUN" "$ROOT/share/light-research.sh" "$ROOT/bin/gemini-image" "$ROOT/bin/gemini-probe"; do
   assert test "$(grep -Fc 'No capacity available for model' "$consumer")" -eq 0
 done
 assert doc_has 'Gemini capacity fallback'
@@ -628,6 +628,8 @@ assert grep -Fq '{ "review-flash", slug or "--clear" }' "$ROOT/hammerspoon/llm-l
 for pin_text in 'review flash: ' 'review flash: unavailable' 'newest (default)'; do
   assert grep -Fq "$pin_text" "$ROOT/hammerspoon/llm-limits.lua"
 done
+assert grep -Fq 'geminibCacheDir() .. "/models.json"' "$ROOT/hammerspoon/llm-limits.lua"
+assert test "$(grep -Fc 'hs.execute' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 assert eq "$(GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" review-flash)" \
   "$(printf '%s\tdefault' "$(GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" families |
     awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }')")"
@@ -881,8 +883,8 @@ assert doc_has 'Worker spawn pressure gate'
 ROUTING_DOC="$ROOT/docs/routing-contract.md"
 SPAWN_HOOK_BIN="$ROOT/bin/worker-spawn-hook.sh"
 native_list() { sed -nE "s/^$1='([^']*)'\$/\1/p" "$SPAWN_HOOK_BIN" | head -n1; }
-assert eq "$(native_list RELAY_TYPES)" 'claudeb-worker codex-worker gemini-worker grok-worker'
-assert eq "$(native_list NATIVE_ALLOWLIST)" 'fork review-waiter gemini-research image-gen'
+assert eq "$(native_list RELAY_TYPES)" 'claudeb-worker codex-worker gemini-worker grok-worker light-worker'
+assert eq "$(native_list NATIVE_ALLOWLIST)" 'fork review-waiter light-research image-gen'
 for native in $(native_list NATIVE_ALLOWLIST); do
   assert grep -Fq "\`$native\`" "$ROOT/$DOC"
   assert grep -Fq "\`$native\`" "$ROUTING_DOC"
@@ -890,7 +892,12 @@ done
 assert grep -Fq 'use a relay worker (worker-run) instead' "$SPAWN_HOOK_BIN"
 assert test "$(grep -Ec '^NATIVE_[A-Z_]+=' "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 0
-assert test "$(grep -Fc 'gemini-research' "$WORKER_GATE")" -eq 0
+assert test "$(grep -Fc 'light-research' "$WORKER_GATE")" -eq 0
+retired_research_name="gemini""-research"
+assert test -z "$(git -C "$ROOT" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
+if [ -d "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/.git" ] || [ -f "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/.git" ]; then
+  assert test -z "$(git -C "${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}" grep -l -F "$retired_research_name" -- . 2>/dev/null)"
+fi
 for retired_doc in "$ROOT/$DOC" "$ROUTING_DOC"; do
   assert test "$(grep -Fc 'NATIVE_EXPLORE_ESCAPE' "$retired_doc")" -eq 0
   assert test "$(grep -Fc 'NATIVE_RESEARCH' "$retired_doc")" -eq 0
@@ -2127,7 +2134,7 @@ assert grep -Fq 'def chat_suffix(session, launchers=None, store=None):' "$RB_STO
 # through `chat_display`, never a resolver call of its own. The count is exact so a new naming site
 # is read here before it ships.
 assert test -z "$(grep -E 'chat_label' "$RB_DEBT")"
-assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 11
+assert eq "$(grep -c 'chat_display' "$RB_DEBT")" 14
 assert grep -Fq '"chat": _store.chat_display(' "$RB_DEBT"
 assert grep -Fq 'chat = _store.chat_display(session)' "$RB_DEBT"
 # The foreign-chat refusal names the chat: it exists to send a reader to another conversation.
@@ -2141,11 +2148,11 @@ LAUNCH_GATE="${WORKER_LAUNCH_GATE:-$HOME/.claude/hooks/worker-launch-gate.sh}"
 assert test -x "$LAUNCH_GATE"
 gate_sanctioned=$(grep -m1 '^SANCTIONED_RE=' "$LAUNCH_GATE" |
   grep -oE '[a-z][a-z-]+-(run|bench|limits|driver|image|go|research)' | sort -u | paste -sd' ' -)
-for launcher in worker-run review-bench llm-limits claude-session-driver opencode-go gemini-research; do
+for launcher in worker-run review-bench llm-limits claude-session-driver opencode-go light-research; do
   assert grep -Fq "\`$launcher\`" "$ROOT/$DOC"
   assert grep -Fq "$launcher" "$LAUNCH_GATE"
 done
-assert eq "$gate_sanctioned" 'claude-session-driver gemini-research llm-limits opencode-go review-bench worker-run'
+assert eq "$gate_sanctioned" 'claude-session-driver light-research llm-limits opencode-go review-bench worker-run'
 # The OWNED launchers are sanctioned only in the hand that owns them, so each has a regex of its
 # own and NONE of them may reappear in SANCTIONED_RE — named there, an image would be generated
 # from any chat's Bash with nothing rendering the account it spent. The extraction above still
@@ -2328,7 +2335,7 @@ GROK_TAG_HOOK="$ROOT/bin/worker-tag-hook.sh"
 assert grep -Fq 'gr_model=$(conf grok_model); gr_model=${gr_model:-auto}' "$WORKERPICK"
 assert grep -Fq 'gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}' "$WORKERPICK"
 assert grep -Fq 'model=${model:-$(worker_model_default_model "$vendor")}' "$WORKER_RUN"
-assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$model")}' "$WORKER_RUN"
+assert grep -Fq 'effort=${effort:-$(worker_model_default_effort "$vendor" "$model" "$model_class")}' "$WORKER_RUN"
 assert grep -Fq '[ "$model" = auto ] || command_meta+=(-m "$model")' "$WORKER_RUN"
 assert grep -Fq 'worker_model_effort_allowed "$vendor" "$model" "$effort"' "$WORKER_RUN"
 assert grep -Fq 'outcome_line EFFORT_REFUSED' "$WORKER_RUN"
@@ -2418,8 +2425,8 @@ assert grep -Fq -- '--claim' "$ROOT/bin/worker-run"
 assert eq "$(grep -c 'worker-claims.sh' "$ROOT/bin/worker-run")" 0
 # Research picks for itself nowhere any more: the compatibility entrypoint submits a tracked
 # worker-run, and that run claims through the same picker flag every other relay uses.
-assert grep -Fq -- 'args=(start gemini --role research' "$ROOT/bin/gemini-research"
-assert eq "$(grep -c 'worker-pick' "$ROOT/bin/gemini-research")" 0
+assert grep -Fq -- 'args=(start "$vendor" --role research' "$ROOT/bin/light-research"
+assert eq "$(grep -c 'worker-pick' "$ROOT/bin/light-research")" 0
 assert grep -Fq 'local role_arg=${WORKER_RUN_ROLE:-workers}' "$ROOT/bin/worker-run"
 assert grep -Fq 'export WORKER_RUN_ROLE=research' "$ROOT/bin/worker-run"
 assert grep -Fq 'worker-claims.sh' "$ROOT/bin/grok-image"

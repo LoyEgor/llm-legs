@@ -150,7 +150,7 @@ wall — a claimed account is still the answer when nothing else is selectable.
 is the entire state. A claim nobody renews simply ages out; nothing releases it explicitly.
 
 `--claim` is valid only with `--account`, and only a caller that is about to launch passes it.
-`worker-run` and `gemini-research` are those callers. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
+`worker-run` and `light-research` are those callers. The image launchers (`codex-image`, `gemini-image`, `grok-image`) pick
 without `--claim`, validate the profile they would launch, then call `worker_claims_record` themselves
 so a missing account directory does not burn the TTL. The human table
 **never** claims: it reports a decision, it does not take one. A query that cannot read the claims
@@ -178,7 +178,7 @@ wrapper is denied beside the bare binary, never instead of it: isolating a profi
 recording a run. Every headless run therefore goes through `worker-run` or a tool that owns its
 own launches, and this is the whole list: `worker-run`, `review-bench`,
 `llm-limits`, `claudeb revive`, `claudeb warm`, `claude-session-driver`, `opencode-go`,
-`gemini-research`, plus the
+`light-research`, plus the
 OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and `codex-image` /
 `gemini-image` / `grok-image`, which only the `image-gen` agent may: a run or an image started from
 the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
@@ -196,9 +196,9 @@ Workers are unified: every run that edits, reviews, verifies or scans is a relay
 `worker-run`, so on every session a NATIVE agent type is refused outright, because it runs on the
 session's own model, which is the one quota the whole relay design exists to spare. Four
 `general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. The allowlist is `fork` (Egor's word only), `review-waiter`, `gemini-research` and
+closes. The allowlist is `fork` (Egor's word only), `review-waiter`, `light-research` and
 `image-gen`; `Explore`, `Plan`, `general-purpose`, `claude-code-guide` and anything custom are
-denied with the ask to use a relay worker instead — read-only research goes to `gemini-research`
+denied with the ask to use a relay worker instead — read-only research goes to `light-research`
 by name. The refusal carries no retry and does not depend on the session model: a stamped
 one-shot deny is a rule a model walks through by calling twice. `bin/worker-limit-gate.sh` judges
 no native type, since a deny there would outrank the spawn hook's allow; it keeps only `image-gen`'s
@@ -220,7 +220,7 @@ rater asks with `worker-pick --account <vendor> --role reviewers`, the chat pick
 `--role chat`, the research launcher with `--role research`, and the image scripts / fan-out with
 `--role image`.
 
-`gemini-research` submits through `worker-run` and maps a picker refusal containing `WALLED` to exit 3 / `GEMINI_USAGE_LIMIT`;
+`light-research` submits through `worker-run` on the `light_research` row's vendor and maps a picker refusal containing `WALLED` to exit 3 / `<VENDOR>_USAGE_LIMIT`;
 paused, switched-off, empty-pool and missing-data refusals are availability failures at exit 4.
 After a Gemini run hits a quota wall, automatic selection re-queries with every tried account in
 `--exclude` and claims the next answer. Once that retry query has no account left, the observed

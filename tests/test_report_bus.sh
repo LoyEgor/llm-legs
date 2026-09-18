@@ -67,7 +67,7 @@ assert test -z "$output"
 assert test "$(count "$STORE/skipped/pending")" = 1
 for payload in '{"agent_id":"child"}' '{"transcript_path":"/tmp/subagents/child.jsonl"}' \
   '{"agent_type":"codex-worker"}' '{"agent_type":"claudeb-worker"}' '{"agent_type":"gemini-worker"}' \
-  '{"agent_type":"grok-worker"}' '{"agent_type":"image-gen"}' '{"agent_type":"gemini-research"}'; do
+  '{"agent_type":"grok-worker"}' '{"agent_type":"image-gen"}' '{"agent_type":"light-research"}' '{"agent_type":"light-worker"}'; do
   output=$(jq '. + {session_id:"skipped"}' <<<"$payload" | "$BUS" flush --event Stop)
   assert test -z "$output"
   assert test "$(count "$STORE/skipped/pending")" = 1

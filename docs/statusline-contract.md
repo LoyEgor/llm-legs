@@ -274,8 +274,8 @@ agent's momentary activity) is never read, so concurrent workers stay distinguis
 | fix run of a review round | `fix: ` + the worker tag | the hash field (last 7 of `state.json` `round_id`), then as a relay worker run |
 | review-bench run (`review-waiter`) | `<tier> · <composition> · <lens>` from the progress doc's `tier`, `composition` (default `standard`), `lens` (`task` for a hunt); `review · <last 7 of run id>` while no doc names the run; never `rev`, never task text (`worker-spawn-hook` seed, `worker-tag-hook` on `review-bench wait <run-id>`, re-read by the renderer) | `review=<run-id>` (or `WAIT`/`ATTACH <run-id>` in the description) → progress doc `$(state dir)/progress/*.json` (`run_id`): `all n/m` (finished/`cells`; a cell in `done` or `failed_cells` is finished) + one group per label in first-appearance order: `label done/total`, `label ✓` when all finished and none failed, ` ✗N` after the fraction for N failed (`✗N` alone when all failed): `all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓` (label = the short model name, the first cell segment with a `claude-`/`codex-`/`oc-`/`opencode-`/`gemini-` prefix dropped, no account; a group with any `chunks` entry `[read, total]` of total > 1 counts chunk passes instead, a finished cell as total/total and one without an entry as 1/1 or 0/1: `all 3/8 agy 7/20 opus ✓ sol 3/10`; a group with a cell in the doc's `verifying` map (`{cell: "running"\|"done"}`, review-bench's opencode/agy verifiers) at `running` says `verify` after its fraction, `agy 4/4 verify`, and gets `✓` only when every cell is finished and none is verifying — a doc without `verifying` renders as before, and the panel phase `verify` shows the groups, no word of its own), then `phase` `report`, while `judge` leaves the panel row's cells in place and adds a judge row below it (see "The judge row"); `state` `done` → `✓ report <confirmed>`, `dead` (legacy `failed`) → `✗ dead`, `cancelled` → no state |
 | image-gen | `<acct> · <short>` (`short.<kind>` of `share/image-caps/<vendor>.json`: `notcom · gpt-image-2`); `image-fanout` → `fanout · image` or `fanout · video` | `media=gen` (`edit` with `--ref`/`--resume`) while the script runs, no state once `exit=N` is stamped (`statusline-workdir-hook` PostToolUse Bash → 0, PostToolUseFailure `Exit code N` → N); fan-out: `image=<dest-dir>` → `<dest-dir>/fanout.state.json` `{kind, cells: [{vendor, account, status, exit}]}` (`image-fanout` rewrites it on every cell change, none on `--dry-run`; `status` is `waiting` while the cell holds for a `--max-parallel` slot with no process of its own, then `running`, then `done`/`failed` — the renderer counts anything but `done`/`failed` as pending, so a queued account is never read as work in flight) through the review cell code, label = vendor: `all 2/3 codex ✓ gemini 0/1 grok ✗1` |
-| gemini-research (light research) | `light research · <model> · <acct>` (`3.8-flash` from `flash38`); the seed carries `light=research`, and a run tag written over line 1 is recast by the renderer | as a relay worker run |
-| gemini-worker (light edit) | `light edit · <model> · <acct>`, seed key `light=edit` | as a relay worker run |
+| light-research | `light research · <model> · <acct>` from the `light_research` row (`3.8-flash` from `flash38`); the seed carries `light=research`, and a run tag written over line 1 is recast by the renderer | as a relay worker run |
+| light-worker | `light edit · <model> · <acct>` from the `light_edit` row, seed key `light=edit`; a gemini-worker spawn is a plain worker row | as a relay worker run |
 | fork | `fork · <model> · <account>` (tool model, else the parent transcript's; the renderer shows the harness model) | `explore`, then `edit N` from the tag line `edit=N` (`statusline-workdir-hook` PostToolUse Edit/Write/NotebookEdit of that agent) |
 | Workflow agent, teammate, anything untagged | `agent · <model> · <account>` | `edit N` when counted, else none |
 
@@ -294,10 +294,10 @@ Every tag-file rewrite — `worker-tag-hook`, the `edit=N` count, the `exit=N` s
 session directory's `.claim.lock` (mkdir lock; one older than a minute is broken once, a live one
 outwaited ~3 s and the write skipped). A `review-waiter`'s `review-bench wait <run-id>` is rewritten (`updatedInput`) to carry
 `--waiter <agent id>` — the id the tag cache is keyed on — so review-bench records the doc's
-`waiter {session, task_id}`. `gemini-research` waits one `worker-run wait --max 540` round per call:
+`waiter {session, task_id}`. `light-research` waits one `worker-run wait --max 540` round per call:
 a run still going prints `RUN: <id>` and `STATUS: running` and exits 0, and
-`gemini-research --attach <run-id> --out <answer>` waits the next round (allowed only inside the
-`gemini-research` agent).
+`light-research --attach <run-id> --out <answer>` waits the next round (allowed only inside the
+`light-research` agent).
 
 Fit: budget = `columns − SUBAGENT_ROW_RESERVE` (default 3, the same margin as the top statusline's
 `STATUSLINE_FIT_MARGIN`, pinned equal by `tests/test_statusline_hooks.sh`; the harness passes `columns: 67` for an
@@ -339,16 +339,16 @@ rows are never red: `fanout.state.json` carries no expected timings.
 
 Gates bound to these rows: `worker-spawn-hook` is the one owner of the native-type policy and denies
 (`permissionDecision: "deny"`) every type outside `RELAY_TYPES` and `NATIVE_ALLOWLIST` (`fork`,
-`review-waiter`, `gemini-research`, `image-gen`) — `Explore`, `Plan`, `general-purpose`,
+`review-waiter`, `light-research`, `image-gen`) — `Explore`, `Plan`, `general-purpose`,
 `claude-code-guide` included; a Workflow call is untouched; `worker-limit-gate` judges no native type
 (shared-invariants row `bt`). `worker-launch-gate` reads a Monitor's command through the same masked
 scan as a Bash call: a Monitor on `worker-run wait` or `review-bench wait` in command position is
-denied, and every owned spelling behind it (`worker-run start`, the image scripts, `gemini-research`)
+denied, and every owned spelling behind it (`worker-run start`, the image scripts, `light-research`)
 meets the same checks a Bash call does; a `review-bench wait` from any Bash but a `review-waiter`'s (a
 headless `CLAUDEB_WORKER=1` process excepted) is denied with the brief to spawn instead — `WAIT
 <run-id>: <what>`, or `ATTACH <run-id>: --relaunch` / `--finish-partial` for a recovery, which the
-review-waiter passes to its first wait (the Stop ask names the same spawns); `gemini-research` is
-denied outside its own agent. A running `gemini-research` round prints `RUN:`, `STATUS: running` and
+review-waiter passes to its first wait (the Stop ask names the same spawns); `light-research` is
+denied outside its own agent. A running `light-research` round prints `RUN:`, `STATUS: running` and
 `OUT: <answer path>` for the next `--attach` call, and `--attach` refuses an `--out` inside the run's
 workdir or add-dirs as the launch does. Foreign runs
 (another chat's review) have no task here and stay in the line 1 review segment, which drops a
