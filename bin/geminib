@@ -89,7 +89,7 @@ disable_account() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch|families) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|agy-launch|families|review-flash) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -540,6 +540,48 @@ show_families() {
   else
     printf '%s\n' "$rows"
   fi
+}
+
+# --- The review Flash pin (shared-invariants row `cs`) ---
+review_flash_file() { printf '%s' "$(capacity_state_dir)/review-flash"; }
+
+review_flash_slugs() { families_rows false | awk -F'\t' '$1 ~ /-flash$/ { print $2 }'; }
+
+review_flash() {
+  local file slug temporary
+  file="$(review_flash_file)"
+  case "${1:-}" in
+    '')
+      slug=''
+      [ ! -r "$file" ] || slug=$(sed -n '1p' <"$file" | tr -d '[:space:]')
+      if [ -n "$slug" ]; then
+        printf '%s\tpinned\n' "$slug"
+        return 0
+      fi
+      slug=$(review_flash_slugs | sed -n '1p')
+      [ -n "$slug" ] || { printf 'geminib: no Flash family in `geminib families`\n' >&2; exit 2; }
+      printf '%s\tdefault\n' "$slug"
+      ;;
+    --clear)
+      [ "$#" -eq 1 ] || { printf 'usage: geminib review-flash [<slug>|--clear]\n' >&2; exit 2; }
+      rm -f "$file"
+      ;;
+    *)
+      [ "$#" -eq 1 ] || { printf 'usage: geminib review-flash [<slug>|--clear]\n' >&2; exit 2; }
+      if ! review_flash_slugs | grep -xF "$1" >/dev/null; then
+        printf 'geminib: not a Flash family slug: %s (see `geminib families`)\n' "$1" >&2
+        exit 2
+      fi
+      mkdir -p "$(capacity_state_dir)" 2>/dev/null || :
+      temporary="$file.tmp.$$"
+      if printf '%s\n' "$1" >"$temporary" 2>/dev/null && mv -f "$temporary" "$file" 2>/dev/null; then
+        return 0
+      fi
+      rm -f "$temporary"
+      printf 'geminib: could not write %s\n' "$file" >&2
+      exit 1
+      ;;
+  esac
 }
 
 capacity_flash_chain() {
@@ -1056,6 +1098,7 @@ show_help() {
     'geminib disable <name>|--all          Exclude an account (or every account) from the worker pool; headless runs are then refused, your own sessions are not.' \
     'geminib use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
     'geminib families [--json] [--refresh]  Gemini model families newest first (family, slug, agy id prefix, label), from agy models cached for 24 h.' \
+    'geminib review-flash [<slug>|--clear]  The Flash family the review cells run (review-bench roster cell and verifier); no argument prints the effective slug and whether it is pinned, --clear returns them to the newest Flash. Workers and research are not affected.' \
     'geminib list                          List profiles with login state.' \
     'geminib status                        Per-account login state and quota.' \
     'geminib export-token <name> --to <path> [--min-seconds <n>]  Export a keychain-first access-only sign-in to a new 0600 file; refresh here if needed, with no profile writes.'
@@ -1110,6 +1153,10 @@ case "${1:-}" in
   families)
     shift
     show_families "$@"
+    ;;
+  review-flash)
+    shift
+    review_flash "$@"
     ;;
   profile|p|run)
     shift

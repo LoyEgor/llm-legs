@@ -139,8 +139,33 @@ GEMINIB_CAPACITY_FALLBACK=1 \
 assert_eq "$(tr '\n' , <"$AGY_CALLS.launch")" 'gemini-3.9-flash-high,gemini-3.8-flash-high,'
 assert grep -qx 'geminib: capacity fallback gemini-3.9-flash-high -> gemini-3.8-flash-high' "$WORK/err"
 
+# --- The review Flash pin (row `cs`): one file beside the model cache, Flash slugs only ---
+jq --argjson s "$(date +%s)" '.fetched_at = $s | .attempted_at = $s' \
+  "$ROOT/tests/fixtures/geminib-models.json" >"$CACHE"
+PIN="$GEMINIB_CACHE_DIR/review-flash"
+pin() { bash "$SCRIPT" review-flash "$@" 2>"$WORK/err"; }
+assert test ! -e "$PIN"
+assert_eq "$(pin)" "flash38${TAB}default"
+assert pin flash37
+assert_eq "$(cat "$PIN")" flash37
+assert_eq "$(pin)" "flash37${TAB}pinned"
+assert_eq "$(bash "$SCRIPT" review-flash flash99 2>&1 >/dev/null; printf 'rc=%s' "$?")" \
+  'geminib: not a Flash family slug: flash99 (see `geminib families`)
+rc=2'
+# A refused slug leaves the running pin where it was.
+assert_eq "$(cat "$PIN")" flash37
+assert_eq "$(bash "$SCRIPT" review-flash pro 2>/dev/null; printf 'rc=%s' "$?")" 'rc=2'
+assert_eq "$(cat "$PIN")" flash37
+assert pin --clear
+assert test ! -e "$PIN"
+assert_eq "$(pin)" "flash38${TAB}default"
+assert pin --clear
+assert_eq "$(bash "$SCRIPT" review-flash flash37 extra 2>&1 >/dev/null; printf 'rc=%s' "$?")" \
+  "usage: geminib review-flash [<slug>|--clear]
+rc=2"
+
 # --- Usage ---
 assert_eq "$(bash "$SCRIPT" families --bogus 2>&1 >/dev/null; printf 'rc=%s' "$?")" "usage: geminib families [--json] [--refresh]
 rc=2"
 
-printf 'PASS: %s asserts; geminib families (fresh fetch from agy models with effort rows folded and non-Gemini rows dropped, TSV and --json, --refresh, newest version first with the newest pro owning `pro`, the 24 h TTL both sides, the stale cache with a stderr note and a stamped attempt, a failing or empty agy never trusted, the built-in list with no cache or an unreadable one, the capacity chain following the list)\n' "$asserts"
+printf 'PASS: %s asserts; geminib families (fresh fetch from agy models with effort rows folded and non-Gemini rows dropped, TSV and --json, --refresh, newest version first with the newest pro owning `pro`, the 24 h TTL both sides, the stale cache with a stderr note and a stamped attempt, a failing or empty agy never trusted, the built-in list with no cache or an unreadable one, the capacity chain following the list, the review Flash pin set, printed, refused and cleared)\n' "$asserts"

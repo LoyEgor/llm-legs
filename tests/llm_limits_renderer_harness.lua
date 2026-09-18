@@ -16,6 +16,16 @@ local dialogCalls = {}
 local fastModeMarkers = {}
 local profileFastModeConfigs = {}
 
+-- What the fake hs.execute answers the two `geminib` reads the Gemini submenu makes with; nil is
+-- the command failing, which is what the `review flash: unavailable` row is rendered off.
+local reviewFlashOutput = "flash38\tdefault\n"
+local geminiFamiliesOutput = table.concat({
+  "gemini-3.8-flash\tflash38\tgemini-3.8-flash\tGemini 3.8 Flash",
+  "gemini-3.7-flash\tflash37\tgemini-3.7-flash\tGemini 3.7 Flash",
+  "gemini-3.6-flash\tflash36\tgemini-3.6-flash\tGemini 3.6 Flash",
+  "gemini-3.1-pro\tpro\tgemini-3.1-pro\tGemini 3.1 Pro",
+}, "\n") .. "\n"
+
 -- What AppKit resolves {System, tertiaryLabelColor} to, the tone the renderer dims with. The two
 -- levels are the two appearances: black on a light menu, white on a dark one.
 local SYSTEM_DIM_ALPHA = 0.258824
@@ -100,6 +110,14 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       return dimTone(interfaceStyle == "Dark" and 1 or 0)
     end } },
     execute = function(command)
+      if tostring(command):match("review%-flash$") then
+        if reviewFlashOutput == nil then return "", false end
+        return reviewFlashOutput, true
+      end
+      if tostring(command):match("families$") then
+        if geminiFamiliesOutput == nil then return "", false end
+        return geminiFamiliesOutput, true
+      end
       local account = tostring(command):match("fast%-mode%s+[\"']?([^%s\"']+)[\"']?%s+status")
       local value = account and fastModeMarkers[account]
       if value then
@@ -2421,8 +2439,9 @@ do
     table.concat(titles, "|"))
   assert(titles[4] == "-" and titles[5] == "Weather: no data" and titles[6] == "window: 24 h"
     and titles[7] == "Refresh weather" and titles[8] == "-" and titles[9] == "Gemini: no data"
-    and titles[10] == "no data" and titles[11] == "window: 1 h" and titles[12] == "Refresh Gemini"
-    and #titles == 12, table.concat(titles, "|"))
+    and titles[10] == "no data" and titles[11] == "window: 1 h"
+    and titles[12] == "review flash: 3.8" and titles[13] == "Refresh Gemini"
+    and #titles == 13, table.concat(titles, "|"))
   for _, item in ipairs(menu or {}) do
     assert(not titleText(item):find("^LLM weather") and not titleText(item):find("^gemini · "),
       "a diagnostics surface rendered outside LLM doctor: " .. titleText(item))
@@ -3423,7 +3442,8 @@ do
   local sub = geminiRow(menu).menu
   assert(titleText(geminiRow(menu)) == "Gemini: starved")
   assert(titleText(sub[5]) == "window: 1 h")
-  assert(titleText(sub[6]) == "Refresh Gemini")
+  assert(titleText(sub[6]) == "review flash: 3.8", titleText(sub[6]))
+  assert(titleText(sub[7]) == "Refresh Gemini")
   assert(titleText(doctorRow(menu)) == "LLM doctor: no snapshot", titleText(doctorRow(menu)))
   assert(not isDimmed(doctorRow(menu).title.runs[1].attributes, 0), "the doctor line is dimmed over a starved Gemini")
   for _, item in ipairs(sub) do
@@ -3499,6 +3519,52 @@ do
   probeRow.fn()
   assert(#probes == 1 and probes[1].path:match("/bin/gemini%-probe$") and #probes[1].args == 0,
     "the probe row did not launch gemini-probe in the background")
+
+  -- The review Flash pin (shared-invariants row `cs`): the row and its choices are read back from
+  -- geminib, and a click writes through geminib rather than touching the file.
+  ;(function()
+    local flashTasks = {}
+    local flashModule = loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil, nil, nil,
+      nil, nil, held)
+    local row = submenuItem(geminiRow(flashModule.menuItems()), "review flash: 3.8")
+    assert(row, "the review flash row is missing")
+    assert(table.concat(submenuTitles(row), "|") == "3.8|3.7|3.6|newest (default)",
+      table.concat(submenuTitles(row), "|"))
+    for index, choice in ipairs(row.menu) do
+      assert((choice.checked == true) == (index == #row.menu),
+        "the default is not the one checked choice: " .. index)
+    end
+    while #flashTasks > 0 do table.remove(flashTasks) end
+    row.menu[2].fn()
+    assert(flashTasks[1] and flashTasks[1].path:find("geminib", 1, true)
+        and flashTasks[1].args[1] == "review-flash" and flashTasks[1].args[2] == "flash37"
+        and flashTasks[1].args[3] == nil,
+      "choosing a Flash family did not pin it through geminib")
+
+    reviewFlashOutput = "flash37\tpinned\n"
+    local pinnedModule = loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil, nil,
+      nil, nil, nil, held)
+    local pinnedRow = submenuItem(geminiRow(pinnedModule.menuItems()), "review flash: 3.7 · pinned")
+    assert(pinnedRow, "a pinned review flash row is not named as pinned: "
+      .. table.concat(submenuTitles(geminiRow(pinnedModule.menuItems())), "|"))
+    for index, choice in ipairs(pinnedRow.menu) do
+      assert((choice.checked == true) == (index == 2), "the pinned family is not the checked choice: " .. index)
+    end
+    while #flashTasks > 0 do table.remove(flashTasks) end
+    pinnedRow.menu[#pinnedRow.menu].fn()
+    assert(flashTasks[1] and flashTasks[1].path:find("geminib", 1, true)
+        and flashTasks[1].args[1] == "review-flash" and flashTasks[1].args[2] == "--clear"
+        and flashTasks[1].args[3] == nil,
+      "the default choice did not clear the pin through geminib")
+
+    reviewFlashOutput = nil
+    local brokenSub = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil,
+      nil, nil, nil, nil, held).menuItems())
+    local brokenRow = submenuItem(brokenSub, "review flash: unavailable")
+    assert(brokenRow and brokenRow.disabled == true and brokenRow.menu == nil,
+      "a failing `geminib review-flash` still offered a submenu")
+    reviewFlashOutput = "flash38\tdefault\n"
+  end)()
 
   ;(function()
     local active, alerts = {}, {}

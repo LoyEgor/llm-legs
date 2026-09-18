@@ -924,6 +924,10 @@ function M.rescanDoctor()
     end)
 end
 
+local function shellQuote(value)
+  return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
+end
+
 local function geminiProbePath()
   local path = M.geminiProbeCmd or (repoRoot and repoRoot .. "/bin/gemini-probe")
   if path and hs.fs and hs.fs.attributes(path) then return path end
@@ -936,6 +940,37 @@ function M.runGeminiProbe()
   startDiagnosticsTask("geminiProbeTask", path, {}, function()
     kickGeminiWeather(nil, true)
   end)
+end
+
+-- The review Flash pin (shared-invariants row `cs`): geminib owns the file and the family list, so
+-- the menu reads both back through it rather than spelling a family or a path of its own.
+local function geminibLines(argument)
+  local output, ok = hs.execute(shellQuote(resolveGeminib()) .. " " .. argument, true)
+  if not ok or type(output) ~= "string" then return nil end
+  local lines = {}
+  for line in output:gmatch("[^\r\n]+") do lines[#lines + 1] = line end
+  return lines
+end
+
+local function flashLabel(slug)
+  local major, minor = tostring(slug):match("^flash(%d)(%d+)$")
+  return major and (major .. "." .. minor) or tostring(slug)
+end
+
+local function reviewFlash()
+  local lines = geminibLines("review-flash")
+  local slug, state = tostring(lines and lines[1] or ""):match("^([^\t]+)\t([^\t]+)$")
+  if not slug then return nil end
+  return slug, state
+end
+
+local function reviewFlashChoices()
+  local slugs = {}
+  for _, line in ipairs(geminibLines("families") or {}) do
+    local family, slug = line:match("^([^\t]+)\t([^\t]+)")
+    if family and family:match("%-flash$") then slugs[#slugs + 1] = slug end
+  end
+  return slugs
 end
 
 local DOCTOR_REPO_WIDTH, DOCTOR_CHAT_WIDTH = 20, 24
@@ -1333,6 +1368,21 @@ local function appendDoctor(menu)
       end })
   end
   items[#items + 1] = { title = infoTitle(string.format("window: %g h", selectedWindow / 60)), menu = windows }
+  local flashSlug, flashState = reviewFlash()
+  if not flashSlug then
+    items[#items + 1] = { title = infoTitle("review flash: unavailable", false, true), disabled = true }
+  else
+    local flashes = {}
+    for _, slug in ipairs(reviewFlashChoices()) do
+      flashes[#flashes + 1] = { title = flashLabel(slug),
+        checked = flashState == "pinned" and slug == flashSlug,
+        fn = function() M.setReviewFlash(slug) end }
+    end
+    flashes[#flashes + 1] = { title = "newest (default)", checked = flashState ~= "pinned",
+      fn = function() M.setReviewFlash(nil) end }
+    items[#items + 1] = { title = infoTitle("review flash: " .. flashLabel(flashSlug)
+      .. (flashState == "pinned" and " · pinned" or "")), menu = flashes }
+  end
   if taskRunning(M.weatherTask) then
     items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
   else
@@ -1426,6 +1476,10 @@ end
 
 local function runGeminib(args, failMessage, onSuccess, options)
   runAccountCommand(resolveGeminib(), args, failMessage, onSuccess, options)
+end
+
+function M.setReviewFlash(slug)
+  runGeminib({ "review-flash", slug or "--clear" }, "review flash failed")
 end
 
 local function runGrokb(args, failMessage, onSuccess, options)
@@ -1784,10 +1838,6 @@ end
 function M.removeGrok(name)
   runGrokb({ "remove", name, "--force" }, "remove failed", nil,
     removalOptions("grok", name))
-end
-
-local function shellQuote(value)
-  return "'" .. tostring(value):gsub("'", [['\'']]) .. "'"
 end
 
 -- Two quoting layers: the account name is shell-quoted inside the command, then
