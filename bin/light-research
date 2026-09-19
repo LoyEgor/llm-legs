@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  printf 'usage: light-research --prompt-file <f> --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 360m]\n       light-research --attach <run-id> --out <answer-file>\n' >&2
+  printf 'usage: light-research --prompt-file <f> [--prompt-file <f>...] --out <answer-file> --repo <abs> [--repo <abs>...] [--account <n>] [--timeout 360m]\n       light-research --attach <run-id> --out <answer-file>\n' >&2
   exit 2
 }
 
@@ -16,7 +16,7 @@ resolve_root() {
   cd -P "$(dirname "$source")/.." && pwd
 }
 
-prompt_file=''
+prompt_files=()
 out=''
 account=''
 timeout_value='360m'
@@ -25,7 +25,7 @@ repos=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --prompt-file) [ "$#" -ge 2 ] || usage; prompt_file=$2; shift 2 ;;
+    --prompt-file) [ "$#" -ge 2 ] || usage; prompt_files+=("$2"); shift 2 ;;
     --out) [ "$#" -ge 2 ] || usage; out=$2; shift 2 ;;
     --repo) [ "$#" -ge 2 ] || usage; repos+=("$2"); shift 2 ;;
     --account) [ "$#" -ge 2 ] || usage; account=$2; shift 2 ;;
@@ -40,54 +40,83 @@ out_dir=$(cd "$(dirname "$out")" && pwd -P) || usage
 out="$out_dir/${out##*/}"
 root=$(resolve_root)
 worker_run="$root/bin/worker-run"
+. "$root/share/light-research.sh"
 # One round per call: the agent's Bash call must return inside the tool's 10-minute cap, and a run
 # still going is handed back as `RUN:`/`STATUS: running` for `--attach` to continue.
 wait_max=${LIGHT_RESEARCH_WAIT_MAX:-540}
+start_seconds=$SECONDS
 
 unavailable() { # vendor reason
   printf 'OUTCOME: %s_UNAVAILABLE\nlight-research: %s\n' "$(tr '[:lower:]' '[:upper:]' <<<"$1")" "$2"
   exit 4
 }
 
-finish_round() { # run-id run-dir
+wait_budget() { # the whole call gets one round, however many runs share it
+  local left=$((wait_max - (SECONDS - start_seconds)))
+  [ "$left" -ge 0 ] || left=0
+  printf '%s\n' "$left"
+}
+
+# A usage limit outranks every other failure of a batch: it is the one the caller routes on.
+code_rank() { case "$1" in 3) printf '3\n' ;; 5) printf '2\n' ;; 4) printf '1\n' ;; *) printf '0\n' ;; esac; }
+
+COLLECT_RUNNING=false
+collect_run() { # run-id run-dir part-file
   local state account vendor code log
-  state=$("$worker_run" wait "$1" --max "$wait_max") || { printf '%s\n' "$state"; exit 4; }
+  COLLECT_RUNNING=false
+  state=$("$worker_run" wait "$1" --max "$(wait_budget)") || { printf '%s\n' "$state"; return 4; }
   case "$state" in
-    *'STATUS: running'*) printf 'RUN: %s\nSTATUS: running\nOUT: %s\n' "$1" "$out"; exit 0 ;;
+    *'STATUS: running'*) COLLECT_RUNNING=true; printf 'RUN: %s\nSTATUS: running\n' "$1"; return 0 ;;
   esac
   printf '%s\n' "$state"
   account=$(jq -r .account "$2/meta.json")
   vendor=$(jq -r .vendor "$2/meta.json")
   log="$2/log"
   [ -f "$log" ] || log="$2/err"
-  printf 'ACCOUNT: %s (%s)\nANSWER: %s\nLOG: %s\n' "$account" "$vendor" "$out" "$log"
-  code=$(cat "$2/exit_code" 2>/dev/null) || exit 4
-  [[ "$code" =~ ^[0-9]+$ ]] || exit 4
+  printf 'ACCOUNT: %s (%s)\nLOG: %s\n' "$account" "$vendor" "$log"
+  code=$(cat "$2/exit_code" 2>/dev/null) || return 4
+  [[ "$code" =~ ^[0-9]+$ ]] || return 4
   if [ "$code" = 0 ] && grep -qx 'STATUS: done' <<<"$state"; then
-    if [ -f "$2/result" ]; then cp "$2/result" "$out"; else cp "$2/out" "$out"; fi || exit 4
-    exit 0
+    if [ -f "$2/result" ]; then cp "$2/result" "$3"; else cp "$2/out" "$3"; fi || return 4
+    return 0
   fi
   case "$(sed -n 's/^OUTCOME: //p' <<<"$state" | tail -n1)" in
-    *_USAGE_LIMIT*) exit 3 ;;
-    READ_ONLY_VIOLATION*) exit 5 ;;
+    *_USAGE_LIMIT*) return 3 ;;
+    READ_ONLY_VIOLATION*) return 5 ;;
   esac
-  exit 4
+  return 4
+}
+
+land_answer() { # combined-file repo-root...
+  local combined=$1 counts lines
+  shift
+  counts=$(research_citation_check "$combined" "$out" "$@") || return 4
+  lines=$(wc -l <"$out" | tr -d '[:space:]')
+  printf 'CITATIONS: %s/%s\nANSWER: %s\nLINES: %s\n' "${counts%% *}" "${counts##* }" "$out" "$lines"
 }
 
 if [ -n "$attach" ]; then
-  [ -z "$prompt_file" ] && [ "${#repos[@]}" -eq 0 ] && [ -z "$account" ] && [[ "$attach" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+  [ "${#prompt_files[@]}" -eq 0 ] && [ "${#repos[@]}" -eq 0 ] && [ -z "$account" ] && [[ "$attach" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
   run_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach"
   [ "$(jq -r '.role // empty' "$run_dir/meta.json" 2>/dev/null)" = research ] ||
     unavailable "${attach%%-*}" "no research run $attach"
+  attach_roots=()
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     resolved=$(cd "$repo" 2>/dev/null && pwd -P) || resolved=$repo
     case "$out" in "$resolved"|"$resolved"/*) usage ;; esac
+    attach_roots+=("$resolved")
   done < <(jq -r '(.workdir // empty), ((.add_dirs // [])[])' "$run_dir/meta.json" 2>/dev/null)
-  finish_round "$attach" "$run_dir"
+  attach_part=$(mktemp "${TMPDIR:-/tmp}/light-research-part.XXXXXX") || exit 4
+  trap 'rm -f "$attach_part"' EXIT
+  collect_run "$attach" "$run_dir" "$attach_part" || exit $?
+  if [ "$COLLECT_RUNNING" = true ]; then printf 'OUT: %s\n' "$out"; exit 0; fi
+  land_answer "$attach_part" "${attach_roots[@]}" || exit 4
+  exit 0
 fi
 
-[ -r "$prompt_file" ] && [ "${#repos[@]}" -gt 0 ] && [ -n "$timeout_value" ] || usage
+[ "${#prompt_files[@]}" -gt 0 ] && [ "${#repos[@]}" -gt 0 ] && [ -n "$timeout_value" ] || usage
+for prompt_file in "${prompt_files[@]}"; do [ -r "$prompt_file" ] || usage; done
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; fi
 
 . "$root/share/worker-model.sh"
@@ -109,22 +138,82 @@ for repo in "${resolved_repos[@]}"; do
   case "$out" in "$repo"|"$repo"/*) usage ;; esac
 done
 
-. "$root/share/light-research.sh"
 timeout_seconds=$(research_duration_seconds "$timeout_value") && [ "$timeout_seconds" -gt 0 ] || usage
-args=(start "$vendor" --role research --model "$model" --brief "$prompt_file" --workdir "${resolved_repos[0]}" --research-timeout "$timeout_value")
-[ -z "$account" ] || args+=(--account "$account")
-for ((i=1; i<${#resolved_repos[@]}; i++)); do args+=(--add-dir "${resolved_repos[$i]}"); done
-start_rc=0
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/light-research.XXXXXX") || exit 4
+trap 'rm -rf "$work"' EXIT
+
+fanout=false
+if research_fans_out_per_repo "$vendor" && [ "${#resolved_repos[@]}" -gt 1 ]; then fanout=true; fi
+geminib_bin=''
 if [ "$vendor" = gemini ]; then
   geminib_bin=$(command -v geminib 2>/dev/null) || unavailable gemini 'geminib is missing'
-  launch=$(WORKER_RUN_GEMINIB="$geminib_bin" GEMINI_RESEARCH_SANDBOX_EXEC="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}" \
-    "$worker_run" "${args[@]}") || start_rc=$?
-else
-  launch=$("$worker_run" "${args[@]}") || start_rc=$?
 fi
-printf '%s\n' "$launch"
-[ "$start_rc" -eq 0 ] || exit "$start_rc"
-run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
-run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
-[ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || exit 4
-finish_round "$run_id" "$run_dir"
+
+run_ids=()
+run_dirs=()
+unit_repos=()
+unit_questions=()
+units=0
+for ((question=0; question<${#prompt_files[@]}; question++)); do
+  if [ "$fanout" = true ]; then targets=("${resolved_repos[@]}"); else targets=("${resolved_repos[0]}"); fi
+  for target in "${targets[@]}"; do
+    brief="$work/brief.$units"
+    { [ "$fanout" = false ] || printf 'REPOSITORY: %s\n\n' "$target"
+      cat "${prompt_files[$question]}"
+      printf '\n%s\n' "$LIGHT_RESEARCH_CONTRACT"; } >"$brief" || exit 4
+    args=(start "$vendor" --role research --model "$model" --brief "$brief" --workdir "$target" --research-timeout "$timeout_value")
+    [ -z "$account" ] || args+=(--account "$account")
+    if [ "$fanout" = false ]; then
+      for ((i=1; i<${#resolved_repos[@]}; i++)); do args+=(--add-dir "${resolved_repos[$i]}"); done
+    fi
+    start_rc=0
+    if [ "$vendor" = gemini ]; then
+      launch=$(WORKER_RUN_GEMINIB="$geminib_bin" \
+        GEMINI_RESEARCH_SANDBOX_EXEC="${GEMINI_RESEARCH_SANDBOX_EXEC:-/usr/bin/sandbox-exec}" \
+        "$worker_run" "${args[@]}") || start_rc=$?
+    else
+      launch=$("$worker_run" "${args[@]}") || start_rc=$?
+    fi
+    printf '%s\n' "$launch"
+    [ "$start_rc" -eq 0 ] || exit "$start_rc"
+    run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
+    run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
+    [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || exit 4
+    run_ids+=("$run_id")
+    run_dirs+=("$run_dir")
+    unit_repos+=("$target")
+    unit_questions+=("$question")
+    units=$((units + 1))
+  done
+done
+
+worst=0
+running=false
+for ((u=0; u<units; u++)); do
+  rc=0
+  collect_run "${run_ids[$u]}" "${run_dirs[$u]}" "$work/part.$u" || rc=$?
+  [ "$COLLECT_RUNNING" = false ] || running=true
+  [ "$(code_rank "$rc")" -le "$(code_rank "$worst")" ] || worst=$rc
+done
+if [ "$running" = true ]; then printf 'OUT: %s\n' "$out"; exit 0; fi
+[ "$worst" -eq 0 ] || exit "$worst"
+
+combined="$work/combined"
+if [ "$units" -eq 1 ]; then
+  cp "$work/part.0" "$combined" || exit 4
+else
+  repo_heading='##'
+  [ "${#prompt_files[@]}" -eq 1 ] || repo_heading='###'
+  : >"$combined"
+  for ((u=0; u<units; u++)); do
+    if [ "${#prompt_files[@]}" -gt 1 ] && { [ "$u" -eq 0 ] || [ "${unit_questions[$u]}" != "${unit_questions[$((u - 1))]}" ]; }; then
+      printf '## Q%s\n\n' "$((${unit_questions[$u]} + 1))" >>"$combined"
+    fi
+    [ "$fanout" = false ] || printf '%s %s\n\n' "$repo_heading" "${unit_repos[$u]}" >>"$combined"
+    cat "$work/part.$u" >>"$combined" || exit 4
+    printf '\n' >>"$combined"
+  done
+fi
+land_answer "$combined" "${resolved_repos[@]}" || exit 4
+exit 0

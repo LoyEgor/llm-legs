@@ -10,6 +10,84 @@ resolve_path() {
   if [ -e "$1" ]; then readlink -f "$1"; else printf '%s\n' "$1"; fi
 }
 
+# `--cwd` is the whole of grok's directory grant (worker-run refuses --add-dir there), so a
+# question over several repositories becomes one run per repository instead of one run over all.
+research_fans_out_per_repo() { [ "$1" = grok ]; }
+
+LIGHT_RESEARCH_CONTRACT='ANSWER CONTRACT (appended by light-research; the answer is checked mechanically):
+Write every factual claim as ONE line of its own, in this shape:
+  <path>:<line> | "exact quoted text" | <the claim>
+<path> is absolute or relative to a repository root this run was given, <line> is the line the quote
+starts on, and the quoted text must appear verbatim within three lines of it. A citation line whose
+quote is not there is moved into an UNVERIFIED block and counts against the answer. Prose that
+carries no claim needs no citation line, and a closed yes/no answer may carry none at all.'
+
+research_citation_normalise() {
+  local text
+  text=$(tr '\n' ' ' <<<"$1" | tr -s '[:space:]' ' ')
+  text=${text# }
+  printf '%s' "${text% }"
+}
+
+research_citation_verify() { # path line quote repo-root...
+  local path=$1 number=$2 quote=$3 file='' root from to window
+  shift 3
+  if [[ "$path" = /* ]]; then
+    [ ! -f "$path" ] || file=$path
+  else
+    for root in "$@"; do
+      [ -f "$root/$path" ] || continue
+      file="$root/$path"
+      break
+    done
+  fi
+  [ -n "$file" ] || return 1
+  from=$((10#$number - 3))
+  [ "$from" -ge 1 ] || from=1
+  to=$((10#$number + 3))
+  window=$(sed -n "${from},${to}p" "$file") || return 1
+  quote=$(research_citation_normalise "$quote")
+  [ -n "$quote" ] || return 1
+  case "$(research_citation_normalise "$window")" in
+    *"$quote"*) return 0 ;;
+  esac
+  return 1
+}
+
+research_citation_check() { # answer-file out-file repo-root... ; prints `<verified> <total>`
+  local answer=$1 destination=$2 line path number quote ok=0 total=0
+  local citation='^[[:space:]]*[-*]?[[:space:]]*([^|]+):([0-9]+)[[:space:]]*\|[[:space:]]*"(.*)"[[:space:]]*\|(.*)$'
+  local -a kept=() failed=()
+  shift 2
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ $citation ]]; then
+      path=${BASH_REMATCH[1]}
+      path=${path#"${path%%[![:space:]]*}"}
+      path=${path%"${path##*[![:space:]]}"}
+      number=${BASH_REMATCH[2]}
+      quote=${BASH_REMATCH[3]}
+      total=$((total + 1))
+      if research_citation_verify "$path" "$number" "$quote" "$@"; then
+        ok=$((ok + 1))
+        kept+=("$line")
+      else
+        failed+=("$line")
+      fi
+    else
+      kept+=("$line")
+    fi
+  done <"$answer"
+  {
+    printf 'CITATIONS: %s/%s\n' "$ok" "$total"
+    [ "${#kept[@]}" -eq 0 ] || printf '%s\n' "${kept[@]}"
+    if [ "${#failed[@]}" -gt 0 ]; then
+      printf '\nUNVERIFIED:\n'
+      printf '%s\n' "${failed[@]}"
+    fi
+  } >"$destination" || return 1
+  printf '%s %s\n' "$ok" "$total"
+}
+
 research_sandbox_profile() {
   local path resolved escaped profile_home
   local -a writable
