@@ -58,6 +58,36 @@ disallowed_models() { # text
   done < <(grep -Eo '(claudeb|codex|gemini|grok)_model=[A-Za-z0-9._-]+' <<<"$1" | sort -u)
 }
 
+# The `light_research=` / `light_edit=` rows, read as `<vendor>[:<model>]` against the LIGHT table
+# (`worker_model_allows … light`), which is wider than the workers one. A row worker-run cannot
+# resolve refuses the launch with OUTCOME: MODEL_REFUSED, so a bad row is a Light leg that only
+# fails at the next delegation — this door is where it is caught instead.
+disallowed_light_rows() { # text
+  local row key value vendor model
+  load_model_list || return 0
+  while IFS= read -r row; do
+    key=${row%%=*}
+    value=${row#*=}
+    vendor=${value%%:*}
+    model=''
+    case "$value" in *:*) model=${value#*:} ;; esac
+    case "$vendor" in
+      claudeb | codex | gemini | grok) ;;
+      *) printf '%s=%s\n' "$key" "$value"; continue ;;
+    esac
+    [ -z "$model" ] || worker_model_allows "$vendor" "$model" light || printf '%s=%s\n' "$key" "$value"
+  done < <(grep -Eo 'light_(research|edit)=[A-Za-z0-9._:-]+' <<<"$1" | sort -u)
+}
+
+deny_light_row() {
+  local vendor list=''
+  load_model_list || :
+  for vendor in claudeb codex gemini grok; do
+    list="${list:+$list; }${vendor} $(worker_model_allowed_list "$vendor" light 2>/dev/null)"
+  done
+  deny "Blocked: $(tr '\n' ' ' <<<"$1" | sed 's/ $//') in ~/.claude/worker-model. A light row is <vendor>[:<model>] over claudeb|codex|gemini|grok, and the light-table models are ${list}. No grant unlocks an unlisted one; worker-run refuses the row with OUTCOME: MODEL_REFUSED before an account is spent."
+}
+
 # The SEARCH side of a substitution names the value being REPLACED, so the pairs left after this
 # are the ones a command would STORE: `sed -i s/gemini_model=flash/gemini_model=pro/` writes the
 # allowed model and was refused for spelling the bare one it removes (live 2026-09-04). The same
@@ -255,6 +285,8 @@ case "$MODE" in
     [ -z "$offending" ] || deny_model "$offending"
     offending=$(disallowed_efforts "$pending" "$model_text")
     [ -z "$offending" ] || deny_effort "$offending"
+    offending=$(disallowed_light_rows "$pending")
+    [ -z "$offending" ] || deny_light_row "$offending"
     fresh && exit 0
     if [ "$tool" = Write ]; then
       # The pin lines this write would leave behind, against the ones there now.
@@ -482,6 +514,8 @@ case "$MODE" in
     offending=$(disallowed_efforts "$pending" "$pending
 $(cat "$(pin_file)" 2>/dev/null)")
     [ -z "$offending" ] || deny_effort "$offending"
+    offending=$(disallowed_light_rows "$pending")
+    [ -z "$offending" ] || deny_light_row "$offending"
     # The raw command, and only while nothing in it is a runtime: matched around one, the shape is
     # a guess, and a guess is exactly what may not open this door.
     if [ -z "$ambiguous" ] && pin_untouched_write "$cmd"; then exit 0; fi

@@ -856,7 +856,7 @@ assert eq "$(grep -E '^WARN_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_WA
 assert eq "$(grep -E '^DENY_AT=[0-9]+$' "$WORKER_GATE" | cut -d= -f2)" "$GATE_DENY"
 assert test "$(grep -Ec '^WARN_AT=' "$WORKER_GATE")" -eq 1
 assert test "$(grep -Ec '^DENY_AT=' "$WORKER_GATE")" -eq 1
-for worker in claudeb-worker codex-worker gemini-worker grok-worker; do
+for worker in claudeb-worker codex-worker gemini-worker grok-worker light-worker; do
   assert grep -Fq "$worker" "$WORKER_GATE"
 done
 for vendor in claudeb codex gemini grok; do
@@ -869,6 +869,46 @@ assert grep -Fq '$pct >= $warn' "$WORKER_GATE"
 assert grep -Fq 'fell back to local thresholds' "$WORKER_GATE"
 assert grep -Fq 'effective_pct' "$WORKER_GATE"
 assert grep -Fq '$reset != null and $reset <= $now then 0' "$WORKER_GATE"
+
+# light-worker is a relay type like the four vendor workers, priced against the vendor its
+# `light_edit` row names and routed under the `light` role. Run against the REPOSITORY's gate, not
+# the installed symlink, and on fixtures alone — every path the gate writes to is redirected.
+LIGHT_GATE_WORK=$(mktemp -d)
+mkdir -p "$LIGHT_GATE_WORK/bin"
+printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
+cat >"$LIGHT_GATE_WORK/bin/worker-pick" <<'LIGHTPICK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$LIGHT_PICK_LOG"
+printf 'alpha\n'
+LIGHTPICK
+chmod +x "$LIGHT_GATE_WORK/bin/worker-pick"
+jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:100}}]}}}' \
+  >"$LIGHT_GATE_WORK/limits.json"
+light_gate() {
+  jq -cn --arg w "$1" '{tool_input:{subagent_type:$w, prompt:"x"}}' |
+    LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" \
+    WORKER_PICK_CONFIG_FILE="$LIGHT_GATE_WORK/worker-model" \
+    LLM_LIMITS_FILE="$LIGHT_GATE_WORK/limits.json" \
+    WORKER_GATE_WORKER_PICK="$LIGHT_GATE_WORK/bin/worker-pick" \
+    WORKER_GATE_STAMPS="$LIGHT_GATE_WORK/stamps" \
+    WORKER_STATS_DIR="$LIGHT_GATE_WORK/stats" \
+    CLAUDEB_DIR="$LIGHT_GATE_WORK/store" \
+      bash "$ROOT/bin/worker-limit-gate.sh"
+}
+: >"$LIGHT_GATE_WORK/picks"
+light_gate_out=$(light_gate light-worker)
+# The resolved vendor's 100% hard wall reaches light-worker too — without the relay row the gate
+# would have exited 0 before reading a single limit.
+assert grep -Fq '"permissionDecision":"deny"' <<<"$light_gate_out"
+assert grep -Fq 'Light on Claude' <<<"$light_gate_out"
+# `<vendor>_workers=off` is not the Light class's wall, so the query carries `--role light`.
+assert grep -qx -- '--account claudeb --role light' "$LIGHT_GATE_WORK/picks"
+# A native type still leaves before any of it.
+: >"$LIGHT_GATE_WORK/picks"
+assert test -z "$(light_gate light-research)"
+assert test ! -s "$LIGHT_GATE_WORK/picks"
+rm -rf "$LIGHT_GATE_WORK"
+
 assert test -r "$WORKER_GATE_SETTINGS"
 assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[] | select(.command == "~/.claude/hooks/worker-limit-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
 assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(claudeb|codex)-limit-gate"))] | length' "$WORKER_GATE_SETTINGS")" 0

@@ -22,7 +22,7 @@ query_fable=false
 query_claim=false
 query_list=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light]]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -47,7 +47,7 @@ while [ "$#" -gt 0 ]; do
       query_role="$2"
       query_role_given=true
       case "$query_role" in
-        workers|reviewers|chat|research|image) ;;
+        workers|reviewers|chat|research|image|light) ;;
         *) printf 'worker-pick: unknown role %s\n' "$query_role" >&2; usage ;;
       esac
       shift 2
@@ -193,11 +193,13 @@ gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
 # workers wall cannot be decided here — whether the pin serves is only known once selection ran.
 role_off() { [ "$(conf "$1_$2")" = off ]; }
 query_role_wall=false
-# `chat`, `research` and `image` have no `<vendor>_<role>` key. `image` also ignores
+# `chat`, `research`, `image` and `light` have no `<vendor>_<role>` key. `image` also ignores
 # `<vendor>_workers=off` and the pin: a picture is not code work, so image = pool + login + not
-# walled, ordered by free budget (Egor, 2026-09-11). Walls, pool and login still apply.
+# walled, ordered by free budget (Egor, 2026-09-11). `light` reads the same way for the same
+# reason — a cheap edit is not the implementation leg `<vendor>_workers` closes (Egor,
+# 2026-09-19). Walls, pool and login still apply.
 if [ -n "$query_vendor" ] && [ "$query_role" != chat ] && [ "$query_role" != research ] &&
-   [ "$query_role" != image ] &&
+   [ "$query_role" != image ] && [ "$query_role" != light ] &&
    role_off "$query_vendor" "$query_role"; then
   if [ "$query_role" = workers ]; then
     query_role_wall=true
@@ -290,10 +292,10 @@ clear_observed_pins() {
     worker_model_clear_walled_pin "$vendor" "$acct" "$now" || true
   done < <(worker_model_pins "$vendor" 2>/dev/null)
 }
-# The pin is workers-only, so only a workers query may spend one on a wall: a chat, research or
-# reviewers reading decides nothing about workers and must leave the file as it found it. A paused
-# vendor spends nothing either — pause blanks the in-memory pins only, deliberately keeping them
-# on disk for when it resumes.
+# The pin is workers-only, so only a workers query may spend one on a wall: a chat, research,
+# light or reviewers reading decides nothing about workers and must leave the file as it found it.
+# A paused vendor spends nothing either — pause blanks the in-memory pins only, deliberately
+# keeping them on disk for when it resumes.
 if [ "$query_role" = workers ]; then
   [ "$cb_paused" = true ] || clear_observed_pins claudeb
   [ "$cx_paused" = true ] || clear_observed_pins codex
@@ -316,7 +318,7 @@ gr_pins=$(pins_json grok)
 [ "$gm_paused" = false ] || gm_pins='[]'
 [ "$gr_paused" = false ] || gr_pins='[]'
 case "$query_role" in
-  reviewers|chat|research|image) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
+  reviewers|chat|research|image|light) cb_pins='[]'; cx_pins='[]'; gm_pins='[]'; gr_pins='[]' ;;
 esac
 pin_scope() {
   if [ "$2" = '[]' ]; then printf none; else worker_model_pin_scope "$1" 2>/dev/null || printf none; fi

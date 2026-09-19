@@ -1694,6 +1694,9 @@ start_run() {
     fi
     model=${model:-${light_model:-$(worker_model_default_model "$vendor")}}
     effort=${effort:-$(worker_model_default_effort "$vendor" "$model" light)}
+    # A light edit is not the implementation leg `<vendor>_workers=off` closes, so it asks the
+    # picker under its own role; research already travels as `research` a few lines below.
+    [ "$light" != edit ] || export WORKER_RUN_ROLE=light
   fi
   if [ "$role" = research ]; then
     [ -z "$resume" ] && [ "$browser" = false ] && [ "$chrome" = false ] || fail 'research does not support resume or browser flags'
@@ -1904,7 +1907,7 @@ start_run() {
   # The role switch walls the vendor exactly the way the pool walls an account: an explicit
   # --account, a resumed session or the pin fallback cannot get in under it, and the vendor pin is
   # the one override, because naming it there is the deliberate "use this one anyway".
-  if [ "$role" = workers ] && [ "$(config_value "${vendor}_workers")" = off ] &&
+  if [ "$role" = workers ] && [ -z "$light" ] && [ "$(config_value "${vendor}_workers")" = off ] &&
      ! worker_model_pin_has "$vendor" "$account"; then
     outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
@@ -2999,6 +3002,9 @@ readonly_report_hint() {
   local directory="$1" workdir gained marker root month started marker_month count=0
   [ -f "$directory/exit_code" ] || return 0
   head -n1 "$directory/brief" 2>/dev/null | grep -Eiq '(^|[[:space:]])(READ-ONLY|RESEARCH):' && return 0
+  # A Light run IS the cheaper leg the hint asks for, and a research run edits nothing by design:
+  # told to route itself somewhere cheaper, either one is being asked to stop existing.
+  jq -e '.role == "research" or has("light")' "$directory/meta.json" >/dev/null 2>&1 && return 0
   compute_run_files "$directory"
   [ -z "$RUN_FILES_REASON" ] && [ -z "$RUN_FILES_LIST" ] || return 0
   [ -f "$directory/dirty-before" ] || return 0
@@ -3018,7 +3024,7 @@ readonly_report_hint() {
     marker_month=$(date -r "$started" +%Y-%m 2>/dev/null || date -d "@$started" +%Y-%m 2>/dev/null) || continue
     [ "$marker_month" != "$month" ] || count=$((count + 1))
   done
-  printf 'HINT: this run edited nothing — a read-only lookup is cheaper as a native Explore/research helper (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: %s\n' "$count"
+  printf 'HINT: this run edited nothing — a read-only lookup is cheaper on the light-research agent (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: %s\n' "$count"
 }
 
 # The agent's answer, reassembled out of the stream: `text` events carry it in chunks, and a raw

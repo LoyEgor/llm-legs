@@ -209,16 +209,23 @@ native spawn buy no bypass.
 
 ## Roles
 
-A vendor serves five roles — `workers` (implementation), `reviewers` (review-bench raters),
-`chat` (where Egor's own session should move next), `research` (read-only Gemini research) and
-`image` (subscription image/video generation) — and `<vendor>_workers` /
-`<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered over the pool: the
-literal value `off` closes that vendor for that role, an absent key or any other value leaves it
-open. There is no `<vendor>_chat`, `<vendor>_research` or `<vendor>_image` key and none is to be invented — the pool
-toggle is the whole gate for `chat` and `research`. The default role is `workers`, so every existing caller keeps its meaning; a
+A vendor serves six roles — `workers` (implementation), `reviewers` (review-bench raters),
+`chat` (where Egor's own session should move next), `research` (read-only Light research),
+`light` (a Light-class edit) and `image` (subscription image/video generation) — and
+`<vendor>_workers` / `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered
+over the pool: the literal value `off` closes that vendor for that role, an absent key or any
+other value leaves it open. There is no `<vendor>_chat`, `<vendor>_research`, `<vendor>_light` or
+`<vendor>_image` key and none is to be invented — the pool toggle is the whole gate for `chat`,
+`research` and `light`. The default role is `workers`, so every existing caller keeps its meaning; a
 rater asks with `worker-pick --account <vendor> --role reviewers`, the chat picker with
-`--role chat`, the research launcher with `--role research`, and the image scripts / fan-out with
-`--role image`.
+`--role chat`, the research launcher with `--role research`, `worker-run start light` with
+`--role light`, and the image scripts / fan-out with `--role image`.
+
+Both Light roles route under `<vendor>_workers=off`: the class is cheap work whose error is cheap
+and whose result the caller verifies, not the implementation leg that switch closes. So
+`worker-run start light` asks the picker as `--role light` and skips its own `${vendor}_workers`
+wall the way a research run does. Pool membership, pause, walls, `--exclude` and `--claim` all
+still apply, and the pin is not read for either Light role.
 
 `light-research` submits through `worker-run` on the `light_research` row's vendor and maps a picker refusal containing `WALLED` to exit 3 / `<VENDOR>_USAGE_LIMIT`;
 paused, switched-off, empty-pool and missing-data refusals are availability failures at exit 4.
@@ -233,7 +240,7 @@ pool's own candidate is never handed over instead. The pin overrides it the same
 pool exclusion — a usable pin answers the workers query and the workers table even while
 `<vendor>_workers=off`, and rule 3 still ends it at its wall, unchanged.
 
-The pin is **workers-only**. A reviewers, chat, research or image query never sees it: it is
+The pin is **workers-only**. A reviewers, chat, research, light or image query never sees it: it is
 neither an override nor a forced choice there, and the pinned account stands in those answers as
 an ordinary candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is
 therefore final — no pin opens it.

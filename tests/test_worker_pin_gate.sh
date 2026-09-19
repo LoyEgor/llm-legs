@@ -586,6 +586,32 @@ rm -f "$GRANT"
 assert allowed "$(edit_event "$PIN_FILE" 'claudeb_effort=high' 'claudeb_effort=medium')"
 assert allowed "$(bash_event "grep claudeb_model=sonnet $PIN_FILE")"
 
+# The two Light rows are `<vendor>[:<model>]` over the LIGHT table, which is wider than the workers
+# one: `claudeb:sonnet` is a light row and not a `claudeb_model=`. An unresolvable row refuses the
+# next `worker-run start light` with MODEL_REFUSED, so it is caught here instead.
+printf 'worker=auto\nclaudeb_model=opus\n' >"$PIN_FILE"
+for good in light_edit=claudeb:sonnet light_research=gemini light_edit=codex light_research=grok:auto; do
+  assert allowed "$(write_event "$PIN_FILE" "worker=auto
+$good
+")"
+  assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' "$good")"
+done
+for bad in light_edit=openai light_research=claudeb:haiku light_edit=gemini:flash35 light_research=grok:grok-4.5; do
+  assert denied "$(write_event "$PIN_FILE" "worker=auto
+$bad
+")"
+  assert denied "$(edit_event "$PIN_FILE" 'worker=auto' "$bad")"
+done
+light_deny=$(write_event "$PIN_FILE" 'light_edit=claudeb:haiku')
+assert contains "$light_deny" 'light_edit=claudeb:haiku'
+assert contains "$light_deny" 'claudeb opus|fable|sonnet'
+assert lacks "$light_deny" 'is Egor'
+# The Bash door carries the same rule, and no grant unlocks it.
+mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
+assert denied "$(bash_event "printf 'light_edit=claudeb:haiku\n' >> $PIN_FILE")"
+assert allowed "$(bash_event "printf 'light_edit=claudeb:sonnet\n' >> $PIN_FILE")"
+rm -f "$GRANT"
+
 # A substitution NAMES the value it replaces, and that value is the one leaving the file: the shell
 # door judged the presence of the text and refused a command storing an allowed model. Proved on an
 # OPEN pin door, since with no grant the pin rule denies every write here whatever it carries.
@@ -629,4 +655,4 @@ assert allowed "$(write_event "$PIN_FILE" "$(printf 'worker=codex\ncodex_profile
 assert denied "$(write_event "$PIN_FILE" "$(printf 'worker=auto\ncodex_profile=alpha,beta\nclaudeb_model=sonnet\n')")"
 assert denied "$(edit_event "$PIN_FILE" 'codex_profile=alpha,beta' 'codex_profile=opus')"
 
-printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — a pin grant of his words opens it for a window and a grant for this chat'\''s own pin does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run, and no grant unlocks that one\n' "$asserts"
+printf 'PASS: %s asserts; the account pin moves only by Egor'\''s hand — a pin grant of his words opens it for a window and a grant for this chat'\''s own pin does not, a session editing ~/.claude/worker-model — by Edit/Write, by shell redirect, or by `use` at the command door in either direction — is denied whatever way it spells the path, while reading the pin, his own shell and every test fixture stay untouched; the same door refuses storing a `*_model=` value no implementation worker may run or a light row naming a vendor or model the light table does not hold, and no grant unlocks either\n' "$asserts"

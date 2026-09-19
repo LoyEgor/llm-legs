@@ -89,6 +89,17 @@ write_caches() {
 assert grep -q 'HOME/.claude-profiles/\*/CLAUDE.md' "$SCRIPT"
 assert grep -q 'HOME/.claude-profiles/\*/agents/\*.md' "$SCRIPT"
 
+# The Light install: the PATH entry resolving to THIS checkout's launcher, and both relay agent
+# files. Installed by hand, so nothing else notices when one goes.
+install_light() {
+  mkdir -p "$HOME/.local/bin" "$HOME/.claude/agents"
+  : >"$FIXTURE/bin/light-research"
+  ln -sfn "$FIXTURE/bin/light-research" "$HOME/.local/bin/light-research"
+  printf 'x\n' >"$HOME/.claude/agents/light-research.md"
+  printf 'x\n' >"$HOME/.claude/agents/light-worker.md"
+}
+install_light
+
 mkdir -p "$TRIPWIRE_DIR"
 printf 'safe\n' >"$TRIPWIRE_DIR/worker.md"
 write_caches
@@ -137,6 +148,27 @@ assert test "$(paste -sd, "$CALLS")" = "e2e_surfaces.sh,test_llm_limits.sh,test_
 assert tail -n 1 "$LOG" | grep -Eq ' status=FAIL failed_step=test_claudeb.sh$'
 assert grep -q '^hs .*hs.alert.show.*test_claudeb.sh' "$ALERTS"
 assert grep -q '^osascript .*display notification .*test_claudeb.sh' "$ALERTS"
+
+# A broken Light install fails before a single suite runs, and the alert names the step.
+for light_break in 'rm -f "$HOME/.local/bin/light-research"' \
+                   'ln -sfn /nowhere/light-research "$HOME/.local/bin/light-research"' \
+                   'rm -f "$HOME/.claude/agents/light-research.md"' \
+                   'rm -f "$HOME/.claude/agents/light-worker.md"'; do
+  install_light
+  eval "$light_break"
+  : >"$CALLS"
+  : >"$ALERTS"
+  asserts=$((asserts + 1))
+  bash "$SCRIPT" run --force >/dev/null 2>&1 && fail "a broken Light install passed: $light_break"
+  assert test ! -s "$CALLS"
+  assert tail -n 2 "$LOG" | grep -q 'status=FAIL step=light-install'
+  assert grep -q 'light-install' "$ALERTS"
+done
+install_light
+: >"$ALERTS"
+bash "$SCRIPT" run --force || fail "restored Light install run failed"
+assert tail -n 3 "$LOG" | grep -q 'status=PASS step=light-install detail=ok'
+assert test ! -s "$ALERTS"
 
 for _ in $(seq 1 65); do
   bash "$SCRIPT" run --force || fail "trimming run failed"
@@ -214,4 +246,4 @@ assert grep -qF 'with\ space/bin/llm-selfcheck' "$WRAPPER"
 bash "$SPACED/llm-selfcheck" uninstall >/dev/null || fail "uninstall from a spaced path failed"
 assert test ! -e "$WRAPPER"
 
-echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, debounce/catch-up/stale-alert dedup, install and uninstall plist"
+echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, the Light install checked before any suite runs, debounce/catch-up/stale-alert dedup, install and uninstall plist"

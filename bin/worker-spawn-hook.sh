@@ -189,9 +189,10 @@ elif [ "$subagent" = review-waiter ]; then
   [ -n "$prefix" ] || prefix="review · ${review_run: -7}"
   [ -n "$review_run" ] || prefix="review · ?"
 elif [ "$subagent" = light-research ] || [ "$subagent" = light-worker ]; then
-  # A pin answers first, then the router under the role the leg spends: the plain query reads the
-  # workers switch and would answer `off` for a vendor parked for workers alone.
-  role=edit route_role=workers
+  # A pin answers first, then the router under the role the leg spends: a workers query reads the
+  # workers switch and would answer `off` for a vendor parked for workers alone, naming an account
+  # the run will not land on.
+  role=edit route_role=light
   [ "$subagent" = light-worker ] || role=research route_role=research
   vendor=$(worker_light_vendor "$role" 2>/dev/null) || vendor=gemini
   model=$(worker_light_model "$role" 2>/dev/null) || model=$(worker_model_default_model "$vendor")

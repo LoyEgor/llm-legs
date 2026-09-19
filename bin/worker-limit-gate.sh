@@ -132,7 +132,7 @@ session_model() {
 }
 
 case "$worker" in
-  claudeb-worker|codex-worker|gemini-worker|grok-worker) ;;
+  claudeb-worker|codex-worker|gemini-worker|grok-worker|light-worker) ;;
   *)
     # Which native types may spawn at all is worker-spawn-hook.sh's decision alone; a deny here
     # would outrank its allow, so this branch only prices a model override on the session account.
@@ -155,24 +155,45 @@ case "$worker" in
 esac
 
 pin=''
+pin_key=''
+# `spec_worker` is the row of the threshold table below this spawn is priced against, and
+# `role_arg` the picker role it is routed under: the worker's own name and `workers` for the four
+# vendor relays, the RESOLVED vendor and `light` for light-worker.
+spec_worker=$worker
+role_arg=workers
 case "$worker" in
   claudeb-worker) pin_key=claudeb_profile; vendor=claudeb; limits_vendor=claude; label=Claude ;;
   codex-worker) pin_key=codex_profile; vendor=codex; limits_vendor=codex; label=Codex ;;
   gemini-worker) pin_key=gemini_profile; vendor=gemini; limits_vendor=gemini; label=Gemini ;;
   grok-worker) pin_key=grok_profile; vendor=grok; limits_vendor=grok; label=Grok ;;
 esac
-if [ -n "$pin_key" ]; then
-  _load_wm() {
-    command -v worker_model_pin_first >/dev/null 2>&1 && return 0
-    local path=${BASH_SOURCE[0]} dir
-    while [ -L "$path" ]; do
-      dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
-      path=$(readlink "$path")
-      [[ "$path" = /* ]] || path="$dir/$path"
-    done
+_load_wm() {
+  command -v worker_model_pin_first >/dev/null 2>&1 && return 0
+  local path=${BASH_SOURCE[0]} dir
+  while [ -L "$path" ]; do
     dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
-    . "$dir/../share/worker-model.sh" 2>/dev/null
-  }
+    path=$(readlink "$path")
+    [[ "$path" = /* ]] || path="$dir/$path"
+  done
+  dir=$(cd -P "$(dirname "$path")" && pwd) || return 1
+  . "$dir/../share/worker-model.sh" 2>/dev/null
+}
+if [ "$worker" = light-worker ]; then
+  # An unreadable or unlisted `light_edit` row is worker-run's own MODEL_REFUSED to word, before
+  # an account is spent; a gate that guessed a vendor here would price the wrong quota.
+  _load_wm || exit 0
+  vendor=$(worker_light_vendor edit 2>/dev/null) || exit 0
+  case "$vendor" in
+    claudeb) limits_vendor=claude; label='Light on Claude' ;;
+    codex) limits_vendor=codex; label='Light on Codex' ;;
+    gemini) limits_vendor=gemini; label='Light on Gemini' ;;
+    grok) limits_vendor=grok; label='Light on Grok' ;;
+    *) exit 0 ;;
+  esac
+  spec_worker="${vendor}-worker"
+  role_arg=light
+fi
+if [ -n "$pin_key" ]; then
   _load_wm || true
   pin=$(worker_model_pin_first "$vendor" 2>/dev/null || true)
 fi
@@ -220,7 +241,11 @@ router_rc=0
 if [ ! -x "$WORKER_PICK" ]; then
   router_rc=127
 else
-  router_account=$("$WORKER_PICK" --account "$vendor" 2>/dev/null) || router_rc=$?
+  if [ "$role_arg" = workers ]; then
+    router_account=$("$WORKER_PICK" --account "$vendor" 2>/dev/null) || router_rc=$?
+  else
+    router_account=$("$WORKER_PICK" --account "$vendor" --role "$role_arg" 2>/dev/null) || router_rc=$?
+  fi
   [[ "$router_account" =~ ^[A-Za-z0-9_.-]+$ ]] || {
     [ "$router_rc" -ne 0 ] || router_rc=2
     router_account=''
@@ -358,7 +383,7 @@ fi
 
 now=$(date +%s) ||
   deny "${fallback_reason}; local threshold fallback could not read the clock. Do not spawn ${worker}."
-decision=$(jq -c --arg worker "$worker" --arg pin "$spawn_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$eff_defs"'
+decision=$(jq -c --arg worker "$spec_worker" --arg pin "$spawn_account" --argjson now "$now" --argjson warn "$WARN_AT" --argjson deny "$DENY_AT" "$eff_defs"'
   # Protective fallback, so stricter than worker-pick auth_ok: any status outside the live set the
   # vendor spec names, and any non-object .auth shape, is dead. Explicit branches — `.auth.status?`
   # on a string yields jq empty, which would either vanish the account or default it
@@ -451,36 +476,36 @@ summary=$(printf '%s' "$decision" | jq -r '.summary // empty' 2>/dev/null) || su
 best=$(printf '%s' "$decision" | jq -r '.best // empty' 2>/dev/null) || best=''
 fallback_prefix="${fallback_reason}; fell back to local thresholds. "
 
-case "$worker:$state" in
+case "$spec_worker:$state" in
   claudeb-worker:stale)
-    warn "${fallback_prefix}Claude 5h limit data is stale or has no valid fetched_at timestamp — allowing claudeb-worker because stale data must not block delegation."
+    warn "${fallback_prefix}Claude 5h limit data is stale or has no valid fetched_at timestamp — allowing ${worker} because stale data must not block delegation."
     ;;
   claudeb-worker:warn)
-    warn "${fallback_prefix}Claude 5h window: ${summary} — no usable account below ${WARN_AT}%; allowing claudeb-worker, but the available window is close to the limit."
+    warn "${fallback_prefix}Claude 5h window: ${summary} — no usable account below ${WARN_AT}%; allowing ${worker}, but the available window is close to the limit."
     ;;
   claudeb-worker:deny)
-    deny "${fallback_prefix}Claude 5h window: ${summary} — no usable account below ${DENY_AT}%. Do not spawn claudeb-worker until an account becomes usable or its window resets."
+    deny "${fallback_prefix}Claude 5h window: ${summary} — no usable account below ${DENY_AT}%. Do not spawn ${worker} until an account becomes usable or its window resets."
     ;;
   codex-worker:warn)
-    warn "${fallback_prefix}The freest Codex account is at ${best}% (${summary}). This codex-worker task may hit the wall mid-run; keep it small or be ready to reroute to a Claude worker."
+    warn "${fallback_prefix}The freest Codex account is at ${best}% (${summary}). This ${worker} task may hit the wall mid-run; keep it small or be ready to reroute to a Claude worker."
     ;;
   codex-worker:deny)
-    deny "${fallback_prefix}No Codex account below ${DENY_AT}% (${summary}) — do not spawn codex-worker now. Delegate this task to a Claude worker instead (owner rule: Fable agents while the Codex wall lasts), or wait for a reset."
+    deny "${fallback_prefix}No Codex account below ${DENY_AT}% (${summary}) — do not spawn ${worker} now. Delegate this task to a Claude worker instead (owner rule: Fable agents while the Codex wall lasts), or wait for a reset."
     ;;
   gemini-worker:stale)
-    warn "${fallback_prefix}Gemini limit data is stale or has no valid fetched_at timestamp — allowing gemini-worker because stale data must not block delegation."
+    warn "${fallback_prefix}Gemini limit data is stale or has no valid fetched_at timestamp — allowing ${worker} because stale data must not block delegation."
     ;;
   gemini-worker:warn)
-    warn "${fallback_prefix}The Gemini account is at ${best}% (${summary}). This gemini-worker task may hit the wall mid-run; keep it small or be ready to reroute according to worker-pick."
+    warn "${fallback_prefix}The Gemini account is at ${best}% (${summary}). This ${worker} task may hit the wall mid-run; keep it small or be ready to reroute according to worker-pick."
     ;;
   gemini-worker:deny)
-    deny "${fallback_prefix}No Gemini account below ${DENY_AT}% (${summary}) — do not spawn gemini-worker now. Reroute according to worker-pick, or wait for a reset."
+    deny "${fallback_prefix}No Gemini account below ${DENY_AT}% (${summary}) — do not spawn ${worker} now. Reroute according to worker-pick, or wait for a reset."
     ;;
   grok-worker:warn)
-    warn "${fallback_prefix}The freest Grok account is at ${best}% of its weekly window (${summary}). This grok-worker task may hit the wall mid-run; keep it small or be ready to reroute according to worker-pick."
+    warn "${fallback_prefix}The freest Grok account is at ${best}% of its weekly window (${summary}). This ${worker} task may hit the wall mid-run; keep it small or be ready to reroute according to worker-pick."
     ;;
   grok-worker:deny)
-    deny "${fallback_prefix}No Grok account below ${DENY_AT}% of its weekly window (${summary}) — do not spawn grok-worker now. Reroute according to worker-pick, or wait for the weekly reset."
+    deny "${fallback_prefix}No Grok account below ${DENY_AT}% of its weekly window (${summary}) — do not spawn ${worker} now. Reroute according to worker-pick, or wait for the weekly reset."
     ;;
   *:allow|*:noop)
     warn "${fallback_prefix}The local threshold check allows ${worker}."

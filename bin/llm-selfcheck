@@ -105,6 +105,7 @@ maybe_run() {
 run_checks() {
   local name path seconds output rc detail
   local tripwire_globs tripwire_state tripwire_snapshot changed_paths changed_count
+  local light_link light_target light_missing
   # Profile roots are watched alongside ~/.claude: agents live in ~/.claude-profiles/<name>/
   # and a mutation there is exactly the event this tripwire exists to catch.
   tripwire_globs="${LLM_SELFCHECK_TRIPWIRE_GLOBS:-$HOME/.claude/CLAUDE.md $HOME/.claude/worker-model $HOME/.claude/settings.json $HOME/.claude/agents/*.md $HOME/.claude/commands/*.md $HOME/.claude-profiles/*/CLAUDE.md $HOME/.claude-profiles/*/settings.json $HOME/.claude-profiles/*/agents/*.md $HOME/.claude-profiles/*/commands/*.md}"
@@ -132,6 +133,25 @@ run_checks() {
   else
     write_step_log WARN config-tripwire 'state dir unwritable — tripwire skipped'
   fi
+  # Installed by hand and by no suite, so a missing piece of the Light class surfaces only at the
+  # next delegation, on whichever chat happened to need it.
+  light_link="$HOME/.local/bin/light-research"
+  light_target=$(readlink "$light_link" 2>/dev/null) || light_target="$light_link"
+  case "$light_target" in /*) ;; *) light_target="$(dirname "$light_link")/$light_target" ;; esac
+  light_missing=''
+  [ "$light_target" = "$repo_root/bin/light-research" ] ||
+    light_missing="$light_link does not resolve to $repo_root/bin/light-research"
+  for path in "$HOME/.claude/agents/light-research.md" "$HOME/.claude/agents/light-worker.md"; do
+    [ -f "$path" ] || light_missing="${light_missing:+$light_missing; }$path absent"
+  done
+  if [ -n "$light_missing" ]; then
+    write_step_log FAIL light-install "$light_missing"
+    write_log FAIL light-install
+    printf 'llm-selfcheck: light-install failed (%s)\n' "$light_missing" >&2
+    alert_failure light-install
+    return 1
+  fi
+  write_step_log PASS light-install ok
   local -a steps=(
     "e2e_surfaces.sh:${LLM_SELFCHECK_E2E_TIMEOUT:-900}"
     "test_llm_limits.sh:${LLM_SELFCHECK_SUITE_TIMEOUT:-300}"

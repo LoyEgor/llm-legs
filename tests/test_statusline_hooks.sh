@@ -3771,11 +3771,25 @@ printf 'light_edit=codex\n' > "$HOME/.claude/worker-model"
 light_edit_out=$(light_worker_spawn spawn-light-edit 'Fix the typo' "$RESEARCH_PICK")
 assert jq -e '.hookSpecificOutput.updatedInput.description == "light edit · astra · routedaccount: Fix typo"' \
   <<< "$light_edit_out" >/dev/null
-assert_eq '--account codex --role workers' "$(cat "$WORK/research-pick.log")"
+assert_eq '--account codex --role light' "$(cat "$WORK/research-pick.log")"
 assert grep -qx 'light=edit' "$(ls -t "$HOME/.cache/claude-worker-tags/spawn-light-edit"/pending-light-worker-* | head -n1)"
 : > "$HOME/.claude/worker-model"
 light_worker_spawn spawn-light-default $'ACCOUNT: pinned\nFix the typo' "$RESEARCH_PICK" >/dev/null
 assert_eq 'light edit · 3.8-flash · pinned' "$(seed_of spawn-light-default light-worker)"
+# `<vendor>_workers=off` closes neither Light role, so the row names the account the run will land
+# on; asked as a workers query it would fall through to `?` and predict an account nobody spends.
+ROLE_PICK="$WORK/role-worker-pick"
+cat >"$ROLE_PICK" <<'ROLEPICK'
+#!/usr/bin/env bash
+case "$*" in
+  *'--role light'*) printf 'lightaccount\n' ;;
+  *) exit 3 ;;
+esac
+ROLEPICK
+chmod +x "$ROLE_PICK"
+printf 'light_edit=gemini\ngemini_workers=off\n' > "$HOME/.claude/worker-model"
+light_worker_spawn spawn-light-off 'Fix the typo' "$ROLE_PICK" >/dev/null
+assert_eq 'light edit · 3.8-flash · lightaccount' "$(seed_of spawn-light-off light-worker)"
 printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 
 # In flight, `--account` on the launch line is the account being spent.

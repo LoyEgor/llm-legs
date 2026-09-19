@@ -2062,6 +2062,17 @@ for vendor in claudeb codex gemini; do
   assert await_done
 done
 
+# A light edit asks the picker under the `light` role, so `<vendor>_workers=off` closes neither
+# door it passes: not the picker's, and not worker-run's own wall over the resolved vendor.
+clear_stub
+set_config 'light_edit=claudeb:sonnet' 'claudeb_workers=off' 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_ACCOUNT=picked PICK_RC=0
+start_ok light
+assert meta_account_is picked
+assert grep -qx -- '--account claudeb --role light --claim' "$PICK_LOG"
+assert jq -e '.model == "sonnet" and .light == "edit"' "$RUN_DIR/meta.json" >/dev/null
+assert await_done
+
 # Legacy picker stderr remains visible but has no routing or report semantics.
 clear_stub
 set_config 'codex_effort=medium'
@@ -2527,7 +2538,7 @@ assert test -f "$RUN_DIR/dirty-before"
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$readonly_workdir" && pwd -P)"
 report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a native Explore/research helper (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 1' <<<"$report"
+assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper on the light-research agent (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 1' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
 
 clear_stub
@@ -2536,7 +2547,7 @@ export STUB_TRANSCRIPT_ACCOUNT=readonly-two
 start_ok claudeb
 assert await_done
 report=$("$RUNNER" report "$RUN_ID")
-assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper as a native Explore/research helper (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 2' <<<"$report"
+assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper on the light-research agent (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 2' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
 
 clear_stub
@@ -2568,6 +2579,32 @@ assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd
 report=$("$RUNNER" report "$RUN_ID")
 assert grep -qx 'RUN-FILES: 0' <<<"$report"
 assert test -z "$(git -C "$declared_workdir" status --porcelain -uall)"
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+
+# A Light run and a research run ARE the cheap read-only leg the hint points at, so neither is
+# told to reroute itself — whatever their brief's first line says.
+export WORKER_TEST_WORKDIR="$readonly_workdir"
+printf 'test brief\nsecond line\n' >"$WORK/brief"
+clear_stub
+set_config 'light_edit=claudeb:sonnet'
+export PICK_RC=0 PICK_ACCOUNT=readonly-light STUB_TRANSCRIPT_SESSION=readonly-light STUB_SESSION=readonly-light
+export STUB_TRANSCRIPT_ACCOUNT=readonly-light
+start_ok light
+assert await_done
+assert jq -e '.light == "edit"' "$RUN_DIR/meta.json" >/dev/null
+report=$("$RUNNER" report "$RUN_ID")
+assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
+assert test ! -e "$RUN_DIR/report-readonly"
+
+clear_stub
+set_config 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_RC=0 PICK_ACCOUNT=readonly-research STUB_TRANSCRIPT_SESSION=readonly-research STUB_SESSION=readonly-research
+export STUB_TRANSCRIPT_ACCOUNT=readonly-research
+start_ok claudeb --role research
+assert await_done
+assert jq -e '.role == "research"' "$RUN_DIR/meta.json" >/dev/null
+report=$("$RUNNER" report "$RUN_ID")
 assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
 
