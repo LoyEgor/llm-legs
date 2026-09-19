@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# The Light edit contract: a run lands on the shared checkout only through its own worktree, and
+# only when the brief's SCOPE fence held and its VERIFY command passed. Every case here proves the
+# shared tree is either advanced by a green run or byte-identical after a red one.
+set -u
+unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE CLAUDE_LAUNCHER_SESSION CLAUDE_CODE_SESSION_ID
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+fail(){ printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2
+  [ ! -f "$WORK/out" ] || { printf -- '--- out ---\n'; cat "$WORK/out"; } >&2
+  [ ! -f "$WORK/err" ] || { printf -- '--- err ---\n'; cat "$WORK/err"; } >&2
+  exit 1; }
+asserts=0
+assert(){ asserts=$((asserts + 1)); "$@" || fail "$*"; }
+
+HOME="$WORK/home"; BIN="$WORK/bin"; SHARED="$WORK/shared"; RUNS="$WORK/runs"
+export HOME
+mkdir -p "$HOME/.claude" "$HOME/.claude-profiles/picked/projects" "$HOME/.codex-profiles/picked" "$BIN" "$SHARED/src" "$RUNS"
+git -C "$SHARED" init -q
+printf 'x\n' >"$SHARED/file"; printf 'keep\n' >"$SHARED/src/kept.txt"
+git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm init
+TOGGLE="$HOME/.claude/worker-model"
+printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
+
+cat >"$BIN/worker-pick" <<'PICK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$PICK_LOG"
+printf 'picked\n'
+PICK
+# The worker: it writes in the directory the supervisor put it in, and names each write in its
+# transcript, which is the only evidence worker-run accepts for "this run's files".
+cat >"$BIN/claudeb" <<'CLAUDEB'
+#!/usr/bin/env bash
+input=$(cat)
+transcript_dir="$CLAUDEB_PROFILES_ROOT/picked/projects/fixture"
+mkdir -p "$transcript_dir"
+jq -cn --arg t "$input" '{type:"user",message:{role:"user",content:$t}}' >"$transcript_dir/$STUB_SESSION.jsonl"
+for path in ${STUB_WRITE:-}; do
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' "${STUB_CONTENT:-worker}" >"$path"
+  jq -cn --arg path "$path" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{timestamp:$ts,type:"assistant",message:{content:[{type:"tool_use",name:"Edit",input:{file_path:$path}}]}}' \
+    >>"$transcript_dir/$STUB_SESSION.jsonl"
+done
+printf '{"result":"light edit done","session_id":"%s"}\n' "$STUB_SESSION"
+CLAUDEB
+cat >"$BIN/codex" <<'CODEX'
+#!/usr/bin/env bash
+cat >/dev/null
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -o ]; then printf 'codex research answer\n' >"$2"; fi
+  shift
+done
+CODEX
+chmod +x "$BIN"/*
+
+session=0
+wr(){ session=$((session + 1))
+  env HOME="$HOME" PATH="$BIN:/usr/bin:/bin" TMPDIR="$WORK" WORKER_RUN_DIR="$RUNS" WORKER_RUN_IDLE_S=0 \
+    WORKER_RUN_ALLOW_DUPLICATE=1 WORKER_RUN_VERIFY_TIMEOUT_S=60 \
+    CLAUDEB_DIR="$HOME/.claude-profiles/.claudeb" CLAUDEB_PROFILES_ROOT="$HOME/.claude-profiles" \
+    CODEX_PROFILES_DIR="$HOME/.codex-profiles" \
+    WORKER_RUN_WORKER_PICK="$BIN/worker-pick" PICK_LOG="$WORK/picks" \
+    WORKER_RUN_CLAUDEB="$BIN/claudeb" WORKER_RUN_CODEX="$BIN/codex" \
+    STUB_SESSION="light-session-$session" STUB_WRITE="${STUB_WRITE:-}" STUB_CONTENT="${STUB_CONTENT:-}" \
+    "$ROOT/bin/worker-run" "$@" >"$WORK/out" 2>"$WORK/err"; }
+
+start(){ STUB_WRITE="${STUB_WRITE:-}" STUB_CONTENT="${STUB_CONTENT:-}" wr start "$@" || return $?
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/out"); RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/out"); }
+await(){ local index
+  for index in $(seq 1 200); do
+    wr wait "$RUN_ID" --max 0
+    grep -q '^STATUS: done\|^STATUS: failed' "$WORK/out" && return 0
+    sleep 0.05
+  done
+  return 1; }
+report(){ wr report "$RUN_ID"; cat "$WORK/out"; }
+# Tracked and untracked content of the shared checkout, with its own .git and the throwaway
+# worktrees under .claude left out: what "byte-identical after a red run" is measured on.
+tree_digest(){ (cd "$1" && find . -path ./.git -prune -o -path ./.claude -prune -o -type f -print0 |
+  sort -z | xargs -0 shasum -a 256) | shasum -a 256 | awk '{print $1}'; }
+run_dirs(){ find "$RUNS" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' '; }
+
+# --- green: the diff reaches the shared checkout and the worktree is gone ---------------------
+printf 'SCOPE: src/*\nVERIFY: test -f src/new.txt\n\nWrite src/new.txt.\n' >"$WORK/brief"
+STUB_WRITE='src/new.txt' start light --brief "$WORK/brief" --workdir "$SHARED" || fail "green start: $(cat "$WORK/err")"
+assert jq -e '.light == "edit" and (.light_worktree | test("/\\.claude/worktrees/light-")) and .light_shared_top == $top' \
+  --arg top "$(cd "$SHARED" && pwd -P)" "$RUN_DIR/meta.json" >/dev/null
+worktree=$(jq -r '.light_worktree' "$RUN_DIR/meta.json")
+assert test -d "$worktree"
+assert await
+green=$(report)
+assert test "$(head -n1 <<<"$green")" = 'VERIFIED: pass'
+assert grep -qx 'SCOPE: ok' <<<"$green"
+assert grep -qx 'LANDED: yes' <<<"$green"
+assert grep -q "^WORKDIR: .*/\.claude/worktrees/light-" <<<"$green"
+assert test "$(cat "$SHARED/src/new.txt")" = worker
+assert test ! -e "$worktree"
+assert test -z "$(git -C "$SHARED" branch --list "light-$RUN_ID")"
+assert grep -qx '.claude/worktrees/' "$SHARED/.git/info/exclude"
+git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm landed
+
+# A brief may carry SCOPE without VERIFY: nothing to run, and the diff still lands.
+printf 'SCOPE: src/*\n\nWrite src/unverified.txt.\n' >"$WORK/brief"
+STUB_WRITE='src/unverified.txt' start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'no-verify start'
+assert await
+noverify=$(report)
+assert grep -qx 'VERIFIED: none' <<<"$noverify"
+assert grep -qx 'LANDED: yes' <<<"$noverify"
+assert test -f "$SHARED/src/unverified.txt"
+git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm unverified
+
+# --- out of scope: nothing lands, and the shared tree is untouched to the byte ----------------
+before=$(tree_digest "$SHARED")
+printf 'SCOPE: src/*\nVERIFY: true\n\nWrite one file under src.\n' >"$WORK/brief"
+STUB_WRITE='other/stray.txt' start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'escape start'
+assert await
+escaped=$(report)
+assert grep -qx 'SCOPE: escaped other/stray.txt' <<<"$escaped"
+assert grep -qx 'LANDED: no' <<<"$escaped"
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert test ! -e "$SHARED/other/stray.txt"
+kept=$(sed -n 's/^LIGHT-WORKTREE: //p' <<<"$escaped")
+assert test -f "$kept/other/stray.txt"
+
+# --- red VERIFY: in scope, still nothing lands ------------------------------------------------
+before=$(tree_digest "$SHARED")
+printf 'SCOPE: src/*\nVERIFY: grep -q absent src/red.txt\n\nWrite src/red.txt.\n' >"$WORK/brief"
+STUB_WRITE='src/red.txt' start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'red-verify start'
+assert await
+red=$(report)
+assert grep -qx 'VERIFIED: fail' <<<"$red"
+assert grep -qx 'SCOPE: ok' <<<"$red"
+assert grep -qx 'LANDED: no' <<<"$red"
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert test ! -e "$SHARED/src/red.txt"
+kept=$(sed -n 's/^LIGHT-WORKTREE: //p' <<<"$red")
+assert test -f "$kept/src/red.txt"
+
+# --- the shared tree moved under the run: the patch is kept, nothing is forced ----------------
+printf 'moved by another agent\n' >"$SHARED/src/kept.txt"
+before=$(tree_digest "$SHARED")
+printf 'SCOPE: src/*\nVERIFY: true\n\nRewrite src/kept.txt.\n' >"$WORK/brief"
+STUB_WRITE='src/kept.txt' STUB_CONTENT='worker rewrite' start light --brief "$WORK/brief" --workdir "$SHARED" ||
+  fail 'conflict start'
+assert await
+conflict=$(report)
+assert grep -qx 'SCOPE: ok' <<<"$conflict"
+assert grep -qx 'LANDED: conflict' <<<"$conflict"
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert test "$(cat "$SHARED/src/kept.txt")" = 'moved by another agent'
+patch=$(sed -n 's/^LIGHT-PATCH: //p' <<<"$conflict")
+assert test -s "$patch"
+assert test -n "$(sed -n 's/^LIGHT-WORKTREE: //p' <<<"$conflict")"
+git -C "$SHARED" checkout -q -- src/kept.txt
+
+# --- the contract is a launch condition, not a report line ------------------------------------
+before_runs=$(run_dirs)
+printf 'Rewrite whatever you like.\n' >"$WORK/brief"
+wr start light --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 4
+assert grep -q "needs a 'SCOPE: <glob>" "$WORK/err"
+assert test "$(run_dirs)" = "$before_runs"
+assert test -z "$(find "$SHARED/.claude/worktrees" -mindepth 1 -maxdepth 1 -newer "$WORK/brief" 2>/dev/null)"
+
+# --- recipes: the brief the orchestrator did not have to write ---------------------------------
+STUB_WRITE='src/renamed.txt' STUB_CONTENT=beta start light --recipe rename \
+  --set from=alpha --set to=beta --set 'paths=src/*' --workdir "$SHARED" || fail "recipe start: $(cat "$WORK/err")"
+assert test "$(head -n1 "$RUN_DIR/brief")" = 'SCOPE: src/*'
+assert test "$(sed -n 2p "$RUN_DIR/brief")" = "VERIFY: ! grep -rlF 'alpha' src/*"
+assert grep -qF 'Rename `alpha` to `beta` in src/*' "$RUN_DIR/brief"
+assert test "$(grep -c '{{' "$RUN_DIR/brief")" = 0
+assert test "$(cat "$RUN_DIR/light-scope")" = 'src/*'
+assert await
+recipe=$(report)
+assert grep -qx 'VERIFIED: pass' <<<"$recipe"
+assert grep -qx 'LANDED: yes' <<<"$recipe"
+assert test "$(cat "$SHARED/src/renamed.txt")" = beta
+
+wr start light --recipe no-such-recipe --set from=a --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'unknown recipe: no-such-recipe' "$WORK/err"
+wr start light --recipe rename --set from=alpha --set to=beta --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'recipe rename still needs {{paths}}' "$WORK/err"
+wr start light --recipe rename --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'pass one of --recipe and --brief' "$WORK/err"
+
+# --- G7: off the light row's vendor, a light run must be told which model to use ---------------
+printf 'light_research=gemini\nlight_edit=claudeb:sonnet\n' >"$TOGGLE"
+printf 'SCOPE: src/*\n\nLook around.\n' >"$WORK/brief"
+wr start codex --role research --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/out"
+assert grep -q 'the light_research row names gemini, not codex' "$WORK/err"
+wr start codex --role research --model gpt-6-astra --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 0
+assert jq -e '.vendor == "codex" and .role == "research" and .model == "gpt-6-astra" and .light == "research"' \
+  "$RUNS/$(sed -n 's/^RUN: //p' "$WORK/out")/meta.json" >/dev/null
+
+printf 'PASS: %s asserts; Light edit SCOPE/VERIFY contract (refused at launch without SCOPE), the throwaway worktree, land-on-green with conflict and red-run byte-identity, recipe composition and refusals, and the off-row light vendor refusal\n' "$asserts"

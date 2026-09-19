@@ -180,8 +180,11 @@ wr(){ env HOME="$HOME" PATH="$BIN:/usr/bin:/bin" TMPDIR="$WORK" WORKER_RUN_DIR="
   WORKER_RUN_CLAUDEB="$BIN/claudeb" WORKER_RUN_CODEX="$BIN/codex" WORKER_RUN_GROKB="$BIN/grokb" \
   "$ROOT/bin/worker-run" "$@" >"$WORK/out" 2>"$WORK/err"; }
 printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
+# A Light edit launches under the SCOPE/VERIFY contract (tests/test_light_edit.sh owns it): the
+# brief fences the paths the run may touch, and without that line there is no launch at all.
+printf 'SCOPE: file\nVERIFY: true\n\nEdit the repository file.\n' >"$WORK/edit-brief"
 : >"$WORK/vendor.log"
-wr start light --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
+wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 0
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e '.vendor == "claudeb" and .role == "workers" and .light == "edit" and .model == "sonnet" and .effort == "medium"' "$RUNS/$run_id/meta.json"
 wr wait "$run_id" --max 60; assert grep -q '^STATUS: done$' "$WORK/out"
@@ -189,7 +192,7 @@ assert grep -q -- '--dangerously-skip-permissions' "$WORK/vendor.log"
 wr start claudeb --model sonnet --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -ne 0
 assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
 printf 'light_edit=grok:opus\n' >"$TOGGLE"
-wr start light --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 4
+wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
 rm -f "$TOGGLE"
 

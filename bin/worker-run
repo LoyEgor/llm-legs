@@ -11,7 +11,7 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> | --recipe <name> [--set k=v]... [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
@@ -1597,6 +1597,172 @@ claim_agent_tag_locked() { # directory tag-dir
     >"$tmp" 2>/dev/null && mv -f "$tmp" "$best" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
+# TEMP-LIGHTLAND(worker-run): the Light edit contract — SCOPE/VERIFY headers, a throwaway worktree
+# and land-on-green. Registered in EXPERIMENTS.json; remove the whole block with its entry.
+#
+# A header line of the brief, read the way `brief_review_round` reads ROUND:. Only the header,
+# because a SCOPE: the prose happens to quote is a sentence, not a fence.
+light_brief_header_value() { # brief key
+  local brief="$1" key="$2" line value=''
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key":*) value=${line#"$key":}; break ;;
+      RESUME\ *:* | ATTACH\ *:*) continue ;;
+    esac
+    [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || break
+  done <"$brief"
+  value=${value#"${value%%[![:space:]]*}"}
+  value=${value%"${value##*[![:space:]]}"}
+  printf '%s\n' "$value"
+}
+
+# Refused rather than launched half-composed: a `{{to}}` left standing reaches the worker as
+# literal text, and it renames things to it.
+light_recipe_compose() { # name key=value...
+  local name="$1" template text value key left out
+  shift
+  case "$name" in
+    *[!a-z0-9-]* | '') fail "recipe names are lowercase words: $name" ;;
+  esac
+  template="$SCRIPT_DIRECTORY/../share/light-recipes/$name.md"
+  [ -r "$template" ] ||
+    fail "unknown recipe: $name — share/light-recipes holds $(ls "$SCRIPT_DIRECTORY/../share/light-recipes" 2>/dev/null | sed 's/\.md$//' | tr '\n' ' ')"
+  text=$(cat "$template") || fail "could not read recipe $name"
+  for value in "$@"; do
+    key=${value%%=*}
+    case "$value" in *=*) ;; *) fail "--set takes key=value: $value" ;; esac
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail "--set names no placeholder: $value"
+    text=${text//"{{$key}}"/${value#*=}}
+  done
+  left=$(grep -o '{{[A-Za-z_][A-Za-z0-9_]*}}' <<<"$text" | sort -u | tr '\n' ' ')
+  [ -z "$left" ] || fail "recipe $name still needs ${left% } — pass each as --set <key>=<value>"
+  out=$(mktemp "${TMPDIR:-/tmp}/worker-run-recipe.XXXXXX") || fail 'could not compose the recipe brief'
+  printf '%s\n' "$text" >"$out" || fail 'could not write the composed brief'
+  printf '%s\n' "$out"
+}
+
+allocate_run_directory() { # vendor — sets root, run_id, directory
+  local allocate_vendor="$1" stamp mark attempts=0 prune_marker
+  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+  mkdir -p "$root" || fail "could not create run root: $root"
+  root=$(cd "$root" && pwd -P) || fail "could not resolve run root: $root"
+  prune_marker="$root/.prune"
+  if [ ! -f "$prune_marker" ] || [ -n "$(find "$prune_marker" -mtime +1 2>/dev/null)" ]; then
+    touch "$prune_marker" 2>/dev/null
+    find "$root" -mindepth 1 -maxdepth 1 -type d ! -name browse -mtime +7 -exec rm -rf {} + 2>/dev/null
+  fi
+  stamp=$(date +%s)
+  printf -v mark '%04x' "$RANDOM"
+  run_id="$allocate_vendor-$stamp-$$-$mark"
+  while :; do
+    directory="$root/$run_id"
+    mkdir "$directory" 2>/dev/null && break
+    attempts=$((attempts + 1))
+    printf -v mark '%04x' "$RANDOM"
+    run_id="$allocate_vendor-$stamp-$$-$mark"
+    [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
+  done
+}
+
+# On a branch and never detached: Egor reads a worktree off its branch name, and a red run's
+# worktree stays behind for him to look at.
+light_worktree_add() { # top run-id
+  local top="$1" light_run="$2" exclude path
+  exclude=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/info/exclude
+  [ ! -d "${exclude%/exclude}" ] || grep -qxF '.claude/worktrees/' "$exclude" 2>/dev/null ||
+    printf '.claude/worktrees/\n' >>"$exclude" 2>/dev/null || :
+  path="$top/.claude/worktrees/light-$light_run"
+  mkdir -p "$top/.claude/worktrees" || return 1
+  git -C "$top" worktree add --quiet -b "light-$light_run" "$path" HEAD >/dev/null 2>&1 || return 1
+  printf '%s\n' "$path"
+}
+
+light_worktree_remove() { # top worktree
+  local top="$1" path="$2" branch=${2##*/}
+  git -C "$top" worktree remove --force "$path" >/dev/null 2>&1 || return 1
+  git -C "$top" branch -D "$branch" >/dev/null 2>&1 || :
+  return 0
+}
+
+# The brief's own success predicate, run in the worktree with a ceiling: a VERIFY that hangs would
+# hold the run's exit code back for as long as it lives, and the supervisor is already detached.
+light_verify_run() { # workdir command log
+  local workdir="$1" command="$2" log="$3" limit="${WORKER_RUN_VERIFY_TIMEOUT_S:-600}" child deadline
+  [[ "$limit" =~ ^[0-9]+$ ]] || limit=600
+  ( cd "$workdir" && eval "$command" ) >"$log" 2>&1 </dev/null &
+  child=$!
+  deadline=$(($(date +%s) + limit))
+  while kill -0 "$child" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      kill -TERM "$child" 2>/dev/null
+      sleep 1
+      kill -KILL "$child" 2>/dev/null
+      wait "$child" 2>/dev/null
+      printf 'VERIFY killed after %ss\n' "$limit" >>"$log"
+      return 1
+    fi
+    sleep 0.2
+  done
+  wait "$child"
+}
+
+# The verdict travels as files, never as output: _deliver's stdout goes to /dev/null, and `report`
+# is where anyone reads it.
+light_gate() { # directory
+  local directory="$1" worktree top scope verify path glob matched
+  local scope_state=none verify_state=none landed=no escaped='' patch="$directory/land.patch"
+  local -a globs=()
+  jq -e '.light == "edit" and (.light_worktree // "") != ""' "$directory/meta.json" >/dev/null 2>&1 || return 0
+  [ ! -f "$directory/light-verdict" ] || return 0
+  worktree=$(jq -r '.light_worktree' "$directory/meta.json")
+  top=$(jq -r '.light_shared_top' "$directory/meta.json")
+  scope=$(cat "$directory/light-scope" 2>/dev/null)
+  verify=$(cat "$directory/light-verify" 2>/dev/null)
+  compute_run_files "$directory"
+  if [ -z "$scope" ]; then
+    scope_state=none
+  elif [ -n "$RUN_FILES_REASON" ]; then
+    scope_state="escaped (the run's files are unknown: $RUN_FILES_REASON)"
+  else
+    read -r -a globs <<<"$scope"
+    while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      matched=false
+      for glob in ${globs[@]+"${globs[@]}"}; do
+        [[ "$path" == $glob ]] || continue
+        matched=true
+        break
+      done
+      [ "$matched" = true ] || escaped+=" $path"
+    done <<<"$RUN_FILES_LIST"
+    if [ -z "$escaped" ]; then scope_state=ok; else scope_state="escaped$escaped"; fi
+  fi
+  if [ -n "$verify" ]; then
+    if light_verify_run "$worktree" "$verify" "$directory/verify.log"; then verify_state=pass; else verify_state=fail; fi
+  fi
+  if [ "$scope_state" = ok ] && [ "$verify_state" != fail ]; then
+    git -C "$worktree" add -A >/dev/null 2>&1
+    git -C "$worktree" diff --cached --binary HEAD >"$patch" 2>/dev/null || : >"$patch"
+    if [ ! -s "$patch" ]; then
+      rm -f "$patch"
+      light_worktree_remove "$top" "$worktree" && worktree=''
+    elif git -C "$top" apply --check "$patch" >/dev/null 2>&1 && git -C "$top" apply "$patch" >/dev/null 2>&1; then
+      landed=yes
+      light_worktree_remove "$top" "$worktree" && worktree=''
+    else
+      landed=conflict
+    fi
+  fi
+  {
+    printf 'VERIFIED: %s\nSCOPE: %s\nLANDED: %s\n' "$verify_state" "$scope_state" "$landed"
+    [ -z "$worktree" ] || printf 'LIGHT-WORKTREE: %s\n' "$worktree"
+    [ "$landed" != conflict ] || printf 'LIGHT-PATCH: %s\n' "$patch"
+  } >"$directory/light-verdict.tmp.$$" 2>/dev/null &&
+    mv -f "$directory/light-verdict.tmp.$$" "$directory/light-verdict" 2>/dev/null ||
+    rm -f "$directory/light-verdict.tmp.$$" 2>/dev/null
+  return 0
+}
+
 refuse_live_run() { # brief resume
   local brief="$1" resume="$2" root entry directory pid now started sha other_sha owner
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
@@ -1643,8 +1809,10 @@ start_run() {
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
   local round_source='' text_rule='' candidate='' rule=''
   local -a text_rounds=()
-  local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root epoch suffix run_id directory
+  local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top=''
+  local recipe='' recipe_brief='' light_scope='' light_verify='' light_worktree='' light_shared_top='' light_offrow=false
+  local -a recipe_sets=()
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
   local web_search=false brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
@@ -1670,6 +1838,8 @@ start_run() {
       --chrome) chrome=true; shift ;;
       --round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;
       --role) [ "$#" -ge 2 ] || usage; role="$2"; shift 2 ;;
+      --recipe) [ "$#" -ge 2 ] || usage; recipe="$2"; shift 2 ;;
+      --set) [ "$#" -ge 2 ] || usage; recipe_sets+=("$2"); shift 2 ;;
       --research-timeout) [ "$#" -ge 2 ] || usage; research_timeout="$2"; shift 2 ;;
       --browser) browser=true; shift ;;
       --target)
@@ -1681,7 +1851,8 @@ start_run() {
       *) usage ;;
     esac
   done
-  [ -n "$brief" ] || usage
+  [ -n "$brief" ] || [ -n "$recipe" ] || usage
+  [ -z "$brief" ] || [ -z "$recipe" ] || fail '--recipe composes the brief itself: pass one of --recipe and --brief'
   [ "$role" = workers ] || [ "$role" = research ] || usage
   if [ "$role" = research ]; then light=research; elif [ "$vendor" = light ]; then light=edit; fi
   if [ -n "$light" ]; then
@@ -1692,11 +1863,20 @@ start_run() {
         fail "the light_$light row in $CONFIG_FILE names no vendor/model of the table. Nothing was launched and no account was spent."
       fi
     fi
+    # Off the row's vendor there is no light model to fall to, and the vendor's own default is a
+    # STRONG model: a run that silently answered on it would be a light class in name only. The
+    # refusal itself waits until the flag-shape checks below have had their say.
+    [ -n "$light_model" ] || [ -n "$model" ] || light_offrow=true
     model=${model:-${light_model:-$(worker_model_default_model "$vendor")}}
     effort=${effort:-$(worker_model_default_effort "$vendor" "$model" light)}
     # A light edit is not the implementation leg `<vendor>_workers=off` closes, so it asks the
     # picker under its own role; research already travels as `research` a few lines below.
     [ "$light" != edit ] || export WORKER_RUN_ROLE=light
+  fi
+  if [ -n "$recipe" ]; then
+    [ "$light" = edit ] || fail '--recipe composes a Light edit brief: it belongs to `worker-run start light`'
+    brief=$(light_recipe_compose "$recipe" ${recipe_sets[@]+"${recipe_sets[@]}"}) || exit $?
+    recipe_brief=$brief
   fi
   if [ "$role" = research ]; then
     [ -z "$resume" ] && [ "$browser" = false ] && [ "$chrome" = false ] || fail 'research does not support resume or browser flags'
@@ -1772,6 +1952,14 @@ start_run() {
     fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
+  if [ "$light" = edit ]; then
+    light_scope=$(light_brief_header_value "$brief" SCOPE)
+    [ -n "$light_scope" ] ||
+      fail "a Light edit brief needs a 'SCOPE: <glob> [<glob>...]' header line naming the repo-relative paths the run may touch, and may carry 'VERIFY: <command>' beside it: worker-run checks both after the run and only then lands the diff. Nothing was launched and no account was spent."
+    light_verify=$(light_brief_header_value "$brief" VERIFY)
+    light_shared_top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) ||
+      fail "a Light edit runs in a throwaway worktree of its workdir, and $workdir is in no git repository. Nothing was launched and no account was spent."
+  fi
   case "$vendor" in
     claudeb)
       { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'claudeb does not support --add-dir, --image, or --web-search'
@@ -1796,6 +1984,10 @@ start_run() {
       [ "${#add_dirs[@]}" -eq 0 ] && [ "${#images[@]}" -eq 0 ] || fail 'grok does not support --add-dir or --image; a run over several repositories needs another vendor, or one run per repository'
       ;;
   esac
+  if [ "$light_offrow" = true ]; then
+    outcome_line MODEL_REFUSED
+    fail "the light_$light row names $(worker_light_vendor "$light" 2>/dev/null || printf 'no vendor'), not $vendor: a $vendor light run with no --model falls to that vendor's strong default. Name a model with --model, or launch on the row's vendor. Nothing was launched and no account was spent."
+  fi
   [ -z "$browser_target" ] || [ "$browser" = true ] || usage
   if [ "$browser" = true ]; then
     case "$vendor" in
@@ -1928,6 +2120,15 @@ start_run() {
   esac
   warn_cold_resume "$vendor" "$account" "$resume" || :
 
+  # The run directory has to exist here and not below: the worktree is named after the run id, and
+  # the vendor command a few lines down is composed around the workdir it replaces.
+  if [ "$light" = edit ]; then
+    allocate_run_directory "$vendor"
+    light_worktree=$(light_worktree_add "$light_shared_top" "$run_id") ||
+      fail "could not create the Light edit worktree under $light_shared_top/.claude/worktrees (a repository with no commit has no HEAD to branch from)"
+    workdir=$light_worktree
+  fi
+
   case "$vendor" in
     claudeb)
       cli="${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}"
@@ -2003,27 +2204,11 @@ start_run() {
       ;;
   esac
 
-  root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
-  mkdir -p "$root" || fail "could not create run root: $root"
-  root=$(cd "$root" && pwd -P) || fail "could not resolve run root: $root"
-  local prune_marker="$root/.prune"
-  if [ ! -f "$prune_marker" ] || [ -n "$(find "$prune_marker" -mtime +1 2>/dev/null)" ]; then
-    touch "$prune_marker" 2>/dev/null
-    find "$root" -mindepth 1 -maxdepth 1 -type d ! -name browse -mtime +7 -exec rm -rf {} + 2>/dev/null
-  fi
-  epoch=$(date +%s)
-  local attempts=0
-  printf -v suffix '%04x' "$RANDOM"
-  run_id="$vendor-$epoch-$$-$suffix"
-  while :; do
-    directory="$root/$run_id"
-    mkdir "$directory" 2>/dev/null && break
-    attempts=$((attempts + 1))
-    printf -v suffix '%04x' "$RANDOM"
-    run_id="$vendor-$epoch-$$-$suffix"
-    [ "$attempts" -lt 50 ] || fail "could not create run directory under: $root"
-  done
+  [ -n "$directory" ] || allocate_run_directory "$vendor"
   cp "$brief" "$directory/brief" || fail 'could not copy brief'
+  [ -z "$recipe_brief" ] || rm -f "$recipe_brief"
+  [ -z "$light_scope" ] || printf '%s\n' "$light_scope" >"$directory/light-scope" || fail 'could not record the brief SCOPE'
+  [ -z "$light_verify" ] || printf '%s\n' "$light_verify" >"$directory/light-verify" || fail 'could not record the brief VERIFY'
   [ -z "$fix_rule" ] || printf '%s\n' "$fix_rule" >"$directory/fix-rule" || fail 'could not write the fix rule'
   if [ "$browser" = true ]; then
     cp "$browser_preamble" "$directory/browser-preamble" || fail 'could not copy browser preamble'
@@ -2059,10 +2244,11 @@ start_run() {
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
     --argjson chrome "$chrome" --argjson browser "$browser" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
-    --arg light "$light" \
+    --arg light "$light" --arg light_worktree "$light_worktree" --arg light_shared_top "$light_shared_top" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
      + if $light != "" then {light:$light} else {} end
+     + if $light_worktree != "" then {light_worktree:$light_worktree,light_shared_top:$light_shared_top} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
@@ -3271,6 +3457,7 @@ report_run() {
   [ -d "$directory" ] && [ -r "$directory/meta.json" ] || fail "unknown run: $1"
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   account=$(jq -r '.account' "$directory/meta.json")
+  [ ! -s "$directory/light-verdict" ] || cat "$directory/light-verdict"
   printf 'ACCOUNT: %s (%s)\n' "$account" "$vendor"
   reroute_lines "$directory"
   if [ -f "$directory/exit_code" ]; then
@@ -3884,6 +4071,8 @@ complete_run() {
   print_outcome "$directory" "$vendor" "$code"
   lang_line "$directory"
   write_run_state "$directory" "$(terminal_status "$directory" "$vendor" "$code")" "$code"
+  # Last, because everything above reads the workdir this may remove.
+  light_gate "$directory" || :
 }
 
 browse_run() {

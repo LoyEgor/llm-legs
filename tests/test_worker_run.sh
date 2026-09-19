@@ -2067,7 +2067,17 @@ done
 clear_stub
 set_config 'light_edit=claudeb:sonnet' 'claudeb_workers=off' 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_ACCOUNT=picked PICK_RC=0
-start_ok light
+# A Light edit launches under the SCOPE/VERIFY contract and inside a worktree off the workdir's
+# HEAD, so it needs a repository with a commit; tests/test_light_edit.sh owns that contract.
+light_workdir="$WORK/light-workdir"
+mkdir -p "$light_workdir"
+git -C "$light_workdir" init -q
+printf 'base\n' >"$light_workdir/file"
+git -C "$light_workdir" add file
+git -C "$light_workdir" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
+printf 'SCOPE: file\ntest brief\nsecond line\n' >"$WORK/brief"
+WORKER_TEST_WORKDIR="$light_workdir" start_ok light
+printf 'test brief\nsecond line\n' >"$WORK/brief"
 assert meta_account_is picked
 assert grep -qx -- '--account claudeb --role light --claim' "$PICK_LOG"
 assert jq -e '.model == "sonnet" and .light == "edit"' "$RUN_DIR/meta.json" >/dev/null
@@ -2590,7 +2600,9 @@ clear_stub
 set_config 'light_edit=claudeb:sonnet'
 export PICK_RC=0 PICK_ACCOUNT=readonly-light STUB_TRANSCRIPT_SESSION=readonly-light STUB_SESSION=readonly-light
 export STUB_TRANSCRIPT_ACCOUNT=readonly-light
-start_ok light
+printf 'SCOPE: file\ntest brief\nsecond line\n' >"$WORK/brief"
+WORKER_TEST_WORKDIR="$light_workdir" start_ok light
+printf 'test brief\nsecond line\n' >"$WORK/brief"
 assert await_done
 assert jq -e '.light == "edit"' "$RUN_DIR/meta.json" >/dev/null
 report=$("$RUNNER" report "$RUN_ID")
@@ -2598,7 +2610,9 @@ assert test "$(grep -c '^HINT:' <<<"$report")" -eq 0
 assert test ! -e "$RUN_DIR/report-readonly"
 
 clear_stub
-set_config 'claudeb_model=opus' 'claudeb_effort=high'
+# On the row's own vendor: off it, a research launch with no --model is refused rather than served
+# the vendor's strong default under the light class.
+set_config 'claudeb_model=opus' 'claudeb_effort=high' 'light_research=claudeb:sonnet'
 export PICK_RC=0 PICK_ACCOUNT=readonly-research STUB_TRANSCRIPT_SESSION=readonly-research STUB_SESSION=readonly-research
 export STUB_TRANSCRIPT_ACCOUNT=readonly-research
 start_ok claudeb --role research
