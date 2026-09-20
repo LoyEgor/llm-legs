@@ -38,7 +38,7 @@ FAILURE_REASONS = (
         r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
         r"|did not declare a clean review|stopped before reviewing|returned empty content"
         r"|no result event|no assistant message|stopped at the \d+-turn budget"
-        r"|without a final message",
+        r"|without a final message|answered the clean marker without reading",
         re.IGNORECASE)),
     ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded", re.IGNORECASE)),
     ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b")),
@@ -76,6 +76,7 @@ FAILURE_ORIGIN = {
     "crashed": "ours",
     "auth": "ours",
     "not found": "ours",
+    "mismatch": "theirs",
     "chunks unread": "ours",
 }
 ORIGIN_ORDER = ("ours", "theirs")
