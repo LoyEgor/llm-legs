@@ -2,12 +2,28 @@
 """Per-model leg weather across review cells and worker runs, read passively off the run stores."""
 import argparse
 import calendar
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
 import statistics
 import sys
 import time
+
+BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+
+
+def load_gemini_weather():
+    loader = importlib.machinery.SourceFileLoader(
+        "gemini_weather", os.path.join(BIN_DIR, "gemini-weather"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+gemini = load_gemini_weather()
 
 DEFAULT_WINDOW_H = 24
 TREND_D = 7
@@ -40,7 +56,10 @@ FAILURE_REASONS = (
         r"|no result event|no assistant message|stopped at the \d+-turn budget"
         r"|without a final message|answered the clean marker without reading",
         re.IGNORECASE)),
-    ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded", re.IGNORECASE)),
+    # geminib spells the same weather twice — agy's own refusal and the line geminib prints when
+    # its fallback chain runs out — and neither says "capacity" the way a gateway does.
+    ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
+                            r"|No capacity available for model|geminib: capacity ", re.IGNORECASE)),
     ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b")),
     ("cancelled", re.compile(r"context canceled", re.IGNORECASE)),
     ("root commit", re.compile(r"root commit", re.IGNORECASE)),
@@ -88,14 +107,13 @@ EMPTY_ZERO_FINDING_REASONS = ("bad output",)
 BENCH_ID_RE = re.compile(r"^(\d{8}T\d{6}Z)-[0-9a-f]+$")
 WORKER_ID_RE = re.compile(r"^[a-z][a-z0-9]*-(\d{9,11})-\d+-[0-9a-z]+$")
 USAGE_LIMIT_RE = re.compile(r"^OUTCOME: \w*_USAGE_LIMIT\b", re.MULTILINE)
+WORKER_TAIL_BYTES = 8192
 OUTSIDE_WRITE_RE = re.compile(
     r"^UNKNOWN: transcript names a write outside the snapshotted repository[^\n]*?: (/[^\n]*)$",
     re.MULTILINE)
 TIMEOUT_RE = re.compile(r"print timeout|timed out", re.IGNORECASE)
 PRINT_TIMEOUT_RE = re.compile(r"print timeout after (?:(\d+)m)?(?:(\d+)s)?")
 TIMED_OUT_RE = re.compile(r"timed out after (\d+)\s*(?:s\b|seconds)")
-SERVED_FLASH_RE = re.compile(r"(?i)gemini[- ]3\.(\d+)[- ]flash")
-SERVED_PRO_RE = re.compile(r"(?i)\bpro\b")
 ID_LIKE_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^[0-9a-f]{12,}$", re.IGNORECASE)
 
 
@@ -115,9 +133,13 @@ def weather_dir():
     return os.environ.get("LLM_WEATHER_DIR") or os.path.join(base_home(), ".cache", "llm-weather")
 
 
+def claudeb_dir():
+    return os.environ.get("CLAUDEB_DIR") or os.path.join(
+        base_home(), ".claude-profiles", ".claudeb")
+
+
 def stats_dir():
-    return os.environ.get("WORKER_STATS_DIR") or os.path.join(
-        base_home(), ".claude-profiles", ".claudeb", "worker-stats")
+    return os.environ.get("WORKER_STATS_DIR") or os.path.join(claudeb_dir(), "worker-stats")
 
 
 def runs_dir():
@@ -130,6 +152,16 @@ def read_json(path):
             return json.load(handle)
     except (OSError, ValueError):
         return None
+
+
+def read_tail(path, limit):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - limit))
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 
 def read_text(path):
@@ -188,14 +220,32 @@ def bench_project(meta):
     return project_of(repo)
 
 
+_family_slugs = None
+
+
+def family_slugs():
+    """geminib's own family list, served family name → slug; empty without its cache."""
+    global _family_slugs
+    if _family_slugs is None:
+        document = read_json(os.path.join(gemini.geminib_cache_dir(), "models.json")) or {}
+        entries = document.get("families")
+        _family_slugs = {}
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("slug"), str):
+                continue
+            for key in ("agy_prefix", "family"):
+                name = gemini.family_of(entry.get(key))
+                if name:
+                    _family_slugs[name] = entry["slug"]
+    return _family_slugs
+
+
 def bench_model(cell):
     served = cell.get("served_model")
     if isinstance(served, str) and served:
-        flash = SERVED_FLASH_RE.search(served)
-        if flash:
-            return "flash3" + flash.group(1)
-        if SERVED_PRO_RE.search(served):
-            return "pro"
+        slug = family_slugs().get(gemini.family_of(served) or "")
+        if slug:
+            return slug
     model = str(cell.get("model") or "")
     for prefix in ("agy-", "oc-"):
         if model.startswith(prefix):
@@ -324,24 +374,28 @@ def kill_detail(line):
 def classify_worker(run_dir, killed, exit_code):
     kill_word = killed.split()[0] if killed else ""
     if kill_word == "wall":
-        return "walled", "wall"
+        return "walled", "wall", ""
     result = read_text(os.path.join(run_dir, "result")) or ""
     if USAGE_LIMIT_RE.search(result):
-        return "walled", "usage limit"
+        return "walled", "usage limit", ""
     if os.path.exists(os.path.join(run_dir, "workdir-escape")):
-        return "escaped", "workdir-escape"
+        return "escaped", "workdir-escape", ""
     note = read_text(os.path.join(run_dir, "files-note")) or ""
     if any(not is_scratch_path(path.strip()) for path in OUTSIDE_WRITE_RE.findall(note)):
-        return "escaped", "outside write"
+        return "escaped", "outside write", ""
     if kill_word in ("silent", "idle"):
-        return "stalled", kill_detail(killed)
+        return "stalled", kill_detail(killed), ""
     if kill_word in ("deadline", "term", "signal"):
-        return "cap", kill_detail(killed)
+        return "cap", kill_detail(killed), ""
     if exit_code in (137, 143):
-        return "cap", "exit %d" % exit_code
+        return "cap", "exit %d" % exit_code, ""
     if exit_code not in (0, None):
-        return "failed", "exit %d" % exit_code
-    return None, ""
+        text = result + "\n" + read_tail(os.path.join(run_dir, "err"), WORKER_TAIL_BYTES)
+        reason = failure_reason(text)
+        if reason in FAILURE_ORIGIN:
+            return "failed", reason, FAILURE_ORIGIN[reason]
+        return "failed", "exit %d" % exit_code, ""
+    return None, "", ""
 
 
 def worker_legs(cutoff, now):
@@ -374,24 +428,36 @@ def worker_legs(cutoff, now):
         ended = mtime_of(exit_path) or mtime_of(killed_path) or started
         if ended < cutoff or ended > now + 3600:
             continue
-        klass, detail = classify_worker(run_dir, killed, exit_code)
+        klass, detail, origin = classify_worker(run_dir, killed, exit_code)
         meta = read_json(os.path.join(run_dir, "meta.json")) or {}
         legs.append({
             "surface": "worker", "model": fields[1], "at": ended,
             "duration": ended - started if match and ended > started else None,
-            "class": klass, "detail": detail, "origin": "",
+            "class": klass, "detail": detail, "origin": origin,
             "project": project_of(meta.get("workdir")), "ref": name,
         })
     return legs
 
 
 def mark_slow(legs):
-    durations = {}
+    clean, timed = {}, {}
     for leg in legs:
-        if leg["duration"] is not None and leg["class"] is None:
-            durations.setdefault((leg["surface"], leg["model"]), []).append(leg["duration"])
-    medians = {key: statistics.median(values) for key, values in durations.items()
-               if len(values) >= SLOW_MIN_LEGS}
+        if leg["duration"] is None:
+            continue
+        key = (leg["surface"], leg["model"])
+        timed.setdefault(key, []).append(leg["duration"])
+        if leg["class"] is None:
+            clean.setdefault(key, []).append(leg["duration"])
+    medians = {}
+    for key, values in timed.items():
+        # A group whose clean legs are too few to hold a median is read off all of them rather
+        # than left unjudged: a capped duration is the kill's, but no median at all hides a model
+        # that is slow on every leg it finishes.
+        sample = clean.get(key, [])
+        if len(sample) < SLOW_MIN_LEGS:
+            sample = values
+        if len(sample) >= SLOW_MIN_LEGS:
+            medians[key] = statistics.median(sample)
     for leg in legs:
         median = medians.get((leg["surface"], leg["model"]))
         if leg["class"] is None and median and leg["duration"] is not None \

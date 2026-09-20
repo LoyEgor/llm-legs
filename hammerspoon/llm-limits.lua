@@ -382,25 +382,6 @@ local function doctorStaleSuffix(asOf)
   return string.format(" · snapshot %dd old", math.floor(age / 86400))
 end
 
-local function geminiWeatherPath()
-  if M.geminiWeatherPath then return M.geminiWeatherPath end
-  local override = os.getenv("GEMINI_WEATHER_DIR")
-  if override and override ~= "" then return override .. "/latest.json" end
-  return home .. "/.cache/gemini-weather/latest.json"
-end
-
-local function readGeminiWeather()
-  local ok, decoded = pcall(function()
-    local file = io.open(geminiWeatherPath(), "r")
-    if not file then return nil end
-    local contents = file:read("*a")
-    file:close()
-    return hs.json.decode(contents)
-  end)
-  if not ok or type(decoded) ~= "table" or type(decoded.families) ~= "table" then return nil end
-  return decoded
-end
-
 local function readLlmLimits()
   local ok, result, reason = pcall(function()
     local file = io.open(M.cachePath, "r")
@@ -530,41 +511,6 @@ local function newCollectorTask(callback, args, envExtra)
     task:setEnvironment(environment)
   end
   return task
-end
-
-local GEMINI_WEATHER_FRESH_S = 60
-local lastWeatherKick = 0
-
--- The rows render the cache as it is; this refreshes it for the next open, off the menu thread.
-local function kickGeminiWeather(weather, force)
-  local now = os.time()
-  local generated = type(weather) == "table" and tonumber(weather.generated_at) or 0
-  if not force and (now - generated < GEMINI_WEATHER_FRESH_S
-      or now - lastWeatherKick < GEMINI_WEATHER_FRESH_S) then
-    return
-  end
-  if M.weatherTask and M.weatherTask:isRunning() then
-    if force then M.weatherRefreshPending = true end
-    return
-  end
-  local path = M.geminiWeatherCmd or (repoRoot and repoRoot .. "/bin/gemini-weather")
-  if not path then return end
-  lastWeatherKick = now
-  local args = M.weatherWindowMin and { "--window", tostring(M.weatherWindowMin) } or {}
-  local task = hs.task.new(path, function()
-    M.weatherTask = nil
-    if M.weatherRefreshPending then
-      M.weatherRefreshPending = nil
-      kickGeminiWeather(nil, true)
-    end
-  end, args)
-  if not task then return end
-  local environment = baseEnvironment()
-  local override = os.getenv("GEMINI_WEATHER_DIR")
-  if override and override ~= "" then environment.GEMINI_WEATHER_DIR = override end
-  task:setEnvironment(environment)
-  M.weatherTask = task
-  task:start()
 end
 
 local actionLogPath = os.getenv("HOME") .. "/.hammerspoon/llm_limits_actions.log"
@@ -880,7 +826,7 @@ local function startDiagnosticsTask(field, path, args, onExit)
   end, args)
   if not task then return end
   local environment = baseEnvironment()
-  for _, name in ipairs({ "GEMINI_WEATHER_DIR", "WORKER_STATS_DIR" }) do
+  for _, name in ipairs({ "LLM_WEATHER_DIR", "WORKER_STATS_DIR", "WORKER_RUN_DIR" }) do
     local override = os.getenv(name)
     if override and override ~= "" then environment[name] = override end
   end
@@ -921,7 +867,13 @@ local function readTextFile(path)
   return contents
 end
 
+-- The slug shape is the fallback: an entry cached before geminib carried labels has none.
+local flashLabels = {}
+
 local function flashLabel(slug)
+  local label = flashLabels[slug]
+  local version = label and tostring(label):match("(%d+%.%d+)")
+  if version then return version end
   local major, minor = tostring(slug):match("^flash(%d)(%d+)$")
   return major and (major .. "." .. minor) or tostring(slug)
 end
@@ -933,8 +885,12 @@ local function geminiFlashSlugs() -- newest first, from geminib's models.json; n
   end)
   if not ok or type(decoded) ~= "table" or type(decoded.families) ~= "table" then return nil end
   local slugs = {}
+  flashLabels = {}
   for _, family in ipairs(decoded.families) do
-    if tostring(family.family or ""):match("%-flash$") and family.slug then slugs[#slugs + 1] = family.slug end
+    if tostring(family.family or ""):match("%-flash$") and family.slug then
+      slugs[#slugs + 1] = family.slug
+      flashLabels[family.slug] = family.label
+    end
   end
   if #slugs == 0 then return nil end
   return slugs
@@ -1031,7 +987,6 @@ local function copyChatCommand(row)
 end
 
 local LLM_WEATHER_FRESH_S = 300
-local LLM_WEATHER_INCIDENTS = 15
 local LLM_WEATHER_DEFAULT_H = 24
 local LLM_WEATHER_WINDOWS = {
   { hours = 3, label = "3 h" }, { hours = 6, label = "6 h" }, { hours = 12, label = "12 h" }, { hours = 24, label = "24 h" },
@@ -1039,8 +994,6 @@ local LLM_WEATHER_WINDOWS = {
 }
 -- The report's own words, in the order the collector ranks them; a column per class on every row.
 local WEATHER_CLASSES = { "walled", "cap", "stalled", "failed", "theirs", "slow", "escaped" }
--- gemini-weather counts the provider's 503s per family; they join that model's `theirs` column.
-local GEMINI_FAMILY_MODEL = { ["3.8"] = "flash38", ["3.7"] = "flash37", ["3.6"] = "flash36", ["3.1p"] = "pro" }
 local lastLlmWeatherKick = 0
 
 local function llmWeatherWindowLabel(hours)
@@ -1079,34 +1032,21 @@ local function kickLlmWeather(weather, force)
   -- A cache over another window is stale whatever its age, but a collector that keeps failing
   -- must not be relaunched on every menu open.
   if not force and cachedWindow ~= selected and now - lastLlmWeatherKick < 60 then return end
-  if M.llmWeatherTask and M.llmWeatherTask:isRunning() then return end
+  if taskRunning(M.llmWeatherTask) then return end
   local path = M.llmWeatherCmd or (repoRoot and repoRoot .. "/bin/llm-weather")
   if not path then return end
   lastLlmWeatherKick = now
-  local task = hs.task.new(path, function()
-    M.llmWeatherTask = nil
-    if force then
-      local latest = readLlmWeather()
-      hs.alert.show("Weather: " .. (latest and (latest.worst ~= "" and latest.worst or "OK") or "no data"), 2.5)
-    end
-  end, { "--window", tostring(selected) })
-  if not task then return end
-  local environment = baseEnvironment()
-  for _, name in ipairs({ "LLM_WEATHER_DIR", "WORKER_STATS_DIR", "WORKER_RUN_DIR" }) do
-    local value = os.getenv(name)
-    if value and value ~= "" then environment[name] = value end
-  end
-  task:setEnvironment(environment)
-  M.llmWeatherTask = task
-  task:start()
+  startDiagnosticsTask("llmWeatherTask", path, { "--window", tostring(selected) }, force and function()
+    local latest = readLlmWeather()
+    hs.alert.show("Weather: " .. (latest and (latest.worst ~= "" and latest.worst or "OK") or "no data"), 2.5)
+  end or nil)
 end
 
 local TREND_MARK = { up = "↑", down = "↓" }
 
 local function llmWeatherIncidents(model)
   local rows = {}
-  for index, incident in ipairs(type(model.incidents) == "table" and model.incidents or {}) do
-    if index > LLM_WEATHER_INCIDENTS then break end
+  for _, incident in ipairs(type(model.incidents) == "table" and model.incidents or {}) do
     if type(incident) == "table" then
       rows[#rows + 1] = {
         tostring(incident.age or ""),
@@ -1146,20 +1086,6 @@ local function appendLlmWeather(items)
   if weather and age >= 86400 then text = text .. string.format(" · stale %dd", math.floor(age / 86400)) end
   items[#items + 1] = { title = infoTitle(text, worst ~= "", worst == ""), disabled = true }
   local rows, clean = {}, {}
-  local gemini = readGeminiWeather()
-  local geminiWindow = math.min((M.llmWeatherWindowH or LLM_WEATHER_DEFAULT_H) * 60, 1440)
-  if M.weatherWindowMin ~= geminiWindow then
-    M.weatherWindowMin = geminiWindow
-    kickGeminiWeather(gemini, true)
-  else
-    kickGeminiWeather(gemini)
-  end
-  local provider503 = {}
-  local sameWindow = gemini and tonumber(gemini.window_min) == geminiWindow
-  for _, family in ipairs(sameWindow and gemini.families or {}) do
-    local name = type(family) == "table" and GEMINI_FAMILY_MODEL[family.short]
-    if name then provider503[name] = tonumber(family.errors_503) or 0 end
-  end
   for _, model in ipairs(weather and weather.models or {}) do
     if type(model) == "table" and type(model.model) == "string" then
       local classes = type(model.classes) == "table" and model.classes or {}
@@ -1167,8 +1093,8 @@ local function appendLlmWeather(items)
       local counts = {}
       for _, name in ipairs(WEATHER_CLASSES) do counts[name] = tonumber(classes[name]) or 0 end
       counts.failed = math.max(0, counts.failed - theirs)
-      counts.theirs = theirs + (provider503[model.model] or 0)
-      if (tonumber(model.bad) or 0) > 0 or counts.theirs > 0 then
+      counts.theirs = theirs
+      if (tonumber(model.bad) or 0) > 0 then
         local line = { model.model, tostring(tonumber(model.legs) or 0) }
         for index, name in ipairs(WEATHER_CLASSES) do
           line[2 + index] = counts[name] > 0 and tostring(counts[name]) or ""

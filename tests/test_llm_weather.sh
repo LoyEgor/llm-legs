@@ -16,6 +16,16 @@ assert_eq() {
 
 export HOME="$WORK/home"
 export WORKER_STATS_DIR="$HOME/stats" WORKER_RUN_DIR="$HOME/runs" LLM_WEATHER_DIR="$HOME/weather"
+export GEMINIB_CACHE_DIR="$WORK/geminib"
+mkdir -p "$GEMINIB_CACHE_DIR"
+cat >"$GEMINIB_CACHE_DIR/models.json" <<'JSON'
+{"fetched_at": 1, "attempted_at": 1, "families": [
+  {"family": "gemini-3.9-flash", "slug": "flash39", "agy_prefix": "gemini-3.9-flash", "label": "Gemini 3.9 Flash"},
+  {"family": "gemini-3.8-flash", "slug": "flash38", "agy_prefix": "gemini-3.8-flash", "label": "Gemini 3.8 Flash"},
+  {"family": "gemini-3.7-flash", "slug": "flash37", "agy_prefix": "gemini-3.7-flash", "label": "Gemini 3.7 Flash"},
+  {"family": "gemini-3.1-pro", "slug": "pro", "agy_prefix": "gemini-3.1-pro", "label": "Gemini 3.1 Pro"}
+]}
+JSON
 NOW=$(( $(date +%s) / 60 * 60 ))
 export LLM_WEATHER_NOW="$NOW"
 
@@ -67,6 +77,24 @@ bench(7300, "aaa1111", [
 ], clone_escapes=[["grok-high", "acct", "/Users/someone/.gemini/brain/" + SESSION + "/scratch"]],
    write_evidence=[["pro-w", "acct", "/Volumes/Work/Projects/llm-legs/bin/x"]])
 
+# geminib's two capacity spellings, on a Flash version this collector has never heard of.
+bench(5000, "eee5555", [
+    cell("agy-flash38", rater="cap-a", served_model="gemini-3.9-flash-high", exit_code=1, errored=True,
+         findings=0, stderr="No capacity available for model gemini-3.9-flash", ended=4900),
+    cell("agy-flash38", rater="cap-b", served_model="gemini-3.9-flash-high", exit_code=1, errored=True,
+         findings=0, stderr="geminib: capacity gemini-3.9-flash after 3 steps, not relaunched", ended=4800),
+])
+
+# Four clean legs is under SLOW_MIN_LEGS, so the median falls back to every leg with a duration.
+bench(4700, "fff6666", [
+    cell("oc-minimax", rater="mm-1", duration=60000, ended=4600),
+    cell("oc-minimax", rater="mm-2", duration=60000, ended=4500),
+    cell("oc-minimax", rater="mm-3", duration=60000, ended=4400),
+    cell("oc-minimax", rater="mm-4", duration=300000, ended=4300),
+    cell("oc-minimax", rater="mm-5", duration=60000, ended=4200, killed="watchdog", exit_code=1,
+         errored=True, stderr="rater task crashed", findings=0),
+])
+
 bench(3600, "bbb2222", [
     cell("agy-flash38", rater="f38-x", exit_code=1, errored=True, stderr="usage limit", ended=3000),
 ], cancelled=True)
@@ -111,7 +139,10 @@ worker("grok", 4100, 600, "acct · grok · high", exit_code="0\n",
                         "UNKNOWN: transcript names a write outside the snapshotted repository; no content baseline was recorded: /Volumes/Other/repo/file.py\n"})
 worker("grok", 4200, 500, "acct · grok · high", exit_code="143\n", killed="deadline 1800\n")
 worker("grok", 4300, 400, "acct · grok · high", exit_code="2\n",
-       workdir="/Users/someone/proj/.claude/worktrees/fix-b")
+       workdir="/Users/someone/proj/.claude/worktrees/fix-b",
+       err="grok: the brief named no files\n")
+worker("gemini", 5100, 150, "acct · pro · high", exit_code="1\n",
+       err="agy: gateway said HTTP 503 upstream\n")
 worker("grok", 4400, 300, "acct · grok · high")
 worker("gemini", 5000, 200, "acct · flash38 · high", killed="wall\n")
 worker("claudeb", 2 * 86400, 2 * 86400, "acct · fable · high", exit_code="0\n")
@@ -127,7 +158,7 @@ assert_eq "$(jq -r '"\(.as_of - '"$NOW"') \(.window_h) \(.trend_d)"' <<<"$json")
 assert_eq "$(jq -c '[.models[0] | keys[]]' <<<"$json")" \
   '["bad","classes","incidents","legs","model","origins","surfaces","trend"]'
 assert_eq "$(jq -r '[.models[] | "\(.model):\(.legs)/\(.bad)"] | join(",")' <<<"$json")" \
-  'grok:5/5,flash38:3/3,kimik3:3/3,pro:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,haiku:2/0'
+  'grok:5/5,flash38:3/3,kimik3:3/3,pro:3/3,minimax:5/2,flash39:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,haiku:2/0'
 assert_eq "$(jq -r '.worst' <<<"$json")" 'grok escaped ×3 · flash38 walled ×3'
 
 assert_eq "$(model grok .classes)" '{"escaped":3,"cap":1,"failed":1}'
@@ -155,8 +186,23 @@ assert_eq "$(model flash38 '[.incidents[].origin] | unique')" '[""]'
 assert_eq "$(model grok '[.incidents[].origin] | unique')" '[""]'
 assert_eq "$(model flash36 '.incidents[0] | "\(.class) \(.detail)"')" '"cap print timeout 16m"'
 assert_eq "$(model glm '.incidents[0] | "\(.class) \(.detail)"')" '"cap timeout 600s"'
-assert_eq "$(model pro '.incidents[0] | "\(.class) \(.detail)"')" '"stalled stall 300s"'
-assert_eq "$(model pro '.incidents[1] | "\(.class) \(.detail)"')" '"escaped outside write"'
+assert_eq "$(model pro '.incidents[1] | "\(.class) \(.detail)"')" '"stalled stall 300s"'
+assert_eq "$(model pro '.incidents[2] | "\(.class) \(.detail)"')" '"escaped outside write"'
+
+# A worker leg reads the same failure vocabulary as a review leg, and its origin joins `origins`.
+assert_eq "$(model pro '.incidents[0] | "\(.surface) \(.class) \(.detail) \(.origin)"')" \
+  '"worker failed server error theirs"'
+assert_eq "$(model pro .origins)" '{"theirs":1}'
+assert_eq "$(model pro .surfaces)" '["review","worker"]'
+# A worker failure no pattern names keeps the exit code and stays unattributed.
+assert_eq "$(model grok '.incidents[0] | "\(.surface) \(.detail) \(.origin)"')" '"worker exit 2 "'
+
+assert_eq "$(model flash39 '"\(.legs) \(.classes) \(.origins)"')" \
+  '"2 {\"failed\":2} {\"theirs\":2}"'
+assert_eq "$(model flash39 '[.incidents[] | "\(.detail) \(.origin)"] | unique')" '["capacity theirs"]'
+
+assert_eq "$(model minimax '"\(.legs) \(.classes)"')" '"5 {\"cap\":1,\"slow\":1}"'
+assert_eq "$(model minimax '.incidents[1] | "\(.class) \(.detail)"')" '"slow 5m vs 1m median"'
 assert_eq "$(model haiku '"\(.classes) \(.trend) \(.incidents)"')" '"{} down []"'
 assert_eq "$(jq '[.models[] | select(.model == "fable")] | length' <<<"$json")" 0
 assert_eq "$(jq '[.. | strings | select(test("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^/"))] | length' <<<"$json")" 0
@@ -164,7 +210,7 @@ assert_eq "$(jq '[.models[].incidents[].detail | select(length > 40)] | length' 
 
 # The default run writes the cache atomically and it is the document --json printed.
 summary=$("$WEATHER") || fail "llm-weather exited nonzero"
-assert_eq "$summary" 'llm-weather: 11 models · grok escaped ×3 · flash38 walled ×3'
+assert_eq "$summary" 'llm-weather: 13 models · grok escaped ×3 · flash38 walled ×3'
 assert_eq "$(jq -c . "$LLM_WEATHER_DIR/latest.json")" "$(jq -c . <<<"$json")"
 assert_eq "$(ls -A "$LLM_WEATHER_DIR" | tr '\n' ' ')" 'latest.json '
 
@@ -180,10 +226,22 @@ assert_eq "$(jq -r '.models[] | select(.model == "flash38") | "\(.legs) \(.bad) 
 assert_eq "$(jq -r '.models[] | select(.model == "flash38") | .incidents[-1].project' <<<"$wide")" review-bench
 assert_eq "$(jq -r '.models[] | select(.model == "fable") | .legs' <<<"$wide")" 1
 
+# Without geminib's cache the served model falls back to the rater's own name: no leg is dropped,
+# and the two Flash versions it can no longer tell apart merge into the slug the cell asked for.
+blind=$(GEMINIB_CACHE_DIR="$WORK/none" "$WEATHER" --json)
+assert_eq "$(jq -r '[.models[].model | select(. == "flash39" or . == "flash37")] | length' <<<"$blind")" 0
+assert_eq "$(jq -r '.models[] | select(.model == "flash38") | "\(.legs) \(.bad)"' <<<"$blind")" '6 6'
+
+# Every other reader resolves the bench store through CLAUDEB_DIR, and so does this one.
+mkdir -p "$WORK/claudeb/worker-stats"
+ln -s "$WORKER_STATS_DIR/benches" "$WORK/claudeb/worker-stats/benches"
+rooted=$(env -u WORKER_STATS_DIR CLAUDEB_DIR="$WORK/claudeb" "$WEATHER" --json)
+assert_eq "$(jq -c '.models' <<<"$rooted")" "$(jq -c '.models' <<<"$json")"
+
 empty=$(WORKER_STATS_DIR="$WORK/none" WORKER_RUN_DIR="$WORK/none" "$WEATHER" --json)
 assert_eq "$(jq -c '[.models, .worst]' <<<"$empty")" '[[],""]'
 assert_eq "$(WORKER_STATS_DIR="$WORK/none" WORKER_RUN_DIR="$WORK/none" "$WEATHER" --dry-run)" 'llm-weather: 0 models · ok'
 "$WEATHER" --window 0 >/dev/null 2>&1 && fail "a zero window was accepted"
 asserts=$((asserts + 1))
 
-printf 'PASS: %s asserts; llm-weather (every class, cancelled run, co-tenant note, served model, slow median, trend, sort, worst, window, atomic cache)\n' "$asserts"
+printf 'PASS: %s asserts; llm-weather (every class, cancelled run, co-tenant note, served model off geminib families, worker origins, slow median and its fallback, trend, sort, worst, window, CLAUDEB_DIR, atomic cache)\n' "$asserts"

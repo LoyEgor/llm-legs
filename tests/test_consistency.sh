@@ -478,9 +478,9 @@ assert grep -Fqx 'HEALTHY_STEP_S = 3' "$WEATHER_BIN"
 assert grep -Fqx 'SLOW_FACTOR = 3' "$WEATHER_BIN"
 assert grep -Fqx 'DEFAULT_WINDOW_MIN = 60' "$WEATHER_BIN"
 assert grep -Fq 'os.path.join(base_home(), ".cache", "gemini-weather")' "$WEATHER_BIN"
-assert grep -Fq 'return home .. "/.cache/gemini-weather/latest.json"' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fq 'os.getenv("GEMINI_WEATHER_DIR")' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fq 'os.time() >= (tonumber(weather.valid_until) or 0)' "$ROOT/hammerspoon/llm-limits.lua"
+# The menu reads no Gemini state at all: `theirs` is one collector's count for every vendor
+# (row `cq`), so a second reader here would mix two windows on one row again.
+assert test "$(grep -Ec 'gemini-weather|GEMINI_WEATHER_DIR|valid_until|errors_503' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 assert test "$(grep -Ec 'streamGenerateContent|SLOW_FACTOR|HEALTHY_STEP_S|SLOW_STEP_S|>= *9' "$ROOT/bin/gemini-probe")" -eq 0
 assert grep -Fq 'weather.state_of(' "$ROOT/bin/gemini-probe"
 assert grep -Fq 'model = family["label"] + " (High)" if family["slug"] == "pro" else family["agy_prefix"] + "-high"' "$ROOT/bin/gemini-probe"
@@ -516,8 +516,14 @@ assert doc_has 'CLEAN legs of the same surface and model'
 for gone_text in 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d' 's/step'; do
   assert test "$(grep -Fc "$gone_text" "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 done
-assert grep -Fq 'tonumber(gemini.window_min) == geminiWindow' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fq '{ "--window", tostring(M.weatherWindowMin) }' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'counts.theirs = theirs' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'counts.failed = math.max(0, counts.failed - theirs)' "$ROOT/hammerspoon/llm-limits.lua"
+# The served model resolves through geminib's family list (row `cr` keeps the versions out of
+# here), so a new Flash reaches the weather table with no code change.
+assert grep -Fq 'gemini.geminib_cache_dir(), "models.json"' "$ROOT/bin/llm-weather"
+assert grep -Fq 'family_slugs().get(gemini.family_of(served) or "")' "$ROOT/bin/llm-weather"
+assert grep -Fq 'os.environ.get("CLAUDEB_DIR")' "$ROOT/bin/llm-weather"
+assert doc_has 'every leg of the group with a duration'
 assert grep -Fq '"RUNS", "CUT", "STEPS"' "$WEATHER_BIN"
 assert grep -Fq 'os.environ.get("WORKER_STATS_DIR")' "$WEATHER_BIN"
 assert grep -Fq '"cut": entry["cut"]' "$WEATHER_BIN"

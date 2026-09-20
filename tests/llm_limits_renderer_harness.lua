@@ -88,12 +88,11 @@ function Styled.__concat(left, right)
   return result
 end
 
-local WEATHER_CONTENTS = "<gemini-weather>"
 local LLM_WEATHER_CONTENTS = "<llm-weather>"
 local pasteboardContents = nil
 
 local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptFn,
-    workerModel, fsAttributes, interfaceStyle, doctorSnapshot, geminiWeather, llmWeather)
+    workerModel, fsAttributes, interfaceStyle, doctorSnapshot, llmWeather)
   local mock = {
     alert = { show = alertFn or function() end },
     dialog = { blockAlert = function(...)
@@ -122,7 +121,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
     -- chosen by what the fake io.open handed back rather than by call order.
     json = { decode = function(text)
       if text == DOCTOR_CONTENTS then return doctorSnapshot end
-      if text == WEATHER_CONTENTS then return geminiWeather end
       if text == LLM_WEATHER_CONTENTS then return llmWeather end
       if text == geminibFiles.MODELS then return geminibFiles.models end
       return type(fixture) == "function" and fixture() or fixture
@@ -161,10 +159,6 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if path:match("/doctor%-snapshot%.json$") then
         if doctorSnapshot == nil then return nil end
         contents = DOCTOR_CONTENTS
-      end
-      if path:match("/gemini%-weather/latest%.json$") then
-        if geminiWeather == nil then return nil end
-        contents = WEATHER_CONTENTS
       end
       if path:match("/llm%-weather/latest%.json$") then
         if llmWeather == nil then return nil end
@@ -1694,7 +1688,7 @@ do
   while #tasks > 0 do table.remove(tasks) end
   local menu = mod.menuItems()
   for index = #tasks, 1, -1 do
-    if tasks[index].path:match("/bin/gemini%-weather$") or tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
+    if tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "menu construction started a collector task")
   for _, item in ipairs(menu) do
@@ -2497,7 +2491,7 @@ do
   assert(titles[10] == "Rescan now", titles[10])
   assert(row.menu[2].disabled == true, "a doctor class row is clickable")
   for index = #tasks, 1, -1 do
-    if tasks[index].path:match("/bin/gemini%-weather$") or tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
+    if tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "rendering the diagnostics row started a task")
   row.menu[7].fn()
@@ -2592,13 +2586,7 @@ do
       { model = "pro", legs = 4, bad = 0, classes = {}, trend = "", incidents = {} },
       { model = "opus", legs = 30, bad = 0, classes = {}, trend = "", incidents = {} },
     } }
-  -- 503s are provider steps, not legs: they join `theirs` only off a cache cut over the same window.
-  local gemini503 = { schema = 1, generated_at = os.time(), valid_until = os.time() + 3600, window_min = 1440,
-    families = {
-      { family = "gemini-3.8-flash", short = "3.8", errors_503 = 4 },
-      { family = "gemini-3.1-pro", short = "3.1p", errors_503 = 2 },
-    } }
-  local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, nil, gemini503, weather)
+  local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, nil, weather)
   local menu = module.menuItems()
   local row = llmWeatherRow(menu)
   assert(titleText(row) == "Weather: flash38 walled ×3 · grok cap ×2", titleText(row))
@@ -2606,13 +2594,13 @@ do
   assert(not isDimmed(doctorRow(menu).title.runs[1].attributes, 0), "the doctor line is dimmed over bad weather")
   local titles = submenuTitles(row)
   assert(titles[1] == "model    legs  walled  cap  stalled  failed  theirs  slow  escaped", titles[1])
-  assert(titles[2] == "flash38    41       3    2                2       7                 ↑", titles[2])
+  assert(titles[2] == "flash38    41       3    2                2       3                 ↑", titles[2])
   assert(titles[3] == "grok       12            2", titles[3])
   assert(titles[4] == "sol         9                                           1", titles[4])
-  assert(titles[5] == "pro         4                                     2", titles[5])
-  assert(titles[6] == "ok: opus", titles[6])
-  assert(titles[7] == "window: 24 h", titles[7])
-  assert(titles[8] == "Refresh weather" and #titles == 8, table.concat(titles, "|"))
+  -- `pro` has bad legs nowhere: with the Gemini 503 join gone nothing can give a clean model a row.
+  assert(titles[5] == "ok: pro, opus", titles[5])
+  assert(titles[6] == "window: 24 h", titles[6])
+  assert(titles[7] == "Refresh weather" and #titles == 7, table.concat(titles, "|"))
   assert(row.menu[1].disabled == true, "the weather table header is clickable")
   local incidents = submenuTitles(row.menu[2])
   assert(incidents[1] == "2m  walled  llm-legs           review  usage limit", incidents[1])
@@ -2624,20 +2612,20 @@ do
   end
   assert(#submenuTitles(row.menu[3]) == 1 and submenuTitles(row.menu[3])[1] == "no incidents")
   for index = #tasks, 1, -1 do
-    if tasks[index].path:match("/bin/gemini%-weather$") or tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
+    if tasks[index].path:match("/bin/llm%-weather$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "a fresh weather cache still launched the collector")
-  row.menu[8].fn()
+  row.menu[7].fn()
   assert(#tasks == 1 and tasks[1].path:match("/bin/llm%-weather$")
     and table.concat(tasks[1].args, " ") == "--window 24", "Refresh weather did not launch bin/llm-weather over the window")
-  local choices = row.menu[7].menu
-  assert(table.concat(submenuTitles(row.menu[7]), "|") == "3 h|6 h|12 h|24 h|3 d|7 d", "the weather window choices changed")
+  local choices = row.menu[6].menu
+  assert(table.concat(submenuTitles(row.menu[6]), "|") == "3 h|6 h|12 h|24 h|3 d|7 d", "the weather window choices changed")
   assert(choices[4].checked == true and choices[5].checked == false)
   choices[5].fn()
   assert(module.llmWeatherWindowH == 72 and #tasks == 2 and table.concat(tasks[2].args, " ") == "--window 72",
     "choosing 3 d did not recollect over 72 h")
   local chosen = llmWeatherRow(module.menuItems())
-  assert(submenuTitles(chosen)[7] == "window: 3 d" and chosen.menu[7].menu[5].checked == true,
+  assert(submenuTitles(chosen)[6] == "window: 3 d" and chosen.menu[6].menu[5].checked == true,
     table.concat(submenuTitles(chosen), "|"))
 end
 
@@ -2645,7 +2633,7 @@ do
   local now = 1800000000
   local quiet = { as_of = now - 2 * 86400, window_h = 24, trend_d = 7, worst = "",
     models = { { model = "opus", legs = 3, bad = 0, classes = {}, trend = "", incidents = {} } } }
-  local row = llmWeatherRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil, nil, nil, quiet).menuItems())
+  local row = llmWeatherRow(loadModule(doctorFixture, nil, now, nil, nil, nil, nil, nil, nil, quiet).menuItems())
   assert(titleText(row) == "Weather: OK · stale 2d", titleText(row))
   assert(isDimmed(row.title.runs[1].attributes, 0), "the clean weather line is not dimmed")
   assert(submenuTitles(row)[1] == "ok: opus", submenuTitles(row)[1])
@@ -3402,21 +3390,15 @@ do
   end
 end
 
--- The Gemini section holds the review Flash pin alone; gemini-weather's cache only feeds the
--- weather table's `theirs` column.
+-- The Gemini section holds the review Flash pin alone; the weather table's `theirs` column is
+-- bin/llm-weather's own count for every vendor, so the menu never reads or launches gemini-weather.
 do
   local now = 1800000000
   local weatherFixture = { schema = 1, vendors = {
     claude = { available = false }, codex = { available = false },
     gemini = { available = true, accounts = { { account = "gem-a", five_hour = bucket(10) } } },
   }}
-  local held = { schema = 1, generated_at = now, valid_until = now + 3600, window_min = 1440, families = {
-    { family = "gemini-3.8-flash", label = "3.8 flash", short = "3.8", state = "starved", runs = 0,
-      steps = 0, errors_503 = 0, hold_age_s = 300 },
-  }}
-  local stale = { schema = 1, generated_at = now - 7200, valid_until = now - 3600, window_min = 1440,
-    families = { held.families[1] } }
-  local plain = loadModule(weatherFixture, nil, now, nil, nil, nil, nil, nil, nil, held).menuItems()
+  local plain = loadModule(weatherFixture, nil, now).menuItems()
   assert(table.concat(submenuTitles(geminiRow(plain)), "|") == "review flash: 3.8",
     table.concat(submenuTitles(geminiRow(plain)), "|"))
   for _, item in ipairs(doctorRow(plain).menu) do
@@ -3425,36 +3407,24 @@ do
       and text ~= "Refresh Gemini", "a Gemini speed row survived: " .. text)
   end
 
+  local launched = {}
+  local kicked = loadModule(weatherFixture, captureTasks(launched), now)
+  kicked.menuItems()
+  kicked.menuItems()
   local kickEnv
-  local function kicks(cache, clock)
-    local launched = {}
-    local module = loadModule(weatherFixture, function(path, _, args)
-      table.insert(launched, { path = path, args = args })
-      return { setEnvironment = function(_, env) kickEnv = env end, start = function() end,
-        isRunning = function() return true end }
-    end, clock, nil, nil, nil, nil, nil, nil, cache)
-    module.menuItems()
-    module.menuItems()
-    for index = #launched, 1, -1 do
-      if launched[index].path:match("/bin/llm%-weather$") then table.remove(launched, index) end
-    end
-    return launched
+  for _, task in ipairs(launched) do
+    assert(not task.path:match("/bin/gemini%-weather$"), "the menu launched gemini-weather")
+    if task.path:match("/bin/llm%-weather$") then kickEnv = task.env end
   end
-  local staleKick = kicks(stale, now)
-  assert(#staleKick == 1 and staleKick[1].path:match("/bin/gemini%-weather$")
-      and table.concat(staleKick[1].args, " ") == "--window 1440",
-    "a stale gemini cache did not launch one gemini-weather refresh over the weather window")
-  -- gemini-weather derives the run store, geminib cache and profiles from HOME when their variables
-  -- are unset, which is how they reach it from here.
-  assert(kickEnv and kickEnv.HOME == os.getenv("HOME"), "the gemini-weather task lost HOME")
-  assert(#kicks(nil, now) == 1, "a missing gemini cache did not launch a refresh")
+  -- llm-weather derives the bench and run stores from HOME when their variables are unset, which
+  -- is how they reach it from here.
+  assert(kickEnv and kickEnv.HOME == os.getenv("HOME"), "the llm-weather task lost HOME")
 
   -- The review Flash pin (shared-invariants row `cs`): the row and its choices are read off the pin
   -- file and geminib's family cache, and a click writes through geminib rather than touching the file.
   ;(function()
     local flashTasks = {}
-    local flashModule = loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil, nil, nil,
-      nil, nil, held)
+    local flashModule = loadModule(weatherFixture, captureTasks(flashTasks), now)
     local row = submenuItem(geminiRow(flashModule.menuItems()), "review flash: 3.8")
     assert(row, "the review flash row is missing")
     assert(table.concat(submenuTitles(row), "|") == "3.8|3.7|3.6|newest (default)",
@@ -3471,8 +3441,7 @@ do
       "choosing a Flash family did not pin it through geminib")
 
     geminibFiles.reviewFlash = "flash37\n"
-    local pinnedModule = loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil, nil,
-      nil, nil, nil, held)
+    local pinnedModule = loadModule(weatherFixture, captureTasks(flashTasks), now)
     local pinnedRow = submenuItem(geminiRow(pinnedModule.menuItems()), "review flash: 3.7 · pinned")
     assert(pinnedRow, "a pinned review flash row is not named as pinned: "
       .. table.concat(submenuTitles(geminiRow(pinnedModule.menuItems())), "|"))
@@ -3487,54 +3456,34 @@ do
       "the default choice did not clear the pin through geminib")
 
     geminibFiles.reviewFlash = nil
+    -- The version on the row is the label geminib already wrote, so a slug whose shape says
+    -- nothing still reads as its family.
+    local labelledModels = geminibFiles.models
+    geminibFiles.models = { families = {
+      { family = "gemini-4.0-flash", slug = "flashnext", agy_prefix = "gemini-4.0-flash",
+        label = "Gemini 4.0 Flash" },
+      { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash",
+        label = "Gemini 3.8 Flash" },
+    } }
+    local labelled = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
+    assert(submenuItem(labelled, "review flash: 4.0"),
+      "the review flash row ignored geminib's label: " .. table.concat(submenuTitles(labelled), "|"))
+    -- An entry cached before geminib carried labels still parses out of the slug shape.
+    geminibFiles.models = { families = {
+      { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash" },
+    } }
+    local bare = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
+    assert(submenuItem(bare, "review flash: 3.8"),
+      "a label-less family lost the slug fallback: " .. table.concat(submenuTitles(bare), "|"))
+    geminibFiles.models = labelledModels
+
     local brokenModels = geminibFiles.models
     geminibFiles.models = nil
-    local brokenSub = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now, nil, nil,
-      nil, nil, nil, nil, held).menuItems())
+    local brokenSub = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
     local brokenRow = submenuItem(brokenSub, "review flash: unavailable")
     assert(brokenRow and brokenRow.disabled == true and brokenRow.menu == nil,
       "a missing geminib family cache still offered a submenu")
     geminibFiles.models = brokenModels
-  end)()
-
-  ;(function()
-    local active = {}
-    local function activeTask(path, callback, args)
-      local task = { path = path, callback = callback, args = args, running = true }
-      function task:setEnvironment(env) self.env = env end
-      function task:start() end
-      function task:isRunning() return self.running end
-      function task:finish() self.running = false; self.callback(0) end
-      table.insert(active, task)
-      return task
-    end
-    local function geminiKicks()
-      local found = {}
-      for _, task in ipairs(active) do
-        if task.path:match("/bin/gemini%-weather$") then table.insert(found, task) end
-      end
-      return found
-    end
-    local selected = loadModule(weatherFixture, activeTask, function() return now end, nil, nil, nil,
-      nil, nil, nil, held)
-    local choices = submenuItem(llmWeatherRow(selected.menuItems()), "window: 24 h")
-    assert(table.concat(submenuTitles(choices), "|") == "3 h|6 h|12 h|24 h|3 d|7 d",
-      table.concat(submenuTitles(choices), "|"))
-    assert(selected.weatherWindowMin == 1440)
-    for _, task in ipairs(geminiKicks()) do task:finish() end
-    local before = #geminiKicks()
-    choices.menu[1].fn()
-    selected.menuItems()
-    local after = geminiKicks()
-    assert(selected.weatherWindowMin == 180 and #after == before + 1
-        and table.concat(after[#after].args, " ") == "--window 180",
-      "the weather window did not carry over to gemini-weather")
-    after[#after]:finish()
-    submenuItem(llmWeatherRow(selected.menuItems()), "window: 3 h").menu[6].fn()
-    selected.menuItems()
-    after = geminiKicks()
-    assert(selected.weatherWindowMin == 1440 and table.concat(after[#after].args, " ") == "--window 1440",
-      "a window past a day did not clamp gemini-weather to 24 h")
   end)()
 
 end

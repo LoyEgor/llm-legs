@@ -187,8 +187,8 @@ LLM doctor: 2 issues
     review flash: 3.8
 ```
 
-`theirs` is the provider's share — `failed` legs whose origin is the provider, plus that Gemini
-family's 503 steps — and `failed` is what remains. The window selection lasts for this module
+`theirs` is the provider's share — the `failed` legs of any vendor and any surface whose origin is
+the provider — and `failed` is what remains. The window selection lasts for this module
 session and forces a collection. The doctor row appends ` · rescanning` during rescans; action
 rows are disabled and read `rescanning…` or `refreshing…` while their tasks run.
 
