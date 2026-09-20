@@ -14,7 +14,7 @@ TREND_D = 7
 SLOW_FACTOR = 2
 SLOW_MIN_LEGS = 5
 TREND_MIN_BAD = 3
-MAX_INCIDENTS = 5
+MAX_INCIDENTS = 15
 DETAIL_MAX = 40
 CLASS_ORDER = ("walled", "escaped", "stalled", "cap", "failed", "slow")
 
@@ -42,6 +42,7 @@ FAILURE_REASONS = (
         re.IGNORECASE)),
     ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded", re.IGNORECASE)),
     ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b")),
+    ("cancelled", re.compile(r"context canceled", re.IGNORECASE)),
     ("root commit", re.compile(r"root commit", re.IGNORECASE)),
     ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
     ("bad command", re.compile(r"cannot be used with", re.IGNORECASE)),
@@ -68,6 +69,7 @@ FAILURE_ORIGIN = {
     "bad output": "ours",
     "capacity": "theirs",
     "server error": "theirs",
+    "cancelled": "theirs",
     "root commit": "ours",
     "permission": "ours",
     "bad command": "ours",
@@ -386,7 +388,7 @@ def worker_legs(cutoff, now):
 def mark_slow(legs):
     durations = {}
     for leg in legs:
-        if leg["duration"] is not None:
+        if leg["duration"] is not None and leg["class"] is None:
             durations.setdefault((leg["surface"], leg["model"]), []).append(leg["duration"])
     medians = {key: statistics.median(values) for key, values in durations.items()
                if len(values) >= SLOW_MIN_LEGS}

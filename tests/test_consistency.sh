@@ -511,18 +511,17 @@ ORIGINPY
 assert doc_has '`FAILURE_REASONS`, `FAILURE_ORIGIN`'
 assert doc_has '`origins` counts'
 assert doc_has '`SLOW_FACTOR = 3`'
-assert doc_has '`Gemini: <state>`'
-assert doc_has '`window: <N> h`'
-assert doc_has '`Run Gemini probe`'
-for weather_text in 'window: %g h' 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d'; do
-  assert grep -Fq "$weather_text" "$ROOT/hammerspoon/llm-limits.lua"
+assert doc_has 'the review Flash pin, row `cs`, and nothing else'
+assert doc_has 'CLEAN legs of the same surface and model'
+for gone_text in 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d' 's/step'; do
+  assert test "$(grep -Fc "$gone_text" "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 done
-assert grep -Fq '{ 1, 2, 3, 6, 12, 24 }' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'tonumber(gemini.window_min) == geminiWindow' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq '{ "--window", tostring(M.weatherWindowMin) }' "$ROOT/hammerspoon/llm-limits.lua"
 assert grep -Fq '"RUNS", "CUT", "STEPS"' "$WEATHER_BIN"
 assert grep -Fq 'os.environ.get("WORKER_STATS_DIR")' "$WEATHER_BIN"
 assert grep -Fq '"cut": entry["cut"]' "$WEATHER_BIN"
-for doctor_state in ' · rescanning' ' · probe running' ' · weather refreshing'; do
+for doctor_state in ' · rescanning'; do
   assert grep -Fq "$doctor_state" "$ROOT/hammerspoon/llm-limits.lua"
   assert doc_has "$doctor_state"
 done

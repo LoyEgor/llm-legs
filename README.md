@@ -171,24 +171,26 @@ local limits = require("llm-limits")
 local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 ```
 
-The `review doctor: N issues · gemini <state>` menu keeps review classes and `Rescan now`,
-then opens Gemini diagnostics in a nested submenu:
+The `LLM doctor: N issues` row opens ONE submenu of three sections:
 
 ```text
-review doctor: 2 issues · gemini slow
-  gemini · slow
-    weather · last 2 h
-    3.7 flash · 12 s/step · cut ×1 · no 503
-    window: 2 h → 1 h / 2 h / 3 h / 6 h / 12 h / 24 h
+LLM doctor: 2 issues
+  Review
+    <class> ×N → <age>  <project>  <chat>  <label>
+    Rescan now
+  Weather: flash38 cap ×4
+    model    legs  walled  cap  stalled  failed  theirs  slow  escaped
+    flash38    41       3    4                2       7
+    window: 24 h → 3 h / 6 h / 12 h / 24 h / 3 d / 7 d
     Refresh weather
-    Run Gemini probe
+  Gemini
+    review flash: 3.8
 ```
 
-The checked window selection lasts for this module session and forces a collection; the weather
-heading reports the cached window. CUT counts panel-killed bench cells within that window.
-The doctor row appends ` · rescanning` during rescans; both parent rows append ` · probe running`
-or ` · weather refreshing` while those tasks run. Their action rows are disabled and read
-`rescanning…`, `probe running…` or `refreshing…`. Forced weather completion shows an alert.
+`theirs` is the provider's share — `failed` legs whose origin is the provider, plus that Gemini
+family's 503 steps — and `failed` is what remains. The window selection lasts for this module
+session and forces a collection. The doctor row appends ` · rescanning` during rescans; action
+rows are disabled and read `rescanning…` or `refreshing…` while their tasks run.
 
 | Vendor | Limit freshness |
 |--------|-----------------|
