@@ -30,27 +30,31 @@ research_citation_normalise() {
 }
 
 research_citation_verify() { # path line quote repo-root...
-  local path=$1 number=$2 quote=$3 file='' root from to window
+  local path=$1 number=$2 quote=$3 root from to window
+  local -a files=()
   shift 3
   if [[ "$path" = /* ]]; then
-    [ ! -f "$path" ] || file=$path
+    [ ! -f "$path" ] || files=("$path")
   else
+    # Every repository of the call, not the first one holding that name: the same relative path
+    # exists in several checkouts, and only one of them is the file the answer quoted.
     for root in "$@"; do
       [ -f "$root/$path" ] || continue
-      file="$root/$path"
-      break
+      files+=("$root/$path")
     done
   fi
-  [ -n "$file" ] || return 1
+  [ "${#files[@]}" -gt 0 ] || return 1
   from=$((10#$number - 3))
   [ "$from" -ge 1 ] || from=1
   to=$((10#$number + 3))
-  window=$(sed -n "${from},${to}p" "$file") || return 1
   quote=$(research_citation_normalise "$quote")
   [ -n "$quote" ] || return 1
-  case "$(research_citation_normalise "$window")" in
-    *"$quote"*) return 0 ;;
-  esac
+  for root in "${files[@]}"; do
+    window=$(sed -n "${from},${to}p" "$root") || continue
+    case "$(research_citation_normalise "$window")" in
+      *"$quote"*) return 0 ;;
+    esac
+  done
   return 1
 }
 

@@ -249,7 +249,28 @@ assert grep -qx "REPOSITORY: $repo2_path" "$RUNS/$second_run/brief.launch"
 assert grep -qx "## $repo_path" "$WORK/answer"
 assert grep -qx "## $repo2_path" "$WORK/answer"
 assert test "$(grep -c 'grok research answer' "$WORK/answer")" = 2
+
+# A launch that fails mid-batch waits out the units already started: abandoned, each keeps running
+# on an account of its own with nothing reading its answer.
+printf '%s\n' researcher 'BAD!' >"$WORK/pick-queue"
+rm -f "$WORK/answer"
+PICK_QUEUE="$WORK/pick-queue" run --repo "$REPO2"; rc=$?
+assert test "$rc" -eq 4
+assert grep -q '^ACCOUNT: researcher (grok)$' "$WORK/out"
+assert test ! -e "$WORK/answer"
 rm -f "$TOGGLE"
+
+# A relative citation path is resolved against EVERY repository of the call: the same name in two
+# checkouts made the first one the only file the quote was ever looked for in.
+printf 'first copy\nsecond line\n' >"$REPO/shared.txt"
+printf 'only in the second repository\n' >"$REPO2/shared.txt"
+printf 'shared.txt:1 | "only in the second repository" | the second checkout holds it\n' >"$WORK/shared-answer"
+printf 'ANSWER-FILE: %s\nResearch both repositories.\n' "$WORK/shared-answer" >"$WORK/prompt"
+rm -f "$WORK/answer"
+run --repo "$REPO2"; rc=$?; assert test "$rc" -eq 0
+assert test "$(head -1 "$WORK/answer")" = 'CITATIONS: 1/1'
+rm -f "$REPO/shared.txt" "$REPO2/shared.txt"
+printf 'Research the repository.\n' >"$WORK/prompt"
 
 # Batching: several --prompt-file run side by side and land under ONE citation header.
 printf 'file:1 | "x" | the tracked file holds x\n' >"$WORK/q1-answer"
@@ -298,6 +319,68 @@ attach --attach "$slow_run" --out "$WORK/answer" --repo "$REPO"; rc=$?; assert t
 attach --attach codex-1-2-none --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: CODEX_UNAVAILABLE$' "$WORK/out"
 
+# A batch whose last unit is still running still exits on the worst rc a finished unit brought
+# back — a usage limit is what the caller routes on — and keeps the units it collected on disk.
+cat >"$BIN/geminib" <<'QUOTASLOW'
+#!/usr/bin/env bash
+if [ "$1" = list ]; then printf 'researcher: ready\n'; exit 0; fi
+log=''; brief=''
+while [ "$#" -gt 1 ]; do
+  case $1 in --log-file) log=$2 ;; --print) brief=$2 ;; esac
+  shift
+done
+case $brief in
+  *QUOTA-Q*) [ -z "$log" ] || printf 'RESOURCE_EXHAUSTED\n' >"$log"; exit 1 ;;
+esac
+sleep 8
+printf 'slow Gemini answer\n'
+QUOTASLOW
+chmod +x "$BIN/geminib"
+printf 'QUOTA-Q: the leg answers with a quota wall.\n' >"$WORK/prompt"
+printf 'Research the repository slowly.\n' >"$WORK/prompt-slow"
+rm -f "$WORK/answer"; rm -rf "$WORK/answer.units"
+LIGHT_RESEARCH_WAIT_MAX=3 run --prompt-file "$WORK/prompt-slow"; rc=$?
+assert test "$rc" -eq 3
+assert grep -q '^STATUS: running$' "$WORK/out"
+assert test ! -e "$WORK/answer"
+assert test "$(grep -c . "$WORK/answer.units/table")" = 2
+assert test "$(cat "$WORK/answer.units/rc.0")" = 3
+rm -rf "$WORK/answer.units"
+
+# --attach re-assembles the WHOLE batch, not the one run it was handed: the other units' answers
+# live beside --out, and the work directory of the launching call is long gone.
+cat >"$BIN/geminib" <<'TWOSLOW'
+#!/usr/bin/env bash
+if [ "$1" = list ]; then printf 'researcher: ready\n'; exit 0; fi
+brief=''
+while [ "$#" -gt 1 ]; do
+  case $1 in --print) brief=$2 ;; esac
+  shift
+done
+sleep 2
+case $brief in
+  *'Second question'*) printf 'second batched answer\n' ;;
+  *) printf 'first batched answer\n' ;;
+esac
+TWOSLOW
+chmod +x "$BIN/geminib"
+printf 'First question.\n' >"$WORK/prompt"
+printf 'Second question.\n' >"$WORK/prompt2"
+rm -f "$WORK/answer"; rm -rf "$WORK/answer.units"
+LIGHT_RESEARCH_WAIT_MAX=0 run --prompt-file "$WORK/prompt2"; rc=$?
+assert test "$rc" -eq 0
+assert test "$(grep -c '^STATUS: running$' "$WORK/out")" = 2
+assert test -f "$WORK/answer.units/table"
+assert test ! -e "$WORK/answer"
+batch_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1)
+attach --attach "$batch_run" --out "$WORK/answer"; rc=$?
+assert test "$rc" -eq 0
+assert grep -qx 'first batched answer' "$WORK/answer"
+assert grep -qx 'second batched answer' "$WORK/answer"
+assert test "$(grep -n '^## Q1$' "$WORK/answer" | cut -d: -f1)" -lt "$(grep -n '^## Q2$' "$WORK/answer" | cut -d: -f1)"
+assert test ! -e "$WORK/answer.units"
+printf 'Research the repository.\n' >"$WORK/prompt"
+
 # The rename leaves no trace of the vendor-bound name outside git history.
 old_name="gemini""-research"
 assert test -z "$(git -C "$ROOT" grep -l -F "$old_name" -- . 2>/dev/null)"
@@ -306,4 +389,4 @@ if [ -d "$setup_root/agents" ]; then
   assert test ! -e "$setup_root/agents/$old_name.md"; assert test -f "$setup_root/agents/light-worker.md"
 fi
 
-printf 'PASS: %s asserts; light toggle rows and defaults, `worker-run start light` from the light_edit row, tracked research on gemini/claudeb/codex/grok with each read-only mechanism, a research brief that names a round but never fixes it, a log-only quota walling the account, outcomes mapped to exits, the citation check with its UNVERIFIED block and headed on-disk answer, per-repository fan-out on grok against one --add-dir run elsewhere, batched questions under one header, and one wait round per call with --attach continuing a running run\n' "$asserts"
+printf 'PASS: %s asserts; light toggle rows and defaults, `worker-run start light` from the light_edit row, tracked research on gemini/claudeb/codex/grok with each read-only mechanism, a research brief that names a round but never fixes it, a log-only quota walling the account, outcomes mapped to exits, the citation check with its UNVERIFIED block and headed on-disk answer, per-repository fan-out on grok against one --add-dir run elsewhere, batched questions under one header, a citation resolved against every repository, a launch that fails mid-batch collecting what it already started, and one wait round per call with --attach continuing a running run and re-assembling a whole batch\n' "$asserts"

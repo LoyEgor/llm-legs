@@ -170,6 +170,16 @@ bash "$SCRIPT" run --force || fail "restored Light install run failed"
 assert tail -n 3 "$LOG" | grep -q 'status=PASS step=light-install detail=ok'
 assert test ! -s "$ALERTS"
 
+# A relative symlink is how the Light launcher is installed by hand: it resolves through `..`
+# segments no string compare against a resolved repository root would ever match.
+ln -sfn ../../../repo/bin/light-research "$HOME/.local/bin/light-research"
+assert test "$(readlink "$HOME/.local/bin/light-research")" = ../../../repo/bin/light-research
+: >"$ALERTS"
+bash "$SCRIPT" run --force || fail "a relative Light symlink was read as a missing install"
+assert tail -n 3 "$LOG" | grep -q 'status=PASS step=light-install detail=ok'
+assert test ! -s "$ALERTS"
+install_light
+
 for _ in $(seq 1 65); do
   bash "$SCRIPT" run --force || fail "trimming run failed"
 done
@@ -246,4 +256,4 @@ assert grep -qF 'with\ space/bin/llm-selfcheck' "$WRAPPER"
 bash "$SPACED/llm-selfcheck" uninstall >/dev/null || fail "uninstall from a spaced path failed"
 assert test ! -e "$WRAPPER"
 
-echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, the Light install checked before any suite runs, debounce/catch-up/stale-alert dedup, install and uninstall plist"
+echo "PASS: $asserts asserts; config tripwire, ordered suites and skip list, daily fixture-only e2e vs manual --e2e, log format and trimming, failure alerts, the Light install checked before any suite runs through an absolute and a relative symlink, debounce/catch-up/stale-alert dedup, install and uninstall plist"

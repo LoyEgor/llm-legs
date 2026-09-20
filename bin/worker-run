@@ -1677,6 +1677,18 @@ light_worktree_add() { # top run-id
   printf '%s\n' "$path"
 }
 
+# A refusal between the worktree and the supervisor, unwound: `fail` and a bare `exit 4` both
+# reach this through the EXIT trap start_run arms the moment the worktree exists.
+LIGHT_ABANDON=''
+light_start_abandon() {
+  local abandon_top abandon_worktree abandon_directory
+  [ -n "$LIGHT_ABANDON" ] || return 0
+  IFS=$'\t' read -r abandon_top abandon_worktree abandon_directory <<<"$LIGHT_ABANDON"
+  LIGHT_ABANDON=''
+  [ -z "$abandon_worktree" ] || light_worktree_remove "$abandon_top" "$abandon_worktree"
+  [ -z "$abandon_directory" ] || rm -rf "$abandon_directory"
+}
+
 light_worktree_remove() { # top worktree
   local top="$1" path="$2" branch=${2##*/}
   git -C "$top" worktree remove --force "$path" >/dev/null 2>&1 || return 1
@@ -1706,43 +1718,66 @@ light_verify_run() { # workdir command log
   wait "$child"
 }
 
+# Everything the throwaway worktree holds that its base commit did not: commits, staged and
+# unstaged changes, and untracked files. Read from the worktree and never from the run's listing —
+# a worker that wrote through the shell leaves that listing `PARTIAL:` and shrunken, and a fence
+# built on it would pass every path the transcript failed to name while `git add -A` landed them.
+light_touched_paths() { # worktree base
+  { git -C "$1" diff --name-only "$2" 2>/dev/null
+    git -C "$1" diff --name-only --cached "$2" 2>/dev/null
+    git -C "$1" ls-files --others --exclude-standard 2>/dev/null; } | sed '/^$/d' | sort -u
+}
+
+light_scope_state() { # scope touched-paths
+  local scope="$1" path glob matched escaped=''
+  local -a globs=()
+  [ -n "$scope" ] || { printf 'none\n'; return 0; }
+  read -r -a globs <<<"$scope"
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    matched=false
+    for glob in ${globs[@]+"${globs[@]}"}; do
+      [[ "$path" == $glob ]] || continue
+      matched=true
+      break
+    done
+    [ "$matched" = true ] || escaped+=" $path"
+  done <<<"$2"
+  if [ -z "$escaped" ]; then printf 'ok\n'; else printf 'escaped%s\n' "$escaped"; fi
+}
+
 # The verdict travels as files, never as output: _deliver's stdout goes to /dev/null, and `report`
 # is where anyone reads it.
-light_gate() { # directory
-  local directory="$1" worktree top scope verify path glob matched
-  local scope_state=none verify_state=none landed=no escaped='' patch="$directory/land.patch"
-  local -a globs=()
+light_gate() { # directory terminal-status
+  local directory="$1" status="${2:-failed}" worktree top base scope verify
+  local scope_state=none verify_state=none landed=no patch="$directory/land.patch" touched
   jq -e '.light == "edit" and (.light_worktree // "") != ""' "$directory/meta.json" >/dev/null 2>&1 || return 0
   [ ! -f "$directory/light-verdict" ] || return 0
   worktree=$(jq -r '.light_worktree' "$directory/meta.json")
   top=$(jq -r '.light_shared_top' "$directory/meta.json")
+  base=$(jq -r '.light_base // ""' "$directory/meta.json")
+  [ -n "$base" ] || base=HEAD
   scope=$(cat "$directory/light-scope" 2>/dev/null)
   verify=$(cat "$directory/light-verify" 2>/dev/null)
-  compute_run_files "$directory"
-  if [ -z "$scope" ]; then
-    scope_state=none
-  elif [ -n "$RUN_FILES_REASON" ]; then
-    scope_state="escaped (the run's files are unknown: $RUN_FILES_REASON)"
-  else
-    read -r -a globs <<<"$scope"
-    while IFS= read -r path; do
-      [ -n "$path" ] || continue
-      matched=false
-      for glob in ${globs[@]+"${globs[@]}"}; do
-        [[ "$path" == $glob ]] || continue
-        matched=true
-        break
-      done
-      [ "$matched" = true ] || escaped+=" $path"
-    done <<<"$RUN_FILES_LIST"
-    if [ -z "$escaped" ]; then scope_state=ok; else scope_state="escaped$escaped"; fi
-  fi
-  if [ -n "$verify" ]; then
+  touched=$(light_touched_paths "$worktree" "$base")
+  scope_state=$(light_scope_state "$scope" "$touched")
+  # A run that ended failed — a nonzero exit, a wall the pool could not reroute, a stall kill —
+  # lands nothing even with an empty VERIFY: its edits are half of an edit, and `none` would sail
+  # through the verify check below.
+  if [ "$status" = done ] && [ -n "$verify" ]; then
     if light_verify_run "$worktree" "$verify" "$directory/verify.log"; then verify_state=pass; else verify_state=fail; fi
   fi
-  if [ "$scope_state" = ok ] && [ "$verify_state" != fail ]; then
+  if [ "$status" = done ] && [ "$scope_state" = ok ] && [ "$verify_state" != fail ]; then
+    # VERIFY ran in the worktree and may have written there itself; the set that is fenced has to
+    # be the set that lands, so it is taken again after it.
+    touched=$(light_touched_paths "$worktree" "$base")
+    scope_state=$(light_scope_state "$scope" "$touched")
+  fi
+  if [ "$status" = done ] && [ "$scope_state" = ok ] && [ "$verify_state" != fail ]; then
     git -C "$worktree" add -A >/dev/null 2>&1
-    git -C "$worktree" diff --cached --binary HEAD >"$patch" 2>/dev/null || : >"$patch"
+    # Against the BASE and not the worktree HEAD: a worker that committed its work inside the
+    # worktree leaves HEAD holding it, and an empty patch would take the branch away with it.
+    git -C "$worktree" diff --cached --binary "$base" >"$patch" 2>/dev/null || : >"$patch"
     if [ ! -s "$patch" ]; then
       rm -f "$patch"
       light_worktree_remove "$top" "$worktree" && worktree=''
@@ -1755,6 +1790,7 @@ light_gate() { # directory
   fi
   {
     printf 'VERIFIED: %s\nSCOPE: %s\nLANDED: %s\n' "$verify_state" "$scope_state" "$landed"
+    [ "$status" = done ] || printf 'LIGHT-RUN: %s\n' "$status"
     [ -z "$worktree" ] || printf 'LIGHT-WORKTREE: %s\n' "$worktree"
     [ "$landed" != conflict ] || printf 'LIGHT-PATCH: %s\n' "$patch"
   } >"$directory/light-verdict.tmp.$$" 2>/dev/null &&
@@ -1812,6 +1848,7 @@ start_run() {
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top=''
   local recipe='' recipe_brief='' light_scope='' light_verify='' light_worktree='' light_shared_top='' light_offrow=false
+  local light_relative='' light_base=''
   local -a recipe_sets=()
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
   local web_search=false brief_cyrillic=''
@@ -1957,8 +1994,24 @@ start_run() {
     [ -n "$light_scope" ] ||
       fail "a Light edit brief needs a 'SCOPE: <glob> [<glob>...]' header line naming the repo-relative paths the run may touch, and may carry 'VERIFY: <command>' beside it: worker-run checks both after the run and only then lands the diff. Nothing was launched and no account was spent."
     light_verify=$(light_brief_header_value "$brief" VERIFY)
+    # Round one's worktree is thrown away the moment its diff lands, so a resumed session would
+    # reason about a tree that is gone and hand back a patch of an edit already in the shared one.
+    [ -z "$resume" ] ||
+      fail "a Light edit is not resumable: its worktree is removed when the diff lands, so the session has no tree left to continue in. Launch a new Light edit whose brief carries the follow-up. Nothing was launched and no account was spent."
+    # The land-on-green fence reaches one repository — the worktree's. A second tree would be
+    # written straight into the shared checkout with nothing checking the paths.
+    [ "${#add_dirs[@]}" -eq 0 ] ||
+      fail "a Light edit lands through a worktree of one repository, and --add-dir grants a second one no fence covers. Launch a full worker, or one Light edit per repository. Nothing was launched and no account was spent."
     light_shared_top=$(git -C "$workdir" rev-parse --show-toplevel 2>/dev/null) ||
       fail "a Light edit runs in a throwaway worktree of its workdir, and $workdir is in no git repository. Nothing was launched and no account was spent."
+    light_shared_top=$(cd "$light_shared_top" && pwd -P) ||
+      fail "could not resolve the repository root of $workdir"
+    light_relative=${workdir%/}
+    case "$light_relative" in
+      "$light_shared_top") light_relative='' ;;
+      "$light_shared_top"/*) light_relative=${light_relative#"$light_shared_top"/} ;;
+      *) light_relative='' ;;
+    esac
   fi
   case "$vendor" in
     claudeb)
@@ -2126,7 +2179,13 @@ start_run() {
     allocate_run_directory "$vendor"
     light_worktree=$(light_worktree_add "$light_shared_top" "$run_id") ||
       fail "could not create the Light edit worktree under $light_shared_top/.claude/worktrees (a repository with no commit has no HEAD to branch from)"
-    workdir=$light_worktree
+    # Every refusal below this line is a run that never launched: without the trap it leaves a
+    # registered worktree, an undeleted branch and an empty run directory behind.
+    LIGHT_ABANDON=$(printf '%s\t%s\t%s' "$light_shared_top" "$light_worktree" "$directory")
+    trap light_start_abandon EXIT
+    light_base=$(git -C "$light_shared_top" rev-parse --verify --quiet "light-$run_id^{commit}") || light_base=''
+    workdir=$light_worktree${light_relative:+/$light_relative}
+    mkdir -p "$workdir" || fail "could not open $light_relative inside the Light edit worktree"
   fi
 
   case "$vendor" in
@@ -2245,10 +2304,11 @@ start_run() {
     --argjson chrome "$chrome" --argjson browser "$browser" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
     --arg light "$light" --arg light_worktree "$light_worktree" --arg light_shared_top "$light_shared_top" \
+    --arg light_base "$light_base" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
      + if $light != "" then {light:$light} else {} end
-     + if $light_worktree != "" then {light_worktree:$light_worktree,light_shared_top:$light_shared_top} else {} end
+     + if $light_worktree != "" then {light_worktree:$light_worktree,light_shared_top:$light_shared_top,light_base:$light_base} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
@@ -2346,6 +2406,9 @@ exit "$rc"'
     fail 'setsid is unavailable'
   fi
   pid=$!
+  # The supervisor owns the worktree from here: a failure below is a run that started.
+  LIGHT_ABANDON=''
+  trap - EXIT
   # pid_started_at is the supervisor's launch instant and never restamped: started_at moves on
   # every walled reroute (run_overdue budgets one deadline per attempt), and a liveness check
   # comparing the pid's own age against a restamped clock reads a live rerouted run as dead.
@@ -4046,7 +4109,7 @@ fold_run_anchors() { # directory
 }
 
 complete_run() {
-  local directory="$1" code="$2" vendor
+  local directory="$1" code="$2" vendor run_status
   local -a result_status
   fold_run_anchors "$directory"
   vendor=$(jq -r .vendor "$directory/meta.json")
@@ -4070,9 +4133,11 @@ complete_run() {
   stamp_result_language "$directory"
   print_outcome "$directory" "$vendor" "$code"
   lang_line "$directory"
-  write_run_state "$directory" "$(terminal_status "$directory" "$vendor" "$code")" "$code"
-  # Last, because everything above reads the workdir this may remove.
-  light_gate "$directory" || :
+  run_status=$(terminal_status "$directory" "$vendor" "$code")
+  write_run_state "$directory" "$run_status" "$code"
+  # Last, because everything above reads the workdir this may remove. `exit_code` is written by
+  # the supervisor only after this returns, so the run's verdict has to arrive as an argument.
+  light_gate "$directory" "$run_status" || :
 }
 
 browse_run() {

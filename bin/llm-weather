@@ -56,6 +56,29 @@ FAILURE_REASONS = (
                              re.IGNORECASE)),
     ("chunks unread", re.compile(r"chunks unread", re.IGNORECASE)),
 )
+# Copied from the same panel.py, beside the table above: whose failure each word is — `ours` is
+# review-bench's own mechanics, `theirs` the provider's weather. tests/test_consistency.sh holds the
+# two copies word for word.
+FAILURE_ORIGIN = {
+    "killed memory": "ours",
+    "pool empty": "ours",
+    "walled": "theirs",
+    "throttled": "theirs",
+    "bare 429": "theirs",
+    "bad output": "ours",
+    "capacity": "theirs",
+    "server error": "theirs",
+    "root commit": "ours",
+    "permission": "ours",
+    "bad command": "ours",
+    "stalled": "ours",
+    "timeout": "ours",
+    "crashed": "ours",
+    "auth": "ours",
+    "not found": "ours",
+    "chunks unread": "ours",
+}
+ORIGIN_ORDER = ("ours", "theirs")
 WALL_REASONS = ("pool empty", "walled", "throttled")
 EMPTY_ZERO_FINDING_REASONS = ("bad output",)
 
@@ -221,23 +244,23 @@ def classify_bench(cell, escaped):
     duration = cell.get("duration_ms")
     duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
     if failed and reason in WALL_REASONS:
-        return "walled", reason
+        return "walled", reason, ""
     if escaped:
-        return "escaped", "outside write"
+        return "escaped", "outside write", ""
     stalled_s = cell.get("stalled_s")
     if killed == "stall" or (isinstance(stalled_s, (int, float)) and stalled_s > 0):
         seconds = stalled_s if isinstance(stalled_s, (int, float)) and stalled_s > 0 else duration_s
-        return "stalled", ("stall " + seconds_text(seconds)).strip()
+        return "stalled", ("stall " + seconds_text(seconds)).strip(), ""
     if killed in ("watchdog", "panel", "memory") or exit_code == 124:
-        return "cap", ("%s %s" % (killed or "exit 124", seconds_text(duration_s))).strip()
+        return "cap", ("%s %s" % (killed or "exit 124", seconds_text(duration_s))).strip(), ""
     if failed and TIMEOUT_RE.search(stderr):
-        return "cap", timeout_detail(stderr, cell.get("timeout_s"))
+        return "cap", timeout_detail(stderr, cell.get("timeout_s")), ""
     if cell.get("errored") or exit_code not in (0, None):
-        return "failed", reason
+        return "failed", reason, FAILURE_ORIGIN.get(reason, "")
     if cell.get("findings") == 0 and exit_code == 0 and stderr.strip() \
             and reason in EMPTY_ZERO_FINDING_REASONS:
-        return "failed", reason
-    return None, ""
+        return "failed", reason, FAILURE_ORIGIN.get(reason, "")
+    return None, "", ""
 
 
 def bench_legs(cutoff, now):
@@ -276,10 +299,10 @@ def bench_legs(cutoff, now):
                 ended = (begun if begun is not None else started) + (duration_s or 0)
             if ended < cutoff or ended > now + 3600:
                 continue
-            klass, detail = classify_bench(cell, cell.get("rater") in escapers)
+            klass, detail, origin = classify_bench(cell, cell.get("rater") in escapers)
             legs.append({
                 "surface": "review", "model": bench_model(cell), "at": ended, "duration": duration_s,
-                "class": klass, "detail": detail, "project": project, "ref": name,
+                "class": klass, "detail": detail, "origin": origin, "project": project, "ref": name,
             })
     return legs
 
@@ -353,7 +376,8 @@ def worker_legs(cutoff, now):
         legs.append({
             "surface": "worker", "model": fields[1], "at": ended,
             "duration": ended - started if match and ended > started else None,
-            "class": klass, "detail": detail, "project": project_of(meta.get("workdir")), "ref": name,
+            "class": klass, "detail": detail, "origin": "",
+            "project": project_of(meta.get("workdir")), "ref": name,
         })
     return legs
 
@@ -395,8 +419,8 @@ def collect(window_h, now):
     per_model = {}
     for leg in legs:
         entry = per_model.setdefault(leg["model"], {
-            "surfaces": set(), "legs": 0, "bad": 0, "classes": {}, "trend_legs": 0, "trend_bad": 0,
-            "incidents": [],
+            "surfaces": set(), "legs": 0, "bad": 0, "classes": {}, "origins": {},
+            "trend_legs": 0, "trend_bad": 0, "incidents": [],
         })
         entry["trend_legs"] += 1
         entry["trend_bad"] += 1 if leg["class"] else 0
@@ -407,6 +431,8 @@ def collect(window_h, now):
         if leg["class"]:
             entry["bad"] += 1
             entry["classes"][leg["class"]] = entry["classes"].get(leg["class"], 0) + 1
+            if leg.get("origin"):
+                entry["origins"][leg["origin"]] = entry["origins"].get(leg["origin"], 0) + 1
             entry["incidents"].append(leg)
     models = []
     for model, entry in per_model.items():
@@ -417,7 +443,8 @@ def collect(window_h, now):
             age = max(0, int(now - leg["at"]))
             incidents.append({
                 "age_s": age, "age": age_text(age), "surface": leg["surface"], "project": leg["project"],
-                "class": leg["class"], "detail": leg["detail"][:DETAIL_MAX], "ref": leg["ref"],
+                "class": leg["class"], "detail": leg["detail"][:DETAIL_MAX],
+                "origin": leg.get("origin") or "", "ref": leg["ref"],
             })
         models.append({
             "model": model,
@@ -425,6 +452,10 @@ def collect(window_h, now):
             "legs": entry["legs"],
             "bad": entry["bad"],
             "classes": {name: entry["classes"][name] for name in CLASS_ORDER if entry["classes"].get(name)},
+            # Beside the classes and never instead of them: `failed` stays one count, and this
+            # says how much of it was ours to fix and how much was the provider's weather.
+            "origins": {name: entry["origins"][name] for name in ORIGIN_ORDER
+                        if entry["origins"].get(name)},
             "trend": trend_of(entry["legs"], entry["bad"], entry["trend_legs"], entry["trend_bad"]),
             "incidents": incidents,
         })

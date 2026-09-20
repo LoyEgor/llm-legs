@@ -206,8 +206,11 @@ toggle_worker=''
 [ -r "$TOGGLE" ] && toggle_worker=$(sed -n 's/^worker=//p' "$TOGGLE" | head -1 | tr -d '[:space:]')
 case "$toggle_worker" in
   claudeb|codex|gemini|grok)
-    [ "$toggle_worker" = "$vendor" ] ||
+    # The Light leg is selected by the `light_edit` row and never by `worker=`, so a mismatch here
+    # would advise a switch that changes nothing about where this spawn lands.
+    if [ "$worker" != light-worker ] && [ "$toggle_worker" != "$vendor" ]; then
       toggle_note="The worker toggle says worker=${toggle_worker}, this spawns ${worker}. Fine if the task called for it; otherwise the toggle is the default and ${toggle_worker}-worker is the one to use."
+    fi
     ;;
 esac
 

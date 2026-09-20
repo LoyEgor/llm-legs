@@ -95,8 +95,105 @@ land_answer() { # combined-file repo-root...
   printf 'CITATIONS: %s/%s\nANSWER: %s\nLINES: %s\n' "${counts%% *}" "${counts##* }" "$out" "$lines"
 }
 
+# The unit table of a multi-unit call, kept beside the answer file. A batch whose first units are
+# done and whose last one is still going has nowhere else to leave them: the work directory dies
+# with this process, and `--attach` is a new one. A single-unit call writes none of it.
+units_dir="$out.units"
+part_dir=''
+persist=false
+units=0
+question_count=0
+fanout=false
+worst=0
+run_ids=()
+run_dirs=()
+unit_repos=()
+unit_questions=()
+resolved_repos=()
+
+units_persist() {
+  local u
+  # A table left by an earlier call to the same --out would hand this batch that call's rc files.
+  rm -rf "$units_dir"
+  mkdir -p "$units_dir" || return 1
+  : >"$units_dir/table" || return 1
+  for ((u=0; u<units; u++)); do
+    printf '%s\t%s\t%s\t%s\n' "${run_ids[$u]}" "${run_dirs[$u]}" "${unit_questions[$u]}" "${unit_repos[$u]}" \
+      >>"$units_dir/table" || return 1
+  done
+  printf '%s\n' "${resolved_repos[@]}" >"$units_dir/repos" || return 1
+  printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape" || return 1
+}
+
+units_load() { # run-id — true when the table holds that run
+  local id dir question repo line
+  [ -f "$units_dir/table" ] && [ -f "$units_dir/repos" ] && [ -f "$units_dir/shape" ] || return 1
+  cut -f1 "$units_dir/table" | grep -qxF -- "$1" || return 1
+  run_ids=(); run_dirs=(); unit_questions=(); unit_repos=(); resolved_repos=()
+  while IFS=$'\t' read -r id dir question repo; do
+    [ -n "$id" ] || continue
+    run_ids+=("$id"); run_dirs+=("$dir"); unit_questions+=("$question"); unit_repos+=("$repo")
+  done <"$units_dir/table"
+  while IFS= read -r line; do [ -n "$line" ] || continue; resolved_repos+=("$line"); done <"$units_dir/repos"
+  units=${#run_ids[@]}
+  { read -r question_count; read -r fanout; read -r worst; } <"$units_dir/shape"
+  [[ "$question_count" =~ ^[0-9]+$ ]] && [[ "$worst" =~ ^[0-9]+$ ]] && [ "$units" -gt 0 ] || return 1
+  part_dir=$units_dir
+  persist=true
+}
+
+# Collect every unit, then assemble — the exit code is the worst rc of the batch whether or not a
+# unit is still running, because a usage limit one unit hit is what the caller routes on.
+units_finish() {
+  local u rc running=false combined repo_heading
+  for ((u=0; u<units; u++)); do
+    if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
+      rc=$(tr -d '[:space:]' <"$units_dir/rc.$u")
+      [[ "$rc" =~ ^[0-9]+$ ]] || rc=4
+    else
+      rc=0
+      collect_run "${run_ids[$u]}" "${run_dirs[$u]}" "$part_dir/part.$u" || rc=$?
+      if [ "$COLLECT_RUNNING" = true ]; then
+        running=true
+      elif [ "$persist" = true ]; then
+        printf '%s\n' "$rc" >"$units_dir/rc.$u"
+      fi
+    fi
+    [ "$(code_rank "$rc")" -le "$(code_rank "$worst")" ] || worst=$rc
+  done
+  [ "$persist" = false ] || printf '%s\n%s\n%s\n' "$question_count" "$fanout" "$worst" >"$units_dir/shape"
+  if [ "$running" = true ]; then
+    printf 'OUT: %s\n' "$out"
+    return "$worst"
+  fi
+  [ "$worst" -eq 0 ] || return "$worst"
+  combined="$part_dir/combined"
+  if [ "$units" -eq 1 ]; then
+    cp "$part_dir/part.0" "$combined" || return 4
+  else
+    repo_heading='##'
+    [ "$question_count" -eq 1 ] || repo_heading='###'
+    : >"$combined"
+    for ((u=0; u<units; u++)); do
+      if [ "$question_count" -gt 1 ] && { [ "$u" -eq 0 ] || [ "${unit_questions[$u]}" != "${unit_questions[$((u - 1))]}" ]; }; then
+        printf '## Q%s\n\n' "$((${unit_questions[$u]} + 1))" >>"$combined"
+      fi
+      [ "$fanout" = false ] || printf '%s %s\n\n' "$repo_heading" "${unit_repos[$u]}" >>"$combined"
+      cat "$part_dir/part.$u" >>"$combined" || return 4
+      printf '\n' >>"$combined"
+    done
+  fi
+  land_answer "$combined" "${resolved_repos[@]}" || return 4
+  [ "$persist" = false ] || rm -rf "$units_dir"
+  return 0
+}
+
 if [ -n "$attach" ]; then
   [ "${#prompt_files[@]}" -eq 0 ] && [ "${#repos[@]}" -eq 0 ] && [ -z "$account" ] && [[ "$attach" =~ ^[a-z0-9][a-z0-9-]*$ ]] || usage
+  if units_load "$attach"; then
+    units_finish
+    exit $?
+  fi
   run_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach"
   [ "$(jq -r '.role // empty' "$run_dir/meta.json" 2>/dev/null)" = research ] ||
     unavailable "${attach%%-*}" "no research run $attach"
@@ -125,7 +222,6 @@ vendor=$(worker_light_vendor research) && model=$(worker_light_model research) |
   exit 4
 }
 
-resolved_repos=()
 for repo in "${repos[@]}"; do
   [[ "$repo" = /* ]] && [ -d "$repo" ] || usage
   resolved=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || unavailable "$vendor" "not a git repository: $repo"
@@ -143,18 +239,13 @@ timeout_seconds=$(research_duration_seconds "$timeout_value") && [ "$timeout_sec
 work=$(mktemp -d "${TMPDIR:-/tmp}/light-research.XXXXXX") || exit 4
 trap 'rm -rf "$work"' EXIT
 
-fanout=false
 if research_fans_out_per_repo "$vendor" && [ "${#resolved_repos[@]}" -gt 1 ]; then fanout=true; fi
 geminib_bin=''
 if [ "$vendor" = gemini ]; then
   geminib_bin=$(command -v geminib 2>/dev/null) || unavailable gemini 'geminib is missing'
 fi
 
-run_ids=()
-run_dirs=()
-unit_repos=()
-unit_questions=()
-units=0
+launch_failed=0
 for ((question=0; question<${#prompt_files[@]}; question++)); do
   if [ "$fanout" = true ]; then targets=("${resolved_repos[@]}"); else targets=("${resolved_repos[0]}"); fi
   for target in "${targets[@]}"; do
@@ -176,10 +267,12 @@ for ((question=0; question<${#prompt_files[@]}; question++)); do
       launch=$("$worker_run" "${args[@]}") || start_rc=$?
     fi
     printf '%s\n' "$launch"
-    [ "$start_rc" -eq 0 ] || exit "$start_rc"
+    # The units already launched are spending accounts of their own: abandoned here, they run to
+    # the end with nothing waiting on them and no answer anybody reads.
+    [ "$start_rc" -eq 0 ] || { launch_failed=$start_rc; break 2; }
     run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
     run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
-    [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || exit 4
+    [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || { launch_failed=4; break 2; }
     run_ids+=("$run_id")
     run_dirs+=("$run_dir")
     unit_repos+=("$target")
@@ -188,32 +281,15 @@ for ((question=0; question<${#prompt_files[@]}; question++)); do
   done
 done
 
-worst=0
-running=false
-for ((u=0; u<units; u++)); do
-  rc=0
-  collect_run "${run_ids[$u]}" "${run_dirs[$u]}" "$work/part.$u" || rc=$?
-  [ "$COLLECT_RUNNING" = false ] || running=true
-  [ "$(code_rank "$rc")" -le "$(code_rank "$worst")" ] || worst=$rc
-done
-if [ "$running" = true ]; then printf 'OUT: %s\n' "$out"; exit 0; fi
-[ "$worst" -eq 0 ] || exit "$worst"
-
-combined="$work/combined"
-if [ "$units" -eq 1 ]; then
-  cp "$work/part.0" "$combined" || exit 4
+[ "$units" -gt 0 ] || exit "$launch_failed"
+worst=$launch_failed
+question_count=${#prompt_files[@]}
+if [ "$units" -gt 1 ]; then
+  persist=true
+  part_dir=$units_dir
+  units_persist || exit 4
 else
-  repo_heading='##'
-  [ "${#prompt_files[@]}" -eq 1 ] || repo_heading='###'
-  : >"$combined"
-  for ((u=0; u<units; u++)); do
-    if [ "${#prompt_files[@]}" -gt 1 ] && { [ "$u" -eq 0 ] || [ "${unit_questions[$u]}" != "${unit_questions[$((u - 1))]}" ]; }; then
-      printf '## Q%s\n\n' "$((${unit_questions[$u]} + 1))" >>"$combined"
-    fi
-    [ "$fanout" = false ] || printf '%s %s\n\n' "$repo_heading" "${unit_repos[$u]}" >>"$combined"
-    cat "$work/part.$u" >>"$combined" || exit 4
-    printf '\n' >>"$combined"
-  done
+  part_dir=$work
 fi
-land_answer "$combined" "${resolved_repos[@]}" || exit 4
-exit 0
+units_finish
+exit $?

@@ -488,6 +488,28 @@ for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
   assert test "$(grep -Ec 'median_step_s *(>=|>) *[0-9]|SLOW_STEP|slow_step_s' "$weather_reader")" -eq 0
 done
 assert doc_has 'Gemini model weather cache'
+
+# --- Row cq: LLM leg weather failure vocabulary --------------------------------
+# bin/llm-weather carries a copy of review-bench's failure table and of the origin table beside it;
+# a word that drifts in either copy silently re-labels a night's legs on the menu.
+assert python3 - "$RB_PKG" "$ROOT/bin/llm-weather" <<'ORIGINPY'
+import importlib.machinery
+import importlib.util
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+from rbench import panel
+spec = importlib.util.spec_from_loader("llm_weather",
+                                       importlib.machinery.SourceFileLoader("llm_weather", sys.argv[2]))
+weather = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(weather)
+assert [(word, pattern.pattern, pattern.flags) for word, pattern in weather.FAILURE_REASONS] \
+    == [(word, pattern.pattern, pattern.flags) for word, pattern in panel.FAILURE_REASONS]
+assert weather.FAILURE_ORIGIN == panel.FAILURE_ORIGIN, weather.FAILURE_ORIGIN
+assert set(weather.ORIGIN_ORDER) == set(panel.FAILURE_ORIGIN.values()) == {"ours", "theirs"}
+ORIGINPY
+assert doc_has '`FAILURE_REASONS`, `FAILURE_ORIGIN`'
+assert doc_has '`origins` counts'
 assert doc_has '`SLOW_FACTOR = 3`'
 assert doc_has '`Gemini: <state>`'
 assert doc_has '`window: <N> h`'
@@ -764,7 +786,8 @@ assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNT
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
 # Review keeps Sol; implementation runs Astra independently (Egor, 2026-09-05).
-assert grep -Fq '"-m", "gpt-5.6-sol"' "$ROOT/../review-bench/share/rbench/launch.py"
+assert grep -Fq '"sol": "gpt-5.6-sol"' "$ROOT/../review-bench/share/rbench/catalog.py"
+assert grep -Fq '("sol", 1)' "$ROOT/../review-bench/share/rbench/catalog.py"
 assert eq "$(bash -c ' . "$1"; worker_model_default_model codex' _ "$WORKER_MODEL_SH")" 'gpt-6-astra'
 assert eq "$(grep -c worker_model_allowed_models "$ROOT/../review-bench/share/rbench/launch.py")" 0
 
@@ -903,6 +926,20 @@ assert grep -Fq '"permissionDecision":"deny"' <<<"$light_gate_out"
 assert grep -Fq 'Light on Claude' <<<"$light_gate_out"
 # `<vendor>_workers=off` is not the Light class's wall, so the query carries `--role light`.
 assert grep -qx -- '--account claudeb --role light' "$LIGHT_GATE_WORK/picks"
+# The Light leg is placed by the `light_edit` row and never by `worker=`, so a toggle naming
+# another vendor is no advice about where this spawn lands and reaches none of its notes.
+jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:10}}]}}}' \
+  >"$LIGHT_GATE_WORK/limits.json"
+printf 'worker=codex\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
+light_toggle_out=$(light_gate light-worker)
+assert grep -Fq 'Light on Claude accounts: alpha 10%' <<<"$light_toggle_out"
+assert test "$(grep -c 'The worker toggle says' <<<"$light_toggle_out")" = 0
+# A vendor relay under the same toggle still hears it.
+assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
+jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:100}}]}}}' \
+  >"$LIGHT_GATE_WORK/limits.json"
+printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
+
 # A native type still leaves before any of it.
 : >"$LIGHT_GATE_WORK/picks"
 assert test -z "$(light_gate light-research)"

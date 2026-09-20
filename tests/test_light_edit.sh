@@ -42,7 +42,20 @@ for path in ${STUB_WRITE:-}; do
     '{timestamp:$ts,type:"assistant",message:{content:[{type:"tool_use",name:"Edit",input:{file_path:$path}}]}}' \
     >>"$transcript_dir/$STUB_SESSION.jsonl"
 done
+# The floor every vendor shares: a write through the shell, named nowhere in the transcript.
+for path in ${STUB_SHELL_WRITE:-}; do
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' "${STUB_CONTENT:-worker}" >"$path"
+  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{timestamp:$ts,type:"assistant",message:{content:[{type:"tool_use",name:"Bash",input:{command:"sed -i \"\" s/x/y/ a-file"}}]}}' \
+    >>"$transcript_dir/$STUB_SESSION.jsonl"
+done
+if [ -n "${STUB_COMMIT:-}" ]; then
+  git add -A >/dev/null 2>&1
+  git -c user.name=w -c user.email=w@y commit -qm 'worker change' >/dev/null 2>&1
+fi
 printf '{"result":"light edit done","session_id":"%s"}\n' "$STUB_SESSION"
+exit "${STUB_RC:-0}"
 CLAUDEB
 cat >"$BIN/codex" <<'CODEX'
 #!/usr/bin/env bash
@@ -63,9 +76,11 @@ wr(){ session=$((session + 1))
     WORKER_RUN_WORKER_PICK="$BIN/worker-pick" PICK_LOG="$WORK/picks" \
     WORKER_RUN_CLAUDEB="$BIN/claudeb" WORKER_RUN_CODEX="$BIN/codex" \
     STUB_SESSION="light-session-$session" STUB_WRITE="${STUB_WRITE:-}" STUB_CONTENT="${STUB_CONTENT:-}" \
+    STUB_SHELL_WRITE="${STUB_SHELL_WRITE:-}" STUB_RC="${STUB_RC:-0}" STUB_COMMIT="${STUB_COMMIT:-}" \
     "$ROOT/bin/worker-run" "$@" >"$WORK/out" 2>"$WORK/err"; }
 
-start(){ STUB_WRITE="${STUB_WRITE:-}" STUB_CONTENT="${STUB_CONTENT:-}" wr start "$@" || return $?
+start(){ STUB_WRITE="${STUB_WRITE:-}" STUB_CONTENT="${STUB_CONTENT:-}" STUB_SHELL_WRITE="${STUB_SHELL_WRITE:-}" \
+  STUB_RC="${STUB_RC:-0}" STUB_COMMIT="${STUB_COMMIT:-}" wr start "$@" || return $?
   RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/out"); RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/out"); }
 await(){ local index
   for index in $(seq 1 200); do
@@ -187,6 +202,100 @@ wr start light --recipe rename --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
 assert test "$rc" -eq 4
 assert grep -q 'pass one of --recipe and --brief' "$WORK/err"
 
+# --- the fence is the WORKTREE's own state, not the run's transcript listing ------------------
+# A vendor that wrote through the shell leaves the listing `PARTIAL:` and shrunken; fenced on that,
+# an out-of-scope file matched nothing and `git add -A` landed it anyway.
+before=$(tree_digest "$SHARED")
+printf 'SCOPE: src/*\nVERIFY: true\n\nWrite one file under src.\n' >"$WORK/brief"
+STUB_SHELL_WRITE='other/shell-stray.txt' start light --brief "$WORK/brief" --workdir "$SHARED" ||
+  fail 'shell-write start'
+STUB_SHELL_WRITE=''
+assert await
+shell=$(report)
+assert grep -q '^PARTIAL: ' "$RUN_DIR/files"
+assert grep -qx 'SCOPE: escaped other/shell-stray.txt' <<<"$shell"
+assert grep -qx 'LANDED: no' <<<"$shell"
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert test ! -e "$SHARED/other/shell-stray.txt"
+
+# --- a run that ended failed lands nothing, even with no VERIFY to fail -----------------------
+before=$(tree_digest "$SHARED")
+printf 'SCOPE: src/*\n\nWrite src/half.txt.\n' >"$WORK/brief"
+STUB_RC=1 STUB_WRITE='src/half.txt' start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'failed-run start'
+STUB_RC=0
+assert await
+half=$(report)
+assert grep -qx 'STATUS: failed' <<<"$half"
+assert grep -qx 'VERIFIED: none' <<<"$half"
+assert grep -qx 'SCOPE: ok' <<<"$half"
+assert grep -qx 'LANDED: no' <<<"$half"
+assert grep -qx 'LIGHT-RUN: failed' <<<"$half"
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert test ! -e "$SHARED/src/half.txt"
+kept=$(sed -n 's/^LIGHT-WORKTREE: //p' <<<"$half")
+assert test -f "$kept/src/half.txt"
+
+# --- VERIFY runs in the worktree and may write there: the fence is taken again after it -------
+before=$(tree_digest "$SHARED")
+printf 'SCOPE: src/*\nVERIFY: : >verify-made.txt\n\nWrite src/checked.txt.\n' >"$WORK/brief"
+STUB_WRITE='src/checked.txt' start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'verify-write start'
+assert await
+late=$(report)
+assert grep -qx 'VERIFIED: pass' <<<"$late"
+assert grep -qx 'SCOPE: escaped verify-made.txt' <<<"$late"
+assert grep -qx 'LANDED: no' <<<"$late"
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert test ! -e "$SHARED/verify-made.txt"
+assert test ! -e "$SHARED/src/checked.txt"
+
+# --- a worker that committed inside its worktree: the diff is base..worktree, never empty -----
+printf 'SCOPE: src/*\nVERIFY: test -f src/kept-by-worker.txt\n\nWrite src/kept-by-worker.txt.\n' >"$WORK/brief"
+STUB_COMMIT=1 STUB_WRITE='src/kept-by-worker.txt' STUB_CONTENT='written by the worker' \
+  start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'worker-vcs start'
+STUB_COMMIT='' STUB_CONTENT=''
+assert await
+vcs=$(report)
+assert grep -qx 'SCOPE: ok' <<<"$vcs"
+assert grep -qx 'LANDED: yes' <<<"$vcs"
+assert test "$(cat "$SHARED/src/kept-by-worker.txt")" = 'written by the worker'
+git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm worker-vcs
+
+# --- the caller's subdirectory is kept: a brief written against it resolves where it was written
+printf 'SCOPE: src/*\nVERIFY: test -f src/in-subdir.txt\n\nWrite in-subdir.txt here.\n' >"$WORK/brief"
+STUB_WRITE='in-subdir.txt' start light --brief "$WORK/brief" --workdir "$SHARED/src" || fail 'subdir start'
+assert jq -e '.workdir | endswith("/src")' "$RUN_DIR/meta.json" >/dev/null
+assert jq -e '. as $m | $m.workdir | startswith($m.light_worktree + "/")' "$RUN_DIR/meta.json" >/dev/null
+assert await
+subdir=$(report)
+assert grep -qx 'SCOPE: ok' <<<"$subdir"
+assert grep -qx 'LANDED: yes' <<<"$subdir"
+assert test -f "$SHARED/src/in-subdir.txt"
+git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm subdir
+
+# --- launch refusals: a Light edit is one repository, and it is not resumable ------------------
+before_runs=$(run_dirs)
+printf 'SCOPE: src/*\n\nCarry on.\n' >"$WORK/brief"
+wr start light --brief "$WORK/brief" --workdir "$SHARED" --resume light-session-1; rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'a Light edit is not resumable' "$WORK/err"
+assert test "$(run_dirs)" = "$before_runs"
+wr start light --brief "$WORK/brief" --workdir "$SHARED" --add-dir "$WORK"; rc=$?
+assert test "$rc" -eq 4
+assert grep -q -- '--add-dir grants a second one no fence covers' "$WORK/err"
+assert test "$(run_dirs)" = "$before_runs"
+
+# --- a refusal below the allocation leaves no worktree, no branch and no empty run directory ---
+branches_before=$(git -C "$SHARED" branch --list 'light-*' | sort)
+worktrees_before=$(git -C "$SHARED" worktree list | sort)
+before_runs=$(run_dirs)
+printf 'light_edit=gemini:flash38\n' >"$TOGGLE"
+wr start light --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
+assert test "$rc" -eq 4
+assert test "$(git -C "$SHARED" branch --list 'light-*' | sort)" = "$branches_before"
+assert test "$(git -C "$SHARED" worktree list | sort)" = "$worktrees_before"
+assert test "$(run_dirs)" = "$before_runs"
+printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
+
 # --- G7: off the light row's vendor, a light run must be told which model to use ---------------
 printf 'light_research=gemini\nlight_edit=claudeb:sonnet\n' >"$TOGGLE"
 printf 'SCOPE: src/*\n\nLook around.\n' >"$WORK/brief"
@@ -199,4 +308,4 @@ assert test "$rc" -eq 0
 assert jq -e '.vendor == "codex" and .role == "research" and .model == "gpt-6-astra" and .light == "research"' \
   "$RUNS/$(sed -n 's/^RUN: //p' "$WORK/out")/meta.json" >/dev/null
 
-printf 'PASS: %s asserts; Light edit SCOPE/VERIFY contract (refused at launch without SCOPE), the throwaway worktree, land-on-green with conflict and red-run byte-identity, recipe composition and refusals, and the off-row light vendor refusal\n' "$asserts"
+printf 'PASS: %s asserts; Light edit SCOPE/VERIFY contract (refused at launch without SCOPE, with --resume or with --add-dir), the throwaway worktree fenced on its own git state, land-on-green with conflict, red-run and failed-run byte-identity, the fence retaken after VERIFY, a worker that used git inside the worktree, the caller subdirectory kept, cleanup after a refusal below the allocation, recipe composition and refusals, and the off-row light vendor refusal\n' "$asserts"

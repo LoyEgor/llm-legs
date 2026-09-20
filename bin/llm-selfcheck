@@ -105,7 +105,7 @@ maybe_run() {
 run_checks() {
   local name path seconds output rc detail
   local tripwire_globs tripwire_state tripwire_snapshot changed_paths changed_count
-  local light_link light_target light_missing
+  local light_link light_target light_missing light_want light_have
   # Profile roots are watched alongside ~/.claude: agents live in ~/.claude-profiles/<name>/
   # and a mutation there is exactly the event this tripwire exists to catch.
   tripwire_globs="${LLM_SELFCHECK_TRIPWIRE_GLOBS:-$HOME/.claude/CLAUDE.md $HOME/.claude/worker-model $HOME/.claude/settings.json $HOME/.claude/agents/*.md $HOME/.claude/commands/*.md $HOME/.claude-profiles/*/CLAUDE.md $HOME/.claude-profiles/*/settings.json $HOME/.claude-profiles/*/agents/*.md $HOME/.claude-profiles/*/commands/*.md}"
@@ -139,7 +139,11 @@ run_checks() {
   light_target=$(readlink "$light_link" 2>/dev/null) || light_target="$light_link"
   case "$light_target" in /*) ;; *) light_target="$(dirname "$light_link")/$light_target" ;; esac
   light_missing=''
-  [ "$light_target" = "$repo_root/bin/light-research" ] ||
+  # A relative symlink keeps its `..` segments, which no string compare against a resolved
+  # repository root ever matches: both sides are resolved before they are compared.
+  light_want="$(cd "$repo_root/bin" 2>/dev/null && pwd -P)/light-research"
+  light_have="$(cd "$(dirname "$light_target")" 2>/dev/null && pwd -P)/$(basename "$light_target")"
+  [ "$light_have" = "$light_want" ] ||
     light_missing="$light_link does not resolve to $repo_root/bin/light-research"
   for path in "$HOME/.claude/agents/light-research.md" "$HOME/.claude/agents/light-worker.md"; do
     [ -f "$path" ] || light_missing="${light_missing:+$light_missing; }$path absent"

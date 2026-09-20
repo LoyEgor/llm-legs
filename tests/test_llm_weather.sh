@@ -56,6 +56,7 @@ bench(7300, "aaa1111", [
          duration=407000, exit_code=1, errored=True, stderr="Error: timeout waiting for response"),
     cell("grok", rater="grok-high"),
     cell("oc-kimik3", exit_code=1, errored=True, stderr="agy -skill returned malformed Markdown", findings=0),
+    cell("oc-kimik3", rater="kimik3-b", exit_code=1, errored=True, stderr="HTTP 503 upstream", findings=0),
     cell("agy-flash36", exit_code=1, errored=True, findings=0, timeout_s=990,
          stderr="agy returned empty output: [agy] print timeout after 16m30s with turn in progress"),
     cell("oc-glm", exit_code=1, errored=True, findings=0, timeout_s=600, stderr="Error: authentication timed out."),
@@ -122,9 +123,10 @@ model() { jq -c --arg m "$1" ".models[] | select(.model == \$m) | $2" <<<"$json"
 
 assert_eq "$(jq -c 'keys' <<<"$json")" '["as_of","models","trend_d","window_h","worst"]'
 assert_eq "$(jq -r '"\(.as_of - '"$NOW"') \(.window_h) \(.trend_d)"' <<<"$json")" '0 24 7'
-assert_eq "$(jq -c '[.models[0] | keys[]]' <<<"$json")" '["bad","classes","incidents","legs","model","surfaces","trend"]'
+assert_eq "$(jq -c '[.models[0] | keys[]]' <<<"$json")" \
+  '["bad","classes","incidents","legs","model","origins","surfaces","trend"]'
 assert_eq "$(jq -r '[.models[] | "\(.model):\(.legs)/\(.bad)"] | join(",")' <<<"$json")" \
-  'grok:5/5,flash38:3/3,pro:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,kimik3:1/1,haiku:2/0'
+  'grok:5/5,flash38:3/3,kimik3:2/2,pro:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,haiku:2/0'
 assert_eq "$(jq -r '.worst' <<<"$json")" 'grok escaped ×3 · flash38 walled ×3'
 
 assert_eq "$(model grok .classes)" '{"escaped":3,"cap":1,"failed":1}'
@@ -144,6 +146,12 @@ assert_eq "$(model opus '.incidents[0] | "\(.class) \(.detail)"')" '"stalled sil
 assert_eq "$(model opus .classes)" '{"stalled":1}'
 assert_eq "$(model astra '.incidents[0] | "\(.class) \(.detail)"')" '"walled usage limit"'
 assert_eq "$(model kimik3 '.incidents[0] | "\(.class) \(.detail)"')" '"failed bad output"'
+assert_eq "$(model kimik3 .classes)" '{"failed":2}'
+assert_eq "$(model kimik3 .origins)" '{"ours":1,"theirs":1}'
+assert_eq "$(model kimik3 '[.incidents[] | "\(.detail) \(.origin)"]')" '["bad output ours","server error theirs"]'
+assert_eq "$(model flash38 .origins)" '{}'
+assert_eq "$(model flash38 '[.incidents[].origin] | unique')" '[""]'
+assert_eq "$(model grok '[.incidents[].origin] | unique')" '[""]'
 assert_eq "$(model flash36 '.incidents[0] | "\(.class) \(.detail)"')" '"cap print timeout 16m"'
 assert_eq "$(model glm '.incidents[0] | "\(.class) \(.detail)"')" '"cap timeout 600s"'
 assert_eq "$(model pro '.incidents[0] | "\(.class) \(.detail)"')" '"stalled stall 300s"'
