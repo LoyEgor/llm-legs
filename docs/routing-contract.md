@@ -134,8 +134,7 @@ the shared `~/.claude` names no account, and what stands in there is the caller'
 `main` for `worker-pick`, `notcom` for `claude-resume-timer`, an openly-labelled `.claudeb-state`
 guess for `workflow-burn-gate.sh`. The answer is a vendor AND an account, because the same name
 lives in both stores (`com` is a claudeb profile and a gateway login), and it decides which
-`.vendors.<vendor>.accounts[]` row a surface reads: `bin/worker-pick` (the `*` own-row marker), `bin/claude-resume-timer`, `bin/workflow-burn-gate.sh` and the
-`resume-timer-nudge` hook.
+`.vendors.<vendor>.accounts[]` row a surface reads: `bin/worker-pick` (the `*` own-row marker), `bin/claude-resume-timer` and `bin/workflow-burn-gate.sh`.
 
 ## Claims
 

@@ -233,9 +233,8 @@ so every surface that used to name the session's account from those facts named 
 ask `share/chat-account.sh` instead — one resolver, `<vendor> <account>` for the current process,
 `CLAUDEGPT_ACCOUNT` first (`docs/routing-contract.md`, "Whose account is this chat?"). Already
 covered by it: `bin/statusline.sh` (its own `CLAUDEGPT_ACCOUNT` branch and the Codex quota kick),
-`bin/worker-pick` (the `*` own-row marker), `bin/claude-resume-timer` (times the resume off the codex five-hour window),
-`bin/workflow-burn-gate.sh` (prices a fan-out against the codex account) and the
-`resume-timer-nudge` hook (nudges about the codex row, and stays quiet about the Claude one).
+`bin/worker-pick` (the `*` own-row marker), `bin/claude-resume-timer` (times the resume off the codex five-hour window)
+and `bin/workflow-burn-gate.sh` (prices a fan-out against the codex account).
 `bin/chats`, `bin/chat-find`, `bin/claude-chat-switch` and the chat-link hooks go through
 `share/chat_resume.py` for reopening, which is the same rule for a different question.
 
