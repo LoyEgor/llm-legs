@@ -5562,6 +5562,37 @@ assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 gate_out=$(gate_agent_payload Explore 'worker-run wait cb-20260901-abcdef' | "$LAUNCH_GATE_BIN")
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 
+# A lookup executes nothing: `command -v` / `-V`, and `type` / `which` / `hash -t`, ask where a word
+# lives, and asking that about an owned launcher is routine diagnostics. `command` without one of
+# those two flags is the transparent wrapper it always was.
+for gate_lookup in \
+  'command -v light-research' \
+  'command -V light-research' \
+  'command -v codex-image' \
+  'command -v grok-video' \
+  'command -v image-fanout' \
+  'command -v claudeb' \
+  'command -v worker-run' \
+  'type light-research' \
+  'which codex-image' \
+  'hash -t light-research'; do
+  gate_out=$(gate_payload "$gate_lookup" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+done
+for gate_lookup_denied in \
+  'command light-research --prompt-file /tmp/q' \
+  'command -p light-research' \
+  'env light-research' \
+  'exec light-research' \
+  'command codex-image --dest /tmp/a.png --prompt cat' \
+  'command claudeb notcom -p go' \
+  'command -v light-research && light-research --prompt-file /tmp/q' \
+  'command -v claudeb; claudeb notcom -p go'; do
+  gate_out=$(gate_payload "$gate_lookup_denied" | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
+
 # --- Task rows: spawn gate, per-spawn seeds, run/review/light state, the renderer's fit -----------
 TR_HOME_CACHE="$HOME/.cache/claude-worker-tags"
 tr_spawn() { # session type prompt [tool_use_id] [model]

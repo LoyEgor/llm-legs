@@ -235,6 +235,14 @@ scan=$(awk -v shellfed="$HEREDOC_SHELL_RE" -v postshell="$HEREDOC_POST_SHELL_RE"
   sed -e "s/[\\\\'\"]//g" | tr ';|&()`' '\n') || exit 0
 [ -n "$scan" ] || scan="$cmd"
 
+# `command` is a wrapper above because it hands its operand to the kernel — except with -v/-V, which
+# only prints where a word lives and runs nothing. The whole segment goes, and after the fallback
+# above, so a command that is nothing but lookups scans as empty instead of falling back to its own
+# text; a lookup chained with a real launch keeps that launch on its own line. `type`, `which` and
+# `hash` are commands in their own right, so their operand never reaches command position at all.
+LOOKUP_RE='^[[:space:]]*command[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[vV]([[:space:]]|$)'
+scan=$(grep -Ev "$LOOKUP_RE" <<<"$scan")
+
 # Inside a relay agent this whole door behaves as it always has; everywhere else — the main chat
 # above all — a worker-run that starts or awaits a run is denied, because the run would then belong
 # to a Bash turn nobody can see instead of to the agent whose row shows who is spending quota.
