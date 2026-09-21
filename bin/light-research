@@ -148,7 +148,8 @@ units_load() { # run-id — true when the table holds that run
 # Collect every unit, then assemble — the exit code is the worst rc of the batch whether or not a
 # unit is still running, because a usage limit one unit hit is what the caller routes on.
 units_finish() {
-  local u rc running=false combined repo_heading counts total=0 verified=0 checked
+  local u rc running=false combined repo_heading counts total=0 verified=0 links=0 checked
+  local unit_ok unit_total unit_links
   for ((u=0; u<units; u++)); do
     if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
       rc=$(tr -d '[:space:]' <"$units_dir/rc.$u")
@@ -177,12 +178,14 @@ units_finish() {
     else
       counts=$(research_citation_check "$part_dir/part.$u" "$checked" "${resolved_repos[@]}") || return 4
     fi
-    verified=$((verified + ${counts%% *}))
-    total=$((total + ${counts##* }))
+    read -r unit_ok unit_total unit_links <<<"$counts"
+    verified=$((verified + unit_ok))
+    total=$((total + unit_total))
+    links=$((links + unit_links))
   done
   combined="$part_dir/combined"
   if [ "$units" -eq 1 ]; then
-    tail -n +2 "$part_dir/checked.0" >"$combined" || return 4
+    tail -n +3 "$part_dir/checked.0" >"$combined" || return 4
   else
     repo_heading='##'
     [ "$question_count" -eq 1 ] || repo_heading='###'
@@ -192,12 +195,12 @@ units_finish() {
         printf '## Q%s\n\n' "$((${unit_questions[$u]} + 1))" >>"$combined"
       fi
       [ "$fanout" = false ] || printf '%s %s\n\n' "$repo_heading" "${unit_repos[$u]}" >>"$combined"
-      tail -n +2 "$part_dir/checked.$u" >>"$combined" || return 4
+      tail -n +3 "$part_dir/checked.$u" >>"$combined" || return 4
       printf '\n' >>"$combined"
     done
   fi
-  { printf 'CITATIONS: %s/%s\n' "$verified" "$total"; cat "$combined"; } >"$out" || return 4
-  printf 'CITATIONS: %s/%s\nANSWER: %s\nLINES: %s\n' "$verified" "$total" "$out" "$(wc -l <"$out" | tr -d '[:space:]')"
+  { printf 'CITATIONS: %s/%s\nLINKS: %s\n' "$verified" "$total" "$links"; cat "$combined"; } >"$out" || return 4
+  printf 'CITATIONS: %s/%s\nLINKS: %s\nANSWER: %s\nLINES: %s\n' "$verified" "$total" "$links" "$out" "$(wc -l <"$out" | tr -d '[:space:]')"
   return 0
 }
 

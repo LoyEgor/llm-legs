@@ -308,13 +308,13 @@ printf 'Research the repository.\n' >"$WORK/prompt"
 printf 'other repository quote\n' >"$REPO2/cross-only.txt"
 printf 'cross-only.txt:1 | "other repository quote" | cross claim\n' >"$WORK/cross-answer"
 . "$ROOT/share/light-research.sh"
-assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1'
-assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO2")" = '1 1'
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1 0'
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO2")" = '1 1 0'
 printf '%s:1 | "other repository quote" | outside claim\n' "$REPO2/cross-only.txt" >"$WORK/cross-answer"
-assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1'
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1 0'
 ln -s "$REPO2/cross-only.txt" "$REPO/cross-link"
 printf 'cross-link:1 | "other repository quote" | symlink claim\n' >"$WORK/cross-answer"
-assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1'
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1 0'
 
 # Batching: several --prompt-file run side by side and land under ONE citation header.
 printf 'file:1 | "x" | the tracked file holds x\n' >"$WORK/q1-answer"
