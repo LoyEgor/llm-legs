@@ -1869,7 +1869,7 @@ routed_profile_command() {
 }
 
 profile_command() {
-  local profile="${1:-}" dir d f near cred_state created=false
+  local profile="${1:-}" dir d f near cred_state copy_was prefs created=false
   if [ "$profile" = --direct ]; then
     printf 'claudeb: --direct was removed; use `claudeb profile <name>`\n' >&2
     return 2
@@ -1933,20 +1933,37 @@ profile_command() {
   done
   # user-scope MCP servers live in ~/.claude.json, which cannot be shared
   # (it also holds oauthAccount); copy the servers over, profile keys win
-  if command -v jq >/dev/null 2>&1 && [ -f "$HOME/.claude.json" ]; then
+  # His UI options live there too and an absent key means Claude's default, so a fresh profile
+  # silently loses them: main's values fill the keys a profile lacks (profile wins), while
+  # copyOnSelect is forced off on every launch and each flip is journalled.
+  if command -v jq >/dev/null 2>&1; then
     servers=$(jq -c '.mcpServers // {}' "$HOME/.claude.json" 2>/dev/null || printf '{}')
-    if [ -n "$servers" ] && [ "$servers" != '{}' ]; then
-      if [ -f "$dir/.claude.json" ]; then
-        tmp=$(mktemp)
-        if jq --argjson s "$servers" '.mcpServers = ($s + (.mcpServers // {}))' \
-             "$dir/.claude.json" >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
-          mv "$tmp" "$dir/.claude.json"
-        else
-          rm -f "$tmp"
+    [ -n "$servers" ] || servers='{}'
+    prefs=$(jq -c '[to_entries[] | select(.key | IN("theme", "editorMode", "autoUpdates", "showSpinnerTree",
+        "verbose", "preferredNotifChannel", "autoCompactEnabled", "diffTool", "autoConnectIde",
+        "showTurnDuration", "terminalProgressBarEnabled", "respectGitignore", "fileCheckpointingEnabled",
+        "messageIdleNotifThresholdMs"))] | from_entries' "$HOME/.claude.json" 2>/dev/null || printf '{}')
+    [ -n "$prefs" ] || prefs='{}'
+    if [ -f "$dir/.claude.json" ]; then
+      copy_was=$(jq -r 'if has("copyOnSelect") then (.copyOnSelect | tostring) else "missing" end' \
+        "$dir/.claude.json" 2>/dev/null || printf 'unreadable')
+      tmp=$(mktemp)
+      if jq --argjson s "$servers" --argjson p "$prefs" '($p + .)
+             | (if ($s | length) > 0 then .mcpServers = ($s + (.mcpServers // {})) else . end)
+             | .copyOnSelect = false' \
+           "$dir/.claude.json" >"$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+        mv "$tmp" "$dir/.claude.json"
+        if [ "$copy_was" != false ]; then
+          mkdir -p "$base_dir" 2>/dev/null || true
+          printf '%s profile=%s copyOnSelect was=%s forced=false claude=%s\n' \
+            "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$profile" "$copy_was" \
+            "$(claude --version 2>/dev/null | head -1)" >>"$base_dir/copy-on-select.log" 2>/dev/null || true
         fi
       else
-        printf '{"mcpServers":%s}\n' "$servers" >"$dir/.claude.json"
+        rm -f "$tmp"
       fi
+    else
+      jq -cn --argjson s "$servers" --argjson p "$prefs" '$p + {mcpServers: $s, copyOnSelect: false}' >"$dir/.claude.json"
     fi
   fi
   if [ "${CLAUDEB_PREPARE_ONLY:-false}" = true ]; then

@@ -33,16 +33,13 @@ research_citation_verify() { # path line quote repo-root...
   local path=$1 number=$2 quote=$3 root from to window
   local -a files=()
   shift 3
-  if [[ "$path" = /* ]]; then
-    [ ! -f "$path" ] || files=("$path")
-  else
-    # Every repository of the call, not the first one holding that name: the same relative path
-    # exists in several checkouts, and only one of them is the file the answer quoted.
-    for root in "$@"; do
-      [ -f "$root/$path" ] || continue
-      files+=("$root/$path")
-    done
-  fi
+  for root in "$@"; do
+    root=$(resolve_path "$root") || continue
+    if [[ "$path" = /* ]]; then from=$path; else from="$root/$path"; fi
+    [ -f "$from" ] || continue
+    from=$(resolve_path "$from") || continue
+    case "$from" in "$root"/*) files+=("$from") ;; esac
+  done
   [ "${#files[@]}" -gt 0 ] || return 1
   from=$((10#$number - 3))
   [ "$from" -ge 1 ] || from=1
@@ -93,16 +90,21 @@ research_citation_check() { # answer-file out-file repo-root... ; prints `<verif
 }
 
 research_sandbox_profile() {
-  local path resolved escaped profile_home
+  local path resolved escaped profile_home mode=${1:-research}
   local -a writable
   writable=()
-  if [ "$account" != main ]; then
-    profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
-    writable+=("$profile_home")
+  if [ "$mode" = light ]; then
+    shift
+    writable=("$@")
+  else
+    if [ "$account" != main ]; then
+      profile_home=$(readlink -f "$(gemini_account_home "$account")") || return 1
+      writable+=("$profile_home")
+    fi
+    mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
+    writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" "${TMPDIR:-/tmp}" /private/tmp
+      "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
   fi
-  mkdir -p "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" 2>/dev/null || :
-  writable+=("$HOME/.gemini" "${GEMINIB_CACHE_DIR:-$HOME/.cache/geminib}" "${TMPDIR:-/tmp}" /private/tmp
-    "$(getconf DARWIN_USER_TEMP_DIR)" "$(getconf DARWIN_USER_CACHE_DIR)" "$directory")
   printf '(version 1)\n(allow default)\n(deny file-write*)\n'
   for path in "${writable[@]}"; do
     [ -n "$path" ] || return 1
@@ -112,6 +114,7 @@ research_sandbox_profile() {
     printf '(allow file-write* (subpath "%s"))\n' "$escaped"
   done
   printf '(allow file-write* (literal "/dev/null") (literal "/dev/tty") (literal "/dev/stdin") (literal "/dev/stdout") (literal "/dev/stderr"))\n'
+  [ "$mode" != light ] || return 0
   # A checkout inside an allowed temp root must still be read-only.
   for path in "${resolved_repos[@]}" "$HOME/.claude"; do
     resolved=$(resolve_path "$path") || return 1

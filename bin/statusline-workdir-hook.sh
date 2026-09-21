@@ -50,8 +50,9 @@ journal_writes() {
   for p in "${write_paths[@]}"; do
     p=$(expand_path "$p")
     while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
-    add edit "$p" && break
+    add edit "$p" && return 0
   done
+  return 1
 }
 
 # SessionStart's agent_type is a top-level `claude --agent` session, not a subagent.
@@ -152,8 +153,11 @@ case "$hook_event:$tool_name" in
     [ -n "$candidate" ] && add edit "$(expand_path "$candidate")" ;;
   PostToolUse:EnterWorktree) [ -n "$candidate" ] && add enter-worktree "$candidate" ;;
   PostToolUse:ExitWorktree) add exit-worktree "${CLAUDE_PROJECT_DIR:-$base_dir}" ;;
-  # A non-zero exit arrives as PostToolUseFailure: the commit before the failing test still landed.
+  # A failed compound command does not identify which segments actually ran.
   PostToolUse:Bash|PostToolUseFailure:Bash)
+    if [ "$hook_event" = PostToolUseFailure ]; then
+      [ -n "$bash_worktree" ] && [ -f "$snap" ] || exit 0
+    fi
     candidate=$(unquote "$candidate")
     if [ -n "$bash_worktree" ]; then
       new=""
@@ -181,8 +185,8 @@ case "$hook_event:$tool_name" in
       dir=$(resolve_dir "$candidate") || exit 0
       top=$(git -C "$dir" rev-parse --show-toplevel) && [ "$(resolve_dir "$top")" = "$dir" ] || exit 0
       add enter-worktree "$dir"
-    elif [ -n "$bash_writes" ] && [ -n "$bash_writes_win" ]; then
-      journal_writes
+    elif [ -n "$bash_writes" ] && [ -n "$bash_writes_win" ] && journal_writes; then
+      :
     elif [ -n "$candidate" ]; then
       # A relative path belongs to this command's own earlier cd, never to the tool's cwd.
       [ -n "$bash_rel_base" ] && rel=$(resolve_dir "$bash_rel_base")

@@ -239,12 +239,32 @@ assert_eq "$TOP_B" "$(last_tree place-git-add)"
 place_case place-git-cwd 'git commit -m m' "$REPO_B"
 assert_eq "$TOP_B" "$(last_tree place-git-cwd)"
 
-# A non-zero exit arrives as PostToolUseFailure: the commit before the failing test still landed.
+# A failed compound command does not prove which mutation, if any, ran.
 place_set place-failure "$TOP_A"
 run_workdir_hook "$(workdir_payload Bash place-failure "$REPO_A" \
   "git -C '$REPO_B' commit --allow-empty -m x && false" |
   jq -c '.hook_event_name = "PostToolUseFailure" | .error = "Exit code 1"')"
-assert_eq "$TOP_B" "$(last_tree place-failure)"
+assert_eq "$TOP_A" "$(last_tree place-failure)"
+
+for command in "cd '$REPO_B' && make > /tmp/build.log" "cd '$REPO_B' && mkdir -p /tmp/scratch" \
+  "git -C '$REPO_B' apply /tmp/fix.patch" "git --git-dir '$REPO_B/.git' -C '$REPO_B' commit -m x" \
+  "git -C '$REPO_A' commit -m \"fix #123\" && git -C '$REPO_B' push" \
+  "echo \"note #1\" > '$REPO_B/out.txt'"; do
+  place_case place-regression-write "$command"
+  assert_eq "$TOP_B" "$(last_tree place-regression-write)"
+done
+for command in 'git branch --show-current' 'git branch --all' 'git branch' 'git tag -n' 'git tag --list' 'git fetch --dry-run' \
+  "(cd '$REPO_B' && true); git add file" \
+  "W='$REPO_B' true; touch \"\$W/file\""; do
+  place_case place-regression-read "$command"
+  assert_eq "$TOP_A" "$(last_tree place-regression-read)"
+done
+place_case place-tag-create "git -C '$REPO_B' tag -a release -m label"
+assert_eq "$TOP_B" "$(last_tree place-tag-create)"
+place_set place-skipped "$TOP_A"
+run_workdir_hook "$(workdir_payload Bash place-skipped "$REPO_A" "false && git -C '$REPO_B' commit -m x" |
+  jq -c '.hook_event_name = "PostToolUseFailure" | .error = "Exit code 1"')"
+assert_eq "$TOP_A" "$(last_tree place-skipped)"
 
 # A relative cd belongs to this command's own earlier cd, never to the tool's cwd; a `-` option
 # token is skipped by itself and does not abort the rest of the parse.
@@ -3299,6 +3319,11 @@ cat <<'SNAP'
 2102 1000 grok --prompt-file /tmp/review
 2103 2102 node /srv/grok-rpc.js
 2104 2102 node /srv/dev.js
+2105 1000 /Applications/Google Chrome.app/Contents/chrome_crashpad_handler
+2106 1000 npx -y @modelcontextprotocol/server-filesystem
+2107 1000 node --inspect ./mcp/server.js
+2108 1000 python3 -m mcp.server
+2109 1000 node server.js --config codex.json
 SNAP
 PSEOFT
 chmod +x "$FAKE_PS_TOOLS"
@@ -3310,11 +3335,16 @@ COMMAND   PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
 node     2101 u   11u  IPv4  0t0      TCP 127.0.0.1:61610 (LISTEN)
 node     2103 u   12u  IPv4  0t0      TCP 127.0.0.1:61611 (LISTEN)
 node     2104 u   13u  IPv4  0t0      TCP 127.0.0.1:4321 (LISTEN)
+chrome   2105 u   13u  IPv4  0t0      TCP 127.0.0.1:4322 (LISTEN)
+node     2106 u   13u  IPv4  0t0      TCP 127.0.0.1:4323 (LISTEN)
+node     2107 u   13u  IPv4  0t0      TCP 127.0.0.1:4324 (LISTEN)
+python   2108 u   13u  IPv4  0t0      TCP 127.0.0.1:4325 (LISTEN)
+node     2109 u   13u  IPv4  0t0      TCP 127.0.0.1:4326 (LISTEN)
 OUT
 LSEOFT
 chmod +x "$FAKE_LSOF_TOOLS"
 STATUSLINE_PS="$FAKE_PS_TOOLS" STATUSLINE_LSOF="$FAKE_LSOF_TOOLS" "$PORTS_PROBE" pp-tools 1000
-assert_eq "$(ports_records 4321)" "$(cat "$STATE_DIR/ports-pp-tools")"
+assert_eq "$(ports_records 4321 4326)" "$(cat "$STATE_DIR/ports-pp-tools")"
 
 
 # Each port is attributed to the WORKING TREE its process directory sits in, and the worktrees live
@@ -4915,6 +4945,26 @@ progress_no_expected_out=$(progress_render no-expected)
 assert grep -Fq " ${DIM}│${RESET} T2 0/1" <<< "$progress_no_expected_out"
 assert test "${progress_no_expected_out#*"${RED}T2"}" = "$progress_no_expected_out"
 
+# A CHUNKED cell is timed from the pass now running (`chunk_started`), never from the run: a
+# 14-chunk round would otherwise go red three medians in and stay red to the end.
+write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
+progress_chunked() { # chunk-started-age-or-empty
+  jq --argjson started_epoch "$(progress_started 400)" --arg age "$1" '
+    . + {started_epoch:$started_epoch, expected:{"cell-0":1000}, chunks:{"cell-0":[1,5]}}
+    | if $age == "" then . else .chunk_started = {"cell-0":($age | tonumber)} end' \
+    "$PROGRESS_DIR/$progress_prefix$$.json" > "$PROGRESS_DIR/$progress_prefix$$.json.tmp"
+  mv "$PROGRESS_DIR/$progress_prefix$$.json.tmp" "$PROGRESS_DIR/$progress_prefix$$.json"
+}
+progress_chunked "$(progress_started)"
+progress_chunk_fresh_out=$(progress_render chunk-fresh)
+assert grep -Fq " ${DIM}│${RESET} T2 0/1" <<< "$progress_chunk_fresh_out"
+assert test "${progress_chunk_fresh_out#*"${RED}T2"}" = "$progress_chunk_fresh_out"
+progress_chunked "$(progress_started 400)"
+assert grep -Fq " ${DIM}│${RESET} ${RED}T2 0/1${RESET}" <<< "$(progress_render chunk-stale)"
+# No key at all is the old document, judged by the run clock exactly as before.
+progress_chunked ""
+assert grep -Fq " ${DIM}│${RESET} ${RED}T2 0/1${RESET}" <<< "$(progress_render chunk-legacy)"
+
 write_progress "$$" T2 0 1 2026-07-27T22:00:00+00:00
 progress_legacy_out=$(progress_render legacy)
 assert grep -Fq " ${DIM}│${RESET} T2 0/1" <<< "$progress_legacy_out"
@@ -6180,6 +6230,27 @@ assert_fails grep -Fq "$RED" <<<"$(tr8_raw "$TR_RSESS")"
 jq '.expected = {} | .started_epoch = 1' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
   mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
 assert_fails grep -Fq "$RED" <<<"$(tr8_raw tr-other)"
+# The same rule per pass: a chunked cell far past 3 x its median by the run clock is not late while
+# the pass it is on is fresh, and is late as soon as that pass is the one running long.
+tr8_chunked() { # chunk-started-age-or-empty
+  jq --arg sess "$TR_RSESS" --argjson began "$(( $(date +%s) - 400 ))" --arg age "$1" '
+    .done = ["agy-flash37-high#1","claude-opus-low#1"] | .failed_cells = [] | del(.waiter) |
+    .session = $sess | .started_epoch = $began |
+    .expected = {"agy-flash37-high#2":50000} |
+    .chunks = {"agy-flash37-high#2":[2,5]} |
+    if $age == "" then del(.chunk_started)
+    else .chunk_started = {"agy-flash37-high#2":($age | tonumber)} end' \
+    "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+    mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
+}
+tr8_chunked "$(date +%s)"
+assert_fails grep -Fq "$RED" <<<"$(tr8_raw "$TR_RSESS")"
+tr8_chunked "$(( $(date +%s) - 400 ))"
+assert grep -Fq "${RED}agy 3/8${RESET}" <<<"$(tr8_raw "$TR_RSESS")"
+tr8_chunked ""
+assert grep -Fq "${RED}agy 3/8${RESET}" <<<"$(tr8_raw "$TR_RSESS")"
+jq 'del(.chunks)' "$TR_STATS/progress/llm-legs__x-8.json" > "$TR_STATS/progress/tmp" &&
+  mv "$TR_STATS/progress/tmp" "$TR_STATS/progress/llm-legs__x-8.json"
 # A group whose cell's verifier runs says `verify` after its fraction and earns `✓` only once it is collected.
 jq '.done = .cells | .failed_cells = [] | .phase = "verify" |
   .verifying = {"agy-flash37-high#1":"done","agy-flash37-high#2":"running","claude-opus-low#1":"done"}' \

@@ -85,13 +85,13 @@ bench(5000, "eee5555", [
          findings=0, stderr="geminib: capacity gemini-3.9-flash after 3 steps, not relaunched", ended=4800),
 ])
 
-# Four clean legs is under SLOW_MIN_LEGS, so the median falls back to every leg with a duration.
+# Too few clean legs cannot establish a baseline; short failures must not lower it.
 bench(4700, "fff6666", [
     cell("oc-minimax", rater="mm-1", duration=60000, ended=4600),
     cell("oc-minimax", rater="mm-2", duration=60000, ended=4500),
-    cell("oc-minimax", rater="mm-3", duration=60000, ended=4400),
+    cell("oc-minimax", rater="mm-3", duration=180000, ended=4400),
     cell("oc-minimax", rater="mm-4", duration=300000, ended=4300),
-    cell("oc-minimax", rater="mm-5", duration=60000, ended=4200, killed="watchdog", exit_code=1,
+    cell("oc-minimax", rater="mm-5", duration=3000, ended=4200, killed="watchdog", exit_code=1,
          errored=True, stderr="rater task crashed", findings=0),
 ])
 
@@ -158,7 +158,7 @@ assert_eq "$(jq -r '"\(.as_of - '"$NOW"') \(.window_h) \(.trend_d)"' <<<"$json")
 assert_eq "$(jq -c '[.models[0] | keys[]]' <<<"$json")" \
   '["bad","classes","incidents","legs","model","origins","surfaces","trend"]'
 assert_eq "$(jq -r '[.models[] | "\(.model):\(.legs)/\(.bad)"] | join(",")' <<<"$json")" \
-  'grok:5/5,flash38:3/3,kimik3:3/3,pro:3/3,minimax:5/2,flash39:2/2,sol:6/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,haiku:2/0'
+  'grok:5/5,flash38:3/3,kimik3:3/3,pro:3/3,flash39:2/2,sol:6/1,minimax:5/1,opus:2/1,astra:1/1,flash36:1/1,flash37:1/1,glm:1/1,haiku:2/0'
 assert_eq "$(jq -r '.worst' <<<"$json")" 'grok escaped ×3 · flash38 walled ×3'
 
 assert_eq "$(model grok .classes)" '{"escaped":3,"cap":1,"failed":1}'
@@ -201,8 +201,8 @@ assert_eq "$(model flash39 '"\(.legs) \(.classes) \(.origins)"')" \
   '"2 {\"failed\":2} {\"theirs\":2}"'
 assert_eq "$(model flash39 '[.incidents[] | "\(.detail) \(.origin)"] | unique')" '["capacity theirs"]'
 
-assert_eq "$(model minimax '"\(.legs) \(.classes)"')" '"5 {\"cap\":1,\"slow\":1}"'
-assert_eq "$(model minimax '.incidents[1] | "\(.class) \(.detail)"')" '"slow 5m vs 1m median"'
+assert_eq "$(model minimax '"\(.legs) \(.classes)"')" '"5 {\"cap\":1}"'
+assert_eq "$(model minimax '[.incidents[] | select(.class == "slow")] | length')" 0
 assert_eq "$(model haiku '"\(.classes) \(.trend) \(.incidents)"')" '"{} down []"'
 assert_eq "$(jq '[.models[] | select(.model == "fable")] | length' <<<"$json")" 0
 assert_eq "$(jq '[.. | strings | select(test("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^/"))] | length' <<<"$json")" 0
@@ -226,11 +226,20 @@ assert_eq "$(jq -r '.models[] | select(.model == "flash38") | "\(.legs) \(.bad) 
 assert_eq "$(jq -r '.models[] | select(.model == "flash38") | .incidents[-1].project' <<<"$wide")" review-bench
 assert_eq "$(jq -r '.models[] | select(.model == "fable") | .legs' <<<"$wide")" 1
 
-# Without geminib's cache the served model falls back to the rater's own name: no leg is dropped,
-# and the two Flash versions it can no longer tell apart merge into the slug the cell asked for.
+# A missing family cache keeps the canonical served family, never the requested model.
 blind=$(GEMINIB_CACHE_DIR="$WORK/none" "$WEATHER" --json)
 assert_eq "$(jq -r '[.models[].model | select(. == "flash39" or . == "flash37")] | length' <<<"$blind")" 0
-assert_eq "$(jq -r '.models[] | select(.model == "flash38") | "\(.legs) \(.bad)"' <<<"$blind")" '6 6'
+assert_eq "$(jq -r '.models[] | select(.model == "flash38") | "\(.legs) \(.bad)"' <<<"$blind")" '3 3'
+
+assert_eq "$(jq -r '.models[] | select(.model == "gemini-3.9-flash") | "\(.legs) \(.bad)"' <<<"$blind")" '2 2'
+assert python3 - "$WEATHER" <<'PYPROBE'
+import runpy, sys
+weather = runpy.run_path(sys.argv[1])
+legs = [dict(surface="review", model="test", duration=300, **{"class": None}) for _ in range(2)]
+legs += [dict(surface="review", model="test", duration=3, **{"class": "walled"}) for _ in range(8)]
+weather["mark_slow"](legs)
+assert all(leg["class"] != "slow" for leg in legs)
+PYPROBE
 
 # Every other reader resolves the bench store through CLAUDEB_DIR, and so does this one.
 mkdir -p "$WORK/claudeb/worker-stats"
@@ -244,4 +253,4 @@ assert_eq "$(WORKER_STATS_DIR="$WORK/none" WORKER_RUN_DIR="$WORK/none" "$WEATHER
 "$WEATHER" --window 0 >/dev/null 2>&1 && fail "a zero window was accepted"
 asserts=$((asserts + 1))
 
-printf 'PASS: %s asserts; llm-weather (every class, cancelled run, co-tenant note, served model off geminib families, worker origins, slow median and its fallback, trend, sort, worst, window, CLAUDEB_DIR, atomic cache)\n' "$asserts"
+printf 'PASS: %s asserts; llm-weather (every class, cancelled run, co-tenant note, served model off geminib families, worker origins, slow median and insufficient clean samples, trend, sort, worst, window, CLAUDEB_DIR, atomic cache)\n' "$asserts"

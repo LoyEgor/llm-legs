@@ -59,14 +59,15 @@ FAILURE_REASONS = (
     # geminib spells the same weather twice — agy's own refusal and the line geminib prints when
     # its fallback chain runs out — and neither says "capacity" the way a gateway does.
     ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
-                            r"|No capacity available for model|geminib: capacity ", re.IGNORECASE)),
+                            r"|No capacity available for model"
+                            r"|geminib: capacity \S+ after \d+ steps, not relaunched", re.IGNORECASE)),
     ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b")),
-    ("cancelled", re.compile(r"context canceled", re.IGNORECASE)),
     ("root commit", re.compile(r"root commit", re.IGNORECASE)),
     ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
     ("bad command", re.compile(r"cannot be used with", re.IGNORECASE)),
     ("stalled", re.compile(r"rater stalled", re.IGNORECASE)),
     ("timeout", re.compile(r"timed out|timeout", re.IGNORECASE)),
+    ("cancelled", re.compile(r"context canceled", re.IGNORECASE)),
     ("crashed", re.compile(
         r"rater task crashed|account lookup failed|codex_core::|sandbox_apply", re.IGNORECASE)),
     ("auth", re.compile(
@@ -243,9 +244,8 @@ def family_slugs():
 def bench_model(cell):
     served = cell.get("served_model")
     if isinstance(served, str) and served:
-        slug = family_slugs().get(gemini.family_of(served) or "")
-        if slug:
-            return slug
+        family = gemini.family_of(served)
+        return family_slugs().get(family, family or served)
     model = str(cell.get("model") or "")
     for prefix in ("agy-", "oc-"):
         if model.startswith(prefix):
@@ -440,24 +440,13 @@ def worker_legs(cutoff, now):
 
 
 def mark_slow(legs):
-    clean, timed = {}, {}
+    clean = {}
     for leg in legs:
-        if leg["duration"] is None:
-            continue
-        key = (leg["surface"], leg["model"])
-        timed.setdefault(key, []).append(leg["duration"])
-        if leg["class"] is None:
+        if leg["duration"] is not None and leg["class"] is None:
+            key = (leg["surface"], leg["model"])
             clean.setdefault(key, []).append(leg["duration"])
-    medians = {}
-    for key, values in timed.items():
-        # A group whose clean legs are too few to hold a median is read off all of them rather
-        # than left unjudged: a capped duration is the kill's, but no median at all hides a model
-        # that is slow on every leg it finishes.
-        sample = clean.get(key, [])
-        if len(sample) < SLOW_MIN_LEGS:
-            sample = values
-        if len(sample) >= SLOW_MIN_LEGS:
-            medians[key] = statistics.median(sample)
+    medians = {key: statistics.median(values) for key, values in clean.items()
+               if len(values) >= SLOW_MIN_LEGS}
     for leg in legs:
         median = medians.get((leg["surface"], leg["model"]))
         if leg["class"] is None and median and leg["duration"] is not None \

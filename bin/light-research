@@ -145,7 +145,7 @@ units_load() { # run-id — true when the table holds that run
 # Collect every unit, then assemble — the exit code is the worst rc of the batch whether or not a
 # unit is still running, because a usage limit one unit hit is what the caller routes on.
 units_finish() {
-  local u rc running=false combined repo_heading
+  local u rc running=false combined repo_heading counts total=0 verified=0 checked
   for ((u=0; u<units; u++)); do
     if [ "$persist" = true ] && [ -f "$units_dir/rc.$u" ]; then
       rc=$(tr -d '[:space:]' <"$units_dir/rc.$u")
@@ -167,9 +167,19 @@ units_finish() {
     return "$worst"
   fi
   [ "$worst" -eq 0 ] || return "$worst"
+  for ((u=0; u<units; u++)); do
+    checked="$part_dir/checked.$u"
+    if [ "$fanout" = true ]; then
+      counts=$(research_citation_check "$part_dir/part.$u" "$checked" "${unit_repos[$u]}") || return 4
+    else
+      counts=$(research_citation_check "$part_dir/part.$u" "$checked" "${resolved_repos[@]}") || return 4
+    fi
+    verified=$((verified + ${counts%% *}))
+    total=$((total + ${counts##* }))
+  done
   combined="$part_dir/combined"
   if [ "$units" -eq 1 ]; then
-    cp "$part_dir/part.0" "$combined" || return 4
+    tail -n +2 "$part_dir/checked.0" >"$combined" || return 4
   else
     repo_heading='##'
     [ "$question_count" -eq 1 ] || repo_heading='###'
@@ -179,12 +189,12 @@ units_finish() {
         printf '## Q%s\n\n' "$((${unit_questions[$u]} + 1))" >>"$combined"
       fi
       [ "$fanout" = false ] || printf '%s %s\n\n' "$repo_heading" "${unit_repos[$u]}" >>"$combined"
-      cat "$part_dir/part.$u" >>"$combined" || return 4
+      tail -n +2 "$part_dir/checked.$u" >>"$combined" || return 4
       printf '\n' >>"$combined"
     done
   fi
-  land_answer "$combined" "${resolved_repos[@]}" || return 4
-  [ "$persist" = false ] || rm -rf "$units_dir"
+  { printf 'CITATIONS: %s/%s\n' "$verified" "$total"; cat "$combined"; } >"$out" || return 4
+  printf 'CITATIONS: %s/%s\nANSWER: %s\nLINES: %s\n' "$verified" "$total" "$out" "$(wc -l <"$out" | tr -d '[:space:]')"
   return 0
 }
 

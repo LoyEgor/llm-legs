@@ -82,6 +82,11 @@ cat >"$BIN/grokb" <<'GROKB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$VENDOR_LOG"
 [ -z "${FAKE_GROK_EDIT:-}" ] || printf 'written\n' >>"$FAKE_GROK_EDIT"
+if [ -n "${FAKE_GROK_CITATION:-}" ]; then
+  jq -cn --arg text "$FAKE_GROK_CITATION" '{type:"text",data:$text}'
+  printf '{"type":"end","modelUsage":{"grok-4.6":{}}}\n'
+  exit 0
+fi
 printf '{"type":"text","data":"grok research answer"}\n{"type":"end","modelUsage":{"grok-4.6":{}}}\n'
 GROKB
 chmod +x "$BIN"/*
@@ -91,7 +96,7 @@ run(){ env HOME="$HOME" PATH="$BIN:/usr/bin:/bin" TMPDIR="$WORK" WORKER_RUN_DIR=
   GEMINI_RESEARCH_SANDBOX_EXEC="$BIN/sandbox-exec" GEMINI_LOG="$WORK/gemini.log" FAKE_EDIT="${FAKE_EDIT:-}" \
   FAKE_LOG_QUOTA="${FAKE_LOG_QUOTA:-}" PICK_QUEUE="${PICK_QUEUE:-}" VENDOR_LOG="$WORK/vendor.log" \
   WORKER_RUN_CLAUDEB="$BIN/claudeb" WORKER_RUN_CODEX="$BIN/codex" WORKER_RUN_GROKB="$BIN/grokb" \
-  FAKE_GROK_EDIT="${FAKE_GROK_EDIT:-}" \
+  FAKE_GROK_EDIT="${FAKE_GROK_EDIT:-}" FAKE_GROK_CITATION="${FAKE_GROK_CITATION:-}" \
   "$ROOT/bin/light-research" --prompt-file "$WORK/prompt" --out "$WORK/answer" --repo "$REPO" "$@" >"$WORK/out" 2>"$WORK/err"; }
 run
 rc=$?; assert test "$rc" -eq 0
@@ -176,7 +181,7 @@ run; rc=$?; assert test "$rc" -eq 4; assert grep -q '^OUTCOME: MODEL_REFUSED$' "
 # Light edit: `worker-run start light` takes vendor, model and effort from the light_edit row, and a
 # light-only model stays refused on the full worker leg.
 wr(){ env HOME="$HOME" PATH="$BIN:/usr/bin:/bin" TMPDIR="$WORK" WORKER_RUN_DIR="$RUNS" WORKER_RUN_IDLE_S=0 \
-  WORKER_RUN_WORKER_PICK="$BIN/worker-pick" PICK_LOG="$WORK/picks" VENDOR_LOG="$WORK/vendor.log" \
+  WORKER_RUN_WORKER_PICK="$BIN/worker-pick" PICK_LOG="$WORK/picks" VENDOR_LOG="$HOME/.claude-profiles/researcher/vendor.log" \
   WORKER_RUN_CLAUDEB="$BIN/claudeb" WORKER_RUN_CODEX="$BIN/codex" WORKER_RUN_GROKB="$BIN/grokb" \
   "$ROOT/bin/worker-run" "$@" >"$WORK/out" 2>"$WORK/err"; }
 printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
@@ -188,7 +193,7 @@ wr start light --brief "$WORK/edit-brief" --workdir "$REPO"; rc=$?; assert test 
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e '.vendor == "claudeb" and .role == "workers" and .light == "edit" and .model == "sonnet" and .effort == "medium"' "$RUNS/$run_id/meta.json"
 wr wait "$run_id" --max 60; assert grep -q '^STATUS: done$' "$WORK/out"
-assert grep -q -- '--dangerously-skip-permissions' "$WORK/vendor.log"
+assert grep -q -- '--dangerously-skip-permissions' "$HOME/.claude-profiles/researcher/vendor.log"
 wr start claudeb --model sonnet --brief "$WORK/prompt" --workdir "$REPO"; rc=$?; assert test "$rc" -ne 0
 assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
 printf 'light_edit=grok:opus\n' >"$TOGGLE"
@@ -250,6 +255,12 @@ assert grep -qx "## $repo_path" "$WORK/answer"
 assert grep -qx "## $repo2_path" "$WORK/answer"
 assert test "$(grep -c 'grok research answer' "$WORK/answer")" = 2
 
+printf 'repo two only\n' >"$REPO2/unit-only.txt"
+FAKE_GROK_CITATION='unit-only.txt:1 | "repo two only" | claim' run --repo "$REPO2"; rc=$?
+assert test "$rc" -eq 0
+assert test "$(head -n1 "$WORK/answer")" = 'CITATIONS: 1/2'
+assert grep -qx 'UNVERIFIED:' "$WORK/answer"
+
 # A launch that fails mid-batch waits out the units already started: abandoned, each keeps running
 # on an account of its own with nothing reading its answer.
 printf '%s\n' researcher 'BAD!' >"$WORK/pick-queue"
@@ -271,6 +282,17 @@ run --repo "$REPO2"; rc=$?; assert test "$rc" -eq 0
 assert test "$(head -1 "$WORK/answer")" = 'CITATIONS: 1/1'
 rm -f "$REPO/shared.txt" "$REPO2/shared.txt"
 printf 'Research the repository.\n' >"$WORK/prompt"
+
+printf 'other repository quote\n' >"$REPO2/cross-only.txt"
+printf 'cross-only.txt:1 | "other repository quote" | cross claim\n' >"$WORK/cross-answer"
+. "$ROOT/share/light-research.sh"
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1'
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO2")" = '1 1'
+printf '%s:1 | "other repository quote" | outside claim\n' "$REPO2/cross-only.txt" >"$WORK/cross-answer"
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1'
+ln -s "$REPO2/cross-only.txt" "$REPO/cross-link"
+printf 'cross-link:1 | "other repository quote" | symlink claim\n' >"$WORK/cross-answer"
+assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked" "$REPO")" = '0 1'
 
 # Batching: several --prompt-file run side by side and land under ONE citation header.
 printf 'file:1 | "x" | the tracked file holds x\n' >"$WORK/q1-answer"
@@ -378,7 +400,13 @@ assert test "$rc" -eq 0
 assert grep -qx 'first batched answer' "$WORK/answer"
 assert grep -qx 'second batched answer' "$WORK/answer"
 assert test "$(grep -n '^## Q1$' "$WORK/answer" | cut -d: -f1)" -lt "$(grep -n '^## Q2$' "$WORK/answer" | cut -d: -f1)"
-assert test ! -e "$WORK/answer.units"
+assert test -f "$WORK/answer.units/table"
+cp "$WORK/answer" "$WORK/first-answer"
+while IFS=$'\t' read -r attached_run rest; do
+  attach --attach "$attached_run" --out "$WORK/answer"; rc=$?
+  assert test "$rc" -eq 0
+  assert cmp -s "$WORK/first-answer" "$WORK/answer"
+done <"$WORK/answer.units/table"
 printf 'Research the repository.\n' >"$WORK/prompt"
 
 # The rename leaves no trace of the vendor-bound name outside git history.

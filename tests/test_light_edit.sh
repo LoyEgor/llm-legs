@@ -15,7 +15,8 @@ assert(){ asserts=$((asserts + 1)); "$@" || fail "$*"; }
 
 HOME="$WORK/home"; BIN="$WORK/bin"; SHARED="$WORK/shared"; RUNS="$WORK/runs"
 export HOME
-mkdir -p "$HOME/.claude" "$HOME/.claude-profiles/picked/projects" "$HOME/.codex-profiles/picked" "$BIN" "$SHARED/src" "$RUNS"
+mkdir -p "$HOME/.claude" "$HOME/.claude-profiles/picked" "$HOME/.claude/projects" "$HOME/.codex-profiles/picked" "$BIN" "$SHARED/src" "$RUNS"
+ln -s "$HOME/.claude/projects" "$HOME/.claude-profiles/picked/projects"
 git -C "$SHARED" init -q
 printf 'x\n' >"$SHARED/file"; printf 'keep\n' >"$SHARED/src/kept.txt"
 git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm init
@@ -50,6 +51,14 @@ for path in ${STUB_SHELL_WRITE:-}; do
     '{timestamp:$ts,type:"assistant",message:{content:[{type:"tool_use",name:"Bash",input:{command:"sed -i \"\" s/x/y/ a-file"}}]}}' \
     >>"$transcript_dir/$STUB_SESSION.jsonl"
 done
+if [ -n "${STUB_RENAME:-}" ]; then
+  git mv src/kept.txt src/renamed-kept.txt
+fi
+if [ -n "${STUB_DROP_BASE:-}" ]; then
+  jq 'del(.light_base)' "$WORKER_RUN_RECORD/meta.json" >"$WORKER_RUN_RECORD/meta.tmp"
+  mv "$WORKER_RUN_RECORD/meta.tmp" "$WORKER_RUN_RECORD/meta.json"
+  [ "$STUB_DROP_BASE" != all ] || rm -f "$WORKER_RUN_RECORD/head-before"
+fi
 if [ -n "${STUB_COMMIT:-}" ]; then
   git add -A >/dev/null 2>&1
   git -c user.name=w -c user.email=w@y commit -qm 'worker change' >/dev/null 2>&1
@@ -76,6 +85,7 @@ wr(){ session=$((session + 1))
     WORKER_RUN_WORKER_PICK="$BIN/worker-pick" PICK_LOG="$WORK/picks" \
     WORKER_RUN_CLAUDEB="$BIN/claudeb" WORKER_RUN_CODEX="$BIN/codex" \
     STUB_SESSION="light-session-$session" STUB_WRITE="${STUB_WRITE:-}" STUB_CONTENT="${STUB_CONTENT:-}" \
+    STUB_DROP_BASE="${STUB_DROP_BASE:-}" STUB_RENAME="${STUB_RENAME:-}" \
     STUB_SHELL_WRITE="${STUB_SHELL_WRITE:-}" STUB_RC="${STUB_RC:-0}" STUB_COMMIT="${STUB_COMMIT:-}" \
     "$ROOT/bin/worker-run" "$@" >"$WORK/out" 2>"$WORK/err"; }
 
@@ -261,7 +271,7 @@ assert test "$(cat "$SHARED/src/kept-by-worker.txt")" = 'written by the worker'
 git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm worker-vcs
 
 # --- the caller's subdirectory is kept: a brief written against it resolves where it was written
-printf 'SCOPE: src/*\nVERIFY: test -f src/in-subdir.txt\n\nWrite in-subdir.txt here.\n' >"$WORK/brief"
+printf 'SCOPE: in-subdir.txt\nVERIFY: test -f in-subdir.txt\n\nWrite in-subdir.txt here.\n' >"$WORK/brief"
 STUB_WRITE='in-subdir.txt' start light --brief "$WORK/brief" --workdir "$SHARED/src" || fail 'subdir start'
 assert jq -e '.workdir | endswith("/src")' "$RUN_DIR/meta.json" >/dev/null
 assert jq -e '. as $m | $m.workdir | startswith($m.light_worktree + "/")' "$RUN_DIR/meta.json" >/dev/null
@@ -271,6 +281,46 @@ assert grep -qx 'SCOPE: ok' <<<"$subdir"
 assert grep -qx 'LANDED: yes' <<<"$subdir"
 assert test -f "$SHARED/src/in-subdir.txt"
 git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm subdir
+
+printf 'SCOPE: src/*\nVERIFY: true\n' >"$WORK/brief"
+STUB_DROP_BASE=meta STUB_COMMIT=1 STUB_WRITE=src/legacy.txt start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'legacy start'
+assert await
+legacy=$(report)
+assert grep -qx 'LANDED: yes' <<<"$legacy"
+assert test -f "$SHARED/src/legacy.txt"
+git -C "$SHARED" add -A; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm legacy
+STUB_DROP_BASE=all STUB_COMMIT=1 STUB_WRITE=src/preserved.txt start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'missing base start'
+assert await
+missing=$(report)
+assert grep -qx 'SCOPE: unknown base' <<<"$missing"
+assert grep -qx 'LANDED: no' <<<"$missing"
+kept=$(sed -n 's/^LIGHT-WORKTREE: //p' <<<"$missing")
+assert test -f "$kept/src/preserved.txt"
+assert test -n "$(git -C "$SHARED" branch --list "light-$RUN_ID")"
+
+printf 'SCOPE: src/renamed-kept.txt\nVERIFY: true\n' >"$WORK/brief"
+STUB_RENAME=1 start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'rename start'
+assert await
+renamed=$(report)
+assert grep -qx 'SCOPE: escaped src/kept.txt' <<<"$renamed"
+assert grep -qx 'LANDED: no' <<<"$renamed"
+assert test -f "$SHARED/src/kept.txt"
+
+printf 'protected\n' >"$HOME/.claude/protected"
+ln -s "$HOME/.claude/protected" "$SHARED/src/outside-link"
+git -C "$SHARED" add src/outside-link; git -C "$SHARED" -c user.name=x -c user.email=x@y commit -qm link
+printf 'SCOPE: src/*\nVERIFY: true\n' >"$WORK/brief"
+before=$(tree_digest "$SHARED")
+STUB_WRITE="$SHARED/src/kept.txt $HOME/.claude/protected src/outside-link" start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'external write start'
+assert await
+assert test "$(cat "$HOME/.claude/protected")" = protected
+assert test "$(tree_digest "$SHARED")" = "$before"
+assert grep -q 'Operation not permitted' "$RUN_DIR/err"
+printf 'SCOPE: src/*\nVERIFY: echo changed > %s\n' "$HOME/.claude/protected" >"$WORK/brief"
+start light --brief "$WORK/brief" --workdir "$SHARED" || fail 'external verify start'
+assert await
+assert grep -qx 'VERIFIED: fail' < <(report)
+assert test "$(cat "$HOME/.claude/protected")" = protected
 
 # --- launch refusals: a Light edit is one repository, and it is not resumable ------------------
 before_runs=$(run_dirs)
@@ -295,6 +345,19 @@ assert test "$(git -C "$SHARED" branch --list 'light-*' | sort)" = "$branches_be
 assert test "$(git -C "$SHARED" worktree list | sort)" = "$worktrees_before"
 assert test "$(run_dirs)" = "$before_runs"
 printf 'light_edit=claudeb:sonnet\n' >"$TOGGLE"
+
+mkdir -p "$WORK/abandoned"
+printf 'owner\n' >"$WORK/abandoned/launcher"
+assert env LIGHT_ABANDON="$(printf '%s\t%s\t%s' "$SHARED" "$WORK/unused-tree" "$WORK/abandoned")" \
+  bash -c '
+    source <(sed -n "/^light_start_abandon() {/,/^}/p" "$1/bin/worker-run")
+    complete_run() { printf "%s\n" "$2" >"$1/completed"; }
+    light_worktree_remove() { exit 99; }
+    light_start_abandon
+  ' _ "$ROOT"
+assert test -d "$WORK/abandoned"
+assert test "$(cat "$WORK/abandoned/exit_code")" = 4
+assert test "$(cat "$WORK/abandoned/completed")" = 4
 
 # --- G7: off the light row's vendor, a light run must be told which model to use ---------------
 printf 'light_research=gemini\nlight_edit=claudeb:sonnet\n' >"$TOGGLE"

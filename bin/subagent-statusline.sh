@@ -177,17 +177,21 @@ review_state() { # run-id session tag-cache-path
     (if (.expected | type) == "object" then .expected else {} end) as $expected |
     ($sid != "" and ($sid == .session or $sid == ((.waiter | objects | .session) // null))) as $launcher |
     (if (.chunks | type) == "object" then .chunks else {} end) as $chunks |
+    (if (.chunk_started | type) == "object" then .chunk_started else {} end) as $chunk_started |
     (if (.verifying | type) == "object" then .verifying else {} end) as $verifying |
     (.cells // [])[] | . as $cell |
     ($chunks[$cell] // null) as $pass |
     (($pass | type) == "array" and ($pass | length) == 2 and ($pass[0] | type) == "number"
       and ($pass[1] | type) == "number" and $pass[1] > 1) as $chunked |
+    ((if $chunked then $chunk_started[$cell] else null end
+      | if type == "number" and . > 0 and (. | floor) == . then . else null end)
+     // $started_epoch) as $late_from |
     [($cell | tostring | sub("#.*$"; "") | if test("^(claude|codex|oc|opencode|gemini)-") then sub("^[^-]*-"; "") else . end | sub("-.*$"; "")),
      (if ($failed | index([$cell])) then "failed" elif ($done | index([$cell])) then "done" else "running" end),
      (if $chunked then $pass[0] | floor | tostring else "" end), (if $chunked then $pass[1] | floor | tostring else "" end),
      ($expected[$cell] as $expected_ms
-      | if $launcher and $started_epoch != null and ($expected_ms | type) == "number" and $expected_ms >= 0
-          and (($now - $started_epoch) * 1000 > ([3 * $expected_ms, 120000] | max)) then "late" else "" end),
+      | if $launcher and $late_from != null and ($expected_ms | type) == "number" and $expected_ms >= 0
+          and (($now - $late_from) * 1000 > ([3 * $expected_ms, 120000] | max)) then "late" else "" end),
      (if $verifying[$cell] == "running" then "verify" else "" end)]
     | join("\u001f")' <<<"$doc")
   if [ -n "$judge_since" ]; then

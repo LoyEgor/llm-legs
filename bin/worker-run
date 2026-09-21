@@ -355,6 +355,9 @@ run_with_deadline() {
   # <&0 is load-bearing: without an explicit stdin redirect, a background
   # command in a non-interactive shell gets /dev/null instead of the brief
   # the caller redirected in (live-caught: claudeb saw an empty stdin).
+  if [ -n "$RUN_DIRECTORY" ] && [ -f "$RUN_DIRECTORY/light-sandbox.sb" ]; then
+    set -- /usr/bin/sandbox-exec -f "$RUN_DIRECTORY/light-sandbox.sb" "$@"
+  fi
   ${CHILD_GROUP_PREFIX[@]+"${CHILD_GROUP_PREFIX[@]}"} "$@" <&0 &
   child=$!
   # The CLI's own pid, for memlogd's memory guard: that guard kills the DESCENDANTS of the pid a
@@ -1090,6 +1093,7 @@ supervise() {
   vendor=$(jq -r '.vendor' "$directory/meta.json")
   workdir=$(jq -r '.workdir' "$directory/meta.json")
   RUN_DIRECTORY=$directory
+  [ ! -f "$directory/light-sandbox.sb" ] || export TMPDIR="$directory/scratch"
   # Into THIS run's tree and nowhere else: the supervisor is setsid'd, so every vendor child and
   # everything it spawns inherits these and nothing on the machine outside the run does. A serial,
   # daemonless nx is what keeps one agent's fan-out from being the tree memlogd's memory guard has
@@ -1099,6 +1103,7 @@ supervise() {
   # the record of a run still going, and a reader takes that for a run that wrote nothing.
   cd "$workdir" || { persist_run_files "$directory"; return 4; }
   while :; do
+    light_sandbox_prepare "$directory" || { persist_run_files "$directory"; return 4; }
     case "$vendor" in
       claudeb) supervise_claudeb "$directory" ;;
       codex) supervise_codex "$directory" ;;
@@ -1685,6 +1690,11 @@ light_start_abandon() {
   [ -n "$LIGHT_ABANDON" ] || return 0
   IFS=$'\t' read -r abandon_top abandon_worktree abandon_directory <<<"$LIGHT_ABANDON"
   LIGHT_ABANDON=''
+  if [ -f "$abandon_directory/launcher" ]; then
+    complete_run "$abandon_directory" 4 >/dev/null 2>&1 || :
+    printf '4\n' >"$abandon_directory/exit_code"
+    return 0
+  fi
   [ -z "$abandon_worktree" ] || light_worktree_remove "$abandon_top" "$abandon_worktree"
   [ -z "$abandon_directory" ] || rm -rf "$abandon_directory"
 }
@@ -1696,12 +1706,45 @@ light_worktree_remove() { # top worktree
   return 0
 }
 
-# The brief's own success predicate, run in the worktree with a ceiling: a VERIFY that hangs would
-# hold the run's exit code back for as long as it lives, and the supervisor is already detached.
+light_sandbox_prepare() { # directory
+  local directory="$1" vendor account light_worktree run_id=${1##*/}
+  local light_runtime light_gitdir light_common light_state
+  local -a light_state_paths=()
+  jq -e '.light == "edit"' "$directory/meta.json" >/dev/null 2>&1 || return 0
+  vendor=$(jq -r '.vendor' "$directory/meta.json")
+  account=$(jq -r '.account' "$directory/meta.json")
+  light_worktree=$(jq -r '.light_worktree' "$directory/meta.json")
+  [ -x /usr/bin/sandbox-exec ] || { printf 'Light edit needs sandbox-exec to fence external writes\n' >&2; return 1; }
+  . "$SCRIPT_DIRECTORY/../share/light-research.sh"
+  case "$vendor" in
+    claudeb) light_runtime="${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account" ;;
+    codex) light_runtime=$(codex_home "$account") ;;
+    gemini) light_runtime=$(gemini_account_home "$account") ;;
+    grok) light_runtime=$(grok_home "$account") ;;
+  esac
+  mkdir -p "$directory/scratch" "$light_runtime" || return 1
+  light_gitdir=$(git -C "$light_worktree" rev-parse --absolute-git-dir) || return 1
+  light_common=$(git -C "$light_worktree" rev-parse --path-format=absolute --git-common-dir) || return 1
+  if [ "$vendor" = claudeb ]; then
+    for light_state in projects sessions file-history history.jsonl debug; do
+      [ ! -e "$light_runtime/$light_state" ] || light_state_paths+=("$light_runtime/$light_state")
+      [ ! -e "$HOME/.claude/$light_state" ] || light_state_paths+=("$HOME/.claude/$light_state")
+    done
+  fi
+  research_sandbox_profile light "$light_worktree" "$light_runtime" "$directory" "$light_gitdir" \
+    "$light_common/objects" "$light_common/refs/heads/light-$run_id" "$light_common/refs/heads/light-$run_id.lock" \
+    "$light_common/logs/refs/heads/light-$run_id" ${light_state_paths[@]+"${light_state_paths[@]}"} >"$directory/light-sandbox.sb" || return 1
+  /usr/bin/sandbox-exec -f "$directory/light-sandbox.sb" /usr/bin/true || return 1
+}
+
 light_verify_run() { # workdir command log
   local workdir="$1" command="$2" log="$3" limit="${WORKER_RUN_VERIFY_TIMEOUT_S:-600}" child deadline
   [[ "$limit" =~ ^[0-9]+$ ]] || limit=600
-  ( cd "$workdir" && eval "$command" ) >"$log" 2>&1 </dev/null &
+  ( cd "$workdir" || exit 1
+    if [ -f "${log%/*}/light-sandbox.sb" ]; then
+      TMPDIR="${log%/*}/scratch" /usr/bin/sandbox-exec -f "${log%/*}/light-sandbox.sb" bash -c "$command"
+    else eval "$command"; fi
+  ) >"$log" 2>&1 </dev/null &
   child=$!
   deadline=$(($(date +%s) + limit))
   while kill -0 "$child" 2>/dev/null; do
@@ -1722,10 +1765,15 @@ light_verify_run() { # workdir command log
 # unstaged changes, and untracked files. Read from the worktree and never from the run's listing —
 # a worker that wrote through the shell leaves that listing `PARTIAL:` and shrunken, and a fence
 # built on it would pass every path the transcript failed to name while `git add -A` landed them.
-light_touched_paths() { # worktree base
-  { git -C "$1" diff --name-only "$2" 2>/dev/null
-    git -C "$1" diff --name-only --cached "$2" 2>/dev/null
-    git -C "$1" ls-files --others --exclude-standard 2>/dev/null; } | sed '/^$/d' | sort -u
+light_touched_paths() { # worktree base workdir
+  local path relative=${3#"$1"} spell
+  relative=${relative#/}
+  { git -C "$1" diff --no-renames --name-only "$2" 2>/dev/null
+    git -C "$1" diff --no-renames --name-only --cached "$2" 2>/dev/null
+    git -C "$1" ls-files --others --exclude-standard 2>/dev/null; } | sed '/^$/d' | sort -u | while IFS= read -r path; do
+    spell=$(produced_spelling "$1" "$relative" "$path")
+    printf '%s\n' "$spell"
+  done
 }
 
 light_scope_state() { # scope touched-paths
@@ -1749,35 +1797,43 @@ light_scope_state() { # scope touched-paths
 # The verdict travels as files, never as output: _deliver's stdout goes to /dev/null, and `report`
 # is where anyone reads it.
 light_gate() { # directory terminal-status
-  local directory="$1" status="${2:-failed}" worktree top base scope verify
+  local directory="$1" status="${2:-failed}" worktree top base scope verify workdir
   local scope_state=none verify_state=none landed=no patch="$directory/land.patch" touched
   jq -e '.light == "edit" and (.light_worktree // "") != ""' "$directory/meta.json" >/dev/null 2>&1 || return 0
   [ ! -f "$directory/light-verdict" ] || return 0
   worktree=$(jq -r '.light_worktree' "$directory/meta.json")
   top=$(jq -r '.light_shared_top' "$directory/meta.json")
   base=$(jq -r '.light_base // ""' "$directory/meta.json")
-  [ -n "$base" ] || base=HEAD
+  [ -n "$base" ] || base=$(cat "$directory/head-before" 2>/dev/null)
+  if [ -z "$base" ] || ! git -C "$worktree" cat-file -e "$base^{commit}" 2>/dev/null; then
+    printf 'VERIFIED: none\nSCOPE: unknown base\nLANDED: no\nLIGHT-WORKTREE: %s\n' "$worktree" >"$directory/light-verdict"
+    return 0
+  fi
+  workdir=$(jq -r '.workdir' "$directory/meta.json")
   scope=$(cat "$directory/light-scope" 2>/dev/null)
   verify=$(cat "$directory/light-verify" 2>/dev/null)
-  touched=$(light_touched_paths "$worktree" "$base")
+  touched=$(light_touched_paths "$worktree" "$base" "$workdir")
   scope_state=$(light_scope_state "$scope" "$touched")
   # A run that ended failed — a nonzero exit, a wall the pool could not reroute, a stall kill —
   # lands nothing even with an empty VERIFY: its edits are half of an edit, and `none` would sail
   # through the verify check below.
   if [ "$status" = done ] && [ -n "$verify" ]; then
-    if light_verify_run "$worktree" "$verify" "$directory/verify.log"; then verify_state=pass; else verify_state=fail; fi
+    if light_verify_run "$workdir" "$verify" "$directory/verify.log"; then verify_state=pass; else verify_state=fail; fi
   fi
   if [ "$status" = done ] && [ "$scope_state" = ok ] && [ "$verify_state" != fail ]; then
     # VERIFY ran in the worktree and may have written there itself; the set that is fenced has to
     # be the set that lands, so it is taken again after it.
-    touched=$(light_touched_paths "$worktree" "$base")
+    touched=$(light_touched_paths "$worktree" "$base" "$workdir")
     scope_state=$(light_scope_state "$scope" "$touched")
   fi
   if [ "$status" = done ] && [ "$scope_state" = ok ] && [ "$verify_state" != fail ]; then
     git -C "$worktree" add -A >/dev/null 2>&1
     # Against the BASE and not the worktree HEAD: a worker that committed its work inside the
     # worktree leaves HEAD holding it, and an empty patch would take the branch away with it.
-    git -C "$worktree" diff --cached --binary "$base" >"$patch" 2>/dev/null || : >"$patch"
+    if ! git -C "$worktree" diff --cached --binary "$base" >"$patch" 2>/dev/null; then
+      printf 'VERIFIED: %s\nSCOPE: unknown diff\nLANDED: no\nLIGHT-WORKTREE: %s\n' "$verify_state" "$worktree" >"$directory/light-verdict"
+      return 0
+    fi
     if [ ! -s "$patch" ]; then
       rm -f "$patch"
       light_worktree_remove "$top" "$worktree" && worktree=''
@@ -2183,7 +2239,7 @@ start_run() {
     # registered worktree, an undeleted branch and an empty run directory behind.
     LIGHT_ABANDON=$(printf '%s\t%s\t%s' "$light_shared_top" "$light_worktree" "$directory")
     trap light_start_abandon EXIT
-    light_base=$(git -C "$light_shared_top" rev-parse --verify --quiet "light-$run_id^{commit}") || light_base=''
+    light_base=$(git -C "$light_shared_top" rev-parse --verify --quiet "light-$run_id^{commit}") || fail "could not record the Light base commit"
     workdir=$light_worktree${light_relative:+/$light_relative}
     mkdir -p "$workdir" || fail "could not open $light_relative inside the Light edit worktree"
   fi
@@ -2313,6 +2369,7 @@ start_run() {
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
+  light_sandbox_prepare "$directory" || fail 'could not prepare the Light write sandbox'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
   # chat spawned IS that chat (Egor, 2026-08-17), and the run is the only place that fact exists —
   # the report says who a worker is, never who asked for it, so ownership read off a report is

@@ -159,7 +159,7 @@ while [ "$#" -gt 0 ]; do
 done
 case "$verb" in
   post|emit)
-    case "$kind" in review|commit|push|notice) ;; *) usage ;; esac
+    case "$kind" in review|commit|push|notice|unresolved) ;; *) usage ;; esac
     id=$(printf '%s' "$id" | LC_ALL=C tr -c 'A-Za-z0-9._-\n' '-' | tr '\n' '-')
     case "$id" in .|..) id="report-$id" ;; esac
     body=$(if [ -n "$file" ]; then cat "$file"; else cat; fi; rc=$?; printf '\001'; exit "$rc") || problem 'cannot read body'

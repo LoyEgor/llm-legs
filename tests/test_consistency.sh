@@ -521,7 +521,10 @@ assert grep -Fq 'counts.failed = math.max(0, counts.failed - theirs)' "$ROOT/ham
 # The served model resolves through geminib's family list (row `cr` keeps the versions out of
 # here), so a new Flash reaches the weather table with no code change.
 assert grep -Fq 'gemini.geminib_cache_dir(), "models.json"' "$ROOT/bin/llm-weather"
-assert grep -Fq 'family_slugs().get(gemini.family_of(served) or "")' "$ROOT/bin/llm-weather"
+assert grep -Fq 'family = gemini.family_of(served)' "$ROOT/bin/llm-weather"
+# The family is the KEY, never the fallback value: a served model geminib's cache cannot place
+# keeps its own name on the menu instead of collapsing into the empty family.
+assert grep -Fq 'family_slugs().get(family, family or served)' "$ROOT/bin/llm-weather"
 assert grep -Fq 'os.environ.get("CLAUDEB_DIR")' "$ROOT/bin/llm-weather"
 assert doc_has 'every leg of the group with a duration'
 assert grep -Fq '"RUNS", "CUT", "STEPS"' "$WEATHER_BIN"
@@ -1198,6 +1201,12 @@ assert grep -Fq 'shared-invariants row `u`' "$ROOT/docs/statusline-contract.md"
 # `expected` map the bench still writes makes that judgement possible.
 assert eq "$(grep -c 'REVIEW_LATE' "$RB_REPORT")" 0
 assert grep -Fq '"expected": dict(expected or {}),' "$RB_STORE"
+# A chunked cell is judged per PASS: the bench stamps when the running pass began and both
+# readers measure from that stamp, or a fourteen-chunk round is red from its third median on.
+assert grep -Fq 'progress.setdefault("chunk_started", {})[cell]' "$RB_STORE"
+assert grep -Fq 'chunk_started' "$STATUSLINE"
+assert grep -Fq 'chunk_started' "$ROOT/bin/subagent-statusline.sh"
+assert doc_has '`chunk_started[cell]`'
 assert doc_has 'Late review threshold'
 assert doc_has '`3` ×'
 assert doc_has '`120`s (`120000`ms) floor'

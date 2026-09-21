@@ -1024,14 +1024,24 @@ if [ -n "$active_top" ] && [ -d "$progress_dir" ]; then
                  and $run.started_epoch > 0)
          then $run.started_epoch else null end) as $started_epoch
       | (if (($run.expected | type) == "object") then $run.expected else {} end) as $expected
+      | (if (($run.chunks | type) == "object") then $run.chunks else {} end) as $chunks
+      | (if (($run.chunk_started | type) == "object")
+         then $run.chunk_started else {} end) as $chunk_started
       | ([
           $run.cells[] as $cell
           | select(($cell | type) == "string")
           | select(($run.done | index($cell)) == null)
+          | ($chunks[$cell] as $pass
+             | if ($pass | type) == "array" and ($pass | length) == 2
+                  and ($pass[1] | type) == "number" and $pass[1] > 1
+               then $chunk_started[$cell] else null end
+             | if type == "number" and . > 0 and (. | floor) == . then . else null end
+            ) as $pass_started
+          | ($pass_started // $started_epoch) as $late_from
           | $expected[$cell]
           | select(type == "number" and . >= 0) as $expected_ms
-          | select($started_epoch != null
-              and (($now - $started_epoch) * 1000
+          | select($late_from != null
+              and (($now - $late_from) * 1000
                    > ([3 * $expected_ms, 120000] | max)))
         ] | length > 0) as $late
       | (if $run.state == "failed" then "dead"

@@ -378,8 +378,8 @@ quoted_event() { # call command
     tool_name: "Bash", tool_input: {command: $c}}' | "$GATE" bash
 }
 assert denied "$(quoted_event toolu_pin1 "WORD='воркеры на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
-printf 'закрепи аккаунт на codex\n' >"$WORDS_DIR/s/last.txt"
-assert allowed "$(quoted_event toolu_pin2 "WORD='закрепи аккаунт на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
+printf 'сделай пин аккаунта на codex\n' >"$WORDS_DIR/s/last.txt"
+assert allowed "$(quoted_event toolu_pin2 "WORD='сделай пин аккаунта на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
 rm -f "$WORDS_DIR/s/last.txt" "$WORDS_DIR/s"/attest.* "$WORDS_DIR/s"/claim.*
 pin_grant account
 touch -t 202601010000 "$WORDS_DIR/s/grant.pin"

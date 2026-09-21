@@ -167,7 +167,7 @@ done
 install_light
 : >"$ALERTS"
 bash "$SCRIPT" run --force || fail "restored Light install run failed"
-assert tail -n 3 "$LOG" | grep -q 'status=PASS step=light-install detail=ok'
+assert grep -q 'status=PASS step=light-install detail=ok' < <(tail -n 3 "$LOG")
 assert test ! -s "$ALERTS"
 
 # A relative symlink is how the Light launcher is installed by hand: it resolves through `..`
@@ -176,7 +176,7 @@ ln -sfn ../../../repo/bin/light-research "$HOME/.local/bin/light-research"
 assert test "$(readlink "$HOME/.local/bin/light-research")" = ../../../repo/bin/light-research
 : >"$ALERTS"
 bash "$SCRIPT" run --force || fail "a relative Light symlink was read as a missing install"
-assert tail -n 3 "$LOG" | grep -q 'status=PASS step=light-install detail=ok'
+assert grep -q 'status=PASS step=light-install detail=ok' < <(tail -n 3 "$LOG")
 assert test ! -s "$ALERTS"
 install_light
 

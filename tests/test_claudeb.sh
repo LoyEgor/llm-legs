@@ -140,6 +140,27 @@ rm "$MODEL_HOME/.claude/settings.json"
 assert model_run -p 'noop'
 assert test "$(cat "$MODEL_ARGV")" = "$(printf '%s\n' -p noop)"
 
+COPY_JSON="$MODEL_HOME/.claude-profiles/model-test/.claude.json"
+COPY_LOG="$MODEL_HOME/store/copy-on-select.log"
+rm -f "$COPY_JSON" "$COPY_LOG"
+printf '{"theme":"dark","autoUpdates":false,"oauthAccount":{"main":1},"numStartups":9}\n' >"$MODEL_HOME/.claude.json"
+assert model_run
+assert test "$(jq -c '[.copyOnSelect, .theme, .autoUpdates, has("oauthAccount"), has("numStartups")]' "$COPY_JSON")" = '[false,"dark",false,false,false]'
+printf '{"theme":"light"}\n' >"$COPY_JSON"
+assert model_run
+assert test "$(jq -c '[.theme, .autoUpdates]' "$COPY_JSON")" = '["light",false]'
+rm -f "$COPY_LOG"
+for before in '{"oauthAccount":{"x":1}}' '{"oauthAccount":{"x":1},"copyOnSelect":true}'; do
+  printf '%s\n' "$before" >"$COPY_JSON"
+  assert model_run
+  assert test "$(jq -c '[.copyOnSelect, .oauthAccount.x]' "$COPY_JSON")" = '[false,1]'
+done
+assert test "$(wc -l <"$COPY_LOG" | tr -d ' ')" = 2
+assert grep -q 'profile=model-test copyOnSelect was=missing forced=false' "$COPY_LOG"
+assert grep -q 'profile=model-test copyOnSelect was=true forced=false' "$COPY_LOG"
+assert model_run
+assert test "$(wc -l <"$COPY_LOG" | tr -d ' ')" = 2
+
 now=$(date +%s)
 short_epoch=$((now + 3600))
 week_epoch=$((now + 172800))

@@ -24,7 +24,8 @@ account first.
 An account is measured on its **weekly** bucket and the reset that bucket carries. A vendor
 that reports no weekly percentage at all is measured on its five-hour reading over the
 neutral window instead — its five-hour reset says nothing about a week. A `--fable` query
-reads the same formula against the fable bucket and the fable reset. An account whose budget
+reads the same formula against the fable bucket and the fable reset, and so does every
+`--role chat` answer on Claude, because a chat runs Fable and spends that bucket. An account whose budget
 is `null` — no numeric percentage in either bucket — is not a candidate.
 
 Two accounts at the same percentage are not equal: the one whose week resets sooner may

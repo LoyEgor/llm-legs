@@ -80,6 +80,12 @@ if [ "$query_claim" = true ] && [ -z "$query_vendor" ]; then
   printf 'worker-pick: --claim only means something with --account\n' >&2
   usage
 fi
+# A chat runs Fable, whose limit is a bucket of its own, so `--role chat` reads the Claude side
+# through the very path `--fable` asks for rather than through the weekly ranking.
+query_fable_view=false
+if [ "$query_fable" = true ] || [ "$query_role" = chat ]; then
+  query_fable_view=true
+fi
 query_exclude_json='[]'
 if [ "$query_exclude_given" = true ]; then
   # Both failures below would hand back a WIDER answer than the caller asked for, which is the
@@ -426,13 +432,15 @@ summary=$(jq -r \
   --argjson gm_claims "$gm_claims" --argjson gr_claims "$gr_claims" \
   --argjson cb_walls "$cb_walls" --argjson cx_walls "$cx_walls" \
   --argjson gm_walls "$gm_walls" --argjson gr_walls "$gr_walls" \
-  --argjson qx "$query_exclude_json" "$LIMITS_VIEW_JQ"'
+  --argjson qx "$query_exclude_json" --arg fable_view "$query_fable_view" "$LIMITS_VIEW_JQ"'
   # Local names for the store-reading defs of share/limits-view.sh, which the pin writes its wall
   # record from as well; never a second copy of them.
   def epoch: limits_store_epoch;
   def eff($b): limits_store_eff($b; $now);
   def reset_str($b): limits_reset_text((($b.resets_at // null) | epoch); $now);
   def bool_or($value; $fallback): if ($value | type) == "boolean" then $value else $fallback end;
+  # Which Claude bucket this whole run is about, chosen once by the caller (see the claude rows).
+  def fable_view: $fable_view == "true";
   def auth_ok: .auth_needed != true and ((.auth.status? // "ok") | IN("expired", "failed") | not);
   # Grok is the one vendor whose CLI refreshes an expired access token itself, so `expired` is a
   # live candidate that merely ranks behind a signed-in one; `needs_login` has no refresh token
@@ -789,42 +797,45 @@ summary=$(jq -r \
     line:reason($rows; $state; $note)}) as $grok |
 
   ([.vendors.claude.accounts[]? |
+    # The whole Claude side reads ONE bucket, named here: the weekly one for ordinary work, the
+    # fable one where the answer will run Fable (`--fable`, and `--role chat` because a chat IS a
+    # Fable run). Everything below — rank, pins, the table cells, `--list` — follows this choice,
+    # so there is no second ranking to keep in step with the first.
+    (if fable_view then .fable else .weekly end) as $bucket |
     {token_expiry:(.account | IN($reviewer_token_expiry[])),
      name:.account,own:($own_vendor == "claude" and .account == $own),
      enabled:(.enabled == true),auth_ok:auth_ok,
      general_usable:bool_or(.rotation.usable.general?; true),
      fable_capable:bool_or(.rotation.usable.fable?; true),
      h5_absent:limits_window_absent(.five_hour),
-     h5:eff(.five_hour),wk:eff(.weekly),fb:eff(.fable),
-     wk_reset:((.weekly.resets_at? // null) | epoch),
-     fb_reset:((.fable.resets_at? // null) | epoch),
-     rs:reset_str(.weekly)} |
-    .blocked = (.general_usable | not) |
-    .spend = spending | .budget = spend_budget | .budget_days = spend_days |
+     h5:eff(.five_hour),wk:eff($bucket),
+     wk_reset:(($bucket.resets_at? // null) | epoch),
+     rs:reset_str($bucket)} |
+    .blocked = (if fable_view then (.fable_capable | not) else (.general_usable | not) end) |
+    # Fable has no five-hour twin to be paced by, so an account with no measured fable window
+    # leaves the ranking rather than falling back to the pace of another bucket.
+    .spend = (if fable_view then .wk else spending end) |
+    .budget = (if fable_view
+               then limits_daily_budget(.wk; limits_days_remaining(.wk_reset; $now))
+               else spend_budget end) |
+    .budget_days = spend_days |
     .claimed = claimed_in($cb_claims) |
     .observed = (.name | IN($cb_walls[])) |
     .walled = (usage_walled(.spend) or .observed) | eligibility |
-    .eligible = (.eligible and (.blocked | not) and (.token_expiry | not)) |
-    # Fable exhaustion never disqualifies ordinary work, so the fable bucket carries its own
-    # candidacy: the account must be able to run Fable at all and have a measured fable window.
-    # A run-observed wall still counts here — it is the whole account that is out, not a bucket.
-    .fable_pinnable = ((.token_expiry | not) and .auth_ok and .fable_capable and (.fb | type) == "number" and
-                       (usage_walled(.fb) | not) and (.observed | not) and (excluded | not)) |
-    .fable_ok = (.enabled and .fable_pinnable)]) as $cl_accounts |
+    .eligible = (.eligible and (.blocked | not) and (.token_expiry | not))]) as $cl_accounts |
   ($cl_accounts | map(select(.eligible)) | rank) as $cl_eligible |
-  serving_pins($cl_accounts; $cb_pins) as $cb_pin_tier |
+  # Fable exhaustion never disqualifies ordinary work, and the reverse holds as well: on the fable
+  # bucket a pin clears the candidate bar too, the pool toggle apart, since a walled or
+  # Fable-incapable account cannot carry the run whatever Egor pinned.
+  (if fable_view
+   then ($cl_accounts | map(select((.name | IN($cb_pins[])) and .auth_ok and .measured and
+                                   (.walled | not) and (.blocked | not) and
+                                   (.token_expiry | not) and (excluded | not))) | rank)
+   else serving_pins($cl_accounts; $cb_pins) end) as $cb_pin_tier |
   ($cb_pin_tier[0] // null) as $pin_rec |
   pin_lapses($cb_pins; $cl_accounts; $pin_rec) as $cb_pin_lapses |
   (($cb_pin_lapses[0].lapse) // "") as $pin_lapse |
   ($pin_rec // $cl_eligible[0] // null) as $cl_best |
-  ($cl_accounts | map(select(.fable_ok) |
-    .budget = limits_daily_budget(.fb; limits_days_remaining(.fb_reset; $now))) | rank)
-    as $fb_eligible |
-  ($cl_accounts | map(select((.name | IN($cb_pins[])) and .fable_pinnable) |
-    .budget = limits_daily_budget(.fb; limits_days_remaining(.fb_reset; $now))) | rank)
-    as $fb_pin_tier |
-  ($fb_pin_tier[0] // null) as $fb_pinned |
-  ($fb_pinned // $fb_eligible[0] // null) as $fb_best |
   (($cl_best.name // "") as $sel |
    (if $cl_best == null then "no selectable account" else $sel end) as $target |
    ($cl_accounts | display_sort($sel)) as $ordered |
@@ -861,7 +872,6 @@ summary=$(jq -r \
    ($grok.budget | tostring),
    $claude.line,($cl_best.name // ""),(if $pin_rec != null then "yes" else "no" end),
    $pin_lapse,(($cl_best.budget // 0) | tostring),
-   ($fb_best.name // ""),
    $age,(if $had_pool then "yes" else "no" end),
    pool_empty($cx_accounts),pool_empty($gm_source),pool_empty($gr_accounts),
    pool_empty($cl_accounts),(if $gr_present then "yes" else "no" end),
@@ -882,7 +892,7 @@ IFS=$'\x1f' read -r cx_selected cx_acct cx_pinned cx_line cx_pin_lapse cx_budget
   gm_selected gm_acct gm_pinned gm_line gm_pin_lapse gm_budget \
   gr_selected gr_acct gr_pinned gr_line gr_pin_lapse gr_budget \
   cl_line cl_acct cl_pinned cl_pin_lapse cl_budget \
-  fb_acct age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
+  age had_pool cx_pool_empty gm_pool_empty gr_pool_empty \
   cl_pool_empty gr_present gr_measured cx_measured gm_measured cl_measured \
   cx_present gm_present cl_present \
   cx_rows cx_nextrows cx_state gm_rows gm_nextrows gm_state \
@@ -920,10 +930,6 @@ cb_known=false; cx_known=false; gm_known=false; gr_known=false
 [ "$gm_known" = true ] || { gm_selected=no; gm_acct=""; gm_pin_lapse=""; gm_nextrows=""; }
 [ "$gr_known" = true ] || { gr_selected=no; gr_acct=""; gr_pin_lapse=""; gr_nextrows=""; }
 
-
-if [ "$query_fable" = true ]; then
-  cl_acct=$fb_acct
-fi
 
 # ALL WALLED is a verdict about quota, so it is read over the vendors actually open for workers:
 # a vendor Egor switched off has an answer he already knows, and counting it would send him

@@ -4,9 +4,9 @@ def value: if . == null then "" else tostring end;
 def tok: "\"(?:\\\\.|[^\"])*\"|'[^']*'|[^[:space:];&|()]+";
 # Wrappers, assignments and shell keywords a cd or git hides behind. Nothing added to `lead` or
 # `gopt` may capture: `bash_hit` reads the separator as `.captures[0]`.
-def lead: "(?:(?:sudo|nohup|command|env|time|then|do|else|elif|if|while|until|for|\\{|!)[ \\t]+|timeout[ \\t]+-?[0-9][^ \\t\\n]*[ \\t]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^ \\t\\n]*)[ \\t]+)*";
+def lead: "(?:(?:sudo|nohup|command|env|time|then|do|else|elif|if|while|until|for|\\{|!)[ \\t]+|timeout[ \\t]+-?[0-9][^ \\t\\n]*[ \\t]+|[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^ \\t\\n;&|()]*)[ \\t]+)*";
 # git's global options may sit on either side of `-C`, which is never one of them.
-def gopt: "(?:[ \\t]+(?:-c[ \\t]+[^ \\t\\n]+|-(?!C(?:[ \\t]|$))[^ \\t\\n]+))*";
+def gopt: "(?:[ \t]+(?:-c[ \t]+" + "(?:" + tok + ")|--(?:git-dir|work-tree|namespace|config-env)[ \t]+" + "(?:" + tok + ")|-(?!C(?:[ \t]|$))[^ \t\n]+))*";
 def git_mutating: ["checkout","switch","commit","merge","rebase","cherry-pick","revert","restore","stash","am","reset","pull","push","add","apply","fetch","tag","clean","rm","mv","branch"];
 # A `cd` inside a heredoc body or a multi-line quoted string is text a command is fed, not a
 # command. Masking preserves the line structure, so it can only lose a cd, never invent one.
@@ -38,7 +38,8 @@ def mask_quoted_spans:
   | gsub("(?<s>\"[^\"]*\")"; (.s | if test("\n") then gsub("[^\n]"; " ") else . end));
 # A trailing `# …` is prose: its `;` and `(` would otherwise open a segment later than the real one.
 def mask_comments:
-  gsub("(?<h>(?:^|[[:space:];&|(])#)(?<c>[^\n]*)"; .h + (.c | gsub("[^\n]"; " ")));
+  gsub("(?<q>\"(?:\\\\.|[^\"])*\"|'[^']*'|\\\\.)|(?<h>(?:^|[[:space:];&|(])#)(?<c>[^\n]*)";
+    if .q != null then .q else .h + (.c | gsub("[^\n]"; " ")) end);
 def masked: mask_heredocs | mask_apostrophes | mask_quoted_spans | mask_comments;
 def unquote_word:
   gsub("\"(?<d>(?:\\\\.|[^\"])*)\"|'(?<s>[^']*)'|\\\\(?<e>.)";
@@ -51,6 +52,11 @@ def write_verbs: ["tee","rm","touch","mkdir","truncate","patch","install"];
 def dest_verbs: ["cp","mv","ln","rsync"];
 def end_command:
   (if (.dest | abs_word) then .paths += [{p: .dest, o: .dest_at}] else . end)
+  | (if .cmd == null then
+       reduce .pending[] as $a (.; .vars |= (map(select(.n != $a.n)) + [$a]))
+     else . end)
+  | .pending = []
+  | .bindings += [{o: .end_at, vars: .vars}]
   | .cmd = null | .write = false | .redirect = "" | .dest = "" | .dest_at = 0;
 # The command's own `NAME=value` words are expanded first: chats name a worktree once
 # (`W=/…/worktrees/x; sed -i '' … $W/f`) and then write only through the variable. The bindings
@@ -58,9 +64,14 @@ def end_command:
 def bash_write_state:
   masked
   | [match("[0-9]*>>?&[0-9-]+|&?[0-9]*>>?[&|]?|<<?-?|[;&|()\\n]|(?:\"(?:\\\\.|[^\"])*\"|'[^']*'|\\\\.|[^[:space:];&|()<>\"'\\\\])+"; "g") | {s: .string, o: .offset}]
-  | reduce .[] as $t ({vars: [], cmd: null, write: false, redirect: "", dest: "", dest_at: 0, paths: []};
+  | reduce .[] as $t ({vars: [], pending: [], bindings: [], end_at: 0, stack: [], cmd: null, write: false, redirect: "", dest: "", dest_at: 0, paths: []};
       $t.s as $s
-      | if ($s | test("^[;&|()\\n]$")) then end_command
+      | if ($s | test("^[;&|()\\n]$")) then
+        .end_at = $t.o | end_command
+        | if $s == "(" then .stack += [.vars]
+          elif $s == ")" then .vars = (.stack[-1] // .vars) | .stack = .stack[:-1]
+            | .bindings += [{o: $t.o, vars: .vars}]
+          else . end
       elif ($s | test("^[0-9]*>>?&[0-9-]")) then .
       elif ($s | test("^&?[0-9]*>>?[&|]?$")) then .redirect = (if ($s | test("^[02-9]")) then "skip" else "take" end)
       elif ($s | startswith("<")) then .redirect = "skip"
@@ -74,7 +85,7 @@ def bash_write_state:
           elif .cmd == null then
             if ($w | test("^[A-Za-z_][A-Za-z0-9_]*=")) then
               ($w | capture("^(?<n>[A-Za-z_][A-Za-z0-9_]*)=(?<v>.*)$"; "s")) as $a
-              | .vars |= (map(select(.n != $a.n)) + (if $a.v | test("[$`]") then [] else [$a] end))
+              | .pending += [$a]
             elif (["export","sudo","command","env","nohup","time","then","do","else","elif","{","}","!","fi","done","if","while","until"] | index($w)) != null then .
             elif (["for","case","select"] | index($w)) != null then .cmd = $w
             else ($w | sub(".*/"; "")) as $c | .cmd = $c | .write = ((write_verbs | index($c)) != null)
@@ -82,26 +93,45 @@ def bash_write_state:
           elif .cmd as $c | (dest_verbs | index($c)) != null then
             if $w | startswith("-") then . else .dest = $w | .dest_at = $t.o end
           else
-            (if (.cmd == "sed" and ($w | test("^(-[A-Za-z]*i|--in-place)"))) or (.cmd == "git" and $w == "apply")
+            (if (.cmd == "sed" and ($w | test("^(-[A-Za-z]*i|--in-place)")))
              then .write = true else . end)
             | if .write and ($w | abs_word) then .paths += [{p: $w, o: $t.o}] else . end
           end
       end)
-  | end_command;
+  | .end_at = 2147483647 | end_command;
 # The LAST write is the one that moves the tree, so the cap trims the oldest targets, not the newest.
 def bash_write_paths: .paths | reverse | .[0:10] | map(.p) | join("\u001e");
-def bash_hit($vars):
+def git_listing($sub; $args):
+  ($args | [match(tok; "g").string | unquote_word]) as $a
+  | if $sub == "branch" or $sub == "tag" then
+      ($a | length) == 0 or any($a[];
+        test("^--(show-current|list|contains|no-contains|merged|no-merged|points-at)(=|$)") or
+        test("^-l$") or
+        (if $sub == "branch" then test("^(-[arv]+|--(all|remotes|verbose))$")
+         else test("^-n[0-9]*$") end))
+    elif $sub == "fetch" then any($a[]; . == "--dry-run")
+    else false end;
+def shell_scope($at):
+  [match("\"(?:\\\\.|[^\"])*\"|'[^']*'|[()]"; "g") | select(.offset <= $at)]
+  | reduce .[] as $t ([]; if $t.string == "(" then . + [$t.offset]
+                         elif $t.string == ")" then .[:-1] else . end);
+def bash_hit($bindings):
   tok as $tok
   | masked
-  | [match("(^|[;&|(\\n])[[:space:]]*" + lead + "(?:(?:cd|pushd)[ \\t]+(?:-[LP@][ \\t]+)*(?<cd>" + $tok + ")|git(?:[ \\t]+-C[ \\t]+(?<wt_dir>" + $tok + "))?[ \\t]+worktree[ \\t]+(?<wt_verb>add|move)(?<wt_args>([ \\t]+(" + $tok + "))+)|git" + gopt + "(?:[ \\t]+-C[ \\t]+(?<dir>" + $tok + "))?" + gopt + "[ \\t]+(?<sub>[A-Za-z][A-Za-z-]*)(?:[ \\t]+(?<sub2>[A-Za-z][A-Za-z-]*))?)"; "g")]
+  | . as $command
+  | [match("(^|[;&|(\\n])[[:space:]]*" + lead + "(?:(?:cd|pushd)[ \\t]+(?:-[LP@][ \\t]+)*(?<cd>" + $tok + ")|git(?:[ \\t]+-C[ \\t]+(?<wt_dir>" + $tok + "))?[ \\t]+worktree[ \\t]+(?<wt_verb>add|move)(?<wt_args>([ \\t]+(" + $tok + "))+)|git" + gopt + "(?:[ \\t]+-C[ \\t]+(?<dir>" + $tok + "))?" + gopt + "[ \\t]+(?<sub>[A-Za-z][A-Za-z-]*)(?:[ \\t]+(?<sub2>[A-Za-z][A-Za-z-]*))?(?<args>(?:[ \t]+(?:" + $tok + "))*))"; "g")]
   | map(
-      ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd_raw
+      .offset as $offset
+      | ([$bindings[] | select(.o <= $offset)] | last | .vars // []) as $vars
+      | ([.captures[] | select(.name == "cd" and .string != null) | .string][0] // "") as $cd_raw
       | ([.captures[] | select(.name == "wt_dir" and .string != null) | .string][0] // "") as $wt_dir
       | ([.captures[] | select(.name == "wt_verb" and .string != null) | .string][0] // "") as $wt_verb
       | ([.captures[] | select(.name == "wt_args" and .string != null) | .string][0] // "") as $wt_args
       | ([.captures[] | select(.name == "dir" and .string != null) | .string][0] // "") as $dir_raw
       | ([.captures[] | select(.name == "sub" and .string != null) | .string][0] // "") as $sub
       | ([.captures[] | select(.name == "sub2" and .string != null) | .string][0] // "") as $sub2
+      | (([.captures[] | select(.name == "sub2") | .string][0] // "") + " " +
+         ([.captures[] | select(.name == "args") | .string][0] // "")) as $args
       | (.captures[0].string // "") as $sep
       | .offset as $at
       | if $wt_args != "" then
@@ -122,7 +152,7 @@ def bash_hit($vars):
           # the hit is kept so a later relative path is refused, never resolved against the cwd.
           | if ($cdw | test("^-")) or (($cdw | test("\\$")) and ($cdw | abs_word | not)) then {path: "", sep: $sep, cd_hit: "1", unknown: "1", worktree: "", worktree_base: "", at: $at}
             else {path: $cd, sep: $sep, cd_hit: "1", worktree: "", worktree_base: "", at: $at} end
-        elif $sub != "" and (if $sub == "worktree"
+        elif $sub != "" and (git_listing($sub; $args) | not) and (if $sub == "worktree"
                              then (["prune","repair","lock","unlock"] | index($sub2) != null)
                              else (git_mutating | index($sub) != null)
                              end) then
@@ -132,6 +162,7 @@ def bash_hit($vars):
             # or to the command's own earlier cd.
             else {path: (if $dir == "" then "." else $dir end), sep: $sep, mut: "1", worktree: "", worktree_base: "", at: $at} end
         else empty end)
+  | map(. as $hit | . + {scope: ($command | shell_scope($hit.at))})
   | . as $hits
   | [$hits[] | select(.unknown != "1")] as $pick
   # A commit, push or worktree add is the strongest evidence of where the changes go, so a cd after
@@ -142,10 +173,10 @@ def bash_hit($vars):
   # Only a cd BEFORE the add: the bootstrap subshell after it cds into the new worktree itself,
   # and taking that one resolves a relative worktree path inside the tree that was just created.
   | (if $last.worktree == "1" and $last.worktree_base == "" then
-       $last + {worktree_base: ([$pick[] | select(.cd_hit == "1" and .at < $last.at) | .path] | last // "")}
+       $last + {worktree_base: ([$pick[] | select(.cd_hit == "1" and .at < $last.at and .scope == $last.scope[0:(.scope | length)]) | .path] | last // "")}
      else $last end) as $last
   # A relative path resolves against this command's own earlier cds, not against the tool's cwd.
-  | (reduce ($hits[] | select(.cd_hit == "1" and .at < ($last.at // 0))) as $h (".";
+  | (reduce ($hits[] | select(.cd_hit == "1" and .at < ($last.at // 0) and .scope == $last.scope[0:(.scope | length)])) as $h (".";
        if . == null or $h.unknown == "1" then null
        else ($h.path | unquote_word) as $p | (if $p | abs_word then $p else . + "/" + $p end) end)) as $base
   | if $base == null and (($last.path // "") | test("^$|^-") | not) and (($last.path | unquote_word | abs_word) | not)
@@ -157,9 +188,9 @@ def git_read($t):
   if any($t[]; startswith("--output")) then false
   elif ($t | length) == 0 then false
   else $t[0] as $head
-    | if $head == "-C" or $head == "-c" then git_read($t[2:])
+    | if (["-C","-c","--git-dir","--work-tree","--namespace","--config-env"] | index($head)) != null then git_read($t[2:])
       elif ($head | startswith("-")) then git_read($t[1:])
-      else (read_git_subs | index($head)) != null
+      else (read_git_subs | index($head)) != null or git_listing($head; ($t[1:] | join(" ")))
       end
   end;
 def drop_env($t):
@@ -204,7 +235,7 @@ def dispatch_paths:
   | .[0:10]
   | join("\u001e");
 (if .tool_name == "Bash" then ((.tool_input.command // "") | bash_write_state) else null end) as $ws
-| (if .tool_name == "Bash" then ((.tool_input.command // "") | bash_hit($ws.vars))
+| (if .tool_name == "Bash" then ((.tool_input.command // "") | bash_hit($ws.bindings))
    else {path: "", sep: "", worktree: "", worktree_base: ""} end) as $bash
 | ($ws.paths // [] | last) as $last_write
 # A write in another tree after the cd or commit this command also carries is the later, stronger
@@ -220,7 +251,7 @@ def dispatch_paths:
   elif .tool_name == "Bash" then $bash.path
   elif .tool_name == "EnterWorktree" then worktree_path
   else "" end),
- (if $bash.sep == "(" then "1" else "" end),
+ (if ($bash.scope // [] | length) > 0 then "1" else "" end),
  (if .tool_name == "Bash" and ((.tool_input.command // "") | command_read_only) then "1" else "" end),
  ($bash.worktree // ""),
  ($bash.worktree_base // ""),
