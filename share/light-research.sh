@@ -20,7 +20,10 @@ Write every factual claim as ONE line of its own, in this shape:
 <path> is absolute or relative to a repository root this run was given, <line> is the line the quote
 starts on, and the quoted text must appear verbatim within three lines of it. A citation line whose
 quote is not there is moved into an UNVERIFIED block and counts against the answer. Prose that
-carries no claim needs no citation line, and a closed yes/no answer may carry none at all.'
+carries no claim needs no citation line, and a closed yes/no answer may carry none at all.
+A claim that rests on a web page is cited the same way with the page URL in place of <path> and no
+line number — `https://host/page | "exact quoted text" | <the claim>` — and is counted as a LINK,
+not as a file citation. Never copy web quotes into a local file and cite that file instead.'
 
 research_citation_normalise() {
   local text
@@ -55,13 +58,19 @@ research_citation_verify() { # path line quote repo-root...
   return 1
 }
 
-research_citation_check() { # answer-file out-file repo-root... ; prints `<verified> <total>`
-  local answer=$1 destination=$2 line path number quote ok=0 total=0
+research_citation_check() { # answer-file out-file repo-root... ; prints `<verified> <total> <links>`
+  local answer=$1 destination=$2 line path number quote ok=0 total=0 links=0
   local citation='^[[:space:]]*[-*]?[[:space:]]*([^|]+):([0-9]+)[[:space:]]*\|[[:space:]]*"(.*)"[[:space:]]*\|(.*)$'
+  # Ahead of the file pattern, which would otherwise read a URL's port or trailing digits as a line
+  # number and fail the citation for a path no checkout has. A link is counted and never fetched.
+  local link='^[[:space:]]*[-*]?[[:space:]]*https?://[^[:space:]|]+[[:space:]]*\|[[:space:]]*"(.*)"[[:space:]]*\|(.*)$'
   local -a kept=() failed=()
   shift 2
   while IFS= read -r line || [ -n "$line" ]; do
-    if [[ "$line" =~ $citation ]]; then
+    if [[ "$line" =~ $link ]]; then
+      links=$((links + 1))
+      kept+=("$line")
+    elif [[ "$line" =~ $citation ]]; then
       path=${BASH_REMATCH[1]}
       path=${path#"${path%%[![:space:]]*}"}
       path=${path%"${path##*[![:space:]]}"}
@@ -79,14 +88,14 @@ research_citation_check() { # answer-file out-file repo-root... ; prints `<verif
     fi
   done <"$answer"
   {
-    printf 'CITATIONS: %s/%s\n' "$ok" "$total"
+    printf 'CITATIONS: %s/%s\nLINKS: %s\n' "$ok" "$total" "$links"
     [ "${#kept[@]}" -eq 0 ] || printf '%s\n' "${kept[@]}"
     if [ "${#failed[@]}" -gt 0 ]; then
       printf '\nUNVERIFIED:\n'
       printf '%s\n' "${failed[@]}"
     fi
   } >"$destination" || return 1
-  printf '%s %s\n' "$ok" "$total"
+  printf '%s %s %s\n' "$ok" "$total" "$links"
 }
 
 research_sandbox_profile() {
@@ -130,7 +139,7 @@ research_failure() {
 }
 
 supervise_gemini_research() {
-  local directory="$1" meta="$1/meta.json" account cli profile sandbox_exec timeout_value rc=0
+  local directory="$1" meta="$1/meta.json" account cli profile sandbox_exec timeout_value argument rc=0
   local -a resolved_repos command
   account=$(jq -r .account "$meta")
   cli=$(jq -r .cli "$meta")
@@ -151,8 +160,9 @@ supervise_gemini_research() {
   mkdir -p "$directory/scratch" || return 4
   command=("$cli" profile "$account" --model "$(jq -r .agy_model "$meta")")
   for repo in "${resolved_repos[@]}"; do command+=(--add-dir "$repo"); done
-  command+=(--print-timeout "$timeout_value" --dangerously-skip-permissions --log-file "$directory/log"
-    --print "$(cat "$directory/brief.launch")")
+  command+=(--print-timeout "$timeout_value" --dangerously-skip-permissions --log-file "$directory/log")
+  while IFS= read -r argument; do command+=("$argument"); done < <(web_search_args gemini "$(web_search_meta_state "$meta")")
+  command+=(--print "$(cat "$directory/brief.launch")")
   # Not a `( cd … && … )` subshell: run_with_deadline installs the supervisor's TERM/INT traps in
   # the shell that calls it, and inside a subshell a signal aimed at the run leaves the sandboxed
   # CLI orphaned.

@@ -2784,7 +2784,8 @@ cp "$RUNNER" "$SELF_RUNNER"
 # list is not one it may guess at either.
 mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
-  "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" "$WORK/share/"
+  "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" \
+  "$ROOT/share/web-search.sh" "$WORK/share/"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -6540,8 +6541,118 @@ ANCHORS
   unset CLAUDE_CODE_SESSION_ID
 }
 
+# Web search, every vendor against every entry point, driven from the one table the launcher reads:
+# a vendor or an entry point added without the capability fails here rather than answering a
+# research brief from memory.
+web_search_tests() {
+  local vendor entry brief expected workdir state
+  . "$ROOT/share/web-search.sh"
+  cat >"$WORK/bin/sandbox-exec" <<'SANDBOX'
+#!/usr/bin/env bash
+shift 2
+exec "$@"
+SANDBOX
+  chmod +x "$WORK/bin/sandbox-exec"
+  export GEMINI_RESEARCH_SANDBOX_EXEC="$WORK/bin/sandbox-exec"
+  workdir="$WORK/websearch-workdir"
+  # The research sandbox profile resolves the account's home with `readlink -f`, which fails on a
+  # path that does not exist — without the directory gemini's research row dies as GEMINI_UNAVAILABLE.
+  mkdir -p "$workdir" "$WORK/websearch" "$HOME/.gemini-profiles/websearch"
+  git -C "$workdir" init -q
+  printf 'base\n' >"$workdir/file"
+  git -C "$workdir" add file
+  git -C "$workdir" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
+  printf 'probe\nsecond line\n' >"$WORK/websearch/plain"
+  printf 'WEB: on\nprobe\nsecond line\n' >"$WORK/websearch/on"
+  printf 'WEB: off\nprobe\nsecond line\n' >"$WORK/websearch/off"
+  printf 'SCOPE: file\nprobe\n' >"$WORK/websearch/light-plain"
+  printf 'WEB: on\nSCOPE: file\nprobe\n' >"$WORK/websearch/light-on"
+  printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
+  export PICK_RC=0 PICK_ACCOUNT=websearch
+
+  web_search_launch() { # brief vendor extra-arg...
+    local file="$1" target="$2"
+    shift 2
+    clear_stub
+    printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
+    "$RUNNER" start "$target" --brief "$file" --workdir "$workdir" "$@" \
+      >"$WORK/start.out" 2>"$WORK/start.err" || fail "web-search start $target failed: $(<"$WORK/start.err")"
+    RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+    RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+    assert await_done
+  }
+
+  # The state's whole argv as one adjacent run, never word by word: `-c` is codex's ordinary config
+  # flag and stands in both states and elsewhere in the command, so a per-word search reads a state
+  # the run was never launched in.
+  web_search_sequence_present() { # vendor state
+    local needle haystack
+    needle=$(web_search_args "$1" "$2" | paste -sd $'\x1f' -)
+    [ -n "$needle" ] || return 1
+    haystack=$'\x1f'$(sed -n 's/^ARG=//p' "$CALL_LOG" | paste -sd $'\x1f' -)$'\x1f'
+    case "$haystack" in *$'\x1f'"$needle"$'\x1f'*) return 0 ;; esac
+    return 1
+  }
+
+  web_search_assert() { # vendor state
+    local target="$1" want="$2" other=on
+    [ "$want" = off ] || other=off
+    [ -z "$(web_search_args "$target" "$want")" ] || assert web_search_sequence_present "$target" "$want"
+    [ -z "$(web_search_args "$target" "$other")" ] || assert_fails web_search_sequence_present "$target" "$other"
+    assert test "$(jq -r '.web_search' "$RUN_DIR/meta.json")" = "$([ "$want" = on ] && printf true || printf false)"
+  }
+
+  for vendor in claudeb codex gemini grok; do
+    # Both columns empty argv is only legal where the vendor HAS no off switch: a blank cell there
+    # would read as "the CLI already does this" and hide a flag nobody wired.
+    if [ -z "$(web_search_args "$vendor" on)" ] && [ -z "$(web_search_args "$vendor" off)" ]; then
+      assert test "$(web_search_column "$vendor" off)" = '!'
+    fi
+    set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=low' \
+      'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high' \
+      "light_research=$vendor" "light_edit=$vendor"
+    expected=$(web_search_state "$vendor" false)
+    web_search_launch "$WORK/websearch/plain" "$vendor"
+    web_search_assert "$vendor" "$expected"
+    web_search_launch "$WORK/websearch/light-plain" light
+    web_search_assert "$vendor" "$expected"
+
+    expected=$(web_search_state "$vendor" true)
+    web_search_launch "$WORK/websearch/plain" "$vendor" --web-search
+    web_search_assert "$vendor" "$expected"
+    web_search_launch "$WORK/websearch/on" "$vendor"
+    web_search_assert "$vendor" "$expected"
+    web_search_launch "$WORK/websearch/light-on" light
+    web_search_assert "$vendor" "$expected"
+    # Research needs no flag and no header: the role is the ask.
+    web_search_launch "$WORK/websearch/plain" "$vendor" --role research
+    web_search_assert "$vendor" "$expected"
+
+    expected=$(web_search_state "$vendor" false)
+    web_search_launch "$WORK/websearch/off" "$vendor" --role research
+    web_search_assert "$vendor" "$expected"
+  done
+
+  # A header that is neither state is a typo, not a default: launching on it would silently pick one.
+  clear_stub
+  printf 'WEB: maybe\nprobe\n' >"$WORK/websearch/bad"
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/websearch/bad" --workdir "$workdir" \
+    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qF "brief header 'WEB: maybe' names no state" "$WORK/websearch.err"
+  assert test ! -s "$CALL_LOG"
+
+  unset GEMINI_RESEARCH_SANDBOX_EXEC
+  rm -f "$STUB_DIR/gemini_profiles"
+  clear_stub
+  set_config
+}
+
+web_search_tests
+
 anchors_store_tests
 
 attribution_repair_tests
 
-echo "PASS: $asserts asserts; worker-run lifecycle, routing, snapshot attribution, transcript diagnostics, legacy claims, the review-anchors store and launcher journal integration"
+echo "PASS: $asserts asserts; worker-run lifecycle, routing, snapshot attribution, transcript diagnostics, legacy claims, web search as one table every vendor and every entry point resolves through, the review-anchors store and launcher journal integration"

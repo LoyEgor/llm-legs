@@ -103,12 +103,14 @@ rc=$?; assert test "$rc" -eq 0
 # The answer file is always headed by its citation count, and a body with no citation line is
 # passed through whole under `CITATIONS: 0/0` — a closed yes/no answer stays legal.
 assert test "$(head -1 "$WORK/answer")" = 'CITATIONS: 0/0'
-assert test "$(sed 1d "$WORK/answer")" = 'tracked Gemini answer'
+assert test "$(sed '1,2d' "$WORK/answer")" = 'tracked Gemini answer'
 assert grep -q '^ACCOUNT: researcher (gemini)$' "$WORK/out"; assert grep -q '^RUN: gemini-' "$WORK/out"
+assert grep -qx 'WEB: on' "$WORK/out"
+assert test "$(sed -n 2p "$WORK/answer")" = 'LINKS: 0'
 # The answer stays on disk: stdout carries the header lines and none of the answer.
 assert grep -qx 'CITATIONS: 0/0' "$WORK/out"
 assert grep -qx "ANSWER: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
-assert grep -qx 'LINES: 2' "$WORK/out"
+assert grep -qx 'LINES: 3' "$WORK/out"
 assert test "$(grep -c 'tracked Gemini answer' "$WORK/out")" = 0
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1); assert test -d "$RUNS/$run_id"; assert test -f "$RUNS/$run_id/meta.json"
 assert jq -e '.role == "research" and .light == "research" and .account == "researcher" and .agy_model == "gemini-3.8-flash-high"' "$RUNS/$run_id/meta.json"
@@ -126,7 +128,7 @@ mkdir -p "$HOME/.gemini-profiles/rescuer"
 printf '%s\n' researcher rescuer >"$WORK/pick-queue"
 FAKE_LOG_QUOTA=1 PICK_QUEUE="$WORK/pick-queue" run
 rc=$?; assert test "$rc" -eq 0
-assert test "$(sed 1d "$WORK/answer")" = 'tracked Gemini answer'
+assert test "$(sed '1,2d' "$WORK/answer")" = 'tracked Gemini answer'
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e '.walled_accounts == ["researcher"] and .account == "rescuer"' "$RUNS/$run_id/meta.json"
 
@@ -149,7 +151,7 @@ printf 'Research the repository.\n' >"$WORK/prompt"
 printf 'light_research=claudeb:sonnet\n' >"$TOGGLE"
 : >"$WORK/vendor.log"
 run; rc=$?; assert test "$rc" -eq 0
-assert test "$(sed 1d "$WORK/answer")" = 'claude research answer'
+assert test "$(sed '1,2d' "$WORK/answer")" = 'claude research answer'
 assert grep -q '^ACCOUNT: researcher (claudeb)$' "$WORK/out"
 run_id=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1)
 assert jq -e '.vendor == "claudeb" and .role == "research" and .model == "sonnet" and .effort == "medium"' "$RUNS/$run_id/meta.json"
@@ -160,14 +162,14 @@ printf 'light_research=codex\n' >"$TOGGLE"
 mkdir -p "$HOME/.codex-profiles/researcher"
 : >"$WORK/vendor.log"
 run; rc=$?; assert test "$rc" -eq 0
-assert test "$(sed 1d "$WORK/answer")" = 'codex research answer'
+assert test "$(sed '1,2d' "$WORK/answer")" = 'codex research answer'
 assert grep -q '^ACCOUNT: researcher (codex)$' "$WORK/out"
 assert grep -q -- '--sandbox read-only' "$WORK/vendor.log"
 
 printf 'light_research=grok\n' >"$TOGGLE"
 : >"$WORK/vendor.log"
 run; rc=$?; assert test "$rc" -eq 0
-assert test "$(sed 1d "$WORK/answer")" = 'grok research answer'
+assert test "$(sed '1,2d' "$WORK/answer")" = 'grok research answer'
 assert grep -q '^ACCOUNT: researcher (grok)$' "$WORK/out"
 # Grok has no read-only mode: a tree that changed under the run fails it, answer withheld.
 rm -f "$WORK/answer"
@@ -228,6 +230,26 @@ done
 assert grep -qx 'Prose that carries no claim needs no citation line.' "$WORK/answer"
 assert grep -qx 'CITATIONS: 2/5' "$WORK/out"
 assert test "$(grep -c 'beta gamma' "$WORK/out")" = 0
+
+# A web page is a source, not an unresolvable path: an `http(s)://` citation is counted as a LINK,
+# kept where it stands and never fetched — the trailing digits of a URL are not a line number.
+cat >"$WORK/linked-answer" <<'LINKED'
+https://example.test/pricing | "4.25% + $0.35" | the published card rate
+https://example.test/docs/v2 | "Authorization and Capture" | the API has delayed capture
+cited.txt:2 | "beta gamma" | line 2 names beta
+gone.txt:1 | "alpha" | no such file
+LINKED
+printf 'ANSWER-FILE: %s\nResearch the repository.\n' "$WORK/linked-answer" >"$WORK/prompt"
+rm -f "$WORK/answer"
+run; rc=$?; assert test "$rc" -eq 0
+assert test "$(head -1 "$WORK/answer")" = 'CITATIONS: 1/2'
+assert test "$(sed -n 2p "$WORK/answer")" = 'LINKS: 2'
+assert grep -qx 'LINKS: 2' "$WORK/out"
+unverified=$(grep -n '^UNVERIFIED:$' "$WORK/answer" | cut -d: -f1); assert test -n "$unverified"
+for kept in 'the published card rate' 'the API has delayed capture'; do
+  assert test "$(grep -n "$kept" "$WORK/answer" | cut -d: -f1)" -lt "$unverified"
+done
+printf 'Research the repository.\n' >"$WORK/prompt"
 
 # G6: grok's --cwd is its whole directory grant, so a two-repository question becomes one run per
 # repository, each brief naming its own; every other vendor keeps the single run with --add-dir.
@@ -332,7 +354,7 @@ assert test ! -e "$REPO/answer-in-repo"
 attach --attach "$slow_run" --out "$REPO/answer-in-repo"; rc=$?; assert test "$rc" -eq 2
 assert test ! -e "$REPO/answer-in-repo"
 attach --attach "$slow_run" --out "$WORK/answer"; rc=$?; assert test "$rc" -eq 0
-assert test "$(sed 1d "$WORK/answer")" = 'slow Gemini answer'; assert grep -q '^ACCOUNT: researcher (gemini)$' "$WORK/out"
+assert test "$(sed '1,2d' "$WORK/answer")" = 'slow Gemini answer'; assert grep -q '^ACCOUNT: researcher (gemini)$' "$WORK/out"
 # --attach lands the same headed answer file, and its stdout carries the header lines, not the answer.
 assert grep -qx 'CITATIONS: 0/0' "$WORK/out"
 assert grep -qx "ANSWER: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
@@ -417,4 +439,4 @@ if [ -d "$setup_root/agents" ]; then
   assert test ! -e "$setup_root/agents/$old_name.md"; assert test -f "$setup_root/agents/light-worker.md"
 fi
 
-printf 'PASS: %s asserts; light toggle rows and defaults, `worker-run start light` from the light_edit row, tracked research on gemini/claudeb/codex/grok with each read-only mechanism, a research brief that names a round but never fixes it, a log-only quota walling the account, outcomes mapped to exits, the citation check with its UNVERIFIED block and headed on-disk answer, per-repository fan-out on grok against one --add-dir run elsewhere, batched questions under one header, a citation resolved against every repository, a launch that fails mid-batch collecting what it already started, and one wait round per call with --attach continuing a running run and re-assembling a whole batch\n' "$asserts"
+printf 'PASS: %s asserts; light toggle rows and defaults, `worker-run start light` from the light_edit row, tracked research on gemini/claudeb/codex/grok with each read-only mechanism, a research brief that names a round but never fixes it, a log-only quota walling the account, outcomes mapped to exits, the citation check with its UNVERIFIED block, its `LINKS:` count for web sources and headed on-disk answer, the `WEB:` state beside the account, per-repository fan-out on grok against one --add-dir run elsewhere, batched questions under one header, a citation resolved against every repository, a launch that fails mid-batch collecting what it already started, and one wait round per call with --attach continuing a running run and re-assembling a whole batch\n' "$asserts"

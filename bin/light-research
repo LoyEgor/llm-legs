@@ -41,6 +41,7 @@ out="$out_dir/${out##*/}"
 root=$(resolve_root)
 worker_run="$root/bin/worker-run"
 . "$root/share/light-research.sh"
+. "$root/share/web-search.sh"
 # One round per call: the agent's Bash call must return inside the tool's 10-minute cap, and a run
 # still going is handed back as `RUN:`/`STATUS: running` for `--attach` to continue.
 wait_max=${LIGHT_RESEARCH_WAIT_MAX:-540}
@@ -62,7 +63,7 @@ code_rank() { case "$1" in 3) printf '3\n' ;; 5) printf '2\n' ;; 4) printf '1\n'
 
 COLLECT_RUNNING=false
 collect_run() { # run-id run-dir part-file
-  local state account vendor code log
+  local state account vendor code log web
   COLLECT_RUNNING=false
   state=$("$worker_run" wait "$1" --max "$(wait_budget)") || { printf '%s\n' "$state"; return 4; }
   case "$state" in
@@ -73,7 +74,8 @@ collect_run() { # run-id run-dir part-file
   vendor=$(jq -r .vendor "$2/meta.json")
   log="$2/log"
   [ -f "$log" ] || log="$2/err"
-  printf 'ACCOUNT: %s (%s)\nLOG: %s\n' "$account" "$vendor" "$log"
+  web=$(web_search_meta_state "$2/meta.json")
+  printf 'ACCOUNT: %s (%s)\nWEB: %s\nLOG: %s\n' "$account" "$vendor" "$web" "$log"
   code=$(cat "$2/exit_code" 2>/dev/null) || return 4
   [[ "$code" =~ ^[0-9]+$ ]] || return 4
   if [ "$code" = 0 ] && grep -qx 'STATUS: done' <<<"$state"; then
@@ -88,11 +90,12 @@ collect_run() { # run-id run-dir part-file
 }
 
 land_answer() { # combined-file repo-root...
-  local combined=$1 counts lines
+  local combined=$1 counts lines verified total links
   shift
   counts=$(research_citation_check "$combined" "$out" "$@") || return 4
+  read -r verified total links <<<"$counts"
   lines=$(wc -l <"$out" | tr -d '[:space:]')
-  printf 'CITATIONS: %s/%s\nANSWER: %s\nLINES: %s\n' "${counts%% *}" "${counts##* }" "$out" "$lines"
+  printf 'CITATIONS: %s/%s\nLINKS: %s\nANSWER: %s\nLINES: %s\n' "$verified" "$total" "$links" "$out" "$lines"
 }
 
 # The unit table of a multi-unit call, kept beside the answer file. A batch whose first units are

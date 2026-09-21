@@ -126,6 +126,11 @@ command -v worker_pool_refuse_headless >/dev/null ||
   fail 'share/worker-model.sh is missing: worker-run cannot tell an allowed model from a cheap one'
 command -v worker_model_allows >/dev/null ||
   fail 'share/worker-model.sh defines no worker_model_allows: refusing to launch unchecked'
+. "$SCRIPT_DIRECTORY/../share/web-search.sh" ||
+  fail 'share/web-search.sh is missing: worker-run cannot tell which vendors can search the web'
+command -v web_search_args >/dev/null ||
+  fail 'share/web-search.sh defines no web_search_args: refusing to launch with an unknown search state'
+
 . "$SCRIPT_DIRECTORY/../share/worker-walls.sh" ||
   fail 'share/worker-walls.sh is missing: worker-run cannot record a run-observed wall'
 command -v worker_walls_record >/dev/null ||
@@ -837,6 +842,9 @@ supervise_claudeb() {
     read_json_array '.add_dirs[]' "$meta"
     for value in "${REPLY_ARRAY[@]}"; do access+=(--add-dir "$value"); done
   fi
+  # Into `access` and not into `command`: the effort-drop retry below rebuilds the command from it,
+  # and a web-search state left behind there relaunches the run with a capability it was denied.
+  while IFS= read -r value; do access+=("$value"); done < <(web_search_args claudeb "$(web_search_meta_state "$meta")")
   command=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json "${access[@]}")
   [ -z "$resume" ] || command+=(--resume "$resume")
   [ "$chrome" = false ] || command+=(--chrome)
@@ -899,7 +907,7 @@ supervise_codex() {
   [ "$(jq -r '.role // "workers"' "$meta")" != research ] || command+=(--sandbox read-only)
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
   for value in "${images[@]}"; do command+=(-i "$value"); done
-  if [ "$(jq -r '.web_search' "$meta")" = true ]; then command+=(-c web_search=live); fi
+  while IFS= read -r value; do command+=("$value"); done < <(web_search_args codex "$(web_search_meta_state "$meta")")
   if value=$(codex_fast_tier "$account"); then
     if [ "$value" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
     else command+=(--disable fast_mode -c 'service_tier="default"'); fi
@@ -950,6 +958,7 @@ supervise_gemini() {
   add_dirs=("${REPLY_ARRAY[@]}")
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
   command+=(--print-timeout 360m --dangerously-skip-permissions --log-file "$directory/log")
+  while IFS= read -r value; do command+=("$value"); done < <(web_search_args gemini "$(web_search_meta_state "$meta")")
   [ -z "$resume" ] || command+=(--conversation "$resume")
   command+=(--print "$prompt")
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
@@ -969,7 +978,7 @@ research_tree_digest() { # root...
 # Grok has no read-only mode, so a research run is checked from outside: the trees it may read are
 # digested before and after, and any difference fails the run.
 supervise_grok() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied before=''
+  local directory="$1" meta="$1/meta.json" account model effort resume cli turns rc served denied before='' search_arg
   local -a command roots
   roots=()
   if [ "$(jq -r '.role // "workers"' "$meta")" = research ]; then
@@ -997,7 +1006,7 @@ supervise_grok() {
   [ "$model" = auto ] || command+=(-m "$model")
   # `-r` resumes; `-s` only ever CREATES and rejects an id that already exists (live 1.0.13).
   [ -z "$resume" ] || command+=(-r "$resume")
-  [ "$(jq -r '.web_search' "$meta")" = true ] || command+=(--disable-web-search)
+  while IFS= read -r search_arg; do command+=("$search_arg"); done < <(web_search_args grok "$(web_search_meta_state "$meta")")
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "${#roots[@]}" -gt 0 ] && [ "$(research_tree_digest "${roots[@]}")" != "$before" ]; then
@@ -1907,7 +1916,7 @@ start_run() {
   local light_relative='' light_base=''
   local -a recipe_sets=()
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
-  local web_search=false brief_cyrillic=''
+  local web_search=false web_search_flag=false web_search_state='' brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
   local browser_target=''
   local -a add_dirs images command_meta command
@@ -1927,7 +1936,7 @@ start_run() {
       --resume) [ "$#" -ge 2 ] || usage; resume="$2"; shift 2 ;;
       --add-dir) [ "$#" -ge 2 ] || usage; add_dirs+=("$2"); shift 2 ;;
       --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
-      --web-search) web_search=true; shift ;;
+      --web-search) web_search_flag=true; shift ;;
       --chrome) chrome=true; shift ;;
       --round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;
       --role) [ "$#" -ge 2 ] || usage; role="$2"; shift 2 ;;
@@ -2045,6 +2054,23 @@ start_run() {
     fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
+  [ "$role" != research ] || web_search=true
+  value=$(light_brief_header_value "$brief" WEB)
+  case "$value" in
+    '') ;;
+    on) web_search=true ;;
+    off) web_search=false ;;
+    *) fail "brief header 'WEB: $value' names no state: the shape is 'WEB: on' or 'WEB: off'" ;;
+  esac
+  [ "$web_search_flag" = false ] || web_search=true
+  if [ "$web_search" = true ] && [ "$(web_search_column "$vendor" on)" = '!' ]; then
+    outcome_line MODEL_REFUSED
+    fail "$vendor cannot search the web, and a run that answers such a brief from memory is worse than none: launch it on $(web_search_vendors). Nothing was launched and no account was spent."
+  fi
+  # What the table can actually deliver, not what was asked: a vendor with no off switch searches
+  # anyway, and meta.json is read by everything downstream as the state the answer may rest on.
+  web_search_state=$(web_search_state "$vendor" "$web_search")
+  case "$web_search_state" in on) web_search=true ;; *) web_search=false ;; esac
   if [ "$light" = edit ]; then
     light_scope=$(light_brief_header_value "$brief" SCOPE)
     [ -n "$light_scope" ] ||
@@ -2071,7 +2097,7 @@ start_run() {
   fi
   case "$vendor" in
     claudeb)
-      { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'claudeb does not support --add-dir, --image, or --web-search'
+      { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] || fail 'claudeb does not support --add-dir or --image'
       ;;
     codex)
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
@@ -2079,7 +2105,7 @@ start_run() {
       ;;
     gemini)
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
-      [ "${#images[@]}" -eq 0 ] && [ "$web_search" = false ] || fail 'gemini does not support --image or --web-search flags'
+      [ "${#images[@]}" -eq 0 ] || fail 'gemini does not support --image'
       # agy has no stdin mode — the brief travels on argv, and past the kernel's
       # per-argument ceiling execve fails with a bare E2BIG long after start.
       # 128 for the RUN-TOKEN line launch_attempt appends, whose run id is not known yet.
@@ -2248,6 +2274,7 @@ start_run() {
     claudeb)
       cli="${WORKER_RUN_CLAUDEB:-$HOME/.local/bin/claudeb}"
       command_meta=("$cli" profile "$account" -p --model "$model" --effort "$effort" --output-format json --dangerously-skip-permissions)
+      while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_args claudeb "$web_search_state")
       [ -z "$resume" ] || command_meta+=(--resume "$resume")
       [ "$chrome" = false ] || command_meta+=(--chrome)
       ;;
@@ -2267,7 +2294,7 @@ start_run() {
       [ "$role" != research ] || command+=(--sandbox read-only)
       for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
       for value in "${images[@]}"; do command+=(-i "$value"); done
-      [ "$web_search" = false ] || command+=(-c web_search=live)
+      while IFS= read -r value; do command+=("$value"); done < <(web_search_args codex "$web_search_state")
       if fast_tier=$(codex_fast_tier "$account"); then
         if [ "$fast_tier" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
         else command+=(--disable fast_mode -c 'service_tier="default"'); fi
@@ -2299,6 +2326,7 @@ start_run() {
       command_meta=("$cli" profile "$account" --model "$agy_model" --add-dir "$HOME/.claude")
       for value in "${add_dirs[@]}"; do command_meta+=(--add-dir "$value"); done
       command_meta+=(--print-timeout 360m --dangerously-skip-permissions --log-file LOG)
+      while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_args gemini "$web_search_state")
       [ -z "$resume" ] || command_meta+=(--conversation "$resume")
       command_meta+=(--print BRIEF_TEXT)
       ;;
@@ -2315,7 +2343,7 @@ start_run() {
       [ -z "$grok_turns" ] || command_meta+=(--max-turns "$grok_turns")
       [ "$model" = auto ] || command_meta+=(-m "$model")
       [ -z "$resume" ] || command_meta+=(-r "$resume")
-      [ "$web_search" = true ] || command_meta+=(--disable-web-search)
+      while IFS= read -r value; do command_meta+=("$value"); done < <(web_search_args grok "$web_search_state")
       ;;
   esac
 
