@@ -10,7 +10,7 @@ input=$(cat) || exit 0
 parsed=$(printf '%s' "$input" | jq -r -f "$bin_dir/../share/statusline-workdir.jq") || exit 0
 IFS=$'\x1f' read -r hook_event tool_name session_id base_dir agent_flag candidate bash_subshell \
   bash_read_only bash_worktree bash_worktree_base bash_cd_hit tool_use_id dispatch bash_writes \
-  transcript <<< "$parsed"
+  transcript bash_rel_base bash_writes_win <<< "$parsed"
 [ -n "$session_id" ] || exit 0
 
 cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
@@ -26,7 +26,7 @@ unquote() {
   esac
 }
 
-resolve_dir() { # token [base] -> physical directory
+expand_path() { # token [base] -> absolute path, unresolved
   local c=$1
   case "$c" in
     '$HOME'|'${HOME}'|'~') c=$HOME ;;
@@ -35,7 +35,23 @@ resolve_dir() { # token [base] -> physical directory
     '~/'*) c="$HOME/${c#\~/}" ;;
   esac
   [[ "$c" = /* ]] || c="${2:-$base_dir}/$c"
+  printf '%s' "$c"
+}
+
+resolve_dir() { # token [base] -> physical directory
+  local c
+  c=$(expand_path "$1" "${2-}")
   (cd "$c" && pwd -P)
+}
+
+journal_writes() {
+  local p write_paths
+  IFS=$'\x1e' read -r -a write_paths <<< "$bash_writes"
+  for p in "${write_paths[@]}"; do
+    p=$(expand_path "$p")
+    while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
+    add edit "$p" && break
+  done
 }
 
 # SessionStart's agent_type is a top-level `claude --agent` session, not a subagent.
@@ -133,13 +149,12 @@ case "$hook_event:$tool_name" in
     done
     ;;
   PostToolUse:Edit|PostToolUse:Write|PostToolUse:NotebookEdit)
-    [ -n "$candidate" ] && add edit "$candidate" ;;
+    [ -n "$candidate" ] && add edit "$(expand_path "$candidate")" ;;
   PostToolUse:EnterWorktree) [ -n "$candidate" ] && add enter-worktree "$candidate" ;;
   PostToolUse:ExitWorktree) add exit-worktree "${CLAUDE_PROJECT_DIR:-$base_dir}" ;;
-  PostToolUse:Bash)
+  # A non-zero exit arrives as PostToolUseFailure: the commit before the failing test still landed.
+  PostToolUse:Bash|PostToolUseFailure:Bash)
     candidate=$(unquote "$candidate")
-    # `cd -` in the resolution subshell lands on the hook's own OLDPWD, not the session's.
-    case "$candidate" in -*) exit 0 ;; esac
     if [ -n "$bash_worktree" ]; then
       new=""
       if [ -f "$snap" ]; then
@@ -166,16 +181,18 @@ case "$hook_event:$tool_name" in
       dir=$(resolve_dir "$candidate") || exit 0
       top=$(git -C "$dir" rev-parse --show-toplevel) && [ "$(resolve_dir "$top")" = "$dir" ] || exit 0
       add enter-worktree "$dir"
-    elif [ -n "$candidate" ] && [ -n "$bash_cd_hit" ] && [ -z "$bash_subshell" ]; then
-      dir=$(resolve_dir "$candidate") && add cd "$dir"
-    elif [ -n "$candidate" ] && [ -z "$bash_read_only" ]; then
-      dir=$(resolve_dir "$candidate") && add git "$dir"
+    elif [ -n "$bash_writes" ] && [ -n "$bash_writes_win" ]; then
+      journal_writes
+    elif [ -n "$candidate" ]; then
+      # A relative path belongs to this command's own earlier cd, never to the tool's cwd.
+      [ -n "$bash_rel_base" ] && rel=$(resolve_dir "$bash_rel_base")
+      if [ -n "$bash_cd_hit" ] && [ -z "$bash_subshell" ]; then
+        dir=$(resolve_dir "$candidate" "${rel:-}") && add cd "$dir"
+      elif [ -z "$bash_read_only" ]; then
+        dir=$(resolve_dir "$candidate" "${rel:-}") && add git "$dir"
+      fi
     elif [ -n "$bash_writes" ]; then
-      IFS=$'\x1e' read -r -a write_paths <<< "$bash_writes"
-      for p in "${write_paths[@]}"; do
-        while [ ! -e "$p" ] && [ "$p" != / ]; do p=$(dirname "$p"); done
-        add edit "$p" && break
-      done
+      journal_writes
     fi
     ;;
 esac

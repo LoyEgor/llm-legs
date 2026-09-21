@@ -206,6 +206,91 @@ place_set "$S" "$TOP_A"
 run_workdir_hook "$(workdir_payload Bash session-git-mut-home "$REPO_A" "(git -C '$REPO_B' checkout main)")"
 assert_eq "$TOP_B" "$(last_tree "$S")"
 
+# --- round 20260919T122344Z-4339d2a: what the place detector used to miss ---
+last_main() { tail -n 1 "$STATE_DIR/place-$1" 2>/dev/null | cut -f4; }
+place_case() { # session command [cwd] -> one event on a fresh journal seeded at TOP_A
+  place_set "$1" "$TOP_A"
+  run_workdir_hook "$(workdir_payload Bash "$1" "${3:-$REPO_A}" "$2")"
+}
+
+# A chat names its worktree once and works through the variable ever after: the command's own
+# `NAME=value` words expand the cd, `git -C` and worktree tokens, as they already did write targets.
+place_case place-var "W=$REPO_B; (cd \$W && git add f && git commit -m m)"
+assert_eq "$TOP_B" "$(last_tree place-var)"
+assert_eq git "$(last_kind place-var)"
+assert_eq "$TOP_A" "$(last_main place-var)"
+place_case place-var-unbound 'cd $NOWHERE && git commit -m m'
+assert_eq "$TOP_A" "$(last_tree place-var-unbound)"
+
+# A wrapper or a shell keyword before the cd or git opens no segment of its own.
+place_case place-lead-env "env FOO=1 git -C '$REPO_B' commit -m m"
+assert_eq "$TOP_B" "$(last_tree place-lead-env)"
+place_case place-lead-timeout "timeout 60 git -C '$REPO_B' push"
+assert_eq "$TOP_B" "$(last_tree place-lead-timeout)"
+place_case place-lead-if "if true; then cd '$REPO_B' && git commit -m m; fi"
+assert_eq "$TOP_B" "$(last_tree place-lead-if)"
+
+# git's global options sit on either side of `-C`, and the mutating list is not commit alone.
+place_case place-git-global "git -c commit.gpgsign=false -C '$REPO_B' --no-pager commit -m m"
+assert_eq "$TOP_B" "$(last_tree place-git-global)"
+place_case place-git-add "git -C '$REPO_B' add -A"
+assert_eq "$TOP_B" "$(last_tree place-git-add)"
+# With no `-C` at all the mutation lands where the tool ran.
+place_case place-git-cwd 'git commit -m m' "$REPO_B"
+assert_eq "$TOP_B" "$(last_tree place-git-cwd)"
+
+# A non-zero exit arrives as PostToolUseFailure: the commit before the failing test still landed.
+place_set place-failure "$TOP_A"
+run_workdir_hook "$(workdir_payload Bash place-failure "$REPO_A" \
+  "git -C '$REPO_B' commit --allow-empty -m x && false" |
+  jq -c '.hook_event_name = "PostToolUseFailure" | .error = "Exit code 1"')"
+assert_eq "$TOP_B" "$(last_tree place-failure)"
+
+# A relative cd belongs to this command's own earlier cd, never to the tool's cwd; a `-` option
+# token is skipped by itself and does not abort the rest of the parse.
+place_case place-cd-chain "cd '$REPO_A' && cd .claude/worktrees/feature-y && git commit -m m"
+assert_eq "$TOP_E" "$(last_tree place-cd-chain)"
+place_case place-cd-optarg "cd -P '$REPO_B' && git commit -am m"
+assert_eq "$TOP_B" "$(last_tree place-cd-optarg)"
+
+# The strongest evidence wins its command: a commit is not undone by a read-only cd after it, a
+# worktree add does not outrank a later commit elsewhere, and a later write outranks both.
+place_case place-prec-subshell "git -C '$REPO_B' commit -m foo && (cd '$REPO_D' && git status)"
+assert_eq "$TOP_B" "$(last_tree place-prec-subshell)"
+place_case place-prec-wt "git -C '$REPO_A' worktree add /nowhere/new topic && git -C '$REPO_B' commit -m m"
+assert_eq "$TOP_B" "$(last_tree place-prec-wt)"
+place_case place-prec-write "cd '$REPO_A' && printf x > '$REPO_E/f'"
+assert_eq "$TOP_E" "$(last_tree place-prec-write)"
+assert_eq edit "$(last_kind place-prec-write)"
+place_case place-prec-last-write "touch '$REPO_A/w1'; touch '$REPO_B/w2'"
+assert_eq "$TOP_B" "$(last_tree place-prec-last-write)"
+
+# More ways to write into another tree, and two more spellings of a redirect.
+place_case place-write-rsync "rsync -a tracked.txt '$REPO_B/rsynced.txt'"
+assert_eq "$TOP_B" "$(last_tree place-write-rsync)"
+place_case place-write-install "install -m 644 tracked.txt '$REPO_B/installed'"
+assert_eq "$TOP_B" "$(last_tree place-write-install)"
+place_case place-write-patch "patch - -d '$REPO_B' < fix.diff"
+assert_eq "$TOP_B" "$(last_tree place-write-patch)"
+place_case place-write-clobber "printf x >| '$REPO_B/clobbered'"
+assert_eq "$TOP_B" "$(last_tree place-write-clobber)"
+place_case place-write-fd "printf x >& '$REPO_B/merged'"
+assert_eq "$TOP_B" "$(last_tree place-write-fd)"
+place_case place-write-tilde 'printf x > ~/project/tilded'
+assert_eq "$TOP_B" "$(last_tree place-write-tilde)"
+
+# A `#` comment is prose: its `(` and `;` must not open a segment later than the real one. An
+# apostrophe inside double quotes is not a quote and pairs with nothing lines away.
+place_case place-comment "git -C '$REPO_B' commit -am m # then (cd '$REPO_A' && npm i)"
+assert_eq "$TOP_B" "$(last_tree place-comment)"
+place_case place-apostrophe "$(printf 'echo "it'"'"'s here"\ncd %q\ngit commit -m "don'"'"'t stop"' "$REPO_B")"
+assert_eq "$TOP_B" "$(last_tree place-apostrophe)"
+
+# An Edit path is expanded like a cd token: `~` and a relative path name a tree too.
+place_set place-edit-tilde "$TOP_A"
+run_workdir_hook "$(workdir_payload Edit place-edit-tilde "$REPO_A" '~/project/tracked.txt')"
+assert_eq "$TOP_B" "$(last_tree place-edit-tilde)"
+
 # A `cd` inside a heredoc body or a multi-line quoted string is text a command is
 # fed, not the session moving: the worktree pin, which only a persistent cd
 # breaks, stays put through every spelling of the delimiter.
@@ -244,13 +329,13 @@ run_workdir_hook "$(workdir_payload Bash session-quoted-span "$REPO_E" \
 assert_eq "$TOP_E" "$(last_tree "$S")"
 
 # Nesting is no proof the session moved either: an inner subshell cd dies with the
-# command, and a brace group is read as no cd at all.
+# command. A brace group is not nesting — it runs in the current shell, so its cd is persistent.
 S="session-cd-nested"
 place_set "$S" "$TOP_E"
 run_workdir_hook "$(workdir_payload Bash session-cd-nested "$REPO_E" "( (cd '$REPO_D') )")"
 assert_eq "$TOP_E" "$(last_tree "$S")"
 run_workdir_hook "$(workdir_payload Bash session-cd-nested "$REPO_E" "{ cd '$REPO_D'; }")"
-assert_eq "$TOP_E" "$(last_tree "$S")"
+assert_eq "$TOP_D" "$(last_tree "$S")"
 
 # No stickiness: a worktree is left on the first change elsewhere.
 S="session-subshell-sticky"
@@ -529,21 +614,23 @@ assert test ! -e "$STATE_DIR/place-$S.snap"
 # adopt what the second add made and the second still finds a baseline of its own.
 WT_ADD_ILA="$REPO_A/.claude/worktrees/hook-wt-il-a"
 WT_ADD_ILB="$REPO_A/.claude/worktrees/hook-wt-il-b"
+# A path no assignment of the command itself can spell: the snapshot is all there is to go on.
+IL_CMD='N=$(mktemp -u); git -C "'"$REPO_A"'" worktree add -b hook-wt-il "$N" HEAD'
 S="session-wt-add-il"
 place_set "$S" "$TOP_E"
-run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$IL_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-a"')"
 git -C "$REPO_A" worktree add -q -b hook-wt-il-a "$WT_ADD_ILA" HEAD
-run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$IL_CMD" |
   jq -c '.hook_event_name = "PreToolUse" | .tool_use_id = "call-b"')"
 assert test -f "$STATE_DIR/place-$S.snap.call-a"
 assert test -f "$STATE_DIR/place-$S.snap.call-b"
 git -C "$REPO_A" worktree add -q -b hook-wt-il-b "$WT_ADD_ILB" HEAD
-run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$IL_CMD" |
   jq -c '.tool_use_id = "call-a"')"
 assert_eq "$TOP_E" "$(last_tree "$S")"
 assert test ! -e "$STATE_DIR/place-$S.snap.call-a"
-run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$VAR_CMD" |
+run_workdir_hook "$(workdir_payload Bash session-wt-add-il "$REPO_E" "$IL_CMD" |
   jq -c '.tool_use_id = "call-b"')"
 assert_eq "$(git -C "$WT_ADD_ILB" rev-parse --show-toplevel)" "$(last_tree "$S")"
 assert test ! -e "$STATE_DIR/place-$S.snap.call-b"
@@ -3078,6 +3165,7 @@ cat <<'SNAP'
 1016 1000 8080 --serve
 1017 1000 COMMANDER --serve
 1018 1000 COMMAND --serve
+1019 1000 node server.js --config codex.json
 1013 1000 claude
 1014 1013 node /path/to/vite-worker
 9999 1 claude
@@ -3122,6 +3210,7 @@ node     1015 u   34u  IPv4  0t0      TCP 127.0.0.1:62150 (LISTEN)
 8080     1016 u   35u  IPv4  0t0      TCP *:4600 (LISTEN)
 COMMANDER 1017 u  36u  IPv4  0t0      TCP *:4700 (LISTEN)
 COMMAND   1018 u  37u  IPv4  0t0      TCP *:4800 (LISTEN)
+node      1019 u  38u  IPv4  0t0      TCP *:4900 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -3148,8 +3237,9 @@ run_probe pp-parse 1001
 # orphans and no repository was given, so nothing places them. 4600 belongs to a process whose own
 # name is all digits, which the pid scan must not mistake for the pid column, and 4700 to one whose
 # name merely starts with the header word. A real process exactly named COMMAND also survives
-# because the listener filter makes the header check redundant.
-assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800)" "$(cat "$STATE_DIR/ports-pp-parse")"
+# because the listener filter makes the header check redundant. 4900 is a dev server whose FLAG
+# VALUE names an LLM tool (`--config codex.json`): only argv[0] and the script it runs are read.
+assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800 4900)" "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # A server backgrounded from a tool call is reparented to launchd as soon as that call returns —
 # the case the ancestry walk alone could never see, and the one every dev server actually hits.
@@ -3160,7 +3250,7 @@ assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800)" "$(cat "$ST
 # /proj is no repository, so the one root given is the whole project and 4254 is attributed to it;
 # every other port here is one this session parents, and its own directory places none of them.
 run_probe pp-orphan 1001 /proj
-assert_eq "$(printf '5173\t-\n8123\t-\n5174\t-\n8080\t-\n4254\t/proj\n4500\t-\n4600\t-\n4700\t-\n4800\t-')" \
+assert_eq "$(printf '5173\t-\n8123\t-\n5174\t-\n8080\t-\n4254\t/proj\n4500\t-\n4600\t-\n4700\t-\n4800\t-\n4900\t-')" \
   "$(cat "$STATE_DIR/ports-pp-orphan")"
 
 # The repository places an orphan, never someone else's session: 1001-1009 hang off the other

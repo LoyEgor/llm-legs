@@ -83,9 +83,9 @@ one writer's line count and its own append. Kinds are informational; no reader b
 |---|---|---|
 | `statusline-workdir-hook` SessionStart, only while the journal is missing or empty | `seed` | the session cwd — unless the first line of `transcript_path` names `forkedFrom.sessionId` (a `/branch` fork) whose `place-<parent>` is non-empty: that journal is copied whole (tmp + rename, `0600`) and nothing is appended |
 | Edit/Write/NotebookEdit PostToolUse — the chat's own and its subagents' alike | `edit` | the file |
-| Bash PostToolUse, a persistent `cd X`/`pushd X` | `cd` | X |
-| Bash PostToolUse, `(cd X && …)` or a mutating `git -C X`, when the command as a whole is not read-only | `git` | X |
-| Bash PostToolUse, a write verb (`sed -i`, `tee`, `cp`, `mv`, `rm`, `touch`, `mkdir`, `ln`, `truncate`) or a `>`/`>>`/`1>` redirect not to `/dev/*`, also inside `if`/`for`/`while` bodies, when no row above matched | `edit` | the first absolute argument — for `cp`/`mv`/`ln` only the last operand — or redirect target (after the command's own `NAME=value` words expand `$NAME`/`${NAME}`; a value that cannot be expanded unbinds the name; `\ ` is a literal space) whose nearest existing ancestor is in a work tree |
+| Bash PostToolUse, a persistent `cd X`/`pushd X` | `cd` | X, relative to this command's own earlier `cd` |
+| Bash PostToolUse, `(cd X && …)` or a mutating `git -C X`, when the command as a whole is not read-only | `git` | X — and a mutating `git` with no `-C` names that same earlier `cd`, else the tool's cwd |
+| Bash PostToolUse, a write verb (`sed -i`, `tee`, `cp`, `mv`, `rm`, `touch`, `mkdir`, `ln`, `truncate`, `install`, `rsync`, `patch`, `git apply`) or a `>`/`>>`/`1>`/`>|`/`&>`/`>&` redirect not to `/dev/*`, also inside `if`/`for`/`while` bodies | `edit` | the LAST absolute or `~`/`$HOME`-rooted argument — for `cp`/`mv`/`ln`/`rsync` only the last operand — or redirect target (after the command's own `NAME=value` words expand `$NAME`/`${NAME}`; a value that cannot be expanded unbinds the name; `\ ` is a literal space) whose nearest existing ancestor is in a work tree |
 | Bash PostToolUse, `git worktree add`/`git worktree move` | `enter-worktree` | the new path from the PreToolUse/PostToolUse worktree-list diff, else the parsed token when it is its own toplevel |
 | Task/Agent PreToolUse, main session only | `dispatch` | the first `/`-rooted token of the brief that is a directory `add` writes a line for |
 | EnterWorktree / ExitWorktree PostToolUse | `enter-worktree` / `exit-worktree` | the worktree / `CLAUDE_PROJECT_DIR`, else the session cwd |
@@ -93,6 +93,26 @@ one writer's line count and its own append. Kinds are informational; no reader b
 | `worker-run`'s terminal outcome, for the run's recorded launcher, once per run (a `.place-end` directory in the run dir), with or without `report-bus` | `worker-end` | the run's workdir |
 | `review-bench`, a progress document created `running` | `review-start` | its `repo`, for its `session` |
 | `review-bench`, the run itself stamping its document `done`/`dead` as it ends (never the reaper retiring a run nobody ended) | `review-end` | the same |
+
+Bash is heard on `PostToolUseFailure` exactly as on `PostToolUse`: a non-zero exit is where the
+commit landed and the test after it failed. A `cd` or `git` is found behind the wrappers and
+keywords that open no segment of their own — `sudo`, `env NAME=v`, `timeout <n>`, `nohup`,
+`command`, `time`, `then`, `do`, `else`, `elif`, `if`, `while`, `until`, `for`, `{`, `!` — and
+behind git's own global options on either side of `-C` (`git -c k=v -C X commit`, `git -C X
+--no-pager commit`); `--git-dir`/`--work-tree` are skipped like any other option, and `bash -c '…'`
+and `eval "…"` bodies are not parsed at all. The mutating subcommands are `checkout switch commit
+merge rebase cherry-pick revert restore stash am reset pull push add apply fetch tag clean rm mv
+branch`. The command's own `NAME=value` words expand the cd, `git -C` and worktree path tokens too
+(`$W`, `${W}`, `"$W"`, `$W/sub`); a token left unexpanded, and `cd -`, name no tree and refuse any
+relative path after them rather than resolve it against the tool's cwd — `$OLDPWD`, `$PWD`,
+`$(pwd)` and the pushd/popd stack are not modelled. `#` comments are blanked before any rule reads
+the command, and an apostrophe inside double quotes is not a quote (`echo "it's"` pairs with
+nothing lines away).
+
+Within ONE command the strongest evidence wins, not the last hit: a mutating `git` or a
+`git worktree add`/`move` outranks every `cd` after it — the read-only look at the tree just left,
+the bootstrap of the worktree just made — while a later `git worktree add` or commit elsewhere
+outranks an earlier one, and a write whose target comes after all of them outranks the lot.
 
 Nothing else writes: a `Read`, a read-only command (`(cd /x && git status)`, `git -C /x log`,
 `grep`/`sed -n` over a worktree), a write with no cd, no `-C` and no absolute target, `git worktree remove`, and a subagent's Bash or dispatch move nothing.

@@ -177,7 +177,10 @@ ports=$(awk -v root="$root" '
     pid=""
     for (j=2;j<=NF;j++) if ($j ~ /^[0-9]+$/) { pid=$j; break }
     c=cmd[pid]
-    if (c ~ /mcp|figma|codex|chrome-devtools|chrome_crashpad/) next
+    # argv[0] and the script it runs are the executable; a flag VALUE naming one of these is not
+    # (`node server.js --config codex.json` is a dev server, `node ./mcp/server.mjs` is not).
+    split(c, cw, /[ \t]+/)
+    if (cw[1] " " cw[2] ~ /mcp|figma|codex|chrome-devtools|chrome_crashpad/) next
     if (base_cmd(pid) == "claude") next
     if (tool_owned(pid, port)) next
     who=owner(pid)
