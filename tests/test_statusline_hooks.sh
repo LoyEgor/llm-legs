@@ -249,7 +249,9 @@ assert_eq "$TOP_A" "$(last_tree place-failure)"
 for command in "cd '$REPO_B' && make > /tmp/build.log" "cd '$REPO_B' && mkdir -p /tmp/scratch" \
   "git -C '$REPO_B' apply /tmp/fix.patch" "git --git-dir '$REPO_B/.git' -C '$REPO_B' commit -m x" \
   "git -C '$REPO_A' commit -m \"fix #123\" && git -C '$REPO_B' push" \
-  "echo \"note #1\" > '$REPO_B/out.txt'"; do
+  "echo \"note #1\" > '$REPO_B/out.txt'" \
+  "git -C '$REPO_B' branch -r -d origin/gone" "git -C '$REPO_B' branch -v -D topic" \
+  "git -C '$REPO_B' branch -m old new"; do
   place_case place-regression-write "$command"
   assert_eq "$TOP_B" "$(last_tree place-regression-write)"
 done
@@ -3186,6 +3188,9 @@ cat <<'SNAP'
 1017 1000 COMMANDER --serve
 1018 1000 COMMAND --serve
 1019 1000 node server.js --config codex.json
+1020 1000 node server.js /tmp/codex-out.json
+1021 1000 node --require /x/codex/hooks.js server.js
+1022 1000 node --loader ts-node/esm mcp-server.ts
 1013 1000 claude
 1014 1013 node /path/to/vite-worker
 9999 1 claude
@@ -3231,6 +3236,9 @@ node     1015 u   34u  IPv4  0t0      TCP 127.0.0.1:62150 (LISTEN)
 COMMANDER 1017 u  36u  IPv4  0t0      TCP *:4700 (LISTEN)
 COMMAND   1018 u  37u  IPv4  0t0      TCP *:4800 (LISTEN)
 node      1019 u  38u  IPv4  0t0      TCP *:4900 (LISTEN)
+node      1020 u  39u  IPv4  0t0      TCP *:5000 (LISTEN)
+node      1021 u  40u  IPv4  0t0      TCP *:5100 (LISTEN)
+node      1022 u  41u  IPv4  0t0      TCP *:5200 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -3259,7 +3267,10 @@ run_probe pp-parse 1001
 # name merely starts with the header word. A real process exactly named COMMAND also survives
 # because the listener filter makes the header check redundant. 4900 is a dev server whose FLAG
 # VALUE names an LLM tool (`--config codex.json`): only argv[0] and the script it runs are read.
-assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800 4900)" "$(cat "$STATE_DIR/ports-pp-parse")"
+# 5000 and 5100 are dev servers a denylisted name reaches only as a POSITIONAL the script carries
+# and as the value of `--require`; 5200 is an MCP server behind `--loader`, whose value is not the
+# program. Reading either word as argv[0] answers about the wrong file.
+assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800 4900 5000 5100)" "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # A server backgrounded from a tool call is reparented to launchd as soon as that call returns —
 # the case the ancestry walk alone could never see, and the one every dev server actually hits.
@@ -3270,7 +3281,7 @@ assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800 4900)" "$(cat
 # /proj is no repository, so the one root given is the whole project and 4254 is attributed to it;
 # every other port here is one this session parents, and its own directory places none of them.
 run_probe pp-orphan 1001 /proj
-assert_eq "$(printf '5173\t-\n8123\t-\n5174\t-\n8080\t-\n4254\t/proj\n4500\t-\n4600\t-\n4700\t-\n4800\t-\n4900\t-')" \
+assert_eq "$(printf '5173\t-\n8123\t-\n5174\t-\n8080\t-\n4254\t/proj\n4500\t-\n4600\t-\n4700\t-\n4800\t-\n4900\t-\n5000\t-\n5100\t-')" \
   "$(cat "$STATE_DIR/ports-pp-orphan")"
 
 # The repository places an orphan, never someone else's session: 1001-1009 hang off the other

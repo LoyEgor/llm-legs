@@ -177,13 +177,18 @@ ports=$(awk -v root="$root" '
     pid=""
     for (j=2;j<=NF;j++) if ($j ~ /^[0-9]+$/) { pid=$j; break }
     c=cmd[pid]
-    executable=c
-    sub(/[ \t]+--?.*$/, "", executable)
-    if (executable ~ /mcp|modelcontextprotocol|figma|codex|chrome-devtools|chrome_crashpad/) next
     split(c, cw, /[ \t]+/)
+    # argv[0] and at most the word after it: a path a dev server merely carries — `node server.js
+    # /tmp/codex-out.json` — names no tool, and reading it drops the port.
+    executable=(cw[2] == "" || cw[2] ~ /^-/) ? cw[1] : cw[1] " " cw[2]
+    if (executable ~ /mcp|modelcontextprotocol|figma|codex|chrome-devtools|chrome_crashpad/) next
     if (base_cmd(pid) ~ /^(node|nodejs|npx|python[0-9.]*)$/) {
+      # An option that takes a value eats it, or the value is read as the program: `node --require
+      # /x/hooks.js server.js` is judged by the hook, and `--loader x mcp-server.ts` by the loader.
+      # Spelled lowercase because cmd[] is: `-X dev` of python arrives here as `-x`.
       for (j=2; cw[j] != ""; j++) {
         if (cw[j] == "-m") { j++; break }
+        if (cw[j] ~ /^(-r|--require|--import|--loader|--experimental-loader|--conditions|--env-file|--node-options|-e|--eval|-p|--print|--package|--prefix|--userconfig|--cache|-c|--call|-w|--workspace|-x)$/) { j++; continue }
         if (cw[j] ~ /^-/) continue
         break
       }

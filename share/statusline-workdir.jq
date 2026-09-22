@@ -104,11 +104,14 @@ def bash_write_paths: .paths | reverse | .[0:10] | map(.p) | join("\u001e");
 def git_listing($sub; $args):
   ($args | [match(tok; "g").string | unquote_word]) as $a
   | if $sub == "branch" or $sub == "tag" then
-      ($a | length) == 0 or any($a[];
+      # A listing flag does not survive company: `git branch -r -d origin/x` lists nothing, it
+      # deletes, and a delete/move/copy anywhere among the arguments settles the whole command.
+      (any($a[]; test("^(-[a-zA-Z]*[dDmMcC][a-zA-Z]*|--(delete|move|copy))$")) | not)
+      and (($a | length) == 0 or any($a[];
         test("^--(show-current|list|contains|no-contains|merged|no-merged|points-at)(=|$)") or
         test("^-l$") or
         (if $sub == "branch" then test("^(-[arv]+|--(all|remotes|verbose))$")
-         else test("^-n[0-9]*$") end))
+         else test("^-n[0-9]*$") end)))
     elif $sub == "fetch" then any($a[]; . == "--dry-run")
     else false end;
 def shell_scope($at):

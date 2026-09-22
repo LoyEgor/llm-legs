@@ -266,7 +266,9 @@ for ((question=0; question<${#prompt_files[@]}; question++)); do
   if [ "$fanout" = true ]; then targets=("${resolved_repos[@]}"); else targets=("${resolved_repos[0]}"); fi
   for target in "${targets[@]}"; do
     brief="$work/brief.$units"
-    { [ "$fanout" = false ] || printf 'REPOSITORY: %s\n\n' "$target"
+    # No blank line under it: worker-run's header block stops at the first non-header line, so a
+    # gap here hides the prompt's own `WEB:` header from the launcher on the fan-out path alone.
+    { [ "$fanout" = false ] || printf 'REPOSITORY: %s\n' "$target"
       cat "${prompt_files[$question]}"
       printf '\n%s\n' "$LIGHT_RESEARCH_CONTRACT"; } >"$brief" || exit 4
     args=(start "$vendor" --role research --model "$model" --brief "$brief" --workdir "$target" --research-timeout "$timeout_value")

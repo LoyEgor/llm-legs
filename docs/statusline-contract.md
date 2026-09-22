@@ -102,7 +102,9 @@ behind git's own global options on either side of `-C` (`git -c k=v -C X commit`
 --no-pager commit`); `--git-dir`/`--work-tree` consume their path arguments, and `bash -c '…'`
 and `eval "…"` bodies are not parsed at all. The mutating subcommands are `checkout switch commit
 merge rebase cherry-pick revert restore stash am reset pull push add apply fetch tag clean rm mv
-branch`; branch/tag listing forms and `fetch --dry-run` are reads. Standalone `NAME=value` assignments expand the cd, `git -C` and worktree path tokens too
+branch`; branch/tag listing forms and `fetch --dry-run` are reads, but a `-d`/`-D`/`-m`/`-M`/`-c`/`-C`
+(in a cluster too) or a `--delete`/`--move`/`--copy` anywhere in the arguments is a write whatever
+listing flags stand beside it. Standalone `NAME=value` assignments expand the cd, `git -C` and worktree path tokens too
 (`$W`, `${W}`, `"$W"`, `$W/sub`); a token left unexpanded, and `cd -`, name no tree and refuse any
 relative path after them rather than resolve it against the tool's cwd — `$OLDPWD`, `$PWD`,
 `$(pwd)` and the pushd/popd stack are not modelled. `#` comments outside quotes are blanked before any rule reads

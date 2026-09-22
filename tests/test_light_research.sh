@@ -277,6 +277,15 @@ assert grep -qx "## $repo_path" "$WORK/answer"
 assert grep -qx "## $repo2_path" "$WORK/answer"
 assert test "$(grep -c 'grok research answer' "$WORK/answer")" = 2
 
+# The prompt's own headers reach worker-run on the fan-out path too: `REPOSITORY:` joins its header
+# block, and a blank line under it would leave `WEB: off` unread on this path alone.
+printf 'WEB: off\nResearch the repository.\n' >"$WORK/prompt"
+run --repo "$REPO2"; rc=$?; assert test "$rc" -eq 0
+first_run=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1); second_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1)
+assert jq -e '.web_search == false' "$RUNS/$first_run/meta.json"
+assert jq -e '.web_search == false' "$RUNS/$second_run/meta.json"
+printf 'Research the repository.\n' >"$WORK/prompt"
+
 printf 'repo two only\n' >"$REPO2/unit-only.txt"
 FAKE_GROK_CITATION='unit-only.txt:1 | "repo two only" | claim' run --repo "$REPO2"; rc=$?
 assert test "$rc" -eq 0

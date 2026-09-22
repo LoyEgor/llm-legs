@@ -1728,7 +1728,10 @@ light_sandbox_prepare() { # directory
   case "$vendor" in
     claudeb) light_runtime="${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account" ;;
     codex) light_runtime=$(codex_home "$account") ;;
-    gemini) light_runtime=$(gemini_account_home "$account") ;;
+    # main's agy home IS the real $HOME (shared-invariants row m), and a sandbox handed $HOME as a
+    # write root fences nothing: grant the state directory a named profile's home holds anyway.
+    gemini) light_runtime=$(gemini_account_home "$account")
+      [ "$account" != main ] || light_runtime="$light_runtime/.gemini" ;;
     grok) light_runtime=$(grok_home "$account") ;;
   esac
   mkdir -p "$directory/scratch" "$light_runtime" || return 1
