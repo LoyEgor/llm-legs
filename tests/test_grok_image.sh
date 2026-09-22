@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/grok-image"
 FIXTURE="$ROOT/tests/fixtures/fake-grokb-image.sh"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() {
@@ -75,7 +79,7 @@ SESSION_UUID=01a058dd-9d01-7ee3-8e4a-fdfda5426483
 image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" \
     GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
-    GROKB_GROK_BIN="${GROKB_GROK_BIN:-$FAKE_BIN/grok}" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
+    GROKB_GROK_BIN="$FAKE_BIN/grok" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
     FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.34}" \
     GROK_IMAGE_GROKB="$FIXTURE" GROK_IMAGE_WORKER_PICK="$FAKE_BIN/worker-pick" \
     FAKE_GROKB_MODE="${FAKE_GROKB_MODE:-image}" PICK_MODE="${PICK_MODE:-ok}" \
@@ -316,9 +320,9 @@ export FAKE_GROK_VERSION
 # tool knobs carry it, the edit one included — an unpinned edit runs on the compiled-in default.
 manifest_model=$(jq -r '.model.image' "$MANIFEST")
 explicit_config="$GROK_PROFILES/explicit/config.toml"
-printf 'model = "grok-4.6"\n\n[ui]\ntheme = "dark"\n' >"$explicit_config"
+printf 'model = "grok-4.7"\n\n[ui]\ntheme = "dark"\n' >"$explicit_config"
 assert image_run --dest "$OUTPUT_DIR/pinmissing.jpg" --prompt badge --account explicit
-assert test "$(cat "$explicit_config")" = "$(printf 'model = "grok-4.6"\n\n[ui]\ntheme = "dark"\n\n[features]\nimage_edit_model_override = "%s"\nimage_gen_model_override = "%s"' "$manifest_model" "$manifest_model")"
+assert test "$(cat "$explicit_config")" = "$(printf 'model = "grok-4.7"\n\n[ui]\ntheme = "dark"\n\n[features]\nimage_edit_model_override = "%s"\nimage_gen_model_override = "%s"' "$manifest_model" "$manifest_model")"
 assert grep -qx "model=$manifest_model model_caps=fresh" "$IMAGE_OUT"
 printf '[features]\nimage_gen_model_override = "grok-imagine-image-fast"\nimage_edit_model_override = "grok-imagine-image-quality"\n[ui]\ntheme = "dark"\n' >"$explicit_config"
 assert image_run --dest "$OUTPUT_DIR/pindifferent.jpg" --prompt badge --account explicit

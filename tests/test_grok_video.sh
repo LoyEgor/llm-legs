@@ -6,6 +6,10 @@ SCRIPT="$ROOT/bin/grok-video"
 FIXTURE="$ROOT/tests/fixtures/fake-grokb-video.sh"
 MANIFEST="$ROOT/share/image-caps/grok.json"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() {

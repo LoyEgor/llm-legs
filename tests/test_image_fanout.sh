@@ -4,6 +4,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/image-fanout"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { echo "FAIL: $*" >&2; [ -z "${FANOUT_ERR:-}" ] || sed -n '1,80p' "$FANOUT_ERR" >&2; exit 1; }

@@ -6,6 +6,10 @@ set -u
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE CLAUDE_LAUNCHER_SESSION CLAUDE_CODE_SESSION_ID
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 fail(){ printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2
   [ ! -f "$WORK/out" ] || { printf -- '--- out ---\n'; cat "$WORK/out"; } >&2
   [ ! -f "$WORK/err" ] || { printf -- '--- err ---\n'; cat "$WORK/err"; } >&2

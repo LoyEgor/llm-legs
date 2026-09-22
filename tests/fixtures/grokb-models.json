@@ -1,0 +1,11 @@
+{
+  "fetched_at": 0,
+  "attempted_at": 0,
+  "default": "grok-4.7",
+  "models": [
+    {"slug": "grok-4.7", "default": true, "label": "grok-4.7"},
+    {"slug": "grok-4.7-build-fast", "default": false, "label": "grok-4.7-build-fast"},
+    {"slug": "grok-4.6", "default": false, "label": "grok-4.6"},
+    {"slug": "grok-4.5", "default": false, "label": "grok-4.5"}
+  ]
+}

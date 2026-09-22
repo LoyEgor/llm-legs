@@ -1,20 +1,19 @@
 #!/usr/bin/env bash
 # PreToolUse(Bash): the shell half of the instruction gate.
 #
-# Deliberately narrow, and narrower than it used to be. A shell command cannot be parsed for
-# intent, and a matcher wide enough to try would deny `git checkout` in the very repositories
-# these files live in, or refuse a plain `grep CLAUDE.md`. Four review rounds spent on the verbs
-# whose destination has to be located inside an argument list produced most of this file's
-# defects and, measured against a real month, almost none of its catches — so those verbs are
-# gone. What remains are the three shapes where the target stands in a fixed place.
+# What it reads off the shell: redirections, tee, the copy verbs (cp, mv, ln, install, rsync, dd,
+# patch, git checkout/restore) and the interpreter write shapes, each located by the one shared
+# parse. A copy onto a guarded file lands whole bytes nobody reviewed, and leaving it to the
+# tripwire alone let it land unseen wherever the tripwire was not watching.
 #
 # This gate is a speed bump, not the guarantee. The guarantee is instruction-watch.sh, which
 # reports every change however it was made and now keeps the previous bytes, so anything that
 # slips past here is one command away from being put back.
 #
-# Not covered, on purpose: cp, mv, ln, rm, truncate, sed -i, perl -pi, ex, ed, patch, dd. Nor a
-# path held in a variable, a name broken up by shell quoting (`> CLAUDE.m\d`), or a new file
-# created by bare name from inside a guarded directory. The accepted false denials run the other
+# Not covered, on purpose: rm, truncate, sed -i, perl -pi, ex, ed. Nor a path held in a variable,
+# or a new file created by bare name from inside a guarded directory. When this gate cannot tell
+# — its library, jq or the payload missing — it refuses the call rather than passing it. The
+# accepted false denials run the other
 # way: an interpreter that READS a guarded file and writes the result elsewhere
 # ("open(other,'w').write(open(CLAUDE.md).read())"), and a redirection written inside a quoted
 # string (`echo 'see >CLAUDE.md' >> notes.txt`), which is indistinguishable from a real one
@@ -34,13 +33,17 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
-. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null || exit 0
+. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
+  { echo "instruction write gate: cannot load share/instruction-files.sh, so no shell write can be checked" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 ||
+  { echo "instruction write gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
-input=$(cat) || exit 0
-values=$(printf '%s' "$input" | jq -r '
+input=$(cat) || input=''
+values=$(printf '%s' "$input" | jq -er '
   [(.tool_name // ""), (.session_id // ""), (.cwd // ""), (.transcript_path // ""),
    (.tool_input.command // "")]
-  | join("\u001f")' 2>/dev/null) || exit 0
+  | join("\u001f")' 2>/dev/null) ||
+  { echo "instruction write gate: the hook payload does not parse" >&2; exit 2; }
 IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript command <<< "$values" || :
 [ "$tool_name" = Bash ] || exit 0
 [ -n "$command" ] || exit 0
@@ -56,8 +59,10 @@ command=${command//\\$'\n'/ }
 # already knows the cwd-relative form, so the fast path was the only thing hiding it.
 # `review-debt-ignore` carries no `.md` and is written from inside `.claude/` as a bare name, so
 # neither of the first two patterns sees it and the guarded basename below is never reached.
+# An ANSI-C quoted run spells a name through escapes, and the volume folds letter case, so neither
+# the literal suffix nor its case is a safe reason to leave early.
 case "$command" in
-  *.md*|*.claude/*|*review-debt-ignore*) ;;
+  *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*"\$'"*) ;;
   *) exit 0 ;;
 esac
 
@@ -65,7 +70,7 @@ alternation=''
 while IFS= read -r path; do
   case "$command" in *"$path"*) ;; *) continue ;; esac
   alternation="${alternation:+$alternation|}$(instruction_ere_escape "$path")"
-done < <(instruction_all_paths "$HOME" "$cwd")
+done < <(instruction_all_paths "$HOME" "$cwd" '' "$command")
 
 dir_alternation=''
 while IFS= read -r path; do
@@ -75,21 +80,15 @@ done < <(instruction_all_dirs "$HOME" "$cwd")
 # Matched by name as well as by path: there is no list of every repository, and a project's
 # own CLAUDE.md or MEMORY.md costs the same per read as the global one.
 by_name="([^[:space:];|&'\"]*/)?${INSTRUCTION_GUARDED_BASENAMES}"
+by_claude="([^[:space:];|&'\"]*/)?\.claude/[^[:space:];|&'\"]*$(instruction_md_ere)"
 # A file that does not exist yet is a file every later session still pays for, so the guarded
 # directories are matched as well as the guarded files. `> new.md` typed from INSIDE such a
 # directory carries no directory at all and stays the tripwire's job.
 by_dir=''
 [ -n "$dir_alternation" ] && by_dir="(${dir_alternation})/[^[:space:];|&'\"]*$(instruction_md_ere)|"
-TARGET="(${alternation:+$alternation|}${by_dir}${by_name})"
+TARGET="(${alternation:+$alternation|}${by_dir}${by_claude}|${by_name})"
 
-# Two shapes read off the shell, and only two. Over a measured month of 60372 shell commands 1709
-# named a guarded file, and of the 113 that wrote to one, 52 did it by redirection, 50 through an
-# interpreter and 3 through tee. cp/mv/ln, rm/truncate and sed -i accounted for the remaining
-# handful; ex, ed, patch and dd for none at all. Finding those verbs' destination inside an
-# argument list is what every second defect in this file came from, so they are the tripwire's
-# business — it reports them however they are typed, and inside Egor's autonomy span it puts their
-# growth back. What makes a redirection and a tee cheap is that the target stands in a fixed place.
-# Redirection and tee are read off the command with its heredoc bodies dropped and its quoted runs
+# Destinations are read off the command with its heredoc bodies dropped and its quoted runs
 # resolved (instruction_shell_scan in the shared module). A guarded name a command merely CARRIES
 # — a scratchpad heredoc quoting a rule, a commit message, a note appended to a log — is data, and
 # reading it as a destination denied ordinary work while saying nothing true about what the command
@@ -100,6 +99,7 @@ scan=$(printf '%s' "$command" | instruction_shell_scan 2>/dev/null) || scan=''
 if printf '%s' "$scan" | grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE"; then
   scan=$command
 fi
+case "$command" in *"\$'"*) scan=$command ;; esac
 
 # grep is line-based, and a heredoc puts the interpreter on one line and the open() on the next.
 # Flattening keeps them in one pipeline stage; the cost is that two unrelated commands on two
@@ -118,7 +118,7 @@ interp_write=$(instruction_interp_write_re "$TARGET")
 # a guarded file twice and only the second is a write.
 name_in() {
   local name
-  name=$(printf '%s' "$1" | grep -Eo "$TARGET" | tail -n 1)
+  name=$(printf '%s' "$1" | grep -Eio "$TARGET" | tail -n 1)
   [ -n "$name" ] || return 1
   # The extractor runs on the unbounded TARGET, so a quote or a delimiter never rides along.
   printf '%s' "${name%%[\"\'[:space:]]*}"
@@ -144,7 +144,7 @@ span_active() {
 # Returns 0 for a REFUSED destination and publishes the state the denial is written from. realpath
 # runs here and nowhere else, and only for a name that already matched a guarded spelling.
 hit=''; class=''; span=''; abs=''; abs_real=''
-judge_row() { # name mode
+judge_row() { # name mode [verb]
   local row_abs row_real row_class row_span=''
   row_abs=$1
   case "$row_abs" in
@@ -154,7 +154,9 @@ judge_row() { # name mode
     /*) ;;
     *) row_abs="${cwd:-$PWD}/${row_abs#./}" ;;
   esac
+  case "${3:-}" in */) [ -d "${row_abs%/*}" ] || return 1 ;; esac
   row_real=$(realpath "$row_abs" 2>/dev/null)
+  instruction_carved_out "${row_real:-$row_abs}" "$HOME" && return 1
   # An empty class is a path no gate speaks for — settings.json above all, which the tripwire
   # watches and nothing denies.
   row_class=$(instruction_write_class "${row_real:-$row_abs}")
@@ -168,10 +170,11 @@ judge_row() { # name mode
 }
 
 # Where the command leaves its bytes, from the ONE parse both doors ask
-# (`instruction_write_targets`). Only the rows this gate speaks for: a redirection and a tee, whose
-# destination stands in a fixed place. The copy verbs and the loose interpreter rows the same parse
-# yields are the tripwire's, and an interpreter is judged by the shared shapes above instead,
-# because a name merely CARRIED inside a payload is not a destination.
+# (`instruction_write_targets`). The rows this gate speaks for: a redirection, tee, a copy verb,
+# dd and patch. The in-place editors and the loose interpreter rows are the tripwire's, and an
+# interpreter is judged by the shared shapes above instead, because a name merely CARRIED inside a
+# payload is not a destination. A `refuse` row is a destination whose name holds a tab or a newline:
+# no check here can hold it, so the call is refused outright.
 # EVERY row is judged, and each against its OWN shape. A class read off the FIRST row while the
 # shrink shape was read off ANY row is how `tee -a ~/.claude/docs/a.md; : > ~/.claude/docs/b.md`
 # passed inside the span: the second row can shrink its file, so the first row grew its own
@@ -181,31 +184,35 @@ row_sep=$(printf '\t')
 while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
   [ -n "$row_name" ] || continue
   case "$row_kind" in
-    redirect) ;;
-    verb) case "$row_verb" in tee|gtee) ;; *) continue ;; esac ;;
+    redirect|copy) ;;
+    refuse)
+      echo "instruction write gate: this command writes to a path holding a tab or a newline ($row_name) under an instruction-file location; no gate can check such a name, so it is refused. Use a plain name." >&2
+      exit 2
+      ;;
+    verb) case "$row_verb" in tee|gtee|dd|patch) ;; *) continue ;; esac ;;
     *) continue ;;
   esac
   [ -n "$denied" ] && continue
-  judge_row "$row_name" "$row_mode" && denied=1
+  judge_row "$row_name" "$row_mode" "$row_verb" && denied=1
 done < <(instruction_write_targets "$scan" "$TARGET")
 # The interpreter rows the same way: EVERY construct, each against its own shape. One match of
 # the whole rule reaches from the interpreter to the last construct on the line, so a mode read
 # off it and a name taken from its front belong to two different writes — that is how in-span
 # `python3 -c "open(<doc>,'w')"; python3 -c "open(CLAUDE.md,'a')"` passed, the append judged as
 # the truncation before it.
-if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eq "${interp_write}"; then
+if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eiq "${interp_write}"; then
   interp_cons=$(instruction_interp_write_construct_re "$TARGET")
   interp_cons_trunc=$(instruction_interp_trunc_construct_re "$TARGET")
   while IFS= read -r construct; do
     [ -n "$construct" ] || continue
     interp_name=$(name_in "$construct") || continue
     interp_mode=append
-    printf '%s' "$construct" | grep -Eq "$interp_cons_trunc" && interp_mode=trunc
+    printf '%s' "$construct" | grep -Eiq "$interp_cons_trunc" && interp_mode=trunc
     if judge_row "$interp_name" "$interp_mode"; then
       denied=1
       break
     fi
-  done < <(printf '%s' "$flat" | grep -Eo "$interp_cons")
+  done < <(printf '%s' "$flat" | grep -Eio "$interp_cons")
 fi
 [ -n "$denied" ] || exit 0
 

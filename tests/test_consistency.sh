@@ -22,6 +22,8 @@ trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
 export WORKER_PICK_CONFIG_FILE="$CONSISTENCY_CACHE/worker-model"
 export GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/geminib"
 . "$ROOT/tests/fixtures/geminib-families.sh"
+export GROKB_CACHE_DIR="$CONSISTENCY_CACHE/grokb"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 
 asserts=0
 fail() { printf 'FAIL: %s\n  (canonical values live in %s)\n' "$*" "$DOC" >&2; exit 1; }
@@ -667,6 +669,54 @@ assert doc_has 'Gemini review Flash pin'
 assert doc_has '`review flash: <label>[ · pinned]`'
 assert doc_has '`../review-bench/share/rbench/catalog.py` `review_flash_pin`'
 
+# --- Row cu: the Grok model list ---------------------------------------------
+# ONE list, and the built-in fallback, the fixture cache and what `grokb models` prints share one
+# column format — a consumer reading three columns must never meet two.
+GROKB_BIN="$ROOT/bin/grokb"
+grok_rows_ok() {
+  awk -F'\t' 'NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || $2 !~ /^(yes|no)$/ || $3 != $1 { bad = 1 }
+              END { exit (bad || NR == 0) }'
+}
+grok_builtin_rows=$(bash -c 'eval "$(sed -n "/^models_builtin() {/,/^}/p" "$1")"; models_builtin' _ "$GROKB_BIN")
+assert grok_rows_ok <<<"$grok_builtin_rows"
+assert eq "$(jq -r '.models[] | [.slug, (if .default then "yes" else "no" end), .label] | @tsv' \
+  "$ROOT/tests/fixtures/grokb-models.json")" "$grok_builtin_rows"
+# No cache and no profiles is the built-in list — and `main`'s auth lives in the REAL $HOME this
+# suite deliberately runs against, so without the stub behind grokb a signed-in machine would run
+# `grok models` for real here and compare a live list to the built-in one.
+assert eq "$(GROKB_PROFILES_DIR="$CONSISTENCY_CACHE/no-profiles" \
+  GROKB_CACHE_DIR="$CONSISTENCY_CACHE/no-grok-cache" "$GROKB_BIN" models 2>/dev/null)" \
+  "$grok_builtin_rows"
+assert grok_rows_ok < <("$GROKB_BIN" models)
+assert eq "$("$GROKB_BIN" models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label] | @tsv')" \
+  "$("$GROKB_BIN" models)"
+# Exactly one default, and it is the one the cache document names.
+assert eq "$("$GROKB_BIN" models | awk -F'\t' '$2 == "yes" { print $1 }')" \
+  "$(jq -r '.default' "$GROKB_CACHE_DIR/models.json")"
+# The quota cache is a different file with a different shape; nothing in this list may read it.
+assert test "$(sed -n '/^models_ttl_s=/,/^show_models() {/p' "$GROKB_BIN" | grep -Fc 'llm-limits-grok')" -eq 0
+# The three stderr lines the doc pairs with a state, spelled here as grokb spells them.
+assert grep -Fq "grokb: grok models failed; using the models cached at %s" "$GROKB_BIN"
+assert grep -Fq 'grokb: grok models failed; no cache; using the built-in list' "$GROKB_BIN"
+assert doc_has 'grokb: grok models failed; no cache; using the built-in list'
+# A hook reads the list, it never refreshes it: the no-fetch switch is one name, read in grokb and
+# exported by both hooks.
+assert grep -Fq '[ "${GROKB_MODELS_NO_FETCH:-}" != 1 ] || no_fetch=true' "$GROKB_BIN"
+for no_fetch_site in "$ROOT/bin/worker-tag-hook.sh" "$ROOT/bin/worker-spawn-hook.sh"; do
+  assert grep -Fqx 'export GROKB_MODELS_NO_FETCH=1' "$no_fetch_site"
+done
+assert doc_has '`GROKB_MODELS_NO_FETCH=1`'
+# One resolution of the slug a `chat-pin grok-fast` chat launches, or a task row names a model the
+# run does not use.
+assert grep -Fq 'worker_model_grok_launch_model() { # model role [chat-pin-file]' "$ROOT/share/worker-model.sh"
+for fast_site in "$ROOT/bin/worker-run" "$ROOT/bin/worker-spawn-hook.sh"; do
+  assert grep -Fq 'worker_model_grok_launch_model' "$fast_site"
+done
+assert doc_has '`worker_model_grok_launch_model`'
+assert doc_has 'Grok model list'
+assert doc_has '`models_builtin`'
+assert doc_has '`grokb models [--json] [--refresh|--cached]`'
+
 # --- Row bq: allowed worker models -------------------------------------------
 # The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
 # after a model `worker-run` will refuse.
@@ -682,7 +732,10 @@ gemini flash37 high high - no
 gemini flash36 high high - no
 gemini pro high high - yes
 grok auto high high,xhigh - no
-grok grok-4.6 high high,xhigh - no'
+grok grok-4.7 high high,xhigh - no
+grok grok-4.7-build-fast high high,xhigh - no
+grok grok-4.6 high high,xhigh - no
+grok grok-4.5 high high,xhigh - no'
 # A Pro newer than every Flash tops `geminib families`, and the table still ends with `pro`: the
 # first gemini row is the vendor default and `pro` is word-gated, so a Pro-first table would hand
 # the gated model to every worker that names no model.
@@ -698,6 +751,59 @@ flash37
 flash36
 pro'
 assert eq "$(GEMINIB_CACHE_DIR="$pro_newest_cache" bash -c '. "$1"; worker_model_default_model gemini' _ "$WORKER_MODEL_SH")" flash38
+# The grok rows are the list `grokb models` prints, behind the `auto` that stays the vendor default:
+# a model the CLI adds reaches the table, and the label, without an edit here (row `cu`).
+grok_new_cache="$CONSISTENCY_CACHE/grokb-new"
+mkdir -p "$grok_new_cache"
+jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now | .default = "grok-5"
+  | .models = ([{slug: "grok-5", default: true, label: "grok-5"}]
+      + (.models | map(.default = false)))' \
+  "$ROOT/tests/fixtures/grokb-models.json" >"$grok_new_cache/models.json"
+grok_table() { GROKB_CACHE_DIR="$grok_new_cache" bash -c '. "$1"; shift; "$@"' _ "$WORKER_MODEL_SH" "$@"; }
+assert eq "$(grok_table worker_model_table | awk '$1 == "grok" { print $2 }' | tr '\n' ,)" \
+  'auto,grok-5,grok-4.7,grok-4.7-build-fast,grok-4.6,grok-4.5,'
+assert eq "$(grok_table worker_model_default_model grok)" auto
+# One helper owns the label, and it collapses `auto` and the CLI's own default alone.
+assert eq "$(grok_table worker_model_grok_label auto)" grok
+assert eq "$(grok_table worker_model_grok_label grok-5)" grok
+assert eq "$(grok_table worker_model_grok_label grok-4.7)" grok-4.7
+grok_fast_pin="$CONSISTENCY_CACHE/grok-fast-pin"
+printf 'grok_profile=*\ngrok_fast=on\n' >"$grok_fast_pin"
+# The fast twin is the default's OWN twin: the separator is required, or a default named `grok-4`
+# would take `grok-4.5-build-fast` — another family — as its fast model.
+grok_fast_cache="$CONSISTENCY_CACHE/grokb-fast-prefix"
+mkdir -p "$grok_fast_cache"
+jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now | .default = "grok-4"
+  | .models = [{slug: "grok-4", default: true, label: "grok-4"},
+               {slug: "grok-4.5-build-fast", default: false, label: "grok-4.5-build-fast"},
+               {slug: "grok-4-build-fast", default: false, label: "grok-4-build-fast"}]' \
+  "$ROOT/tests/fixtures/grokb-models.json" >"$grok_fast_cache/models.json"
+grok_fast_table() { GROKB_CACHE_DIR="$grok_fast_cache" bash -c '. "$1"; shift; "$@"' _ "$WORKER_MODEL_SH" "$@"; }
+assert eq "$(grok_fast_table worker_model_grok_fast_sibling)" grok-4-build-fast
+assert eq "$(bash -c '. "$1"; worker_model_grok_fast_sibling' _ "$WORKER_MODEL_SH")" grok-4.7-build-fast
+# A list whose default has no fast twin answers nothing rather than guessing at another family,
+# and a WORKERS run of a fast chat then launches the default it already had.
+assert eq "$(grok_table worker_model_grok_fast_sibling)" ''
+assert eq "$(GROKB_CACHE_DIR="$grok_new_cache" bash -c \
+  '. "$1"; worker_model_grok_launch_model auto workers "$2" 2>/dev/null' \
+  _ "$WORKER_MODEL_SH" "$CONSISTENCY_CACHE/grok-fast-pin")" auto
+# ONE resolution of the slug a `chat-pin grok-fast` chat launches: the pin swaps the twin in for the
+# marked default and for `auto` alone, on a WORKERS leg alone.
+grok_launch() { # model role pin-file
+  GROKB_CACHE_DIR="$GROKB_CACHE_DIR" bash -c '. "$1"; shift; worker_model_grok_launch_model "$@"' \
+    _ "$WORKER_MODEL_SH" "$@" 2>/dev/null
+}
+assert eq "$(grok_launch auto workers "$grok_fast_pin")" grok-4.7-build-fast
+assert eq "$(grok_launch grok-4.7 workers "$grok_fast_pin")" grok-4.7-build-fast
+# A brief naming a slug is a choice and runs unchanged, and fast is WORKERS only.
+assert eq "$(grok_launch grok-4.6 workers "$grok_fast_pin")" grok-4.6
+assert eq "$(grok_launch auto research "$grok_fast_pin")" auto
+assert eq "$(grok_launch auto light "$grok_fast_pin")" auto
+assert eq "$(grok_launch auto workers "$CONSISTENCY_CACHE/no-such-pin")" auto
+for label_site in "$WORKER_RUN" "$ROOT/bin/worker-tag-hook.sh" "$ROOT/bin/worker-spawn-hook.sh"; do
+  assert grep -Fq 'worker_model_grok_label' "$label_site"
+  assert test "$(grep -Fc 'grok-4.6' "$label_site")" -eq 0
+done
 # Neither refusal spells a model of its own: both read the list through these functions.
 assert grep -Fq 'worker_model_allows "$vendor" "$effective"' "$WORKER_RUN"
 assert grep -Fq 'worker_model_allowed_list "$vendor"' "$WORKER_RUN"
@@ -719,10 +825,12 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   assert grep -Fq 'gpt-6-astra' "$site"
   assert grep -Fq 'MODEL_REFUSED' "$site"
 done
-# grok is the one vendor with two spellings, and a site naming only `auto` reads as a shorter list.
+# grok's list is not a literal any more: a site spelling one out is a list that will drift.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   "$ROOT/docs/DIAGNOSTICS.md"; do
-  assert grep -Fq 'grok-4.6' "$site"
+  assert grep -Fq 'grokb models' "$site"
+  # Named, never spelled: a grok model literal on the line that states the list is the drift.
+  assert test "$(grep -F 'grokb models' "$site" | grep -Ec 'grok-4\.[0-9]')" -eq 0
 done
 # The relay briefs may not offer a cheap model as a per-task MODEL: option.
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
@@ -731,7 +839,7 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-59]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto`'
+assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto` (the CLI'"'"'s own default, plus every slug `grokb models` prints, row `cu`)'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'acct=$(worker_model_pin_first gemini' "$SPAWN_HOOK"
@@ -2434,7 +2542,7 @@ for grok_knob_hook in "$SPAWN_HOOK" "$GROK_TAG_HOOK"; do
   assert grep -Fq 'worker_conf grok_model' "$grok_knob_hook"
   assert grep -Fq 'worker_conf grok_effort' "$grok_knob_hook"
 done
-assert grep -Fq '`grok_model=auto` and `grok_effort=high|xhigh`' "$WORKER_COMMAND"
+assert grep -Fq '`grok_model=auto|<slug>` (`auto` is the Grok CLI'"'"'s own default; a slug is one `grokb models` prints) and `grok_effort=high|xhigh`' "$WORKER_COMMAND"
 assert doc_has 'Grok worker knobs'
 assert doc_has '`grok_model=auto`, `grok_effort=high`'
 
@@ -2719,5 +2827,5 @@ for caller in bin/worker-run bin/light-research share/light-research.sh; do
 done
 assert doc_has 'ONE table, `share/web-search.sh` `web_search_table`'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one web-search table every vendor and every worker-run entry point resolves through, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
 ' "$asserts" "$DOC"

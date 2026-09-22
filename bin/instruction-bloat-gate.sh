@@ -25,7 +25,10 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
-. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null || exit 0
+. "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
+  { echo "instruction bloat gate: cannot load share/instruction-files.sh, so no edit can be priced" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 ||
+  { echo "instruction bloat gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
 # A size warning about the global file is not a decision of its own: the edit may still be priced,
 # denied and retried, so the note rides along with whatever this gate ends up saying.
@@ -48,15 +51,20 @@ pass() {
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/instruction-gate.XXXXXX") || exit 0
 trap 'rm -rf "$tmp_dir" 2>/dev/null' EXIT
 input_file="$tmp_dir/input.json"
-cat >"$input_file" || exit 0
+cat >"$input_file" || : >"$input_file"
 
-jq -e '
-  (.tool_name == "Edit" or .tool_name == "Write")
-  and (.tool_input | type == "object")
-  and (.tool_input.file_path | type == "string")
-' "$input_file" >/dev/null 2>&1 || exit 0
+jq -e 'type == "object"' "$input_file" >/dev/null 2>&1 ||
+  { echo "instruction bloat gate: the hook payload does not parse" >&2; exit 2; }
+jq -e '.tool_name == "Edit" or .tool_name == "Write" or .tool_name == "MultiEdit"' \
+  "$input_file" >/dev/null 2>&1 || exit 0
+jq -e '(.tool_input | type == "object") and (.tool_input.file_path | type == "string")' \
+  "$input_file" >/dev/null 2>&1 ||
+  { echo "instruction bloat gate: the edit payload carries no file_path" >&2; exit 2; }
 
-file_path=$(jq -r '.tool_input.file_path' "$input_file" 2>/dev/null) || exit 0
+file_path=$(jq -r '.tool_input.file_path' "$input_file" 2>/dev/null) || exit 2
+case "$file_path" in
+  "~/"*) file_path="$HOME/${file_path#\~/}" ;;
+esac
 case "$file_path" in
   /*) ;;
   *)
@@ -107,7 +115,7 @@ if is_global "$file_path"; then
   global=1
 else
   case "$file_path" in
-    */CLAUDE.md)
+    */[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd])
       file_real=$(realpath "$file_path" 2>/dev/null)
       [ -n "$file_real" ] && is_global "$file_real" && global=1
       ;;
@@ -126,25 +134,25 @@ fi
 # is the one anybody editing the repo actually types. Resolving the directory (not the file:
 # a Write may be creating it) is what closes that.
 if [ -z "$class_reads" ]; then
-  case "$file_path" in
-    *.md)
-      file_dir=$(instruction_resolved_dir "$file_path") || file_dir=''
-      if [ -n "$file_dir" ]; then
-        for pair in docs:160 agents:2500 instructions:160 skills:90 commands:90; do
-          guarded=$(CDPATH= cd -- "$HOME/.claude/${pair%%:*}" 2>/dev/null && pwd -P) || continue
-          [ -n "$guarded" ] || continue
-          case "$file_dir" in "$guarded"|"$guarded"/*) class_reads=${pair##*:}; break ;; esac
-        done
-      fi
-      ;;
-  esac
+  if instruction_is_md "$(printf '%s' "$file_path" | tr '[:upper:]' '[:lower:]')"; then
+    file_dir=$(instruction_resolved_dir "$file_path") || file_dir=''
+    if [ -n "$file_dir" ]; then
+      while IFS= read -r class_dir; do
+        guarded=$(CDPATH= cd -- "$class_dir" 2>/dev/null && pwd -P) || continue
+        [ -n "$guarded" ] || continue
+        case "$file_dir" in
+          "$guarded"|"$guarded"/*) class_reads=$(_instruction_class_rate "${class_dir##*/}"); break ;;
+        esac
+      done < <(_instruction_class_dirs "$HOME")
+    fi
+  fi
 fi
 # This hook runs before every Edit and every Write in every session, so what it does for a file it
 # will never price has to be nothing. Only markdown is ever measured (the export indexes no other
 # extension) and only markdown carries a class rate, so a source file with neither leaves here
 # rather than paying for a Cyrillic scan and a lookup over the whole rate index.
 case "$file_path" in
-  *.md|*.markdown) ;;
+  *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
   *) [ -n "$class_reads" ] || [ -n "$global" ] || exit 0 ;;
 esac
 
@@ -152,7 +160,9 @@ esac
 # verbatim user phrase — a trigger word Egor actually types — is marked, and the only reason one of
 # these files would carry Cyrillic at all.
 cyrillic=$(jq -r '
-  (if .tool_name == "Edit" then .tool_input.new_string else .tool_input.content end)
+  (if .tool_name == "Edit" then .tool_input.new_string
+   elif .tool_name == "MultiEdit" then ([.tool_input.edits[]?.new_string | strings] | join("\n"))
+   else .tool_input.content end)
   | if type == "string" then gsub("«[^»]*»"; "") else "" end
   | if test("[А-Яа-яЁё]") then "yes" else "no" end
 ' "$input_file" 2>/dev/null) || cyrillic=''
@@ -170,25 +180,37 @@ if [ "$tool_name" = "Write" ]; then
   [ -f "$file_path" ] && old_bytes=$(wc -c <"$file_path" | tr -d '[:space:]')
   delta=$((new_bytes - old_bytes))
 else
-  jq -e '(.tool_input.old_string | type == "string") and (.tool_input.new_string | type == "string")' \
-    "$input_file" >/dev/null 2>&1 || exit 0
-  jq -j '.tool_input.old_string' "$input_file" >"$tmp_dir/old" 2>/dev/null || exit 0
-  jq -j '.tool_input.new_string' "$input_file" >"$tmp_dir/new" 2>/dev/null || exit 0
-  old_len=$(wc -c <"$tmp_dir/old" | tr -d '[:space:]')
-  new_len=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')
-  delta=$((new_len - old_len))
-  replace_all=$(jq -r '.tool_input.replace_all // false' "$input_file" 2>/dev/null) || exit 0
-  if [ "$replace_all" = "true" ] && [ -f "$file_path" ] && [ "$old_len" -gt 0 ]; then
-    count=$(perl -e '
-      local $/; open my $f, "<", $ARGV[0] or exit; my $hay = <$f>;
-      open my $n, "<", $ARGV[1] or exit; my $needle = <$n>;
-      exit unless defined $hay && defined $needle && length $needle;
-      my $c = 0; my $pos = 0;
-      while (($pos = index($hay, $needle, $pos)) != -1) { $c++; $pos += length $needle }
-      print $c;
-    ' "$file_path" "$tmp_dir/old" 2>/dev/null)
-    [ -n "$count" ] && [ "$count" -gt 1 ] 2>/dev/null && delta=$((delta * count))
+  if [ "$tool_name" = MultiEdit ]; then
+    edits='.tool_input.edits'
+  else
+    edits='[.tool_input]'
   fi
+  jq -e "($edits | type == \"array\") and all($edits[]; (.old_string | type == \"string\") and (.new_string | type == \"string\"))" \
+    "$input_file" >/dev/null 2>&1 || exit 0
+  n_edits=$(jq -r "$edits | length" "$input_file" 2>/dev/null) || exit 0
+  delta=0
+  i=0
+  while [ "$i" -lt "$n_edits" ]; do
+    jq -j --argjson i "$i" "$edits[\$i].old_string" "$input_file" >"$tmp_dir/old" 2>/dev/null || exit 0
+    jq -j --argjson i "$i" "$edits[\$i].new_string" "$input_file" >"$tmp_dir/new" 2>/dev/null || exit 0
+    old_len=$(wc -c <"$tmp_dir/old" | tr -d '[:space:]')
+    new_len=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')
+    one=$((new_len - old_len))
+    replace_all=$(jq -r --argjson i "$i" "$edits[\$i].replace_all // false" "$input_file" 2>/dev/null) || exit 0
+    if [ "$replace_all" = "true" ] && [ -f "$file_path" ] && [ "$old_len" -gt 0 ]; then
+      count=$(perl -e '
+        local $/; open my $f, "<", $ARGV[0] or exit; my $hay = <$f>;
+        open my $n, "<", $ARGV[1] or exit; my $needle = <$n>;
+        exit unless defined $hay && defined $needle && length $needle;
+        my $c = 0; my $pos = 0;
+        while (($pos = index($hay, $needle, $pos)) != -1) { $c++; $pos += length $needle }
+        print $c;
+      ' "$file_path" "$tmp_dir/old" 2>/dev/null)
+      [ -n "$count" ] && [ "$count" -gt 1 ] 2>/dev/null && one=$((one * count))
+    fi
+    delta=$((delta + one))
+    i=$((i + 1))
+  done
 fi
 
 # The global file's ceiling, checked before the retry stamp is ever consulted: the audit-then-retry

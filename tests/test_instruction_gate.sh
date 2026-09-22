@@ -147,19 +147,23 @@ assert_eq deny "$(decision "echo hi >> $CLAUDE_MD")"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD")"
 assert_eq deny "$(decision "printf x | tee -a $CLAUDE_MD")"
 
-echo "== write gate: the verbs whose destination has to be inferred are out of scope"
-# Measured over a month, these accounted for a handful of writes between them and for most of
-# this gate's defects. The tripwire reports them instead, and now keeps the bytes to undo them.
+echo "== write gate: a copy verb landing whole bytes on a guarded file is denied"
+assert_eq deny "$(decision "cp $WORK/unrelated.py $CLAUDE_MD")"
+assert_eq deny "$(decision "mv $WORK/unrelated.py $CLAUDE_MD")"
+assert_eq deny "$(decision "ln -sf $WORK/unrelated.py $CLAUDE_MD")"
+assert_eq deny "$(decision "install -m 644 $WORK/unrelated.py $CLAUDE_MD")"
+assert_eq deny "$(decision "rsync -a $WORK/unrelated.py $CLAUDE_MD")"
+assert_eq deny "$(decision "patch $CLAUDE_MD $WORK/some.diff")"
+assert_eq deny "$(decision "dd if=/dev/zero of=$CLAUDE_MD bs=1024 count=1")"
+assert_eq pass "$(decision "cp $CLAUDE_MD $WORK/backup.md")"
+assert_eq pass "$(decision "cp $WORK/unrelated.py $WORK/notes.txt")"
+
+echo "== write gate: the in-place editors stay the tripwire's"
 assert_eq pass "$(decision "sed -i '' 's/a/b/' $CLAUDE_MD")"
-assert_eq pass "$(decision "cp $WORK/unrelated.py $CLAUDE_MD")"
-assert_eq pass "$(decision "mv $WORK/unrelated.py $CLAUDE_MD")"
-assert_eq pass "$(decision "ln -sf $WORK/unrelated.py $CLAUDE_MD")"
 assert_eq pass "$(decision "rm $CLAUDE_MD")"
 assert_eq pass "$(decision "truncate -s 0 $CLAUDE_MD")"
 assert_eq pass "$(decision "perl -pi -e 's/a/b/' $CLAUDE_MD")"
 assert_eq pass "$(decision "ed -s $CLAUDE_MD")"
-assert_eq pass "$(decision "patch $CLAUDE_MD $WORK/some.diff")"
-assert_eq pass "$(decision "dd if=/dev/zero of=$CLAUDE_MD bs=1024 count=1")"
 
 echo "== write gate: a project memory index is not the gate's business"
 # Appending one pointer line is the memory workflow every agent is told to follow, and a project
@@ -240,9 +244,11 @@ assert_eq pass "$(decision "diff $CLAUDE_MD $WORK/unrelated.py")"
 assert_eq pass "$(decision "cp $CLAUDE_MD $WORK/backup.md")"
 assert_eq pass "$(decision "python3 -c \"print(open('$CLAUDE_MD').read())\"")"
 assert_eq pass "$(decision "echo x > $WORK/unrelated.py")"
-# Repository work restores these files all the time and must never be gated.
-assert_eq pass "$(decision "git -C $REPO checkout -- global/CLAUDE.md")"
-assert_eq pass "$(decision "git -C $REPO checkout -- $REAL_MD")"
+assert_eq deny "$(decision "git -C $REPO checkout -- global/CLAUDE.md")"
+assert_eq deny "$(decision "git -C $REPO checkout -- $REAL_MD")"
+assert_eq deny "$(decision "git -C $REPO restore global/CLAUDE.md")"
+assert_eq pass "$(decision "git -C $REPO checkout -- src/app.py")"
+assert_eq pass "$(decision "git -C $REPO checkout main")"
 assert_eq pass "$(decision "git -C $REPO stash pop")"
 # `add` ends in `dd`, `column` contains `ln`: a verb needs a boundary, not a substring.
 assert_eq pass "$(decision "git add $CLAUDE_MD")"
@@ -1277,10 +1283,34 @@ printf 'changed again\n' > "$HOME/.claude/docs/review-tiers.md"
 assert_contains "CHANGED" "$(watch check sid-a | jq -r '.hookSpecificOutput.additionalContext // ""')"
 assert_contains "CHANGED" "$(watch check sid-b | jq -r '.hookSpecificOutput.additionalContext // ""')"
 
-echo "== tripwire: no baseline yet is silent, and it builds one"
+echo "== tripwire: a check with no baseline is an event, journaled, and it builds one"
 rm -f "$INSTRUCTION_WATCH_STATE"/*.tsv
-assert_eq "" "$(watch check sid-c)"
+assert_contains "BASELINE-MISSING" "$(watch check sid-c | jq -r '.hookSpecificOutput.additionalContext // ""')"
+assert_eq "baseline-missing" "$(tail -n 1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq -r .kind)"
 assert [ -s "$INSTRUCTION_WATCH_STATE/session-sid-c.tsv" ]
+assert_eq "" "$(watch check sid-c)"
+# An emptied baseline is the same event, and the newest baseline another session left stands in
+# for it: what changed since is reported rather than absorbed.
+watch baseline sid-other >/dev/null
+: > "$INSTRUCTION_WATCH_STATE/session-sid-c.tsv"
+printf 'changed while the baseline was gone\n' >> "$HOME/.claude/docs/review-tiers.md"
+out=$(watch check sid-c | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "BASELINE-MISSING" "$out"
+assert_contains "CHANGED $HOME/.claude/docs/review-tiers.md" "$out"
+case "$out" in *REVERTED*) fail "a comparison against another session's baseline put bytes back" ;; esac
+assert_eq "" "$(watch check sid-c)"
+
+echo "== tripwire: a new session reports what changed while no session was watching"
+watch baseline sid-before >/dev/null
+printf 'changed between sessions\n' >> "$HOME/.claude/docs/review-tiers.md"
+out=$(watch baseline sid-after | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED-BETWEEN-SESSIONS $HOME/.claude/docs/review-tiers.md" "$out"
+assert_eq "changed-between-sessions" "$(tail -n 1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq -r .kind)"
+assert_eq "" "$(watch check sid-after)"
+# A resumed session compares against its own baseline.
+printf 'changed across a compaction\n' >> "$HOME/.claude/docs/review-tiers.md"
+assert_contains "CHANGED-BETWEEN-SESSIONS" "$(watch baseline sid-after | jq -r '.hookSpecificOutput.additionalContext // ""')"
+assert_eq "" "$(watch baseline sid-after)"
 
 echo "== tripwire: the harness switching model is not an edit to settings.json"
 printf '{"model":"sonnet","permissions":{"defaultMode":"bypassPermissions"},"hooks":{}}\n' \
@@ -1828,6 +1858,84 @@ assert_eq 0 "$(share_call 'printf "%s" "$2" | instruction_shell_scan | grep -c r
 # after it is still the body.
 assert_eq "" "$(targets "$(printf 'cat > %s/stage/scratch <<-EOF\n  EOF\nsee > %s for the rule\nEOF\n' "$WORK" "$DOC")" "$DOC_ERE")"
 
+echo "== one parse: what the scan cannot resolve sends every door to the raw command"
+# The conservative side of this parse, spelled as the doors read it: a false deny is a retry, a
+# false allow is a write or a launch nobody authorised. Every shape below ran unflagged in review
+# round 20260922T131804Z-50cea15, each because the scan quietly resolved to something the raw text
+# does not say.
+scan_of() { # command -> the scan's own output
+  share_call 'printf "%s" "$2" | instruction_shell_scan' "$1"
+}
+unresolved() { # command -> yes when the scan tells its callers to read the raw command instead
+  share_call 'printf "%s" "$2" | instruction_shell_scan |
+    grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" && printf yes || printf no' "$1"
+}
+
+# A language runtime re-parses its payload exactly as a shell does, and what it starts from there
+# is any command at all — `python3 -c Q` says nothing about the `git push` inside the Q.
+for interp in \
+  'python3 -c '"'"'import subprocess; subprocess.run(["git","push"])'"'"'' \
+  'perl -e '"'"'system("git push")'"'"'' \
+  'ruby -e '"'"'system("git push")'"'"'' \
+  'node -e '"'"'require("child_process").execSync("git push")'"'"'' \
+  'awk '"'"'BEGIN{system("git push")}'"'"'' \
+  'su -c '"'"'git push'"'"'' \
+  'flock /tmp/l -c '"'"'git push'"'"''; do
+  assert_eq yes "$(unresolved "$interp")"
+done
+# The write gate keeps its own reading of a runtime beside this one: a payload that names a
+# guarded file without writing it is still a read.
+assert_eq pass "$(decision "python3 -c \"open('$WORK/stage/notes.md','w').write('x')\"")"
+assert_eq pass "$(decision "python3 -c \"open('$CLAUDE_MD','r').read()\"")"
+assert_eq deny "$(decision "python3 -c \"open('$CLAUDE_MD','w').write('one more line')\"")"
+
+# A `<<` whose terminator never appears is not a heredoc: an arithmetic shift and a quoted
+# sentence both supply one, and every command after that line was dropped from the scanned text.
+assert_contains "git commit -m x" "$(scan_of "$(printf 'echo $((1<<n))\ngit commit -m x\n')")"
+assert_contains "git push" "$(scan_of "$(printf 'echo "shift is 1 << n"\ngit push\n')")"
+assert_eq deny "$(decision "$(printf 'echo $((1<<n))\ncat %s/stage/tmp.md > %s\n' "$WORK" "$CLAUDE_MD")")"
+# A heredoc whose terminator IS there keeps dropping its body, which is what the pass is for.
+assert_eq 0 "$(scan_of "$(printf 'cat > %s/stage/scratch <<EOF\ngit push\nEOF\n' "$WORK")" | grep -c 'git push')"
+assert_eq pass "$(decision "$(printf 'cat > %s/stage/scratch <<EOF\nsee %s for the rule\nEOF\n' "$WORK" "$CLAUDE_MD")")"
+
+# A git alias body is a program git hands to a shell, and it runs as a command line of its own.
+assert_contains "git push zz" "$(scan_of "git -c alias.zz='!git push' zz")"
+assert_contains "review-bench review . p" "$(scan_of "git -c alias.p='!review-bench review .' p")"
+# A quoted run that is NOT an alias body is still the one word it is: a commit message naming a
+# gated command carries it as text.
+assert_eq "git commit -m Q" "$(scan_of 'git commit -m "remember to git push later"')"
+assert_eq no "$(unresolved 'git commit -m "remember to git push later"')"
+
+# A backtick is the other spelling of `$(`, and in command position it names an executable this
+# parse cannot resolve.
+assert_eq yes "$(unresolved '`which git` push')"
+assert_eq yes "$(unresolved '`printf git` push')"
+# Standing as an ARGUMENT it resolves nothing and hides nothing.
+assert_eq no "$(unresolved 'ls `pwd`')"
+
+# A brace group and an env-assignment prefix are command position typed two other ways, and `^`
+# restarts at every line.
+assert_eq yes "$(unresolved '{ $GIT push; }')"
+assert_eq yes "$(unresolved 'GIT_DIR=/tmp/r.git $GIT push')"
+assert_eq yes "$(unresolved "$(printf 'cd /repo\n$GIT push\n')")"
+assert_eq no "$(unresolved '{ echo one; echo two; }')"
+assert_eq no "$(unresolved 'GIT_DIR=/tmp/r.git git status')"
+assert_eq no "$(unresolved 'git push $REMOTE')"
+
+# Outside quotes a backslash escapes one character: the name it stands inside survives it.
+assert_eq "git push" "$(scan_of 'gi\t push')"
+assert_eq "echo a b" "$(scan_of 'echo a\ b')"
+# ANSI-C quoting is a body this parse does not resolve, so the word stands in command position.
+assert_eq "Q push" "$(scan_of "\$'g\\x69t' push")"
+assert_eq yes "$(unresolved "\$'g\\x69t' push")"
+
+# A variable in command position counts whatever follows it — a quoted word glued to it, a
+# positional parameter, one of the shell's own specials.
+assert_eq yes "$(unresolved "\$VAR'view-bench'")"
+for special in '$1 push' '$@ push' '$* push' '$_ push' '$- push' '$! push' '$? push'; do
+  assert_eq yes "$(unresolved "$special")"
+done
+
 echo "== one parse: the tripwire attributes exactly what that parse finds"
 parse_case=0
 while IFS='|' read -r owns cmd; do
@@ -1845,9 +1953,11 @@ while IFS='|' read -r owns cmd; do
     assert_contains "CHANGED" "$ctx"
     case "$ctx" in *REVERTED*) fail "a command that wrote elsewhere was blamed for the growth: $cmd" ;; esac
   fi
-  # Neither shape is the gate's: a derived name and a read are not writes at all, and locating a
-  # copy verb's destination in an argument list is the tripwire's job by design.
-  assert_eq pass "$(decision "$cmd")"
+  if [ "$owns" = yes ]; then
+    assert_eq deny "$(GATE_CWD="$WORK" decision "$cmd")"
+  else
+    assert_eq pass "$(GATE_CWD="$WORK" decision "$cmd")"
+  fi
 done <<CASES
 no|echo x > $DOC.bak
 yes|mv $WORK/stage/tmp.md $DOC && true
@@ -2218,10 +2328,12 @@ case "$(cat "$RANKED")" in *proj-b*) fail "the re-cut cache still names the drop
 out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 case "$out" in *DELETED*) fail "a file the ranking dropped was reported as deleted: $out" ;; esac
+# The ranked cache is a file any session can rewrite, so dropping a path from it does not stop the
+# watch on a file this session already watches.
 printf 'b rules edited after demotion\n' > "$WORK/proj-b/CLAUDE.md"
 out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
-case "$out" in *CHANGED*) fail "a demoted ranked file still on disk reported CHANGED: $out" ;; esac
+assert_contains "CHANGED $WORK/proj-b/CLAUDE.md" "$out"
 rm -f "$PROJ/CLAUDE.md"
 out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
@@ -2335,6 +2447,9 @@ echo "== journal: concurrent appends during a trim both survive"
 span_base sid-trim-a >/dev/null
 printf 'trim-race-B\n' > "$HOME/.claude/agents/codex-worker.md"
 span_base sid-trim-b >/dev/null
+# sid-trim-b's start already journaled the change between the two baselines; the race below is
+# about two checks each carrying a record of its own, so that marker is let go.
+rm -rf "$INSTRUCTION_WATCH_STATE/alerts"
 INSTRUCTION_WATCH_JOURNAL_MAX=2
 export INSTRUCTION_WATCH_JOURNAL_MAX
 i=1
@@ -2351,6 +2466,159 @@ wait "$p1" "$p2"
 assert_contains "review-tiers.md" "$(cat "$J")"
 assert_contains "codex-worker.md" "$(cat "$J")"
 unset INSTRUCTION_WATCH_JOURNAL_MAX
+
+echo "== bypasses: every shell spelling of a write onto a guarded file is refused, the neighbours pass"
+mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/projects/p/memory" "$WORK/repo2/.claude/agents" \
+         "$WORK/repo2/skills/foo"
+printf 'policy\n' > "$HOME/.claude/hooks/policy.md"
+while read -r want c; do
+  [ -n "$c" ] || continue
+  c=$(printf '%b' "$c")
+  got=$(GATE_CWD="$WORK/repo2" gate "$c" 2>/dev/null; echo "rc=$?")
+  case "$got" in *'"deny"'*) got=deny ;; *rc=2) got=refuse ;; *) got=pass ;; esac
+  asserts=$((asserts + 1))
+  [ "$want" = "$got" ] || fail "assert $asserts failed: expected $want, got $got for: $c"
+done <<'CASES'
+deny printf x >> ~/.claude/hooks/policy.md
+deny printf x >> ./skills/foo/SKILL.md
+deny echo x > .claude/agents/new.md
+deny mv /tmp/x ~/.claude/review-debt-ignore
+deny echo hi >& ~/.claude/CLAUDE.md
+deny echo hi &> ~/.claude/CLAUDE.md
+deny printf Z 1<> ~/.claude/CLAUDE.md
+deny printf Z <> ~/.claude/CLAUDE.md
+deny echo x > $'CLAUDE.md'
+deny echo x > $'CLAUDE.m\\x64'
+deny echo hi >> ~/.claude/claude.md
+deny echo hi >> ~/.claude/Claude.MD
+deny python3 -c "import os; os.rename('/tmp/x', 'CLAUDE.md')"
+deny python3 -c "import os; open('CLAUDE.md','w').write('x'); print(1)"
+deny node -e "require('fs').renameSync('/tmp/x', 'CLAUDE.md')"
+deny git checkout -- CLAUDE.md
+deny bash <<'X'\nprintf x >> ~/.claude/CLAUDE.md\nX
+deny cat <<'X' | bash\nprintf x >> ~/.claude/CLAUDE.md\nX
+refuse printf x > "$HOME/.claude/docs/"$'bad\\nname.md'
+refuse printf x > "$HOME/.claude/docs/"$'bad\\tname.md'
+pass echo x >> ~/.claude/projects/p/memory/note.md
+pass echo x > notes.txt
+pass echo x > /tmp/scratch.md
+pass echo x 2>&1
+pass cat > /tmp/scratch <<'X'\nprintf x >> CLAUDE.md\nX
+pass bash -n /tmp/x.sh && cat > /tmp/scratch <<'X'\nprintf x >> CLAUDE.md\nX
+pass cp ~/.claude/CLAUDE.md /tmp/backup.md
+pass git stash pop
+pass python3 -c "print(open('CLAUDE.md').read()); x = 1"
+CASES
+
+echo "== bypasses: the bloat gate prices every spelling and every edit tool"
+mkdir -p "$HOME/.claude/rules" "$HOME/.claude/skills-on-demand/s"
+printf 'x\n' > "$HOME/.claude/rules/r.md"
+printf 'x\n' > "$HOME/.claude/skills-on-demand/s/s.md"
+printf 'x\n' > "$WORK/repo2/notes.md"
+bloat_tool() { # tool tool-input-json
+  local out
+  out=$(jq -cn --arg n "$1" --argjson ti "$2" '{tool_name:$n,session_id:"s",cwd:"/tmp",tool_input:$ti}' \
+    | bash "$BLOAT" 2>/dev/null)
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"'
+}
+edit_json() { jq -cn --arg f "$1" --arg n "$2" '{file_path:$f,old_string:"x",new_string:$n}'; }
+assert_eq deny "$(bloat_tool Edit "$(edit_json '~/.claude/docs/review-tiers.md' "$big")")"
+assert_eq deny "$(bloat_tool Edit "$(edit_json "$HOME/.claude/rules/r.md" "$big")")"
+assert_eq deny "$(bloat_tool Edit "$(edit_json "$HOME/.claude/skills-on-demand/s/s.md" "$big")")"
+assert_eq deny "$(bloat_tool Edit "$(edit_json "$WORK/repo2/claude.MD" "$big")")"
+assert_eq pass "$(bloat_tool Edit "$(edit_json "$WORK/repo2/notes.md" "$big")")"
+half=${big:0:100}
+assert_eq deny "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.md" --arg n "$half" \
+  '{file_path:$f,edits:[{old_string:"x",new_string:$n},{old_string:"y",new_string:$n}]}')")"
+assert_eq pass "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.md" \
+  '{file_path:$f,edits:[{old_string:"x",new_string:"yy"}]}')")"
+assert_eq deny "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.md" \
+  '{file_path:$f,edits:[{old_string:"x",new_string:"y"},{old_string:"y",new_string:"при"}]}')")"
+
+echo "== bypasses: a hook that cannot run refuses instead of passing"
+mkdir -p "$WORK/nolib/bin" "$WORK/nojq"
+cp "$WRITE_GATE" "$BLOAT" "$WATCH" "$WORK/nolib/bin/"
+for f in /usr/bin/* /bin/*; do
+  [ "${f##*/}" = jq ] || ln -sf "$f" "$WORK/nojq/${f##*/}" 2>/dev/null
+done
+for h in instruction-write-gate.sh instruction-bloat-gate.sh instruction-watch.sh; do
+  printf '{"tool_name":"Edit","tool_input":{}}' | /bin/bash "$WORK/nolib/bin/$h" check >/dev/null 2>&1
+  assert_eq 2 "$?"
+  printf 'not json' | /bin/bash "$ROOT/bin/$h" check >/dev/null 2>&1
+  assert_eq 2 "$?"
+  printf '{"tool_name":"Edit","tool_input":{}}' | PATH="$WORK/nojq" /bin/bash "$ROOT/bin/$h" check >/dev/null 2>&1
+  assert_eq 2 "$?"
+done
+
+echo "== bypasses: a change the journal could not take is reported again, not absorbed"
+span_base sid-jfail >/dev/null
+printf 'journal failure\n' >> "$DOC"
+mv "$J" "$J.saved" 2>/dev/null
+mkdir -p "$J"
+out=$(raw_check sid-jfail Bash command 'git status' "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "could not be written" "$out"
+rmdir "$J"
+[ ! -f "$J.saved" ] || mv "$J.saved" "$J"
+out=$(raw_check sid-jfail Bash command 'git status' "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED $DOC" "$out"
+
+echo "== bypasses: the same bytes written twice inside a day are two alerts"
+span_base sid-flip >/dev/null
+cp "$DOC" "$WORK/doc-a"
+printf 'flip B\n' > "$DOC"
+raw_check sid-flip Bash command 'git status' "$NOSPAN_T" >/dev/null
+cp "$WORK/doc-a" "$DOC"
+raw_check sid-flip Bash command 'git status' "$NOSPAN_T" >/dev/null
+n0=$(grep -c . "$J")
+printf 'flip B\n' > "$DOC"
+raw_check sid-flip Bash command 'git status' "$NOSPAN_T" >/dev/null
+assert_eq $((n0 + 1)) "$(grep -c . "$J")"
+
+echo "== bypasses: bytes landing mid-check are reported, never vouched for"
+mkdir -p "$WORK/shim"
+printf '#!/bin/bash\ncase " $* " in *" -L "*) [ -f "$IW_FLAG" ] || { : > "$IW_FLAG"; printf "landed during the rewrite\\n" >> "$IW_DOC"; } ;; esac\nexec /usr/bin/stat "$@"\n' \
+  > "$WORK/shim/stat"
+chmod +x "$WORK/shim/stat"
+span_base sid-race >/dev/null
+printf 'race start\n' >> "$DOC"
+IW_FLAG="$WORK/race.flag" IW_DOC="$DOC" PATH="$WORK/shim:$PATH" \
+  raw_check sid-race Bash command 'git status' "$NOSPAN_T" >/dev/null
+assert [ -f "$WORK/race.flag" ]
+out=$(raw_check sid-race Bash command 'git status' "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED $DOC" "$out"
+printf '#!/bin/bash\nfor a in "$@"; do case "$a" in *review-tiers.md) rm -f "$a" ;; esac; done\nexec /usr/bin/shasum "$@"\n' \
+  > "$WORK/shim/shasum"
+chmod +x "$WORK/shim/shasum"
+rm -f "$WORK/shim/stat"
+cp "$DOC" "$WORK/doc-keep"
+span_base sid-vanish >/dev/null
+printf 'vanishing\n' >> "$DOC"
+out=$(PATH="$WORK/shim:$PATH" raw_check sid-vanish Bash command 'git status' "$NOSPAN_T" \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "DELETED $DOC" "$out"
+rm -f "$WORK/shim/shasum"
+cp "$WORK/doc-keep" "$DOC"
+
+echo "== bypasses: a session id that names no file gets a baseline of its own"
+jq -cn '{hook_event_name:"SessionStart"}' | bash "$WATCH" baseline >/dev/null
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-unknown.tsv" ]
+assert_contains "session-unknown-" "$(ls "$INSTRUCTION_WATCH_STATE")"
+jq -cn '{hook_event_name:"SessionStart"}' | bash "$WATCH" baseline >/dev/null
+assert [ "$(ls "$INSTRUCTION_WATCH_STATE" | grep -c '^session-unknown-')" = 1 ]
+
+echo "== bypasses: the tripwire attributes a write however its target is spelled"
+printf 'tier doc\n' > "$DOC"
+for c in "printf x >> $'${DOC%d}\\x64'" "perl -pi -e 's/\$/ more/' $DOC"; do
+  span_base sid-spell >/dev/null
+  printf 'a line no human asked for\n' >> "$DOC"
+  assert_contains "REVERTED" "$(span_check sid-spell Bash command "$c" "$SPAN_T")"
+  assert_eq "tier doc" "$(cat "$DOC")"
+done
+span_base sid-multi >/dev/null
+printf 'a line no human asked for\n' >> "$DOC"
+assert_contains "REVERTED" "$(span_check sid-multi MultiEdit file_path "$DOC" "$SPAN_T")"
+assert_eq "tier doc" "$(cat "$DOC")"
 
 # The harness reads the FIRST journal line and the ranked cache; the tests above
 # trimmed both. Leave a fresh collector record and the project file it lists.

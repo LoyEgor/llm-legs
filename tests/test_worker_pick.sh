@@ -10,6 +10,10 @@ FIXTURES="$ROOT/tests/fixtures/worker-pick/scenarios.json"
 GOLDEN="$ROOT/tests/fixtures/worker-pick/golden-output.txt"
 DECISIONS="$ROOT/tests/fixtures/worker-pick/decisions.txt"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 
 asserts=0
@@ -1586,18 +1590,6 @@ printf '%s\n' 'worker=gemini' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_
 run_case gemini_fresh
 assert contains "$(nrow 1)" 'gemini/main f38·high'
 assert not_contains "$output" flash38
-# `worker=sonnet` is a toggle value that no longer exists — every implementation run belongs to a
-# relay worker on another account — so the reader routes it as `auto` and says so once, instead of
-# falling through to a mode nobody defines.
-printf '%s\n' 'worker=sonnet' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high' \
-  'gemini_model=flash38' 'gemini_effort=high' >"$CONFIG"
-run_case golden
-sonnet_next=$(next_block)
-assert grep -Fq 'worker=sonnet is no longer a worker toggle value' "$WORK/note.err"
-write_config
-run_case golden
-assert test "$sonnet_next" = "$(next_block)"
-
 # `sonnet·xhigh` is twelve characters of legal toggle values, and the column it sits in is the
 # widest thing either row builder pads: with no gap left the reset and the flags glue onto it and
 # the row reads as one token.

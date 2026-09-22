@@ -110,7 +110,12 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    ignored there, and every other chat keeps the global pins. The session id is
    `CLAUDE_CODE_SESSION_ID`; the Agent hooks export it from their stdin `.session_id` before asking
    `worker-pick`. No session id, no file or an empty file means the global pins. Resolution lives in
-   `share/worker-model.sh` alone (`worker_model_pin_file`), and every reader takes pins through it.
+   `share/worker-model.sh` alone (`worker_model_pin_file`), and every reader takes pins through it. The
+   same file may carry `<vendor>_fast=on` beside the pin (`chat-pin grok-fast`/`codex-fast`): on a
+   WORKERS run of that vendor grok swaps in the `-fast` sibling `grokb models` lists, but only
+   when the resolved model is `auto` or the marked default — a brief naming a slug runs
+   unchanged — while codex keeps its model and adds the fast/priority flags; any other pin
+   target clears it.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
@@ -316,7 +321,7 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 `worker-pick` answers which ACCOUNT. `share/worker-model.sh` (`worker_model_table`) is the
 source for allowed models, default efforts, brief efforts and efforts requiring Egor's word
 (`docs/shared-invariants.md` row `bq`; policy table in `share/worker-policy.md`). Default models
-are claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (`grok-4.6` also allowed).
+are claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (the CLI's own default, also every slug `grokb models` prints).
 Opus defaults to `high`; brief efforts are `high`, `xhigh`, and word efforts are `low`, `medium`, `max`.
 claudeb `fable`, codex `gpt-5.6-sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts.
 Gemini is the exception to the effort refusal: every Gemini leg runs `high`, and a lower effort is raised rather than refused.

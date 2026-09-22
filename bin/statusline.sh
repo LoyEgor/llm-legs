@@ -2069,7 +2069,11 @@ if [ -n "$session_id" ]; then
             *) pin_label=$pin_vendor ;;
           esac
         fi
-        [ -n "$pin_label" ] && pin_body="${MAGENTA}${pin_label}${RESET}"
+        if [ -n "$pin_label" ]; then
+          # The pin's own second line, so it is read off the same file on the same tick.
+          grep -qxF "${pin_vendor}_fast=on" "$pin_file" 2>/dev/null && pin_label="${pin_label}⚡"
+          pin_body="${MAGENTA}${pin_label}${RESET}"
+        fi
         ;;
     esac
   fi

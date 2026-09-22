@@ -18,14 +18,20 @@
 # can append to it can retire its own unreviewed work by writing a line, which is why it is the
 # project's answer and never the model's. It carries no `.md` suffix on purpose — the bloat gate
 # prices markdown by the byte and has nothing to say about a two-line ignore file.
-INSTRUCTION_GUARDED_BASENAMES='(CLAUDE\.md|CLAUDE\.local\.md|review-debt-ignore)'
+# Letter case spelled out because the volume folds it: `claude.md` opens `CLAUDE.md`, and a name
+# matched case-sensitively is a write that reaches the file under a spelling no door recognises.
+# SKILL.md is here because a skill is loaded wherever it sits, so the name alone says what it is.
+INSTRUCTION_GUARDED_BASENAMES='([Cc][Ll][Aa][Uu][Dd][Ee]\.[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee]\.[Ll][Oo][Cc][Aa][Ll]\.[Mm][Dd]|[Ss][Kk][Ii][Ll][Ll]\.[Mm][Dd]|[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]-[Ii][Gg][Nn][Oo][Rr][Ee])'
 
 # Every consumer of these lists reads them a line and a field at a time, so a name carrying a
-# newline or a tab is refused here rather than downstream: by the time `read` has seen it the
-# name is already two names, and no check further along can put it back together.
+# newline or a tab would arrive as two names. It is emitted with each of those characters turned
+# into `?` rather than dropped: a dropped name is a file no door ever sees, while this spelling
+# stats as missing and the tripwire reports it as a name it cannot watch.
 _instruction_emit() {
-  case "$1" in *"$_instruction_nl"*|*"$_instruction_tab"*) return 0 ;; esac
-  printf '%s\n' "$1"
+  local p=$1
+  p=${p//"$_instruction_nl"/?}
+  p=${p//"$_instruction_tab"/?}
+  printf '%s\n' "$p"
 }
 _instruction_nl='
 '
@@ -44,12 +50,14 @@ _instruction_class_dirs() {
     "$home/.claude/commands"
 }
 
-# Depth-unbounded, because the write gate's directory rule and the bloat gate's ancestor walk
-# both are: a doc at docs/topic/sub/note.md is denied a shell write and priced per month, and a
-# glob that stopped one level down left exactly those files guarded but unwatched. -L because
-# docs/ and agents/ are symlinks into the config repository and the tree below them is the point.
-# -print0 so a name carrying a newline arrives whole and is refused by _instruction_emit rather
-# than arriving as two names.
+_instruction_class_rate() { # class-dir-name
+  case "$1" in
+    agents) printf 2500 ;;
+    docs|instructions|rules) printf 160 ;;
+    skills|skills-on-demand|commands) printf 90 ;;
+  esac
+}
+
 # The markdown extensions, spelled once. The class table below and this enumerator disagreeing is
 # the one hole neither half can report: a `.markdown` the gate speaks for that the tripwire never
 # watched, or the reverse.
@@ -69,17 +77,40 @@ instruction_is_md() {
   return 1
 }
 
+# EVERY markdown file under ~/.claude, at any depth and whatever directory holds it: a list of
+# selected directories is a list somebody forgets to extend, and `~/.claude/hooks/policy.md` sat
+# outside every door for exactly that reason. -L because docs/, agents/, hooks/ and skills/ are
+# symlinks into the config repository and the tree below them is the point; -print0 so a name
+# carrying a newline arrives whole. Pruned: VCS internals, dependency trees, worktree copies, and
+# `projects/`, which holds transcripts and the memory files the model writes by design (see the
+# MEMORY.md note above). The review-debt list rides in the same walk.
 _instruction_class_files() {
   local home=${1:-$HOME} p e
-  local -a dirs=() name_args=()
-  while IFS= read -r p; do dirs+=("$p"); done < <(_instruction_class_dirs "$home")
-  for e in $INSTRUCTION_MD_EXTENSIONS; do
-    [ "${#name_args[@]}" -eq 0 ] || name_args+=(-o)
-    name_args+=(-name "*.$e")
-  done
+  local -a name_args=(-name review-debt-ignore)
+  for e in $INSTRUCTION_MD_EXTENSIONS; do name_args+=(-o -iname "*.$e"); done
+  [ -d "$home/.claude" ] || return 0
   while IFS= read -r -d '' p; do
     _instruction_emit "$p"
-  done < <(find -L "${dirs[@]}" -type f \( "${name_args[@]}" \) -print0 2>/dev/null)
+  done < <(find -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
+             -o -path "$home/.claude/projects" \) -prune -o -type f \( "${name_args[@]}" \) \
+             -print0 2>/dev/null)
+}
+
+instruction_repo_root() { # cwd
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 1
+  git -C "$1" rev-parse --show-toplevel 2>/dev/null
+}
+
+instruction_repo_files() { # repo-root
+  local root=${1:-} p e
+  local -a md_args=(-name review-debt-ignore)
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
+  while IFS= read -r -d '' p; do
+    _instruction_emit "$p"
+  done < <(find "$root" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
+             -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
+             \( -path '*/.claude/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null)
 }
 
 # What the TRIPWIRE watches: the guarded set plus settings.json, which no gate speaks for.
@@ -90,11 +121,28 @@ _instruction_class_files() {
 # $2, when given, is the ranked cache below: the watch set is then the enumeration PLUS the few
 # project files the ranking speaks for. Called without it — the rebuild does, and so does anything
 # that wants the enumeration alone — the answer is what ~/.claude reaches and nothing else.
+# $3 is the repository root the session works in, whose files join the set whatever they rank. A
+# path reached twice — the ranking naming the current repository's CLAUDE.md, or that repository
+# being the config repository ~/.claude links into — is listed once, by resolved target, or every
+# change to it is reported twice.
 instruction_visible_paths() {
-  local home=${1:-$HOME} cache=${2:-}
-  [ -f "$home/.claude/settings.json" ] && _instruction_emit "$home/.claude/settings.json"
-  instruction_guarded_paths "$home"
-  [ -z "$cache" ] || instruction_ranked_paths "$cache"
+  local home=${1:-$HOME} cache=${2:-} root=${3:-} link real
+  local -a linked=()
+  for link in "$home"/.claude/*; do
+    [ -L "$link" ] || continue
+    real=$(realpath "$link" 2>/dev/null) && linked+=("$real")
+  done
+  {
+    [ -f "$home/.claude/settings.json" ] && _instruction_emit "$home/.claude/settings.json"
+    instruction_guarded_paths "$home"
+    [ -z "$cache" ] || instruction_ranked_paths "$cache"
+    instruction_repo_files "$root" | while IFS= read -r real; do
+      for link in ${linked[@]+"${linked[@]}"}; do
+        case "$real" in "$link"|"$link"/*) continue 2 ;; esac
+      done
+      printf '%s\n' "$real"
+    done
+  } | awk '!seen[$0]++'
 }
 
 # The enumeration above is what `~/.claude` REACHES, and the gate's `always` class is wider than
@@ -187,13 +235,12 @@ instruction_ranked_refresh() { # home cache
   instruction_ranked_rebuild "$home" "$cache"
 }
 
-# What the write GATE guards.
+# What the write GATE guards: the enumeration of ~/.claude, the global CLAUDE files and the
+# review-debt list included, plus the current repository's files when its root is given.
 instruction_guarded_paths() {
-  local home=${1:-$HOME} p
-  for p in "$home"/.claude/CLAUDE.md "$home"/.claude/CLAUDE.local.md; do
-    [ -f "$p" ] && _instruction_emit "$p"
-  done
+  local home=${1:-$HOME} root=${2:-}
   _instruction_class_files "$home"
+  instruction_repo_files "$root"
 }
 
 # Which rule a guarded target answers to, from its name alone.
@@ -208,7 +255,9 @@ instruction_guarded_paths() {
 instruction_write_class() {
   case "${1##*/}" in
     CLAUDE.md|CLAUDE.local.md) printf always ;;
+    [Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]|[Cc][Ll][Aa][Uu][Dd][Ee].[Ll][Oo][Cc][Aa][Ll].[Mm][Dd]) printf always ;;
     review-debt-ignore) printf debt ;;
+    [Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]-[Ii][Gg][Nn][Oo][Rr][Ee]) printf debt ;;
     settings.json) ;;
     *)
       if instruction_is_md "${1##*/}"; then printf span; fi
@@ -308,8 +357,18 @@ instruction_always_loaded() { # path [home] -> prints always|span
 # INSTRUCTION_INTERPRETER_RE name stands in it: there the quoted text is a program, not data.
 instruction_shell_scan() {
   awk -v sq="'" -v dq='"' '
+    function feedsshell(line,   at, pre, post) {
+      at = index(line, "<<")
+      if (!at) return 0
+      pre = substr(line, 1, at - 1)
+      post = substr(line, at)
+      sub(/.*(;|&)/, "", pre)
+      sub(/(;|&|\|\|).*/, "", post)
+      return (pre post) ~ shellre
+    }
     { cmd = cmd (nread++ ? "\n" : "") $0 }
     END {
+      shellre = "(^|[ \t|;&(])([^ \t|;&()<>]*/)?(bash|sh|zsh|ksh|dash)([ \t]|$)"
       # `<<\EOF` is the backslash spelling of a literal heredoc, as ordinary as the quoted one:
       # unrecognised, its body is never dropped and the rules it quotes read as commands.
       hdre = "<<-?[ \t]*\\\\?(" dq "[^" dq "]*" dq "|" sq "[^" sq "]*" sq "|[A-Za-z_][A-Za-z_0-9]*)"
@@ -323,6 +382,9 @@ instruction_shell_scan() {
         ndel = 0
         rest = L[i]
         gsub(/<<</, "\001", rest)
+        # `$((1<<n))` is a shift, not a redirection, and its operand is not a delimiter: read as
+        # one it swallowed every command after this line.
+        while (sub(/\$\(\([^)]*\)\)/, "\002", rest)) continue
         while (match(rest, hdre)) {
           tok = substr(rest, RSTART, RLENGTH)
           rest = substr(rest, RSTART + RLENGTH)
@@ -337,16 +399,23 @@ instruction_shell_scan() {
           DEL[ndel] = d
           STRIP[ndel] = strip
         }
+        # A heredoc fed to a shell is a program: its body stays in the text as commands.
+        if (feedsshell(L[i])) ndel = 0
         i++
         for (k = 1; k <= ndel; k++) {
+          start = i
+          found = 0
           while (i <= nl) {
             b = L[i]
             i++
             # `<<-` strips TABS and no spaces: a space-indented word is not the terminator, and
             # stopping on it leaves the rest of the body read as commands.
             if (STRIP[k]) sub(/^\t+/, "", b)
-            if (b == DEL[k]) break
+            if (b == DEL[k]) { found = 1; break }
           }
+          # A terminator that never appears means there was no heredoc — a `<<` inside a quoted
+          # sentence or an arithmetic shift — and the lines consumed for it are commands.
+          if (!found) { i = start; break }
         }
       }
       out = ""
@@ -354,7 +423,23 @@ instruction_shell_scan() {
       i = 1
       while (i <= n) {
         c = substr(text, i, 1)
-        if (c == "\\") { out = out "Q"; i += 2; continue }
+        # Outside quotes a backslash escapes ONE character and nothing more: collapsing it to a
+        # placeholder erased the name of the binary it stood inside (`gi\t push`) and left that
+        # word resolvable to neither a name nor command position.
+        if (c == "\\") { out = out substr(text, i + 1, 1); i += 2; continue }
+        # ANSI-C quoting, a dollar in front of a single-quoted body: the body is escape sequences
+        # this parse does not resolve, so the word is an executable it cannot name and has to
+        # stand in command position as one, whatever the body spells.
+        if (c == "$" && substr(text, i + 1, 1) == sq) {
+          j = i + 2
+          while (j <= n && substr(text, j, 1) != sq) {
+            if (substr(text, j, 1) == "\\") j += 2
+            else j++
+          }
+          out = out "Q"
+          i = j + 1
+          continue
+        }
         if (c == sq || c == dq) {
           q = c; j = i + 1; body = ""; live = 0; closed = 0
           while (j <= n) {
@@ -366,7 +451,12 @@ instruction_shell_scan() {
             j++
           }
           if (!closed) { out = out substr(text, i); break }
-          if (live) out = out body
+          # A run whose body opens with `!` is a git alias: git hands the rest of it to a shell,
+          # so it is a program like a `$(` run is — and the shell runs it as a command line of its
+          # own, which is where this parse has to put it or the command word it carries
+          # (`git -c alias.zz=!git push zz`) stands in no command position at all.
+          if (body ~ /^!/) out = out "\n" substr(body, 2)
+          else if (live) out = out body
           else if (body ~ /[ \t\n]/) out = out "Q"
           else out = out body
           i = j + 1
@@ -379,16 +469,26 @@ instruction_shell_scan() {
     }'
 }
 
-# A word that hands quoted TEXT to a shell parser. Once one of these stands in a command the
-# quoted runs are a program rather than data, and reading them as data hides the write they
-# perform — an interpreter handed a quoted program that redirects into a guarded file — so the
-# caller reads the raw command instead. Only names that re-parse text belong here: env, nohup and
-# setsid execute argv and unquote nothing, and python/perl/node hand their payload to a language
-# the write gate reads with a rule of its own.
-INSTRUCTION_INTERPRETER_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(bash|sh|zsh|ksh|dash|eval|xargs|ssh|osascript)([[:space:]]|$)'
-# A word in COMMAND position this scan cannot resolve — a collapsed quoted run, a `$(...)`, a bare
-# variable — is an executable it cannot name, and one of the names above is exactly what it may be.
-INSTRUCTION_CMD_POSITION_RE='(^|[;|&(])[[:space:]]*(Q|\$\(|\$\{?[A-Za-z_][A-Za-z_0-9]*\}?([[:space:]]|$))'
+# A word that hands quoted TEXT to a parser. Once one of these stands in a command the quoted runs
+# are a program rather than data, and reading them as data hides what the program does — a write
+# into a guarded file, a `git push`, a review launch — so the caller reads the raw command instead.
+# Two halves because the write gate reads the second one with a rule of its own as well
+# (`instruction_interp_write_re`), never instead of this one; every door asks the union. env, nohup
+# and setsid stay out: they execute argv and unquote nothing.
+INSTRUCTION_SHELL_INTERPRETER_RE='(^|[[:space:]|;&({])([^[:space:]|;&()<>]*/)?(bash|sh|zsh|ksh|dash|fish|csh|tcsh|eval|xargs|ssh|osascript|su|flock)([[:space:]]|$)'
+# A language runtime re-parses its payload exactly as a shell does, and what it runs from there is
+# any command at all: `python3 -c` and `awk BEGIN{system(...)}` reach git and review-bench through a
+# payload no door reads.
+INSTRUCTION_LANG_INTERPRETER_RE='(^|[[:space:]|;&({])([^[:space:]|;&()<>]*/)?(python[0-9.]*|perl|ruby|node|deno|bun|php|lua|awk|gawk)([[:space:]]|$)'
+INSTRUCTION_INTERPRETER_RE="$INSTRUCTION_SHELL_INTERPRETER_RE|$INSTRUCTION_LANG_INTERPRETER_RE"
+# A word in COMMAND position this scan cannot resolve — a collapsed quoted run, any expansion
+# (`$(...)`, a backtick, `${VAR}`, `$1`) — is an executable it cannot name, and one of the names
+# above is exactly what it may be. A dollar or a backtick counts whatever follows it: `$VAR` glued
+# to a quoted word and `$1` are as unresolvable as `$VAR ` is, and a class that asked for trailing
+# whitespace let both stand. The start class carries `{` and an env-assignment prefix because
+# `{ $GIT push; }` and `GIT_DIR=/tmp/r.git $GIT push` are that same word typed two other ways; `^`
+# restarts per LINE, so every consumer matches this with grep -E rather than a whole-string `=~`.
+INSTRUCTION_CMD_POSITION_RE='(^|[;|&({])[[:space:]]*([A-Za-z_][A-Za-z_0-9]*=[^[:space:]]*[[:space:]]+)*(Q|`|\$)'
 # The boundary classes a guarded name has to stand between, spelled once for every door. BOTH
 # ends: `CLAUDE.md.bak` and `dummyCLAUDE.md` are not the file, and this repository keeps exactly
 # such backups. The backslash belongs in both — a path inside an escaped quote, which is how an
@@ -440,7 +540,7 @@ _instruction_interp_rule() { # names-alternation mode-pattern node-verb
 # prose reads as a write.
 _instruction_interp_construct() { # names-alternation mode-pattern node-verb
   set -- "($1)" "$2" "$3"
-  printf '%s' "(open\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*,[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?$2|open\([^()]*,[[:space:]]*$2[[:space:]]*,[[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|Path\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*\)[[:space:]]*\.(write_text|write_bytes|open\([[:space:]]*$2)|$3\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|(shutil\.copy[a-z_0-9]*|copyfile)\([^()]*,[[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|File\.write\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q})"
+  printf '%s' "(open\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*,[[:space:]]*(mode[[:space:]]*=[[:space:]]*)?$2|open\([^()]*,[[:space:]]*$2[[:space:]]*,[[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|Path\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}[[:space:]]*\)[[:space:]]*\.(write_text|write_bytes|open\([[:space:]]*$2)|$3\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|(shutil\.(copy[a-z_0-9]*|move)|copyfile|os\.replace|rename(Sync)?)\([^()]*,[[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q}|File\.write\([[:space:]]*${_INSTRUCTION_Q}${1}${_INSTRUCTION_Q})"
 }
 
 instruction_interp_write_re() { # names-alternation → ERE matching a write to one of them
@@ -483,10 +583,59 @@ instruction_interp_trunc_construct_re() { # names-alternation → ERE matching o
 # operand.
 instruction_write_targets() { # command-text names-alternation → KIND MODE VERB NAME rows
   [ -n "${2:-}" ] || return 0
-  IWT_TARGET=$2 IWT_NAME_START=$INSTRUCTION_NAME_START IWT_NAME_END=$INSTRUCTION_NAME_END \
+  # C locale: tolower() under UTF-8 aborts on a byte run it cannot decode, and a path is bytes.
+  LC_ALL=C IWT_TARGET=$2 IWT_NAME_START=$INSTRUCTION_NAME_START IWT_NAME_END=$INSTRUCTION_NAME_END \
   awk -v sq="'" -v bq='`' '
+    # Only the simple command that declares the heredoc decides whether a shell reads it, pipes kept:
+    # `cat <<EOF | bash` runs the body, `bash -n x && cat > f <<EOF` does not.
+    function feedsshell(line,   at, pre, post) {
+      at = index(line, "<<")
+      if (!at) return 0
+      pre = substr(line, 1, at - 1)
+      post = substr(line, at)
+      sub(/.*(;|&)/, "", pre)
+      sub(/(;|&|\|\|).*/, "", post)
+      return (pre post) ~ shellre
+    }
     function addword() {
       if (word != "") { W[++nw] = word; word = "" }
+    }
+    # ANSI-C quoting, `$'...'`, with p on the dollar: the body with its escapes resolved, so a name
+    # spelled through one is the name the shell opens.
+    function ansic(code,   out, c, d, n, k) {
+      out = ""
+      p += 2
+      while (p <= length(code)) {
+        c = substr(code, p, 1)
+        if (c == sq) { p++; return out }
+        if (c != "\\") { out = out c; p++; continue }
+        d = substr(code, p + 1, 1)
+        p += 2
+        if (d == "n") out = out "\n"
+        else if (d == "t") out = out "\t"
+        else if (d == "r") out = out "\r"
+        else if (d == "x") {
+          n = 0
+          for (k = 0; k < 2 && substr(code, p, 1) ~ /[0-9A-Fa-f]/; k++) {
+            n = n * 16 + index("0123456789abcdef", tolower(substr(code, p, 1))) - 1
+            p++
+          }
+          out = out sprintf("%c", n)
+        } else if (d ~ /[0-7]/) {
+          n = d + 0
+          for (k = 0; k < 2 && substr(code, p, 1) ~ /[0-7]/; k++) { n = n * 8 + substr(code, p, 1); p++ }
+          out = out sprintf("%c", n)
+        } else out = out d
+      }
+      return out
+    }
+    function isinterp(   k, b) {
+      for (k = 1; k <= nw; k++) {
+        b = W[k]; sub(/^.*\//, "", b)
+        if (b ~ /^(perl|python[0-9.]*|ruby|node|bun|deno)$/) return 1
+      }
+      b = word; sub(/^.*\//, "", b)
+      return b ~ /^(perl|python[0-9.]*|ruby|node|bun|deno)$/
     }
     function trailing_bs(s,   i, c) {
       i = length(s); c = 0
@@ -500,6 +649,7 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       while (p <= length(code)) {
         c = substr(code, p, 1)
         if (c == "\\") { p++; w = w substr(code, p, 1); p++; continue }
+        if (c == "$" && substr(code, p + 1, 1) == sq) { w = w ansic(code); continue }
         if (c == "\"" || c == sq) { p++; continue }
         if (c ~ blank || c == ";" || c == "|" || c == "&" || c == "(" || c == ")" ||
             c == bq || c == ">" || c == "<") break
@@ -508,10 +658,30 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       }
       return w
     }
+    # Names are compared folded, because the volume folds them. One carrying a newline or a tab
+    # cannot travel in a tab-separated row, so it goes out as a `refuse` row with `?` in their place.
     function emit(kind, mode, verb, name, whole) {
       if (name == "") return
-      if (whole && name !~ exact) return
+      if (name ~ /[\t\n]/) { gsub(/[\t\n]/, "?", name); kind = "refuse" }
+      if (whole && tolower(name) !~ exact) return
       printf "%s\t%s\t%s\t%s\n", kind, mode, verb, name
+    }
+    # Perl and ruby edit in place under a bundled `-i` (`-pi`, `-i.bak`, `-0777pi`), never under a
+    # module or library switch that merely spells the letter (`-Mstrict`).
+    function inplace(from,   j) {
+      for (j = from + 1; j <= nw; j++) if (W[j] ~ /^-[0-9lnpawsx]*i/) return 1
+      return 0
+    }
+    # `git checkout` and `git restore` rewrite the files they name; global options (`-C dir`,
+    # `-c key=value`) stand between the binary and the subcommand. gsub_at is where it stood.
+    function gitwrites(from,   j) {
+      for (j = from + 1; j <= nw; j++) {
+        if (W[j] == "-C" || W[j] == "-c") { j++; continue }
+        if (W[j] ~ /^-/) continue
+        gsub_at = j
+        return W[j] == "checkout" || W[j] == "restore"
+      }
+      return 0
     }
     # An option carrying this letter anywhere in the run: an in-place editor and an appending tee
     # are as often folded into a bundle as they are typed alone.
@@ -527,13 +697,13 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
     }
     function scan_loose(text, verb,   s, m, name, at, len) {
       s = text
-      while (match(s, bounded)) {
+      while (match(tolower(s), bounded)) {
         # The inner match overwrites RSTART/RLENGTH, so where this one stood is remembered first
         # or the scan re-reads the same name until the text runs out.
         at = RSTART; len = RLENGTH
         m = substr(s, at, len)
         name = m
-        if (match(m, target)) name = substr(m, RSTART, RLENGTH)
+        if (match(tolower(m), target)) name = substr(m, RSTART, RLENGTH)
         emit("verb", "unknown", verb, name, 0)
         s = substr(s, at + len)
       }
@@ -552,10 +722,18 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
         # editor rewrite the file they are pointed at. `awk` is not here at all: what it writes
         # goes out through a redirection, which is read as a redirection.
         if (base ~ /^g?tee$/) vkind = "tee"
+        else if (base ~ /^(perl|ruby)$/ && inplace(j)) vkind = "dest"
         else if (base ~ /^(perl|python[0-9.]*|ruby|node|bun|deno)$/) vkind = "loose"
         else if (base ~ /^(truncate|dd|patch|ed|ex)$/) vkind = "dest"
         else if (base ~ /^g?sed$/ && flagged(j, "i", "--in-place")) vkind = "dest"
-        else if (base ~ /^(cp|mv|ln|install)$/) vkind = "copy"
+        else if (base ~ /^(cp|mv|ln|install|rsync)$/) vkind = "copy"
+        else if (base == "git" && gitwrites(j)) vkind = "git"
+      }
+      if (vkind == "git") {
+        for (j = gsub_at + 1; j <= nw; j++) {
+          if (W[j] ~ /^-/) continue
+          emit("copy", "trunc", "git", W[j], 1)
+        }
       }
       if (vkind == "tee" || vkind == "dest") {
         mode = (vkind == "tee" && flagged(vi, "a", "--append")) ? "append" : "trunc"
@@ -587,10 +765,12 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
             src = OP[k]
             sub(/^.*\//, "", src)
             if (src == "") continue
+            # The trailing slash on the verb marks the row as the directory reading, which only
+            # holds when the destination IS a directory; a caller that can look decides.
             if (dest == "" || dest == ".") {
-              emit("copy", "trunc", verb, src, 1)
-              emit("copy", "trunc", verb, "./" src, 1)
-            } else emit("copy", "trunc", verb, dest "/" src, 1)
+              emit("copy", "trunc", verb "/", src, 1)
+              emit("copy", "trunc", verb "/", "./" src, 1)
+            } else emit("copy", "trunc", verb "/", dest "/" src, 1)
           }
         }
       } else if (vkind == "loose") {
@@ -598,17 +778,31 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       }
       nw = 0; word = ""
     }
-    function tokenize(code, body,   n, c, prev, op, c2, dest, cstart) {
-      nw = 0; word = ""
+    function tokenize(code, body,   n, c, prev, op, c2, dest, cstart, inq) {
+      nw = 0; word = ""; inq = ""
       n = length(code)
       p = 1
       cstart = 1
       while (p <= n) {
         c = substr(code, p, 1)
         prev = (p > 1) ? substr(code, p - 1, 1) : ""
-        if (c == "#" && word == "" && (p == 1 || prev ~ blank)) break
+        if (c == "#" && word == "" && inq == "" && (p == 1 || prev ~ blank)) break
         if (c == "\\") { p++; word = word substr(code, p, 1); p++; continue }
-        if (c == "\"" || c == sq) { p++; continue }
+        if (c == "$" && substr(code, p + 1, 1) == sq && inq == "") { word = word ansic(code); continue }
+        if (c == "\"" || c == sq) {
+          if (inq == "") inq = c
+          else if (inq == c) inq = ""
+          p++
+          continue
+        }
+        # A quoted payload handed to a language runtime is one argument: a `;` between two of its
+        # statements does not end the command that runs them.
+        if (inq != "" && (c == ";" || c == "|" || c == "&" || c == bq || c == ">" || c == "<") &&
+            isinterp()) {
+          word = word c
+          p++
+          continue
+        }
         # A paren ends a WORD and not the command: a name inside `open(...)` still belongs to the
         # interpreter that named it, and `$(...)` carries the verb of the command it runs.
         if (c ~ blank || c == "(" || c == ")") { addword(); p++; continue }
@@ -629,7 +823,15 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           c2 = substr(code, p, 1)
           if (c2 == ">") { op = ">>"; p++ }
           else if (c2 == "|") { op = ">|"; p++ }
-          else if (c2 == "&") { p++; readword(code); continue }
+          else if (c2 == "&") {
+            # `>&` followed by a descriptor duplicates it; followed by anything else it opens that
+            # word as a file, truncating it.
+            p++
+            while (p <= n && substr(code, p, 1) ~ blank) p++
+            dest = readword(code)
+            if (dest !~ /^([0-9]+-?|-)$/) emit("redirect", "trunc", ">&", dest, 1)
+            continue
+          }
           while (p <= n && substr(code, p, 1) ~ blank) p++
           dest = readword(code)
           emit("redirect", (op == ">>") ? "append" : "trunc", op, dest, 1)
@@ -643,7 +845,14 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           p++
           c2 = substr(code, p, 1)
           if (c2 == "<") { p++; c2 = substr(code, p, 1); if (c2 == "<" || c2 == "-") p++ }
-          else if (c2 == "&" || c2 == ">") p++
+          else if (c2 == "&") p++
+          else if (c2 == ">") {
+            # `<>` opens the word read-write without truncating: bytes written land in the file.
+            p++
+            while (p <= n && substr(code, p, 1) ~ blank) p++
+            emit("redirect", "append", "<>", readword(code), 1)
+            continue
+          }
           while (p <= n && substr(code, p, 1) ~ blank) p++
           readword(code)
           continue
@@ -655,9 +864,10 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
       finish(substr(code, cstart, n - cstart + 1), body)
     }
     BEGIN {
-      target = ENVIRON["IWT_TARGET"]
+      target = tolower(ENVIRON["IWT_TARGET"])
       exact = "^(" target ")$"
-      bounded = ENVIRON["IWT_NAME_START"] "(" target ")" ENVIRON["IWT_NAME_END"]
+      bounded = tolower(ENVIRON["IWT_NAME_START"] "(" ENVIRON["IWT_TARGET"] ")" ENVIRON["IWT_NAME_END"])
+      shellre = "(^|[ \t|;&(])([^ \t|;&()<>]*/)?(bash|sh|zsh|ksh|dash)([ \t]|$)"
       blank = "[ \t]"
       nl = 0
       # A continuation is one command to the shell and two lines to everything here, and the
@@ -696,6 +906,8 @@ instruction_write_targets() { # command-text names-alternation → KIND MODE VER
           STRIP[ndel] = (tok ~ /^<<-/)
         }
         body = ""
+        # A heredoc fed to a shell is a program, so its lines are commands in their own right.
+        if (feedsshell(code)) ndel = 0
         for (k = 1; k <= ndel; k++) {
           stop = 0
           for (j = i; j <= nl; j++) {
@@ -758,16 +970,18 @@ instruction_split_commands() {
 # and prices the dearest class, not one path a live rate could be looked up for.
 instruction_read_rate() {
   local path=$1 home=${2:-$HOME}
+  local dir
   case "$path" in
-    "$home"/.claude/CLAUDE.md) printf 15682 ;;                 # every session, every project
-    */MEMORY.md|*/CLAUDE.md|*/CLAUDE.local.md) printf 3131 ;;  # every session of one project
-    */.claude/instructions/*) printf 160 ;;                    # loaded on topic
-    */SKILL.md|*/.claude/skills/*) printf 90 ;;                # loaded on trigger
-    */projects/*/memory/*.md) printf 160 ;;                    # recalled when its topic comes up
-    "$home"/.claude/docs/*) printf 160 ;;                      # protocol docs, read per task type
-    "$home"/.claude/commands/*) printf 90 ;;                   # loaded when the command is typed
-    "$home"/.claude/agents/*) printf 2500 ;;                   # per spawn of a busy worker
+    "$home"/.claude/CLAUDE.md) printf 15682; return 0 ;;       # every session, every project
+    */MEMORY.md|*/[Cc][Ll][Aa][Uu][Dd][Ee].[Mm][Dd]|*/[Cc][Ll][Aa][Uu][Dd][Ee].[Ll][Oo][Cc][Aa][Ll].[Mm][Dd])
+      printf 3131; return 0 ;;                                 # every session of one project
+    */.claude/instructions/*) printf 160; return 0 ;;          # loaded on topic
+    */[Ss][Kk][Ii][Ll][Ll].[Mm][Dd]|*/.claude/skills/*) printf 90; return 0 ;;  # loaded on trigger
+    */projects/*/memory/*.md) printf 160; return 0 ;;          # recalled when its topic comes up
   esac
+  while IFS= read -r dir; do
+    case "$path" in "$dir"/*) _instruction_class_rate "${dir##*/}"; return 0 ;; esac
+  done < <(_instruction_class_dirs "$home")
 }
 
 # A recall names no path anywhere in the transcript: it hands over the memory's text and nothing
@@ -975,11 +1189,36 @@ instruction_live_rates() {
 # The directories, not just the files in them. A doc that does not exist yet costs the same per
 # month as one that does the moment it is created, and a set built by globbing existing files
 # can only ever guard what is already there.
+# ~/.claude itself, because every markdown file under it is guarded, plus each directory it links
+# into another repository: that repository's spelling is the one anybody editing it types.
 instruction_guarded_dirs() {
   local home=${1:-$HOME} p
+  [ -d "$home/.claude" ] && _instruction_emit "$home/.claude"
   while IFS= read -r p; do
     [ -d "$p" ] && _instruction_emit "$p"
   done < <(_instruction_class_dirs "$home")
+  for p in "$home"/.claude/*; do
+    [ -L "$p" ] && [ -d "$p" ] && _instruction_emit "$p"
+  done
+}
+
+# The two carve-outs from the directory rule, asked of an absolute path the gate already matched.
+# A memory file under ~/.claude/projects is the model's to write (see the MEMORY.md note above),
+# and an ordinary markdown file inside a worktree is repository work, not instruction content: a
+# worktree's own CLAUDE files and `.claude/` tree stay guarded like the repository's.
+instruction_carved_out() { # abs-path [home]
+  local p=$1 home=${2:-$HOME} rest
+  printf '%s' "${p##*/}" | grep -Eqx "$INSTRUCTION_GUARDED_BASENAMES" && return 1
+  case "$p" in "$home"/.claude/projects/*) return 0 ;; esac
+  case "$p" in
+    */.claude/worktrees/*/*)
+      rest=${p##*/.claude/worktrees/}
+      rest=/${rest#*/}
+      case "$rest" in */.claude/*) return 1 ;; esac
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 # Every spelling a shell command can carry for the same bytes. A matcher that knows only the
@@ -1019,9 +1258,17 @@ _instruction_spell_all() {
   done
 }
 
+# $4, when given, is the command text: a path none of whose spellings can stand in it is skipped
+# before the realpath its spellings cost, which is what keeps a set of hundreds affordable ahead of
+# every Bash call. Every spelling ends in the file's own name unless the file is itself a link.
 instruction_all_paths() {
-  local home=${1:-$HOME} cwd=${2:-}
-  instruction_guarded_paths "$home" | _instruction_spell_all "$home" "$cwd"
+  local home=${1:-$HOME} cwd=${2:-} root=${3:-} text=${4:-} p
+  instruction_guarded_paths "$home" "$root" | while IFS= read -r p; do
+    if [ -n "$text" ] && [ ! -L "$p" ]; then
+      case "$text" in *"${p##*/}"*) ;; *) continue ;; esac
+    fi
+    printf '%s\n' "$p"
+  done | _instruction_spell_all "$home" "$cwd"
 }
 
 instruction_all_dirs() {

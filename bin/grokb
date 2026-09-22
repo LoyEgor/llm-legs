@@ -95,7 +95,7 @@ account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|models) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -237,6 +237,132 @@ show_status() {
   done < <(account_names)
 }
 
+# --- The model list: the one list every consumer reads (shared-invariants row `cu`) ---
+models_ttl_s=86400
+
+models_cache_dir() { printf '%s' "${GROKB_CACHE_DIR:-$HOME/.cache/grokb}"; }
+
+models_builtin() {
+  printf '%s\t%s\t%s\n' \
+    grok-4.7 yes grok-4.7 \
+    grok-4.7-build-fast no grok-4.7-build-fast \
+    grok-4.6 no grok-4.6 \
+    grok-4.5 no grok-4.5
+}
+
+models_parse() { # `grok models` output -> slug<TAB>default<TAB>label, in the CLI's own order
+  awk '
+    /^[[:space:]]*Default model:/ { stated = $NF }
+    /^[[:space:]]*Available models:/ { listing = 1; next }
+    listing && $0 ~ /^[[:space:]]*$/ { next }
+    listing {
+      if (($1 != "*" && $1 != "-") || $2 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/) { listing = 0; next }
+      slugs[++n] = $2
+      if (index($0, "(default)")) { marked[$2] = 1; any = 1 }
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        slug = slugs[i]
+        printf "%s\t%s\t%s\n", slug,
+          ((slug in marked) || (!any && slug == stated)) ? "yes" : "no", slug
+      }
+    }'
+}
+
+models_write() { # fetched-at attempted-at rows
+  local cache tmp
+  cache="$(models_cache_dir)/models.json"
+  mkdir -p "$(models_cache_dir)" 2>/dev/null || return 0
+  tmp="$cache.tmp.$$"
+  if printf '%s' "$3" | jq -Rn --argjson fetched "$1" --argjson attempted "$2" '
+       [inputs | select(length > 0) | split("\t")
+        | {slug: .[0], default: (.[1] == "yes"), label: .[2]}] as $models
+       | {fetched_at: $fetched, attempted_at: $attempted,
+          default: (first($models[] | select(.default) | .slug) // ""),
+          models: $models}' >"$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$cache" 2>/dev/null || rm -f "$tmp"
+  else
+    rm -f "$tmp"
+  fi
+}
+
+models_fresh() { [ "$(($1 - $2))" -ge 0 ] && [ "$(($1 - $2))" -lt "$models_ttl_s" ]; } # now stamp
+
+# The list is account-independent, so any signed-in profile answers for all of them; a profile that
+# is not signed in prints an older default, which is why one that is signed in has to be found.
+models_fetch() {
+  local account output
+  # Every signed-in profile in turn: one whose token the CLI rejects answers nothing, and stopping
+  # at it would cache that failure for the whole TTL on a machine that has a working account.
+  while IFS= read -r account; do
+    [ -n "$account" ] || continue
+    output=$(grok_env_run touch "$account" false models 2>/dev/null) || continue
+    output=$(models_parse <<<"$output") || continue
+    [ -n "$output" ] || continue
+    printf '%s\n' "$output"
+    return 0
+  done < <(list_accounts | sed -n 's/^\([a-z0-9][a-z0-9-]*\): Logged in as .*/\1/p')
+  return 1
+}
+
+# A failed refresh stamps attempted_at, so a broken grok is asked once per TTL and not by every hook.
+models_rows() { # refresh(true|false) [no-fetch(true|false)]
+  local cache now fetched=0 attempted=0 rows='' cached='' output no_fetch="${2:-false}"
+  [ "${GROKB_MODELS_NO_FETCH:-}" != 1 ] || no_fetch=true
+  cache="$(models_cache_dir)/models.json"
+  now=$(date +%s)
+  if [ -r "$cache" ] && cached=$(jq -r '
+       [((.fetched_at // 0) | floor), ((.attempted_at // 0) | floor)] as $stamps
+       | ($stamps | map(tostring) | join("\t")),
+         (.models[]? | [.slug, (if .default then "yes" else "no" end), .label]
+          | select(all(type == "string" and length > 0)) | @tsv)' "$cache" 2>/dev/null); then
+    IFS=$'\t' read -r fetched attempted <<<"${cached%%$'\n'*}"
+    [ "${cached#*$'\n'}" = "$cached" ] || rows=${cached#*$'\n'}
+  fi
+  [[ "$fetched" =~ ^[0-9]+$ ]] || fetched=0
+  [[ "$attempted" =~ ^[0-9]+$ ]] || attempted=0
+  if [ "$no_fetch" = false ] &&
+     { [ "$1" = true ] || { ! models_fresh "$now" "$fetched" && ! models_fresh "$now" "$attempted"; }; }; then
+    if output=$(models_fetch); then
+      models_write "$now" "$now" "$output"
+      printf '%s\n' "$output"
+      return 0
+    fi
+    models_write "$fetched" "$now" "$rows"
+  fi
+  if [ -z "$rows" ]; then
+    printf 'grokb: grok models failed; no cache; using the built-in list\n' >&2
+    models_builtin
+    return 0
+  fi
+  models_fresh "$now" "$fetched" ||
+    printf 'grokb: grok models failed; using the models cached at %s\n' \
+      "$(date -u -r "$fetched" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || printf '%s' "$fetched")" >&2
+  printf '%s\n' "$rows"
+}
+
+show_models() {
+  local json=false refresh=false cached=false rows
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true ;;
+      --refresh) refresh=true ;;
+      --cached) cached=true ;;
+      *) printf 'usage: grokb models [--json] [--refresh|--cached]\n' >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [ "$refresh" = false ] || [ "$cached" = false ] ||
+    { printf 'grokb: --refresh and --cached are opposites\n' >&2; exit 2; }
+  rows=$(models_rows "$refresh" "$cached")
+  if [ "$json" = true ]; then
+    printf '%s\n' "$rows" | jq -Rn '[inputs | select(length > 0) | split("\t")
+      | {slug: .[0], default: (.[1] == "yes"), label: .[2]}]'
+  else
+    printf '%s\n' "$rows"
+  fi
+}
+
 pin_account() {
   case "${1:-}" in
     --unpin) worker_model_pin_account grok_profile grokb account_names is_disabled --unpin "${2:-}" ;;
@@ -360,6 +486,7 @@ show_help() {
     'grokb enable <name>|--all            Return an account (or every account) to worker selection.' \
     'grokb disable <name>|--all           Exclude an account (or every account) from the worker pool.' \
     'grokb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
+    'grokb models [--json] [--refresh|--cached]  The model list every consumer reads, newest first; --cached never asks the CLI.' \
     'grokb list                           List profiles with login state.' \
     'grokb status                         Per-account login state and quota.' \
     'grokb export-token <name> --to <path> [--min-seconds N]  Write a renewal-free copy of the saved session for a confined run; rotates one with less than N seconds left first.'
@@ -526,6 +653,10 @@ case "${1:-}" in
   use)
     shift
     pin_account "$@"
+    ;;
+  models)
+    shift
+    show_models "$@"
     ;;
   list)
     [ "$#" -eq 1 ] || { printf 'usage: grokb list\n' >&2; exit 2; }

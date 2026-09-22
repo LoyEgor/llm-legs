@@ -6,6 +6,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PIN="$ROOT/bin/chat-pin"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 
 export HOME="$WORK/home"
@@ -62,6 +66,26 @@ assert "$PIN" grok
 assert chat_is 'grok_profile=*'
 assert "$PIN" claudeb
 assert chat_is 'claudeb_profile=*'
+
+# --- Fast is a modifier of the pin: two lines, written and replaced together ---------------------
+assert "$PIN" grok-fast
+assert chat_is 'grok_profile=*
+grok_fast=on'
+assert contains "$("$PIN")" 'every grok pool account (*) · fast'
+# The plain vendor pin is what turns fast off.
+assert "$PIN" grok
+assert chat_is 'grok_profile=*'
+assert_fails contains "$("$PIN")" 'fast'
+assert "$PIN" codex-fast
+assert chat_is 'codex_profile=*
+codex_fast=on'
+# Only the two CLIs with a fast twin take the word; anything else is an account name and there is
+# no account called that.
+assert exits 2 "$PIN" gemini-fast
+assert contains "$(cat "$WORK/out")" 'unknown account: gemini-fast'
+assert exits 2 "$PIN" claudeb-fast
+assert "$PIN" auto
+assert_fails test -e "$CHAT"
 
 # --- An account name finds its vendor through the live pool -------------------------------------
 assert "$PIN" beta
@@ -181,6 +205,24 @@ assert exits 3 "$PIN" codex
 words_grant grok
 assert "$PIN" grok
 assert chat_is 'grok_profile=*'
+# `grok-fast` is its own target: the vendor's own grant does not open it.
+assert exits 3 "$PIN" grok-fast
+words_grant grok-fast
+assert "$PIN" grok-fast
+assert chat_is 'grok_profile=*
+grok_fast=on'
+# The modifier rides on the vendor word, so the fast grant opens the same escape hatch to `auto`
+# the plain vendor word does — «воркеры на grok быстро» must not leave the chat unable to unpin.
+assert "$PIN" auto
+assert_fails test -e "$CHAT"
+words_grant codex-fast
+assert "$PIN" codex-fast
+assert chat_is 'codex_profile=*
+codex_fast=on'
+assert "$PIN" auto
+assert_fails test -e "$CHAT"
+words_grant grok-fast
+assert "$PIN" grok-fast
 unset WORDS_LIB WORDS_DIR
 rm -f "$GRANT"
 
@@ -189,6 +231,9 @@ rm -f "$GRANT"
 assert [ "$(worker_model_pin_scope grok)" = vendor ]
 assert [ "$(worker_model_pins grok)" = delta ]
 assert [ "$(worker_model_pin_scope codex)" = none ]
+# The fast line rides beside the pin without becoming one, and only for the vendor it names.
+assert worker_model_chat_fast grok
+assert_fails worker_model_chat_fast codex
 
 # A wall that empties the chat file removes it: an empty chat file would still ask for a grant.
 export WORKER_WALLS_DIR="$WORK/walls"
@@ -221,4 +266,4 @@ printf 'codex_profile=*\n' >"$CHAT"
 assert [ -z "$(LLM_LIMITS_FILE="$WORK/missing.json" worker_model_pins codex 2>"$WORK/err")" ]
 assert contains "$(cat "$WORK/err")" "$WORK/missing.json"
 
-printf 'PASS: %s asserts; chat-pin writes one pin line for one chat — a vendor as `*`, an account through the vendor whose live pool holds it, ambiguous and unknown names refused — and inside a session only with a fresh grant naming this chat and this target\n' "$asserts"
+printf 'PASS: %s asserts; chat-pin writes one pin line for one chat — a vendor as `*`, an account through the vendor whose live pool holds it, `codex-fast`/`grok-fast` adding a second `<vendor>_fast=on` line that any other target clears, ambiguous and unknown names refused — and inside a session only with a fresh grant naming this chat and this target\n' "$asserts"

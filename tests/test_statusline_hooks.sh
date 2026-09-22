@@ -8,6 +8,10 @@ WORKER_HOOK="$ROOT/bin/worker-tag-hook.sh"
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 STATUSLINE="$ROOT/bin/statusline.sh"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 
@@ -1488,6 +1492,21 @@ assert grep -Fq "${MAGENTA}gemini${RESET}" <<< "$pin_out"
 write_chat_pin status-pin-star-grok 'grok_profile=*'
 pin_out=$(run_statusline "$(statusline_payload status-pin-star-grok)")
 assert grep -Fq "${MAGENTA}grok${RESET}" <<< "$pin_out"
+
+# A `<vendor>_fast=on` line beside the pin marks the label and nothing else; a fast line the pin
+# does not name is not this vendor's.
+printf 'grok_profile=*\ngrok_fast=on\n' > "$CHAT_PINS_DIR/status-pin-fast-grok"
+pin_out=$(run_statusline "$(statusline_payload status-pin-fast-grok)")
+assert grep -Fq "${MAGENTA}grok⚡${RESET}" <<< "$pin_out"
+
+printf 'codex_profile=alt\ncodex_fast=on\n' > "$CHAT_PINS_DIR/status-pin-fast-acct"
+pin_out=$(run_statusline "$(statusline_payload status-pin-fast-acct)")
+assert grep -Fq "${MAGENTA}alt⚡${RESET}" <<< "$pin_out"
+
+printf 'grok_profile=*\ncodex_fast=on\n' > "$CHAT_PINS_DIR/status-pin-fast-other"
+pin_out=$(run_statusline "$(statusline_payload status-pin-fast-other)")
+assert grep -Fq "${MAGENTA}grok${RESET}" <<< "$pin_out"
+assert test "${pin_out#*⚡}" = "$pin_out"
 
 write_chat_pin status-pin-acct 'codex_profile=alt'
 pin_out=$(run_statusline "$(statusline_payload status-pin-acct)")
@@ -3713,8 +3732,9 @@ for gemini_launch in \
     <<<"$gemini_form_output" >/dev/null
 done
 
-# The launch line's own model has to be the one that shows: `grok-4.6` collapses to the vendor word
-# and would render the same as the knob fallback, so the seed names a model neither path produces.
+# The launch line's own model has to be the one that shows: the default `grokb models` marks
+# collapses to the vendor word and would render the same as the knob fallback, so the seed names a
+# model neither path produces.
 printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
 grok_seed=$(worker_payload grok-worker worker/grok 'Implement it' \
   "env GROK_MEMORY=0 $HOME/.local/bin/grokb profile supergrok --prompt-file /tmp/brief --output-format streaming-json -m grok-4.5 --reasoning-effort xhigh")
@@ -3722,9 +3742,9 @@ grok_seed_output=$(printf '%s' "$grok_seed" | "$WORKER_HOOK") || fail "grok-tag 
 assert_eq 'supergrok · grok-4.5 · xhigh' "$(cat "$TAGDIR/workergrok")"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.5 · xhigh — Implement it"' \
   <<< "$grok_seed_output" >/dev/null
-# `grok-4.6` is the one launch-line model that does collapse to the vendor word.
+# The default of `grokb models` is the one launch-line model that does collapse to the vendor word.
 grok_collapse=$(worker_payload grok-worker worker/grokcollapse 'Implement it' \
-  "grokb profile supergrok --prompt-file /tmp/brief -m grok-4.6 --reasoning-effort xhigh")
+  "grokb profile supergrok --prompt-file /tmp/brief -m grok-4.7 --reasoning-effort xhigh")
 printf '%s' "$grok_collapse" | "$WORKER_HOOK" >/dev/null || fail "grok collapse tag exited nonzero"
 assert_eq 'supergrok · grok · xhigh' "$(cat "$TAGDIR/workergrokcollapse")"
 
@@ -3762,7 +3782,7 @@ assert_eq "" "$grok_interactive_output"
 
 printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
 # The brief's MODEL: line has to reach the row, so it names a model the knob fallback and the
-# `grok-4.6` collapse both cannot produce.
+# default's collapse both cannot produce.
 grok_spawn=$(jq -cn '{
   hook_event_name:"PreToolUse",session_id:"spawn-grok",
   tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
@@ -3783,6 +3803,46 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok
   <<< "$grok_auto_output" >/dev/null
 assert_eq 'supergrok · grok · high' \
   "$(seed_of spawn-grok-auto grok-worker)"
+
+# In a chat pinned with `chat-pin grok-fast` the run launches the `-fast` sibling, so the row has to
+# name it: the hook and `worker-run start` resolve the slug through the one helper, and a row that
+# named the default here would disagree with the launch-line tag a second later.
+printf 'grok_profile=*\ngrok_fast=on\n' >"$CHAT_PINS_DIR/spawn-grok-fast"
+grok_fast_spawn=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-grok-fast",
+  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
+              prompt:"ACCOUNT: supergrok\nEFFORT: high\nWorking directory: /tmp"}}')
+grok_fast_output=$(printf '%s' "$grok_fast_spawn" | "$SPAWN_HOOK") || fail "grok fast spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.7-build-fast · high: Implement fixture"' \
+  <<< "$grok_fast_output" >/dev/null
+assert_eq 'supergrok · grok-4.7-build-fast · high' \
+  "$(seed_of spawn-grok-fast grok-worker)"
+# A brief naming a slug is a choice and travels as named, fast pin or not.
+grok_fast_named=$(jq -cn '{
+  hook_event_name:"PreToolUse",session_id:"spawn-grok-fast",
+  tool_input:{subagent_type:"grok-worker",description:"Implement fixture",
+              prompt:"ACCOUNT: supergrok\nMODEL: grok-4.5\nEFFORT: high\nWorking directory: /tmp"}}')
+assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok-4.5 · high: Implement fixture"' \
+  <<< "$(printf '%s' "$grok_fast_named" | "$SPAWN_HOOK")" >/dev/null
+rm -f "$CHAT_PINS_DIR/spawn-grok-fast"
+
+# A hook runs on the interactive path, so it READS the model list and never refreshes it: a cold
+# cache must not put a 30 s bounded `grok models` in front of the keystroke. The fixture's stub
+# records every call it is handed, and the paired control is what makes the absence mean something.
+grok_signed_in="$WORK/grok-signed-in"
+mkdir -p "$grok_signed_in/supergrok"
+printf '{"key":"k","email":"w@example.com","refresh_token":"r","expires_at":"2099-01-01T00:00:00Z"}\n' \
+  >"$grok_signed_in/supergrok/auth.json"
+env GROKB_PROFILES_DIR="$grok_signed_in" GROKB_CACHE_DIR="$WORK/grok-cold-control" \
+  GROK_FETCH_MARKER="$WORK/grok-fetch-control" "$ROOT/bin/grokb" models >/dev/null 2>&1
+assert test -s "$WORK/grok-fetch-control"
+grok_cold_out=$(printf '%s' "$grok_auto_spawn" |
+  env GROKB_PROFILES_DIR="$grok_signed_in" GROKB_CACHE_DIR="$WORK/grok-cold-cache" \
+    GROK_FETCH_MARKER="$WORK/grok-fetch-hook" "$SPAWN_HOOK") ||
+  fail "cold-cache grok spawn hook exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "supergrok · grok · high: Implement fixture"' \
+  <<< "$grok_cold_out" >/dev/null
+assert test ! -e "$WORK/grok-fetch-hook"
 
 printf 'gemini_model=flash38\ngemini_effort=high\n' > "$HOME/.claude/worker-model"
 spawn_payload=$(jq -cn '{

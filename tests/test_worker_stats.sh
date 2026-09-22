@@ -10,6 +10,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/worker-stats"
 CORPUS="$ROOT/bin/worker-corpus"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 
 asserts=0
@@ -303,7 +307,7 @@ check(wc.valid_model("gpt-6-astra")=="gpt-6-astra","gpt ok")
 check(wc.valid_model("opus")=="opus","opus ok")
 check(wc.valid_model("sonnet")=="sonnet","sonnet ok")
 # grok's served model is the id its `end` event reports, which is not the id the launch asked for.
-check(wc.valid_model("grok-4.6-build")=="grok-4.6-build","grok served model ok")
+check(wc.valid_model("grok-4.7-build")=="grok-4.7-build","grok served model ok")
 check(wc.valid_model("grok-4.5")=="grok-4.5","grok model ok")
 check("grok-worker" in wc.WORKER_TYPES,"grok-worker is a corpus worker type")
 check("gemini-worker" in wc.WORKER_TYPES,"gemini-worker is a corpus worker type")

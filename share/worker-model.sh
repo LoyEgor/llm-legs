@@ -23,10 +23,70 @@ TABLE
     $2 == "pro" { pro = pro sprintf("gemini %s high high - yes\n", $2); next }
     { printf "gemini %s high high - no\n", $2 }
     END { printf "%s", pro }'
+  # `auto` stays the vendor default: it is the CLI's own default model, so a release that moves it
+  # self-integrates, and every slug the list prints is offered beside it.
   cat <<'TABLE'
 grok auto high high,xhigh - no
-grok grok-4.6 high high,xhigh - no
 TABLE
+  worker_model_grok_models | awk -F'\t' '{ printf "grok %s high high,xhigh - no\n", $1 }'
+}
+
+worker_model_grok_models() {
+  "${BASH_SOURCE[0]%/*}/../bin/grokb" models 2>/dev/null
+}
+
+worker_model_grok_default() {
+  worker_model_grok_models | awk -F'\t' '$2 == "yes" { print $1; exit }'
+}
+
+# `auto` is the knob's word for "the CLI's default", and the slug that default resolves to names no
+# more than the vendor word does — on a row beside a claudeb twin of the same account name, the
+# vendor word is what tells them apart. Any other slug is a choice someone made and shows itself.
+worker_model_grok_label() { # model -> what a surface shows
+  local model="${1-}" default
+  default=$(worker_model_grok_default)
+  if [ "$model" = auto ] || { [ -n "$default" ] && [ "$model" = "$default" ]; }; then
+    printf 'grok\n'
+  else
+    printf '%s\n' "$model"
+  fi
+}
+
+# The Build CLI's fast twin of the default model, read off the same list every other reader takes:
+# the slug that carries the default's own prefix and a `-fast` tail. A release that renames either
+# one self-integrates, and a list with no such slug answers nothing rather than a guess.
+worker_model_grok_fast_sibling() {
+  local default sibling
+  default=$(worker_model_grok_default)
+  [ -n "$default" ] || return 1
+  # The separator is required: a bare prefix test would read `grok-4.5-build-fast` as the fast twin
+  # of a default named `grok-4`, and the pin would silently run another model family.
+  sibling=$(worker_model_grok_models |
+    awk -F'\t' -v default="$default" 'index($1, default "-") == 1 && $1 ~ /-fast$/ { print $1; exit }')
+  [ -n "$sibling" ] || return 1
+  printf '%s\n' "$sibling"
+}
+
+# The grok slug a run really launches: `chat-pin grok-fast` swaps the fast twin in for the marked
+# default and for `auto` alone — a brief naming a slug runs unchanged — and only on a WORKERS leg.
+# ONE resolution, because `worker-run` launches off it and the spawn hook labels its task row off
+# it; two would let a row name a model the run does not use.
+worker_model_grok_launch_model() { # model role [chat-pin-file]
+  local model="${1-}" role="${2-}" file="${3-}" default sibling
+  if [ "$role" = workers ]; then
+    [ -n "$file" ] || file=$(worker_model_chat_pin_file) || file=''
+    if [ -n "$file" ] && [ "$(worker_model_pin_line "$file" grok_fast)" = on ]; then
+      default=$(worker_model_grok_default)
+      if [ "$model" = auto ] || { [ -n "$default" ] && [ "$model" = "$default" ]; }; then
+        if sibling=$(worker_model_grok_fast_sibling); then
+          model=$sibling
+        else
+          printf 'grok: `grokb models` lists no fast model; running the default\n' >&2
+        fi
+      fi
+    fi
+  fi
+  printf '%s\n' "$model"
 }
 
 worker_model_gemini_families() {
@@ -230,6 +290,14 @@ worker_model_pin_line() { # file key
     "$1" 2>/dev/null
 }
 
+# Fast mode is a MODIFIER of the chat pin and lives on its second line, `<vendor>_fast=on`: it is
+# written and cleared by the same `chat-pin` call, so it can never outlive the pin it belongs to.
+worker_model_chat_fast() { # vendor
+  local file
+  file=$(worker_model_chat_pin_file) || return 1
+  [ "$(worker_model_pin_line "$file" "${1}_fast")" = on ]
+}
+
 worker_model_pinned_account() {
   local key="$1" file
   case "$key" in
@@ -363,7 +431,10 @@ worker_model_pin_write() { # vendor key op(set|add|remove) argument [file]
     tmp="$file.tmp.$$"
     trap 'rm -f "$tmp"' EXIT
     {
-      if [ -r "$file" ]; then grep -Ev "^${key}(_wall)?=" "$file" || true; fi
+      # A pin that goes takes its own fast line with it: a modifier left behind by a met wall would
+      # keep making that vendor's runs fast with no pin left to read it off.
+      if [ -r "$file" ] && [ -n "$csv" ]; then grep -Ev "^${key}(_wall)?=" "$file" || true
+      elif [ -r "$file" ]; then grep -Ev "^${key}(_wall)?=|^${key%_profile}_fast=" "$file" || true; fi
       [ -z "$csv" ] || printf '%s=%s\n' "$key" "$csv"
     } >"$tmp" || return 2
     if [ ! -s "$tmp" ] && [ "$file" = "$(worker_model_chat_pin_file 2>/dev/null)" ]; then

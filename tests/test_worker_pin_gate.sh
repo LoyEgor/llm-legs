@@ -8,6 +8,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 GATE="$ROOT/bin/worker-pin-gate.sh"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 export CLAUDEB_DIR="$WORK/store"
 unset WORKER_STATS_DIR
@@ -520,7 +524,7 @@ assert allowed "$(jq -cn --arg p "$PIN_FILE" \
 # The same door refuses storing a model no implementation worker may run. Unlike the pin this one
 # takes no grant: a cheap default here silently downgrades every worker after it.
 rm -f "$GRANT"
-for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 gemini_model=flash39 grok_model=grok-4.5 codex_model=gpt-5.6-terra; do
+for bad in claudeb_model=sonnet claudeb_model=haiku gemini_model=flash35 gemini_model=flash39 grok_model=grok-3 codex_model=gpt-5.6-terra; do
   assert denied "$(write_event "$PIN_FILE" "worker=auto
 $bad
 ")"
@@ -530,7 +534,7 @@ done
 # The deny names the offender and the allowed list, and says nothing about the pin.
 model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
-assert contains "$model_deny" 'claudeb opus|fable; codex gpt-6-astra|gpt-5.6-sol; gemini flash38|flash37|flash36|pro; grok auto|grok-4.6'
+assert contains "$model_deny" 'claudeb opus|fable; codex gpt-6-astra|gpt-5.6-sol; gemini flash38|flash37|flash36|pro; grok auto|grok-4.7|grok-4.7-build-fast|grok-4.6|grok-4.5'
 assert lacks "$model_deny" 'is Egor'
 # A grant unblocks the pin and never the model.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
@@ -596,7 +600,7 @@ $good
 ")"
   assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' "$good")"
 done
-for bad in light_edit=openai light_research=claudeb:haiku light_edit=gemini:flash35 light_research=grok:grok-4.5; do
+for bad in light_edit=openai light_research=claudeb:haiku light_edit=gemini:flash35 light_research=grok:grok-3; do
   assert denied "$(write_event "$PIN_FILE" "worker=auto
 $bad
 ")"

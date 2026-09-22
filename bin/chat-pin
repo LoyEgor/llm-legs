@@ -15,14 +15,14 @@ chat_pin_root=$(resolve_root) || exit 2
 . "$chat_pin_root/share/worker-model.sh" || exit 2
 
 VENDORS='claudeb codex gemini grok'
-USAGE='usage: chat-pin [claudeb|claude|codex|gemini|grok|<account>|auto]'
+USAGE='usage: chat-pin [claudeb|claude|codex|gemini|grok|codex-fast|grok-fast|<account>|auto]'
 
 die() { printf 'chat-pin: %s\n' "$1" >&2; exit "${2:-2}"; }
 
 lower() { LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]' <<<"$1"; }
 
 show_state() {
-  local file="$1" line key value vendor
+  local file="$1" line key value vendor fast=''
   line=$(grep -E '^(claudeb|codex|gemini|grok)_profile=' "$file" 2>/dev/null | head -n1)
   if [ -z "$line" ]; then
     printf 'chat-pin: no chat pin — this chat follows the global pin and worker-pick\n'
@@ -31,10 +31,11 @@ show_state() {
   key=${line%%=*}
   value=${line#*=}
   vendor=${key%_profile}
+  grep -qxF "${vendor}_fast=on" "$file" 2>/dev/null && fast=' · fast'
   if [ "$value" = '*' ]; then
-    printf 'chat-pin: this chat pins workers to every %s pool account (*)\n' "$vendor"
+    printf 'chat-pin: this chat pins workers to every %s pool account (*)%s\n' "$vendor" "$fast"
   else
-    printf 'chat-pin: this chat pins workers to %s (%s)\n' "$value" "$vendor"
+    printf 'chat-pin: this chat pins workers to %s (%s)%s\n' "$value" "$vendor" "$fast"
   fi
 }
 
@@ -53,7 +54,9 @@ granted() { # target
     content=$(lower "$content")
     [ -n "$content" ] || return 1
     [ "$content" = "$(lower "$1")" ] && return 0
-    [ "$1" = auto ] && [[ " $VENDORS " = *" $content "* ]]
+    # `воркеры на grok быстро` grants `grok-fast`: the modifier rides on the vendor word and must
+    # not close the documented escape hatch the plain word opens.
+    [ "$1" = auto ] && [[ " $VENDORS " = *" ${content%-fast} "* ]]
     return
   fi
   grant=$(worker_model_chat_pin_grant) || return 1
@@ -92,6 +95,9 @@ case "$arg" in
   auto) target=auto line='' ;;
   claude | claudeb) target=claudeb line='claudeb_profile=*' ;;
   codex | gemini | grok) target=$arg line="${arg}_profile=*" ;;
+  # Two lines, written and replaced together: any other target stores its single line and that is
+  # what turns fast back off.
+  codex-fast | grok-fast) target=$arg line="${arg%-fast}_profile=*"$'\n'"${arg%-fast}_fast=on" ;;
   *)
     [[ "$arg" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] || die "unknown account: $arg"
     vendors=$(account_vendors "$arg")

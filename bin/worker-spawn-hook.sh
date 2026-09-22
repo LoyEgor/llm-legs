@@ -7,6 +7,11 @@
 # leave the call untouched.
 set -u
 
+# A hook runs on the interactive path: it reads the model list, it never refreshes it. A cold
+# or expired cache would otherwise put a 30 s bounded `grok models` in front of the keystroke,
+# and every concurrent hook would start its own.
+export GROKB_MODELS_NO_FETCH=1
+
 input=$(cat) || exit 0
 WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"
 
@@ -134,9 +139,10 @@ elif [ "$subagent" = grok-worker ]; then
   model=$(brief_line MODEL)
   [ -n "$model" ] || model=$(worker_conf grok_model)
   [ -n "$model" ] || model=auto
-  # `auto` is the knob's word for "CLI default", meaningless on a menu row beside a claudeb twin
-  # of the same account name — the vendor word is what tells them apart.
-  case "$model" in auto|grok-4.6) model=grok ;; esac
+  # A relay subagent is always a WORKERS leg, so the fast pin applies here exactly as it does in
+  # `worker-run start`; both resolve the slug through the one helper.
+  model=$(worker_model_grok_launch_model "$model" workers)
+  model=$(worker_model_grok_label "$model")
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")

@@ -3,6 +3,10 @@ set -u
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 fail(){ echo "FAIL: $*" >&2; [ ! -f "$WORK/out" ] || cat "$WORK/out" >&2; [ ! -f "$WORK/err" ] || cat "$WORK/err" >&2; exit 1; }
 asserts=0
 assert(){ asserts=$((asserts + 1)); "$@" || fail "$*"; }
@@ -84,10 +88,10 @@ printf '%s\n' "$*" >>"$VENDOR_LOG"
 [ -z "${FAKE_GROK_EDIT:-}" ] || printf 'written\n' >>"$FAKE_GROK_EDIT"
 if [ -n "${FAKE_GROK_CITATION:-}" ]; then
   jq -cn --arg text "$FAKE_GROK_CITATION" '{type:"text",data:$text}'
-  printf '{"type":"end","modelUsage":{"grok-4.6":{}}}\n'
+  printf '{"type":"end","modelUsage":{"grok-4.7-build":{}}}\n'
   exit 0
 fi
-printf '{"type":"text","data":"grok research answer"}\n{"type":"end","modelUsage":{"grok-4.6":{}}}\n'
+printf '{"type":"text","data":"grok research answer"}\n{"type":"end","modelUsage":{"grok-4.7-build":{}}}\n'
 GROKB
 chmod +x "$BIN"/*
 printf 'Research the repository.\n' >"$WORK/prompt"

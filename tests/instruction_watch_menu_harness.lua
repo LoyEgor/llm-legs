@@ -504,6 +504,20 @@ local ok, err = pcall(function()
         end
         return { start = function() end, stop = function() end }
     end
+    appendEvent("pct-path", "2026-09-22T00:00:01Z", "CHANGED /tmp/a100%d/CLAUDE.md (+1 bytes)",
+        { "/tmp/a100%d/CLAUDE.md" }, { 1 })
+    local pctOk, pctErr = pcall(M.pump)
+    check(pctOk, "a % in a recorded path broke the pump: " .. tostring(pctErr))
+    local twinA, twinB = "dddd4444-0000-4000-8000-00000000000a", "dddd4444-0000-4000-8000-00000000000b"
+    M.setChatResolver(function(_, onDone) onDone("Only one of them (dddd4444)") end)
+    appendEvent("twin-a", "2026-09-22T00:00:02Z", "CHANGED /tmp/twin-a.md (+1 bytes)", nil, { 1 }, nil, twinA)
+    appendEvent("twin-b", "2026-09-22T00:00:03Z", "CHANGED /tmp/twin-b.md (+1 bytes)", nil, { 1 }, nil, twinB)
+    M.pump()
+    local cached = hs.json.decode(readFile(fixture .. "/chat-names.json") or "{}") or {}
+    check(type(cached[twinA]) == "table" and cached[twinA].name == ""
+        and type(cached[twinB]) == "table" and cached[twinB].name == "",
+        "two chats sharing a short id were both given the one name the resolver returned")
+
     local missing = fixture .. "-absent-state"
     M.stop()
     M.setStateDir(missing)

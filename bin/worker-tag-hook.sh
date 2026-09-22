@@ -7,6 +7,11 @@
 # subagent rows can surface the tag. Fail-open everywhere.
 set -u
 
+# A hook runs on the interactive path: it reads the model list, it never refreshes it. A cold
+# or expired cache would otherwise put a 30 s bounded `grok models` in front of the keystroke,
+# and every concurrent hook would start its own.
+export GROKB_MODELS_NO_FETCH=1
+
 input=$(cat) || exit 0
 
 field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
@@ -296,7 +301,7 @@ elif is_grokb_launch &&
   model=$(grab '\-m[= ]+[A-Za-z0-9][A-Za-z0-9_.-]*' | grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*$')
   [ -n "$model" ] || model=$(worker_conf grok_model)
   [ -n "$model" ] || model=auto
-  case "$model" in auto|grok-4.6) model=grok ;; esac
+  model=$(worker_model_grok_label "$model")
   effort=$(grab '\-\-reasoning-effort[= ]+[a-z]+' | grep -oE '[a-z]+$')
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)
   [ -n "$effort" ] || effort=$(worker_model_default_effort grok "$(worker_model_default_model grok)")

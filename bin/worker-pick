@@ -152,14 +152,8 @@ if [ -n "$query_vendor" ] && vendor_paused "$query_vendor"; then
   exit 3
 fi
 worker_mode=$(conf worker); worker_mode=${worker_mode:-auto}
-# The native Sonnet subagent is gone — implementation always runs on a relay worker's account — so
-# a `worker=sonnet` line left behind in the file is read as `auto` rather than as a fifth vendor.
-if [ "$worker_mode" = sonnet ]; then
-  printf 'worker-pick: worker=sonnet is no longer a worker toggle value; routing as auto\n' >&2
-  worker_mode=auto
-fi
-# Silently, unlike the `sonnet` note above: that value is a leftover Egor never chose, while a
-# pause is a decision he made after setting the toggle, and a warning on every run would be noise.
+# Silently: a pause is a decision Egor made after setting the toggle, and a warning on every run
+# would be noise.
 case "$worker_mode" in
   claudeb) [ "$cb_paused" = false ] || worker_mode=auto ;;
   codex) [ "$cx_paused" = false ] || worker_mode=auto ;;
@@ -180,9 +174,9 @@ worker_model_effort_allowed gemini "$gm_model" "$gm_effort" ||
 gr_model=$(conf grok_model); gr_model=${gr_model:-auto}
 gr_effort=$(conf grok_effort); gr_effort=${gr_effort:-$(worker_model_default_effort grok "$gr_model")}
 
-# What the `model·eff` column says a dispatch would launch. The model is the short alias of the one
-# model that vendor's workers run, never a version: grok's `auto` IS `grok-4.6` (shared-invariants
-# row `bk`), so printing the placeholder would name a knob where the column names a model.
+# What the `model·eff` column says a dispatch would launch, abbreviated to the width every vendor
+# row pays for: grok's models all read as the vendor word here (`grokb models` is the list, row
+# `cu`), so `auto` never shows as the knob placeholder it is.
 codex_model=$(codex_model_short_label)
 eff_display() { case "$1" in medium) printf med ;; *) printf '%s' "$1" ;; esac; }
 case "$gr_model" in auto | grok-*) gr_model_display=grok ;; *) gr_model_display=$gr_model ;; esac

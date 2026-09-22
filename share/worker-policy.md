@@ -28,8 +28,8 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 | codex / gpt-5.6-sol | medium | medium, high | low, xhigh | yes |
 | gemini / each Flash slug `geminib families` prints | high | high | — | no |
 | gemini / pro | high | high | — | yes |
-| grok / auto | high | high, xhigh | — | no |
-| grok / grok-4.6 | high | high, xhigh | — | no |
+| grok / auto (the CLI's own default) | high | high, xhigh | — | no |
+| grok / each slug `grokb models` prints | high | high, xhigh | — | no |
 
 Use the first `NEXT` row's account. Effort defaults to `<vendor>_effort` in
 `~/.claude/worker-model`, else the resolved model's table default. Write `EFFORT:` only to move

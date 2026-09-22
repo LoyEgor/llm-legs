@@ -194,7 +194,7 @@ chat_pins_written() { # command → 0 when it writes, copies over or deletes und
   load_share instruction-files.sh instruction_write_targets || return 1
   scan=$(printf '%s' "$1" | instruction_shell_scan 2>/dev/null) || scan=''
   [ -n "$scan" ] || scan=$1
-  grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE|$PIN_LANG_RE" <<<"$scan" &&
+  grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan" &&
     scan=$1
   [ -z "$(instruction_write_targets "$scan" "[^[:space:]]*($names)(/[^[:space:]]*)?")" ] || return 0
   while IFS= read -r -d '' segment; do
@@ -237,13 +237,6 @@ PIN_NAME_RE='[^[:space:]]*worker-model'
 # does not model — it reports where bytes LAND, and these leave none. `chmod` and `chown` are here
 # for the same reason: a pin `worker-pick` can no longer read is a pin gone, whatever its bytes say.
 DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown)([[:space:]]|$)'
-
-# A language runtime hands its payload to a parser of its own, exactly as a shell does, so with the
-# quoted runs resolved the payload is gone and its names go with it. The shell names are the shared
-# module's (`INSTRUCTION_INTERPRETER_RE`), which stops short of these on purpose — the write gate
-# reads a runtime through the interpreter SHAPES instead. This door finds its file by name and has
-# to see the text, so a runtime standing in the command sends it back to the raw command too.
-PIN_LANG_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(python[0-9.]*|perl|ruby|node|bun|deno|php)([[:space:]]|$)'
 
 deny() {
   jq -cn --arg r "$1" \
@@ -323,7 +316,7 @@ case "$MODE" in
     scan=$(printf '%s' "$cmd" | instruction_shell_scan 2>/dev/null) || scan=''
     [ -n "$scan" ] || scan="$cmd"
     ambiguous=''
-    if grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE|$PIN_LANG_RE" <<<"$scan"; then
+    if grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan"; then
       scan="$cmd"
       ambiguous=1
     fi

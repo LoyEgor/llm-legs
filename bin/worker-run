@@ -908,7 +908,11 @@ supervise_codex() {
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
   for value in "${images[@]}"; do command+=(-i "$value"); done
   while IFS= read -r value; do command+=("$value"); done < <(web_search_args codex "$(web_search_meta_state "$meta")")
-  if value=$(codex_fast_tier "$account"); then
+  # The launching chat's fast word travels in meta.json: the supervisor is detached and the chat
+  # pin file it was read from belongs to a session this process cannot name.
+  if [ "$(jq -r '.fast // false' "$meta")" = true ]; then
+    command+=(--enable fast_mode -c 'service_tier="priority"')
+  elif value=$(codex_fast_tier "$account"); then
     if [ "$value" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
     else command+=(--disable fast_mode -c 'service_tier="default"'); fi
   fi
@@ -1914,7 +1918,7 @@ start_run() {
   local round_source='' text_rule='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
-  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role=''
   local recipe='' recipe_brief='' light_scope='' light_verify='' light_worktree='' light_shared_top='' light_offrow=false
   local light_relative='' light_base=''
   local -a recipe_sets=()
@@ -2145,6 +2149,19 @@ start_run() {
     model=${model:-$(config_value "${vendor}_model")}
     model=${model:-$(worker_model_default_model "$vendor")}
   fi
+  # Fast is the chat pin's modifier and it is WORKERS ONLY (Egor): a research or light leg carries
+  # the model its own row names, whatever this chat asked for.
+  chat_fast=false
+  if [ "$role" = workers ] && [ -z "$light" ] && worker_model_chat_fast "$vendor"; then
+    chat_fast=true
+  fi
+  # One resolution for the slug a fast chat launches; the spawn hook labels its row through the
+  # same helper, so the row and the run can never name different models.
+  if [ "$vendor" = grok ]; then
+    fast_role=$role
+    [ -z "$light" ] || fast_role=light
+    model=$(worker_model_grok_launch_model "$model" "$fast_role")
+  fi
   effort=${effort:-$(config_value "${vendor}_effort")}
   effort=${effort:-$(worker_model_default_effort "$vendor" "$model" "$model_class")}
   # Gemini is raised, never refused: Egor's rule is high on every Gemini leg, and a brief asking for
@@ -2298,7 +2315,9 @@ start_run() {
       for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
       for value in "${images[@]}"; do command+=(-i "$value"); done
       while IFS= read -r value; do command+=("$value"); done < <(web_search_args codex "$web_search_state")
-      if fast_tier=$(codex_fast_tier "$account"); then
+      # The chat's own word outranks the account's standing switch for this run alone.
+      if [ "$chat_fast" = true ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
+      elif fast_tier=$(codex_fast_tier "$account"); then
         if [ "$fast_tier" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
         else command+=(--disable fast_mode -c 'service_tier="default"'); fi
       fi
@@ -2334,7 +2353,7 @@ start_run() {
       command_meta+=(--print BRIEF_TEXT)
       ;;
     grok)
-      case "$model" in auto|grok-4.6) model_label=grok ;; *) model_label=$model ;; esac
+      model_label=$(worker_model_grok_label "$model")
       # No turn cap unless one is asked for: an implementation brief is bounded by the wall-clock
       # deadline like every other vendor's, and a cap ends a run the vendor was still serving.
       grok_turns=${WORKER_RUN_GROK_MAX_TURNS:-}
@@ -2388,12 +2407,13 @@ start_run() {
     --arg round_source "$round_source" \
     --argjson pid 0 --argjson started_at "$started" --argjson cmd "$cmd_json" \
     --argjson add_dirs "$add_dirs_json" --argjson images "$images_json" --argjson web_search "$web_search" \
-    --argjson chrome "$chrome" --argjson browser "$browser" \
+    --argjson chrome "$chrome" --argjson browser "$browser" --argjson chat_fast "$chat_fast" \
     --arg browser_device "$browser_device" --arg browser_account "$browser_account" \
     --arg light "$light" --arg light_worktree "$light_worktree" --arg light_shared_top "$light_shared_top" \
     --arg light_base "$light_base" \
     '{vendor:$vendor,account:$account,model:$model,effort:$effort,role:$role,research_timeout:$research_timeout,sandbox_exec:$sandbox_exec,workdir:$workdir,pid:$pid,cmd:$cmd,started_at:$started_at,resume:$resume,cli:$cli,add_dirs:$add_dirs,images:$images,web_search:$web_search,chrome:$chrome,browser:$browser,explicit_model:$explicit_model,explicit_effort:$explicit_effort}
      + {explicit_account:$explicit_account}
+     + if $chat_fast then {fast:true} else {} end
      + if $light != "" then {light:$light} else {} end
      + if $light_worktree != "" then {light_worktree:$light_worktree,light_shared_top:$light_shared_top,light_base:$light_base} else {} end
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end

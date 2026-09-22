@@ -4,6 +4,10 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/bin/worker-run"
 WORK="$(mktemp -d)"
+# Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
+# `grok` CLI behind it can never be reached (row `cu`).
+export GROKB_CACHE_DIR="$WORK/grokb-cache"
+. "$ROOT/tests/fixtures/grokb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2; exit 1; }
@@ -2456,6 +2460,20 @@ start_ok codex --account resumeacct
 assert await_done
 assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
 assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
+
+# `chat-pin codex-fast` outranks the account's standing switch for the runs of this chat alone, and
+# travels to the detached supervisor in meta.json.
+clear_stub
+mkdir -p "$CHAT_PINS_DIR"
+printf 'codex_profile=*\ncodex_fast=on\n' >"$CHAT_PINS_DIR/chat-codex-fast"
+CLAUDE_CODE_SESSION_ID=chat-codex-fast start_ok codex --account resumeacct
+assert test "$(jq -r '.fast' "$RUN_DIR/meta.json")" = true
+assert await_done
+assert grep -qxF 'ARG=--enable' "$CALL_LOG"
+assert grep -qxF 'ARG=fast_mode' "$CALL_LOG"
+assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
+rm -f "$CHAT_PINS_DIR/chat-codex-fast"
 rm -r "$HOME/.codex-profiles/.codexb/fast-mode"
 
 # codex resume cannot carry --add-dir; refuse before launching anything.
@@ -5346,7 +5364,7 @@ assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert grep -qx 'SESSION: 01a05811-7788-7d22-a9c9-c028072cbff5' "$WORK/wait.out"
 assert meta_account_is grokacct
-assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = grok-4.6-build
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = grok-4.7-build
 # No turn cap by default: the wall-clock deadline is the runaway guard here as it is for claudeb,
 # codex and gemini, and a cap borrowed from short reviewer cells ends an implementation brief the
 # vendor was still serving.
@@ -5367,17 +5385,58 @@ assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 assert grep -qx 'grok result' <<<"$("$RUNNER" report "$RUN_ID")"
 
 clear_stub
+# A model that is not the one `grokb models` marks default is its own label; only that default
+# and `auto` collapse to the vendor word.
 set_config 'grok_model=grok-4.6' 'grok_effort=high'
 start_ok grok
-assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
-assert grep -qx 'grokacct · grok · high' "$RUN_DIR/tag"
+assert grep -qx 'TAG: grokacct · grok-4.6 · high' "$WORK/start.out"
+assert grep -qx 'grokacct · grok-4.6 · high' "$RUN_DIR/tag"
 assert await_done
 assert grep -qx 'ARG=-m' "$CALL_LOG"
 assert grep -qx 'ARG=grok-4.6' "$CALL_LOG"
 assert grep -qx 'ARG=--reasoning-effort' "$CALL_LOG"
 assert grep -qx 'ARG=high' "$CALL_LOG"
 
-# `xhigh` exists on grok-4.6 alone and the CLI is what knows: it travels as asked instead of being
+# --- fast is the chat pin's modifier, and it is workers only -------------------------------------
+# `chat-pin grok-fast` writes `grok_fast=on` beside the pin: the default model becomes the `-fast`
+# sibling `grokb models` lists beside it, carrying that slug's own label instead of the vendor word.
+mkdir -p "$CHAT_PINS_DIR"
+printf 'grok_profile=*\ngrok_fast=on\n' >"$CHAT_PINS_DIR/chat-fast"
+clear_stub
+set_config 'grok_model=auto' 'grok_effort=high'
+CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
+assert grep -qx 'TAG: grokacct · grok-4.7-build-fast · high' "$WORK/start.out"
+assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = grok-4.7-build-fast
+assert await_done
+assert grep -qx 'ARG=-m' "$CALL_LOG"
+assert grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+
+# A model someone named is a choice and travels as named: fast stands in for the default and for
+# `auto`, never for that.
+clear_stub
+set_config 'grok_model=grok-4.6' 'grok_effort=high'
+CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok
+assert grep -qx 'TAG: grokacct · grok-4.6 · high' "$WORK/start.out"
+assert await_done
+assert grep -qx 'ARG=grok-4.6' "$CALL_LOG"
+
+# Research is not a worker leg and never takes it (Egor).
+clear_stub
+set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok'
+CLAUDE_CODE_SESSION_ID=chat-fast start_ok grok --role research
+assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
+assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = auto
+assert await_done
+
+# Another chat's fast line is not this chat's.
+clear_stub
+set_config 'grok_model=auto' 'grok_effort=high'
+CLAUDE_CODE_SESSION_ID=chat-plain start_ok grok
+assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
+assert await_done
+rm -f "$CHAT_PINS_DIR/chat-fast"
+
+# `xhigh` is the CLI's to know: it travels as asked instead of being
 # clamped here, and only an effort no grok has is refused before launch.
 clear_stub
 start_ok grok --effort xhigh
@@ -5911,14 +5970,14 @@ export PICK_RC=0 PICK_ACCOUNT=picked
 printf 'picked\n' >"$STUB_DIR/gemini_profiles"
 for spec in 'claudeb:sonnet' 'claudeb:haiku' 'codex:gpt-5.6-terra' \
             'codex:gpt-5.6-luna' 'codex:gpt-5.6' 'gemini:flash' \
-            'gemini:flash35' 'gemini:flash39' 'grok:grok-4.5'; do
+            'gemini:flash35' 'gemini:flash39' 'grok:grok-3'; do
   vendor=${spec%%:*}
   bad=${spec#*:}
   assert model_refused "$vendor" "$bad" --model "$bad"
 done
 
 # The same refusal when the toggle file carries it and no brief names a model at all.
-for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-4.5'; do
+for spec in 'claudeb:claudeb_model=sonnet' 'gemini:gemini_model=flash35' 'grok:grok_model=grok-3'; do
   vendor=${spec%%:*}
   key=${spec#*:}
   set_config "$key" 'claudeb_effort=high' 'codex_effort=medium' 'gemini_effort=high' 'grok_effort=high'

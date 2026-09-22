@@ -46,7 +46,8 @@ local function runOpenCommand(sid, onDone)
 end
 local openCommandFn = runOpenCommand
 
-local DEFAULT_STATE = (os.getenv("HOME") or "") .. "/.cache/claude-instruction-watch"
+local DEFAULT_STATE = os.getenv("INSTRUCTION_WATCH_STATE")
+    or ((os.getenv("HOME") or "") .. "/.cache/claude-instruction-watch")
 local JOURNAL_TAIL = 200    -- records kept in memory; the writer trims the file to the same order
 local MENU_ROWS = 12
 local ALERT_BURST = 3       -- alerts one pump may put on screen before it collapses the rest
@@ -153,7 +154,7 @@ local function shortSummary(event)
         for _, file in ipairs(files) do
             if type(file) == "string" and file ~= "" then
                 local plain = file:gsub("(%W)", "%%%1")
-                summary = summary:gsub(plain, shortPath(file), 1)
+                summary = summary:gsub(plain, (shortPath(file):gsub("%%", "%%%%")), 1)
             end
         end
     else
@@ -295,8 +296,8 @@ end
 -- and its space in front say which record a delta belongs to.
 local function segment(summary, file)
     local plain = file:gsub("(%W)", "%%%1")
-    local verb, delta = summary:match("(%u+) " .. plain .. " %(([%+%-]%d+) bytes%)")
-    if not verb then verb = summary:match("(%u+) " .. plain .. "%f[^%w/%.%-_]") or summary:match("(%u+) " .. plain .. "$") end
+    local verb, delta = summary:match("([%u%-]+) " .. plain .. " %(([%+%-]%d+) bytes%)")
+    if not verb then verb = summary:match("([%u%-]+) " .. plain .. "%f[^%w/%.%-_]") or summary:match("([%u%-]+) " .. plain .. "$") end
     return verb, delta
 end
 
@@ -387,8 +388,13 @@ resolveChatNames = function(events)
             local name, short = line:match("^(.-) %((%x+)%)$")
             if name and short then found[short] = line end
         end
+        -- The resolver answers by short id, so two asked ids sharing one are left unnamed rather
+        -- than both handed whichever chat answered first.
+        local shared = {}
+        for _, sid in ipairs(ask) do shared[sid:sub(1, 8)] = (shared[sid:sub(1, 8)] or 0) + 1 end
         for _, sid in ipairs(ask) do
-            names[sid] = { name = found[sid:sub(1, 8)] or "", at = now }
+            local short = sid:sub(1, 8)
+            names[sid] = { name = shared[short] == 1 and found[short] or "", at = now }
         end
         writeFile(chatCachePath(), hs.json.encode(names))
         if chatRerun then
