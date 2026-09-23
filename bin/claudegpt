@@ -21,7 +21,8 @@ import chat_resume  # noqa: E402
 import gateway_auth  # noqa: E402
 
 
-MODELS = {"sol": "gpt-5.6-sol", "astra": "gpt-6-astra"}
+FAMILIES = ("sol", "astra")
+CODEXB = Path(__file__).resolve().parent / "codexb"
 CONTEXT_WINDOW = 872000
 CONTEXT_ENV = {
     "CLAUDE_CODE_MAX_CONTEXT_TOKENS": str(CONTEXT_WINDOW),
@@ -41,6 +42,20 @@ def menu_settings():
 
 def fail(message):
     raise SystemExit("claudegpt: " + message)
+
+
+def codex_models():
+    models = {}
+    for family in FAMILIES:
+        try:
+            slug = subprocess.run([str(CODEXB), "models", "--family", family], capture_output=True,
+                                  text=True, timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            slug = ""
+        if not slug:
+            fail(f"`codexb models` lists no {family} model")
+        models[family] = slug
+    return models
 
 
 def account_dir(name):
@@ -222,7 +237,7 @@ def main():
     parser = argparse.ArgumentParser(description="Claude Code with an explicit OpenAI account")
     parser.add_argument("action", choices=["p", "profile", "login", "list"])
     parser.add_argument("account", nargs="?")
-    parser.add_argument("--model", choices=MODELS, default="sol")
+    parser.add_argument("--model", choices=FAMILIES, default="sol")
     args, forwarded = parser.parse_known_args()
     if forwarded[:1] == ["--"]:
         forwarded = forwarded[1:]
@@ -300,6 +315,7 @@ def main():
                 lock.close()
                 lock = None
             bridge_auth = auth
+        models = codex_models()
         proxy = None
         keeper = None
         stopped = threading.Event()
@@ -313,7 +329,7 @@ def main():
                 try:
                     with urllib.request.urlopen(endpoint + "/v1/models", timeout=1) as response:
                         available = {m["id"] for m in json.load(response).get("data", [])}
-                    if MODELS[args.model] in available:
+                    if models[args.model] in available:
                         break
                 except (OSError, ValueError):
                     pass
@@ -324,7 +340,7 @@ def main():
             run_setup(db, ["init"], env)
             run_setup(db, ["provider", "add", "openai", "--type", "anthropic-compatible",
                            "--base-url", endpoint, "--no-api-key"], env)
-            for alias, model in MODELS.items():
+            for alias, model in models.items():
                 run_setup(db, ["model", "add", alias, "--provider", "openai", "--model", model], env)
                 run_setup(db, ["model", "update", alias, "--tools", "true", "--tool-choice", "true",
                                "--streaming", "true", "--system-messages", "true", "--thinking", "true",

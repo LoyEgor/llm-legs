@@ -121,7 +121,10 @@ These variables are removed before `worker-run` starts its own vendor sessions.
 No global Claude settings are changed. Relaunch to apply the window to an existing
 conversation; statusline changes apply on its next render.
 
-Capacity evidence (2026-09-07): `sol` routes to `gpt-5.6-sol`, `astra` to
+`sol` and `astra` are family words: each launch routes them to the newest slug of that family
+`codexb models --family` names (shared-invariants row `cv`), so a new Codex version needs no edit.
+
+Capacity evidence (2026-09-07): `sol` then routed to `gpt-5.6-sol`, `astra` to
 `gpt-6-astra`. The locally fetched Codex model catalog reports `context_window`
 272000 and `max_context_window` 872000 for both. The [public API catalog](https://developers.openai.com/api/docs/models/compare)
 reports 1,050,000 for both, but that is not this subscription transport’s catalog.
@@ -194,8 +197,8 @@ retention window rather than a guess. It cannot, on three independent grounds.
    ("remains eligible for reuse for 30 minutes after its most recent write or reuse",
    earlier models "typically ... around 5 to 10 minutes"), not as a guarantee a
    countdown could render.
-3. **The published window does not describe this transport.** `gpt-5.6-sol` and
-   `gpt-6-astra` here are subscription aliases reached through the Codex backend, not
+3. **The published window does not describe this transport.** The `sol` and
+   `astra` slugs here are subscription aliases reached through the Codex backend, not
    the public API catalog — the same catalog that reports a 1,050,000-token context
    window for models this transport serves at 872,000 (see Capacity evidence above).
    Codex CLI has the identical shape and does not surface a cache TTL either: its

@@ -24,6 +24,7 @@ export GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/geminib"
 . "$ROOT/tests/fixtures/geminib-families.sh"
 export GROKB_CACHE_DIR="$CONSISTENCY_CACHE/grokb"
 . "$ROOT/tests/fixtures/grokb-models.sh"
+. "$ROOT/tests/fixtures/codexb-models.sh"
 
 asserts=0
 fail() { printf 'FAIL: %s\n  (canonical values live in %s)\n' "$*" "$DOC" >&2; exit 1; }
@@ -148,7 +149,7 @@ for alias in sol astra; do
   label=$(python3 -c 'import sys; print(sys.argv[1].capitalize())' "$alias")
   assert grep -Fq "anthropic.ccr.$alias) model=$label ;;" "$STATUSLINE"
   assert grep -Fq "\"$alias\": \"$label\"" "$CHAT_RESUME"
-  assert grep -Fq "\"$alias\": \"gpt-" "$ROOT/bin/claudegpt"
+  assert grep -Fq "\"$alias\"" <(grep '^FAMILIES = ' "$ROOT/bin/claudegpt")
   assert doc_has "\`anthropic.ccr.$alias\`"
 done
 # The prefix is spelled once on the reader side; a second literal is a second answer.
@@ -168,7 +169,8 @@ assert grep -q 'anthropic%.ccr%.' "$HS_COMPACT"
 assert doc_has 'The `anthropic.ccr.` model-id prefix'
 # The launcher's own aliases stay bare: prefixing them would send the router a model it has no
 # provider for.
-assert grep -Fq 'MODELS = {"sol": "gpt-' "$CLAUDEGPT"
+assert grep -Fqx 'FAMILIES = ("sol", "astra")' "$CLAUDEGPT"
+assert grep -Fq '"models", "--family", family' "$CLAUDEGPT"
 
 # --- Row ce: gateway context window and its derived cuts ---------------------
 # The nudge ceiling and Claude Code's autocompact trigger are the SAME number by construction: a
@@ -723,10 +725,38 @@ assert doc_has '`grokb models [--json] [--refresh|--cached]`'
 WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
 PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
 assert test -r "$WORKER_MODEL_SH"
+# --- Row cv: the Codex model list and the family word --------------------------
+# ONE list: the builtin fallback and a cache read share one row format, the table keys codex on the
+# family word, and every launcher resolves that word through `codexb models --family`.
+CODEXB_BIN="$ROOT/bin/codexb"
+WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
+codex_rows_ok() {
+  awk -F'\t' 'NF != 6 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || $5 !~ /^[yn]$/ || $6 !~ /^[a-z,]+$/ { bad = 1 }
+              $5 == "y" { defaults++ }
+              END { exit (bad || NR == 0 || defaults != 1) }'
+}
+assert codex_rows_ok < <(CODEXB_MODELS_CACHE=/nonexistent "$CODEXB_BIN" models 2>/dev/null)
+assert codex_rows_ok < <("$CODEXB_BIN" models)
+assert eq "$(CODEXB_MODELS_CACHE=/nonexistent "$CODEXB_BIN" models --json 2>/dev/null | jq -r '.[0].source')" builtin
+assert eq "$("$CODEXB_BIN" models --json | jq -r '[.[] | [.slug, .family, (.version // "-"), .label, (if .default then "y" else "n" end), (.efforts | join(","))] | @tsv] | join("\n")')" \
+  "$("$CODEXB_BIN" models)"
+assert eq "$(awk '$1 == "codex" { print $2 }' <(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH") | tr '\n' ' ')" 'astra sol '
+for family in astra sol; do
+  assert eq "$(bash -c '. "$1"; worker_model_codex_slug "$2"' _ "$WORKER_MODEL_SH" "$family")" \
+    "$("$CODEXB_BIN" models --family "$family")"
+done
+assert grep -Fq 'worker_model_codex_slug "$model"' "$ROOT/bin/worker-run"
+assert grep -Fq 'worker_model_codex_slug "$(worker_model_default_model codex)"' "$CODEXB_BIN"
+assert grep -Fq 'models_builtin() { # slug<TAB>label<TAB>priority<TAB>visibility<TAB>efforts' "$CODEXB_BIN"
+assert test "$(grep -Ec 'gpt-[0-9.]+-(astra|sol)' "$WORKER_MODEL_SH" "$ROOT/bin/claudegpt" "$ROOT/bin/worker-run" | awk -F: '{ n += $2 } END { print n }')" -eq 0
+assert doc_has 'Codex model list'
+assert doc_has '`codexb models [--json] [--all] [--family <word>]`'
+assert doc_has '`worker_model_codex_slug`'
+
 assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
-codex gpt-6-astra low low,medium,high xhigh no
-codex gpt-5.6-sol medium medium,high low,xhigh yes
+codex astra low low,medium,high xhigh no
+codex sol medium medium,high low,xhigh yes
 gemini flash38 high high - no
 gemini flash37 high high - no
 gemini flash36 high high - no
@@ -822,7 +852,7 @@ assert test "$(grep -n 'refuse_cheap_model "$vendor" "$model"' "$WORKER_RUN" | c
 # Prose sites, each naming the same four allowed models and the refusal by name.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   "$ROOT/docs/DIAGNOSTICS.md" "$WORKER_COMMAND"; do
-  assert grep -Fq 'gpt-6-astra' "$site"
+  assert grep -Fq 'astra' "$site"
   assert grep -Fq 'MODEL_REFUSED' "$site"
 done
 # grok's list is not a literal any more: a site spelling one out is a list that will drift.
@@ -831,6 +861,13 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   assert grep -Fq 'grokb models' "$site"
   # Named, never spelled: a grok model literal on the line that states the list is the drift.
   assert test "$(grep -F 'grokb models' "$site" | grep -Ec 'grok-4\.[0-9]')" -eq 0
+# Codex is named by its family word; a slug on these pages is a version that will go stale.
+for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
+  "$ROOT/docs/DIAGNOSTICS.md"; do
+  assert grep -Fq 'codex `astra`' "$site"
+  assert grep -Fq 'codexb models' "$site"
+  assert test "$(grep -F 'codex `astra`' "$site" | grep -Ec 'gpt-[0-9.]+-(astra|sol)')" -eq 0
+done
 done
 # The relay briefs may not offer a cheap model as a per-task MODEL: option.
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
@@ -839,7 +876,7 @@ for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
   assert test "$(grep -Ev '^model: ' "$agent" | grep -Eic '(sonnet|haiku|flash3[0-59]|gpt-5\.6-(terra|luna))')" -eq 0
 done
 assert doc_has 'Allowed worker models'
-assert doc_has 'claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto` (the CLI'"'"'s own default, plus every slug `grokb models` prints, row `cu`)'
+assert doc_has 'claudeb `opus`, codex `astra` (the newest slug of the family `codexb models` lists, row `cv`), gemini the newest Flash family `geminib families` prints, the table'"'"'s first gemini row since `pro` is emitted last whatever its version (also every other slug the list prints, row `cr`), grok `auto` (the CLI'"'"'s own default, plus every slug `grokb models` prints, row `cu`)'
 
 SPAWN_HOOK="$ROOT/bin/worker-spawn-hook.sh"
 assert grep -Fq 'acct=$(worker_model_pin_first gemini' "$SPAWN_HOOK"
@@ -902,9 +939,10 @@ assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNT
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
 # Review keeps Sol; implementation runs Astra independently (Egor, 2026-09-05).
-assert grep -Fq '"sol": "gpt-5.6-sol"' "$ROOT/../review-bench/share/rbench/catalog.py"
+assert grep -Fq 'CODEX_CELLS = ("sol", "astra")' "$ROOT/../review-bench/share/rbench/catalog.py"
+assert grep -Fq '"models", "--family"' "$ROOT/../review-bench/share/rbench/catalog.py"
 assert grep -Fq '("sol", 1)' "$ROOT/../review-bench/share/rbench/catalog.py"
-assert eq "$(bash -c ' . "$1"; worker_model_default_model codex' _ "$WORKER_MODEL_SH")" 'gpt-6-astra'
+assert eq "$(bash -c ' . "$1"; worker_model_default_model codex' _ "$WORKER_MODEL_SH")" 'astra'
 assert eq "$(grep -c worker_model_allowed_models "$ROOT/../review-bench/share/rbench/launch.py")" 0
 
 # --- Row n: weekly bucket provenance ----------------------------------------

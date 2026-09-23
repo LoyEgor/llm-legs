@@ -14,8 +14,8 @@ worker_model_table() {
   cat <<'TABLE'
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
-codex gpt-6-astra low low,medium,high xhigh no
-codex gpt-5.6-sol medium medium,high low,xhigh yes
+codex astra low low,medium,high xhigh no
+codex sol medium medium,high low,xhigh yes
 TABLE
   # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
   # Pro newer than every Flash would otherwise make the word-gated model everyone's default.
@@ -89,6 +89,37 @@ worker_model_grok_launch_model() { # model role [chat-pin-file]
   printf '%s\n' "$model"
 }
 
+# A codex slug is `gpt-<version>-<family>`; a slug with no word after the version (`gpt-5.5`) or
+# no version at all is a family of its own. `codexb models` ranks by this split and the table keys
+# on the family, so both read this one rule.
+worker_model_codex_split() { # slug -> family<TAB>version (`-` when none)
+  local slug="${1-}"
+  if [[ "$slug" =~ ^gpt-([0-9]+(\.[0-9]+)*)-(.+)$ ]]; then
+    printf '%s\t%s\n' "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}"
+  elif [[ "$slug" =~ ^gpt-([0-9]+(\.[0-9]+)*)$ ]]; then
+    printf '%s\t%s\n' "$slug" "${BASH_REMATCH[1]}"
+  else
+    printf '%s\t-\n' "$slug"
+  fi
+}
+
+worker_model_codex_family() { # word or slug -> the family word the table keys on
+  local split
+  split=$(worker_model_codex_split "${1-}")
+  printf '%s\n' "${split%%$'\t'*}"
+}
+
+# The slug a codex launch runs: a family word follows the vendor's newest listed member, and a full
+# slug is a deliberate pin and passes through.
+worker_model_codex_slug() { # word-or-slug
+  local model="${1-}"
+  [ -n "$model" ] || return 1
+  case "$model" in
+    gpt-*) printf '%s\n' "$model" ;;
+    *) "${BASH_SOURCE[0]%/*}/../bin/codexb" models --family "$model" 2>/dev/null ;;
+  esac
+}
+
 worker_model_gemini_families() {
   "${BASH_SOURCE[0]%/*}/../bin/geminib" families 2>/dev/null
 }
@@ -126,15 +157,19 @@ worker_model_default_model() {
   printf '%s\n' "${models%%$'\n'*}"
 }
 
+worker_model_row_key() { # vendor model -> the name the table keys the model on
+  if [ "${1-}" = codex ]; then worker_model_codex_family "${2-}"; else printf '%s\n' "${2-}"; fi
+}
+
 worker_model_default_effort() { # vendor model [class]
-  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="${2-}" '
+  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
     $1 == vendor && $2 == model { print $3; found = 1; exit }
     END { if (!found) exit 2 }
   '
 }
 
 worker_model_effort_list() { # vendor model [class]
-  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="${2-}" '
+  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
     $1 == vendor && $2 == model {
       found = 1; sep = ""
       for (col = 4; col <= 5; col++) {
@@ -164,7 +199,7 @@ worker_model_allows() { # vendor model [class]
   local allowed
   allowed=$(worker_model_allowed_models "${1-}" "${3-}") || return 2
   [ -n "${2-}" ] || return 1
-  grep -qxF -- "${2-}" <<<"$allowed"
+  grep -qxF -- "$(worker_model_row_key "${1-}" "${2-}")" <<<"$allowed"
 }
 
 # The vendor's allowed ids as one phrase a refusal can quote, so no consumer respells the list.

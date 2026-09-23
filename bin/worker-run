@@ -897,12 +897,12 @@ supervise_codex() {
   images=("${REPLY_ARRAY[@]}")
   if [ -n "$resume" ]; then
     command=("$cli" exec resume "$resume")
-    value=$(jq -r '.explicit_model // empty' "$meta")
+    value=$(jq -r 'if (.explicit_model // "") != "" then .model_id // .explicit_model else empty end' "$meta")
     [ -z "$value" ] || command+=(-m "$value")
     value=$(jq -r '.explicit_effort // empty' "$meta")
     [ -z "$value" ] || command+=(-c "model_reasoning_effort=$value")
   else
-    command=("$cli" exec -C "$(jq -r '.workdir' "$meta")" -m "$model" -c "model_reasoning_effort=$effort" --color never)
+    command=("$cli" exec -C "$(jq -r '.workdir' "$meta")" -m "$(jq -r '.model_id // .model' "$meta")" -c "model_reasoning_effort=$effort" --color never)
   fi
   [ "$(jq -r '.role // "workers"' "$meta")" != research ] || command+=(--sandbox read-only)
   for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
@@ -950,6 +950,7 @@ supervise_codex() {
 
 supervise_gemini() {
   local directory="$1" meta="$1/meta.json" account agy_model resume cli prompt value rc
+      value=$(worker_model_codex_slug "$value") && [ -n "$value" ] || return "$rc"
   local -a command add_dirs
   account=$(jq -r '.account' "$meta")
   agy_model=$(jq -r '.agy_model' "$meta")
@@ -1918,7 +1919,7 @@ start_run() {
   local round_source='' text_rule='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
-  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role='' model_id=''
   local recipe='' recipe_brief='' light_scope='' light_verify='' light_worktree='' light_shared_top='' light_offrow=false
   local light_relative='' light_base=''
   local -a recipe_sets=()
@@ -2214,6 +2215,10 @@ start_run() {
     browser_account=$explicit_account
   fi
 
+  if [ "$vendor" = codex ] && ! { model_id=$(worker_model_codex_slug "$model") && [ -n "$model_id" ]; }; then
+    outcome_line MODEL_REFUSED
+    fail "codex model $model names no model \`codexb models\` lists. Nothing was launched and no account was spent."
+  fi
   if [ -n "$explicit_account" ]; then
     account="$explicit_account"
   else
@@ -2306,10 +2311,10 @@ start_run() {
         # `exec resume` keeps the session's own model unless told otherwise, so
         # only an explicit request overrides it — config defaults must not.
         command=("$cli" exec resume "$resume")
-        [ -z "$explicit_model" ] || command+=(-m "$explicit_model")
+        [ -z "$explicit_model" ] || command+=(-m "$model_id")
         [ -z "$explicit_effort" ] || command+=(-c "model_reasoning_effort=$explicit_effort")
       else
-        command=("$cli" exec -C "$workdir" -m "$model" -c "model_reasoning_effort=$effort" --color never)
+        command=("$cli" exec -C "$workdir" -m "$model_id" -c "model_reasoning_effort=$effort" --color never)
       fi
       [ "$role" != research ] || command+=(--sandbox read-only)
       for value in "${add_dirs[@]}"; do command+=(--add-dir "$value"); done
@@ -2400,7 +2405,7 @@ start_run() {
   images_json=$(jq -cn --args '$ARGS.positional' -- "${images[@]}") || fail 'could not encode image metadata'
   started=$(date +%s)
   jq -cn --arg vendor "$vendor" --arg account "$account" --arg model "$model" --arg effort "$effort" \
-    --arg agy_model "$agy_model" --arg grok_turns "$grok_turns" \
+    --arg agy_model "$agy_model" --arg grok_turns "$grok_turns" --arg model_id "$model_id" \
     --arg workdir "$workdir" --arg resume "$resume" --arg cli "$cli" \
     --arg explicit_model "$explicit_model" --arg explicit_effort "$explicit_effort" --arg role "$role" --arg explicit_account "$explicit_account" \
     --arg research_timeout "$research_timeout" --arg sandbox_exec "$sandbox_exec" --arg review_round "$review_round" \
@@ -2455,6 +2460,7 @@ start_run() {
   # open would be evidence produced by whichever run happened to finish beside them.
   workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
+     + if $model_id != "" then {model_id:$model_id} else {} end
     rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
   workdir_dirty_shas "$workdir" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||

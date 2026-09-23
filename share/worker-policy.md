@@ -24,8 +24,8 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 | --- | --- | --- | --- | --- |
 | claudeb / opus | high | high, xhigh | low, medium, max | no |
 | claudeb / fable | low | low, medium, high | xhigh, max | yes |
-| codex / gpt-6-astra | low | low, medium, high | xhigh | no |
-| codex / gpt-5.6-sol | medium | medium, high | low, xhigh | yes |
+| codex / astra (newest slug of the family `codexb models` lists) | low | low, medium, high | xhigh | no |
+| codex / sol (likewise) | medium | medium, high | low, xhigh | yes |
 | gemini / each Flash slug `geminib families` prints | high | high | — | no |
 | gemini / pro | high | high | — | yes |
 | grok / auto (the CLI's own default) | high | high, xhigh | — | no |
@@ -34,7 +34,9 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 Use the first `NEXT` row's account. Effort defaults to `<vendor>_effort` in
 `~/.claude/worker-model`, else the resolved model's table default. Write `EFFORT:` only to move
 off that default within Brief efforts. Word efforts and word-only models (`fable`,
-`gpt-5.6-sol`) require Egor's ask in this chat; quote nothing but his ask.
+codex `sol`) require Egor's ask in this chat; quote nothing but his ask. A codex `MODEL:` names the
+family word (codex `astra`, `sol`), which launches the newest slug `codexb models` lists; a full
+slug is a deliberate pin and launches as written.
 His cues «не парься / задача простая / не жги» lower effort within Brief efforts;
 «подумай как следует / сложное» raise it there. Anything in the word columns, models included, needs his
 explicit word; otherwise no `MODEL:` line. Neither Codex model allows `max`.

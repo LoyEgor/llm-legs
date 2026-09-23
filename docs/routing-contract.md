@@ -321,9 +321,9 @@ session (`CLAUDECODE`) the way the role writer does, so the menubar is the only 
 `worker-pick` answers which ACCOUNT. `share/worker-model.sh` (`worker_model_table`) is the
 source for allowed models, default efforts, brief efforts and efforts requiring Egor's word
 (`docs/shared-invariants.md` row `bq`; policy table in `share/worker-policy.md`). Default models
-are claudeb `opus`, codex `gpt-6-astra`, gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (the CLI's own default, also every slug `grokb models` prints).
+are claudeb `opus`, codex `astra` (the family word; the launch resolves it to the newest slug `codexb models` lists, and a full slug passes through as a deliberate pin), gemini the newest Flash family `geminib families` prints (also every other slug it prints), grok `auto` (the CLI's own default, also every slug `grokb models` prints).
 Opus defaults to `high`; brief efforts are `high`, `xhigh`, and word efforts are `low`, `medium`, `max`.
-claudeb `fable`, codex `gpt-5.6-sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts.
+claudeb `fable`, codex `sol` and gemini `pro` require Egor's explicit ask in this chat, as do word efforts.
 Gemini is the exception to the effort refusal: every Gemini leg runs `high`, and a lower effort is raised rather than refused.
 
 The model check covers `MODEL:` forwarded as `--model`, vendor `*_model=` values consumed by
@@ -412,8 +412,9 @@ routing-math paragraph the rules above replace.
   A store written long ago with no account reading behind it at all says so in those words, and a
   store with no timestamp reads `no timestamp`.
 - Reset credits and the account tier label are absent from this output entirely. Neither enters
-  the rank vector on any vendor, both are rendered by the menubar where the reset is spent (both
-  vendors publish `reset_credits_expires_at` and both have a redeem RPC behind that click), and a
+  the rank vector on any vendor, both are rendered by the menubar where the reset is spent (every
+  vendor that publishes `reset_credits_expires_at` — codex, grok, claude — has a redeem RPC behind
+  that click), and a
   number printed beside a row nobody ranks on reads as one that ranked it.
 - review-bench affordability derives from worker-pick's answer under these same rules —
   it keeps no thresholds of its own.

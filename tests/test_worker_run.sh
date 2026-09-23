@@ -8,6 +8,7 @@ WORK="$(mktemp -d)"
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
 . "$ROOT/tests/fixtures/grokb-models.sh"
+. "$ROOT/tests/fixtures/codexb-models.sh"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2; exit 1; }
@@ -372,7 +373,7 @@ model_effort_tests() {
   local spec vendor model effort
   set_config
   export PICK_RC=0 PICK_ACCOUNT=picked
-  for spec in codex:gpt-6-astra:low codex:gpt-5.6-sol:medium claudeb:opus:high claudeb:fable:low gemini:flash38:high grok:auto:high grok:grok-4.6:high; do
+  for spec in codex:astra:low codex:sol:medium claudeb:opus:high claudeb:fable:low gemini:flash38:high grok:auto:high grok:grok-4.6:high; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
     start_ok "$vendor" --model "$model" --account main
@@ -381,20 +382,24 @@ model_effort_tests() {
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
   done
   clear_stub
+  assert test "$(jq -r '.model_id' "$RUN_DIR/meta.json")" = null
   start_ok codex --account main
   assert await_done
   assert grep -qx 'ARG=model_reasoning_effort=low' "$CALL_LOG"
   set_config 'codex_effort=high'
+  assert test "$(jq -r '[.model, .model_id] | join(" ")' "$RUN_DIR/meta.json")" = 'astra gpt-6.1-astra'
+  assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
+  assert grep -qx 'main · astra · low' "$RUN_DIR/tag"
   clear_stub
   start_ok codex --account main
   assert await_done
   assert grep -qx 'ARG=model_reasoning_effort=high' "$CALL_LOG"
-  for spec in codex:gpt-6-astra:xhigh codex:gpt-5.6-sol:low claudeb:fable:max claudeb:opus:low; do
+  for spec in codex:astra:xhigh codex:gpt-5.6-sol:low claudeb:fable:max claudeb:opus:low; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     clear_stub
     start_ok "$vendor" --model "$model" --effort "$effort" --account main
     assert await_done
-    assert grep -qx "ARG=$model" "$CALL_LOG"
+    assert grep -qx "ARG=$([ "$model" = astra ] && printf gpt-6.1-astra || printf %s "$model")" "$CALL_LOG"
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
     if [ "$model" = gpt-5.6-sol ]; then
       assert grep -qx 'ARG=-m' "$CALL_LOG"
@@ -410,11 +415,11 @@ model_effort_tests() {
   assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = low
   # `gemini:flash38:ultra` and not `xhigh`: every effort the table knows is RAISED to high on a
   # Gemini leg, so only a word that is no effort at all can be refused there.
-  for spec in codex:gpt-6-astra:max codex:gpt-5.6-sol:max claudeb:opus:ultra gemini:flash38:ultra grok:auto:low grok:grok-4.6:medium; do
+  for spec in codex:astra:max codex:gpt-5.6-sol:max claudeb:opus:ultra gemini:flash38:ultra grok:auto:low grok:grok-4.6:medium; do
     vendor=${spec%%:*}; model=${spec#*:}; effort=${model##*:}; model=${model%:*}
     effort_refused "$vendor" "$model" "$effort"
   done
-  effort_refused codex gpt-6-astra max --account main --resume codex-resume
+  effort_refused codex astra max --account main --resume codex-resume
   effort_refused claudeb opus ultra --account main --resume claude-resume
   effort_refused gemini flash38 ultra --account main --resume gemini-resume
   effort_refused grok auto low --account main --resume grok-resume
@@ -430,7 +435,7 @@ model_effort_tests() {
   start_ok codex --account main --resume codex-resume
   assert await_done
   assert_fails grep -q '^ARG=model_reasoning_effort=' "$CALL_LOG"
-  effort_refused codex gpt-6-astra max --account main --resume codex-resume
+  effort_refused codex astra max --account main --resume codex-resume
   set_config
   clear_stub
 }
@@ -525,7 +530,7 @@ reliability_tests() {
       clear_stub
       start_ok codex --account model --model default --resume "$resume"
       assert await_done
-      assert grep -qx 'ARG=gpt-6-astra' "$CALL_LOG"
+      assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
       assert_fails grep -qx 'ARG=default' "$CALL_LOG"
     done
   fi
@@ -535,16 +540,16 @@ reliability_tests() {
     : >"$STUB_DIR/codex_bad_model"
     start_ok codex --account model
     assert await_done
-    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+    assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
     clear_stub
     : >"$STUB_DIR/codex_bad_model"
     # config.toml is Egor's interactive pick: a terra there changes nothing about the retry,
     # which respells the allow-list's own model.
     printf 'model = "gpt-5.6-terra"\n' >"$WORKER_RUN_CODEX_CONFIG"
-    start_ok codex --account model --model gpt-6-astra
+    start_ok codex --account model --model astra
     assert await_done
     assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
-    assert grep -qxF 'ARG=model=\"gpt-6-astra\"' "$CALL_LOG"
+    assert grep -qxF 'ARG=model=\"gpt-6.1-astra\"' "$CALL_LOG"
     assert_fails grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
     printf 'model = "gpt-6-astra"\n' >"$WORKER_RUN_CODEX_CONFIG"
   fi
@@ -2423,12 +2428,12 @@ assert await_done
 # Explicit --model/--effort override a resumed session; config defaults never do.
 clear_stub
 set_config 'codex_effort=high'
-start_ok codex --account resumeacct --resume codex-resume --model gpt-6-astra --effort low
+start_ok codex --account resumeacct --resume codex-resume --model astra --effort low
 assert grep -qx 'TAG: resumeacct · astra · low' "$WORK/start.out"
 assert await_done
 assert grep -q '^ARG=resume$' "$CALL_LOG"
 assert grep -q '^ARG=-m$' "$CALL_LOG"
-assert grep -q '^ARG=gpt-6-astra$' "$CALL_LOG"
+assert grep -q '^ARG=gpt-6.1-astra$' "$CALL_LOG"
 assert grep -q '^ARG=model_reasoning_effort=low$' "$CALL_LOG"
 
 # Fast Mode is per account and has to reach the worker launch, not only the menu: codexb writes
@@ -2731,12 +2736,12 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model"
-start_ok codex --model gpt-6-astra
+start_ok codex --model astra
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 1
-assert test "$(grep -c '^ARG=gpt-6-astra$' "$CALL_LOG")" -eq 1
+assert test "$(grep -c '^ARG=gpt-6.1-astra$' "$CALL_LOG")" -eq 1
 assert jq -e '.model_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert_launched_brief "$STUB_DIR/codex.stdin"
 
@@ -2744,7 +2749,7 @@ assert_launched_brief "$STUB_DIR/codex.stdin"
 clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel STUB_ERROR='note: that model is not supported everywhere'
-start_ok codex --model gpt-6-astra
+start_ok codex --model astra
 assert await_done
 assert grep -q '^STATUS: done$' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
@@ -2756,7 +2761,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_bad_model_always"
-start_ok codex --model gpt-6-astra
+start_ok codex --model astra
 assert await_done
 assert grep -q '^STATUS: failed$' "$WORK/wait.out"
 assert grep -qx 'OUTCOME: CODEX_UNAVAILABLE' "$WORK/wait.out"
@@ -2779,7 +2784,7 @@ clear_stub
 set_config 'codex_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=badmodel
 : >"$STUB_DIR/codex_phrase_deep"
-start_ok codex --model gpt-6-astra
+start_ok codex --model astra
 assert await_done
 assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/wait.out"
 assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 1
@@ -2832,6 +2837,7 @@ assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
 # Same hazard on the caller's side: a `wait` polling across the edit must report,
 # not die on a syntax error in its own script.
 clear_stub
+[ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
 set_config 'codex_effort=high'
 cp "$RUNNER" "$SELF_RUNNER"
 export PICK_RC=0 PICK_ACCOUNT=selfedit STUB_SLEEP=3
@@ -5992,7 +5998,7 @@ for flags in '' '--model default'; do
   # shellcheck disable=SC2086
   start_ok codex --account model $flags
   assert await_done
-  assert grep -qx 'ARG=gpt-6-astra' "$CALL_LOG"
+  assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
 done
 # A resume is not that run: `exec resume` keeps the session's own model and nothing sends the
 # config's, so the file cannot refuse a resumed session — only a model the caller names can.
@@ -6010,7 +6016,7 @@ clear_stub
 start_ok claudeb --model opus
 assert await_done
 clear_stub
-start_ok codex --model gpt-6-astra
+start_ok codex --model astra
 assert await_done
 clear_stub
 start_ok gemini --account main --model flash38

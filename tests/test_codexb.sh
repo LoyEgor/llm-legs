@@ -4,6 +4,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/codexb"
 HELPER="$ROOT/codex-quota.py"
+. "$ROOT/tests/fixtures/codexb-models.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
@@ -393,7 +394,7 @@ assert test "$(sed -n '5p' "$CODEX_CALLS")" = 'ARG=--json'
 assert test "$(sed -n '6p' "$CODEX_CALLS")" = 'ARG=two\ words'
 
 assert test "$(sed -n '2p' "$CODEX_CALLS")" = 'ARG=-m'
-assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=gpt-6-astra'
+assert test "$(sed -n '3p' "$CODEX_CALLS")" = 'ARG=gpt-6.1-astra'
 assert test "$(sed -n '7p' "$CODEX_CALLS")" = 'ARG=--disable'
 assert test "$(sed -n '8p' "$CODEX_CALLS")" = 'ARG=fast_mode'
 assert test "$(sed -n '9p' "$CODEX_CALLS")" = 'ARG=--config'
@@ -457,10 +458,17 @@ assert grep -q "new profile 'fresh' created" <<<"$fresh_output"
 assert wait_announce '--refresh-account codex/fresh'
 assert grep -qx "CALL account=fresh home=$HOME/.codex-profiles/fresh argc=6" "$CODEX_CALLS"
 assert grep -qx 'ARG=-m' "$CODEX_CALLS"
-assert grep -qx 'ARG=gpt-6-astra' "$CODEX_CALLS"
+assert grep -qx 'ARG=gpt-6.1-astra' "$CODEX_CALLS"
 for item in config.toml AGENTS.md skills plugins; do
   assert test -L "$HOME/.codex-profiles/fresh/$item"
 done
+
+jq '.models |= map(select(.slug | test("astra") | not))' "$CODEXB_MODELS_CACHE" >"$WORK/no-astra.json"
+: >"$CODEX_CALLS"
+no_family=$(CODEXB_MODELS_CACHE="$WORK/no-astra.json" bash "$SCRIPT" profile alpha 2>&1)
+assert test "$?" -eq 2
+assert grep -q "default family 'astra'" <<<"$no_family"
+assert test ! -s "$CODEX_CALLS"
 
 : >"$CODEX_CALLS"
 bash "$SCRIPT" run menulogin login >/dev/null 2>&1 || fail "menu login failed"

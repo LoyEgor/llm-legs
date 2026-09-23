@@ -61,7 +61,7 @@ account_home() {
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-auth|models) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -509,7 +509,14 @@ run_account() {
   fi
   ensure_profile "$directory"
   if codex_launch_needs_default_model "$@"; then
-    set -- -m "$(worker_model_allowed_models codex | head -n1)" "$@"
+    local default_slug
+    default_slug=$(worker_model_codex_slug "$(worker_model_default_model codex)") || default_slug=''
+    if [ -z "$default_slug" ]; then
+      printf "codexb: no listed codex model of the default family '%s' (see 'codexb models'); pass -m <slug>\n" \
+        "$(worker_model_default_model codex)" >&2
+      exit 2
+    fi
+    set -- -m "$default_slug" "$@"
   fi
   if codex_launch_needs_fast_mode_off "$@"; then
     # Past a `--` codex reads everything as prompt text, so the flags go in ahead of it.
@@ -539,7 +546,111 @@ show_help() {
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota; on a TTY, Enter opens Claude Code on the selected account (claudegpt p <name> --model astra).' \
     'codexb pick                            Print the highest-priority usable account.' \
+    'codexb models [--json] [--all] [--family <word>]  The codex model list from the newest models_cache.json (builtin fallback); --family prints the newest slug of a family word.' \
     'codexb export-auth <name> --to <path> [--min-seconds N]  Write an access-only auth.json for a confined run.'
+}
+
+models_builtin() { # slug<TAB>label<TAB>priority<TAB>visibility<TAB>efforts
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    gpt-6-astra GPT-6-Astra 1 list low,medium,high,xhigh,max,ultra \
+    gpt-reserve GPT-Reserve 3 hide low,medium,high,xhigh,max \
+    gpt-5.6-sol GPT-5.6-Sol 4 list low,medium,high,xhigh,max,ultra \
+    gpt-5.6-terra GPT-5.6-Terra 7 list low,medium,high,xhigh,max,ultra \
+    gpt-5.6-luna GPT-5.6-Luna 8 list low,medium,high,xhigh,max \
+    gpt-5.5 GPT-5.5 12 list low,medium,high,xhigh \
+    codex-auto-review 'Codex Auto Review' 43 hide low,medium,high,xhigh,max
+}
+
+models_cache_rows() { # cache -> the builtin's columns, nothing when unusable
+  jq -r '.models | select(type == "array" and length > 0) | .[]
+    | [.slug, (.display_name // .slug), (.priority // 999 | tostring), (.visibility // "list"),
+       ([.supported_reasoning_levels[]? | .effort? // . | strings] | join(","))]
+    | select(.[0] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) | @tsv' "$1" 2>/dev/null
+}
+
+# The CLI refreshes models_cache.json in whichever home it last ran from, so the newest by the
+# stamp the CLI wrote is the vendor's current list; no network here.
+models_source() { # -> path of the newest usable cache, or nothing
+  local path stamp best='' best_stamp=''
+  if [ -n "${CODEXB_MODELS_CACHE:-}" ]; then
+    [ -z "$(models_cache_rows "$CODEXB_MODELS_CACHE")" ] || printf '%s\n' "$CODEXB_MODELS_CACHE"
+    return 0
+  fi
+  for path in "$HOME/.codex/models_cache.json" "$profiles_dir"/*/models_cache.json; do
+    [ -r "$path" ] || continue
+    [ -n "$(models_cache_rows "$path")" ] || continue
+    stamp=$(jq -r '.fetched_at // "" | tostring' "$path" 2>/dev/null) || continue
+    if [ -z "$best" ] || [[ "$stamp" > "$best_stamp" ]]; then best=$path; best_stamp=$stamp; fi
+  done
+  [ -z "$best" ] || printf '%s\n' "$best"
+}
+
+models_ranked() { # all(true|false) source-path
+  local slug label priority visibility efforts split
+  { if [ -n "$2" ]; then models_cache_rows "$2"; else models_builtin; fi; } |
+    while IFS=$'\t' read -r slug label priority visibility efforts; do
+      split=$(worker_model_codex_split "$slug")
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slug" "$split" "$label" "$efforts" "$priority" "$visibility"
+    done |
+    awk -F'\t' -v all="$1" '
+      function newer(a, b,   x, y, n, m, i) {
+        if (b == "") return 1
+        n = split(a, x, "."); m = split(b, y, ".")
+        for (i = 1; i <= (n > m ? n : m); i++) if ((x[i] + 0) != (y[i] + 0)) return (x[i] + 0) > (y[i] + 0)
+        return 0
+      }
+      all != "true" && $7 != "list" { next }
+      { row[++n] = $0; fam[n] = $2; ver[n] = ($3 == "-" ? "" : $3); pri[n] = $6 + 0
+        if (!($2 in top) || newer(ver[n], topver[$2])) { top[$2] = n; topver[$2] = ver[n] }
+        if ($7 == "list" && (dflt == "" || pri[n] < pri[dflt])) dflt = n }
+      END {
+        for (i = 1; i <= n; i++) {
+          rank = sprintf("%09d", pri[top[fam[i]]])
+          split(ver[i], v, "."); key = ""
+          for (j = 1; j <= 4; j++) key = key sprintf("%06d", 999999 - (v[j] + 0))
+          split(row[i], c, "\t")
+          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", rank, fam[i], key, c[1], c[2], c[3], c[4],
+            (i == dflt ? "y" : "n"), c[5], c[6] "\t" c[7]
+        }
+      }' | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -k3,3 | cut -f4-
+}
+
+show_models() {
+  local json=false all=false family='' source rows known
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --json) json=true ;;
+      --all) all=true ;;
+      --family) [ "$#" -ge 2 ] || { printf 'usage: codexb models [--json] [--all] [--family <word>]\n' >&2; exit 2; }
+                family=$2; shift ;;
+      *) printf 'usage: codexb models [--json] [--all] [--family <word>]\n' >&2; exit 2 ;;
+    esac
+    shift
+  done
+  source=$(models_source)
+  [ -n "$source" ] || printf 'codexb: no readable models_cache.json; using the built-in list\n' >&2
+  if [ -n "$family" ]; then
+    rows=$(models_ranked true "$source")
+    awk -F'\t' -v want="$family" '$1 == want { print $1; found = 1; exit } END { exit !found }' \
+      <<<"$rows" && return 0
+    awk -F'\t' -v want="$family" '$2 == want && $8 == "list" { print $1; found = 1; exit } END { exit !found }' \
+      <<<"$rows" && return 0
+    known=$(awk -F'\t' '$8 == "list" && !seen[$2]++ { printf "%s%s", sep, $2; sep = ", " }' <<<"$rows")
+    printf 'codexb: no listed codex model of family %s; families: %s\n' "$family" "$known" >&2
+    exit 1
+  fi
+  rows=$(models_ranked "$all" "$source")
+  if [ "$json" = true ]; then
+    printf '%s\n' "$rows" | jq -Rn --arg source "$([ -n "$source" ] && printf cache || printf builtin)" \
+      --arg path "$source" '
+      [inputs | select(length > 0) | split("\t")
+       | {slug: .[0], family: .[1], version: (if .[2] == "-" then null else .[2] end), label: .[3],
+          default: (.[4] == "y"), efforts: (.[5] | split(",") | map(select(length > 0))),
+          priority: (.[6] | tonumber), visibility: .[7], source: $source}
+         + (if $path != "" then {cache: $path} else {} end)]'
+  else
+    printf '%s\n' "$rows" | cut -f1-6
+  fi
 }
 
 # The saved login carries a refresh_token, and a confined runtime holding one can rotate the
@@ -607,6 +718,11 @@ print(f"source=auth.json expires_at={payload['expired']}")
 PYTHON
 }
 
+if [ "${1:-}" = models ]; then
+  shift
+  show_models "$@"
+  exit
+fi
 if [ "${1:-}" = fast-mode ]; then
   shift
   [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { printf 'usage: codexb fast-mode <name> [on|off|status]\n' >&2; exit 2; }

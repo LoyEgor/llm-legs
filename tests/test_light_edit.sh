@@ -10,6 +10,7 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
 . "$ROOT/tests/fixtures/grokb-models.sh"
+. "$ROOT/tests/fixtures/codexb-models.sh"
 fail(){ printf 'FAIL(line %s): %s\n' "${BASH_LINENO[1]-?}" "$*" >&2
   [ ! -f "$WORK/out" ] || { printf -- '--- out ---\n'; cat "$WORK/out"; } >&2
   [ ! -f "$WORK/err" ] || { printf -- '--- err ---\n'; cat "$WORK/err"; } >&2
@@ -370,9 +371,9 @@ wr start codex --role research --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
 assert test "$rc" -eq 4
 assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/out"
 assert grep -q 'the light_research row names gemini, not codex' "$WORK/err"
-wr start codex --role research --model gpt-6-astra --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
+wr start codex --role research --model astra --brief "$WORK/brief" --workdir "$SHARED"; rc=$?
 assert test "$rc" -eq 0
-assert jq -e '.vendor == "codex" and .role == "research" and .model == "gpt-6-astra" and .light == "research"' \
+assert jq -e '.vendor == "codex" and .role == "research" and .model == "astra" and .model_id == "gpt-6.1-astra" and .light == "research"' \
   "$RUNS/$(sed -n 's/^RUN: //p' "$WORK/out")/meta.json" >/dev/null
 
 printf 'PASS: %s asserts; Light edit SCOPE/VERIFY contract (refused at launch without SCOPE, with --resume or with --add-dir), the throwaway worktree fenced on its own git state, land-on-green with conflict, red-run and failed-run byte-identity, the fence retaken after VERIFY, a worker that used git inside the worktree, the caller subdirectory kept, cleanup after a refusal below the allocation, recipe composition and refusals, and the off-row light vendor refusal\n' "$asserts"

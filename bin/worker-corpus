@@ -23,7 +23,7 @@ ATTACH_RE = re.compile(r"ATTACH\s+[a-z0-9][a-z0-9-]*:")
 
 # Only model-shaped values are real; junk like `py_compile`, `pytest`,
 # `transcriber.ctl`, `http.server` came from `python3 -m <module>` commands.
-MODEL_RE = re.compile(r'^(gpt-|claude-|grok-|o[0-9]|sol|opus|sonnet|haiku)', re.IGNORECASE)
+MODEL_RE = re.compile(r'^(gpt-|claude-|grok-|o[0-9]|sol|astra|opus|sonnet|haiku)', re.IGNORECASE)
 USAGE_LIMIT_RE = re.compile(r'(?:CODEX|CLAUDEB|GEMINI|GROK)_USAGE_LIMIT')
 # Failure only when the OUTCOME verdict itself is a failure token (not any line that
 # merely contains "error"/"fail" — e.g. "OUTCOME: done ... 0 errors" or a review

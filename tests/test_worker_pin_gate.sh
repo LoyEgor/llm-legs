@@ -534,7 +534,7 @@ done
 # The deny names the offender and the allowed list, and says nothing about the pin.
 model_deny=$(write_event "$PIN_FILE" 'claudeb_model=sonnet')
 assert contains "$model_deny" 'claudeb=sonnet'
-assert contains "$model_deny" 'claudeb opus|fable; codex gpt-6-astra|gpt-5.6-sol; gemini flash38|flash37|flash36|pro; grok auto|grok-4.7|grok-4.7-build-fast|grok-4.6|grok-4.5'
+assert contains "$model_deny" 'claudeb opus|fable; codex astra|sol; gemini flash38|flash37|flash36|pro; grok auto|grok-4.7|grok-4.7-build-fast|grok-4.6|grok-4.5'
 assert lacks "$model_deny" 'is Egor'
 # A grant unblocks the pin and never the model.
 mkdir -p "$(dirname "$GRANT")" && touch "$GRANT"
@@ -560,7 +560,7 @@ gemini_model=flash38
 grok_model=auto
 ')"
 assert allowed "$(edit_event "$PIN_FILE" 'claudeb_model=sonnet' 'claudeb_model=opus')"
-for model_line in claudeb_model=fable codex_model=gpt-5.6-sol; do
+for model_line in claudeb_model=fable codex_model=sol codex_model=gpt-5.6-sol; do
   assert allowed "$(write_event "$PIN_FILE" "$model_line")"
   assert allowed "$(edit_event "$PIN_FILE" 'worker=auto' "$model_line")"
 done

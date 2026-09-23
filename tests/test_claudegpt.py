@@ -18,6 +18,16 @@ loader = importlib.machinery.SourceFileLoader("claudegpt", str(source))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 app = importlib.util.module_from_spec(spec)
 loader.exec_module(app)
+os.environ.setdefault("CODEXB_MODELS_CACHE",
+                      str(Path(__file__).resolve().parent / "fixtures/codexb-models.json"))
+# Resolved once before any test patches subprocess.Popen, which codex_models() spawns through.
+RESOLVED_MODELS = app.codex_models()
+app.codex_models = lambda: dict(RESOLVED_MODELS)
+
+
+class CodexFamilyTests(unittest.TestCase):
+    def test_families_resolve_through_codexb_models(self):
+        self.assertEqual(RESOLVED_MODELS, {"sol": "gpt-5.6-sol", "astra": "gpt-6.1-astra"})
 
 
 class ChatLaunchTests(unittest.TestCase):
@@ -269,7 +279,7 @@ class GatewayAuthResolverTests(unittest.TestCase):
                      patch.object(app.subprocess, "Popen", side_effect=proxy), \
                      patch.object(app.subprocess, "call", return_value=0) as launch, \
                      patch.object(app.urllib.request, "urlopen", side_effect=lambda *_a, **_k:
-                                  io.BytesIO(b'{"data":[{"id":"gpt-6-astra"}]}')), \
+                                  io.BytesIO(b'{"data":[{"id":"gpt-6.1-astra"}]}')), \
                      patch.object(sys, "stderr", io.StringIO()):
                     self.assertEqual(app.main(), 0)
                     self.assertEqual(len(inspected), 1)
@@ -531,7 +541,7 @@ class LauncherTests(unittest.TestCase):
              patch.object(app.subprocess, "call", side_effect=call), \
              patch.object(app.urllib.request, "urlopen",
                           side_effect=lambda *a, **k: io.BytesIO(
-                              b'{"data":[{"id":"gpt-5.6-sol"},{"id":"gpt-6-astra"}]}')), \
+                              b'{"data":[{"id":"gpt-5.6-sol"},{"id":"gpt-6.1-astra"}]}')), \
              patch.object(app.sys, "stderr", io.StringIO()), \
              patch.object(app.sys, "argv", argv):
             self.assertEqual(app.main(), 0)
@@ -617,7 +627,7 @@ class LauncherTests(unittest.TestCase):
                  patch.object(app.subprocess, "call", side_effect=call), \
                  patch.object(app.urllib.request, "urlopen",
                               side_effect=lambda *a, **k: io.BytesIO(
-                                  b'{"data":[{"id":"gpt-5.6-sol"},{"id":"gpt-6-astra"}]}')), \
+                                  b'{"data":[{"id":"gpt-5.6-sol"},{"id":"gpt-6.1-astra"}]}')), \
                  patch.object(app.sys, "stderr", io.StringIO()), \
                  patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": str(Path(temporary) / "claude")}), \
                  patch.object(app.sys, "argv", argv):
@@ -768,7 +778,7 @@ class ConcurrentLauncherSubprocessTests(unittest.TestCase):
             "with open(os.environ['TEST_CLAUDE_ARGV'], 'w') as f: json.dump(sys.argv[1:], f)\n")
         proxy = self.bin_dir / "cli-proxy-api"
         proxy.write_text(proxy.read_text().replace(
-            "[{'id': 'gpt-5.6-sol'}]", "[{'id': 'gpt-5.6-sol'}, {'id': 'gpt-6-astra'}]"))
+            "[{'id': 'gpt-5.6-sol'}]", "[{'id': 'gpt-5.6-sol'}, {'id': 'gpt-6.1-astra'}]"))
         proc = self.launch(argv[2], extra=argv[3:])
         stdout, stderr = proc.communicate(timeout=10)
         self.assertEqual(proc.returncode, 0, stderr.decode())
