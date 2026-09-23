@@ -383,6 +383,7 @@ merge_usage() {
     def epoch:
       capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?:Z|\\+00:00)$") |
       (.base + "Z") | fromdateiso8601;
+    .cedar_ember as $cedar |
     ($old + {
       five_hour: {used_percentage: (.five_hour.utilization | round), resets_at: (.five_hour.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}
     } +
@@ -396,7 +397,19 @@ merge_usage() {
     (if $fable then $merged + {fable: {used_percentage: ($fable.percent | round), resets_at: ($fable.resets_at | if . == null then 0 else epoch end), as_of: $now, origin: "usage"}}
     elif ($merged.fable.resets_at? // 0) > $now then $merged + {fable: ($merged.fable + {origin: "cached"})}
     else $merged + {fable: {used_percentage: 0, resets_at: 0, as_of: $now, origin: "usage"}} end) +
-    {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)' \
+    {auth: {status: "ok", checked_at: $now}} | del(.auth_needed, .auth_cause, .auth_checked_at)
+    # cli_version = our User-Agent is below the minimum the server accepts, not an account fact.
+    | if ($cedar | type) == "object" and $cedar.ineligible_reason != "cli_version" then
+        [$cedar.grants[]? | select(type == "object" and .paused != true
+           and .usable_now == true
+           and ((.resets_left | type) == "number") and .resets_left >= 1)
+         | . + {ends: (if .ends_at == null then null else (.ends_at | try epoch catch null) end)}
+         | select(.ends_at == null or (.ends != null and .ends > $now))] as $live |
+        . + {reset_credits: ([$live[].resets_left] | add // 0), reset_credits_as_of: $now}
+        | ([$live[].ends | select(. != null)] | min) as $soonest
+        | if $soonest == null then del(.reset_credits_expires_at)
+          else . + {reset_credits_expires_at: ($soonest | todateiso8601)} end
+      else del(.reset_credits, .reset_credits_as_of, .reset_credits_expires_at) end' \
       "$body" > "$tmp" 2>/dev/null; then
       rm -f "$tmp"
       return 1
@@ -1047,8 +1060,8 @@ probe_one() {
       if http=$(printf 'header = "Authorization: Bearer %s"\n' "$access_token" | \
         curl -sK - -m 10 -o "$dir/$name.usage" -w '%{http_code}' \
           -H 'anthropic-beta: oauth-2025-04-20' \
-          -H 'User-Agent: claude-cli/2.1.207 (external, cli)' \
-          https://api.anthropic.com/api/oauth/usage 2>/dev/null); then
+          -H 'User-Agent: claude-cli/2.1.280 (external, cli)' \
+          'https://api.anthropic.com/api/oauth/usage?cedar_ember=1' 2>/dev/null); then
         :
       else
         rc=$?

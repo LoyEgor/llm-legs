@@ -8,8 +8,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REDEEM="$ROOT/bin/llm-reset-redeem"
 WORK="$(mktemp -d)"
 SERVER_PID=''
+CLAUDE_SERVER_PID=''
 cleanup() {
   [ -z "$SERVER_PID" ] || kill "$SERVER_PID" 2>/dev/null || true
+  [ -z "$CLAUDE_SERVER_PID" ] || kill "$CLAUDE_SERVER_PID" 2>/dev/null || true
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -202,8 +204,8 @@ out=$(redeem gemini/main); rc=$?
 grep -q 'NO_REDEEM_BACKEND' <<<"$out$(cat "$WORK/last.err")" \
   || fail "gemini did not name NO_REDEEM_BACKEND: $out $(cat "$WORK/last.err")"
 [ ! -s "$CALL_LOG" ] || fail "a vendor with no backend still called the reset service"
-out=$(redeem claude/notcom); rc=$?
-[ "$rc" -eq 4 ] || fail "claude: expected exit 4, got $rc"
+out=$(redeem opencode/main); rc=$?
+[ "$rc" -eq 4 ] || fail "opencode: expected exit 4, got $rc"
 out=$(redeem grok); rc=$?
 [ "$rc" -eq 2 ] || fail "a target with no account: expected exit 2, got $rc"
 pass
@@ -464,9 +466,264 @@ out=$(codex_redeem codex/main); rc=$?
 [ ! -s "$REFRESH_LOG" ] || fail "a redeem that never landed still refreshed the account"
 pass
 
+# --- claude: the cedar_ember program over a local stand-in for api.anthropic.com ---
+CLAUDE_TOKEN='claude-access-token-SENTINEL-must-never-be-printed'
+CLAUDE_STATE="$WORK/claude-state"
+CLAUDE_CALL_LOG="$WORK/claude-calls.log"
+CLAUDE_HOME="$WORK/claude-home"
+ORG='5d3c1a2b-0000-4000-8000-00000000c1a0'
+mkdir -p "$CLAUDE_HOME/.claude-profiles/notcom" "$CLAUDE_HOME/.claude-profiles/nokeychain" "$WORK/bin"
+for profile in notcom nokeychain; do
+  printf '{"oauthAccount":{"organizationUuid":"%s"}}\n' "$ORG" \
+    >"$CLAUDE_HOME/.claude-profiles/$profile/.claude.json"
+done
+NOTCOM_SERVICE="Claude Code-credentials-$(printf '%s' "$CLAUDE_HOME/.claude-profiles/notcom" \
+  | shasum -a 256 | cut -c1-8)"
+cat >"$WORK/bin/security" <<EOF
+#!/usr/bin/env bash
+[ "\$1" = find-generic-password ] && [ "\$3" = "$NOTCOM_SERVICE" ] || exit 44
+printf '{"claudeAiOauth":{"accessToken":"$CLAUDE_TOKEN","refreshToken":"r","expiresAt":4102444800000}}\n'
+EOF
+chmod +x "$WORK/bin/security"
+
+cat >"$WORK/claude-server.py" <<'PY'
+import http.server
+import json
+import sys
+import threading
+import time
+
+CALL_LOG, PORT_FILE, STATE = sys.argv[1:4]
+
+
+def grant(grant_id, ends_at, resets_left=1, **extra):
+    return {"id": grant_id, "resets_total": 1, "resets_left": resets_left,
+            "starts_at": "2026-09-22T16:00:00+00:00", "ends_at": ends_at,
+            "clears": ["five_hour", "seven_day"], "paused": False, "usable_now": True,
+            "use_requires_limit": False, **extra}
+
+
+def program(grants, next_grant_id=None):
+    return {"eligible": True, "ineligible_reason": None, "at_limit": False, "exhausted": [],
+            "grants": grants, "next_grant_id": next_grant_id,
+            "weekly_resets_at": "2026-09-27T05:00:00+00:00", "cooldown_until": None}
+
+
+ONE = program([grant("opus55-launch-team-20260921", "2026-10-22T16:00:00+00:00")],
+              "opus55-launch-team-20260921")
+# Listed latest-first, so taking grants[0] would let the deadline the menu shows lapse.
+TWO_SOONEST = program([grant("grant-later", "2026-12-01T00:00:00+00:00"),
+                       grant("grant-soon", "2026-10-01T00:00:00+00:00")])
+TWO_NEXT = program([grant("grant-soon", "2026-10-01T00:00:00+00:00"),
+                    grant("grant-named", "2026-12-01T00:00:00+00:00")], "grant-named")
+MULTI = [program([grant("grant-multi", "2026-10-22T16:00:00+00:00", left)]) for left in (1, 2)]
+READS = {"one": ONE, "already": ONE, "post429": ONE, "post503": ONE, "soonest": TWO_SOONEST,
+         "multi503": MULTI[1], "multiafter": MULTI[0],
+         "next": TWO_NEXT, "empty": program([]),
+         "zero": program([grant("spent-grant", "2026-10-22T16:00:00+00:00", 0)]),
+         "null": None}
+
+
+def mode():
+    with open(STATE) as handle:
+        return handle.read().strip()
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def record(self, body):
+        with open(CALL_LOG, "a") as handle:
+            handle.write(json.dumps({
+                "method": self.command, "path": self.path, "body": body,
+                "authorization": self.headers.get("Authorization", ""),
+                "beta": self.headers.get("anthropic-beta", "")}) + "\n")
+
+    def do_GET(self):
+        self.record(None)
+        case = mode()
+        if case == "get401":
+            return self.reply(401, {"error": "unauthorized"})
+        if not self.path.startswith("/api/oauth/usage"):
+            return self.reply(404, {"error": "unknown"})
+        self.reply(200, {"five_hour": {"utilization": 10, "resets_at": None},
+                         "seven_day": {"utilization": 20, "resets_at": None},
+                         "cedar_ember": READS.get(case)})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length).decode()
+        self.record(body)
+        case = mode()
+        if case == "post429":
+            return self.reply(429, {"error": "rate_limited"})
+        if case in ("post503", "multi503"):
+            return self.reply(503, {"error": "overloaded"})
+        if case == "already":
+            return self.reply(200, {"result": "already_used"})
+        self.reply(200, {"result": "reset", "resets_left": 0, "cleared": ["five_hour", "seven_day"]})
+
+    def reply(self, status, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(PORT_FILE, "w") as handle:
+    handle.write(str(server.server_address[1]))
+threading.Thread(target=server.serve_forever, daemon=True).start()
+while True:
+    time.sleep(3600)
+PY
+printf 'one\n' >"$CLAUDE_STATE"
+python3 "$WORK/claude-server.py" "$CLAUDE_CALL_LOG" "$WORK/claude-port" "$CLAUDE_STATE" &
+CLAUDE_SERVER_PID=$!
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  [ -s "$WORK/claude-port" ] && break
+  sleep 0.2
+done
+[ -s "$WORK/claude-port" ] || fail "the local api.anthropic.com stand-in never bound a port"
+CLAUDE_BASE="http://127.0.0.1:$(cat "$WORK/claude-port")"
+claude_redeem() {
+  env HOME="$CLAUDE_HOME" CLAUDEB_DIR="$WORK/claudeb" PATH="$WORK/bin:$PATH" \
+    CLAUDE_RESETS_ENDPOINT="$CLAUDE_BASE" \
+    LLM_RESET_REDEEM_COLLECTOR="$WORK/fake-collector.sh" \
+    "$REDEEM" "$@" 2>"$WORK/last.err"
+}
+claude_posts() { grep -c '"method": "POST"' "$CLAUDE_CALL_LOG"; }
+claude_post_field() { grep '"method": "POST"' "$CLAUDE_CALL_LOG" | tail -1 | jq -r '.body' | jq -r "$1"; }
+claude_no_secret() {
+  case "$1" in *"$CLAUDE_TOKEN"*) fail "the claude token leaked into $2" ;; esac
+  grep -q "$CLAUDE_TOKEN" "$WORK/last.err" && fail "the claude token leaked into stderr while $2"
+  return 0
+}
+
+# One read of the usage body with the program asked for, one write naming the program, the grant
+# the read handed back and a request id in the shape the server accepts, then the targeted refresh.
+printf 'one\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"; : >"$REFRESH_LOG"
+out=$(claude_redeem claude/notcom); rc=$?
+[ "$rc" -eq 0 ] || fail "claude redeem: expected exit 0, got $rc ($(cat "$WORK/last.err"))"
+grep -q 'usage reset redeemed' <<<"$out" || fail "the claude redeem printed no outcome line: $out"
+grep -q '"method": "GET", "path": "/api/oauth/usage?cedar_ember=1"' "$CLAUDE_CALL_LOG" \
+  || fail "the claude read did not ask for cedar_ember: $(cat "$CLAUDE_CALL_LOG")"
+[ "$(claude_posts)" -eq 1 ] || fail "the claude redeem did not POST exactly once: $(cat "$CLAUDE_CALL_LOG")"
+grep '"method": "POST"' "$CLAUDE_CALL_LOG" \
+  | grep -q "\"path\": \"/api/organizations/$ORG/reset_rate_limits\"" \
+  || fail "the claude POST did not target the profile's organization: $(cat "$CLAUDE_CALL_LOG")"
+[ "$(claude_post_field .program)" = cedar_ember ] || fail "the POST named the wrong program"
+[ "$(claude_post_field .grant_id)" = opus55-launch-team-20260921 ] \
+  || fail "the POST did not carry the read's grant: $(claude_post_field .grant_id)"
+first_request=$(claude_post_field .request_id)
+grep -Eq '^[A-Za-z0-9_-]{1,64}$' <<<"$first_request" \
+  || fail "the request id is outside the server's shape: $first_request"
+grep '"method": "POST"' "$CLAUDE_CALL_LOG" | grep -q "\"authorization\": \"Bearer $CLAUDE_TOKEN\", \"beta\": \"oauth-2025-04-20\"" \
+  || fail "the claude POST did not carry the keychain token and the oauth beta header"
+grep -qx -- '--refresh-account claude/notcom' "$REFRESH_LOG" \
+  || fail "the claude redeem did not trigger the targeted refresh: $(cat "$REFRESH_LOG")"
+claude_no_secret "$out" "redeeming a claude reset"
+pass
+
+# The request id is derived, never drawn: a re-click after a lost reply presents the same one.
+: >"$CLAUDE_CALL_LOG"
+claude_redeem claude/notcom >/dev/null
+[ "$(claude_post_field .request_id)" = "$first_request" ] \
+  || fail "a second claude run drew a fresh request id"
+pass
+
+# Answered under our own request id, already_used means the earlier attempt landed.
+printf 'already\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"; : >"$REFRESH_LOG"
+out=$(claude_redeem claude/notcom); rc=$?
+[ "$rc" -eq 0 ] || fail "claude already_used: expected exit 0, got $rc"
+[ "$(claude_posts)" -eq 1 ] || fail "already_used was not exactly one POST: $(cat "$CLAUDE_CALL_LOG")"
+grep -q 'already landed' <<<"$out" || fail "already_used was not explained: $out"
+grep -qx -- '--refresh-account claude/notcom' "$REFRESH_LOG" \
+  || fail "a landed claude redeem did not re-read the quota"
+pass
+
+# Nothing to redeem — no grants, a spent grant, or no program at all — never reaches the POST.
+for state in empty zero null; do
+  printf '%s\n' "$state" >"$CLAUDE_STATE"
+  : >"$CLAUDE_CALL_LOG"; : >"$REFRESH_LOG"
+  out=$(claude_redeem claude/notcom); rc=$?
+  [ "$rc" -eq 2 ] || fail "claude $state: expected exit 2, got $rc ($(cat "$WORK/last.err"))"
+  [ "$(claude_posts)" -eq 0 ] || fail "claude $state still POSTed: $(cat "$CLAUDE_CALL_LOG")"
+  [ ! -s "$REFRESH_LOG" ] || fail "claude $state still refreshed the account"
+done
+pass
+
+# next_grant_id wins; without one, the soonest ends_at is spent whatever the listing order.
+printf 'next\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"
+claude_redeem claude/notcom >/dev/null || fail "claude next_grant_id: redeem failed"
+[ "$(claude_post_field .grant_id)" = grant-named ] \
+  || fail "next_grant_id was not the grant spent: $(claude_post_field .grant_id)"
+printf 'soonest\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"
+claude_redeem claude/notcom >/dev/null || fail "claude soonest: redeem failed"
+[ "$(claude_post_field .grant_id)" = grant-soon ] \
+  || fail "the soonest-lapsing grant was not the one spent: $(claude_post_field .grant_id)"
+pass
+
+# A refused token is the owner's to fix: no POST, no refresh from this path, a one-line hint.
+printf 'get401\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"; : >"$REFRESH_LOG"
+out=$(claude_redeem claude/notcom); rc=$?
+[ "$rc" -eq 3 ] || fail "claude 401: expected exit 3, got $rc"
+[ "$(claude_posts)" -eq 0 ] || fail "a refused claude read still POSTed"
+[ ! -s "$REFRESH_LOG" ] || fail "a refused claude read still refreshed the account"
+grep -q 'press Refresh' "$WORK/last.err" || fail "exit 3 gave no hint: $(cat "$WORK/last.err")"
+[ "$(wc -l <"$WORK/last.err" | tr -d ' ')" -eq 1 ] \
+  || fail "the claude 401 was not one human line: $(cat "$WORK/last.err")"
+claude_no_secret "$out" "reporting a refused claude token"
+pass
+
+# 429 and 5xx on the write are ambiguous: exit 5 after exactly one POST, never a second.
+for state in post429 post503; do
+  printf '%s\n' "$state" >"$CLAUDE_STATE"
+  : >"$CLAUDE_CALL_LOG"; : >"$REFRESH_LOG"
+  out=$(claude_redeem claude/notcom); rc=$?
+  [ "$rc" -eq 5 ] || fail "claude $state: expected exit 5, got $rc"
+  [ "$(claude_posts)" -eq 1 ] || fail "claude $state was retried: $(cat "$CLAUDE_CALL_LOG")"
+  [ ! -s "$REFRESH_LOG" ] || fail "claude $state still refreshed the account"
+done
+pass
+
+# A reset that landed under a lost reply lowers resets_left; the re-click must still present the
+# unanswered request id so it collides into already_used, and only an answered one moves the key on.
+printf 'multi503\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"
+claude_redeem claude/notcom >/dev/null
+lost_request=$(claude_post_field .request_id)
+printf 'multiafter\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"
+claude_redeem claude/notcom >/dev/null || fail "claude re-click after a lost reply failed"
+[ "$(claude_post_field .request_id)" = "$lost_request" ] \
+  || fail "the re-click after a lost reply drew a new request id"
+: >"$CLAUDE_CALL_LOG"
+claude_redeem claude/notcom >/dev/null
+[ "$(claude_post_field .request_id)" != "$lost_request" ] \
+  || fail "an answered request id was presented again"
+pass
+
+# No keychain entry is a login to fix, found before anything reaches the network.
+printf 'one\n' >"$CLAUDE_STATE"
+: >"$CLAUDE_CALL_LOG"
+out=$(claude_redeem claude/nokeychain); rc=$?
+[ "$rc" -eq 3 ] || fail "claude without a keychain entry: expected exit 3, got $rc"
+[ ! -s "$CLAUDE_CALL_LOG" ] || fail "a profile with no keychain entry still called the service"
+pass
+
 # Every run leaves a line where the other bin tools log, and none of them carries a token.
 [ -s "$WORK/claudeb/reset-redeem.log" ] || fail "no run was logged"
 grep -q "$TOKEN" "$WORK/claudeb/reset-redeem.log" && fail "the log carries an access token"
+grep -q "$CLAUDE_TOKEN" "$WORK/claudeb/reset-redeem.log" && fail "the log carries the claude token"
 grep -q 'grok/supergrok' "$WORK/claudeb/reset-redeem.log" \
   || fail "the log does not name what was redeemed"
 pass

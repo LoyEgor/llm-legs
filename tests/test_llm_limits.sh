@@ -825,6 +825,8 @@ jq -e '.vendors.claude.accounts[0].rotation == {usable:{general:true,fable:true}
   .vendors.claude.accounts[0].blocked == false and
   (.vendors.claude | has("daemon") | not)' <<<"$multi" >/dev/null \
   || fail "local Claude rotation contract mismatch"
+jq -e '.vendors.claude.accounts[0] | has("reset_credits") | not' <<<"$multi" >/dev/null \
+  || fail "a Claude snapshot without a reset count grew one"
 
 HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CLAUDEB_CMD="$WORK/missing-claudeb" \
   LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --refresh >/dev/null 2>&1
@@ -3431,5 +3433,25 @@ jq -e '(.vendors.gemini | has("auth_needed") | not) and
   .vendors.gemini.refresh_error.cause == "login unconfirmed (auth probe lock busy)"' \
   <<<"$gemini_busy" >/dev/null || fail "an unconfirmed Gemini logout became a verdict: $gemini_busy"
 
+
+# Runs last: the freshness contract above budgets 60 s from the suite clock and these are three more collector passes.
+CLAUDEB_CREDITS="$WORK/claudeb-credits-store"
+CLAUDEB_CREDITS_CACHE="$WORK/claudeb-credits-cache.json"
+mkdir -p "$CLAUDEB_CREDITS/limits" "$CLAUDEB_CREDITS/tokens"
+: >"$CLAUDEB_CREDITS/tokens/alona"
+printf 'alona\n' >"$CLAUDEB_CREDITS/.claudeb-state"
+printf '{"five_hour":{"used_percentage":7,"resets_at":%s},"auth":{"status":"ok","checked_at":%s},"reset_credits":1,"reset_credits_as_of":%s,"reset_credits_expires_at":"2099-10-22T16:00:00Z"}\n' \
+  "$((now + 5000))" "$now" "$now" >"$CLAUDEB_CREDITS/limits/alona.json"
+claude_credits=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_CREDITS" LLM_LIMITS_CACHE="$CLAUDEB_CREDITS_CACHE" \
+  bash "$SCRIPT" --json) || fail "claudeb collection with reset credits failed"
+jq -e --argjson now "$now" '.vendors.claude.accounts[0] | .reset_credits == 1 and
+  .reset_credits_as_of == $now and .reset_credits_stale == false and
+  .reset_credits_expires_at == "2099-10-22T16:00:00Z"' <<<"$claude_credits" >/dev/null \
+  || fail "the Claude projection dropped the reset consumable"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_CREDITS" LLM_LIMITS_CACHE="$CLAUDEB_CREDITS_CACHE" bash "$SCRIPT" --table \
+  | awk '$1 == "claude/alona*" {print $(NF-1)}' | grep -qx '↻1' \
+  || fail "Claude reset credits missing from CR"
+HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_CREDITS" LLM_LIMITS_CACHE="$CLAUDEB_CREDITS_CACHE" bash "$SCRIPT" --plain \
+  | grep -q '^claude/alona\*: .* | cr ↻1 | ' || fail "Claude reset credits missing from plain"
 echo "PASS: account order (priority names, profile birth time, unknowns last) and vendor-scoped --refresh-account, schema, Claude unique accounts and fallback, Codex multi-account reset credits, auth-needed accounts and legacy cache, local Claude rotation usability, enabled flags, freshness contract, reset placeholder normalization, machine effective percentages and usability, refresh failure reasons, zero-spend refresh, start-windows, small-file fallback, truncated boundary, walls, weekly bucket provenance, experiment announcements, Hammerspoon projection contract including vendor pin (*_profile=*) vs account pin, one dim tone in the renderer, plain output, table output and sorts, reset tiers, expired windows, age alarm, bare JSON default, atomic cache, per-account newest-wins merge, a removed Gemini base profile absent from every surface with the vendor hoisted from what remains, the same for a removed Codex main (menubar flag, passive collects, table and plain, the vendor stating its removal when nothing named is left, undone by deleting the marker), a paused vendor absent from the store and every render path with its collector never run, missing exit 3"
 exit 0

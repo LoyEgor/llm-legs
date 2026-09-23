@@ -347,6 +347,8 @@ render_table() {
       elif (.weekly.effective_pct // 0) >= 100 then "limit-weekly"
       elif (.fable.effective_pct // 0) >= 100 then "fb:limit-fable"
       else "-" end;
+    def credits:
+      if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end;
     def account_status($vendor):
       if .auth_needed == true or
          ((.auth.status? | type) == "string" and .auth.status != "ok"
@@ -384,7 +386,7 @@ render_table() {
           | {src: ("claude/" + .account + (if .is_current then "*" else "" end)),
              five: .five_hour, week: .weekly, fable: .fable,
              age: compact_age($render_now), alarm: (.age_alarm == true),
-             rot: rotation, credits: "-", status: account_status("claude")})
+             rot: rotation, credits: credits, status: account_status("claude")})
        else {src: "claude", five: null, week: null, fable:null,
              age: ($v.claude | compact_age($render_now)), alarm: ($v.claude.age_alarm == true),
              rot:"-", credits:"-", status:($v.claude.status // "-")} end),
@@ -397,13 +399,13 @@ render_table() {
               | {src: ($k + "/" + .account + (if .is_current then "*" else "" end)),
                  five: .five_hour, week: .weekly, fable:null,
                  age: compact_age($render_now), alarm: (.age_alarm == true), rot: rotation,
-                 credits:(if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
+                 credits: credits,
                  status:account_status($k)})
          elif .available then
            {src: $k, five: .five_hour, week: .weekly, fable:null,
             age: compact_age($render_now), alarm: (.age_alarm == true),
             rot: ((.accounts[0] // .) | rotation),
-            credits:(if (.reset_credits | type) == "number" then "↻" + (.reset_credits | tostring) else "-" end),
+            credits: credits,
             status:"-"}
            else
            {src: $k, five: null, week: null, fable:null,
@@ -1118,7 +1120,14 @@ elif [ -d "$claudeb_root/limits" ] && [ "${#claudeb_files[@]}" -gt 0 ]; then
         resets_at:(if $fable_reset == "" then null else $fable_reset end)} + ($x.fable // {}))} end) +
       {rotation:{usable:{general:$auth_alive,
                          fable:($auth_alive and
-                                $has_fable == 1 and $plan_type != "pro")}}}' <<<"$claude_data")
+                                $has_fable == 1 and $plan_type != "pro")}}} +
+      (if ($d.reset_credits | type) == "number" then
+         (if ($d.reset_credits_as_of | type) == "number" then $d.reset_credits_as_of else $account_asof end) as $credits_asof |
+         {reset_credits:$d.reset_credits,reset_credits_as_of:$credits_asof,
+          reset_credits_stale:(([$now - $credits_asof, 0] | max) > $thrw)}
+       else {} end) +
+      (if ($d.reset_credits_expires_at | type) == "string" then
+         {reset_credits_expires_at:$d.reset_credits_expires_at} else {} end)' <<<"$claude_data")
     accounts_lines+="$account_json"$'\n'
   done
   accounts=$(jq -sc '.' <<<"$accounts_lines")
@@ -2496,7 +2505,7 @@ else
     select(.key != "opencode") |
     if .key == "claude" and .value.available and (.value.accounts | type) == "array" then
         .value.accounts[] |
-        line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; "-"; account_status("claude"))
+        line("claude/" + .account + (if .is_current then "*" else "" end); .; rotation; credits; account_status("claude"))
     elif (.key == "codex" or .key == "gemini" or .key == "grok") and
          ((.value.accounts | type) == "array") and
          ((.value.accounts | length) > 1 or

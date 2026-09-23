@@ -21,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "share"))
+import claude_resets  # noqa: E402
 import codex_appserver  # noqa: E402
 import grok_resets  # noqa: E402
 
@@ -251,6 +252,98 @@ def redeem_codex(account: str, target: str) -> int:
     return report(line, EXIT_REDEEMED)
 
 
+PENDING_PATH = LOG_PATH.with_name("reset-redeem-pending.json")
+
+
+def pending_requests() -> dict:
+    try:
+        pending = json.loads(PENDING_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return pending if isinstance(pending, dict) else {}
+
+
+def save_pending(key: str, request_id: str | None) -> None:
+    pending = pending_requests()
+    if request_id is None:
+        pending.pop(key, None)
+    else:
+        pending[key] = request_id
+    temporary = PENDING_PATH.with_name(f".{PENDING_PATH.name}.{os.getpid()}")
+    try:
+        PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(pending, sort_keys=True))
+        os.replace(temporary, PENDING_PATH)
+    except OSError:
+        pass
+
+
+CLAUDE_OUTCOMES = {"reset": EXIT_REDEEMED, "already_used": EXIT_REDEEMED,
+                   "not_limited": EXIT_NOTHING, "cooldown": EXIT_NOTHING,
+                   "ineligible": EXIT_NOTHING, "unavailable": EXIT_TRANSIENT}
+
+
+def redeem_claude(account: str, target: str) -> int:
+    hint = f"press Refresh in the menubar or open Claude Code on {account}, then try again"
+    try:
+        token = claude_resets.access_token(account)
+    except claude_resets.AuthError as exc:
+        return report(f"{target}: {exc} — {hint}", EXIT_EXPIRED)
+    organization = claude_resets.organization_uuid(account)
+    if organization is None:
+        return report(f"{target}: no organizationUuid in the profile's .claude.json — open Claude "
+                      f"Code on {account}", EXIT_EXPIRED)
+
+    try:
+        program = claude_resets.read_program(token)
+    except claude_resets.AuthError as exc:
+        return report(f"{target}: token rejected ({exc}) — {hint}", EXIT_EXPIRED)
+    except claude_resets.TransientError as exc:
+        return report(f"{target}: reset read failed ({exc})", EXIT_TRANSIENT)
+    grant = claude_resets.choose_grant(program) if program is not None else None
+    if grant is None:
+        reason = (program or {}).get("ineligible_reason")
+        return report(f"{target}: no usage reset available to redeem"
+                      + (f" ({reason})" if isinstance(reason, str) and reason else ""),
+                      EXIT_NOTHING)
+
+    # A POST without a reply keeps its request id until one arrives: a reset that landed has
+    # already lowered resets_left, so a re-derived id would spend a second reset instead of
+    # colliding into `already_used`.
+    pending_key = f"{target}/{grant['id']}"
+    request_id = pending_requests().get(pending_key)
+    if not isinstance(request_id, str) or not claude_resets.REQUEST_ID_RE.match(request_id):
+        request_id = str(uuid.uuid5(IDEMPOTENCY_NAMESPACE,
+                                    f"{target}/{grant['id']}/{grant['resets_left']}"))
+    save_pending(pending_key, request_id)
+    try:
+        result = claude_resets.reset(token, organization, grant["id"], request_id)
+    except claude_resets.AuthError as exc:
+        return report(f"{target}: token rejected ({exc}) — {hint}", EXIT_EXPIRED)
+    except claude_resets.TransientError as exc:
+        return report(f"{target}: redeem failed ({exc}) — check the account before retrying",
+                      EXIT_TRANSIENT)
+    save_pending(pending_key, None)
+
+    log("claude-reset", json.dumps(result, sort_keys=True))
+    outcome = result.get("result")
+    code = CLAUDE_OUTCOMES.get(outcome) if isinstance(outcome, str) else None
+    if code is not None and code != EXIT_REDEEMED:
+        reason = result.get("reason")
+        return report(f"{target}: nothing redeemed — {outcome}"
+                      + (f" ({reason})" if isinstance(reason, str) and reason else ""), code)
+    line = f"{target}: usage reset redeemed"
+    if outcome == "already_used":
+        line += " — an earlier attempt under this grant's request id had already landed"
+    elif code is None:
+        line += f" — unrecognized outcome, see {LOG_PATH}"
+    elif isinstance(result.get("resets_left"), int):
+        line += f" — {result['resets_left']} left"
+    if not refresh(target):
+        line += " (quota re-read failed; press Refresh)"
+    return report(line, EXIT_REDEEMED)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) != 1 or "/" not in argv[0]:
         print("usage: llm-reset-redeem <vendor>/<account>", file=sys.stderr)
@@ -265,6 +358,8 @@ def main(argv: list[str]) -> int:
         return redeem_grok(account, target)
     if vendor == "codex":
         return redeem_codex(account, target)
+    if vendor == "claude":
+        return redeem_claude(account, target)
     return report(f"{target}: NO_REDEEM_BACKEND — {vendor} has no usage-reset consumable",
                   EXIT_NO_BACKEND)
 

@@ -3095,7 +3095,7 @@ do
       gemini = { available = false },
     }
     vendors[vendor] = { available = true, current_account = account.account,
-      accounts = { account } }
+      accounts = { account }, source = vendor == "claude" and "claudeb-store" or nil }
     return { schema = 1, vendors = vendors }
   end
   local function redeemItem(menu, name)
@@ -3111,7 +3111,7 @@ do
   local aged = os.date("!%Y-%m-%dT%H:%M:%SZ", os.time() - 9 * 60)
   local expectedLabel = "Redeem usage reset · " .. os.date("%b %d", expiryEpoch)
   local labels = {}
-  for _, vendor in ipairs({ "grok", "codex" }) do
+  for _, vendor in ipairs({ "grok", "codex", "claude" }) do
     local menu = loadModule(resetFixture(vendor, {
       account = "acct", is_current = true, enabled = true, five_hour = bucket(10),
       weekly = bucket(40), as_of = aged, reset_credits = 1, reset_credits_stale = false,
@@ -3130,7 +3130,8 @@ do
       vendor .. " worded the redeem action differently: " .. titleText(redeem))
     table.insert(labels, titleText(redeem))
   end
-  assert(labels[1] == labels[2], "the two vendors' redeem actions did not read identically")
+  assert(labels[1] == labels[2] and labels[2] == labels[3],
+    "the three vendors' redeem actions did not read identically")
 
   -- A vendor that published a count with no redeem RPC behind it states the reason rather than
   -- dropping the item, so an absent action never reads as an absent reset.

@@ -224,6 +224,12 @@ assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$DRIV
 assert grep -Fq '"Claude Code-credentials-"' "$DRIVER"
 assert grep -Fq '".claude-profiles"' "$DRIVER"
 assert doc_has 'bin/claude-session-driver'
+CLAUDE_RESETS="$ROOT/share/claude_resets.py"
+assert grep -q '^def keychain_service' "$CLAUDE_RESETS"
+assert grep -Fq 'hashlib.sha256(profile.encode("utf-8")).hexdigest()[:8]' "$CLAUDE_RESETS"
+assert grep -Fq '"Claude Code-credentials-"' "$CLAUDE_RESETS"
+assert grep -Fq '".claude-profiles"' "$CLAUDE_RESETS"
+assert doc_has '`share/claude_resets.py` `keychain_service`'
 
 # --- Row d: weather HTTP classes ---------------------------------------------
 # probe_weather_failed's case pattern is the canonical class list.
@@ -2702,9 +2708,11 @@ done
 # The router prints no count at all: the reset is spent from the menu, and a number beside a row
 # nobody ranks on reads as one that ranked it.
 assert eq "$(grep -c '↻' "$WORKERPICK")" 0
-assert eq "$(grep -c 'if (.reset_credits | type) == "number" then "↻"' "$LLMLIMITS")" 3
+assert eq "$(grep -c 'if (.reset_credits | type) == "number" then "↻"' "$LLMLIMITS")" 2
 assert eq "$(grep -c '\$key == "codex" then credits' "$LLMLIMITS")" 0
-for credits_field in "$GROKQUOTA" "$CODEXQUOTA"; do
+assert eq "$(grep -c 'credits: "-", status: account_status("claude")' "$LLMLIMITS")" 0
+assert eq "$(grep -c 'rotation; "-"; account_status("claude")' "$LLMLIMITS")" 0
+for credits_field in "$GROKQUOTA" "$CODEXQUOTA" "$CLAUDEB"; do
   assert grep -Fq 'reset_credits' "$credits_field"
   assert grep -Fq 'reset_credits_expires_at' "$credits_field"
 done
@@ -2726,13 +2734,23 @@ for appserver_caller in "$CODEXQUOTA" "$REDEEM"; do
 done
 assert eq "$(grep -rl 'rateLimitResetCredit/consume' "$ROOT/bin" "$ROOT/share" "$CODEXQUOTA" | wc -l | tr -d ' ')" 1
 assert grep -Fq 'rateLimitResetCredit/consume' "$REDEEM"
+assert grep -Fq 'RESET_PATH = "/api/organizations/{organization}/reset_rate_limits"' "$CLAUDE_RESETS"
+assert grep -Fq 'PROGRAM = "cedar_ember"' "$CLAUDE_RESETS"
+assert eq "$(grep -rlI 'reset_rate_limits' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d ' ')" 1
+assert eq "$(grep -rlI 'claude_resets.reset(' "$ROOT/bin" "$ROOT/share" | wc -l | tr -d ' ')" 1
+assert grep -Fq 'claude_resets.reset(' "$REDEEM"
+assert grep -Fq 'oauth/usage?cedar_ember=1' "$CLAUDEB"
+claude_ua=$(sed -nE 's/^USER_AGENT = "(claude-cli\/[^"]+)"$/\1/p' "$CLAUDE_RESETS")
+assert test -n "$claude_ua"
+assert grep -Fq -- "-H 'User-Agent: $claude_ua'" "$CLAUDEB"
+assert doc_has '`cedar_ember`'
 # One wording for the action, shared by the renderer and the contract that pins it.
 assert grep -Fq 'local title = "Redeem usage reset"' "$HAMMER"
 assert grep -Fq 'title .. " · " .. formatResetTime(block.reset_credits_expires_at)' "$HAMMER"
 assert grep -Fq 'Redeem usage reset · ' "$ROOT/tests/llm_limits_renderer_harness.lua"
 assert doc_has 'Redeem usage reset · <when>'
 # The menu is the only surface that may fire the write, and only for a vendor with a backend.
-assert grep -Fq 'local RESET_REDEEM_VENDORS = { grok = true, codex = true }' "$HAMMER"
+assert grep -Fq 'local RESET_REDEEM_VENDORS = { grok = true, codex = true, claude = true }' "$HAMMER"
 assert grep -Fq 'M.resetRedeemCmd or "llm-reset-redeem"' "$HAMMER"
 assert grep -Fq 'hs.dialog.blockAlert' "$HAMMER"
 assert test -r "$ROOT/tests/test_llm_reset_redeem.sh"

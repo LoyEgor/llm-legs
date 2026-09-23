@@ -1467,7 +1467,7 @@ function M.hardRefreshGrok(name) hardRefresh("grok/" .. name) end
 
 -- The whole per-vendor difference: who has a redeem RPC. Wording and layout are shared, so the
 -- item still renders for a vendor without one, disabled and saying why, rather than vanishing.
-local RESET_REDEEM_VENDORS = { grok = true, codex = true }
+local RESET_REDEEM_VENDORS = { grok = true, codex = true, claude = true }
 
 -- Spends a real one-per-period consumable on the account, so it fires on a click and a
 -- confirmation and on nothing else. The script does the targeted refresh itself; the recollect

@@ -216,6 +216,40 @@ assert merge_headers alpha "$headers"
 assert jq -e --argjson as_of "$cached_as_of" \
   '.five_hour.used_percentage == 42 and .fable.used_percentage == 31 and .fable.as_of == $as_of and .fable.origin == "cached"' \
   "$snapshot" >/dev/null
+
+# The reset consumable rides the usage body's cedar_ember object: spendable = not paused, not
+# lapsed, usable_now, resets_left counted; the expiry is the soonest of those. An unmeasured count is absent.
+soon_iso=$(date -u -r "$((now + 86400))" '+%Y-%m-%dT%H:%M:%S+00:00' 2>/dev/null \
+  || date -u -d "@$((now + 86400))" '+%Y-%m-%dT%H:%M:%S+00:00')
+late_iso=$(date -u -r "$((now + 864000))" '+%Y-%m-%dT%H:%M:%S+00:00' 2>/dev/null \
+  || date -u -d "@$((now + 864000))" '+%Y-%m-%dT%H:%M:%S+00:00')
+jq -n --arg soon "$soon_iso" --arg late "$late_iso" '{
+  five_hour:{utilization:1,resets_at:null},seven_day:{utilization:2,resets_at:null},limits:[],
+  cedar_ember:{eligible:true,next_grant_id:"live",grants:[
+    {id:"live",resets_left:1,ends_at:$late,paused:false,usable_now:true},
+    {id:"open",resets_left:1,ends_at:null,paused:false,usable_now:true},
+    {id:"held",resets_left:2,ends_at:$soon,paused:true,usable_now:false},
+    {id:"lapsed",resets_left:1,ends_at:"2020-01-01T00:00:00+00:00",paused:false,usable_now:false},
+    {id:"spent",resets_left:0,ends_at:$soon,paused:false,usable_now:false},
+    {id:"limited",resets_left:3,ends_at:$soon,paused:false,usable_now:false}]}}' >"$usage"
+assert merge_usage alpha "$usage"
+assert jq -e --arg late "${late_iso%+00:00}Z" --argjson now "$now" \
+  '.reset_credits == 2 and .reset_credits_expires_at == $late and .reset_credits_as_of >= $now' \
+  "$snapshot" >/dev/null
+assert merge_headers alpha "$headers"
+assert jq -e '.reset_credits == 2 and (.reset_credits_expires_at | type) == "string"' "$snapshot" >/dev/null
+jq '.cedar_ember.grants |= map(select(.id == "spent" or .id == "held"))' "$usage" >"$usage.next"
+assert merge_usage alpha "$usage.next"
+assert jq -e '.reset_credits == 0 and (has("reset_credits_expires_at") | not)' "$snapshot" >/dev/null
+jq '.cedar_ember = {eligible:false,ineligible_reason:"cli_version",grants:[]}' "$usage" >"$usage.next"
+assert merge_usage alpha "$usage"
+assert merge_usage alpha "$usage.next"
+assert jq -e 'has("reset_credits") | not' "$snapshot" >/dev/null
+jq '.cedar_ember = null' "$usage" >"$usage.next"
+assert merge_usage alpha "$usage"
+assert merge_usage alpha "$usage.next"
+assert jq -e '[has("reset_credits"), has("reset_credits_as_of"), has("reset_credits_expires_at")] == [false, false, false]' \
+  "$snapshot" >/dev/null
 export CLAUDEB_LOCK_RETRIES=1 CLAUDEB_LOCK_DELAY=0
 mkdir "$snapshot.lock"
 assert_fails merge_headers alpha "$headers"
@@ -1030,7 +1064,7 @@ case "$*" in
     printf 'token\n' >>"$EVENT_LOG"
     printf '{"error":"rate_limited"}\n429'
     ;;
-  *'/api/oauth/usage'*)
+  *'/api/oauth/usage?cedar_ember=1'*)
     printf 'usage\n' >>"$EVENT_LOG"
     output=''
     previous=''
