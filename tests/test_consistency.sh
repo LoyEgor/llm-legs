@@ -414,9 +414,9 @@ assert grep -Fq 'agy-flash38-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash37-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'agy-flash36-high' "$REVIEW_ROOT/docs/DIAGNOSTICS.md"
 assert grep -Fq 'return f"{_catalog.AGY_MODEL_IDS[rater['\''model'\'']]}-{rater['\''effort'\'']}"' "$RB_LAUNCH"
-assert grep -Fq 'if rater["model"] == "agy-pro" and rater["effort"] == "high":' "$RB_LAUNCH"
+assert test "$(grep -A2 '^def agy_model_id' "$RB_LAUNCH" | grep -c agy_expected_label)" -eq 0
 assert doc_has '`agy-pro-low` → `--model gemini-3.1-pro-low`'
-assert doc_has '`agy-pro-high` → `--model "Gemini 3.1 Pro (High)"`'
+assert doc_has '`agy-pro-high` → `--model gemini-3.1-pro-high`'
 assert doc_has '`agy-flash38-<effort>` → `--model gemini-3.8-flash-<effort>`'
 assert doc_has '`agy-flash37-<effort>` → `--model gemini-3.7-flash-<effort>`'
 assert doc_has '`agy-flash36-<effort>` → `--model gemini-3.6-flash-<effort>`'
@@ -454,7 +454,7 @@ assert test "$(grep -Fc -- 'agy_model="$(cut -f3 <<<"$gemini_family")-$effort"' 
 # label: the `-high` Pro slug is still served as Flash, so the slug spelling would run the
 # wrong model on every Pro worker.
 assert test "$(grep -Fc -- '[ "$effort" = high ] &&' "$WORKER_RUN")" -eq 1
-assert test "$(grep -Fc -- 'agy_model="$(cut -f4 <<<"$gemini_family") (High)"' "$WORKER_RUN")" -eq 1
+assert test "$(grep -Fc -- ' (High)"' "$WORKER_RUN")" -eq 0
 assert test "$(grep -Ec 'pro:(medium|low)' "$WORKER_RUN")" -eq 0
 # No arm below `high` for any Gemini model, and none for a family outside the table: the effort
 # is RAISED before this case is read, so a lower arm is an arm nothing can reach.
@@ -493,7 +493,7 @@ assert grep -Fq 'os.path.join(base_home(), ".cache", "gemini-weather")' "$WEATHE
 assert test "$(grep -Ec 'gemini-weather|GEMINI_WEATHER_DIR|valid_until|errors_503' "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 assert test "$(grep -Ec 'streamGenerateContent|SLOW_FACTOR|HEALTHY_STEP_S|SLOW_STEP_S|>= *9' "$ROOT/bin/gemini-probe")" -eq 0
 assert grep -Fq 'weather.state_of(' "$ROOT/bin/gemini-probe"
-assert grep -Fq 'model = family["label"] + " (High)" if family["slug"] == "pro" else family["agy_prefix"] + "-high"' "$ROOT/bin/gemini-probe"
+assert grep -Fq 'model = family["agy_prefix"] + "-high"' "$ROOT/bin/gemini-probe"
 for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
   assert test "$(grep -Ec 'median_step_s *(>=|>) *[0-9]|SLOW_STEP|slow_step_s' "$weather_reader")" -eq 0
 done
@@ -568,15 +568,18 @@ assert doc_has 'Gemini capacity fallback'
 assert doc_has 'geminib: model <slug>'
 
 # --- Row cr: Gemini model families -------------------------------------------
-# ONE list: a family literal in a production file is a second copy a rollout has to find. The
-# built-in fallback in geminib is the only one; a registered experiment's tagged block and the
-# bench's legacy rater renames name a family on purpose.
+# A versioned model id of any vendor in a production file is a copy the next release has to find and
+# bump. Survivors name one on purpose: the frozen `*_builtin` fallbacks, the image-caps manifests'
+# proven pins, the line under a `pin:` comment, a registered experiment's tagged block, the bench's
+# legacy rater renames. A comment line is history, not behaviour.
 family_literals() { # legs-root bench-root setup-root
   python3 - "$@" <<'FAMPY'
 import json, os, re, sys
 legs, bench, setup = sys.argv[1:4]
-literal = re.compile(r"gemini-3\.[0-9]+-(flash|pro)(?!-image)|flash3[0-9]")
-tag = re.compile(r"TEMP-[A-Z][A-Z0-9_-]*\([a-z0-9_-]+\)")
+literal = re.compile(r"gemini-[0-9]+\.[0-9]+-(flash|pro)(?!-image)|flash3[0-9]|\bgpt-(image-)?[0-9]|\bgrok-([0-9]|imagine-)"
+                     r"|\bclaude-(opus|sonnet|haiku|fable)-[0-9]|\b(imagen|veo)-[0-9]")
+tag = re.compile(r"TEMP-[A-Z][A-Z0-9_-]*\([a-z0-9_-]+\)|(#|--|//) pin: ")
+comment = re.compile(r"\s*(#|--|//)")
 experiment_ids = []
 for root in (legs, bench):
     try:
@@ -599,18 +602,20 @@ for root, tops in ((legs, ("bin", "share", "hammerspoon")), (bench, ("share/rben
                 except (OSError, UnicodeDecodeError):
                     continue
                 relative = os.path.relpath(path, root)
+                if relative.startswith("share/image-caps/"):
+                    continue
                 tagged = builtin = legacy = False
                 for number, line in enumerate(lines, 1):
                     stripped = line.strip()
-                    if relative == "bin/geminib":
-                        builtin = stripped.startswith("families_builtin()") or (builtin and stripped != "}")
+                    if relative in ("bin/geminib", "bin/grokb", "bin/codexb"):
+                        builtin = bool(re.match(r"[a-z]+_builtin\(\)", stripped)) or (builtin and stripped != "}")
                     if relative == "share/rbench/raters.py":
                         legacy = line.startswith("def normalize_legacy_rater(") or (legacy and not line.startswith("def "))
                     tagged = tagged or bool(tag.search(line))
                     text = line
                     for word in experiment_ids:
                         text = text.replace(word, "")
-                    if literal.search(text) and not (tagged or builtin or legacy):
+                    if literal.search(text) and not (tagged or builtin or legacy or comment.match(line)):
                         hits.append("%s:%d" % (relative, number))
                     if tagged and not tag.search(line) and not stripped.startswith("#"):
                         tagged = False
@@ -627,8 +632,13 @@ printf 'def normalize_legacy_rater(r):\n    return "agy-flash36-"\n\ndef other()
 printf 'families_builtin() {\n  printf x gemini-3.8-flash\n}\nchain=gemini-3.7-flash\n' >"$family_probe/bin/geminib"
 printf 'model gemini-3.1-flash-image\n' >"$family_probe/share/image.json"
 printf 'Gemini on gemini-3.6-flash-high\n' >"$family_probe/agents/a.md"
+mkdir -p "$family_probe/hammerspoon" "$family_probe/share/image-caps"
+printf -- '-- gpt-6-sol is the newest\nlocal model = "gpt-6-sol"\n-- pin: the cheapest id answers a probe\nlocal probe = "claude-haiku-4-5"\nlocal last = "grok-4.7"\n' \
+  >"$family_probe/hammerspoon/probe.lua"
+printf 'models_builtin() {\n  printf x grok-4.7\n}\n' >"$family_probe/bin/grokb"
+printf '{"image": "grok-imagine-image-2.0"}\n' >"$family_probe/share/image-caps/grok.json"
 assert eq "$(family_literals "$family_probe" "$family_probe/bench" "$family_probe")" \
-  'bin/geminib:4 share/tagged.sh:5 share/rbench/raters.py:5 agents/a.md:1'
+  'bin/geminib:4 share/tagged.sh:5 hammerspoon/probe.lua:2 hammerspoon/probe.lua:5 share/rbench/raters.py:5 agents/a.md:1'
 # The built-in list, both fixtures and what `geminib families` prints share one column format.
 family_rows_ok() {
   awk -F'\t' 'NF != 4 || $1 !~ /^gemini-[0-9]+\.[0-9]+-(flash|pro)$/ || $2 !~ /^(flash[0-9]+|pro)$/ ||
@@ -680,15 +690,16 @@ assert doc_has '`../review-bench/share/rbench/catalog.py` `review_flash_pin`'
 
 # --- Row cu: the Grok model list ---------------------------------------------
 # ONE list, and the built-in fallback, the fixture cache and what `grokb models` prints share one
-# column format — a consumer reading three columns must never meet two.
+# column format — a consumer reading four columns must never meet three.
 GROKB_BIN="$ROOT/bin/grokb"
 grok_rows_ok() {
-  awk -F'\t' 'NF != 3 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || $2 !~ /^(yes|no)$/ || $3 != $1 { bad = 1 }
+  awk -F'\t' 'NF != 4 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || $2 !~ /^(yes|no)$/ || $3 != $1 ||
+              $4 !~ /^(-|[a-z]+(,[a-z]+)*)$/ { bad = 1 }
               END { exit (bad || NR == 0) }'
 }
 grok_builtin_rows=$(bash -c 'eval "$(sed -n "/^models_builtin() {/,/^}/p" "$1")"; models_builtin' _ "$GROKB_BIN")
 assert grok_rows_ok <<<"$grok_builtin_rows"
-assert eq "$(jq -r '.models[] | [.slug, (if .default then "yes" else "no" end), .label] | @tsv' \
+assert eq "$(jq -r '.models[] | [.slug, (if .default then "yes" else "no" end), .label, (.efforts | join(","))] | @tsv' \
   "$ROOT/tests/fixtures/grokb-models.json")" "$grok_builtin_rows"
 # No cache and no profiles is the built-in list — and `main`'s auth lives in the REAL $HOME this
 # suite deliberately runs against, so without the stub behind grokb a signed-in machine would run
@@ -697,7 +708,8 @@ assert eq "$(GROKB_PROFILES_DIR="$CONSISTENCY_CACHE/no-profiles" \
   GROKB_CACHE_DIR="$CONSISTENCY_CACHE/no-grok-cache" "$GROKB_BIN" models 2>/dev/null)" \
   "$grok_builtin_rows"
 assert grok_rows_ok < <("$GROKB_BIN" models)
-assert eq "$("$GROKB_BIN" models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label] | @tsv')" \
+assert eq "$("$GROKB_BIN" models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label,
+    (.efforts | if length == 0 then "-" else join(",") end)] | @tsv')" \
   "$("$GROKB_BIN" models)"
 # Exactly one default, and it is the one the cache document names.
 assert eq "$("$GROKB_BIN" models | awk -F'\t' '$2 == "yes" { print $1 }')" \
@@ -772,7 +784,7 @@ grok auto high high,xhigh - no
 grok grok-4.7 high high,xhigh - no
 grok grok-4.7-build-fast high high,xhigh - no
 grok grok-4.6 high high,xhigh - no
-grok grok-4.5 high high,xhigh - no'
+grok grok-4.5 high high - no'
 # A Pro newer than every Flash tops `geminib families`, and the table still ends with `pro`: the
 # first gemini row is the vendor default and `pro` is word-gated, so a Pro-first table would hand
 # the gated model to every worker that names no model.
@@ -800,6 +812,17 @@ grok_table() { GROKB_CACHE_DIR="$grok_new_cache" bash -c '. "$1"; shift; "$@"' _
 assert eq "$(grok_table worker_model_table | awk '$1 == "grok" { print $2 }' | tr '\n' ,)" \
   'auto,grok-5,grok-4.7,grok-4.7-build-fast,grok-4.6,grok-4.5,'
 assert eq "$(grok_table worker_model_default_model grok)" auto
+# Efforts come from the catalog: the CLI refuses a level a model's menu lacks, so grok-4.5 (no xhigh)
+# offers high alone, a slug with unknown efforts keeps high and xhigh, and `auto` takes its default's.
+assert eq "$(grok_table worker_model_effort_list grok grok-4.5)" high
+assert eq "$(grok_table worker_model_effort_list grok grok-5)" 'high|xhigh'
+assert eq "$(grok_table worker_model_effort_list grok auto)" 'high|xhigh'
+grok_old_default_cache="$CONSISTENCY_CACHE/grokb-old-default"
+mkdir -p "$grok_old_default_cache"
+jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now | .default = "grok-4.5"
+  | .models |= map(.default = (.slug == "grok-4.5"))' \
+  "$ROOT/tests/fixtures/grokb-models.json" >"$grok_old_default_cache/models.json"
+assert eq "$(GROKB_CACHE_DIR="$grok_old_default_cache" bash -c '. "$1"; worker_model_effort_list grok auto' _ "$WORKER_MODEL_SH")" high
 # One helper owns the label, and it collapses `auto` and the CLI's own default alone.
 assert eq "$(grok_table worker_model_grok_label auto)" grok
 assert eq "$(grok_table worker_model_grok_label grok-5)" grok
@@ -835,6 +858,17 @@ assert eq "$(grok_launch grok-4.7 workers "$grok_fast_pin")" grok-4.7-build-fast
 # A brief naming a slug is a choice and runs unchanged, and fast is WORKERS only.
 assert eq "$(grok_launch grok-4.6 workers "$grok_fast_pin")" grok-4.6
 assert eq "$(grok_launch auto research "$grok_fast_pin")" auto
+# The account's menu Fast Mode (`grokb fast-mode`) swaps the same twin in, on the same terms.
+grok_acct_profiles="$CONSISTENCY_CACHE/grok-acct-profiles"
+mkdir -p "$grok_acct_profiles/.grokb/fast-mode"
+printf 'fast\n' >"$grok_acct_profiles/.grokb/fast-mode/fastacct"
+printf 'default\n' >"$grok_acct_profiles/.grokb/fast-mode/slowacct"
+: >"$CONSISTENCY_CACHE/grok-no-pin"
+grok_launch_acct() { GROKB_PROFILES_DIR="$grok_acct_profiles" grok_launch "$@"; }
+assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.7-build-fast
+assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" slowacct)" auto
+assert eq "$(grok_launch_acct auto research "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" auto
+assert eq "$(grok_launch_acct grok-4.6 workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.6
 assert eq "$(grok_launch auto light "$grok_fast_pin")" auto
 assert eq "$(grok_launch auto workers "$CONSISTENCY_CACHE/no-such-pin")" auto
 for label_site in "$WORKER_RUN" "$ROOT/bin/worker-tag-hook.sh" "$ROOT/bin/worker-spawn-hook.sh"; do
@@ -920,10 +954,10 @@ assert grep -Fq 'grok_cancelled_start "$1"' "$WORKER_RUN"
 assert doc_has '`OUTCOME: GROK_CANCELLED <run-id>` with `STATUS: failed`'
 assert grep -Fq 'OUTCOME: GROK_CANCELLED <run-id>' "$ROOT/docs/DIAGNOSTICS.md"
 
-# ask_claude.sh seds this stderr literal into its audit account field, so the wording is a
-# three-site contract, not free prose.
+# claudeb's headless selection announcement is a two-site contract with the legs test stub.
+# ask_claude.sh picks its own reviewers-role account and runs `claudeb profile`, so it parses none.
 assert grep -Fq "printf 'claudeb: worker-pick selected %s\\n'" "$CLAUDEB"
-assert grep -Fq 's/^claudeb: worker-pick selected \([^[:space:]]*\)$/\1/p' "$ROOT/ask_claude.sh"
+assert grep -Fq 'worker-pick --account claudeb --role "${LEGS_ROLE:-reviewers}"' "$ROOT/ask_claude.sh"
 assert grep -Fq "printf 'claudeb: worker-pick selected %s\\n'" "$ROOT/tests/test_legs_routing.sh"
 assert doc_has 'claudeb: worker-pick selected'
 
@@ -1097,6 +1131,12 @@ assert grep -Fq 'Light on Claude accounts: alpha 10%' <<<"$light_toggle_out"
 assert test "$(grep -c 'The worker toggle says' <<<"$light_toggle_out")" = 0
 # A vendor relay under the same toggle still hears it.
 assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
+# Light switched off in Egor's menu: the spawn hook refuses the spawn, and this gate neither prices
+# a Light quota nor asks for an account.
+printf 'light_paused=on\nlight_edit=claudeb:sonnet\n' >"$LIGHT_GATE_WORK/worker-model"
+: >"$LIGHT_GATE_WORK/picks"
+assert test -z "$(light_gate light-worker)"
+assert test ! -s "$LIGHT_GATE_WORK/picks"
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:100}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=auto\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
@@ -1602,6 +1642,9 @@ assert doc_has '`${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/<session_id>`'
 assert grep -Fq "printf '%s/%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pins}\" \"\$sid\"" "$WORKER_MODEL_SH"
 assert grep -Fq "chat_pins_dir() { printf '%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pins}\"; }" "$PIN_GATE"
 assert grep -Fq 'pin_file="${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/$session_id"' "$STATUSLINE"
+assert grep -Fq 'os.environ.get("CHAT_PINS_DIR") or os.path.expanduser("~/.cache/claude-chat-pins")' "$RB_ACCOUNTS"
+assert grep -Fq "grep -qx 'open=all' \"\$file\"" "$ROOT/bin/worker-pick"
+assert grep -Fq 'line.strip() == "open=all"' "$RB_ACCOUNTS"
 assert doc_has '`bin/worker-pin-gate.sh` `chat_pins_dir`'
 assert doc_has '`bin/statusline.sh` `pin` segment'
 assert eq "$(grep -rlF 'claude-chat-pins' "$ROOT/bin" "$ROOT/share" "$ROOT/llm-limits.sh" | sed "s|^$ROOT/||" | sort | tr '\n' ' ')" 'bin/statusline.sh bin/worker-pin-gate.sh share/worker-model.sh '

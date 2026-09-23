@@ -77,6 +77,10 @@ cat >"$FAKE_BIN/opener" <<'EOF'
 printf '%s\n' "$*" >>"$OPENED"
 EOF
 chmod +x "$FAKE_BIN/opener"
+printf '#!/usr/bin/env bash\ncat "$DATA/pick"\n' >"$FAKE_BIN/worker-pick"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
+chmod +x "$FAKE_BIN/worker-pick" "$FAKE_BIN/claudeb"
+printf 'acct-b\n' >"$DATA/pick"
 
 printf '0.156.1\n' >"$DATA/ver-codex"
 printf '1.0.41\n' >"$DATA/ver-grok"
@@ -151,7 +155,14 @@ assert [ "$(field '.substantive | join(",")')" = ids ]
 assert grep -qxF '+grok-imagine-image-3.0' "$EVENTS/$id.diff"
 assert [ "$(cat "$OPENED")" = "$EVENTS/$id.command" ]
 assert grep -qxF "cd $(printf '%q' "$ROOT") || exit 1" "$EVENTS/$id.command"
-assert grep -qF -- "--model opus --effort high Vendor\\ release\\ event\\ $id:\\ read\\ $ROOT/docs/vendor-release.md" "$EVENTS/$id.command"
+launch_sid=$(sed -n 's/^CLAUDE_CODE_SESSION_ID=\([^ ]*\) .*/\1/p' "$EVENTS/$id.command")
+assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$launch_sid"
+assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $launch_sid --model opus --effort high Vendor\\ release\\ event\\ $id:\\ read\\ $ROOT/docs/vendor-release.md" "$EVENTS/$id.command"
+# The chat it opens has every vendor open: the pin line lands in that session's chat pin file.
+launch_pins="$WORK/chat-pins"
+sed -n '/^CLAUDE_CODE_SESSION_ID=/p' "$EVENTS/$id.command" >"$WORK/pin-line.sh"
+env -u CLAUDECODE CHAT_PINS_DIR="$launch_pins" bash "$WORK/pin-line.sh"
+assert [ "$(cat "$launch_pins/$launch_sid")" = open=all ]
 assert [ "$(field '.launched_at != null')" = true ]
 check
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
@@ -170,6 +181,25 @@ codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
 check
 assert [ "$(field '.changed | join(",")')" = catalog_text ]
 assert [ "$(field .status)" = auto-closed ]
+
+# Accounts served different catalogs: a field they disagree on is recorded as its value set, and
+# ~/.codex dropping in and out of the homes as the app and our client take turns writing it is no
+# release.
+count=$(events)
+VARIANT="[{\"slug\":\"gpt-6-sol\",\"context_window\":272000,\"supports_computer_use\":true,\"default_service_tier\":\"priority\",\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
+mkdir -p "$HOME/.codex-profiles/b"
+ln -s "$HOME/.codex-profiles/a/skills" "$HOME/.codex/skills"
+codex_cache "$HOME/.codex-profiles/b" 0.156.1 "$VARIANT"
+check
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '.substantive | join(",")')" = catalog ]
+assert grep -qxF '+gpt-6-sol.default_service_tier.per_account.1 = "priority"' "$(field .diff)"
+count=$(events)
+codex_cache "$HOME/.codex" 0.156.1 "$VARIANT"
+check
+codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"}]'
+check
+assert [ "$(events)" = "$count" ]
 
 # Another client's list never enters the catalog, and an unreachable catalog keeps its last value.
 count=$(events)
@@ -224,13 +254,18 @@ assert [ "$(field .vendor)" = claude ]
 assert [ "$(field '.substantive | join(",")')" = installs ]
 assert grep -qxF "+$HOME/.nvm/versions/node/v24.0.0/bin/claude = \"2.1.201\"" "$(field .diff)"
 
-# A chat that could not be opened is opened by the next run, once.
+# A chat with no Claude account to run on, or that could not be opened, is opened by the next run, once.
 : >"$OPENED"
-: >"$DATA/opener-fails"
+: >"$DATA/pick"
 fake_cli "$FAKE_BIN/claude" claude claude-opus-5-5 claude-sonnet-5 claude-opus-6
 check
 id=$(field .id)
 assert [ "$(field '.launched_at == null')" = true ]
+: >"$DATA/opener-fails"
+printf 'acct-b\n' >"$DATA/pick"
+check
+assert [ "$(field '.launched_at == null')" = true ]
+assert [ ! -s "$OPENED" ]
 rm "$DATA/opener-fails"
 check
 check
@@ -254,7 +289,9 @@ assert [ "$(jq -r '.decisions[0].decision' "$EVENTS/$id.json")" = integrated ]
 assert [ "$(jq -r '"\(.status) \(.note)"' "$EVENTS/$id.json")" = "closed integrated claude-opus-6" ]
 assert_fails grep -qF "$id" <(bash "$SCRIPT" events)
 assert grep -qF "$id" <(bash "$SCRIPT" events --all)
+# The npm CLI is found under nvm with no PATH naming it.
 : >"$OPENED"
+mv "$FAKE_BIN/grok" "$HOME/.nvm/versions/node/v24.0.0/bin/grok"
 manual=$(bash "$SCRIPT" request grok 'catch up' | head -n 1)
 assert [ "$(jq -r '"\(.status) \(.reason) \(.to)"' "$EVENTS/$manual.json")" = "open manual request: catch up 1.0.41" ]
 assert [ "$(cat "$OPENED")" = "$EVENTS/$manual.command" ]
@@ -282,4 +319,12 @@ kill "$HOLDER" 2>/dev/null
 wait "$HOLDER" 2>/dev/null
 HOLDER=""
 
-echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/installs/divergence open one integration chat per event, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock"
+# The integration chat's own change moved a facet: `check --here` records the event as its own and
+# opens no other chat.
+: >"$OPENED"
+bash "$SCRIPT" check --here grok
+assert [ "$(events)" = "$((count + 1))" ]
+assert [ "$(field '"\(.vendor) \(.status) \(.launched)"')" = "grok open here" ]
+assert [ ! -s "$OPENED" ]
+
+echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/installs/divergence open one integration chat per event, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here"

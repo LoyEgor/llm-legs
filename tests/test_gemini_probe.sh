@@ -80,7 +80,7 @@ assert_eq "$?" 1
 assert test "$(( $(date +%s) - started ))" -lt 20
 out=$(cat "$WORK/out")
 assert_eq "$(sed -n 1p <<<"$out")" 'account: alpha'
-assert_eq "$(sed -n 2p <<<"$out")" 'families: gemini-3.8-flash-high, gemini-3.7-flash-high, gemini-3.6-flash-high, Gemini 3.1 Pro (High)'
+assert_eq "$(sed -n 2p <<<"$out")" 'families: gemini-3.8-flash-high, gemini-3.7-flash-high, gemini-3.6-flash-high, gemini-3.1-pro-high'
 assert grep -Eq '^FAMILY +SHORT +LONG +WALL +503 +STATE$' <<<"$out"
 assert grep -Eq '^gemini-3\.8-flash +1 step 2\.0s +6 steps med 2\.0s p90 2\.0s +[0-9]+s\+[0-9]+s +0 +ok$' <<<"$out"
 assert grep -Eq '^gemini-3\.7-flash +1 step 12\.0s +6 steps med 12\.0s p90 12\.0s +[0-9]+s\+[0-9]+s +0 +slow$' <<<"$out"

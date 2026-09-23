@@ -1,6 +1,7 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-09-11 against **agy 1.2.1**, launched by `geminib` with a Google
+Verified on 2026-09-23 against **agy 1.2.9** (binary schema, help and model ids; the last live
+generation is the 2026-09-11 one below), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription
 CLI, not the Gemini Developer API, Vertex API, or the Python SDK's configurable models.

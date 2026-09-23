@@ -1493,6 +1493,10 @@ write_chat_pin status-pin-star-grok 'grok_profile=*'
 pin_out=$(run_statusline "$(statusline_payload status-pin-star-grok)")
 assert grep -Fq "${MAGENTA}grok${RESET}" <<< "$pin_out"
 
+write_chat_pin status-pin-all 'open=all'
+pin_out=$(run_statusline "$(statusline_payload status-pin-all)")
+assert grep -Fq "${MAGENTA}all${RESET}" <<< "$pin_out"
+
 # A `<vendor>_fast=on` line beside the pin marks the label and nothing else; a fast line the pin
 # does not name is not this vendor's.
 printf 'grok_profile=*\ngrok_fast=on\n' > "$CHAT_PINS_DIR/status-pin-fast-grok"
@@ -3693,6 +3697,21 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "? · opus · high
   <<<"$unknown_spawn_out" >/dev/null
 assert_eq '? · opus · high' \
   "$(seed_of spawn-claudeb-unknown claudeb-worker)"
+
+# Light switched off in Egor's menu: a new Light spawn is refused with the way around it, and an
+# ATTACH to a run started before the switch still waits it out.
+printf 'light_paused=on\n' > "$HOME/.claude/worker-model"
+for light_agent in light-research light-worker; do
+  light_off_out=$(jq -cn --arg agent "$light_agent" '{hook_event_name:"PreToolUse",session_id:"spawn-light-off",
+    tool_input:{subagent_type:$agent,description:"Map the hooks",prompt:"Map the hooks."}}' | "$SPAWN_HOOK") ||
+    fail "light-off spawn hook exited nonzero"
+  assert jq -e '.hookSpecificOutput.permissionDecision == "deny"
+    and (.hookSpecificOutput.permissionDecisionReason | contains("Light is off"))' <<<"$light_off_out" >/dev/null
+done
+light_attach_out=$(jq -cn '{hook_event_name:"PreToolUse",session_id:"spawn-light-off",
+  tool_input:{subagent_type:"light-research",description:"Map the hooks",prompt:"ATTACH run-1: wait"}}' | "$SPAWN_HOOK") ||
+  fail "light-off attach spawn hook exited nonzero"
+assert test "$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$light_attach_out")" != deny
 
 rm -f "$HOME/.claude/worker-model"
 default_effort_spawn=$(jq -cn '{

@@ -26,7 +26,10 @@ case "$mode" in
   quota-plain) printf 'QUOTA\n'; exit 0 ;;
   quota-stderr) printf 'RESOURCE_EXHAUSTED\n' >&2; exit 1 ;;
   quota-log) printf 'image generation quota exceeded\n' >"$log_file"; exit 1 ;;
-  quota-exit) exit 3 ;;
+  quota-exit) printf 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached"}
+' >&2; exit 3 ;;
+  api-error) printf 'AGY_ERROR: {"short_error":"INTERNAL (code 500): backend error"}
+' >&2; exit 3 ;;
   error) printf 'transport failed\n' >&2; exit 1 ;;
   pool) printf 'gemini: fixture is out of the worker pool, so no headless run may use it.\n' >&2; exit 2 ;;
 esac

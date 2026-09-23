@@ -995,11 +995,14 @@ messages_probe() {
     printf '255 000'
     return
   fi
+  # pin: any served id answers a one-token probe, so the cheapest; a retired one 404s and the
+  # fingerprint's claude ids facet names its successor.
+  local body='{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}'
   if http=$(printf 'header = "Authorization: Bearer %s"\n' "$bearer" | \
     curl -sK - -m 10 -D "$dir/$name.headers" -o /dev/null -w '%{http_code}' -X POST \
       -H 'anthropic-beta: oauth-2025-04-20' -H 'anthropic-version: 2023-06-01' \
       -H 'Content-Type: application/json' \
-      -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+      -d "$body" \
       https://api.anthropic.com/v1/messages 2>/dev/null); then
     :
   else

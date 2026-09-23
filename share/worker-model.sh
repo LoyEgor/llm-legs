@@ -25,10 +25,19 @@ TABLE
     END { printf "%s", pro }'
   # `auto` stays the vendor default: it is the CLI's own default model, so a release that moves it
   # self-integrates, and every slug the list prints is offered beside it.
-  cat <<'TABLE'
-grok auto high high,xhigh - no
-TABLE
-  worker_model_grok_models | awk -F'\t' '{ printf "grok %s high high,xhigh - no\n", $1 }'
+  # A slug offers high/xhigh only where its catalog efforts carry them; `-` (unknown) offers both.
+  worker_model_grok_models | awk -F'\t' '
+    function row(model, efforts,   n, e, i, allowed) {
+      if (efforts == "" || efforts == "-") efforts = "high,xhigh"
+      n = split(efforts, e, ",")
+      for (i = 1; i <= n; i++) if (e[i] == "high") allowed = "high"
+      for (i = 1; i <= n; i++) if (e[i] == "xhigh") allowed = allowed (allowed == "" ? "" : ",") "xhigh"
+      if (allowed == "") allowed = efforts
+      split(allowed, e, ",")
+      return sprintf("grok %s %s %s - no\n", model, e[1], allowed)
+    }
+    { rows = rows row($1, $4); if ($2 == "yes") auto = row("auto", $4) }
+    END { printf "%s%s", (auto == "" ? row("auto", "-") : auto), rows }'
 }
 
 worker_model_grok_models() {
@@ -67,15 +76,27 @@ worker_model_grok_fast_sibling() {
   printf '%s\n' "$sibling"
 }
 
-# The grok slug a run really launches: `chat-pin grok-fast` swaps the fast twin in for the marked
-# default and for `auto` alone — a brief naming a slug runs unchanged — and only on a WORKERS leg.
-# ONE resolution, because `worker-run` launches off it and the spawn hook labels its task row off
-# it; two would let a row name a model the run does not use.
-worker_model_grok_launch_model() { # model role [chat-pin-file]
-  local model="${1-}" role="${2-}" file="${3-}" default sibling
+worker_model_grok_account_fast() { # account
+  local file tier=''
+  [ -n "${1-}" ] || return 1
+  file="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}/.grokb/fast-mode/$1"
+  [ -r "$file" ] || return 1
+  IFS= read -r tier <"$file" || [ -n "$tier" ]
+  [ "$tier" = fast ]
+}
+
+# The grok slug a run really launches: `chat-pin grok-fast`, or the account's menu Fast Mode
+# (`grokb fast-mode`), swaps the fast twin in for the marked default and for `auto` alone — a brief
+# naming a slug runs unchanged — and only on a WORKERS leg. ONE resolution, because `worker-run`
+# launches off it and the spawn hook labels its task row off it; two would let a row name a model
+# the run does not use.
+worker_model_grok_launch_model() { # model role [chat-pin-file] [account]
+  local model="${1-}" role="${2-}" file="${3-}" account="${4-}" default sibling fast=false
   if [ "$role" = workers ]; then
     [ -n "$file" ] || file=$(worker_model_chat_pin_file) || file=''
-    if [ -n "$file" ] && [ "$(worker_model_pin_line "$file" grok_fast)" = on ]; then
+    if [ -n "$file" ] && [ "$(worker_model_pin_line "$file" grok_fast)" = on ]; then fast=true; fi
+    if worker_model_grok_account_fast "$account"; then fast=true; fi
+    if [ "$fast" = true ]; then
       default=$(worker_model_grok_default)
       if [ "$model" = auto ] || { [ -n "$default" ] && [ "$model" = "$default" ]; }; then
         if sibling=$(worker_model_grok_fast_sibling); then
@@ -217,6 +238,10 @@ worker_model_allowed_summary() { # every vendor, as one phrase
   printf '%s' "$out"
 }
 
+# Egor's menu switch (LLM Limits -> Light): off, no Light leg exists and every consumer routes as if
+# the class had never been built.
+worker_light_off() { [ "$(worker_model_pin_line "$(worker_model_file)" light_paused)" = on ]; }
+
 worker_light_row() { # research|edit
   case "${1-}" in research | edit) ;; *) return 2 ;; esac
   worker_model_pin_line "$(worker_model_file)" "light_$1"
@@ -287,6 +312,11 @@ worker_model_chat_pin_file() {
 
 # A non-empty chat file replaces the global pin tier whole — a vendor it does not name is unpinned
 # for that chat, never filled in from the global file.
+worker_model_chat_opens_all() {
+  local file
+  file=$(worker_model_chat_pin_file) && grep -qx 'open=all' "$file" 2>/dev/null
+}
+
 worker_model_pin_file() {
   local chat
   if chat=$(worker_model_chat_pin_file) && [ -s "$chat" ]; then
@@ -606,7 +636,7 @@ worker_model_set_role() {
 # cannot be parked is a vendor Egor cannot put away.
 worker_model_set_paused() {
   local vendor="${1-}" state="${2-}" file key
-  case "$vendor" in claudeb | codex | gemini | grok | opencode) ;; *)
+  case "$vendor" in claudeb | codex | gemini | grok | opencode | light) ;; *)
     printf 'worker-model: unknown vendor: %s\n' "$vendor" >&2; return 2 ;;
   esac
   case "$state" in on | off) ;; *)
@@ -615,7 +645,7 @@ worker_model_set_paused() {
   # Parking a vendor takes it out of every router at once, so it is Egor's hand only — the menubar
   # shells out from Hammerspoon, which carries no CLAUDECODE.
   if [ -n "${CLAUDECODE:-}" ]; then
-    printf 'worker-model: pause switches are Egor'"'"'s: the menubar (LLM Limits -> vendor -> Pause/Resume) is his own hand on them\n' >&2
+    printf 'worker-model: pause switches are Egor'"'"'s: the menubar (LLM Limits -> vendor -> Pause/Resume, and LLM Limits -> Light) is his own hand on them\n' >&2
     return 3
   fi
   file=$(worker_model_file)

@@ -30,13 +30,16 @@ stamp() { # file fetched-at
 
 # --- No cache anywhere: the builtin list, said so on stderr and in --json ---
 assert_eq "$(models | cut -f1,2,3,5)" "gpt-6-astra${TAB}astra${TAB}6${TAB}y
+gpt-6-sol${TAB}sol${TAB}6${TAB}n
 gpt-5.6-sol${TAB}sol${TAB}5.6${TAB}n
-gpt-5.6-terra${TAB}terra${TAB}5.6${TAB}n
+gpt-6-luna${TAB}luna${TAB}6${TAB}n
 gpt-5.6-luna${TAB}luna${TAB}5.6${TAB}n
+gpt-5.6-terra${TAB}terra${TAB}5.6${TAB}n
 gpt-5.5${TAB}gpt-5.5${TAB}5.5${TAB}n"
 assert grep -q 'built-in list' "$WORK/err"
 assert_eq "$(models --json | jq -r '[.[].source] | unique | join(",")')" builtin
 assert_eq "$(models --family astra)" gpt-6-astra
+assert_eq "$(models --family sol)" gpt-6-sol
 # The read never touches a profile: ensure_profiles would link ~/.codex items into each one.
 touch "$HOME/.codex/config.toml"
 models >/dev/null

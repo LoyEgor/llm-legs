@@ -3,13 +3,16 @@
 # Prompt as $1 or stdin. Prints the model's final message to stdout.
 #
 # AUTONOMY MODEL POLICY (owner request 2026-06-09): do NOT hardcode a model version.
-#   - No -m flag => the Codex CLI default, which OpenAI moves to the CURRENT FLAGSHIP with CLI
-#     updates (this is how gpt-5.5 was being served before any pin existed). New flagship ships
-#     -> this leg picks it up with a normal `codex` update, no repo edit.
+#   - CODEX_MODEL unset => the newest slug of the roster's default codex family
+#     (share/worker-model.sh), so a new release arrives through the roster, no repo edit. If the
+#     roster cannot answer, no -m flag => the Codex CLI default, logged as `cli-default`.
+#   - The account is worker-pick's answer for role LEGS_ROLE (default `reviewers`): a report leg
+#     is a judgment seat, so the workers switch does not silence it.
 #   - GUARD instead of pin: the served model is extracted and tier-classified. If it looks like
 #     a weak tier (mini/nano/lite/flash/...), the call FAILS (exit 3) rather than silently
 #     feeding a cheap model's judgment into the pipeline (the workflow tolerates a dropped leg).
-#     Override for emergencies: CODEX_ALLOW_WEAK=1. Force a specific model: CODEX_MODEL=<name>.
+#     Override for emergencies: CODEX_ALLOW_WEAK=1. Force a specific model: CODEX_MODEL=<slug>;
+#     a family word (CODEX_MODEL=<family>) runs that family's newest roster slug.
 #   - Reasoning effort defaults to high. Frontier legs must not exceed high implicitly;
 #     callers may explicitly pass CODEX_EFFORT for a different supported level.
 #   - Every call logs {requested, served} to data/served-models.jsonl; `--probe` does a tiny
@@ -26,8 +29,6 @@ DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
 WEAK_RE='(^|[-_.])(mini|nano|lite|flash|small|tiny|haiku|luna)([-_.0-9]|$)'
-MODEL_ARGS=()
-[ -n "${CODEX_MODEL:-}" ] && MODEL_ARGS=(-m "$CODEX_MODEL")
 
 PROBE=0
 if [ "${1:-}" = "--probe" ]; then PROBE=1; PROMPT="Reply with exactly: ok"; shift || true
@@ -41,7 +42,7 @@ CODEX_CMD=(codex)
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
 if command -v worker-pick >/dev/null 2>&1; then
   pick_rc=0
-  account="$(worker-pick --account codex)" || pick_rc=$?
+  account="$(worker-pick --account codex --role "${LEGS_ROLE:-reviewers}")" || pick_rc=$?
   if [ "$pick_rc" -eq 3 ]; then
     # Falling back here would spend quota the router deliberately reserved.
     echo "ask_codex.sh: no selectable Codex account — leg unavailable" >&2
@@ -61,6 +62,28 @@ else
   echo "ask_codex.sh: worker-pick not installed; falling back to bare codex on the main account" >&2
 fi
 
+REQUESTED="${CODEX_MODEL:-}"
+case "$REQUESTED" in
+  gpt-*) ;;
+  *)
+    family="$REQUESTED"
+    roster_account=""
+    [ "${CODEX_CMD[0]}" = codexb ] && roster_account="$ACCOUNT"
+    REQUESTED="$(. "$(dirname "${BASH_SOURCE[0]}")/share/worker-model.sh" 2>/dev/null \
+      && worker_model_codex_slug "${family:-$(worker_model_default_model codex)}" "$roster_account" 2>/dev/null | head -1)" || REQUESTED=""
+    case "$REQUESTED" in
+      *[![:alnum:]._-]*) REQUESTED="" ;;
+    esac
+    if [ -z "$REQUESTED" ] && [ -n "$family" ]; then
+      REQUESTED="$family"
+    elif [ -z "$REQUESTED" ]; then
+      echo "ask_codex.sh: the roster named no codex model; running the CLI default" >&2
+    fi
+    ;;
+esac
+MODEL_ARGS=()
+[ -n "$REQUESTED" ] && MODEL_ARGS=(-m "$REQUESTED")
+
 ERRF="$(mktemp)"; trap 'rm -f "$ERRF"' EXIT
 set +e
 # </dev/null: codex reads stdin IN ADDITION to the argv prompt ("Reading additional input
@@ -78,11 +101,11 @@ served="$( { grep -m1 -ioE '(^|[[:space:]])model:?[[:space:]]+[a-z0-9._-]+' "$ER
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
 printf '{"ts":"%s","leg":"codex","requested":"%s","effort":"%s","served":"%s","weak_tier":%s,"rc":%d,"account":"%s"}\n' \
-  "$(date -u +%FT%TZ)" "${CODEX_MODEL:-cli-default}" "$EFFORT" "${served:-unknown}" "$weak" "$RC" "$ACCOUNT" \
+  "$(date -u +%FT%TZ)" "${REQUESTED:-cli-default}" "$EFFORT" "${served:-unknown}" "$weak" "$RC" "$ACCOUNT" \
   >> "$LOG" 2>/dev/null || true
 
 if [ "$PROBE" = "1" ]; then
-  echo "codex served: ${served:-unknown} (weak_tier=$weak, rc=$RC)"
+  echo "codex served: ${served:-unknown} (requested=${REQUESTED:-cli-default}, account=$ACCOUNT, weak_tier=$weak, rc=$RC)"
   [ $RC -ne 0 ] && exit $RC
   [ "$weak" = "1" ] && exit 3
   exit 0

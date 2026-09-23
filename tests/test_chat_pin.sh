@@ -66,6 +66,12 @@ assert "$PIN" grok
 assert chat_is 'grok_profile=*'
 assert "$PIN" claudeb
 assert chat_is 'claudeb_profile=*'
+# «воркер на все»: one line that opens every vendor and pins none.
+assert "$PIN" all
+assert chat_is 'open=all'
+assert contains "$("$PIN")" 'opens every vendor for workers and reviews'
+assert "$PIN" все
+assert chat_is 'open=all'
 
 # --- Fast is a modifier of the pin: two lines, written and replaced together ---------------------
 assert "$PIN" grok-fast
@@ -91,6 +97,7 @@ assert_fails test -e "$CHAT"
 assert "$PIN" beta
 assert chat_is 'codex_profile=beta'
 assert contains "$("$PIN")" 'pins workers to beta (codex)'
+assert contains "$("$PIN")" 'its reviews may use codex too'
 assert "$PIN" alpha
 assert chat_is 'claudeb_profile=alpha'
 assert "$PIN" delta

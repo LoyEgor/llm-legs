@@ -22,7 +22,7 @@ ln -s "$ROOT/tests/fixtures/fake-geminib-image.sh" "$WORK/bin/geminib"
 cat >"$WORK/bin/agy" <<'STUB'
 #!/usr/bin/env bash
 [ "$*" = --version ] || exit 91
-printf '%s\n' "${FAKE_AGY_VERSION:-1.2.1}"
+printf '%s\n' "${FAKE_AGY_VERSION:-1.2.9}"
 STUB
 cat >"$WORK/bin/worker-pick" <<'STUB'
 #!/usr/bin/env bash
@@ -97,14 +97,14 @@ FAKE_GEMINIB_MODE=no-model assert image_run "${args[@]}" --account explicit
 assert grep -qx 'model=unknown model_caps=unknown' "$WORK/out"
 FAKE_IMAGE_MODEL=gemini-future-image FAKE_AGY_VERSION=1.3.0 assert image_run "${args[@]}" --account explicit
 assert grep -qx 'model=gemini-future-image model_caps=stale verified=gemini-3.1-flash-image' "$WORK/out"
-assert grep -qx 'caps=stale cli=1.3.0 verified=1.2.1' "$WORK/out"
+assert grep -qx 'caps=stale cli=1.3.0 verified=1.2.9' "$WORK/out"
 
 for mode in quota quota-plain quota-stderr quota-log quota-exit quota-tool; do
   FAKE_GEMINIB_MODE=$mode expect_rc 3 "${args[@]}" --account explicit
   assert grep -qx GEMINI_USAGE_LIMIT "$WORK/err"
   assert test ! -s "$WORK/out"
 done
-for mode in error no-image stale; do
+for mode in error api-error no-image stale; do
   FAKE_GEMINIB_MODE=$mode expect_rc 1 "${args[@]}" --account explicit
 done
 FAKE_GEMINIB_MODE=pool expect_rc 4 "${args[@]}" --account explicit

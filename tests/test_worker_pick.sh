@@ -1081,6 +1081,39 @@ write_config 'grok_reviewers=off'
 grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
 assert test "$query_rc" -eq 3
 assert test "$(cat "$WORK/query.err")" = 'worker-pick: grok is switched off for reviewers'
+# Egor's per-chat grant opens the vendor for that chat's reviews too; a chat pinned to another
+# vendor, and every other chat, still meet the switch.
+mkdir -p "$WORK/chat-pins"
+printf 'grok_profile=*\n' >"$WORK/chat-pins/chat-r"
+reviewer_env=("${run_env[@]}")
+run_env+=(CLAUDE_CODE_SESSION_ID=chat-r)
+grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
+assert test "$query_rc" -eq 0
+assert test -n "$query_out"
+printf 'codex_profile=*\n' >"$WORK/chat-pins/chat-r"
+grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
+assert test "$query_rc" -eq 3
+run_env=("${reviewer_env[@]}" CLAUDE_CODE_SESSION_ID=chat-other)
+printf 'grok_profile=*\n' >"$WORK/chat-pins/chat-r"
+grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
+assert test "$query_rc" -eq 3
+# «воркер на все» opens every vendor for both roles in that chat alone.
+write_config 'grok_reviewers=off' 'grok_workers=off'
+printf 'open=all\n' >"$WORK/chat-pins/chat-r"
+run_env=("${reviewer_env[@]}" CLAUDE_CODE_SESSION_ID=chat-r)
+grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
+assert test "$query_rc" -eq 0
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 0
+assert test -n "$query_out"
+run_env=("${reviewer_env[@]}" CLAUDE_CODE_SESSION_ID=chat-other)
+grok_query "$GROK_PAIR_JSON" --account grok --role reviewers
+assert test "$query_rc" -eq 3
+grok_query "$GROK_PAIR_JSON" --account grok
+assert test "$query_rc" -eq 3
+write_config 'grok_reviewers=off'
+run_env=("${reviewer_env[@]}")
+rm -f "$WORK/chat-pins/chat-r"
 query --account grok
 assert test "$query_rc" -eq 0
 assert test "$query_out" = spare
@@ -1612,6 +1645,10 @@ assert contains "$output" '         edit     codex   astra·low'
 write_config 'light_edit=grok:opus'
 run_case golden
 assert contains "$output" '         edit     invalid light_edit row'
+write_config 'light_paused=on'
+run_case golden
+assert contains "$output" 'light:   off'
+assert test -z "$(grep -E '^ +(research|edit) ' <<<"$output")"
 write_config
 
 # The golden output is the whole contract in one store: line order, the session-account footnote,
@@ -1781,6 +1818,11 @@ assert grep -Fqx 'grok_workers=off' "$PAUSE_MODEL"
 # OpenCode has no roles and no leg here, and is parkable all the same: review-bench staffs it.
 assert set_paused opencode on
 assert grep -Fqx 'opencode_paused=on' "$PAUSE_MODEL"
+# Light is parked by the same writer: one key over both of its roles.
+assert set_paused light on
+assert grep -Fqx 'light_paused=on' "$PAUSE_MODEL"
+assert set_paused light off
+assert test -z "$(grep light_paused "$PAUSE_MODEL")"
 set_paused nosuchvendor on 2>/dev/null && fail 'worker_model_set_paused accepted an unknown vendor'
 set_paused grok sometimes 2>/dev/null && fail 'worker_model_set_paused accepted an unknown state'
 # Parking a vendor takes it out of every router at once, so a session may not do it.

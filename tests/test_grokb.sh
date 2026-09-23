@@ -260,4 +260,12 @@ else
   assert grep -q 'grok CLI not found' <<<"$missing_out"
 fi
 
-printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, CLI resolution without an nvm PATH, and the fake CLI contract are covered\n' "$asserts"
+# The menu's Fast Mode toggle: the same verb, marker layout and writer as codexb's.
+mkdir -p "$GROKB_PROFILES_DIR/alpha"
+assert test "$(bash "$SCRIPT" fast-mode alpha)" = off
+assert test "$(bash "$SCRIPT" fast-mode alpha on)" = on
+assert test "$(cat "$GROKB_PROFILES_DIR/.grokb/fast-mode/alpha")" = fast
+assert test "$(bash "$SCRIPT" fast-mode alpha off)" = off
+assert_fails bash "$SCRIPT" fast-mode nobody on >/dev/null 2>&1
+
+printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, CLI resolution without an nvm PATH, the per-account Fast Mode toggle, and the fake CLI contract are covered\n' "$asserts"

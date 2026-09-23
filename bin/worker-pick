@@ -191,7 +191,15 @@ gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
 # The ladder is pin > roles > pool: a role toggle walls the vendor for everything the pool would
 # choose, and a usable pin still answers over it the way it answers over pool exclusion. So a
 # workers wall cannot be decided here — whether the pin serves is only known once selection ran.
-role_off() { [ "$(conf "$1_$2")" = off ]; }
+# Egor's per-chat grant opens what it names for this chat alone: «воркер на <vendor>» that vendor's
+# reviews (its workers ride the pin itself), «воркер на все» every vendor for both roles. Which
+# account works stays the pool's.
+chat_opens() { # vendor role
+  local file
+  file=$(worker_model_chat_pin_file) && [ -s "$file" ] || return 1
+  grep -qx 'open=all' "$file" || { [ "$2" = reviewers ] && grep -q "^$1_profile=" "$file"; }
+}
+role_off() { [ "$(conf "$1_$2")" = off ] && ! chat_opens "$1" "$2"; }
 query_role_wall=false
 # `chat`, `research`, `image` and `light` have no `<vendor>_<role>` key. `image` also ignores
 # `<vendor>_workers=off` and the pin: a picture is not code work, so image = pool + login + not
@@ -1153,5 +1161,6 @@ for light_role in research edit; do
   fi
   light_rows="${light_rows:+$light_rows$'\x1e'}$light_row"
 done
+! worker_light_off || light_rows=off
 print_section light "$light_rows"
 printf 'DATA: %s\n' "$age"

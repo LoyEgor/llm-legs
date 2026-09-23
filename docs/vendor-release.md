@@ -13,6 +13,8 @@ over an account set that changes.
 
 - `bin/vendor-fingerprint show <id>` — the event: vendor, versions, `changed`, `substantive`, and
   the paths of its `.diff` and of the current fingerprint (`snapshot <vendor>` re-takes one).
+- Read your vendor's lines in `docs/vendor-release-open.md`: prove what this release lets you
+  prove, and never re-check what a closed event already settled.
 - No id given: `bin/vendor-fingerprint events` lists the open ones; handle each vendor's together.
 - A manual request (`request [--here] <vendor>`) has no diff: do the whole checklist against the
   current CLI.
@@ -22,16 +24,25 @@ over an account set that changes.
 ## 1. Ground rules
 
 - Work in a worktree per repository you change (llm-legs, review-bench, claude-setup), on branch
-  `vendor-release/<vendor>-<version>`, per `~/.claude/docs/worktrees.md`. Never commit or push:
-  that is Egor's word. The report names the branches.
+  `vendor-release/<vendor>-<version>`, per `~/.claude/docs/worktrees.md`. Never review, commit or push:
+  Egor's end-of-day pass does all three for everything at once, so no event re-checks another.
+- The chat opens with every vendor open for workers and reviews (chat pin `open=all`, the one
+  «воркер на все» writes): a live proof on a vendor Egor switched off in the menu runs anyway. A
+  paused vendor, walls and the Light switch still apply.
 - Tests use fixtures only; never point one at `~/.claude-profiles/.claudeb`, a real `~/.codex`,
   `~/.grok` or `~/.gemini`, and never mutate the live Hammerspoon singleton (read-only
   `menuItems()` only).
 - Never generate an image or video: every generation needs Egor's «сгенерируй». Collect what only a
   generation can prove (§3 step 10) into one ask in the report.
+- Before building a capability for this vendor, study how the other vendors already expose the same
+  or an analogous one — the Hammerspoon menu, `<vendor>b` verbs, worker-run, chat pins, statusline,
+  review pins — and put it in the same places with the same names and look (codex's per-account
+  "Fast Mode (workers)" toggle means grok's fast model gets that toggle too, not a chat tag). Share
+  the mechanism where it fits; where the vendors really differ, an implementation of its own is
+  fine, but the visible surface still matches. Egor never has to ask for this parity.
 - A worker's "done" is a claim: diff the files it says it changed, and diff every test/spec change
   against HEAD — a weakened assertion is a regression, not a pass.
-- Blocked on the owner (ZDR/privacy toggles, generation budget, paid API, commit word): record it as
+- Blocked on the owner (ZDR/privacy toggles, generation budget, paid API): record it as
   `blocked` with what his word unlocks, and keep going on everything else.
 
 ## 2. Sources of truth, most reliable first
@@ -64,11 +75,17 @@ over an account set that changes.
    `share/image-caps/<vendor>.json` and the wrapper's flags. Every field is wired, `unsupported`, or
    `api_only`; the vendor's default is sent unless a reason is stated; no wrapper suppresses a
    native feature; the output parser handles every result tag the tool can emit (negative test).
-7. Models: family words and aliases resolve to the newest (`codexb models --family`, `geminib
-   families`, `grokb models`, Claude aliases). Grep llm-legs, review-bench and claude-setup for
-   literal versioned ids (`gpt-`, `grok-`, `gemini-`, `claude-`, `imagen-`, `veo-`); every survivor
-   is a pin with its reason written next to it, or it goes. A new id family the fingerprint's
-   `id_prefixes` does not know is added there.
+7. Models — resolve, never type. First learn how resolution works here (`docs/DIAGNOSTICS.md` system
+   map, `docs/routing-contract.md`, `docs/shared-invariants.md` rows `cr` and `cu`): family words
+   and aliases resolve to the newest (`codexb models --family`, `geminib families`, `grokb models`,
+   Claude aliases). A release that would have you edit a version number is a hardcode to remove:
+   make that surface read the live list, so the next release needs no edit there. Where the vendor
+   needs an explicit id to serve the newest (grok Imagine falls back to an old model without one),
+   send the RESOLVED id, not a typed one. A literal survives only where nothing lists the ids: an
+   `image-caps` manifest pin a live run proved, or the line under a `# pin: <reason>` comment; the
+   fingerprint's `ids` facet reports its successor. The `*_builtin()` fallback lists are frozen: never
+   edit them. `tests/test_consistency.sh` (row `cr`) fails on any other versioned id in the three
+   repositories. A new id family the fingerprint's `id_prefixes` does not know is added there.
 8. Surfaces: `share/worker-model.sh` table and `share/worker-policy.md`, `bin/worker-run`,
    `worker-pick` roles, relay agent md files (every flag the leg accepts), review-bench catalog,
    cells, raters and tests, Light rows, image legs and `image-fanout`, the Hammerspoon menu (read-only
@@ -87,8 +104,14 @@ over an account set that changes.
     with its `field_sources` note.
 13. Tests: every new behaviour asserted; each new assertion shown red on the old code (mutation);
     `bash tests/run-all` green in every worktree touched.
-14. Review the worktree diff at the tier `~/.claude/docs/review-tiers.md` gives it; fix what it
-    finds.
+14. Pour it into main, uncommitted, so it works at once: in each worktree `git add -N` the new
+    files, then `git -C <worktree> diff HEAD >patch` and `git -C <main checkout> apply patch`. Other
+    uncommitted work there is someone's live work: apply on top, never revert, stash or overwrite
+    it. A hunk that does not apply (`git apply --reject`) is merged by hand, keeping both sides.
+    Rerun the suites your diff touches in the main checkout, then remove the
+    worktree and its branch. Last, `bin/vendor-fingerprint check --here <vendor>`: your change can move what a
+    facet reads (a new cache field), and the event it records is yours to decide and close, never a
+    new chat's.
 
 ## 4. Close — the completeness gate
 
@@ -97,11 +120,13 @@ Write a decisions file, one row per changed diff line:
 a test name, an artifact path or a source line, and a `line` ending in `*` covers every line it
 prefixes (`ids<TAB>+gpt-7*<TAB>...`). Then
 `bin/vendor-fingerprint close <id> --decisions <file> <one-line note>`; it refuses while any changed
-line is undecided. Before closing, also fail yourself if any capability claim has neither a
+line is undecided. Before it, update `docs/vendor-release-open.md`: add a line for every
+`blocked` or unproven claim, delete the lines you proved or made moot. Before closing, also fail yourself if any capability claim has neither a
 schema/doc line nor an artifact, or any "observed" value came from our own config.
 
 ## 5. Report — to Egor, in Russian, short
 
 Per feature: integrated (where, which test), not applicable (why), blocked (what his word
-unlocks). The worktree branches to commit. The one ask for generations, if any, as the list from
+unlocks). What became automatic (hardcodes removed), and every pin moved with its proof. What was
+poured into main (files), for the end-of-day pass. The one ask for generations, if any, as the list from
 step 10. No session ids, no diffs, no transcripts.

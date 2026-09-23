@@ -33,7 +33,9 @@ actual_format() { # path
 }
 
 # The C2PA manifest's CBOR `softwareAgent {name, version}` is the only place the model names itself.
-c2pa_model() { # path -> gpt-image-2 | gpt-image-2.5 | nothing
+# Seen live 2026-09-23 (cli 0.156.1): {name: ChatGPT, version: gpt-image} — the product in `name`, the
+# model family alone in `version`; older files carried {name: gpt-image, version: 2.0}.
+c2pa_model() { # path -> the versioned gpt-image id, the bare family, or nothing
   python3 - "$1" <<'PY' 2>/dev/null || true
 import re, sys
 data = open(sys.argv[1], "rb").read()
@@ -60,6 +62,9 @@ while at >= 0:
             key, pos = text(pos)
             value, pos = text(pos)
             agent[key] = value
+        if agent.get("version", "").startswith("gpt-image"):
+            print(agent["version"])
+            break
         if agent.get("name") and agent.get("version"):
             print(agent["name"] + "-" + re.sub(r"\.0$", "", agent["version"]))
             break
@@ -258,6 +263,15 @@ fi
 
 worker_pool_refuse_headless codex "$account" "$(worker_model_pin_csv < <(worker_model_pins codex))" || exit 4
 
+# The model that drives image_gen: the table's family at its newest listed slug on this account, never
+# the model a profile's config.toml still names. A resumed thread keeps its own.
+text_model=''
+if [ -z "$resume_id" ]; then
+  text_model=$(worker_model_codex_slug "$(worker_model_default_model codex)" "$account") || text_model=''
+  [ -n "$text_model" ] ||
+    printf 'codex-image: no listed codex model for the default family; running the account config model\n' >&2
+fi
+
 if [ "$account" = main ]; then
   generated_images_dir="$base_home/.codex/generated_images"
   codex_home=''
@@ -350,7 +364,10 @@ codex_deadline="${CODEX_IMAGE_DEADLINE:-900}"
 # A deadline while the account lock is held: a hung codex would otherwise block
 # this account forever (waiters cap at 600s, stale reclaim needs >1200s).
 run_codex() {
-  local -a argv=(exec -C "$work_dir" --color never --skip-git-repo-check --experimental-json -o "$stdout_file")
+  # Fast is workers-only; the account's config.toml tier is Egor's interactive pick and can say fast.
+  local -a argv=(exec -C "$work_dir" --color never --skip-git-repo-check --experimental-json -o "$stdout_file"
+    --disable fast_mode -c 'service_tier="default"')
+  [ -z "$text_model" ] || argv+=(-m "$text_model")
   if [ -n "$resume_id" ]; then
     argv+=(resume "$resume_id")
   fi

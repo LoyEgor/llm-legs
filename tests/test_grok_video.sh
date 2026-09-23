@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/grok-video"
 FIXTURE="$ROOT/tests/fixtures/fake-grokb-video.sh"
 MANIFEST="$ROOT/share/image-caps/grok.json"
+VERIFIED_CLI=$(jq -r .cli.version "$MANIFEST")
 WORK="$(mktemp -d)"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
@@ -58,7 +59,7 @@ chmod +x "$FAKE_BIN/worker-pick"
 
 cat >"$FAKE_BIN/grok" <<'EOF'
 #!/usr/bin/env bash
-printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.34}"
+printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:?}"
 EOF
 chmod +x "$FAKE_BIN/grok"
 
@@ -91,7 +92,7 @@ video_run() {
   env PATH="$FAKE_BIN:$PATH" TMPDIR="$TMP_ROOT" \
     GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
     GROKB_GROK_BIN="$FAKE_BIN/grok" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
-    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.34}" \
+    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-$VERIFIED_CLI}" \
     GROK_VIDEO_GROKB="$FIXTURE" GROK_VIDEO_WORKER_PICK="$FAKE_BIN/worker-pick" \
     GROK_VIDEO_FFPROBE="${GROK_VIDEO_FFPROBE:-ffprobe}" GROK_VIDEO_MDLS="${GROK_VIDEO_MDLS:-$FAKE_BIN/fake-mdls}" \
     FAKE_MDLS_MODE="${FAKE_MDLS_MODE:-ok}" \
@@ -103,6 +104,7 @@ video_run() {
 
 REFS_MAX=$(jq -r '.video.refs_max' "$MANIFEST")
 VOICES_MAX=$(jq -r '.video.voices_max' "$MANIFEST")
+KEYFRAMES_MAX=$(jq -r '.video.keyframes_max' "$MANIFEST")
 SINGLE_TOOL=$(jq -r '.video.tools.single_ref' "$MANIFEST")
 MULTI_TOOL=$(jq -r '.video.tools.multi_ref' "$MANIFEST")
 CONTAINER=$(jq -r '.video.container' "$MANIFEST")
@@ -294,6 +296,47 @@ assert video_run --dest "$OUTPUT_DIR/voiceonly.$CONTAINER" --prompt 'a narrator 
   --voice eve --voice leo --account explicit
 assert grep -qx "ARG=$MULTI_TOOL" "$FAKE_GROKB_CALLS"
 
+# Pinned frames are reference_to_video inputs of their own: with one of them a single --ref is no
+# longer image_to_video, and a pinned frame alone is a legal run. With first_frame set it takes
+# <IMAGE_0>, so the refs the prompt tags start at <IMAGE_1>.
+: >"$FAKE_GROKB_CALLS"
+: >"$FAKE_GROKB_PROMPT"
+assert video_run --dest "$OUTPUT_DIR/pinned.$CONTAINER" --prompt '<IMAGE_1> walks in' \
+  --ref "$WORK/ref-a.jpg" --first-frame "$WORK/ref-b.jpg" --keyframe "$WORK/ref-a.jpg@3" \
+  --keyframe "$WORK/ref-b.jpg@4.5" --last-frame "$WORK/ref-b.jpg" --account explicit
+assert grep -qx "ARG=$MULTI_TOOL" "$FAKE_GROKB_CALLS"
+assert_fails grep -qx "ARG=$SINGLE_TOOL" "$FAKE_GROKB_CALLS"
+assert grep -qx -- "- first_frame: $WORK/ref-b.jpg" "$FAKE_GROKB_PROMPT"
+assert grep -q '^- images, in this order, referenced in the prompt as <IMAGE_1>, <IMAGE_2>' "$FAKE_GROKB_PROMPT"
+assert grep -qx -- "  - {image: $WORK/ref-a.jpg, timestamp_s: 3}" "$FAKE_GROKB_PROMPT"
+assert grep -qx -- "  - {image: $WORK/ref-b.jpg, timestamp_s: 4.5}" "$FAKE_GROKB_PROMPT"
+assert grep -qx -- "- last_frame: $WORK/ref-b.jpg" "$FAKE_GROKB_PROMPT"
+assert test "$(grep -oE '^- (first_frame|images|keyframes|last_frame)' "$FAKE_GROKB_PROMPT" | cut -c3- |
+  tr '\n' ,)" = 'first_frame,images,keyframes,last_frame,'
+: >"$FAKE_GROKB_CALLS"
+assert video_run --dest "$OUTPUT_DIR/loop.$CONTAINER" --prompt 'a seamless loop' \
+  --first-frame "$WORK/ref-a.jpg" --last-frame "$WORK/ref-a.jpg" --account explicit
+assert grep -qx "ARG=$MULTI_TOOL" "$FAKE_GROKB_CALLS"
+over_keyframes=()
+for ((i = 1; i <= KEYFRAMES_MAX + 1; i++)); do over_keyframes+=(--keyframe "$WORK/ref-a.jpg@$i"); done
+: >"$FAKE_GROKB_CALLS"
+for bad_pin in "--keyframe $WORK/ref-a.jpg@0" "--keyframe $WORK/ref-a.jpg@6" "--keyframe $WORK/ref-a.jpg@7" \
+  "--keyframe $WORK/ref-a.jpg@2 --keyframe $WORK/ref-b.jpg@2.2" "--keyframe $WORK/ref-a.jpg" \
+  "--keyframe ref-a.jpg@2" "--keyframe $WORK/ref-a.jpg@two" "--keyframe $WORK/absent.jpg@2" \
+  "--first-frame ref-a.jpg" "--last-frame $WORK/absent.jpg" "${over_keyframes[*]}"; do
+  video_rc=0
+  # shellcheck disable=SC2086
+  video_run --dest "$OUTPUT_DIR/badpin.$CONTAINER" --prompt 'push in' --account explicit $bad_pin || video_rc=$?
+  assert test "$video_rc" -eq 2
+done
+assert test ! -s "$FAKE_GROKB_CALLS"
+video_rc=0
+video_run --dest "$OUTPUT_DIR/spaced.$CONTAINER" --prompt 'push in' --account explicit \
+  --keyframe "$WORK/ref-a.jpg@2" --keyframe "$WORK/ref-b.jpg@2.2" || video_rc=$?
+assert grep -qx 'grok-video: --keyframe times must lie strictly inside the 6 s clip and at least 1/3 s apart' "$VIDEO_ERR"
+assert video_run --dest "$OUTPUT_DIR/longclip.$CONTAINER" --prompt 'push in' --account explicit \
+  --keyframe "$WORK/ref-a.jpg@7" --duration 10
+
 # The account is recovered from the store that holds the session, so a resume routes itself and
 # spends no claim on the selector.
 mkdir -p "$GROK_PROFILES/explicit/sessions/%2Ftmp%2Fwork/$SESSION_UUID"
@@ -370,11 +413,11 @@ video_rc=0
 video_run --dest "$OUTPUT_DIR/stillframe.$CONTAINER" --prompt 'push in' \
   --ref "$WORK/ref-a.jpg" --account explicit || video_rc=$?
 assert test "$video_rc" -eq 1
-assert grep -q 'no ImageToVideo event' "$VIDEO_ERR"
+assert grep -q 'no ImageToVideo or ReferenceToVideo event' "$VIDEO_ERR"
 assert test ! -e "$OUTPUT_DIR/stillframe.$CONTAINER"
 
 for mode_case in 'limit 3 GROK_USAGE_LIMIT' 'generic-limit 1 .' 'pool 4 refused by the worker pool' \
-  'no-video 1 no ImageToVideo event' 'zdr 1 zero data retention' 'tier 1 no video generation on its tier'; do
+  'no-video 1 no.ImageToVideo.or.ReferenceToVideo.event' 'zdr 1 zero data retention' 'tier 1 no video generation on its tier'; do
   set -- $mode_case
   FAKE_GROKB_MODE=$1
   export FAKE_GROKB_MODE
@@ -407,7 +450,7 @@ assert video_run --dest "$OUTPUT_DIR/staleversion.$CONTAINER" --prompt 'push in'
   --ref "$WORK/ref-a.jpg" --account explicit
 assert grep -qx "caps=stale cli=9.9.9 verified=$(jq -r '.cli.version' "$MANIFEST")" "$VIDEO_OUT"
 assert grep -qx 'model=unknown model_caps=unknown' "$VIDEO_OUT"
-FAKE_GROK_VERSION=1.0.34
+FAKE_GROK_VERSION=$VERIFIED_CLI
 export FAKE_GROK_VERSION
 
 # Whatever a media script writes is journalled by the agent that ran it, so the one thing it owes
@@ -418,4 +461,4 @@ CLAUDE_LAUNCHER_SESSION=video-launching-chat \
   --ref "$WORK/ref-a.jpg" --account explicit
 assert grep -qx 'CLAUDE_LAUNCHER_SESSION=video-launching-chat' "$FAKE_GROKB_CALLS"
 
-echo "PASS: $asserts asserts; manifest-driven refs/voices/duration/resolution/aspect gates refused before any spend, image_to_video vs reference_to_video selection, account routing with claims and pool/limit classification, per-account lock, ffprobe and Spotlight probes plus the unmeasurable case, ImageToVideo-only harvesting, ZDR and tier refusals kept off exit 3, session resume routed by the store that holds it, the eight-line footer, and the launching chat's stamp passed through"
+echo "PASS: $asserts asserts; manifest-driven refs/voices/duration/resolution/aspect gates refused before any spend, image_to_video vs reference_to_video selection, pinned first/last frames and keyframes with their tag order and grid checks, account routing with claims and pool/limit classification, per-account lock, ffprobe and Spotlight probes plus the unmeasurable case, ImageToVideo and ReferenceToVideo harvesting, ZDR and tier refusals kept off exit 3, session resume routed by the store that holds it, the eight-line footer, and the launching chat's stamp passed through"

@@ -83,18 +83,32 @@ fi
 
 ACCOUNT=main
 CLAUDE_CMD=(claude)
-CLAUDE_ROUTED=0
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
-if command -v worker-pick >/dev/null 2>&1 && command -v claudeb >/dev/null 2>&1; then
-  CLAUDE_CMD=(claudeb)
-  CLAUDE_ROUTED=1
-elif ! command -v worker-pick >/dev/null 2>&1; then
-  echo "ask_claude.sh: worker-pick not installed; falling back to bare claude on the main account" >&2
+# The account is worker-pick's answer for role LEGS_ROLE (default `reviewers`), like ask_codex.sh;
+# a bare `claudeb -p` would ask for the workers role.
+if command -v worker-pick >/dev/null 2>&1; then
+  pick_rc=0
+  account="$(worker-pick --account claudeb --role "${LEGS_ROLE:-reviewers}")" || pick_rc=$?
+  if [ "$pick_rc" -eq 3 ]; then
+    # Falling back here would spend quota the router deliberately reserved.
+    echo "ask_claude.sh: no selectable Claude account — leg unavailable" >&2
+    exit 6
+  elif [ "$pick_rc" -eq 2 ]; then
+    echo "ask_claude.sh: worker-pick unusable (exit 2); falling back to bare claude on the main account" >&2
+  elif [ "$pick_rc" -ne 0 ] || [ -z "$account" ]; then
+    echo "ask_claude.sh: worker-pick failed (exit $pick_rc) — leg unavailable" >&2
+    exit 6
+  elif command -v claudeb >/dev/null 2>&1; then
+    ACCOUNT="$account"
+    CLAUDE_CMD=(claudeb profile "$ACCOUNT")
+  else
+    echo "ask_claude.sh: claudeb not installed; falling back to bare claude on the main account" >&2
+  fi
 else
-  echo "ask_claude.sh: claudeb not installed; falling back to bare claude on the main account" >&2
+  echo "ask_claude.sh: worker-pick not installed; falling back to bare claude on the main account" >&2
 fi
 
-if [ "$CLAUDE_ROUTED" = 0 ] && ! command -v claude >/dev/null 2>&1; then
+if [ "${CLAUDE_CMD[0]}" = claude ] && ! command -v claude >/dev/null 2>&1; then
   echo "ask_claude.sh: claude CLI not installed — leg unavailable" >&2
   log "$MODEL" "MISSING_CLI" 0 1
   exit 1
@@ -122,30 +136,6 @@ OUT="$("${CLAUDE_CMD[@]}" -p "$PROMPT" --output-format json --model "$MODEL" \
 RC=$?
 set -e
 
-if [ "$CLAUDE_ROUTED" = 1 ] && [ "$RC" -eq 3 ]; then
-  cat "$ERRF" >&2
-  # Falling back here would spend quota the router deliberately reserved.
-  echo "ask_claude.sh: no selectable Claude account — leg unavailable" >&2
-  exit 6
-fi
-if [ "$CLAUDE_ROUTED" = 1 ] && [ "$RC" -eq 2 ] \
-   && grep -qE '^claudeb: (cannot route without worker-pick|worker-pick failed \(exit 2\))' "$ERRF"; then
-  echo "ask_claude.sh: worker-pick unusable (exit 2); falling back to bare claude on the main account" >&2
-  : >"$ERRF"
-  set +e
-  OUT="$(claude -p "$PROMPT" --output-format json --model "$MODEL" \
-          --strict-mcp-config --setting-sources project \
-          --disallowedTools "$DISALLOWED_TOOLS" \
-          ${ALLOW_ARGS[@]+"${ALLOW_ARGS[@]}"} </dev/null 2>"$ERRF")"
-  RC=$?
-  set -e
-  CLAUDE_ROUTED=0
-fi
-if [ "$CLAUDE_ROUTED" = 1 ]; then
-  ACCOUNT="$(sed -n 's/^claudeb: worker-pick selected \([^[:space:]]*\)$/\1/p' "$ERRF" | tail -1)"
-  [ -n "$ACCOUNT" ] || ACCOUNT=main
-fi
-
 served="$(printf '%s' "$OUT" | extract_served_model "$MODEL" || true)"
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
@@ -156,7 +146,7 @@ fi
 log "$MODEL" "${served:-unknown}" "$weak" "$RC"
 
 if [ "$PROBE" = "1" ]; then
-  echo "claude served: ${served:-unknown} (weak_tier=$weak, rc=$RC)"
+  echo "claude served: ${served:-unknown} (requested=$MODEL, account=$ACCOUNT, weak_tier=$weak, rc=$RC)"
   [ $RC -ne 0 ] && { head -3 "$ERRF" >&2; exit $RC; }
   [ "$weak" = "1" ] && exit 3
   exit 0

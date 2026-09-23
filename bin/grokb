@@ -95,7 +95,7 @@ account_exists() { [ "$1" = main ] || [ -d "$profiles_dir/$1" ]; }
 
 reserved_name() {
   case "$1" in
-    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|export-token|models) return 0 ;;
+    .*|*/*|help|add|remove|list|status|pick|profile|p|run|login|enable|disable|use|fast-mode|export-token|models) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -242,12 +242,14 @@ models_ttl_s=86400
 
 models_cache_dir() { printf '%s' "${GROKB_CACHE_DIR:-$HOME/.cache/grokb}"; }
 
+# The last-known list, answering only with no cache and no signed-in profile; row `cu` holds it equal
+# to tests/fixtures/grokb-models.json.
 models_builtin() {
-  printf '%s\t%s\t%s\n' \
-    grok-4.7 yes grok-4.7 \
-    grok-4.7-build-fast no grok-4.7-build-fast \
-    grok-4.6 no grok-4.6 \
-    grok-4.5 no grok-4.5
+  printf '%s\t%s\t%s\t%s\n' \
+    grok-4.7 yes grok-4.7 xhigh,high,medium,low \
+    grok-4.7-build-fast no grok-4.7-build-fast xhigh,high,medium,low \
+    grok-4.6 no grok-4.6 xhigh,high,medium,low \
+    grok-4.5 no grok-4.5 high,medium,low
 }
 
 models_parse() { # `grok models` output -> slug<TAB>default<TAB>label, in the CLI's own order
@@ -269,6 +271,16 @@ models_parse() { # `grok models` output -> slug<TAB>default<TAB>label, in the CL
     }'
 }
 
+# `grok models` prints no efforts; the catalog the same call refreshes in that profile's home does,
+# and the CLI refuses a level a model's menu lacks (grok-4.5 has no xhigh). `-` = not known.
+models_add_efforts() { # catalog-file < rows -> rows with an efforts column
+  local catalog=$1 efforts='{}'
+  [ -r "$catalog" ] && efforts=$(jq -c '.models // {} | map_values([.info.reasoning_efforts[]?.id
+      | select(type == "string" and length > 0)] | join(","))' "$catalog" 2>/dev/null) || efforts='{}'
+  jq -Rr --argjson efforts "$efforts" 'select(length > 0) | split("\t")
+    | .[:3] + [($efforts[.[0]] // "") | if . == "" then "-" else . end] | join("\t")'
+}
+
 models_write() { # fetched-at attempted-at rows
   local cache tmp
   cache="$(models_cache_dir)/models.json"
@@ -276,7 +288,8 @@ models_write() { # fetched-at attempted-at rows
   tmp="$cache.tmp.$$"
   if printf '%s' "$3" | jq -Rn --argjson fetched "$1" --argjson attempted "$2" '
        [inputs | select(length > 0) | split("\t")
-        | {slug: .[0], default: (.[1] == "yes"), label: .[2]}] as $models
+        | {slug: .[0], default: (.[1] == "yes"), label: .[2],
+           efforts: ((.[3] // "-") | split(",") | map(select(length > 0 and . != "-")))}] as $models
        | {fetched_at: $fetched, attempted_at: $attempted,
           default: (first($models[] | select(.default) | .slug) // ""),
           models: $models}' >"$tmp" 2>/dev/null; then
@@ -299,6 +312,7 @@ models_fetch() {
     output=$(grok_env_run touch "$account" false models 2>/dev/null) || continue
     output=$(models_parse <<<"$output") || continue
     [ -n "$output" ] || continue
+    output=$(models_add_efforts "$(account_home "$account")/models_cache.json" <<<"$output")
     printf '%s\n' "$output"
     return 0
   done < <(list_accounts | sed -n 's/^\([a-z0-9][a-z0-9-]*\): Logged in as .*/\1/p')
@@ -314,7 +328,8 @@ models_rows() { # refresh(true|false) [no-fetch(true|false)]
   if [ -r "$cache" ] && cached=$(jq -r '
        [((.fetched_at // 0) | floor), ((.attempted_at // 0) | floor)] as $stamps
        | ($stamps | map(tostring) | join("\t")),
-         (.models[]? | [.slug, (if .default then "yes" else "no" end), .label]
+         (.models[]? | [.slug, (if .default then "yes" else "no" end), .label,
+            ((.efforts // []) | if length == 0 then "-" else join(",") end)]
           | select(all(type == "string" and length > 0)) | @tsv)' "$cache" 2>/dev/null); then
     IFS=$'\t' read -r fetched attempted <<<"${cached%%$'\n'*}"
     [ "${cached#*$'\n'}" = "$cached" ] || rows=${cached#*$'\n'}
@@ -357,7 +372,8 @@ show_models() {
   rows=$(models_rows "$refresh" "$cached")
   if [ "$json" = true ]; then
     printf '%s\n' "$rows" | jq -Rn '[inputs | select(length > 0) | split("\t")
-      | {slug: .[0], default: (.[1] == "yes"), label: .[2]}]'
+      | {slug: .[0], default: (.[1] == "yes"), label: .[2],
+         efforts: ((.[3] // "-") | split(",") | map(select(length > 0 and . != "-")))}]'
   else
     printf '%s\n' "$rows"
   fi
@@ -486,6 +502,7 @@ show_help() {
     'grokb enable <name>|--all            Return an account (or every account) to worker selection.' \
     'grokb disable <name>|--all           Exclude an account (or every account) from the worker pool.' \
     'grokb use <name>|--unpin [<name>]|--clear  Add/remove a workers pin; no name prints the list.' \
+    'grokb fast-mode <name> [on|off|status]  Set Fast Mode for worker-run launches on that account; existing sessions are unchanged.' \
     'grokb models [--json] [--refresh|--cached]  The model list every consumer reads, newest first; --cached never asks the CLI.' \
     'grokb list                           List profiles with login state.' \
     'grokb status                         Per-account login state and quota.' \
@@ -657,6 +674,13 @@ case "${1:-}" in
   use)
     shift
     pin_account "$@"
+    ;;
+  fast-mode)
+    shift
+    [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { printf 'usage: grokb fast-mode <name> [on|off|status]\n' >&2; exit 2; }
+    account_exists "$1" || { printf 'grokb: unknown account: %s\n' "$1" >&2; exit 2; }
+    python3 "$grokb_root/share/codex_fast_mode.py" "$profiles_dir" "$1" "${2:-status}" grokb
+    exit
     ;;
   models)
     shift

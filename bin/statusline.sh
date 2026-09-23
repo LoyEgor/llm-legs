@@ -2059,6 +2059,7 @@ if [ -n "$session_id" ]; then
   if [ -s "$pin_file" ]; then
     pin_line=$(sed -n '1p' "$pin_file")
     case "$pin_line" in
+      open=all) pin_body="${MAGENTA}all${RESET}" ;;
       claudeb_profile=*|codex_profile=*|gemini_profile=*|grok_profile=*)
         pin_vendor=${pin_line%%_profile=*}
         pin_val=${pin_line#*_profile=}

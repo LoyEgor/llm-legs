@@ -15,7 +15,7 @@ chat_pin_root=$(resolve_root) || exit 2
 . "$chat_pin_root/share/worker-model.sh" || exit 2
 
 VENDORS='claudeb codex gemini grok'
-USAGE='usage: chat-pin [claudeb|claude|codex|gemini|grok|codex-fast|grok-fast|<account>|auto]'
+USAGE='usage: chat-pin [claudeb|claude|codex|gemini|grok|codex-fast|grok-fast|<account>|all|auto]'
 
 die() { printf 'chat-pin: %s\n' "$1" >&2; exit "${2:-2}"; }
 
@@ -23,6 +23,10 @@ lower() { LC_ALL=en_US.UTF-8 tr '[:upper:]' '[:lower:]' <<<"$1"; }
 
 show_state() {
   local file="$1" line key value vendor fast=''
+  if grep -qx 'open=all' "$file" 2>/dev/null; then
+    printf 'chat-pin: this chat opens every vendor for workers and reviews; worker-pick picks the account\n'
+    return 0
+  fi
   line=$(grep -E '^(claudeb|codex|gemini|grok)_profile=' "$file" 2>/dev/null | head -n1)
   if [ -z "$line" ]; then
     printf 'chat-pin: no chat pin — this chat follows the global pin and worker-pick\n'
@@ -33,9 +37,9 @@ show_state() {
   vendor=${key%_profile}
   grep -qxF "${vendor}_fast=on" "$file" 2>/dev/null && fast=' · fast'
   if [ "$value" = '*' ]; then
-    printf 'chat-pin: this chat pins workers to every %s pool account (*)%s\n' "$vendor" "$fast"
+    printf 'chat-pin: this chat pins workers to every %s pool account (*)%s; its reviews may use %s too\n' "$vendor" "$fast" "$vendor"
   else
-    printf 'chat-pin: this chat pins workers to %s (%s)%s\n' "$value" "$vendor" "$fast"
+    printf 'chat-pin: this chat pins workers to %s (%s)%s; its reviews may use %s too\n' "$value" "$vendor" "$fast" "$vendor"
   fi
 }
 
@@ -93,6 +97,7 @@ file=$(worker_model_chat_pin_file) || die 'cannot resolve the chat pin file'
 arg=$1
 case "$arg" in
   auto) target=auto line='' ;;
+  all | все) target=all line='open=all' ;;
   claude | claudeb) target=claudeb line='claudeb_profile=*' ;;
   codex | gemini | grok) target=$arg line="${arg}_profile=*" ;;
   # Two lines, written and replaced together: any other target stores its single line and that is

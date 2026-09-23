@@ -4,6 +4,8 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/codex-image"
 FIXTURE="$ROOT/tests/fixtures/fake-codex-image.sh"
+. "$ROOT/tests/fixtures/codexb-models.sh"
+arg_after() { grep -A1 -x -- "ARG=$1" "$FAKE_CODEX_CALLS" | grep -qx -- "ARG=$2"; }
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
@@ -66,6 +68,8 @@ chmod +x "$FAKE_BIN/magick"
 IMAGE_OUT="$WORK/image.out"
 IMAGE_ERR="$WORK/image.err"
 CLAIMS_DIR="$WORK/worker-claims"
+manifest_value() { jq -r "$1" "$ROOT/share/image-caps/codex.json"; }
+VERIFIED_CLI=$(manifest_value '.cli.version')
 image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" HOME="$FAKE_HOME" \
     CODEX_PROFILES_DIR="$CODEX_PROFILES" CODEXB_PROFILES_DIR="$CODEX_PROFILES" \
@@ -73,16 +77,15 @@ image_run() {
     CODEX_IMAGE_CODEX="$FIXTURE" \
     FAKE_CODEX_MODE="${FAKE_CODEX_MODE:-image}" PICK_MODE="${PICK_MODE:-ok}" \
     PICK_ACCOUNT="${PICK_ACCOUNT:-picked}" FAKE_CODEX_IMAGE_FORMAT="${FAKE_CODEX_IMAGE_FORMAT:-png}" \
-    FAKE_CODEX_VERSION="${FAKE_CODEX_VERSION:-0.153.4}" \
+    FAKE_CODEX_VERSION="${FAKE_CODEX_VERSION:-$VERIFIED_CLI}" \
     FAKE_CODEX_THREAD="${FAKE_CODEX_THREAD:-01a09aaa-1111-7000-8000-00000000000a}" \
     bash "$SCRIPT" "$@" >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 }
-manifest_value() { jq -r "$1" "$ROOT/share/image-caps/codex.json"; }
 
 REF_MAX=$(manifest_value '.refs.max')
 assert test "$REF_MAX" -ge 1
 assert test "$(manifest_value '.transparent')" = native+chroma
-assert test "$(manifest_value '.cli.version')" = 0.153.4
+assert grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' <<<"$VERIFIED_CLI"
 
 image_rc=0
 image_run --dest relative.png --prompt badge || image_rc=$?
@@ -185,6 +188,10 @@ assert grep -qx 'ARG=--skip-git-repo-check' "$FAKE_CODEX_CALLS"
 # optional: dropped, every run reports session=none and no caller can resume one.
 assert grep -qx 'ARG=--experimental-json' "$FAKE_CODEX_CALLS"
 assert grep -qx 'ARG=-o' "$FAKE_CODEX_CALLS"
+assert arg_after --disable fast_mode
+assert grep -qx 'ARG=service_tier="default"' "$FAKE_CODEX_CALLS"
+# The model is the table family's newest listed slug, not whatever a profile's config.toml names.
+assert arg_after -m gpt-6.1-astra
 assert grep -qx "CODEX_HOME=$CODEX_PROFILES/picked" "$FAKE_CODEX_CALLS"
 assert_fails grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
 assert grep -q 'built-in image_gen tool' "$FAKE_CODEX_PROMPT"
@@ -209,17 +216,24 @@ assert grep -qx 'model=gpt-image-2 model_caps=fresh' "$IMAGE_OUT"
 FAKE_CODEX_AGENT_VERSION=2.5
 assert image_run --dest "$OUTPUT_DIR/agent25.png" --prompt badge --account explicit
 assert grep -qx 'model=gpt-image-2.5 model_caps=stale verified=gpt-image-2' "$IMAGE_OUT"
+# The live shape since cli 0.156.1: the product in `name`, the unversioned family in `version`.
+FAKE_CODEX_AGENT_VERSION=gpt-image FAKE_CODEX_AGENT_NAME=ChatGPT \
+  assert image_run --dest "$OUTPUT_DIR/agent-live.png" --prompt badge --account explicit
+assert grep -qx 'model=gpt-image model_caps=unknown verified=gpt-image-2' "$IMAGE_OUT"
+FAKE_CODEX_AGENT_VERSION=gpt-image-2.5 FAKE_CODEX_AGENT_NAME=ChatGPT \
+  assert image_run --dest "$OUTPUT_DIR/agent-live25.png" --prompt badge --account explicit
+assert grep -qx 'model=gpt-image-2.5 model_caps=stale verified=gpt-image-2' "$IMAGE_OUT"
 unset FAKE_CODEX_AGENT_VERSION
 
 # The tool schema lives in the binary, so a CLI other than the verified one may promise the wrong
 # limits — said out loud, never fatal.
-FAKE_CODEX_VERSION=0.154.0
+FAKE_CODEX_VERSION=999.0.0
 export FAKE_CODEX_VERSION
 FAKE_CODEX_THREAD=01a09bbb-2222-7000-8000-00000000000b
 export FAKE_CODEX_THREAD
 assert image_run --dest "$OUTPUT_DIR/stale.png" --prompt badge --account explicit
-assert grep -qx 'caps=stale cli=0.154.0 verified=0.153.4' "$IMAGE_OUT"
-FAKE_CODEX_VERSION=0.153.4
+assert grep -qx "caps=stale cli=999.0.0 verified=$VERIFIED_CLI" "$IMAGE_OUT"
+FAKE_CODEX_VERSION=$VERIFIED_CLI
 export FAKE_CODEX_VERSION
 FAKE_CODEX_THREAD=01a09aaa-1111-7000-8000-00000000000a
 export FAKE_CODEX_THREAD
@@ -300,6 +314,7 @@ assert image_run --dest "$OUTPUT_DIR/resumed.png" --prompt 'now make it bluer' -
 assert test ! -s "$PICK_CALLS"
 assert grep -qx 'ARG=resume' "$FAKE_CODEX_CALLS"
 assert grep -qx "ARG=$RESUME_ID" "$FAKE_CODEX_CALLS"
+assert_fails grep -qx 'ARG=-m' "$FAKE_CODEX_CALLS"
 assert grep -qx "CODEX_HOME=$CODEX_PROFILES/other" "$FAKE_CODEX_CALLS"
 assert grep -qx 'account=other' "$IMAGE_OUT"
 assert grep -qx "session=$RESUME_ID" "$IMAGE_OUT"

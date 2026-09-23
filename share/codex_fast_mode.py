@@ -6,11 +6,12 @@ import tempfile
 
 
 def main():
-    profiles, name, mode = sys.argv[1:]
+    profiles, name, mode = sys.argv[1:4]
+    tool = sys.argv[4] if len(sys.argv) > 4 else "codexb"
     if (mode not in {"on", "off", "status", "tier", "state"} or name == "main"
             or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name)):
         raise ValueError("use a named account and on, off, status, tier, or state")
-    target = Path(profiles) / ".codexb" / "fast-mode" / name
+    target = Path(profiles) / f".{tool}" / "fast-mode" / name
     if mode in {"on", "off"}:
         tier = "fast" if mode == "on" else "default"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -43,5 +44,6 @@ if __name__ == "__main__":
     try:
         main()
     except (OSError, ValueError) as error:
-        print(f"codexb: Fast Mode unavailable: {type(error).__name__}", file=sys.stderr)
+        tool = sys.argv[4] if len(sys.argv) > 4 else "codexb"
+        print(f"{tool}: Fast Mode unavailable: {type(error).__name__}", file=sys.stderr)
         sys.exit(2)

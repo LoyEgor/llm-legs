@@ -57,6 +57,8 @@ done
 repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"
 [ -d "$repo/tests" ] || fail "no tests directory under $repo"
 
+# Absolute, not -n: a nested run must stay at 10, not sink further.
+renice 10 -p $$ >/dev/null 2>&1 || :
 [[ "$jobs" =~ ^[0-9]+$ ]] || usage
 if [ "$jobs" -eq 0 ]; then
   jobs=$(( $(sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4) / 2 ))

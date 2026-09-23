@@ -55,6 +55,8 @@ if [ -n "${FAKE_EDIT:-}" ]; then printf 'Operation not permitted: %s\n' "$FAKE_E
 case $brief in
   *QUOTA-Q*) [ -z "$log" ] || printf 'RESOURCE_EXHAUSTED\n' >"$log"; exit 1 ;;
   *UNAVAIL-Q*) exit 1 ;;
+  *APIERR-Q*) printf 'AGY_ERROR: {"short_error":"INTERNAL (code 500): backend error"}
+' >&2; exit 3 ;;
 esac
 if [ -n "${FAKE_LOG_QUOTA:-}" ] && [ "$account" = researcher ]; then
   [ -z "$log" ] || printf 'RESOURCE_EXHAUSTED\n' >"$log"
@@ -151,6 +153,13 @@ printf 'ROUND: 20260801T140000Z-0a1b2c3\nRead the cell logs.\n' >"$WORK/prompt"
 run; rc=$?; assert test "$rc" -ne 0
 assert grep -q 'a research run fixes nothing' "$WORK/err" "$WORK/out"
 printf 'Research the repository.\n' >"$WORK/prompt"
+
+# Light switched off in Egor's menu launches nothing and names why.
+printf 'light_paused=on\n' >"$TOGGLE"
+: >"$WORK/vendor.log"
+run; rc=$?; assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: LIGHT_OFF' "$WORK/out"
+assert test ! -s "$WORK/vendor.log"
 
 # Every vendor runs the same tracked read-only role, placed by the light_research row alone.
 printf 'light_research=claudeb:sonnet\n' >"$TOGGLE"
@@ -388,6 +397,10 @@ printf 'Research the repository.\n' >"$WORK/prompt"
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-quota"; rc=$?; assert test "$rc" -eq 3
 assert grep -q '^OUTCOME: GEMINI_USAGE_LIMIT$' "$WORK/out"; assert test ! -e "$WORK/answer"
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-unavail"; rc=$?; assert test "$rc" -eq 4
+assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/out"; assert test ! -e "$WORK/answer"
+printf 'APIERR-Q: agy >= 1.2.6 exits 3 on a model API failure that is no quota wall.
+' >"$WORK/prompt-apierr"
+rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-apierr"; rc=$?; assert test "$rc" -eq 4
 assert grep -q '^OUTCOME: GEMINI_UNAVAILABLE$' "$WORK/out"; assert test ! -e "$WORK/answer"
 rm -f "$WORK/answer"; run --prompt-file "$WORK/prompt-unavail" --prompt-file "$WORK/prompt-quota"; rc=$?; assert test "$rc" -eq 3
 assert test ! -e "$WORK/answer"

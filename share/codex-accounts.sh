@@ -36,3 +36,14 @@ codex_fast_mode_state() {
   local profiles="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
   python3 "$(codex_fast_mode_helper)" "$profiles" "$1" state
 }
+
+# OpenAI switches Fast per account and model through the catalog the CLI fetches; a priority tier the
+# catalog does not advertise is dropped by the CLI without a word. 0 offered, 1 not offered, 2 no catalog.
+codex_fast_offered() { # codex-home slug
+  local cache="$1/models_cache.json"
+  [ -r "$cache" ] || return 2
+  jq -e --arg slug "$2" 'any(.models[]?; .slug == $slug and any(.service_tiers[]?; .id == "priority"))' \
+    "$cache" >/dev/null 2>&1 && return 0
+  jq -e '.models | type == "array"' "$cache" >/dev/null 2>&1 && return 1
+  return 2
+}

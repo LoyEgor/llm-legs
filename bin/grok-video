@@ -26,6 +26,7 @@ caps() { image_caps_get "$root" grok "$1"; }
 container=$(caps '.video.container')
 refs_max=$(caps '.video.refs_max')
 voices_max=$(caps '.video.voices_max')
+keyframes_max=$(caps '.video.keyframes_max')
 single_durations=$(caps '.video.durations | join("|")')
 reference_min=$(caps '.video.reference_duration.min')
 reference_max=$(caps '.video.reference_duration.max')
@@ -37,13 +38,15 @@ single_tool=$(caps '.video.tools.single_ref')
 multi_tool=$(caps '.video.tools.multi_ref')
 
 usage() {
-  printf 'usage: grok-video --dest <absolute .%s path> --prompt <motion description> [--ref <absolute image path>]... [--voice <id>]... [--duration <seconds>] [--resolution <%s>] [--aspect <ratio>] [--account <profile>] [--resume <session-id>]\n' \
+  printf 'usage: grok-video --dest <absolute .%s path> --prompt <motion description> [--ref <absolute image path>]... [--voice <id>]... [--first-frame <absolute image path>] [--last-frame <absolute image path>] [--keyframe <absolute image path>@<seconds>]... [--duration <seconds>] [--resolution <%s>] [--aspect <ratio>] [--account <profile>] [--resume <session-id>]\n' \
     "$container" "$resolutions" >&2
   printf '  one --ref and no --voice: %s, duration %s, no aspect ratio (set it on the source image)\n' \
     "$single_tool" "$single_durations" >&2
   printf '  %s to %s refs and/or up to %s --voice: %s, duration %s-%s, aspect %s\n' \
     2 "$refs_max" "$voices_max" "$multi_tool" "$reference_min" "$reference_max" "$video_aspects" >&2
-  printf '  at least one --ref or one --voice is required; --resume takes the session id printed as session= by an earlier run\n' >&2
+  printf '  --first-frame/--last-frame and up to %s --keyframe pin exact frames (%s; a keyframe strictly inside the clip, anchors at least 1/3 s apart); with --first-frame the first --ref is <IMAGE_1>\n' \
+    "$keyframes_max" "$multi_tool" >&2
+  printf '  at least one --ref, --voice, --first-frame, --last-frame or --keyframe is required; --resume takes the session id printed as session= by an earlier run\n' >&2
   exit 2
 }
 
@@ -56,6 +59,9 @@ account=''
 resume=''
 refs=()
 voices=()
+first_frame=''
+last_frame=''
+keyframes=()
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -63,6 +69,9 @@ while [ "$#" -gt 0 ]; do
     --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
     --ref) [ "$#" -ge 2 ] || usage; refs+=("$2"); shift 2 ;;
     --voice) [ "$#" -ge 2 ] || usage; voices+=("$2"); shift 2 ;;
+    --first-frame) [ "$#" -ge 2 ] || usage; first_frame=$2; shift 2 ;;
+    --last-frame) [ "$#" -ge 2 ] || usage; last_frame=$2; shift 2 ;;
+    --keyframe) [ "$#" -ge 2 ] || usage; keyframes+=("$2"); shift 2 ;;
     --duration) [ "$#" -ge 2 ] || usage; duration=$2; shift 2 ;;
     --resolution) [ "$#" -ge 2 ] || usage; resolution=$2; shift 2 ;;
     --aspect) [ "$#" -ge 2 ] || usage; aspect=$2; shift 2 ;;
@@ -79,12 +88,29 @@ done
 
 ref_count=${#refs[@]}
 voice_count=${#voices[@]}
+keyframe_count=${#keyframes[@]}
+pinned_count=$keyframe_count
+[ -z "$first_frame" ] || pinned_count=$((pinned_count + 1))
+[ -z "$last_frame" ] || pinned_count=$((pinned_count + 1))
 [ "$ref_count" -le "$refs_max" ] || usage
 [ "$voice_count" -le "$voices_max" ] || usage
-[ $((ref_count + voice_count)) -gt 0 ] || usage
+[ "$keyframe_count" -le "$keyframes_max" ] || usage
+[ $((ref_count + voice_count + pinned_count)) -gt 0 ] || usage
 if [ "$ref_count" -gt 0 ]; then
   for ref in "${refs[@]}"; do
     [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+  done
+fi
+for ref in "$first_frame" "$last_frame"; do
+  [ -z "$ref" ] || { [[ "$ref" = /* ]] && [ -f "$ref" ]; } || usage
+done
+keyframe_times=''
+if [ "$keyframe_count" -gt 0 ]; then
+  for keyframe in "${keyframes[@]}"; do
+    ref=${keyframe%@*}
+    [ "$ref" != "$keyframe" ] && [[ "$ref" = /* ]] && [ -f "$ref" ] || usage
+    [[ "${keyframe##*@}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || usage
+    keyframe_times+="${keyframe##*@}"$'\n'
   done
 fi
 # The roster is not enumerable offline — the schema names four examples and says an unknown id
@@ -97,7 +123,7 @@ if [ "$voice_count" -gt 0 ]; then
 fi
 
 tool=$multi_tool
-if [ "$ref_count" -eq 1 ] && [ "$voice_count" -eq 0 ]; then tool=$single_tool; fi
+if [ "$ref_count" -eq 1 ] && [ "$voice_count" -eq 0 ] && [ "$pinned_count" -eq 0 ]; then tool=$single_tool; fi
 
 if [ "$tool" = "$single_tool" ]; then
   # image_to_video has no aspect_ratio field at all: its frame is the source image's. Silently
@@ -132,6 +158,16 @@ else
   fi
 fi
 duration=${duration:-$default_duration}
+# The engine snaps anchors to a 1/3-second grid and rejects two that land closer, and one on or past
+# an endpoint; refused here so the rejection is not billed.
+if [ "$keyframe_count" -gt 0 ] && ! printf '%s' "$keyframe_times" | sort -n | awk -v d="$duration" '
+    $1 <= 0 || $1 >= d { bad = 1 }
+    NR > 1 && $1 - prev < 1 / 3 { bad = 1 }
+    { prev = $1 }
+    END { exit bad }'; then
+  printf 'grok-video: --keyframe times must lie strictly inside the %s s clip and at least 1/3 s apart\n' "$duration" >&2
+  exit 2
+fi
 case "|$resolutions|" in
   *"|$resolution|"*) ;;
   *) usage ;;
@@ -186,8 +222,14 @@ if [ "$tool" = "$single_tool" ]; then
   instruction+=$'\n- image: '
   instruction+="${refs[0]}"
 else
+  # The tag index space follows the upload order first_frame, images, keyframes, last_frame.
+  image_tag=0
+  if [ -n "$first_frame" ]; then
+    instruction+=$'\n- first_frame: '"$first_frame"
+    image_tag=1
+  fi
   if [ "$ref_count" -gt 0 ]; then
-    instruction+=$'\n- images, in this order, referenced in the prompt as <IMAGE_0>, <IMAGE_1>, ...:'
+    instruction+=$'\n- images, in this order, referenced in the prompt as <IMAGE_'"$image_tag"'>, <IMAGE_'"$((image_tag + 1))"'>, ...:'
     for ref in "${refs[@]}"; do
       instruction+=$'\n  - '
       instruction+="$ref"
@@ -200,6 +242,13 @@ else
       instruction+="$voice"
     done
   fi
+  if [ "$keyframe_count" -gt 0 ]; then
+    instruction+=$'\n- keyframes:'
+    for keyframe in "${keyframes[@]}"; do
+      instruction+=$'\n  - {image: '"${keyframe%@*}"', timestamp_s: '"${keyframe##*@}"'}'
+    done
+  fi
+  [ -z "$last_frame" ] || instruction+=$'\n- last_frame: '"$last_frame"
   [ -z "$aspect" ] || instruction+=$'\n- aspect_ratio: '"$aspect"
 fi
 instruction+=$'\n- duration: '"$duration"
@@ -215,8 +264,8 @@ generation_rc=0
 GROK_MEMORY=0 "$grokb_cmd" "${launch_args[@]}" \
   >"$stream_file" 2>"$stderr_file" || generation_rc=$?
 
-# Both video tools answer under the ImageToVideo tag; reference_to_video has no variant of its own.
-generated=$(grok_media_stream_path "$stream_file" ImageToVideo) || generated=''
+# 1.0.41 tags reference_to_video ReferenceToVideo; older CLIs tagged both tools ImageToVideo.
+generated=$(grok_media_stream_path "$stream_file" ImageToVideo,ReferenceToVideo) || generated=''
 
 if [ -z "$generated" ]; then
   case "$(grok_media_failure_class "$stream_file" "$stderr_file")" in
@@ -240,7 +289,7 @@ if [ -z "$generated" ]; then
     printf 'grok-video: %s has no video generation on its tier (SuperGrok only)\n' "$account" >&2
     exit 1
   fi
-  printf 'grok-video: generation failed (exit %s); no ImageToVideo event with a readable file\n' \
+  printf 'grok-video: generation failed (exit %s); no ImageToVideo or ReferenceToVideo event with a readable file\n' \
     "$generation_rc" >&2
   tail -n 20 "$stderr_file" "$stream_file" >&2 2>/dev/null || true
   exit 1

@@ -37,6 +37,12 @@ mkdir -p "$GROKB_PROFILES_DIR/signedout" "$GROKB_PROFILES_DIR/supergrok"
 printf '{"key":"k","email":"worker@example.com","refresh_token":"r","expires_at":"2099-01-01T00:00:00Z"}\n' \
   >"$GROKB_PROFILES_DIR/supergrok/auth.json"
 printf '{}\n' >"$GROKB_PROFILES_DIR/signedout/auth.json"
+# The catalog the real CLI refreshes in the answering profile's home on `grok models`: the only place
+# the per-model efforts are written down (grok-4.5 has no xhigh, and the CLI refuses it).
+jq -n '{models: ({"grok-4.7": ["xhigh","high","medium","low"], "grok-4.7-build-fast": ["xhigh","high","medium","low"],
+    "grok-4.6": ["xhigh","high","medium","low"], "grok-4.5": ["high","medium","low"]}
+  | map_values({info: {reasoning_efforts: map({id: ., value: .})}}))}' \
+  >"$GROKB_PROFILES_DIR/supergrok/models_cache.json"
 
 CACHE="$GROKB_CACHE_DIR/models.json"
 TAB=$(printf '\t')
@@ -47,10 +53,10 @@ age_cache() { # seconds
   jq --argjson s "$stamp" '.fetched_at = $s | .attempted_at = $s' "$CACHE" >"$CACHE.new" && mv "$CACHE.new" "$CACHE"
 }
 
-expected="grok-4.7${TAB}yes${TAB}grok-4.7
-grok-4.7-build-fast${TAB}no${TAB}grok-4.7-build-fast
-grok-4.6${TAB}no${TAB}grok-4.6
-grok-4.5${TAB}no${TAB}grok-4.5"
+expected="grok-4.7${TAB}yes${TAB}grok-4.7${TAB}xhigh,high,medium,low
+grok-4.7-build-fast${TAB}no${TAB}grok-4.7-build-fast${TAB}xhigh,high,medium,low
+grok-4.6${TAB}no${TAB}grok-4.6${TAB}xhigh,high,medium,low
+grok-4.5${TAB}no${TAB}grok-4.5${TAB}high,medium,low"
 
 # --- Fresh fetch: no cache, grok lists the models, the prose around the block is dropped ---
 assert_eq "$(models)" "$expected"
@@ -62,6 +68,7 @@ assert jq -e '(.fetched_at | type) == "number" and (.models | length) == 4' "$CA
 assert_eq "$(jq -r '.default' "$CACHE")" grok-4.7
 assert_eq "$(jq -r '.models[1] | [.slug, .default, .label] | join("|")' "$CACHE")" \
   'grok-4.7-build-fast|false|grok-4.7-build-fast'
+assert_eq "$(jq -c '.models[3].efforts' "$CACHE")" '["high","medium","low"]'
 assert_eq "$(cat "$WORK/err")" ''
 
 # --- A fresh cache answers without asking grok ---
@@ -69,23 +76,25 @@ assert_eq "$(models)" "$expected"
 assert_eq "$(calls)" 1
 
 # --- --json: the same rows as a list of objects ---
-assert_eq "$(models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label] | @tsv')" "$expected"
-assert_eq "$(models --json | jq -r '.[3] | keys | join(",")')" 'default,label,slug'
+assert_eq "$(models --json | jq -r '.[] | [.slug, (if .default then "yes" else "no" end), .label, (.efforts | join(","))] | @tsv')" "$expected"
+assert_eq "$(models --json | jq -r '.[3] | keys | join(",")')" 'default,efforts,label,slug'
 
 # --- --refresh asks grok inside the TTL, and a new release reaches every reader ---
 printf 'Default model: grok-5\n\nAvailable models:\n  * grok-5 (default)\n  - grok-4.7\n' >"$GROK_MODELS_OUT"
 rolled="$(models --refresh)"
 assert_eq "$(calls)" 2
 assert_eq "$(printf '%s\n' "$rolled" | cut -f1 | tr '\n' ,)" 'grok-5,grok-4.7,'
-assert_eq "$(printf '%s\n' "$rolled" | head -n1)" "grok-5${TAB}yes${TAB}grok-5"
+# A slug the profile's catalog does not hold yet has unknown efforts, never a guessed list.
+assert_eq "$(printf '%s\n' "$rolled" | head -n1)" "grok-5${TAB}yes${TAB}grok-5${TAB}-"
+assert_eq "$(jq -c '.models[0].efforts' "$CACHE")" '[]'
 # The CLI's order is the list's order, and `Default model:` alone marks the default when the block
 # carries no `(default)` — the two ways one release states the same fact.
 printf 'Available models:\n  - grok-4.6\n  - grok-4.7\n\nDefault model: grok-4.7\n' >"$GROK_MODELS_OUT"
-assert_eq "$(models --refresh | tr '\n\t' ',:')" 'grok-4.6:no:grok-4.6,grok-4.7:yes:grok-4.7,'
+assert_eq "$(models --refresh | cut -f1-3 | tr '\n\t' ',:')" 'grok-4.6:no:grok-4.6,grok-4.7:yes:grok-4.7,'
 # When the two disagree the block's own marker is the answer: the `Default model:` line is what a
 # profile that is not signed in also answers with, and it goes stale a release before the block does.
 printf 'Default model: grok-4.6\n\nAvailable models:\n  - grok-4.6\n  * grok-4.7 (default)\n' >"$GROK_MODELS_OUT"
-assert_eq "$(models --refresh | tr '\n\t' ',:')" 'grok-4.6:no:grok-4.6,grok-4.7:yes:grok-4.7,'
+assert_eq "$(models --refresh | cut -f1-3 | tr '\n\t' ',:')" 'grok-4.6:no:grok-4.6,grok-4.7:yes:grok-4.7,'
 cp "$ROOT/tests/fixtures/grok-models.txt" "$GROK_MODELS_OUT"
 models --refresh >/dev/null
 

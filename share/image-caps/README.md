@@ -20,7 +20,7 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
   "exact_size": false,
   "transparent": "chroma",
   "resume": {"flag": "--resume", "id_source": "streaming-json session id"},
-  "video": {"refs_max": 7, "durations": [6, 10], "resolutions": ["480p"], "voices_max": 3},
+  "video": {"refs_max": 7, "durations": [6, 10], "resolutions": ["480p"], "voices_max": 3, "keyframes_max": 4},
   "unsupported": ["mask", "quality", "resolution", "n"]
 }
 ```
@@ -31,6 +31,9 @@ vendor CLI docs). Re-verify when `caps=stale` or `model_caps=stale` shows up; th
 - `aspects`: null when the CLI has no aspect parameter (Codex takes size only as prose).
 - `transparent`: `native` (the tool returns alpha), `chroma` (green background + key), `native+chroma`
   (try native, key when the result carries no alpha).
-- `video`: null when the vendor has no video tool.
+- `video`: null when the vendor has no video tool. `keyframes_max`: mid-clip anchors a pinned-frame
+  tool takes (grok `reference_to_video`).
+- `api_only`: what the vendor's REST API offers and the CLI tools do not carry — recorded so a
+  release that wires one is noticed, never sent.
 - Soft vs hard for the fan-out: `video: null` is hard (skip the vendor); `refs.max`, `aspects`,
   `exact_size`, `transparent` are soft (truncate, map to the nearest, emulate).

@@ -84,7 +84,7 @@ span_turn() {
   jq -cn --arg t "$(date -u -r "$(( $(date +%s) - 600 ))" +%Y-%m-%dT%H:%M:%SZ)" --arg c "$1" \
     '{type:"user",timestamp:$t,message:{role:"user",content:$c}}'
 }
-span_turn 'tidy the instruction docs, максимально автономно' > "$SPAN_T"
+span_turn 'tidy the instruction docs, сделай максимально автономно' > "$SPAN_T"
 span_turn 'tidy the instruction docs' > "$NOSPAN_T"
 # A transcript no longer arms anything by itself: the word intake reads his newest turn once and
 # writes the span markers `rj_autonomous` answers from. The fixture arms through that same intake,

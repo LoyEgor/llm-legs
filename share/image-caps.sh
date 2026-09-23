@@ -32,6 +32,9 @@ image_caps_model_check() { # root vendor kind observed -> "model=<observed> mode
     printf 'model=unknown model_caps=unknown\n'
   elif [ "$observed" = "$expected" ]; then
     printf 'model=%s model_caps=fresh\n' "$observed"
+  elif [[ "$expected" == "$observed"-* ]]; then
+    # The file names the family but not its version: it neither confirms nor contradicts the manifest.
+    printf 'model=%s model_caps=unknown verified=%s\n' "$observed" "$expected"
   else
     printf 'model=%s model_caps=stale verified=%s\n' "$observed" "${expected:-none}"
   fi

@@ -182,6 +182,7 @@ if [ "$worker" = light-worker ]; then
   # An unreadable or unlisted `light_edit` row is worker-run's own MODEL_REFUSED to word, before
   # an account is spent; a gate that guessed a vendor here would price the wrong quota.
   _load_wm || exit 0
+  ! worker_light_off || exit 0
   vendor=$(worker_light_vendor edit 2>/dev/null) || exit 0
   case "$vendor" in
     claudeb) limits_vendor=claude; label='Light on Claude' ;;

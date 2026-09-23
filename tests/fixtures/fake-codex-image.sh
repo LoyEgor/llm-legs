@@ -6,7 +6,7 @@ set -euo pipefail
 : "${REAL_MAGICK:?}"
 
 if [ "${1-}" = --version ]; then
-  printf 'codex-cli %s\n' "${FAKE_CODEX_VERSION:-0.153.4}"
+  printf 'codex-cli %s\n' "${FAKE_CODEX_VERSION:?}"
   exit 0
 fi
 
@@ -80,11 +80,11 @@ case "${FAKE_CODEX_IMAGE_FORMAT:-png}" in
     ;;
 esac
 if [ -n "${FAKE_CODEX_AGENT_VERSION:-}" ]; then
-  python3 - "$image_path" "$FAKE_CODEX_AGENT_VERSION" <<'PY'
+  python3 - "$image_path" "$FAKE_CODEX_AGENT_VERSION" "${FAKE_CODEX_AGENT_NAME:-gpt-image}" <<'PY'
 import struct, sys, zlib
-path, version = sys.argv[1], sys.argv[2].encode()
-cbor = (b"\x78\x0ddigitalSourceType\x61x" + b"softwareAgent\xa2\x64name\x69gpt-image\x67version"
-        + bytes([0x60 + len(version)]) + version)
+path, version, name = sys.argv[1], sys.argv[2].encode(), sys.argv[3].encode()
+cbor = (b"\x78\x0ddigitalSourceType\x61x" + b"softwareAgent\xa2\x64name" + bytes([0x60 + len(name)]) + name
+        + b"\x67version" + bytes([0x60 + len(version)]) + version)
 data = open(path, "rb").read()
 end = data.rindex(b"IEND") - 4
 chunk = struct.pack(">I", len(cbor)) + b"caBX" + cbor + struct.pack(">I", zlib.crc32(b"caBX" + cbor))

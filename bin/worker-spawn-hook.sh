@@ -53,6 +53,15 @@ _load_worker_model() {
   . "$SELF_DIR/../share/worker-model.sh" 2>/dev/null
 }
 _load_worker_model || true
+# An ATTACH brief waits out a run started before the switch went off; only a new launch is refused.
+case "$subagent" in
+  light-research | light-worker)
+    if command -v worker_light_off >/dev/null 2>&1 && worker_light_off && [[ "$prompt" != ATTACH\ * ]]; then
+      jq -cn --arg r "Light is off (Egor's menu: LLM Limits -> Light): work as if it did not exist. Give this brief to the regular worker relay worker-pick names (its NEXT row); a research brief says it is read-only and carries \`WEB: on\` when it needs the web." \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+      exit 0
+    fi ;;
+esac
 image_model() { # vendor
   local model
   model=$(jq -r '.short.image // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
@@ -141,7 +150,7 @@ elif [ "$subagent" = grok-worker ]; then
   [ -n "$model" ] || model=auto
   # A relay subagent is always a WORKERS leg, so the fast pin applies here exactly as it does in
   # `worker-run start`; both resolve the slug through the one helper.
-  model=$(worker_model_grok_launch_model "$model" workers)
+  model=$(worker_model_grok_launch_model "$model" workers '' "$acct")
   model=$(worker_model_grok_label "$model")
   effort=$(brief_line EFFORT)
   [ -n "$effort" ] || effort=$(worker_conf grok_effort)

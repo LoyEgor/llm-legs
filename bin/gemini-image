@@ -246,7 +246,8 @@ response=$(jq -r '[.[] | select(.event == "result") | .result.response // empty]
 jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) |
   .. | strings' "$events_file" >"$tmp_dir/errors"
 # The image model has its own per-account quota, invisible in the chat-model quota table.
-if [ "$generation_rc" -eq 3 ] || [ "$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')" = QUOTA ] ||
+# Exit 3 is not a limit: agy >= 1.2.6 exits 3 on every model API failure (AGY_ERROR on stderr).
+if [ "$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')" = QUOTA ] ||
    grep -Eq '^QUOTA[[:space:]]*$' "$stdout_file" ||
    grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' "$tmp_dir/errors"; then
   printf 'GEMINI_USAGE_LIMIT\n' >&2

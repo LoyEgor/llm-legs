@@ -53,7 +53,8 @@ grok_media_select_account() { # tool root worker-pick-cmd profiles-dir requested
 }
 
 # The media tools all answer with the same MediaGenOutput under a per-tool `type` tag: image_gen
-# reports ImageGen, image_edit ImageEdit, and both video tools ImageToVideo. Reading the tag list
+# reports ImageGen, image_edit ImageEdit, image_to_video ImageToVideo and reference_to_video
+# ReferenceToVideo (ImageToVideo before 1.0.41). Reading the tag list
 # rather than one name is what keeps an edit or a reference_to_video run from looking like a
 # generation that produced nothing.
 grok_media_stream_path() { # stream-file type[,type...]

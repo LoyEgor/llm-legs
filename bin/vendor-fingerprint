@@ -26,6 +26,9 @@ info_facets="version catalog_text foreign_clients"
 id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
 id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
 read -r -a opener <<<"${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}"
+# npm puts codex and grok under nvm, which neither a LaunchAgent's PATH nor a plain shell's carries.
+# Appended, so a native install earlier on PATH (~/.local/bin/claude) stays the one that runs.
+while IFS= read -r nvm_bin; do PATH="$PATH:$nvm_bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
 
 timeout_command() {
   if command -v gtimeout >/dev/null 2>&1; then
@@ -139,9 +142,15 @@ codex_facets() {
   if [ "$(jq length "$work/features" 2>/dev/null || printf 0)" -gt 0 ]; then put features <"$work/features"; else fail features local; fi
   while IFS= read -r home; do homes+=("$home"); done < <(codex_homes "$version")
   if [ "${#homes[@]}" -gt 0 ]; then
-    # Prompts ride in the catalog as long strings; they change without any capability changing.
-    jq -s 'map(.models[]?) | group_by(.slug) | map({key: .[0].slug, value: .[0]}) | from_entries' \
+    # Accounts are served different catalogs (A/B defaults, priorities) and ~/.codex drops in and out
+    # of the homes as the ChatGPT app rewrites it: a field the homes disagree on is their sorted value
+    # set, so the facet never depends on which home happened to be read first.
+    jq -s 'map(.models[]?) | group_by(.slug) | map(. as $vs | {key: .[0].slug, value: (
+        [$vs[] | paths((type != "object" and type != "array") or . == {} or . == [])] | unique
+        | reduce .[] as $p (null; setpath($p; [$vs[] | try getpath($p) catch null] | unique
+            | if length == 1 then .[0] else {per_account: .} end)))}) | from_entries' \
       "${homes[@]/%//models_cache.json}" >"$work/catalog" 2>/dev/null
+    # Prompts ride in the catalog as long strings; they change without any capability changing.
     jq 'delpaths([paths(type == "string" and length > 300)])' "$work/catalog" | put catalog
     jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
       "$work/catalog" | while IFS=$'\t' read -r key text; do
@@ -279,13 +288,21 @@ check_vendor() { # vendor
 }
 
 launch_event() { # id
-  local id=$1 file claude_bin
-  claude_bin=$(command -v claude) || { log "cannot open $id: no claude on PATH"; return 0; }
+  local id=$1 file claudeb account session
+  # A bare `claude` runs on ~/.claude, which holds no login: the chat opens on a picked profile.
+  claudeb=$(command -v claudeb) || { log "cannot open $id: no claudeb on PATH"; return 0; }
+  account=$(worker-pick --account claudeb 2>/dev/null) && [ -n "$account" ] ||
+    { log "cannot open $id: worker-pick names no Claude account; retried next run"; return 0; }
+  session=$(uuidgen | tr '[:upper:]' '[:lower:]')
   file="$events_dir/$id.command"
   {
     printf '#!/bin/bash\n'
     printf 'cd %q || exit 1\n' "$repo_root"
-    printf 'exec %q --model opus --effort high %q\n' "$claude_bin" \
+    # Egor's rule for test chats: every vendor open for workers and reviews, through the same chat pin
+    # «воркер на все» writes. Run from Terminal, where no Claude session asks for his words.
+    printf 'CLAUDE_CODE_SESSION_ID=%q %q all >/dev/null || echo "chat-pin all failed: this chat meets the worker switches"\n' \
+      "$session" "$repo_root/bin/chat-pin"
+    printf 'exec %q profile %q --session-id %q --model opus --effort high %q\n' "$claudeb" "$account" "$session" \
       "Vendor release event $id: read $repo_root/docs/vendor-release.md in full and follow it."
   } >"$file"
   chmod 755 "$file"
@@ -306,14 +323,21 @@ launch_pending() {
   return 0
 }
 
-check() { # [vendor...]
-  local vendor
+check() { # [--here] [vendor...]
+  local vendor file here=false
   mkdir -p "$fp_dir" "$events_dir"
   if [ -z "${VENDOR_FINGERPRINT_LOCKED:-}" ]; then
     exec env VENDOR_FINGERPRINT_LOCKED=1 lockf -k -t 0 "$fp_dir/check.lock" "$script_path" check "$@"
   fi
+  [ "${1:-}" = --here ] && { here=true; shift; }
   for vendor in ${*:-$vendors}; do check_vendor "$vendor"; done
-  launch_pending
+  $here || { launch_pending; return 0; }
+  for file in "$events_dir"/*.json; do
+    [ -f "$file" ] || continue
+    jq -e --arg v " ${*:-$vendors} " '.status == "open" and .launched_at == null and (.vendor as $x | $v | contains(" \($x) "))' \
+      "$file" >/dev/null 2>&1 && event_set "$(jq -r .id "$file")" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"
+  done
+  return 0
 }
 
 request() { # [--here] vendor [note...] -> a full integration pass without waiting for a fingerprint change
@@ -395,7 +419,7 @@ show_event() { # id
 }
 
 usage() {
-  printf 'usage: vendor-fingerprint check [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor> [note]\n' >&2
+  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor> [note]\n' >&2
   exit 2
 }
 

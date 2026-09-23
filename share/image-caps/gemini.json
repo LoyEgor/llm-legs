@@ -1,9 +1,9 @@
 {
   "vendor": "gemini",
-  "verified": "2026-09-11",
+  "verified": "2026-09-23",
   "cli": {
     "name": "agy",
-    "version": "1.2.1",
+    "version": "1.2.9",
     "version_args": [
       "--version"
     ]
@@ -111,12 +111,12 @@
   "sources": {
     "binary": {
       "location": "/Users/egorloy/.local/bin/agy",
-      "version": "1.2.1",
+      "version": "1.2.9",
       "method": "strings -n 8; generateImageArgs schema tags, GenerateImageTool description, CortexStepGenerateImage protobuf"
     },
     "help": {
       "location": "agy --help; agy --version",
-      "observed": "1.2.1; --conversation, --continue, --output-format stream-json"
+      "observed": "1.2.9; --conversation, --continue, --output-format stream-json"
     },
     "headless": {
       "url": "https://antigravity.google/docs/cli/headless/"

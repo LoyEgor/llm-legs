@@ -241,6 +241,10 @@ done
 if [ -n "$account" ] && ! [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then usage; fi
 
 . "$root/share/worker-model.sh"
+if worker_light_off; then
+  printf 'OUTCOME: LIGHT_OFF\nlight-research: Light is off (Egor'"'"'s menu: LLM Limits -> Light); give the question to a regular worker relay\n'
+  exit 4
+fi
 vendor=$(worker_light_vendor research) && model=$(worker_light_model research) || {
   printf 'OUTCOME: MODEL_REFUSED\n'
   exit 4

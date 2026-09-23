@@ -15,6 +15,8 @@ for argument in "$@"; do
   fi
   previous=$argument
 done
+video_tag=ImageToVideo
+case " $* " in *reference_to_video*) video_tag=ReferenceToVideo ;; esac
 
 case "${FAKE_GROKB_MODE:-video}" in
   limit)
@@ -66,5 +68,5 @@ printf '%s' 'AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAOCbW9vdgAAAGxtdmhkAAA
 jq -cn --arg tool "${FAKE_GROKB_TOOL:-image_to_video}" '{type:"tool_call",toolCallId:"call-video-1",title:$tool,kind:"other",status:"pending",toolName:$tool,rawInput:{prompt:"gentle push-in",duration:6,resolution_name:"480p"},content:[],locations:[]}'
 printf '%s\n' '{"type":"tool_call_update","toolCallId":"call-video-1","status":null,"content":[],"rawOutput":null,"locations":[]}'
 content_text=$(jq -cn --arg path "$video_path" '{path:$path,filename:"1.mp4",session_folder:"videos",message:("Video generated and saved to " + $path + ". Do not read or re-display it, and do not describe how it appears to the user.")}')
-jq -cn --arg path "$video_path" --arg text "$content_text" '{type:"tool_call_update",toolCallId:"call-video-1",status:"completed",content:[{type:"content",content:{type:"text",text:$text}}],rawOutput:{type:"ImageToVideo",path:$path,filename:"1.mp4",session_folder:"videos"},locations:[]}'
+jq -cn --arg path "$video_path" --arg text "$content_text" --arg tag "$video_tag" '{type:"tool_call_update",toolCallId:"call-video-1",status:"completed",content:[{type:"content",content:{type:"text",text:$text}}],rawOutput:{type:$tag,path:$path,filename:"1.mp4",session_folder:"videos"},locations:[]}'
 jq -cn --arg session "${FAKE_GROKB_SESSION_ID:-01a05a11-0000-7000-8000-00000000beef}" '{type:"end",stopReason:"EndTurn",sessionId:$session,requestId:"fixture-request",usage:{input_tokens:900,output_tokens:120,total_tokens:1020},num_turns:2}'

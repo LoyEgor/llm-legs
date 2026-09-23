@@ -305,6 +305,8 @@ for arg in "$@"; do
   previous="$arg"
 done
 printf 'server.go:1017] Created conversation gemini-conversation\n' >"$log"
+[ -z "${STUB_GEMINI_LABEL:-}" ] ||
+  printf 'model_config_manager.go:327] Propagating selected model override to backend: label="%s"\n' "$STUB_GEMINI_LABEL" >>"$log"
 # What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
 # chat through the environment and through nothing else.
 [ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" gemini-conversation
@@ -327,7 +329,7 @@ clear_stub() {
   : >"$PICK_LOG"
   unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW \
     STUB_EDIT_PATH STUB_PICK_WALL \
-    STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
+    STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
@@ -2102,6 +2104,23 @@ assert grep -qx -- '--account claudeb --role light --claim' "$PICK_LOG"
 assert jq -e '.model == "sonnet" and .light == "edit"' "$RUN_DIR/meta.json" >/dev/null
 assert await_done
 
+# With Light off (Egor's menu) there is no light leg: `start light` is refused before any account is
+# asked, and research is a plain run on the vendor's own default model, off the light row or not.
+clear_stub
+set_config 'light_paused=on' 'light_edit=claudeb:sonnet' 'light_research=gemini' 'claudeb_model=opus' 'claudeb_effort=high'
+: >"$PICK_LOG"
+printf 'SCOPE: file\ntest brief\n' >"$WORK/brief"
+rc=0
+WORKER_TEST_WORKDIR="$light_workdir" "$RUNNER" start light --brief "$WORK/brief" --workdir "$light_workdir" \
+  >"$WORK/lightoff.out" 2>"$WORK/lightoff.err" || rc=$?
+assert test "$rc" -ne 0
+assert grep -qx 'OUTCOME: LIGHT_OFF' "$WORK/lightoff.out"
+assert test ! -s "$PICK_LOG"
+printf 'test brief\nsecond line\n' >"$WORK/brief"
+start_ok claudeb --role research
+assert jq -e '.model == "opus" and (has("light") | not)' "$RUN_DIR/meta.json" >/dev/null
+assert await_done
+
 # The Light write sandbox never receives $HOME as a root. gemini's main account IS the real HOME
 # (shared-invariants row `m`), so it is granted the agy state directory a named profile's own home
 # holds anyway — the shape codex and grok main already have.
@@ -2263,6 +2282,19 @@ clear_stub
 CLAUDE_CODE_SESSION_ID=chat-pin-test start_ok codex --account other
 assert meta_account_is other
 assert await_done
+# «воркер на все» (open=all) opens the switched-off vendor to a named account in that chat alone.
+printf 'open=all
+' >"$CHAT_PINS_DIR/chat-open-all"
+set_config 'codex_workers=off' 'codex_effort=medium'
+clear_stub
+CLAUDE_CODE_SESSION_ID=chat-open-all start_ok codex --account explicit
+assert meta_account_is explicit
+assert await_done
+clear_stub
+rc=0
+CLAUDE_CODE_SESSION_ID=chat-pin-test "$RUNNER" start codex --brief "$WORK/brief" --account explicit   >"$WORK/role-open.out" 2>"$WORK/role-open.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -q 'codex is switched off for workers' "$WORK/role-open.err"
 rm -rf "$CHAT_PINS_DIR" "$HOME/.llm-limits.json"
 
 # A missing wall is loud: worker-run must refuse to launch rather than read every account as
@@ -2338,9 +2370,8 @@ start_ok gemini --account main
 assert meta_agy_is 'gemini-3.8-flash-high'
 assert await_done
 set_config 'gemini_model=flash38' 'gemini_effort=high'
-# The other families and Pro, each at the one effort they run. Pro takes the row `h` label: agy
-# still serves the `-high` Pro slug as Flash.
-for pair in 'flash37:gemini-3.7-flash-high' 'flash36:gemini-3.6-flash-high' 'pro:Gemini 3.1 Pro (High)'; do
+# The other families and Pro, each at the one effort they run.
+for pair in 'flash37:gemini-3.7-flash-high' 'flash36:gemini-3.6-flash-high' 'pro:gemini-3.1-pro-high'; do
   clear_stub
   start_ok gemini --account main --model "${pair%%:*}"
   assert meta_agy_is "${pair#*:}"
@@ -2456,6 +2487,25 @@ assert await_done
 assert grep -qxF 'ARG=--enable' "$CALL_LOG"
 assert grep -qxF 'ARG=fast_mode' "$CALL_LOG"
 assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+
+# OpenAI switches Fast per account and model in the catalog: switched on here but not listed there,
+# the run goes standard and says so; listed again, it is Fast again with nobody touching the switch.
+clear_stub
+mkdir -p "$CODEX_PROFILES_DIR/fastacct"
+jq '.models |= map(del(.service_tiers))' "$CODEXB_MODELS_CACHE" >"$CODEX_PROFILES_DIR/fastacct/models_cache.json"
+start_ok codex --account fastacct
+assert await_done
+assert test "$(grep -c '^ARG=service_tier=' "$CALL_LOG")" -eq 1
+assert grep -qxF 'ARG=service_tier=\"default\"' "$CALL_LOG"
+assert grep -q 'OpenAI offers no Fast for gpt-6.1-astra on fastacct' "$WORK/start.err"
+clear_stub
+jq '.models |= map(.service_tiers = [{"id": "priority", "name": "Fast"}])' "$CODEXB_MODELS_CACHE" \
+  >"$CODEX_PROFILES_DIR/fastacct/models_cache.json"
+start_ok codex --account fastacct
+assert await_done
+assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+assert_fails grep -q 'offers no Fast' "$WORK/start.err"
+rm -r "$CODEX_PROFILES_DIR/fastacct"
 
 clear_stub
 printf 'default\n' >"$HOME/.codex-profiles/.codexb/fast-mode/fastacct"
@@ -2603,6 +2653,14 @@ start_ok codex
 assert await_done
 assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = gpt-6.1-astra
 rm -f "$STUB_DIR/codex_rollout"
+
+# Gemini: the last backend override label in agy's log.
+clear_stub
+export STUB_GEMINI_LABEL='Gemini 3.8 Flash (High)'
+start_ok gemini --account main
+assert await_done
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = 'Gemini 3.8 Flash (High)'
+assert grep -qx 'SERVED: Gemini 3.8 Flash (High)' <<<"$("$RUNNER" report "$RUN_ID")"
 
 # A family word is resolved again on the account the attempt runs on: its own list, not the
 # machine-wide newest one.

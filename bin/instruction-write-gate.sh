@@ -336,7 +336,7 @@ case "$class" in
     if [ -n "$span" ]; then
       reason="Instruction gate: this command ADDS to $hit rather than replacing it$cost. Egor's autonomy span covers reshaping these files, never growing them: while it stands, a write that leaves the file no larger passes here unasked, and growth of an instruction file waits for him. Rewrite the whole file smaller if the change is a net cut; otherwise keep the addition for his next turn and say so in one line. The tripwire measures the bytes either way and puts back growth this session produced."
     else
-      reason="Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the weekly token cost with monthly context, what the change SAVES, ask him, and wait. With his OK the identical command passes on retry."
+      reason="Instruction gate: this command writes to $hit, a file LLMs re-read across sessions$cost. Egor's standing rule is that these files are read-only without his explicit OK in the current turn, and that rule binds every tool equally — a shell write is not a way around a denied Edit. If the change is genuinely needed: state the byte delta, the weekly token cost with monthly context, what the change SAVES, ask him, and wait. With his OK the IDENTICAL command, byte for byte, passes on retry; a changed command is a new write that needs its own denial and his OK after it, so change the text with the Edit tool instead, which passes after a full Read."
     fi
     ;;
 esac

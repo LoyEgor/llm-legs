@@ -419,6 +419,7 @@ local WORKER_ROLES = { "workers", "reviewers" }
 -- parkable like any other vendor and needs its own prefix table.
 local PAUSE_VENDOR_PREFIX = {
   claude = "claudeb", codex = "codex", gemini = "gemini", grok = "grok", opencode = "opencode",
+  light = "light",
 }
 
 -- Section order of the vendor rows, read by the store-backed render and by the no-data one alike:
@@ -1381,11 +1382,11 @@ function M.pinClaude(name, currentlyPinned)
   end
 end
 
-function M.codexFastMode(name)
+local function readFastMarker(envName, profilesDir, tool, name)
   if type(name) ~= "string" or name == "" then return nil end
-  local profiles = os.getenv("CODEXB_PROFILES_DIR")
-  if not profiles or profiles == "" then profiles = home .. "/.codex-profiles" end
-  local marker = io.open(profiles .. "/.codexb/fast-mode/" .. name, "r")
+  local profiles = os.getenv(envName)
+  if not profiles or profiles == "" then profiles = home .. profilesDir end
+  local marker = io.open(profiles .. "/" .. tool .. "/fast-mode/" .. name, "r")
   local tier
   if marker then
     tier = marker:read("*l")
@@ -1398,11 +1399,86 @@ function M.codexFastMode(name)
   return nil
 end
 
+function M.codexFastMode(name)
+  return readFastMarker("CODEXB_PROFILES_DIR", "/.codex-profiles", ".codexb", name)
+end
+
+function M.grokFastMode(name)
+  return readFastMarker("GROKB_PROFILES_DIR", "/.grok-profiles", ".grokb", name)
+end
+
+-- Grok's fast variant is a model of its own: offered while the account's catalog lists a `-fast` slug.
+function M.grokFastOffered(name)
+  if type(name) ~= "string" or name == "" then return nil end
+  local path
+  if name == "main" then
+    path = home .. "/.grok/models_cache.json"
+  else
+    local profiles = os.getenv("GROKB_PROFILES_DIR")
+    if not profiles or profiles == "" then profiles = home .. "/.grok-profiles" end
+    path = profiles .. "/" .. name .. "/models_cache.json"
+  end
+  local file = io.open(path, "r")
+  if not file then return nil end
+  local contents = file:read("*a")
+  file:close()
+  local ok, decoded = pcall(hs.json.decode, contents)
+  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or next(decoded.models) == nil then
+    return nil
+  end
+  for slug in pairs(decoded.models) do
+    if type(slug) == "string" and slug:match("%-fast$") then return true end
+  end
+  return false
+end
+
+-- OpenAI switches Fast per account in the catalog the CLI fetches; worker-run then launches standard
+-- (codex_tier_args), so a switched-on row must not claim ⚡. nil = no readable catalog.
+function M.codexFastOffered(name)
+  if type(name) ~= "string" or name == "" then return nil end
+  local path
+  if name == "main" then
+    path = home .. "/.codex/models_cache.json"
+  else
+    local profiles = os.getenv("CODEXB_PROFILES_DIR")
+    if not profiles or profiles == "" then profiles = home .. "/.codex-profiles" end
+    path = profiles .. "/" .. name .. "/models_cache.json"
+  end
+  local file = io.open(path, "r")
+  if not file then return nil end
+  local contents = file:read("*a")
+  file:close()
+  local ok, decoded = pcall(hs.json.decode, contents)
+  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or #decoded.models == 0 then
+    return nil
+  end
+  for _, model in ipairs(decoded.models) do
+    if type(model) == "table" and model.visibility ~= "hide" and type(model.service_tiers) == "table" then
+      for _, tier in ipairs(model.service_tiers) do
+        if type(tier) == "table" and tier.id == "priority" then return true end
+      end
+    end
+  end
+  return false
+end
+
 function M.toggleCodexFastMode(name, enabled)
   runCodexb({ "fast-mode", name, enabled and "off" or "on" }, "Fast Mode toggle failed", function()
     M.refreshRouting()
   end, { skipRecollect = true })
 end
+
+function M.toggleGrokFastMode(name, enabled)
+  runGrokb({ "fast-mode", name, enabled and "off" or "on" }, "Fast Mode toggle failed", function()
+    M.refreshRouting()
+  end, { skipRecollect = true })
+end
+
+-- One Fast Mode row shape for every vendor that has one; looked up through M so a test can stub it.
+local fastModeApi = {
+  codex = { mode = "codexFastMode", offered = "codexFastOffered", toggle = "toggleCodexFastMode", vendor = "OpenAI" },
+  grok = { mode = "grokFastMode", offered = "grokFastOffered", toggle = "toggleGrokFastMode", vendor = "xAI" },
+}
 
 function M.pinCodex(name, currentlyPinned)
   if currentlyPinned then
@@ -1961,6 +2037,12 @@ function M.menuItems()
     title = infoTitle("Routing"),
     menu = routingSubmenu(),
   })
+  local lightOff = select(3, readWorkerModel()).light == true
+  table.insert(menu, {
+    title = "Light (research + edit)",
+    checked = not lightOff,
+    fn = function() M.setWorkerPaused("light", not lightOff) end,
+  })
   table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
     local pins, roles, paused, vendorPins = readWorkerModel()
@@ -2196,8 +2278,10 @@ function M.menuItems()
             -- about to spend the reset, so it lives on the action instead of crowding out the age.
             local resetSuffix = resetCredits and resetCredits > 0
               and string.format("  ↻%d", math.floor(resetCredits)) or ""
-            local fastMode = entry.key == "codex" and M.codexFastMode(acct) == true
-            if fastMode then resetSuffix = "  ⚡" .. resetSuffix end
+            local fastApi = fastModeApi[entry.key]
+            local fastMode = fastApi ~= nil and M[fastApi.mode](acct) == true
+            local fastWithdrawn = fastMode and M[fastApi.offered](acct) == false
+            if fastMode and not fastWithdrawn then resetSuffix = "  ⚡" .. resetSuffix end
             local accountRow
             if authNeeded then
               local loginFn, hardRefreshFn, removeFn
@@ -2291,17 +2375,17 @@ function M.menuItems()
                 if redeem then table.insert(accountRow.menu, redeem) end
               end
             end
-            if entry.key == "codex" and accountRow.menu then
+            if fastApi and accountRow.menu then
               -- A logged-out row's submenu is one constructor's fixed three items, and an account
               -- that cannot launch has nothing to launch fast: the mark still shows, the toggle
               -- waits for the login.
               if authNeeded then
-                if fastMode then accountRow.title = accountRow.title .. metaTitle("  ⚡") end
+                if fastMode and not fastWithdrawn then accountRow.title = accountRow.title .. metaTitle("  ⚡") end
               else
                 table.insert(accountRow.menu, {
-                  title = "Fast Mode (workers)",
+                  title = fastWithdrawn and "Fast Mode (workers) · " .. fastApi.vendor .. ": off now" or "Fast Mode (workers)",
                   checked = fastMode,
-                  fn = function() M.toggleCodexFastMode(acct, fastMode) end,
+                  fn = function() M[fastApi.toggle](acct, fastMode) end,
                 })
               end
             end

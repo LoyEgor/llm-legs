@@ -2,6 +2,7 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VERIFIED_CLI=$(jq -r .cli.version "$ROOT/share/image-caps/grok.json")
 SCRIPT="$ROOT/bin/grok-image"
 FIXTURE="$ROOT/tests/fixtures/fake-grokb-image.sh"
 WORK="$(mktemp -d)"
@@ -58,7 +59,7 @@ chmod +x "$FAKE_BIN/worker-pick"
 
 cat >"$FAKE_BIN/grok" <<'EOF'
 #!/usr/bin/env bash
-printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:-1.0.34}"
+printf 'grok %s (5e9a58528b76) [alpha]\n' "${FAKE_GROK_VERSION:?}"
 EOF
 chmod +x "$FAKE_BIN/grok"
 
@@ -80,7 +81,7 @@ image_run() {
   env PATH="${IMAGE_PATH:-$FAKE_BIN:$PATH}" TMPDIR="$TMP_ROOT" \
     GROKB_PROFILES_DIR="$GROK_PROFILES" WORKER_CLAIMS_DIR="$CLAIMS_DIR" \
     GROKB_GROK_BIN="$FAKE_BIN/grok" GROKB_MAIN_GROK_HOME="$MAIN_GROK_HOME" \
-    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-1.0.34}" \
+    FAKE_GROK_VERSION="${FAKE_GROK_VERSION:-$VERIFIED_CLI}" \
     GROK_IMAGE_GROKB="$FIXTURE" GROK_IMAGE_WORKER_PICK="$FAKE_BIN/worker-pick" \
     FAKE_GROKB_MODE="${FAKE_GROKB_MODE:-image}" PICK_MODE="${PICK_MODE:-ok}" \
     PICK_ACCOUNT="${PICK_ACCOUNT:-picked}" FAKE_GROKB_IMAGE_FORMAT="${FAKE_GROKB_IMAGE_FORMAT:-jpg}" \
@@ -312,7 +313,7 @@ export FAKE_GROK_VERSION
 assert image_run --dest "$OUTPUT_DIR/staleversion.jpg" --prompt badge --account explicit
 assert grep -qx "caps=stale cli=9.9.9 verified=$(jq -r '.cli.version' "$MANIFEST")" "$IMAGE_OUT"
 assert grep -qx 'model=unknown model_caps=unknown' "$IMAGE_OUT"
-FAKE_GROK_VERSION=1.0.34
+FAKE_GROK_VERSION=$VERIFIED_CLI
 export FAKE_GROK_VERSION
 
 # The manifest's model is pinned into the account's config.toml before the launch: a missing table
@@ -417,4 +418,13 @@ CLAUDE_LAUNCHER_SESSION=image-launching-chat \
 assert test "$image_rc" -eq 0
 assert grep -qx 'CLAUDE_LAUNCHER_SESSION=image-launching-chat' "$FAKE_GROKB_CALLS"
 
+
+# Tripwire: the compiled-in default `grok-imagine-image-quality` retires 2026-11-02 and is then served as
+# `grok-imagine-image-2.0` at quality low (docs.x.ai migration notice). From that day the manifest's
+# model.image note, which pins the override because of that retirement, must be re-verified.
+asserts=$((asserts + 1))
+if [ "$(date -u +%Y%m%d)" -ge 20261102 ] &&
+   jq -e '.field_sources["model.image"] | contains("retires 2026-11-02")' "$MANIFEST" >/dev/null; then
+  fail "grok-imagine-image-quality retired 2026-11-02: re-verify share/image-caps/grok.json model.image (docs/vendor-release.md)"
+fi
 echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, manifest-driven aspect enums per tool with auto and the manifest ref cap, ImageGen and ImageEdit stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, --resume routed to image_edit through the store that holds the session without worker-pick, the seven-line footer with model and caps freshness, fake session preservation, temp-cwd cleanup, and the launching chat's stamp passed through to the CLI it starts"

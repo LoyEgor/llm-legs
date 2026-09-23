@@ -653,6 +653,21 @@ failure_outcome() {
   esac
 }
 
+# Fast asked for but not in the account's catalog for this model: the CLI would drop it silently, so
+# the run says so and goes standard; it comes back by itself once OpenAI lists the tier again.
+codex_tier_args() { # account slug requested(true|false)
+  local want=$3 rc=0
+  if [ "$want" = true ]; then
+    codex_fast_offered "$(codex_home "$1")" "$2" || rc=$?
+    if [ "$rc" -eq 1 ]; then
+      printf 'worker-run: OpenAI offers no Fast for %s on %s now; running standard\n' "$2" "$1" >&2
+      want=false
+    fi
+  fi
+  if [ "$want" = true ]; then printf '%s\n' --enable fast_mode -c 'service_tier="priority"'
+  else printf '%s\n' --disable fast_mode -c 'service_tier="default"'; fi
+}
+
 codex_home() {
   if [ "$1" = main ]; then
     printf '%s/.codex' "$HOME"
@@ -895,7 +910,7 @@ codex_attempt() {
 }
 
 supervise_codex() {
-  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value drop=false dropped=false
+  local directory="$1" meta="$1/meta.json" account model effort resume cli rc value drop=false dropped=false fast
   local -a command retry add_dirs images
   account=$(jq -r '.account' "$meta")
   model=$(jq -r '.model' "$meta")
@@ -928,12 +943,9 @@ supervise_codex() {
   while IFS= read -r value; do command+=("$value"); done < <(web_search_args codex "$(web_search_meta_state "$meta")")
   # The launching chat's fast word travels in meta.json: the supervisor is detached and the chat
   # pin file it was read from belongs to a session this process cannot name.
-  if [ "$(jq -r '.fast // false' "$meta")" = true ]; then
-    command+=(--enable fast_mode -c 'service_tier="priority"')
-  elif value=$(codex_fast_tier "$account"); then
-    if [ "$value" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
-    else command+=(--disable fast_mode -c 'service_tier="default"'); fi
-  fi
+  fast=false
+  if [ "$(jq -r '.fast // false' "$meta")" = true ] || [ "$(codex_fast_tier "$account")" = fast ]; then fast=true; fi
+  while IFS= read -r value; do command+=("$value"); done < <(codex_tier_args "$account" "$(jq -r '.model_id // .model' "$meta")" "$fast")
   command+=(-o "$directory/out" -)
   codex_attempt "$directory" "$account" "${command[@]}"
   rc=$?
@@ -978,6 +990,15 @@ codex_record_served() { # directory account
       | if .type == "turn_context" then .payload.model?
         elif .type == "event_msg" and .payload.type? == "model_reroute" then .payload.to_model?
         else empty end | strings' "$transcript" 2>/dev/null | tail -n 1)
+  [ -z "$served" ] || meta_update "$1" '.served_model = $model' --arg model "$served" || :
+}
+
+# The requested id is no evidence (agy <= 1.1.9 served Flash for the Pro high slug); the log's last
+# backend override label is.
+gemini_record_served() { # directory
+  local served
+  served=$(sed -n 's/.*Propagating selected model override to backend: label="\([^"]*\)".*/\1/p' \
+    "$1/log" 2>/dev/null | tail -n 1)
   [ -z "$served" ] || meta_update "$1" '.served_model = $model' --arg model "$served" || :
 }
 
@@ -1169,6 +1190,7 @@ supervise() {
       *) return 4 ;;
     esac
     rc=$?
+    [ "$vendor" != gemini ] || gemini_record_served "$directory"
     # After EVERY attempt, not only the last one: a walled attempt wrote whatever it wrote before the
     # wall, and rerouting restamps the run's start and takes a new session — read afterwards, that
     # attempt's files are behind the cut and belong to nobody at all. A failed attempt counts the
@@ -2004,7 +2026,14 @@ start_run() {
   [ "$web_search_flag" = false ] || [ "$web_search_off_flag" = false ] ||
     fail '--web-search and --no-web-search ask for opposite states: pass one of them'
   [ "$role" = workers ] || [ "$role" = research ] || usage
-  if [ "$role" = research ]; then light=research; elif [ "$vendor" = light ]; then light=edit; fi
+  if worker_light_off; then
+    if [ "$vendor" = light ]; then
+      outcome_line LIGHT_OFF
+      fail "Light is off (Egor's menu: LLM Limits -> Light), so there is no light leg: give the task to the regular worker worker-pick names. Nothing was launched and no account was spent."
+    fi
+  elif [ "$role" = research ]; then light=research
+  elif [ "$vendor" = light ]; then light=edit
+  fi
   if [ -n "$light" ]; then
     model_class=light
     if [ "$vendor" = light ] || [ "$(worker_light_vendor "$light" 2>/dev/null)" = "$vendor" ]; then
@@ -2297,10 +2326,10 @@ start_run() {
     fi
   fi
   # The role switch walls the vendor exactly the way the pool walls an account: an explicit
-  # --account, a resumed session or the pin fallback cannot get in under it, and the vendor pin is
-  # the one override, because naming it there is the deliberate "use this one anyway".
+  # --account, a resumed session or the pin fallback cannot get in under it; the vendor pin and the
+  # chat's open=all are the overrides, because naming either is the deliberate "use this one anyway".
   if [ "$role" = workers ] && [ -z "$light" ] && [ "$(config_value "${vendor}_workers")" = off ] &&
-     ! worker_model_pin_has "$vendor" "$account"; then
+     ! worker_model_pin_has "$vendor" "$account" && ! worker_model_chat_opens_all; then
     outcome_line "$(vendor_name "$vendor")_UNAVAILABLE"
     fail "$vendor is switched off for workers; ask Egor to turn the role back on or name another vendor"
   fi
@@ -2318,6 +2347,8 @@ start_run() {
     grok:*) [[ "$account" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "invalid grok account: $account" ;;
     *) [[ "$account" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "invalid account: $account" ;;
   esac
+  # The account's own Fast Mode is only known now; the chat's was applied above.
+  [ "$vendor" != grok ] || model=$(worker_model_grok_launch_model "$model" "$fast_role" '' "$account")
   warn_cold_resume "$vendor" "$account" "$resume" || :
 
   # The run directory has to exist here and not below: the worktree is named after the run id, and
@@ -2361,11 +2392,9 @@ start_run() {
       for value in "${images[@]}"; do command+=(-i "$value"); done
       while IFS= read -r value; do command+=("$value"); done < <(web_search_args codex "$web_search_state")
       # The chat's own word outranks the account's standing switch for this run alone.
-      if [ "$chat_fast" = true ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
-      elif fast_tier=$(codex_fast_tier "$account"); then
-        if [ "$fast_tier" = fast ]; then command+=(--enable fast_mode -c 'service_tier="priority"')
-        else command+=(--disable fast_mode -c 'service_tier="default"'); fi
-      fi
+      fast_tier=false
+      if [ "$chat_fast" = true ] || [ "$(codex_fast_tier "$account")" = fast ]; then fast_tier=true; fi
+      while IFS= read -r value; do command+=("$value"); done < <(codex_tier_args "$account" "$model_id" "$fast_tier")
       command+=(-o OUT -)
       if [ "$account" = main ]; then command_meta=("${command[@]}"); else command_meta=(env "CODEX_HOME=$(codex_home "$account")" "${command[@]}"); fi
       ;;
@@ -2374,13 +2403,7 @@ start_run() {
       [ "$effort" = high ] &&
         gemini_family=$(worker_model_gemini_families | awk -F'\t' -v slug="$model" '$2 == slug { print; exit }') &&
         [ -n "$gemini_family" ] || { outcome_line GEMINI_UNAVAILABLE; exit 4; }
-      # agy still serves the Pro high slug as Flash (shared-invariants row h), so the one effort Pro
-      # may run here launches under the label instead.
-      if [ "$model" = pro ]; then
-        agy_model="$(cut -f4 <<<"$gemini_family") (High)"
-      else
-        agy_model="$(cut -f3 <<<"$gemini_family")-$effort"
-      fi
+      agy_model="$(cut -f3 <<<"$gemini_family")-$effort"
       cli="${WORKER_RUN_GEMINIB:-$HOME/.local/bin/geminib}"
       if [ "$account" != main ]; then
         list_output=$("$cli" list 2>/dev/null)

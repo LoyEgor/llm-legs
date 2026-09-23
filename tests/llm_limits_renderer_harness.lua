@@ -15,6 +15,7 @@ local dialogCalls = {}
 -- exercise the reader the menu actually uses instead of stubbing it out.
 local fastModeMarkers = {}
 local profileFastModeConfigs = {}
+local codexCatalogs = {}
 
 -- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
 -- the Gemini submenu reads; nil is the file being absent — no cache is what the
@@ -123,6 +124,8 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if text == DOCTOR_CONTENTS then return doctorSnapshot end
       if text == LLM_WEATHER_CONTENTS then return llmWeather end
       if text == geminibFiles.MODELS then return geminibFiles.models end
+      local catalog = type(text) == "string" and text:match("^CODEX_CATALOG:(.+)$")
+      if catalog then return codexCatalogs[catalog] end
       return type(fixture) == "function" and fixture() or fixture
     end },
     osascript = { applescript = osascriptFn or function() return true, true, {} end },
@@ -151,6 +154,11 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
       if fastAccount then
         if fastModeMarkers[fastAccount] == nil then return nil end
         contents = fastModeMarkers[fastAccount]
+      end
+      local catalogAccount = path:match("/%.codex%-profiles/([^/]+)/models_cache%.json$")
+      if catalogAccount then
+        if codexCatalogs[catalogAccount] == nil then return nil end
+        contents = "CODEX_CATALOG:" .. catalogAccount
       end
       local profileAccount = path:match("/%.codex%-profiles/([^/]+)/config%.toml$")
       if profileAccount and profileFastModeConfigs[profileAccount] then
@@ -488,6 +496,35 @@ do
   assert(captured[1] == "codex-current" and captured[2] == false)
 end
 
+-- Grok's fast variant gets the same row, mark and toggle as Codex's: one shape, the vendor's own reader.
+do
+  local grokFixture = { schema = 1, vendors = {
+    grok = { available = true, accounts = {
+      { account = "grok-fast", is_current = true, five_hour = bucket(10) },
+      { account = "grok-gone", is_current = false, five_hour = bucket(20) },
+      { account = "grok-slow", is_current = false, five_hour = bucket(30) },
+    } },
+  } }
+  local module = loadModule(grokFixture)
+  module.grokFastMode = function(name) return name ~= "grok-slow" end
+  module.grokFastOffered = function(name) return name ~= "grok-gone" end
+  local captured
+  module.toggleGrokFastMode = function(name, enabled) captured = {name, enabled} end
+  local menu = module.menuItems()
+  local fast = accountItem(menu, "grok-fast")
+  assert(titleText(fast):find("⚡", 1, true), "a Grok account in Fast Mode did not render ⚡")
+  assert(submenuItem(fast, "Fast Mode (workers)").checked == true)
+  submenuItem(fast, "Fast Mode (workers)").fn()
+  assert(captured[1] == "grok-fast" and captured[2] == true)
+  local gone = accountItem(menu, "grok-gone")
+  assert(not titleText(gone):find("⚡", 1, true), "a Grok catalog without a fast model still rendered ⚡")
+  assert(submenuItem(gone, "Fast Mode (workers) · xAI: off now").checked == true)
+  local slow = accountItem(menu, "grok-slow")
+  assert(not titleText(slow):find("⚡", 1, true))
+  submenuItem(slow, "Fast Mode (workers)").fn()
+  assert(captured[1] == "grok-slow" and captured[2] == false)
+end
+
 -- The ⚡ has to come from the file codexb writes: the block above stubs the reader out, so this is
 -- the only place the two halves of the toggle are checked against each other.
 -- `main` is a Codex account like any other here: codexb lists it, writes its marker beside the
@@ -513,6 +550,28 @@ do
   assert(not titleText(accountItem(markerMenu, "codex-current")):find("⚡", 1, true),
     "an account whose marker says off still rendered ⚡")
   fastModeMarkers = {}
+end
+
+-- OpenAI withdrew Fast from the account's catalog: the switch stays on (it comes back by itself), but
+-- the row stops claiming ⚡ and the item says why; a catalog that still lists it keeps both.
+do
+  fastModeMarkers = { ["codex-pin"] = "fast\n", ["codex-current"] = "fast\n" }
+  codexCatalogs = {
+    ["codex-pin"] = { models = { { slug = "gpt-x", visibility = "list", service_tiers = {} } } },
+    ["codex-current"] = { models = { { slug = "gpt-x", visibility = "list", service_tiers = { { id = "priority" } } } } },
+  }
+  local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)
+  assert(module.codexFastOffered("codex-pin") == false and module.codexFastOffered("codex-current") == true)
+  assert(module.codexFastOffered("codex-none") == nil, "a missing catalog must read as unknown")
+  local menu = module.menuItems()
+  local withdrawn = accountItem(menu, "codex-pin")
+  assert(not titleText(withdrawn):find("⚡", 1, true), "a withdrawn Fast still rendered ⚡")
+  assert(submenuItem(withdrawn, "Fast Mode (workers) · OpenAI: off now").checked == true,
+    "the switch must stay on while OpenAI has Fast off")
+  local offered = accountItem(menu, "codex-current")
+  assert(titleText(offered):find("⚡", 1, true))
+  assert(submenuItem(offered, "Fast Mode (workers)").checked == true)
+  fastModeMarkers, codexCatalogs = {}, {}
 end
 
 do
@@ -3002,6 +3061,26 @@ do
     assert(not launched.args[2]:find("claudeb", 1, true)
         and not launched.args[2]:find(mod.workerModelPath, 1, true),
       case.title .. " interpolated its arguments into the shell script")
+  end
+end
+
+-- Light is one switch over both of its roles, written by the same locked writer as a vendor's Pause.
+do
+  for _, case in ipairs({ { model = nil, checked = true, state = "on" },
+      { model = "light_paused=on", checked = false, state = "off" } }) do
+    local tasks = {}
+    local mod = loadModule(roleFixture, captureTasks(tasks), nil, nil, nil, case.model)
+    local item
+    for _, entry in ipairs(mod.menuItems()) do
+      if titleText(entry) == "Light (research + edit)" then item = entry end
+    end
+    assert(item and item.checked == case.checked, "the Light switch did not show its state")
+    while #tasks > 0 do table.remove(tasks) end
+    item.fn()
+    local launched = tasks[1]
+    assert(launched and launched.args[2]:find("worker_model_set_paused", 1, true)
+        and launched.env.WM_VENDOR == "light" and launched.env.WM_STATE == case.state,
+      "the Light switch asked the writer for the wrong state")
   end
 end
 

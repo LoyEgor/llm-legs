@@ -6,7 +6,7 @@ which needs `OPENAI_API_KEY` and is a different model surface with different kno
 script enforces come from `share/image-caps/codex.json` at runtime; this file says where every value
 in that manifest came from and how to check it again.
 
-Verified against `codex-cli 0.153.4` on 2026-09-11.
+Verified against `codex-cli 0.156.1` on 2026-09-23.
 
 ## Capabilities
 
@@ -32,13 +32,14 @@ Verified against `codex-cli 0.153.4` on 2026-09-11.
   guarantee; with no `--size` the prompt asks for low quality, which is likewise only prose.
 - **Video** — no video tool in this CLI; the manifest's `video` is `null`, which is the fan-out's hard
   skip signal for this vendor.
-- **Naming the image model per run** — `codex exec` output never mentions `gpt-image-2`: the exec JSONL
-  item vocabulary is `agent_message`, `reasoning`, `command_execution`, `file_change`,
-  `mcp_tool_call`, `web_search`, `todo_list`, with no image item, and the saved PNG carries no
-  metadata beyond `png:IHDR`. So `image_caps_model_check` is called with an EMPTY observation and every
-  run prints `model=unknown model_caps=unknown`. Do not "fix" that by feeding it the manifest's own
-  value — it would report `model_caps=fresh` forever while measuring nothing. The CLI version in
-  `caps=` is the guard that actually fires when the extension changes.
+- **Naming the image model per run** — `codex exec` output never names the image model (no image item
+  in the exec JSONL). The only witness is the PNG's C2PA `softwareAgent`, which `c2pa_model` reads. Live
+  on cli 0.156.1 (2026-09-23) it is `{name: ChatGPT, version: gpt-image}` — the family without its
+  version — so a run prints `model=gpt-image model_caps=unknown verified=gpt-image-2`; a versioned
+  name that differs from the manifest prints `stale`. The source sends `IMAGE_MODEL = "gpt-image-2"`
+  (`codex-rs/ext/image-generation/src/tool.rs`), which is what `model.image` records. Never feed the
+  check the manifest's own value — it would report `fresh` forever while measuring nothing. The CLI
+  version in `caps=` is the guard that fires when the extension changes.
 - **`-i/--image` on `codex exec`** — it exists ("Optional image(s) to attach to the initial prompt") and
   would put a reference in conversation context, but the built-in tool edits local files through
   `referenced_image_paths`, so the script does not spend the extra image tokens on it.
@@ -70,7 +71,7 @@ bin/codex-image --dest /tmp/badge.png --prompt 'a round blue enamel badge, white
 # format=png
 # account=notcom
 # session=01a09ccc-3333-7000-8000-00000000000c
-# model=unknown model_caps=unknown
+# model=gpt-image model_caps=unknown verified=gpt-image-2
 # caps=fresh
 
 # second turn, same thread: the model edits the image it already made
@@ -90,6 +91,13 @@ bin/codex-image --dest /tmp/badge-bluer.png --prompt 'now make it bluer' \
   stderr and reports the id it actually got; the image is still delivered, since it is already paid for.
 - With no `--ref`, a resume tells the model to edit the thread's own last image via
   `num_last_images_to_include: 1` — `referenced_image_paths` would need a local path per target.
+
+## Text model and tier
+
+A new thread runs `-m` = the worker table's codex family at its newest slug listed on that account
+(`worker_model_codex_slug`), never the model an account's `config.toml` still names; a resumed thread
+keeps its own. Every launch pins the standard tier (`--disable fast_mode -c 'service_tier="default"'`):
+Fast is workers-only, and `config.toml`'s tier is Egor's interactive pick.
 
 ## Re-verifying (what to do when `caps=stale` shows up)
 

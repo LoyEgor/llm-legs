@@ -21,7 +21,9 @@
 # Model chain (same Google family only — this leg must stay vendor-pure for cross-checking):
 #   1) AGY_MODEL          (default "<Pro label> (High)", the `pro` row of `geminib families`)
 #   2) AGY_MODEL_FALLBACK (default "<Pro label> (Low)" — same pro tier, lower reasoning)
+# Either may name a family word instead of a label ("pro (Low)"): it becomes that row's label.
 # Flash/lite tiers are WEAK and never used in a judgment seat (GEMINI_ALLOW_WEAK=1 overrides).
+# The account is worker-pick's answer for role LEGS_ROLE (default `reviewers`), like ask_codex.sh.
 #
 # Every call logs {transport:"agy", requested, served(pinned, unverified)} to
 # data/served-models.jsonl. Modes: --probe (no model call), --list-models.
@@ -32,11 +34,19 @@ set -uo pipefail
 DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
 mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
-pro_label=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null | awk -F'\t' '$2 == "pro" { print $4; exit }')
-if [ -n "$pro_label" ]; then
+families=$("$(dirname "${BASH_SOURCE[0]}")/bin/geminib" families 2>/dev/null)
+agy_label() { # "<families word> (<tier>)" -> "<agy label> (<tier>)"; anything else unchanged
+  local word="${1%% (*}" label
+  label=$(printf '%s\n' "$families" | awk -F'\t' -v w="$word" '$2 == w { print $4; exit }')
+  if [ -n "$label" ]; then printf '%s\n' "$label${1#"$word"}"; else printf '%s\n' "$1"; fi
+}
+pro_label=$(agy_label pro)
+if [ "$pro_label" != pro ]; then
   AGY_MODEL="${AGY_MODEL:-$pro_label (High)}"
   AGY_MODEL_FALLBACK="${AGY_MODEL_FALLBACK:-$pro_label (Low)}"
 fi
+[ -n "${AGY_MODEL:-}" ] && AGY_MODEL=$(agy_label "$AGY_MODEL")
+[ -n "${AGY_MODEL_FALLBACK:-}" ] && AGY_MODEL_FALLBACK=$(agy_label "$AGY_MODEL_FALLBACK")
 AGY_PRINT_TIMEOUT="${AGY_PRINT_TIMEOUT:-5m}"
 WEAK_RE='(^|[^a-z])(flash|lite|nano|mini|small|tiny)([^a-z]|$)'
 # Broad, for stderr only (legacy behavior): stderr is terse, so false positives are unlikely.
@@ -67,7 +77,7 @@ fi
 # Missing routing tools are a cron/launchd portability case; preserve the bare-CLI contract.
 if command -v worker-pick >/dev/null 2>&1; then
   pick_rc=0
-  account="$(worker-pick --account gemini)" || pick_rc=$?
+  account="$(worker-pick --account gemini --role "${LEGS_ROLE:-reviewers}")" || pick_rc=$?
   if [ "$pick_rc" -eq 3 ]; then
     # Falling back here would spend quota the router deliberately reserved.
     echo "ask_gemini.sh: no selectable Gemini account — leg unavailable" >&2
@@ -101,7 +111,7 @@ case "${1:-}" in
       printf '%s\n' "$MODELS" >&2
       exit 3
     fi
-    echo "gemini leg alive: agy $("${GEMINI_CMD[@]}" --version 2>/dev/null | head -1), model pinned: $AGY_MODEL (no probe call — quota economy)"
+    echo "gemini leg alive: agy $("${GEMINI_CMD[@]}" --version 2>/dev/null | head -1), model pinned: $AGY_MODEL, account=$ACCOUNT (no probe call — quota economy)"
     exit 0 ;;
 esac
 

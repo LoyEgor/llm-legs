@@ -27,7 +27,7 @@ vendor API has and its CLI does not carry). No vendor has a mask, a fidelity fla
 | Quality control | none | none | none (API `low\|medium\|auto`: `api_only`) |
 | Exact size | no (size as prose) | no | no |
 | 1K / 2K | no | no | no (`api_only`) |
-| Video | no | no | `grok-video`: 1 ref → 6/10 s, up to 14 refs → 1–15 s, 480p/720p |
+| Video | no | no | `grok-video`: 1 ref → 6/10 s, up to 14 refs → 1–15 s, pinned first/last frames and up to 4 keyframes, 480p/720p (API 1080p: `api_only`) |
 
 ## Soft vs hard fan-out adaptations
 

@@ -2,7 +2,9 @@
 
 Verified on 2026-09-11 against **grok 1.0.13 (5e9a58528b76)** and re-verified on 2026-09-17
 against **grok 1.0.34 (3736acbc8658)** (image tool schemas unchanged; `grok-imagine-image-2.0`
-pinned through `features.image_gen_model_override` and `features.image_edit_model_override`),
+pinned through `features.image_gen_model_override` and `features.image_edit_model_override`), and
+on 2026-09-23 against **grok 1.0.41 (4220f3b224a6)** (every tool struct and limit string unchanged;
+the pinned first/last frames and keyframes `reference_to_video` has carried since 1.0.34 wired),
 launched by `grokb` on a SuperGrok subscription. The runtime contract is [grok.json](../../share/image-caps/grok.json);
 its `field_sources` maps each capability to the evidence below. This page concerns the
 subscription CLI's Imagine tools, not the xAI Imagine REST API, whose parameter surface is
@@ -19,7 +21,7 @@ Two wrappers read that one manifest: [`bin/grok-image`](../../bin/grok-image) fo
 | --- | --- | --- |
 | Text to image | `image_gen`, fields `prompt` and `aspect_ratio` only | B1 |
 | Edit and references | `image_edit`, fields `image` (array), `prompt`, `aspect_ratio` | B2 |
-| Reference count | **3** in practice: with 4 refs the agent answered in text and never called `image_edit` (live, 2026-09-11, `notcom`); 3 refs generated `1248x832`. The endpoint documents 5, the CLI schema states no cap | live bisect, D2, B2 — manifest `refs.verified_max: true` |
+| Reference count | **5**: one `image_edit` call carried five refs and returned all five subjects (live, 2026-09-23, 1.0.41, `rawilimo`). On 1.0.13 four refs got a text answer and no call (2026-09-11). The endpoint documents 5 (was 3); the CLI schema states no cap | live, D2, B2 — manifest `refs.verified_max: true` |
 | Aspect, generate | `1:1`, `16:9`, `9:16`, `3:2`, `2:3`, `auto` | B1 |
 | Aspect, edit | `1:1`, `16:9`, `9:16`, `4:3`, `3:4`, `3:2`, `2:3`, `2:1`, `1:2`, `19.5:9`, `9:19.5`, `20:9`, `9:20`, `auto` | B2 |
 | Default aspect | `auto` on both tools; the wrapper's default too | B1, B2 |
@@ -46,8 +48,9 @@ same-titled session. A resumed run always reaches `image_edit`, with or without 
 | Capability | Result | Source |
 | --- | --- | --- |
 | One source image | `image_to_video` — fields `image`, `prompt`, `duration`, `resolution_name` | B3 |
-| Two or more images, or voices | `reference_to_video` — `images`, `prompt` (required), `voices`, `duration`, `resolution_name`, `aspect_ratio` | B3 |
-| Reference images | up to **7**; runtime guard “`images` must contain at most N image references.” | B3 |
+| Two or more images, voices, or pinned frames | `reference_to_video` — `images`, `prompt` (required), `voices`, `first_frame`, `last_frame`, `keyframes`, `duration`, `resolution_name`, `aspect_ratio` | B3 |
+| Reference images | up to **14** (7 in 1.0.13); runtime guard “`images` must contain at most N image references.” | B3 |
+| Pinned frames | `first_frame` and `last_frame` appear literally at the ends (the same image twice loops); up to **4** `keyframes` `{image, timestamp_s}` strictly inside the clip, snapped to a 1/3 s grid, anchors under 1/3 s apart rejected. The prompt's `<IMAGE_i>` index follows the upload order `first_frame`, `images`, `keyframes`, `last_frame`, so with a first frame the first `images` entry is `<IMAGE_1>`. `grok-video --first-frame`, `--last-frame`, `--keyframe <path>@<seconds>`; bad times refused before the spend | B3 — manifest `video.keyframes_max` |
 | Voices | up to **3** preset ids; the roster is not enumerable offline, examples `ara`, `eve`, `leo`, `rex` | B3 — manifest `video.voices: null` |
 | Duration, `image_to_video` | `6` or `10` seconds, default `6`; guard “`duration` must be either 6 or 10 seconds.” | B3 |
 | Duration, `reference_to_video` | `1`–`15` seconds, default `6` | B3, B7 |

@@ -1191,6 +1191,7 @@ printf '{"five_hour":{"used_percentage":21,"resets_at":%s,"as_of":%s,"origin":"s
   "$((now + 90000))" "$((now - 10800))" "$now" >"$CLAUDEB_FRESH/limits/divergent.json"
 printf 'divergent\n' >"$CLAUDEB_FRESH/.claudeb-state"
 fresh_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB_FRESH" LLM_LIMITS_CACHE="$CACHE" bash "$SCRIPT" --json) || fail "freshness-contract collection failed"
+fresh_done=$(date +%s)
 jq -e --argjson asof "$((now - 3000))" '
   [.vendors.claude.accounts[] | select(.account == "aged")][0] as $a |
   $a.five_hour.as_of == $asof and $a.five_hour.origin == "usage" and
@@ -1235,11 +1236,11 @@ sticky_json=$(HOME="$HOME_FIXTURE" CLAUDEB_DIR="$STICKY_STORE" LLM_LIMITS_CACHE=
 jq -e '[.vendors.claude.accounts[] | select(.account == "sticky")][0].five_hour
   | .resets_at == null and .expired == true and .effective_pct == 0' <<<"$sticky_json" >/dev/null \
   || fail "a bucket whose ancient reset was already dropped must stay expired on the next pass"
-jq -e --argjson oldest "$((now - 10800))" --argjson now "$now" '
+jq -e --argjson oldest "$((now - 10800))" --argjson now "$now" --argjson done "$fresh_done" '
   [.vendors.claude.accounts[] | select(.account == "divergent")][0] as $a |
   ($a.as_of | fromdateiso8601) == $oldest and
   $a.stale_seconds >= ($now - $oldest) and
-  ($a.stale_seconds < ($now - $oldest + 60)) and
+  $a.stale_seconds <= ($done - $oldest) and
   (.vendors.claude.as_of | fromdateiso8601) == $oldest and
   .vendors.claude.stale_seconds == $a.stale_seconds and
   .vendors.claude.stale == true and .vendors.claude.auth.status == "ok"' <<<"$fresh_json" >/dev/null \

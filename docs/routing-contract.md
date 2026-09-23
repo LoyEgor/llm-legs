@@ -115,7 +115,14 @@ only pace math anywhere — one formula in one shared home, never a per-surface 
    WORKERS run of that vendor grok swaps in the `-fast` sibling `grokb models` lists, but only
    when the resolved model is `auto` or the marked default — a brief naming a slug runs
    unchanged — while codex keeps its model and adds the fast/priority flags; any other pin
-   target clears it.
+   target clears it. The account-level twin is the menu's "Fast Mode (workers)" toggle, one per
+   account for codex and grok alike: `<vendor>b fast-mode <name> on|off` writes
+   `<profiles>/.<vendor>b/fast-mode/<name>` through `share/codex_fast_mode.py`, and a WORKERS run on
+   that account goes fast exactly as a fast chat's does (grok: `worker_model_grok_launch_model`'s
+   account argument, applied once worker-run has settled the account). An `open=all` line
+   (`chat-pin all`, «воркер на все») opens every `<vendor>_workers`/`<vendor>_reviewers` wall for
+   that chat alone — `worker-pick` `chat_opens`, `worker-run` through `worker_model_chat_opens_all`
+   for a named `--account` too; the pool, a pause and usage walls still hold.
 
 4. **Reachability.** The pool toggle is not advice to the selector, it is the wall: an account
    outside the pool cannot carry a headless run however it is named: the four vendor CLIs
@@ -260,8 +267,15 @@ pool exclusion — a usable pin answers the workers query and the workers table 
 
 The pin is **workers-only**. A reviewers, chat, research, light or image query never sees it: it is
 neither an override nor a forced choice there, and the pinned account stands in those answers as
-an ordinary candidate ranked by pool and spending like any other. `<vendor>_reviewers=off` is
-therefore final — no pin opens it.
+an ordinary candidate ranked by pool and spending like any other. The global pin never opens
+`<vendor>_reviewers=off`. A chat pin does, for that chat alone: Egor's per-chat grant («воркер на
+<vendor>», Egor 2026-09-23) is a whole test permission, workers and reviews alike, and the pool still
+picks which account reviews (`chat_opens` in `bin/worker-pick`). «воркер на все» (`chat-pin all`) writes the one line
+`open=all` instead: no vendor is pinned, and every `<vendor>_workers=off` and `<vendor>_reviewers=off`
+is open for that chat, so the pool ranks all vendors as if no switch were closed. A paused vendor,
+walls and the Light switch still apply. `bin/vendor-fingerprint` opens every integration chat with
+this line already written (Egor 2026-09-23: test chats get every permission; the switches exist to
+steer models acting on their own).
 
 `image` ignores `<vendor>_workers=off` and the pin alike: a picture is not code work, so an image
 query is pool membership + login + not walled, ordered by free budget, and a fan-out that asks
