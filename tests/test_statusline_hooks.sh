@@ -3210,6 +3210,8 @@ cat <<'SNAP'
 1020 1000 node server.js /tmp/codex-out.json
 1021 1000 node --require /x/codex/hooks.js server.js
 1022 1000 node --loader ts-node/esm mcp-server.ts
+1023 1000 uv run mcp-server-fetch
+1024 1000 npm exec @modelcontextprotocol/server-x
 1013 1000 claude
 1014 1013 node /path/to/vite-worker
 9999 1 claude
@@ -3258,6 +3260,8 @@ node      1019 u  38u  IPv4  0t0      TCP *:4900 (LISTEN)
 node      1020 u  39u  IPv4  0t0      TCP *:5000 (LISTEN)
 node      1021 u  40u  IPv4  0t0      TCP *:5100 (LISTEN)
 node      1022 u  41u  IPv4  0t0      TCP *:5200 (LISTEN)
+uv        1023 u  42u  IPv4  0t0      TCP *:5300 (LISTEN)
+npm       1024 u  43u  IPv4  0t0      TCP *:5400 (LISTEN)
 OUT
 LSEOF
 chmod +x "$FAKE_LSOF"
@@ -3288,7 +3292,8 @@ run_probe pp-parse 1001
 # VALUE names an LLM tool (`--config codex.json`): only argv[0] and the script it runs are read.
 # 5000 and 5100 are dev servers a denylisted name reaches only as a POSITIONAL the script carries
 # and as the value of `--require`; 5200 is an MCP server behind `--loader`, whose value is not the
-# program. Reading either word as argv[0] answers about the wrong file.
+# program. Reading either word as argv[0] answers about the wrong file. 5300 and 5400 are MCP
+# servers behind a launcher subcommand (`uv run`, `npm exec`), which is not the program either.
 assert_eq "$(ports_records 5173 8123 5174 8080 4500 4600 4700 4800 4900 5000 5100)" "$(cat "$STATE_DIR/ports-pp-parse")"
 
 # A server backgrounded from a tool call is reparented to launchd as soon as that call returns —

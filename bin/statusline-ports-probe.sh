@@ -181,6 +181,8 @@ ports=$(awk -v root="$root" '
     # argv[0] and at most the word after it: a path a dev server merely carries — `node server.js
     # /tmp/codex-out.json` — names no tool, and reading it drops the port.
     executable=(cw[2] == "" || cw[2] ~ /^-/) ? cw[1] : cw[1] " " cw[2]
+    # A launcher subcommand (`uv run`, `npm exec`, `bun x`) is not the program: the word after it is.
+    for (j=2; cw[j] ~ /^(run|exec|x|dlx|tool)$/ && cw[j+1] != "" && cw[j+1] !~ /^-/; j++) executable=executable " " cw[j+1]
     if (executable ~ /mcp|modelcontextprotocol|figma|codex|chrome-devtools|chrome_crashpad/) next
     if (base_cmd(pid) ~ /^(node|nodejs|npx|python[0-9.]*)$/) {
       # An option that takes a value eats it, or the value is read as the program: `node --require
