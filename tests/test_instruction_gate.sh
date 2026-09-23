@@ -2464,6 +2464,20 @@ assert [ ! -e "$long_mark" ]
 assert_eq this-call "$(tail -1 "$J" | jq -r .writer)"
 printf 'tier doc\n' > "$DOC"
 
+echo "== in flight: a call older than an hour keeps another session's equally old mark as a window"
+span_base sid-long >/dev/null
+pre_call sid-long Bash command "$grow_cmd" "$SPAN_T"
+read -r _ long_rest <"$long_mark"
+printf '%s %s\n' "$(( $(date +%s) - 7200 ))" "$long_rest" > "$long_mark"
+old_mark="$INSTRUCTION_WATCH_STATE/inflight/sid-old@tu-old"
+printf '%s tu-old Bash /tmp\n' "$(( $(date +%s) - 7300 ))" > "$old_mark"
+printf 'a line either long call could have written\n' >> "$DOC"
+assert_eq "" "$(span_check sid-long Bash command "$grow_cmd" "$SPAN_T" | grep -o REVERTED)"
+assert [ -e "$old_mark" ]
+assert_eq ambiguous "$(tail -1 "$J" | jq -r .writer)"
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+printf 'tier doc\n' > "$DOC"
+
 echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
 TRIM_STATE="$WORK/trim"
 trim_plant() { # unreceipted receipted

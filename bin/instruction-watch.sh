@@ -478,12 +478,25 @@ offer_restore() {
   restores+=("cp $(shq "$kept") $(shq "${b_real[$i]}")")
 }
 
+inflight_window() { # file name start
+  if [ "$2" = "$own_name" ]; then
+    own_count=$((own_count + 1))
+    if [ -z "$tool_use_id" ]; then
+      own_file=$1; own_start=$3
+    fi
+    return 0
+  fi
+  other_sids+=("$2"); other_starts+=("$3")
+}
+
 # The in-flight windows, read once per check: this session's own mark, consumed only when it names
 # this call's tool_use_id (a call another PreToolUse hook denied never reaches PostToolUse and
 # leaves its mark behind) and never aged out, since this call is alive however long it ran; every
-# other mark older than an hour is a call that died and is swept without a word.
+# other mark older than an hour is a call that died and is swept without a word — unless this call
+# itself ran over an hour, when an equally old mark may be just as alive and stays a window.
 load_inflight() {
-  local f name m_start m_id start own_name own_file='' own_count=0
+  local f name m_start m_id start own_name own_file='' own_count=0 k
+  local aged_files=() aged_names=() aged_starts=()
   now_ns=$(instruction_ns "$(instruction_now)") || { now_ns=''; return 0; }
   own_name=$(instruction_sid_name "$sid")
   for f in "$INFLIGHT_DIR"/*; do
@@ -497,17 +510,17 @@ load_inflight() {
       continue
     fi
     if [ $((now_ns - start)) -gt 3600000000000 ]; then
-      rm -f "$f" 2>/dev/null
+      aged_files+=("$f"); aged_names+=("$name"); aged_starts+=("$start")
       continue
     fi
-    if [ "$name" = "$own_name" ]; then
-      own_count=$((own_count + 1))
-      if [ -z "$tool_use_id" ]; then
-        own_file=$f; own_start=$start
-      fi
-      continue
+    inflight_window "$f" "$name" "$start"
+  done
+  for k in ${aged_files[@]+"${!aged_files[@]}"}; do
+    if [ -n "$own_start" ] && [ $((now_ns - own_start)) -gt 3600000000000 ]; then
+      inflight_window "${aged_files[$k]}" "${aged_names[$k]}" "${aged_starts[$k]}"
+    else
+      rm -f "${aged_files[$k]}" 2>/dev/null
     fi
-    other_sids+=("$name"); other_starts+=("$start")
   done
   # Without a tool_use_id only a lone mark can be this call's; with several, any could be.
   if [ -z "$tool_use_id" ] && [ "$own_count" -gt 1 ]; then
