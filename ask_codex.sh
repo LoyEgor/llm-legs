@@ -100,8 +100,9 @@ served="$( { grep -m1 -ioE '(^|[[:space:]])model:?[[:space:]]+[a-z0-9._-]+' "$ER
 
 weak=0
 if printf '%s' "${served:-}" | grep -qiE "$WEAK_RE"; then weak=1; fi
-printf '{"ts":"%s","leg":"codex","requested":"%s","effort":"%s","served":"%s","weak_tier":%s,"rc":%d,"account":"%s"}\n' \
-  "$(date -u +%FT%TZ)" "${REQUESTED:-cli-default}" "$EFFORT" "${served:-unknown}" "$weak" "$RC" "$ACCOUNT" \
+run_id="${LLM_LEGS_RUN_ID:-}"; case "$run_id" in *[![:alnum:]._-]*) run_id="" ;; esac
+printf '{"ts":"%s","leg":"codex","requested":"%s","effort":"%s","served":"%s","weak_tier":%s,"rc":%d,"account":"%s","run":"%s"}\n' \
+  "$(date -u +%FT%TZ)" "${REQUESTED:-cli-default}" "$EFFORT" "${served:-unknown}" "$weak" "$RC" "$ACCOUNT" "$run_id" \
   >> "$LOG" 2>/dev/null || true
 
 if [ "$PROBE" = "1" ]; then

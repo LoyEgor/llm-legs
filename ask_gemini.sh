@@ -56,8 +56,9 @@ QUOTA_RE='quota|exhausted|capacity|rate.?limit|resource.?exhausted|429'
 QUOTA_LOG_RE='RESOURCE_EXHAUSTED|Individual quota reached|\(code 429\)'
 
 log() { # $1 requested, $2 served, $3 weak(0/1)
-  printf '{"ts":"%s","leg":"gemini","transport":"agy","requested":"%s","served":"%s","weak_tier":%s,"account":"%s"}\n' \
-    "$(date -u +%FT%TZ)" "$1" "$2" "${3:-0}" "$ACCOUNT" >> "$LOG" 2>/dev/null || true
+  local run_id="${LLM_LEGS_RUN_ID:-}"; case "$run_id" in *[![:alnum:]._-]*) run_id="" ;; esac
+  printf '{"ts":"%s","leg":"gemini","transport":"agy","requested":"%s","served":"%s","weak_tier":%s,"account":"%s","run":"%s"}\n' \
+    "$(date -u +%FT%TZ)" "$1" "$2" "${3:-0}" "$ACCOUNT" "$run_id" >> "$LOG" 2>/dev/null || true
 }
 is_weak() { printf '%s' "$1" | grep -qiE "$WEAK_RE"; }
 

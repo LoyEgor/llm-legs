@@ -207,6 +207,17 @@ assert run_leg "$ROUTED_PATH" "$WORK/family-gemini" "$ROOT/ask_gemini.sh" "famil
 LEG_ENV=()
 assert jq -e --arg label "$PRO_LABEL (Low)" '.requested == $label' "$WORK/family-gemini/served-models.jsonl" >/dev/null
 
+# Every audit row carries the caller's LLM_LEGS_RUN_ID; a value unsafe for the JSON row is dropped.
+for spec in "codex:$ROOT/ask_codex.sh" "gemini:$ROOT/ask_gemini.sh" "claude:$ROOT/ask_claude.sh"; do
+  IFS=: read -r leg script <<<"$spec"
+  LEG_ENV=(LLM_LEGS_RUN_ID=run-fixture.1)
+  assert run_leg "$ROUTED_PATH" "$WORK/run-$leg" "$script" "run $leg" >/dev/null 2>&1
+  LEG_ENV=('LLM_LEGS_RUN_ID=bad"id')
+  assert run_leg "$ROUTED_PATH" "$WORK/run-$leg" "$script" "run $leg" >/dev/null 2>&1
+  LEG_ENV=()
+  assert jq -se '[.[].run] == ["run-fixture.1", ""]' "$WORK/run-$leg/served-models.jsonl" >/dev/null
+done
+
 # A roster that cannot answer (no share/ beside the script) never fails the leg: the CLI default
 # runs with no -m and the audit row says `cli-default`.
 mkdir -p "$WORK/lone"
