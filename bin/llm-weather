@@ -53,7 +53,8 @@ FAILURE_REASONS = (
     ("refused", re.compile(
         r"finish_?[Rr]eason\W{1,4}(?:SAFETY|PROHIBITED_CONTENT|RECITATION|BLOCKLIST|SPII)"
         r"|blocked (?:due to|for) SAFETY|PROHIBITED_CONTENT|content_filter|content_policy_violation"
-        r"|flagged as potentially violating|(?i:violat\w* (?:our |the )?usage (?:policy|policies"
+        r"|flagged as potentially violating|flagged for possible cybersecurity risk"
+        r"|(?i:violat\w* (?:our |the )?usage (?:policy|policies"
         r"|guidelines))|\"stop_reason\"\s*:\s*\"refusal\"")),
     ("bad output", re.compile(
         r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
