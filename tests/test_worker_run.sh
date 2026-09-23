@@ -381,15 +381,15 @@ model_effort_tests() {
     assert test "$(jq -r '.model' "$RUN_DIR/meta.json")" = "$model"
     assert test "$(jq -r '.effort' "$RUN_DIR/meta.json")" = "$effort"
   done
-  clear_stub
   assert test "$(jq -r '.model_id' "$RUN_DIR/meta.json")" = null
+  clear_stub
   start_ok codex --account main
   assert await_done
   assert grep -qx 'ARG=model_reasoning_effort=low' "$CALL_LOG"
-  set_config 'codex_effort=high'
   assert test "$(jq -r '[.model, .model_id] | join(" ")' "$RUN_DIR/meta.json")" = 'astra gpt-6.1-astra'
   assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
   assert grep -qx 'main · astra · low' "$RUN_DIR/tag"
+  set_config 'codex_effort=high'
   clear_stub
   start_ok codex --account main
   assert await_done
@@ -2825,6 +2825,7 @@ mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
   "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" \
   "$ROOT/share/web-search.sh" "$WORK/share/"
+[ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -2837,7 +2838,6 @@ assert test "$(grep -c '^OUTCOME:' "$WORK/wait.out")" -eq 0
 # Same hazard on the caller's side: a `wait` polling across the edit must report,
 # not die on a syntax error in its own script.
 clear_stub
-[ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
 set_config 'codex_effort=high'
 cp "$RUNNER" "$SELF_RUNNER"
 export PICK_RC=0 PICK_ACCOUNT=selfedit STUB_SLEEP=3

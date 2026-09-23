@@ -938,6 +938,7 @@ supervise_codex() {
     if [ "$dropped" = true ]; then
       value=$(codex_config_model)
       worker_model_allows codex "$value" || return "$rc"
+      value=$(worker_model_codex_slug "$value") && [ -n "$value" ] || return "$rc"
       retry+=(-c "model=\"$value\"")
       meta_update "$directory" '.model_flag_dropped = true' || return 4
       : >"$directory/out"
@@ -950,7 +951,6 @@ supervise_codex() {
 
 supervise_gemini() {
   local directory="$1" meta="$1/meta.json" account agy_model resume cli prompt value rc
-      value=$(worker_model_codex_slug "$value") && [ -n "$value" ] || return "$rc"
   local -a command add_dirs
   account=$(jq -r '.account' "$meta")
   agy_model=$(jq -r '.agy_model' "$meta")
@@ -2181,6 +2181,10 @@ start_run() {
     outcome_line EFFORT_REFUSED
     fail "$vendor model $model does not allow effort $effort; allowed efforts: $(worker_model_effort_list "$vendor" "$model" "$model_class"). Nothing was launched and no account was spent."
   fi
+  if [ "$vendor" = codex ] && ! { model_id=$(worker_model_codex_slug "$model") && [ -n "$model_id" ]; }; then
+    outcome_line MODEL_REFUSED
+    fail "codex model $model names no model \`codexb models\` lists. Nothing was launched and no account was spent."
+  fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
   # Paths are re-resolved by the detached supervisor after it cds to workdir, so
@@ -2215,10 +2219,6 @@ start_run() {
     browser_account=$explicit_account
   fi
 
-  if [ "$vendor" = codex ] && ! { model_id=$(worker_model_codex_slug "$model") && [ -n "$model_id" ]; }; then
-    outcome_line MODEL_REFUSED
-    fail "codex model $model names no model \`codexb models\` lists. Nothing was launched and no account was spent."
-  fi
   if [ -n "$explicit_account" ]; then
     account="$explicit_account"
   else
@@ -2424,6 +2424,7 @@ start_run() {
      + if $review_round != "" then {review_round:$review_round,round_source:$round_source} else {} end
      + if $browser then {browser_device:$browser_device,browser_account:$browser_account} else {} end
      + if $vendor == "gemini" then {agy_model:$agy_model} else {} end
+     + if $model_id != "" then {model_id:$model_id} else {} end
      + if $vendor == "grok" and $grok_turns != "" then {max_turns:($grok_turns | tonumber)} else {} end' >"$directory/meta.json" || fail 'could not write metadata'
   light_sandbox_prepare "$directory" || fail 'could not prepare the Light write sandbox'
   # Who this run answers to, written where a hook can find it without parsing anything: a worker a
@@ -2460,7 +2461,6 @@ start_run() {
   # open would be evidence produced by whichever run happened to finish beside them.
   workdir_dirty_paths "$workdir" >"$directory/dirty-before.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before.tmp.$$" "$directory/dirty-before" 2>/dev/null ||
-     + if $model_id != "" then {model_id:$model_id} else {} end
     rm -f "$directory/dirty-before.tmp.$$" 2>/dev/null
   workdir_dirty_shas "$workdir" >"$directory/dirty-before-shas.tmp.$$" 2>/dev/null &&
     mv -f "$directory/dirty-before-shas.tmp.$$" "$directory/dirty-before-shas" 2>/dev/null ||

@@ -719,12 +719,6 @@ assert doc_has 'Grok model list'
 assert doc_has '`models_builtin`'
 assert doc_has '`grokb models [--json] [--refresh|--cached]`'
 
-# --- Row bq: allowed worker models -------------------------------------------
-# The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
-# after a model `worker-run` will refuse.
-WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
-PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
-assert test -r "$WORKER_MODEL_SH"
 # --- Row cv: the Codex model list and the family word --------------------------
 # ONE list: the builtin fallback and a cache read share one row format, the table keys codex on the
 # family word, and every launcher resolves that word through `codexb models --family`.
@@ -753,6 +747,12 @@ assert doc_has 'Codex model list'
 assert doc_has '`codexb models [--json] [--all] [--family <word>]`'
 assert doc_has '`worker_model_codex_slug`'
 
+# --- Row bq: allowed worker models -------------------------------------------
+# The list has ONE home in code; every other site is prose, and prose that drifts sends a worker
+# after a model `worker-run` will refuse.
+WORKER_MODEL_SH="$ROOT/share/worker-model.sh"
+PIN_GATE="$ROOT/bin/worker-pin-gate.sh"
+assert test -r "$WORKER_MODEL_SH"
 assert eq "$(bash -c '. "$1"; worker_model_table' _ "$WORKER_MODEL_SH")" 'claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
 codex astra low low,medium,high xhigh no
@@ -855,12 +855,6 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   assert grep -Fq 'astra' "$site"
   assert grep -Fq 'MODEL_REFUSED' "$site"
 done
-# grok's list is not a literal any more: a site spelling one out is a list that will drift.
-for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
-  "$ROOT/docs/DIAGNOSTICS.md"; do
-  assert grep -Fq 'grokb models' "$site"
-  # Named, never spelled: a grok model literal on the line that states the list is the drift.
-  assert test "$(grep -F 'grokb models' "$site" | grep -Ec 'grok-4\.[0-9]')" -eq 0
 # Codex is named by its family word; a slug on these pages is a version that will go stale.
 for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   "$ROOT/docs/DIAGNOSTICS.md"; do
@@ -868,6 +862,12 @@ for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
   assert grep -Fq 'codexb models' "$site"
   assert test "$(grep -F 'codex `astra`' "$site" | grep -Ec 'gpt-[0-9.]+-(astra|sol)')" -eq 0
 done
+# grok's list is not a literal any more: a site spelling one out is a list that will drift.
+for site in "$ROOT/share/worker-policy.md" "$ROOT/docs/routing-contract.md" \
+  "$ROOT/docs/DIAGNOSTICS.md"; do
+  assert grep -Fq 'grokb models' "$site"
+  # Named, never spelled: a grok model literal on the line that states the list is the drift.
+  assert test "$(grep -F 'grokb models' "$site" | grep -Ec 'grok-4\.[0-9]')" -eq 0
 done
 # The relay briefs may not offer a cheap model as a per-task MODEL: option.
 for agent in "$CLAUDEB_AGENT" "$CODEX_AGENT" "$GEMINI_AGENT" "$GROK_AGENT"; do
