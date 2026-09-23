@@ -36,6 +36,7 @@ ceiling_note=''
 
 deny() {
   local reason=$1
+  instruction_inflight_clear "$sid"
   [ -n "$ceiling_note" ] && reason="$reason $ceiling_note"
   jq -cn --arg r "$reason" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
@@ -55,11 +56,19 @@ cat >"$input_file" || : >"$input_file"
 
 jq -e 'type == "object"' "$input_file" >/dev/null 2>&1 ||
   { echo "instruction bloat gate: the hook payload does not parse" >&2; exit 2; }
+IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd < <(jq -j '
+  [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // "")]
+  | join("\u001f")' "$input_file" 2>/dev/null) || :
+# Before any decision: the tripwire attributes bytes to this call by the mark's time, and deny()
+# takes the mark back, since a denied call never runs.
+case "$tool_name" in
+  Edit|Write|MultiEdit|NotebookEdit) instruction_inflight_mark "$sid" "$tool_use_id" "$tool_name" "$payload_cwd" ;;
+esac
 jq -e '.tool_name == "Edit" or .tool_name == "Write" or .tool_name == "MultiEdit"' \
   "$input_file" >/dev/null 2>&1 || exit 0
 jq -e '(.tool_input | type == "object") and (.tool_input.file_path | type == "string")' \
   "$input_file" >/dev/null 2>&1 ||
-  { echo "instruction bloat gate: the edit payload carries no file_path" >&2; exit 2; }
+  { instruction_inflight_clear "$sid"; echo "instruction bloat gate: the edit payload carries no file_path" >&2; exit 2; }
 
 file_path=$(jq -r '.tool_input.file_path' "$input_file" 2>/dev/null) || exit 2
 case "$file_path" in
@@ -79,6 +88,7 @@ esac
 # and asks again walks straight through it. Ordinary repository markdown and the memory files are
 # no part of this — `instruction_always_loaded` answers for the always-on classes alone.
 if instruction_in_relay && instruction_always_loaded "$file_path" "$HOME" >/dev/null; then
+  instruction_inflight_clear "$sid"
   instruction_relay_refusal "$file_path" >&2
   exit 2
 fi
@@ -375,7 +385,15 @@ SEEN
   return 1
 }
 
-if instruction_stamp_ready "$STAMP_DIR" "$hash"; then
+instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid"
+stamp_rc=$?
+if [ "$stamp_rc" = 3 ]; then
+  instruction_inflight_clear "$sid"
+  instruction_stamp_forged "$file_path" "$sid"
+  echo "instruction bloat gate: a retry stamp for this edit of $file_path was there before any denial of this session minted it, so it was removed and recorded for Egor; running the edit again gets the ordinary denial." >&2
+  exit 2
+fi
+if [ "$stamp_rc" = 0 ]; then
   if retry_read_seen; then
     rm -f "$note" 2>/dev/null
     instruction_stamp_consume "$STAMP_DIR" "$hash" && pass

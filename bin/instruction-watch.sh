@@ -13,6 +13,9 @@
 # the span's rule (reshape these files, do not grow them) is the only arbiter left in the room and
 # the gate ahead of this one can read a command's shape but never its result. Everything else is
 # still reported and never touched — see revert_growth for the three conditions, all required.
+# "This call produced it" is read off the clock, never off the command text: the PreToolUse gates
+# mark the call in flight (`inflight/<session>`), and bytes whose mtime lies between that mark and
+# this check are the call's — unless another session's mark covers the same instant too.
 #
 # Everything this hook keeps on disk — the baselines, the ranked cache, the alert markers — is a
 # file the model can write, so it is evidence and never authority: a baseline that is gone or empty
@@ -27,9 +30,7 @@ set -u
 
 [ -n "${HOME:-}" ] || exit 0
 
-STATE_DIR="${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}"
 LOG_FILE="${INSTRUCTION_WATCH_LOG:-$HOME/.claude/instruction-changes.log}"
-ALERT="${INSTRUCTION_WATCH_ALERT:-hs}"
 # A rolled-back writer must be told or it may repeat the write.
 CHAT="${INSTRUCTION_WATCH_CHAT:-reverts}"
 
@@ -46,6 +47,7 @@ done
 command -v jq >/dev/null 2>&1 ||
   { echo "instruction watch: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
+STATE_DIR=$(instruction_watch_state)
 RANKED_CACHE="$STATE_DIR/ranked.txt"
 repo_root=''
 
@@ -97,9 +99,8 @@ shq() {
 SNAP_DIR="$STATE_DIR/snapshot"
 REVERT_DIR="$STATE_DIR/reverts"
 ALERT_DIR="$STATE_DIR/alerts"
-JOURNAL="$STATE_DIR/events.jsonl"
 RECEIPT_DIR="$STATE_DIR/receipts"
-JOURNAL_MAX=${INSTRUCTION_WATCH_JOURNAL_MAX:-200}
+INFLIGHT_DIR="$STATE_DIR/inflight"
 SNAP_MAX_BYTES=1048576
 _watch_nl='
 '
@@ -315,16 +316,8 @@ write_baseline() {
   mv "$tmp" "$out" 2>/dev/null
 }
 
-# A session id that cannot name a file gets one per CALLER (the parent is the CLI that runs every
-# hook of one session), never a name every such caller shares — a shared baseline lets one
-# caller's rewrite absorb a change another has not reported yet — and never one per call, which
-# reads every check as a missing baseline.
 session_baseline() {
-  local sid=$1
-  case "$sid" in
-    ''|*[!A-Za-z0-9._-]*) printf '%s/session-unknown-%s.tsv' "$STATE_DIR" "$PPID" ;;
-    *) printf '%s/session-%s.tsv' "$STATE_DIR" "$sid" ;;
-  esac
+  printf '%s/session-%s.tsv' "$STATE_DIR" "$(instruction_sid_name "$1")"
 }
 
 has_rows() { [ -f "$1" ] && grep -q '^[^#]' "$1" 2>/dev/null; }
@@ -351,57 +344,29 @@ log_line() {
 }
 
 journal_event() { # sent id summary
-  local sent=$1 id=$2 summary=$3 line n
-  local files='' vis k chat='' resolver=''
-  if [ -n "${sid:-}" ]; then
-    resolver=$(command -v chat-name 2>/dev/null) || resolver=''
-    [ -n "$resolver" ] || { [ ! -x "$HOME/.local/bin/chat-name" ] || resolver=$HOME/.local/bin/chat-name; }
-    [ -z "$resolver" ] || chat=$("$resolver" "$sid" 2>/dev/null) || true
-  fi
-  local lock="$STATE_DIR/journal.lock" i=0 born now
+  local sent=$1 id=$2 summary=$3 line files='' k chat='' c cands=''
+  [ -z "${sid:-}" ] || chat=$(instruction_chat_name "$sid") || chat=''
   for k in "${keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
-  mkdir -p "$STATE_DIR" 2>/dev/null || return 1
+  for c in ${cand_sids[@]+"${cand_sids[@]}"}; do
+    cands="$cands$c$_watch_tab$(instruction_chat_name "$c" | head -n 1)$_watch_nl"
+  done
   line=$(jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sid "${sid:-}" --arg summary "$summary" --arg sent "$sent" --arg kind "${kind:-change}" \
     --arg chat "$chat" --arg bytes "$(printf '%s\n' ${deltas[@]+"${deltas[@]}"})" \
     --arg files "$files" --arg restores "$(printf '%s\n' ${restores[@]+"${restores[@]}"})" \
     --arg reverted "$(printf '%s\n' ${reverted[@]+"${reverted[@]}"})" \
-    '{id:$id,at:$at,sid:$sid,kind:$kind,summary:$summary,sent:$sent,
+    --arg writer "$(record_writer)" --arg cands "$cands" \
+    '{id:$id,at:$at,sid:$sid,kind:$kind,summary:$summary,sent:$sent,writer:$writer,
       files:($files|split("\n")|map(select(length>0))),
       bytes:($bytes|split("\n")|map(select(length>0)|tonumber)),
       restores:($restores|split("\n")|map(select(length>0))),
       reverted:($reverted|split("\n")|map(select(length>0)))} +
-      (if $chat != "" then {chat:$chat} else {} end)' 2>/dev/null) || return 1
+      (if $chat != "" then {chat:$chat} else {} end) +
+      (if $cands != "" then {candidates:($cands|split("\n")|map(select(length>0)|split("\t")
+        | {sid:.[0]} + (if (.[1] // "") != "" then {chat:.[1]} else {} end)))} else {} end)' \
+    2>/dev/null) || return 1
   [ -n "$line" ] || return 1
-  # tail-then-mv of the journal drops a line another session appends between the two;
-  # that session has already claimed its marker, so the record would vanish.
-  while ! mkdir "$lock" 2>/dev/null; do
-    born=$(stat -f %m "$lock" 2>/dev/null) || born=
-    now=$(date +%s)
-    if [ -n "$born" ] && [ $((now - born)) -gt 30 ]; then
-      rmdir "$lock" 2>/dev/null || true
-    fi
-    i=$((i + 1))
-    [ "$i" -lt 50 ] || return 1
-    sleep 0.02
-  done
-  printf '%s\n' "$line" >>"$JOURNAL" 2>/dev/null || { rmdir "$lock" 2>/dev/null; return 1; }
-  n=$(wc -l <"$JOURNAL" 2>/dev/null) || n=0
-  if [ "${n:-0}" -gt $((JOURNAL_MAX * 2)) ] 2>/dev/null; then
-    tail -n "$JOURNAL_MAX" "$JOURNAL" >"$JOURNAL.$$" 2>/dev/null &&
-      mv "$JOURNAL.$$" "$JOURNAL" 2>/dev/null
-    rm -f "$JOURNAL.$$" 2>/dev/null
-  fi
-  rmdir "$lock" 2>/dev/null || true
-  return 0
-}
-
-poke_alert() {
-  # Keep untrusted filenames in JSON, never in the Lua command.
-  command -v "$ALERT" >/dev/null 2>&1 || return 1
-  ( "$ALERT" -c 'local ok, m = pcall(require, "instruction-watch"); if ok then m.pump() end' \
-      >/dev/null 2>&1 & ) &
-  return 0
+  instruction_journal_append "$line"
 }
 
 # One alert per change, machine-wide. This hook runs in EVERY live session — the chat Egor is
@@ -443,7 +408,7 @@ alert_once() { # path content-key summary
   # a leftover receipt swallow a same-bytes repeat after the marker expires.
   id=$(printf '%s\n%s\n%s\n%s\n' "$id" "$$" "$RANDOM" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     | shasum -a 256 | cut -c1-16)
-  command -v "$ALERT" >/dev/null 2>&1 && sent=attempted
+  instruction_alert_sendable && sent=attempted
   if ! journal_event "$sent" "$id" "$3"; then
     # A failed append would otherwise leave the change claimed and unjournaled.
     for key in $claimed; do
@@ -451,7 +416,7 @@ alert_once() { # path content-key summary
     done
     return 1
   fi
-  poke_alert || return 0
+  instruction_alert_poke || return 0
 }
 
 # SessionStart. The baseline it writes is compared first against the newest one on disk — this
@@ -508,65 +473,81 @@ offer_restore() {
   restores+=("cp $(shq "$kept") $(shq "${b_real[$i]}")")
 }
 
-# Whether the tool call that just ran is what wrote this file. An Edit or a Write says so in its
-# own file_path; a Bash command says so by leaving its bytes in one of the file's spellings — the
-# absolute path, the tilde form, the name relative to the working directory — which the shared
-# parse the gate ahead of this hook asks the same question of (`instruction_write_targets`). Read
-# on the RAW command, heredoc bodies and quoted runs included, because the whole point of this
-# half is the writes the gate could not see: a heredoc fed to an interpreter names its target
-# inside the body. Every spelling goes to the parse, none is pre-filtered against the raw text:
-# the parse resolves `$'…'` and backslash escapes, and a name spelled through them never appears
-# literally in the command.
-# The answer decides a REVERT, so a row has to be a write by SHAPE. A redirection, a copy verb and
-# a destination verb say so themselves. An interpreter row does not — it is the parse reporting a
-# name it found inside a payload it does not read, and `python3 -c 'open("CLAUDE.md").read()'`
-# produces exactly that row — so the interpreter shapes decide it, from the same shared spelling
-# the gate ahead of this hook denies on (`instruction_interp_write_re`). Rolling back on a mention
-# would put back growth another chat in the same checkout wrote, over a call that only read.
-own_write() {
-  local vis=$1 real=$2 p pr spelling names='' row_kind row_mode mention=''
-  case "$tool" in
-    Edit|Write|MultiEdit|NotebookEdit)
-      [ -n "$tool_path" ] || return 1
-      p=$tool_path
-      case "$p" in "~/"*) p="$HOME/${p#\~/}" ;; esac
-      case "$p" in "$vis"|"$real") return 0 ;; esac
-      pr=$(realpath "$p" 2>/dev/null) || return 1
-      case "$pr" in "$vis"|"$real") return 0 ;; esac
-      return 1
-      ;;
-    Bash)
-      [ -n "$tool_cmd" ] || return 1
-      while IFS= read -r spelling; do
-        [ -n "$spelling" ] || continue
-        names="${names:+$names|}$(instruction_ere_escape "$spelling")"
-      done <<SPELL
-$(_instruction_spellings "$vis" "$HOME" "$cwd"
-  [ "$vis" = "$real" ] || _instruction_spellings "$real" "$HOME" "$cwd")
-SPELL
-      [ -n "$names" ] || return 1
-      while IFS=$'\t' read -r row_kind row_mode _; do
-        case "$row_kind" in
-          redirect|copy|refuse) return 0 ;;
-          verb) if [ "$row_mode" = unknown ]; then mention=1; else return 0; fi ;;
-        esac
-      done < <(instruction_write_targets "$tool_cmd" "$names")
-      [ -n "$mention" ] || return 1
-      # Flattened, because a heredoc puts the interpreter on one line and the open() on the next.
-      printf '%s' "${tool_cmd//$'\n'/ }" \
-        | grep -Eiq "$(instruction_interp_write_re "$names")" || return 1
-      return 0
-      ;;
+# The in-flight windows, read once per check: this session's own mark, consumed only when it names
+# this call's tool_use_id (a call another PreToolUse hook denied never reaches PostToolUse and
+# leaves its mark behind), and every other session's, where a mark older than an hour is a session
+# that died mid-call and is swept without a word.
+load_inflight() {
+  local f name m_start m_id start own_name
+  now_ns=$(instruction_ns "$(instruction_now)") || { now_ns=''; return 0; }
+  own_name=$(instruction_sid_name "$sid")
+  f="$INFLIGHT_DIR/$own_name"
+  if [ -f "$f" ] && read -r m_start m_id _ <"$f" 2>/dev/null; then
+    if [ -z "$tool_use_id" ] || [ "$m_id" = "$tool_use_id" ]; then
+      own_start=$(instruction_ns "$m_start") || own_start=''
+      rm -f "$f" 2>/dev/null
+    fi
+  fi
+  for f in "$INFLIGHT_DIR"/*; do
+    [ -f "$f" ] || continue
+    name=${f##*/}
+    [ "$name" = "$own_name" ] && continue
+    read -r m_start _ <"$f" 2>/dev/null || continue
+    start=$(instruction_ns "$m_start") || continue
+    if [ $((now_ns - start)) -gt 3600000000000 ]; then
+      rm -f "$f" 2>/dev/null
+      continue
+    fi
+    other_sids+=("$name"); other_starts+=("$start")
+  done
+}
+
+add_candidate() {
+  local c
+  for c in ${cand_sids[@]+"${cand_sids[@]}"}; do [ "$c" = "$1" ] && return 0; done
+  cand_sids+=("$1")
+}
+
+# Who wrote bytes that landed at mtime $1: `this-call` when they fall inside this call's window
+# alone, `ambiguous` when another session's window covers the same instant, `unknown` otherwise —
+# including every check the gate did not mark, since only a mark says a call of this session ran.
+attribute() { # mtime
+  local m k hit=''
+  attr=unknown
+  [ -n "$now_ns" ] || { w_unknown=1; return 0; }
+  m=$(instruction_ns "$1") || { w_unknown=1; return 0; }
+  if [ -n "$own_start" ] && [ "$m" -ge "$own_start" ] && [ "$m" -le "$now_ns" ]; then
+    attr=this-call
+  fi
+  for k in ${other_starts[@]+"${!other_starts[@]}"}; do
+    [ "$m" -ge "${other_starts[$k]}" ] && [ "$m" -le "$now_ns" ] || continue
+    hit=1
+    add_candidate "${other_sids[$k]}"
+  done
+  if [ "$attr" = this-call ] && [ -n "$hit" ]; then
+    attr=ambiguous
+    add_candidate "$(instruction_sid_name "$sid")"
+  fi
+  case "$attr" in
+    this-call) w_call=1 ;;
+    ambiguous) w_ambig=1 ;;
+    *) w_unknown=1 ;;
   esac
-  return 1
+}
+
+record_writer() {
+  if [ -n "${w_ambig:-}" ]; then printf ambiguous
+  elif [ -n "${w_call:-}" ] && [ -z "${w_unknown:-}" ]; then printf this-call
+  else printf unknown
+  fi
 }
 
 # Growth put back rather than reported. Three conditions, every one of them required:
 #   - the file is one the write gate speaks for (instruction_write_class), which leaves out
 #     settings.json — the harness rewrites that on its own and no gate ever denied it;
-#   - the call that just ran AIMED a write at it. A shared checkout means the writer is as often
-#     another chat or a worker as this session, and a rollback decided on a guess eats that chat's
-#     live work — the standing rule for everything else in this hook;
+#   - the bytes landed while this session's call was in flight and no other session's was
+#     (`attribute`). A shared checkout means the writer is as often another chat or a worker as
+#     this session, and a rollback decided on a guess eats that chat's live work;
 #   - Egor's autonomy span stands, OR the writer is a relay worker. In the first case he is away;
 #     in the second he never negotiated with the writer at all — an instruction file is the
 #     orchestrating model's to edit, after its audit, and a worker proposes. Both leave growth of a
@@ -580,7 +561,7 @@ revert_growth() {
   [ "$mode" = check ] || return 1
   [ "${b_trust[$i]}" = 1 ] || return 1
   [ -n "$(instruction_write_class "$real")" ] || return 1
-  own_write "$vis" "$real" || return 1
+  [ "$attr" = this-call ] || return 1
   # Asked of every rollback and not only of the ones the span did not already authorise: WHO wrote
   # decides the wording, and a worker inside a span told to leave the addition for Egor's next turn
   # is a worker handed a human's instruction instead of the MD-PROPOSAL protocol it answers by.
@@ -647,6 +628,9 @@ cmd_check() {
   local -a b_mtime=() b_size=() b_ino=() b_trust=() b_hash=() b_link=() b_vis=() b_real=()
   local roots_known='' unw_known='' pinned='' kind=change sfx='' moved=0 top_rate=''
   local relay_revert='' grown_key=''
+  local attr='' own_start='' now_ns='' w_call='' w_unknown='' w_ambig=''
+  local -a other_sids=() other_starts=() cand_sids=()
+  [ "$mode" != check ] || load_inflight
   load_baseline "$ref"
   if [ "$mode" = check ] && [ "${#b_real[@]}" -eq 0 ]; then
     mode=missing
@@ -757,6 +741,7 @@ cmd_check() {
       fi
       delta=$((cur_size - ${b_size[$i]}))
       grown_key="$cur_hash@$cur_mtime"
+      attribute "$cur_mtime"
       if [ "$delta" -gt 0 ] && revert_growth "$i" "$delta"; then
         continue
       fi
@@ -805,6 +790,7 @@ cmd_check() {
       [ "$vis" = "$real" ] || cur_link=$(stat -f '%Y' "$vis" 2>/dev/null)
       [ -n "$cur_link" ] || cur_link='-'
       pin "$vis" "$mtime" "$size" "$ino" "$cur_hash" "$cur_link" "$real"
+      attribute "$mtime"
       report "ADDED$sfx $vis" "$vis" "$cur_hash@$mtime" "${size:-0}"
       clear_gone_marks "$vis"
     done < <({ printf '%s\n' "${b_vis[@]}"; printf '\035\n'; visible_paths; } |
@@ -815,7 +801,12 @@ cmd_check() {
   # Rebuilding the baseline costs a stat of the whole set, so it happens only when
   # something actually moved. This runs after every call; on the quiet path the
   # whole check is one stat.
-  [ "$moved" = 1 ] || exit 0
+  # The touch is the session's last-hook stamp the week-old sweep in cmd_baseline keys on: a quiet
+  # session never rewrites its baseline, and the file's mtime would otherwise say it is dead.
+  if [ "$moved" != 1 ]; then
+    [ "$mode" != check ] || touch -c "$baseline" 2>/dev/null
+    exit 0
+  fi
   if [ "${#reports[@]}" -eq 0 ]; then
     write_baseline "$baseline" "$baseline.$$" "$baseline" "$pinned" || true
     exit 0
@@ -870,18 +861,15 @@ payload=""
 # start buys nothing.
 values=$(printf '%s' "$payload" | jq -er '
   if type != "object" then error("not an object") else . end
-  | [(.hook_event_name // "PostToolUse"), (.session_id // ""), (.tool_name // ""),
-     (.transcript_path // ""), (.cwd // ""),
-     (.tool_input.file_path // .tool_input.notebook_path // ""), (.tool_input.command // "")]
+  | [(.hook_event_name // "PostToolUse"), (.session_id // ""), (.transcript_path // ""),
+     (.tool_use_id // "" | tostring), (.cwd // "")]
   | join("\u001f")' 2>/dev/null) ||
   { echo "instruction watch: the hook payload does not parse, so no change can be attributed" >&2; exit 2; }
-# NUL-delimited rather than a line read, and the command last: a Bash command is routinely several
-# lines, and a line read would keep only its first one.
-IFS=$'\x1f' read -r -d '' event sid tool transcript cwd tool_path tool_cmd <<<"$values" || :
+IFS=$'\x1f' read -r -d '' event sid transcript tool_use_id cwd <<<"$values" || :
 # A read that found no field at all leaves the newline the here-string added, and that newline is
 # the event name every emitted record would carry.
 case "${event:-}" in ''|*[!A-Za-z]*) event=PostToolUse ;; esac
-tool_cmd=${tool_cmd%$'\n'}
+cwd=${cwd%$'\n'}
 repo_root=$(instruction_repo_root "${cwd:-}") || repo_root=''
 baseline=$(session_baseline "${sid:-}")
 

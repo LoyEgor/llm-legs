@@ -57,7 +57,7 @@ local stateDir = DEFAULT_STATE
 local watcher = nil
 local timer = nil
 local lastSeen = nil        -- journal size+mtime, so a write anywhere else in the dir costs a stat
-local ensureWatcher, onChange, resolveChatNames
+local ensureWatcher, onChange, resolveChatNames, watchStart, watchTick
 
 local alertFn = function(text, duration)
     hs.alert.show(text, duration or 6)
@@ -102,7 +102,7 @@ end
 -- not cost Egor the twelve good ones under it.
 local function readJournal()
     local body = readFile(journalPath())
-    if not body then return {} end
+    if not body then return {}, {} end
     local events, count = {}, 0
     for line in body:gmatch("[^\n]+") do
         local ok, decoded = pcall(hs.json.decode, line)
@@ -116,9 +116,9 @@ local function readJournal()
         for i = count - JOURNAL_TAIL + 1, count do
             trimmed[#trimmed + 1] = events[i]
         end
-        return trimmed
+        return trimmed, events
     end
-    return events
+    return events, events
 end
 
 local function receiptFor(id)
@@ -144,6 +144,9 @@ end
 
 local function shortSummary(event)
     local summary = tostring(event.summary or "")
+    if summary == "" and event.kind == "dropped" then
+        summary = tostring(event.count or "?") .. " changes dropped"
+    end
     if summary == "" then summary = "instruction file changed" end
     -- The absolute path is what the record holds and what the detail rows show; a menu row that
     -- spends forty characters on `/Users/egorloy/` says less, not more. The PARENT stays, though —
@@ -177,6 +180,8 @@ end
 -- once: the receipt is what decides, and a record that has one is never delivered twice.
 function M.pump()
     ensureWatcher()
+    watchStart()
+    watchTick()
     local result = { delivered = 0, alerted = 0, stale = 0 }
     local events = readJournal()
     if #events == 0 then return result end
@@ -404,11 +409,562 @@ resolveChatNames = function(events)
     end)
 end
 local function chatLabel(event)
+    if event.source == "watcher" and (type(event.chat) ~= "string" or event.chat == "") then
+        return "writer: " .. tostring(event.writer or "unknown")
+    end
     if type(event.chat) == "string" and event.chat ~= "" then return event.chat end
     local sid = type(event.sid) == "string" and event.sid or ""
     local row = loadChatNames()[sid]
     if type(row) == "table" and row.name ~= "" then return row.name end
     return "unnamed chat (" .. (sid ~= "" and sid:sub(1, 8) or "?") .. ")"
+end
+
+-- The file watcher. `hash_of` and `watch_mark_key` are eval'ed out of bin/instruction-watch.sh on
+-- every call, never re-spelled here: the tripwire and this watcher must derive the same marker for
+-- one write, or both alert for it.
+local WATCH_TICK = 120
+-- The hooks run under a session's `env bash`; Hammerspoon's bare PATH would pick /bin/bash 3.2.
+local WATCH_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin"
+local WATCH_SCRIPT = [==[
+set -u
+root=$1 home=$2 state=$3 mode=$4
+shift 4
+. "$root/share/instruction-files.sh" 2>/dev/null || exit 2
+command -v jq >/dev/null 2>&1 || exit 2
+for f in hash_of shq snap_key keep_revert watch_mark_key; do
+  eval "$(sed -n '/^'"$f"'() {/,/^}/p' "$root/bin/instruction-watch.sh")"
+  declare -F "$f" >/dev/null || exit 3
+done
+SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576
+case $mode in
+  list) instruction_visible_paths "$home" "$state/ranked.txt" '' ;;
+  repo) for r; do instruction_repo_files "$r"; done ;;
+  hash)
+    [ $# -gt 0 ] || exit 0
+    stat -L -f '%N%t%Fm%t%z%t%i' -- "$@" 2>/dev/null
+    printf '\035\n'
+    plain=()
+    for p; do
+      [ -f "$p" ] || continue
+      case "$p" in
+        */settings.json) printf '%s\t%s\n' "$(hash_of "$p" "$p")" "$p" ;;
+        *) plain+=("$p") ;;
+      esac
+    done
+    [ ${#plain[@]} -eq 0 ] ||
+      shasum -a 256 -- "${plain[@]}" 2>/dev/null | awk '{ print substr($0, 1, 64) "\t" substr($0, 67) }' ;;
+  keys) while [ $# -ge 2 ]; do watch_mark_key "$1" "$2"; shift 2; done ;;
+  append) INSTRUCTION_WATCH_STATE=$state instruction_journal_append "$1" || exit 1 ;;
+  restore)
+    while [ $# -ge 6 ]; do
+      vis=$1 real=$2 was=$3 now=$4 offer=$5 keep=$6
+      shift 6
+      line=''
+      if [ "$offer" = 1 ] && [ -n "$was" ] && kept=$(keep_revert "$vis" "$real" "$was"); then
+        line="cp $(shq "$kept") $(shq "$real")"
+      fi
+      dst=$SNAP_DIR/$(snap_key "$vis")-$now
+      size=$(stat -f %z "$real" 2>/dev/null) || size=''
+      if [ "$keep" = 1 ] && [ -n "$now" ] && [ -n "$size" ] && [ ! -e "$dst" ] &&
+         [ "$size" -le "$SNAP_MAX_BYTES" ] && mkdir -p "$SNAP_DIR" && cp "$real" "$dst.$$" 2>/dev/null; then
+        if [ "$(hash_of "$dst.$$" "$vis")" = "$now" ]; then mv "$dst.$$" "$dst"; else rm -f "$dst.$$"; fi
+      fi
+      printf '%s\n' "$line"
+    done ;;
+esac
+exit 0
+]==]
+
+local W = nil
+local watchWanted = false
+local homeOverride = nil
+local function homeDir() return homeOverride or os.getenv("HOME") or "" end
+local function watchDir() return stateDir .. "/watcher" end
+local function snapshotPath() return watchDir() .. "/snapshot.tsv" end
+local function heartbeatPath() return watchDir() .. "/heartbeat" end
+local function isoNow() return os.date("!%Y-%m-%dT%H:%M:%SZ") end
+
+local function shellQuote(value)
+    return "'" .. (tostring(value):gsub("'", "'\\''")) .. "'"
+end
+
+local function runScan(mode, args)
+    if not ROOT then return nil, "repository root unresolved" end
+    local parts = { "PATH=" .. WATCH_PATH .. ":$PATH; export PATH; exec bash -c", shellQuote(WATCH_SCRIPT),
+        "instruction-watcher", shellQuote(ROOT), shellQuote(homeDir()), shellQuote(stateDir), mode }
+    for _, arg in ipairs(args or {}) do parts[#parts + 1] = shellQuote(arg) end
+    local handle = io.popen(table.concat(parts, " ") .. " 2>/dev/null")
+    if not handle then return nil, "cannot start bash" end
+    local out = handle:read("*a")
+    local ok, _, code = handle:close()
+    if not ok then return nil, "scan " .. mode .. " exited " .. tostring(code) end
+    return out
+end
+
+local function outputLines(out)
+    local lines = {}
+    for line in (out or ""):gmatch("([^\n]*)\n") do lines[#lines + 1] = line end
+    return lines
+end
+
+local function realOf(path)
+    local ok, resolved = pcall(hs.fs.pathToAbsolute, path)
+    if ok and type(resolved) == "string" then return resolved end
+    local dir, base = tostring(path):match("^(.*)/([^/]+)$")
+    if dir then
+        local okDir, parent = pcall(hs.fs.pathToAbsolute, dir ~= "" and dir or "/")
+        if okDir and type(parent) == "string" then return parent .. "/" .. base end
+    end
+    return path
+end
+
+local function fingerprint(path)
+    local attrs = hs.fs.attributes(path)
+    if not attrs then return nil end
+    return tostring(attrs.size) .. "/" .. tostring(attrs.modification) .. "/" .. tostring(attrs.ino)
+end
+
+local function hashPaths(paths)
+    local result = {}
+    if #paths == 0 then return result end
+    local out, err = runScan("hash", paths)
+    if not out then return nil, err end
+    local stats, second = {}, false
+    for _, line in ipairs(outputLines(out)) do
+        if line == "\029" then
+            second = true
+        elseif not second then
+            local path, mtime, size, ino = line:match("^(.-)\t([^\t]*)\t([^\t]*)\t([^\t]*)$")
+            if path then stats[path] = { mtime = mtime, size = tonumber(size), ino = ino } end
+        else
+            local hash, path = line:match("^(%x+)\t(.+)$")
+            if hash and stats[path] then stats[path].hash = hash end
+        end
+    end
+    for _, path in ipairs(paths) do
+        local row = stats[path]
+        if row and row.hash and row.size then
+            row.real, row.fp = realOf(path), fingerprint(path)
+            result[path] = row
+        end
+    end
+    return result
+end
+
+local function readSnapshot()
+    local body = readFile(snapshotPath())
+    if not body then return nil end
+    local rows = {}
+    for line in body:gmatch("[^\n]+") do
+        local vis, hash, size, mtime, trust, real = line:match("^([^\t]+)\t(%x+)\t(%d+)\t([^\t]*)\t([01])\t?([^\t]*)$")
+        if vis then
+            rows[vis] = { hash = hash, size = tonumber(size), mtime = mtime, trust = trust == "1",
+                          real = real ~= "" and real or nil }
+        end
+    end
+    return rows
+end
+
+local function writeSnapshot()
+    local paths = {}
+    for path in pairs(W.prev) do paths[#paths + 1] = path end
+    table.sort(paths)
+    local lines = {}
+    for _, path in ipairs(paths) do
+        local row = W.prev[path]
+        lines[#lines + 1] = table.concat({ path, row.hash, tostring(row.size), row.mtime or "",
+            row.trust and "1" or "0", row.real or "" }, "\t")
+    end
+    hs.fs.mkdir(watchDir())
+    local tmp = snapshotPath() .. ".tmp"
+    if writeFile(tmp, table.concat(lines, "\n") .. "\n") then os.rename(tmp, snapshotPath()) end
+    W.dirty = false
+end
+
+local function writeHeartbeat()
+    local roots, files = 0, 0
+    for _ in pairs(W.watchers) do roots = roots + 1 end
+    for _ in pairs(W.prev) do files = files + 1 end
+    hs.fs.mkdir(watchDir())
+    writeFile(heartbeatPath(), string.format("since=%d roots=%d files=%d%s\n", W.since, roots, files,
+        W.error and (" error=" .. W.error) or ""))
+end
+
+local function refreshInflight()
+    local dir, present, now = stateDir .. "/inflight", {}, os.time()
+    if hs.fs.attributes(dir, "mode") == "directory" then
+        for name in hs.fs.dir(dir) do
+            if name ~= "." and name ~= ".." then
+                local epoch, callId = (readFile(dir .. "/" .. name) or ""):match("^(%d+%.?%d*)%s+(%S+)")
+                if epoch then
+                    local key = name .. "|" .. callId
+                    present[key] = true
+                    W.inflight[key] = W.inflight[key] or { sid = name, start = tonumber(epoch) }
+                end
+            end
+        end
+    end
+    for key, row in pairs(W.inflight) do
+        if not present[key] and not row.ended then row.ended = now end
+        if row.ended and now - row.ended > 600 then W.inflight[key] = nil end
+    end
+end
+
+-- A second of slack both ways: the write's mtime is floored to whole seconds here.
+local function writersAt(stamps)
+    local sids, seen, now = {}, {}, os.time()
+    for _, row in pairs(W.inflight) do
+        for _, stamp in ipairs(stamps) do
+            if not seen[row.sid] and stamp >= row.start - 1 and stamp <= (row.ended or now) + 1 then
+                seen[row.sid] = true
+                sids[#sids + 1] = row.sid
+            end
+        end
+    end
+    table.sort(sids)
+    return sids
+end
+
+local function journalAppend(line)
+    return runScan("append", { line }) ~= nil
+end
+
+local function watchEmit(entries, kind)
+    if #entries == 0 then return end
+    local args = {}
+    for _, entry in ipairs(entries) do
+        args[#args + 1], args[#args + 2] = entry.vis, entry.content
+        if entry.verb == "ADDED" then
+            args[#args + 1], args[#args + 2] = entry.vis, "absent"
+            args[#args + 1], args[#args + 2] = entry.vis, "gone"
+        end
+    end
+    local keys, keyIndex = outputLines(runScan("keys", args)), 0
+    local alertDir, claimed = stateDir .. "/alerts", {}
+    hs.fs.mkdir(alertDir)
+    for _, entry in ipairs(entries) do
+        keyIndex = keyIndex + 1
+        local key = keys[keyIndex]
+        if entry.verb == "ADDED" then
+            for _ = 1, 2 do
+                keyIndex = keyIndex + 1
+                if (keys[keyIndex] or ""):match("^%x+$") then hs.fs.rmdir(alertDir .. "/" .. keys[keyIndex]) end
+            end
+        end
+        if (key or ""):match("^%x+$") and hs.fs.mkdir(alertDir .. "/" .. key) then
+            entry.key = key
+            claimed[#claimed + 1] = entry
+        end
+    end
+    local restoreArgs = {}
+    for _, entry in ipairs(entries) do
+        local old, cur = entry.old or {}, entry.cur or {}
+        local offer = entry.key ~= nil and old.trust and entry.verb ~= "ADDED"
+        for _, value in ipairs({ entry.vis, cur.real or old.real or realOf(entry.vis), old.hash or "",
+            cur.hash or "", offer and "1" or "0", (cur.trust and cur.hash) and "1" or "0" }) do
+            restoreArgs[#restoreArgs + 1] = value
+        end
+    end
+    local restores = outputLines(runScan("restore", restoreArgs))
+    if #claimed == 0 then return end
+    local record = { id = string.format("%08x%08x", os.time() % 0x100000000, math.random(0, 0x7fffffff)),
+        at = isoNow(), sid = "", kind = kind, sent = "attempted", source = "watcher", writer = "unknown",
+        files = {}, bytes = {}, restores = {}, reverted = {} }
+    local summaries, stamps = {}, {}
+    for index, entry in ipairs(entries) do
+        if entry.key then
+            record.files[#record.files + 1] = entry.vis
+            record.bytes[#record.bytes + 1] = entry.delta
+            summaries[#summaries + 1] = entry.summary
+            if (restores[index] or "") ~= "" then record.restores[#record.restores + 1] = restores[index] end
+            stamps[#stamps + 1] = math.floor(tonumber(entry.cur and entry.cur.mtime or "") or os.time())
+        end
+    end
+    record.summary = table.concat(summaries, "; ")
+    local function finish()
+        if not journalAppend(hs.json.encode(record)) then
+            for _, entry in ipairs(claimed) do
+                hs.fs.rmdir(alertDir .. "/" .. entry.key)
+                if W then W.prev[entry.vis] = entry.old; W.dirty = true end
+            end
+            return
+        end
+        M.pump()
+    end
+    local sids = kind == "change" and writersAt(stamps) or {}
+    if #sids == 0 then return finish() end
+    record.sid = sids[1]
+    chatResolverFn(sids, function(stdout)
+        local found = {}
+        for line in (stdout or ""):gmatch("[^\r\n]+") do
+            local short = line:match("^.- %((%x+)%)$")
+            if short then found[short] = line end
+        end
+        local labels = {}
+        for _, sid in ipairs(sids) do
+            labels[#labels + 1] = found[sid:sub(1, 8)] or ("unnamed chat (" .. sid:sub(1, 8) .. ")")
+        end
+        record.writer = table.concat(labels, ", ")
+        if found[sids[1]:sub(1, 8)] then record.chat = found[sids[1]:sub(1, 8)] end
+        finish()
+    end)
+end
+
+local function describeChange(verb, suffix, vis, delta)
+    if verb == "CHANGED" then
+        return string.format("CHANGED%s %s (%s%d bytes)", suffix, vis, delta >= 0 and "+" or "", delta)
+    end
+    return verb .. suffix .. " " .. vis
+end
+
+-- A path the set newly names was either created since the last listing (ADDED) or was always there
+-- and only just ranked, which nobody wrote and nothing reports.
+local function bornSince(path, stamp)
+    local attrs = hs.fs.attributes(path)
+    local born = attrs and (attrs.creation or attrs.modification)
+    return born ~= nil and stamp ~= nil and born >= stamp - 1
+end
+
+local function watchCheck(paths, forceHash, suffix, kind, addedSince)
+    local toHash, entries = {}, {}
+    for _, path in ipairs(paths) do
+        local old = W.prev[path]
+        if not hs.fs.attributes(path) then
+            if old then
+                entries[#entries + 1] = { verb = "DELETED", vis = path, old = old, content = "absent",
+                    delta = -(old.size or 0) }
+            end
+        elseif forceHash or not old or fingerprint(path) ~= old.fp then
+            toHash[#toHash + 1] = path
+        end
+    end
+    local fresh, err = hashPaths(toHash)
+    if not fresh then W.error = err; return end
+    W.error = nil
+    for _, path in ipairs(toHash) do
+        local old, cur = W.prev[path], fresh[path]
+        if cur == nil then
+            if old and not hs.fs.attributes(path) then
+                entries[#entries + 1] = { verb = "DELETED", vis = path, old = old, content = "absent",
+                    delta = -(old.size or 0) }
+            end
+        elseif old == nil then
+            local added = bornSince(path, addedSince)
+            cur.trust = not added
+            W.prev[path], W.dirty = cur, true
+            if added then
+                entries[#entries + 1] = { verb = "ADDED", vis = path, cur = cur,
+                    content = cur.hash .. "@" .. cur.mtime, delta = cur.size }
+            end
+        elseif cur.hash ~= old.hash then
+            cur.trust = old.trust
+            W.prev[path], W.dirty = cur, true
+            entries[#entries + 1] = { verb = "CHANGED", vis = path, old = old, cur = cur,
+                content = cur.hash .. "@" .. cur.mtime, delta = cur.size - (old.size or 0) }
+        else
+            cur.trust = old.trust
+            W.prev[path], W.dirty = cur, true
+        end
+    end
+    for _, entry in ipairs(entries) do
+        if entry.verb == "DELETED" then W.prev[entry.vis], W.dirty = nil, true end
+        entry.summary = describeChange(entry.verb, suffix, entry.vis, entry.delta)
+    end
+    watchEmit(entries, kind)
+end
+
+local function watchPaths()
+    local paths, seen = {}, {}
+    for _, path in ipairs(W.list) do seen[path] = true; paths[#paths + 1] = path end
+    for path in pairs(W.prev) do
+        if not seen[path] then seen[path] = true; paths[#paths + 1] = path end
+    end
+    return paths
+end
+
+local function under(path, dir) return path == dir or path:sub(1, #dir + 1) == dir .. "/" end
+
+local function watchRefresh()
+    local out, err = runScan("list")
+    if not out then W.error = err; return false end
+    local list, seen, seenReal = {}, {}, {}
+    local function add(path)
+        if path == "" or seen[path] then return end
+        local real = realOf(path)
+        if seenReal[real] then return end
+        seen[path], seenReal[real] = true, true
+        list[#list + 1] = path
+    end
+    for _, line in ipairs(outputLines(out)) do add(line) end
+    local claudeDir = homeDir() .. "/.claude"
+    local repoRoots, repos = {}, {}
+    for _, path in ipairs(list) do
+        if not under(path, claudeDir) then
+            local root = path:match("^(.-)/%.claude/")
+            local base = (path:match("[^/]+$") or ""):lower()
+            if not root and (base == "claude.md" or base == "claude.local.md" or base == "skill.md") then
+                root = path:match("^(.*)/[^/]+$")
+            end
+            if root and root ~= "" and not repoRoots[root] then
+                repoRoots[root] = true
+                repos[#repos + 1] = root
+            end
+        end
+    end
+    if #repos > 0 then
+        for _, line in ipairs(outputLines(runScan("repo", repos))) do add(line) end
+    end
+    local candidates = { realOf(claudeDir) }
+    for _, root in ipairs(repos) do candidates[#candidates + 1] = realOf(root) end
+    -- ~/.claude's class directories are symlinks into another repository, and FSEvents reports a
+    -- write at the target, so a file reached through a link is watched at the link's target.
+    for _, path in ipairs(list) do
+        local real, covered = realOf(path), false
+        for _, root in ipairs(candidates) do if under(real, root) then covered = true; break end end
+        if not covered then
+            local top = under(path, claudeDir) and path:sub(#claudeDir + 2):match("^[^/]+")
+            local linked = top and realOf(claudeDir .. "/" .. top)
+            if linked and hs.fs.attributes(linked, "mode") == "directory" and under(real, linked) then
+                candidates[#candidates + 1] = linked
+            else
+                candidates[#candidates + 1] = real:match("^(.*)/[^/]+$")
+            end
+        end
+    end
+    table.sort(candidates, function(a, b) return #a < #b end)
+    local roots = {}
+    for _, candidate in ipairs(candidates) do
+        local nested = false
+        for _, kept in ipairs(roots) do if under(candidate, kept) then nested = true; break end end
+        if not nested and hs.fs.attributes(candidate, "mode") == "directory" then roots[#roots + 1] = candidate end
+    end
+    local wanted = {}
+    for _, root in ipairs(roots) do
+        wanted[root] = true
+        if not W.watchers[root] then
+            local ok, watcherObj = pcall(hs.pathwatcher.new, root, function(paths) M.watchEvent(paths) end)
+            if ok and watcherObj then
+                watcherObj:start()
+                W.watchers[root] = watcherObj
+            end
+        end
+    end
+    for root, watcherObj in pairs(W.watchers) do
+        if not wanted[root] then watcherObj:stop(); W.watchers[root] = nil end
+    end
+    W.list, W.listedBefore, W.listedAt = list, W.listedAt, os.time()
+    W.byReal = {}
+    for _, path in ipairs(watchPaths()) do
+        W.byReal[path] = path
+        W.byReal[realOf(path)] = path
+        if W.prev[path] and W.prev[path].real then W.byReal[W.prev[path].real] = path end
+    end
+    return true
+end
+
+watchTick = function()
+    if not W or W.busy then return end
+    W.busy = true
+    pcall(function()
+        refreshInflight()
+        if watchRefresh() then watchCheck(watchPaths(), false, "", "change", W.listedBefore) end
+        if W.dirty then writeSnapshot() end
+    end)
+    if W then
+        writeHeartbeat()
+        W.busy = false
+    end
+end
+
+watchStart = function()
+    if W or not watchWanted then return end
+    if not (hs.pathwatcher and hs.pathwatcher.new) then return end
+    if hs.fs.attributes(stateDir, "mode") ~= "directory" then return end
+    W = { prev = {}, watchers = {}, inflight = {}, list = {}, byReal = {}, since = os.time(), busy = true }
+    hs.fs.mkdir(watchDir())
+    local snapshotBorn = hs.fs.attributes(snapshotPath(), "modification")
+    local snapshot = readSnapshot()
+    local ok = pcall(function()
+        refreshInflight()
+        if not watchRefresh() then return end
+        local paths, seen = {}, {}
+        for _, path in ipairs(W.list) do seen[path] = true; paths[#paths + 1] = path end
+        for path in pairs(snapshot or {}) do
+            if not seen[path] then seen[path] = true; paths[#paths + 1] = path end
+        end
+        if snapshot == nil then
+            local fresh, err = hashPaths(paths)
+            if not fresh then W.error = err; return end
+            local count = 0
+            for path, row in pairs(fresh) do row.trust = true; W.prev[path] = row; count = count + 1 end
+            watchEmit({ { verb = "SNAPSHOT-MISSING", vis = snapshotPath(), delta = 0,
+                content = "missing@" .. os.time() .. "." .. math.random(0, 0x7fffffff),
+                summary = "SNAPSHOT-MISSING " .. snapshotPath() .. " (" .. count
+                    .. " files taken as found; anything changed before this went unseen)" } },
+                "changed-while-watcher-off")
+        else
+            W.prev = snapshot
+            watchCheck(paths, true, "-WHILE-WATCHER-OFF", "changed-while-watcher-off", snapshotBorn)
+        end
+        W.byReal = {}
+        for _, path in ipairs(watchPaths()) do W.byReal[path] = path; W.byReal[realOf(path)] = path end
+        writeSnapshot()
+    end)
+    if not ok and W then W.error = W.error or "start failed" end
+    if W then
+        writeHeartbeat()
+        W.busy = false
+    end
+end
+
+local function watchStop()
+    if not W then return end
+    for _, watcherObj in pairs(W.watchers) do pcall(function() watcherObj:stop() end) end
+    W = nil
+end
+
+local function instructionLike(path)
+    local lower = tostring(path):lower()
+    if lower:find("/.claude/projects/", 1, true) then return false end
+    return lower:match("%.md$") or lower:match("%.markdown$") or lower:match("/review%-debt%-ignore$")
+        or lower:match("/settings%.json$")
+end
+
+-- An event always hashes: hs.fs mtimes are whole seconds, so a same-size rewrite inside that second
+-- leaves the fingerprint the tick compares untouched.
+function M.watchEvent(paths)
+    if not W or W.busy then return end
+    W.busy = true
+    pcall(function()
+        refreshInflight()
+        local wanted, seen, unknown = {}, {}, false
+        for _, path in ipairs(paths or {}) do
+            local vis = W.byReal[path] or W.byReal[realOf(path)]
+            if vis and not seen[vis] then
+                seen[vis] = true
+                wanted[#wanted + 1] = vis
+            elseif not vis and instructionLike(path) then
+                unknown = true
+            end
+        end
+        if #wanted > 0 then watchCheck(wanted, true, "", "change", W.listedAt) end
+        if W.dirty then writeSnapshot() end
+        if unknown and not W.relist and hs.timer and hs.timer.doAfter then
+            W.relist = hs.timer.doAfter(3, function()
+                if W then W.relist = nil end
+                watchTick()
+            end)
+        end
+    end)
+    if W then W.busy = false end
+end
+
+function M.watchTick() watchTick() end
+function M.watchRoots()
+    local roots = {}
+    for root in pairs(W and W.watchers or {}) do roots[#roots + 1] = root end
+    table.sort(roots)
+    return roots
 end
 
 -- The watched `~/.claude/...` names are symlinks into claude-setup and tokenmap indexes what the
@@ -495,10 +1051,11 @@ local function alignedTitles(rows, columns, style)
     return titles
 end
 
+local RED = { red = 0.86, green = 0.16, blue = 0.14, alpha = 1 }
 local function renderStyle()
     local color = dimColor()
-    return function(text, dim)
-        return hs.styledtext.new(text, { font = menuFont, color = dim and color or nil })
+    return function(text, dim, red)
+        return hs.styledtext.new(text, { font = menuFont, color = red and RED or (dim and color or nil) })
     end
 end
 local function eventTime(event)
@@ -525,6 +1082,7 @@ local function eventMenu(event, receipt, cache, style)
     for _, title in ipairs(alignedTitles(rows, columns, style)) do
         items[#items + 1] = { title = title, disabled = true }
     end
+    if tostring(event.sid or "") == "" then return items end
     items[#items + 1] = { title = "-" }
     items[#items + 1] = {
         title = "Copy command to open this chat",
@@ -599,10 +1157,32 @@ local function topMenu(cache, style)
     return items
 end
 
+local function livenessItem(style)
+    local path = heartbeatPath()
+    local born = hs.fs.attributes(path, "modification")
+    local body = readFile(path) or ""
+    local since = tonumber(body:match("since=(%d+)"))
+    local roots, files = tonumber(body:match("roots=(%d+)")), tonumber(body:match("files=(%d+)"))
+    local failure = body:match("error=([^\n]+)")
+    local function stamp(value) return os.date("%d %b %H:%M", value) end
+    local text
+    if not born then
+        text = "watcher: never started"
+    elseif os.time() - born > 2 * WATCH_TICK then
+        text = "watcher: DOWN since " .. stamp(born)
+    elseif failure or (roots or 0) == 0 then
+        text = "watcher: DOWN since " .. stamp(since or born) .. " · " .. (failure or "no root watched")
+    else
+        return { title = style(string.format("watcher: live since %s · %d roots · %d files",
+            stamp(since or born), roots, files or 0)), disabled = true }
+    end
+    return { title = style(text, false, true), disabled = true }
+end
+
 function M.menuItems()
-    local events = readJournal()
+    local events, all = readJournal()
     local cache, style = rates(), renderStyle()
-    local items = {}
+    local items = { livenessItem(style) }
     -- Widths follow this render's content: a column nobody fills takes no room and leaves no
     -- blank tail, while every row still lands on the same offsets.
     local rows, fileWidth, byteWidth, priceWidth = {}, 0, 0, 0
@@ -612,6 +1192,7 @@ function M.menuItems()
         local files, bytes = event.files or {}, deltas(event)
         local more = #files > 1 and (" +" .. (#files - 1) .. " more") or ""
         local path = clip(shortPath(files[1] or "?"), FILE_WIDTH - cells(more))
+        if event.kind == "dropped" or #files == 0 then path, more = shortSummary(event), "" end
         local totalBytes, totalPrice
         for i, file in ipairs(files) do
             if bytes[i] ~= nil then totalBytes = (totalBytes or 0) + bytes[i] end
@@ -620,7 +1201,8 @@ function M.menuItems()
         end
         -- A legacy ADDED/DELETED record carries no number; the verb says what the blank would not.
         local row = { event = event, receipt = receipt, path = path, more = more,
-                      bytes = signed(totalBytes), price = priceText(totalPrice) }
+                      bytes = signed(totalBytes), price = priceText(totalPrice),
+                      red = event.kind == "stamp-forged" }
         local verb = verbs(event)[1]
         for _, other in pairs(verbs(event)) do if other ~= verb then verb = nil end end
         if verb and verb ~= "changed" and (totalBytes == nil or totalBytes == 0) then
@@ -632,19 +1214,31 @@ function M.menuItems()
         rows[#rows + 1] = row
     end
     for _, row in ipairs(rows) do
-        local title = style(pad(eventTime(row.event), 12) .. "  " .. row.path)
-            .. style(row.more, true)
+        local red = row.red
+        local title = style(pad(eventTime(row.event), 12) .. "  " .. row.path, false, red)
+            .. style(row.more, true, red)
         local tail = string.rep(" ", fileWidth - cells(row.path) - cells(row.more))
         if byteWidth > 0 and (row.bytes ~= "" or row.price ~= "") then
-            title = title .. style(tail .. "  " .. string.rep(" ", byteWidth - cells(row.bytes)))
-                .. style(row.bytes, row.verb)
+            title = title .. style(tail .. "  " .. string.rep(" ", byteWidth - cells(row.bytes)), false, red)
+                .. style(row.bytes, row.verb, red)
             tail = ""
         end
-        if priceWidth > 0 and row.price ~= "" then title = title .. style(tail .. "  " .. pad(row.price, priceWidth, true)) end
+        if priceWidth > 0 and row.price ~= "" then
+            title = title .. style(tail .. "  " .. pad(row.price, priceWidth, true), false, red)
+        end
         items[#items + 1] = { title = title, menu = eventMenu(row.event, row.receipt, cache, style) }
     end
-    if #items == 0 then
+    if #rows == 0 then
         items[#items + 1] = { title = "No changes recorded", disabled = true }
+    end
+    local older, now = 0, os.time()
+    for index = 1, #all - #rows do
+        local event = all[index]
+        local stamp = parseIso(event.at)
+        if (stamp ~= nil and now - stamp <= ALERT_MAX_AGE) or not receiptFor(event.id) then older = older + 1 end
+    end
+    if older > 0 then
+        items[#items + 1] = { title = style("+" .. older .. " older in events.jsonl", true), disabled = true }
     end
     items[#items + 1] = { title = "-" }
     items[#items + 1] = { title = "Top MD files this week", menu = topMenu(cache, style) }
@@ -690,6 +1284,7 @@ end
 
 onChange = function()
     ensureWatcher()
+    if W then pcall(refreshInflight) end
     local stamp = journalStamp()
     if stamp ~= nil and stamp == lastSeen then return end
     lastSeen = stamp
@@ -700,9 +1295,14 @@ function M.start()
     M.stop()
     lastSeen = journalStamp()
     ensureWatcher()
+    watchWanted = true
+    watchStart()
     -- The fallback, not the mechanism: FSEvents can coalesce or drop across a sleep, and a change
     -- Egor is never told about is the one failure this module exists to remove.
-    timer = hs.timer.doEvery(120, onChange)
+    timer = hs.timer.doEvery(WATCH_TICK, function()
+        watchTick()
+        onChange()
+    end)
     M.pump()
     return M
 end
@@ -710,6 +1310,8 @@ end
 function M.stop()
     if watcher then watcher:stop(); watcher = nil end
     if timer then timer:stop(); timer = nil end
+    watchStop()
+    watchWanted = false
 end
 
 -- Both exist for the test harness, which runs inside the real Hammerspoon: it points the module at
@@ -717,6 +1319,7 @@ end
 -- line on Egor's display or a receipt in his cache.
 function M.setStateDir(dir)
     if watcher then watcher:stop(); watcher = nil end
+    watchStop()
     stateDir = dir or DEFAULT_STATE
     lastSeen = nil
     chatNames, chatPending, chatRerun = nil, false, false
@@ -737,6 +1340,11 @@ end
 
 function M.setOpenCommand(fn)
     openCommandFn = fn or runOpenCommand
+end
+
+function M.setHome(dir)
+    watchStop()
+    homeOverride = dir
 end
 
 function M.setRatesPath(path)

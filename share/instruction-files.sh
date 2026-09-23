@@ -1276,6 +1276,80 @@ instruction_all_dirs() {
   instruction_guarded_dirs "$home" | _instruction_spell_all "$home" "$cwd"
 }
 
+# `git apply` and `git stash pop|apply` write files their command text never names. What they
+# write is read off the patch — the command text itself (a heredoc) and every file the command
+# names — and off the stash, relative to the repository's top level (the directory outside one).
+instruction_git_landing() { # command cwd → absolute paths, one per line
+  local cmd=$1 cwd=${2:-$PWD} seg gcwd i n sub w ro real dir top ref f base
+  local apply='' stash='' gcwds='' files='' sh_cwd=$cwd
+  local -a words
+  case "$cmd" in *git*) ;; *) return 0 ;; esac
+  while IFS= read -r -d '' seg; do
+    words=()
+    read -r -a words <<<"$(printf '%s' "$seg" | tr -d "\"'" | tr '\n()<>' '     ')"
+    if [ "${words[0]:-}" = cd ]; then
+      sh_cwd=$(cd "$sh_cwd" 2>/dev/null && cd "${words[1]:-$HOME}" 2>/dev/null && pwd) || sh_cwd=$cwd
+      continue
+    fi
+    n=${#words[@]} i=0 gcwd=$sh_cwd
+    while [ "$i" -lt "$n" ] && [ "${words[$i]##*/}" != git ]; do i=$((i + 1)); done
+    [ "$i" -lt "$n" ] || continue
+    i=$((i + 1))
+    while [ "$i" -lt "$n" ]; do
+      case "${words[$i]}" in
+        -C) gcwd=$(cd "$gcwd" 2>/dev/null && cd "${words[$((i + 1))]:-.}" 2>/dev/null && pwd) || gcwd=$sh_cwd
+            i=$((i + 2)) ;;
+        -c) i=$((i + 2)) ;;
+        -*) i=$((i + 1)) ;;
+        *) break ;;
+      esac
+    done
+    sub=${words[$i]:-}
+    top=$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null) || top=$gcwd
+    case "$sub" in
+      apply)
+        ro='' real='' dir=''
+        for w in "${words[@]:$((i + 1))}"; do
+          case "$w" in
+            --check|--stat|--numstat|--summary) ro=1 ;;
+            --apply|--index|-3|--3way) real=1 ;;
+            --directory=*) dir=${w#--directory=}/ ;;
+          esac
+        done
+        [ -n "$ro" ] && [ -z "$real" ] && continue
+        apply="$apply$top/$dir"$'\n'
+        gcwds="$gcwds$gcwd"$'\n'
+        ;;
+      stash)
+        case "${words[$((i + 1))]:-}" in pop|apply) ;; *) continue ;; esac
+        ref=''
+        for w in "${words[@]:$((i + 2))}"; do
+          case "$w" in -*) ;; *) ref=$w; break ;; esac
+        done
+        stash="$stash$( { git -C "$gcwd" stash show --name-only --include-untracked ${ref:+"$ref"} 2>/dev/null ||
+          git -C "$gcwd" stash show --name-only ${ref:+"$ref"} 2>/dev/null; } | sed "s#^#$top/#")"$'\n'
+        ;;
+    esac
+  done < <(instruction_split_commands "$cmd")
+  [ -z "$stash" ] || printf '%s' "$stash" | grep .
+  [ -n "$apply" ] || return 0
+  read -r -a words <<<"$(printf '%s' "$cmd" | tr -d "\"'" | tr '\n()<>;|&' '         ')"
+  for w in ${words[@]+"${words[@]}"}; do
+    while IFS= read -r base; do
+      [ -n "$base" ] || continue
+      case "$w" in /*) f=$w ;; *) f=$base/$w ;; esac
+      [ -f "$f" ] && [ -r "$f" ] && { files="$files$f"$'\n'; break; }
+    done <<<"$cwd"$'\n'"$gcwds"
+  done
+  { printf '%s\n' "$cmd"
+    printf '%s' "$files" | while IFS= read -r f; do [ -z "$f" ] || head -c 20000000 "$f"; done
+  } | sed -n -e 's#^+++ b/##p' -e 's#^--- a/##p' -e 's#^rename to ##p' -e 's#^copy to ##p' |
+    cut -f1 | sort -u | while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      printf '%s' "$apply" | while IFS= read -r base; do [ -z "$base" ] || printf '%s%s\n' "$base" "$f"; done
+    done
+}
+
 # The one-shot retry stamp both gates run on. mkdir is the atomic claim: the creator denies, and
 # the approved retry is consumed by whichever caller wins the rmdir — but only once the stamp has
 # aged, because two identical commands dispatched in the same batch arrive milliseconds apart,
@@ -1304,9 +1378,11 @@ instruction_mark_once() {
 
 # Finding the stamp and spending it are separate steps because a caller may have a condition of
 # its own to put between them — one that, when it fails, has to leave the stamp for the next try.
-# 0 = a stamp of this caller's is there and old enough to spend.
-instruction_stamp_ready() {
-  local dir=$1 hash=$2 stamp now born age=''
+# 0 = a stamp of this caller's is there and old enough to spend; 3 = a stamp no denial of this
+# session minted (`denied/<hash>` in the watch state is missing, names another session or is past
+# the stamp's day) — removed, and the caller refuses and journals it.
+instruction_stamp_ready() { # dir hash session
+  local dir=$1 hash=$2 sid=${3:-} stamp now born age=''
   case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
   mkdir -p "$dir" 2>/dev/null || return 1
   # The sweep is aimed at exactly what a gate creates: an EMPTY DIRECTORY whose name is the
@@ -1327,8 +1403,15 @@ $(find "$dir" -mindepth 1 -maxdepth 1 -type f \
     -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h.read" -mmin +1440 2>/dev/null)
 SWEEP
   stamp="$dir/$hash"
-  mkdir "$stamp" 2>/dev/null && return 1
+  if mkdir "$stamp" 2>/dev/null; then
+    _instruction_deny_record "$hash" "$sid" || rmdir "$stamp" 2>/dev/null
+    return 1
+  fi
   [ -d "$stamp" ] || return 1
+  if ! _instruction_deny_record_ok "$hash" "$sid"; then
+    rmdir "$stamp" 2>/dev/null
+    return 3
+  fi
   now=$(date +%s 2>/dev/null)
   born=$(stat -f %m "$stamp" 2>/dev/null)
   if [ -n "$now" ] && [ -n "$born" ]; then
@@ -1340,7 +1423,25 @@ SWEEP
 
 instruction_stamp_consume() {
   rmdir "$1/$2" 2>/dev/null || return 1
+  rm -f "$(instruction_watch_state)/denied/$2" 2>/dev/null
   return 0
+}
+
+_instruction_deny_record() { # hash session
+  local d
+  d="$(instruction_watch_state)/denied"
+  mkdir -p "$d" 2>/dev/null || return 1
+  find "$d" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
+  printf '%s %s\n' "${2:--}" "$(date +%s)" >"$d/$1" 2>/dev/null
+}
+
+_instruction_deny_record_ok() { # hash session
+  local who='' at='' now
+  read -r who at _ <"$(instruction_watch_state)/denied/$1" 2>/dev/null || return 1
+  [ "$who" = "${2:--}" ] || return 1
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s)
+  [ $((now - at)) -ge 0 ] && [ $((now - at)) -lt 86400 ]
 }
 
 instruction_user_turn_after_stamp() {
@@ -1382,4 +1483,169 @@ _instruction_is_note() {
   case "$first" in ''|*[!0-9]*) return 1 ;; esac
   case "$second" in /*) return 0 ;; esac
   return 1
+}
+
+instruction_watch_state() {
+  printf '%s' "${INSTRUCTION_WATCH_STATE:-$HOME/.cache/claude-instruction-watch}"
+}
+
+# A session id that cannot name a file gets one per CALLER (the parent is the CLI that runs every
+# hook of one session), never a name every such caller shares and never one per call.
+instruction_sid_name() { # session
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*) printf 'unknown-%s' "$PPID" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+instruction_now() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    printf '%s' "${EPOCHREALTIME/,/.}"
+    return 0
+  fi
+  perl -MTime::HiRes=time -e 'printf "%.6f", time' 2>/dev/null || date +%s
+}
+
+# Integer nanoseconds: a float loses the digits that separate two writes a millisecond apart.
+instruction_ns() { # epoch[.fraction]
+  local s=${1%%.*} f=''
+  case "$1" in *.*) f=${1#*.} ;; esac
+  case "$s" in ''|*[!0-9]*) return 1 ;; esac
+  case "$f" in *[!0-9]*) return 1 ;; esac
+  f="${f}000000000"
+  printf '%s' "$((s * 1000000000 + 10#${f:0:9}))"
+}
+
+# PreToolUse marks the call in flight and PostToolUse `check` consumes the mark: bytes whose mtime
+# lies between the two are this call's. One line, `<start> <tool_use_id> <tool> <cwd>`.
+instruction_inflight_mark() { # session tool_use_id tool cwd
+  local dir now id=${2:-} cwd=${4:--}
+  dir="$(instruction_watch_state)/inflight"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  now=$(instruction_now)
+  [ -n "$id" ] || id="${now%%.*}-$$"
+  id=${id//[[:space:]]/_}
+  cwd=${cwd//$'\n'/ }
+  printf '%s %s %s %s\n' "$now" "$id" "${3:--}" "$cwd" >"$dir/$(instruction_sid_name "$1")" 2>/dev/null
+}
+
+instruction_inflight_clear() { # session
+  rm -f "$(instruction_watch_state)/inflight/$(instruction_sid_name "$1")" 2>/dev/null
+  return 0
+}
+
+instruction_chat_name() { # session
+  local resolver=''
+  [ -n "${1:-}" ] || return 1
+  resolver=$(command -v chat-name 2>/dev/null) || resolver=''
+  [ -n "$resolver" ] || { [ ! -x "$HOME/.local/bin/chat-name" ] || resolver=$HOME/.local/bin/chat-name; }
+  [ -n "$resolver" ] || return 1
+  "$resolver" "$1" 2>/dev/null
+}
+
+instruction_alert_sendable() {
+  command -v "${INSTRUCTION_WATCH_ALERT:-hs}" >/dev/null 2>&1
+}
+
+# File names stay in the JSON journal, never in the Lua command.
+instruction_alert_poke() {
+  local alert=${INSTRUCTION_WATCH_ALERT:-hs}
+  command -v "$alert" >/dev/null 2>&1 || return 1
+  ( "$alert" -c 'local ok, m = pcall(require, "instruction-watch"); if ok then m.pump() end' \
+      >/dev/null 2>&1 & ) &
+  return 0
+}
+
+instruction_journal_line() { # kind session summary [count] [file]
+  local sent=unsent chat='' id
+  instruction_alert_sendable && sent=attempted
+  [ -z "$2" ] || chat=$(instruction_chat_name "$2") || chat=''
+  id=$(printf '%s\n%s\n%s\n%s\n' "$1" "$$" "$RANDOM" "$(instruction_now)" | shasum -a 256 | cut -c1-16)
+  jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" --arg sid "$2" --arg kind "$1" \
+    --arg summary "$3" --arg sent "$sent" --arg count "${4:-}" --arg file "${5:-}" --arg chat "$chat" \
+    '{id:$id,at:$at,sid:$sid,kind:$kind,summary:$summary,sent:$sent,
+      files:(if $file == "" then [] else [$file] end),bytes:[],restores:[],reverted:[]} +
+      (if $count != "" then {count:($count|tonumber)} else {} end) +
+      (if $chat != "" then {chat:$chat} else {} end)' 2>/dev/null
+}
+
+instruction_stamp_forged() { # path session
+  local line
+  line=$(instruction_journal_line stamp-forged "$2" \
+    "STAMP-FORGED $1 (a retry stamp no denial of this session minted)" '' "$1") || return 1
+  [ -n "$line" ] && instruction_journal_append "$line" || return 1
+  instruction_alert_poke || true
+}
+
+# The append and the trim share one short mkdir lock: a tail-then-mv drops a line another session
+# appends between the two, after that session has already claimed its marker.
+instruction_journal_append() { # json-line
+  local state journal lock i=0 born now n max=${INSTRUCTION_WATCH_JOURNAL_MAX:-200}
+  state=$(instruction_watch_state)
+  journal="$state/events.jsonl"
+  lock="$state/journal.lock"
+  mkdir -p "$state" 2>/dev/null || return 1
+  while ! mkdir "$lock" 2>/dev/null; do
+    born=$(stat -f %m "$lock" 2>/dev/null) || born=
+    now=$(date +%s)
+    if [ -n "$born" ] && [ $((now - born)) -gt 30 ]; then
+      rmdir "$lock" 2>/dev/null || true
+    fi
+    i=$((i + 1))
+    [ "$i" -lt 50 ] || return 1
+    sleep 0.02
+  done
+  printf '%s\n' "$1" >>"$journal" 2>/dev/null || { rmdir "$lock" 2>/dev/null; return 1; }
+  n=$(wc -l <"$journal" 2>/dev/null) || n=0
+  if [ "${n:-0}" -gt $((max * 2)) ] 2>/dev/null; then
+    _instruction_journal_trim "$journal" "$state/receipts" "$max"
+  fi
+  rmdir "$lock" 2>/dev/null || true
+  return 0
+}
+
+# Only a record Hammerspoon has receipted is trimmed. Unreceipted ones stay up to twice the cap;
+# past it the oldest go and ONE `dropped` record carrying their count (and any earlier unreceipted
+# `dropped` record's) is appended, so the bound reports itself instead of losing changes silently.
+_instruction_journal_trim() { # journal receipts max
+  local j=$1 rdir=$2 max=$3 line id kind count k carry=0 nu=0 nr=0 cut_r cut_u out need_d=''
+  local -a lines=() cls=()
+  while IFS= read -r line <&3 && IFS=$'\t' read -r id kind count <&4; do
+    if [ -n "$id" ] && [ -e "$rdir/$id" ]; then
+      cls+=(r); nr=$((nr + 1))
+    elif [ "$kind" = dropped ]; then
+      case "$count" in ''|*[!0-9]*) count=1 ;; esac
+      cls+=(d); carry=$((carry + count))
+    else
+      cls+=(u); nu=$((nu + 1))
+    fi
+    lines+=("$line")
+  done 3<"$j" 4< <(jq -R -r '(fromjson? // {}) | (if type == "object" then . else {} end)
+      | [(.id // "" | tostring), (.kind // "" | tostring), (.count // 1 | tostring)] | @tsv' "$j" 2>/dev/null)
+  [ "${#lines[@]}" -gt 0 ] || return 0
+  cut_u=0
+  if [ "$carry" -gt 0 ] || [ "$nu" -gt $((max * 2)) ]; then
+    need_d=1
+    [ "$nu" -le $((max * 2 - 1)) ] || cut_u=$((nu - (max * 2 - 1)))
+  fi
+  cut_r=$((nr + nu - cut_u - max))
+  [ -z "$need_d" ] || cut_r=$((cut_r + 1))
+  [ "$cut_r" -gt 0 ] || cut_r=0
+  [ "$cut_r" -le "$nr" ] || cut_r=$nr
+  out="$j.$$"
+  : >"$out" 2>/dev/null || return 1
+  for k in "${!lines[@]}"; do
+    case "${cls[$k]}" in
+      r) if [ "$cut_r" -gt 0 ]; then cut_r=$((cut_r - 1)); continue; fi ;;
+      d) continue ;;
+      u) if [ "$cut_u" -gt 0 ]; then cut_u=$((cut_u - 1)); carry=$((carry + 1)); continue; fi ;;
+    esac
+    printf '%s\n' "${lines[$k]}" >>"$out"
+  done
+  if [ -n "$need_d" ]; then
+    instruction_journal_line dropped '' \
+      "DROPPED $carry instruction-change records Hammerspoon never receipted (the journal bound)" \
+      "$carry" >>"$out" || { rm -f "$out"; return 1; }
+  fi
+  mv "$out" "$j" 2>/dev/null || rm -f "$out" 2>/dev/null
 }

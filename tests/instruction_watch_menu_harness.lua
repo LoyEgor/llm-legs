@@ -39,6 +39,7 @@ end
 
 local alerts = {}
 local savedDir = M.stateDir()
+check(savedDir == fixture, "INSTRUCTION_WATCH_STATE did not decide the default state directory: " .. tostring(savedDir))
 local savedWatcherNew = hs.pathwatcher.new
 check(debug.getinfo(M.pump, "S").source:sub(1, #root + 1) == "@" .. root,
     "the harness loaded instruction-watch outside its root")
@@ -51,6 +52,7 @@ local function restore()
     M.setOpenCommand(nil)
     M.setChatResolver(nil)
     M.setRatesPath(nil)
+    M.setHome(nil)
     M.setStateDir(nil)
     package.path = savedPath
     package.loaded["instruction-watch"] = existing
@@ -307,7 +309,7 @@ local ok, err = pcall(function()
         end
     end
     appendEvent("badbytes", now, "unused", { indexed }, { 1, 2 })
-    local bad = M.menuItems()[1]
+    local bad = M.menuItems()[2]
     check(not plain(bad.title):find("tok/wk", 1, true), "mismatched bytes produced a price")
     check(not plain(bad.menu[2].title):find("tok/wk", 1, true), "mismatched bytes produced a file price")
 
@@ -317,7 +319,7 @@ local ok, err = pcall(function()
         return utf8.len(text:sub(1, (atEnd and finish or start) - 1))
     end
     appendEvent("aligned", now, "unused", { indexed, "/tmp/top/f09.md" }, { -32000, 5 })
-    local alignedMenu = M.menuItems()[1].menu
+    local alignedMenu = M.menuItems()[2].menu
     local lineA, lineB = plain(alignedMenu[2].title), plain(alignedMenu[3].title)
     check(lineA:find("-32k", 1, true) and lineB:find("+5", 1, true) and lineA:find("#1 ", 1, true)
         and lineB:find("#13", 1, true), "aligned fixture lines lack their cells: [" .. lineA .. "] [" .. lineB .. "]")
@@ -531,6 +533,202 @@ local ok, err = pcall(function()
     M.stop()
     M.setStateDir(fixture)
     os.execute('rmdir "' .. missing .. '"')
+
+    local wf = _G.INSTRUCTION_WATCHER_FIXTURE
+    check(type(wf) == "table", "no watcher fixture was passed")
+    if type(wf) ~= "table" then return end
+    M.stop()
+    M.setStateDir(wf.state)
+    M.setHome(wf.home)
+    M.setRatesPath(wf.state .. "/no-rates.json")
+    M.setChatResolver(function(_, onDone) onDone("") end)
+    local fired = {}
+    hs.pathwatcher.new = function(dir, cb)
+        fired[dir] = cb
+        return { start = function(self) return self end, stop = function() end }
+    end
+    local function records()
+        local out = {}
+        for line in (readFile(wf.state .. "/events.jsonl") or ""):gmatch("[^\n]+") do
+            local okLine, decoded = pcall(hs.json.decode, line)
+            if okLine and type(decoded) == "table" then out[#out + 1] = decoded end
+        end
+        return out
+    end
+    local function write(path, body, mode)
+        local handle = assert(io.open(path, mode or "a"))
+        handle:write(body)
+        handle:close()
+    end
+    local function fire(path)
+        local real = hs.fs.pathToAbsolute(path) or path
+        local best
+        for dir in pairs(fired) do
+            if real:sub(1, #dir + 1) == dir .. "/" and (not best or #dir > #best) then best = dir end
+        end
+        check(best ~= nil, "no watched root covers " .. real)
+        if best then fired[best]({ real }, {}) end
+    end
+    local function quoted(value) return "'" .. tostring(value):gsub("'", "'\\''") .. "'" end
+    local function tripwire(mode, sid, gate)
+        local payload = hs.json.encode({ session_id = sid, cwd = wf.home, tool_name = "Bash",
+            hook_event_name = gate and "PreToolUse" or mode == "baseline" and "SessionStart" or "PostToolUse",
+            tool_use_id = gate and "toolu_seam" or nil, tool_input = { command = "true" } })
+        return os.execute(table.concat({ "env", "HOME=" .. quoted(wf.home), "PATH=" .. quoted(wf.path),
+            "INSTRUCTION_WATCH_STATE=" .. quoted(wf.state),
+            "INSTRUCTION_WATCH_LOG=" .. quoted(wf.home .. "/.claude/instruction-changes.log"),
+            "INSTRUCTION_WATCH_ALERT=" .. quoted(wf.home .. "/no-such-hs"), "INSTRUCTION_WATCH_CHAT=off",
+            "TOKENMAP_RATES=" .. quoted(wf.home .. "/no-rates.json"),
+            "bash", quoted(gate or wf.watch), mode, "<<'PAYLOAD' >/dev/null 2>&1\n" .. payload .. "\nPAYLOAD\n" }, " "))
+    end
+    local function isRed(title)
+        if type(title) ~= "userdata" then return false end
+        local okTable, parts = pcall(function() return title:asTable() end)
+        if not okTable then return false end
+        for index = 2, #parts do
+            local color = type(parts[index]) == "table" and type(parts[index].attributes) == "table"
+                and parts[index].attributes.color
+            if type(color) == "table" and (color.red or 0) > 0.8 and (color.green or 1) < 0.3 then return true end
+        end
+        return false
+    end
+    local doc, settings = wf.home .. "/.claude/docs/x.md", wf.home .. "/.claude/settings.json"
+    local heartbeat = wf.state .. "/watcher/heartbeat"
+
+    alerts = {}
+    M.start()
+    local started = records()
+    check(#started == 1 and started[1].kind == "changed-while-watcher-off" and started[1].source == "watcher"
+        and tostring(started[1].summary):find("SNAPSHOT-MISSING", 1, true) ~= nil,
+        "a watcher loading with no snapshot did not journal one changed-while-watcher-off record: "
+        .. tostring(#started))
+    local roots, wantRoots = M.watchRoots(), {}
+    for _, dir in ipairs({ wf.home .. "/.claude", wf.repo }) do wantRoots[hs.fs.pathToAbsolute(dir)] = true end
+    check(#roots == 2 and wantRoots[roots[1]] and wantRoots[roots[2]],
+        "the watcher does not watch exactly ~/.claude and the ranked repository: " .. table.concat(roots, ", "))
+    local liveTitle = M.menuItems()[1].title
+    local live = plain(liveTitle)
+    check(live:find("^watcher: live since ") ~= nil and live:find("· 2 roots · 3 files", 1, true) ~= nil
+        and not isRed(liveTitle), "the liveness line is not green with its counts: " .. live)
+    check(findRow(M.menuItems(), "older in events.jsonl") == nil, "a trailer was shown with nothing hidden")
+
+    local before = #records()
+    write(doc, "grown line\n")
+    fire(doc)
+    local after = records()
+    local grown = after[#after]
+    check(#after == before + 1, "a write with no hook produced " .. (#after - before) .. " records")
+    if #after == before + 1 then
+        check(grown.source == "watcher" and grown.writer == "unknown" and grown.kind == "change",
+            "the watcher record lacks source/writer/kind: " .. hs.json.encode(grown))
+        check(type(grown.files) == "table" and grown.files[1] == doc, "the watcher record names the wrong file")
+        check(type(grown.bytes) == "table" and grown.bytes[1] == #"grown line\n",
+            "the watcher record carries the wrong byte delta")
+        check(readFile(wf.state .. "/receipts/" .. tostring(grown.id)) ~= nil, "the watcher record was never receipted")
+        local grownRow = findRow(M.menuItems(), "docs/x.md")
+        check(grownRow ~= nil and plain(grownRow.menu[1].title) == "writer: unknown",
+            "the unattributed row does not say writer: unknown")
+    end
+    before = #records()
+    hs.fs.mkdir(wf.home .. "/.claude/projects")
+    write(wf.home .. "/.claude/notes.txt", "not watched\n")
+    write(wf.home .. "/.claude/projects/MEMORY.md", "not watched either\n")
+    fire(wf.home .. "/.claude/notes.txt")
+    fire(wf.home .. "/.claude/projects/MEMORY.md")
+    check(#records() == before, "a write outside the visible set was journaled")
+
+    local sidB = "eeee5555-0000-4000-8000-00000000000b"
+    check(tripwire("", sidB, wf.gate), "the write gate refused a plain Bash call")
+    local mark = readFile(wf.state .. "/inflight/" .. sidB) or ""
+    check(mark:match("^%d+%.%d+ toolu_seam Bash ") ~= nil, "the write gate left no in-flight mark: " .. mark)
+    M.setChatResolver(function(_, onDone) onDone("Writer chat (eeee5555)") end)
+    write(doc, "second line\n")
+    fire(doc)
+    os.remove(wf.state .. "/inflight/" .. sidB)
+    local named = records()
+    local attributed = named[#named] or {}
+    local restore = tostring((attributed.restores or {})[1] or "")
+    check(#named == before + 1 and attributed.writer == "Writer chat (eeee5555)" and attributed.sid == sidB,
+        "a write inside an in-flight window is not attributed to that session: " .. hs.json.encode(attributed))
+    check(restore:find("^cp '") ~= nil, "the watcher offered no restore for bytes it had already seen")
+    local kept = restore:match("^cp '([^']+)'")
+    check(kept ~= nil and readFile(kept) == "watched doc\ngrown line\n",
+        "the restore command does not point at the bytes before the change")
+
+    M.setChatResolver(function(_, onDone) onDone("") end)
+    check(tripwire("baseline", "sid-watch-c"), "the tripwire baseline did not run")
+    write(doc, "third line\n")
+    write(settings, '{"model":"sonnet","hooks":{"x":1}}\n', "w")
+    before = #records()
+    local alertsBefore = #alerts
+    check(tripwire("check", "sid-watch-c"), "the tripwire check did not run")
+    fire(doc)
+    fire(settings)
+    M.pump()
+    local marked = records()
+    check(#marked == before + 1 and marked[#marked].source == nil,
+        "tripwire then watcher did not leave exactly the tripwire's one record: " .. (#marked - before))
+    check(#alerts - alertsBefore == 1, "tripwire then watcher alerted " .. (#alerts - alertsBefore) .. " times")
+    write(settings, '{"model":"haiku","hooks":{"x":1}}\n', "w")
+    fire(settings)
+    check(#records() == before + 1, "a model switch in settings.json was journaled by the watcher")
+
+    M.stop()
+    write(doc, "while off\n")
+    M.start()
+    local off = records()
+    check(off[#off].kind == "changed-while-watcher-off"
+        and tostring(off[#off].summary):find("CHANGED-WHILE-WATCHER-OFF " .. doc, 1, true) ~= nil,
+        "a change while the watcher was off was not journaled against its snapshot")
+
+    local fresh = os.time()
+    hs.fs.touch(heartbeat, fresh - 10 * 60, fresh - 10 * 60)
+    local downTitle = M.menuItems()[1].title
+    check(plain(downTitle):find("^watcher: DOWN since ") ~= nil and isRed(downTitle),
+        "a stale heartbeat does not render a red DOWN line: " .. plain(downTitle))
+    write(heartbeat, string.format("since=%d roots=0 files=3\n", fresh), "w")
+    local noRoots = M.menuItems()[1].title
+    check(plain(noRoots):find("^watcher: DOWN since ") ~= nil and isRed(noRoots),
+        "a heartbeat with no running root does not render DOWN: " .. plain(noRoots))
+    os.remove(heartbeat)
+    local never = M.menuItems()[1].title
+    check(plain(never) == "watcher: never started" and isRed(never), "a missing heartbeat is not never started")
+
+    local now = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    local function journalLine(event)
+        write(wf.state .. "/events.jsonl", hs.json.encode(event) .. "\n")
+    end
+    journalLine({ id = "dropped1", at = now, kind = "dropped", count = 7, sid = "", summary = "", files = {} })
+    journalLine({ id = "forged1", at = now, kind = "stamp-forged", sid = "", files = { "/tmp/forged/CLAUDE.md" },
+        summary = "STAMP-FORGED /tmp/forged/CLAUDE.md" })
+    local bounds = M.menuItems()
+    check(findRow(bounds, "7 changes dropped") ~= nil, "a dropped record does not render as N changes dropped")
+    local forged = findRow(bounds, "forged/CLAUDE.md")
+    check(forged ~= nil and isRed(forged.title), "a stamp-forged record is not a red row")
+
+    for i = 1, 14 do
+        journalLine({ id = string.format("older%04d", i), at = now, sid = "", files = { "/tmp/older.md" },
+            summary = "CHANGED /tmp/older.md (+1 bytes)", bytes = { 1 } })
+    end
+    local total = #records()
+    check(findRow(M.menuItems(), "+" .. (total - 12) .. " older in events.jsonl") ~= nil,
+        "the twelve-row cap hides " .. (total - 12) .. " records without a trailer")
+
+    local flood = {}
+    for i = 1, 400 do
+        flood[i] = hs.json.encode({ id = string.format("flood%04d", i), at = now, sid = "", files = {}, summary = "x" })
+    end
+    write(wf.state .. "/events.jsonl", table.concat(flood, "\n") .. "\n", "w")
+    write(doc, "past the bound\n")
+    fire(doc)
+    local bounded = records()
+    local last = bounded[#bounded] or {}
+    check(#bounded == 400 and last.kind == "dropped" and last.count == 2,
+        "the watcher's append past the bound dropped records without a dropped record: " .. #bounded)
+
+    M.stop()
+    M.setHome(nil)
+    M.setStateDir(fixture)
 end)
 
 restore()

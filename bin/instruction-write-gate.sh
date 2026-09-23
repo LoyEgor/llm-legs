@@ -41,11 +41,14 @@ command -v jq >/dev/null 2>&1 ||
 input=$(cat) || input=''
 values=$(printf '%s' "$input" | jq -er '
   [(.tool_name // ""), (.session_id // ""), (.cwd // ""), (.transcript_path // ""),
-   (.tool_input.command // "")]
+   (.tool_use_id // "" | tostring), (.tool_input.command // "")]
   | join("\u001f")' 2>/dev/null) ||
   { echo "instruction write gate: the hook payload does not parse" >&2; exit 2; }
-IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript command <<< "$values" || :
+IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript tool_use_id command <<< "$values" || :
 [ "$tool_name" = Bash ] || exit 0
+# Before any decision: the tripwire attributes bytes to this call by the mark's time, never by the
+# command text. A denied call never runs, so every deny below takes its mark back.
+instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd"
 [ -n "$command" ] || exit 0
 
 # A continuation is one command to the shell but two lines to grep, and every pattern below is
@@ -59,11 +62,14 @@ command=${command//\\$'\n'/ }
 # already knows the cwd-relative form, so the fast path was the only thing hiding it.
 # `review-debt-ignore` carries no `.md` and is written from inside `.claude/` as a bare name, so
 # neither of the first two patterns sees it and the guarded basename below is never reached.
-# An ANSI-C quoted run spells a name through escapes, and the volume folds letter case, so neither
-# the literal suffix nor its case is a safe reason to leave early.
-case "$command" in
-  *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*"\$'"*) ;;
-  *) exit 0 ;;
+# An ANSI-C quoted run spells a name through escapes, a quote or a backslash splits it
+# (`CLAUDE.m\d`), and the volume folds letter case, so none of those is a reason to leave early.
+# `git apply` and `git stash pop` name no destination at all.
+case "$command" in *"\$'"*) ;; *)
+  case "${command//[\\\"\']/}" in
+    *.[Mm][Dd]*|*.claude/*|*[Rr][Ee][Vv][Ii][Ee][Ww]-[Dd][Ee][Bb][Tt]*|*git*apply*|*git*stash*) ;;
+    *) exit 0 ;;
+  esac ;;
 esac
 
 alternation=''
@@ -186,6 +192,7 @@ while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
   case "$row_kind" in
     redirect|copy) ;;
     refuse)
+      instruction_inflight_clear "$sid"
       echo "instruction write gate: this command writes to a path holding a tab or a newline ($row_name) under an instruction-file location; no gate can check such a name, so it is refused. Use a plain name." >&2
       exit 2
       ;;
@@ -214,22 +221,39 @@ if [ -z "$denied" ] && printf '%s' "$flat" | grep -Eiq "${interp_write}"; then
     fi
   done < <(printf '%s' "$flat" | grep -Eio "$interp_cons")
 fi
+if [ -z "$denied" ]; then
+  while IFS= read -r landing; do
+    [ -n "$landing" ] || continue
+    if judge_row "$landing" trunc; then
+      denied=1
+      break
+    fi
+  done < <(instruction_git_landing "$command" "$cwd")
+fi
 [ -n "$denied" ] || exit 0
 
 # A relay worker gets no stamp and no honour path: the retry both doors grant is for the chat Egor
 # negotiated with, and a worker spends it by asking twice. The review-debt list keeps its own
 # reason below — what a line in it retires is a review, not a context window.
 case "$class" in
-  always|span) instruction_in_relay && { instruction_relay_refusal "$hit" >&2; exit 2; } ;;
+  always|span) instruction_in_relay && { instruction_inflight_clear "$sid"; instruction_relay_refusal "$hit" >&2; exit 2; } ;;
 esac
 
 # The session is part of the key: a parallel chat spending its own retry must not spend this
 # one's, and a later session must not inherit approval Egor gave in an earlier turn.
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$hit" "$command" | shasum -a 256 | cut -c1-16)
-if instruction_stamp_ready "$STAMP_DIR" "$hash"; then
+instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid"
+stamp_rc=$?
+if [ "$stamp_rc" = 0 ]; then
   if instruction_user_turn_after_stamp "$transcript" "$STAMP_DIR/$hash"; then
     instruction_stamp_consume "$STAMP_DIR" "$hash" && exit 0
   fi
+fi
+instruction_inflight_clear "$sid"
+if [ "$stamp_rc" = 3 ]; then
+  instruction_stamp_forged "$hit" "$sid"
+  echo "instruction write gate: a retry stamp for this write to $hit was there before any denial of this session minted it, so it was removed and recorded for Egor; running the command again gets the ordinary denial." >&2
+  exit 2
 fi
 
 # The number has to be the one THIS file costs. A skill and an agent doc are a factor of thirty

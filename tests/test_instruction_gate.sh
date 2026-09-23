@@ -11,6 +11,7 @@ asserts=0
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert() { asserts=$((asserts + 1)); "$@" || fail "assert $asserts failed: $*"; }
+assert_fails() { asserts=$((asserts + 1)); ! "$@" || fail "assert $asserts failed: succeeded: $*"; }
 assert_eq() {
   asserts=$((asserts + 1))
   [ "$1" = "$2" ] || fail "assert $asserts failed: expected '$1', got '$2'"
@@ -315,6 +316,46 @@ assert_eq deny "$(decision "$cmd2")"
 age_stamps
 assert_eq deny "$(GATE_SID=session-two decision "$cmd2")"
 
+echo "== write gate: a retry stamp no denial of this session minted is refused and recorded"
+# The name is learnt from a denial in a scratch cache, so the planted directory is exactly the one
+# a real denial of that session would have made.
+learn_stamp() { # command [session]
+  local scratch="$WORK/learn-$RANDOM$RANDOM"
+  GATE_SID=${2:-session-one} INSTRUCTION_WRITE_GATE_STAMPS="$scratch/stamps" \
+    INSTRUCTION_WATCH_STATE="$scratch/state" decision "$1" >/dev/null
+  ls "$scratch/stamps"
+}
+JW="$INSTRUCTION_WATCH_STATE/events.jsonl"
+forged_count() { cat "$JW" 2>/dev/null | grep -c '"kind":"stamp-forged"' || true; }
+cmd3="echo forged > $CLAUDE_MD"
+h3=$(learn_stamp "$cmd3")
+mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h3"
+age_stamps
+append_write_user
+n0=$(forged_count)
+out=$(gate "$cmd3" 2>&1; echo "rc=$?")
+assert_contains "rc=2" "$out"
+assert_contains "retry stamp" "$out"
+assert_eq $((n0 + 1)) "$(forged_count)"
+assert_eq session-one "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r .sid)"
+assert_eq "$CLAUDE_MD" "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r '.files[0]')"
+assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h3" ]
+assert_eq deny "$(decision "$cmd3")"
+age_stamps
+append_write_user
+assert_eq pass "$(decision "$cmd3")"
+cmd4="echo borrowed > $CLAUDE_MD"
+assert_eq deny "$(decision "$cmd4")"
+h4a=$(learn_stamp "$cmd4")
+h4b=$(learn_stamp "$cmd4" session-two)
+mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h4b"
+cp "$INSTRUCTION_WATCH_STATE/denied/$h4a" "$INSTRUCTION_WATCH_STATE/denied/$h4b"
+age_stamps
+append_write_user
+out=$(GATE_SID=session-two gate "$cmd4" 2>&1; echo "rc=$?")
+assert_contains "rc=2" "$out"
+assert_eq session-two "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r .sid)"
+
 echo "== write gate: a trailing redirect or comment does not move the destination"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD 2>/dev/null")"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD # harmless note")"
@@ -555,6 +596,20 @@ assert_eq pass "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
 # The stamp and the note it was denied with are both gone, so the next identical edit starts over.
 assert_eq 0 "$(count_in)"
 assert_eq deny "$(retry_decision "$CLAUDE_MD" retry-one Edit "$TRANSCRIPT")"
+
+echo "== bloat gate: a planted retry stamp is refused and recorded, not honoured"
+FORGE="$WORK/learn-bloat"
+retry_payload "$CLAUDE_MD" forge-one Edit "$TRANSCRIPT" \
+  | INSTRUCTION_BLOAT_GATE_STAMPS="$FORGE/stamps" INSTRUCTION_WATCH_STATE="$FORGE/state" \
+    bash "$BLOAT" >/dev/null 2>&1
+hb=$(find "$FORGE/stamps" -mindepth 1 -maxdepth 1 -type d)
+mkdir -p "$RETRY_STAMPS/${hb##*/}"
+age_stamps "$RETRY_STAMPS"
+append_read "$CLAUDE_MD"
+out=$(retry_bloat "$CLAUDE_MD" forge-one Edit "$TRANSCRIPT" 2>&1; echo "rc=$?")
+assert_contains "rc=2" "$out"
+assert_eq forge-one "$(grep '"kind":"stamp-forged"' "$INSTRUCTION_WATCH_STATE/events.jsonl" | tail -1 | jq -r .sid)"
+assert_eq deny "$(retry_decision "$CLAUDE_MD" forge-one Edit "$TRANSCRIPT")"
 
 echo "== bloat gate: the read counts under either spelling of the file"
 # ~/.claude/CLAUDE.md is a symlink into a config repository: the edit lands on one name and the
@@ -1701,11 +1756,24 @@ echo "== tripwire: growth this session's own call produced is put back inside th
 # The gate ahead of this one can read a command's shape but never its result, so the bytes are
 # this hook's to measure. Inside the span growth goes back rather than being reported: Egor is
 # away, and the span's rule is the only arbiter left in the room.
+tool_payload() { # event sid tool key value transcript
+  jq -cn --arg e "$1" --arg s "$2" --arg n "$3" --arg k "$4" --arg v "$5" --arg t "$6" --arg c "$WORK" \
+    --arg u "tu-$2" '{session_id:$s,hook_event_name:$e,transcript_path:$t,tool_name:$n,cwd:$c,
+      tool_use_id:$u,tool_input:{($k):$v}}'
+}
+# The gate's own PreToolUse is what marks a call in flight, so every case that expects a revert
+# runs it ahead of the bytes landing, exactly as the harness does. The gate calls of the matrix
+# above leave marks no check consumes; any of them would make this window ambiguous.
+pre_call() { # sid tool key value transcript
+  local gate=$BLOAT
+  [ "$2" = Bash ] && gate=$WRITE_GATE
+  rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+  arm_span "$1" "$5"
+  tool_payload PreToolUse "$@" | bash "$gate" >/dev/null 2>&1 || true
+}
 span_check() { # sid tool key value transcript
   arm_span "$1" "$5"
-  jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "$5" --arg c "$WORK" \
-    '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
-      tool_input:{($k):$v}}' | bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
+  tool_payload PostToolUse "$@" | bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
 }
 span_base() { jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}' | bash "$WATCH" baseline; }
 # The bytes this case goes back to are its own: the machine-wide marker is named for the file and
@@ -1714,8 +1782,12 @@ span_base() { jq -cn --arg s "$1" '{session_id:$s,hook_event_name:"PostToolUse"}
 # the model.
 printf 'tier doc before the revert case\n' > "$DOC"
 span_base sid-revert >/dev/null
+grow_cmd="perl -pi -e 's/\$/ a line no human asked for/' $DOC"
+pre_call sid-revert Bash command "$grow_cmd" "$SPAN_T"
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-revert" ]
 printf 'a line no human asked for\n' >> "$DOC"
-ctx=$(span_check sid-revert Bash command "echo a line no human asked for >> $DOC" "$SPAN_T")
+ctx=$(span_check sid-revert Bash command "$grow_cmd" "$SPAN_T")
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-revert" ]
 assert_contains "REVERTED" "$ctx"
 assert_contains "PUT BACK" "$ctx"
 assert_eq 0 "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq '.bytes[0]')"
@@ -1732,6 +1804,7 @@ echo "== tripwire: an Edit says which file it wrote in its own payload"
 AGENT_MD="$HOME/.claude/agents/codex-worker.md"
 span_base sid-revert-edit >/dev/null
 before=$(cat "$AGENT_MD")
+pre_call sid-revert-edit Edit file_path "$AGENT_MD" "$SPAN_T"
 printf 'a brief nobody approved\n' >> "$AGENT_MD"
 ctx=$(span_check sid-revert-edit Edit file_path "$AGENT_MD" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
@@ -1740,31 +1813,31 @@ assert_eq "$before" "$(cat "$AGENT_MD")"
 echo "== tripwire: outside the span nothing is rolled back"
 # Egor is here to arbiter, and the writer may be another chat sharing the checkout.
 span_base sid-nospan >/dev/null
+pre_call sid-nospan Bash command "$grow_cmd" "$NOSPAN_T"
 printf 'grown out of the span\n' >> "$DOC"
-ctx=$(span_check sid-nospan Bash command "echo grown out of the span >> $DOC" "$NOSPAN_T")
+ctx=$(span_check sid-nospan Bash command "$grow_cmd" "$NOSPAN_T")
 assert_contains "CHANGED" "$ctx"
 assert_contains "puts them back" "$ctx"
 case "$ctx" in *REVERTED*) fail "the tripwire rolled back a change with Egor in the room" ;; esac
 assert_contains "grown out of the span" "$(cat "$DOC")"
 printf 'tier doc\n' > "$DOC"
 
-echo "== tripwire: a call that only NAMES the file claims nothing"
+echo "== tripwire: bytes that landed before this call started claim nothing"
 # In a shared checkout the writer is as often another chat as this session, and a rollback decided
 # on a guess eats that chat's live work.
 span_base sid-foreign >/dev/null
 printf 'grown by somebody else\n' >> "$DOC"
+pre_call sid-foreign Bash command "grep -c . $DOC" "$SPAN_T"
 ctx=$(span_check sid-foreign Bash command "grep -c . $DOC" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
 case "$ctx" in *REVERTED*) fail "the tripwire rolled back a change it could not attribute" ;; esac
 assert_contains "grown by somebody else" "$(cat "$DOC")"
 printf 'tier doc\n' > "$DOC"
 
-echo "== tripwire: a write verb aimed elsewhere is not this call's write"
-# The bytes have to LAND in the file: `sed -n` reads it, and a redirect names the file it writes.
-# Blaming either for growth another chat in the same checkout produced puts that chat's work back.
-# An interpreter row is the parse reporting a name it found inside a payload it cannot read, so it
-# is evidence of a mention and never of a write: reading a file must not roll back the growth
-# another chat in the same checkout produced.
+echo "== tripwire: a call whose window missed the write is not its writer, whatever it names"
+# The bytes have to land while the call is in flight: a command that names the file — `sed -n`,
+# a redirect aimed elsewhere, a runtime reading it — started after another chat's growth and is not
+# blamed for it.
 aimed_case=0
 for read_cmd in "sed -n '1,5p' $DOC" "cat $DOC > $WORK/scratch/copy.md" \
                 "python3 -c 'open(\"$DOC\").read()'" \
@@ -1772,6 +1845,7 @@ for read_cmd in "sed -n '1,5p' $DOC" "cat $DOC > $WORK/scratch/copy.md" \
   aimed_case=$((aimed_case + 1))
   span_base "sid-aimed-$aimed_case" >/dev/null
   printf 'grown by somebody else\n' >> "$DOC"
+  pre_call "sid-aimed-$aimed_case" Bash command "$read_cmd" "$SPAN_T"
   ctx=$(span_check "sid-aimed-$aimed_case" Bash command "$read_cmd" "$SPAN_T")
   assert_contains "CHANGED" "$ctx"
   case "$ctx" in *REVERTED*) fail "a command that only read the file was blamed for its growth: $read_cmd" ;; esac
@@ -1782,6 +1856,7 @@ done
 echo "== tripwire: an interpreter READING the every-session file is not a write to it"
 span_base sid-read-always >/dev/null
 printf 'a line no human asked for\n' >> "$CLAUDE_MD"
+pre_call sid-read-always Bash command "python3 -c 'open(\"$CLAUDE_MD\").read()'" "$SPAN_T"
 ctx=$(span_check sid-read-always Bash command "python3 -c 'open(\"$CLAUDE_MD\").read()'" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
 case "$ctx" in *REVERTED*) fail "a python read of the global file was blamed for its growth" ;; esac
@@ -1896,6 +1971,7 @@ assert_contains "git push" "$(scan_of "$(printf 'echo "shift is 1 << n"\ngit pus
 assert_eq deny "$(decision "$(printf 'echo $((1<<n))\ncat %s/stage/tmp.md > %s\n' "$WORK" "$CLAUDE_MD")")"
 # A heredoc whose terminator IS there keeps dropping its body, which is what the pass is for.
 assert_eq 0 "$(scan_of "$(printf 'cat > %s/stage/scratch <<EOF\ngit push\nEOF\n' "$WORK")" | grep -c 'git push')"
+assert_contains "git push" "$(scan_of "$(printf 'bash -c "$(cat <<EOF\ngit push\nEOF\n)"')")"
 assert_eq pass "$(decision "$(printf 'cat > %s/stage/scratch <<EOF\nsee %s for the rule\nEOF\n' "$WORK" "$CLAUDE_MD")")"
 
 # A git alias body is a program git hands to a shell, and it runs as a command line of its own.
@@ -1936,7 +2012,9 @@ for special in '$1 push' '$@ push' '$* push' '$_ push' '$- push' '$! push' '$? p
   assert_eq yes "$(unresolved "$special")"
 done
 
-echo "== one parse: the tripwire attributes exactly what that parse finds"
+echo "== in flight: the gate denies by the parse, the tripwire attributes by the clock"
+# A call the gate lets through and whose window covers the write is its writer; bytes that landed
+# before the call started are not, whatever destination the command names.
 parse_case=0
 while IFS='|' read -r owns cmd; do
   [ -n "$cmd" ] || continue
@@ -1944,7 +2022,13 @@ while IFS='|' read -r owns cmd; do
   printf 'tier doc\n' > "$DOC"
   printf 'staged\n' > "$WORK/stage/review-tiers.md"
   span_base "sid-parse-$parse_case" >/dev/null
-  printf 'a line no human asked for\n' >> "$DOC"
+  if [ "$owns" = yes ]; then
+    pre_call "sid-parse-$parse_case" Bash command "$cmd" "$SPAN_T"
+    printf 'a line no human asked for\n' >> "$DOC"
+  else
+    printf 'a line no human asked for\n' >> "$DOC"
+    pre_call "sid-parse-$parse_case" Bash command "$cmd" "$SPAN_T"
+  fi
   ctx=$(span_check "sid-parse-$parse_case" Bash command "$cmd" "$SPAN_T")
   if [ "$owns" = yes ]; then
     assert_contains "REVERTED" "$ctx"
@@ -1968,6 +2052,8 @@ printf 'tier doc\n' > "$DOC"
 
 echo "== tripwire: a write that SHRANK the file is what the span exists for"
 span_base sid-shrink >/dev/null
+pre_call sid-shrink Bash command "printf tiny > $DOC" "$SPAN_T"
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-shrink" ]
 printf 'tiny\n' > "$DOC"
 ctx=$(span_check sid-shrink Bash command "printf tiny > $DOC" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
@@ -1979,6 +2065,7 @@ printf 'tier doc\n' > "$DOC"
 CMD_MD="$HOME/.claude/commands/worker.md"
 printf '%129s\n' | tr ' ' x > "$CMD_MD"
 span_base sid-shrink-edit >/dev/null
+pre_call sid-shrink-edit Edit file_path "$CMD_MD" "$SPAN_T"
 printf 'x\n' > "$CMD_MD"
 ctx=$(span_check sid-shrink-edit Edit file_path "$CMD_MD" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
@@ -1989,19 +2076,19 @@ printf 'command doc\n' > "$CMD_MD"
 echo "== tripwire: settings.json is watched and never reverted"
 # No gate speaks for it, in the span or out of it.
 span_base sid-set-span >/dev/null
+pre_call sid-set-span Bash command "echo x > $HOME/.claude/settings.json" "$SPAN_T"
 printf '{"model":"opus","hooks":{"Stop":[],"PreToolUse":[]}}\n' > "$HOME/.claude/settings.json"
 ctx=$(span_check sid-set-span Bash command "echo x > $HOME/.claude/settings.json" "$SPAN_T")
 assert_contains "settings.json" "$ctx"
 case "$ctx" in *REVERTED*) fail "the tripwire rolled back settings.json, which no gate speaks for" ;; esac
 
 echo "== tripwire: growth through a path the gate cannot see is still put back"
-# A heredoc fed to an interpreter, which is why the attribution reads the RAW command: the target
-# is named inside the body the gate drops.
+# A script file names its target nowhere in the command, so no parse could ever attribute it; the
+# clock does.
 span_base sid-heredoc >/dev/null
-printf 'a line through a heredoc\n' >> "$DOC"
-ctx=$(span_check sid-heredoc Bash command "python3 - <<'EOF'
-open('$DOC','a').write('a line through a heredoc')
-EOF" "$SPAN_T")
+pre_call sid-heredoc Bash command "python3 $WORK/stage/grow.py" "$SPAN_T"
+printf 'a line through a script\n' >> "$DOC"
+ctx=$(span_check sid-heredoc Bash command "python3 $WORK/stage/grow.py" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
 assert_eq "tier doc" "$(cat "$DOC")"
 
@@ -2089,13 +2176,13 @@ echo "== tripwire: inside a relay a worker's growth is put back with Egor in the
 # here is the relay and not only the span.
 relay_check() { # sid tool key value [transcript]
   arm_span "$1" "${5:-$NOSPAN_T}"
-  jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "${5:-$NOSPAN_T}" --arg c "$WORK" \
-    '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
-      tool_input:{($k):$v}}' \
+  tool_payload PostToolUse "$1" "$2" "$3" "$4" "${5:-$NOSPAN_T}" \
     | env CLAUDEB_WORKER=1 bash "$WATCH" check | jq -r '.hookSpecificOutput.additionalContext // ""'
 }
+relay_pre() { CLAUDEB_WORKER=1 pre_call "$1" "$2" "$3" "$4" "${5:-$NOSPAN_T}"; }
 printf 'tier doc\n' > "$DOC"
 span_base sid-relay-revert >/dev/null
+relay_pre sid-relay-revert Bash command "sed -i '' -e 's/x/y/' $DOC"
 printf 'a line no worker was asked for\n' >> "$DOC"
 ctx=$(relay_check sid-relay-revert Bash command "sed -i '' -e 's/x/y/' $DOC")
 assert_contains "REVERTED" "$ctx"
@@ -2104,14 +2191,16 @@ assert_contains "under MD-PROPOSAL in your RETURN" "$ctx"
 assert_eq "tier doc" "$(cat "$DOC")"
 # A shrink is not growth, here as much as inside the span.
 span_base sid-relay-shrink >/dev/null
+relay_pre sid-relay-shrink Bash command "sed -i '' -e 's/.*/tiny/' $DOC"
 printf 'tiny\n' > "$DOC"
-ctx=$(relay_check sid-relay-shrink Bash command "printf tiny > $DOC")
+ctx=$(relay_check sid-relay-shrink Bash command "sed -i '' -e 's/.*/tiny/' $DOC")
 assert_contains "CHANGED" "$ctx"
 case "$ctx" in *REVERTED*) fail "a relay worker's shrink was put back" ;; esac
 assert_eq "tiny" "$(cat "$DOC")"
 printf 'tier doc\n' > "$DOC"
 # settings.json is watched and no gate speaks for it, so no worker rule reaches it either.
 span_base sid-relay-settings >/dev/null
+relay_pre sid-relay-settings Bash command "echo x > $HOME/.claude/settings.json"
 printf '{"model":"opus","hooks":{"Stop":[],"PostToolUse":[]}}\n' > "$HOME/.claude/settings.json"
 ctx=$(relay_check sid-relay-settings Bash command "echo x > $HOME/.claude/settings.json")
 assert_contains "settings.json" "$ctx"
@@ -2122,6 +2211,7 @@ case "$ctx" in *REVERTED*) fail "a relay rule reached settings.json, which no ga
 # the proposal Egor would price never reaches him.
 printf 'tier doc\n' > "$DOC"
 span_base sid-relay-in-span >/dev/null
+relay_pre sid-relay-in-span Bash command "sed -i '' -e 's/x/y/' $DOC" "$SPAN_T"
 printf 'a line no worker was asked for\n' >> "$DOC"
 ctx=$(relay_check sid-relay-in-span Bash command "sed -i '' -e 's/x/y/' $DOC" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
@@ -2154,9 +2244,7 @@ printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> %s\n' "$ALERT_REC" > "$WORK/alert-stu
 chmod +x "$WORK/alert-stub"
 raw_check() { # sid tool key value transcript
   arm_span "$1" "$5"
-  jq -cn --arg s "$1" --arg n "$2" --arg k "$3" --arg v "$4" --arg t "$5" --arg c "$WORK" \
-    '{session_id:$s,hook_event_name:"PostToolUse",transcript_path:$t,tool_name:$n,cwd:$c,
-      tool_input:{($k):$v}}' | bash "$WATCH" check
+  tool_payload PostToolUse "$@" | bash "$WATCH" check
 }
 alert_said() {
   local i=0
@@ -2183,8 +2271,9 @@ assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T
 echo "== tripwire: a session whose write was put back is still told"
 printf 'tier doc\n' > "$DOC"
 span_base sid-quiet-revert >/dev/null
+pre_call sid-quiet-revert Bash command "$grow_cmd" "$SPAN_T"
 printf 'a line no human asked for\n' >> "$DOC"
-ctx=$(raw_check sid-quiet-revert Bash command "echo a line no human asked for >> $DOC" "$SPAN_T" \
+ctx=$(raw_check sid-quiet-revert Bash command "$grow_cmd" "$SPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "REVERTED" "$ctx"
 assert_eq "tier doc" "$(cat "$DOC")"
@@ -2192,8 +2281,9 @@ assert_eq "tier doc" "$(cat "$DOC")"
 echo "== tripwire: off silences the chat channel entirely"
 export INSTRUCTION_WATCH_CHAT=off
 span_base sid-off >/dev/null
+pre_call sid-off Bash command "$grow_cmd" "$SPAN_T"
 printf 'another line no human asked for\n' >> "$DOC"
-assert_eq "" "$(raw_check sid-off Bash command "echo another line no human asked for >> $DOC" "$SPAN_T")"
+assert_eq "" "$(raw_check sid-off Bash command "$grow_cmd" "$SPAN_T")"
 assert_eq "tier doc" "$(cat "$DOC")"
 export INSTRUCTION_WATCH_CHAT=all
 
@@ -2231,6 +2321,130 @@ assert_eq "$journal_delta" "$(printf '%s' "$rec" | jq '.bytes[0]')"
 assert_eq 'Stub chat (abcdef12)' "$(printf '%s' "$rec" | jq -r '.chat')"
 printf '#!/bin/sh\nexit 1\n' > "$HOME/.local/bin/chat-name"
 
+echo "== in flight: bytes no mark accounts for are reported, never put back"
+printf 'tier doc\n' > "$DOC"
+span_base sid-nomark >/dev/null
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+printf 'a line nobody marked\n' >> "$DOC"
+ctx=$(span_check sid-nomark Bash command "$grow_cmd" "$SPAN_T")
+assert_contains "CHANGED $DOC" "$ctx"
+assert_eq "" "$(printf '%s' "$ctx" | grep -o REVERTED)"
+assert_contains "a line nobody marked" "$(cat "$DOC")"
+assert_eq unknown "$(tail -1 "$J" | jq -r .writer)"
+
+echo "== in flight: a mark another call of the session left is not this call's window"
+printf 'tier doc\n' > "$DOC"
+span_base sid-idm >/dev/null
+pre_call sid-idm Bash command "$grow_cmd" "$SPAN_T"
+printf 'a line under a parallel call mark\n' >> "$DOC"
+ctx=$(tool_payload PostToolUse sid-idm Bash command "$grow_cmd" "$SPAN_T" \
+      | jq -c '.tool_use_id = "tu-parallel"' | bash "$WATCH" check \
+      | jq -r '.hookSpecificOutput.additionalContext // ""')
+assert_contains "CHANGED $DOC" "$ctx"
+assert_eq "" "$(printf '%s' "$ctx" | grep -o REVERTED)"
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-idm" ]
+
+echo "== in flight: two sessions' windows over one write name both chats and put nothing back"
+cat > "$HOME/.local/bin/chat-name" <<'STUB'
+#!/bin/sh
+printf 'Chat of %s\n' "$1"
+STUB
+printf 'tier doc\n' > "$DOC"
+span_base sid-amb-a >/dev/null
+pre_call sid-amb-a Bash command "$grow_cmd" "$SPAN_T"
+tool_payload PreToolUse sid-amb-b Bash command 'git status --short' "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-amb-b" ]
+printf 'a line either chat could have written\n' >> "$DOC"
+ctx=$(span_check sid-amb-a Bash command "$grow_cmd" "$SPAN_T")
+assert_contains "CHANGED $DOC" "$ctx"
+assert_eq "" "$(printf '%s' "$ctx" | grep -o REVERTED)"
+assert_contains "either chat" "$(cat "$DOC")"
+rec=$(tail -1 "$J")
+assert_eq ambiguous "$(printf '%s' "$rec" | jq -r .writer)"
+assert_eq "sid-amb-a sid-amb-b" "$(printf '%s' "$rec" | jq -r '[.candidates[].sid] | sort | join(" ")')"
+assert_eq "Chat of sid-amb-a|Chat of sid-amb-b" \
+  "$(printf '%s' "$rec" | jq -r '[.candidates[].chat] | sort | join("|")')"
+printf '#!/bin/sh\nexit 1\n' > "$HOME/.local/bin/chat-name"
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+
+echo "== in flight: a denied call leaves no window behind"
+arm_span sid-deny "$SPAN_T"
+out=$(tool_payload PreToolUse sid-deny Bash command "printf x >> $CLAUDE_MD" "$SPAN_T" \
+      | bash "$WRITE_GATE" 2>/dev/null)
+assert_contains '"deny"' "$out"
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-deny" ]
+out=$(tool_payload PreToolUse sid-deny Edit file_path "$DOC" "$SPAN_T" \
+      | jq -c --arg n "$big" '.tool_input += {old_string:"tier", new_string:$n}' | bash "$BLOAT" 2>/dev/null)
+assert_contains '"deny"' "$out"
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-deny" ]
+printf 'tier doc\n' > "$DOC"
+span_base sid-deny >/dev/null
+printf 'a line after the denial\n' >> "$DOC"
+ctx=$(span_check sid-deny Edit file_path "$DOC" "$SPAN_T")
+assert_contains "CHANGED $DOC" "$ctx"
+assert_eq "" "$(printf '%s' "$ctx" | grep -o REVERTED)"
+
+echo "== in flight: a mark older than an hour is a dead call, swept without a word"
+printf 'tier doc\n' > "$DOC"
+span_base sid-live >/dev/null
+pre_call sid-live Bash command "$grow_cmd" "$SPAN_T"
+printf '%s tu-dead Bash /tmp\n' "$(( $(date +%s) - 7200 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-dead"
+printf 'a line the live call wrote\n' >> "$DOC"
+assert_contains "REVERTED" "$(span_check sid-live Bash command "$grow_cmd" "$SPAN_T")"
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-dead" ]
+assert_eq this-call "$(tail -1 "$J" | jq -r .writer)"
+assert_eq 0 "$(grep -c sid-dead "$J")"
+printf 'tier doc\n' > "$DOC"
+
+echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
+TRIM_STATE="$WORK/trim"
+trim_plant() { # unreceipted receipted
+  rm -rf "$TRIM_STATE"
+  mkdir -p "$TRIM_STATE/receipts"
+  { [ "$2" = 0 ] || seq 1 "$2" | awk '{printf "{\"id\":\"r%d\",\"kind\":\"change\",\"summary\":\"r\"}\n", $1}'
+    seq 1 "$1" | awk '{printf "{\"id\":\"u%d\",\"kind\":\"change\",\"summary\":\"u\"}\n", $1}'
+  } | grep . > "$TRIM_STATE/events.jsonl"
+  [ "$2" = 0 ] || (cd "$TRIM_STATE/receipts" && seq 1 "$2" | sed 's/^/r/' | xargs touch)
+}
+trim_append() {
+  INSTRUCTION_WATCH_STATE="$TRIM_STATE" INSTRUCTION_WATCH_JOURNAL_MAX=200 \
+    share_call 'instruction_journal_append "$2"' "{\"id\":\"new$1\",\"kind\":\"change\",\"summary\":\"n\"}"
+}
+TJ="$TRIM_STATE/events.jsonl"
+trim_plant 249 0
+trim_append 1
+assert_eq 250 "$(grep -c . "$TJ")"
+assert_eq 0 "$(grep -c '"kind":"dropped"' "$TJ")"
+trim_plant 249 151
+trim_append 1
+assert_eq 250 "$(grep -c . "$TJ")"
+assert_eq 0 "$(grep -c '"id":"r' "$TJ")"
+assert_eq 0 "$(grep -c '"kind":"dropped"' "$TJ")"
+trim_plant 99 301
+trim_append 1
+assert_eq 200 "$(grep -c . "$TJ")"
+assert_eq 100 "$(grep -c '"id":"r' "$TJ")"
+assert_eq '"r202"' "$(grep '"id":"r' "$TJ" | head -1 | jq .id)"
+trim_plant 449 0
+trim_append 1
+assert_eq 400 "$(grep -c . "$TJ")"
+assert_eq dropped "$(tail -1 "$TJ" | jq -r .kind)"
+assert_eq 51 "$(tail -1 "$TJ" | jq -r .count)"
+assert_eq '"u52"' "$(head -1 "$TJ" | jq .id)"
+trim_append 2
+assert_eq 400 "$(grep -c . "$TJ")"
+assert_eq 1 "$(grep -c '"kind":"dropped"' "$TJ")"
+assert_eq 52 "$(tail -1 "$TJ" | jq -r .count)"
+
+echo "== baseline sweep: a quiet session that just ran a check is alive, a silent one goes"
+span_base sid-alive >/dev/null
+span_base sid-gone >/dev/null
+touch -t 202001010000 "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" \
+  "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv"
+assert_eq "" "$(raw_check sid-alive Bash command 'git status --short' "$NOSPAN_T")"
+span_base sid-sweeper >/dev/null
+assert [ -e "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" ]
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv" ]
 
 echo "== journal: a delivery that could not even be attempted says so"
 saved_alert=$INSTRUCTION_WATCH_ALERT
@@ -2471,6 +2685,20 @@ echo "== bypasses: every shell spelling of a write onto a guarded file is refuse
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/projects/p/memory" "$WORK/repo2/.claude/agents" \
          "$WORK/repo2/skills/foo"
 printf 'policy\n' > "$HOME/.claude/hooks/policy.md"
+# The ordinary stash stays on top: the bare `stash pop` case below must land in notes.txt.
+GL="$WORK/gitland"
+mkdir -p "$GL"
+git -C "$GL" init -q
+printf 'rules\n' > "$GL/CLAUDE.md"
+printf 'notes\n' > "$GL/notes.txt"
+git -C "$GL" add CLAUDE.md notes.txt
+git -C "$GL" -c user.name=t -c user.email=t@t commit -qm init
+printf 'more rules\n' >> "$GL/CLAUDE.md"
+git -C "$GL" -c user.name=t -c user.email=t@t stash -q
+printf 'more notes\n' >> "$GL/notes.txt"
+git -C "$GL" -c user.name=t -c user.email=t@t stash -q
+printf -- '--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n rules\n+more\n' > "$WORK/claude.patch"
+printf -- '--- a/notes.txt\n+++ b/notes.txt\n@@ -1 +1,2 @@\n notes\n+more\n' > "$WORK/notes.patch"
 while read -r want c; do
   [ -n "$c" ] || continue
   c=$(printf '%b' "$c")
@@ -2506,7 +2734,20 @@ pass echo x 2>&1
 pass cat > /tmp/scratch <<'X'\nprintf x >> CLAUDE.md\nX
 pass bash -n /tmp/x.sh && cat > /tmp/scratch <<'X'\nprintf x >> CLAUDE.md\nX
 pass cp ~/.claude/CLAUDE.md /tmp/backup.md
-pass git stash pop
+pass git -C ../gitland stash pop
+deny git -C ../gitland stash pop stash@{1}
+deny cd ../gitland && git stash apply stash@{1}
+deny git -C ../gitland apply ../claude.patch
+deny git apply ../claude.patch
+deny cat ../claude.patch | git apply --index
+deny git apply <<'X'\n--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n rules\n+more\nX
+pass git -C ../gitland apply ../notes.patch
+pass git apply --check ../claude.patch
+deny bash -c "$(cat <<'EOF'\nprintf x >> ~/.claude/CLAUDE.md\nEOF\n)"
+deny printf x >> CLAUDE.m\\d
+deny printf x >> CLAUDE.m""d
+pass python3 -c "x = 1; y = x >> ~/.claude/CLAUDE.md"
+deny python3 -c "x = 1; y = 2"; printf x >> ~/.claude/CLAUDE.md
 pass python3 -c "print(open('CLAUDE.md').read()); x = 1"
 CASES
 
@@ -2607,15 +2848,15 @@ assert_contains "session-unknown-" "$(ls "$INSTRUCTION_WATCH_STATE")"
 jq -cn '{hook_event_name:"SessionStart"}' | bash "$WATCH" baseline >/dev/null
 assert [ "$(ls "$INSTRUCTION_WATCH_STATE" | grep -c '^session-unknown-')" = 1 ]
 
-echo "== bypasses: the tripwire attributes a write however its target is spelled"
+echo "== bypasses: the tripwire attributes a write by the clock, whatever the tool"
 printf 'tier doc\n' > "$DOC"
-for c in "printf x >> $'${DOC%d}\\x64'" "perl -pi -e 's/\$/ more/' $DOC"; do
-  span_base sid-spell >/dev/null
-  printf 'a line no human asked for\n' >> "$DOC"
-  assert_contains "REVERTED" "$(span_check sid-spell Bash command "$c" "$SPAN_T")"
-  assert_eq "tier doc" "$(cat "$DOC")"
-done
+span_base sid-spell >/dev/null
+pre_call sid-spell Bash command "$grow_cmd" "$SPAN_T"
+printf 'a line no human asked for\n' >> "$DOC"
+assert_contains "REVERTED" "$(span_check sid-spell Bash command "$grow_cmd" "$SPAN_T")"
+assert_eq "tier doc" "$(cat "$DOC")"
 span_base sid-multi >/dev/null
+pre_call sid-multi MultiEdit file_path "$DOC" "$SPAN_T"
 printf 'a line no human asked for\n' >> "$DOC"
 assert_contains "REVERTED" "$(span_check sid-multi MultiEdit file_path "$DOC" "$SPAN_T")"
 assert_eq "tier doc" "$(cat "$DOC")"
@@ -2647,14 +2888,22 @@ raise SystemExit(result.returncode)
 HSPY
 }
 assert [ -s "$INSTRUCTION_WATCH_STATE/events.jsonl" ]
+WH="$WORK/watcher"
+mkdir -p "$WH/home/.claude/docs" "$WH/repo" "$WH/state"
+printf 'watched doc\n' > "$WH/home/.claude/docs/x.md"
+printf '{"model":"opus","hooks":{}}\n' > "$WH/home/.claude/settings.json"
+printf 'repo rules\n' > "$WH/repo/CLAUDE.md"
+printf '#1\n%s\n' "$WH/repo/CLAUDE.md" > "$WH/state/ranked.txt"
 if command -v hs >/dev/null 2>&1 && [ "$(hs_bounded -c 'return "ok"' 2>/dev/null)" = ok ]; then
   # Isolate require and globals: the harness otherwise replaces the live module and starts it.
   menu_lua=$(cat <<LUA
 local env = setmetatable({}, { __index = _G })
-env._G = { INSTRUCTION_WATCH_FIXTURE = [[$INSTRUCTION_WATCH_STATE]] }
+env._G = { INSTRUCTION_WATCH_FIXTURE = [[$INSTRUCTION_WATCH_STATE]], INSTRUCTION_WATCHER_FIXTURE = {
+    home = [[$WH/home]], state = [[$WH/state]], repo = [[$WH/repo]], watch = [[$WATCH]], gate = [[$WRITE_GATE]], path = [[$PATH]] } }
 env.package = { path = package.path, loaded = {} }
 env.os = setmetatable({ getenv = function(key)
     if key == "HOME" then return [[$HOME]] end
+    if key == "INSTRUCTION_WATCH_STATE" then return [[$INSTRUCTION_WATCH_STATE]] end
     return os.getenv(key)
 end }, { __index = os })
 local inert = function() return { start = function() end, stop = function() end } end
@@ -2674,7 +2923,7 @@ LUA
 )
   menu_out=$(hs_bounded -c "$menu_lua" 2>/dev/null) \
     || fail "the Hammerspoon menu harness threw"
-  assert_eq "PASS: instruction-watch menu contract" "$menu_out"
+  assert_eq "PASS: instruction-watch menu contract" "$(printf '%s\n' "$menu_out" | grep -v '^-- Loading extension: ')"
 else
   echo "   (skipped: Hammerspoon is not reachable from this shell)"
 fi
