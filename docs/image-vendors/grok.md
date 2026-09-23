@@ -27,7 +27,7 @@ Two wrappers read that one manifest: [`bin/grok-image`](../../bin/grok-image) fo
 | Exact dimensions / resolution / quality | No such parameter on either tool | B1, B2 |
 | Multiple outputs | No `n`: “To produce multiple images, emit multiple tool calls with distinct prompts.” | B1 |
 | Transparency | Wrapper chroma key onto a `.png`; no alpha or background parameter, the client writes `jpg` | B2, B5, [chroma implementation](../../share/image-chroma.sh) |
-| Image model | `grok-imagine-image-quality` compiled in; `grok-image` pins the manifest's `grok-imagine-image-2.0` in `features.image_gen_model_override` AND `image_edit_model_override`, so generation and editing run on the same model | B5, B8 |
+| Image model | `grok-imagine-image-quality` compiled in; `grok-image` pins the manifest's `grok-imagine-image-2.0` in `features.image_gen_model_override` AND `image_edit_model_override`, so generation and editing run on the same model. A deliberate pin: the remote settings leave both keys null, so unpinned runs would fall back to the retiring compiled-in model | B5, B8 |
 | Parallelism | `tools.media_gen.max_parallel_image_gen_calls` (default 8, also `GROK_MAX_PARALLEL_IMAGE_GEN_CALLS`) caps image calls per model step; the wrapper asks for one image | B8 |
 | Resume | `--resume <UUID>` → `grok -r`; the id is the terminal event's `sessionId` | B6, D1 |
 | Generated file | `tool_call_update` with `rawOutput.type` `ImageGen` or `ImageEdit`, absolute `.path` | B5 |

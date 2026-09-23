@@ -185,6 +185,10 @@ EOF
 
 cat >"$WORK/bin/codex" <<'EOF'
 #!/usr/bin/env bash
+case "${1:-}" in
+  --version) printf 'codex-cli 0.156.1\n'; exit 0 ;;
+  debug) exit 0 ;;
+esac
 {
   printf 'CODEX_CALL\n'
   printf 'CODEX_HOME=%q\n' "${CODEX_HOME-__unset__}"
@@ -275,6 +279,10 @@ fi
 if [ "${STUB_CODE:-0}" -eq 0 ]; then
   printf 'session id: codex-session\n' >&2
   printf 'codex result\n' >"$out"
+  if [ -r "$STUB_DIR/codex_rollout" ]; then
+    mkdir -p "${CODEX_HOME:-$HOME/.codex}/sessions/2026/09/23"
+    cp "$STUB_DIR/codex_rollout" "${CODEX_HOME:-$HOME/.codex}/sessions/2026/09/23/rollout-2026-09-23T00-00-00-codex-session.jsonl"
+  fi
 fi
 exit "${STUB_CODE:-0}"
 EOF
@@ -2577,6 +2585,42 @@ export STUB_MODEL_USAGE='{"claude-haiku-4-5-20251001":{"outputTokens":500},"clau
 start_ok claudeb
 assert await_done
 assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = claude-opus-4-8
+
+# Codex: the rollout's last turn_context model, or the server's reroute after it.
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=servedcodex
+printf '%s\n' '{"type":"session_meta","payload":{}}' '{"type":"turn_context","payload":{"model":"gpt-6.1-astra"}}' \
+  '{"type":"event_msg","payload":{"type":"model_reroute","from_model":"gpt-6.1-astra","to_model":"gpt-6-astra"}}' \
+  >"$STUB_DIR/codex_rollout"
+start_ok codex
+assert await_done
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = gpt-6-astra
+assert grep -qx 'SERVED: gpt-6-astra' <<<"$("$RUNNER" report "$RUN_ID")"
+clear_stub
+export PICK_ACCOUNT=servedcodex2
+printf '%s\n' '{"type":"turn_context","payload":{"model":"gpt-6.1-astra"}}' >"$STUB_DIR/codex_rollout"
+start_ok codex
+assert await_done
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = gpt-6.1-astra
+rm -f "$STUB_DIR/codex_rollout"
+
+# A family word is resolved again on the account the attempt runs on: its own list, not the
+# machine-wide newest one.
+clear_stub
+saved_models_cache=$CODEXB_MODELS_CACHE
+unset CODEXB_MODELS_CACHE
+mkdir -p "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"' "$saved_models_cache" \
+  >"$HOME/.codex-profiles/ownlist/models_cache.json"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z" | .models |= map(select(.slug != "gpt-6.1-astra"))' \
+  "$saved_models_cache" >"$HOME/.codex-profiles/otherlist/models_cache.json"
+export PICK_RC=0 PICK_ACCOUNT=ownlist
+start_ok codex --model astra
+assert await_done
+assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
+assert test "$(jq -r '.model_id' "$RUN_DIR/meta.json")" = gpt-6.1-astra
+rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist"
+export CODEXB_MODELS_CACHE=$saved_models_cache
 
 readonly_runs="$WORK/readonly-runs"
 readonly_workdir="$WORK/readonly-workdir"

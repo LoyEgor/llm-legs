@@ -1451,7 +1451,8 @@ instruction_denial_tag() { # hash
 
 # `denied/<hash>` lives in a cache the model can write and its name is computable, so the record
 # alone proves nothing: the harness writes every denial reason into the transcript as an is_error
-# tool_result, a text no tool of the model's can start with a gate's name. No readable transcript
+# tool_result behind its own `PreToolUse:<tool> hook error: ` prefix, a text no tool of the model's
+# can start with. No readable transcript
 # is no evidence either way, as for the audit read. Asked only of an aged stamp: a twin in the same
 # batch arrives before the harness has written the first denial.
 _instruction_deny_witnessed() { # hash transcript
@@ -1463,7 +1464,7 @@ _instruction_deny_witnessed() { # hash transcript
     | .message.content? | arrays | .[]
     | select(type == "object" and .type == "tool_result" and .is_error == true)
     | (.content | if type == "string" then . else ([.[]? | objects | .text? | strings] | join("")) end)
-    | select(test("^Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
+    | select(test("^(PreToolUse:[A-Za-z]+ hook error: )?Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
 }
 
 instruction_stamp_consume() {

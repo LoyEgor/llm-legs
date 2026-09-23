@@ -907,6 +907,11 @@ supervise_codex() {
   REPLY_ARRAY=()
   read_json_array '.images[]' "$meta"
   images=("${REPLY_ARRAY[@]}")
+  # Resolved again here, on the account this attempt runs on: a reroute lands on another account,
+  # and each account's catalog is its own.
+  value=$(worker_model_codex_slug "$model" "$account") && [ -n "$value" ] &&
+    [ "$value" != "$(jq -r '.model_id // empty' "$meta")" ] &&
+    { meta_update "$directory" '.model_id = $id' --arg id "$value" || :; }
   if [ -n "$resume" ]; then
     command=("$cli" exec resume "$resume")
     value=$(jq -r 'if (.explicit_model // "") != "" then .model_id // .explicit_model else empty end' "$meta")
@@ -950,7 +955,7 @@ supervise_codex() {
     if [ "$dropped" = true ]; then
       value=$(codex_config_model)
       worker_model_allows codex "$value" || return "$rc"
-      value=$(worker_model_codex_slug "$value") && [ -n "$value" ] || return "$rc"
+      value=$(worker_model_codex_slug "$value" "$account") && [ -n "$value" ] || return "$rc"
       retry+=(-c "model=\"$value\"")
       meta_update "$directory" '.model_flag_dropped = true' || return 4
       : >"$directory/out"
@@ -958,7 +963,21 @@ supervise_codex() {
       rc=$?
     fi
   fi
+  codex_record_served "$directory" "$account"
   return "$rc"
+}
+
+# The rollout names the model the client asked for on each turn, and a `model_reroute` event where
+# the server answered with another; the last of them is what served the run.
+codex_record_served() { # directory account
+  local session transcript served
+  session=$(session_id "$1")
+  transcript=$(session_transcript codex "$2" "$session") || return 0
+  served=$(jq -rR 'fromjson? | select(type == "object")
+      | if .type == "turn_context" then .payload.model?
+        elif .type == "event_msg" and .payload.type? == "model_reroute" then .payload.to_model?
+        else empty end | strings' "$transcript" 2>/dev/null | tail -n 1)
+  [ -z "$served" ] || meta_update "$1" '.served_model = $model' --arg model "$served" || :
 }
 
 supervise_gemini() {

@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+set -u
+
+resolve_script() {
+  local source="${BASH_SOURCE[0]}" directory
+  while [ -L "$source" ]; do
+    directory=$(cd -P "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$directory/$source"
+  done
+  cd -P "$(dirname "$source")" && printf '%s/%s\n' "$PWD" "$(basename "$source")"
+}
+
+script_path=$(resolve_script)
+repo_root=$(cd "$(dirname "$script_path")/.." && pwd)
+state_dir="${VENDOR_CLI_UPDATE_STATE_DIR:-$HOME/.cache/vendor-cli-update}"
+state_file="$state_dir/state.json"
+log_file="$state_dir/update.log"
+codex_profiles_dir="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}"
+agent_dir="$HOME/Library/LaunchAgents"
+label="com.llm-legs.vendor-cli-update"
+plist="$agent_dir/$label.plist"
+wrapper="$HOME/.local/libexec/vendor-cli-update"
+# agy and the native Claude Code update themselves; npm installs never do, and a vendor lists a new
+# model only to a client at least as new as the model's minimal_client_version. An npm claude is a
+# second install that any PATH with /usr/local/bin or nvm first runs instead of the native one.
+vendors="codex grok claude"
+
+package_of() {
+  case $1 in
+    codex) printf '@openai/codex\n' ;;
+    grok) printf '@xai-official/grok\n' ;;
+    claude) printf '@anthropic-ai/claude-code\n' ;;
+  esac
+}
+
+timeout_command() {
+  if command -v gtimeout >/dev/null 2>&1; then
+    command gtimeout "$@"
+  elif command -v timeout >/dev/null 2>&1; then
+    command timeout "$@"
+  else
+    perl -e 'alarm shift; exec @ARGV' "$@"
+  fi
+}
+
+stamp() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+node_bin_dir() { # cli -> the npm bin directory that installed it
+  local dir found=''
+  if [ -n "${VENDOR_CLI_UPDATE_BIN_DIR:-}" ]; then
+    printf '%s\n' "$VENDOR_CLI_UPDATE_BIN_DIR"
+    return 0
+  fi
+  while IFS= read -r dir; do
+    [ -x "$dir/$1" ] && [ -x "$dir/npm" ] && found=$dir
+  done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V)
+  [ -n "$found" ] && printf '%s\n' "$found"
+}
+
+version_of() { "$@" 2>/dev/null | head -n 1 | LC_ALL=C grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
+
+newer() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1)" = "$1" ]; }
+
+# A running client is found by the executable it maps, never by its command line: a worker starts
+# `<nvm>/bin/grok`, a symlink, so no argument names the package it would be replaced from. lsof exits
+# 1 whenever one listed file is not open, so only its output answers.
+busy() { # vendor npm-root
+  local file
+  local -a files=()
+  case $1 in
+    codex)
+      while IFS= read -r file; do files+=("$file"); done < <(find "$2/@openai/codex" -type f -path '*/vendor/*/bin/codex' 2>/dev/null)
+      ;;
+    grok) files=("$2/@xai-official/grok/bin/grok-native" "$HOME"/.grok/bin/grok-*) ;;
+    claude) files=("$2/@anthropic-ai/claude-code/bin/claude.exe") ;;
+  esac
+  [ "${#files[@]}" -gt 0 ] && [ -n "$(lsof -t -- "${files[@]}" 2>/dev/null)" ]
+}
+
+record() { # vendor result installed latest [from]
+  local tmp
+  [ "$2" = current ] || [ "$2" = not-installed ] ||
+    printf '%s %s %s %s -> %s\n' "$(stamp)" "$1" "$2" "${5:-${3:--}}" "${4:--}" >>"$log_file"
+  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
+  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } |
+    jq --arg v "$1" --arg r "$2" --arg i "$3" --arg l "$4" --arg t "$(stamp)" \
+      '.[$v] = ((.[$v] // {}) + {result: $r, installed: $i, latest: $l, checked_at: $t})' >"$tmp" 2>/dev/null &&
+    mv -f "$tmp" "$state_file" || rm -f "$tmp"
+}
+
+refresh_models() { # vendor bin-dir
+  local home
+  case $1 in
+    codex)
+      for home in "$HOME/.codex" "$codex_profiles_dir"/*; do
+        [ -f "$home/auth.json" ] || continue
+        CODEX_HOME=$home PATH="$2:$PATH" timeout_command 60 "$2/codex" debug models >/dev/null 2>&1 ||
+          printf '%s codex models refresh failed in %s\n' "$(stamp)" "$home" >>"$log_file"
+      done
+      ;;
+    grok)
+      PATH="$2:$PATH" timeout_command 120 "${VENDOR_CLI_UPDATE_GROKB:-$repo_root/bin/grokb}" models --refresh >/dev/null 2>&1 ||
+        printf '%s grok models refresh failed\n' "$(stamp)" >>"$log_file"
+      ;;
+  esac
+}
+
+# Codex state is per home, and not only our CLI writes it: the ChatGPT app runs its own bundled codex
+# against ~/.codex. Each finding is a line `kind<TAB>where<TAB>what`.
+codex_divergence() { # bin-dir installed-version -> foreign writers before the refresh
+  local home client
+  for home in "$HOME/.codex" "$codex_profiles_dir"/*; do
+    [ -f "$home/models_cache.json" ] || continue
+    client=$(jq -r '.client_version // "" | tostring' "$home/models_cache.json" 2>/dev/null)
+    [ -z "$client" ] || [ "$client" = "$2" ] || printf 'writer\t%s\t%s\n' "$(home_account "$home")" "$client"
+  done
+}
+home_account() { if [ "$1" = "$HOME/.codex" ]; then printf main; else printf '%s' "${1##*/}"; fi; }
+# Any other codex executable running on this machine, found by what runs rather than by where an app
+# happens to install one.
+codex_foreign_clients() { # npm-root
+  local path version
+  ps -axo comm= 2>/dev/null | LC_ALL=C sort -u | while IFS= read -r path; do
+    [ "${path##*/}" = codex ] && [ -x "$path" ] || continue
+    case "$path" in "$1"/*) continue ;; esac
+    version=$(version_of timeout_command 10 "$path" --version)
+    printf 'client\t%s\t%s\n' "$path" "${version:-unknown}"
+  done
+}
+# Accounts whose installed-client list lacks a model another account lists: a plan difference, or an
+# account the vendor serves differently. Read after the refresh.
+codex_catalog_gaps() { # installed-version
+  local home rows='' union
+  for home in "$HOME/.codex" "$codex_profiles_dir"/*; do
+    [ -f "$home/auth.json" ] && [ -f "$home/models_cache.json" ] || continue
+    [ "$(jq -r '.client_version // ""' "$home/models_cache.json" 2>/dev/null)" = "$1" ] || continue
+    rows+="$(home_account "$home")"$'\t'"$(jq -r '[.models[]?.slug | strings] | sort | join(",")' "$home/models_cache.json" 2>/dev/null)"$'\n'
+  done
+  [ -n "$rows" ] || return 0
+  union=$(printf '%s' "$rows" | cut -f2 | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort -u)
+  printf '%s' "$rows" | while IFS=$'\t' read -r account slugs; do
+    missing=$(comm -23 <(printf '%s\n' "$union") <(printf '%s\n' "$slugs" | tr ',' '\n' | LC_ALL=C sort -u) | paste -sd, -)
+    [ -z "$missing" ] || printf 'catalog\t%s\tmissing %s\n' "$account" "$missing"
+  done
+}
+record_divergence() { # vendor findings
+  local tmp before
+  before=$(jq -r --arg v "$1" '.[$v].divergence // [] | .[]' "$state_file" 2>/dev/null)
+  [ "$before" = "$2" ] || printf '%s %s divergence: %s\n' "$(stamp)" "$1" "$(printf '%s' "${2:-none}" | tr '\t\n' ' ;')" >>"$log_file"
+  tmp=$(mktemp "$state_dir/state.XXXXXX") || return 0
+  { [ -s "$state_file" ] && cat "$state_file" || printf '{}\n'; } |
+    jq --arg v "$1" --arg d "$2" '.[$v].divergence = ($d | split("\n") | map(select(length > 0)))' >"$tmp" 2>/dev/null &&
+    mv -f "$tmp" "$state_file" || rm -f "$tmp"
+}
+
+update_vendor() { # vendor
+  local vendor=$1 package bin_dir installed latest now
+  package=$(package_of "$vendor")
+  bin_dir=$(node_bin_dir "$vendor") || { record "$vendor" not-installed '' ''; return 0; }
+  installed=$(version_of "$bin_dir/$vendor" --version)
+  latest=$(PATH="$bin_dir:$PATH" timeout_command 60 "$bin_dir/npm" view "$package" version 2>/dev/null | tail -n 1)
+  if [ -z "$installed" ] || [ -z "$latest" ]; then
+    record "$vendor" check-failed "$installed" "$latest"
+    return 0
+  fi
+  if ! newer "$latest" "$installed"; then
+    record "$vendor" current "$installed" "$latest"
+    return 0
+  fi
+  if busy "$vendor" "$(dirname "$bin_dir")/lib/node_modules"; then
+    record "$vendor" busy "$installed" "$latest"
+    return 0
+  fi
+  if ! PATH="$bin_dir:$PATH" timeout_command 600 "$bin_dir/npm" install -g "$package@latest" >>"$log_file" 2>&1; then
+    record "$vendor" install-failed "$installed" "$latest"
+    return 0
+  fi
+  now=$(version_of "$bin_dir/$vendor" --version)
+  if [ "$now" != "$latest" ]; then
+    record "$vendor" install-failed "$now" "$latest" "$installed"
+    return 0
+  fi
+  record "$vendor" updated "$now" "$latest" "$installed"
+}
+
+run_all() {
+  local vendor bin_dir installed findings bin_dirs=''
+  mkdir -p "$state_dir"
+  if [ -z "${VENDOR_CLI_UPDATE_LOCKED:-}" ]; then
+    exec env VENDOR_CLI_UPDATE_LOCKED=1 lockf -k -t 0 "$state_dir/run.lock" "$script_path" run
+  fi
+  for vendor in $vendors; do
+    update_vendor "$vendor"
+    bin_dir=$(node_bin_dir "$vendor") || continue
+    bin_dirs+=":$bin_dir"
+    if [ "$vendor" = codex ]; then
+      installed=$(version_of "$bin_dir/codex" --version)
+      findings=$(codex_divergence "$bin_dir" "$installed")
+    fi
+    # A server adds a model for the client already installed, so the lists are re-read every run,
+    # not only after an update: every launch resolves its family word against them.
+    refresh_models "$vendor" "$bin_dir"
+    if [ "$vendor" = codex ]; then
+      findings=$(printf '%s\n%s\n%s\n' "$findings" "$(codex_foreign_clients "$(dirname "$bin_dir")/lib/node_modules")" \
+        "$(codex_catalog_gaps "$installed")" | sed '/^$/d')
+      record_divergence codex "$findings"
+    fi
+  done
+  # Appended, not prepended: the native claude in ~/.local/bin must stay the one found first.
+  PATH="$PATH$bin_dirs" timeout_command 900 "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" check \
+    >>"$log_file" 2>&1 || printf '%s fingerprint check failed\n' "$(stamp)" >>"$log_file"
+}
+
+wrapper_exec_line() {
+  printf 'exec %q "$@"' "$script_path"
+}
+
+install_agent() {
+  local wrapper_tmp
+  mkdir -p "$agent_dir" "$state_dir" "$(dirname "$wrapper")"
+  wrapper_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
+  printf '#!/usr/bin/env bash\n%s\n' "$(wrapper_exec_line)" >"$wrapper_tmp"
+  chmod 755 "$wrapper_tmp"
+  mv -f "$wrapper_tmp" "$wrapper"
+  cat >"$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$wrapper</string>
+    <string>run</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>$state_dir/launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>$state_dir/launchd.log</string>
+</dict>
+</plist>
+EOF
+  launchctl bootout "gui/$UID" "$plist" >/dev/null 2>&1 || true
+  if ! launchctl bootstrap "gui/$UID" "$plist"; then
+    launchctl load -w "$plist"
+  fi
+  printf 'Installed %s: every 30 minutes and at login.\n' "$label"
+}
+
+uninstall_agent() {
+  launchctl bootout "gui/$UID" "$plist" >/dev/null 2>&1 || launchctl unload -w "$plist" >/dev/null 2>&1 || true
+  rm -f "$plist"
+  if [ -f "$wrapper" ] && grep -qF "$(wrapper_exec_line)" "$wrapper"; then
+    rm -f "$wrapper"
+  fi
+  printf 'Uninstalled %s.\n' "$label"
+}
+
+show_status() {
+  if launchctl print "gui/$UID/$label" >/dev/null 2>&1; then
+    printf 'agent: loaded\n'
+  else
+    printf 'agent: not loaded\n'
+  fi
+  if [ -s "$state_file" ]; then
+    jq -r 'to_entries[] | "\(.key)\t\(.value.result)\tinstalled \(.value.installed)\tlatest \(.value.latest)\t\(.value.checked_at)"' "$state_file"
+  fi
+  [ -s "$state_file" ] && jq -r 'to_entries[] | .key as $v | (.value.divergence // [])[] | "\($v)\tdivergence\t\(.)"' "$state_file"
+  "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" events 2>/dev/null | sed "s/^/event\t/"
+  [ -s "$log_file" ] && tail -n 10 "$log_file"
+  return 0
+}
+
+usage() { printf 'usage: vendor-cli-update [run|install|uninstall|status]\n' >&2; exit 2; }
+
+case "${1:-run}" in
+  run) run_all ;;
+  install) install_agent ;;
+  uninstall) uninstall_agent ;;
+  status) show_status ;;
+  *) usage ;;
+esac

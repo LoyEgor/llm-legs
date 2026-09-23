@@ -5809,6 +5809,61 @@ for gate_lookup_denied in \
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
 done
 
+# --- worker-launch-gate.sh: a relay passes the brief's MODEL:/ACCOUNT: through as written --------
+# Live 2026-09-23: a codex relay handed `MODEL: sol` resolved it itself off a stale list and
+# launched `--model gpt-5.6-sol` — a full slug, which worker-run reads as a deliberate pin.
+relay_parent="$WORK/relay-parent.jsonl"
+: >"$relay_parent"
+mkdir -p "${relay_parent%.jsonl}/subagents"
+relay_brief_file() { # agent-id brief
+  jq -cn --arg brief "$2" '{type:"user",message:{role:"user",content:$brief}}' \
+    >"${relay_parent%.jsonl}/subagents/agent-$1.jsonl"
+}
+relay_payload() { # agent-type agent-id command
+  jq -cn --arg agent "$1" --arg id "$2" --arg command "$3" --arg transcript "$relay_parent" \
+    '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_type:$agent,agent_id:$id,transcript_path:$transcript,
+      tool_input:{command:$command,timeout:600000}}'
+}
+relay_brief_file relaysol $'ACCOUNT: notcom\nMODEL: sol\n\n# Probe\nRun codex --version.'
+relay_brief_file relaynomodel $'ACCOUNT: notcom\n\n# Task\nNames the sol model only in prose, where no MODEL: line starts.'
+relay_brief_file relaybare $'# Task\nNo header lines at all.'
+jq -cn '{type:"user",message:{role:"user",content:[{type:"text",text:"ACCOUNT: work4\nMODEL: astra\n\nbody"}]}}' \
+  >"${relay_parent%.jsonl}/subagents/agent-relayblocks.jsonl"
+launch_with() { printf 'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<'"'"'BRIEF_EOF'"'"'\nMODEL: gpt-5.6-sol\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /tmp %s\n' "$1"; }
+for relay_case in \
+  "codex-worker relaysol --account notcom --model gpt-5.6-sol|MODEL: sol" \
+  "codex-worker relaysol --account notcom|MODEL: sol" \
+  "codex-worker relaysol --account work4 --model sol|ACCOUNT: notcom" \
+  "codex-worker relaysol --model sol|ACCOUNT: notcom" \
+  "codex-worker relaynomodel --account notcom --model astra|no MODEL: line" \
+  "light-worker relaysol --account notcom --model sol|light row decides" \
+  "claudeb-worker relayblocks --account work4 --model=opus|MODEL: astra"; do
+  relay_spec=${relay_case%%|*} relay_reason=${relay_case#*|}
+  read -r relay_type relay_id relay_flags <<<"$relay_spec"
+  gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+  assert jq -e --arg r "$relay_reason" '.hookSpecificOutput.permissionDecisionReason | contains($r)' <<<"$gate_out" >/dev/null
+done
+for relay_case in \
+  "codex-worker relaysol --account notcom --model sol" \
+  "codex-worker relaysol --model 'sol' --account=notcom" \
+  "codex-worker relaynomodel --account notcom" \
+  "codex-worker relaybare" \
+  "codex-worker relaybare --account work4" \
+  "light-worker relaynomodel --account notcom" \
+  "claudeb-worker relayblocks --account work4 --model astra" \
+  "codex-worker relaymissing --model gpt-5.6-sol"; do
+  read -r relay_type relay_id relay_flags <<<"$relay_case"
+  gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq "" "$gate_out"
+done
+# Not a launch: a relay's wait or report is never judged against the brief.
+gate_out=$(relay_payload codex-worker relaysol 'worker-run wait codex-1-2-3 --max 540' | "$LAUNCH_GATE_BIN")
+assert_eq "" "$gate_out"
+
+
 # --- Task rows: spawn gate, per-spawn seeds, run/review/light state, the renderer's fit -----------
 TR_HOME_CACHE="$HOME/.cache/claude-worker-tags"
 tr_spawn() { # session type prompt [tool_use_id] [model]
@@ -5845,6 +5900,11 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "fork · fable · 
 # The codex row names the brief's MODEL: line.
 tr_codex=$(tr_spawn tr-codex codex-worker $'ACCOUNT: alt\nMODEL: gpt-5.6-terra\nEFFORT: high\nx') || fail "codex spawn exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · terra · high: Do the task"' <<<"$tr_codex" >/dev/null
+# With no EFFORT: line the row names the default of the brief's own model, not of the vendor's default.
+tr_codex=$(tr_spawn tr-codex-sol codex-worker $'ACCOUNT: alt\nMODEL: sol\nx') || fail "codex spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · sol · medium: Do the task"' <<<"$tr_codex" >/dev/null
+tr_codex=$(tr_spawn tr-claudeb-fable claudeb-worker $'ACCOUNT: alt\nMODEL: fable\nx') || fail "claudeb spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · fable · low: Do the task"' <<<"$tr_codex" >/dev/null
 
 # A review-waiter row reads tier, composition and lens off the run's progress document and seeds `review=`.
 TR_STATS="$WORK/tr-stats"

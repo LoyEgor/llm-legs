@@ -342,6 +342,51 @@ case "$agent_type" in
     ;;
 esac
 
+# A relay is a pipe: the brief's MODEL: line IS the launch's --model, and its ACCOUNT: line the
+# --account. A relay that resolves a family word itself hands worker-run a full slug, which reads as
+# a deliberate pin (live 2026-09-23: `MODEL: sol` launched as gpt-5.6-sol off a stale list). The
+# brief is the relay's first prompt in its own transcript; without that transcript nothing is judged.
+relay_brief() {
+  local transcript own agent_id
+  transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
+  agent_id=$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-')
+  case "$transcript" in
+    */subagents/*.jsonl) own=$transcript ;;
+    *.jsonl) [ -n "$agent_id" ] || return 0; own="${transcript%.jsonl}/subagents/agent-$agent_id.jsonl" ;;
+    *) return 0 ;;
+  esac
+  [ -r "$own" ] || return 0
+  head -n 5 "$own" | jq -rR 'fromjson? | select(type == "object" and .type == "user") | .message.content
+    | if type == "string" then . else ([.[]? | select(.type? == "text") | .text] | join("\n")) end' \
+    2>/dev/null | head -n 400
+}
+brief_value() { grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" <<<"$brief" | sed -E "s/^$1:[[:space:]]*//"; }
+flag_value() {
+  grep -oE -e "--$1(=|[[:space:]]+)[\"']?[A-Za-z0-9_.-]+" <<<"$start_line" | head -n 1 |
+    sed -E "s/^--$1(=|[[:space:]]+)[\"']?//"
+}
+case "$agent_type" in
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
+    start_line=$(grep -E "${VENDOR_WORD}worker-run[[:space:]]+start${EDGE}" <<<"$scan" 2>/dev/null | head -n 1)
+    [ -z "$start_line" ] || brief=$(relay_brief)
+    if [ -n "$start_line" ] && [ -n "${brief:-}" ]; then
+      want_model=$(brief_value MODEL)
+      [ "$agent_type" != light-worker ] || want_model=''
+      have_model=$(flag_value model)
+      if [ "$have_model" != "$want_model" ]; then
+        if [ -z "$want_model" ]; then
+          deny "Blocked: this launch passes \`--model ${have_model}\`, but the brief carries no MODEL: line$([ "$agent_type" != light-worker ] || printf ' (a light-worker never passes one: the light row decides)'). Drop \`--model\`; worker-run resolves the default itself."
+        fi
+        deny "Blocked: the brief says \`MODEL: ${want_model}\`, so the launch passes \`--model ${want_model}\` exactly as written$([ -z "$have_model" ] || printf ', not `--model %s`' "$have_model"). Never resolve a family word into a slug yourself: worker-run resolves it on the account the run lands on, and a full slug would pin that version."
+      fi
+      want_account=$(brief_value ACCOUNT)
+      have_account=$(flag_value account)
+      [ -z "$want_account" ] || [ "$have_account" = "$want_account" ] ||
+        deny "Blocked: the brief says \`ACCOUNT: ${want_account}\`, so the launch passes \`--account ${want_account}\`$([ -z "$have_account" ] || printf ', not `--account %s`' "$have_account")."
+    fi
+    ;;
+esac
+
 grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0
 
 for launch_re in "${LAUNCH_RES[@]}"; do

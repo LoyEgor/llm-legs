@@ -125,22 +125,23 @@ append_write_tool_result() {
 }
 
 # What the harness does with a denial: its reason lands in the transcript as an is_error
-# tool_result, the witness a retry stamp is honoured beside.
-harness_deny() { # transcript gate-output
+# tool_result behind the harness's own `PreToolUse:<tool> hook error: ` prefix, the witness a retry
+# stamp is honoured beside.
+harness_deny() { # transcript gate-output tool
   local r
   [ -n "$1" ] || return 0
   r=$(printf '%s' "$2" | jq -r 'select(.hookSpecificOutput.permissionDecision == "deny")
     | .hookSpecificOutput.permissionDecisionReason' 2>/dev/null)
   [ -n "$r" ] || return 0
-  jq -cn --arg r "$r" '{type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:$r}]}}' \
-    >> "$1"
+  jq -cn --arg r "PreToolUse:${3:-Write} hook error: $r" \
+    '{type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:$r}]}}' >> "$1"
 }
 
 gate() {
   local out rc
   out=$(bash_payload "$1" | bash "$WRITE_GATE")
   rc=$?
-  harness_deny "${GATE_TRANSCRIPT:-$WRITE_TRANSCRIPT}" "$out"
+  harness_deny "${GATE_TRANSCRIPT:-$WRITE_TRANSCRIPT}" "$out" Bash
   [ -z "$out" ] || printf '%s\n' "$out"
   return "$rc"
 }
@@ -389,6 +390,21 @@ out=$(gate "$cmd5" 2>&1; echo "rc=$?")
 assert_contains "rc=2" "$out"
 assert_eq $((n0 + 1)) "$(forged_count)"
 assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h5" ]
+# The tag echoed by a command of the model's own, even spelled as the harness spells a denial,
+# starts with the command's exit line and witnesses nothing.
+cmd6="echo echoed > $CLAUDE_MD"
+h6=$(learn_stamp "$cmd6")
+mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h6"
+printf 'session-one %s\n' "$(date +%s)" > "$INSTRUCTION_WATCH_STATE/denied/$h6"
+jq -cn --arg r "Exit code 1
+PreToolUse:Bash hook error: Instruction gate: (denial $h6)" \
+  '{type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:$r}]}}' \
+  >> "$WRITE_TRANSCRIPT"
+age_stamps
+append_write_user
+out=$(gate "$cmd6" 2>&1; echo "rc=$?")
+assert_contains "rc=2" "$out"
+assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h6" ]
 
 echo "== write gate: a trailing redirect or comment does not move the destination"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD 2>/dev/null")"
@@ -606,7 +622,7 @@ retry_bloat() {
   local out rc
   out=$(retry_payload "$@" | INSTRUCTION_BLOAT_GATE_STAMPS="$RETRY_STAMPS" bash "$BLOAT")
   rc=$?
-  [ ! -f "$4" ] || harness_deny "$4" "$out"
+  [ ! -f "$4" ] || harness_deny "$4" "$out" "$3"
   [ -z "$out" ] || printf '%s\n' "$out"
   return "$rc"
 }
@@ -1196,7 +1212,7 @@ ceil() {
     '{tool_name:"Edit",cwd:"/tmp",session_id:$s,transcript_path:$t,
       tool_input:{file_path:$p,old_string:$o,new_string:$n}}' \
     | INSTRUCTION_BLOAT_GATE_STAMPS="$CEIL_STAMPS" bash "$BLOAT")
-  harness_deny "$TRANSCRIPT" "$out"
+  harness_deny "$TRANSCRIPT" "$out" Edit
   [ -z "$out" ] || printf '%s\n' "$out"
 }
 ceil_decision() {

@@ -102,6 +102,79 @@ assert_eq "$(bash -c '. "$1/share/worker-model.sh"; worker_model_codex_split gpt
 gpt-5.5${TAB}5.5
 codex-auto-review${TAB}-"
 
+# --- A cache is ranked by the client that wrote it: ~/.codex also holds the ChatGPT app's own
+# older codex list, fresher by the clock but hiding every model newer than that client ---
+FAKE="$WORK/fake-codex"
+mkdir -p "$FAKE"
+cat >"$FAKE/codex" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  [ -z "${FAKE_CODEX_VERSION:-}" ] && exit 1
+  printf 'codex-cli %s\n' "$FAKE_CODEX_VERSION"; exit 0
+fi
+if [ "${1:-} ${2:-}" = 'debug models' ]; then
+  printf '%s\n' "${CODEX_HOME:-main}" >>"$FAKE_CODEX_LOG"
+  [ -z "${FAKE_CODEX_REFRESH:-}" ] && exit 1
+  jq --arg v "$FAKE_CODEX_VERSION" '.client_version = $v' "$FAKE_CODEX_REFRESH" >"$CODEX_HOME/models_cache.json"
+  exit 0
+fi
+exit 3
+EOF
+chmod +x "$FAKE/codex"
+export FAKE_CODEX_LOG="$WORK/refreshes"
+: >"$FAKE_CODEX_LOG"
+ranked() { PATH="$FAKE:$PATH" bash "$SCRIPT" models "$@" 2>"$WORK/err"; }
+jq '.client_version = "0.154.0" | .fetched_at = "2026-09-25T00:00:00.000000Z"
+    | .models |= map(select(.slug != "gpt-6.1-astra"))' "$FIXTURE" >"$HOME/.codex/models_cache.json"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"' "$FIXTURE" \
+  >"$CODEXB_PROFILES_DIR/beta/models_cache.json"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6.1-astra
+# A writer newer than the installed CLI lists models this CLI may not launch: it is passed over.
+jq '.client_version = "0.157.0"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
+# With no installed CLI to measure against, the newest writer wins.
+assert_eq "$(FAKE_CODEX_VERSION='' ranked --family astra)" gpt-6.1-astra
+# One writer version everywhere: fetched_at decides and the CLI is never asked.
+jq '.client_version = "0.154.0"' "$CODEXB_PROFILES_DIR/beta/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/beta/models_cache.json"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
+assert_eq "$(cat "$FAKE_CODEX_LOG")" ''
+
+# --- --account: that account's own list, brought to the installed client first ---
+jq '.client_version = "0.154.0" | .models |= map(select(.slug != "gpt-6.1-astra"))' "$FIXTURE" \
+  >"$CODEXB_PROFILES_DIR/alpha/models_cache.json"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-26T00:00:00.000000Z"
+    | .models |= map(select(.slug != "gpt-6.1-astra"))' "$FIXTURE" >"$CODEXB_PROFILES_DIR/beta/models_cache.json"
+export FAKE_CODEX_REFRESH="$FIXTURE"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha)" gpt-6.1-astra
+assert_eq "$(cat "$FAKE_CODEX_LOG")" "$CODEXB_PROFILES_DIR/alpha"
+assert_eq "$(jq -r .client_version "$CODEXB_PROFILES_DIR/alpha/models_cache.json")" 0.156.1
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra)" gpt-6-astra
+# Already the installed client's list: read as it is, no refresh.
+: >"$FAKE_CODEX_LOG"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha)" gpt-6.1-astra
+assert_eq "$(cat "$FAKE_CODEX_LOG")" ''
+# A refresh that fails leaves an older client's list unanswered: the machine-wide choice serves.
+jq '.client_version = "0.154.0"' "$CODEXB_PROFILES_DIR/alpha/models_cache.json" >"$WORK/c" &&
+  mv "$WORK/c" "$CODEXB_PROFILES_DIR/alpha/models_cache.json"
+assert_eq "$(FAKE_CODEX_REFRESH='' FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account alpha)" gpt-6-astra
+assert_eq "$(cat "$FAKE_CODEX_LOG")" "$CODEXB_PROFILES_DIR/alpha"
+assert_eq "$(jq -r .client_version "$CODEXB_PROFILES_DIR/alpha/models_cache.json")" 0.154.0
+# An account with no home, or a name that is no account, falls back without touching anything.
+: >"$FAKE_CODEX_LOG"
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account gone)" gpt-6-astra
+assert_eq "$(FAKE_CODEX_VERSION=0.156.1 ranked --family astra --account ../beta)" gpt-6-astra
+assert_eq "$(cat "$FAKE_CODEX_LOG")" ''
+# The launch helper hands its account through.
+assert_eq "$(PATH="$FAKE:$PATH" FAKE_CODEX_VERSION=0.156.1 bash -c '. "$1/share/worker-model.sh"; worker_model_codex_slug astra alpha' _ "$ROOT" 2>/dev/null)" gpt-6.1-astra
+unset FAKE_CODEX_REFRESH
+rm -f "$CODEXB_PROFILES_DIR/alpha/models_cache.json"
+printf 'not json\n' >"$CODEXB_PROFILES_DIR/alpha/models_cache.json"
+jq '.fetched_at = "2026-09-20T00:00:00.000000Z" | .models |= map(select(.slug != "gpt-6.1-astra"))' \
+  "$FIXTURE" >"$HOME/.codex/models_cache.json"
+stamp "$CODEXB_PROFILES_DIR/beta/models_cache.json" 2026-09-23T08:00:00.000000Z
+
 # --- codexb's own chat launch opens on the resolved default ---
 mkdir -p "$WORK/bin"
 printf '#!/usr/bin/env bash\nfor a in "$@"; do printf "ARG=%%s\\n" "$a"; done >"%s"\n' "$WORK/calls" >"$WORK/bin/codex"

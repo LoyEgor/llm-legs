@@ -546,7 +546,7 @@ show_help() {
     'codexb list                            List profiles with login state.' \
     'codexb status                          Per-account login state and quota; on a TTY, Enter opens Claude Code on the selected account (claudegpt p <name> --model astra).' \
     'codexb pick                            Print the highest-priority usable account.' \
-    'codexb models [--json] [--all] [--family <word>]  The codex model list from the newest models_cache.json (builtin fallback); --family prints the newest slug of a family word.' \
+    'codexb models [--json] [--all] [--family <word>] [--account <name>]  The codex model list from the cache of the newest client not above the installed CLI (builtin fallback); --family prints the newest slug of a family word; --account reads that account'"'"'s own list, refreshed when another client wrote it.' \
     'codexb export-auth <name> --to <path> [--min-seconds N]  Write an access-only auth.json for a confined run.'
 }
 
@@ -568,21 +568,57 @@ models_cache_rows() { # cache -> the builtin's columns, nothing when unusable
     | select(.[0] | type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$")) | @tsv' "$1" 2>/dev/null
 }
 
-# The CLI refreshes models_cache.json in whichever home it last ran from, so the newest by the
-# stamp the CLI wrote is the vendor's current list; no network here.
-models_source() { # -> path of the newest usable cache, or nothing
-  local path stamp best='' best_stamp=''
+cache_field() { jq -r --arg key "$2" '.[$key] // "" | tostring' "$1" 2>/dev/null; }
+installed_client() { codex --version 2>/dev/null | head -n 1 | LC_ALL=C grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
+version_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C sort -V | head -n 1)" = "$1" ]; }
+timeout_command() {
+  if command -v gtimeout >/dev/null 2>&1; then command gtimeout "$@"
+  elif command -v timeout >/dev/null 2>&1; then command timeout "$@"
+  else perl -e 'alarm shift; exec @ARGV' "$@"; fi
+}
+
+# A cache holds what the server listed to the client that wrote it, and the server hides every model
+# whose minimal_client_version is above that client. ~/.codex is also written by the ChatGPT app's
+# own bundled codex, so the freshest file can be an older client's shorter list: the newest writer
+# not above the installed CLI wins, and fetched_at only breaks a tie. No network here.
+models_source() { # -> path of the cache to read, or nothing
+  local path rows='' kept='' client stamp installed
   if [ -n "${CODEXB_MODELS_CACHE:-}" ]; then
     [ -z "$(models_cache_rows "$CODEXB_MODELS_CACHE")" ] || printf '%s\n' "$CODEXB_MODELS_CACHE"
     return 0
   fi
   for path in "$HOME/.codex/models_cache.json" "$profiles_dir"/*/models_cache.json; do
-    [ -r "$path" ] || continue
-    [ -n "$(models_cache_rows "$path")" ] || continue
-    stamp=$(jq -r '.fetched_at // "" | tostring' "$path" 2>/dev/null) || continue
-    if [ -z "$best" ] || [[ "$stamp" > "$best_stamp" ]]; then best=$path; best_stamp=$stamp; fi
+    [ -r "$path" ] && [ -n "$(models_cache_rows "$path")" ] || continue
+    rows+="$(cache_field "$path" client_version)"$'\t'"$(cache_field "$path" fetched_at)"$'\t'"$path"$'\n'
   done
-  [ -z "$best" ] || printf '%s\n' "$best"
+  [ -n "$rows" ] || return 0
+  if [ "$(printf '%s' "$rows" | cut -f1 | LC_ALL=C sort -u | wc -l)" -gt 1 ] &&
+     installed=$(installed_client) && [ -n "$installed" ]; then
+    while IFS=$'\t' read -r client stamp path; do
+      { [ -z "$client" ] || version_le "$client" "$installed"; } || continue
+      kept+="$client"$'\t'"$stamp"$'\t'"$path"$'\n'
+    done <<<"${rows%$'\n'}"
+  fi
+  printf '%s' "${kept:-$rows}" | LC_ALL=C sort -t $'\t' -k1,1V -k2,2 | tail -n 1 | cut -f3
+}
+
+# An account may be served a catalog of its own (its plan), so a launch resolves against that
+# account's home — refreshed first through the installed CLI when another client wrote it. A home
+# that cannot be brought to the installed client's list answers nothing; the caller falls back.
+account_models_source() { # name -> path, or nothing
+  local home cache installed
+  case "$1" in
+    main) home="$HOME/.codex" ;;
+    *) [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || return 0; home="$profiles_dir/$1" ;;
+  esac
+  [ -d "$home" ] || return 0
+  cache="$home/models_cache.json"
+  installed=$(installed_client)
+  if [ -n "$installed" ] && [ "$(cache_field "$cache" client_version)" != "$installed" ]; then
+    CODEX_HOME="$home" timeout_command 60 codex debug models >/dev/null 2>&1 || :
+    [ "$(cache_field "$cache" client_version)" = "$installed" ] || return 0
+  fi
+  [ -z "$(models_cache_rows "$cache")" ] || printf '%s\n' "$cache"
 }
 
 models_ranked() { # all(true|false) source-path
@@ -616,18 +652,21 @@ models_ranked() { # all(true|false) source-path
 }
 
 show_models() {
-  local json=false all=false family='' source rows known
+  local json=false all=false family='' account='' source='' rows known
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --json) json=true ;;
       --all) all=true ;;
-      --family) [ "$#" -ge 2 ] || { printf 'usage: codexb models [--json] [--all] [--family <word>]\n' >&2; exit 2; }
+      --family) [ "$#" -ge 2 ] || { printf 'usage: codexb models [--json] [--all] [--family <word>] [--account <name>]\n' >&2; exit 2; }
                 family=$2; shift ;;
-      *) printf 'usage: codexb models [--json] [--all] [--family <word>]\n' >&2; exit 2 ;;
+      --account) [ "$#" -ge 2 ] || { printf 'usage: codexb models [--json] [--all] [--family <word>] [--account <name>]\n' >&2; exit 2; }
+                account=$2; shift ;;
+      *) printf 'usage: codexb models [--json] [--all] [--family <word>] [--account <name>]\n' >&2; exit 2 ;;
     esac
     shift
   done
-  source=$(models_source)
+  [ -z "$account" ] || [ -n "${CODEXB_MODELS_CACHE:-}" ] || source=$(account_models_source "$account")
+  [ -n "$source" ] || source=$(models_source)
   [ -n "$source" ] || printf 'codexb: no readable models_cache.json; using the built-in list\n' >&2
   if [ -n "$family" ]; then
     rows=$(models_ranked true "$source")
