@@ -2452,6 +2452,18 @@ assert_eq this-call "$(tail -1 "$J" | jq -r .writer)"
 assert_eq 0 "$(grep -c sid-dead "$J")"
 printf 'tier doc\n' > "$DOC"
 
+echo "== in flight: this call's own mark counts however long the call ran"
+span_base sid-long >/dev/null
+pre_call sid-long Bash command "$grow_cmd" "$SPAN_T"
+long_mark="$INSTRUCTION_WATCH_STATE/inflight/sid-long@tu-sid-long"
+read -r _ long_rest <"$long_mark"
+printf '%s %s\n' "$(( $(date +%s) - 7200 ))" "$long_rest" > "$long_mark"
+printf 'a line the long call wrote\n' >> "$DOC"
+assert_contains "REVERTED" "$(span_check sid-long Bash command "$grow_cmd" "$SPAN_T")"
+assert [ ! -e "$long_mark" ]
+assert_eq this-call "$(tail -1 "$J" | jq -r .writer)"
+printf 'tier doc\n' > "$DOC"
+
 echo "== journal: the bound trims what Hammerspoon receipted, and says so when it must drop more"
 TRIM_STATE="$WORK/trim"
 trim_plant() { # unreceipted receipted

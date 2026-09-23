@@ -480,8 +480,8 @@ offer_restore() {
 
 # The in-flight windows, read once per check: this session's own mark, consumed only when it names
 # this call's tool_use_id (a call another PreToolUse hook denied never reaches PostToolUse and
-# leaves its mark behind), and every other session's, where a mark older than an hour is a session
-# that died mid-call and is swept without a word.
+# leaves its mark behind) and never aged out, since this call is alive however long it ran; every
+# other mark older than an hour is a call that died and is swept without a word.
 load_inflight() {
   local f name m_start m_id start own_name own_file='' own_count=0
   now_ns=$(instruction_ns "$(instruction_now)") || { now_ns=''; return 0; }
@@ -492,15 +492,17 @@ load_inflight() {
     name=${name%%@*}
     read -r m_start m_id _ <"$f" 2>/dev/null || continue
     start=$(instruction_ns "$m_start") || continue
+    if [ "$name" = "$own_name" ] && [ -n "$tool_use_id" ] && [ "$m_id" = "${tool_use_id//[^A-Za-z0-9._-]/_}" ]; then
+      own_count=$((own_count + 1)); own_file=$f; own_start=$start
+      continue
+    fi
     if [ $((now_ns - start)) -gt 3600000000000 ]; then
       rm -f "$f" 2>/dev/null
       continue
     fi
     if [ "$name" = "$own_name" ]; then
       own_count=$((own_count + 1))
-      if [ -n "$tool_use_id" ] && [ "$m_id" = "${tool_use_id//[^A-Za-z0-9._-]/_}" ]; then
-        own_file=$f; own_start=$start
-      elif [ -z "$tool_use_id" ]; then
+      if [ -z "$tool_use_id" ]; then
         own_file=$f; own_start=$start
       fi
       continue
