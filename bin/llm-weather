@@ -50,6 +50,11 @@ FAILURE_REASONS = (
         r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
         r"|rate limit exceeded|too many requests", re.IGNORECASE)),
     ("bare 429", re.compile(r"\b429\b")),
+    ("refused", re.compile(
+        r"finish_?[Rr]eason\W{1,4}(?:SAFETY|PROHIBITED_CONTENT|RECITATION|BLOCKLIST|SPII)"
+        r"|blocked (?:due to|for) SAFETY|PROHIBITED_CONTENT|content_filter|content_policy_violation"
+        r"|flagged as potentially violating|(?i:violat\w* (?:our |the )?usage (?:policy|policies"
+        r"|guidelines))|\"stop_reason\"\s*:\s*\"refusal\"")),
     ("bad output", re.compile(
         r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
         r"|did not declare a clean review|stopped before reviewing|returned empty content"
@@ -72,7 +77,7 @@ FAILURE_REASONS = (
         r"rater task crashed|account lookup failed|codex_core::|sandbox_apply", re.IGNORECASE)),
     ("auth", re.compile(
         r"not logged in|not signed in|credentials were rejected|session has expired"
-        r"|unauthor|forbidden|\b40[13]\b", re.IGNORECASE)),
+        r"|unauthor|forbidden|\b40[13]\b|cell preparation refused", re.IGNORECASE)),
     ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b)",
                              re.IGNORECASE)),
     ("chunks unread", re.compile(r"chunks unread", re.IGNORECASE)),
@@ -86,6 +91,7 @@ FAILURE_ORIGIN = {
     "walled": "theirs",
     "throttled": "theirs",
     "bare 429": "theirs",
+    "refused": "theirs",
     "bad output": "ours",
     "capacity": "theirs",
     "server error": "theirs",
