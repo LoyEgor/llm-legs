@@ -63,7 +63,7 @@ research_citation_check() { # answer-file out-file repo-root... ; prints `<verif
   local citation='^[[:space:]]*[-*]?[[:space:]]*([^|]+):([0-9]+)[[:space:]]*\|[[:space:]]*"(.*)"[[:space:]]*\|(.*)$'
   # Ahead of the file pattern, which would otherwise read a URL's port or trailing digits as a line
   # number and fail the citation for a path no checkout has. A link is counted and never fetched.
-  local link='^[[:space:]]*[-*]?[[:space:]]*https?://[^[:space:]|]+[[:space:]]*\|[[:space:]]*"(.*)"[[:space:]]*\|(.*)$'
+  local link='^[[:space:]]*[-*]?[[:space:]]*[Hh][Tt][Tt][Pp][Ss]?://[^[:space:]|]+[[:space:]]*\|[[:space:]]*"(.*)"[[:space:]]*\|(.*)$'
   local -a kept=() failed=()
   shift 2
   while IFS= read -r line || [ -n "$line" ]; do
@@ -96,6 +96,12 @@ research_citation_check() { # answer-file out-file repo-root... ; prints `<verif
     fi
   } >"$destination" || return 1
   printf '%s %s %s\n' "$ok" "$total" "$links"
+}
+
+# The checked file's body, past the two header lines research_citation_check writes: a reader that
+# strips one of them carries the other into the answer under every per-unit heading.
+research_citation_body() { # checked-file
+  tail -n +3 "$1"
 }
 
 research_sandbox_profile() {

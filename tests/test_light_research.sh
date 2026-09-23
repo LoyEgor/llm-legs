@@ -7,6 +7,7 @@ WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
 . "$ROOT/tests/fixtures/grokb-models.sh"
+. "$ROOT/tests/fixtures/codexb-models.sh"
 fail(){ echo "FAIL: $*" >&2; [ ! -f "$WORK/out" ] || cat "$WORK/out" >&2; [ ! -f "$WORK/err" ] || cat "$WORK/err" >&2; exit 1; }
 asserts=0
 assert(){ asserts=$((asserts + 1)); "$@" || fail "$*"; }
@@ -23,7 +24,7 @@ assert test "$(toggle worker_light_model edit)" = "$(toggle worker_model_default
 assert test "$(toggle worker_light_effort research)" = high
 printf 'worker=auto\nlight_research=claudeb:sonnet\nlight_edit=codex\n' >"$TOGGLE"
 assert test "$(toggle worker_light_vendor research) $(toggle worker_light_model research) $(toggle worker_light_effort research)" = 'claudeb sonnet medium'
-assert test "$(toggle worker_light_vendor edit) $(toggle worker_light_model edit)" = 'codex gpt-6-astra'
+assert test "$(toggle worker_light_vendor edit) $(toggle worker_light_model edit)" = 'codex astra'
 assert test "$(toggle eval 'worker_model_allows claudeb sonnet; echo $?')" = 1
 printf 'light_research=mistral\nlight_edit=grok:opus\n' >"$TOGGLE"
 assert test "$(toggle eval 'worker_light_vendor research 2>/dev/null; echo $?')" = 2
@@ -253,6 +254,33 @@ unverified=$(grep -n '^UNVERIFIED:$' "$WORK/answer" | cut -d: -f1); assert test 
 for kept in 'the published card rate' 'the API has delayed capture'; do
   assert test "$(grep -n "$kept" "$WORK/answer" | cut -d: -f1)" -lt "$unverified"
 done
+
+# A scheme in capitals names the same page: read as a file path it fails a citation for a path no
+# checkout has, and the answer loses the link it rests on.
+printf 'HTTPS://Example.Test/Pricing | "4.25%%" | the card rate\n' >"$WORK/upper-answer"
+printf 'ANSWER-FILE: %s\nResearch the repository.\n' "$WORK/upper-answer" >"$WORK/prompt"
+rm -f "$WORK/answer"
+run; rc=$?; assert test "$rc" -eq 0
+assert test "$(head -1 "$WORK/answer")" = 'CITATIONS: 0/0'
+assert test "$(sed -n 2p "$WORK/answer")" = 'LINKS: 1'
+assert grep -qx 'LINKS: 1' "$WORK/out"
+
+# The search state is the caller's ask, read ONCE from the prompt header here and handed to
+# worker-run as a flag. A state the vendor cannot reach is refused before an account is spent.
+printf 'web: OFF\nResearch the repository.\n' >"$WORK/prompt"
+rm -f "$WORK/answer"; : >"$WORK/gemini.log"
+run; rc=$?; assert test "$rc" -eq 4
+assert grep -q '^OUTCOME: MODEL_REFUSED$' "$WORK/out"
+assert grep -q 'no switch that turns web search off' "$WORK/err"
+assert test "$(grep -c '^profile=' "$WORK/gemini.log")" = 0
+assert test ! -e "$WORK/answer"
+
+printf 'WEB: maybe\nResearch the repository.\n' >"$WORK/prompt"
+: >"$WORK/gemini.log"
+run; rc=$?; assert test "$rc" -eq 2
+assert grep -q 'names no state' "$WORK/err"
+assert test "$(grep -c '^profile=' "$WORK/gemini.log")" = 0
+
 printf 'Research the repository.\n' >"$WORK/prompt"
 
 # G6: grok's --cwd is its whole directory grant, so a two-repository question becomes one run per
@@ -281,13 +309,19 @@ assert grep -qx "## $repo_path" "$WORK/answer"
 assert grep -qx "## $repo2_path" "$WORK/answer"
 assert test "$(grep -c 'grok research answer' "$WORK/answer")" = 2
 
-# The prompt's own headers reach worker-run on the fan-out path too: `REPOSITORY:` joins its header
-# block, and a blank line under it would leave `WEB: off` unread on this path alone.
+# Every unit of a fan-out launches in the state the prompt asked for: the launcher's own
+# `REPOSITORY:` prefix pushes a re-embedded header out of reach of worker-run's header block.
 printf 'WEB: off\nResearch the repository.\n' >"$WORK/prompt"
+: >"$WORK/vendor.log"
 run --repo "$REPO2"; rc=$?; assert test "$rc" -eq 0
-first_run=$(sed -n 's/^RUN: //p' "$WORK/out" | head -1); second_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1)
-assert jq -e '.web_search == false' "$RUNS/$first_run/meta.json"
-assert jq -e '.web_search == false' "$RUNS/$second_run/meta.json"
+assert test "$(grep -c -- '--disable-web-search' "$WORK/vendor.log")" = 2
+assert grep -qx 'WEB: off' "$WORK/out"
+assert test "$(grep -cx 'WEB: on' "$WORK/out")" = 0
+for off_run in $(sed -n 's/^RUN: //p' "$WORK/out"); do
+  assert test "$(jq -r '.web_search' "$RUNS/$off_run/meta.json")" = false
+  assert test "$(grep -ci '^web *:' "$RUNS/$off_run/brief.launch")" = 0
+  assert grep -qx 'Research the repository.' "$RUNS/$off_run/brief.launch"
+done
 printf 'Research the repository.\n' >"$WORK/prompt"
 
 printf 'repo two only\n' >"$REPO2/unit-only.txt"
@@ -331,7 +365,7 @@ assert test "$(research_citation_check "$WORK/cross-answer" "$WORK/cross-checked
 
 # Batching: several --prompt-file run side by side and land under ONE citation header.
 printf 'file:1 | "x" | the tracked file holds x\n' >"$WORK/q1-answer"
-printf 'plain second answer\n' >"$WORK/q2-answer"
+printf 'plain second answer\nhttps://example.test/two | "second page" | a link of the second unit\n' >"$WORK/q2-answer"
 printf 'ANSWER-FILE: %s\nFirst question.\n' "$WORK/q1-answer" >"$WORK/prompt"
 printf 'ANSWER-FILE: %s\nSecond question.\n' "$WORK/q2-answer" >"$WORK/prompt2"
 : >"$WORK/gemini.log"
@@ -339,6 +373,11 @@ run --prompt-file "$WORK/prompt2"; rc=$?; assert test "$rc" -eq 0
 assert test "$(grep -c '^profile=' "$WORK/gemini.log")" = 2
 assert test "$(grep -c '^CITATIONS:' "$WORK/answer")" = 1
 assert test "$(head -1 "$WORK/answer")" = 'CITATIONS: 1/1'
+# Both header lines are counted across the batch and written once: a per-unit `LINKS:` carried into
+# the body puts a stray count under every heading and leaves the answer with no aggregate.
+assert test "$(grep -c '^LINKS:' "$WORK/answer")" = 1
+assert test "$(sed -n 2p "$WORK/answer")" = 'LINKS: 1'
+assert grep -qx 'LINKS: 1' "$WORK/out"
 assert test "$(grep -n '^## Q1$' "$WORK/answer" | cut -d: -f1)" -lt "$(grep -n '^## Q2$' "$WORK/answer" | cut -d: -f1)"
 assert grep -qx 'plain second answer' "$WORK/answer"
 
@@ -359,6 +398,8 @@ printf '#!/usr/bin/env bash\nif [ "$1" = list ]; then printf "researcher: ready\
 rm -f "$WORK/answer"
 LIGHT_RESEARCH_WAIT_MAX=0 run; rc=$?; assert test "$rc" -eq 0
 assert grep -q '^STATUS: running$' "$WORK/out"; assert test ! -e "$WORK/answer"
+# The state is recorded at launch, so the round that hands back a running id already names it.
+assert grep -qx 'WEB: on' "$WORK/out"
 assert grep -qx "OUT: $(cd "$WORK" && pwd -P)/answer" "$WORK/out"
 slow_run=$(sed -n 's/^RUN: //p' "$WORK/out" | tail -1); assert test -d "$RUNS/$slow_run"
 attach(){ env HOME="$HOME" PATH="$BIN:/usr/bin:/bin" TMPDIR="$WORK" WORKER_RUN_DIR="$RUNS" LIGHT_RESEARCH_WAIT_MAX="${LIGHT_RESEARCH_WAIT_MAX:-540}" \

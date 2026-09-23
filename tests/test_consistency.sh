@@ -2873,11 +2873,40 @@ assert doc_has 'Instruction-file classes and the one span'
 # worker leg kept. The image legs are not worker runs and keep their own launch.
 WEB_SEARCH="$ROOT/share/web-search.sh"
 assert test -r "$WEB_SEARCH"
-for vendor in claudeb codex gemini grok; do
+. "$WEB_SEARCH"
+# The vendors and the flags both come from the table itself: pinned to today's literals the scan
+# cannot catch the next drift it exists for — a fifth vendor's flag, or a changed cell spelling,
+# hand-written into a new builder in bin/.
+WEB_SEARCH_VENDORS=$(web_search_table | cut -f1)
+assert test -n "$WEB_SEARCH_VENDORS"
+for vendor in $WEB_SEARCH_VENDORS; do
   assert grep -qE "^$vendor	" "$WEB_SEARCH"
+  # Every vendor worker-run can launch has a row: without one web_search_args fails inside
+  # `< <(...)`, where nothing reads its rc, and the run launches with no search argument at all.
+  assert grep -qE "^ *case \"\\\$vendor\" in .*$vendor" "$ROOT/bin/worker-run"
+  for state in on off; do
+    cell=$(web_search_column "$vendor" "$state")
+    case "$cell" in
+      *--disallowedTools*)
+        # A tool LIST is one comma-joined word, the way ask_claude.sh spells it: a second word
+        # reaches `claude -p` as the prompt and the brief on stdin is never read.
+        assert eq "$(web_search_args "$vendor" "$state" | wc -l | tr -d '[:space:]')" 2
+        assert grep -qE "^DISALLOWED_TOOLS='[A-Za-z]+(,[A-Za-z]+)*'$" "$ROOT/ask_claude.sh"
+        ;;
+    esac
+  done
 done
-assert eq "$(grep -rlE 'web_search=live|web_search=disabled|--disable-web-search|--disallowedTools' "$ROOT/bin" "$ROOT/share" |
+WEB_SEARCH_PATTERN=$(web_search_table | cut -f2,3 | tr '\t' ' ' | tr ' ' '\n' |
+  grep -vxE '\-|!|\-c' | grep -v '^$' | sed 's/[.[\*^$+?(){}|]/\\&/g' | sort -u | paste -sd '|' -)
+assert test -n "$WEB_SEARCH_PATTERN"
+assert eq "$(grep -rlE "$WEB_SEARCH_PATTERN" "$ROOT/bin" "$ROOT/share" |
   grep -vE '/(share/web-search\.sh|bin/grok-image|bin/grok-video)$' | wc -l | tr -d '[:space:]')" 0
+# Row ct's prose quotes the table; a search literal there the table does not hold is the same drift
+# one step further away, where no builder scan reaches it.
+while IFS= read -r literal; do
+  [ -n "$literal" ] || continue
+  assert grep -qF -- "$literal" <(web_search_table)
+done < <(grep -oE 'web_search=[a-z]+|--disable-web-search|--disallowedTools [A-Za-z,]+' "$ROOT/$DOC" | sort -u)
 for caller in bin/worker-run bin/light-research share/light-research.sh; do
   assert grep -q 'web_search_args\|web_search_meta_state' "$ROOT/$caller"
 done

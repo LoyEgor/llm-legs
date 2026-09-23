@@ -11,7 +11,7 @@ set -u
 
 usage() {
   printf '%s\n' \
-    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> | --recipe <name> [--set k=v]... [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
+    'usage: worker-run start <claudeb|codex|gemini|grok|light> --brief <file> | --recipe <name> [--set k=v]... [--workdir <dir>] [--account <n>] [--model <m>] [--effort <e>] [--resume <id>] [--round <review-round-id>] [--add-dir <d>]... [--image <p>]... [--web-search | --no-web-search] [--browser] [--target dia|chrome] [--chrome] [--role research --research-timeout <duration>]' \
     '       worker-run wait <run-id> [--max <sec>]' \
     '       worker-run report <run-id>' \
     '       worker-run claim <run-id> --paths <path>... [--complete]' \
@@ -154,6 +154,12 @@ gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 # edit 60 belongs where it read last.
 BRIEF_PREAMBLE='AUDIENCE: your reader is another model (the orchestrator), never Egor — write the report and every message in English; Russian only when quoting his words inside «…». TEST LOOP: while iterating run a one-off probe or ONE covering suite, never every suite after each edit; a mutation check is one run of the covering suite (revert → fails → restore); run every FULL suite exactly once at the end, in parallel (`tests/run-all` where the repo has it), and report PASS counts. Work in the files the brief names; if the brief covers more than ~8 findings or ~6 files, do them in the order given and report progress at each checkpoint. A command that ended by signal 9 (exit 137) was killed by the machine'"'"'s memory guard because its process tree outgrew the RAM budget: do not rerun it as is — run one project'"'"'s tests, never the whole monorepo'"'"'s, or split the work. REUSE FIRST: nothing the project may already have is written from scratch — before writing a function, helper, wrapper over a platform API, list, constant or pattern, grep the whole project for an existing one (its name, the API it wraps, the literal) and use it; editing an existing value or call needs no search; one search, then proceed.'
 
+# Grok is the one research leg with no read-only mode: supervise_grok digests every tree it may read
+# before and after, and ANY difference ends a finished run as READ_ONLY_VIOLATION with the answer
+# withheld and the account already spent. Since the answer contract asks such a run to fetch pages,
+# the consequence is stated where the model reads it rather than discovered by losing a run.
+GROK_RESEARCH_FENCE='READ-ONLY TREE: every repository handed to this run is digested before and after it. Creating or changing ANY file in them — a fetched page, a scratch note, a saved quote — fails the finished run and throws your answer away. Quote web pages inline in the answer and write nothing, anywhere.'
+
 # Cyrillic share outside «…»/code past which the text is written for Egor, not for the model reading it.
 CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-15}
 CYRILLIC_SHARE=${WORKER_RUN_CYRILLIC_SHARE:-$SCRIPT_DIRECTORY/cyrillic-share}
@@ -221,6 +227,10 @@ launch_attempt() { # directory
     if [ -s "$directory/fix-rule" ]; then
       printf '\n'
       cat "$directory/fix-rule" || return 1
+    fi
+    if [ -s "$directory/research-fence" ]; then
+      printf '\n'
+      cat "$directory/research-fence" || return 1
     fi
     printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
     >"$directory/brief.launch.tmp.$$" &&
@@ -1015,7 +1025,7 @@ supervise_grok() {
   run_with_deadline "${command[@]}" >"$directory/out" 2>"$directory/err"
   rc=$?
   if [ "${#roots[@]}" -gt 0 ] && [ "$(research_tree_digest "${roots[@]}")" != "$before" ]; then
-    printf 'research: the tree changed during a read-only grok run\n' >>"$directory/err"
+    printf 'research: the tree changed during a read-only grok run — a fetched page or a scratch note saved into it is the usual cause; web sources belong inline in the answer\n' >>"$directory/err"
     printf 'READ_ONLY_VIOLATION\n' >"$directory/research-outcome"
     return 5
   fi
@@ -1924,7 +1934,8 @@ start_run() {
   local light_relative='' light_base=''
   local -a recipe_sets=()
   local started cli cmd_json add_dirs_json images_json pid supervisor_body value list_output list_rc launcher_session
-  local web_search=false web_search_flag=false web_search_state='' brief_cyrillic=''
+  local web_search=false web_search_flag=false web_search_off_flag=false web_search_asked=''
+  local web_search_state='' brief_cyrillic=''
   local chrome=false browser=false browser_json='' browser_preamble='' browser_device='' browser_account=''
   local browser_target=''
   local -a add_dirs images command_meta command
@@ -1945,6 +1956,7 @@ start_run() {
       --add-dir) [ "$#" -ge 2 ] || usage; add_dirs+=("$2"); shift 2 ;;
       --image) [ "$#" -ge 2 ] || usage; images+=("$2"); shift 2 ;;
       --web-search) web_search_flag=true; shift ;;
+      --no-web-search) web_search_off_flag=true; shift ;;
       --chrome) chrome=true; shift ;;
       --round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;
       --role) [ "$#" -ge 2 ] || usage; role="$2"; shift 2 ;;
@@ -1963,6 +1975,8 @@ start_run() {
   done
   [ -n "$brief" ] || [ -n "$recipe" ] || usage
   [ -z "$brief" ] || [ -z "$recipe" ] || fail '--recipe composes the brief itself: pass one of --recipe and --brief'
+  [ "$web_search_flag" = false ] || [ "$web_search_off_flag" = false ] ||
+    fail '--web-search and --no-web-search ask for opposite states: pass one of them'
   [ "$role" = workers ] || [ "$role" = research ] || usage
   if [ "$role" = research ]; then light=research; elif [ "$vendor" = light ]; then light=edit; fi
   if [ -n "$light" ]; then
@@ -2062,18 +2076,32 @@ start_run() {
     fail "brief is in Russian ($brief_cyrillic% Cyrillic outside «…»/code): the reader is a model — rewrite it in English, quote Egor's words only inside «…»"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
+  web_search_column "$vendor" on >/dev/null ||
+    fail "share/web-search.sh has no row for $vendor: a launch with an unknown search state would take whichever one the CLI happens to stand in. Nothing was launched and no account was spent."
   [ "$role" != research ] || web_search=true
-  value=$(light_brief_header_value "$brief" WEB)
+  value=$(web_search_brief_state "$brief") || fail "$value"
   case "$value" in
-    '') ;;
-    on) web_search=true ;;
-    off) web_search=false ;;
-    *) fail "brief header 'WEB: $value' names no state: the shape is 'WEB: on' or 'WEB: off'" ;;
+    on)
+      [ "$web_search_off_flag" = false ] ||
+        fail "--no-web-search and the brief's 'WEB: on' ask for opposite states: pass one of them. Nothing was launched and no account was spent."
+      web_search=true; web_search_asked=on ;;
+    off)
+      [ "$web_search_flag" = false ] ||
+        fail "--web-search and the brief's 'WEB: off' ask for opposite states: pass one of them. Nothing was launched and no account was spent."
+      web_search=false; web_search_asked=off ;;
   esac
-  [ "$web_search_flag" = false ] || web_search=true
+  if [ "$web_search_flag" = true ]; then web_search=true; web_search_asked=on; fi
+  if [ "$web_search_off_flag" = true ]; then web_search=false; web_search_asked=off; fi
   if [ "$web_search" = true ] && [ "$(web_search_column "$vendor" on)" = '!' ]; then
     outcome_line MODEL_REFUSED
-    fail "$vendor cannot search the web, and a run that answers such a brief from memory is worse than none: launch it on $(web_search_vendors). Nothing was launched and no account was spent."
+    fail "$vendor cannot search the web, and a run that answers such a brief from memory is worse than none: launch it on $(web_search_vendors on). Nothing was launched and no account was spent."
+  fi
+  # An unreachable OFF is refused the same way an unreachable ON is, and only when it was ASKED for:
+  # the vendor's own default searching anyway is recorded as what the run got, but a caller who said
+  # so would otherwise get live pages under a brief that ruled them out and learn it from nothing.
+  if [ "$web_search_asked" = off ] && [ "$(web_search_column "$vendor" off)" = '!' ]; then
+    outcome_line MODEL_REFUSED
+    fail "$vendor has no switch that turns web search off — it searches whatever the brief says — so a run that must not rest on live pages launches on $(web_search_vendors off). Drop the ask to accept $vendor's own search-on default. Nothing was launched and no account was spent."
   fi
   # What the table can actually deliver, not what was asked: a vendor with no off switch searches
   # anyway, and meta.json is read by everything downstream as the state the answer may rest on.
@@ -2129,7 +2157,7 @@ start_run() {
   esac
   if [ "$light_offrow" = true ]; then
     outcome_line MODEL_REFUSED
-    fail "the light_$light row names $(worker_light_vendor "$light" 2>/dev/null || printf 'no vendor'), not $vendor: a $vendor light run with no --model falls to that vendor's strong default. Name a model with --model, or launch on the row's vendor. Nothing was launched and no account was spent."
+    fail "the light_$light row names $(worker_light_vendor "$light" 2>/dev/null || printf 'no vendor'), not $vendor: a $vendor light run with no --model falls to that vendor's strong default. Add \`--model <id>\` with one of $vendor's light ids ($(worker_model_allowed_list "$vendor" light 2>/dev/null || printf 'none — the vendor has no row')), or launch on the row's vendor. Nothing was launched and no account was spent."
   fi
   [ -z "$browser_target" ] || [ "$browser" = true ] || usage
   if [ "$browser" = true ]; then
@@ -2380,6 +2408,8 @@ start_run() {
   [ -z "$light_scope" ] || printf '%s\n' "$light_scope" >"$directory/light-scope" || fail 'could not record the brief SCOPE'
   [ -z "$light_verify" ] || printf '%s\n' "$light_verify" >"$directory/light-verify" || fail 'could not record the brief VERIFY'
   [ -z "$fix_rule" ] || printf '%s\n' "$fix_rule" >"$directory/fix-rule" || fail 'could not write the fix rule'
+  [ "$vendor" != grok ] || [ "$role" != research ] ||
+    printf '%s\n' "$GROK_RESEARCH_FENCE" >"$directory/research-fence" || fail 'could not write the research fence'
   if [ "$browser" = true ]; then
     cp "$browser_preamble" "$directory/browser-preamble" || fail 'could not copy browser preamble'
     rm -f "$browser_preamble"
@@ -2553,7 +2583,9 @@ exit "$rc"'
   [ ! -s "$directory/launcher" ] || claim_agent_tag "$directory" "$(cat "$directory/launcher")"
   write_run_state "$directory" start
   : >"$directory/.ready"
-  printf 'RUN: %s\nTAG: %s · %s · %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$directory"
+  # WEB: on the launch line, because the state the run really got is otherwise only in meta.json and
+  # an orchestrator cannot tell a web-grounded answer from one written out of memory.
+  printf 'RUN: %s\nTAG: %s · %s · %s\nWEB: %s\nDIR: %s\n' "$run_id" "$account" "${model_label:-$model}" "$effort" "$web_search_state" "$directory"
 }
 
 session_id() {
