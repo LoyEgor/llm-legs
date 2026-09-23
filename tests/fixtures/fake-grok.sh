@@ -19,9 +19,15 @@ case "${1:-}" in
     # The heartbeat's token touch: the real CLI says this and rotates the token anyway, so its
     # own words and exit status are never what decides an account's auth state. A test that needs
     # the rotation itself names the new expiry in FAKE_GROK_ROTATE_EXPIRES; leaving it unset is a
-    # touch that renewed nothing.
+    # touch that renewed nothing. Like 1.0.41, it rotates only a session within
+    # GROK_AUTH_EARLY_INVALIDATION_SECS of its expiry (or with none readable).
+    left=$(jq -r --argjson now "$(date +%s)" '
+      first(.. | objects | .expires_at? // empty)
+      | (if type == "number" then . else (sub("\\.[0-9]+"; "") | try fromdateiso8601 catch empty) end)
+      | floor - $now' "${GROK_HOME:-/nonexistent}/auth.json" 2>/dev/null)
     if [ -n "${FAKE_GROK_ROTATE_EXPIRES:-}" ] && [ -n "${GROK_HOME:-}" ] \
-       && [ -f "$GROK_HOME/auth.json" ]; then
+       && [ -f "$GROK_HOME/auth.json" ] \
+       && { [ -z "$left" ] || [ "$left" -lt "${GROK_AUTH_EARLY_INVALIDATION_SECS:-300}" ]; }; then
       rotated="$GROK_HOME/auth.json.rotated"
       if jq --arg expiry "$FAKE_GROK_ROTATE_EXPIRES" '
            def rotate: .expires_at = $expiry | .key = "rotated-key-sentinel"

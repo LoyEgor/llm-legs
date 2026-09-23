@@ -65,7 +65,8 @@ assert test "$(stat -f '%Lp' "$WORK/long.json" 2>/dev/null || stat -c '%a' "$WOR
 
 # --- short of the run: rotate the live session through the CLI, then export the fresh token -----
 # review-bench asks for a cell's whole wall, so the last half hour of every token's life used to
-# refuse a read-only export the account's own refresh token could have served.
+# refuse a read-only export the account's own refresh token could have served. The fake rotates
+# only inside GROK_AUTH_EARLY_INVALIDATION_SECS as the CLI does, so 600 s left needs the run's own.
 write_session "$(iso_at 600)"
 rotated_expiry=$(iso_at 7200)
 FAKE_GROK_ROTATE_EXPIRES="$rotated_expiry" export_token "$WORK/rotated.json" 1717

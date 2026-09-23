@@ -526,22 +526,26 @@ auth_entry_without_renewal() { # name
 
 # The CLI owns auth.json: any authenticated subcommand rotates a session near its expiry and writes
 # the new pair back through its own auth.json.lock, so this is the one refresh grok has here and
-# llm-limits.sh's heartbeat touch is the same call (shared-invariants row ak). Its words and its
-# exit status state nothing — only the expiry the rotation leaves behind is a verdict, bar the two
-# answers that mean no rotation was even attempted: no binary to run, and a bound that expired.
+# llm-limits.sh's heartbeat touch is the same call (shared-invariants row ak). "Near" is
+# GROK_AUTH_EARLY_INVALIDATION_SECS, 300 by default: a plain touch leaves a 6-hour token with 17
+# minutes left untouched, which refused every grok cell in the last half hour of each token (run
+# c52158a), so the touch is told the run's own need. Its words and its exit status state nothing —
+# only the expiry the rotation leaves behind is a verdict, bar the two answers that mean no
+# rotation was even attempted: no binary to run, and a bound that expired.
 refresh_failure=''
-refresh_access_token() { # name -> 1 and refresh_failure when nothing could rotate
+refresh_access_token() { # name min-seconds -> 1 and refresh_failure when nothing could rotate
   local log='' rc=0 reason=''
   refresh_failure=''
   printf 'grokb: %s: access token too short for the run, touching the CLI to rotate it\n' "$1" >&2
   log=$(mktemp "${TMPDIR:-/tmp}/grokb-touch.XXXXXX") || log=''
   if [ -n "$log" ]; then
-    grok_env_run touch "$1" false models >"$log" 2>&1 || rc=$?
+    GROK_AUTH_EARLY_INVALIDATION_SECS="$2" grok_env_run touch "$1" false models >"$log" 2>&1 || rc=$?
     reason=$(grep -v '^[[:space:]]*$' "$log" | tail -n1)
     reason=${reason#grokb: }
     rm -f "$log"
   else
-    grok_env_run touch "$1" false models >/dev/null 2>&1 || rc=$?
+    GROK_AUTH_EARLY_INVALIDATION_SECS="$2" grok_env_run touch "$1" false models >/dev/null 2>&1 \
+      || rc=$?
   fi
   case "$rc" in
     127) refresh_failure=${reason:-grok CLI not found} ;;
@@ -610,7 +614,7 @@ export_token() {
       return 4
     fi
     refreshed=true
-    if ! refresh_access_token "$name"; then
+    if ! refresh_access_token "$name" "$min_seconds"; then
       printf "grokb: %s's access token could not be rotated: %s\n" "$name" "$refresh_failure" >&2
       return 4
     fi

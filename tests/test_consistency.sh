@@ -663,9 +663,10 @@ for pin_blind in "$ROOT/share/worker-model.sh" "$ROOT/bin/worker-run" "$ROOT/bin
 done
 assert grep -Fq '"$(capacity_state_dir)/review-flash"' "$GEMINIB_BIN"
 assert grep -Fq 'geminib_cache_dir() / "review-flash"' "$REVIEW_ROOT/share/rbench/catalog.py"
-assert grep -Fq 'GEMINI_VERIFIER = GEMINI_FLASH_CELL' "$REVIEW_ROOT/share/rbench/catalog.py"
+assert grep -Fq 'GEMINI_VERIFIER = NEWEST_FLASH_CELL' "$REVIEW_ROOT/share/rbench/catalog.py"
+assert grep -Fq 'FLASH_PIN_TIERS = ("T0", "T1")' "$REVIEW_ROOT/share/rbench/catalog.py"
 assert grep -Fq '{ "review-flash", slug or "--clear" }' "$ROOT/hammerspoon/llm-limits.lua"
-for pin_text in 'review flash: ' 'review flash: unavailable' 'newest (default)'; do
+for pin_text in 'review flash T0–T1: ' 'review flash T0–T1: unavailable' 'newest (default)'; do
   assert grep -Fq "$pin_text" "$ROOT/hammerspoon/llm-limits.lua"
 done
 assert grep -Fq 'geminibCacheDir() .. "/models.json"' "$ROOT/hammerspoon/llm-limits.lua"
@@ -674,7 +675,7 @@ assert eq "$(GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" revi
   "$(printf '%s\tdefault' "$(GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/no-cache" "$GEMINIB_BIN" families |
     awk -F'\t' '$1 ~ /-flash$/ { print $2; exit }')")"
 assert doc_has 'Gemini review Flash pin'
-assert doc_has '`review flash: <label>[ · pinned]`'
+assert doc_has '`review flash T0–T1: <label>[ · pinned]`'
 assert doc_has '`../review-bench/share/rbench/catalog.py` `review_flash_pin`'
 
 # --- Row cu: the Grok model list ---------------------------------------------

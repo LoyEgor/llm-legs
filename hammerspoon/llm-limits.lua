@@ -1202,7 +1202,7 @@ local function appendDoctor(menu)
   items[#items + 1] = { title = infoTitle("Gemini", false, true), disabled = true }
   local flashSlugs = geminiFlashSlugs()
   if not flashSlugs then
-    items[#items + 1] = { title = infoTitle("review flash: unavailable", false, true), disabled = true }
+    items[#items + 1] = { title = infoTitle("review flash T0–T1: unavailable", false, true), disabled = true }
   else
     local flashSlug, flashState = reviewFlash(flashSlugs)
     local flashes = {}
@@ -1213,7 +1213,7 @@ local function appendDoctor(menu)
     end
     flashes[#flashes + 1] = { title = "newest (default)", checked = flashState ~= "pinned",
       fn = function() M.setReviewFlash(nil) end }
-    items[#items + 1] = { title = infoTitle("review flash: " .. flashLabel(flashSlug)
+    items[#items + 1] = { title = infoTitle("review flash T0–T1: " .. flashLabel(flashSlug)
       .. (flashState == "pinned" and " · pinned" or "")), menu = flashes }
   end
 

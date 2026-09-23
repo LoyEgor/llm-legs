@@ -18,7 +18,7 @@ local profileFastModeConfigs = {}
 
 -- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
 -- the Gemini submenu reads; nil is the file being absent — no cache is what the
--- `review flash: unavailable` row is rendered off.
+-- `review flash T0–T1: unavailable` row is rendered off.
 local geminibFiles = { reviewFlash = nil, MODELS = "<geminib-models>", models = { families = {
   { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash", label = "Gemini 3.8 Flash" },
   { family = "gemini-3.7-flash", slug = "flash37", agy_prefix = "gemini-3.7-flash", label = "Gemini 3.7 Flash" },
@@ -2434,7 +2434,7 @@ do
     table.concat(titles, "|"))
   assert(titles[4] == "-" and titles[5] == "Weather: no data" and titles[6] == "window: 24 h"
     and titles[7] == "Refresh weather" and titles[8] == "-" and titles[9] == "Gemini"
-    and titles[10] == "review flash: 3.8" and #titles == 10, table.concat(titles, "|"))
+    and titles[10] == "review flash T0–T1: 3.8" and #titles == 10, table.concat(titles, "|"))
   for _, item in ipairs(menu or {}) do
     assert(not titleText(item):find("^LLM weather") and not titleText(item):find("^gemini · "),
       "a diagnostics surface rendered outside LLM doctor: " .. titleText(item))
@@ -3400,7 +3400,7 @@ do
     gemini = { available = true, accounts = { { account = "gem-a", five_hour = bucket(10) } } },
   }}
   local plain = loadModule(weatherFixture, nil, now).menuItems()
-  assert(table.concat(submenuTitles(geminiRow(plain)), "|") == "review flash: 3.8",
+  assert(table.concat(submenuTitles(geminiRow(plain)), "|") == "review flash T0–T1: 3.8",
     table.concat(submenuTitles(geminiRow(plain)), "|"))
   for _, item in ipairs(doctorRow(plain).menu) do
     local text = titleText(item)
@@ -3426,7 +3426,7 @@ do
   ;(function()
     local flashTasks = {}
     local flashModule = loadModule(weatherFixture, captureTasks(flashTasks), now)
-    local row = submenuItem(geminiRow(flashModule.menuItems()), "review flash: 3.8")
+    local row = submenuItem(geminiRow(flashModule.menuItems()), "review flash T0–T1: 3.8")
     assert(row, "the review flash row is missing")
     assert(table.concat(submenuTitles(row), "|") == "3.8|3.7|3.6|newest (default)",
       table.concat(submenuTitles(row), "|"))
@@ -3443,7 +3443,7 @@ do
 
     geminibFiles.reviewFlash = "flash37\n"
     local pinnedModule = loadModule(weatherFixture, captureTasks(flashTasks), now)
-    local pinnedRow = submenuItem(geminiRow(pinnedModule.menuItems()), "review flash: 3.7 · pinned")
+    local pinnedRow = submenuItem(geminiRow(pinnedModule.menuItems()), "review flash T0–T1: 3.7 · pinned")
     assert(pinnedRow, "a pinned review flash row is not named as pinned: "
       .. table.concat(submenuTitles(geminiRow(pinnedModule.menuItems())), "|"))
     for index, choice in ipairs(pinnedRow.menu) do
@@ -3467,21 +3467,21 @@ do
         label = "Gemini 3.8 Flash" },
     } }
     local labelled = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
-    assert(submenuItem(labelled, "review flash: 4.0"),
+    assert(submenuItem(labelled, "review flash T0–T1: 4.0"),
       "the review flash row ignored geminib's label: " .. table.concat(submenuTitles(labelled), "|"))
     -- An entry cached before geminib carried labels still parses out of the slug shape.
     geminibFiles.models = { families = {
       { family = "gemini-3.8-flash", slug = "flash38", agy_prefix = "gemini-3.8-flash" },
     } }
     local bare = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
-    assert(submenuItem(bare, "review flash: 3.8"),
+    assert(submenuItem(bare, "review flash T0–T1: 3.8"),
       "a label-less family lost the slug fallback: " .. table.concat(submenuTitles(bare), "|"))
     geminibFiles.models = labelledModels
 
     local brokenModels = geminibFiles.models
     geminibFiles.models = nil
     local brokenSub = geminiRow(loadModule(weatherFixture, captureTasks(flashTasks), now).menuItems())
-    local brokenRow = submenuItem(brokenSub, "review flash: unavailable")
+    local brokenRow = submenuItem(brokenSub, "review flash T0–T1: unavailable")
     assert(brokenRow and brokenRow.disabled == true and brokenRow.menu == nil,
       "a missing geminib family cache still offered a submenu")
     geminibFiles.models = brokenModels
