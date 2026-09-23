@@ -124,7 +124,26 @@ append_write_tool_result() {
     >> "$WRITE_TRANSCRIPT"
 }
 
-gate() { bash_payload "$1" | bash "$WRITE_GATE"; }
+# What the harness does with a denial: its reason lands in the transcript as an is_error
+# tool_result, the witness a retry stamp is honoured beside.
+harness_deny() { # transcript gate-output
+  local r
+  [ -n "$1" ] || return 0
+  r=$(printf '%s' "$2" | jq -r 'select(.hookSpecificOutput.permissionDecision == "deny")
+    | .hookSpecificOutput.permissionDecisionReason' 2>/dev/null)
+  [ -n "$r" ] || return 0
+  jq -cn --arg r "$r" '{type:"user",message:{role:"user",content:[{type:"tool_result",is_error:true,content:$r}]}}' \
+    >> "$1"
+}
+
+gate() {
+  local out rc
+  out=$(bash_payload "$1" | bash "$WRITE_GATE")
+  rc=$?
+  harness_deny "${GATE_TRANSCRIPT:-$WRITE_TRANSCRIPT}" "$out"
+  [ -z "$out" ] || printf '%s\n' "$out"
+  return "$rc"
+}
 
 decision() {
   local out
@@ -322,7 +341,8 @@ echo "== write gate: a retry stamp no denial of this session minted is refused a
 learn_stamp() { # command [session]
   local scratch="$WORK/learn-$RANDOM$RANDOM"
   GATE_SID=${2:-session-one} INSTRUCTION_WRITE_GATE_STAMPS="$scratch/stamps" \
-    INSTRUCTION_WATCH_STATE="$scratch/state" decision "$1" >/dev/null
+    INSTRUCTION_WATCH_STATE="$scratch/state" GATE_TRANSCRIPT="$scratch/transcript.jsonl" \
+    decision "$1" >/dev/null
   ls "$scratch/stamps"
 }
 JW="$INSTRUCTION_WATCH_STATE/events.jsonl"
@@ -355,6 +375,20 @@ append_write_user
 out=$(GATE_SID=session-two gate "$cmd4" 2>&1; echo "rc=$?")
 assert_contains "rc=2" "$out"
 assert_eq session-two "$(grep '"kind":"stamp-forged"' "$JW" | tail -1 | jq -r .sid)"
+
+# The record and the stamp are both computable from the session, the path and the command; the
+# denial the harness wrote into this session's transcript is not.
+cmd5="echo recorded > $CLAUDE_MD"
+h5=$(learn_stamp "$cmd5")
+mkdir -p "$INSTRUCTION_WRITE_GATE_STAMPS/$h5" "$INSTRUCTION_WATCH_STATE/denied"
+printf 'session-one %s\n' "$(date +%s)" > "$INSTRUCTION_WATCH_STATE/denied/$h5"
+age_stamps
+append_write_user
+n0=$(forged_count)
+out=$(gate "$cmd5" 2>&1; echo "rc=$?")
+assert_contains "rc=2" "$out"
+assert_eq $((n0 + 1)) "$(forged_count)"
+assert [ ! -d "$INSTRUCTION_WRITE_GATE_STAMPS/$h5" ]
 
 echo "== write gate: a trailing redirect or comment does not move the destination"
 assert_eq deny "$(decision "printf x | tee $CLAUDE_MD 2>/dev/null")"
@@ -569,7 +603,12 @@ retry_payload() {
     + (if $t == "" then {} else {transcript_path:$t} end)'
 }
 retry_bloat() {
-  retry_payload "$@" | INSTRUCTION_BLOAT_GATE_STAMPS="$RETRY_STAMPS" bash "$BLOAT"
+  local out rc
+  out=$(retry_payload "$@" | INSTRUCTION_BLOAT_GATE_STAMPS="$RETRY_STAMPS" bash "$BLOAT")
+  rc=$?
+  [ ! -f "$4" ] || harness_deny "$4" "$out"
+  [ -z "$out" ] || printf '%s\n' "$out"
+  return "$rc"
 }
 retry_decision() {
   local out
@@ -1152,10 +1191,13 @@ echo "== bloat gate: the global file's byte ceiling stands outside the retry rit
 # audit-then-retry stamp must not be a way through it.
 CEIL_STAMPS="$HOME/.cache/bloat-ceiling"
 ceil() {
-  jq -cn --arg p "$1" --arg o "$2" --arg n "$3" --arg s "ceil-$4" --arg t "$TRANSCRIPT" \
+  local out
+  out=$(jq -cn --arg p "$1" --arg o "$2" --arg n "$3" --arg s "ceil-$4" --arg t "$TRANSCRIPT" \
     '{tool_name:"Edit",cwd:"/tmp",session_id:$s,transcript_path:$t,
       tool_input:{file_path:$p,old_string:$o,new_string:$n}}' \
-    | INSTRUCTION_BLOAT_GATE_STAMPS="$CEIL_STAMPS" bash "$BLOAT"
+    | INSTRUCTION_BLOAT_GATE_STAMPS="$CEIL_STAMPS" bash "$BLOAT")
+  harness_deny "$TRANSCRIPT" "$out"
+  [ -z "$out" ] || printf '%s\n' "$out"
 }
 ceil_decision() {
   local out
@@ -1784,10 +1826,10 @@ printf 'tier doc before the revert case\n' > "$DOC"
 span_base sid-revert >/dev/null
 grow_cmd="perl -pi -e 's/\$/ a line no human asked for/' $DOC"
 pre_call sid-revert Bash command "$grow_cmd" "$SPAN_T"
-assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-revert" ]
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-revert@tu-sid-revert" ]
 printf 'a line no human asked for\n' >> "$DOC"
 ctx=$(span_check sid-revert Bash command "$grow_cmd" "$SPAN_T")
-assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-revert" ]
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-revert@tu-sid-revert" ]
 assert_contains "REVERTED" "$ctx"
 assert_contains "PUT BACK" "$ctx"
 assert_eq 0 "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq '.bytes[0]')"
@@ -2053,7 +2095,7 @@ printf 'tier doc\n' > "$DOC"
 echo "== tripwire: a write that SHRANK the file is what the span exists for"
 span_base sid-shrink >/dev/null
 pre_call sid-shrink Bash command "printf tiny > $DOC" "$SPAN_T"
-assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-shrink" ]
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-shrink@tu-sid-shrink" ]
 printf 'tiny\n' > "$DOC"
 ctx=$(span_check sid-shrink Bash command "printf tiny > $DOC" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
@@ -2342,7 +2384,21 @@ ctx=$(tool_payload PostToolUse sid-idm Bash command "$grow_cmd" "$SPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED $DOC" "$ctx"
 assert_eq "" "$(printf '%s' "$ctx" | grep -o REVERTED)"
-assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-idm" ]
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-idm@tu-sid-idm" ]
+
+echo "== in flight: a parallel call of the session, denied, leaves this call's window standing"
+printf 'tier doc\n' > "$DOC"
+span_base sid-par >/dev/null
+pre_call sid-par Bash command "$grow_cmd" "$SPAN_T"
+out=$(tool_payload PreToolUse sid-par Bash command "printf x >> $CLAUDE_MD" "$SPAN_T" \
+      | jq -c '.tool_use_id = "tu-par-denied"' | bash "$WRITE_GATE" 2>/dev/null)
+assert_contains '"deny"' "$out"
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-par@tu-sid-par" ]
+printf 'a line beside a denied parallel call\n' >> "$DOC"
+ctx=$(span_check sid-par Bash command "$grow_cmd" "$SPAN_T")
+assert_contains "REVERTED" "$ctx"
+assert_eq this-call "$(tail -1 "$J" | jq -r .writer)"
+assert_eq "tier doc" "$(cat "$DOC")"
 
 echo "== in flight: two sessions' windows over one write name both chats and put nothing back"
 cat > "$HOME/.local/bin/chat-name" <<'STUB'
@@ -2353,7 +2409,7 @@ printf 'tier doc\n' > "$DOC"
 span_base sid-amb-a >/dev/null
 pre_call sid-amb-a Bash command "$grow_cmd" "$SPAN_T"
 tool_payload PreToolUse sid-amb-b Bash command 'git status --short' "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null
-assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-amb-b" ]
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-amb-b@tu-sid-amb-b" ]
 printf 'a line either chat could have written\n' >> "$DOC"
 ctx=$(span_check sid-amb-a Bash command "$grow_cmd" "$SPAN_T")
 assert_contains "CHANGED $DOC" "$ctx"
@@ -2372,11 +2428,11 @@ arm_span sid-deny "$SPAN_T"
 out=$(tool_payload PreToolUse sid-deny Bash command "printf x >> $CLAUDE_MD" "$SPAN_T" \
       | bash "$WRITE_GATE" 2>/dev/null)
 assert_contains '"deny"' "$out"
-assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-deny" ]
+assert_eq 0 "$(find "$INSTRUCTION_WATCH_STATE/inflight" -name 'sid-deny*' | wc -l | tr -d ' ')"
 out=$(tool_payload PreToolUse sid-deny Edit file_path "$DOC" "$SPAN_T" \
       | jq -c --arg n "$big" '.tool_input += {old_string:"tier", new_string:$n}' | bash "$BLOAT" 2>/dev/null)
 assert_contains '"deny"' "$out"
-assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-deny" ]
+assert_eq 0 "$(find "$INSTRUCTION_WATCH_STATE/inflight" -name 'sid-deny*' | wc -l | tr -d ' ')"
 printf 'tier doc\n' > "$DOC"
 span_base sid-deny >/dev/null
 printf 'a line after the denial\n' >> "$DOC"
@@ -2388,10 +2444,10 @@ echo "== in flight: a mark older than an hour is a dead call, swept without a wo
 printf 'tier doc\n' > "$DOC"
 span_base sid-live >/dev/null
 pre_call sid-live Bash command "$grow_cmd" "$SPAN_T"
-printf '%s tu-dead Bash /tmp\n' "$(( $(date +%s) - 7200 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-dead"
+printf '%s tu-dead Bash /tmp\n' "$(( $(date +%s) - 7200 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-dead@tu-dead"
 printf 'a line the live call wrote\n' >> "$DOC"
 assert_contains "REVERTED" "$(span_check sid-live Bash command "$grow_cmd" "$SPAN_T")"
-assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-dead" ]
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-dead@tu-dead" ]
 assert_eq this-call "$(tail -1 "$J" | jq -r .writer)"
 assert_eq 0 "$(grep -c sid-dead "$J")"
 printf 'tier doc\n' > "$DOC"
@@ -2741,6 +2797,9 @@ deny git -C ../gitland apply ../claude.patch
 deny git apply ../claude.patch
 deny cat ../claude.patch | git apply --index
 deny git apply <<'X'\n--- a/CLAUDE.md\n+++ b/CLAUDE.md\n@@ -1 +1,2 @@\n rules\n+more\nX
+deny git apply -p0 <<'X'\n--- CLAUDE.md.orig\t2026-09-23 03:00:00\n+++ CLAUDE.md\t2026-09-23 03:01:00\n@@ -1 +1,2 @@\n rules\n+more\nX
+deny git apply -p 2 <<'X'\n--- x/y/CLAUDE.md\n+++ x/y/CLAUDE.md\n@@ -1 +1,2 @@\n rules\n+more\nX
+pass git apply -p0 <<'X'\n--- notes.txt\n+++ notes.txt\n@@ -1 +1,2 @@\n rules\n+more\nX
 pass git -C ../gitland apply ../notes.patch
 pass git apply --check ../claude.patch
 deny bash -c "$(cat <<'EOF'\nprintf x >> ~/.claude/CLAUDE.md\nEOF\n)"

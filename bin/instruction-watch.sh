@@ -390,6 +390,13 @@ clear_gone_marks() { # path
   done
 }
 
+release_marks() { # key...
+  local key
+  for key; do
+    rmdir "$ALERT_DIR/$key" 2>/dev/null || true
+  done
+}
+
 # 1 when the journal could not take the record: the caller then keeps its baseline where it was, so
 # the change is found and reported again rather than absorbed unrecorded.
 alert_once() { # path content-key summary
@@ -411,9 +418,7 @@ alert_once() { # path content-key summary
   instruction_alert_sendable && sent=attempted
   if ! journal_event "$sent" "$id" "$3"; then
     # A failed append would otherwise leave the change claimed and unjournaled.
-    for key in $claimed; do
-      rmdir "$ALERT_DIR/$key" 2>/dev/null || true
-    done
+    release_marks $claimed
     return 1
   fi
   instruction_alert_poke || return 0
@@ -478,28 +483,35 @@ offer_restore() {
 # leaves its mark behind), and every other session's, where a mark older than an hour is a session
 # that died mid-call and is swept without a word.
 load_inflight() {
-  local f name m_start m_id start own_name
+  local f name m_start m_id start own_name own_file='' own_count=0
   now_ns=$(instruction_ns "$(instruction_now)") || { now_ns=''; return 0; }
   own_name=$(instruction_sid_name "$sid")
-  f="$INFLIGHT_DIR/$own_name"
-  if [ -f "$f" ] && read -r m_start m_id _ <"$f" 2>/dev/null; then
-    if [ -z "$tool_use_id" ] || [ "$m_id" = "$tool_use_id" ]; then
-      own_start=$(instruction_ns "$m_start") || own_start=''
-      rm -f "$f" 2>/dev/null
-    fi
-  fi
   for f in "$INFLIGHT_DIR"/*; do
     [ -f "$f" ] || continue
     name=${f##*/}
-    [ "$name" = "$own_name" ] && continue
-    read -r m_start _ <"$f" 2>/dev/null || continue
+    name=${name%%@*}
+    read -r m_start m_id _ <"$f" 2>/dev/null || continue
     start=$(instruction_ns "$m_start") || continue
     if [ $((now_ns - start)) -gt 3600000000000 ]; then
       rm -f "$f" 2>/dev/null
       continue
     fi
+    if [ "$name" = "$own_name" ]; then
+      own_count=$((own_count + 1))
+      if [ -n "$tool_use_id" ] && [ "$m_id" = "${tool_use_id//[^A-Za-z0-9._-]/_}" ]; then
+        own_file=$f; own_start=$start
+      elif [ -z "$tool_use_id" ]; then
+        own_file=$f; own_start=$start
+      fi
+      continue
+    fi
     other_sids+=("$name"); other_starts+=("$start")
   done
+  # Without a tool_use_id only a lone mark can be this call's; with several, any could be.
+  if [ -z "$tool_use_id" ] && [ "$own_count" -gt 1 ]; then
+    own_file=''; own_start=''
+  fi
+  [ -z "$own_file" ] || rm -f "$own_file" 2>/dev/null
 }
 
 add_candidate() {

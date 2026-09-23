@@ -2827,14 +2827,12 @@ fi
 for instr_hook in "$INSTR_GATE" "$INSTR_WATCH"; do
   assert grep -Fq 'share/instruction-files.sh' "$instr_hook"
   assert grep -Fq 'instruction_write_class "' "$instr_hook"
-  assert grep -Fq 'instruction_write_targets "' "$instr_hook"
   # No redirection, copy-verb or destination-verb matcher of its own.
   assert eq "$(grep -cE '>\[>\|\]|g\?tee|\(cp\|mv\|ln\|install\)|--in-place' "$instr_hook")" 0
   # Nor an interpreter write shape of its own. The parse can only report that an interpreter NAMED
   # a guarded path, so what makes that a write is asked of the module by both doors: a second
   # spelling is a one-liner one of them denies and the other never puts back.
   assert eq "$(grep -cE 'write_text|writeFileSync|python\[0-9' "$instr_hook")" 0
-  assert grep -Fq 'instruction_interp_write_re "' "$instr_hook"
   # No class list of its own: neither a class directory literal nor the guarded basename set.
   assert eq "$(grep -cE 'skills-on-demand|\.claude/(instructions|rules)([/ ]|$)' "$instr_hook")" 0
   assert eq "$(grep -c 'CLAUDE\.local\.md' "$instr_hook")" 0
@@ -2842,6 +2840,13 @@ for instr_hook in "$INSTR_GATE" "$INSTR_WATCH"; do
   assert grep -Fq 'instruction_autonomous "$sid" "$transcript"' "$instr_hook"
   assert eq "$(grep -cE 'rj_autonomous|RJ_AUTONOMY_PHRASE' "$instr_hook")" 0
 done
+assert grep -Fq 'instruction_write_targets "' "$INSTR_GATE"
+assert grep -Fq 'instruction_interp_write_re "' "$INSTR_GATE"
+# The tripwire attributes a write by the clock of the gates' in-flight mark and reads no command
+# text at all, so no second reading of a command can disagree with the gate's.
+assert eq "$(grep -c 'tool_input' "$INSTR_WATCH")" 0
+assert grep -Fq 'instruction_inflight_mark "$sid"' "$INSTR_GATE"
+assert grep -Fq 'instruction_inflight_mark "$sid"' "$ROOT/bin/instruction-bloat-gate.sh"
 
 # One definition of the span, in the journal library, reached from exactly one place in this
 # repository — the call and the comment naming it. Nothing here re-spells his phrase.

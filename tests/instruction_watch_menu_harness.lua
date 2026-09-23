@@ -612,12 +612,15 @@ local ok, err = pcall(function()
         and not isRed(liveTitle), "the liveness line is not green with its counts: " .. live)
     check(findRow(M.menuItems(), "older in events.jsonl") == nil, "a trailer was shown with nothing hidden")
 
+    local expiredMark = wf.state .. "/alerts/0123456789abcdef"
+    os.execute("mkdir -p " .. quoted(expiredMark) .. " && touch -t 202001010000 " .. quoted(expiredMark))
     local before = #records()
     write(doc, "grown line\n")
     fire(doc)
     local after = records()
     local grown = after[#after]
     check(#after == before + 1, "a write with no hook produced " .. (#after - before) .. " records")
+    check(hs.fs.attributes(expiredMark) == nil, "the watcher's claim did not sweep a day-old alert marker")
     if #after == before + 1 then
         check(grown.source == "watcher" and grown.writer == "unknown" and grown.kind == "change",
             "the watcher record lacks source/writer/kind: " .. hs.json.encode(grown))
@@ -639,12 +642,12 @@ local ok, err = pcall(function()
 
     local sidB = "eeee5555-0000-4000-8000-00000000000b"
     check(tripwire("", sidB, wf.gate), "the write gate refused a plain Bash call")
-    local mark = readFile(wf.state .. "/inflight/" .. sidB) or ""
+    local mark = readFile(wf.state .. "/inflight/" .. sidB .. "@toolu_seam") or ""
     check(mark:match("^%d+%.%d+ toolu_seam Bash ") ~= nil, "the write gate left no in-flight mark: " .. mark)
     M.setChatResolver(function(_, onDone) onDone("Writer chat (eeee5555)") end)
     write(doc, "second line\n")
     fire(doc)
-    os.remove(wf.state .. "/inflight/" .. sidB)
+    os.remove(wf.state .. "/inflight/" .. sidB .. "@toolu_seam")
     local named = records()
     local attributed = named[#named] or {}
     local restore = tostring((attributed.restores or {})[1] or "")

@@ -1280,8 +1280,8 @@ instruction_all_dirs() {
 # write is read off the patch — the command text itself (a heredoc) and every file the command
 # names — and off the stash, relative to the repository's top level (the directory outside one).
 instruction_git_landing() { # command cwd → absolute paths, one per line
-  local cmd=$1 cwd=${2:-$PWD} seg gcwd i n sub w ro real dir top ref f base
-  local apply='' stash='' gcwds='' files='' sh_cwd=$cwd
+  local cmd=$1 cwd=${2:-$PWD} seg gcwd i n sub w ro real dir top ref f base strip next
+  local apply='' stash='' gcwds='' files='' strips='' sh_cwd=$cwd
   local -a words
   case "$cmd" in *git*) ;; *) return 0 ;; esac
   while IFS= read -r -d '' seg; do
@@ -1308,17 +1308,22 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
     top=$(git -C "$gcwd" rev-parse --show-toplevel 2>/dev/null) || top=$gcwd
     case "$sub" in
       apply)
-        ro='' real='' dir=''
+        ro='' real='' dir='' strip=1 next=''
         for w in "${words[@]:$((i + 1))}"; do
+          [ -z "$next" ] || { strip=$w; next=''; continue; }
           case "$w" in
             --check|--stat|--numstat|--summary) ro=1 ;;
             --apply|--index|-3|--3way) real=1 ;;
             --directory=*) dir=${w#--directory=}/ ;;
+            -p) next=1 ;;
+            -p*) strip=${w#-p} ;;
           esac
         done
         [ -n "$ro" ] && [ -z "$real" ] && continue
+        case "$strip" in ''|*[!0-9]*) strip=1 ;; esac
         apply="$apply$top/$dir"$'\n'
         gcwds="$gcwds$gcwd"$'\n'
+        strips="$strips$strip"$'\n'
         ;;
       stash)
         case "${words[$((i + 1))]:-}" in pop|apply) ;; *) continue ;; esac
@@ -1343,9 +1348,22 @@ instruction_git_landing() { # command cwd → absolute paths, one per line
   done
   { printf '%s\n' "$cmd"
     printf '%s' "$files" | while IFS= read -r f; do [ -z "$f" ] || head -c 20000000 "$f"; done
-  } | sed -n -e 's#^+++ b/##p' -e 's#^--- a/##p' -e 's#^rename to ##p' -e 's#^copy to ##p' |
-    cut -f1 | sort -u | while IFS= read -r f; do
-      [ -n "$f" ] || continue
+  } | sed -n -e 's#^+++ #P #p' -e 's#^--- #P #p' -e 's#^rename to #R #p' -e 's#^copy to #R #p' |
+    cut -f1 | sort -u | while read -r kind f; do
+      [ -n "$f" ] && [ "$f" != /dev/null ] || continue
+      if [ "$kind" = R ]; then
+        printf '%s\n' "$f"
+      else
+        printf '%s' "$strips" | sort -u | while IFS= read -r strip; do
+          n=$strip w=$f
+          while [ "$n" -gt 0 ]; do
+            case "$w" in */*) w=${w#*/} ;; *) w=''; break ;; esac
+            n=$((n - 1))
+          done
+          [ -z "$w" ] || printf '%s\n' "$w"
+        done
+      fi
+    done | sort -u | while IFS= read -r f; do
       printf '%s' "$apply" | while IFS= read -r base; do [ -z "$base" ] || printf '%s%s\n' "$base" "$f"; done
     done
 }
@@ -1380,9 +1398,10 @@ instruction_mark_once() {
 # its own to put between them — one that, when it fails, has to leave the stamp for the next try.
 # 0 = a stamp of this caller's is there and old enough to spend; 3 = a stamp no denial of this
 # session minted (`denied/<hash>` in the watch state is missing, names another session or is past
-# the stamp's day) — removed, and the caller refuses and journals it.
-instruction_stamp_ready() { # dir hash session
-  local dir=$1 hash=$2 sid=${3:-} stamp now born age=''
+# the stamp's day, or the session's transcript holds no denial carrying the stamp's tag) —
+# removed, and the caller refuses and journals it.
+instruction_stamp_ready() { # dir hash session [transcript]
+  local dir=$1 hash=$2 sid=${3:-} transcript=${4:-} stamp now born age=''
   case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
   mkdir -p "$dir" 2>/dev/null || return 1
   # The sweep is aimed at exactly what a gate creates: an EMPTY DIRECTORY whose name is the
@@ -1418,7 +1437,33 @@ SWEEP
     case "$now$born" in *[!0-9]*) ;; *) age=$((now - born)) ;; esac
   fi
   [ -n "$age" ] && [ "$age" -ge 2 ] || return 1
+  if ! _instruction_deny_witnessed "$hash" "$transcript"; then
+    rmdir "$stamp" 2>/dev/null
+    return 3
+  fi
   return 0
+}
+
+# The tag a stamp-minting denial carries in its reason, and the proof the retry looks for.
+instruction_denial_tag() { # hash
+  printf '(denial %s)' "$1"
+}
+
+# `denied/<hash>` lives in a cache the model can write and its name is computable, so the record
+# alone proves nothing: the harness writes every denial reason into the transcript as an is_error
+# tool_result, a text no tool of the model's can start with a gate's name. No readable transcript
+# is no evidence either way, as for the audit read. Asked only of an aged stamp: a twin in the same
+# batch arrives before the harness has written the first denial.
+_instruction_deny_witnessed() { # hash transcript
+  local tag
+  [ -n "${2:-}" ] && [ -r "$2" ] && [ -s "$2" ] || return 0
+  tag=$(instruction_denial_tag "$1")
+  grep -F "$tag" "$2" 2>/dev/null | jq -eR --arg tag "$tag" '
+    fromjson? | select(type == "object" and .type == "user")
+    | .message.content? | arrays | .[]
+    | select(type == "object" and .type == "tool_result" and .is_error == true)
+    | (.content | if type == "string" then . else ([.[]? | objects | .text? | strings] | join("")) end)
+    | select(test("^Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
 }
 
 instruction_stamp_consume() {
@@ -1517,20 +1562,24 @@ instruction_ns() { # epoch[.fraction]
 }
 
 # PreToolUse marks the call in flight and PostToolUse `check` consumes the mark: bytes whose mtime
-# lies between the two are this call's. One line, `<start> <tool_use_id> <tool> <cwd>`.
+# lies between the two are this call's. One file per call, `inflight/<session>@<tool_use_id>`, one
+# line `<start> <tool_use_id> <tool> <cwd>`: parallel calls of one session each keep their own
+# window, and a deny takes back only the mark its own call wrote.
 instruction_inflight_mark() { # session tool_use_id tool cwd
   local dir now id=${2:-} cwd=${4:--}
+  INSTRUCTION_INFLIGHT_FILE=''
   dir="$(instruction_watch_state)/inflight"
   mkdir -p "$dir" 2>/dev/null || return 1
   now=$(instruction_now)
   [ -n "$id" ] || id="${now%%.*}-$$"
-  id=${id//[[:space:]]/_}
+  id=${id//[^A-Za-z0-9._-]/_}
   cwd=${cwd//$'\n'/ }
-  printf '%s %s %s %s\n' "$now" "$id" "${3:--}" "$cwd" >"$dir/$(instruction_sid_name "$1")" 2>/dev/null
+  INSTRUCTION_INFLIGHT_FILE="$dir/$(instruction_sid_name "$1")@$id"
+  printf '%s %s %s %s\n' "$now" "$id" "${3:--}" "$cwd" >"$INSTRUCTION_INFLIGHT_FILE" 2>/dev/null
 }
 
-instruction_inflight_clear() { # session
-  rm -f "$(instruction_watch_state)/inflight/$(instruction_sid_name "$1")" 2>/dev/null
+instruction_inflight_clear() {
+  [ -z "${INSTRUCTION_INFLIGHT_FILE:-}" ] || rm -f "$INSTRUCTION_INFLIGHT_FILE" 2>/dev/null
   return 0
 }
 

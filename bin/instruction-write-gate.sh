@@ -242,7 +242,7 @@ esac
 # The session is part of the key: a parallel chat spending its own retry must not spend this
 # one's, and a later session must not inherit approval Egor gave in an earlier turn.
 hash=$(printf '%s\n%s\n%s\n' "$sid" "$hit" "$command" | shasum -a 256 | cut -c1-16)
-instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid"
+instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid" "$transcript"
 stamp_rc=$?
 if [ "$stamp_rc" = 0 ]; then
   if instruction_user_turn_after_stamp "$transcript" "$STAMP_DIR/$hash"; then
@@ -341,6 +341,6 @@ case "$class" in
     ;;
 esac
 
-jq -cn --arg r "$reason" \
+jq -cn --arg r "$reason $(instruction_denial_tag "$hash")" \
   '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
 exit 0

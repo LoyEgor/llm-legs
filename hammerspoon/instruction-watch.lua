@@ -431,11 +431,11 @@ root=$1 home=$2 state=$3 mode=$4
 shift 4
 . "$root/share/instruction-files.sh" 2>/dev/null || exit 2
 command -v jq >/dev/null 2>&1 || exit 2
-for f in hash_of shq snap_key keep_revert watch_mark_key; do
+for f in hash_of shq snap_key keep_revert watch_mark_key clear_gone_marks release_marks; do
   eval "$(sed -n '/^'"$f"'() {/,/^}/p' "$root/bin/instruction-watch.sh")"
   declare -F "$f" >/dev/null || exit 3
 done
-SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576
+SNAP_DIR=$state/snapshot REVERT_DIR=$state/reverts SNAP_MAX_BYTES=1048576 ALERT_DIR=$state/alerts
 case $mode in
   list) instruction_visible_paths "$home" "$state/ranked.txt" '' ;;
   repo) for r; do instruction_repo_files "$r"; done ;;
@@ -453,7 +453,14 @@ case $mode in
     done
     [ ${#plain[@]} -eq 0 ] ||
       shasum -a 256 -- "${plain[@]}" 2>/dev/null | awk '{ print substr($0, 1, 64) "\t" substr($0, 67) }' ;;
-  keys) while [ $# -ge 2 ]; do watch_mark_key "$1" "$2"; shift 2; done ;;
+  claim)
+    while [ $# -ge 3 ]; do
+      [ "$3" = 1 ] && clear_gone_marks "$1"
+      key=$(watch_mark_key "$1" "$2")
+      if instruction_mark_once "$ALERT_DIR" "$key"; then printf '%s\n' "$key"; else printf -- '-\n'; fi
+      shift 3
+    done ;;
+  release) release_marks "$@" ;;
   append) INSTRUCTION_WATCH_STATE=$state instruction_journal_append "$1" || exit 1 ;;
   restore)
     while [ $# -ge 6 ]; do
@@ -599,7 +606,7 @@ local function refreshInflight()
                 if epoch then
                     local key = name .. "|" .. callId
                     present[key] = true
-                    W.inflight[key] = W.inflight[key] or { sid = name, start = tonumber(epoch) }
+                    W.inflight[key] = W.inflight[key] or { sid = name:match("^(.-)@") or name, start = tonumber(epoch) }
                 end
             end
         end
@@ -633,26 +640,14 @@ local function watchEmit(entries, kind)
     if #entries == 0 then return end
     local args = {}
     for _, entry in ipairs(entries) do
-        args[#args + 1], args[#args + 2] = entry.vis, entry.content
-        if entry.verb == "ADDED" then
-            args[#args + 1], args[#args + 2] = entry.vis, "absent"
-            args[#args + 1], args[#args + 2] = entry.vis, "gone"
+        for _, value in ipairs({ entry.vis, entry.content, entry.verb == "ADDED" and "1" or "0" }) do
+            args[#args + 1] = value
         end
     end
-    local keys, keyIndex = outputLines(runScan("keys", args)), 0
-    local alertDir, claimed = stateDir .. "/alerts", {}
-    hs.fs.mkdir(alertDir)
-    for _, entry in ipairs(entries) do
-        keyIndex = keyIndex + 1
-        local key = keys[keyIndex]
-        if entry.verb == "ADDED" then
-            for _ = 1, 2 do
-                keyIndex = keyIndex + 1
-                if (keys[keyIndex] or ""):match("^%x+$") then hs.fs.rmdir(alertDir .. "/" .. keys[keyIndex]) end
-            end
-        end
-        if (key or ""):match("^%x+$") and hs.fs.mkdir(alertDir .. "/" .. key) then
-            entry.key = key
+    local keys, claimed = outputLines(runScan("claim", args)), {}
+    for index, entry in ipairs(entries) do
+        if (keys[index] or ""):match("^%x+$") then
+            entry.key = keys[index]
             claimed[#claimed + 1] = entry
         end
     end
@@ -683,10 +678,12 @@ local function watchEmit(entries, kind)
     record.summary = table.concat(summaries, "; ")
     local function finish()
         if not journalAppend(hs.json.encode(record)) then
+            local keys = {}
             for _, entry in ipairs(claimed) do
-                hs.fs.rmdir(alertDir .. "/" .. entry.key)
+                keys[#keys + 1] = entry.key
                 if W then W.prev[entry.vis] = entry.old; W.dirty = true end
             end
+            runScan("release", keys)
             return
         end
         M.pump()
