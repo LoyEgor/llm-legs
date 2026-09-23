@@ -177,7 +177,8 @@ fi
 [ -z "${STUB_ERROR:-}" ] || printf '%s\n' "$STUB_ERROR" >&2
 [ -z "${STUB_STDOUT:-}" ] || printf '%s\n' "$STUB_STDOUT"
 if [ "${STUB_CODE:-0}" -eq 0 ]; then
-  printf '{"result":"claudeb result","session_id":"%s","total_cost_usd":1.25}\n' "${STUB_SESSION-claude-session}"
+  jq -cn --arg session "${STUB_SESSION-claude-session}" --argjson usage "${STUB_MODEL_USAGE:-null}" \
+    '{result:"claudeb result",session_id:$session,total_cost_usd:1.25} + if $usage then {modelUsage:$usage} else {} end'
 fi
 exit "${STUB_CODE:-0}"
 EOF
@@ -319,7 +320,7 @@ clear_stub() {
   unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW \
     STUB_EDIT_PATH STUB_PICK_WALL \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
-    STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS
+    STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE
   rm -f "$STUB_DIR/claudeb_drop_effort" "$STUB_DIR/codex_trusted" "$STUB_DIR/codex.stdin" \
     "$STUB_DIR/codex_bad_model" "$STUB_DIR/codex_bad_model_always" "$STUB_DIR/codex_noise" \
     "$STUB_DIR/codex_noise_deep" "$STUB_DIR/codex_phrase_deep" "$STUB_DIR/codex_append_target" \
@@ -2570,6 +2571,13 @@ start_ok claudeb
 assert await_done
 assert grep -qx 'OUTCOME: CLAUDEB_FAILED' "$WORK/wait.out"
 
+clear_stub
+export PICK_RC=0 PICK_ACCOUNT=servedacct
+export STUB_MODEL_USAGE='{"claude-haiku-4-5-20251001":{"outputTokens":500},"claude-opus-4-8":{"outputTokens":43}}'
+start_ok claudeb
+assert await_done
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = claude-opus-4-8
+
 readonly_runs="$WORK/readonly-runs"
 readonly_workdir="$WORK/readonly-workdir"
 mkdir -p "$readonly_runs" "$readonly_workdir"
@@ -2587,7 +2595,10 @@ assert await_done
 assert test -f "$RUN_DIR/dirty-before"
 assert test -f "$RUN_DIR/dirty-before-shas"
 assert test "$(cd "$(jq -r '.workdir' "$RUN_DIR/meta.json")" && pwd -P)" = "$(cd "$readonly_workdir" && pwd -P)"
+assert test "$(jq 'has("served_model")' "$RUN_DIR/meta.json")" = false
 report=$("$RUNNER" report "$RUN_ID")
+assert grep -qx 'MODEL: opus·high' <<<"$report"
+assert_fails grep -q '^SERVED:' <<<"$report"
 assert grep -qx 'HINT: this run edited nothing — a read-only lookup is cheaper on the light-research agent (see ~/.claude/CLAUDE.md, Model routing); read-only relay runs this month: 1' <<<"$report"
 assert test -f "$RUN_DIR/report-readonly"
 
@@ -2869,15 +2880,18 @@ assert await_done
 clear_stub
 set_config 'claudeb_model=opus' 'claudeb_effort=high'
 export PICK_RC=0 PICK_ACCOUNT=effortacct
+export STUB_MODEL_USAGE='{"opus":{"canonicalModel":"claude-opus-5-5"},"claude-haiku-4-5-20251001":{"outputTokens":5}}'
 : >"$STUB_DIR/claudeb_drop_effort"
 start_ok claudeb
 assert await_done
 assert test "$(grep -c '^CLAUDEB_CALL$' "$CALL_LOG")" -eq 2
 assert test "$(grep -c '^ARG=--effort$' "$CALL_LOG")" -eq 1
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
+assert test "$(jq -r '.served_model' "$RUN_DIR/meta.json")" = claude-opus-5-5
 
 report=$("$RUNNER" report "$RUN_ID")
 assert test "$(head -n1 <<<"$report")" = 'ACCOUNT: effortacct (claudeb)'
+assert test "$(sed -n 2,3p <<<"$report")" = $'MODEL: opus·high\nSERVED: claude-opus-5-5'
 assert grep -q '^COST: 625k tok-eq$' <<<"$report"
 assert grep -q '^RESULT:$' <<<"$report"
 assert grep -q '^claudeb result$' <<<"$report"

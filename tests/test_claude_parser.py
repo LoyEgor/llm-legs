@@ -53,6 +53,19 @@ class ClaudeServedModelParserTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "claude-opus-4-8")
 
+    def test_canonical_model_names_the_served_model(self):
+        payload = {
+            "modelUsage": {
+                "opus": {"canonicalModel": "claude-opus-5-5"},
+                "claude-haiku-4-5-20251001": {"outputTokens": 5},
+            },
+        }
+
+        result = extract_served(payload, "claude-opus-5-5")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "claude-opus-5-5")
+
     def test_fails_closed_when_model_usage_missing(self):
         result = extract_served({"result": "ok"})
 

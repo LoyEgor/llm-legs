@@ -33,7 +33,6 @@ unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN 2>/dev/null || true
 # Audit log lands in the CALLER's data/ dir by default (orchestrators invoke legs with
 # cwd = project root). Override with LLM_LEGS_DATA_DIR for cron/launchd contexts.
 DATA_DIR="${LLM_LEGS_DATA_DIR:-$PWD/data}"
-mkdir -p "$DATA_DIR" 2>/dev/null || true
 LOG="$DATA_DIR/served-models.jsonl"
 MODEL="${CLAUDE_MODEL:-opus}"
 WEAK_RE='(^|[-_.])(haiku|mini|nano|lite|flash|small|tiny)([-_.0-9]|$)'
@@ -57,23 +56,23 @@ is_weak() { printf '%s' "$1" | grep -qiE "$WEAK_RE"; }
 extract_served_model() { # $1 (optional): requested model name/alias to prefer
   # CLI JSON: .modelUsage maps EVERY model that ran, including auxiliary/service models (a
   # haiku entry shows up next to opus on a plain probe) — same trap as Gemini's flash stats
-  # poisoning. The response model is the key matching the requested alias; if none matches,
-  # the dominant model by outputTokens. Fail closed when modelUsage is absent.
-  jq -er --arg req "${1:-}" '
-    (.modelUsage // {}) | to_entries
-    | if length == 0 then empty else
-        ([.[] | select($req != "" and (.key | ascii_downcase | contains($req | ascii_downcase)))]) as $match
-        | (if ($match | length) > 0 then $match else . end)
-        | sort_by(-(.value.outputTokens // 0))
-        | .[0].key
-      end
-  ' 2>/dev/null
+  # poisoning. The response model is the entry whose key or canonicalModel matches the requested
+  # alias; if none matches, the dominant model by outputTokens. Fail closed when modelUsage is absent.
+  jq -r --arg req "${1:-}" '
+    .modelUsage | objects | to_entries
+    | map(select(.key != "canonicalModel")
+          | {key, name: ((.value | objects | .canonicalModel | strings | select(. != "")) // .key),
+             out: ((.value | objects | .outputTokens | numbers) // 0)}) as $all
+    | ($all | map(select($req != "" and ((.key + " " + .name) | ascii_downcase | contains($req | ascii_downcase))))) as $match
+    | (if ($match | length) > 0 then $match else $all end) | max_by(.out) | .name // empty
+  ' 2>/dev/null | tail -n1 | grep .
 }
 
 case "${1:-}" in
   --extract-served-model)
     extract_served_model "${2:-}"; exit $? ;;
 esac
+mkdir -p "$DATA_DIR" 2>/dev/null || true
 
 PROBE=0
 if [ "${1:-}" = "--probe" ]; then PROBE=1; PROMPT="Reply with exactly: ok"; shift || true

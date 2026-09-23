@@ -873,6 +873,8 @@ supervise_claudeb() {
     run_with_deadline "${retry[@]}" <"$directory/brief.launch" >"$directory/out" 2>"$directory/err"
     rc=$?
   fi
+  value=$(served_model_from_envelope "$directory/out" "$model")
+  [ -z "$value" ] || meta_update "$directory" '.served_model = $model' --arg model "$value" || :
   return "$rc"
 }
 
@@ -1029,7 +1031,7 @@ supervise_grok() {
     printf 'READ_ONLY_VIOLATION\n' >"$directory/research-outcome"
     return 5
   fi
-  served=$(grok_end_field "$directory" '((.modelUsage // {}) | keys_unsorted[0]) // empty')
+  served=$(grok_end_field "$directory" 'tojson' | served_model_from_envelope /dev/stdin "$model")
   [ -z "$served" ] || meta_update "$directory" '.served_model = $model' --arg model "$served" || :
   # A tool the permission policy refused is neither a wall nor a failed run — 1.0.13 ends such a run
   # normally with exit 0 — but it is the one thing a reader of a thin result needs to know about.
@@ -1045,6 +1047,10 @@ supervise_grok() {
   [[ "$denied" =~ ^[0-9]+$ ]] || denied=0
   [ "$denied" -eq 0 ] || meta_update "$directory" '.denied_tools = $n' --argjson n "$denied" || :
   return "$rc"
+}
+
+served_model_from_envelope() { # envelope-file requested-model
+  "$SCRIPT_DIRECTORY/../ask_claude.sh" --extract-served-model "${2:-}" <"$1"
 }
 
 # One field off the streaming run's terminal `end` event. Read with fromjson? so a truncated line
@@ -3668,6 +3674,9 @@ report_run() {
   account=$(jq -r '.account' "$directory/meta.json")
   [ ! -s "$directory/light-verdict" ] || cat "$directory/light-verdict"
   printf 'ACCOUNT: %s (%s)\n' "$account" "$vendor"
+  jq -r '"MODEL: \(.model // "?")\(if (.effort // "") != "" then "·" + .effort else "" end)",
+         (.served_model // empty | "SERVED: \(.)")' "$directory/meta.json" 2>/dev/null
+  printf 'WEB: %s\n' "$(web_search_meta_state "$directory/meta.json")"
   reroute_lines "$directory"
   if [ -f "$directory/exit_code" ]; then
     code=$(tr -d '[:space:]' <"$directory/exit_code")
