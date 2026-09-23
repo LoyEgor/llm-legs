@@ -1496,8 +1496,8 @@ assert grep -Fq '+ if $review_round != "" then {review_round:$review_round,round
 assert grep -Fq 'ROUND_BRIEF_PREFIX = "ROUND:"' "$RB_ROUND"
 assert grep -Fq '    ROUND:*) ;;' "$ROOT/bin/worker-run"
 assert grep -Fq 'review_round=$(brief_review_round "$brief") || exit 4' "$ROOT/bin/worker-run"
-# Neither door named one, so the prose is read: the text scan is what keeps a hand-written fix
-# brief from landing as debt.
+# Neither door named one, so the prose is read: an open round there refuses the launch, which is
+# what keeps a hand-written fix brief from landing as debt without binding a brief that only cites it.
 assert grep -Fq 'local shape=${REVIEW_ROUND_RE#^}' "$ROOT/bin/worker-run"
 assert grep -Fq 'grep -xE "${shape%'"'"'$'"'"'}"' "$ROOT/bin/worker-run"
 # One shape, one place: a second copy of the id pattern is how the scan lost the `-<n>` member

@@ -5306,58 +5306,56 @@ assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0
 await_done || fail "the header round run never finished"
 clear_stub
 printf 'ACCOUNT: main\n\nThe brief must carry the line\nROUND: 20260801T140000Z-0a1b2c3\n' >"$WORK/round-brief"
-round_start || fail "prose round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-# A ROUND: past the header is not a header line — but it is prose naming an open round, which the
-# text scan answers, and the source says which door the id came through.
-assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = brief-text
-await_done || fail "the prose round run never finished"
+# A ROUND: past the header is not a header line — it is prose naming an open round, and prose is
+# asked about rather than bound.
+rc=0
+round_start || rc=$?
+assert test "$rc" -eq 4
+assert grep -Fq "open review round(s) 20260801T140000Z-0a1b2c3 but has no ROUND: line" "$WORK/round.err"
+assert_fails grep -q '^RUN: ' "$WORK/round.out"
 
-# A brief a chat wrote by hand names its round in prose and nowhere else: the run is bound to it,
-# review-bench's rule rides along, and one line says where the id came from — without it the fix
-# lands with no anchor and is charged to whoever touches the file next.
+# A brief that names an open round in prose alone is refused, never bound: bound, a read-only audit
+# that cited a run as evidence was handed that round's findings to fix (2026-09-23), and unasked a
+# hand-written fix brief lands its fixes as debt. The refusal names both headers that answer it.
+clear_stub
+printf 'ACCOUNT: main\n\nAudit the labels of review round 20260801T140000Z-0a1b2c3 (see the bench). Edit nothing.\n' >"$WORK/round-brief"
+rc=0
+round_start || rc=$?
+assert test "$rc" -eq 4
+assert test "$(wc -l <"$WORK/round.err" | tr -d ' ')" = 1
+assert grep -Fq "add 'ROUND: <id>' when this run fixes that round, or 'ROUND: none' when it only cites it" "$WORK/round.err"
+assert_fails grep -q '^RUN: ' "$WORK/round.out"
+# `ROUND: none` launches it unbound: no round, no fix rule appended.
+clear_stub
+printf 'ACCOUNT: main\nROUND: none\n\nAudit the labels of review round 20260801T140000Z-0a1b2c3 (see the bench). Edit nothing.\n' >"$WORK/round-brief"
+round_start || fail "ROUND: none start failed: $(<"$WORK/round.err")"
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
+assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
+await_done || fail "the ROUND: none run never finished"
+
+# The same brief against a settled round: `fix --print` prints nothing, so nothing is asked — a
+# round with no confirmed finding left is not a round this run could fix.
 clear_stub
 printf 'ACCOUNT: main\n\nFix the three findings of review round 20260801T140000Z-0a1b2c3 (see the bench).\n' >"$WORK/round-brief"
-round_start || fail "brief-text round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = brief-text
-assert test "$(sed '/^AUDIENCE: /,$d' "$RUN_DIR/brief.launch")" = "ACCOUNT: main
-
-Fix the three findings of review round 20260801T140000Z-0a1b2c3 (see the bench).
-
-STUB FIX RULE fix 20260801T140000Z-0a1b2c3 --print
-write verdicts.jsonl rows"
-assert grep -Fqx 'round 20260801T140000Z-0a1b2c3 taken from the brief text (no ROUND: line)' "$WORK/round.err"
-await_done || fail "the brief-text round run never finished"
-
-# The same brief against a settled round: `fix --print` prints nothing, so nothing binds — a round
-# with no confirmed finding left is not the round this run fixes.
-clear_stub
 REVIEW_BENCH_STUB_EMPTY=1 round_start || fail "settled brief-text start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
 assert test "$(jq 'has("round_source")' "$RUN_DIR/meta.json")" = false
 assert_fails grep -q 'STUB FIX RULE' "$RUN_DIR/brief.launch"
-assert_fails grep -q 'taken from the brief text' "$WORK/round.err"
+assert_fails grep -q 'ROUND: line' "$WORK/round.err"
 await_done || fail "the settled brief-text run never finished"
 
 # A member id of a chunked round is one token to the scan as well as to the validator: the prose of
-# a chunk's fix brief names `<round>-<n>`, and a scan blind to the suffix would bind nothing.
+# a chunk's fix brief names `<round>-<n>`, and a scan blind to the suffix would ask nothing.
 clear_stub
 mkdir -p "$DELEG_BENCHES/20260801T140000Z-0a1b2c3-2"
 printf 'ACCOUNT: main\n\nFix the findings of review round 20260801T140000Z-0a1b2c3-2 (see the bench).\n' >"$WORK/round-brief"
-round_start || fail "chunked brief-text round start failed: $(<"$WORK/round.err")"
-RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
-RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
-assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3-2
-assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = brief-text
-assert grep -Fqx 'round 20260801T140000Z-0a1b2c3-2 taken from the brief text (no ROUND: line)' "$WORK/round.err"
-await_done || fail "the chunked brief-text round run never finished"
+rc=0
+round_start || rc=$?
+assert test "$rc" -eq 4
+assert grep -Fq "open review round(s) 20260801T140000Z-0a1b2c3-2 but" "$WORK/round.err"
 
 # Two open rounds in the prose and no line choosing between them: a run that picked one would
 # anchor half its fixes against the other, so it refuses and asks for the ROUND: line.
@@ -5368,7 +5366,7 @@ round_start || rc=$?
 assert test "$rc" -eq 4
 assert test "$(wc -l <"$WORK/round.err" | tr -d ' ')" = 1
 assert grep -Fq '20260801T140000Z-0a1b2c3 20260801T130000Z-def4560' "$WORK/round.err"
-assert grep -Fq "add a 'ROUND: <id>' line" "$WORK/round.err"
+assert grep -Fq "add 'ROUND: <id>'" "$WORK/round.err"
 assert_fails grep -q '^RUN: ' "$WORK/round.out"
 
 # A ROUND: header answers alone: the prose beside it names another open round and is never scanned.
@@ -5379,7 +5377,7 @@ RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
 assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = header
-assert_fails grep -q 'taken from the brief text' "$WORK/round.err"
+assert_fails grep -q 'ROUND: line' "$WORK/round.err"
 await_done || fail "the header-wins run never finished"
 
 # The flag answers alone the same way, and names its own source.
@@ -5398,7 +5396,7 @@ round_start || fail "non-round token start failed: $(<"$WORK/round.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
 RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
 assert test "$(jq 'has("review_round")' "$RUN_DIR/meta.json")" = false
-assert_fails grep -q 'taken from the brief text' "$WORK/round.err"
+assert_fails grep -q 'ROUND: line' "$WORK/round.err"
 await_done || fail "the non-round token run never finished"
 
 for bad_round in 'ROUND: 20260801T140000Z-0A1B2C3' 'ROUND: 20260801T140000Z-0a1b2c' \
