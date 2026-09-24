@@ -142,6 +142,9 @@ run_one() { # suite-path
   # against nothing. TMPDIR is what mktemp fixtures collide on, and it is safe to move.
   (
     export TMPDIR="$logdir/tmp-$name"
+    # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the
+    # worker's marker and be judged as one.
+    unset CLAUDEB_WORKER
     mkdir -p "$TMPDIR"
     cd "$repo" || exit 4
     case "$path" in

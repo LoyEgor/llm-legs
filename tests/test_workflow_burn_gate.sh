@@ -123,4 +123,16 @@ CONFIG_DIR_ENV="$HOME_DIR/.claude"
 assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, and stays out of every other tool call\n' "$asserts"
+# A workflow reaching a relay type or worker-run is denied whatever the pressure; one of native
+# agents is not, and a script file is read like an inline script.
+limits alona 10
+ACCOUNT_ENV=alona
+wf() { jq -cn --arg s "$1" --arg p "${2:-}" '{hook_event_name:"PreToolUse",tool_name:"Workflow",tool_input:({script:$s} + (if $p == "" then {} else {scriptPath:$p} end))}' |
+  env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" CLAUDE_LIMITS_ACCOUNT="$ACCOUNT_ENV" bash "$GATE"; }
+assert denied "$(wf "await agent('x', {subagent_type: 'codex-worker'})")"
+assert denied "$(wf "await agent('run worker-run start codex --brief b')")"
+assert lacks "$(wf "await agent('grep the repo')")" 'permissionDecision'
+printf "agent('y', {agentType: 'claudeb-worker'})\n" >"$WORK/wf.js"
+assert denied "$(wf "" "$WORK/wf.js")"
+
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a relay agent type or worker-run, inline or from its script file, and stays out of every other tool call\n' "$asserts"

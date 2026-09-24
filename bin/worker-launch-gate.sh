@@ -6,8 +6,13 @@
 #
 # Two lists and no judgement between them. LAUNCH_RES is a vendor binary plus the flag or
 # subcommand that makes it print-and-exit; SANCTIONED_RE is the tools that own their launches. A
-# command naming a sanctioned launcher anywhere passes whatever else it spells — `worker-run start
-# codex` beside a brief that quotes `codex exec` is the shape that exemption exists for.
+# command running a sanctioned launcher in command position passes whatever else it spells —
+# `worker-run start codex` beside a brief that quotes `codex exec` is the shape that exemption exists
+# for — while a sanctioned name in a comment or an operand exempts nothing.
+#
+# The text gate reads the common spellings only. A run spelled past it — `eval`, a script file, an
+# interpreter — is still a run recorded under this chat, and the Stop backstop
+# (bin/worker-run-backstop.sh) holds the chat's turn until a relay owns it.
 #
 # Quoted text is collapsed into ONE word first, then quotes and backslashes are stripped from the
 # whole string, so `'claude' -p`, `"codex" exec` and `\claude -p` are the launches they spell while
@@ -37,11 +42,14 @@ EDGE="([[:space:]]|\$)"
 # lets `/usr/local/bin/codex exec` read as `codex exec` while keeping `~/.claude` and
 # `.claude/hooks` from reading as the `claude` binary.
 KEYWORD="([{!]|if|then|else|elif|do|while|until)[[:space:]]+"
-WRAPPER="(env|command|exec|nohup|nice|time|timeout|stdbuf|setsid|sudo|xargs)([[:space:]]+(-[^[:space:]]*|[0-9][^[:space:]]*))*"
-VENDOR_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
+WRAPPER="(env|command|exec|builtin|nohup|nice|time|timeout|gtimeout|stdbuf|setsid|caffeinate|unbuffer|arch|sudo|xargs)([[:space:]]+(-[^[:space:]]*|[0-9][^[:space:]]*))*"
+# Wrappers whose operands are not flags alone — a user, a host, a path, a session name — so any
+# words may stand between them and the command they run.
+LOOSE_WRAPPER="(sudo|script|watch|ssh|find|tmux|screen|launchctl|xargs)([[:space:]]+.*)?"
+VENDOR_WORD="^[[:space:]]*(${KEYWORD})*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|${WRAPPER}|${LOOSE_WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*"
 # The flag or subcommand that turns a vendor CLI into a headless run, reached past any number of
 # other flags.
-PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt)${EDGE}"
+PRINT_FLAG="([[:space:]]+[^[:space:]]+)*[[:space:]]+(-p|--print|--prompt)(=[^[:space:]]*)?${EDGE}"
 SUBCOMMAND="([[:space:]]+[^[:space:]]+)*[[:space:]]+"
 
 # Grok's own spellings, not reusable from PRINT_FLAG: folding it back in would let
@@ -53,7 +61,8 @@ LAUNCH_RES=(
   # `claudeb?` cannot reach it: the `gpt` sits where that alternation expects a separator, and a
   # `claudegpt p <acct> -p` run is a print run spending a Codex account like any other.
   "${VENDOR_WORD}claudegpt${PRINT_FLAG}"
-  "${VENDOR_WORD}codexb?${SUBCOMMAND}exec${EDGE}"
+  # `e` is codex's own alias for `exec`, and `review` is a headless run of its own.
+  "${VENDOR_WORD}codexb?${SUBCOMMAND}(exec|e|review)${EDGE}"
   "${VENDOR_WORD}geminib?${PRINT_FLAG}"
   "${VENDOR_WORD}agy${PRINT_FLAG}"
   "${VENDOR_WORD}opencode${SUBCOMMAND}run${EDGE}"
@@ -78,9 +87,16 @@ OWNED_IMAGE_RE="${VENDOR_WORD}((codex|gemini|grok)-image|grok-video|image-fanout
 # own agent type: from the chat's Bash neither has a row nor anything that wakes the chat.
 OWNED_REVIEW_WAIT_RE="${VENDOR_WORD}review-bench[[:space:]]+wait${EDGE}"
 OWNED_RESEARCH_RE="${VENDOR_WORD}light-research${EDGE}"
+# A review panel spends a pool of accounts; a headless worker has no row to show it on. A plain
+# `review-bench wait` spends nothing and stays open to it.
+WORKER_REVIEW_RE="${VENDOR_WORD}review-bench[[:space:]]+((review|run)${EDGE}|wait[[:space:]].*--(relaunch|finish-partial))"
+# The legs and probes that spend an account with no launcher around them. No agent type owns them:
+# `--extract-served-model` and `--help` spend nothing.
+OWNED_LEGS_RE="${VENDOR_WORD}(ask_(claude|codex|gemini)\.sh|codex-fast-probe|gemini-probe)${EDGE}"
+LEGS_FREE_RE='[[:space:]]--(extract-served-model|help)([[:space:]]|$)'
 WAIT_ASK="wait through the ATTACH relay / review-waiter agent so the run has a magenta row"
 
-SANCTIONED_RE='(^|[[:space:]])([^[:space:]/]*/)*(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research)([[:space:]]|$)|(^|[[:space:]])([^[:space:]/]*/)*claudeb[[:space:]]+(revive|warm)([[:space:]]|$)'
+SANCTIONED_RE="${VENDOR_WORD}(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research|claudeb[[:space:]]+(revive|warm))${EDGE}"
 
 deny() {
   jq -cn --arg r "$1" \
@@ -108,6 +124,9 @@ HEREDOC_SHELL_RE="${SHELL_WORD}([[:space:]]+-[^[:space:]]+)*[[:space:]]*\$"
 # chain link, so `cat <<EOF | grep sh` keeps its body as the text it is.
 HEREDOC_POST_SHELL_RE="(^[[:space:]]*|[|;&][[:space:]]*)((${WRAPPER})[[:space:]]+)*([^[:space:]/]*/)*(ba|z|da|k)?sh([[:space:]]|\$)"
 DASH_C_RE="${SHELL_WORD}([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[A-Za-z]*c[[:space:]]+\$"
+# The other commands whose quoted operand is a program: `eval "…"`, `ssh host "…"`, `tmux new "…"`,
+# `screen … "…"`, `watch "…"`, `su -c "…"` and `env -S "…"`.
+PROGRAM_STRING_RE="${DASH_C_RE}|(^|[;|&(){}])[[:space:]]*(eval|ssh|tmux|screen|watch|su|env([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[A-Za-z]*S)([[:space:]]+[^[:space:]]+)*[[:space:]]+\$"
 
 # Four passes, and their ORDER is the whole difference between reading a launch and inventing one.
 # A heredoc body is text a command is FED, so it is blanked first, while the line structure that
@@ -217,7 +236,7 @@ scan=$(awk -v shellfed="$HEREDOC_SHELL_RE" -v postshell="$HEREDOC_POST_SHELL_RE"
          for (i = 1; i <= NR; i++) print (i in mask) ? ((i in keep) ? keep[i] : "") : line[i]
        }' <<<"$cmd" |
   awk '{ if (sub(/\\[[:space:]]*$/, " ")) { printf "%s", $0; next } print }' |
-  awk -v dashc="$DASH_C_RE" '{ out = ""; q = ""; body = 0
+  awk -v dashc="$PROGRAM_STRING_RE" '{ out = ""; q = ""; body = 0
          for (i = 1; i <= length($0); i++) {
            c = substr($0, i, 1)
            if (q == "") {
@@ -275,6 +294,15 @@ if [ "$tool" = Monitor ]; then
   monitor_hit=$(first_hit "${VENDOR_WORD}(worker-run|review-bench)[[:space:]]+wait${EDGE}")
   [ -z "$monitor_hit" ] || deny "Blocked: a Monitor on \`${monitor_hit}\` owns no task row — ${WAIT_ASK}."
 fi
+if [ "${CLAUDEB_WORKER:-}" = 1 ]; then
+  worker_review_hit=$(first_hit "$WORKER_REVIEW_RE")
+  [ -z "$worker_review_hit" ] ||
+    deny "Blocked: \`${worker_review_hit}\` inside a headless worker launches review cells that spend a pool of accounts with no task row anywhere. A worker never runs a review: report that one is due and the chat that spawned you launches it with its review-waiter."
+fi
+legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
+  grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
+[ -z "$legs_hit" ] ||
+  deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record and no task row naming the account. A question for a model goes through a relay worker (\`worker-run\` via its Agent); a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
 case "$agent_type" in
   image-gen) ;;
   *)
@@ -286,16 +314,14 @@ esac
 case "$agent_type" in
   review-waiter) ;;
   *)
-    # Inside a headless worker process no task row exists to give the wait to.
-    if [ -z "$agent_type" ] && [ "${CLAUDEB_WORKER:-}" = 1 ]; then :; else
-      review_wait_hit=$(first_hit "$OWNED_REVIEW_WAIT_RE")
-      if [ -n "$review_wait_hit" ]; then
-        recovery=$(grep -Eo -e '--(relaunch|finish-partial)' <<<"$scan" 2>/dev/null | head -n1)
-        if [ -n "$recovery" ]; then
-          deny "Blocked: \`${review_wait_hit} ${recovery}\` from this Bash owns no task row — ${WAIT_ASK}. Spawn \`review-waiter\` with the brief \`ATTACH <run-id>: ${recovery}\`; it runs the recovery itself and waits the run out."
-        fi
-        deny "Blocked: \`${review_wait_hit}\` from this Bash owns no task row — ${WAIT_ASK}. \`review-bench review\` returns at once and stays sanctioned; spawn \`review-waiter\` with a brief \`WAIT <run-id>: <what>\`, or \`ATTACH <run-id>: --relaunch\` / \`ATTACH <run-id>: --finish-partial\` for a dead or interrupted run."
+    review_wait_hit=''
+    [ -z "$agent_type" ] && [ "${CLAUDEB_WORKER:-}" = 1 ] || review_wait_hit=$(first_hit "$OWNED_REVIEW_WAIT_RE")
+    if [ -n "$review_wait_hit" ]; then
+      recovery=$(grep -Eo -e '--(relaunch|finish-partial)' <<<"$scan" 2>/dev/null | head -n1)
+      if [ -n "$recovery" ]; then
+        deny "Blocked: \`${review_wait_hit} ${recovery}\` from this Bash owns no task row — ${WAIT_ASK}. Spawn \`review-waiter\` with the brief \`ATTACH <run-id>: ${recovery}\`; it runs the recovery itself and waits the run out."
       fi
+      deny "Blocked: \`${review_wait_hit}\` from this Bash owns no task row — ${WAIT_ASK}. \`review-bench review\` returns at once and stays sanctioned; spawn \`review-waiter\` with a brief \`WAIT <run-id>: <what>\`, or \`ATTACH <run-id>: --relaunch\` / \`ATTACH <run-id>: --finish-partial\` for a dead or interrupted run."
     fi
     ;;
 esac
@@ -308,7 +334,7 @@ case "$agent_type" in
     ;;
 esac
 case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | image-gen) ;;
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker) ;;
   *)
     owned_hit=$(first_hit "$OWNED_RUN_RE")
     [ -n "$owned_hit" ] || owned_hit=$(first_hit "$UNREADABLE_RUN_RE")
@@ -330,55 +356,66 @@ wait_default=$(grep -m1 -Eo 'run_id="\$1" max=[0-9]+' \
   "$HOME/.local/bin/worker-run" 2>/dev/null | grep -Eo '[0-9]+$')
 [[ "$wait_default" =~ ^[0-9]+$ ]] || wait_default=100
 
+# review-waiter's poll has no default: `review-bench wait` without `--max` blocks until the panel
+# is over. A light-research call is one round of up to the ceiling and takes no `--max`.
+poll_lines=''
 case "$agent_type" in
-  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | image-gen)
-    wait_lines=$(grep -E "${VENDOR_WORD}worker-run[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null)
-    if [ -n "$wait_lines" ]; then
-      wait_max=$(grep -Eo -- '--max[[:space:]]+[0-9]+' <<<"$wait_lines" 2>/dev/null |
-        grep -Eo '[0-9]+' | sort -rn | head -n1)
-      # A `--max` whose value is a variable or a substitution states no duration at all, and the
-      # poll it hides is the one this guard exists for; a wait with no `--max` is not unbounded
-      # either — it polls worker-run's default, and letting that spelling pass while denying the
-      # identical explicit number is two verdicts for one poll.
-      if grep -Eq -- '--max[[:space:]]+[^0-9[:space:]]' <<<"$wait_lines" 2>/dev/null; then
-        wait_max=$WAIT_CEILING
-        wait_says="\`--max\` here is spelled with a variable, so the gate has to read it as the ${WAIT_CEILING}s ceiling"
-      elif [ -z "$wait_max" ]; then
-        wait_max=$wait_default
-        wait_says="this wait carries no \`--max\`, so worker-run polls its default ${wait_max}s"
-      else
-        wait_says="\`worker-run wait … --max ${wait_max}\` polls for up to ${wait_max}s"
-      fi
-      wait_needed=$(((10#$wait_max + 30) * 1000))
-      # Above the ceiling no timeout the harness accepts can cover the poll, so asking for one
-      # would be an instruction nobody can carry out: the only answer left is a shorter `--max`.
-      [ "$wait_needed" -le "$HARNESS_TIMEOUT_MAX" ] ||
-        deny "Blocked: ${wait_says}, and no Bash timeout can cover it — the harness caps \`timeout\` at ${HARNESS_TIMEOUT_MAX}ms, which is ${WAIT_CEILING}s of polling plus its margin. Retry with \`--max ${WAIT_CEILING}\` or lower and \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
-      call_timeout=$(printf '%s' "$input" | jq -r '.tool_input.timeout // empty' 2>/dev/null)
-      [[ "$call_timeout" =~ ^[0-9]+$ ]] || call_timeout=0
-      [ "$call_timeout" -ge "$wait_needed" ] ||
-        deny "Blocked: ${wait_says}, but this Bash call carries a timeout of ${call_timeout}ms — the harness kills it mid-poll and the run goes on with nobody waiting on it, no checkpoint and no wake-up. Retry the identical call with \`timeout: 600000\` (at least ${wait_needed}), or spell a literal \`--max\` that fits the timeout you pass."
-    fi
-    ;;
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
+    poll_word='worker-run wait'
+    poll_lines=$(grep -E "${VENDOR_WORD}(worker-run|[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?)[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null) ;;
+  review-waiter)
+    poll_word='review-bench wait'
+    poll_lines=$(grep -E "${VENDOR_WORD}review-bench[[:space:]]+wait${EDGE}" <<<"$scan" 2>/dev/null)
+    wait_default='' ;;
+  light-research)
+    poll_word='light-research'
+    poll_lines=$(grep -E "$OWNED_RESEARCH_RE" <<<"$scan" 2>/dev/null)
+    wait_default=$WAIT_CEILING ;;
 esac
+if [ -n "$poll_lines" ]; then
+  [ "$(printf '%s' "$input" | jq -r '.tool_input.run_in_background // false' 2>/dev/null)" != true ] ||
+    deny "Blocked: \`${poll_word}\` with \`run_in_background\` returns at once, so this relay can return and its task row close while the run still spends. Run the identical call in the foreground with \`timeout: 600000\`."
+  wait_max=$(grep -Eo -- '--max(=|[[:space:]]+)[0-9]+' <<<"$poll_lines" 2>/dev/null |
+    grep -Eo '[0-9]+$' | sort -rn | head -n1)
+  # A `--max` whose value is a variable or a substitution states no duration at all, and the
+  # poll it hides is the one this guard exists for; a wait with no `--max` is not unbounded
+  # either — it polls worker-run's default, and letting that spelling pass while denying the
+  # identical explicit number is two verdicts for one poll.
+  if grep -Eq -- '--max(=|[[:space:]]+)[^0-9[:space:]]' <<<"$poll_lines" 2>/dev/null; then
+    wait_max=$WAIT_CEILING
+    wait_says="\`--max\` here is spelled with a variable, so the gate has to read it as the ${WAIT_CEILING}s ceiling"
+  elif [ -z "$wait_max" ] && [ -z "$wait_default" ]; then
+    deny "Blocked: \`${poll_word}\` with no \`--max\` blocks until the whole panel is over, and the harness kills the call long before that. Add \`--max ${WAIT_CEILING}\` and pass \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
+  elif [ -z "$wait_max" ]; then
+    wait_max=$wait_default
+    if [ "$agent_type" = light-research ]; then
+      wait_says="\`light-research\` polls its run for up to ${wait_max}s in one call"
+    else
+      wait_says="this wait carries no \`--max\`, so worker-run polls its default ${wait_max}s"
+    fi
+  else
+    wait_says="\`${poll_word} … --max ${wait_max}\` polls for up to ${wait_max}s"
+  fi
+  wait_needed=$(((10#$wait_max + 30) * 1000))
+  # Above the ceiling no timeout the harness accepts can cover the poll, so asking for one
+  # would be an instruction nobody can carry out: the only answer left is a shorter `--max`.
+  [ "$wait_needed" -le "$HARNESS_TIMEOUT_MAX" ] ||
+    deny "Blocked: ${wait_says}, and no Bash timeout can cover it — the harness caps \`timeout\` at ${HARNESS_TIMEOUT_MAX}ms, which is ${WAIT_CEILING}s of polling plus its margin. Retry with \`--max ${WAIT_CEILING}\` or lower and \`timeout: ${HARNESS_TIMEOUT_MAX}\`."
+  call_timeout=$(printf '%s' "$input" | jq -r '.tool_input.timeout // empty' 2>/dev/null)
+  [[ "$call_timeout" =~ ^[0-9]+$ ]] || call_timeout=0
+  [ "$call_timeout" -ge "$wait_needed" ] ||
+    deny "Blocked: ${wait_says}, but this Bash call carries a timeout of ${call_timeout}ms — the harness kills it mid-poll and the run goes on with nobody waiting on it and no wake-up. Retry the identical call with \`timeout: 600000\` (at least ${wait_needed}), or spell a literal \`--max\` that fits the timeout you pass."
+fi
 
 # A relay is a pipe: the brief's MODEL: line IS the launch's --model, and its ACCOUNT: line the
 # --account. A relay that resolves a family word itself hands worker-run a full slug, which reads as
 # a deliberate pin (live 2026-09-23: `MODEL: sol` launched as gpt-5.6-sol off a stale list). The
 # brief is the relay's first prompt in its own transcript; without that transcript nothing is judged.
 relay_brief() {
-  local transcript own agent_id
-  transcript=$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)
-  agent_id=$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null | tr -cd 'A-Za-z0-9_-')
-  case "$transcript" in
-    */subagents/*.jsonl) own=$transcript ;;
-    *.jsonl) [ -n "$agent_id" ] || return 0; own="${transcript%.jsonl}/subagents/agent-$agent_id.jsonl" ;;
-    *) return 0 ;;
-  esac
-  [ -r "$own" ] || return 0
-  head -n 5 "$own" | jq -rR 'fromjson? | select(type == "object" and .type == "user") | .message.content
-    | if type == "string" then . else ([.[]? | select(.type? == "text") | .text] | join("\n")) end' \
-    2>/dev/null | head -n 400
+  local self
+  self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/relay-transcript.sh" 2>/dev/null || return 0
+  relay_first_prompt "$(printf '%s' "$input" | jq -r '.transcript_path // empty' 2>/dev/null)" \
+    "$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)" | head -n 400
 }
 brief_value() { grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" <<<"$brief" | sed -E "s/^$1:[[:space:]]*//"; }
 flag_value() {
@@ -407,7 +444,7 @@ case "$agent_type" in
     ;;
 esac
 
-grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0
+grep -Eq "$SANCTIONED_RE" <<<"$scan" && exit 0
 
 for launch_re in "${LAUNCH_RES[@]}"; do
   hit=$(grep -Eo "$launch_re" <<<"$scan" 2>/dev/null | head -n1 |

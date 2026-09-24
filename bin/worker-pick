@@ -195,9 +195,8 @@ gr_display="${gr_model_display}·$(eff_display "$gr_effort")"
 # reviews (its workers ride the pin itself), «воркер на все» every vendor for both roles. Which
 # account works stays the pool's.
 chat_opens() { # vendor role
-  local file
-  file=$(worker_model_chat_pin_file) && [ -s "$file" ] || return 1
-  grep -qx 'open=all' "$file" || { [ "$2" = reviewers ] && grep -q "^$1_profile=" "$file"; }
+  worker_model_chat_opens_all ||
+    { [ "$2" = reviewers ] && grep -q "^$1_profile=" "$(worker_model_chat_pin_file)" 2>/dev/null; }
 }
 role_off() { [ "$(conf "$1_$2")" = off ] && ! chat_opens "$1" "$2"; }
 query_role_wall=false

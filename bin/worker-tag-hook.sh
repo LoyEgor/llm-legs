@@ -82,17 +82,9 @@ SEED_MAX_AGE_S=${WORKER_TAG_SEED_MAX_AGE_S:-600}
 prompt_key() { shasum -a 256 2>/dev/null | cut -c1-16; }
 # The spawn's first prompt line is the one fact both the seed and the agent's own transcript carry.
 agent_prompt_key() {
-  local transcript own first
-  transcript=$(field '.transcript_path')
-  case "$transcript" in
-    */subagents/*.jsonl) own=$transcript ;;
-    *.jsonl) own="${transcript%.jsonl}/subagents/agent-$agent_id.jsonl" ;;
-    *) return 0 ;;
-  esac
-  [ -r "$own" ] || return 0
-  first=$(head -n 5 "$own" | jq -rR 'fromjson? | select(type == "object" and .type == "user") | .message.content
-    | if type == "string" then . else ([.[]? | select(.type? == "text") | .text] | join("\n")) end
-    | "k:" + (split("\n")[0] // "")' 2>/dev/null | head -n1)
+  local first
+  command -v relay_first_prompt >/dev/null 2>&1 || . "$SELF_DIR/../share/relay-transcript.sh" 2>/dev/null || return 0
+  first=$(relay_first_prompt "$(field '.transcript_path')" "$agent_id" | sed -n '1s/^/k:/p')
   [ -z "$first" ] || printf '%s\n' "${first#k:}" | prompt_key
 }
 # An agent that knows its spawn key takes only the seed carrying that key, and a denied or cancelled
@@ -213,13 +205,15 @@ codex_model_short_label() {
 # claudeb may land on a different account between resumes).
 tag=""
 extra=()
+# An agent making a call is running again, whatever SubagentStop marked on its tag before.
+[ -z "$(tag_value stopped)" ] || extra+=("stopped=")
 waiter_command=''
 review_run=''
 [ "$agent_type" != review-waiter ] || review_run=$(grab "${cmd_word}"'review-bench[[:space:]]+wait[[:space:]]+["'\'']?[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?' |
   grep -oE '[0-9]{8}T[0-9]{6}Z-[0-9a-f]+(-[0-9]+)?$')
 if [ -n "$review_run" ]; then
   tag=$(review_tag "$review_run")
-  extra=("review=$review_run")
+  extra+=("review=$review_run")
   # review-bench records the waiter on the progress document; the agent id is the one the tag cache
   # is keyed on, so the parent can find the row that waits on its run.
   if ! printf '%s' "$command" | grep -qE -- '--waiter([[:space:]=]|$)'; then
@@ -312,6 +306,10 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'light-research([[:space:]]|$
   acct=$(grab '\-\-account[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
   model=$(worker_light_model research 2>/dev/null) || model=''
   [ -z "$acct" ] || [ -z "$model" ] || tag="$acct · $model · $(worker_light_effort research)"
+  # Its runs are worker-run's: `start=` lets worker-run claim this row and write the account the run
+  # actually landed on, and an attach names the run it waits on.
+  attach_run=$(grab '\-\-attach[= ]+["'\'' ]*[a-z0-9][a-z0-9-]*' | grep -oE '[a-z0-9][a-z0-9-]*$')
+  if [ -n "$attach_run" ]; then extra+=("run=$attach_run"); else extra+=("start=$(date +%s)"); fi
 elif printf '%s' "$launch" | grep -qE "${cmd_word}"'((codex|gemini|grok)-image|grok-video)([[:space:]]|$)'; then
   # `--account` is the only account this text can vouch for: without it the script asks worker-pick
   # at run time, so the seed worker-spawn-hook wrote is the better answer and the tail below keeps it.

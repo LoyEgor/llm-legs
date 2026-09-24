@@ -4013,7 +4013,8 @@ research_tag=$(worker_payload light-research worker/research 'Search the tree' \
 research_tag_out=$(printf '%s' "$research_tag" | "$WORKER_HOOK") || fail "research tag hook exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "rawilimo · flash38 · high — Search the tree"' \
   <<< "$research_tag_out" >/dev/null
-assert_eq 'rawilimo · flash38 · high' "$(cat "$TAGDIR/workerresearch")"
+assert_eq 'rawilimo · flash38 · high' "$(head -n1 "$TAGDIR/workerresearch")"
+assert grep -Eqx 'start=[0-9]+' "$TAGDIR/workerresearch"
 # A relay worker already bypasses permissions, so `allow` there only spares it a second prompt;
 # light-research runs INSIDE this session, where the same word would grant a call nobody granted.
 assert jq -e '.hookSpecificOutput | has("permissionDecision") | not' <<< "$research_tag_out" >/dev/null
@@ -6138,13 +6139,13 @@ for tr_review_ok in 'review-bench review --tier T2' "review-bench report $TR_REV
   gate_out=$(gate_payload "$tr_review_ok" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
-gate_out=$(gate_agent_payload review-waiter "review-bench wait $TR_REVIEW --max 540" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+gate_out=$(gate_timeout_payload review-waiter "review-bench wait $TR_REVIEW --max 540" 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
 gate_out=$(gate_payload 'light-research --prompt-file /tmp/q --out /tmp/a --repo /tmp/r' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
-gate_out=$(gate_agent_payload light-research '~/.local/bin/light-research --prompt-file /tmp/q --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+gate_out=$(gate_timeout_payload light-research '~/.local/bin/light-research --prompt-file /tmp/q --out /tmp/a' 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
-gate_out=$(gate_agent_payload light-research 'light-research --attach gemini-1-2-abcd --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+gate_out=$(gate_timeout_payload light-research 'light-research --attach gemini-1-2-abcd --out /tmp/a' 600000 | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq "" "$gate_out"
 gate_out=$(gate_payload 'light-research --attach gemini-1-2-abcd --out /tmp/a' | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
 assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"

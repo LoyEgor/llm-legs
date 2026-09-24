@@ -82,6 +82,11 @@ for site in "$REPORT_BUS" "$REPORT_NOTICE"; do
   assert grep -Fq '[ -z "$agent" ] ||' "$site"
   assert grep -Fq '*/subagents/*)' "$site"
 done
+# A relay's own transcript is located and read by share/relay-transcript.sh alone.
+for site in "$ROOT/bin/worker-launch-gate.sh" "$ROOT/bin/worker-tag-hook.sh"; do
+  assert grep -Fq 'relay_first_prompt "' "$site"
+  assert test "$(grep -c -e '/subagents/' -e 'fromjson?' "$site")" = 0
+done
 report_types='codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|image-gen|light-research'
 for site in "$REPORT_BUS" "$REPORT_TAG"; do assert grep -Fq "$report_types)" "$site"; done
 for marker in CLAUDEB_WORKER=1 agent_id /subagents/ agent_type codex-worker claudeb-worker gemini-worker grok-worker light-worker image-gen light-research; do
@@ -895,10 +900,17 @@ grok_acct_profiles="$CONSISTENCY_CACHE/grok-acct-profiles"
 mkdir -p "$grok_acct_profiles/.grokb/fast-mode"
 printf 'fast\n' >"$grok_acct_profiles/.grokb/fast-mode/fastacct"
 printf 'default\n' >"$grok_acct_profiles/.grokb/fast-mode/slowacct"
+printf 'priority\n' >"$grok_acct_profiles/.grokb/fast-mode/prioacct"
 : >"$CONSISTENCY_CACHE/grok-no-pin"
 grok_launch_acct() { GROKB_PROFILES_DIR="$grok_acct_profiles" grok_launch "$@"; }
 assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.7-build-fast
 assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" slowacct)" auto
+assert eq "$(grok_launch_acct auto workers "$CONSISTENCY_CACHE/grok-no-pin" prioacct)" grok-4.7-build-fast
+for fast_offered in grokFastOffered codexFastOffered; do
+  fast_body=$(awk -v start="^function M[.]$fast_offered[(]" '$0 ~ start { on = 1 } on { print } on && /^end$/ { exit }' "$HAMMER")
+  assert grep -Fq 'readTextFile(path)' <<<"$fast_body"
+  assert test "$(grep -Fc 'io.open' <<<"$fast_body")" = 0
+done
 assert eq "$(grok_launch_acct auto research "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" auto
 assert eq "$(grok_launch_acct grok-4.6 workers "$CONSISTENCY_CACHE/grok-no-pin" fastacct)" grok-4.6
 assert eq "$(grok_launch auto light "$grok_fast_pin")" auto
@@ -1675,7 +1687,9 @@ assert grep -Fq "printf '%s/%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pi
 assert grep -Fq "chat_pins_dir() { printf '%s' \"\${CHAT_PINS_DIR:-\$HOME/.cache/claude-chat-pins}\"; }" "$PIN_GATE"
 assert grep -Fq 'pin_file="${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/$session_id"' "$STATUSLINE"
 assert grep -Fq 'os.environ.get("CHAT_PINS_DIR") or os.path.expanduser("~/.cache/claude-chat-pins")' "$RB_ACCOUNTS"
-assert grep -Fq "grep -qx 'open=all' \"\$file\"" "$ROOT/bin/worker-pick"
+assert grep -Fq "grep -qx 'open=all' \"\$file\"" "$WORKER_MODEL_SH"
+assert grep -Fq 'worker_model_chat_opens_all ||' "$ROOT/bin/worker-pick"
+assert test "$(grep -Fc 'open=all' "$ROOT/bin/worker-pick")" = 0
 assert grep -Fq 'line.strip() == "open=all"' "$RB_ACCOUNTS"
 assert doc_has '`bin/worker-pin-gate.sh` `chat_pins_dir`'
 assert doc_has '`bin/statusline.sh` `pin` segment'
@@ -2495,7 +2509,7 @@ done
 # reused by the worker-run ownership rule, which is not a vendor.
 assert eq "$(sed -n '/^LAUNCH_RES=(/,/^)/p' "$LAUNCH_GATE" | grep -Fc '${VENDOR_WORD}')" 7
 assert grep -Fq 'OWNED_RUN_RE=' "$LAUNCH_GATE"
-assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$cmd" && exit 0' "$LAUNCH_GATE"
+assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$scan" && exit 0' "$LAUNCH_GATE"
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'
 assert grep -Fq '## Sanctioned launchers' "$ROOT/docs/routing-contract.md"

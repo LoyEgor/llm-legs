@@ -194,9 +194,12 @@ own launches, and this is the whole list: `worker-run`, `review-bench`,
 OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and `codex-image` /
 `gemini-image` / `grok-image`, which only the `image-gen` agent may: a run or an image started from
 the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
-mechanical half — a PreToolUse Bash gate denying a command that spells a bare launch unless the
-same command names one of those launchers, and denying an owned one outside the agent type that
-owns it. It reads the whole command string, and a vendor name counts only where a
+mechanical half — a PreToolUse Bash gate denying a command that spells a bare launch unless one of
+those launchers stands in command position in the same command (a comment or an operand naming one
+exempts nothing), and denying an owned one outside the agent type that owns it. The `ask_*.sh`
+legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash, and a headless
+worker (`CLAUDEB_WORKER=1`) never launches a review panel. The run itself is the backstop: a live
+run of the chat that no relay owns holds the chat's Stop (`bin/worker-run-backstop.sh`). It reads the whole command string, and a vendor name counts only where a
 shell would run it: quoted text collapses into one operand word before the quotes come off, so
 `'claude' -p` and `X="a b" claude -p` are denied while a launch quoted inside an echo or a grep is
 the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /

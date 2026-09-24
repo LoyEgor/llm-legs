@@ -308,6 +308,11 @@ for ((question=0; question<${#prompt_files[@]}; question++)); do
     run_id=$(sed -n 's/^RUN: //p' <<<"$launch" | head -n1)
     run_dir=$(sed -n 's/^DIR: //p' <<<"$launch" | head -n1)
     [ -n "$run_id" ] && [ -r "$run_dir/meta.json" ] || { launch_failed=4; break 2; }
+    # Every later unit claims the row the first one claimed: the relay's tag must name all of them.
+    if [ -z "${CLAUDE_AGENT_ID:-}" ] && [ -s "$run_dir/agent-task" ]; then
+      CLAUDE_AGENT_ID=$(cat "$run_dir/agent-task")
+      export CLAUDE_AGENT_ID
+    fi
     run_ids+=("$run_id")
     run_dirs+=("$run_dir")
     unit_repos+=("$target")

@@ -13,6 +13,19 @@ WARN_AT="${WORKFLOW_GATE_WARN_PCT:-70}"
 input=$(cat) || exit 0
 printf '%s' "$input" | jq -e '.hook_event_name == "PreToolUse" and .tool_name == "Workflow"' >/dev/null 2>&1 || exit 0
 
+# A workflow's agents never pass worker-spawn-hook.sh: an agent of a relay type, or a worker-run it
+# starts, would spend an account on no task row of its own. Relays are spawned with the Agent tool.
+script=$(printf '%s' "$input" | jq -r '.tool_input.script // empty' 2>/dev/null)
+script_path=$(printf '%s' "$input" | jq -r '.tool_input.scriptPath // empty' 2>/dev/null)
+[ -z "$script_path" ] || [ ! -r "$script_path" ] || script="$script
+$(cat "$script_path" 2>/dev/null)"
+relay_word=$(grep -oE '(claudeb|codex|gemini|grok|light)-worker|light-research|review-waiter|image-gen|worker-run' <<<"$script" 2>/dev/null | head -n1)
+if [ -n "$relay_word" ]; then
+  jq -cn --arg r "Blocked: this workflow reaches \`$relay_word\`, but a workflow's agents never get the account·model task row a relay spawned with the Agent tool gets, so Egor could not see what it spends. Spawn relay workers (and review-waiter, light-research, image-gen) with the Agent tool; keep the workflow to native agents on this session's own account." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null
+  exit 0
+fi
+
 gate_root() {
   local path="${BASH_SOURCE[0]}" directory
   while [ -L "$path" ]; do

@@ -1690,7 +1690,7 @@ claim_agent_tag_locked() { # directory tag-dir
   printf '%s\n' "${best##*/}" >"$directory/agent-task" 2>/dev/null || :
   IFS= read -r tag <"$directory/tag" 2>/dev/null || IFS= read -r tag <"$best" 2>/dev/null || tag=''
   tmp="$best.tmp.$$"
-  { printf '%s\n' "$tag"; tail -n +2 "$best" | grep -vE '^(start|run)='; printf 'run=%s\n' "${directory##*/}"; } \
+  { printf '%s\n' "$tag"; tail -n +2 "$best" | grep -vE '^start=' | grep -vxF "run=${directory##*/}"; printf 'run=%s\n' "${directory##*/}"; } \
     >"$tmp" 2>/dev/null && mv -f "$tmp" "$best" 2>/dev/null || rm -f "$tmp" 2>/dev/null
 }
 
@@ -3668,12 +3668,11 @@ running_report() {
   out_bytes=$(wc -c <"$directory/out" | tr -d '[:space:]')
   err_bytes=$(wc -c <"$directory/err" | tr -d '[:space:]')
   printf 'STATUS: running\nELAPSED: %s\n' "$elapsed"
-  # Once per RUN, not once per round: the relay contract returns a checkpoint on any LONG-RUN line,
-  # so repeating it bounced an attached relay back after a single ~9-minute wait, over and over
-  # (live 2026-09-01). The marker is written where the line is printed, so a `wait` that never got
-  # to print it still owes it.
+  # Once per RUN, not once per round. The marker is written where the line is printed, so a `wait`
+  # that never got to print it still owes it. A relay never returns on it: its row is the run's only
+  # visible trace.
   if [ "$elapsed" -ge "${WORKER_RUN_LONG_RUN_S:-1500}" ] && [ ! -e "$directory/long-run-said" ]; then
-    printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; hand the remainder back as a split brief unless the brief is multi-agent\n' "$((elapsed / 60))"
+    printf 'LONG-RUN: %s min — the orchestrator'"'"'s prompt cache cools past the hour; the relay keeps waiting until the run ends\n' "$((elapsed / 60))"
     : >"$directory/long-run-said" 2>/dev/null || :
   fi
   printf 'OUT-BYTES: %s\nERR-BYTES: %s\nSESSION: %s\n' "$out_bytes" "$err_bytes" "$(session_id "$directory")"

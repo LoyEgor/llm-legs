@@ -231,6 +231,24 @@ else
   prefix="$acct · $(gemini_label "$model") · high"
 fi
 
+# An ATTACH relay waits on a run that already chose its account and model: the row is that run's tag,
+# and the seed names the run so the Stop backstop counts it owned before the relay's first call.
+attach_run=''
+case "$subagent" in
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | light-research)
+    attach_run=$(printf '%s' "$prompt" | sed -n '1s/^ATTACH \([a-z0-9][a-z0-9-]*\):.*/\1/p') ;;
+esac
+attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
+[ -d "$attach_dir" ] || attach_run=''
+if [ -n "$attach_run" ] && IFS= read -r run_tag <"$attach_dir/tag" 2>/dev/null && [[ "$run_tag" = *' · '*' · '* ]]; then
+  case "$subagent" in
+    light-*)
+      run_model=${run_tag#* · }
+      prefix="light $role · $(light_label "$(jq -r '.vendor // empty' "$attach_dir/meta.json" 2>/dev/null)" "${run_model%% · *}") · ${run_tag%% · *}" ;;
+    *) prefix=$run_tag ;;
+  esac
+fi
+
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}(: | — )//')
 [ -n "$title" ] || title=task
 
@@ -250,6 +268,7 @@ if mkdir -p "$pending_dir" 2>/dev/null; then
   first_line=${prompt%%$'\n'*}
   { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "$(printf '%s\n' "$first_line" | shasum -a 256 2>/dev/null | cut -c1-16)"
     [ -z "${review_run:-}" ] || printf 'review=%s\n' "$review_run"
+    [ -z "$attach_run" ] || printf 'run=%s\n' "$attach_run"
     [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"; } > "$tmp_pending" 2>/dev/null &&
     mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
   rm -f "$tmp_pending" 2>/dev/null

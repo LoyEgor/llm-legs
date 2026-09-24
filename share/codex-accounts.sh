@@ -20,9 +20,9 @@ codex_fast_mode_helper() {
   printf '%s\n' "${CODEXB_FAST_MODE_HELPER:-$share_dir/codex_fast_mode.py}"
 }
 
-codex_fast_tier() {
+codex_fast_tier() { # account [profiles-dir tool]
   local file tier
-  file="${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}/.codexb/fast-mode/$1"
+  file="${2:-${CODEXB_PROFILES_DIR:-$HOME/.codex-profiles}}/.${3:-codexb}/fast-mode/$1"
   [ -f "$file" ] && [ -r "$file" ] || { printf 'default\n'; return; }
   IFS= read -r tier <"$file" || [ -n "$tier" ] || { printf 'default\n'; return; }
   case "$tier" in

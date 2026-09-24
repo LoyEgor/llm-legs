@@ -1,5 +1,6 @@
 . "${BASH_SOURCE[0]%/*}/worker-pool.sh"
 . "${BASH_SOURCE[0]%/*}/worker-walls.sh"
+. "${BASH_SOURCE[0]%/*}/codex-accounts.sh"
 
 worker_model_file() {
   printf '%s' "${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
@@ -88,12 +89,8 @@ worker_model_grok_account_lists() { # account slug
 }
 
 worker_model_grok_account_fast() { # account
-  local file tier=''
   [ -n "${1-}" ] || return 1
-  file="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}/.grokb/fast-mode/$1"
-  [ -r "$file" ] || return 1
-  IFS= read -r tier <"$file" || [ -n "$tier" ]
-  [ "$tier" = fast ]
+  [ "$(codex_fast_tier "$1" "${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}" grokb)" = fast ]
 }
 
 # The grok slug a run really launches: `chat-pin grok-fast`, or the account's menu Fast Mode

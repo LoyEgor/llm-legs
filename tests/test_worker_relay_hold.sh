@@ -54,4 +54,29 @@ assert_eq "" "$(stop claudeb-worker a-live)"
 printf '%s 9\n' "$(($(date +%s) - 600))" >"$TAGS/a-live.holds"
 assert_eq block "$(stop claudeb-worker a-live | decision)"
 
-printf 'PASS: %s asserts; a relay agent whose worker run is still alive is held so its row stays, every other stop goes through, and a relay that never waits is released after five holds\n' "$asserts"
+# A relay let go is marked stopped for the Stop backstop; a held one is not.
+assert_eq 1 "$(grep -c '^stopped=' "$TAGS/a-done")"
+rm -f "$TAGS/a-live.holds"
+stop claudeb-worker a-live >/dev/null
+assert_eq 0 "$(grep -c '^stopped=' "$TAGS/a-live")"
+
+# Any live run the tag names holds it, not only the last one written.
+printf 'locomthebest · opus · high\nrun=run-live\nrun=run-done\n' >"$TAGS/a-many"
+assert_eq block "$(stop light-worker a-many | decision)"
+
+# light-research holds on its run with its own attach call; review-waiter on a running panel.
+printf 'light research · flash · acct\nrun=run-live\n' >"$TAGS/a-research"
+out=$(stop light-research a-research)
+assert_eq true "$(printf '%s' "$out" | jq -r '.reason | contains("light-research --attach run-live")')"
+export WORKER_STATS_DIR="$WORK/stats"
+mkdir -p "$WORKER_STATS_DIR/progress"
+jq -nc --argjson hb "$(date +%s)" '{run_id:"20260924T010203Z-abc1234",state:"running",heartbeat_epoch:$hb}' \
+  >"$WORKER_STATS_DIR/progress/p.json"
+printf 'T2 · double · bugs\nreview=20260924T010203Z-abc1234\n' >"$TAGS/a-waiter"
+out=$(stop review-waiter a-waiter)
+assert_eq true "$(printf '%s' "$out" | jq -r '.reason | contains("review-bench wait 20260924T010203Z-abc1234 --max 540")')"
+jq '.state = "done"' "$WORKER_STATS_DIR/progress/p.json" >"$WORK/p" && mv "$WORK/p" "$WORKER_STATS_DIR/progress/p.json"
+assert_eq "" "$(stop review-waiter a-waiter)"
+assert_eq 1 "$(grep -c '^stopped=' "$TAGS/a-waiter")"
+
+printf 'PASS: %s asserts; a relay agent whose worker run (any the tag names), light-research run or running review panel is still alive is held so its row stays, a relay let go is marked stopped, every other stop goes through, and a relay that never waits is released after five holds\n' "$asserts"

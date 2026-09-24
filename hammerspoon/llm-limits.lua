@@ -1611,10 +1611,8 @@ function M.grokFastOffered(name)
     if not profiles or profiles == "" then profiles = home .. "/.grok-profiles" end
     path = profiles .. "/" .. name .. "/models_cache.json"
   end
-  local file = io.open(path, "r")
-  if not file then return nil end
-  local contents = file:read("*a")
-  file:close()
+  local contents = readTextFile(path)
+  if not contents then return nil end
   local ok, decoded = pcall(hs.json.decode, contents)
   if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or next(decoded.models) == nil then
     return nil
@@ -1661,10 +1659,8 @@ function M.codexFastOffered(name)
     if not profiles or profiles == "" then profiles = home .. "/.codex-profiles" end
     path = profiles .. "/" .. name .. "/models_cache.json"
   end
-  local file = io.open(path, "r")
-  if not file then return nil end
-  local contents = file:read("*a")
-  file:close()
+  local contents = readTextFile(path)
+  if not contents then return nil end
   local ok, decoded = pcall(hs.json.decode, contents)
   if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or #decoded.models == 0 then
     return nil
