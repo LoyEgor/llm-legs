@@ -32,6 +32,8 @@ resolve_root() {
 }
 
 root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start gemini-image image observed_model
 . "$root/share/image-caps.sh"
 aspect_choices=$(image_caps_get "$root" gemini '.aspects.generate | join("|")')
 dest=''
@@ -184,7 +186,7 @@ if [ -n "$resume" ] && [ ! -f "$conversations_dir/$resume.db" ]; then
   exit 2
 fi
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/gemini-image.XXXXXX")
-trap 'rm -rf "$tmp_dir"' EXIT
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 launch_marker="$tmp_dir/launch"
 stdout_file="$tmp_dir/stdout"
 log_file="$tmp_dir/agy.log"

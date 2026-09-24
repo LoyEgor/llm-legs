@@ -17,6 +17,8 @@ resolve_root() {
 }
 
 root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start grok-image image pin_model
 . "$root/share/image-caps.sh"
 . "$root/share/image-chroma.sh"
 . "$root/share/worker-claims.sh"
@@ -188,7 +190,7 @@ for pin_key in image_gen_model_override image_edit_model_override; do
 done
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-image.XXXXXX")
-trap 'rm -rf "$tmp_dir"' EXIT
+trap 'image_leg_exit; rm -rf "$tmp_dir"' EXIT
 work_dir="$tmp_dir/work"
 mkdir -p "$work_dir"
 stream_file="$tmp_dir/stream.jsonl"

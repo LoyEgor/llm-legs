@@ -566,11 +566,26 @@ codex_config_model() {
 # reports under the id its own launch would have had and never under the id of the live run it
 # names, which would dedup that run's completion away; it stays unprinted, because a `RUN:` line
 # on stdout is what tells a relay a run directory exists to wait on.
+# llm-doctor reads the outcome back: beside the run when there is one, else from prelaunch.jsonl.
+outcome_record() { # outcome [directory]
+  local log="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/prelaunch.jsonl"
+  if [ -n "${2:-}" ]; then
+    [ ! -d "$2" ] || printf '%s\n' "$1" 2>/dev/null >"$2/outcome" || :
+    return 0
+  fi
+  mkdir -p "${log%/*}" 2>/dev/null || return 0
+  jq -cn --arg outcome "$1" --arg vendor "${vendor:-}" --arg account "${account:-${explicit_account:-}}" \
+    --arg model "${model:-${effective:-}}" --arg role "${role:-}" --arg light "${light:-}" \
+    '{ts: (now | floor), outcome: $outcome, vendor: $vendor, account: $account, model: $model,
+      role: $role, light: $light}' 2>/dev/null >>"$log" || :
+}
+
 outcome_line() (
   local outcome="$1" report_directory="${2:-}" report_id="${run_id:-}" launcher
   local details files=unknown elapsed=0 began now marker='' marker_pid marker_age place_session
   local posting_pid=${BASHPID:-$(sh -c 'echo "$PPID"')}
   printf 'OUTCOME: %s\n' "$outcome"
+  outcome_record "$outcome" "$report_directory"
   if [ -n "$report_directory" ] && mkdir "$report_directory/.place-end" 2>/dev/null; then
     place_session=$(cat "$report_directory/launcher" 2>/dev/null)
     case "$place_session" in

@@ -89,6 +89,8 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start codex-image image text_model
 . "$root/share/image-caps.sh" ||
   { printf 'codex-image: share/image-caps.sh is missing; refusing to run unchecked\n' >&2; exit 4; }
 ref_max=$(image_caps_get "$root" codex '.refs.max // "none"' 2>/dev/null) || ref_max=''
@@ -296,7 +298,7 @@ cleanup() {
   fi
   rm -rf "$tmp_dir"
 }
-trap cleanup EXIT
+trap 'image_leg_exit; cleanup' EXIT
 work_dir="$tmp_dir/work"
 mkdir -p "$work_dir"
 launch_marker="$tmp_dir/launch"

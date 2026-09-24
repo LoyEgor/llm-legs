@@ -378,6 +378,8 @@ effort_refused() {
   assert test ! -s "$CALL_LOG"
   assert test ! -s "$PICK_LOG"
   assert test "$runs_before" = "$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+  assert test "$(tail -n1 "$WORKER_RUN_DIR/prelaunch.jsonl" | jq -r '"\(.outcome) \(.vendor) \(.ts | type)"')" = \
+    "EFFORT_REFUSED $vendor number"
 }
 
 model_effort_tests() {
@@ -2156,6 +2158,7 @@ for vendor in codex gemini; do
   start_ok "$vendor"
   assert meta_account_is main
   assert await_done
+  assert grep -qx DONE "$RUN_DIR/outcome"
 done
 
 for vendor in claudeb codex gemini; do
@@ -2167,6 +2170,8 @@ for vendor in claudeb codex gemini; do
   assert test "$rc" -eq 3
   assert grep -qx "OUTCOME: $(tr '[:lower:]' '[:upper:]' <<<"$vendor")_USAGE_LIMIT" "$WORK/refused.out"
   assert test ! -s "$CALL_LOG"
+  assert test "$(tail -n1 "$WORKER_RUN_DIR/prelaunch.jsonl" | jq -r '"\(.outcome) \(.vendor)"')" = \
+    "$(tr '[:lower:]' '[:upper:]' <<<"$vendor")_USAGE_LIMIT $vendor"
 done
 
 # An empty worker pool is a decision, not a limit: reporting it as a usage limit would send the

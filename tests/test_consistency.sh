@@ -501,44 +501,74 @@ for weather_reader in "$ROOT/hammerspoon/llm-limits.lua"; do
 done
 assert doc_has 'Gemini model weather cache'
 
-# --- Row cq: LLM leg weather failure vocabulary --------------------------------
-# bin/llm-weather carries a copy of review-bench's failure table and of the origin table beside it;
+# --- Row cq: LLM doctor document; Row cw: its problem ledger ------------------
+# bin/llm-doctor carries a copy of review-bench's failure table and of the origin table beside it;
 # a word that drifts in either copy silently re-labels a night's legs on the menu.
-assert python3 - "$RB_PKG" "$ROOT/bin/llm-weather" <<'ORIGINPY'
+DOCTOR_BIN="$ROOT/bin/llm-doctor"
+assert python3 - "$RB_PKG" "$DOCTOR_BIN" "$ROOT/share/doctor-ledger.json" <<'ORIGINPY'
 import importlib.machinery
 import importlib.util
+import json
+import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]).parent))
 from rbench import panel
-spec = importlib.util.spec_from_loader("llm_weather",
-                                       importlib.machinery.SourceFileLoader("llm_weather", sys.argv[2]))
-weather = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(weather)
-assert [(word, pattern.pattern, pattern.flags) for word, pattern in weather.FAILURE_REASONS] \
+spec = importlib.util.spec_from_loader("llm_doctor",
+                                       importlib.machinery.SourceFileLoader("llm_doctor", sys.argv[2]))
+doctor = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(doctor)
+assert [(word, pattern.pattern, pattern.flags) for word, pattern in doctor.FAILURE_REASONS] \
     == [(word, pattern.pattern, pattern.flags) for word, pattern in panel.FAILURE_REASONS]
-assert weather.FAILURE_ORIGIN == panel.FAILURE_ORIGIN, weather.FAILURE_ORIGIN
-assert set(weather.ORIGIN_ORDER) == set(panel.FAILURE_ORIGIN.values()) == {"ours", "theirs"}
+assert doctor.FAILURE_ORIGIN == panel.FAILURE_ORIGIN, doctor.FAILURE_ORIGIN
+assert set(doctor.ORIGIN_ORDER) == set(panel.FAILURE_ORIGIN.values()) == {"ours", "theirs"}
+ledger = json.load(open(sys.argv[3]))
+assert set(ledger["owners"]) == set(doctor.BLOCKS), ledger["owners"]
+words = set(doctor.FAILURE_ORIGIN) | set(doctor.IMAGE_ORIGIN) | {
+    "escaped", "slow", "cap", "walled", "stalled", "verify failed", "land conflict"}
+ids = [row["id"] for row in ledger["rows"]]
+assert len(ids) == len(set(ids)), ids
+for row in ledger["rows"]:
+    assert row["block"] in doctor.BLOCKS + ("any",), row
+    assert row["status"] in doctor.LEDGER_STATUSES, row
+    if row["status"] == "fixed":
+        assert doctor.zoned_epoch(row["fixed_at"]) and row["fixed_in"], row
+    if "machinery" in row["match"]:
+        assert set(row["match"]) == {"machinery"} and row["block"] == "reviewers", row
+        continue
+    assert row["match"]["word"] in words, row
+    for key in ("model", "detail"):
+        if row["match"].get(key):
+            re.compile(row["match"][key])
+    assert set(row["match"]) <= {"word", "model", "detail", "until"}, row
+    if "until" in row["match"]:
+        assert doctor.zoned_epoch(row["match"]["until"]), row
+bug_words = {word for word, origin in doctor.FAILURE_ORIGIN.items() if origin == "ours"} | {"escaped"}
+covered = {row["match"]["word"] for row in ledger["rows"] if row["block"] == "any"
+           and "word" in row["match"] and not row["match"].get("model") and not row["match"].get("detail")}
+machinery = [row["match"]["machinery"] for row in ledger["rows"] if "machinery" in row["match"]]
+assert len(machinery) == len(set(machinery)), machinery
+assert bug_words <= covered, sorted(bug_words - covered)
 ORIGINPY
 assert doc_has '`FAILURE_REASONS`, `FAILURE_ORIGIN`'
-assert doc_has '`origins` counts'
-assert doc_has '`SLOW_FACTOR = 3`'
-assert doc_has 'the review Flash pin, row `cs`, and nothing else'
-assert doc_has 'CLEAN legs of the same surface and model'
-for gone_text in 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d' 's/step'; do
+assert doc_has 'LLM doctor problem ledger'
+assert doc_has 'CLEAN legs of the same block, surface and model'
+assert doc_has 'every leg of the group with a duration'
+assert grep -Fq 'SLOW_FACTOR = 2' "$DOCTOR_BIN"
+assert grep -Fq 'TREND_DAYS = 14' "$DOCTOR_BIN"
+assert grep -Fq 'BLOCKS = ("reviewers", "workers", "light", "image")' "$DOCTOR_BIN"
+for gone_text in 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d' 's/step' 'llm-weather' 'LLM_WEATHER'; do
   assert test "$(grep -Fc "$gone_text" "$ROOT/hammerspoon/llm-limits.lua")" -eq 0
 done
-assert grep -Fq 'counts.theirs = theirs' "$ROOT/hammerspoon/llm-limits.lua"
-assert grep -Fq 'counts.failed = math.max(0, counts.failed - theirs)' "$ROOT/hammerspoon/llm-limits.lua"
+assert test ! -e "$ROOT/bin/llm-weather"
 # The served model resolves through geminib's family list (row `cr` keeps the versions out of
-# here), so a new Flash reaches the weather table with no code change.
-assert grep -Fq 'gemini.geminib_cache_dir(), "models.json"' "$ROOT/bin/llm-weather"
-assert grep -Fq 'family = gemini.family_of(served)' "$ROOT/bin/llm-weather"
+# here), so a new Flash reaches the doctor with no code change.
+assert grep -Fq 'gemini.geminib_cache_dir(), "models.json"' "$DOCTOR_BIN"
+assert grep -Fq 'family = gemini.family_of(served)' "$DOCTOR_BIN"
 # The family is the KEY, never the fallback value: a served model geminib's cache cannot place
 # keeps its own name on the menu instead of collapsing into the empty family.
-assert grep -Fq 'family_slugs().get(family, family or served)' "$ROOT/bin/llm-weather"
-assert grep -Fq 'os.environ.get("CLAUDEB_DIR")' "$ROOT/bin/llm-weather"
-assert doc_has 'every leg of the group with a duration'
+assert grep -Fq 'family_slugs().get(family, family or served)' "$DOCTOR_BIN"
+assert grep -Fq 'os.environ.get("CLAUDEB_DIR")' "$DOCTOR_BIN"
 assert grep -Fq '"RUNS", "CUT", "STEPS"' "$WEATHER_BIN"
 assert grep -Fq 'os.environ.get("WORKER_STATS_DIR")' "$WEATHER_BIN"
 assert grep -Fq '"cut": entry["cut"]' "$WEATHER_BIN"
@@ -982,11 +1012,11 @@ assert grep -Fq 'printf '\''%s\n'\'' "$gemini_profiles_dir/$1"' "$GEMINI_ACCOUNT
 assert doc_has 'Gemini profile discovery and HOME mapping'
 
 # Review keeps Sol; implementation runs Astra independently (Egor, 2026-09-05).
-assert grep -Fq 'CODEX_CELLS = ("sol", "astra")' "$ROOT/../review-bench/share/rbench/catalog.py"
-assert grep -Fq '"models", "--family"' "$ROOT/../review-bench/share/rbench/catalog.py"
-assert grep -Fq '("sol", 1)' "$ROOT/../review-bench/share/rbench/catalog.py"
+assert grep -Fq 'CODEX_CELLS = ("sol", "astra")' "$REVIEW_ROOT/share/rbench/catalog.py"
+assert grep -Fq '"models", "--family"' "$REVIEW_ROOT/share/rbench/catalog.py"
+assert grep -Fq '("sol", 1)' "$REVIEW_ROOT/share/rbench/catalog.py"
 assert eq "$(bash -c ' . "$1"; worker_model_default_model codex' _ "$WORKER_MODEL_SH")" 'astra'
-assert eq "$(grep -c worker_model_allowed_models "$ROOT/../review-bench/share/rbench/launch.py")" 0
+assert eq "$(grep -c worker_model_allowed_models "$REVIEW_ROOT/share/rbench/launch.py")" 0
 
 # --- Row n: weekly bucket provenance ----------------------------------------
 STATUSLINE="$ROOT/bin/statusline.sh"

@@ -1,0 +1,1340 @@
+#!/usr/bin/env python3
+"""LLM doctor: every LLM leg read passively off the run stores, split into Reviewers, Workers, Light and
+Image blocks, bugs kept apart from weather, and every bug held against the problem ledger."""
+import argparse
+import calendar
+import datetime
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+
+BIN_DIR = os.path.dirname(os.path.realpath(__file__))
+ROOT_DIR = os.path.dirname(BIN_DIR)
+
+
+def load_gemini_weather():
+    loader = importlib.machinery.SourceFileLoader(
+        "gemini_weather", os.path.join(BIN_DIR, "gemini-weather"))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+gemini = load_gemini_weather()
+
+DEFAULT_WINDOW_H = 24
+TREND_DAYS = 14
+SLOW_BASE_D = 7
+# worker-run prunes run directories by mtime (`find -mtime +7`), so an older run id can outlive
+# its younger siblings and date the store further back than it is whole.
+WORKER_KEEP_D = 7
+PID_START_SLACK_S = 30
+SLOW_FACTOR = 2
+SLOW_MIN_LEGS = 5
+TREND_MIN = 3
+MAX_INCIDENTS = 15
+DETAIL_MAX = 40
+TEXT_MAX = 4000
+TOP_MAX = 3
+BLOCKS = ("reviewers", "workers", "light", "image")
+COLUMNS = ("walled", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried")
+NOT_MEASURABLE = ("worker false-green reports", "weakened tests")
+SPARK = "▁▂▃▄▅▆▇█"
+LEDGER_STATUSES = ("open", "fixed", "not-a-bug", "weather")
+
+# Copied from review-bench share/rbench/panel.py FAILURE_REASONS (and catalog.py's status anchors);
+# review-bench is not importable from here, so the two tables drift unless both are edited.
+HTTP_STATUS_PREFIX = (r"(?:HTTP(?:/[0-9.]+)?(?:\s+error)?\s*:?\s+"
+                      r"|\"?status(?:_code)?\"?\s*[:=]\s*)")
+FAILURE_REASONS = (
+    ("killed memory", re.compile(r"SIGKILLed by the memory guard")),
+    ("pool empty", re.compile(r"has no \w+ account left", re.IGNORECASE)),
+    ("walled", re.compile(
+        r"GoUsageLimitError|limitName|usage limit|out of credits|usage balance exhaust"
+        r"|402 Payment Required|Individual quota reached|RESOURCE_EXHAUSTED"
+        r"|exhausted your capacity on this model|walled off while"
+        r"|hit the (?:rate|credit) limit for your plan|free-usage-exhausted", re.IGNORECASE)),
+    ("throttled", re.compile(
+        r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
+        r"|rate limit exceeded|too many requests", re.IGNORECASE)),
+    ("bare 429", re.compile(r"\b429\b")),
+    ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
+                            r"|No capacity available for model"
+                            r"|geminib: capacity \S+ after \d+ steps, not relaunched", re.IGNORECASE)),
+    ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b|\(code 5[0-9][0-9]\)")),
+    ("refused", re.compile(
+        r"(?:finish|block)_?[Rr]eason\W{1,4}(?:SAFETY|PROHIBITED_CONTENT|RECITATION|BLOCKLIST|SPII)"
+        r"|blocked (?:due to|for) SAFETY"
+        r"|(?:finish_?[Rr]eason|code|type)\W{1,4}(?:content_filter|content_policy_violation)"
+        r"|flagged as potentially violating|flagged for possible cybersecurity risk"
+        r"|safeguards flagged this"
+        r"|(?i:violat\w* (?:our |the )?usage (?:policy|policies"
+        r"|guidelines))|\"stop_reason\"\s*:\s*\"refusal\"")),
+    ("bad output", re.compile(
+        r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
+        r"|did not declare a clean review|stopped before reviewing|returned empty content"
+        r"|no result event|no assistant message|stopped at the \d+-turn budget"
+        r"|without a final message|answered the clean marker without reading",
+        re.IGNORECASE)),
+    ("root commit", re.compile(r"root commit", re.IGNORECASE)),
+    ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
+    ("bad command", re.compile(r"cannot be used with|unknown effort level"
+                               r"|is not supported when using Codex with a ChatGPT account",
+                               re.IGNORECASE)),
+    ("stalled", re.compile(r"rater stalled", re.IGNORECASE)),
+    ("timeout", re.compile(r"timed out|(?<![-\w])timeout", re.IGNORECASE)),
+    ("cancelled", re.compile(r"context canceled", re.IGNORECASE)),
+    ("crashed", re.compile(
+        r"rater task crashed|cell processing crashed|account lookup failed|codex_core::|sandbox_apply",
+        re.IGNORECASE)),
+    ("auth", re.compile(
+        r"not logged in|not signed in|credentials were rejected|session has expired"
+        r"|unauthor|forbidden|\b40[13]\b|cell preparation refused", re.IGNORECASE)),
+    ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b)",
+                             re.IGNORECASE)),
+    ("chunks unread", re.compile(r"chunks unread", re.IGNORECASE)),
+)
+# Copied from the same panel.py, beside the table above: whose failure each word is — `ours` is
+# our own mechanics, `theirs` the provider's weather. tests/test_consistency.sh holds the two
+# copies word for word.
+FAILURE_ORIGIN = {
+    "killed memory": "ours",
+    "pool empty": "ours",
+    "walled": "theirs",
+    "throttled": "theirs",
+    "bare 429": "theirs",
+    "refused": "theirs",
+    "bad output": "ours",
+    "capacity": "theirs",
+    "server error": "theirs",
+    "cancelled": "theirs",
+    "root commit": "ours",
+    "permission": "ours",
+    "bad command": "ours",
+    "stalled": "ours",
+    "timeout": "ours",
+    "crashed": "ours",
+    "auth": "ours",
+    "not found": "ours",
+    "mismatch": "theirs",
+    "chunks unread": "ours",
+}
+ORIGIN_ORDER = ("ours", "theirs")
+WALL_REASONS = ("walled", "throttled")
+EMPTY_ZERO_FINDING_REASONS = ("bad output",)
+# A pool that is empty because every account is walled is weather; one emptied by a switch or an
+# exclusion list still staffed a cell nobody may run, which is ours.
+POOL_CONFIG_RE = re.compile(r"switched off for \w+|excluded by \w+")
+# panel.cell_status's own reading of a model swap, which it tests before any vocabulary word.
+MISMATCH_RE = re.compile(r"\bserved\b.+\binstead of\b", re.IGNORECASE | re.DOTALL)
+CUT_RE = re.compile(r"panel interrupted before cell completed|^error: interrupted\b",
+                    re.IGNORECASE | re.MULTILINE)
+CEILING_RE = re.compile(r"print timeout after|timed out after|timeout waiting for response", re.IGNORECASE)
+PRINT_TIMEOUT_RE = re.compile(r"print timeout after (?:(\d+)m)?(?:(\d+)s)?")
+TIMED_OUT_RE = re.compile(r"timed out after (\d+)\s*(?:s\b|seconds)")
+CHUNK_LINE_RE = re.compile(r"^chunk (\d+): exit (-?\d+): (.*?)(?=^chunk \d+: exit -?\d+: |\Z)",
+                           re.MULTILINE | re.DOTALL)
+JUDGE_SHORT_RE = re.compile(r"ruled on \d+ of \d+ claims", re.IGNORECASE)
+PATH_RE = re.compile(r"(?<![\w.])(/(?:Users|Volumes|private|tmp|var|opt|etc|Library)/[^\s'\"`\\)(;|&<>]*)")
+PROFILE_HOME_RE = re.compile(r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/|/\.gemini/(?:antigravity/brain|tmp)/")
+BENCH_ID_RE = re.compile(r"^(\d{8}T\d{6}Z)-[0-9a-f]+$")
+WORKER_ID_RE = re.compile(r"^[a-z][a-z0-9]*-(\d{9,11})-\d+-[0-9a-z]+$")
+USAGE_LIMIT_RE = re.compile(r"^OUTCOME: \w*_USAGE_LIMIT\b", re.MULTILINE)
+OUTSIDE_WRITE_RE = re.compile(
+    r"^UNKNOWN: transcript names a write outside the snapshotted repository[^\n]*?: (/[^\n]*)$",
+    re.MULTILINE)
+DIGEST_RE = re.compile(r"tree digest[^\n]*could not be taken", re.IGNORECASE)
+WORKER_TAIL_BYTES = 8192
+ID_LIKE_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^[0-9a-f]{12,}$", re.IGNORECASE)
+# Words the image wrappers print that the review vocabulary never meets; checked before it.
+IMAGE_REASONS = (
+    ("cap", re.compile(r"exceeded \d+s deadline|print timeout after", re.IGNORECASE)),
+    ("bad output", re.compile(r"generated file not found|no ImageGen event"
+                              r"|no (?:ImageToVideo|ReferenceToVideo) event", re.IGNORECASE)),
+    ("not entitled", re.compile(r"zero data retention|SuperGrok|entitlement|no video generation on its tier",
+                                re.IGNORECASE)),
+)
+IMAGE_ORIGIN = {"bad output": "ours", "not entitled": "ours"}
+PRELAUNCH_SKIP = ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
+
+
+def failure_reason(stderr):
+    text = stderr or ""
+    for reason, pattern in FAILURE_REASONS:
+        if pattern.search(text):
+            return reason
+    return "unclassified" if text.strip() else "no output"
+
+
+def base_home():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def doctor_dir():
+    return os.environ.get("LLM_DOCTOR_DIR") or os.path.join(base_home(), ".cache", "llm-doctor")
+
+
+def claudeb_dir():
+    return os.environ.get("CLAUDEB_DIR") or os.path.join(base_home(), ".claude-profiles", ".claudeb")
+
+
+def stats_dir():
+    return os.environ.get("WORKER_STATS_DIR") or os.path.join(claudeb_dir(), "worker-stats")
+
+
+def runs_dir():
+    return os.environ.get("WORKER_RUN_DIR") or os.path.join(base_home(), ".cache", "claude-worker-runs")
+
+
+def image_log():
+    return os.environ.get("IMAGE_LEG_LOG") or os.path.join(base_home(), ".cache", "image-legs", "legs.jsonl")
+
+
+def ledger_path():
+    return os.environ.get("LLM_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "doctor-ledger.json")
+
+
+def read_json(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def read_jsonl(path):
+    rows = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def read_tail(path, limit):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, handle.tell() - limit))
+            return handle.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def read_text(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def first_line(path):
+    text = (read_text(path) or "").strip()
+    return text.splitlines()[0].strip() if text else ""
+
+
+def mtime_of(path):
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def iso_epoch(value):
+    if not isinstance(value, str) or len(value) < 19:
+        return None
+    try:
+        return calendar.timegm(time.strptime(value[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+
+
+def zoned_epoch(value):
+    """An ISO time with its own offset; a bare one is read as UTC."""
+    epoch = iso_epoch(value)
+    if epoch is None:
+        return None
+    offset = re.search(r"([+-])(\d{2}):?(\d{2})$", value[19:])
+    if offset:
+        seconds = int(offset.group(2)) * 3600 + int(offset.group(3)) * 60
+        epoch -= seconds if offset.group(1) == "+" else -seconds
+    return epoch
+
+
+def as_int(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def project_of(path):
+    if not isinstance(path, str) or not path:
+        return ""
+    if is_scratch_path(path):
+        return "scratch"
+    parts = path.rstrip("/").split("/")
+    name = parts[-1]
+    for index in range(1, len(parts) - 2):
+        if parts[index] == ".claude" and parts[index + 1] == "worktrees" and not parts[index + 2].startswith("light-"):
+            name = "%s/%s" % (parts[index - 1], parts[index + 2])
+    return "" if ID_LIKE_RE.search(name) else name
+
+
+def bench_project(meta):
+    repo = meta.get("repo")
+    if isinstance(repo, str) and "/worker-stats/merged/" in repo:
+        names = []
+        for entry in meta.get("repos") or []:
+            if isinstance(entry, dict):
+                name = project_of(entry.get("repo")) or project_of(entry.get("label"))
+                if name and name not in names:
+                    names.append(name)
+        return "+".join(names)
+    return project_of(repo)
+
+
+_family_slugs = None
+
+
+def family_slugs():
+    """geminib's own family list, served family name → slug; empty without its cache."""
+    global _family_slugs
+    if _family_slugs is None:
+        document = read_json(os.path.join(gemini.geminib_cache_dir(), "models.json")) or {}
+        entries = document.get("families")
+        _family_slugs = {}
+        for entry in entries if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("slug"), str):
+                continue
+            for key in ("agy_prefix", "family"):
+                name = gemini.family_of(entry.get(key))
+                if name:
+                    _family_slugs[name] = entry["slug"]
+    return _family_slugs
+
+
+def bench_model(cell):
+    served = cell.get("served_model")
+    if isinstance(served, str) and served:
+        family = gemini.family_of(served)
+        return family_slugs().get(family, family or served)
+    model = str(cell.get("model") or "")
+    for prefix in ("agy-", "oc-"):
+        if model.startswith(prefix):
+            return model[len(prefix):]
+    return model
+
+
+def seconds_text(seconds):
+    return "" if seconds is None else "%ds" % int(round(seconds))
+
+
+def timeout_detail(stderr, timeout_s):
+    printed = PRINT_TIMEOUT_RE.search(stderr)
+    if printed and (printed.group(1) or printed.group(2)):
+        seconds = int(printed.group(1) or 0) * 60 + int(printed.group(2) or 0)
+        return "print timeout %dm" % (seconds // 60) if seconds >= 60 else "print timeout %ds" % seconds
+    timed_out = TIMED_OUT_RE.search(stderr)
+    if timed_out:
+        return "timeout %ss" % timed_out.group(1)
+    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and timeout_s > 0:
+        return "timeout %ds" % timeout_s
+    return "timeout"
+
+
+def is_scratch_path(path):
+    roots = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders",
+             os.path.join(base_home(), ".cache")]
+    if os.environ.get("TMPDIR"):
+        roots.append(os.environ["TMPDIR"])
+    if "/scratchpad/" in path + "/":
+        return True
+    return any(path == root.rstrip("/") or path.startswith(root.rstrip("/") + "/") for root in roots)
+
+
+def outside_paths(text):
+    """Absolute paths a leg named that are neither scratch space nor a vendor profile's own state."""
+    return [path for path in PATH_RE.findall(text or "")
+            if not is_scratch_path(path.rstrip(".,:")) and not PROFILE_HOME_RE.search(path)]
+
+
+def age_text(seconds):
+    if seconds < 3600:
+        return "%dm" % (seconds // 60)
+    if seconds < 86400:
+        return "%dh" % (seconds // 3600)
+    return "%dd" % (seconds // 86400)
+
+
+def word_of_retry(retry_of):
+    text = re.sub(r"^weather:\s*", "", str(retry_of or "")).strip()
+    if text in FAILURE_ORIGIN:
+        return text
+    reason = failure_reason(text)
+    return reason if reason in FAILURE_ORIGIN else ""
+
+
+def classify_failure_text(text, exit_code, timeout_s=None):
+    """(class, reason, detail, origin) of a leg that failed, read off its own words."""
+    reason = failure_reason(text)
+    if reason == "killed memory":
+        return "failed", reason, reason, "ours"
+    if reason == "pool empty" and not POOL_CONFIG_RE.search(text):
+        return "walled", reason, reason, ""
+    if reason in WALL_REASONS:
+        return "walled", reason, reason, ""
+    if CUT_RE.search(text):
+        return "cap", "cut", "cut by the panel", ""
+    if CEILING_RE.search(text):
+        return "cap", "timeout", timeout_detail(text, timeout_s), ""
+    if MISMATCH_RE.search(text) and reason in ("unclassified", "timeout", "no output"):
+        return "failed", "mismatch", "mismatch", "theirs"
+    detail = reason
+    if reason in ("unclassified", "no output") and exit_code not in (None, 0, 1):
+        detail = "%s · exit %s" % (reason, exit_code)
+    return "failed", reason, detail, FAILURE_ORIGIN.get(reason, "")
+
+
+def classify_bench(cell, escaped, retry_word=""):
+    killed = cell.get("killed")
+    exit_code = cell.get("exit_code")
+    stderr = cell.get("stderr") or ""
+    duration = cell.get("duration_ms")
+    duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
+    failed = bool(cell.get("errored")) or exit_code not in (0, None) or bool(killed)
+    if escaped:
+        return "escaped", "escaped", "outside write", ""
+    if not failed:
+        if cell.get("findings") == 0 and stderr.strip() \
+                and failure_reason(stderr) in EMPTY_ZERO_FINDING_REASONS:
+            return "failed", "bad output", "bad output", "ours"
+        return None, "", "", ""
+    reason = failure_reason(stderr)
+    if killed == "memory" or reason == "killed memory":
+        return "failed", "killed memory", "killed memory", "ours"
+    if reason == "pool empty" or reason in WALL_REASONS:
+        return classify_failure_text(stderr, exit_code)
+    stalled_s = cell.get("stalled_s")
+    if killed == "stall" or (isinstance(stalled_s, (int, float)) and stalled_s > 0):
+        seconds = stalled_s if isinstance(stalled_s, (int, float)) and stalled_s > 0 else duration_s
+        return "stalled", "stalled", ("stall " + seconds_text(seconds)).strip(), ""
+    if killed == "panel" or CUT_RE.search(stderr):
+        return "cap", "cut", ("cut by the panel " + seconds_text(duration_s)).strip(), ""
+    if isinstance(exit_code, int) and exit_code < 0:
+        return "cap", "cut", "signal %d" % -exit_code, ""
+    if killed == "watchdog" or exit_code == 124:
+        return "cap", "timeout", ("%s %s" % (killed or "exit 124", seconds_text(duration_s))).strip(), ""
+    klass, reason, detail, origin = classify_failure_text(stderr, exit_code, cell.get("timeout_s"))
+    if klass == "failed" and reason == "no output" and retry_word:
+        return "failed", retry_word, retry_word, FAILURE_ORIGIN.get(retry_word, "")
+    return klass, reason, detail, origin
+
+
+def escape_evidence(meta):
+    """rater spec → accounts whose own lexical escape candidates name a path outside scratch."""
+    hits = {}
+    for key in ("write_evidence", "clone_escapes"):
+        for hit in meta.get(key) or []:
+            if not isinstance(hit, (list, tuple)) or not hit:
+                continue
+            text = " ".join(str(part) for part in hit[2:]) if len(hit) > 2 else ""
+            if outside_paths(text):
+                hits.setdefault(hit[0], set()).add(hit[1] if len(hit) > 1 else None)
+    return hits
+
+
+def leg(block, surface, model, at, klass, reason, detail, origin, **extra):
+    row = {"block": block, "surface": surface, "model": model or "", "at": at, "class": klass,
+           "reason": reason, "detail": detail or "", "origin": origin, "attempt": "final",
+           "duration": None, "project": "", "tier": "", "ref": "", "text": ""}
+    row.update(extra)
+    return row
+
+
+def bench_legs(cutoff, now):
+    root = os.path.join(stats_dir(), "benches")
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return [], None
+    legs, earliest = [], None
+    for name in names:
+        match = BENCH_ID_RE.match(name)
+        run_dir = os.path.join(root, name)
+        started = calendar.timegm(time.strptime(match.group(1), "%Y%m%dT%H%M%SZ")) if match else mtime_of(run_dir)
+        if started is None:
+            continue
+        if match:
+            earliest = started if earliest is None else min(earliest, started)
+        if started < cutoff - 86400:
+            continue
+        meta = read_json(os.path.join(run_dir, "meta.json"))
+        if not isinstance(meta, dict) or meta.get("cancelled"):
+            continue
+        legs.extend(run_legs(meta, name, started, cutoff, now))
+    return legs, earliest
+
+
+def run_legs(meta, name, started, cutoff, now):
+    evidence = escape_evidence(meta)
+    project = bench_project(meta)
+    tier = str(meta.get("tier") or "")
+    rows = [row for row in meta.get("rater_runs") or [] if isinstance(row, dict)]
+    last = {}
+    for index, row in enumerate(rows):
+        last[row.get("rater")] = index
+    legs = []
+    for index, cell in enumerate(rows):
+        final = last.get(cell.get("rater")) == index
+        duration = cell.get("duration_ms")
+        duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
+        ended = iso_epoch(cell.get("finished_at"))
+        if ended is None:
+            begun = iso_epoch(cell.get("started_at"))
+            ended = (begun if begun is not None else started) + (duration_s or 0)
+        if ended < cutoff or ended > now + 3600:
+            continue
+        accounts = evidence.get(cell.get("rater"), set())
+        escaped = final and (cell.get("account") in accounts or None in accounts)
+        retry_word = ""
+        if not final:
+            retry_word = word_of_retry(rows[last[cell.get("rater")]].get("retry_of"))
+        klass, reason, detail, origin = classify_bench(cell, escaped, retry_word)
+        passes = cell.get("passes")
+        per_pass = duration_s / passes if duration_s and isinstance(passes, int) and passes > 1 else duration_s
+        model = bench_model(cell)
+        common = {"project": project, "tier": tier, "ref": name, "account": cell.get("account") or "",
+                  "text": (cell.get("stderr") or "")[-TEXT_MAX:]}
+        legs.append(leg("reviewers", "review", model, ended, klass, reason, detail, origin,
+                        attempt="final" if final else "superseded", duration=per_pass, **common))
+        if final and klass is None and cell.get("exit_code") == 0:
+            for chunk in CHUNK_LINE_RE.finditer(cell.get("stderr") or ""):
+                text = chunk.group(3).strip()
+                c_exit = as_int(chunk.group(2))
+                if isinstance(c_exit, int) and c_exit < 0:
+                    c_class, c_reason, c_detail, c_origin = "cap", "cut", "signal %d" % -c_exit, ""
+                elif c_exit == 124:
+                    c_class, c_reason, c_detail, c_origin = "cap", "timeout", "exit 124", ""
+                else:
+                    c_class, c_reason, c_detail, c_origin = classify_failure_text(
+                        text, c_exit, cell.get("timeout_s"))
+                legs.append(leg("reviewers", "review", model, ended, c_class, c_reason,
+                                "chunk %s: %s" % (chunk.group(1), c_detail), c_origin, attempt="chunk",
+                                **dict(common, text=text)))
+    finished = iso_epoch(meta.get("finished_at")) or iso_epoch(meta.get("closed_at")) \
+        or iso_epoch(meta.get("sealed_at")) or started
+    judge = meta.get("judge")
+    if isinstance(judge, dict) and judge.get("state") in ("ran", "failed") and cutoff <= finished <= now + 3600:
+        legs.append(judge_leg(judge, finished, project, tier, name))
+    failure = str(meta.get("failure") or "")
+    if failure and not failure.startswith("cell failures:") and cutoff <= finished <= now + 3600:
+        if re.search(r"SystemExit: *(?:143|130|2)\b|SIGTERM|KeyboardInterrupt", failure):
+            legs.append(leg("reviewers", "panel", "panel", finished, "cap", "cut", "panel killed", "",
+                            project=project, tier=tier, ref=name, text=failure[-TEXT_MAX:]))
+        else:
+            legs.append(leg("reviewers", "panel", "panel", finished, "failed", "crashed",
+                            failure.splitlines()[0][:DETAIL_MAX], "ours",
+                            project=project, tier=tier, ref=name, text=failure[-TEXT_MAX:]))
+    return legs
+
+
+def judge_leg(judge, at, project, tier, ref):
+    duration = judge.get("duration_ms")
+    duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
+    common = {"project": project, "tier": tier, "ref": ref, "duration": duration_s,
+              "text": str(judge.get("reason") or "")[-TEXT_MAX:]}
+    model = str(judge.get("model") or "judge")
+    if judge.get("state") != "failed":
+        return leg("reviewers", "judge", model, at, None, "", "", "", **common)
+    reason_text = str(judge.get("reason") or "")
+    if judge.get("exit_code") == 124 or reason_text == "timeout":
+        return leg("reviewers", "judge", model, at, "cap", "timeout",
+                   ("timeout " + seconds_text(duration_s)).strip(), "", **common)
+    if JUDGE_SHORT_RE.search(reason_text):
+        return leg("reviewers", "judge", model, at, "failed", "bad output", "bad output", "ours", **common)
+    if re.search(r"refused a read-only credential export", reason_text):
+        return leg("reviewers", "judge", model, at, "failed", "auth", "auth", "ours", **common)
+    klass, reason, detail, origin = classify_failure_text(reason_text, judge.get("exit_code"))
+    return leg("reviewers", "judge", model, at, klass, reason, detail, origin, **common)
+
+
+def kill_detail(line):
+    words = line.split()
+    if not words:
+        return ""
+    if len(words) > 1:
+        number = words[1].rstrip("s")
+        if number.isdigit():
+            return "%s %ss" % (words[0], number)
+    return words[0]
+
+
+def worker_block(meta):
+    light = str(meta.get("light") or "")
+    return "light" if light or meta.get("role") == "research" else "workers"
+
+
+def worker_escape(run_dir):
+    lines = [line.strip() for line in (read_text(os.path.join(run_dir, "workdir-escape")) or "").splitlines()]
+    return [line for line in lines if line and not is_scratch_path(line) and not PROFILE_HOME_RE.search(line)]
+
+
+def light_verdict(run_dir):
+    verdict = {}
+    for line in (read_text(os.path.join(run_dir, "light-verdict")) or "").splitlines():
+        key, _, value = line.partition(":")
+        verdict[key.strip()] = value.strip()
+    return verdict
+
+
+def classify_worker(run_dir, meta, killed, exit_code):
+    """(class, reason, detail, origin) of one worker-run leg, off the verdicts worker-run left beside it."""
+    kill_word = killed.split()[0] if killed else ""
+    outcome = first_line(os.path.join(run_dir, "outcome"))
+    result = read_text(os.path.join(run_dir, "result")) or ""
+    err = read_tail(os.path.join(run_dir, "err"), WORKER_TAIL_BYTES)
+    escapes = worker_escape(run_dir)
+    if escapes:
+        return "escaped", "escaped", "worked in %s" % project_of(escapes[0]), ""
+    note = read_text(os.path.join(run_dir, "files-note")) or ""
+    granted = [str(path).rstrip("/") + "/" for path in meta.get("add_dirs") or [] if path]
+    outside = [path for path in outside_paths("\n".join(OUTSIDE_WRITE_RE.findall(note)))
+               if not any(path.startswith(root) for root in granted)]
+    if outside:
+        return "escaped", "escaped", "wrote %s" % project_of(outside[0]), ""
+    verdict = light_verdict(run_dir)
+    if (verdict.get("SCOPE") or "").split()[:1] == ["escaped"]:
+        return "escaped", "escaped", "light scope escaped", ""
+    research = first_line(os.path.join(run_dir, "research-outcome"))
+    if research == "READ_ONLY_VIOLATION":
+        if DIGEST_RE.search(err):
+            return "failed", "crashed", "tree digest not taken", "ours"
+        return "escaped", "escaped", "read-only violation", ""
+    if outcome.startswith("GROK_CANCELLED") or (
+            exit_code == 0 and (read_json(os.path.join(run_dir, "state.json")) or {}).get("phase") == "failed"):
+        return "failed", "cancelled", "cancelled before the first turn", "theirs"
+    if exit_code == 0:
+        if verdict.get("VERIFIED") == "fail":
+            return "failed", "verify failed", "light verify failed", "ours"
+        if verdict.get("LANDED") == "conflict":
+            return "failed", "land conflict", "light landing conflict", "ours"
+        return None, "", "", ""
+    if os.path.exists(os.path.join(run_dir, "memguard")) and os.path.getsize(os.path.join(run_dir, "memguard")):
+        return "failed", "killed memory", "killed memory", "ours"
+    attempt = first_line(os.path.join(run_dir, "attempt"))
+    if kill_word == "wall" or outcome.endswith("_USAGE_LIMIT") or research.endswith("_USAGE_LIMIT") \
+            or USAGE_LIMIT_RE.search(result) or os.path.exists(os.path.join(run_dir, "wall-reset.%s" % attempt)):
+        return "walled", "walled", "usage limit", ""
+    if kill_word in ("silent", "idle"):
+        return "stalled", "stalled", kill_detail(killed), ""
+    if kill_word in ("deadline", "term", "signal"):
+        return "cap", "timeout" if kill_word == "deadline" else "cut", kill_detail(killed), ""
+    if exit_code in (137, 143):
+        return "cap", "cut", "exit %d" % exit_code, ""
+    if exit_code in (126, 127):
+        return "failed", "crashed", "exit %d" % exit_code, "ours"
+    if exit_code == 4 and not err.strip():
+        return "failed", "crashed", "abandoned before launch", "ours"
+    if outcome == "GROK_MAX_TURNS":
+        return "failed", "bad output", "max turns", "ours"
+    klass, reason, detail, origin = classify_failure_text(err, exit_code)
+    if klass == "failed" and not origin and exit_code is not None:
+        detail = "%s · exit %d" % (reason, exit_code) if "exit" not in detail else detail
+    return klass, reason, detail, origin
+
+
+def worker_legs(cutoff, now):
+    root = runs_dir()
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return [], None
+    legs, earliest = [], None
+    for name in names:
+        match = WORKER_ID_RE.match(name)
+        run_dir = os.path.join(root, name)
+        started = int(match.group(1)) if match else mtime_of(run_dir)
+        if started is None or not os.path.isdir(run_dir):
+            continue
+        # browse/ and other long-lived directories are never pruned; only run ids date the store.
+        if match:
+            earliest = started if earliest is None else min(earliest, started)
+        if started < cutoff - 86400:
+            continue
+        tag = read_text(os.path.join(run_dir, "tag"))
+        if not tag:
+            continue
+        fields = [field.strip() for field in tag.strip().split("·")]
+        if len(fields) < 2 or not fields[1]:
+            continue
+        meta = read_json(os.path.join(run_dir, "meta.json")) or {}
+        exit_path = os.path.join(run_dir, "exit_code")
+        killed_path = os.path.join(run_dir, "killed")
+        killed = first_line(killed_path)
+        exit_text = read_text(exit_path)
+        block = worker_block(meta)
+        common = {"project": project_of(meta.get("workdir")), "ref": name, "account": fields[0],
+                  "text": read_tail(os.path.join(run_dir, "err"), TEXT_MAX)}
+        if exit_text is None and not killed:
+            if not meta_pid_gone(meta) or now - started < 6 * 3600:
+                continue
+            ended = mtime_of(os.path.join(run_dir, "out")) or started
+            if cutoff <= ended <= now + 3600:
+                legs.append(leg(block, "worker", fields[1], ended, "failed", "crashed",
+                                "no exit: supervisor gone", "ours", **common))
+            continue
+        exit_code = as_int(exit_text) if exit_text is not None else None
+        ended = mtime_of(exit_path) or mtime_of(killed_path) or started
+        if ended < cutoff or ended > now + 3600:
+            continue
+        klass, reason, detail, origin = classify_worker(run_dir, meta, killed, exit_code)
+        legs.append(leg(block, "worker", fields[1], ended, klass, reason, detail, origin,
+                        duration=ended - started if ended > started else None, **common))
+        for account in meta.get("walled_accounts") or []:
+            legs.append(leg(block, "worker", fields[1], started, "walled", "walled", "usage limit", "",
+                            attempt="superseded", **dict(common, account=str(account))))
+    if earliest is not None:
+        earliest = max(earliest, now - WORKER_KEEP_D * 86400)
+    return legs, earliest
+
+
+def meta_pid_gone(meta):
+    pid = as_int(meta.get("pid"))
+    if not pid or pid <= 0:
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    began = as_int(meta.get("pid_started_at"))
+    if not began or began <= 0:
+        return False
+    try:
+        elapsed = subprocess.run(["ps", "-p", str(pid), "-o", "etime="], capture_output=True, text=True,
+                                 timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    seconds = etime_seconds(elapsed)
+    return seconds is not None and abs(time.time() - seconds - began) > PID_START_SLACK_S
+
+
+def etime_seconds(text):
+    match = re.match(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$", text)
+    if not match:
+        return None
+    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def prelaunch_legs(cutoff, now):
+    """Refusals worker-run gave before any run directory existed, from its own prelaunch log."""
+    legs, earliest = [], None
+    for row in read_jsonl(os.path.join(runs_dir(), "prelaunch.jsonl")):
+        at = row.get("ts")
+        outcome = str(row.get("outcome") or "")
+        if not isinstance(at, (int, float)) or not outcome:
+            continue
+        earliest = at if earliest is None else min(earliest, at)
+        if at < cutoff or at > now + 3600 or outcome.split()[0] in PRELAUNCH_SKIP:
+            continue
+        block = "light" if row.get("light") or row.get("role") == "research" else "workers"
+        model = str(row.get("model") or row.get("vendor") or "")
+        common = {"account": str(row.get("account") or ""), "ref": "prelaunch", "text": outcome}
+        if outcome.endswith("_USAGE_LIMIT"):
+            legs.append(leg(block, "worker", model, at, "walled", "walled", "pool walled at launch", "", **common))
+        elif outcome.endswith("_UNAVAILABLE"):
+            legs.append(leg(block, "worker", model, at, "failed", "pool empty", "unavailable at launch",
+                            "ours", **common))
+        elif outcome in ("MODEL_REFUSED", "EFFORT_REFUSED"):
+            legs.append(leg(block, "worker", model, at, "failed", "bad command", outcome.lower().replace("_", " "),
+                            "ours", **common))
+    return legs, earliest
+
+
+def classify_image(rc, err):
+    if rc == 0:
+        return None, "", "", ""
+    if rc == 3:
+        return "walled", "walled", "usage limit", ""
+    if rc == 2:
+        return "failed", "bad command", "bad arguments", "ours"
+    if rc in (130, 137, 143):
+        return "cap", "cut", "signal exit %d" % rc, ""
+    if rc == 4:
+        if re.search(r"refusing|unreadable|unknown|cannot be read", err, re.IGNORECASE):
+            return "failed", "crashed", "setup refused", "ours"
+        if re.search(r"refused by the worker pool|out of the worker pool", err, re.IGNORECASE):
+            return "failed", "pool empty", "pool refused", "ours"
+        return "skip", "", "", ""
+    word = failure_reason(err)
+    if FAILURE_ORIGIN.get(word) == "theirs" or word in WALL_REASONS:
+        return classify_failure_text(err, rc)
+    for reason, pattern in IMAGE_REASONS:
+        if pattern.search(err):
+            if reason == "cap":
+                return "cap", "timeout", "deadline", ""
+            return "failed", reason, reason, IMAGE_ORIGIN.get(reason, "")
+    klass, reason, detail, origin = classify_failure_text(err, rc)
+    if klass == "cap" and reason == "timeout" and not re.search(r"print timeout after|deadline", err):
+        return "failed", "timeout", "timeout", "ours"
+    return klass, reason, detail, origin
+
+
+def image_legs(cutoff, now):
+    legs, earliest = [], None
+    for row in read_jsonl(image_log()):
+        at = row.get("ts")
+        rc = as_int(row.get("rc"))
+        if not isinstance(at, (int, float)) or rc is None:
+            continue
+        earliest = at if earliest is None else min(earliest, at)
+        if at < cutoff or at > now + 3600:
+            continue
+        err = str(row.get("err") or "")
+        klass, reason, detail, origin = classify_image(rc, err)
+        if klass == "skip":
+            continue
+        model = str(row.get("tool") or "")
+        seconds = row.get("seconds")
+        legs.append(leg("image", str(row.get("kind") or "image"), model, at, klass, reason, detail, origin,
+                        duration=seconds if isinstance(seconds, (int, float)) and seconds > 0 else None,
+                        account=str(row.get("account") or ""), ref=str(row.get("tool") or ""),
+                        text=err[-TEXT_MAX:]))
+    return legs, earliest
+
+
+def mark_slow(legs, now):
+    base_cutoff = now - SLOW_BASE_D * 86400
+    clean, timed = {}, {}
+    for leg_row in legs:
+        if leg_row["duration"] is None or leg_row["attempt"] != "final" or leg_row["at"] < base_cutoff:
+            continue
+        key = (leg_row["block"], leg_row["surface"], leg_row["model"])
+        timed.setdefault(key, []).append(leg_row["duration"])
+        if leg_row["class"] is None:
+            clean.setdefault(key, []).append(leg_row["duration"])
+    medians = {}
+    for key, values in timed.items():
+        sample = clean.get(key, []) if len(clean.get(key, [])) >= SLOW_MIN_LEGS else values
+        if len(sample) >= SLOW_MIN_LEGS:
+            medians[key] = statistics.median(sample)
+    for leg_row in legs:
+        median = medians.get((leg_row["block"], leg_row["surface"], leg_row["model"]))
+        if leg_row["class"] is None and leg_row["attempt"] == "final" and median \
+                and leg_row["duration"] is not None and leg_row["duration"] > SLOW_FACTOR * median:
+            leg_row["class"], leg_row["reason"] = "slow", "slow"
+            unit = 60 if median >= 60 else 1
+            leg_row["detail"] = "%d%s vs %d%s median" % (
+                round(leg_row["duration"] / unit), "m" if unit == 60 else "s", round(median / unit),
+                "m" if unit == 60 else "s")
+
+
+def verdict_of(leg_row):
+    """bug | weather | clean, before the ledger speaks."""
+    if leg_row["class"] is None:
+        return "clean"
+    if leg_row["attempt"] == "superseded":
+        return "weather"
+    if leg_row["class"] == "escaped":
+        return "bug"
+    if leg_row["class"] == "failed" and leg_row["origin"] != "theirs":
+        return "bug"
+    return "weather"
+
+
+def word_of(leg_row):
+    return leg_row["reason"] if leg_row["class"] == "failed" else leg_row["class"]
+
+
+def problem_key(leg_row):
+    if leg_row["attempt"] == "superseded":
+        return ("retried", "", "")
+    if leg_row["class"] == "failed":
+        return ("failed", leg_row["reason"], leg_row["origin"])
+    return (leg_row["class"], "", "")
+
+
+def key_label(key):
+    klass, reason, origin = key
+    if klass == "failed":
+        return "failed · %s%s" % (reason, " · theirs" if origin == "theirs" else "")
+    return klass
+
+
+def load_ledger():
+    document = read_json(ledger_path())
+    if not isinstance(document, dict):
+        return {"owners": {}, "rows": [], "machinery": {}}
+    rows, machinery_rows = [], {}
+    for row in document.get("rows") or []:
+        if not isinstance(row, dict) or not isinstance(row.get("match"), dict):
+            continue
+        if row["match"].get("machinery"):
+            compiled = dict(row, _fixed_at=zoned_epoch(row.get("fixed_at")) if row.get("fixed_at") else None)
+            machinery_rows.setdefault(row["match"]["machinery"], compiled)
+            continue
+        if not row["match"].get("word"):
+            continue
+        compiled = dict(row)
+        compiled["_model"] = re.compile(row["match"]["model"]) if row["match"].get("model") else None
+        compiled["_detail"] = re.compile(row["match"]["detail"], re.IGNORECASE) if row["match"].get("detail") else None
+        compiled["_fixed_at"] = zoned_epoch(row.get("fixed_at")) if row.get("fixed_at") else None
+        compiled["_until"] = zoned_epoch(row["match"]["until"]) if row["match"].get("until") else None
+        compiled["_specific"] = int(bool(compiled["_model"])) + int(bool(compiled["_detail"])) \
+            + int(row.get("block") not in (None, "any")) + int(compiled["_until"] is not None)
+        rows.append(compiled)
+    order = {id(row): index for index, row in enumerate(rows)}
+    rows.sort(key=lambda row: (-row["_specific"], order[id(row)]))
+    owners = document.get("owners") if isinstance(document.get("owners"), dict) else {}
+    return {"owners": owners, "rows": rows, "machinery": machinery_rows}
+
+
+def ledger_match(ledger, leg_row):
+    word = word_of(leg_row)
+    for row in ledger["rows"]:
+        if row["match"]["word"] != word or row.get("block") not in ("any", None, leg_row["block"]):
+            continue
+        if row["_model"] and not row["_model"].search(leg_row["model"]):
+            continue
+        if row["_until"] is not None and leg_row["at"] > row["_until"]:
+            continue
+        if row["_detail"] and not (row["_detail"].search(leg_row["text"]) or row["_detail"].search(leg_row["detail"])):
+            continue
+        return row
+    return None
+
+
+def judge_leg_state(ledger, leg_row):
+    """new | open | regressed | fixed | weather — the leg's standing once the ledger has spoken."""
+    verdict = verdict_of(leg_row)
+    if verdict != "bug":
+        return verdict, None
+    row = ledger_match(ledger, leg_row)
+    if row is None:
+        return "new", None
+    status = row.get("status")
+    if status in ("not-a-bug", "weather"):
+        return "weather", row
+    if status == "fixed":
+        fixed_at = row["_fixed_at"]
+        return ("regressed" if fixed_at is None or leg_row["at"] > fixed_at else "fixed"), row
+    return "open", row
+
+
+def local_day(epoch):
+    return time.strftime("%Y-%m-%d", time.localtime(epoch))
+
+
+def trend_days(now):
+    today = datetime.date.fromtimestamp(now)
+    return [(today - datetime.timedelta(days=offset)).isoformat() for offset in range(TREND_DAYS - 1, -1, -1)]
+
+
+def day_start(day):
+    return time.mktime(time.strptime(day, "%Y-%m-%d"))
+
+
+def rollup_key(leg_row):
+    klass, reason, origin = problem_key(leg_row)
+    ledger_id = leg_row["ledger"]["id"] if leg_row["ledger"] is not None else ""
+    return "|".join((leg_row["block"], leg_row["model"], klass, reason, origin, ledger_id))
+
+
+def relabel_frozen(counts, ledger, at):
+    """A day frozen before its cause got a ledger row keeps the empty id; a row that needs no detail
+    text to match claims those counts, so the problem's history follows it into the ledger."""
+    relabeled = {}
+    for key, value in counts.items():
+        fields = key.split("|")
+        bug = len(fields) == 6 and (fields[2] == "escaped" or (fields[2] == "failed" and fields[4] != "theirs"))
+        if bug and not fields[5]:
+            row = ledger_match(ledger, {"block": fields[0], "model": fields[1], "class": fields[2],
+                                        "reason": fields[3] if fields[2] == "failed" else fields[2],
+                                        "text": "", "detail": "", "at": at})
+            if row is not None and row["_detail"] is None:
+                fields[5] = row["id"]
+        relabeled["|".join(fields)] = relabeled.get("|".join(fields), 0) + value
+    return relabeled
+
+
+def rollup(legs, coverage, now, write, ledger):
+    """Per local day of the trend: counts per (block, model, key) — recomputed from the stores while
+    they still hold the whole day, read back from the frozen file once they do not."""
+    directory = os.path.join(doctor_dir(), "daily")
+    days = trend_days(now)
+    fresh = {day: {"counts": {}, "legs": {}} for day in days}
+    for leg_row in legs:
+        day = local_day(leg_row["at"])
+        if day not in fresh:
+            continue
+        if leg_row["attempt"] == "final":
+            key = leg_row["block"] + "|" + leg_row["model"]
+            fresh[day]["legs"][key] = fresh[day]["legs"].get(key, 0) + 1
+        if leg_row["class"] is not None:
+            key = rollup_key(leg_row)
+            fresh[day]["counts"][key] = fresh[day]["counts"].get(key, 0) + 1
+    result = {}
+    for day in days:
+        path = os.path.join(directory, day + ".json")
+        stored = read_json(path) if os.path.exists(path) else None
+        merged = {"day": day, "counts": {}, "legs": {}, "covered": []}
+        for block in BLOCKS:
+            since = coverage.get(block)
+            whole = since is not None and since <= day_start(day)
+            source = fresh[day] if whole or not isinstance(stored, dict) \
+                else dict(stored, counts=relabel_frozen(stored.get("counts") or {}, ledger, day_start(day)))
+            for part in ("counts", "legs"):
+                for key, value in (source.get(part) or {}).items():
+                    if key.split("|", 1)[0] == block:
+                        merged[part][key] = value
+            if whole or (isinstance(stored, dict) and block in (stored.get("covered") or [])):
+                merged["covered"].append(block)
+        result[day] = merged
+        if write and day != days[-1] and merged["covered"]:
+            os.makedirs(directory, exist_ok=True)
+            temporary = "%s.tmp.%d" % (path, os.getpid())
+            with open(temporary, "w", encoding="utf-8") as handle:
+                json.dump(merged, handle, ensure_ascii=False, sort_keys=True)
+                handle.write("\n")
+            os.replace(temporary, path)
+    return result
+
+
+def spark(values):
+    top = max(values) if values else 0
+    if top <= 0:
+        return ""
+    return "".join(" " if value == 0 else SPARK[min(len(SPARK) - 1, (value * len(SPARK) - 1) // top)]
+                   for value in values)
+
+
+def trend_mark(count, legs, base_count, base_legs):
+    """↑/↓ on a ≥2× move of the window's rate per leg against the rollup's days before the window."""
+    if not legs or not base_legs:
+        return ""
+    rate, base = count / legs, base_count / base_legs
+    if count >= TREND_MIN and rate >= 2 * base:
+        return "up"
+    if base_count >= TREND_MIN and rate * 2 <= base:
+        return "down"
+    return ""
+
+
+def top_counts(counter, limit):
+    return [name for name, _ in sorted(counter.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]]
+
+
+def incident_of(leg_row, now):
+    age = max(0, int(now - leg_row["at"]))
+    return {"age_s": age, "age": age_text(age), "model": leg_row["model"], "surface": leg_row["surface"],
+            "project": leg_row["project"], "tier": leg_row["tier"], "attempt": leg_row["attempt"],
+            "detail": leg_row["detail"][:DETAIL_MAX], "ref": leg_row["ref"]}
+
+
+def ledger_view(row):
+    if row is None:
+        return None
+    return {key: row.get(key) for key in
+            ("id", "title", "status", "fixed_in", "fixed_at", "last_reviewed", "reviewed_by", "note")}
+
+
+def days_since(date_text, now):
+    epoch = zoned_epoch(date_text + "T00:00:00") if isinstance(date_text, str) and len(date_text) == 10 \
+        else zoned_epoch(date_text)
+    return None if epoch is None else max(0, int((now - epoch) // 86400))
+
+
+def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
+    window = [leg_row for leg_row in legs if leg_row["block"] == block and leg_row["at"] >= window_cutoff]
+    window_legs = sum(1 for leg_row in window if leg_row["attempt"] == "final")
+    prefix = "%s|" % block
+    days = sorted(daily)
+    base_days = [day for day in days if day_start(day) + 86400 <= window_cutoff and block in daily[day]["covered"]]
+    base_legs = sum(value for day in base_days for key, value in daily[day]["legs"].items() if key.startswith(prefix))
+    groups = {}
+    for leg_row in window:
+        state, row = leg_row["state"], leg_row["ledger"]
+        if state == "clean":
+            continue
+        key = problem_key(leg_row)
+        group_id = ("weather" if state == "weather" else "bug", key, row["id"] if row is not None else "")
+        group = groups.setdefault(group_id, {"key": key, "ledger": row, "legs": [], "states": {}})
+        group["legs"].append(leg_row)
+        group["states"][state] = group["states"].get(state, 0) + 1
+    problems = []
+    for (group_kind, key, ledger_id), group in groups.items():
+        dismissed = group_kind == "weather" and bool(ledger_id)
+        states = group["states"]
+        bug_count = states.get("new", 0) + states.get("open", 0) + states.get("regressed", 0)
+        fixed_count = states.get("fixed", 0)
+        weather_count = states.get("weather", 0)
+        row = group["ledger"]
+        kind = "bug" if bug_count else ("fixed" if fixed_count else "weather")
+        if states.get("regressed"):
+            status = "regressed"
+            status_text = "regressed ×%d" % states["regressed"]
+        elif states.get("new"):
+            status, status_text = "new", "new"
+        elif states.get("open"):
+            status, status_text = "open", "open"
+        elif fixed_count:
+            since = days_since(row.get("fixed_at"), now) if row else None
+            status = "fixed"
+            status_text = "fixed %s · 0 since" % ("%dd" % since if since is not None else "")
+        else:
+            status = "not-a-bug" if dismissed else "weather"
+            status_text = "not a bug" if dismissed else ""
+        if kind == "bug" and fixed_count:
+            status_text += " · %d before fix" % fixed_count
+        model_counter = {}
+        for leg_row in group["legs"]:
+            model_counter[leg_row["model"]] = model_counter.get(leg_row["model"], 0) + 1
+        series = []
+        for day in days:
+            total = 0
+            for rolled, value in daily[day]["counts"].items():
+                fields = rolled.split("|")
+                if rolled.startswith(prefix) and len(fields) == 6 \
+                        and tuple(fields[2:5]) == key and fields[5] == ledger_id:
+                    total += value
+            series.append(total)
+        count = bug_count or fixed_count or weather_count
+        base_count = sum(value for day, value in zip(days, series) if day in base_days)
+        last = max(leg_row["at"] for leg_row in group["legs"])
+        looked = days_since(row.get("last_reviewed"), now) if row is not None else None
+        problems.append({
+            "kind": kind, "label": key_label(key) + (" · not a bug" if dismissed else ""),
+            "class": key[0], "reason": key[1], "origin": key[2],
+            "models": top_counts(model_counter, TOP_MAX), "count": count,
+            "trend": trend_mark(count, window_legs, base_count, base_legs) if kind != "fixed" else "",
+            "daily": series, "spark": spark(series),
+            "last_seen_s": max(0, int(now - last)), "last_seen": age_text(max(0, int(now - last))),
+            "status": status, "status_text": status_text,
+            "looked": "" if looked is None else "looked at %dd ago" % looked,
+            "ledger": ledger_view(row),
+            "incidents": [incident_of(leg_row, now) for leg_row in
+                          sorted(group["legs"], key=lambda item: -item["at"])[:MAX_INCIDENTS]],
+        })
+    rank = {"regressed": 0, "new": 1, "open": 2, "fixed": 3, "not-a-bug": 4, "weather": 5}
+    problems.sort(key=lambda item: (rank[item["status"]], -item["count"], item["label"]))
+    bugs = sum(1 for leg_row in window if leg_row["state"] in ("new", "open", "regressed"))
+    weather = sum(1 for leg_row in window if leg_row["state"] == "weather")
+    top = {}
+    top_pool = [leg_row for leg_row in window if leg_row["state"] in ("new", "open", "regressed")] \
+        or [leg_row for leg_row in window if leg_row["state"] == "weather" and leg_row["attempt"] != "superseded"]
+    for leg_row in top_pool:
+        name = "%s %s" % (leg_row["model"], leg_row["reason"] if leg_row["class"] == "failed" else leg_row["class"])
+        top[name] = top.get(name, 0) + 1
+    models = {}
+    for leg_row in window:
+        entry = models.setdefault(leg_row["model"], {"model": leg_row["model"], "legs": 0, "bugs": 0,
+                                                     "weather": 0, "columns": {}})
+        if leg_row["attempt"] == "final":
+            entry["legs"] += 1
+        if leg_row["state"] in ("new", "open", "regressed"):
+            entry["bugs"] += 1
+        elif leg_row["state"] == "weather":
+            entry["weather"] += 1
+        column = None
+        if leg_row["attempt"] == "superseded":
+            column = "retried"
+        elif leg_row["class"] == "failed":
+            column = "theirs" if leg_row["origin"] == "theirs" else "failed"
+        elif leg_row["class"] is not None:
+            column = leg_row["class"]
+        if column:
+            entry["columns"][column] = entry["columns"].get(column, 0) + 1
+    model_rows = sorted((entry for entry in models.values() if entry["model"]),
+                        key=lambda item: (-item["bugs"], -item["weather"], -item["legs"], item["model"]))
+    return {
+        "block": block, "owner": ledger["owners"].get(block) or "",
+        "legs": window_legs,
+        "bugs": bugs, "weather": weather,
+        "new": sum(1 for leg_row in window if leg_row["state"] == "new"),
+        "regressed": sum(1 for leg_row in window if leg_row["state"] == "regressed"),
+        "top": " · ".join("%s ×%d" % (name, top[name]) for name in top_counts(top, TOP_MAX)),
+        "top_kind": "bug" if bugs else ("weather" if top else ""),
+        "coverage_from": int(coverage[block]) if coverage.get(block) else None,
+        "problems": problems,
+        "models": [{"model": entry["model"], "legs": entry["legs"], "bugs": entry["bugs"],
+                    "weather": entry["weather"],
+                    "columns": {name: entry["columns"][name] for name in COLUMNS if entry["columns"].get(name)}}
+                   for entry in model_rows],
+    }
+
+
+def machinery_state(row, details, as_of):
+    if row is None:
+        return "new"
+    status = row.get("status")
+    if status in ("not-a-bug", "weather"):
+        return "not-a-bug"
+    if status != "fixed":
+        return "open"
+    fixed_at = row["_fixed_at"]
+    for detail in details:
+        age = detail.get("age_s") if isinstance(detail, dict) else None
+        if fixed_at is None or not isinstance(age, (int, float)) or as_of - age > fixed_at:
+            return "regressed"
+    return "fixed"
+
+
+def machinery(ledger, now):
+    """review-bench doctor's snapshot classes, each held against the ledger like a leg's problem:
+    a class nobody has looked at is new, so the menu title counts only new and regressed ones."""
+    snapshot = read_json(os.path.join(stats_dir(), "doctor-snapshot.json"))
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("anomalies"), dict):
+        return None
+    as_of = snapshot["as_of"] if isinstance(snapshot.get("as_of"), (int, float)) else now
+    details = snapshot.get("rows") if isinstance(snapshot.get("rows"), dict) else {}
+    classes = []
+    for name in sorted(snapshot["anomalies"]):
+        count = snapshot["anomalies"][name]
+        if not isinstance(count, int) or count <= 0:
+            continue
+        row = ledger["machinery"].get(name)
+        rows = details.get(name) if isinstance(details.get(name), list) else []
+        classes.append({"class": name, "count": count, "status": machinery_state(row, rows, as_of),
+                        "ledger": ledger_view(row)})
+    return {"as_of": snapshot.get("as_of"), "total": snapshot.get("total"), "anomalies": snapshot["anomalies"],
+            "classes": classes,
+            "issues": sum(item["count"] for item in classes if item["status"] in ("new", "regressed"))}
+
+
+def collect(window_h, now, write_daily=False):
+    ledger = load_ledger()
+    window_cutoff = now - window_h * 3600
+    start = min(window_cutoff, now - TREND_DAYS * 86400, now - SLOW_BASE_D * 86400)
+    legs, coverage = [], {}
+    for block, reader in (("reviewers", bench_legs), ("workers", worker_legs), ("prelaunch", prelaunch_legs),
+                          ("image", image_legs)):
+        found, earliest = reader(start, now)
+        legs.extend(found)
+        if block == "workers":
+            coverage["workers"] = coverage["light"] = earliest
+        elif block != "prelaunch":
+            coverage[block] = earliest
+    mark_slow(legs, now)
+    for leg_row in legs:
+        leg_row["state"], leg_row["ledger"] = judge_leg_state(ledger, leg_row)
+    daily = rollup(legs, coverage, now, write_daily, ledger)
+    blocks = [build_block(block, legs, ledger, daily, window_cutoff, now, coverage)
+              for block in BLOCKS]
+    reviewers = blocks[0]
+    reviewers["machinery"] = machinery(ledger, now)
+    summary = " · ".join("%s %d" % (block["block"], block["bugs"]) for block in blocks if block["bugs"])
+    return {"as_of": int(now), "window_h": window_h, "trend_days": TREND_DAYS,
+            "bugs": sum(block["bugs"] for block in blocks), "summary": summary,
+            "not_measurable": list(NOT_MEASURABLE), "blocks": blocks}
+
+
+def write_cache(report):
+    directory = doctor_dir()
+    os.makedirs(directory, exist_ok=True)
+    target = os.path.join(directory, "latest.json")
+    temporary = "%s.tmp.%d" % (target, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(report, handle, ensure_ascii=False, indent=1)
+        handle.write("\n")
+    os.replace(temporary, target)
+    return target
+
+
+def render(report, only=None):
+    lines = ["LLM doctor · %s · %d bug%s" % (window_text(report["window_h"]), report["bugs"],
+                                              "" if report["bugs"] == 1 else "s")]
+    for block in report["blocks"]:
+        if only and block["block"] != only:
+            continue
+        lines.append("")
+        lines.append("%s: %d bug%s · %d weather · owner: %s" % (
+            block["block"].capitalize(), block["bugs"], "" if block["bugs"] == 1 else "s", block["weather"],
+            block["owner"] or "unset"))
+        if block.get("machinery"):
+            busy = ["%s %d %s%s" % (item["class"], item["count"], item["status"],
+                                    (" " + item["ledger"]["id"]) if item["ledger"] else "")
+                    for item in block["machinery"]["classes"]]
+            lines.append("  review machinery: %s" % (" · ".join(busy) if busy else "ok"))
+        if not block["problems"]:
+            lines.append("  no legs failed in the window")
+        for problem in block["problems"]:
+            ledger = problem["ledger"] or {}
+            head = "  %-7s %s  [%s]  %d  %s  %s  %s%s%s" % (
+                problem["kind"].upper() if problem["kind"] != "weather" else "weather",
+                problem["label"], ", ".join(problem["models"]), problem["count"],
+                problem["spark"] or "-", problem["last_seen"], problem["status_text"] or "-",
+                ("  " + ledger["id"]) if ledger.get("id") else "",
+                ("  " + problem["looked"]) if problem["looked"] else "")
+            lines.append(head)
+            if problem["kind"] != "weather":
+                if ledger.get("title"):
+                    lines.append("          %s" % ledger["title"])
+                for incident in problem["incidents"][:5]:
+                    lines.append("          %4s  %-10s %-18s %-3s %s" % (
+                        incident["age"], incident["model"], incident["project"][:18], incident["tier"],
+                        incident["detail"]))
+        if block["top"]:
+            lines.append("  top: %s" % block["top"])
+    lines.append("")
+    lines.append("not measurable yet: %s" % ", ".join(report["not_measurable"]))
+    return "\n".join(lines) + "\n"
+
+
+def window_text(hours):
+    return "%d d" % (hours // 24) if hours % 24 == 0 and hours >= 72 else "%d h" % hours
+
+
+def main(argv):
+    parser = argparse.ArgumentParser(prog="llm-doctor", description=__doc__.splitlines()[0])
+    parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_H, metavar="H")
+    parser.add_argument("--block", choices=BLOCKS)
+    parser.add_argument("--json", action="store_true", help="print the document instead of the view")
+    parser.add_argument("--dry-run", action="store_true", help="write neither latest.json nor the daily rollup")
+    parser.add_argument("--quiet", action="store_true", help="print nothing")
+    args = parser.parse_args(argv)
+    if args.window <= 0:
+        parser.error("--window must be a positive number of hours")
+    now_override = os.environ.get("LLM_DOCTOR_NOW")
+    now = float(now_override) if now_override else time.time()
+    report = collect(args.window, now, write_daily=not args.dry_run)
+    if not args.dry_run:
+        try:
+            write_cache(report)
+        except OSError as error:
+            print("llm-doctor: cache not written: %s" % error, file=sys.stderr)
+            return 1
+    if args.quiet:
+        return 0
+    if args.json:
+        shown = report if not args.block else dict(report, blocks=[
+            block for block in report["blocks"] if block["block"] == args.block])
+        sys.stdout.write(json.dumps(shown, ensure_ascii=False) + "\n")
+        return 0
+    sys.stdout.write(render(report, args.block))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

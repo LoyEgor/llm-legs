@@ -4,6 +4,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$ROOT/bin/image-fanout"
 WORK="$(mktemp -d)"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"

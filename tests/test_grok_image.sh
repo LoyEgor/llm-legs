@@ -6,6 +6,7 @@ VERIFIED_CLI=$(jq -r .cli.version "$ROOT/share/image-caps/grok.json")
 SCRIPT="$ROOT/bin/grok-image"
 FIXTURE="$ROOT/tests/fixtures/fake-grokb-image.sh"
 WORK="$(mktemp -d)"
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
 # Every `worker_model_*` call shells `grokb models`: the fixture list answers it, and the
 # `grok` CLI behind it can never be reached (row `cu`).
 export GROKB_CACHE_DIR="$WORK/grokb-cache"
@@ -374,6 +375,7 @@ image_rc=0
 image_run --dest "$OUTPUT_DIR/limit.jpg" --prompt portrait --account explicit || image_rc=$?
 assert test "$image_rc" -eq 3
 assert grep -qx GROK_USAGE_LIMIT "$IMAGE_ERR"
+assert test "$(tail -n1 "$IMAGE_LEG_LOG" | jq -r '"\(.tool) \(.kind) \(.rc) \(.account)"')" = 'grok-image image 3 explicit'
 
 FAKE_GROKB_MODE=generic-limit
 export FAKE_GROKB_MODE
@@ -394,6 +396,8 @@ image_rc=0
 image_run --dest "$OUTPUT_DIR/no-image.jpg" --prompt portrait --account explicit || image_rc=$?
 assert test "$image_rc" -eq 1
 assert grep -q 'no ImageGen event' "$IMAGE_ERR"
+# llm-doctor reads the failure's own words off the image-leg log, so the row must carry stderr.
+assert grep -q 'no ImageGen event' <(tail -n1 "$IMAGE_LEG_LOG" | jq -r '.err')
 
 FAKE_GROKB_MODE=image
 PICK_MODE=limit
@@ -427,4 +431,4 @@ if [ "$(date -u +%Y%m%d)" -ge 20261102 ] &&
    jq -e '.field_sources["model.image"] | contains("retires 2026-11-02")' "$MANIFEST" >/dev/null; then
   fail "grok-imagine-image-quality retired 2026-11-02: re-verify share/image-caps/grok.json model.image (docs/vendor-release.md)"
 fi
-echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, manifest-driven aspect enums per tool with auto and the manifest ref cap, ImageGen and ImageEdit stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, --resume routed to image_edit through the store that holds the session without worker-pick, the seven-line footer with model and caps freshness, fake session preservation, temp-cwd cleanup, and the launching chat's stamp passed through to the CLI it starts"
+echo "PASS: $asserts asserts; routing and account pinning, exact Grok launch controls, manifest-driven aspect enums per tool with auto and the manifest ref cap, ImageGen and ImageEdit stream harvesting despite max-turns exit, byte-identical same-format delivery with alpha, differing-format conversion, transparent chroma path, persistent-only limit classification, pool refusal, missing ImageGen failure, worker-pick limit propagation, --resume routed to image_edit through the store that holds the session without worker-pick, the seven-line footer with model and caps freshness, one image-leg log row per run with its status and stderr, fake session preservation, temp-cwd cleanup, and the launching chat's stamp passed through to the CLI it starts"

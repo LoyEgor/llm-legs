@@ -1,0 +1,544 @@
+{
+ "owners": {
+  "reviewers": "Review-bench improvements phase 4",
+  "workers": null,
+  "light": null,
+  "image": null
+ },
+ "rows": [
+  {
+   "id": "R6",
+   "block": "reviewers",
+   "match": {
+    "word": "bad output",
+    "model": "^(opus|fable|sonnet|haiku)",
+    "detail": "no result event"
+   },
+   "title": "claude \"no result event\" masked a launcher Traceback or EPERM",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3"
+   ],
+   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R13",
+   "block": "reviewers",
+   "match": {
+    "word": "bad output",
+    "detail": "answered the clean marker without reading"
+   },
+   "title": "the agy bare-answer 10-rounds/60-seconds rule false-failed clean reviews",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@a9270b4"
+   ],
+   "fixed_at": "2026-09-24T00:59:20+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "tool reads decide now"
+  },
+  {
+   "id": "N5",
+   "block": "reviewers",
+   "match": {
+    "word": "bad output",
+    "detail": "command_execution"
+   },
+   "title": "codex \"no command_execution\" is a true label",
+   "status": "not-a-bug",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R1",
+   "block": "reviewers",
+   "match": {
+    "word": "bad output"
+   },
+   "title": "bad output: empty-findings chunks, agy Markdown shapes and the read-coverage floor (R1, R3, R4)",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3"
+   ],
+   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "R1 a chunk answering {\"findings\":[]} recorded as bad output; R3 agy Markdown shapes rejected (bare file lists, clean phrasing); R4 the read-coverage floor discarded answers that had findings. Any bad output after the fix is a regression or a new cause and needs its own row."
+  },
+  {
+   "id": "R2",
+   "block": "reviewers",
+   "match": {
+    "word": "crashed",
+    "model": "^grok",
+    "detail": "credential export|access token"
+   },
+   "title": "grok token not rotated in its last 30 min, so every grok cell was refused",
+   "status": "fixed",
+   "fixed_in": [
+    "llm-legs@735bb2c"
+   ],
+   "fixed_at": "2026-09-23T20:41:43+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "N6",
+   "block": "reviewers",
+   "match": {
+    "word": "crashed",
+    "model": "^opus",
+    "detail": "mkstemp|FileNotFoundError",
+    "until": "2026-09-14T23:59:59+03:00"
+   },
+   "title": "opus mkstemp and FileNotFoundError crashes, one-offs on 09-12 to 09-14",
+   "status": "not-a-bug",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R7",
+   "block": "reviewers",
+   "match": {
+    "word": "crashed",
+    "detail": "credential export"
+   },
+   "title": "a credential-export refusal worded \"rater task crashed\" (now `cell preparation refused`, word auth)",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3"
+   ],
+   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R12",
+   "block": "reviewers",
+   "match": {
+    "word": "auth",
+    "detail": "cell preparation refused|credential export"
+   },
+   "title": "an export refusal ended the cell instead of trying the pool's next account",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@a9270b4"
+   ],
+   "fixed_at": "2026-09-24T00:59:20+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "claude x6 on 09-16/17 (access token expires ... short of Ns), grok x32 on 09-23; R11 (a hung credential export had no timeout, EXPORT_TIMEOUT_S = 120) was fixed in review-bench@08d37c3"
+  },
+  {
+   "id": "N7",
+   "block": "reviewers",
+   "match": {
+    "word": "auth",
+    "model": "^(flash|pro)",
+    "detail": "sign",
+    "until": "2026-09-13T23:59:59+03:00"
+   },
+   "title": "geminib \"sign-in shape\" refusals, 09-13 only",
+   "status": "not-a-bug",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "N4",
+   "block": "reviewers",
+   "match": {
+    "word": "timeout",
+    "detail": "print timeout",
+    "until": "2026-09-16T23:59:59+03:00"
+   },
+   "title": "agy \"print timeout\" rows labelled timeout · ours exist only on 09-16; current code writes watchdog",
+   "status": "not-a-bug",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R5",
+   "block": "reviewers",
+   "match": {
+    "word": "timeout"
+   },
+   "title": "agy print-timeout ceiling and stall mislabelled",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3"
+   ],
+   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R8",
+   "block": "reviewers",
+   "match": {
+    "word": "refused"
+   },
+   "title": "vendor policy refusals were unclassified (now refused · theirs)",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3",
+    "llm-legs@bc50235"
+   ],
+   "fixed_at": "2026-09-23T21:43:07+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "R14: codex \"flagged for possible cybersecurity risk\" joined the word in review-bench@a9270b4 and llm-legs@90ca761"
+  },
+  {
+   "id": "R9",
+   "block": "reviewers",
+   "match": {
+    "word": "capacity"
+   },
+   "title": "geminib `capacity hold` read as a model mismatch",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3"
+   ],
+   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "R10",
+   "block": "reviewers",
+   "match": {
+    "word": "cap"
+   },
+   "title": "stale killed_chunks / max_pass_ms carried over a rerun",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench@08d37c3"
+   ],
+   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "caps are caps: agy cap kills (about 97 a week) are weather, never a reason to drop a cell or raise a cap"
+  },
+  {
+   "id": "N3",
+   "block": "reviewers",
+   "match": {
+    "word": "cancelled"
+   },
+   "title": "the 09-16 \"context canceled\" storm was an external SIGTERM at launch",
+   "status": "weather",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": ""
+  },
+  {
+   "id": "N2",
+   "block": "reviewers",
+   "match": {
+    "word": "slow"
+   },
+   "title": "a \"6155 s\" cell was the sum of 22 chunks, not one cell",
+   "status": "fixed",
+   "fixed_in": [
+    "llm-legs@llm-doctor-split"
+   ],
+   "fixed_at": "2026-09-24T02:00:00+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "slow compares one pass of a chunked cell now"
+  },
+  {
+   "id": "W1",
+   "block": "light",
+   "match": {
+    "word": "crashed",
+    "detail": "tree digest"
+   },
+   "title": "a read-only research run could not take the tree digest it is checked against",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "grok research runs x2 on 09-23 (worker-run READ_ONLY_VIOLATION, exit 5)"
+  },
+  {
+   "id": "W2",
+   "block": "workers",
+   "match": {
+    "word": "bad command",
+    "model": "^grok",
+    "detail": "unknown effort level"
+   },
+   "title": "worker-run passes an effort grok does not serve (xhigh on a model whose menu lacks it)",
+   "status": "fixed",
+   "fixed_in": [
+    "llm-legs@53a472e"
+   ],
+   "fixed_at": "2026-09-23T23:59:15+03:00",
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "efforts now come from the grok catalog: grok-4.5 lists only high, so xhigh is refused before launch (EFFORT_REFUSED) instead of reaching the CLI"
+  },
+  {
+   "id": "V1",
+   "block": "any",
+   "match": {
+    "word": "killed memory"
+   },
+   "title": "the memory guard cut a leg's process tree",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V2",
+   "block": "any",
+   "match": {
+    "word": "pool empty"
+   },
+   "title": "a leg was staffed on a vendor switched off or excluded for its role",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "a pool empty only because every account is walled reads as walled weather, never here"
+  },
+  {
+   "id": "V3",
+   "block": "any",
+   "match": {
+    "word": "root commit"
+   },
+   "title": "a review of a root commit failed",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V4",
+   "block": "any",
+   "match": {
+    "word": "permission"
+   },
+   "title": "a tool call needed a permission the leg did not have",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V5",
+   "block": "any",
+   "match": {
+    "word": "bad command"
+   },
+   "title": "a leg was launched with flags, a model or an effort its CLI refuses",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V6",
+   "block": "any",
+   "match": {
+    "word": "stalled"
+   },
+   "title": "a rater stalled with no output",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V7",
+   "block": "any",
+   "match": {
+    "word": "crashed"
+   },
+   "title": "a leg's own machinery crashed",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V8",
+   "block": "any",
+   "match": {
+    "word": "auth"
+   },
+   "title": "a leg's login or credential was refused",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V9",
+   "block": "any",
+   "match": {
+    "word": "not found"
+   },
+   "title": "an endpoint or model the vendor no longer serves",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V10",
+   "block": "any",
+   "match": {
+    "word": "chunks unread"
+   },
+   "title": "a chunked cell came back from a minority of its chunks",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V11",
+   "block": "any",
+   "match": {
+    "word": "bad output"
+   },
+   "title": "a leg answered in a shape its reader cannot parse",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V12",
+   "block": "any",
+   "match": {
+    "word": "timeout"
+   },
+   "title": "a leg timed out on a clock of ours",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": ""
+  },
+  {
+   "id": "V13",
+   "block": "any",
+   "match": {
+    "word": "escaped"
+   },
+   "title": "a leg worked outside its workdir or its scratch space",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "a cross-repository brief can make this legitimate: triage with a model or detail row, never by deleting the class"
+  },
+  {
+   "id": "M1",
+   "block": "reviewers",
+   "match": {
+    "machinery": "anchors"
+   },
+   "title": "review-anchors check warns on a repository a recent chat reviewed (expired claims, orphans)",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+  },
+  {
+   "id": "M2",
+   "block": "reviewers",
+   "match": {
+    "machinery": "closure_pending"
+   },
+   "title": "review rounds still pending closure more than 6 h after launch",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+  },
+  {
+   "id": "M3",
+   "block": "reviewers",
+   "match": {
+    "machinery": "debt_scope"
+   },
+   "title": "debt rounds whose shared or unanchored fix lines look out of scope",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+  },
+  {
+   "id": "M4",
+   "block": "reviewers",
+   "match": {
+    "machinery": "integrity"
+   },
+   "title": "the reviewed tree changed while its review ran",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-24",
+   "reviewed_by": "LLM doctor",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+  }
+ ]
+}

@@ -17,6 +17,8 @@ resolve_root() {
 }
 
 root=$(resolve_root)
+. "$root/share/image-leg.sh"
+image_leg_start grok-video video observed_model
 . "$root/share/image-caps.sh"
 . "$root/share/worker-claims.sh"
 . "$root/share/grok-media.sh"
@@ -208,7 +210,7 @@ grok_media_select_account grok-video "$root" "$worker_pick_cmd" "$grok_profiles_
 account=$grok_media_account
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/grok-video.XXXXXX")
-trap 'grok_media_lock_release; rm -rf "$tmp_dir"' EXIT
+trap 'image_leg_exit; grok_media_lock_release; rm -rf "$tmp_dir"' EXIT
 work_dir="$tmp_dir/work"
 mkdir -p "$work_dir"
 stream_file="$tmp_dir/stream.jsonl"

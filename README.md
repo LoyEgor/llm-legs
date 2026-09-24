@@ -171,26 +171,46 @@ local limits = require("llm-limits")
 local submenu = { title = "LLM Limits", menu = limits.menuItems() }
 ```
 
-The `LLM doctor: N issues` row opens ONE submenu of three sections:
+The `LLM doctor: …` row opens ONE submenu: LLM doctor's four blocks, then the Gemini pin:
 
 ```text
-LLM doctor: 2 issues
-  Review
-    <class> ×N → <age>  <project>  <chat>  <label>
-    Rescan now
-  Weather: flash38 cap ×4
-    model    legs  walled  cap  stalled  failed  theirs  slow  escaped
-    flash38    41       3    4                2       7
-    window: 24 h → 3 h / 6 h / 12 h / 24 h / 3 d / 7 d
-    Refresh weather
+LLM doctor: 5 bugs · 2 issues
+  Reviewers: 1 bug · 97 weather · 1 new
+    owner: Review-bench improvements phase 4 · 212 legs in 3 d
+    Review machinery: 76 · 2 new
+      closure_pending: 23 · open  M2
+        <age>  <project>  <chat>  <label>
+      debt_line: 2 · new
+      Rescan now
+    failed · pool empty   3  ↑   █   █  58m  new                 V2  grok47
+    ───
+    failed · bad output  17     ▁▃▅▄▃▆   5h  fixed 0d · 0 since  R1  flash37, opus
+    cap · watchdog       40     ▃▃▅▂▁    9m  weather                 flash38
+    top: cap · watchdog
+    ───
+    By model
+    Copy brief for the owner
+  Workers: 1 bug · 61 weather
+  Light: 3 bugs · 5 weather · 2 new
+  Image: no legs
+  window: 3 d → 3 h / 6 h / 12 h / 24 h / 3 d / 7 d
+  Refresh blocks
   Gemini
     review flash: 3.8
 ```
 
-`theirs` is the provider's share — the `failed` legs of any vendor and any surface whose origin is
-the provider — and `failed` is what remains. The window selection lasts for this module
-session and forces a collection. The doctor row appends ` · rescanning` during rescans; action
-rows are disabled and read `rescanning…` or `refreshing…` while their tasks run.
+A block is one kind of LLM leg — Reviewers (review-bench cells, chunks, judges and panels),
+Workers (`worker-run`, prelaunch refusals included), Light (the light research and edit legs) and
+Image (the image and video wrappers) — and every block classifies its legs the same way. A bug is
+a `failed` leg whose origin is ours or unknown, or an `escaped` one; everything else — walled, cap,
+stalled, `failed · theirs`, slow, and a leg a retry superseded — is weather, which is counted but
+never a bug. Each bug row carries its state against `share/doctor-ledger.json`: `new` (no ledger
+row), `open`, `regressed` (legs after the row's `fixed_at`) or `fixed`. A row opens its last 15
+incidents and `Copy for an LLM`; `Copy brief for the owner` hands the whole block to the chat that
+owns it. `Review machinery` is review-bench doctor's snapshot inside Reviewers, each class held
+against the same ledger; the title counts only its new and regressed classes. The window selection lasts for this module session and forces a collection. The doctor
+row appends ` · rescanning` during rescans; action rows are disabled and read `rescanning…` or
+`refreshing…` while their tasks run.
 
 | Vendor | Limit freshness |
 |--------|-----------------|

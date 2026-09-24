@@ -3,6 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
+export IMAGE_LEG_LOG="$WORK/image-legs.jsonl"
 trap 'rm -rf "$WORK"' EXIT
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; cat "$WORK/err" >&2; exit 1; }
@@ -131,7 +132,7 @@ mkdir -p "$WORK/repo/bin" "$WORK/repo/share/image-caps"
 cp "$ROOT/bin/gemini-image" "$WORK/repo/bin/"
 printf '#!/usr/bin/env bash\nexec bash "%s" "$@"\n' "$ROOT/bin/geminib" >"$WORK/repo/bin/geminib"
 chmod +x "$WORK/repo/bin/geminib"
-cp "$ROOT/share/"{image-caps,image-chroma,gemini-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
+cp "$ROOT/share/"{image-caps,image-chroma,image-leg,gemini-accounts,worker-model,worker-pool,worker-walls,worker-claims}.sh "$WORK/repo/share/"
 jq '.refs.max=1 | .aspects.generate=["5:4"] | .aspects.edit=["5:4"] | .aspects.default="5:4"' "$ROOT/share/image-caps/gemini.json" >"$WORK/repo/share/image-caps/gemini.json"
 SCRIPT="$WORK/repo/bin/gemini-image"
 assert image_run "${args[@]}" --ref "$ref" --account explicit

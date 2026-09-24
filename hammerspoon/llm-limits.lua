@@ -827,7 +827,7 @@ local function startDiagnosticsTask(field, path, args, onExit)
   end, args)
   if not task then return end
   local environment = baseEnvironment()
-  for _, name in ipairs({ "LLM_WEATHER_DIR", "WORKER_STATS_DIR", "WORKER_RUN_DIR" }) do
+  for _, name in ipairs({ "LLM_DOCTOR_DIR", "LLM_DOCTOR_LEDGER", "WORKER_STATS_DIR", "WORKER_RUN_DIR", "IMAGE_LEG_LOG" }) do
     local override = os.getenv(name)
     if override and override ~= "" then environment[name] = override end
   end
@@ -842,8 +842,7 @@ function M.rescanDoctor()
     { "doctor", "--snapshot" }, function()
       local snapshot = readDoctorSnapshot()
       local total = snapshot and tonumber(snapshot.total) or nil
-      hs.alert.show(total and string.format("LLM doctor: %d issue%s", total, total == 1 and "" or "s")
-        or "LLM doctor: rescan failed", 2.5)
+      hs.alert.show(total and string.format("Review machinery: %d", total) or "Review machinery: rescan failed", 2.5)
     end)
 end
 
@@ -987,175 +986,289 @@ local function copyChatCommand(row)
   end
 end
 
-local LLM_WEATHER_FRESH_S = 300
-local LLM_WEATHER_DEFAULT_H = 24
-local LLM_WEATHER_WINDOWS = {
+local LLM_DOCTOR_FRESH_S = 300
+local LLM_DOCTOR_DEFAULT_H = 24
+local LLM_DOCTOR_WINDOWS = {
   { hours = 3, label = "3 h" }, { hours = 6, label = "6 h" }, { hours = 12, label = "12 h" }, { hours = 24, label = "24 h" },
   { hours = 72, label = "3 d" }, { hours = 168, label = "7 d" },
 }
--- The report's own words, in the order the collector ranks them; a column per class on every row.
-local WEATHER_CLASSES = { "walled", "cap", "stalled", "failed", "theirs", "slow", "escaped" }
-local lastLlmWeatherKick = 0
+local DOCTOR_BLOCK_NAMES = { reviewers = "Reviewers", workers = "Workers", light = "Light", image = "Image" }
+-- The collector's own column words, in its order; blank for zero so a class keeps its column.
+local DOCTOR_MODEL_COLUMNS = { "walled", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried" }
+local TREND_MARK = { up = "↑", down = "↓" }
+local lastLlmDoctorKick = 0
 
-local function llmWeatherWindowLabel(hours)
-  for _, choice in ipairs(LLM_WEATHER_WINDOWS) do
+local function plural(count, word)
+  return string.format("%d %s%s", count, word, count == 1 and "" or "s")
+end
+
+local function llmDoctorWindowLabel(hours)
+  for _, choice in ipairs(LLM_DOCTOR_WINDOWS) do
     if choice.hours == hours then return choice.label end
   end
   return string.format("%d h", hours)
 end
 
-local function llmWeatherPath()
-  if M.llmWeatherPath then return M.llmWeatherPath end
-  local override = os.getenv("LLM_WEATHER_DIR")
+local function llmDoctorPath()
+  if M.llmDoctorPath then return M.llmDoctorPath end
+  local override = os.getenv("LLM_DOCTOR_DIR")
   if override and override ~= "" then return override .. "/latest.json" end
-  return home .. "/.cache/llm-weather/latest.json"
+  return home .. "/.cache/llm-doctor/latest.json"
 end
 
-local function readLlmWeather()
+local function readLlmDoctor()
   local ok, decoded = pcall(function()
-    local file = io.open(llmWeatherPath(), "r")
-    if not file then return nil end
-    local contents = file:read("*a")
-    file:close()
-    return hs.json.decode(contents)
+    local contents = readTextFile(llmDoctorPath())
+    return contents and hs.json.decode(contents) or nil
   end)
-  if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" then return nil end
+  if not ok or type(decoded) ~= "table" or type(decoded.blocks) ~= "table" then return nil end
   return decoded
 end
 
-local function kickLlmWeather(weather, force)
+local function kickLlmDoctor(document, force, stale)
   local now = os.time()
-  local asOf = type(weather) == "table" and tonumber(weather.as_of) or 0
-  local selected = M.llmWeatherWindowH or LLM_WEATHER_DEFAULT_H
-  local cachedWindow = type(weather) == "table" and tonumber(weather.window_h) or selected
-  local fresh = now - asOf < LLM_WEATHER_FRESH_S or now - lastLlmWeatherKick < LLM_WEATHER_FRESH_S
-  if not force and cachedWindow == selected and fresh then return end
+  local asOf = type(document) == "table" and tonumber(document.as_of) or 0
+  local selected = M.llmDoctorWindowH or LLM_DOCTOR_DEFAULT_H
+  local cachedWindow = type(document) == "table" and tonumber(document.window_h) or selected
+  local fresh = now - asOf < LLM_DOCTOR_FRESH_S or now - lastLlmDoctorKick < LLM_DOCTOR_FRESH_S
+  if not force and not stale and cachedWindow == selected and fresh then return end
   -- A cache over another window is stale whatever its age, but a collector that keeps failing
   -- must not be relaunched on every menu open.
-  if not force and cachedWindow ~= selected and now - lastLlmWeatherKick < 60 then return end
-  if taskRunning(M.llmWeatherTask) then return end
-  local path = M.llmWeatherCmd or (repoRoot and repoRoot .. "/bin/llm-weather")
+  if not force and (stale or cachedWindow ~= selected) and now - lastLlmDoctorKick < 60 then return end
+  if taskRunning(M.llmDoctorTask) then return end
+  local path = M.llmDoctorCmd or (repoRoot and repoRoot .. "/bin/llm-doctor")
   if not path then return end
-  lastLlmWeatherKick = now
-  startDiagnosticsTask("llmWeatherTask", path, { "--window", tostring(selected) }, force and function()
-    local latest = readLlmWeather()
-    hs.alert.show("Weather: " .. (latest and (latest.worst ~= "" and latest.worst or "OK") or "no data"), 2.5)
+  lastLlmDoctorKick = now
+  startDiagnosticsTask("llmDoctorTask", path, { "--window", tostring(selected), "--quiet" }, force and function()
+    local latest = readLlmDoctor()
+    local summary = latest and tostring(latest.summary or "") or ""
+    hs.alert.show("LLM doctor: " .. (not latest and "no data" or summary ~= "" and summary or "no bugs"), 2.5)
   end or nil)
 end
 
-local TREND_MARK = { up = "↑", down = "↓" }
+local function doctorTableTitles(rows, right, styles)
+  local widths = {}
+  for _, row in ipairs(rows) do
+    for c, text in ipairs(row) do widths[c] = math.max(widths[c] or 0, cells(text)) end
+  end
+  local titles = {}
+  for index, row in ipairs(rows) do
+    local last = 0
+    for c = 1, #row do if row[c] ~= "" then last = c end end
+    local title
+    for c = 1, last do
+      if widths[c] > 0 then
+        local text = c == last and not right[c] and row[c] or padCells(row[c], widths[c], right[c])
+        local style = styles(index, c)
+        local piece = infoTitle((title and "  " or "") .. text, style == "warn", style == "dim")
+        title = title and (title .. piece) or piece
+      end
+    end
+    titles[index] = title or infoTitle("")
+  end
+  return titles
+end
 
-local function llmWeatherIncidents(model)
+local function problemTag(problem)
+  local ledger = type(problem.ledger) == "table" and problem.ledger or nil
+  return ledger and tostring(ledger.id or "") or ""
+end
+
+local function incidentRows(problem)
   local rows = {}
-  for _, incident in ipairs(type(model.incidents) == "table" and model.incidents or {}) do
+  for _, incident in ipairs(type(problem.incidents) == "table" and problem.incidents or {}) do
     if type(incident) == "table" then
-      rows[#rows + 1] = {
-        tostring(incident.age or ""),
-        incident.class == "failed" and incident.origin == "theirs" and "theirs" or tostring(incident.class or ""),
-        tostring(incident.project or ""),
-        tostring(incident.surface or ""),
-        tostring(incident.detail or ""),
-      }
+      local detail = tostring(incident.detail or "")
+      local surface = tostring(incident.surface or "")
+      if surface == "judge" or surface == "panel" or surface == "video" then detail = surface .. ": " .. detail end
+      if incident.attempt and incident.attempt ~= "final" then detail = detail .. " · " .. tostring(incident.attempt) end
+      rows[#rows + 1] = { tostring(incident.age or ""), tostring(incident.model or ""),
+        tostring(incident.project or ""), tostring(incident.tier or ""), detail }
     end
   end
-  local widths = { 0, 0, 0, 0 }
-  for _, row in ipairs(rows) do
-    for c = 1, 4 do widths[c] = math.max(widths[c], cells(row[c])) end
+  return rows
+end
+
+local function problemBrief(problem, block, windowLabel)
+  local ledger = type(problem.ledger) == "table" and problem.ledger or nil
+  local lines = { string.format("LLM doctor, %s block, last %s: %s — %s on %s, %s%s.",
+    DOCTOR_BLOCK_NAMES[block] or block, windowLabel, tostring(problem.label or ""),
+    plural(tonumber(problem.count) or 0, "leg"),
+    table.concat(type(problem.models) == "table" and problem.models or {}, ", "),
+    tostring(problem.status_text ~= "" and problem.status_text or problem.kind or ""),
+    ledger and string.format("; ledger %s: %s", tostring(ledger.id), tostring(ledger.title or "")) or "") }
+  lines[#lines + 1] = "Incidents, newest first:"
+  for _, incident in ipairs(type(problem.incidents) == "table" and problem.incidents or {}) do
+    if type(incident) == "table" then
+      lines[#lines + 1] = string.format("- %s ago · %s · %s · %s%s · %s · run %s", tostring(incident.age or ""),
+        tostring(incident.surface or ""), tostring(incident.model or ""), tostring(incident.project or ""),
+        (incident.tier or "") ~= "" and (" · " .. tostring(incident.tier)) or "", tostring(incident.detail or ""),
+        tostring(incident.ref or ""))
+    end
   end
+  local root = repoRoot or "llm-legs"
+  lines[#lines + 1] = string.format("Find the cause in the code, fix it or rule it out, and record the verdict as a row"
+    .. " in %s/share/doctor-ledger.json (status open, fixed with fixed_in repo@hash and fixed_at as an ISO time with"
+    .. " offset, not-a-bug or weather). `%s/bin/llm-doctor --block %s --json` prints every field.", root, root, block)
+  return table.concat(lines, "\n")
+end
+
+local function ownerBrief(entry, windowLabel, hours)
+  local root = repoRoot or "llm-legs"
+  local block = tostring(entry.block)
+  local owner = tostring(entry.owner or "")
+  return string.format("You own the %s block of LLM doctor%s. Run `%s/bin/llm-doctor --block %s --window %d`"
+    .. " (add --json for every field and each run's ref) and triage its regressed, new and open bugs one by one:"
+    .. " find each cause in the code, fix it or rule it out, and record the verdict in %s/share/doctor-ledger.json —"
+    .. " one row per cause with status open, fixed (fixed_in repo@hash, fixed_at an ISO time with offset), not-a-bug"
+    .. " or weather, plus last_reviewed and reviewed_by. Weather (walled, cap, stalled, failed · theirs, slow, retried)"
+    .. " is not a bug, and caps are caps: never propose dropping a cell or a vendor or raising a cap."
+    .. " Last %s: %s (%d new, %d regressed), %d weather%s.",
+    DOCTOR_BLOCK_NAMES[block] or block, owner ~= "" and (" (owner: " .. owner .. ")") or "", root, block, hours,
+    root, windowLabel, plural(tonumber(entry.bugs) or 0, "bug"), tonumber(entry.new) or 0,
+    tonumber(entry.regressed) or 0, tonumber(entry.weather) or 0,
+    (entry.top or "") ~= "" and ("; top: " .. tostring(entry.top)) or "")
+end
+
+local function copyText(text, label)
+  hs.pasteboard.setContents(text)
+  hs.alert.show("copied: " .. label, 1.5)
+end
+
+local function problemMenu(problem, block, windowLabel)
   local items = {}
-  for _, row in ipairs(rows) do
-    local title = infoTitle(padCells(row[1], widths[1], true), false, true)
-      .. infoTitle("  " .. padCells(row[2], widths[2]))
-      .. infoTitle("  " .. padCells(row[3], widths[3]))
-      .. infoTitle("  " .. padCells(row[4], widths[4]), false, true)
-    if row[5] ~= "" then title = title .. infoTitle("  " .. row[5], false, true) end
+  local ledger = type(problem.ledger) == "table" and problem.ledger or nil
+  if ledger then
+    items[#items + 1] = { title = infoTitle(tostring(ledger.id or "") .. "  " .. tostring(ledger.title or "")), disabled = true }
+    local facts = { tostring(ledger.status or "") }
+    if type(ledger.fixed_in) == "table" and #ledger.fixed_in > 0 then
+      facts[#facts + 1] = "fixed in " .. table.concat(ledger.fixed_in, ", ")
+    end
+    if (problem.looked or "") ~= "" then facts[#facts + 1] = tostring(problem.looked) end
+    if (ledger.reviewed_by or "") ~= "" then facts[#facts + 1] = "by " .. tostring(ledger.reviewed_by) end
+    items[#items + 1] = { title = infoTitle(table.concat(facts, " · "), false, true), disabled = true }
+    if (ledger.note or "") ~= "" then
+      items[#items + 1] = { title = infoTitle(clipHead(tostring(ledger.note), 110), false, true), disabled = true }
+    end
+    items[#items + 1] = { title = "-" }
+  end
+  local rows = incidentRows(problem)
+  for _, title in ipairs(doctorTableTitles(rows, { true }, function(_, c)
+    return (c == 1 or c == 4) and "dim" or nil
+  end)) do
     items[#items + 1] = { title = title, disabled = true }
   end
-  if #items == 0 then items[1] = { title = infoTitle("no incidents", false, true), disabled = true } end
+  if #rows == 0 then items[#items + 1] = { title = infoTitle("no incidents", false, true), disabled = true } end
+  items[#items + 1] = { title = "-" }
+  items[#items + 1] = { title = infoTitle("Copy for an LLM"), fn = function()
+    copyText(problemBrief(problem, block, windowLabel), "problem for an LLM")
+  end }
   return items
 end
 
--- Weather block: a header with the two worst models, a table with one column per class (blank
--- for zero, so the same class sits in the same column on every row), the clean models on one
--- dim line, the window choice and the refresh. Returns the worst text ("" when clean).
-local function appendLlmWeather(items)
-  local weather = readLlmWeather()
-  kickLlmWeather(weather)
-  local worst = weather and tostring(weather.worst or "") or ""
-  local text = not weather and "Weather: no data" or (worst ~= "" and ("Weather: " .. worst) or "Weather: OK")
-  local age = weather and (os.time() - (tonumber(weather.as_of) or 0)) or 0
-  if weather and age >= 86400 then text = text .. string.format(" · stale %dd", math.floor(age / 86400)) end
-  items[#items + 1] = { title = infoTitle(text, worst ~= "", worst == ""), disabled = true }
-  local rows, clean = {}, {}
-  for _, model in ipairs(weather and weather.models or {}) do
+local function modelTableMenu(models)
+  local rows = { { "model", "legs", "bugs" } }
+  for _, name in ipairs(DOCTOR_MODEL_COLUMNS) do rows[1][#rows[1] + 1] = name end
+  for _, model in ipairs(models) do
     if type(model) == "table" and type(model.model) == "string" then
-      local classes = type(model.classes) == "table" and model.classes or {}
-      local theirs = type(model.origins) == "table" and tonumber(model.origins.theirs) or 0
-      local counts = {}
-      for _, name in ipairs(WEATHER_CLASSES) do counts[name] = tonumber(classes[name]) or 0 end
-      counts.failed = math.max(0, counts.failed - theirs)
-      counts.theirs = theirs
-      if (tonumber(model.bad) or 0) > 0 then
-        local line = { model.model, tostring(tonumber(model.legs) or 0) }
-        for index, name in ipairs(WEATHER_CLASSES) do
-          line[2 + index] = counts[name] > 0 and tostring(counts[name]) or ""
-        end
-        rows[#rows + 1] = { line = line, model = model, trend = TREND_MARK[model.trend] or "" }
+      local columns = type(model.columns) == "table" and model.columns or {}
+      local bugs = tonumber(model.bugs) or 0
+      local row = { model.model, tostring(tonumber(model.legs) or 0), bugs > 0 and tostring(bugs) or "" }
+      for _, name in ipairs(DOCTOR_MODEL_COLUMNS) do
+        local count = tonumber(columns[name]) or 0
+        row[#row + 1] = count > 0 and tostring(count) or ""
+      end
+      rows[#rows + 1] = row
+    end
+  end
+  local right = {}
+  for c = 2, #rows[1] do right[c] = true end
+  local items = {}
+  for index, title in ipairs(doctorTableTitles(rows, right, function(row, c)
+    if row == 1 or c == 2 then return "dim" end
+    if c == 3 then return "warn" end
+    return nil
+  end)) do
+    items[#items + 1] = { title = title, disabled = true }
+  end
+  return items
+end
+
+local function blockMenu(entry, windowLabel, hours, lead)
+  local block = tostring(entry.block)
+  local items = {}
+  local owner = tostring(entry.owner or "")
+  items[#items + 1] = { title = infoTitle("owner: " .. (owner ~= "" and owner or "unset") .. " · "
+    .. plural(tonumber(entry.legs) or 0, "leg") .. " in " .. windowLabel, false, true), disabled = true }
+  if lead then items[#items + 1] = lead end
+  local bugRows, weatherRows, bugProblems, weatherProblems = {}, {}, {}, {}
+  for _, problem in ipairs(type(entry.problems) == "table" and entry.problems or {}) do
+    if type(problem) == "table" then
+      local row = { tostring(problem.label or ""), tostring(tonumber(problem.count) or 0),
+        TREND_MARK[problem.trend] or "", tostring(problem.spark or ""), tostring(problem.last_seen or ""),
+        tostring(problem.status_text or ""), problemTag(problem),
+        table.concat(type(problem.models) == "table" and problem.models or {}, ", ") }
+      if problem.kind == "weather" then
+        weatherRows[#weatherRows + 1] = row
+        weatherProblems[#weatherProblems + 1] = problem
       else
-        clean[#clean + 1] = model.model
+        bugRows[#bugRows + 1] = row
+        bugProblems[#bugProblems + 1] = problem
       end
     end
   end
-  if #rows > 0 then
-    local header = { "model", "legs" }
-    for index, name in ipairs(WEATHER_CLASSES) do header[2 + index] = name end
-    local widths = {}
-    for c = 1, #header do
-      widths[c] = cells(header[c])
-      for _, row in ipairs(rows) do widths[c] = math.max(widths[c], cells(row.line[c])) end
-    end
-    local head = infoTitle(padCells(header[1], widths[1]), false, true)
-    for c = 2, #header do head = head .. infoTitle("  " .. padCells(header[c], widths[c], true), false, true) end
-    items[#items + 1] = { title = head, disabled = true }
-    for _, row in ipairs(rows) do
-      local last = row.trend ~= "" and #header or 2
-      for c = 3, #header do if row.line[c] ~= "" then last = math.max(last, c) end end
-      local title = infoTitle(padCells(row.line[1], widths[1]), true)
-        .. infoTitle("  " .. padCells(row.line[2], widths[2], true), false, true)
-      for c = 3, last do title = title .. infoTitle("  " .. padCells(row.line[c], widths[c], true)) end
-      if row.trend ~= "" then title = title .. infoTitle("  " .. row.trend, row.trend == "↑") end
-      items[#items + 1] = { title = title, menu = llmWeatherIncidents(row.model) }
-    end
+  local all = {}
+  for _, row in ipairs(bugRows) do all[#all + 1] = row end
+  for _, row in ipairs(weatherRows) do all[#all + 1] = row end
+  local problems = {}
+  for _, problem in ipairs(bugProblems) do problems[#problems + 1] = problem end
+  for _, problem in ipairs(weatherProblems) do problems[#problems + 1] = problem end
+  local titles = doctorTableTitles(all, { [2] = true, [5] = true }, function(index, c)
+    local problem = problems[index]
+    local loud = problem.status == "new" or problem.status == "regressed"
+    if problem.kind ~= "bug" then return "dim" end
+    if c == 1 or c == 6 then return loud and "warn" or nil end
+    if c == 3 then return problem.trend == "up" and "warn" or "dim" end
+    return "dim"
+  end)
+  for index, problem in ipairs(problems) do
+    if index == #bugRows + 1 and #bugRows > 0 then items[#items + 1] = { title = "-" } end
+    items[#items + 1] = { title = titles[index], menu = problemMenu(problem, block, windowLabel) }
   end
-  if #clean > 0 then
-    items[#items + 1] = { title = infoTitle("ok: " .. table.concat(clean, ", "), false, true), disabled = true }
-  elseif weather and #rows == 0 then
-    items[#items + 1] = { title = infoTitle("no legs in the window", false, true), disabled = true }
+  if #problems == 0 then
+    items[#items + 1] = { title = infoTitle("no legs failed in the window", false, true), disabled = true }
   end
-  local selected = M.llmWeatherWindowH or LLM_WEATHER_DEFAULT_H
-  local choices = {}
-  for _, choice in ipairs(LLM_WEATHER_WINDOWS) do
-    choices[#choices + 1] = { title = choice.label, checked = selected == choice.hours, fn = function()
-      M.llmWeatherWindowH = choice.hours
-      kickLlmWeather(readLlmWeather(), true)
-    end }
+  if (entry.top or "") ~= "" then
+    items[#items + 1] = { title = infoTitle("top: " .. tostring(entry.top), entry.top_kind == "bug", entry.top_kind ~= "bug"),
+      disabled = true }
   end
-  items[#items + 1] = { title = infoTitle("window: " .. llmWeatherWindowLabel(selected)), menu = choices }
-  if taskRunning(M.llmWeatherTask) then
-    items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
-  else
-    items[#items + 1] = { title = infoTitle("Refresh weather"), fn = function() kickLlmWeather(readLlmWeather(), true) end }
-  end
-  return worst
+  items[#items + 1] = { title = "-" }
+  local models = type(entry.models) == "table" and entry.models or {}
+  if #models > 0 then items[#items + 1] = { title = infoTitle("By model"), menu = modelTableMenu(models) } end
+  items[#items + 1] = { title = infoTitle("Copy brief for the owner"), fn = function()
+    copyText(ownerBrief(entry, windowLabel, hours), DOCTOR_BLOCK_NAMES[block] .. " brief")
+  end }
+  return items
 end
 
--- ONE diagnostics entry: the review doctor classes and the model weather as two sections of the
--- same submenu. The parent says only how many review issues there are.
-local function appendDoctor(menu)
-  local snapshot = readDoctorSnapshot()
+local function machineryStatuses(document)
+  for _, entry in ipairs(document and document.blocks or {}) do
+    if type(entry) == "table" and entry.block == "reviewers" and type(entry.machinery) == "table" then
+      local statuses = {}
+      for _, item in ipairs(type(entry.machinery.classes) == "table" and entry.machinery.classes or {}) do
+        if type(item) == "table" and type(item.class) == "string" then statuses[item.class] = item end
+      end
+      return statuses
+    end
+  end
+  return nil
+end
+
+-- review-bench doctor's classes as one submenu row. A class the ledger does not know is new — also
+-- every class while llm-doctor has no document — and only new or regressed ones reach the title.
+local function machineryRow(snapshot, statuses)
   local items = {}
-  local total = snapshot and tonumber(snapshot.total) or 0
-  items[#items + 1] = { title = infoTitle("Review", false, true), disabled = true }
+  local total, fresh, regressed = 0, 0, 0
   if snapshot then
     local names, clean = {}, {}
     for name in pairs(snapshot.anomalies) do
@@ -1166,7 +1279,14 @@ local function appendDoctor(menu)
     for _, name in ipairs(names) do
       local count = tonumber(snapshot.anomalies[name]) or 0
       if count > 0 then
-        items[#items + 1] = { title = infoTitle(string.format("%s: %d", name, count), true), disabled = true }
+        local known = statuses and statuses[name] or nil
+        local status = known and tostring(known.status or "") or "new"
+        local ledger = known and type(known.ledger) == "table" and known.ledger or nil
+        local loud = status == "new" or status == "regressed"
+        total = total + count
+        if status == "new" then fresh = fresh + count elseif status == "regressed" then regressed = regressed + count end
+        items[#items + 1] = { title = infoTitle(string.format("%s: %d · %s%s", name, count, status,
+          ledger and ledger.id and ("  " .. tostring(ledger.id)) or ""), loud, not loud), disabled = true }
         local detail = {}
         for _, row in ipairs(type(rows[name]) == "table" and rows[name] or {}) do
           if type(row) == "table" then table.insert(detail, row) end
@@ -1194,10 +1314,82 @@ local function appendDoctor(menu)
   else
     items[#items + 1] = { title = infoTitle("Rescan now"), fn = function() M.rescanDoctor() end }
   end
+  local parts = {}
+  if fresh > 0 then parts[#parts + 1] = tostring(fresh) .. " new" end
+  if regressed > 0 then parts[#parts + 1] = tostring(regressed) .. " regressed" end
+  local text = not snapshot and "no snapshot" or total == 0 and "OK"
+    or tostring(total) .. (#parts > 0 and (" · " .. table.concat(parts, " · ")) or "")
+  local loud = fresh + regressed
+  return { title = infoTitle("Review machinery: " .. text, loud > 0, loud == 0), menu = items }, loud
+end
 
-  items[#items + 1] = { title = "-" }
-  local llmWorst = appendLlmWeather(items)
+-- The four blocks of bin/llm-doctor's document, one submenu each, then the window and the refresh.
+-- The machinery row opens inside Reviewers, or stands first while there is no document.
+-- Returns the bug count and the machinery count the parent title shows.
+local function appendDoctorBlocks(items, snapshot)
+  local document = readLlmDoctor()
+  local machinery, issues = machineryRow(snapshot, machineryStatuses(document))
+  local judged
+  for _, entry in ipairs(document and document.blocks or {}) do
+    if type(entry) == "table" and entry.block == "reviewers" and type(entry.machinery) == "table" then
+      judged = tonumber(entry.machinery.as_of)
+    end
+  end
+  -- Statuses judged off an older snapshot than the one shown (a rescan just ran) are re-judged.
+  kickLlmDoctor(document, false, snapshot and document and tonumber(snapshot.as_of) ~= nil
+    and tonumber(snapshot.as_of) ~= judged)
+  local selected = M.llmDoctorWindowH or LLM_DOCTOR_DEFAULT_H
+  local hours = document and tonumber(document.window_h) or selected
+  local windowLabel = llmDoctorWindowLabel(hours)
+  local bugs = 0
+  if not document then
+    items[#items + 1] = machinery
+    items[#items + 1] = { title = infoTitle("Blocks: no data", false, true), disabled = true }
+  end
+  for _, entry in ipairs(document and document.blocks or {}) do
+    if type(entry) == "table" and DOCTOR_BLOCK_NAMES[entry.block] then
+      local count = tonumber(entry.bugs) or 0
+      bugs = bugs + count
+      local parts = { plural(count, "bug"), tostring(tonumber(entry.weather) or 0) .. " weather" }
+      if (tonumber(entry.new) or 0) > 0 then parts[#parts + 1] = tostring(entry.new) .. " new" end
+      if (tonumber(entry.regressed) or 0) > 0 then parts[#parts + 1] = tostring(entry.regressed) .. " regressed" end
+      local text = DOCTOR_BLOCK_NAMES[entry.block] .. ": " .. table.concat(parts, " · ")
+      if (tonumber(entry.legs) or 0) == 0 and count == 0 and (tonumber(entry.weather) or 0) == 0 then
+        text = DOCTOR_BLOCK_NAMES[entry.block] .. ": no legs"
+      end
+      items[#items + 1] = { title = infoTitle(text, count > 0, count == 0),
+        menu = blockMenu(entry, windowLabel, hours, entry.block == "reviewers" and machinery or nil) }
+    end
+  end
+  if document and type(document.not_measurable) == "table" and #document.not_measurable > 0 then
+    items[#items + 1] = { title = infoTitle("not measurable yet: " .. table.concat(document.not_measurable, ", "),
+      false, true), disabled = true }
+  end
+  local choices = {}
+  for _, choice in ipairs(LLM_DOCTOR_WINDOWS) do
+    choices[#choices + 1] = { title = choice.label, checked = selected == choice.hours, fn = function()
+      M.llmDoctorWindowH = choice.hours
+      kickLlmDoctor(readLlmDoctor(), true)
+    end }
+  end
+  local windowText = "window: " .. llmDoctorWindowLabel(selected)
+  local age = document and (os.time() - (tonumber(document.as_of) or 0)) or 0
+  if document and age >= 86400 then windowText = windowText .. string.format(" · stale %dd", math.floor(age / 86400)) end
+  items[#items + 1] = { title = infoTitle(windowText), menu = choices }
+  if taskRunning(M.llmDoctorTask) then
+    items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
+  else
+    items[#items + 1] = { title = infoTitle("Refresh blocks"), fn = function() kickLlmDoctor(readLlmDoctor(), true) end }
+  end
+  return bugs, issues
+end
 
+-- ONE diagnostics entry: LLM doctor's four blocks (the review machinery inside Reviewers), then
+-- the review Flash pin.
+local function appendDoctor(menu)
+  local snapshot = readDoctorSnapshot()
+  local items = {}
+  local bugs, issues = appendDoctorBlocks(items, snapshot)
 
   items[#items + 1] = { title = "-" }
   items[#items + 1] = { title = infoTitle("Gemini", false, true), disabled = true }
@@ -1218,12 +1410,13 @@ local function appendDoctor(menu)
       .. (flashState == "pinned" and " · pinned" or "")), menu = flashes }
   end
 
-  local doctorText = not snapshot and "LLM doctor: no snapshot"
-    or total > 0 and string.format("LLM doctor: %d issue%s", total, total == 1 and "" or "s")
-    or "LLM doctor: OK"
+  local parts = {}
+  if bugs > 0 then parts[#parts + 1] = plural(bugs, "bug") end
+  if not snapshot then parts[#parts + 1] = "no snapshot" elseif issues > 0 then parts[#parts + 1] = plural(issues, "issue") end
+  local doctorText = "LLM doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "OK")
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
     .. (taskRunning(M.doctorRescanTask) and " · rescanning" or "")
-  local quiet = total == 0 and llmWorst == ""
+  local quiet = issues == 0 and bugs == 0
   table.insert(menu, { title = infoTitle(title, false, quiet), menu = items })
   table.insert(menu, { title = "-" })
 end
