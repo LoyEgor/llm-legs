@@ -241,10 +241,12 @@ Snapshot store and schema live in `~/.claude-profiles/` (documented in its READM
   pins THIS chat's workers in `${CHAT_PINS_DIR:-~/.cache/claude-chat-pins}/<session_id>`, replacing
   the global pins there: a vendor means any of its pool accounts (`*`), `auto` drops the pin, no
   argument prints it. Inside a session it runs only on the grant Egor's own words wrote.
-- `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[app|terminal|auto] [extra-minutes]`
-  reads the given (or auto-detected) account's 5h window from `~/.llm-limits.json` and arms the
-  Hammerspoon `ClaudeContinue.startTimerFor` per-destination resume timer for that reset + extra
-  minutes (default +10), falling back to +15 minutes if the window is expired or unknown.
+- `bin/claude-resume-timer` → `~/.local/bin/claude-resume-timer` — `[terminal|all] [extra-minutes]`
+  reads the chat's account's 5h window from `~/.llm-limits.json` and arms the Hammerspoon
+  `ClaudeContinue.startTimerFor` terminal slot of the calling chat's tty (`all`: every live chat)
+  for that reset + extra minutes (default +10), falling back to +15 minutes if the window is expired
+  or unknown. It arms nothing for a worker run or a caller outside every Claude chat; the app and
+  Kimi slots are the Hammerspoon menu's alone.
 
 ## codexb multi-account suite
 

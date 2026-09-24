@@ -1432,6 +1432,30 @@ function M.grokFastOffered(name)
   return false
 end
 
+-- A worker launch runs the default codex family's newest slug; the family is the first codex row of
+-- share/worker-model.sh's table, the one place it is spelled.
+local function codexDefaultFamily()
+  local file = M.workerModelShPath and io.open(M.workerModelShPath, "r")
+  if not file then return nil end
+  local family
+  for line in file:lines() do
+    family = line:match("^codex (%S+) ")
+    if family then break end
+  end
+  file:close()
+  return family
+end
+
+local function versionNewer(a, b)
+  local x, y = {}, {}
+  for part in tostring(a):gmatch("%d+") do x[#x + 1] = tonumber(part) end
+  for part in tostring(b):gmatch("%d+") do y[#y + 1] = tonumber(part) end
+  for i = 1, math.max(#x, #y) do
+    if (x[i] or 0) ~= (y[i] or 0) then return (x[i] or 0) > (y[i] or 0) end
+  end
+  return false
+end
+
 -- OpenAI switches Fast per account in the catalog the CLI fetches; worker-run then launches standard
 -- (codex_tier_args), so a switched-on row must not claim ⚡. nil = no readable catalog.
 function M.codexFastOffered(name)
@@ -1452,12 +1476,25 @@ function M.codexFastOffered(name)
   if not ok or type(decoded) ~= "table" or type(decoded.models) ~= "table" or #decoded.models == 0 then
     return nil
   end
+  local function priority(model)
+    if type(model.service_tiers) ~= "table" then return false end
+    for _, tier in ipairs(model.service_tiers) do
+      if type(tier) == "table" and tier.id == "priority" then return true end
+    end
+    return false
+  end
+  local family, launched, launchedVersion = codexDefaultFamily(), nil, nil
   for _, model in ipairs(decoded.models) do
-    if type(model) == "table" and model.visibility ~= "hide" and type(model.service_tiers) == "table" then
-      for _, tier in ipairs(model.service_tiers) do
-        if type(tier) == "table" and tier.id == "priority" then return true end
+    if family and type(model) == "table" and model.visibility ~= "hide" and type(model.slug) == "string" then
+      local version, word = model.slug:match("^gpt%-([%d%.]+)%-(.+)$")
+      if word == family and (not launched or versionNewer(version, launchedVersion)) then
+        launched, launchedVersion = model, version
       end
     end
+  end
+  if launched then return priority(launched) end
+  for _, model in ipairs(decoded.models) do
+    if type(model) == "table" and model.visibility ~= "hide" and priority(model) then return true end
   end
   return false
 end

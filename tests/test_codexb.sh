@@ -1115,4 +1115,28 @@ assert env CODEX_IMAGE_DEADLINE=garbage PATH="$IMAGE_PATH" TMPDIR="$IMAGE_TMPDIR
   --prompt landscape --account main >"$IMAGE_OUT" 2>"$IMAGE_ERR"
 assert grep -qx 'account=main' "$IMAGE_OUT"
 
+# A slug an older client's catalog does not list says nothing about Fast; one it lists without the
+# tier, or a current client's catalog, still says "not offered".
+FO_BIN="$WORK/fast-offered-bin"
+FO_HOME="$WORK/fast-offered-home"
+mkdir -p "$FO_BIN" "$FO_HOME"
+printf '#!/usr/bin/env bash\nprintf "codex-cli 0.156.1\\n"\n' >"$FO_BIN/codex"
+chmod +x "$FO_BIN/codex"
+fast_offered() { # slug
+  PATH="$FO_BIN:$PATH" bash -c '. "$1/share/codex-accounts.sh"; codex_fast_offered "$2" "$3"; printf "%s" "$?"' \
+    _ "$ROOT" "$FO_HOME" "$1"
+}
+printf '{"client_version":"0.150.0","models":[{"slug":"gpt-6-astra"}]}\n' >"$FO_HOME/models_cache.json"
+assert test "$(fast_offered gpt-6.1-astra)" = 2
+assert test "$(fast_offered gpt-6-astra)" = 1
+printf '{"client_version":"0.156.1","models":[{"slug":"gpt-6-astra"}]}\n' >"$FO_HOME/models_cache.json"
+assert test "$(fast_offered gpt-6.1-astra)" = 1
+
+# An option missing its value is a usage error, not a loop that never ends.
+for flag in --account --model --runs; do
+  rc=0
+  perl -e 'alarm 10; exec @ARGV' bash "$ROOT/bin/codex-fast-probe" "$flag" >/dev/null 2>&1 || rc=$?
+  assert test "$rc" -eq 2
+done
+
 echo "PASS: $asserts asserts; add and shared-link trap, worker-pool exclusion and shield override (pick skips it, headless runs are refused however named, interactive and pinned runs pass, the last member goes out too, visible in list/status), list/status, quota-aware authenticated pick by descending daily budget, reset credits, auth-needed cache markers, dead-token classification (short cause, no raw RPC blob) with list/status/pick honoring the marker over lying local auth.json, a transient non-auth error preserving the definite auth verdict while fresh weather on a never-marked account stays non-auth, and marker recovery only on a genuinely good probe, exact run environments/arguments, one-step profile auto-create with shared links, browser-OAuth menu login passthrough with device-auth de-advertised everywhere yet still working manually, and missing-name guard, existing-profile relaunch stays quiet, creation-only reserved-name guards, leading-hyphen and charset rejection parity, multi-account cache compatibility, remove forgets profiles including reserved legacy names and prunes the cache entry, the base account removed by marker alone (hidden from list/status/pin/pick/launch, the real ~/.codex untouched, the cache's current falling to the first account left, undone by deleting the marker), use pin set/show/clear/refusal parity, and Codex image generation routing with claimed automatic picks, prompt, account environments, rescue, generation deadline with garbage-value fallback, destination checks made before a generation is spent, and limits"

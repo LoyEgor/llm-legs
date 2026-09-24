@@ -655,6 +655,11 @@ failure_outcome() {
 
 # Fast asked for but not in the account's catalog for this model: the CLI would drop it silently, so
 # the run says so and goes standard; it comes back by itself once OpenAI lists the tier again.
+refuse_codex_model() { # model
+  outcome_line MODEL_REFUSED
+  fail "codex model $1 names no model \`codexb models\` lists. Nothing was launched and no account was spent."
+}
+
 codex_tier_args() { # account slug requested(true|false)
   local want=$3 rc=0
   if [ "$want" = true ]; then
@@ -1977,7 +1982,7 @@ start_run() {
   local round_source='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
-  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role='' model_id=''
+  local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role='' model_id='' slug_account=''
   local recipe='' recipe_brief='' light_scope='' light_verify='' light_worktree='' light_shared_top='' light_offrow=false
   local light_relative='' light_base=''
   local -a recipe_sets=()
@@ -2250,9 +2255,10 @@ start_run() {
     outcome_line EFFORT_REFUSED
     fail "$vendor model $model does not allow effort $effort; allowed efforts: $(worker_model_effort_list "$vendor" "$model" "$model_class"). Nothing was launched and no account was spent."
   fi
-  if [ "$vendor" = codex ] && ! { model_id=$(worker_model_codex_slug "$model") && [ -n "$model_id" ]; }; then
-    outcome_line MODEL_REFUSED
-    fail "codex model $model names no model \`codexb models\` lists. Nothing was launched and no account was spent."
+  if [ "$vendor" = codex ]; then
+    slug_account=$explicit_account
+    model_id=$(worker_model_codex_slug "$model" "$slug_account") || model_id=''
+    [ -n "$model_id" ] || [ -z "$slug_account" ] || refuse_codex_model "$model"
   fi
   [ -z "$resume" ] || [ -n "$explicit_account" ] || fail '--resume requires --account: sessions live inside one vendor profile, and worker-pick may route elsewhere'
   refuse_live_run "$brief" "$resume"
@@ -2348,7 +2354,18 @@ start_run() {
     *) [[ "$account" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || fail "invalid account: $account" ;;
   esac
   # The account's own Fast Mode is only known now; the chat's was applied above.
-  [ "$vendor" != grok ] || model=$(worker_model_grok_launch_model "$model" "$fast_role" '' "$account")
+  if [ "$vendor" = grok ]; then
+    value=$(worker_model_grok_launch_model "$model" "$fast_role" '' "$account")
+    if [ "$value" != "$model" ] && ! worker_model_effort_allowed grok "$value" "$effort" "$model_class"; then
+      outcome_line EFFORT_REFUSED
+      fail "grok model $value (this account's Fast Mode) does not allow effort $effort; allowed efforts: $(worker_model_effort_list grok "$value" "$model_class"). Nothing was launched and no account was spent."
+    fi
+    model=$value
+  fi
+  if [ "$vendor" = codex ] && [ "$account" != "$slug_account" ]; then
+    value=$(worker_model_codex_slug "$model" "$account") && [ -n "$value" ] && model_id=$value
+    [ -n "$model_id" ] || refuse_codex_model "$model"
+  fi
   warn_cold_resume "$vendor" "$account" "$resume" || :
 
   # The run directory has to exist here and not below: the worktree is named after the run id, and

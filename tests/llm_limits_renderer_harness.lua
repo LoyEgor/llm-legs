@@ -16,6 +16,7 @@ local dialogCalls = {}
 local fastModeMarkers = {}
 local profileFastModeConfigs = {}
 local codexCatalogs = {}
+local workerModelSh = nil
 
 -- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
 -- the Gemini submenu reads; nil is the file being absent — no cache is what the
@@ -160,6 +161,7 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         if codexCatalogs[catalogAccount] == nil then return nil end
         contents = "CODEX_CATALOG:" .. catalogAccount
       end
+      if path:match("/share/worker%-model%.sh$") and workerModelSh then contents = workerModelSh end
       local profileAccount = path:match("/%.codex%-profiles/([^/]+)/config%.toml$")
       if profileAccount and profileFastModeConfigs[profileAccount] then
         contents = profileFastModeConfigs[profileAccount]
@@ -572,6 +574,28 @@ do
   assert(titleText(offered):find("⚡", 1, true))
   assert(submenuItem(offered, "Fast Mode (workers)").checked == true)
   fastModeMarkers, codexCatalogs = {}, {}
+end
+
+-- ⚡ follows the slug a worker launches, the default family's newest, not any model in the catalog.
+do
+  workerModelSh = "worker_model_table() {\n  cat <<'TABLE'\ncodex astra low low,medium,high xhigh no\ncodex sol medium medium,high low,xhigh yes\nTABLE\n}\n"
+  codexCatalogs = {
+    ["codex-pin"] = { models = {
+      { slug = "gpt-6-astra", visibility = "list", service_tiers = { { id = "priority" } } },
+      { slug = "gpt-6.1-astra", visibility = "list", service_tiers = {} },
+      { slug = "gpt-6-sol", visibility = "list", service_tiers = { { id = "priority" } } },
+    } },
+    ["codex-current"] = { models = {
+      { slug = "gpt-6.1-astra", visibility = "list", service_tiers = { { id = "priority" } } },
+      { slug = "gpt-6-sol", visibility = "list", service_tiers = {} },
+    } },
+  }
+  local module = loadModule(pinFixture, nil, nil, nil, nil, pinConfig)
+  module.workerModelShPath = "/fixture/share/worker-model.sh"
+  assert(module.codexFastOffered("codex-pin") == false,
+    "Fast on another model claimed ⚡ for a launch slug that has none")
+  assert(module.codexFastOffered("codex-current") == true)
+  workerModelSh, codexCatalogs = nil, {}
 end
 
 do

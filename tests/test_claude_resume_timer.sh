@@ -38,23 +38,56 @@ run_timer() {
   PATH="$FAKE_BIN:$PATH" HOME="$FIXTURE_HOME" CALLS="$CALLS" "$@"
 }
 
+PS_FIXTURE="$WORK/ps.out"
+FAKE_TTY=ttys009
+export PS_FIXTURE FAKE_TTY
+cat >"$FAKE_BIN/ps" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-axo" ] && [ "${2:-}" = "tty=,command=" ]; then
+  cat "$PS_FIXTURE"
+  exit 0
+fi
+if [ "${1:-}" = "-o" ] && [ "${2:-}" = "tty=" ]; then
+  echo "${FAKE_TTY:-??}"
+  exit 0
+fi
+exec /bin/ps "$@"
+EOF
+chmod +x "$FAKE_BIN/ps"
+echo 'ttys009 /Users/e/.local/bin/claude --resume' >"$PS_FIXTURE"
+CHAT_ARM='HS -q -c ClaudeContinue.startTimerFor("terminal", 15, nil, "/dev/ttys009")'
+
 now=$(date +%s)
 
-# --- surface auto-detection ---
+# --- who arms: a Claude chat for itself; never a worker, the app or a caller outside every chat ---
 
 write_limits notcom "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
 
-out=$(run_timer env -u TERM_PROGRAM CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" auto 10) \
-  || fail "auto (no TERM_PROGRAM) exited non-zero"
-grep -q 'HS -q -c ClaudeContinue.startTimerFor("app", ' "$CALLS" || fail "auto without TERM_PROGRAM should target app: $(cat "$CALLS")"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" 10 >/dev/null || fail "a bare call from a chat tty exited non-zero"
+grep -q 'HS -q -c ClaudeContinue.startTimerFor("terminal", [0-9]*, nil, "/dev/ttys009")' "$CALLS" ||
+  fail "a bare call should arm the caller's own tty: $(cat "$CALLS")"
 
-out=$(run_timer env TERM_PROGRAM=iTerm.app CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" auto 10) \
-  || fail "auto (TERM_PROGRAM set) exited non-zero"
-grep -q 'HS -q -c ClaudeContinue.startTimerFor("terminal", ' "$CALLS" || fail "auto with TERM_PROGRAM should target terminal: $(cat "$CALLS")"
+for surface in app auto kimi; do
+  run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" "$surface" 10 >/dev/null 2>&1
+  status=$?
+  [ "$status" -eq 2 ] || fail "$surface is no surface and should exit 2 (got $status)"
+  grep -q HS "$CALLS" && fail "$surface must not reach hs: $(cat "$CALLS")"
+done
 
-out=$(run_timer env TERM_PROGRAM= CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" auto 10) \
-  || fail "auto (TERM_PROGRAM set but empty) exited non-zero"
-grep -q 'HS -q -c ClaudeContinue.startTimerFor("terminal", ' "$CALLS" || fail "auto with empty-but-set TERM_PROGRAM should still target terminal: $(cat "$CALLS")"
+for tty in '' ttys005; do
+  out=$(run_timer env FAKE_TTY="$tty" CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 10 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a caller on tty '$tty' (no Claude chat) should arm nothing"
+  echo "$out" | grep -q "no Claude chat" || fail "a caller outside every chat should be told why: $out"
+  grep -q HS "$CALLS" && fail "a caller on tty '$tty' must not reach hs: $(cat "$CALLS")"
+done
+
+for surface in terminal all; do
+  out=$(run_timer env WORKER_RUN_RECORD="$WORK/run" CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" "$surface" 10 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a worker run should arm nothing ($surface)"
+  grep -q HS "$CALLS" && fail "a worker run must not reach hs ($surface): $(cat "$CALLS")"
+done
 
 # --- account resolution order ---
 
@@ -135,18 +168,18 @@ write_limits_other
 # --- expired / missing window fallback ---
 
 write_limits notcom "1970-01-01T03:00:00+02:00"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "expired-window run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "expired-window run failed"
 echo "$out" | grep -q "already reset" || fail "expired window should report fallback reason: $out"
 echo "$out" | grep -q '+15 min' || fail "expired window should arm for +15 min: $out"
-grep -q 'HS -q -c ClaudeContinue.startTimerFor("app", 15)' "$CALLS" || fail "expired window should call startTimerFor with 15: $(cat "$CALLS")"
+grep -qF "$CHAT_ARM" "$CALLS" || fail "expired window should call startTimerFor with 15: $(cat "$CALLS")"
 
 rm -f "$FIXTURE_HOME/.llm-limits.json"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "missing-cache run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "missing-cache run failed"
 echo "$out" | grep -q "no five_hour.resets_at" || fail "missing cache file should report fallback reason: $out"
-grep -q 'HS -q -c ClaudeContinue.startTimerFor("app", 15)' "$CALLS" || fail "missing cache should arm for 15: $(cat "$CALLS")"
+grep -qF "$CHAT_ARM" "$CALLS" || fail "missing cache should arm for 15: $(cat "$CALLS")"
 
 write_limits unknown-account "$(date -u -r "$((now + 6000))" +%Y-%m-%dT%H:%M:%SZ)"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "account-not-in-fixture run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "account-not-in-fixture run failed"
 echo "$out" | grep -q "no five_hour.resets_at" || fail "account absent from fixture should report fallback reason: $out"
 
 # --- minutes math, including +extra and the 1-minute floor ---
@@ -154,23 +187,23 @@ echo "$out" | grep -q "no five_hour.resets_at" || fail "account absent from fixt
 # drift between capturing $now here and the script fetching its own "now" moments later.
 
 write_limits notcom "$(date -u -r "$((now + 3600 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0) || fail "60min-window run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0) || fail "60min-window run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "60" ] || fail "60 minutes to reset + 0 extra should be 60 (got $minutes): $out"
 
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 25) || fail "60min-window+extra run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 25) || fail "60min-window+extra run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "85" ] || fail "60 minutes to reset + 25 extra should be 85 (got $minutes): $out"
 
 write_limits notcom "$(date -u -r "$((now + 300))" +%Y-%m-%dT%H:%M:%SZ)"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app -310) || fail "floor-clamped run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal -310) || fail "floor-clamped run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "1" ] || fail "a negative net result should floor at 1 minute (got $minutes): $out"
 
 # --- default extra-minutes is +10 ---
 
 write_limits notcom "$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app) || fail "default-extra run failed"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal) || fail "default-extra run failed"
 minutes=$(echo "$out" | grep -oE 'for [0-9]+ min' | grep -oE '[0-9]+')
 [ "$minutes" = "30" ] || fail "default extra should be +10 (20 to reset + 10 = 30, got $minutes): $out"
 
@@ -185,17 +218,17 @@ EOF
 }
 
 write_limits_bucket false 60
-run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "fresh-row run failed"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 >/dev/null || fail "fresh-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" && fail "a row the collector calls fresh must not be refreshed: $(cat "$CALLS")"
 
 write_limits_bucket false 3600
-run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "aged-row run failed"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 >/dev/null || fail "aged-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row past the five-hour threshold must be refreshed: $(cat "$CALLS")"
 
 # The flag is written at collection time and cannot age, so it is asked as well as the clock: a
 # minutes-old row the collector marked stale (expired auth, cached origin) is not one to arm off.
 write_limits_bucket true 60
-run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "stale-marked-row run failed"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 >/dev/null || fail "stale-marked-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked stale must be refreshed: $(cat "$CALLS")"
 
 # `expired` is the collector's other verdict and independent of `stale`: a just-collected row whose
@@ -205,22 +238,10 @@ cat >"$FIXTURE_HOME/.llm-limits.json" <<EOF
   "resets_at":"$(date -u -r "$((now - 300))" +%Y-%m-%dT%H:%M:%SZ)",
   "as_of":$((now - 60)),"stale":false,"expired":true}}]}}}
 EOF
-run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 >/dev/null || fail "expired-marked-row run failed"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 >/dev/null || fail "expired-marked-row run failed"
 grep -q 'LLM_LIMITS --refresh' "$CALLS" || fail "a row the collector marked expired must be refreshed: $(cat "$CALLS")"
 
 # --- `all`: one timer per live claude tty, in every argv form claude runs under ---
-
-PS_FIXTURE="$WORK/ps.out"
-export PS_FIXTURE
-cat >"$FAKE_BIN/ps" <<'EOF'
-#!/usr/bin/env bash
-if [ "${1:-}" = "-axo" ] && [ "${2:-}" = "tty=,command=" ]; then
-  cat "$PS_FIXTURE"
-  exit 0
-fi
-exec /bin/ps "$@"
-EOF
-chmod +x "$FAKE_BIN/ps"
 
 cat >"$PS_FIXTURE" <<'EOF'
 ttys001 /Users/e/.local/bin/claude --resume
@@ -251,22 +272,24 @@ status=$?
 [ "$status" -ne 0 ] || fail "all with no claude tty should exit non-zero"
 echo "$out" | grep -q "no active Claude chat ttys" || fail "all with no claude tty should say so: $out"
 
+echo 'ttys009 /Users/e/.local/bin/claude --resume' >"$PS_FIXTURE"
+
 # --- custom message: passed through verbatim, single-line only ---
 
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 -m 'continue: "the fix"') \
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 -m 'continue: "the fix"') \
   || fail "-m run failed"
 grep -qF '"continue: \"the fix\""' "$CALLS" || fail "-m should pass the message to hs: $(cat "$CALLS")"
 echo "$out" | grep -q "custom message" || fail "-m should be reported: $out"
 
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 --message=keep-going) \
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 --message=keep-going) \
   || fail "--message= run failed"
 grep -qF '"keep-going"' "$CALLS" || fail "--message= should pass the message to hs: $(cat "$CALLS")"
 
-run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 -m >/dev/null 2>&1
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 -m >/dev/null 2>&1
 status=$?
 [ "$status" -eq 2 ] || fail "-m without a value should exit 2 (got $status)"
 
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" app 0 -m 'first
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 0 -m 'first
 second' 2>&1)
 status=$?
 [ "$status" -eq 2 ] || fail "a multi-line message should exit 2 (got $status): $out"
@@ -275,7 +298,9 @@ grep -q HS "$CALLS" && fail "a rejected message must not reach hs: $(cat "$CALLS
 
 # --- hs unreachable ---
 
-out=$(PATH="/usr/bin:/bin" HOME="$FIXTURE_HOME" "$SCRIPT" app 0 2>&1)
+mkdir -p "$WORK/nohs"
+cp "$FAKE_BIN/ps" "$WORK/nohs/ps"
+out=$(PATH="$WORK/nohs:/usr/bin:/bin" HOME="$FIXTURE_HOME" "$SCRIPT" terminal 0 2>&1)
 status=$?
 [ "$status" -ne 0 ] || fail "should exit non-zero when hs is not on PATH"
 echo "$out" | grep -qi "hs" || fail "should mention hs in the error: $out"

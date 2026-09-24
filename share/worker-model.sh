@@ -76,6 +76,17 @@ worker_model_grok_fast_sibling() {
   printf '%s\n' "$sibling"
 }
 
+# xAI serves each account a catalog of its own; the menu reads the same file for its Fast mark.
+# An account with no readable catalog is unknown, not refused.
+worker_model_grok_account_lists() { # account slug
+  local cache
+  [ -n "${1-}" ] || return 0
+  if [ "$1" = main ]; then cache="$HOME/.grok/models_cache.json"
+  else cache="${GROKB_PROFILES_DIR:-$HOME/.grok-profiles}/$1/models_cache.json"; fi
+  jq -e '.models | type == "object" and length > 0' "$cache" >/dev/null 2>&1 || return 0
+  jq -e --arg slug "$2" '.models | has($slug)' "$cache" >/dev/null 2>&1
+}
+
 worker_model_grok_account_fast() { # account
   local file tier=''
   [ -n "${1-}" ] || return 1
@@ -100,7 +111,11 @@ worker_model_grok_launch_model() { # model role [chat-pin-file] [account]
       default=$(worker_model_grok_default)
       if [ "$model" = auto ] || { [ -n "$default" ] && [ "$model" = "$default" ]; }; then
         if sibling=$(worker_model_grok_fast_sibling); then
-          model=$sibling
+          if worker_model_grok_account_lists "$account" "$sibling"; then
+            model=$sibling
+          else
+            printf 'grok: %s lists no %s now; running the default\n' "$account" "$sibling" >&2
+          fi
         else
           printf 'grok: `grokb models` lists no fast model; running the default\n' >&2
         fi

@@ -571,8 +571,6 @@ models_cache_rows() { # cache -> the builtin's columns, nothing when unusable
 }
 
 cache_field() { jq -r --arg key "$2" '.[$key] // "" | tostring' "$1" 2>/dev/null; }
-installed_client() { codex --version 2>/dev/null | head -n 1 | LC_ALL=C grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
-version_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C sort -V | head -n 1)" = "$1" ]; }
 timeout_command() {
   if command -v gtimeout >/dev/null 2>&1; then command gtimeout "$@"
   elif command -v timeout >/dev/null 2>&1; then command timeout "$@"

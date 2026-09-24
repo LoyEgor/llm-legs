@@ -336,6 +336,17 @@ video_run --dest "$OUTPUT_DIR/spaced.$CONTAINER" --prompt 'push in' --account ex
 assert grep -qx 'grok-video: --keyframe times must lie strictly inside the 6 s clip and at least 1/3 s apart' "$VIDEO_ERR"
 assert video_run --dest "$OUTPUT_DIR/longclip.$CONTAINER" --prompt 'push in' --account explicit \
   --keyframe "$WORK/ref-a.jpg@7" --duration 10
+# The engine snaps to the 1/3 s grid: an anchor that lands on an endpoint is refused before the spend.
+: >"$FAKE_GROKB_CALLS"
+for bad_pin in "--keyframe $WORK/ref-a.jpg@0.1" "--keyframe $WORK/ref-a.jpg@5.9"; do
+  video_rc=0
+  # shellcheck disable=SC2086
+  video_run --dest "$OUTPUT_DIR/snapped.$CONTAINER" --prompt 'push in' --account explicit $bad_pin || video_rc=$?
+  assert test "$video_rc" -eq 2
+done
+assert test ! -s "$FAKE_GROKB_CALLS"
+assert video_run --dest "$OUTPUT_DIR/nearedge.$CONTAINER" --prompt 'push in' --account explicit \
+  --keyframe "$WORK/ref-a.jpg@0.2"
 
 # The account is recovered from the store that holds the session, so a resume routes itself and
 # spends no claim on the selector.

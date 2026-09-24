@@ -267,5 +267,9 @@ assert test "$(bash "$SCRIPT" fast-mode alpha on)" = on
 assert test "$(cat "$GROKB_PROFILES_DIR/.grokb/fast-mode/alpha")" = fast
 assert test "$(bash "$SCRIPT" fast-mode alpha off)" = off
 assert_fails bash "$SCRIPT" fast-mode nobody on >/dev/null 2>&1
+# `main` is an account the menu offers the toggle on, and worker-run reads its marker.
+assert test "$(bash "$SCRIPT" fast-mode main on)" = on
+assert test "$(cat "$GROKB_PROFILES_DIR/.grokb/fast-mode/main")" = fast
+assert test "$(bash "$SCRIPT" fast-mode main off)" = off
 
 printf 'PASS: %s asserts; Grok profile creation/login, safe status, pool gating, pinned launch environments, main isolation, account pinning, reserved names, removal, announcements, CLI resolution without an nvm PATH, the per-account Fast Mode toggle, and the fake CLI contract are covered\n' "$asserts"

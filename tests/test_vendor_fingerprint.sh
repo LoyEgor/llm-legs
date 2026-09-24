@@ -24,6 +24,7 @@ export HOME DATA OPENED
 unset CODEXB_PROFILES_DIR VENDOR_CLI_UPDATE_STATE_DIR VENDOR_FINGERPRINT_LOCKED GROK_HOME GROKB_CACHE_DIR
 unset VENDOR_FINGERPRINT_NATIVE_codex VENDOR_FINGERPRINT_NATIVE_grok VENDOR_FINGERPRINT_NATIVE_gemini VENDOR_FINGERPRINT_NATIVE_claude
 export VENDOR_FINGERPRINT_OPENER="$FAKE_BIN/opener"
+export VENDOR_FINGERPRINT_WORKER_PICK="$FAKE_BIN/worker-pick"
 # Only the fakes: the real CLIs live in ~/.local/bin, nvm and /usr/local/bin, none of which is here.
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 CODEX_PACKAGE="$WORK/node/lib/node_modules/@openai/codex"
@@ -77,7 +78,7 @@ cat >"$FAKE_BIN/opener" <<'EOF'
 printf '%s\n' "$*" >>"$OPENED"
 EOF
 chmod +x "$FAKE_BIN/opener"
-printf '#!/usr/bin/env bash\ncat "$DATA/pick"\n' >"$FAKE_BIN/worker-pick"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$DATA/pick-args"\ncat "$DATA/pick"\n' >"$FAKE_BIN/worker-pick"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$FAKE_BIN/claudeb"
 chmod +x "$FAKE_BIN/worker-pick" "$FAKE_BIN/claudeb"
 printf 'acct-b\n' >"$DATA/pick"
@@ -166,6 +167,17 @@ assert [ "$(cat "$launch_pins/$launch_sid")" = open=all ]
 assert [ "$(field '.launched_at != null')" = true ]
 check
 assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
+# The account is a chat's, asked past the workers switch; and launchd's PATH carries no repo bin, so
+# the picker is the one beside the script.
+assert grep -qxF -- '--account claudeb --role chat' "$DATA/pick-args"
+mkdir -p "$WORK/repo/bin"
+cp "$SCRIPT" "$WORK/repo/bin/vendor-fingerprint"
+printf '#!/usr/bin/env bash\nprintf "repo-acct\\n"\n' >"$WORK/repo/bin/worker-pick"
+chmod +x "$WORK/repo/bin/worker-pick"
+: >"$OPENED"
+printf 'grok-4.7 grok-imagine-video-1.5 grok-imagine-image-3.0 grok-imagine-image-3.1\n' >"$HOME/.grok/bin/grok-1.0.41"
+env -u VENDOR_FINGERPRINT_WORKER_PICK PATH="$FAKE_BIN:/usr/bin:/bin" bash "$WORK/repo/bin/vendor-fingerprint" check
+assert grep -qF 'profile repo-acct ' "$(cat "$OPENED")"
 
 # A new catalog field is substantive; a changed prompt alone is recorded and closes itself.
 : >"$OPENED"

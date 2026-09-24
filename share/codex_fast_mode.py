@@ -8,7 +8,7 @@ import tempfile
 def main():
     profiles, name, mode = sys.argv[1:4]
     tool = sys.argv[4] if len(sys.argv) > 4 else "codexb"
-    if (mode not in {"on", "off", "status", "tier", "state"} or name == "main"
+    if (mode not in {"on", "off", "status", "tier", "state"}
             or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", name)):
         raise ValueError("use a named account and on, off, status, tier, or state")
     target = Path(profiles) / f".{tool}" / "fast-mode" / name

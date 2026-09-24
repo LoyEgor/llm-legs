@@ -50,9 +50,16 @@ FAILURE_REASONS = (
         r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
         r"|rate limit exceeded|too many requests", re.IGNORECASE)),
     ("bare 429", re.compile(r"\b429\b")),
+    # geminib spells the same weather twice — agy's own refusal and the line geminib prints when
+    # its fallback chain runs out — and neither says "capacity" the way a gateway does.
+    ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
+                            r"|No capacity available for model"
+                            r"|geminib: capacity \S+ after \d+ steps, not relaunched", re.IGNORECASE)),
+    ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b")),
     ("refused", re.compile(
-        r"finish_?[Rr]eason\W{1,4}(?:SAFETY|PROHIBITED_CONTENT|RECITATION|BLOCKLIST|SPII)"
-        r"|blocked (?:due to|for) SAFETY|PROHIBITED_CONTENT|content_filter|content_policy_violation"
+        r"(?:finish|block)_?[Rr]eason\W{1,4}(?:SAFETY|PROHIBITED_CONTENT|RECITATION|BLOCKLIST|SPII)"
+        r"|blocked (?:due to|for) SAFETY"
+        r"|(?:finish_?[Rr]eason|code|type)\W{1,4}(?:content_filter|content_policy_violation)"
         r"|flagged as potentially violating|flagged for possible cybersecurity risk"
         r"|(?i:violat\w* (?:our |the )?usage (?:policy|policies"
         r"|guidelines))|\"stop_reason\"\s*:\s*\"refusal\"")),
@@ -62,12 +69,6 @@ FAILURE_REASONS = (
         r"|no result event|no assistant message|stopped at the \d+-turn budget"
         r"|without a final message|answered the clean marker without reading",
         re.IGNORECASE)),
-    # geminib spells the same weather twice — agy's own refusal and the line geminib prints when
-    # its fallback chain runs out — and neither says "capacity" the way a gateway does.
-    ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
-                            r"|No capacity available for model"
-                            r"|geminib: capacity \S+ after \d+ steps, not relaunched", re.IGNORECASE)),
-    ("server error", re.compile(HTTP_STATUS_PREFIX + r"(?:5[0-9][0-9]|000)\b")),
     ("root commit", re.compile(r"root commit", re.IGNORECASE)),
     ("permission", re.compile(r"tool required the .command. permission", re.IGNORECASE)),
     ("bad command", re.compile(r"cannot be used with", re.IGNORECASE)),

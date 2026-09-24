@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $(basename "$0") [app|terminal|auto|all] [extra-minutes] [-m|--message text]" >&2
+  echo "Usage: $(basename "$0") [terminal|all] [extra-minutes] [-m|--message text]" >&2
 }
 
 # A signed integer and nothing else: a pattern admitting any mix of digits and hyphens took
@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
       custom_message=${1#--message=}
       shift
       ;;
-    app|terminal|auto|all)
+    terminal|all)
       if [ -n "$surface" ]; then usage; exit 2; fi
       surface=$1
       shift
@@ -84,27 +84,9 @@ if [ -n "$custom_message" ] && [ -x "$CYRILLIC_SHARE" ]; then
   esac
 fi
 
-surface=${surface:-auto}
+[ "$surface" = all ] && arm_all=1
+surface=terminal
 extra=${extra:-10}
-
-case "$surface" in
-  app|terminal) ;;
-  all)
-    arm_all=1
-    surface=terminal
-    ;;
-  auto)
-    if [ -n "${TERM_PROGRAM+x}" ]; then
-      surface=terminal
-    else
-      surface=app
-    fi
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
-esac
 
 is_int "$extra" || { usage; exit 2; }
 
@@ -141,6 +123,36 @@ detect_controlling_tty() {
   done
   return 1
 }
+
+# The argv forms a live chat actually runs under, mirrored from `commandIsClaude` in the
+# hammerspoon repo's claude_cmd_keys.lua: a node/bun wrapper around claude-code is as much a
+# claude tty as a bare `claude`, and a tty this misses is a chat that never gets its timer.
+enumerate_claude_ttys() {
+  ps -axo tty=,command= 2>/dev/null | awk '
+    function base(path,   n, parts) { n = split(path, parts, "/"); return parts[n] }
+    $1 ~ /^ttys[0-9]+$/ {
+      if (base($2) == "claude" || index($2, "/claude/versions/")) { print "/dev/" $1; next }
+      runtime = base($2)
+      if (runtime != "node" && runtime != "bun") next
+      if (index($3, "/@anthropic-ai/claude-code/") || index($3, "/claude-code/")) print "/dev/" $1
+    }
+  ' | sort -u
+}
+
+# The timer types into a chat, so only a chat may arm one, for itself or for every chat: a worker
+# inherits its chat's tty and a caller outside every chat has none to aim at.
+if [ -n "${WORKER_RUN_RECORD:-}" ]; then
+  echo "claude-resume-timer: a worker run arms no timer; its chat does, on Egor's word" >&2
+  exit 1
+fi
+target_tty=""
+if [ "$arm_all" -eq 0 ]; then
+  target_tty=$(detect_controlling_tty) || target_tty=""
+  if [ -z "$target_tty" ] || ! enumerate_claude_ttys | grep -qxF "$target_tty"; then
+    echo "claude-resume-timer: the caller sits in no Claude chat's terminal, so no timer is armed" >&2
+    exit 1
+  fi
+fi
 
 cache="$HOME/.llm-limits.json"
 
@@ -237,51 +249,22 @@ if ! command -v hs >/dev/null 2>&1; then
   exit 1
 fi
 
-# The argv forms a live chat actually runs under, mirrored from `commandIsClaude` in the
-# hammerspoon repo's claude_cmd_keys.lua: a node/bun wrapper around claude-code is as much a
-# claude tty as a bare `claude`, and a tty this misses is a chat that never gets its timer.
-enumerate_claude_ttys() {
-  ps -axo tty=,command= 2>/dev/null | awk '
-    function base(path,   n, parts) { n = split(path, parts, "/"); return parts[n] }
-    $1 ~ /^ttys[0-9]+$/ {
-      if (base($2) == "claude" || index($2, "/claude/versions/")) { print "/dev/" $1; next }
-      runtime = base($2)
-      if (runtime != "node" && runtime != "bun") next
-      if (index($3, "/@anthropic-ai/claude-code/") || index($3, "/claude-code/")) print "/dev/" $1
-    }
-  ' | sort -u
-}
-
 lua_quote() {
   python3 -c 'import json,sys; print(json.dumps(sys.argv[1], ensure_ascii=False))' "$1"
 }
 
 arm_one() {
-  local target_tty=$1 hs_output hs_status target_note="" lua_msg
-  case "$target_tty" in
-    /dev/tty*) ;;
-    *) target_tty="" ;;
-  esac
+  local target_tty=$1 hs_output hs_status target_note lua_msg=nil
   if [ -n "$custom_message" ]; then
     lua_msg=$(lua_quote "$custom_message") || exit 1
-    if [ -n "$target_tty" ]; then
-      hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(
-\"$surface\", $minutes, $lua_msg, \"$target_tty\")" 2>&1)
-    else
-      hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(
-\"$surface\", $minutes, $lua_msg)" 2>&1)
-    fi
-  elif [ -n "$target_tty" ]; then
-    hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")" 2>&1)
-  else
-    hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes)" 2>&1)
   fi
+  hs_output=$(hs -q -c "ClaudeContinue.startTimerFor(\"$surface\", $minutes, $lua_msg, \"$target_tty\")" 2>&1)
   hs_status=$?
   if [ "$hs_status" -ne 0 ]; then
     echo "claude-resume-timer: could not reach hs (Hammerspoon CLI): $hs_output" >&2
     exit 1
   fi
-  [ -n "$target_tty" ] && target_note=" (target $target_tty)"
+  target_note=" (target $target_tty)"
   [ -n "$custom_message" ] && target_note="${target_note} (custom message)"
   if [ -n "$fallback_reason" ]; then
     echo "claude-resume-timer: $fallback_reason; armed $surface for +$minutes min (fires ~$fires_clock)$target_note"
@@ -308,8 +291,4 @@ EOF
   exit 0
 fi
 
-target_tty=""
-if [ "$surface" = terminal ]; then
-  target_tty=$(detect_controlling_tty) || target_tty=""
-fi
 arm_one "$target_tty"

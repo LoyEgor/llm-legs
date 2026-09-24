@@ -37,13 +37,22 @@ codex_fast_mode_state() {
   python3 "$(codex_fast_mode_helper)" "$profiles" "$1" state
 }
 
+installed_client() { codex --version 2>/dev/null | head -n 1 | LC_ALL=C grep -oE '[0-9]+(\.[0-9]+)+' | head -n 1; }
+version_le() { [ "$(printf '%s\n%s\n' "$1" "$2" | LC_ALL=C sort -V | head -n 1)" = "$1" ]; }
+
 # OpenAI switches Fast per account and model through the catalog the CLI fetches; a priority tier the
 # catalog does not advertise is dropped by the CLI without a word. 0 offered, 1 not offered, 2 no catalog.
+# A slug missing from a catalog an older client wrote (the ChatGPT app's bundled codex rewrites
+# ~/.codex) is no evidence of absence: the server hides newer models from that client.
 codex_fast_offered() { # codex-home slug
-  local cache="$1/models_cache.json"
+  local cache="$1/models_cache.json" client installed
   [ -r "$cache" ] || return 2
   jq -e --arg slug "$2" 'any(.models[]?; .slug == $slug and any(.service_tiers[]?; .id == "priority"))' \
     "$cache" >/dev/null 2>&1 && return 0
-  jq -e '.models | type == "array"' "$cache" >/dev/null 2>&1 && return 1
-  return 2
+  jq -e '.models | type == "array"' "$cache" >/dev/null 2>&1 || return 2
+  jq -e --arg slug "$2" 'any(.models[]; .slug == $slug)' "$cache" >/dev/null 2>&1 && return 1
+  client=$(jq -r '.client_version // "" | tostring' "$cache" 2>/dev/null)
+  installed=$(installed_client)
+  [ -z "$client" ] || [ -z "$installed" ] || version_le "$installed" "$client" || return 2
+  return 1
 }

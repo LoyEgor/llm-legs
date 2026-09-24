@@ -5678,7 +5678,11 @@ EOF' \
 worker-run wait cb-20260901-abcdef
 EOF' \
   'echo start <<EOF
-worker-run wait cb-20260901-abcdef'; do
+worker-run wait cb-20260901-abcdef' \
+  'W=/Volumes/Work/Projects/llm-legs/bin/worker-run; $W start claudeb --brief /tmp/brief --workdir /tmp' \
+  'W=/x/bin/worker-run; $W wait cb-20260901-abcdef --max 3000; $W report cb-20260901-abcdef' \
+  'export W=worker-run && "${W}" wait cb-20260901-abcdef' \
+  '$RUNNER start claudeb --brief /tmp/brief --workdir /tmp'; do
   gate_out=$(gate_payload "$owned_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
   assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("ATTACH <run-id>:")' \
@@ -5708,7 +5712,9 @@ EOF' \
 worker-run wait cb-20260901-abcdef
 EOF' \
   'grep -rn "<<EOF" bin/' \
-  'grep -n "worker-run start" bin/worker-run'; do
+  'grep -n "worker-run start" bin/worker-run' \
+  'W=/x/bin/worker-run; $W report cb-20260901-abcdef' \
+  'WORK=/tmp; ls $WORK; W=/x/bin/worker-run; echo $W start'; do
   gate_out=$(gate_payload "$owned_allowed" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done

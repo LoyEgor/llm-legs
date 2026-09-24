@@ -291,7 +291,10 @@ launch_event() { # id
   local id=$1 file claudeb account session
   # A bare `claude` runs on ~/.claude, which holds no login: the chat opens on a picked profile.
   claudeb=$(command -v claudeb) || { log "cannot open $id: no claudeb on PATH"; return 0; }
-  account=$(worker-pick --account claudeb 2>/dev/null) && [ -n "$account" ] ||
+  # The chat role: this is an interactive chat, and the workers switch it meets is lifted only by the
+  # pin written below, once the account is already chosen.
+  account=$("${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" --account claudeb --role chat 2>/dev/null) &&
+    [ -n "$account" ] ||
     { log "cannot open $id: worker-pick names no Claude account; retried next run"; return 0; }
   session=$(uuidgen | tr '[:upper:]' '[:lower:]')
   file="$events_dir/$id.command"

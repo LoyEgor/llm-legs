@@ -2680,6 +2680,36 @@ assert test "$(jq -r '.model_id' "$RUN_DIR/meta.json")" = gpt-6.1-astra
 rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist"
 export CODEXB_MODELS_CACHE=$saved_models_cache
 
+# The launch line resolves on the account too, not only the supervisor: Fast is judged on the slug
+# the account really runs, and a family only the picked account lists is no refusal.
+clear_stub
+unset CODEXB_MODELS_CACHE
+mkdir -p "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist" "$HOME/.codex-profiles/.codexb/fast-mode"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-23T00:00:00.000000Z"
+    | .models |= map(if .slug == "gpt-6.1-astra" then .service_tiers = [{"id": "priority", "name": "Fast"}] else . end)' \
+  "$saved_models_cache" >"$HOME/.codex-profiles/ownlist/models_cache.json"
+jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z" | .models |= map(select(.slug != "gpt-6.1-astra"))' \
+  "$saved_models_cache" >"$HOME/.codex-profiles/otherlist/models_cache.json"
+printf 'fast\n' >"$HOME/.codex-profiles/.codexb/fast-mode/ownlist"
+export PICK_RC=0 PICK_ACCOUNT=ownlist
+start_ok codex --model astra
+assert_fails grep -q 'offers no Fast' "$WORK/start.err"
+assert jq -e 'any(.cmd[]; . == "gpt-6.1-astra")' "$RUN_DIR/meta.json"
+assert await_done
+assert grep -qxF 'ARG=service_tier=\"priority\"' "$CALL_LOG"
+clear_stub
+jq '.models |= map(select(.slug | test("astra") | not))' "$saved_models_cache" \
+  | jq '.client_version = "0.156.1" | .fetched_at = "2026-09-24T00:00:00.000000Z"' >"$HOME/.codex-profiles/otherlist/models_cache.json"
+start_ok codex --model astra
+assert await_done
+assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
+clear_stub
+start_ok codex --model astra --account ownlist
+assert await_done
+assert grep -qx 'ARG=gpt-6.1-astra' "$CALL_LOG"
+rm -r "$HOME/.codex-profiles/ownlist" "$HOME/.codex-profiles/otherlist" "$HOME/.codex-profiles/.codexb/fast-mode/ownlist"
+export CODEXB_MODELS_CACHE=$saved_models_cache
+
 readonly_runs="$WORK/readonly-runs"
 readonly_workdir="$WORK/readonly-workdir"
 mkdir -p "$readonly_runs" "$readonly_workdir"
@@ -5556,6 +5586,37 @@ CLAUDE_CODE_SESSION_ID=chat-plain start_ok grok
 assert grep -qx 'TAG: grokacct · grok · high' "$WORK/start.out"
 assert await_done
 rm -f "$CHAT_PINS_DIR/chat-fast"
+
+# The account's own Fast Mode swaps the model after the effort was checked on `auto`: the swapped
+# slug's catalog efforts still decide, before anything launches.
+cp "$GROKB_CACHE_DIR/models.json" "$WORK/grok-models.saved"
+jq '.models |= map(if .slug == "grok-4.7-build-fast" then .efforts = ["high"] else . end)' "$WORK/grok-models.saved" \
+  >"$GROKB_CACHE_DIR/models.json"
+mkdir -p "$GROKB_PROFILES_DIR/.grokb/fast-mode"
+printf 'fast\n' >"$GROKB_PROFILES_DIR/.grokb/fast-mode/grokacct"
+clear_stub
+set_config 'grok_model=auto' 'grok_effort=high'
+rc=0
+"$RUNNER" start grok --brief "$WORK/brief" --effort xhigh >"$WORK/grok-effort.out" 2>"$WORK/grok-effort.err" || rc=$?
+assert test "$rc" -eq 4
+assert grep -qx 'OUTCOME: EFFORT_REFUSED' "$WORK/grok-effort.out"
+assert grep -q 'grok-4.7-build-fast' "$WORK/grok-effort.err"
+assert test ! -s "$CALL_LOG"
+cp "$WORK/grok-models.saved" "$GROKB_CACHE_DIR/models.json"
+# The account's own catalog decides whether its Fast twin exists, not the shared list.
+mkdir -p "$GROKB_PROFILES_DIR/grokacct"
+printf '{"models":{"grok-4.7":{},"grok-4.6":{}}}\n' >"$GROKB_PROFILES_DIR/grokacct/models_cache.json"
+clear_stub
+start_ok grok
+assert await_done
+assert_fails grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+assert grep -q 'grok: grokacct lists no grok-4.7-build-fast now' "$WORK/start.err"
+printf '{"models":{"grok-4.7":{},"grok-4.7-build-fast":{}}}\n' >"$GROKB_PROFILES_DIR/grokacct/models_cache.json"
+clear_stub
+start_ok grok
+assert await_done
+assert grep -qx 'ARG=grok-4.7-build-fast' "$CALL_LOG"
+rm -f "$GROKB_PROFILES_DIR/.grokb/fast-mode/grokacct" "$GROKB_PROFILES_DIR/grokacct/models_cache.json"
 
 # `xhigh` is the CLI's to know: it travels as asked instead of being
 # clamped here, and only an effort no grok has is refused before launch.

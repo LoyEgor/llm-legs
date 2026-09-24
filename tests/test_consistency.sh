@@ -20,6 +20,8 @@ WORKER_GATE_SETTINGS="${WORKER_GATE_SETTINGS:-$HOME/.claude/settings.json}"
 CONSISTENCY_CACHE=$(mktemp -d)
 trap 'rm -rf "$CONSISTENCY_CACHE"' EXIT
 export WORKER_PICK_CONFIG_FILE="$CONSISTENCY_CACHE/worker-model"
+# A vendor-release chat runs with its own open=all pin, which would open every role wall probed here.
+export CHAT_PINS_DIR="$CONSISTENCY_CACHE/chat-pins"
 export GEMINIB_CACHE_DIR="$CONSISTENCY_CACHE/geminib"
 . "$ROOT/tests/fixtures/geminib-families.sh"
 export GROKB_CACHE_DIR="$CONSISTENCY_CACHE/grokb"
@@ -1345,7 +1347,7 @@ for grok_wall_wording in \
   assert grep -Fq "$grok_wall_wording" "$RB_ACCOUNTS"
   assert doc_has "$grok_wall_wording"
 done
-assert grep -E 'codex\) pattern=.*out of credits' "$WORKER_RUN"
+assert grep -qE 'codex\) pattern=.*out of credits' "$WORKER_RUN"
 assert grep -Fqi 'out of credits' <<<"$(sed -n '/^def codex_usage_wall(/,/^def is_429_error(/p' "$RB_ACCOUNTS")"
 assert doc_has 'out of credits'
 assert doc_has 'A spent SuperGrok plan is one wording in both repositories'
@@ -2605,9 +2607,9 @@ assert doc_has '`ClaudeContinue.startTimerFor(id, minutes, customMessage, target
 assert doc_has '`ClaudeChatSwitch.cancel()`'
 timer_sig=$(sed -n 's/^function ClaudeContinue\.startTimerFor(\(.*\))$/\1/p' "$CONTINUE_LUA")
 assert eq "$timer_sig" 'id, minutes, customMessage, targetTty'
+assert grep -Fq 'if id ~= "terminal" then' "$CONTINUE_LUA"
 timer_calls=$(grep -o 'startTimerFor([^)]*)' "$ROOT/bin/claude-resume-timer" | LC_ALL=C sort -u)
-assert eq "$timer_calls" 'startTimerFor(\"$surface\", $minutes)
-startTimerFor(\"$surface\", $minutes, nil, \"$target_tty\")'
+assert eq "$timer_calls" 'startTimerFor(\"$surface\", $minutes, $lua_msg, \"$target_tty\")'
 assert eq "$(grep -c '^function ClaudeChatSwitch\.cancel(' "$SWITCH_LUA")" 1
 assert grep -Fq 'function ClaudeChatSwitch.cancel()' "$SWITCH_LUA"
 assert test "$(grep -Fc 'claudeb profile' "$SWITCH_LUA")" -eq 0
@@ -2948,7 +2950,7 @@ done
 WEB_SEARCH_PATTERN=$(web_search_table | cut -f2,3 | tr '\t' ' ' | tr ' ' '\n' |
   grep -vxE '\-|!|\-c' | grep -v '^$' | sed 's/[.[\*^$+?(){}|]/\\&/g' | sort -u | paste -sd '|' -)
 assert test -n "$WEB_SEARCH_PATTERN"
-assert eq "$(grep -rlE "$WEB_SEARCH_PATTERN" "$ROOT/bin" "$ROOT/share" |
+assert eq "$(grep -rlE -e "$WEB_SEARCH_PATTERN" "$ROOT/bin" "$ROOT/share" |
   grep -vE '/(share/web-search\.sh|bin/grok-image|bin/grok-video)$' | wc -l | tr -d '[:space:]')" 0
 # Row ct's prose quotes the table; a search literal there the table does not hold is the same drift
 # one step further away, where no builder scan reaches it.

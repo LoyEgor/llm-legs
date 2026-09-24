@@ -65,6 +65,8 @@ LAUNCH_RES=(
 # exists, and a bare `worker-run` prints help, so none of the three is here;
 # `bash tests/test_worker_run.sh` has `bash` in command position and is not a run.
 OWNED_RUN_RE="${VENDOR_WORD}worker-run[[:space:]]+(start|wait)${EDGE}"
+# A variable this door could not expand, standing where worker-run would, is read as worker-run.
+UNREADABLE_RUN_RE="${VENDOR_WORD}[\$][{]?[A-Za-z_][A-Za-z0-9_]*[}]?[[:space:]]+(start|wait)${EDGE}"
 
 # The image scripts are owned the same way and by ONE agent. Run from the main chat's Bash they
 # spend an image account with nothing rendering the spend — no task row, no tag, no notification —
@@ -243,6 +245,23 @@ scan=$(awk -v shellfed="$HEREDOC_SHELL_RE" -v postshell="$HEREDOC_POST_SHELL_RE"
 LOOKUP_RE='^[[:space:]]*command[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[vV]([[:space:]]|$)'
 scan=$(grep -Ev "$LOOKUP_RE" <<<"$scan")
 
+# A command word held in a variable is the launch it names: `W=…/worker-run; $W start` ran two
+# workers with no row (2026-09-24). Names assigned in this command are expanded in place; a value
+# that itself holds a `$` is skipped, or its expansion would never end.
+ASSIGN_RE='^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?[A-Za-z_][A-Za-z0-9_]*=[^[:space:]$]+'
+while IFS= read -r assign; do
+  [ -n "$assign" ] || continue
+  assign=$(sed -E 's/^[[:space:]]*((export|local|readonly|declare|typeset)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*)?//' <<<"$assign")
+  scan=$(awk -v n="${assign%%=*}" -v v="${assign#*=}" '{
+    gsub("\\$[{]" n "[}]", v)
+    out = ""
+    while (match($0, "\\$" n "([^A-Za-z0-9_]|$)")) {
+      out = out substr($0, 1, RSTART - 1) v
+      $0 = substr($0, RSTART + 1 + length(n))
+    }
+    print out $0 }' <<<"$scan")
+done < <(grep -Eo "$ASSIGN_RE" <<<"$scan")
+
 # Inside a relay agent this whole door behaves as it always has; everywhere else — the main chat
 # above all — a worker-run that starts or awaits a run is denied, because the run would then belong
 # to a Bash turn nobody can see instead of to the agent whose row shows who is spending quota.
@@ -292,6 +311,7 @@ case "$agent_type" in
   claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker | image-gen) ;;
   *)
     owned_hit=$(first_hit "$OWNED_RUN_RE")
+    [ -n "$owned_hit" ] || owned_hit=$(first_hit "$UNREADABLE_RUN_RE")
     [ -z "$owned_hit" ] ||
       deny "Blocked: \`${owned_hit}\` runs the worker from this chat's own Bash. A worker run must be owned by a relay agent for its whole life — that ownership is what renders it as a magenta tagged row in the task list and what wakes the chat when the run ends, while a Bash wait owns nothing and dies with the turn. Launch it by spawning the matching Agent (\`claudeb-worker\`, \`codex-worker\`, \`gemini-worker\`, \`grok-worker\`, \`light-worker\`), which does the \`worker-run start\` itself; to re-attach to a run already in flight, spawn THE SAME agent type again with a brief starting \`ATTACH <run-id>:\` — never a background Bash wait. \`worker-run report\` (it only prints a record), \`worker-run claim\`, a bare \`worker-run\` and the test suites are not gated."
     ;;
