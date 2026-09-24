@@ -1361,6 +1361,29 @@ local function appendDoctorBlocks(items, snapshot)
         menu = blockMenu(entry, windowLabel, hours, entry.block == "reviewers" and machinery or nil) }
     end
   end
+  for _, row in ipairs(document and type(document.health) == "table" and document.health or {}) do
+    if type(row) == "table" and type(row.name) == "string" then
+      local count = tonumber(row.count) or 0
+      local sub = {}
+      for _, item in ipairs(type(row.items) == "table" and row.items or {}) do
+        if type(item) == "table" then
+          local age = math.max(0, os.time() - (tonumber(item.last) or 0))
+          local lines = tonumber(item.lines) or 0
+          sub[#sub + 1] = { title = infoTitle(string.format("%d · %s · %s%s", tonumber(item.count) or 0,
+            age < 3600 and (math.floor(age / 60) .. "m") or (math.floor(age / 3600) .. "h"),
+            tostring(item.label or ""), lines > 0 and (" · " .. lines .. " lines") or "")), disabled = true }
+        end
+      end
+      for _, note in ipairs(type(row.notes) == "table" and row.notes or {}) do
+        sub[#sub + 1] = { title = infoTitle(tostring(note), false, true), disabled = true }
+      end
+      if #sub == 0 then sub[1] = { title = infoTitle("nothing in the window", false, true), disabled = true } end
+      local name = row.name:sub(1, 1):upper() .. row.name:sub(2)
+      items[#items + 1] = { title = infoTitle(name .. ": " .. (count > 0 and plural(count, "problem") or "OK"),
+        count > 0, count == 0), menu = sub }
+      issues = issues + count
+    end
+  end
   if document and type(document.not_measurable) == "table" and #document.not_measurable > 0 then
     items[#items + 1] = { title = infoTitle("not measurable yet: " .. table.concat(document.not_measurable, ", "),
       false, true), disabled = true }

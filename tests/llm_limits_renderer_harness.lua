@@ -2690,6 +2690,12 @@ local function doctorDocument(asOf)
         models = {} },
       { block = "image", owner = "", legs = 0, bugs = 0, weather = 0, new = 0, regressed = 0, top = "",
         problems = {}, models = {} },
+    },
+    health = {
+      { name = "hooks", status = "problem", count = 2, notes = {},
+        items = { { label = "ask-english-report.sh: exit 124", count = 2, last = os.time() - 7200, lines = 0 } } },
+      { name = "debt", status = "ok", count = 0, items = {},
+        notes = { "losses.jsonl not written yet: only recording gaps are seen" } },
     } }
 end
 
@@ -2711,9 +2717,16 @@ do
   assert(titles[1] == "Reviewers: 2 bugs · 40 weather · 1 new · 1 regressed", titles[1])
   assert(titles[2] == "Workers: 0 bugs · 2 weather" and titles[3] == "Light: 1 bug · 0 weather"
     and titles[4] == "Image: no legs", table.concat(titles, "|"))
-  assert(titles[5] == "not measurable yet: worker false-green reports, weakened tests", titles[5])
-  assert(titles[6] == "window: 24 h" and titles[7] == "Refresh blocks" and titles[8] == "-"
-    and titles[9] == "Gemini", table.concat(titles, "|"))
+  assert(titles[5] == "Hooks: 2 problems" and titles[6] == "Debt: OK", table.concat(titles, "|"))
+  assert(not isDimmed(row.menu[5].title.runs[1].attributes, 0), "a health row with problems is dimmed")
+  assert(isDimmed(row.menu[6].title.runs[1].attributes, 0), "a clean health row is not dimmed")
+  local hooks = submenuTitles(row.menu[5])
+  assert(hooks[1] == "2 · 2h · ask-english-report.sh: exit 124" and #hooks == 1, table.concat(hooks, "|"))
+  local debt = submenuTitles(row.menu[6])
+  assert(debt[1] == "losses.jsonl not written yet: only recording gaps are seen" and #debt == 1, table.concat(debt, "|"))
+  assert(titles[7] == "not measurable yet: worker false-green reports, weakened tests", titles[7])
+  assert(titles[8] == "window: 24 h" and titles[9] == "Refresh blocks" and titles[10] == "-"
+    and titles[11] == "Gemini", table.concat(titles, "|"))
   assert(not isDimmed(row.menu[1].title.runs[1].attributes, 0), "a block with bugs is dimmed")
   assert(isDimmed(row.menu[2].title.runs[1].attributes, 0), "a block with no bugs is not dimmed")
   local reviewers = blockRow(menu, "Reviewers")
@@ -2761,16 +2774,16 @@ do
     if tasks[index].path:match("/bin/llm%-doctor$") then table.remove(tasks, index) end
   end
   assert(#tasks == 0, "a fresh doctor cache still launched the collector")
-  row.menu[7].fn()
+  row.menu[9].fn()
   assert(#tasks == 1 and tasks[1].path:match("/bin/llm%-doctor$")
     and table.concat(tasks[1].args, " ") == "--window 24 --quiet", "Refresh blocks did not launch bin/llm-doctor over the window")
-  local choices = row.menu[6].menu
-  assert(table.concat(submenuTitles(row.menu[6]), "|") == "3 h|6 h|12 h|24 h|3 d|7 d", "the window choices changed")
+  local choices = row.menu[8].menu
+  assert(table.concat(submenuTitles(row.menu[8]), "|") == "3 h|6 h|12 h|24 h|3 d|7 d", "the window choices changed")
   assert(choices[4].checked == true and choices[5].checked == false)
   choices[5].fn()
   assert(module.llmDoctorWindowH == 72 and #tasks == 2 and table.concat(tasks[2].args, " ") == "--window 72 --quiet",
     "choosing 3 d did not recollect over 72 h")
-  assert(submenuTitles(doctorRow(module.menuItems()))[6] == "window: 3 d")
+  assert(submenuTitles(doctorRow(module.menuItems()))[8] == "window: 3 d")
 end
 
 do
@@ -2795,6 +2808,9 @@ do
     { class = "closure_pending", count = 11, status = "new" } } }
   local snapshot = { as_of = os.time(), total = 14, anomalies = { anchors = 3, closure_pending = 11 },
     rows = { anchors = {}, closure_pending = {} } }
+  local healthy = loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
+  assert(titleText(doctorRow(healthy)) == "LLM doctor: 3 bugs · 13 issues", titleText(doctorRow(healthy)))
+  document.health = nil
   local menu = loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
   assert(titleText(doctorRow(menu)) == "LLM doctor: 3 bugs · 11 issues", titleText(doctorRow(menu)))
   local machinery = blockRow(menu, "Reviewers").menu[2]

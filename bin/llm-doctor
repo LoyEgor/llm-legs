@@ -41,6 +41,7 @@ SLOW_MIN_LEGS = 5
 SLOW_BASE_N = 20
 SLOW_FLOOR_S = 30
 SLOW_SIZE_RATIO = 2
+STOP_REPEAT_S = 30 * 60
 TREND_MIN = 3
 MAX_INCIDENTS = 15
 DETAIL_MAX = 40
@@ -198,6 +199,20 @@ def runs_dir():
 
 def image_log():
     return os.environ.get("IMAGE_LEG_LOG") or os.path.join(base_home(), ".cache", "image-legs", "legs.jsonl")
+
+
+def stop_journal():
+    return os.environ.get("STOP_GATE_JOURNAL") or os.path.join(base_home(), ".cache", "claude", "stop-gate",
+                                                               "journal.jsonl")
+
+
+def words_journal():
+    return os.path.join(os.environ.get("WORDS_DIR") or os.path.join(base_home(), ".cache", "claude", "words"),
+                        "journal.jsonl")
+
+
+def debt_dir():
+    return os.environ.get("REVIEW_DEBT_DIR") or os.path.join(base_home(), ".cache", "claude", "review-debt")
 
 
 def ledger_path():
@@ -1265,6 +1280,83 @@ def machinery(ledger, now):
             "issues": sum(item["count"] for item in classes if item["status"] in ("new", "regressed"))}
 
 
+def health_row(name, items, notes=()):
+    items = sorted(items.values(), key=lambda item: -item["last"])
+    count = sum(item["count"] for item in items)
+    return {"name": name, "status": "problem" if count else "ok", "count": count,
+            "items": items, "notes": list(notes)}
+
+
+def add_item(items, label, at, lines=0):
+    item = items.setdefault(label, {"label": label, "count": 0, "last": 0, "lines": 0})
+    item["count"] += 1
+    item["last"] = max(item["last"], at)
+    item["lines"] += lines
+
+
+def hooks_health(cutoff, now):
+    """Hook failures, asks the model left unanswered, and word notices it gave no reading line."""
+    items, asked = {}, {}
+    for row in read_jsonl(stop_journal()):
+        at = iso_epoch(row.get("ts"))
+        if at is None or not cutoff <= at <= now + 3600:
+            continue
+        for hook in row.get("hooks") or []:
+            if not isinstance(hook, dict):
+                continue
+            name, outcome, reason = str(hook.get("name") or "?"), hook.get("outcome"), str(hook.get("reason") or "")
+            if outcome == "error":
+                add_item(items, "%s: %s" % (name, reason or "error"), at)
+            elif outcome == "asked":
+                if row.get("busy"):
+                    add_item(items, "%s: asked while busy" % name, at)
+                key = (row.get("session"), name, reason[:120])
+                if key in asked and at - asked[key] <= STOP_REPEAT_S:
+                    add_item(items, "%s: same ask again within 30 min" % name, at)
+                asked[key] = at
+    rows, marks = [], {}
+    for row in read_jsonl(words_journal()):
+        if row.get("mark"):
+            marks[row.get("ref")] = row["mark"]
+        elif isinstance(row.get("ts"), (int, float)) and cutoff <= row["ts"] <= now + 3600:
+            rows.append(row)
+    for row in rows:
+        if row.get("silent") or not row.get("hook"):
+            continue
+        mark = marks.get("%s:%s" % (row.get("ts"), row.get("session")))
+        if mark == "miss" or (row.get("match") is False and mark != "ok"):
+            add_item(items, "word notice with no reading: %s" % str(row.get("hook"))[:40], row["ts"])
+    return health_row("hooks", items)
+
+
+def debt_health(cutoff, now):
+    """Debt that recording failed to capture (gaps) or that a store dropped unreviewed (losses)."""
+    items, notes = {}, []
+    root = os.path.join(debt_dir(), "gaps")
+    try:
+        sessions = os.listdir(root)
+    except OSError:
+        sessions = []
+    for session in sessions:
+        for line in (read_text(os.path.join(root, session)) or "").splitlines():
+            parts = line.split("\t")
+            try:
+                at = float(parts[0])
+            except (ValueError, IndexError):
+                continue
+            if cutoff <= at <= now + 3600:
+                add_item(items, "not recorded: %s" % (parts[1] if len(parts) > 1 else "gap"), at)
+    losses = os.path.join(debt_dir(), "losses.jsonl")
+    if os.path.exists(losses):
+        for row in read_jsonl(losses):
+            at = row.get("at")
+            if isinstance(at, (int, float)) and cutoff <= at <= now + 3600:
+                add_item(items, "lost unreviewed: %s" % (row.get("kind") or "?"), at, as_int(row.get("lines")) or 0)
+    else:
+        notes.append("losses.jsonl not written yet: only recording gaps are seen")
+    return health_row("debt", items, notes)
+
+
 def collect(window_h, now, write_daily=False):
     ledger = load_ledger()
     window_cutoff = now - window_h * 3600
@@ -1290,7 +1382,8 @@ def collect(window_h, now, write_daily=False):
     summary = " · ".join("%s %d" % (block["block"], block["bugs"]) for block in blocks if block["bugs"])
     return {"as_of": int(now), "window_h": window_h, "trend_days": TREND_DAYS,
             "bugs": sum(block["bugs"] for block in blocks), "summary": summary,
-            "not_measurable": list(NOT_MEASURABLE), "blocks": blocks}
+            "not_measurable": list(NOT_MEASURABLE), "blocks": blocks,
+            "health": [hooks_health(window_cutoff, now), debt_health(window_cutoff, now)]}
 
 
 def write_cache(report):
@@ -1340,6 +1433,17 @@ def render(report, only=None):
                         incident["detail"]))
         if block["top"]:
             lines.append("  top: %s" % block["top"])
+    for row in report.get("health") or []:
+        if only:
+            break
+        lines.append("")
+        lines.append("%s: %s" % (row["name"].capitalize(), "%d problem%s" % (row["count"], "" if row["count"] == 1 else "s")
+                                  if row["count"] else "ok"))
+        for item in row["items"]:
+            lines.append("  %-4d %4s  %s%s" % (item["count"], age_text(max(0, report["as_of"] - item["last"])),
+                                               item["label"], " · %d lines" % item["lines"] if item["lines"] else ""))
+        for note in row["notes"]:
+            lines.append("  %s" % note)
     lines.append("")
     lines.append("not measurable yet: %s" % ", ".join(report["not_measurable"]))
     return "\n".join(lines) + "\n"

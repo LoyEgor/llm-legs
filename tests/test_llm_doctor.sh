@@ -14,6 +14,7 @@ export HOME="$WORK/home"
 export WORKER_STATS_DIR="$HOME/stats" WORKER_RUN_DIR="$HOME/runs" LLM_DOCTOR_DIR="$HOME/doctor"
 export IMAGE_LEG_LOG="$HOME/image-legs/legs.jsonl" LLM_DOCTOR_LEDGER="$WORK/ledger.json"
 export GEMINIB_CACHE_DIR="$WORK/geminib"
+unset STOP_GATE_JOURNAL WORDS_DIR REVIEW_DEBT_DIR
 mkdir -p "$GEMINIB_CACHE_DIR"
 cat >"$GEMINIB_CACHE_DIR/models.json" <<'JSON'
 {"fetched_at": 1, "attempted_at": 1, "families": [
@@ -177,6 +178,29 @@ os.makedirs(os.path.join(doctor, "daily"))
 json.dump({"day": frozen_day, "covered": ["image"], "legs": {"image|grok-image": 9},
            "counts": {"image|grok-image|failed|bad output|ours|X4": 5, "image|grok-image|walled|||": 2}},
           open(os.path.join(doctor, "daily", frozen_day + ".json"), "w"))
+
+cache = os.path.join(os.environ["HOME"], ".cache", "claude")
+for sub in ("stop-gate", "words", os.path.join("review-debt", "gaps")):
+    os.makedirs(os.path.join(cache, sub), exist_ok=True)
+def stop(offset, hooks, busy=""):
+    return json.dumps({"ts": iso(offset), "session": "s1", "cwd": "/tmp", "busy": busy, "hooks": hooks}) + "\n"
+with open(os.path.join(cache, "stop-gate", "journal.jsonl"), "w") as handle:
+    handle.write(stop(3600, [{"name": "ask-slow.sh", "outcome": "error", "reason": "exit 124"}]))
+    handle.write(stop(3000, [{"name": "ask-slow.sh", "outcome": "error", "reason": "exit 124"},
+                             {"name": "ask-same.sh", "outcome": "asked", "reason": "do X"}]))
+    handle.write(stop(2400, [{"name": "ask-same.sh", "outcome": "asked", "reason": "do X"}]))
+    handle.write(stop(90000, [{"name": "ask-old.sh", "outcome": "error", "reason": "exit 1"}]))
+    handle.write(stop(1200, [{"name": "notice-fine.sh", "outcome": "silent", "reason": ""}]))
+with open(os.path.join(cache, "words", "journal.jsonl"), "w") as handle:
+    for row in ({"ts": now - 500, "session": "s1", "turn": "1", "hook": "⚡ review", "match": False},
+                {"ts": now - 400, "session": "s1", "turn": "2", "hook": "⚡ commit", "match": False},
+                {"ts": now - 300, "session": "s1", "turn": "3", "hook": "⚡ push", "match": True},
+                {"ts": now - 200, "session": "s1", "turn": "4", "hook": "⚡ pin", "match": None},
+                {"ts": now - 100, "session": "s1", "turn": "5", "hook": "", "match": None, "silent": True},
+                {"mark": "ok", "ref": "%d:s1" % (now - 400)}):
+        handle.write(json.dumps(row) + "\n")
+with open(os.path.join(cache, "review-debt", "gaps", "s1"), "w") as handle:
+    handle.write("%d\ttouch-failed\t/repo: review-anchors exited 1\n%d\tfixer-missing\told\n" % (now - 900, now - 90000))
 PY
 
 before=$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')
@@ -189,6 +213,15 @@ doc = json.load(open(sys.argv[1]))
 blocks = {block["block"]: block for block in doc["blocks"]}
 assert [block["block"] for block in doc["blocks"]] == ["reviewers", "workers", "light", "image"]
 assert doc["not_measurable"] == ["worker false-green reports", "weakened tests"]
+health = {row["name"]: row for row in doc["health"]}
+assert [row["name"] for row in doc["health"]] == ["hooks", "debt"]
+hooks = {item["label"]: item["count"] for item in health["hooks"]["items"]}
+assert hooks == {"ask-slow.sh: exit 124": 2, "ask-same.sh: same ask again within 30 min": 1,
+                 "word notice with no reading: ⚡ review": 1}, hooks
+assert health["hooks"]["status"] == "problem" and health["hooks"]["count"] == 4
+debt = {item["label"]: item["count"] for item in health["debt"]["items"]}
+assert debt == {"not recorded: touch-failed": 1}, debt
+assert health["debt"]["notes"] == ["losses.jsonl not written yet: only recording gaps are seen"]
 
 def problems(block):
     return {(item["label"], (item["ledger"] or {}).get("id", "")): item for item in blocks[block]["problems"]}
@@ -284,4 +317,14 @@ assert grep -q 'X1' "$WORK/view.txt"
 assert test "$(grep -c '^Workers: ' "$WORK/view.txt")" -eq 0
 assert test "$(grep -Ec '[0-9]{8}T[0-9]{6}Z|codex-[0-9]{9}' "$WORK/view.txt")" -eq 0
 
-echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids"
+printf '{"at":%d,"kind":"untouch","repo":"/r","path":"a.py","session":"s1","lines":12}\n' "$((NOW - 600))" \
+  >"$HOME/.cache/claude/review-debt/losses.jsonl"
+assert "$DOCTOR" --dry-run --json >"$WORK/doc2.json"
+assert python3 - "$WORK/doc2.json" <<'PY'
+import json, sys
+debt = [row for row in json.load(open(sys.argv[1]))["health"] if row["name"] == "debt"][0]
+items = {item["label"]: (item["count"], item["lines"]) for item in debt["items"]}
+assert items == {"not recorded: touch-failed": (1, 0), "lost unreviewed: untouch": (1, 12)} and debt["notes"] == [], debt
+PY
+
+echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, hooks health (hook errors, a repeated ask, an unanswered word notice minus an ok mark) and debt health (recording gaps, logged losses with their lines)"
