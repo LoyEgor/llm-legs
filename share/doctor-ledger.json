@@ -262,7 +262,7 @@
    "title": "a \"6155 s\" cell was the sum of 22 chunks, not one cell",
    "status": "fixed",
    "fixed_in": [
-    "llm-legs@llm-doctor-split"
+    "llm-legs@a9a033c"
    ],
    "fixed_at": "2026-09-24T02:00:00+03:00",
    "last_reviewed": "2026-09-24",
@@ -300,7 +300,7 @@
    "fixed_at": "2026-09-23T23:59:15+03:00",
    "last_reviewed": "2026-09-24",
    "reviewed_by": "LLM doctor",
-   "note": "efforts now come from the grok catalog: grok-4.5 lists only high, so xhigh is refused before launch (EFFORT_REFUSED) instead of reaching the CLI"
+   "note": "efforts now come from the grok catalog: a model that lists only high refuses xhigh before launch (EFFORT_REFUSED) instead of reaching the CLI"
   },
   {
    "id": "V1",
