@@ -38,6 +38,8 @@ WORKER_KEEP_D = 7
 PID_START_SLACK_S = 30
 SLOW_FACTOR = 2
 SLOW_MIN_LEGS = 5
+SLOW_BASE_N = 20
+SLOW_FLOOR_S = 30
 TREND_MIN = 3
 MAX_INCIDENTS = 15
 DETAIL_MAX = 40
@@ -521,12 +523,15 @@ def run_legs(meta, name, started, cutoff, now):
             retry_word = word_of_retry(rows[last[cell.get("rater")]].get("retry_of"))
         klass, reason, detail, origin = classify_bench(cell, escaped, retry_word)
         passes = cell.get("passes")
-        per_pass = duration_s / passes if duration_s and isinstance(passes, int) and passes > 1 else duration_s
+        chunked = isinstance(passes, int) and passes > 1
+        per_pass = duration_s / passes if duration_s and chunked else duration_s
         model = bench_model(cell)
+        cohort = "·".join(part for part in (model, str(cell.get("effort") or ""), "chunks" if chunked else "") if part)
         common = {"project": project, "tier": tier, "ref": name, "account": cell.get("account") or "",
                   "text": (cell.get("stderr") or "")[-TEXT_MAX:]}
         legs.append(leg("reviewers", "review", model, ended, klass, reason, detail, origin,
-                        attempt="final" if final else "superseded", duration=per_pass, **common))
+                        attempt="final" if final else "superseded", cohort=cohort,
+                        duration=None if cell.get("killed_chunks") else per_pass, **common))
         if final and klass is None and cell.get("exit_code") == 0:
             for chunk in CHUNK_LINE_RE.finditer(cell.get("stderr") or ""):
                 text = chunk.group(3).strip()
@@ -564,6 +569,8 @@ def judge_leg(judge, at, project, tier, ref):
     common = {"project": project, "tier": tier, "ref": ref, "duration": duration_s,
               "text": str(judge.get("reason") or "")[-TEXT_MAX:]}
     model = str(judge.get("model") or "judge")
+    batches = as_int(judge.get("batches")) or 1
+    common["cohort"] = "%s·%s·%s" % (model, judge.get("effort") or "", "%d batches" % batches if batches < 4 else "4+ batches")
     if judge.get("state") != "failed":
         return leg("reviewers", "judge", model, at, None, "", "", "", **common)
     reason_text = str(judge.get("reason") or "")
@@ -708,8 +715,15 @@ def worker_legs(cutoff, now):
         if ended < cutoff or ended > now + 3600:
             continue
         klass, reason, detail, origin = classify_worker(run_dir, meta, killed, exit_code)
-        legs.append(leg(block, "worker", fields[1], ended, klass, reason, detail, origin,
-                        duration=ended - started if ended > started else None, **common))
+        attempt_start = as_int(meta.get("started_at"))
+        begun = attempt_start if attempt_start and started <= attempt_start < ended else started
+        vendor_end = mtime_of(os.path.join(run_dir, "out"))
+        finished = vendor_end if vendor_end and begun < vendor_end <= ended else ended
+        effort = fields[2] if len(fields) > 2 and fields[2] else str(meta.get("effort") or "")
+        kind = str(meta.get("light") or ("research" if meta.get("role") == "research" else ""))
+        cohort = "·".join(part for part in (fields[1], effort, kind, "resume" if meta.get("resume") else "") if part)
+        legs.append(leg(block, "worker", fields[1], ended, klass, reason, detail, origin, cohort=cohort,
+                        duration=finished - begun if finished > begun else None, **common))
         for account in meta.get("walled_accounts") or []:
             legs.append(leg(block, "worker", fields[1], started, "walled", "walled", "usage limit", "",
                             attempt="superseded", **dict(common, account=str(account))))
@@ -817,37 +831,39 @@ def image_legs(cutoff, now):
         if klass == "skip":
             continue
         model = str(row.get("tool") or "")
+        served = str(row.get("served") or "")
         seconds = row.get("seconds")
         legs.append(leg("image", str(row.get("kind") or "image"), model, at, klass, reason, detail, origin,
+                        cohort=model + "·" + served if served else model,
                         duration=seconds if isinstance(seconds, (int, float)) and seconds > 0 else None,
                         account=str(row.get("account") or ""), ref=str(row.get("tool") or ""),
                         text=err[-TEXT_MAX:]))
     return legs, earliest
 
 
-def mark_slow(legs, now):
-    base_cutoff = now - SLOW_BASE_D * 86400
-    clean, timed = {}, {}
-    for leg_row in legs:
-        if leg_row["duration"] is None or leg_row["attempt"] != "final" or leg_row["at"] < base_cutoff:
+def mark_slow(legs):
+    """Each completed leg against the median of the SLOW_BASE_N completions of its cohort that
+    ended before it within SLOW_BASE_D. Slow legs stay in the sample: a model whose new speed
+    persists becomes its own baseline after about half that many legs, and a verdict, resting only
+    on what came before, never flips when later legs arrive."""
+    history = {}
+    for leg_row in sorted(legs, key=lambda row: row["at"]):
+        duration = leg_row["duration"]
+        if leg_row["class"] is not None or leg_row["attempt"] != "final" or not duration or duration <= 0:
             continue
-        key = (leg_row["block"], leg_row["surface"], leg_row["model"])
-        timed.setdefault(key, []).append(leg_row["duration"])
-        if leg_row["class"] is None:
-            clean.setdefault(key, []).append(leg_row["duration"])
-    medians = {}
-    for key, values in timed.items():
-        sample = clean.get(key, []) if len(clean.get(key, [])) >= SLOW_MIN_LEGS else values
-        if len(sample) >= SLOW_MIN_LEGS:
-            medians[key] = statistics.median(sample)
-    for leg_row in legs:
-        median = medians.get((leg_row["block"], leg_row["surface"], leg_row["model"]))
-        if leg_row["class"] is None and leg_row["attempt"] == "final" and median \
-                and leg_row["duration"] is not None and leg_row["duration"] > SLOW_FACTOR * median:
+        key = (leg_row["block"], leg_row["surface"], leg_row.get("cohort") or leg_row["model"])
+        earlier = [item for item in history.get(key, []) if item[0] >= leg_row["at"] - SLOW_BASE_D * 86400]
+        history[key] = (earlier + [(leg_row["at"], duration)])[-SLOW_BASE_N:]
+        if len(earlier) < SLOW_MIN_LEGS:
+            leg_row["baseline"] = None
+            continue
+        median = statistics.median(value for _, value in earlier)
+        leg_row["baseline"] = median
+        if duration > SLOW_FACTOR * median and duration - median >= SLOW_FLOOR_S:
             leg_row["class"], leg_row["reason"] = "slow", "slow"
             unit = 60 if median >= 60 else 1
             leg_row["detail"] = "%d%s vs %d%s median" % (
-                round(leg_row["duration"] / unit), "m" if unit == 60 else "s", round(median / unit),
+                round(duration / unit), "m" if unit == 60 else "s", round(median / unit),
                 "m" if unit == 60 else "s")
 
 
@@ -1177,6 +1193,8 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
         "top": " · ".join("%s ×%d" % (name, top[name]) for name in top_counts(top, TOP_MAX)),
         "top_kind": "bug" if bugs else ("weather" if top else ""),
         "coverage_from": int(coverage[block]) if coverage.get(block) else None,
+        "speed": {"judged": sum(1 for leg_row in window if leg_row.get("baseline") is not None),
+                  "unjudged": sum(1 for leg_row in window if "baseline" in leg_row and leg_row["baseline"] is None)},
         "problems": problems,
         "models": [{"model": entry["model"], "legs": entry["legs"], "bugs": entry["bugs"],
                     "weather": entry["weather"],
@@ -1226,17 +1244,18 @@ def machinery(ledger, now):
 def collect(window_h, now, write_daily=False):
     ledger = load_ledger()
     window_cutoff = now - window_h * 3600
-    start = min(window_cutoff, now - TREND_DAYS * 86400, now - SLOW_BASE_D * 86400)
+    start = min(window_cutoff, now - TREND_DAYS * 86400)
     legs, coverage = [], {}
     for block, reader in (("reviewers", bench_legs), ("workers", worker_legs), ("prelaunch", prelaunch_legs),
                           ("image", image_legs)):
-        found, earliest = reader(start, now)
+        found, earliest = reader(start - SLOW_BASE_D * 86400, now)
         legs.extend(found)
         if block == "workers":
             coverage["workers"] = coverage["light"] = earliest
         elif block != "prelaunch":
             coverage[block] = earliest
-    mark_slow(legs, now)
+    mark_slow(legs)
+    legs = [leg_row for leg_row in legs if leg_row["at"] >= start]
     for leg_row in legs:
         leg_row["state"], leg_row["ledger"] = judge_leg_state(ledger, leg_row)
     daily = rollup(legs, coverage, now, write_daily, ledger)

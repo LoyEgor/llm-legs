@@ -51,6 +51,17 @@ def cell(rater, model, offset, exit_code=0, stderr="", duration_s=100, **extra):
 clean = [cell("opus-%d" % index, "opus", 30000 + index * 60) for index in range(6)]
 bench(30000, "aaaaaaa", clean)
 bench(3 * 86400, "ddddddd", [cell("opus-old", "opus", 3 * 86400)])
+# A cohort is model and effort: a high-effort leg is never judged against low-effort ones.
+bench(50000, "eeeeeee", [cell("sonnet-low-%d" % index, "sonnet", 50000 - index * 60, effort="low")
+                         for index in range(5)]
+      + [cell("sonnet-low-slow", "sonnet", 40000, duration_s=300, effort="low"),
+         cell("sonnet-high-first", "sonnet", 40000, duration_s=300, effort="high")])
+# A model that turns 3x slower is slow for its first legs only, then its new speed is the norm.
+bench(60000, "fffffff", [cell("haiku2-old-%d" % index, "haiku2", 60000 - index * 60) for index in range(5)]
+      + [cell("haiku2-new-%d" % index, "haiku2", 50000 - index * 60, duration_s=300) for index in range(12)])
+# Seconds-scale jitter stays under the absolute floor.
+bench(60000, "ggggggg", [cell("tiny-%d" % index, "tiny", 60000 - index * 60, duration_s=5) for index in range(5)]
+      + [cell("tiny-late", "tiny", 40000, duration_s=20)])
 bench(3600, "bbbbbbb", [
     cell("opus-high", "opus", 3600, duration_s=400),
     cell("opus-xhigh", "opus", 3600, duration_s=400, passes=4),
@@ -197,7 +208,12 @@ assert escaped["count"] == 1 and escaped["models"] == ["glm"], escaped
 retried = review[("retried", "")]
 assert retried["count"] == 1 and retried["models"] == ["grok47"], retried
 slow = review[("slow", "")]
-assert slow["count"] == 1 and slow["models"] == ["opus"], slow
+slow_models = {}
+for incident in slow["incidents"]:
+    slow_models[incident["model"]] = slow_models.get(incident["model"], 0) + 1
+assert slow["count"] == 7 and slow_models == {"opus": 1, "sonnet": 1, "haiku2": 5}, (slow["count"], slow_models)
+speed = blocks["reviewers"]["speed"]
+assert speed["judged"] >= 15 and speed["unjudged"] >= 5, speed
 assert blocks["reviewers"]["owner"] == "Review owner" and blocks["workers"]["owner"] == ""
 for problem in blocks["reviewers"]["problems"]:
     assert len(problem["daily"]) == 14, problem

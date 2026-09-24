@@ -557,9 +557,13 @@ assert bug_words <= covered, sorted(bug_words - covered)
 ORIGINPY
 assert doc_has '`FAILURE_REASONS`, `FAILURE_ORIGIN`'
 assert doc_has 'LLM doctor problem ledger'
-assert doc_has 'CLEAN legs of the same block, surface and model'
-assert doc_has 'every leg of the group with a duration'
+assert doc_has 'over 2× AND at least 30 s above the median of the last 20 completed legs of its cohort'
+assert doc_has 'within 7 d (≥ 5 of them'
 assert grep -Fq 'SLOW_FACTOR = 2' "$DOCTOR_BIN"
+assert grep -Fq 'SLOW_BASE_N = 20' "$DOCTOR_BIN"
+assert grep -Fq 'SLOW_FLOOR_S = 30' "$DOCTOR_BIN"
+assert grep -Fq 'SLOW_BASE_D = 7' "$DOCTOR_BIN"
+assert grep -Fq 'SLOW_MIN_LEGS = 5' "$DOCTOR_BIN"
 assert grep -Fq 'TREND_DAYS = 14' "$DOCTOR_BIN"
 assert grep -Fq 'BLOCKS = ("reviewers", "workers", "light", "image")' "$DOCTOR_BIN"
 for gone_text in 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d' 's/step' 'llm-weather' 'LLM_WEATHER'; do

@@ -217,6 +217,7 @@ stream_file="$tmp_dir/stream.jsonl"
 stderr_file="$tmp_dir/grok.stderr"
 
 grok_media_lock_acquire grok-video "$account" || exit 1
+image_leg_mark
 
 instruction="Generate exactly one video and stop after the video tool completes.
 Use $tool with these arguments and nothing else:"
