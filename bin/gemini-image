@@ -236,6 +236,7 @@ if [ -z "$text_family" ]; then
   printf 'gemini-image: `geminib families` printed no Flash row; no text model to drive the tool\n' >&2
   exit 1
 fi
+image_leg_mark $((ref_count + 1))
 geminib profile "$account" --model "$text_family-low" --print-timeout 180s \
   ${resume_args[@]+"${resume_args[@]}"} --output-format stream-json \
   --dangerously-skip-permissions --log-file "$log_file" --print "$instruction" \

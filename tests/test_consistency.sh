@@ -564,6 +564,8 @@ assert grep -Fq 'SLOW_BASE_N = 20' "$DOCTOR_BIN"
 assert grep -Fq 'SLOW_FLOOR_S = 30' "$DOCTOR_BIN"
 assert grep -Fq 'SLOW_BASE_D = 7' "$DOCTOR_BIN"
 assert grep -Fq 'SLOW_MIN_LEGS = 5' "$DOCTOR_BIN"
+assert grep -Fq 'SLOW_SIZE_RATIO = 2' "$DOCTOR_BIN"
+assert doc_has 'whose input size is within 2× of its own (`SLOW_SIZE_RATIO`'
 assert grep -Fq 'TREND_DAYS = 14' "$DOCTOR_BIN"
 assert grep -Fq 'BLOCKS = ("reviewers", "workers", "light", "image")' "$DOCTOR_BIN"
 for gone_text in 'Refresh Gemini' 'Run Gemini probe' 'cut ×%d' 's/step' 'llm-weather' 'LLM_WEATHER'; do

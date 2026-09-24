@@ -3,7 +3,7 @@
 
 image_leg_start() { # tool kind [served-model-variable]
   IMAGE_LEG_TOOL=$1 IMAGE_LEG_KIND=$2 IMAGE_LEG_MODEL_VAR=${3:-} IMAGE_LEG_STARTED=$(date +%s)
-  IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0
+  IMAGE_LEG_ERR='' IMAGE_LEG_TEE='' IMAGE_LEG_QUEUED=0 IMAGE_LEG_SIZE=''
   trap image_leg_exit EXIT
   IMAGE_LEG_ERR=$(mktemp "${TMPDIR:-/tmp}/image-leg.XXXXXX" 2>/dev/null) || { IMAGE_LEG_ERR=''; return 0; }
   # A process substitution that cannot open /dev/fd complains on the live stderr; probe it silenced.
@@ -22,12 +22,13 @@ image_leg_start() { # tool kind [served-model-variable]
   IMAGE_LEG_TEE=${!:-}
 }
 
-# Called once the wrapper holds its account: the wait before it is queueing, not the model's time.
-image_leg_mark() {
+# Called right before the vendor runs: the wait before it is queueing, not the model's time. The
+# argument is the leg's input size (images: 1 + reference images, video: requested seconds).
+image_leg_mark() { # [size]
   local now
   [ -n "${IMAGE_LEG_TOOL:-}" ] || return 0
   now=$(date +%s)
-  IMAGE_LEG_QUEUED=$((now - IMAGE_LEG_STARTED)) IMAGE_LEG_STARTED=$now
+  IMAGE_LEG_QUEUED=$((now - IMAGE_LEG_STARTED)) IMAGE_LEG_STARTED=$now IMAGE_LEG_SIZE=${1:-}
 }
 
 # A wrapper that sets its own EXIT trap calls this first in it: `$?` must still be the wrapper's
@@ -49,9 +50,9 @@ image_leg_exit() {
   log=${IMAGE_LEG_LOG:-$HOME/.cache/image-legs/legs.jsonl}
   mkdir -p "${log%/*}" 2>/dev/null || return 0
   jq -cn --arg tool "$IMAGE_LEG_TOOL" --arg kind "$IMAGE_LEG_KIND" --argjson rc "$rc" \
-    --argjson started "$IMAGE_LEG_STARTED" --argjson queued "${IMAGE_LEG_QUEUED:-0}" --arg account "${account:-}" --arg served "$model" --arg err "$err" \
+    --argjson started "$IMAGE_LEG_STARTED" --argjson queued "${IMAGE_LEG_QUEUED:-0}" --arg size "${IMAGE_LEG_SIZE:-}" --arg account "${account:-}" --arg served "$model" --arg err "$err" \
     '{ts: (now | floor), tool: $tool, kind: $kind, rc: $rc, seconds: ((now | floor) - $started),
-      queued: $queued, account: $account, served: $served, err: $err}' 2>/dev/null >>"$log" || true
+      queued: $queued, size: ($size | tonumber? // null), account: $account, served: $served, err: $err}' 2>/dev/null >>"$log" || true
   IMAGE_LEG_TOOL=''
   return 0
 }

@@ -62,6 +62,11 @@ bench(60000, "fffffff", [cell("haiku2-old-%d" % index, "haiku2", 60000 - index *
 # Seconds-scale jitter stays under the absolute floor.
 bench(60000, "ggggggg", [cell("tiny-%d" % index, "tiny", 60000 - index * 60, duration_s=5) for index in range(5)]
       + [cell("tiny-late", "tiny", 40000, duration_s=20)])
+# Legs are judged against earlier legs of a similar input size: a 10x larger scope is unjudged, not slow.
+bench(45000, "hhhhhhh", [cell("sz-%d" % index, "sz", 45000 - index * 60) for index in range(5)],
+      scope_price={"files": 1, "lines": 100})
+bench(44000, "iiiiiii", [cell("sz-big", "sz", 44000, duration_s=400)], scope_price={"files": 9, "lines": 1000})
+bench(43000, "jjjjjjj", [cell("sz-same", "sz", 43000, duration_s=400)], scope_price={"files": 1, "lines": 150})
 bench(3600, "bbbbbbb", [
     cell("opus-high", "opus", 3600, duration_s=400),
     cell("opus-xhigh", "opus", 3600, duration_s=400, passes=4),
@@ -211,7 +216,7 @@ slow = review[("slow", "")]
 slow_models = {}
 for incident in slow["incidents"]:
     slow_models[incident["model"]] = slow_models.get(incident["model"], 0) + 1
-assert slow["count"] == 7 and slow_models == {"opus": 1, "sonnet": 1, "haiku2": 5}, (slow["count"], slow_models)
+assert slow["count"] == 8 and slow_models == {"opus": 1, "sonnet": 1, "haiku2": 5, "sz": 1}, (slow["count"], slow_models)
 speed = blocks["reviewers"]["speed"]
 assert speed["judged"] >= 15 and speed["unjudged"] >= 5, speed
 assert blocks["reviewers"]["owner"] == "Review owner" and blocks["workers"]["owner"] == ""

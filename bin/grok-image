@@ -230,6 +230,7 @@ launch_args=(profile "$account" -p "$instruction"
 [ -z "$resume" ] || launch_args+=(--resume "$resume")
 
 generation_rc=0
+image_leg_mark $((ref_count + 1))
 GROK_MEMORY=0 "$grokb_cmd" "${launch_args[@]}" \
   >"$stream_file" 2>"$stderr_file" || generation_rc=$?
 

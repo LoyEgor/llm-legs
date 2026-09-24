@@ -356,7 +356,7 @@ while ! mkdir "$lock_dir" 2>/dev/null; do
   lock_waited=$((lock_waited + 2))
 done
 lock_held=true
-image_leg_mark
+image_leg_mark $((ref_count + 1))
 
 # Backdated a second: -newer misses files that land in the marker's own mtime quantum.
 : >"$launch_marker"

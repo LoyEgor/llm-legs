@@ -40,6 +40,7 @@ SLOW_FACTOR = 2
 SLOW_MIN_LEGS = 5
 SLOW_BASE_N = 20
 SLOW_FLOOR_S = 30
+SLOW_SIZE_RATIO = 2
 TREND_MIN = 3
 MAX_INCIDENTS = 15
 DETAIL_MAX = 40
@@ -253,6 +254,13 @@ def first_line(path):
 def mtime_of(path):
     try:
         return os.stat(path).st_mtime
+    except OSError:
+        return None
+
+
+def file_size(path):
+    try:
+        return os.stat(path).st_size
     except OSError:
         return None
 
@@ -500,6 +508,7 @@ def bench_legs(cutoff, now):
 def run_legs(meta, name, started, cutoff, now):
     evidence = escape_evidence(meta)
     project = bench_project(meta)
+    scope_lines = as_int((meta.get("scope_price") or {}).get("lines")) if isinstance(meta.get("scope_price"), dict) else None
     tier = str(meta.get("tier") or "")
     rows = [row for row in meta.get("rater_runs") or [] if isinstance(row, dict)]
     last = {}
@@ -525,13 +534,18 @@ def run_legs(meta, name, started, cutoff, now):
         passes = cell.get("passes")
         chunked = isinstance(passes, int) and passes > 1
         per_pass = duration_s / passes if duration_s and chunked else duration_s
+        max_pass = cell.get("max_pass_ms")
+        max_pass_s = max_pass / 1000.0 if chunked and isinstance(max_pass, (int, float)) and max_pass > 0 else None
+        if max_pass_s:
+            per_pass = max_pass_s
+        pass_lines = scope_lines / passes if scope_lines and chunked else scope_lines
         model = bench_model(cell)
         cohort = "·".join(part for part in (model, str(cell.get("effort") or ""), "chunks" if chunked else "") if part)
         common = {"project": project, "tier": tier, "ref": name, "account": cell.get("account") or "",
                   "text": (cell.get("stderr") or "")[-TEXT_MAX:]}
         legs.append(leg("reviewers", "review", model, ended, klass, reason, detail, origin,
                         attempt="final" if final else "superseded", cohort=cohort,
-                        duration=None if cell.get("killed_chunks") else per_pass, **common))
+                        duration=max_pass_s if cell.get("killed_chunks") else per_pass, size=pass_lines, **common))
         if final and klass is None and cell.get("exit_code") == 0:
             for chunk in CHUNK_LINE_RE.finditer(cell.get("stderr") or ""):
                 text = chunk.group(3).strip()
@@ -567,7 +581,7 @@ def judge_leg(judge, at, project, tier, ref):
     duration = judge.get("duration_ms")
     duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
     common = {"project": project, "tier": tier, "ref": ref, "duration": duration_s,
-              "text": str(judge.get("reason") or "")[-TEXT_MAX:]}
+              "size": as_int(judge.get("claims")), "text": str(judge.get("reason") or "")[-TEXT_MAX:]}
     model = str(judge.get("model") or "judge")
     batches = as_int(judge.get("batches")) or 1
     common["cohort"] = "%s·%s·%s" % (model, judge.get("effort") or "", "%d batches" % batches if batches < 4 else "4+ batches")
@@ -723,7 +737,8 @@ def worker_legs(cutoff, now):
         kind = str(meta.get("light") or ("research" if meta.get("role") == "research" else ""))
         cohort = "·".join(part for part in (fields[1], effort, kind, "resume" if meta.get("resume") else "") if part)
         legs.append(leg(block, "worker", fields[1], ended, klass, reason, detail, origin, cohort=cohort,
-                        duration=finished - begun if finished > begun else None, **common))
+                        duration=finished - begun if finished > begun else None,
+                        size=file_size(os.path.join(run_dir, "brief")), **common))
         for account in meta.get("walled_accounts") or []:
             legs.append(leg(block, "worker", fields[1], started, "walled", "walled", "usage limit", "",
                             attempt="superseded", **dict(common, account=str(account))))
@@ -836,28 +851,37 @@ def image_legs(cutoff, now):
         legs.append(leg("image", str(row.get("kind") or "image"), model, at, klass, reason, detail, origin,
                         cohort=model + "·" + served if served else model,
                         duration=seconds if isinstance(seconds, (int, float)) and seconds > 0 else None,
-                        account=str(row.get("account") or ""), ref=str(row.get("tool") or ""),
+                        size=as_int(row.get("size")), account=str(row.get("account") or ""), ref=str(row.get("tool") or ""),
                         text=err[-TEXT_MAX:]))
     return legs, earliest
 
 
+def comparable_size(size, other):
+    if not (isinstance(size, (int, float)) and size > 0):
+        return not (isinstance(other, (int, float)) and other > 0)
+    return isinstance(other, (int, float)) and other > 0 and max(size, other) <= SLOW_SIZE_RATIO * min(size, other)
+
+
 def mark_slow(legs):
-    """Each completed leg against the median of the SLOW_BASE_N completions of its cohort that
-    ended before it within SLOW_BASE_D. Slow legs stay in the sample: a model whose new speed
-    persists becomes its own baseline after about half that many legs, and a verdict, resting only
-    on what came before, never flips when later legs arrive."""
+    """Each completed leg against the median of the SLOW_BASE_N completions of its cohort, within
+    SLOW_SIZE_RATIO of its input size, that ended before it within SLOW_BASE_D. Slow legs
+    stay in the sample: a model whose new speed persists becomes its own baseline after about half
+    that many legs, and a verdict, resting only on what came before, never flips when later legs
+    arrive."""
     history = {}
     for leg_row in sorted(legs, key=lambda row: row["at"]):
         duration = leg_row["duration"]
         if leg_row["class"] is not None or leg_row["attempt"] != "final" or not duration or duration <= 0:
             continue
         key = (leg_row["block"], leg_row["surface"], leg_row.get("cohort") or leg_row["model"])
-        earlier = [item for item in history.get(key, []) if item[0] >= leg_row["at"] - SLOW_BASE_D * 86400]
-        history[key] = (earlier + [(leg_row["at"], duration)])[-SLOW_BASE_N:]
+        size = leg_row.get("size")
+        recent = [item for item in history.get(key, []) if item[0] >= leg_row["at"] - SLOW_BASE_D * 86400]
+        history[key] = recent + [(leg_row["at"], duration, size)]
+        earlier = [item for item in recent if comparable_size(size, item[2])][-SLOW_BASE_N:]
         if len(earlier) < SLOW_MIN_LEGS:
             leg_row["baseline"] = None
             continue
-        median = statistics.median(value for _, value in earlier)
+        median = statistics.median(item[1] for item in earlier)
         leg_row["baseline"] = median
         if duration > SLOW_FACTOR * median and duration - median >= SLOW_FLOOR_S:
             leg_row["class"], leg_row["reason"] = "slow", "slow"
