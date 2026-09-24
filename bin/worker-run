@@ -582,7 +582,7 @@ outcome_record() { # outcome [directory]
 
 outcome_line() (
   local outcome="$1" report_directory="${2:-}" report_id="${run_id:-}" launcher
-  local details files=unknown elapsed=0 began now marker='' marker_pid marker_age place_session
+  local details files=unknown elapsed='' began now marker='' marker_pid marker_age place_session repo=''
   local posting_pid=${BASHPID:-$(sh -c 'echo "$PPID"')}
   printf 'OUTCOME: %s\n' "$outcome"
   outcome_record "$outcome" "$report_directory"
@@ -621,13 +621,19 @@ outcome_line() (
     began=$(jq -r '.pid_started_at // .started_at // 0' "$report_directory/meta.json" 2>/dev/null)
     now=$(date +%s)
     [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] && elapsed=$((now - began))
+    repo=$(git -C "$(jq -r '.workdir // empty' "$report_directory/meta.json" 2>/dev/null)" rev-parse --show-toplevel 2>/dev/null)
+    repo=${repo##*/}
     if [ -f "$report_directory/files" ]; then
       files=$(awk '!/^WORKDIR: |^UNKNOWN: |^PARTIAL: / && NF {n++} END {print n+0}' "$report_directory/files")
       if grep -q '^UNKNOWN: \|^PARTIAL: ' "$report_directory/files"; then files="$files (incomplete)"; fi
     fi
   fi
   [ -n "$report_id" ] || report_id="${vendor:-worker}-$(date +%s)-$$-$RANDOM"
-  if printf 'OUTCOME: %s\n%s · wall-clock: %ss\nfiles: %s\n' "$outcome" "$details" "$elapsed" "$files" |
+  if jq -cn --arg repo "$repo" --arg outcome "$outcome" --arg worker "$details" --arg seconds "$elapsed" \
+      --arg files "$files" '{word: "worker", rows: (([["repo", $repo]] | map(select(.[1] != ""))) + [
+        ["outcome", $outcome], ["worker", $worker],
+        ["wall-clock", {seconds: (if $seconds == "" then null else ($seconds | tonumber) end)}],
+        ["files", $files]])}' |
     report-bus post --kind notice --id "$report_id" --session "${launcher:-_orphan}" >/dev/null; then
     [ -z "$marker" ] || : >"$report_directory/report-posted"
   fi

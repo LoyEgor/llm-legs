@@ -3,9 +3,16 @@ set -u
 umask 077
 ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports"
 CAP=16000
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in /*) self=$link ;; *) self=${self%/*}/$link ;; esac
+done
+FRAME=${REPORT_FRAME:-$(cd -P "${self%/*}/.." 2>/dev/null && pwd)/share/report_frame.py}
 locked=false
 tmp=''
 usage() { printf 'report-bus: invalid arguments (post | emit | flush | list | doctor); emit exits 3 on a duplicate\n' >&2; exit 2; }
+refuse_body() { printf 'report-bus: the body must be a block document {"word":…,"rows":[[label,value],…]}: %s\n' "$1" >&2; exit 2; }
 valid_name() { case "$1" in ''|.|..|*[!A-Za-z0-9._-]*) return 1 ;; esac; }
 # shellcheck disable=SC2329
 cleanup() {
@@ -91,9 +98,12 @@ render() {
   jq -er '
     if type != "object" or (.body | type) != "string"
     then error("invalid report") else
-      (if .session == "_orphan" then "chat: unknown\n" else "" end) +
       (.body | sub("^\n+"; "") | sub("\n+$"; ""))
     end' "$1"
+}
+undelivered_block() {
+  printf '{"word":"reports","rows":[["undelivered",%s]]}' "$1" | python3 "$FRAME" block 2>/dev/null ||
+    printf 'report-bus: %s report(s) undelivered\n' "$1"
 }
 hook_output() {
   jq -cn --arg m "$1" --arg c "${2:-}" --arg e "${3:-PostToolUse}" '
@@ -166,6 +176,16 @@ case "$verb" in
     body=${body%$'\001'}
     resolve_session
     [ -n "$id" ] || id=$(printf '%s' "$body" | shasum -a 256 | cut -c1-12)
+    document=$body
+    if [ "$session" = _orphan ]; then
+      document=$(printf '%s' "$body" | jq -c '.rows = [["chat", "unknown"]] + .rows' 2>/dev/null) ||
+        refuse_body 'not JSON'
+    fi
+    tmp=$(mktemp "${TMPDIR:-/tmp}/report-bus.XXXXXX") || problem 'cannot create temporary file'
+    body=$(printf '%s' "$document" | python3 "$FRAME" block 2>"$tmp") ||
+      refuse_body "$(sed 's/^report_frame: //' "$tmp" 2>/dev/null)"
+    rm -f "$tmp"
+    tmp=''
     valid_name "$id" || problem 'cannot hash body'
     lock_store || problem 'cannot write queue root or acquire lock'
     if duplicate; then case "$verb" in emit) exit 3 ;; *) exit 0 ;; esac; fi
@@ -206,8 +226,7 @@ case "$verb" in
     done < <(pending_files)
     reserve=0
     if [ "$event" = Stop ]; then
-      warning="report-bus: $total report(s) undelivered — $ROOT/$session/pending"
-      reserve=$(printf '\n\n%s' "$warning" | wc -c | tr -d ' ')
+      reserve=$(printf '\n\n%s' "$(undelivered_block "$total")" | wc -c | tr -d ' ')
     fi
     mkdir -p "$ROOT/$session/delivered" 2>/dev/null || exit 0
     for entry in ${files[@]+"${files[@]}"}; do
@@ -222,7 +241,7 @@ case "$verb" in
     done
     remaining=$((total - ${#selected[@]}))
     if [ "$event" = Stop ] && [ "$remaining" -gt 0 ]; then
-      blocks="$blocks${blocks:+$'\n\n'}report-bus: $remaining report(s) undelivered — $ROOT/$session/pending"
+      blocks="$blocks${blocks:+$'\n\n'}$(undelivered_block "$remaining")"
     fi
     # A body that renders to nothing is still a delivered report: gating on the text alone
     # left it pending forever, re-read by every later flush and counted undelivered.

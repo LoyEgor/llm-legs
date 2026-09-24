@@ -846,18 +846,20 @@ worker-end $norb_top"
 # A refusal that never made a run directory prints no `RUN:` line — that line means a run exists to
 # wait on — so its report id is read back off the bus.
 posted_id() { # outcome
-  jq -rs --arg o "OUTCOME: $1" \
-    '[.[] | select(.body | startswith($o))] | last | .argv[4] // ""' "$REPORT_BUS_LOG"
+  jq -rs --arg o "$1" '[.[] | select([.body | fromjson | .rows[] | select(.[0] == "outcome")
+    | .[1]] == [$o])] | last | .argv[4] // ""' "$REPORT_BUS_LOG"
 }
 assert_worker_post() {
   local id="$1" outcome="$2" rows
   rows=$(jq -s --arg id "$id" '[.[] | select(.argv[4] == $id)]' "$REPORT_BUS_LOG")
   assert test "$(jq length <<<"$rows")" = 1
   assert jq -e --arg id "$id" '.[0].argv == ["post","--kind","notice","--id",$id,"--session","report-launcher"]' <<<"$rows" >/dev/null
-  assert test "$(jq -r '.[0].body' <<<"$rows" | head -n1)" = "OUTCOME: $outcome"
-  assert test "$(jq -r '.[0].body' <<<"$rows" | wc -l | tr -d ' ')" = 3
-  assert grep -q 'wall-clock: [0-9]*s' <<<"$(jq -r '.[0].body' <<<"$rows")"
-  assert grep -q '^files: ' <<<"$(jq -r '.[0].body' <<<"$rows")"
+  assert jq -e --arg o "$outcome" '.[0].body | fromjson | .word == "worker"
+    and ([.rows[] | .[0]] - ["repo"]) == ["outcome", "worker", "wall-clock", "files"]
+    and ([.rows[] | select(.[0] == "outcome") | .[1]] == [$o])
+    and ([.rows[] | select(.[0] == "wall-clock") | .[1] | keys] == [["seconds"]])' <<<"$rows" >/dev/null
+  jq -r '.[0].body' <<<"$rows" | python3 "$ROOT/share/report_frame.py" block >"$WORK/notice-frame"
+  assert grep -qx "outcome:      $outcome" "$WORK/notice-frame"
 }
 report_bus_tests
 

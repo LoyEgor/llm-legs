@@ -1,7 +1,10 @@
 # Report bus
 
-`bin/report-bus` owns delivery of user-facing reports. Producers supply text; the bus owns
-queueing, rendering, replay and diagnostics. `~/.local/bin/report-bus` is a symlink to the script.
+`bin/report-bus` owns delivery of user-facing reports. Producers supply a block document; the
+bus owns rendering, queueing, replay and diagnostics. Every block renders through
+`share/report_frame.py`, the one renderer of the frame, width, label column, fitting and number
+and time words; `tests/test_report_frame_guard.sh` fails on any other frame drawn in llm-legs,
+review-bench or claude-setup. `~/.local/bin/report-bus` is a symlink to the script.
 Requires Bash, jq and shasum.
 
 ## CLI
@@ -20,7 +23,13 @@ are invalid. Report IDs replace other characters with `-`; `.` and `..` gain a `
 SHA256. The dedup key is `<kind>/<id>` within a session, checked against pending, delivered
 and history, including orphan records adopted by another chat. A duplicate writes no second file and prints nothing: `post` exits 0, `emit` exits 3 so its producer can tell a suppressed report from a broken bus.
 
-`post` reads FILE or stdin and atomically writes one queue file, using a temporary file and
+A body is a JSON document `{"word": "<frame word>", "rows": [[label, value], …]}`. A value is
+text, a number (a count), `{"seconds": s}` (a time word), or a list of item lines, each such a
+value or a list of parts joined as they stand; a row whose value has no text is left out. A body
+that is not such a document exits 2 with `report-bus: the body must be a block document …: <reason>`
+and queues nothing.
+
+`post` reads FILE or stdin, renders it and atomically writes one queue file, using a temporary file and
 rename. Directories are created on demand. Delivery errors exit 0 with `report-bus: <reason>`
 on stderr and the body appended to `lost.log`. If the filesystem also refuses that append,
 stderr carries the body; an unwritable filesystem cannot retain a log.
@@ -45,7 +54,8 @@ the worker-tag agent types `codex-worker`, `claudeb-worker`, `gemini-worker`, `g
 
 ## Rendering and storage
 
-Bodies are delivered verbatim except for boundary newlines; orphan reports start with `chat: unknown`.
+Queue files hold the rendered block, delivered verbatim; an orphan report carries a `chat: unknown`
+row first inside its frame.
 Both `emit` and `flush` start systemMessage with exactly one newline, separate blocks by exactly one blank line, and add no trailing blank line.
 
 Root: `${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports`.
@@ -58,7 +68,7 @@ Root: `${XDG_CACHE_HOME:-$HOME/.cache}/claude-reports`.
 <root>/lost.log
 ```
 
-Queue files contain JSON metadata and the original body. History is JSONL: one line per
+Queue files contain JSON metadata and the rendered body. History is JSONL: one line per
 delivery with `epoch`, `session`, `kind`, `id`, `bytes`, `event`, plus `source_session` and
 rendered `text` for replay and orphan dedup. `list` reprints the last 10 deliveries for the
 resolved chat by default. `--last 0` prints nothing. History survives delivered-file pruning.
@@ -73,10 +83,12 @@ the next flush continues with the following report. Stop reserves space for its 
 the newest 200 per session at flush. No undelivered file is pruned.
 
 `doctor` prints pending counts older than 10 minutes per session, `lost.log` size and orphan
-count. A Stop with files still pending includes this line in the same systemMessage:
+count. A Stop with files still pending includes this block in the same systemMessage:
 
 ```text
-report-bus: N report(s) undelivered — <root>/<session>/pending
+======================= reports ========================
+undelivered:  N
+========================================================
 ```
 
 ## Delivery guarantees
