@@ -269,6 +269,16 @@ VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
 assert [ "$(grep -c '^fingerprint ' "$CALLS")" = 2 ]
 assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
 assert [ "$(tail -n 1 "$CALLS" | cut -d' ' -f1-4)" = "fingerprint request --all Egor's" ]
+# The request probes each CLI's --version, so it gets the npm bin dirs the check got.
+assert [ "$(tail -n 1 "$CALLS" | sed 's/.*PATH=//')" = "$PATH:$FAKE_BIN:$FAKE_BIN:$FAKE_BIN" ]
+# A lock held past lockf's 900s means no pass ran: no integration chat for CLIs nobody updated.
+: >"$CALLS"
+printf '#!/usr/bin/env bash\ncase "$*" in *run.lock*) exit 75 ;; esac\nexec /usr/bin/lockf "$@"\n' >"$FAKE_BIN/lockf"
+chmod +x "$FAKE_BIN/lockf"
+assert_fails env VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
+rm "$FAKE_BIN/lockf"
+assert_fails grep -qF 'request --all' "$CALLS"
+assert grep -qF 'another run held the lock' "$LOG"
 : >"$CALLS"
 assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
 for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done

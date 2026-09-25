@@ -231,9 +231,20 @@ update_now() {
     printf 'vendor update started: CLIs, model lists and fingerprints first, then one integration chat for every vendor opens in Terminal; progress in %s\n' "$log_file"
     return 0
   fi
+  local rc=0 vendor bin_dir bin_dirs=''
   printf '%s manual update: pass started\n' "$(stamp)" >>"$log_file"
-  VENDOR_FINGERPRINT_HOLD=1 lockf -k -t 900 "$state_dir/run.lock" env VENDOR_CLI_UPDATE_LOCKED=1 "$script_path" run
-  "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" request --all "Egor's manual update" >/dev/null
+  VENDOR_FINGERPRINT_HOLD=1 lockf -k -t 900 "$state_dir/run.lock" env VENDOR_CLI_UPDATE_LOCKED=1 "$script_path" run ||
+    rc=$?
+  # 75 is lockf's timeout: the pass never ran, so an integration chat would read CLIs nobody updated.
+  if [ "$rc" = 75 ]; then
+    printf '%s manual update: another run held the lock for 900s; no pass, no integration chat\n' "$(stamp)" >>"$log_file"
+    return 1
+  fi
+  for vendor in $vendors; do
+    bin_dir=$(node_bin_dir "$vendor") && bin_dirs+=":$bin_dir"
+  done
+  PATH="$PATH$bin_dirs" "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" request --all \
+    "Egor's manual update" >/dev/null
 }
 
 wrapper_exec_line() {
