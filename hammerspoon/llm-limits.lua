@@ -955,7 +955,7 @@ local function doctorDetailRows(rows)
   return titles
 end
 
--- The click hands the chat over the way Instruction files does: bin/chats prints the terminal
+-- The click hands the chat over the way Instruction file changes does: bin/chats prints the terminal
 -- command that reopens it under the account worker-pick names. A row with no chat copies its run
 -- id, the one handle review-bench report understands.
 local function copyChatCommand(row)

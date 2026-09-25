@@ -216,7 +216,7 @@ function M.pump()
                 alerted = ok
             elseif freshIndex == ALERT_BURST + 1 then
                 local rest = freshTotal - ALERT_BURST
-                pcall(alertFn, rest .. " more instruction changes — see Automations ▸ Instruction files")
+                pcall(alertFn, rest .. " more instruction changes — see Automations ▸ Token tracking ▸ Instruction file changes")
             end
         end
         local reason = "delivered"
@@ -1154,7 +1154,7 @@ local function topMenu(cache, style)
     return items
 end
 
-local function livenessItem(style)
+local function watcherState()
     local path = heartbeatPath()
     local born = hs.fs.attributes(path, "modification")
     local body = readFile(path) or ""
@@ -1162,18 +1162,22 @@ local function livenessItem(style)
     local roots, files = tonumber(body:match("roots=(%d+)")), tonumber(body:match("files=(%d+)"))
     local failure = body:match("error=([^\n]+)")
     local function stamp(value) return os.date("%d %b %H:%M", value) end
-    local text
-    if not born then
-        text = "watcher: never started"
-    elseif os.time() - born > 2 * WATCH_TICK then
-        text = "watcher: DOWN since " .. stamp(born)
-    elseif failure or (roots or 0) == 0 then
-        text = "watcher: DOWN since " .. stamp(since or born) .. " · " .. (failure or "no root watched")
-    else
-        return { title = style(string.format("watcher: live since %s · %d roots · %d files",
-            stamp(since or born), roots, files or 0)), disabled = true }
+    if not born then return "watcher: never started", true end
+    if os.time() - born > 2 * WATCH_TICK then return "watcher: DOWN since " .. stamp(born), true end
+    if failure or (roots or 0) == 0 then
+        return "watcher: DOWN since " .. stamp(since or born) .. " · " .. (failure or "no root watched"), true
     end
-    return { title = style(text, false, true), disabled = true }
+    return string.format("watcher: live since %s · %d roots · %d files", stamp(since or born), roots, files or 0), false
+end
+
+local function livenessItem(style)
+    local text, down = watcherState()
+    return { title = style(text, false, down), disabled = true }
+end
+
+function M.watcherAlarm()
+    local text, down = watcherState()
+    return down and text or nil
 end
 
 function M.menuItems()
