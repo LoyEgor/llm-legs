@@ -1599,7 +1599,38 @@ record_worker_session() {
   esac
   grep -qxF -- "$session" "$directory/worker-session" 2>/dev/null && return 0
   printf '%s\n' "$session" >>"$directory/worker-session" 2>/dev/null || :
+  journal_worker_attempt "$directory" "$session"
   return 0
+}
+
+WORKER_ATTEMPTS_ROTATE_BYTES=16777216
+
+file_bytes() { # path
+  stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
+}
+
+# tokenmap zones every worker session from this journal: the run directory is pruned after seven
+# days and a wall reroute rewrites meta.account, so each attempt is written down while its facts
+# still hold. Two segments of 16 MiB bound it; the rotation lock is re-checked inside because a
+# second writer may have rotated between the size read and the mkdir, and a lock older than a
+# minute is a killed rotation's, which would otherwise stop every later one.
+journal_worker_attempt() { # directory session
+  local directory="$1" journal
+  journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/worker-attempts.jsonl"
+  mkdir -p "${journal%/*}" 2>/dev/null || return 0
+  if [ "$(file_bytes "$journal")" -gt "$WORKER_ATTEMPTS_ROTATE_BYTES" ] \
+    && { find "$journal.rotating" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null; mkdir "$journal.rotating" 2>/dev/null; }; then
+    [ "$(file_bytes "$journal")" -le "$WORKER_ATTEMPTS_ROTATE_BYTES" ] || mv -f "$journal" "$journal.1" 2>/dev/null
+    rmdir "$journal.rotating" 2>/dev/null
+  fi
+  jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "${directory##*/}" --arg session "$2" \
+    --arg attempt "$(head -n1 "$directory/attempt" 2>/dev/null)" \
+    --arg launcher "$(head -n1 "$directory/launcher" 2>/dev/null)" \
+    --arg agent "$(head -n1 "$directory/agent-task" 2>/dev/null)" \
+    '{ts: $ts, run: $run, attempt: (($attempt | tonumber?) // null), session: $session,
+      vendor, account, role, light: (.light // null), model, workdir,
+      launcher: (($launcher | select(. != "")) // null), agent: (($agent | select(. != "")) // null)}' \
+    "$directory/meta.json" >>"$journal" 2>/dev/null || :
 }
 
 # The task row the chat paints for this run reads this file, so every transition rewrites it whole.
@@ -1614,38 +1645,9 @@ write_run_state() { # directory phase [exit-code]
   [ -n "$agent" ] || agent=${CLAUDE_AGENT_ID:-}
   IFS= read -r tag <"$directory/tag" 2>/dev/null || :
   rest=${tag#* · }
-  journal_worker_attempt "$directory" "$session"
   session=$(cat "$directory/launcher" 2>/dev/null) || session=''
   tmp="$directory/state.json.tmp.$$"
   if jq -n --arg phase "$phase" --argjson round "$round" --arg code "$code" --arg agent "$agent" \
-WORKER_ATTEMPTS_ROTATE_BYTES=16777216
-
-file_bytes() { # path
-  stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
-}
-
-# tokenmap zones every worker session from this journal: the run directory is pruned after seven
-# days and a wall reroute rewrites meta.account, so each attempt is written down while its facts
-# still hold. Two segments of 16 MiB bound it; the rotation lock is re-checked inside because a
-# second writer may have rotated between the size read and the mkdir.
-journal_worker_attempt() { # directory session
-  local directory="$1" journal
-  journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/worker-attempts.jsonl"
-  mkdir -p "${journal%/*}" 2>/dev/null || return 0
-  if [ "$(file_bytes "$journal")" -gt "$WORKER_ATTEMPTS_ROTATE_BYTES" ] && mkdir "$journal.rotating" 2>/dev/null; then
-    [ "$(file_bytes "$journal")" -le "$WORKER_ATTEMPTS_ROTATE_BYTES" ] || mv -f "$journal" "$journal.1" 2>/dev/null
-    rmdir "$journal.rotating" 2>/dev/null
-  fi
-  jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "${directory##*/}" --arg session "$2" \
-    --arg attempt "$(head -n1 "$directory/attempt" 2>/dev/null)" \
-    --arg launcher "$(head -n1 "$directory/launcher" 2>/dev/null)" \
-    --arg agent "$(head -n1 "$directory/agent-task" 2>/dev/null)" \
-    '{ts: $ts, run: $run, attempt: (($attempt | tonumber?) // null), session: $session,
-      vendor, account, role, light: (.light // null), model, workdir,
-      launcher: (($launcher | select(. != "")) // null), agent: (($agent | select(. != "")) // null)}' \
-    "$directory/meta.json" >>"$journal" 2>/dev/null || :
-}
-
     --arg session "$session" --arg account "${tag%% · *}" --arg model "${rest%% · *}" --arg effort "${rest##* · }" \
     --arg round_id "$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null)" \
     --arg started "$(jq -r '.pid_started_at // .started_at // empty' "$directory/meta.json" 2>/dev/null)" \

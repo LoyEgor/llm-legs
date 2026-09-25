@@ -55,4 +55,11 @@ assert test "$(jq -r '.session' "$JOURNAL.1" | paste -sd, -)" = "01a0-first,01a0
 assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-third"
 assert test ! -d "$JOURNAL.rotating"
 
+# A lock a killed rotation left behind does not stop the next one.
+mkdir "$JOURNAL.rotating" && touch -t 202001010000 "$JOURNAL.rotating"
+ROTATE_BYTES=10 record 01a0-fourth
+assert test "$(jq -r '.session' "$JOURNAL.1")" = "01a0-third"
+assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-fourth"
+assert test ! -d "$JOURNAL.rotating"
+
 printf 'OK: worker attempts journal (%d assertions)\n' "$asserts"
