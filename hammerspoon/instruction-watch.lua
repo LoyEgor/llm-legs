@@ -20,7 +20,6 @@
 local M = {}
 local CHARS_PER_TOKEN = 3.2
 local FILE_WIDTH = 32
-local TOP_FILES = 10
 local MODES = { always_on = "always", on_demand = "demand", agent_brief = "brief" }
 local ROOT = debug.getinfo(1, "S").source:match("^@(.+)/hammerspoon/instruction%-watch%.lua$")
 local DEFAULT_RATES = (os.getenv("HOME") or "") .. "/.local/share/tokenmap/read-rates.json"
@@ -274,24 +273,7 @@ local function rates()
         return ar > br
     end)
     for rank, path in ipairs(paths) do ranks[path] = rank end
-    local top, measured = {}, false
-    local function readTokens(path)
-        local weekly = entries[path].weekly
-        return type(weekly) == "table" and tonumber(weekly.read_tokens) or nil
-    end
-    for _, path in ipairs(paths) do
-        local tokens = readTokens(path)
-        if tokens then measured = true end
-        local markdown = path:sub(-3) == ".md" or path:sub(-9) == ".markdown"
-        if tokens and tokens > 0 and markdown then top[#top + 1] = path end
-    end
-    table.sort(top, function(a, b)
-        local at, bt = readTokens(a), readTokens(b)
-        if at == bt then return a < b end
-        return at > bt
-    end)
-    for index = #top, TOP_FILES + 1, -1 do top[index] = nil end
-    ratesCache, ratesStamp = { entries = entries, ranks = ranks, top = top, measured = measured }, stamp
+    ratesCache, ratesStamp = { entries = entries, ranks = ranks }, stamp
     return ratesCache
 end
 
@@ -1105,55 +1087,6 @@ local function eventMenu(event, receipt, cache, style)
     return items
 end
 
-local function distinctShortPaths(paths)
-    local depth, names = {}, {}
-    for index in ipairs(paths) do depth[index] = 2 end
-    for _ = 1, 8 do
-        local seen, clash = {}, false
-        for index, path in ipairs(paths) do
-            local parts = {}
-            for part in tostring(path):gmatch("[^/]+") do parts[#parts + 1] = part end
-            names[index] = table.concat(parts, "/", math.max(1, #parts - depth[index] + 1))
-            seen[names[index]] = (seen[names[index]] or 0) + 1
-        end
-        for index in ipairs(paths) do
-            if seen[names[index]] > 1 then depth[index], clash = depth[index] + 1, true end
-        end
-        if not clash then break end
-    end
-    return names
-end
-
-local function tokenText(value)
-    if value >= 999950 then return string.format("%.1fM tok", value / 1e6) end
-    if value >= 1000 then return string.format("%.1fk tok", value / 1000) end
-    return math.floor(value) .. " tok"
-end
-
-local function topMenu(cache, style)
-    if not cache.measured then
-        return { { title = style("read_tokens missing — regenerate read-rates.json", true), disabled = true } }
-    end
-    local items = { { title = style("tokens read this week · from Read/@ loads", true), disabled = true },
-                    { title = "-" } }
-    local rows, names = {}, distinctShortPaths(cache.top)
-    for index, path in ipairs(cache.top) do
-        local weekly = cache.entries[path].weekly
-        local loads = tonumber(weekly.read_loads)
-        rows[index] = { clip(names[index], FILE_WIDTH), tokenText(tonumber(weekly.read_tokens)),
-                        loads and ("×" .. math.floor(loads)) or "", MODES[cache.entries[path].mode] or "" }
-    end
-    local columns = { {}, { right = true }, { right = true }, { dim = true } }
-    for index, title in ipairs(alignedTitles(rows, columns, style)) do
-        local path = cache.top[index]
-        items[#items + 1] = { title = title, fn = function() pasteboardFn(path) end }
-    end
-    if #rows == 0 then
-        items[#items + 1] = { title = style("no markdown read this week", true), disabled = true }
-    end
-    return items
-end
-
 local function watcherState()
     local path = heartbeatPath()
     local born = hs.fs.attributes(path, "modification")
@@ -1242,7 +1175,6 @@ function M.menuItems()
         items[#items + 1] = { title = style("+" .. older .. " older in events.jsonl", true), disabled = true }
     end
     items[#items + 1] = { title = "-" }
-    items[#items + 1] = { title = "Top MD files this week", menu = topMenu(cache, style) }
     local ranked = M.rankedPaths()
     local coverage = { { title = "~/.claude: settings.json and every guarded markdown",
                          disabled = true } }

@@ -11,8 +11,8 @@ local DEFAULT_PATH = HOME .. "/.local/share/tokenmap/tracking.json"
 local PAGE = HOME .. "/.local/share/tokenmap/tokenmap.html"
 local TOKENMAP = HOME .. "/.local/bin/tokenmap"
 local TASK_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-local NOTE_WIDTH = 76
 local STALE_HOURS = 26
+local DELTA_COLUMN = 3
 
 local menuFont = { name = "Menlo", size = 13 }
 local RED = { red = 0.86, green = 0.16, blue = 0.14, alpha = 1 }
@@ -69,8 +69,8 @@ local function pad(text, size, right)
     return right and (spaces .. text) or (text .. spaces)
 end
 
--- Each row: { label, nums = {...}, tone, extra, dim }. The label column is left-aligned, every
--- number right-aligned to its column's widest cell, the last number coloured by the row's tone.
+-- Each row: { label, nums = {...}, tone, dim }. The label column is left-aligned, every number
+-- right-aligned to its column's widest cell, the Δ column coloured by the row's tone.
 local function aligned(rows)
     local labelWidth, numWidths = 0, {}
     for _, row in ipairs(rows) do
@@ -87,27 +87,12 @@ local function aligned(rows)
         local title = style(pad(row.label or "", labelWidth), rowColor)
         for c = 1, #numWidths do
             local color = rowColor
-            if c == #numWidths and row.tone then color = TONES[row.tone] or rowColor end
+            if c == DELTA_COLUMN and row.tone then color = TONES[row.tone] or rowColor end
             title = title .. style("  " .. pad(nums[c] or "", numWidths[c], true), color)
         end
-        if row.extra and row.extra ~= "" then title = title .. style("   " .. row.extra, dim) end
         titles[index] = title
     end
     return titles
-end
-
-local function wrap(text, size)
-    local lines, line = {}, ""
-    for word in tostring(text or ""):gmatch("%S+") do
-        if line ~= "" and width(line) + 1 + width(word) > size then
-            lines[#lines + 1] = line
-            line = word
-        else
-            line = line == "" and word or (line .. " " .. word)
-        end
-    end
-    if line ~= "" then lines[#lines + 1] = line end
-    return lines
 end
 
 local function copyFn(text)
@@ -117,27 +102,8 @@ local function copyFn(text)
     end
 end
 
-local function sectionItems(section)
-    local rows = { { label = section.title or "", nums = section.columns or {}, dim = true } }
-    for _, item in ipairs(section.rows or {}) do
-        rows[#rows + 1] = { label = item.label, nums = item.cells, tone = item.tone, dim = item.dim }
-    end
-    local items = {}
-    for index, title in ipairs(aligned(rows)) do
-        local entry = { title = title }
-        local source = section.rows and section.rows[index - 1]
-        if index == 1 then
-            entry.disabled = true
-        elseif source and source.copy then
-            entry.fn = copyFn(source.copy)
-        end
-        items[#items + 1] = entry
-    end
-    return items
-end
-
 local function weeksMenu(row)
-    local rows = { { label = "calendar week", nums = { "Mon–Sun" }, dim = true } }
+    local rows = { { label = "week (Mon–Sun)", nums = { row.weeks_unit or "" }, dim = true } }
     for _, week in ipairs(row.weeks or {}) do
         rows[#rows + 1] = { label = week.label, nums = { week.cell } }
     end
@@ -148,19 +114,62 @@ local function weeksMenu(row)
     return items
 end
 
-local function rowMenu(row)
-    local items, dim = {}, dimColor()
-    for _, line in ipairs(wrap(row.note, NOTE_WIDTH)) do
-        items[#items + 1] = { title = style(line, dim), disabled = true }
+local function byWeekMenu(data)
+    local columns = {}
+    for _, row in ipairs(data.rows) do
+        if #(row.weeks or {}) > #columns then columns = row.weeks end
     end
-    for _, section in ipairs(row.sections or {}) do
-        if #(section.rows or {}) > 0 then
-            items[#items + 1] = { title = "-" }
-            for _, item in ipairs(sectionItems(section)) do items[#items + 1] = item end
+    local rows, groups = { { label = "week (Mon–Sun)", nums = {}, dim = true } }, {}
+    for c, week in ipairs(columns) do rows[1].nums[c] = week.short or week.label end
+    for _, row in ipairs(data.rows) do
+        if #(row.weeks or {}) > 0 then
+            local label = row.label
+            if row.weeks_unit and row.weeks_unit ~= data.unit_label then label = label .. " · " .. row.weeks_unit end
+            local nums = {}
+            for c, week in ipairs(row.weeks) do nums[c] = week.cell end
+            rows[#rows + 1] = { label = label, nums = nums }
+            groups[#rows] = row.group
         end
     end
-    items[#items + 1] = { title = "-" }
-    items[#items + 1] = { title = "Calendar weeks", menu = weeksMenu(row) }
+    local items = {}
+    for index, title in ipairs(aligned(rows)) do
+        if index > 2 and groups[index] ~= groups[index - 1] then items[#items + 1] = { title = "-" } end
+        items[#items + 1] = { title = title, disabled = index == 1 }
+    end
+    return items
+end
+
+-- Every section of one drill menu is aligned as one table, so their columns line up.
+local function rowMenu(row)
+    local rows, owners = {}, {}
+    for _, section in ipairs(row.sections or {}) do
+        if #(section.rows or {}) > 0 then
+            rows[#rows + 1] = { label = section.title or "", nums = section.columns or {}, dim = true }
+            owners[#rows] = false
+            for _, item in ipairs(section.rows) do
+                rows[#rows + 1] = { label = item.label, nums = item.cells, tone = item.tone, dim = item.dim }
+                owners[#rows] = item
+            end
+        end
+    end
+    local items = {}
+    for index, title in ipairs(aligned(rows)) do
+        local item = owners[index]
+        if not item then
+            if #items > 0 then items[#items + 1] = { title = "-" } end
+            items[#items + 1] = { title = title, disabled = true }
+        elseif item.child then
+            items[#items + 1] = { title = title, menu = rowMenu(item.child) }
+        elseif item.copy then
+            items[#items + 1] = { title = title, fn = copyFn(item.copy) }
+        else
+            items[#items + 1] = { title = title }
+        end
+    end
+    if #(row.weeks or {}) > 0 then
+        items[#items + 1] = { title = "-" }
+        items[#items + 1] = { title = "Calendar weeks", menu = weeksMenu(row) }
+    end
     return items
 end
 
@@ -254,18 +263,26 @@ function M.menuItems(changeLog, watcherAlarm)
     local data, problem, attrs = load()
     local items = statusItems(data, problem, attrs)
     if data then
-        local rows = { { label = "", nums = data.columns or { "7 days", "prev 7", "Δ" }, dim = true } }
+        local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" },
+                         dim = true } }
         for _, row in ipairs(data.rows) do
-            rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone, extra = row.extra }
+            rows[#rows + 1] = { label = row.label, nums = row.cells, tone = row.tone }
+        end
+        local titles = aligned(rows)
+        items[#items + 1] = { title = "-" }
+        items[#items + 1] = { title = titles[1], disabled = true }
+        local group = nil
+        for index, row in ipairs(data.rows) do
+            if group ~= nil and row.group ~= group then
+                items[#items + 1] = { title = "-" }
+                local caption = type(data.groups) == "table" and data.groups[row.group]
+                if caption then items[#items + 1] = { title = style(caption, dimColor()), disabled = true } end
+            end
+            group = row.group
+            items[#items + 1] = { title = titles[index + 1], menu = rowMenu(row) }
         end
         items[#items + 1] = { title = "-" }
-        for index, title in ipairs(aligned(rows)) do
-            if index == 1 then
-                items[#items + 1] = { title = title, disabled = true }
-            else
-                items[#items + 1] = { title = title, menu = rowMenu(data.rows[index - 1]) }
-            end
-        end
+        items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
     end
     items[#items + 1] = { title = "-" }
     if type(changeLog) == "function" then

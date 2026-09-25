@@ -92,6 +92,7 @@ fi
 
 if [ "$repo_ok" -eq 1 ]; then
     canary "canary tokenmap" env PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap canary
+    canary "verify tokenmap" env PYTHONPATH="$REPO" nice -n 19 "$PYTHON" -m tokenmap verify --no-color
 fi
 # The instruction canary answers for the gates, not for the token-map checkout, so a missing
 # repo silences the half above it and nothing here.

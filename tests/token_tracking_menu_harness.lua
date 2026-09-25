@@ -19,17 +19,45 @@ local function write(body)
 end
 
 local fixture = {
-    version = 1, generated_at = "2026-09-25T13:54:45+03:00", data_through = "2026-09-25T13:53:01+03:00",
-    stale_after_hours = 26, columns = { "7 days", "prev 7", "Δ" },
+    version = 2, generated_at = "2026-09-25T13:54:45+03:00", data_through = "2026-09-25T13:53:01+03:00",
+    stale_after_hours = 26, columns = { "7 days", "prev 7", "Δ", "share" }, unit_label = "limit tokens",
+    groups = { vendors = "Other vendors — each its own pool" },
     rows = {
-        { key = "spend", label = "Claude spend", cells = { "229M", "290M", "-21%" }, tone = "",
-          extra = "251 ctx", note = "Limit tokens.", weeks = { { label = "Sep 22–28 (4d)", cell = "120M" } },
-          sections = {} },
-        { key = "skills", label = "  skill listing", cells = { "7.9k", "4.9k", "+62%" }, tone = "worse",
-          extra = "", note = "Per context.", weeks = {},
-          sections = { { title = "Top files", columns = { "7 days", "prev 7", "Δ" },
-                         rows = { { label = "SKILL.md (3×)", cells = { "41k", "14k", "×2.9" }, tone = "worse",
-                                    copy = "/abs/SKILL.md" } } } } },
+        { key = "spend", label = "Claude spend", group = "claude", cells = { "229.0M", "291.0M", "-21%", "100.0%" },
+          tone = "better", note = "Limit tokens.",
+          weeks = { { label = "Sep 22–28 (4d)", short = "Sep 22 (4d)", cell = "120.0M" },
+                    { label = "Sep 15–21", short = "Sep 15", cell = "301.0M" } },
+          weeks_unit = "limit tokens",
+          sections = {
+              { title = "By zone", columns = { "7 days", "prev 7", "Δ" },
+                rows = { { label = "review-bench", cells = { "172.0M", "257.0M", "-33%" }, tone = "better" } } },
+              { title = "Top projects", columns = { "7 days", "prev 7", "Δ" },
+                rows = { { label = "arbostar-frs-frontend-long-name", cells = { "36.0M", "15.0M", "+139%" },
+                           tone = "worse" } } },
+          } },
+        { key = "startup", label = "Startup", group = "claude", cells = { "4.8M", "3.5M", "+37%", "2.1%" },
+          tone = "worse", note = "Per context.", weeks = {}, weeks_unit = "limit tokens",
+          sections = {
+              { title = "Per context (avg)", columns = { "7 days", "prev 7", "Δ" },
+                rows = { { label = "skill listing", cells = { "7.9k", "4.9k", "+62%" }, tone = "worse",
+                           child = { key = "skills", label = "Skill listing", weeks_unit = "per context",
+                                     weeks = { { label = "Sep 22–28 (4d)", cell = "7.9k" } },
+                                     sections = { { title = "Local skills and commands",
+                                                    columns = { "7 days", "prev 7", "Δ" },
+                                                    rows = { { label = "dataviz", cells = { "569", "585", "-3%" },
+                                                               tone = "" } } } } } } } },
+              { title = "Top files (click copies)", columns = { "7 days", "prev 7", "Δ" },
+                rows = { { label = "SKILL.md", cells = { "41.0k", "14.0k", "+193%" }, tone = "worse",
+                           copy = "/abs/SKILL.md" } } },
+          } },
+        { key = "vendor:codex", label = "Codex", group = "vendors", cells = { "28.0M", "54.0M", "-49%" },
+          tone = "better", note = "Own pool.", weeks_unit = "limit tokens",
+          weeks = { { label = "Sep 22–28 (4d)", short = "Sep 22 (4d)", cell = "9.0M" },
+                    { label = "Sep 15–21", short = "Sep 15", cell = "44.0M" } }, sections = {} },
+        { key = "counts", label = "Counts", group = "counts", cells = {}, tone = "", note = "Counts.",
+          weeks = {}, sections = { { title = "Events", columns = { "7 days", "prev 7", "Δ" },
+                                     rows = { { label = "hook blocks", cells = { "2,567", "1,571", "+63%" },
+                                                tone = "" } } } } },
     },
 }
 write(hs.json.encode(fixture))
@@ -43,40 +71,74 @@ check(text(items[1].title):find("^7 days to 13:53 vs the 7 before") ~= nil
     or text(items[1].title):find("^7 days to Sep 25 13:53") ~= nil,
     "status line: " .. text(items[1].title))
 
-local rows = {}
-for _, item in ipairs(items) do
-    local line = text(item.title)
-    if line:find("spend", 1, true) or line:find("skill listing", 1, true) or line:find("prev 7", 1, true) then
-        rows[#rows + 1] = { item = item, line = line }
+local function find(list, needle)
+    for index, item in ipairs(list or {}) do
+        if item.title ~= "-" and text(item.title):find(needle, 1, true) then return item, index end
     end
 end
-check(#rows == 3, "expected the header and two rows, got " .. #rows)
-local function deltaEnd(line, cell)
+local function cellEnd(item, cell)
+    local line = text(item.title)
     local stop = select(2, line:find(cell, 1, true))
     return stop and utf8.len(line:sub(1, stop)) or -1
 end
-check(deltaEnd(rows[2].line, "-21%") == deltaEnd(rows[3].line, "+62%")
-    and deltaEnd(rows[1].line, "Δ") == deltaEnd(rows[2].line, "-21%"),
-    "the Δ column is not aligned:\n" .. rows[1].line .. "\n" .. rows[2].line .. "\n" .. rows[3].line)
 
-local red = false
-for _, run in ipairs(rows[3].item.title:asTable()) do
+local header = find(items, "limit tokens")
+local spend, startup = find(items, "Claude spend"), find(items, "Startup")
+local codex, codexAt = find(items, "Codex")
+check(header and text(header.title):find("share", 1, true), "no unit header with a share column")
+check(header and spend and startup and codex
+    and cellEnd(header, "Δ") == cellEnd(spend, "-21%") and cellEnd(spend, "-21%") == cellEnd(startup, "+37%")
+    and cellEnd(startup, "+37%") == cellEnd(codex, "-49%"),
+    "the top-level Δ column is not aligned")
+
+local red, shareRed = false, false
+for _, run in ipairs(startup.title:asTable()) do
     if type(run) == "table" and run.attributes and run.attributes.color then
-        local piece = rows[3].line:sub(run.starts, run.ends)
-        if piece:find("+62%", 1, true) and (run.attributes.color.red or 0) > 0.8 then red = true end
+        local piece = text(startup.title):sub(run.starts, run.ends)
+        local isRed = (run.attributes.color.red or 0) > 0.8
+        if piece:find("+37%", 1, true) and isRed then red = true end
+        if piece:find("2.1%", 1, true) and isRed then shareRed = true end
     end
 end
 check(red, "a worse Δ is not red")
+check(not shareRed, "the share column took the Δ tone")
 
-local drill = rows[3].item.menu
-local leaf = nil
-for _, item in ipairs(drill) do
-    if text(item.title):find("SKILL.md", 1, true) then leaf = item end
-end
+check(codexAt and items[codexAt - 1].title ~= "-" and text(items[codexAt - 1].title) == "Other vendors — each its own pool"
+    and items[codexAt - 2].title == "-", "the vendor group has no separator and caption")
+
+local drill = spend.menu
+check(text(drill[1].title):find("^By zone") ~= nil, "the drill does not open on its first section: " .. text(drill[1].title))
+local zoneHead, topHead = find(drill, "By zone"), find(drill, "Top projects")
+check(zoneHead and topHead and cellEnd(zoneHead, "Δ") == cellEnd(topHead, "Δ")
+    and cellEnd(find(drill, "review-bench"), "-33%") == cellEnd(find(drill, "arbostar"), "+139%"),
+    "the sections of one drill are not aligned with each other")
+check(text(drill[#drill].title) == "Calendar weeks" and drill[#drill].menu, "no calendar weeks submenu")
+
+local listing = find(startup.menu, "skill listing")
+check(listing and listing.menu and find(listing.menu, "dataviz"), "the skill listing row does not open its catalog")
+local weeks = listing and listing.menu and listing.menu[#listing.menu]
+check(weeks and weeks.menu and text(weeks.menu[1].title):find("per context", 1, true),
+    "the child's weeks do not name their unit")
+check(#startup.menu > 0 and text(startup.menu[#startup.menu].title) ~= "Calendar weeks",
+    "a row with no weeks still offers Calendar weeks")
+
+local leaf = find(startup.menu, "SKILL.md")
 check(leaf and leaf.fn, "the copyable leaf has no action")
 if leaf and leaf.fn then leaf.fn() end
 check(copied == "/abs/SKILL.md", "the leaf copied " .. tostring(copied))
-check(text(drill[#drill].title) == "Calendar weeks" and drill[#drill].menu, "no calendar weeks submenu")
+
+local byWeek = find(items, "By week")
+local matrix = byWeek and byWeek.menu or {}
+local weekHead, weekSpend, weekCodex = find(matrix, "Sep 22 (4d)"), find(matrix, "Claude spend"), find(matrix, "Codex")
+check(weekHead and weekHead.disabled and weekSpend and weekCodex
+    and cellEnd(weekHead, "Sep 15") == cellEnd(weekSpend, "301.0M") and cellEnd(weekSpend, "301.0M") == cellEnd(weekCodex, "44.0M"),
+    "the By week matrix is missing or its week columns are not aligned")
+check(find(matrix, "Startup") == nil, "a row without weeks is in the By week matrix")
+local _, codexLine = find(matrix, "Codex")
+check(codexLine and matrix[codexLine - 1].title == "-", "the By week matrix does not separate the vendor group")
+
+local counts = find(items, "Counts")
+check(counts and counts.menu and find(counts.menu, "hook blocks"), "the Counts row has no drill")
 
 local failing = M.menuItems(function() error("boom") end, "watcher: DOWN")
 local sawFailure, sawAlarm = false, false

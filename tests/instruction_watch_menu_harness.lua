@@ -332,38 +332,6 @@ local ok, err = pcall(function()
         check(plain(alignedMenu[index].title):match("%s$") == nil, "a submenu file line ends with a space")
     end
 
-    local topItems, topIndex, coverageIndex = M.menuItems(), nil, nil
-    for index, item in ipairs(topItems) do
-        if plain(item.title) == "Top MD files this week" then topIndex = index end
-        if plain(item.title) == "Coverage" then coverageIndex = index end
-    end
-    check(topIndex ~= nil and coverageIndex == topIndex + 1, "Top MD files is not right before Coverage")
-    local top = topIndex and topItems[topIndex].menu or {}
-    local expected = {
-        "tokens read this week · from Read/@ loads",
-        "-",
-        "project/CLAUDE.md  1.2M tok   ×7  always",
-        "tmp/x/a.md         1.0M tok  ×12  demand",
-        "top/f08.md         8.2k tok  ×80  brief",
-        "top/f07.md         7.2k tok  ×70  brief",
-        "top/f06.md         6.2k tok  ×60  brief",
-        "top/f05.md         5.2k tok       brief",
-        "top/f04.md         4.2k tok  ×40  brief",
-        "top/f03.markdown   3.2k tok  ×30  brief",
-        "alt/x/a.md         2.2k tok  ×20  brief",
-        "top/f01.md          999 tok   ×1",
-    }
-    check(#top == #expected, "Top MD files has " .. #top .. " items, expected " .. #expected)
-    for index, want in ipairs(expected) do
-        local got = top[index] and plain(top[index].title) or "<missing>"
-        check(got == want, "Top MD files item " .. index .. " is [" .. got .. "], expected [" .. want .. "]")
-    end
-    check(top[1] and top[1].disabled == true and type(top[1].title) == "userdata", "Top header is not a disabled styled line")
-    local topCopied = {}
-    M.setPasteboard(function(text) topCopied[#topCopied + 1] = text end)
-    if top[3] and top[3].fn then top[3].fn() end
-    check(topCopied[1] == indexed, "clicking a Top line did not copy its absolute path")
-
     for _, item in ipairs(menus) do
         if type(item.menu) == "table" then
             check(findRow(item.menu, "alert shown") == nil and findRow(item.menu, "recorded ") == nil,
@@ -457,10 +425,8 @@ local ok, err = pcall(function()
     appendEvent("symlinked", now, "unused", { link }, { 32 })
     local linkedMenu = M.menuItems()
     local linkedRow = findRow(linkedMenu, "linked/CLAUDE.md")
-    local placeholder = findRow(linkedMenu, "Top MD files this week")
-    check(placeholder ~= nil and #placeholder.menu == 1 and placeholder.menu[1].disabled == true
-        and plain(placeholder.menu[1].title) == "read_tokens missing — regenerate read-rates.json",
-        "a rates export without read_tokens does not show the regenerate placeholder")
+    check(findRow(linkedMenu, "Top MD files this week") == nil,
+        "Top MD files is back in Instruction file changes; Token tracking ▸ Doc reads owns it")
     check(linkedRow ~= nil, "symlinked row is missing")
     if linkedRow then
         check(plain(linkedRow.title):find("tok/wk", 1, true) ~= nil, "symlinked path has no top-row price")
