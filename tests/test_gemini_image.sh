@@ -17,13 +17,15 @@ export LLM_LIMITS_GEMINI_ACCOUNTS_DIR="$WORK/account-caches" TMPDIR="$WORK/tmp"
 export FAKE_GEMINIB_CALLS="$WORK/calls" FAKE_GEMINIB_PROMPT="$WORK/prompt"
 export PICK_CALLS="$WORK/picks" AGY_BIN="$WORK/bin/agy"
 export GEMINIB_CACHE_DIR="$WORK/geminib-cache"
+MANIFEST_CLI_VERSION=$(jq -r '.cli.version' "$ROOT/share/image-caps/gemini.json")
+export MANIFEST_CLI_VERSION
 . "$ROOT/tests/fixtures/geminib-families.sh"
 mkdir -p "$HOME" "$WORK/bin" "$TMPDIR" "$WORK/output" "$GEMINIB_PROFILES_DIR/explicit" "$GEMINIB_PROFILES_DIR/picked"
 ln -s "$ROOT/tests/fixtures/fake-geminib-image.sh" "$WORK/bin/geminib"
 cat >"$WORK/bin/agy" <<'STUB'
 #!/usr/bin/env bash
 [ "$*" = --version ] || exit 91
-printf '%s\n' "${FAKE_AGY_VERSION:-1.2.9}"
+printf '%s\n' "${FAKE_AGY_VERSION:-$MANIFEST_CLI_VERSION}"
 STUB
 cat >"$WORK/bin/worker-pick" <<'STUB'
 #!/usr/bin/env bash
@@ -91,6 +93,13 @@ for mode in stream rescue init-only; do
   assert grep -qx 'session=fixture-session' "$WORK/out"
   assert grep -qx 'model=gemini-3.1-flash-image model_caps=fresh' "$WORK/out"
 done
+FAKE_GEMINIB_MODE=saved-then-error assert image_run "${args[@]}" --account explicit
+assert grep -qx 'model=gemini-3.1-flash-image model_caps=fresh' "$WORK/out"
+assert grep -q 'agy exited 3 after the image was saved' "$WORK/err"
+FAKE_GEMINIB_MODE=saved-then-quota assert image_run "${args[@]}" --account explicit
+assert grep -q 'agy exited 3 after the image was saved' "$WORK/err"
+assert test "$(grep -c GEMINI_USAGE_LIMIT "$WORK/err")" = 0
+assert test -s "$WORK/output/result.png"
 FAKE_GEMINIB_MODE=no-session assert image_run "${args[@]}" --account explicit
 assert grep -qx 'session=none' "$WORK/out"
 assert grep -qx 'model=unknown model_caps=unknown' "$WORK/out"
@@ -98,7 +107,7 @@ FAKE_GEMINIB_MODE=no-model assert image_run "${args[@]}" --account explicit
 assert grep -qx 'model=unknown model_caps=unknown' "$WORK/out"
 FAKE_IMAGE_MODEL=gemini-future-image FAKE_AGY_VERSION=1.3.0 assert image_run "${args[@]}" --account explicit
 assert grep -qx 'model=gemini-future-image model_caps=stale verified=gemini-3.1-flash-image' "$WORK/out"
-assert grep -qx 'caps=stale cli=1.3.0 verified=1.2.9' "$WORK/out"
+assert grep -qx "caps=stale cli=1.3.0 verified=$MANIFEST_CLI_VERSION" "$WORK/out"
 
 for mode in quota quota-plain quota-stderr quota-log quota-exit quota-tool; do
   FAKE_GEMINIB_MODE=$mode expect_rc 3 "${args[@]}" --account explicit
@@ -152,5 +161,10 @@ GEMINIB_CACHE_DIR="$noflash" image_run "${args[@]}" --account explicit
 noflash_rc=$?
 assert test "$noflash_rc" -eq 1
 assert grep -q 'no Flash row' "$WORK/err"
+
+mkdir -p "$WORK/bare-log"
+(cd "$WORK/bare-log" && IMAGE_LEG_LOG=legs.jsonl bash -c '. "$1/share/image-leg.sh"; image_leg_start probe image; exit 4' _ "$ROOT") 2>/dev/null
+assert test -f "$WORK/bare-log/legs.jsonl"
+assert test "$(jq -r '"\(.tool) \(.rc)"' "$WORK/bare-log/legs.jsonl")" = 'probe 4'
 
 printf 'PASS: %s asserts; manifest limits, account isolation, stream paths, resume, brain rescue, model provenance, quota, chroma, no Flash family, and output contract\n' "$asserts"

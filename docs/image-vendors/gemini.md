@@ -1,6 +1,6 @@
 # Gemini images through Antigravity CLI
 
-Verified on 2026-09-23 against **agy 1.2.9** (binary schema, help and model ids; the last live
+Verified on 2026-09-24 against **agy 1.2.10** (binary schema, help and model ids; the last live
 generation is the 2026-09-11 one below), launched by `geminib` with a Google
 subscription. The runtime contract is [gemini.json](../../share/image-caps/gemini.json);
 its `field_sources` maps each capability to evidence. This page concerns the subscription
@@ -141,7 +141,12 @@ existing conversation DB there. `main` uses the original HOME; named accounts us
 
 Success prints exactly seven lines: `dest`, `size`, `format`, `account`, `session`,
 `model=... model_caps=...`, `caps=...`. `QUOTA`, vendor exhaustion, or selector exit 3
-produces `GEMINI_USAGE_LIMIT`, exit 3, and no success footer.
+produces `GEMINI_USAGE_LIMIT`, exit 3, and no success footer. Since agy 1.2.10 a turn that
+ends on a model error after `generate_image` saved its file exits 3 (`AGY_ERROR` on stderr); the
+saved image is still delivered with the success footer, plus a stderr note naming the exit, so a
+paid generation is never repeated. Without a saved file any other nonzero exit is
+`generation failed`, exit 1. A limit is read from stderr, the log and the stream's error fields,
+never from stream events, which echo the prompt.
 
 ## Re-verification and live-call status
 

@@ -224,17 +224,19 @@ native spawn buy no bypass.
 
 ## Roles
 
-A vendor serves six roles — `workers` (implementation), `reviewers` (review-bench raters),
+A vendor serves seven roles — `workers` (implementation), `reviewers` (review-bench raters),
 `chat` (where Egor's own session should move next), `research` (read-only Light research),
-`light` (a Light-class edit) and `image` (subscription image/video generation) — and
+`light` (a Light-class edit), `image` (subscription image/video generation) and `computer` (a GUI
+app driven through Codex Computer Use) — and
 `<vendor>_workers` / `<vendor>_reviewers` in `~/.claude/worker-model` are per-role walls layered
 over the pool: the literal value `off` closes that vendor for that role, an absent key or any
-other value leaves it open. There is no `<vendor>_chat`, `<vendor>_research`, `<vendor>_light` or
-`<vendor>_image` key and none is to be invented — the pool toggle is the whole gate for `chat`,
+other value leaves it open. There is no `<vendor>_chat`, `<vendor>_research`, `<vendor>_light`,
+`<vendor>_image` or `<vendor>_computer` key and none is to be invented — the pool toggle is the whole gate for `chat`,
 `research` and `light`. The default role is `workers`, so every existing caller keeps its meaning; a
 rater asks with `worker-pick --account <vendor> --role reviewers`, the chat picker with
 `--role chat`, the research launcher with `--role research`, `worker-run start light` with
-`--role light`, and the image scripts / fan-out with `--role image`.
+`--role light`, the image scripts / fan-out with `--role image`, and `worker-run start codex
+--computer` with `--role computer`.
 
 Both Light roles route under `<vendor>_workers=off`: the class is cheap work whose error is cheap
 and whose result the caller verifies, not the implementation leg that switch closes. So
@@ -268,7 +270,7 @@ pool's own candidate is never handed over instead. The pin overrides it the same
 pool exclusion — a usable pin answers the workers query and the workers table even while
 `<vendor>_workers=off`, and rule 3 still ends it at its wall, unchanged.
 
-The pin is **workers-only**. A reviewers, chat, research, light or image query never sees it: it is
+The pin is **workers-only**. A reviewers, chat, research, light, image or computer query never sees it: it is
 neither an override nor a forced choice there, and the pinned account stands in those answers as
 an ordinary candidate ranked by pool and spending like any other. The global pin never opens
 `<vendor>_reviewers=off`. A chat pin does, for that chat alone: Egor's per-chat grant («воркер на
@@ -280,9 +282,9 @@ walls and the Light switch still apply. `bin/vendor-fingerprint` opens every int
 this line already written (Egor 2026-09-23: test chats get every permission; the switches exist to
 steer models acting on their own).
 
-`image` ignores `<vendor>_workers=off` and the pin alike: a picture is not code work, so an image
-query is pool membership + login + not walled, ordered by free budget, and a fan-out that asks
-every vendor still reaches a vendor whose code workers are paused. Walls, the five-hour deferral,
+`image` and `computer` ignore `<vendor>_workers=off` and the pin alike: a picture or a GUI app is
+not code work, so such a query is pool membership + login + not walled, ordered by free budget, and
+a fan-out that asks every vendor still reaches a vendor whose code workers are paused. Walls, the five-hour deferral,
 pool exclusion and missing login still apply, unchanged.
 
 `chat` is the same candidates under the same walls, minus the one thing that is about workers.

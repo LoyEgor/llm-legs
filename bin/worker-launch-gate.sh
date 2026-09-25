@@ -440,6 +440,15 @@ case "$agent_type" in
       have_account=$(flag_value account)
       [ -z "$want_account" ] || [ "$have_account" = "$want_account" ] ||
         deny "Blocked: the brief says \`ACCOUNT: ${want_account}\`, so the launch passes \`--account ${want_account}\`$([ -z "$have_account" ] || printf ', not `--account %s`' "$have_account")."
+      # Computer Use opens codex under codex_workers=off, so only the orchestrator's brief may ask for it.
+      want_computer=no
+      [ "$(brief_value COMPUTER)" != yes ] || want_computer=yes
+      have_computer=no
+      ! grep -Eq -- '--computer([[:space:]]|$)' <<<"$start_line" || have_computer=yes
+      [ "$want_computer" = no ] || [ "$have_computer" = yes ] ||
+        deny "Blocked: the brief says \`COMPUTER: yes\`, so the launch passes \`--computer\`."
+      [ "$have_computer" = no ] || [ "$want_computer" = yes ] ||
+        deny "Blocked: this launch passes \`--computer\`, but the brief carries no \`COMPUTER: yes\` line. Drop \`--computer\`: whether a task needs Computer Use is the orchestrator's call, made in the brief."
     fi
     ;;
 esac

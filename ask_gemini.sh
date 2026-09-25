@@ -127,6 +127,7 @@ fi
 
 ERRF="$(mktemp)"; LOGF="$(mktemp)"; trap 'rm -f "$ERRF" "$LOGF"' EXIT
 quota_hit=0
+served_other=0
 reset_hint=""
 for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   [ -z "$MODEL" ] && continue
@@ -140,8 +141,12 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
   # --log-file: quota exhaustion prints NOTHING to stdout/stderr (rc 0); its only trace is
   # RESOURCE_EXHAUSTED/429 in agy's internal log, so route it to a temp file we can grep.
   : > "$LOGF"  # agy appends — truncate so we inspect only THIS model's log
-  out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")"
-  if [ -n "$(printf '%s' "$out" | tr -d '[:space:]')" ]; then
+  rc=0
+  out="$("${GEMINI_CMD[@]}" --print "$PROMPT" --model "$MODEL" --print-timeout "$AGY_PRINT_TIMEOUT" --sandbox --log-file "$LOGF" </dev/null 2>"$ERRF")" || rc=$?
+  answered=0
+  [ -z "$(printf '%s' "$out" | tr -d '[:space:]')" ] || answered=1
+  # agy >= 1.2.10 exits nonzero when a streamed answer ends on a model error: the text is cut short.
+  if [ "$answered" = 1 ] && [ "$rc" -eq 0 ]; then
     log "$MODEL" "antigravity:pinned:$MODEL (unverified)" 0
     printf '%s\n' "$out"
     exit 0
@@ -157,10 +162,16 @@ for MODEL in "$AGY_MODEL" "$AGY_MODEL_FALLBACK"; do
     continue
   fi
   head -2 "$ERRF" | sed 's/^/ask_gemini agy stderr: /' >&2
+  served_other=1
+  if [ "$answered" = 1 ]; then
+    log "$MODEL" "PARTIAL" 0
+    echo "ask_gemini.sh: agy cut the answer short (exit $rc) on '$MODEL' — trying next model in chain" >&2
+    continue
+  fi
   echo "ask_gemini.sh: agy produced no output on '$MODEL' — trying next model in chain" >&2
 done
 
-if [ "$quota_hit" = 1 ]; then
+if [ "$quota_hit" = 1 ] && [ "$served_other" = 0 ]; then
   echo "ask_gemini.sh: Antigravity individual quota exhausted across the model chain${reset_hint:+ — $reset_hint} — account-wide, leg unavailable (quota)" >&2
   exit 5
 fi

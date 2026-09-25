@@ -9,6 +9,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import statistics
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import time
 
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.dirname(BIN_DIR)
+sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
 
 
 def load_gemini_weather():
@@ -35,7 +37,6 @@ SLOW_BASE_D = 7
 # worker-run prunes run directories by mtime (`find -mtime +7`), so an older run id can outlive
 # its younger siblings and date the store further back than it is whole.
 WORKER_KEEP_D = 7
-PID_START_SLACK_S = 30
 SLOW_FACTOR = 2
 SLOW_MIN_LEGS = 5
 SLOW_BASE_N = 20
@@ -48,7 +49,7 @@ DETAIL_MAX = 40
 TEXT_MAX = 4000
 TOP_MAX = 3
 BLOCKS = ("reviewers", "workers", "light", "image")
-COLUMNS = ("walled", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried")
+COLUMNS = ("walled", "off", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried")
 NOT_MEASURABLE = ("worker false-green reports", "weakened tests")
 SPARK = "▁▂▃▄▅▆▇█"
 LEDGER_STATUSES = ("open", "fixed", "not-a-bug", "weather")
@@ -68,7 +69,7 @@ FAILURE_REASONS = (
     ("throttled", re.compile(
         r"provider_rate_limit_exceeded|rate_limit_error|provider rate limit"
         r"|rate limit exceeded|too many requests", re.IGNORECASE)),
-    ("bare 429", re.compile(r"\b429\b")),
+    ("bare 429", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"429\b|\b429\s+Too\s+Many\b|\(code 429\))")),
     ("capacity", re.compile(r"at capacity|temporarily unavailable|overloaded"
                             r"|No capacity available for model"
                             r"|geminib: capacity \S+ after \d+ steps, not relaunched", re.IGNORECASE)),
@@ -100,7 +101,9 @@ FAILURE_REASONS = (
         re.IGNORECASE)),
     ("auth", re.compile(
         r"not logged in|not signed in|credentials were rejected|session has expired"
-        r"|unauthor|forbidden|\b40[13]\b|cell preparation refused", re.IGNORECASE)),
+        r"|unauthor|cell preparation refused|not eligible for antigravity|verify your account"
+        r"|accounts\.google\.com/signin"
+        r"|" + HTTP_STATUS_PREFIX + r"40[13]\b|\b40[13]\s+(?:Unauthorized|Forbidden)\b", re.IGNORECASE)),
     ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b)",
                              re.IGNORECASE)),
     ("chunks unread", re.compile(r"chunks unread", re.IGNORECASE)),
@@ -134,8 +137,33 @@ ORIGIN_ORDER = ("ours", "theirs")
 WALL_REASONS = ("walled", "throttled")
 EMPTY_ZERO_FINDING_REASONS = ("bad output",)
 # A pool that is empty because every account is walled is weather; one emptied by a switch or an
-# exclusion list still staffed a cell nobody may run, which is ours.
+# exclusion list still staffed a cell nobody may run, which is ours. The pool message quotes the last
+# account's error, so a crash inside it is the crash.
 POOL_CONFIG_RE = re.compile(r"switched off for \w+|excluded by \w+")
+POOL_CRASH_RE = re.compile(dict(FAILURE_REASONS)["crashed"].pattern + r"|Traceback", re.IGNORECASE)
+# An account's login is the owner's to renew (`grokb add`, a browser sign-in); a refused credential
+# export is our preparation failing to move to the next account (R12).
+LOGIN_STATE_RE = re.compile(
+    r"not logged in|not signed in|session has expired|credentials were rejected|not eligible for antigravity"
+    r"|verify your account|accounts\.google\.com/signin", re.IGNORECASE)
+EXPORT_REFUSAL_RE = re.compile(r"cell preparation refused|credential export", re.IGNORECASE)
+# Copied from review-bench panel.py PROVIDER_TIMEOUT_RE: the vendor's clock, not our cap.
+PROVIDER_TIMEOUT_RE = re.compile(
+    r"gateway time-?out|" + HTTP_STATUS_PREFIX + r"504\b|\(code 504\)"
+    r"|DEADLINE_EXCEEDED|upstream (?:request )?timeout", re.IGNORECASE)
+TURN_BUDGET_RE = re.compile(r"stopped at the \d+-turn budget", re.IGNORECASE)
+# A switch the owner closed from the menubar while the run was in flight: the cells were staffed
+# while it was open and obeyed it, which is his own hand and no defect.
+ROLE_SWITCH_RE = re.compile(r"\b(\w+) is switched off for (\w+)")
+SWITCH_LINE_RE = re.compile(
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)\s+done\s+"
+    r"(?:worker-model (\w+)=(on|off)|(\w+) (disable|enable) (\S+)) exit=0\b")
+SWITCH_SLACK_S = 60
+POOL_BINARIES = {"claudeb": "claudeb", "codex": "codexb", "gemini": "geminib", "grok": "grokb"}
+# A watchdog kill that ended a cell while another cell of its panel still ran bought no wall time
+# and lost the answer: our watchdog's defect, whatever the kill was called.
+WATCHDOG_KILLS = ("stall", "watchdog")
+KILLED_EARLY_SLACK_S = 60
 # panel.cell_status's own reading of a model swap, which it tests before any vocabulary word.
 MISMATCH_RE = re.compile(r"\bserved\b.+\binstead of\b", re.IGNORECASE | re.DOTALL)
 CUT_RE = re.compile(r"panel interrupted before cell completed|^error: interrupted\b",
@@ -146,8 +174,12 @@ TIMED_OUT_RE = re.compile(r"timed out after (\d+)\s*(?:s\b|seconds)")
 CHUNK_LINE_RE = re.compile(r"^chunk (\d+): exit (-?\d+): (.*?)(?=^chunk \d+: exit -?\d+: |\Z)",
                            re.MULTILINE | re.DOTALL)
 JUDGE_SHORT_RE = re.compile(r"ruled on \d+ of \d+ claims", re.IGNORECASE)
-PATH_RE = re.compile(r"(?<![\w.])(/(?:Users|Volumes|private|tmp|var|opt|etc|Library)/[^\s'\"`\\)(;|&<>]*)")
+PATH_RE = re.compile(r"(?<![\w.:/~])(~?/[^\s'\"`\\)(;|&<>/][^\s'\"`\\)(;|&<>]*)")
 PROFILE_HOME_RE = re.compile(r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/|/\.gemini/(?:antigravity/brain|tmp)/")
+MAIN_STATE_RE = re.compile(r"/\.gemini/(?:antigravity/brain|tmp)/")
+COPY_VERBS = ("cp", "rsync", "ln", "install", "ditto", "scp")
+READ_VERBS = ("cat", "head", "tail", "grep", "rg", "less", "wc", "diff", "ls", "stat", "file")
+COMMAND_SPLIT_RE = re.compile(r"&&|\|\||[;|\n]")
 BENCH_ID_RE = re.compile(r"^(\d{8}T\d{6}Z)-[0-9a-f]+$")
 WORKER_ID_RE = re.compile(r"^[a-z][a-z0-9]*-(\d{9,11})-\d+-[0-9a-z]+$")
 USAGE_LIMIT_RE = re.compile(r"^OUTCOME: \w*_USAGE_LIMIT\b", re.MULTILINE)
@@ -165,8 +197,85 @@ IMAGE_REASONS = (
     ("not entitled", re.compile(r"zero data retention|SuperGrok|entitlement|no video generation on its tier",
                                 re.IGNORECASE)),
 )
-IMAGE_ORIGIN = {"bad output": "ours", "not entitled": "ours"}
+IMAGE_ORIGIN = {"bad output": "ours"}
 PRELAUNCH_SKIP = ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
+
+
+def action_log():
+    return os.environ.get("LLM_LIMITS_ACTION_LOG") or os.path.join(
+        base_home(), ".hammerspoon", "llm_limits_actions.log")
+
+
+_SWITCHES = []
+
+
+def switch_flips():
+    """`{"<vendor>_<role>" | "pool:<binary>:<account>": [(epoch, closed), ...]}`: every role switch and
+    pool membership the owner flipped from the menubar."""
+    if not _SWITCHES:
+        flips = {}
+        for line in (read_text(action_log()) or "").splitlines():
+            match = SWITCH_LINE_RE.match(line)
+            if not match:
+                continue
+            at = time.mktime(time.strptime(match.group(1), "%Y-%m-%d %H:%M:%S"))
+            if match.group(2):
+                key, closed = match.group(2), match.group(3) == "off"
+            else:
+                key, closed = "pool:%s:%s" % (match.group(4), match.group(6)), match.group(5) == "disable"
+            flips.setdefault(key, []).append((at, closed))
+        _SWITCHES.append(flips)
+    return _SWITCHES[0]
+
+
+def switched_mid_run(text, begun, ended):
+    match = ROLE_SWITCH_RE.search(text or "")
+    if not match:
+        return False
+    return any(closed and begun - SWITCH_SLACK_S <= at <= ended + SWITCH_SLACK_S
+               for at, closed in switch_flips().get("%s_%s" % match.groups(), ()))
+
+
+def closed_at(key, moment):
+    closed = False
+    for at, state in sorted(switch_flips().get(key, ())):
+        if at > moment + SWITCH_SLACK_S:
+            break
+        closed = state
+    return closed
+
+
+def refused_by_switch(vendor, account, moment):
+    """Whether a worker or image refusal met a role switch or a pool membership the owner had closed."""
+    pool = POOL_BINARIES.get(vendor, vendor + "b")
+    names = ("--all", account) if account else ("--all",)
+    return closed_at("%s_workers" % vendor, moment) or any(
+        closed_at("pool:%s:%s" % (pool, name), moment) for name in names)
+
+
+def owner_switch(klass, reason, detail, origin, text, begun, ended):
+    """The leg's reading once a pool refusal is traced to a switch closed mid-run."""
+    if klass == "failed" and reason == "pool empty" and switched_mid_run(text, begun, ended):
+        return "off", "off", "switched off mid-run", ""
+    return klass, reason, detail, origin
+
+
+def chunk_span(numbers):
+    """`9–16` or `2, 5` for the chunk numbers one reading covers."""
+    numbers = sorted(set(numbers))
+    if len(numbers) > 2 and numbers[-1] - numbers[0] == len(numbers) - 1:
+        return "%d–%d" % (numbers[0], numbers[-1])
+    return ", ".join(str(number) for number in numbers)
+
+
+def cell_end(cell, started):
+    ended = iso_epoch(cell.get("finished_at"))
+    if ended is not None:
+        return ended
+    duration = cell.get("duration_ms")
+    duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else 0
+    begun = iso_epoch(cell.get("started_at"))
+    return (begun if begun is not None else started) + duration_s
 
 
 def failure_reason(stderr):
@@ -397,10 +506,64 @@ def is_scratch_path(path):
     return any(path == root.rstrip("/") or path.startswith(root.rstrip("/") + "/") for root in roots)
 
 
-def outside_paths(text):
-    """Absolute paths a leg named that are neither scratch space nor a vendor profile's own state."""
-    return [path for path in PATH_RE.findall(text or "")
-            if not is_scratch_path(path.rstrip(".,:")) and not PROFILE_HOME_RE.search(path)]
+def outside_paths(text, exempt=PROFILE_HOME_RE):
+    """Absolute or home-relative paths a leg named that are neither scratch space nor `exempt` state."""
+    paths = []
+    for path in PATH_RE.findall(text or ""):
+        bare = path.rstrip(".,:")
+        if bare.startswith("~/"):
+            scratch = bare.startswith("~/.cache/") or "/scratchpad/" in bare + "/"
+        else:
+            scratch = is_scratch_path(bare)
+        if not scratch and not exempt.search(path):
+            paths.append(path)
+    return paths
+
+
+def own_state_re(account):
+    """The vendor state an account may write: its own profile, never another account's."""
+    if account in (None, "", "main"):
+        return MAIN_STATE_RE
+    return re.compile(r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/%s(?:/|$)" % re.escape(str(account)))
+
+
+def write_targets(text):
+    """What an escape candidate writes: a bare path is its own target; a command writes its
+    redirections, a copy's last argument, and every argument of a verb that is neither a copy nor a read."""
+    text = text.strip()
+    if not re.search(r"\s", text):
+        return [text]
+    targets = []
+    for segment in COMMAND_SPLIT_RE.split(text):
+        try:
+            words = shlex.split(segment)
+        except ValueError:
+            words = segment.split()
+        plain, pending = [], False
+        for word in words:
+            if pending:
+                targets.append(word)
+                pending = False
+                continue
+            redirect = re.match(r"^\d?>>?(.*)$", word)
+            if redirect:
+                if redirect.group(1):
+                    targets.append(redirect.group(1))
+                else:
+                    pending = True
+                continue
+            plain.append(word)
+        while plain and (re.match(r"^\w+=", plain[0]) or plain[0] in ("sudo", "env", "command")):
+            plain.pop(0)
+        if not plain:
+            continue
+        verb = os.path.basename(plain[0])
+        arguments = [word for word in plain[1:] if not word.startswith("-")]
+        if verb in COPY_VERBS:
+            targets.extend(arguments[-1:])
+        elif verb not in READ_VERBS:
+            targets.extend(arguments)
+    return targets
 
 
 def age_text(seconds):
@@ -421,52 +584,73 @@ def word_of_retry(retry_of):
 
 def classify_failure_text(text, exit_code, timeout_s=None):
     """(class, reason, detail, origin) of a leg that failed, read off its own words."""
+    if MISMATCH_RE.search(text):
+        return "failed", "mismatch", "mismatch", "theirs"
     reason = failure_reason(text)
     if reason == "killed memory":
         return "failed", reason, reason, "ours"
+    if reason == "pool empty" and POOL_CRASH_RE.search(text):
+        return "failed", "crashed", "pool empty: crashed", "ours"
     if reason == "pool empty" and not POOL_CONFIG_RE.search(text):
         return "walled", reason, reason, ""
     if reason in WALL_REASONS:
         return "walled", reason, reason, ""
+    if reason == "auth" and LOGIN_STATE_RE.search(text) and not EXPORT_REFUSAL_RE.search(text):
+        return "walled", "login", "needs login", ""
     if CUT_RE.search(text):
         return "cap", "cut", "cut by the panel", ""
+    if reason in ("timeout", "unclassified") and PROVIDER_TIMEOUT_RE.search(text):
+        return "failed", "timeout", "provider timeout", "theirs"
     if CEILING_RE.search(text):
         return "cap", "timeout", timeout_detail(text, timeout_s), ""
-    if MISMATCH_RE.search(text) and reason in ("unclassified", "timeout", "no output"):
-        return "failed", "mismatch", "mismatch", "theirs"
+    if reason == "bad output" and TURN_BUDGET_RE.search(text) \
+            and failure_reason(TURN_BUDGET_RE.sub("", text)) != "bad output":
+        return "cap", "turns", "turn budget", ""
     detail = reason
     if reason in ("unclassified", "no output") and exit_code not in (None, 0, 1):
         detail = "%s · exit %s" % (reason, exit_code)
     return "failed", reason, detail, FAILURE_ORIGIN.get(reason, "")
 
 
-def classify_bench(cell, escaped, retry_word=""):
+def classify_bench(cell, escaped, retry_word="", run_done=False):
     killed = cell.get("killed")
     exit_code = cell.get("exit_code")
     stderr = cell.get("stderr") or ""
     duration = cell.get("duration_ms")
     duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
-    failed = bool(cell.get("errored")) or exit_code not in (0, None) or bool(killed)
+    abandoned = run_done and exit_code is None and not cell.get("errored") and not killed \
+        and not cell.get("not_run")
+    failed = bool(cell.get("errored")) or exit_code not in (0, None) or bool(killed) or abandoned
     if escaped:
         return "escaped", "escaped", "outside write", ""
     if not failed:
-        if cell.get("findings") == 0 and stderr.strip() \
-                and failure_reason(stderr) in EMPTY_ZERO_FINDING_REASONS:
-            return "failed", "bad output", "bad output", "ours"
+        own = CHUNK_LINE_RE.sub("", stderr)
+        if cell.get("findings") == 0 and own.strip() and failure_reason(own) in EMPTY_ZERO_FINDING_REASONS:
+            return classify_failure_text(own, exit_code)
         return None, "", "", ""
+    if abandoned:
+        klass, reason, detail, origin = classify_failure_text(stderr, None)
+        if reason in ("no output", "unclassified"):
+            detail = "no exit recorded"
+        return klass, reason, detail, origin
+    stalled_s = cell.get("stalled_s")
+    stall = killed == "stall" or (isinstance(stalled_s, (int, float)) and stalled_s > 0)
+    if MISMATCH_RE.search(stderr) and not stall and killed != "panel":
+        return "failed", "mismatch", "mismatch", "theirs"
     reason = failure_reason(stderr)
     if killed == "memory" or reason == "killed memory":
         return "failed", "killed memory", "killed memory", "ours"
     if reason == "pool empty" or reason in WALL_REASONS:
         return classify_failure_text(stderr, exit_code)
-    stalled_s = cell.get("stalled_s")
-    if killed == "stall" or (isinstance(stalled_s, (int, float)) and stalled_s > 0):
+    if stall:
         seconds = stalled_s if isinstance(stalled_s, (int, float)) and stalled_s > 0 else duration_s
         return "stalled", "stalled", ("stall " + seconds_text(seconds)).strip(), ""
     if killed == "panel" or CUT_RE.search(stderr):
         return "cap", "cut", ("cut by the panel " + seconds_text(duration_s)).strip(), ""
     if isinstance(exit_code, int) and exit_code < 0:
         return "cap", "cut", "signal %d" % -exit_code, ""
+    if exit_code in (130, 143) and not stderr.strip():
+        return "cap", "cut", "signal exit %d" % exit_code, ""
     if killed == "watchdog" or exit_code == 124:
         return "cap", "timeout", ("%s %s" % (killed or "exit 124", seconds_text(duration_s))).strip(), ""
     klass, reason, detail, origin = classify_failure_text(stderr, exit_code, cell.get("timeout_s"))
@@ -475,23 +659,47 @@ def classify_bench(cell, escaped, retry_word=""):
     return klass, reason, detail, origin
 
 
+def changed_roots(meta):
+    """Roots the run's integrity record (or a legacy per-cell check) saw change."""
+    roots = []
+    record = meta.get("integrity")
+    for row in (record.get("roots") or []) if isinstance(record, dict) else []:
+        if isinstance(row, dict) and row.get("status") == "changed" and row.get("root"):
+            roots.append(str(row["root"]))
+    for cell in meta.get("rater_runs") or []:
+        checks = cell.get("integrity_checks") if isinstance(cell, dict) else None
+        for check in checks if isinstance(checks, list) else []:
+            for row in (check.get("roots") or []) if isinstance(check, dict) else []:
+                if isinstance(row, dict) and row.get("changed") and row.get("root"):
+                    roots.append(str(row["root"]))
+    return [root.rstrip("/") for root in roots]
+
+
 def escape_evidence(meta):
-    """rater spec → accounts whose own lexical escape candidates name a path outside scratch."""
+    """rater spec → accounts whose escape candidates write a path outside scratch and outside that
+    account's own vendor state, under a root the run's integrity record saw change. write_evidence
+    is lexical — a denied or quoted call reads the same — so the integrity record is the proof."""
+    roots = changed_roots(meta)
     hits = {}
     for key in ("write_evidence", "clone_escapes"):
         for hit in meta.get(key) or []:
             if not isinstance(hit, (list, tuple)) or not hit:
                 continue
+            account = hit[1] if len(hit) > 1 else None
             text = " ".join(str(part) for part in hit[2:]) if len(hit) > 2 else ""
-            if outside_paths(text):
-                hits.setdefault(hit[0], set()).add(hit[1] if len(hit) > 1 else None)
+            for target in outside_paths("\n".join(write_targets(text)), own_state_re(account)):
+                target = target.rstrip(".,:")
+                target = base_home() + target[1:] if target.startswith("~/") else target
+                if any(target == root or target.startswith(root + "/") for root in roots):
+                    hits.setdefault(hit[0], set()).add(account)
+                    break
     return hits
 
 
 def leg(block, surface, model, at, klass, reason, detail, origin, **extra):
     row = {"block": block, "surface": surface, "model": model or "", "at": at, "class": klass,
            "reason": reason, "detail": detail or "", "origin": origin, "attempt": "final",
-           "duration": None, "project": "", "tier": "", "ref": "", "text": ""}
+           "duration": None, "project": "", "tier": "", "ref": "", "text": "", "session": ""}
     row.update(extra)
     return row
 
@@ -514,9 +722,12 @@ def bench_legs(cutoff, now):
         if started < cutoff - 86400:
             continue
         meta = read_json(os.path.join(run_dir, "meta.json"))
-        if not isinstance(meta, dict) or meta.get("cancelled"):
+        if not isinstance(meta, dict):
             continue
-        legs.extend(run_legs(meta, name, started, cutoff, now))
+        session = str(meta.get("session") or "")
+        for row in run_legs(meta, name, started, cutoff, now):
+            row["session"] = session
+            legs.append(row)
     return legs, earliest
 
 
@@ -526,26 +737,44 @@ def run_legs(meta, name, started, cutoff, now):
     scope_lines = as_int((meta.get("scope_price") or {}).get("lines")) if isinstance(meta.get("scope_price"), dict) else None
     tier = str(meta.get("tier") or "")
     rows = [row for row in meta.get("rater_runs") or [] if isinstance(row, dict)]
+    if meta.get("cancelled"):
+        rows = [row for row in rows if row.get("exit_code") is not None or row.get("errored") or row.get("killed")]
+    finished = iso_epoch(meta.get("finished")) or iso_epoch(meta.get("finished_at")) \
+        or iso_epoch(meta.get("closed_at")) or iso_epoch(meta.get("sealed_at"))
+    run_done = finished is not None and not meta.get("cancelled")
+    finished = finished or started
     last = {}
     for index, row in enumerate(rows):
         last[row.get("rater")] = index
+    ends = {index: cell_end(cell, started) for index, cell in enumerate(rows)}
+    escapes = {}
+    for index, cell in enumerate(rows):
+        if cell.get("account") in evidence.get(cell.get("rater"), ()):
+            escapes[cell.get("rater")] = index
+    for rater, index in last.items():
+        if rater not in escapes and evidence.get(rater):
+            escapes[rater] = index
     legs = []
     for index, cell in enumerate(rows):
         final = last.get(cell.get("rater")) == index
         duration = cell.get("duration_ms")
         duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
-        ended = iso_epoch(cell.get("finished_at"))
-        if ended is None:
-            begun = iso_epoch(cell.get("started_at"))
-            ended = (begun if begun is not None else started) + (duration_s or 0)
+        ended = ends[index]
         if ended < cutoff or ended > now + 3600:
             continue
-        accounts = evidence.get(cell.get("rater"), set())
-        escaped = final and (cell.get("account") in accounts or None in accounts)
+        escaped = escapes.get(cell.get("rater")) == index
         retry_word = ""
         if not final:
             retry_word = word_of_retry(rows[last[cell.get("rater")]].get("retry_of"))
-        klass, reason, detail, origin = classify_bench(cell, escaped, retry_word)
+        klass, reason, detail, origin = owner_switch(*classify_bench(cell, escaped, retry_word, run_done),
+                                                     cell.get("stderr") or "", started, ended)
+        if final and cell.get("killed") in WATCHDOG_KILLS and klass in ("stalled", "cap"):
+            others = [ends[other] for other, row in enumerate(rows)
+                      if last.get(row.get("rater")) == other and row.get("rater") != cell.get("rater")]
+            waited = max(others, default=ended) - ended
+            if waited > KILLED_EARLY_SLACK_S:
+                klass, reason, origin = "failed", "killed early", "ours"
+                detail = "%s, panel ran %s more" % (detail, seconds_text(waited))
         passes = cell.get("passes")
         chunked = isinstance(passes, int) and passes > 1
         per_pass = duration_s / passes if duration_s and chunked else duration_s
@@ -561,22 +790,29 @@ def run_legs(meta, name, started, cutoff, now):
         legs.append(leg("reviewers", "review", model, ended, klass, reason, detail, origin,
                         attempt="final" if final else "superseded", cohort=cohort,
                         duration=max_pass_s if cell.get("killed_chunks") else per_pass, size=pass_lines, **common))
-        if final and klass is None and cell.get("exit_code") == 0:
+        if final and klass != "escaped":
+            # One cause across many chunks of one cell is one leg: a refusal that met eight queued
+            # chunks is one event, not eight bugs.
+            readings = {}
             for chunk in CHUNK_LINE_RE.finditer(cell.get("stderr") or ""):
                 text = chunk.group(3).strip()
                 c_exit = as_int(chunk.group(2))
                 if isinstance(c_exit, int) and c_exit < 0:
-                    c_class, c_reason, c_detail, c_origin = "cap", "cut", "signal %d" % -c_exit, ""
+                    reading = ("cap", "cut", "signal %d" % -c_exit, "")
                 elif c_exit == 124:
-                    c_class, c_reason, c_detail, c_origin = "cap", "timeout", "exit 124", ""
+                    reading = ("cap", "timeout", "exit 124", "")
                 else:
-                    c_class, c_reason, c_detail, c_origin = classify_failure_text(
-                        text, c_exit, cell.get("timeout_s"))
+                    reading = owner_switch(*classify_failure_text(text, c_exit, cell.get("timeout_s")),
+                                           text, started, ended)
+                if (reading[0], reading[1], reading[3]) == (klass, reason, origin) or (
+                        reading[0] == "cap" and cell.get("killed")):
+                    continue
+                readings.setdefault(reading, [text, []])[1].append(int(chunk.group(1)))
+            for (c_class, c_reason, c_detail, c_origin), (text, numbers) in readings.items():
                 legs.append(leg("reviewers", "review", model, ended, c_class, c_reason,
-                                "chunk %s: %s" % (chunk.group(1), c_detail), c_origin, attempt="chunk",
-                                **dict(common, text=text)))
-    finished = iso_epoch(meta.get("finished_at")) or iso_epoch(meta.get("closed_at")) \
-        or iso_epoch(meta.get("sealed_at")) or started
+                                "chunk%s %s: %s" % ("s" if len(numbers) > 1 else "", chunk_span(numbers),
+                                                    c_detail),
+                                c_origin, attempt="chunk", **dict(common, text=text)))
     judge = meta.get("judge")
     if isinstance(judge, dict) and judge.get("state") in ("ran", "failed") and cutoff <= finished <= now + 3600:
         legs.append(judge_leg(judge, finished, project, tier, name))
@@ -649,11 +885,12 @@ def classify_worker(run_dir, meta, killed, exit_code):
     outcome = first_line(os.path.join(run_dir, "outcome"))
     result = read_text(os.path.join(run_dir, "result")) or ""
     err = read_tail(os.path.join(run_dir, "err"), WORKER_TAIL_BYTES)
-    escapes = worker_escape(run_dir)
+    granted = [str(path).rstrip("/") + "/" for path in meta.get("add_dirs") or [] if path]
+    escapes = [path for path in worker_escape(run_dir)
+               if not any((path.rstrip("/") + "/").startswith(root) for root in granted)]
     if escapes:
         return "escaped", "escaped", "worked in %s" % project_of(escapes[0]), ""
     note = read_text(os.path.join(run_dir, "files-note")) or ""
-    granted = [str(path).rstrip("/") + "/" for path in meta.get("add_dirs") or [] if path]
     outside = [path for path in outside_paths("\n".join(OUTSIDE_WRITE_RE.findall(note)))
                if not any(path.startswith(root) for root in granted)]
     if outside:
@@ -666,9 +903,14 @@ def classify_worker(run_dir, meta, killed, exit_code):
         if DIGEST_RE.search(err):
             return "failed", "crashed", "tree digest not taken", "ours"
         return "escaped", "escaped", "read-only violation", ""
-    if outcome.startswith("GROK_CANCELLED") or (
-            exit_code == 0 and (read_json(os.path.join(run_dir, "state.json")) or {}).get("phase") == "failed"):
+    if outcome.startswith("GROK_CANCELLED"):
         return "failed", "cancelled", "cancelled before the first turn", "theirs"
+    if exit_code == 0 and (read_json(os.path.join(run_dir, "state.json")) or {}).get("phase") == "failed":
+        if re.search(r"cancel", err, re.IGNORECASE) or re.search(
+                r'"stopReason"\s*:\s*"cancelled"', read_tail(os.path.join(run_dir, "out"), WORKER_TAIL_BYTES)):
+            return "failed", "cancelled", "cancelled before the first turn", "theirs"
+        klass, reason, detail, origin = classify_failure_text(err, None)
+        return klass, reason, "%s · failed under exit 0" % detail if klass == "failed" else detail, origin
     if exit_code == 0:
         if verdict.get("VERIFIED") == "fail":
             return "failed", "verify failed", "light verify failed", "ours"
@@ -692,7 +934,7 @@ def classify_worker(run_dir, meta, killed, exit_code):
     if exit_code == 4 and not err.strip():
         return "failed", "crashed", "abandoned before launch", "ours"
     if outcome == "GROK_MAX_TURNS":
-        return "failed", "bad output", "max turns", "ours"
+        return "cap", "turns", "max turns", ""
     klass, reason, detail, origin = classify_failure_text(err, exit_code)
     if klass == "failed" and not origin and exit_code is not None:
         detail = "%s · exit %d" % (reason, exit_code) if "exit" not in detail else detail
@@ -715,7 +957,8 @@ def worker_legs(cutoff, now):
         # browse/ and other long-lived directories are never pruned; only run ids date the store.
         if match:
             earliest = started if earliest is None else min(earliest, started)
-        if started < cutoff - 86400:
+        if started < cutoff - 86400 and max(mtime_of(os.path.join(run_dir, "exit_code")) or 0,
+                                            mtime_of(os.path.join(run_dir, "killed")) or 0) < cutoff:
             continue
         tag = read_text(os.path.join(run_dir, "tag"))
         if not tag:
@@ -730,9 +973,10 @@ def worker_legs(cutoff, now):
         exit_text = read_text(exit_path)
         block = worker_block(meta)
         common = {"project": project_of(meta.get("workdir")), "ref": name, "account": fields[0],
-                  "text": read_tail(os.path.join(run_dir, "err"), TEXT_MAX)}
+                  "text": read_tail(os.path.join(run_dir, "err"), TEXT_MAX),
+                  "session": (read_text(os.path.join(run_dir, "launcher")) or "").strip()}
         if exit_text is None and not killed:
-            if not meta_pid_gone(meta) or now - started < 6 * 3600:
+            if now - started < 6 * 3600 or not supervisor_gone(run_dir, meta.get("pid") or ""):
                 continue
             ended = mtime_of(os.path.join(run_dir, "out")) or started
             if cutoff <= ended <= now + 3600:
@@ -762,34 +1006,13 @@ def worker_legs(cutoff, now):
     return legs, earliest
 
 
-def meta_pid_gone(meta):
-    pid = as_int(meta.get("pid"))
-    if not pid or pid <= 0:
-        return True
+def supervisor_gone(run_dir, pid):
+    script = '. "$1" || exit 2; supervisor_running "$2" "$3"'
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except OSError:
-        return False
-    began = as_int(meta.get("pid_started_at"))
-    if not began or began <= 0:
-        return False
-    try:
-        elapsed = subprocess.run(["ps", "-p", str(pid), "-o", "etime="], capture_output=True, text=True,
-                                 timeout=5).stdout.strip()
+        return subprocess.run(["bash", "-c", script, "bash", os.path.join(ROOT_DIR, "share", "run-liveness.sh"),
+                               run_dir, str(pid)], capture_output=True, timeout=10).returncode == 1
     except (OSError, subprocess.SubprocessError):
         return False
-    seconds = etime_seconds(elapsed)
-    return seconds is not None and abs(time.time() - seconds - began) > PID_START_SLACK_S
-
-
-def etime_seconds(text):
-    match = re.match(r"^(?:(?:(\d+)-)?(\d+):)?(\d+):(\d+)$", text)
-    if not match:
-        return None
-    days, hours, minutes, seconds = (int(part or 0) for part in match.groups())
-    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
 
 
 def prelaunch_legs(cutoff, now):
@@ -808,12 +1031,15 @@ def prelaunch_legs(cutoff, now):
         common = {"account": str(row.get("account") or ""), "ref": "prelaunch", "text": outcome}
         if outcome.endswith("_USAGE_LIMIT"):
             legs.append(leg(block, "worker", model, at, "walled", "walled", "pool walled at launch", "", **common))
+        elif outcome.endswith("_UNAVAILABLE") and refused_by_switch(str(row.get("vendor") or ""),
+                                                                     common["account"], at):
+            legs.append(leg(block, "worker", model, at, "off", "off", "switched off", "", **common))
         elif outcome.endswith("_UNAVAILABLE"):
             legs.append(leg(block, "worker", model, at, "failed", "pool empty", "unavailable at launch",
                             "ours", **common))
         elif outcome in ("MODEL_REFUSED", "EFFORT_REFUSED"):
-            legs.append(leg(block, "worker", model, at, "failed", "bad command", outcome.lower().replace("_", " "),
-                            "ours", **common))
+            legs.append(leg(block, "worker", model, at, "off", "refused", outcome.lower().replace("_", " "),
+                            "", **common))
     return legs, earliest
 
 
@@ -839,6 +1065,8 @@ def classify_image(rc, err):
         if pattern.search(err):
             if reason == "cap":
                 return "cap", "timeout", "deadline", ""
+            if reason == "not entitled":
+                return "walled", reason, reason, ""
             return "failed", reason, reason, IMAGE_ORIGIN.get(reason, "")
     klass, reason, detail, origin = classify_failure_text(err, rc)
     if klass == "cap" and reason == "timeout" and not re.search(r"print timeout after|deadline", err):
@@ -861,6 +1089,8 @@ def image_legs(cutoff, now):
         if klass == "skip":
             continue
         model = str(row.get("tool") or "")
+        if reason == "pool empty" and refused_by_switch(model.split("-")[0], str(row.get("account") or ""), at):
+            klass, reason, detail, origin = "off", "off", "switched off", ""
         served = str(row.get("served") or "")
         seconds = row.get("seconds")
         legs.append(leg("image", str(row.get("kind") or "image"), model, at, klass, reason, detail, origin,
@@ -910,13 +1140,23 @@ def verdict_of(leg_row):
     """bug | weather | clean, before the ledger speaks."""
     if leg_row["class"] is None:
         return "clean"
-    if leg_row["attempt"] == "superseded":
-        return "weather"
     if leg_row["class"] == "escaped":
         return "bug"
+    if leg_row["attempt"] == "superseded":
+        return "weather"
     if leg_row["class"] == "failed" and leg_row["origin"] != "theirs":
         return "bug"
     return "weather"
+
+
+BUG_STATES = ("new", "open", "regressed")
+
+
+def cause_of(leg_row):
+    """One problem: its ledger row, else its word and detail with the numbers blanked."""
+    if leg_row["ledger"] is not None:
+        return leg_row["ledger"]["id"]
+    return "|".join(problem_key(leg_row) + (re.sub(r"\d+", "N", leg_row["detail"]),))
 
 
 def word_of(leg_row):
@@ -924,7 +1164,7 @@ def word_of(leg_row):
 
 
 def problem_key(leg_row):
-    if leg_row["attempt"] == "superseded":
+    if leg_row["attempt"] == "superseded" and leg_row["class"] != "escaped":
         return ("retried", "", "")
     if leg_row["class"] == "failed":
         return ("failed", leg_row["reason"], leg_row["origin"])
@@ -1068,12 +1308,18 @@ def rollup(legs, coverage, now, write, ledger):
                 merged["covered"].append(block)
         result[day] = merged
         if write and day != days[-1] and merged["covered"]:
-            os.makedirs(directory, exist_ok=True)
             temporary = "%s.tmp.%d" % (path, os.getpid())
-            with open(temporary, "w", encoding="utf-8") as handle:
-                json.dump(merged, handle, ensure_ascii=False, sort_keys=True)
-                handle.write("\n")
-            os.replace(temporary, path)
+            try:
+                os.makedirs(directory, exist_ok=True)
+                with open(temporary, "w", encoding="utf-8") as handle:
+                    json.dump(merged, handle, ensure_ascii=False, sort_keys=True)
+                    handle.write("\n")
+                os.replace(temporary, path)
+            except OSError as error:
+                print("llm-doctor: daily rollup not written: %s" % error, file=sys.stderr)
+                if os.path.exists(temporary):
+                    os.remove(temporary)
+                write = False
     return result
 
 
@@ -1105,7 +1351,7 @@ def incident_of(leg_row, now):
     age = max(0, int(now - leg_row["at"]))
     return {"age_s": age, "age": age_text(age), "model": leg_row["model"], "surface": leg_row["surface"],
             "project": leg_row["project"], "tier": leg_row["tier"], "attempt": leg_row["attempt"],
-            "detail": leg_row["detail"][:DETAIL_MAX], "ref": leg_row["ref"]}
+            "detail": leg_row["detail"][:DETAIL_MAX], "ref": leg_row["ref"], "session": leg_row["session"], "chat": ""}
 
 
 def ledger_view(row):
@@ -1191,10 +1437,11 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
             "ledger": ledger_view(row),
             "incidents": [incident_of(leg_row, now) for leg_row in
                           sorted(group["legs"], key=lambda item: -item["at"])[:MAX_INCIDENTS]],
+            "incidents_total": len(group["legs"]),
         })
     rank = {"regressed": 0, "new": 1, "open": 2, "fixed": 3, "not-a-bug": 4, "weather": 5}
     problems.sort(key=lambda item: (rank[item["status"]], -item["count"], item["label"]))
-    bugs = sum(1 for leg_row in window if leg_row["state"] in ("new", "open", "regressed"))
+    bugs = len({cause_of(leg_row) for leg_row in window if leg_row["state"] in BUG_STATES})
     weather = sum(1 for leg_row in window if leg_row["state"] == "weather")
     top = {}
     top_pool = [leg_row for leg_row in window if leg_row["state"] in ("new", "open", "regressed")] \
@@ -1204,16 +1451,16 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
         top[name] = top.get(name, 0) + 1
     models = {}
     for leg_row in window:
-        entry = models.setdefault(leg_row["model"], {"model": leg_row["model"], "legs": 0, "bugs": 0,
+        entry = models.setdefault(leg_row["model"], {"model": leg_row["model"], "legs": 0, "causes": set(),
                                                      "weather": 0, "columns": {}})
         if leg_row["attempt"] == "final":
             entry["legs"] += 1
-        if leg_row["state"] in ("new", "open", "regressed"):
-            entry["bugs"] += 1
+        if leg_row["state"] in BUG_STATES:
+            entry["causes"].add(cause_of(leg_row))
         elif leg_row["state"] == "weather":
             entry["weather"] += 1
         column = None
-        if leg_row["attempt"] == "superseded":
+        if leg_row["attempt"] == "superseded" and leg_row["class"] != "escaped":
             column = "retried"
         elif leg_row["class"] == "failed":
             column = "theirs" if leg_row["origin"] == "theirs" else "failed"
@@ -1221,14 +1468,16 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
             column = leg_row["class"]
         if column:
             entry["columns"][column] = entry["columns"].get(column, 0) + 1
+    for entry in models.values():
+        entry["bugs"] = len(entry.pop("causes"))
     model_rows = sorted((entry for entry in models.values() if entry["model"]),
                         key=lambda item: (-item["bugs"], -item["weather"], -item["legs"], item["model"]))
     return {
         "block": block, "owner": ledger["owners"].get(block) or "",
         "legs": window_legs,
         "bugs": bugs, "weather": weather,
-        "new": sum(1 for leg_row in window if leg_row["state"] == "new"),
-        "regressed": sum(1 for leg_row in window if leg_row["state"] == "regressed"),
+        "new": len({cause_of(leg_row) for leg_row in window if leg_row["state"] == "new"}),
+        "regressed": len({cause_of(leg_row) for leg_row in window if leg_row["state"] == "regressed"}),
         "top": " · ".join("%s ×%d" % (name, top[name]) for name in top_counts(top, TOP_MAX)),
         "top_kind": "bug" if bugs else ("weather" if top else ""),
         "coverage_from": int(coverage[block]) if coverage.get(block) else None,
@@ -1258,7 +1507,7 @@ def machinery_state(row, details, as_of):
     return "fixed"
 
 
-def machinery(ledger, now):
+def machinery(ledger, now, window_cutoff):
     """review-bench doctor's snapshot classes, each held against the ledger like a leg's problem:
     a class nobody has looked at is new, so the menu title counts only new and regressed ones."""
     snapshot = read_json(os.path.join(stats_dir(), "doctor-snapshot.json"))
@@ -1275,20 +1524,52 @@ def machinery(ledger, now):
         rows = details.get(name) if isinstance(details.get(name), list) else []
         classes.append({"class": name, "count": count, "status": machinery_state(row, rows, as_of),
                         "ledger": ledger_view(row)})
+    stale = as_of < window_cutoff
     return {"as_of": snapshot.get("as_of"), "total": snapshot.get("total"), "anomalies": snapshot["anomalies"],
-            "classes": classes,
-            "issues": sum(item["count"] for item in classes if item["status"] in ("new", "regressed"))}
+            "classes": classes, "stale": stale,
+            "issues": 0 if stale else sum(item["count"] for item in classes
+                                          if item["status"] in ("new", "open", "regressed"))}
+
+
+_CHAT_SOURCES = []
+
+
+def name_chats(rows):
+    """Set each row's `chat` from its `session`, reading the session and run records once per process.
+
+    A name recorded with the row (`chat`) is the fallback for a session no record names any more."""
+    pending = [row for row in rows if row.get("session")]
+    if not pending:
+        return
+    if not _CHAT_SOURCES:
+        from chat_names import chat_name, short_session, store_names, worker_run_launchers
+        _CHAT_SOURCES.extend((chat_name, short_session, worker_run_launchers(), store_names()))
+    chat_name, short_session, launchers, store = _CHAT_SOURCES
+    for row in pending:
+        row["chat"] = chat_name(row["session"], launchers=launchers, store=store) \
+            or row.get("chat") or short_session(row["session"])
 
 
 def health_row(name, items, notes=()):
-    items = sorted(items.values(), key=lambda item: -item["last"])
+    name_chats(list(items.values()))
+    merged = {}
+    for item in items.values():
+        into = merged.setdefault((item["label"], item["chat"]), dict(item, count=0, last=0, lines=0))
+        into["count"] += item["count"]
+        into["last"] = max(into["last"], item["last"])
+        into["lines"] += item["lines"]
+    items = sorted(merged.values(), key=lambda item: -item["last"])
     count = sum(item["count"] for item in items)
     return {"name": name, "status": "problem" if count else "ok", "count": count,
             "items": items, "notes": list(notes)}
 
 
-def add_item(items, label, at, lines=0):
-    item = items.setdefault(label, {"label": label, "count": 0, "last": 0, "lines": 0})
+def add_item(items, label, at, lines=0, session="", chat=""):
+    session = str(session or "")
+    item = items.setdefault((label, session), {"label": label, "session": session, "chat": "",
+                                               "count": 0, "last": 0, "lines": 0})
+    if chat and chat != session and not item["chat"]:
+        item["chat"] = re.sub(r" \([0-9a-f]{8}\)$", "", str(chat))
     item["count"] += 1
     item["last"] = max(item["last"], at)
     item["lines"] += lines
@@ -1305,14 +1586,15 @@ def hooks_health(cutoff, now):
             if not isinstance(hook, dict):
                 continue
             name, outcome, reason = str(hook.get("name") or "?"), hook.get("outcome"), str(hook.get("reason") or "")
+            session = row.get("session")
             if outcome == "error":
-                add_item(items, "%s: %s" % (name, reason or "error"), at)
+                add_item(items, "%s: %s" % (name, reason or "error"), at, session=session)
             elif outcome == "asked":
+                key = (session, name, reason[:120])
                 if row.get("busy"):
-                    add_item(items, "%s: asked while busy" % name, at)
-                key = (row.get("session"), name, reason[:120])
-                if key in asked and at - asked[key] <= STOP_REPEAT_S:
-                    add_item(items, "%s: same ask again within 30 min" % name, at)
+                    add_item(items, "%s: asked while busy" % name, at, session=session)
+                elif key in asked and at - asked[key] <= STOP_REPEAT_S:
+                    add_item(items, "%s: same ask again within 30 min" % name, at, session=session)
                 asked[key] = at
     rows, marks = [], {}
     for row in read_jsonl(words_journal()):
@@ -1321,11 +1603,14 @@ def hooks_health(cutoff, now):
         elif isinstance(row.get("ts"), (int, float)) and cutoff <= row["ts"] <= now + 3600:
             rows.append(row)
     for row in rows:
-        if row.get("silent") or not row.get("hook"):
+        if row.get("silent") or not (row.get("hook") or row.get("unprompted")):
             continue
         mark = marks.get("%s:%s" % (row.get("ts"), row.get("session")))
         if mark == "miss" or (row.get("match") is False and mark != "ok"):
-            add_item(items, "word notice with no reading: %s" % str(row.get("hook"))[:40], row["ts"])
+            label = ("⚡ reading with no notice: %s" % "; ".join(row.get("model") or [])[:40]
+                     if row.get("unprompted") else
+                     "word notice with no reading: %s" % str(row.get("hook"))[:40])
+            add_item(items, label, row["ts"], session=row.get("session"), chat=row.get("chat"))
     return health_row("hooks", items)
 
 
@@ -1345,13 +1630,14 @@ def debt_health(cutoff, now):
             except (ValueError, IndexError):
                 continue
             if cutoff <= at <= now + 3600:
-                add_item(items, "not recorded: %s" % (parts[1] if len(parts) > 1 else "gap"), at)
+                add_item(items, "not recorded: %s" % (parts[1] if len(parts) > 1 else "gap"), at, session=session)
     losses = os.path.join(debt_dir(), "losses.jsonl")
     if os.path.exists(losses):
         for row in read_jsonl(losses):
             at = row.get("at")
             if isinstance(at, (int, float)) and cutoff <= at <= now + 3600:
-                add_item(items, "lost unreviewed: %s" % (row.get("kind") or "?"), at, as_int(row.get("lines")) or 0)
+                add_item(items, "lost unreviewed: %s" % (row.get("kind") or "?"), at, as_int(row.get("lines")) or 0,
+                         session=row.get("session"))
     else:
         notes.append("losses.jsonl not written yet: only recording gaps are seen")
     return health_row("debt", items, notes)
@@ -1377,8 +1663,9 @@ def collect(window_h, now, write_daily=False):
     daily = rollup(legs, coverage, now, write_daily, ledger)
     blocks = [build_block(block, legs, ledger, daily, window_cutoff, now, coverage)
               for block in BLOCKS]
+    name_chats([incident for block in blocks for problem in block["problems"] for incident in problem["incidents"]])
     reviewers = blocks[0]
-    reviewers["machinery"] = machinery(ledger, now)
+    reviewers["machinery"] = machinery(ledger, now, window_cutoff)
     summary = " · ".join("%s %d" % (block["block"], block["bugs"]) for block in blocks if block["bugs"])
     return {"as_of": int(now), "window_h": window_h, "trend_days": TREND_DAYS,
             "bugs": sum(block["bugs"] for block in blocks), "summary": summary,
@@ -1440,8 +1727,9 @@ def render(report, only=None):
         lines.append("%s: %s" % (row["name"].capitalize(), "%d problem%s" % (row["count"], "" if row["count"] == 1 else "s")
                                   if row["count"] else "ok"))
         for item in row["items"]:
-            lines.append("  %-4d %4s  %s%s" % (item["count"], age_text(max(0, report["as_of"] - item["last"])),
-                                               item["label"], " · %d lines" % item["lines"] if item["lines"] else ""))
+            lines.append("  %-4d %4s  %s%s%s" % (item["count"], age_text(max(0, report["as_of"] - item["last"])),
+                                                 item["chat"] + " · " if item.get("chat") else "", item["label"],
+                                                 " · %d lines" % item["lines"] if item["lines"] else ""))
         for note in row["notes"]:
             lines.append("  %s" % note)
     lines.append("")
@@ -1457,7 +1745,7 @@ def main(argv):
     parser = argparse.ArgumentParser(prog="llm-doctor", description=__doc__.splitlines()[0])
     parser.add_argument("--window", type=int, default=DEFAULT_WINDOW_H, metavar="H")
     parser.add_argument("--block", choices=BLOCKS)
-    parser.add_argument("--json", action="store_true", help="print the document instead of the view")
+    parser.add_argument("--json", action="store_true", help="print the document instead of the view; writes nothing")
     parser.add_argument("--dry-run", action="store_true", help="write neither latest.json nor the daily rollup")
     parser.add_argument("--quiet", action="store_true", help="print nothing")
     args = parser.parse_args(argv)
@@ -1465,8 +1753,9 @@ def main(argv):
         parser.error("--window must be a positive number of hours")
     now_override = os.environ.get("LLM_DOCTOR_NOW")
     now = float(now_override) if now_override else time.time()
-    report = collect(args.window, now, write_daily=not args.dry_run)
-    if not args.dry_run:
+    write = not (args.dry_run or args.json)
+    report = collect(args.window, now, write_daily=write)
+    if write:
         try:
             write_cache(report)
         except OSError as error:

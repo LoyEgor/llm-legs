@@ -159,6 +159,7 @@ if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; 
   while [ "$grown" -lt "${STUB_SLEEP:-0}" ]; do
     sleep 1
     grown=$((grown + 1))
+    [ "$grown" -le "${STUB_TRANSCRIPT_GROW_TURNS:-$grown}" ] || continue
     jq -cn --arg n "$grown" \
       '{type:"assistant",message:{content:[{type:"text",text:("turn " + $n)}]}}' \
       >>"$transcript_dir/$transcript_name.jsonl"
@@ -327,7 +328,7 @@ set_config() {
 clear_stub() {
   : >"$CALL_LOG"
   : >"$PICK_LOG"
-  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW \
+  unset STUB_SLEEP STUB_HEARTBEAT STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW STUB_TRANSCRIPT_GROW_TURNS \
     STUB_EDIT_PATH STUB_PICK_WALL \
     STUB_ERROR STUB_CODE STUB_STDOUT STUB_GEMINI_LABEL STUB_SESSION STUB_GROK_SESSION STUB_GROK_MODEL \
     STUB_GROK_ANSWER STUB_GROK_ERROR_EVENT STUB_GROK_TURNS STUB_MODEL_USAGE
@@ -876,6 +877,24 @@ for marker_state in dead aged; do
   assert test ! -e "$marker_run/.report-posting"
 done
 
+# The repo row names the repository, never a worktree's branch directory or the caller's cwd.
+notice_repo="$WORK/notice-repos/myrepo"
+git init -q "$notice_repo"
+git -C "$notice_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git -C "$notice_repo" worktree add -q -b feat/x "$notice_repo/.claude/worktrees/feat-x"
+for repo_case in worktree:"$notice_repo/.claude/worktrees/feat-x" none:; do
+  repo_run="$WORKER_RUN_DIR/codex-repo-${repo_case%%:*}"
+  mkdir -p "$repo_run"
+  jq -cn --arg w "${repo_case#*:}" '{vendor:"codex",account:"main",model:"gpt-6-astra",effort:"medium",started_at:1}
+    + if $w == "" then {} else {workdir: $w} end' >"$repo_run/meta.json"
+  printf 'report-launcher\n' >"$repo_run/launcher"
+  printf '0\n' >"$repo_run/exit_code"
+  (cd "$notice_repo" && "$RUNNER" report "${repo_run##*/}" >/dev/null)
+  repo_row=$(jq -rs --arg id "${repo_run##*/}" '[.[] | select(.argv[4] == $id)] | last | .body | fromjson
+    | [.rows[] | select(.[0] == "repo") | .[1]] | join(",")' "$REPORT_BUS_LOG")
+  case $repo_case in worktree:*) assert test "$repo_row" = myrepo ;; *) assert test -z "$repo_row" ;; esac
+done
+
 if [ "${WORKER_RUN_TEST_REPORTS_ONLY:-0}" = 1 ]; then
   printf 'PASS: %s report producer asserts\n' "$asserts"
   exit 0
@@ -1025,7 +1044,7 @@ EOF
         BROWSE_WORKER_PICK="$BT_WP" \
         WORKER_RUN_DIR="$BT_RUNS" \
         BROWSE_SKIP_PROCESSES=1 \
-        "$RUNNER" browse) || rc=$?
+        "$RUNNER" browse --vendor codex) || rc=$?
   assert test "$rc" -eq 0
   assert grep -qx 'DIA: running' <<<"$out"
   assert grep -qx 'DIA-PROFILE: work dia (Profile 8)' <<<"$out"
@@ -1057,6 +1076,10 @@ EOF
   assert grep -q 'Never drive Google Chrome' "$preamble_path"
   assert test "$(grep -c '6ada21d4-ae66-4990-9040-97e18bb7b529' "$preamble_path")" -eq 0
   assert test "$(grep -c 'b1a2c3d4-e5f6-4a1b-8c2d-3e4f5a6b7c8d' "$preamble_path")" -eq 0
+  # Claude in Chrome leads the browser plan; Codex is its fallback.
+  out=$(BROWSE_DIA_USER_DATA="$BT_DIA" BROWSE_CHROME_USER_DATA="$BT_CHROME" BROWSE_CODEX_CONFIG="$BT_CODEX_CONF" \
+        BROWSE_WORKER_PICK="$BT_WP" WORKER_RUN_DIR="$BT_RUNS" BROWSE_SKIP_PROCESSES=1 "$RUNNER" browse)
+  assert grep -qx 'PLAN: claudeb account=com device=6ada21d4-ae66-4990-9040-97e18bb7b529 source=probe' <<<"$out"
 
   cat >"$BT_CODEX_CONF.nocua" <<'EOF'
 [model]
@@ -1155,6 +1178,7 @@ EOF
   assert test "$(jq -r .launched <<<"$json_out")" = 'null'
   assert test "$(jq -r 'has("banned_devices")' <<<"$json_out")" = 'false'
   assert test "$(jq -r .cua_repl <<<"$json_out")" = 'registered'
+  # The device is cached to `spare`, which this pool lacks: claudeb cannot run, so Codex falls back.
   assert test "$(jq -r .plan.vendor <<<"$json_out")" = 'codex'
   assert test "$(jq -r .plan.account <<<"$json_out")" = 'main'
 
@@ -1296,11 +1320,15 @@ EOF
     rc=0
     out=$(BROWSE_WORKER_PICK="$BT_WP.empty" "$RUNNER" start "$vendor" --browser --brief "$WORK/brief") || rc=$?
     assert test "$rc" -eq 2
-    assert grep -qx 'REASON: claudeb skipped — no usable accounts' <<<"$out"
-    assert grep -qx 'REASON: codex skipped — no usable accounts' <<<"$out"
+    assert grep -qx 'REASON: claudeb skipped — no accounts' <<<"$out"
+    assert grep -qx 'REASON: codex skipped — unavailable' <<<"$out"
     assert test ! -s "$CALL_LOG"
     assert test "$(grep -c '^RUN:' <<<"$out")" -eq 0
   done
+  printf '#!/usr/bin/env bash\nprintf "codex:   off for workers\\nclaude:  no accounts\\n"\n' >"$BT_WP.off"
+  chmod +x "$BT_WP.off"
+  out=$(BROWSE_WORKER_PICK="$BT_WP.off" "$RUNNER" browse) || :
+  assert grep -qx 'REASON: codex skipped — off for workers' <<<"$out"
   clear_stub
   out=$("$RUNNER" browse --record "$dev" com)
   rc=0
@@ -2304,6 +2332,40 @@ assert test "$rc" -eq 4
 assert grep -q 'codex is switched off for workers' "$WORK/role-open.err"
 rm -rf "$CHAT_PINS_DIR" "$HOME/.llm-limits.json"
 
+# Computer Use is not the implementation leg codex_workers=off closes: the picker is asked under
+# `computer`, the role wall stays open, and only the launched brief carries the preamble.
+printf '#!/bin/sh\nexit 0\n' >"$WORK/bin/cua-sync-ok"
+printf '#!/bin/sh\necho "fake registration failure" >&2\nexit 2\n' >"$WORK/bin/cua-sync-broken"
+chmod +x "$WORK/bin/cua-sync-ok" "$WORK/bin/cua-sync-broken"
+set_config 'codex_workers=off' 'codex_effort=medium'
+clear_stub
+export PICK_ACCOUNT=cu PICK_RC=0
+BROWSE_CUA_SYNC="$WORK/bin/cua-sync-ok" BROWSE_SKIP_PROCESSES=1 start_ok codex --computer
+assert grep -qx -- '--account codex --role computer --claim' "$PICK_LOG"
+assert meta_account_is cu
+assert jq -e '.computer == true' "$RUN_DIR/meta.json" >/dev/null
+assert grep -q 'Computer Use Preamble' "$RUN_DIR/brief.launch"
+assert cmp -s "$WORK/brief" "$RUN_DIR/brief"
+assert await_done
+for computer_bad in 'claudeb --computer' 'codex --computer --browser'; do
+  clear_stub
+  rc=0
+  # shellcheck disable=SC2086
+  "$RUNNER" start $computer_bad --brief "$WORK/brief" >"$WORK/computer-bad.out" 2>"$WORK/computer-bad.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -Eq 'only codex drives the computer|drive different surfaces' "$WORK/computer-bad.err"
+  assert test ! -s "$CALL_LOG"
+done
+clear_stub
+rc=0
+BROWSE_CUA_SYNC="$WORK/bin/cua-sync-broken" BROWSE_SKIP_PROCESSES=1 \
+  "$RUNNER" start codex --computer --brief "$WORK/brief" >"$WORK/computer-cua.out" 2>&1 || rc=$?
+assert test "$rc" -eq 2
+assert grep -qx 'REASON: codex computer use unavailable — cua_repl registration failed: fake registration failure' "$WORK/computer-cua.out"
+assert test ! -s "$CALL_LOG"
+unset PICK_ACCOUNT PICK_RC
+set_config
+
 # A missing wall is loud: worker-run must refuse to launch rather than read every account as
 # excluded because its include went missing.
 NOSHARE_RUNNER="$WORK/noshare/bin/worker-run"
@@ -2975,8 +3037,9 @@ cp "$RUNNER" "$SELF_RUNNER"
 mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
   "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" \
-  "$ROOT/share/web-search.sh" "$WORK/share/"
+  "$ROOT/share/web-search.sh" "$ROOT/share/run-liveness.sh" "$WORK/share/"
 [ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
+[ -e "$WORK/bin/cyrillic-share" ] || ln -s "$ROOT/bin/cyrillic-share" "$WORK/bin/cyrillic-share"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
 "$SELF_RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || fail "self-edit start failed: $(<"$WORK/start.err")"
 RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
@@ -4917,6 +4980,22 @@ assert test "$(grep -c 'KILLED: silent' <<<"$growing_wait")" -eq 0
 assert test ! -e "$RUN_DIR/killed"
 # The run really did stay mute for longer than the window that would have killed it.
 assert test "$(wc -l <"$CLAUDEB_PROFILES_ROOT/growing/projects/fixture/growing-session.jsonl")" -ge 3
+
+# A run that has worked and then sits in one long tool call (a suite, ten-plus minutes) freezes
+# every source; that is IDLE's to judge, never silence (live 2026-09-24: two fixers killed mid-suite).
+clear_stub
+set_config 'claudeb_profile=pinned'
+export PICK_RC=0 PICK_ACCOUNT=paused STUB_SLEEP=9 STUB_TRANSCRIPT_SESSION=paused-session \
+  STUB_TRANSCRIPT_ACCOUNT=paused STUB_TRANSCRIPT_GROW=1 STUB_TRANSCRIPT_GROW_TURNS=3 \
+  WORKER_RUN_SILENT_S=2 WORKER_RUN_IDLE_S=0 WORKER_RUN_DEADLINE=600
+start_ok claudeb
+unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT STUB_TRANSCRIPT_GROW \
+  STUB_TRANSCRIPT_GROW_TURNS WORKER_RUN_SILENT_S WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
+paused_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
+assert grep -qx 'STATUS: done' <<<"$paused_wait"
+assert test "$(grep -c 'KILLED: silent' <<<"$paused_wait")" -eq 0
+assert test ! -e "$RUN_DIR/killed"
+assert test "$(wc -l <"$CLAUDEB_PROFILES_ROOT/paused/projects/fixture/paused-session.jsonl")" -eq 4
 
 # And the same empty out/err with a transcript that never moves is still silence: killed.
 clear_stub

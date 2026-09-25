@@ -11,6 +11,7 @@ CLI: `report_frame.py block < {"word": â€¦, "rows": [[label, value | [items]], â
 """
 
 import json
+import math
 import sys
 
 WIDTH = 56
@@ -74,7 +75,7 @@ def fit(text, room):
 
 
 def time_word(seconds):
-    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds < 0:
+    if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0:
         return UNKNOWN
     if round(seconds) < 60:
         return f"{round(seconds)}s"

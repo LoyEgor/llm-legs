@@ -87,8 +87,16 @@ case "$mode" in
   rescue|init-only|no-image) response='The image is ready.' ;;
   stream) response='Image generated.' ;;
 esac
-if [ "$mode" = stream ]; then
+if [ "$mode" = stream ] || [ "$mode" = saved-then-error ] || [ "$mode" = saved-then-quota ]; then
   jq -cn --arg session "$session" --arg path "$image_path" '{event:"step_update",step_update:{conversation_id:$session,step_index:3,state:"DONE",step_type:"tool",tool_name:"generate_image",tool_info:{name:"generate_image",parameters:{Prompt:"A poster reading rate limit",ImageName:"fixture"},output:("Using prompt: A poster reading rate limit\n\nGenerated image is saved at " + $path + ".\n\n Do not output the path of this image to show to the user since the user can already see it.")}}}'
+fi
+if [ "$mode" = saved-then-error ]; then
+  printf 'AGY_ERROR: {"short_error":"INTERNAL (code 500): backend error"}\n' >&2
+  exit 3
+fi
+if [ "$mode" = saved-then-quota ]; then
+  printf 'AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached"}\n' >&2
+  exit 3
 fi
 if [ "$mode" != init-only ]; then
   [ "$mode" != no-session ] || session=''

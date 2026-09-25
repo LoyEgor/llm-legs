@@ -1073,6 +1073,7 @@ if args == ["unlock-keychain", "-p", "fixture-password", keychain]:
     sys.exit(0)
 assert args == ["find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", keychain]
 if os.environ.get("XPORT_LOCKED") and not Path(os.environ["XPORT_OUT"], "unlocked").exists():
+    Path(os.environ["XPORT_OUT"], "prompted").touch()
     sys.exit(36)
 blob = Path(os.environ["XPORT_BLOB"])
 if not blob.exists():
@@ -1125,7 +1126,8 @@ assert jq -e '.token.access_token == "keychain-placeholder" and .token.token_typ
 assert test "$(stat -f '%Sp' "$XPORT_OUT/token")" = '-rw-------'
 assert test "$(shasum "$XPORT_BLOB")" = "$xport_before"
 assert_fails /bin/bash "$SCRIPT" export-token xport --to "$XPORT_OUT/token" 2>/dev/null
-assert test "$(wc -l <"$XPORT_LOG" | tr -d ' ')" = 3
+# A read of a locked keychain is the GUI password dialog (seen after a reboot), so unlock comes first.
+assert_fails test -e "$XPORT_OUT/prompted"
 
 python3 - <<'PYSOON'
 import base64, datetime as dt, json, os
@@ -1204,6 +1206,6 @@ xport_rc=0
 assert test "$xport_rc" -eq 2
 assert_fails test -e "$XPORT_OUT/unknown"
 assert jq -se --arg home "$XPORT_HOME" 'all(.[]; .home == $home)
-  and (.[0:3] | map(.args[0])) == ["find-generic-password", "unlock-keychain", "find-generic-password"]' "$XPORT_LOG" >/dev/null
+  and (.[0:2] | map(.args[0])) == ["unlock-keychain", "find-generic-password"]' "$XPORT_LOG" >/dev/null
 
 echo "PASS: $asserts asserts; base and isolated HOME routing, worker-pool exclusion (own file beside the profiles, headless runs refused, interactive and pinned runs pass, the last member goes out too, visible in list/status), shared configuration and Playwright caches, a private MCP config per leg listing no server at all (main untouched even when unparsable, an already-empty file not rewritten), dead project records swept once a day (vanished temp paths only, both /var/folders spellings; live, non-temp and unparsable records kept), per-profile keychain kept unlockable behind a login.keychain-db symlink, parallel ordered list/status probes, one-step creation, strict launch names, exec delimiter stripping, override-aware login hints, persistent remove markers, a base profile removed by marker alone (hidden from list/status/pin/launch, the real HOME untouched, undone by deleting the marker), use pin set/show/clear/refusal parity, and one-image generation routing, refused unknown accounts, destination checks made before a generation is spent, prompt, rescue, and conversion, and keychain-first export-token with HOME-pinned read/unlock, 0600 nested access-only output retaining ID tokens, trusted-side refresh without profile writes (a wrong-first embedded client secret skipped on invalid_client), safe grant and lifetime refusals, no overwrite, and nested/flat legacy fallback only for an absent keychain item"

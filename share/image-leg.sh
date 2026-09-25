@@ -48,7 +48,7 @@ image_leg_exit() {
   fi
   [ -z "$IMAGE_LEG_MODEL_VAR" ] || model=${!IMAGE_LEG_MODEL_VAR:-}
   log=${IMAGE_LEG_LOG:-$HOME/.cache/image-legs/legs.jsonl}
-  mkdir -p "${log%/*}" 2>/dev/null || return 0
+  case $log in */*) mkdir -p "${log%/*}" 2>/dev/null || return 0 ;; esac
   jq -cn --arg tool "$IMAGE_LEG_TOOL" --arg kind "$IMAGE_LEG_KIND" --argjson rc "$rc" \
     --argjson started "$IMAGE_LEG_STARTED" --argjson queued "${IMAGE_LEG_QUEUED:-0}" --arg size "${IMAGE_LEG_SIZE:-}" --arg account "${account:-}" --arg served "$model" --arg err "$err" \
     '{ts: (now | floor), tool: $tool, kind: $kind, rc: $rc, seconds: ((now | floor) - $started),

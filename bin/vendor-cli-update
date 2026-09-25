@@ -155,7 +155,7 @@ record_divergence() { # vendor findings
 }
 
 update_vendor() { # vendor
-  local vendor=$1 package bin_dir installed latest now
+  local vendor=$1 package bin_dir installed latest native spec=latest now
   package=$(package_of "$vendor")
   bin_dir=$(node_bin_dir "$vendor") || { record "$vendor" not-installed '' ''; return 0; }
   installed=$(version_of "$bin_dir/$vendor" --version)
@@ -163,6 +163,15 @@ update_vendor() { # vendor
   if [ -z "$installed" ] || [ -z "$latest" ]; then
     record "$vendor" check-failed "$installed" "$latest"
     return 0
+  fi
+  # The native updater ships npm's `next` hours before `latest` moves: the npm claude follows the
+  # native version, or every release reads as a lagging install and opens a chat.
+  if [ "$vendor" = claude ]; then
+    native=$(version_of timeout_command 30 "${VENDOR_CLI_UPDATE_NATIVE_CLAUDE:-$HOME/.local/bin/claude}" --version)
+    if [ -n "$native" ] && newer "$native" "$latest" &&
+      [ "$(PATH="$bin_dir:$PATH" timeout_command 60 "$bin_dir/npm" view "$package@$native" version 2>/dev/null | tail -n 1)" = "$native" ]; then
+      latest=$native spec=$native
+    fi
   fi
   if ! newer "$latest" "$installed"; then
     record "$vendor" current "$installed" "$latest"
@@ -172,7 +181,7 @@ update_vendor() { # vendor
     record "$vendor" busy "$installed" "$latest"
     return 0
   fi
-  if ! PATH="$bin_dir:$PATH" timeout_command 600 "$bin_dir/npm" install -g "$package@latest" >>"$log_file" 2>&1; then
+  if ! PATH="$bin_dir:$PATH" timeout_command 600 "$bin_dir/npm" install -g "$package@$spec" >>"$log_file" 2>&1; then
     record "$vendor" install-failed "$installed" "$latest"
     return 0
   fi
@@ -212,6 +221,21 @@ run_all() {
     >>"$log_file" 2>&1 || printf '%s fingerprint check failed\n' "$(stamp)" >>"$log_file"
 }
 
+# Egor's «сделай апдейт» (word family `update`): this pass, then every vendor's integration in one chat at once. It
+# returns at once, since the pass takes minutes and the chat that asked must not wait on it.
+update_now() {
+  mkdir -p "$state_dir"
+  if [ -z "${VENDOR_CLI_UPDATE_DETACHED:-}" ]; then
+    VENDOR_CLI_UPDATE_DETACHED=1 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$script_path" now \
+      </dev/null >>"$state_dir/launchd.log" 2>&1 &
+    printf 'vendor update started: CLIs, model lists and fingerprints first, then one integration chat for every vendor opens in Terminal; progress in %s\n' "$log_file"
+    return 0
+  fi
+  printf '%s manual update: pass started\n' "$(stamp)" >>"$log_file"
+  VENDOR_FINGERPRINT_HOLD=1 lockf -k -t 900 "$state_dir/run.lock" env VENDOR_CLI_UPDATE_LOCKED=1 "$script_path" run
+  "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" request --all "Egor's manual update" >/dev/null
+}
+
 wrapper_exec_line() {
   printf 'exec %q "$@"' "$script_path"
 }
@@ -236,7 +260,7 @@ install_agent() {
     <string>run</string>
   </array>
   <key>StartInterval</key>
-  <integer>1800</integer>
+  <integer>86400</integer>
   <key>RunAtLoad</key>
   <true/>
   <key>ProcessType</key>
@@ -257,7 +281,7 @@ EOF
   if ! launchctl bootstrap "gui/$UID" "$plist"; then
     launchctl load -w "$plist"
   fi
-  printf 'Installed %s: every 30 minutes and at login.\n' "$label"
+  printf 'Installed %s: daily and at login.\n' "$label"
 }
 
 uninstall_agent() {
@@ -284,10 +308,11 @@ show_status() {
   return 0
 }
 
-usage() { printf 'usage: vendor-cli-update [run|install|uninstall|status]\n' >&2; exit 2; }
+usage() { printf 'usage: vendor-cli-update [run|now|install|uninstall|status]\n' >&2; exit 2; }
 
 case "${1:-run}" in
   run) run_all ;;
+  now) update_now ;;
   install) install_agent ;;
   uninstall) uninstall_agent ;;
   status) show_status ;;

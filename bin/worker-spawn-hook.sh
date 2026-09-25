@@ -131,6 +131,7 @@ if [ "$subagent" = claudeb-worker ]; then
   prefix="${acct:-?} · $model · $effort"
 elif [ "$subagent" = codex-worker ]; then
   acct=$(brief_line ACCOUNT)
+  [ -n "$acct" ] || [ "$(brief_line COMPUTER)" != yes ] || acct=$(route_account codex --role computer)
   [ -n "$acct" ] || acct=$(route_account codex)
   [ -n "$acct" ] || acct=$(worker_model_pin_first codex 2>/dev/null || true)
   [ -n "$acct" ] || acct=main

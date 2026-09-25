@@ -217,6 +217,10 @@ esac
 
 
 prompt=$(printf '%s' "$input" | jq -r '.tool_input.prompt // empty' 2>/dev/null) || prompt=''
+if [ "$worker" = codex-worker ] && grep -Eq '^COMPUTER:[[:space:]]*yes[[:space:]]*$' <<<"$prompt"; then
+  role_arg=computer
+  toggle_note=''
+fi
 
 # An `ATTACH <run-id>:` relay opens no window: the run is already in flight on an account it is
 # already spending, and this spawn only waits on it. Priced like a fresh launch it becomes

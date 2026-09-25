@@ -994,7 +994,7 @@ local LLM_DOCTOR_WINDOWS = {
 }
 local DOCTOR_BLOCK_NAMES = { reviewers = "Reviewers", workers = "Workers", light = "Light", image = "Image" }
 -- The collector's own column words, in its order; blank for zero so a class keeps its column.
-local DOCTOR_MODEL_COLUMNS = { "walled", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried" }
+local DOCTOR_MODEL_COLUMNS = { "walled", "off", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried" }
 local TREND_MARK = { up = "↑", down = "↓" }
 local lastLlmDoctorKick = 0
 
@@ -1083,7 +1083,8 @@ local function incidentRows(problem)
       if surface == "judge" or surface == "panel" or surface == "video" then detail = surface .. ": " .. detail end
       if incident.attempt and incident.attempt ~= "final" then detail = detail .. " · " .. tostring(incident.attempt) end
       rows[#rows + 1] = { tostring(incident.age or ""), tostring(incident.model or ""),
-        tostring(incident.project or ""), tostring(incident.tier or ""), detail }
+        tostring(incident.project or ""), tostring(incident.tier or ""),
+        clipHead(type(incident.chat) == "string" and incident.chat or "", 28), detail }
     end
   end
   return rows
@@ -1159,6 +1160,10 @@ local function problemMenu(problem, block, windowLabel)
     items[#items + 1] = { title = title, disabled = true }
   end
   if #rows == 0 then items[#items + 1] = { title = infoTitle("no incidents", false, true), disabled = true } end
+  local total = tonumber(problem.incidents_total) or #rows
+  if total > #rows and #rows > 0 then
+    items[#items + 1] = { title = infoTitle(string.format("latest %d of %d", #rows, total), false, true), disabled = true }
+  end
   items[#items + 1] = { title = "-" }
   items[#items + 1] = { title = infoTitle("Copy for an LLM"), fn = function()
     copyText(problemBrief(problem, block, windowLabel), "problem for an LLM")
@@ -1369,8 +1374,9 @@ local function appendDoctorBlocks(items, snapshot)
         if type(item) == "table" then
           local age = math.max(0, os.time() - (tonumber(item.last) or 0))
           local lines = tonumber(item.lines) or 0
-          sub[#sub + 1] = { title = infoTitle(string.format("%d · %s · %s%s", tonumber(item.count) or 0,
-            age < 3600 and (math.floor(age / 60) .. "m") or (math.floor(age / 3600) .. "h"),
+          local chat = type(item.chat) == "string" and item.chat ~= "" and (item.chat .. " · ") or ""
+          sub[#sub + 1] = { title = infoTitle(string.format("%d · %s · %s%s%s", tonumber(item.count) or 0,
+            age < 3600 and (math.floor(age / 60) .. "m") or (math.floor(age / 3600) .. "h"), chat,
             tostring(item.label or ""), lines > 0 and (" · " .. lines .. " lines") or "")), disabled = true }
         end
       end
@@ -1435,7 +1441,8 @@ local function appendDoctor(menu)
 
   local parts = {}
   if bugs > 0 then parts[#parts + 1] = plural(bugs, "bug") end
-  if not snapshot then parts[#parts + 1] = "no snapshot" elseif issues > 0 then parts[#parts + 1] = plural(issues, "issue") end
+  if issues > 0 then parts[#parts + 1] = plural(issues, "issue") end
+  if not snapshot then parts[#parts + 1] = "no snapshot" end
   local doctorText = "LLM doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "OK")
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
     .. (taskRunning(M.doctorRescanTask) and " · rescanning" or "")

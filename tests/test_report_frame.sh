@@ -33,7 +33,7 @@ assert f.time_word(59.6) == "1.0m"
 assert f.time_word(402) == "6.7m"
 assert f.time_word(599) == "10m"
 assert f.time_word(1620) == "27m"
-for nothing in (None, -1, "12", True):
+for nothing in (None, -1, "12", True, float("nan"), float("inf")):
     assert f.time_word(nothing) == "–", nothing
 
 assert f.count(999) == "999"

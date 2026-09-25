@@ -132,6 +132,9 @@ wf() { jq -cn --arg s "$1" --arg p "${2:-}" '{hook_event_name:"PreToolUse",tool_
 assert denied "$(wf "await agent('x', {subagent_type: 'codex-worker'})")"
 assert denied "$(wf "await agent('run worker-run start codex --brief b')")"
 assert lacks "$(wf "await agent('grep the repo')")" 'permissionDecision'
+assert lacks "$(wf "await agent('review bin/worker-run, the codex-worker relay and image-gen docs')")" 'permissionDecision'
+assert denied "$(wf "await agent(\"x\", {subagent_type: \"review-waiter\"})")"
+assert denied "$(wf "await agent('run light-research --out o q')")"
 printf "agent('y', {agentType: 'claudeb-worker'})\n" >"$WORK/wf.js"
 assert denied "$(wf "" "$WORK/wf.js")"
 

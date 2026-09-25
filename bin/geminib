@@ -957,19 +957,19 @@ def export():
     source = "antigravity-oauth-token"
     blob = None
     if keychain.exists():
+        # Unlock BEFORE reading: after a reboot the keychain is locked, and a read of a locked one
+        # pops a GUI password dialog that hangs a headless caller until someone answers it.
+        try:
+            password = (home / ".keychain-password").read_text().rstrip("\n")
+        except OSError:
+            password = ""
+        if not password or subprocess.run(
+            [security, "unlock-keychain", "-p", password, str(keychain)],
+            env=security_env, capture_output=True,
+        ).returncode:
+            refuse(3, "keychain is unavailable; refusing a legacy fallback")
         command = [security, "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w", str(keychain)]
         result = subprocess.run(command, env=security_env, capture_output=True)
-        if result.returncode not in (0, 44):
-            try:
-                password = (home / ".keychain-password").read_text().rstrip("\n")
-            except OSError:
-                password = ""
-            if not password or subprocess.run(
-                [security, "unlock-keychain", "-p", password, str(keychain)],
-                env=security_env, capture_output=True,
-            ).returncode:
-                refuse(3, "keychain is unavailable; refusing a legacy fallback")
-            result = subprocess.run(command, env=security_env, capture_output=True)
         if result.returncode == 0:
             source = "keychain"
             blob = result.stdout.strip()

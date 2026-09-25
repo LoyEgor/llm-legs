@@ -176,7 +176,9 @@ write_claudeb "trap 'printf \"int\n\" >>'$SIGNALS'; [ \"\$(grep -c \"\" '$SIGNAL
 printf 'stubborn but interruptible\n'
 while :; do sleep 0.2; done"
 int_rc=0
-"$DRIVER" beta --cwd "$SESSION_CWD" --timeout 20 >"$WORK/int.out" 2>&1 || int_rc=$?
+# Under an ignored SIGINT, as a driver started from a background job or launchd gets one: exec keeps
+# SIG_IGN, and a session that inherits it shrugs off every ^C the ladder types.
+( trap '' INT; exec "$DRIVER" beta --cwd "$SESSION_CWD" --timeout 20 ) >"$WORK/int.out" 2>&1 || int_rc=$?
 assert test "$int_rc" -eq 0
 assert test "$(grep -c '' "$SIGNALS")" -eq 2
 assert_fails test -e "$TYPED"

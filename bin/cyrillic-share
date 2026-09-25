@@ -1,42 +1,20 @@
 #!/usr/bin/env python3
-"""How Russian a piece of model-to-model text is. Reads stdin, prints `<share> <letters>`.
-
-Quoted spans «...» are Egor's own words, which every English report is allowed to carry verbatim,
-and code is not prose at all: both are removed before anything is counted, so the share answers
-for what the model WROTE.
-"""
-import re
+"""How Russian a piece of model-to-model text is. Reads stdin, prints `<share> <letters>`; the rule
+lives in share/english_text.py. `--allowed` prints the rule's one-line statement instead."""
+import os
 import sys
 
-CYRILLIC_RANGES = (
-    (0x0400, 0x04FF),
-    (0x0500, 0x052F),
-    (0x1C80, 0x1C8F),
-    (0x2DE0, 0x2DFF),
-    (0xA640, 0xA69F),
-)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
 
-FENCE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
-INLINE = re.compile(r"`[^`]*`")
-# Unterminated by design: a report cut mid-quote would otherwise count the whole tail as prose.
-QUOTED = re.compile(r"«.*?(?:»|\Z)", re.DOTALL)
-
-
-def is_cyrillic(ch):
-    point = ord(ch)
-    return any(low <= point <= high for low, high in CYRILLIC_RANGES)
+from english_text import ALLOWED, cyrillic_share  # noqa: E402
 
 
 def main():
-    text = sys.stdin.buffer.read().decode("utf-8", "replace")
-    for pattern in (FENCE, INLINE, QUOTED):
-        text = pattern.sub(" ", text)
-    letters = [ch for ch in text if ch.isalpha()]
-    if not letters:
-        print("0 0")
+    if sys.argv[1:] == ["--allowed"]:
+        print(ALLOWED)
         return 0
-    cyrillic = sum(1 for ch in letters if is_cyrillic(ch))
-    print("%d %d" % ((cyrillic * 100 + len(letters) // 2) // len(letters), len(letters)))
+    text = sys.stdin.buffer.read().decode("utf-8", "replace")
+    print("%d %d" % cyrillic_share(text))
     return 0
 
 

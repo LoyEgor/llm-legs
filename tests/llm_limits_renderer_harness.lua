@@ -2664,8 +2664,9 @@ local function doctorDocument(asOf)
             looked = "looked at 1d ago",
             ledger = { id = "R7", title = "an export refusal worded crashed", status = "fixed",
               fixed_in = { "review-bench@08d37c3" }, reviewed_by = "Review-bench improvements", note = "" },
+            incidents_total = 3,
             incidents = { { age = "2h", model = "opus", surface = "review", project = "llm-legs", tier = "T2",
-              detail = "crashed", attempt = "final", ref = "20260924T100000Z-1234567" } } },
+              detail = "crashed", attempt = "final", ref = "20260924T100000Z-1234567", chat = "Design system" } } },
           { kind = "bug", label = "failed · pool empty", models = { "grok47" }, count = 1, trend = "up",
             spark = "█", last_seen = "22m", status = "new", status_text = "new", looked = "",
             incidents = { { age = "22m", model = "grok47", surface = "judge", project = "claude-setup", tier = "T2",
@@ -2684,16 +2685,18 @@ local function doctorDocument(asOf)
         models = { { model = "astra", legs = 20, bugs = 0, weather = 2, columns = { walled = 2 } } } },
       { block = "light", owner = "", legs = 4, bugs = 1, weather = 0, new = 0, regressed = 0,
         top = "grok crashed ×1", top_kind = "bug",
-        problems = { { kind = "bug", label = "failed · crashed", models = { "grok" }, count = 1, trend = "",
-          spark = "█", last_seen = "9h", status = "open", status_text = "open",
+        problems = { { kind = "bug", label = "failed · crashed", models = { "grok" }, count = 3, trend = "",
+          spark = "█", last_seen = "9h", status = "open", status_text = "open", incidents_total = 3,
           ledger = { id = "W1", title = "tree digest", status = "open", fixed_in = {} }, incidents = {} } },
         models = {} },
       { block = "image", owner = "", legs = 0, bugs = 0, weather = 0, new = 0, regressed = 0, top = "",
         problems = {}, models = {} },
     },
     health = {
-      { name = "hooks", status = "problem", count = 2, notes = {},
-        items = { { label = "ask-english-report.sh: exit 124", count = 2, last = os.time() - 7200, lines = 0 } } },
+      { name = "hooks", status = "problem", count = 3, notes = {},
+        items = { { label = "ask-english-report.sh: exit 124", count = 2, last = os.time() - 7200, lines = 0,
+                    chat = "Design system" },
+                  { label = "word notice with no reading: ⚡ review", count = 1, last = os.time() - 7300, lines = 0 } } },
       { name = "debt", status = "ok", count = 0, items = {},
         notes = { "losses.jsonl not written yet: only recording gaps are seen" } },
     } }
@@ -2711,17 +2714,18 @@ do
   local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, nil, doctorDocument())
   local menu = module.menuItems()
   local row = doctorRow(menu)
-  assert(titleText(row) == "LLM doctor: 3 bugs · no snapshot", titleText(row))
+  assert(titleText(row) == "LLM doctor: 3 bugs · 3 issues · no snapshot", titleText(row))
   assert(not isDimmed(row.title.runs[1].attributes, 0), "the doctor line is dimmed over open bugs")
   local titles = submenuTitles(row)
   assert(titles[1] == "Reviewers: 2 bugs · 40 weather · 1 new · 1 regressed", titles[1])
   assert(titles[2] == "Workers: 0 bugs · 2 weather" and titles[3] == "Light: 1 bug · 0 weather"
     and titles[4] == "Image: no legs", table.concat(titles, "|"))
-  assert(titles[5] == "Hooks: 2 problems" and titles[6] == "Debt: OK", table.concat(titles, "|"))
+  assert(titles[5] == "Hooks: 3 problems" and titles[6] == "Debt: OK", table.concat(titles, "|"))
   assert(not isDimmed(row.menu[5].title.runs[1].attributes, 0), "a health row with problems is dimmed")
   assert(isDimmed(row.menu[6].title.runs[1].attributes, 0), "a clean health row is not dimmed")
   local hooks = submenuTitles(row.menu[5])
-  assert(hooks[1] == "2 · 2h · ask-english-report.sh: exit 124" and #hooks == 1, table.concat(hooks, "|"))
+  assert(hooks[1] == "2 · 2h · Design system · ask-english-report.sh: exit 124"
+    and hooks[2] == "1 · 2h · word notice with no reading: ⚡ review" and #hooks == 2, table.concat(hooks, "|"))
   local debt = submenuTitles(row.menu[6])
   assert(debt[1] == "losses.jsonl not written yet: only recording gaps are seen" and #debt == 1, table.concat(debt, "|"))
   assert(titles[7] == "not measurable yet: worker false-green reports, weakened tests", titles[7])
@@ -2745,27 +2749,28 @@ do
   local problem = submenuTitles(reviewers.menu[3])
   assert(problem[1] == "R7  an export refusal worded crashed", problem[1])
   assert(problem[2] == "fixed · fixed in review-bench@08d37c3 · looked at 1d ago · by Review-bench improvements", problem[2])
-  assert(problem[3] == "-" and problem[4] == "2h  opus  llm-legs  T2  crashed", table.concat(problem, "|"))
-  assert(problem[5] == "-" and problem[6] == "Copy for an LLM" and #problem == 6, table.concat(problem, "|"))
+  assert(problem[3] == "-" and problem[4] == "2h  opus  llm-legs  T2  Design system  crashed", table.concat(problem, "|"))
+  assert(problem[5] == "latest 1 of 3", table.concat(problem, "|"))
+  assert(problem[6] == "-" and problem[7] == "Copy for an LLM" and #problem == 7, table.concat(problem, "|"))
   local chunk = submenuTitles(reviewers.menu[4])
   assert(chunk[1] == "22m  grok47  claude-setup  T2  judge: pool empty · chunk", chunk[1])
   for _, text in ipairs({ problem[4], chunk[1] }) do
     assert(not text:find("20260924T", 1, true), "an incident row shows a run id: " .. text)
   end
-  reviewers.menu[3].menu[6].fn()
+  reviewers.menu[3].menu[7].fn()
   assert(pasteboardContents:find("run 20260924T100000Z-1234567", 1, true)
     and pasteboardContents:find("share/doctor-ledger.json", 1, true)
     and pasteboardContents:find("ledger R7: an export refusal worded crashed", 1, true), pasteboardContents)
   local models = submenuTitles(reviewers.menu[9])
-  assert(models[1] == "model   legs  bugs  walled  cap  stalled  failed  theirs  slow  escaped  retried", models[1])
-  assert(models[2] == "grok47    10     1            2                                                1", models[2])
-  assert(models[3] == "opus      30     1                             1", models[3])
+  assert(models[1] == "model   legs  bugs  walled  off  cap  stalled  failed  theirs  slow  escaped  retried", models[1])
+  assert(models[2] == "grok47    10     1                 2                                                1", models[2])
+  assert(models[3] == "opus      30     1                                  1", models[3])
   reviewers.menu[10].fn()
   assert(pasteboardContents:find("--block reviewers --window 24", 1, true)
     and pasteboardContents:find("caps are caps", 1, true)
     and pasteboardContents:find("(owner: Review-bench improvements)", 1, true), pasteboardContents)
   local light = submenuTitles(blockRow(menu, "Light"))
-  assert(light[1] == "owner: unset · 4 legs in 24 h" and light[2] == "failed · crashed  1  █  9h  open  W1  grok",
+  assert(light[1] == "owner: unset · 4 legs in 24 h" and light[2] == "failed · crashed  3  █  9h  open  W1  grok",
     table.concat(light, "|"))
   local image = submenuTitles(blockRow(menu, "Image"))
   assert(image[2] == "no legs failed in the window" and image[#image] == "Copy brief for the owner",
@@ -2809,7 +2814,7 @@ do
   local snapshot = { as_of = os.time(), total = 14, anomalies = { anchors = 3, closure_pending = 11 },
     rows = { anchors = {}, closure_pending = {} } }
   local healthy = loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
-  assert(titleText(doctorRow(healthy)) == "LLM doctor: 3 bugs · 13 issues", titleText(doctorRow(healthy)))
+  assert(titleText(doctorRow(healthy)) == "LLM doctor: 3 bugs · 14 issues", titleText(doctorRow(healthy)))
   document.health = nil
   local menu = loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
   assert(titleText(doctorRow(menu)) == "LLM doctor: 3 bugs · 11 issues", titleText(doctorRow(menu)))

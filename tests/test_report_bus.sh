@@ -40,6 +40,16 @@ for body in 'plain text' '{"word":"t"}' '{"word":"","rows":[]}' '{"word":"t","ro
   assert test ! -s "$WORK/out"
 done
 assert test "$(count "$STORE/refused/pending")" = 0
+# A renderer that cannot run is a delivery problem: exit 0 and the document kept in lost.log.
+printf '#!/bin/sh\nexit 1\n' >"$WORK/bin/crash-frame"
+for frame_path in "$WORK/no-such-frame.py" "$WORK/bin/crash-frame"; do
+  rc=0
+  doc 'unrendered body' | REPORT_FRAME="$frame_path" "$BUS" post --kind notice --id unrendered --session unrendered 2>"$WORK/error" || rc=$?
+  assert test "$rc" = 0
+  assert grep -q 'cannot render report' "$WORK/error"
+  assert grep -q 'unrendered body' "$STORE/lost.log"
+done
+: >"$STORE/lost.log"
 for args in 'post --kind notice --session ../escape' 'flush --event bogus' 'list --last -1' 'emit --kind notice --session basic' 'doctor --last 1'; do
   rc=0
   # shellcheck disable=SC2086

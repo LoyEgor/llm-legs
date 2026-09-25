@@ -358,7 +358,7 @@ assert denied "$(write_event "$PIN_FILE")"
 rm -f "$GRANT"
 
 # With the library, the grant is the pin grant claude-setup's word intake wrote for this chat.
-export WORDS_LIB="$ROOT/../claude-setup/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
+export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
 [ -r "$WORDS_LIB" ] || fail "the words library is missing: $WORDS_LIB"
 pin_grant() { # scope
   mkdir -p "$WORDS_DIR/s"

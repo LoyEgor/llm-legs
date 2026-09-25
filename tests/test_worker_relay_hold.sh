@@ -41,6 +41,11 @@ done
 # A finished run, a dead supervisor, a tag without a run and a non-relay agent stop freely.
 assert_eq "" "$(stop claudeb-worker a-done)"
 assert_eq "" "$(stop claudeb-worker a-dead)"
+# A supervisor pid now worn by an unrelated process — it began long after the launch stamp — is gone.
+mkdir -p "$WORKER_RUN_DIR/run-recycled"
+printf '{"pid":%s,"pid_started_at":%s}\n' "$LIVE_PID" "$(($(date +%s) - 86400))" >"$WORKER_RUN_DIR/run-recycled/meta.json"
+printf 'locomthebest · opus · high run=run-recycled\n' >"$TAGS/a-recycled"
+assert_eq "" "$(stop claudeb-worker a-recycled)"
 assert_eq "" "$(stop claudeb-worker a-norun)"
 assert_eq "" "$(stop claudeb-worker a-missing)"
 assert_eq "" "$(stop general-purpose a-live)"

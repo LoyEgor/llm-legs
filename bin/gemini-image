@@ -248,30 +248,6 @@ session=$(jq -r '([.[] | select(.event == "result") | .result.conversation_id //
 response=$(jq -r '[.[] | select(.event == "result") | .result.response // empty] | last // ""' "$events_file")
 jq -r '.[] | (.result.error // empty), (.step_update.tool_info.error // empty) |
   .. | strings' "$events_file" >"$tmp_dir/errors"
-# The image model has its own per-account quota, invisible in the chat-model quota table.
-# Exit 3 is not a limit: agy >= 1.2.6 exits 3 on every model API failure (AGY_ERROR on stderr).
-if [ "$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')" = QUOTA ] ||
-   grep -Eq '^QUOTA[[:space:]]*$' "$stdout_file" ||
-   grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' "$tmp_dir/errors"; then
-  printf 'GEMINI_USAGE_LIMIT\n' >&2
-  exit 3
-fi
-if [ "$generation_rc" -ne 0 ]; then
-  if grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' \
-      "$stdout_file" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
-    printf 'GEMINI_USAGE_LIMIT\n' >&2
-    exit 3
-  fi
-  if grep -Eqi 'out of the worker pool|treating every account as out of the pool' \
-      "$stdout_file" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
-    printf 'gemini-image: account refused by the worker pool\n' >&2
-    exit 4
-  fi
-  printf 'gemini-image: generation failed\n' >&2
-  tail -n 20 "$tmp_dir/stderr" >&2
-  exit 1
-fi
-
 generated=''
 while IFS= read -r candidate; do
   if [[ "$candidate" = /* ]] && [ -f "$candidate" ] && [ ! "$candidate" -ot "$launch_marker" ]; then
@@ -294,10 +270,45 @@ if [ -z "$generated" ] && [ -d "$brain_dir" ]; then
     \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \) \
     -newer "$launch_marker" -print 2>/dev/null)
 fi
+# agy >= 1.2.10 exits 3 when the turn ends on a model error after a tool already saved the image;
+# the paid generation is delivered, never regenerated, whatever the error was.
+if [ -z "$generated" ]; then
+  # The image model has its own per-account quota, invisible in the chat-model quota table.
+  # Exit 3 is not a limit: agy >= 1.2.6 exits 3 on every model API failure (AGY_ERROR on stderr).
+  if [ "$(printf '%s\n' "$response" | tail -n 1 | tr -d '\r')" = QUOTA ] ||
+     grep -Eq '^QUOTA[[:space:]]*$' "$stdout_file" ||
+     grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' "$tmp_dir/errors"; then
+    printf 'GEMINI_USAGE_LIMIT\n' >&2
+    exit 3
+  fi
+  if [ "$generation_rc" -ne 0 ]; then
+    # Stream events echo the prompt; their errors were read above, so only non-event lines count here.
+    grep -v '^[[:space:]]*{' "$stdout_file" >"$tmp_dir/stdout-text" || :
+    if grep -Eqi 'GEMINI_USAGE_LIMIT|RESOURCE_EXHAUSTED|Individual quota reached|usage limit|quota exceeded|image generation quota.*exceeded|rate limit' \
+        "$tmp_dir/stdout-text" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
+      printf 'GEMINI_USAGE_LIMIT\n' >&2
+      exit 3
+    fi
+    if grep -Eqi 'out of the worker pool|treating every account as out of the pool' \
+        "$tmp_dir/stdout-text" "$log_file" "$tmp_dir/stderr" 2>/dev/null; then
+      printf 'gemini-image: account refused by the worker pool\n' >&2
+      exit 4
+    fi
+  fi
+fi
+if [ -z "$generated" ] && [ "$generation_rc" -ne 0 ]; then
+  printf 'gemini-image: generation failed\n' >&2
+  tail -n 20 "$tmp_dir/stderr" >&2
+  exit 1
+fi
 if [ -z "$generated" ]; then
   printf 'gemini-image: generated file not found\n' >&2
   tail -n 20 "$stdout_file" >&2
   exit 1
+fi
+if [ "$generation_rc" -ne 0 ]; then
+  printf 'gemini-image: agy exited %s after the image was saved; delivering it\n' "$generation_rc" >&2
+  tail -n 5 "$tmp_dir/stderr" >&2
 fi
 
 if [ "$remove_green" = true ]; then

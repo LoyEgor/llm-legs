@@ -57,7 +57,7 @@ printf '%s (Claude Code)\n' "$(cat "$FAKE_BIN/ver-claude")"
 EOF
 cat >"$FAKE_BIN/fingerprint" <<'EOF'
 #!/usr/bin/env bash
-printf 'fingerprint %s PATH=%s\n' "$*" "$PATH" >>"$CALLS"
+printf 'fingerprint %s HOLD=%s PATH=%s\n' "$*" "${VENDOR_FINGERPRINT_HOLD:-}" "$PATH" >>"$CALLS"
 EOF
 printf '2.1.280\n' >"$FAKE_BIN/ver-claude"
 printf '2.1.280\n' >"$FAKE_BIN/latest-claude"
@@ -66,12 +66,20 @@ cat >"$FAKE_BIN/npm" <<'EOF'
 #!/usr/bin/env bash
 name() { case $1 in @openai/codex*) printf codex ;; @xai-official/grok*) printf grok ;; @anthropic-ai/claude-code*) printf claude ;; esac; }
 case $1 in
-  view) cat "$FAKE_BIN/latest-$(name "$2")" 2>/dev/null ;;
+  view)
+    case $2 in
+      *@[0-9]*) grep -xF "${2##*@}" "$FAKE_BIN/published-$(name "$2")" 2>/dev/null ;;
+      *) cat "$FAKE_BIN/latest-$(name "$2")" 2>/dev/null ;;
+    esac
+    ;;
   install)
     printf 'npm install %s\n' "$3" >>"$CALLS"
     [ -z "${NPM_INSTALL_FAIL:-}" ] || exit 1
     [ -z "${NPM_INSTALL_NOOP:-}" ] || exit 0
-    cp "$FAKE_BIN/latest-$(name "$3")" "$FAKE_BIN/ver-$(name "$3")"
+    case $3 in
+      *@latest) cp "$FAKE_BIN/latest-$(name "$3")" "$FAKE_BIN/ver-$(name "$3")" ;;
+      *) printf '%s\n' "${3##*@}" >"$FAKE_BIN/ver-$(name "$3")" ;;
+    esac
     ;;
 esac
 EOF
@@ -165,6 +173,30 @@ run
 assert grep -qxF 'npm install @anthropic-ai/claude-code@latest' "$CALLS"
 assert [ "$(result claude)" = "updated 2.1.280" ]
 
+# The native claude runs ahead of npm's latest tag: the npm claude follows it to the same version when
+# npm publishes that version, and stays on latest when it does not or when the native one is older.
+export VENDOR_CLI_UPDATE_NATIVE_CLAUDE="$WORK/native-claude"
+printf '#!/usr/bin/env bash\nprintf "%%s (Claude Code)\\n" "$(cat "$FAKE_BIN/ver-native")"\n' >"$VENDOR_CLI_UPDATE_NATIVE_CLAUDE"
+chmod +x "$VENDOR_CLI_UPDATE_NATIVE_CLAUDE"
+printf '2.1.282\n' >"$FAKE_BIN/ver-native"
+printf '2.1.282\n' >"$FAKE_BIN/published-claude"
+run
+assert grep -qxF 'npm install @anthropic-ai/claude-code@2.1.282' "$CALLS"
+assert [ "$(result claude)" = "updated 2.1.282" ]
+run
+assert_fails grep -qF 'npm install @anthropic-ai/claude-code' "$CALLS"
+assert [ "$(result claude)" = "current 2.1.282" ]
+printf '2.1.283\n' >"$FAKE_BIN/ver-native"
+printf '2.1.201\n' >"$FAKE_BIN/ver-claude"
+run
+assert grep -qxF 'npm install @anthropic-ai/claude-code@latest' "$CALLS"
+assert [ "$(result claude)" = "updated 2.1.280" ]
+printf '2.1.279\n' >"$FAKE_BIN/ver-native"
+printf '2.1.201\n' >"$FAKE_BIN/ver-claude"
+run
+assert grep -qxF 'npm install @anthropic-ai/claude-code@latest' "$CALLS"
+unset VENDOR_CLI_UPDATE_NATIVE_CLAUDE
+
 # No npm install of a CLI at all is recorded without a log line every run.
 lines=$(wc -l <"$LOG")
 VENDOR_CLI_UPDATE_BIN_DIR='' run
@@ -230,6 +262,18 @@ run
 assert [ "$(jq -r '.codex.divergence | length' "$STATE")" = 0 ]
 assert grep -qF 'codex divergence: none' "$LOG"
 
+# «выполни обновление»: the same pass with the fingerprint's own launch held, then one chat for every
+# vendor; from a chat it returns at once and runs detached.
+: >"$CALLS"
+VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
+assert [ "$(grep -c '^fingerprint ' "$CALLS")" = 2 ]
+assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
+assert [ "$(tail -n 1 "$CALLS" | cut -d' ' -f1-4)" = "fingerprint request --all Egor's" ]
+: >"$CALLS"
+assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
+for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done
+assert grep -qF 'fingerprint request --all' "$CALLS"
+
 # launchd runs a wrapper named after the job, never a bare interpreter; uninstall removes both.
 WRAPPER="$HOME/.local/libexec/vendor-cli-update"
 PLIST="$HOME/Library/LaunchAgents/com.llm-legs.vendor-cli-update.plist"
@@ -245,4 +289,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$WRAPPER"
 assert test ! -e "$PLIST"
 
-echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended"
+echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, a manual update detached with one chat for every vendor"

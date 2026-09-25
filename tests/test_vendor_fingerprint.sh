@@ -25,6 +25,8 @@ unset CODEXB_PROFILES_DIR VENDOR_CLI_UPDATE_STATE_DIR VENDOR_FINGERPRINT_LOCKED 
 unset VENDOR_FINGERPRINT_NATIVE_codex VENDOR_FINGERPRINT_NATIVE_grok VENDOR_FINGERPRINT_NATIVE_gemini VENDOR_FINGERPRINT_NATIVE_claude
 export VENDOR_FINGERPRINT_OPENER="$FAKE_BIN/opener"
 export VENDOR_FINGERPRINT_WORKER_PICK="$FAKE_BIN/worker-pick"
+# Every chat at once until the weekly batching case at the end.
+export VENDOR_FINGERPRINT_LAUNCH_EVERY=0
 # Only the fakes: the real CLIs live in ~/.local/bin, nvm and /usr/local/bin, none of which is here.
 PATH="$FAKE_BIN:/usr/bin:/bin:/usr/sbin:/sbin"
 CODEX_PACKAGE="$WORK/node/lib/node_modules/@openai/codex"
@@ -213,6 +215,45 @@ codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"}]'
 check
 assert [ "$(events)" = "$count" ]
 
+# The list order differs per account and flaps; every launch resolves its -m, so it opens no chat.
+count=$(events)
+codex_cache "$HOME/.codex-profiles/a" 0.156.1 \
+  "[{\"slug\":\"gpt-6-sol\",\"priority\":2,\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
+codex_cache "$HOME/.codex-profiles/b" 0.156.1 "${VARIANT/\"slug\":\"gpt-6-sol\",/\"slug\":\"gpt-6-sol\",\"priority\":3,}"
+check
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '.changed | join(",")')" = catalog_order ]
+assert [ "$(field .status)" = auto-closed ]
+assert grep -qxF '+gpt-6-sol.per_account.0 = 2' "$(field .diff)"
+assert_fails jqe '.facets.catalog["gpt-6-sol"] | has("priority")' "$STATE/fingerprints/codex.json"
+# A fingerprint stored while priority was still in the catalog loses it with no chat.
+count=$(events)
+: >"$OPENED"
+jq '.facets.catalog["gpt-6-sol"].priority = {per_account: [2, 3]}' "$STATE/fingerprints/codex.json" >"$WORK/old-codex.json"
+mv "$WORK/old-codex.json" "$STATE/fingerprints/codex.json"
+check
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '.changed | join(",")')" = catalog ]
+assert [ "$(field .status)" = auto-closed ]
+assert [ ! -s "$OPENED" ]
+
+# An A/B variant rolled back — every value is one some account already had — closes itself; a value
+# no account had before still opens a chat.
+count=$(events)
+: >"$OPENED"
+REGROUPED="[{\"slug\":\"gpt-6-sol\",\"priority\":3,\"context_window\":272000,\"supports_computer_use\":true,\"model_messages\":{\"instructions_template\":\"$PROMPT changed\"}}]"
+codex_cache "$HOME/.codex-profiles/b" 0.156.1 "$REGROUPED"
+check
+assert [ "$(events)" = $((count + 1)) ]
+assert [ "$(field '.changed | join(",")')" = catalog ]
+assert [ "$(field .status)" = auto-closed ]
+assert [ ! -s "$OPENED" ]
+codex_cache "$HOME/.codex-profiles/b" 0.156.1 "${REGROUPED/\"priority\":3,/\"priority\":3,\"default_service_tier\":\"flex\",}"
+check
+assert [ "$(events)" = $((count + 2)) ]
+assert [ "$(field '.substantive | join(",")')" = catalog ]
+assert [ "$(field .status)" = open ]
+
 # Another client's list never enters the catalog, and an unreachable catalog keeps its last value.
 count=$(events)
 codex_cache "$HOME/.codex" 0.154.0 '[{"slug":"gpt-5.6-sol"},{"slug":"gpt-5.5"}]'
@@ -265,6 +306,16 @@ check
 assert [ "$(field .vendor)" = claude ]
 assert [ "$(field '.substantive | join(",")')" = installs ]
 assert grep -qxF "+$HOME/.nvm/versions/node/v24.0.0/bin/claude = \"2.1.201\"" "$(field .diff)"
+# Once its chat is open, the install catching up or still lagging is no new event to handle.
+jq '.launched_at = "2026-09-24T00:00:00Z"' "$(last_event)" >"$WORK/launched" && mv "$WORK/launched" "$(last_event)"
+second 2.1.250
+check
+assert [ "$(field '.changed | join(",")')" = installs ]
+assert [ "$(field .status)" = auto-closed ]
+second 2.1.281
+check
+assert [ "$(field '.changed | join(",")')" = installs ]
+assert [ "$(field .status)" = auto-closed ]
 
 # A chat with no Claude account to run on, or that could not be opened, is opened by the next run, once.
 : >"$OPENED"
@@ -339,4 +390,74 @@ assert [ "$(events)" = "$((count + 1))" ]
 assert [ "$(field '"\(.vendor) \(.status) \(.launched)"')" = "grok open here" ]
 assert [ ! -s "$OPENED" ]
 
-echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/installs/divergence open one integration chat per event, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here"
+# Events wait for one chat a week. A change meanwhile joins its vendor's waiting event and is judged
+# against the fingerprint from before it, so a flap that has reverted by then closes the event.
+unset VENDOR_FINGERPRINT_LAUNCH_EVERY
+LAST="$STATE/fingerprints/last-launch"
+date +%s >"$LAST"
+: >"$OPENED"
+count=$(events)
+grok_ids() { printf 'grok-4.7 grok-imagine-video-1.5 grok-imagine-image-3.0 grok-5 %s\n' "$*" >"$HOME/.grok/bin/grok-1.0.41"; }
+grok_ids grok-6
+check
+grok_id=$(field .id)
+assert [ "$(field '"\(.vendor) \(.status) \(.launched_at)"')" = "grok open null" ]
+grok_ids grok-6 grok-7
+check
+assert [ "$(events)" = $((count + 1)) ]
+assert grep -qxF '+grok-6' "$EVENTS/$grok_id.diff"
+assert grep -qxF '+grok-7' "$EVENTS/$grok_id.diff"
+printf 'gemini-5-pro\tGemini 5 Pro\n' >>"$DATA/models-agy"
+check
+gemini_id=$(field .id)
+assert [ "$(field '"\(.vendor) \(.status)"')" = "gemini open" ]
+sed -i '' '/gemini-5-pro/d' "$DATA/models-agy"
+check
+assert [ "$(jq -r .status "$EVENTS/$gemini_id.json")" = auto-closed ]
+assert [ "$(events)" = $((count + 2)) ]
+fake_cli "$FAKE_BIN/claude" claude claude-opus-5-5 claude-sonnet-5 claude-opus-6 claude-opus-7
+check
+claude_id=$(field .id)
+assert [ "$(events)" = $((count + 3)) ]
+assert [ ! -s "$OPENED" ]
+# A week on, one chat takes every waiting event, and the clock restarts.
+echo $(($(date +%s) - 8 * 86400)) >"$LAST"
+check
+assert [ "$(cat "$OPENED")" = "$EVENTS/$claude_id.command" ]
+/usr/bin/grep '^exec ' "$EVENTS/$claude_id.command" | /usr/bin/grep -F "events\\ $claude_id" >"$WORK/batch-line"
+assert grep -qF "\\ $grok_id:\\ read" "$WORK/batch-line"
+assert grep -qF 'for\ each\ event\ in\ turn' "$WORK/batch-line"
+assert jqe '.launched_at != null' "$EVENTS/$claude_id.json"
+assert jqe '.launched_at != null' "$EVENTS/$grok_id.json"
+assert [ "$(ls "$EVENTS"/*.base 2>/dev/null | wc -l | tr -d ' ')" = 0 ]
+assert [ $(($(date +%s) - $(cat "$LAST"))) -lt 60 ]
+# Within the week a new event waits, and a manual request whose chat failed to open is retried anyway.
+echo $(($(date +%s) - 3 * 86400)) >"$LAST"
+last=$(cat "$LAST")
+: >"$OPENED"
+grok_ids grok-6 grok-7 grok-8
+check
+waiting=$(field .id)
+: >"$DATA/opener-fails"
+manual=$(bash "$SCRIPT" request claude | head -n 1)
+rm "$DATA/opener-fails"
+check
+assert [ "$(cat "$OPENED")" = "$EVENTS/$manual.command" ]
+assert jqe '.launched_at == null' "$EVENTS/$waiting.json"
+assert [ "$(cat "$LAST")" = "$last" ]
+
+# The manual update's own check launches nothing, however long the week has been.
+: >"$OPENED"
+VENDOR_FINGERPRINT_HOLD=1 VENDOR_FINGERPRINT_LAUNCH_EVERY=0 bash "$SCRIPT" check
+assert [ ! -s "$OPENED" ]
+# Egor's update word: every vendor in one chat now — a waiting event carries its vendor's pass, each
+# other vendor gets a manual one — and the weekly clock restarts.
+: >"$OPENED"
+bash "$SCRIPT" request --all "update word" >"$WORK/all-ids"
+assert [ "$(xargs -I{} jq -r .vendor "$EVENTS/{}.json" <"$WORK/all-ids" | sort | xargs)" = "claude codex gemini grok" ]
+assert grep -qxF "$waiting" "$WORK/all-ids"
+assert [ "$(wc -l <"$OPENED" | tr -d ' ')" = 1 ]
+assert [ "$(xargs -I{} jq -r '.launched_at != null' "$EVENTS/{}.json" <"$WORK/all-ids" | sort -u)" = true ]
+assert [ $(($(date +%s) - $(cat "$LAST"))) -lt 60 ]
+
+echo "PASS: $asserts asserts; baseline, version-only releases close themselves, new ids/catalog fields/docs/help/newly lagging installs/divergence open one integration chat per event, an install catching up or still lagging closes itself, prompts and foreign clients are informational, unreadable facets keep their value, broken local probes are reported, manual requests, close, lock, check --here, weekly batched chats with waiting events joined and reverts closed, every vendor in one chat on request --all"

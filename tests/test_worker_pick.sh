@@ -1251,6 +1251,24 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = work
 write_config
 
+# Computer Use reads like image: workers-off is no wall, the pin no override, pause still is.
+write_config 'codex_profile=with-credit' 'codex_workers=off'
+query_case codex_credit --account codex --role computer
+assert test "$query_rc" -eq 0
+assert test "$query_out" = plain
+query_case codex_credit --account codex
+assert test "$query_out" = with-credit
+write_config 'codex_workers=off'
+query_case codex_credit --account codex --role computer
+assert test "$query_out" = plain
+query_case codex_credit --account codex
+assert test "$query_rc" -eq 3
+assert test "$(cat "$WORK/query.err")" = 'worker-pick: codex is switched off for workers'
+write_config 'codex_paused=on'
+query_case codex_credit --account codex --role computer
+assert test "$query_rc" -eq 3
+assert grep -q 'codex is paused' "$WORK/query.err"
+
 write_config
 query_case claude_pool --account claudeb --role reviewers
 assert test "$query_rc" -eq 0
@@ -2158,4 +2176,4 @@ query --list
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
 
-printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the six roles including chat, research and light without pins or role keys and light and image ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"
+printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the seven roles including chat, research, light and computer without pins or role keys and light, image and computer ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

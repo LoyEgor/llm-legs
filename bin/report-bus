@@ -182,8 +182,14 @@ case "$verb" in
         refuse_body 'not JSON'
     fi
     tmp=$(mktemp "${TMPDIR:-/tmp}/report-bus.XXXXXX") || problem 'cannot create temporary file'
-    body=$(printf '%s' "$document" | python3 "$FRAME" block 2>"$tmp") ||
+    rc=0
+    rendered=$(printf '%s' "$document" | python3 "$FRAME" block 2>"$tmp") || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      [ "$rc" = 2 ] && grep -q '^report_frame: ' "$tmp" 2>/dev/null ||
+        problem "cannot render report: $(tail -n 1 "$tmp" 2>/dev/null)"
       refuse_body "$(sed 's/^report_frame: //' "$tmp" 2>/dev/null)"
+    fi
+    body=$rendered
     rm -f "$tmp"
     tmp=''
     valid_name "$id" || problem 'cannot hash body'

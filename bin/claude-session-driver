@@ -157,6 +157,10 @@ def drive(account, cwd, timeout):
             # `current account` marker the menubar and statusline read.
             os.environ["CLAUDEB_NO_STATE_STAMP"] = "1"
             os.environ["TERM"] = "xterm-256color"
+            # exec keeps an ignored SIGINT (a driver started from a background job or launchd has
+            # one), and a session that inherits it shrugs off every ^C the ladder types.
+            for sig in (signal.SIGINT, signal.SIGQUIT):
+                signal.signal(sig, signal.SIG_DFL)
             os.execvp(claudeb, [claudeb, "profile", account])
         except BaseException:
             pass

@@ -20,12 +20,21 @@ hasnt() { a; grep -Fq "$2" <<<"$1" && fail "did not expect [$2] in [$1]"; return
 RUSSIAN='Почини гейт: добавь проверку языка и прогони тесты, отчитайся кратко.'
 ENGLISH='Fix the gate: add the language check, run the suite, report briefly.'
 QUOTING='Egor asked for «максимально автономно», so review, commit and push it yourself.'
+LONG_QUOTE='«подбери ревью, который тебе нужен, ревью с таском о размерах и единицах» Hunt every size measure.'
+ONE_WORD='Fix the gate, add the language check, run the whole suite and report briefly, готово.'
 
 # --- 1. the tool -------------------------------------------------------------
 a; [ -x "$SHARE" ] || fail "bin/cyrillic-share is not executable"
+# The hooks quote the rule in their refusals through --allowed rather than keep a copy of it.
+eq "$("$SHARE" --allowed)" "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import english_text; print(english_text.ALLOWED)' "$ROOT/share")"
 eq "$(printf '%s' "$RUSSIAN" | "$SHARE" | cut -d' ' -f1)" "100"
 eq "$(printf '%s' "$ENGLISH" | "$SHARE" | cut -d' ' -f1)" "0"
 eq "$(printf '%s' "$QUOTING" | "$SHARE" | cut -d' ' -f1)" "0"
+eq "$(printf '%s' "$LONG_QUOTE" | "$SHARE" | cut -d' ' -f1)" "75"
+eq "$(printf '%s' "$ONE_WORD" | "$SHARE" | cut -d' ' -f1)" "9"
+eq "$(printf '%s' 'He said «всё готово' | "$SHARE")" "60 15"
+eq "$(printf '%s' $'x\n```\nпривет мир' | "$SHARE" | cut -d' ' -f1)" "90"
+eq "$(printf '%s' $'x\n```\nпривет мир\n```' | "$SHARE" | cut -d' ' -f1)" "0"
 
 # --- 2. the brief worker-run is handed --------------------------------------
 # The preamble tells the worker who reads it, and it is the FIRST thing said: the rule the reports
@@ -42,22 +51,23 @@ start() { # brief-file
 printf '%s\n' "$RUSSIAN" >"$WORK/brief-ru"
 printf '%s\n' "$ENGLISH" >"$WORK/brief-en"
 printf '%s\n' "$QUOTING" >"$WORK/brief-quoting"
+printf '%s\n' "$LONG_QUOTE" >"$WORK/brief-long-quote"
+printf '%s\n' "$ONE_WORD" >"$WORK/brief-one-word"
 
 out=$(start "$WORK/brief-ru")
-has "$out" 'brief is in Russian (100% Cyrillic outside «…»/code)'
+has "$out" 'brief has Russian (100% Cyrillic)'
 has "$out" 'the reader is a model'
 start "$WORK/brief-ru" >/dev/null 2>&1
 eq "$?" "4"
 # Nothing was launched: the refusal comes before a run directory exists.
 eq "$(find "$WORK" -name 'meta.json' | wc -l | tr -d ' ')" "0"
 
-# A brief that only QUOTES him passes, or the one legitimate reason to write Cyrillic would be
-# gated away.
-hasnt "$(start "$WORK/brief-quoting")" 'brief is in Russian'
-hasnt "$(start "$WORK/brief-en")" 'brief is in Russian'
+hasnt "$(start "$WORK/brief-quoting")" 'brief has Russian'
+hasnt "$(start "$WORK/brief-en")" 'brief has Russian'
+has "$(start "$WORK/brief-long-quote")" 'brief has Russian'
+has "$(start "$WORK/brief-one-word")" 'brief has Russian'
 
-# A measurement that cannot run never refuses a launch.
-hasnt "$(WORKER_RUN_CYRILLIC_SHARE=/nonexistent start "$WORK/brief-ru")" 'brief is in Russian'
+has "$(WORKER_RUN_CYRILLIC_SHARE=/nonexistent start "$WORK/brief-en")" 'could not be measured'
 
 # --- 4. the result a non-Claude vendor hands back ---------------------------
 # No Stop hook runs inside a codex or gemini CLI, so the report is stamped where it lands and the
@@ -110,4 +120,4 @@ printf '#!/bin/sh\nprintf "99 10\\n"\n' >"$WORK/elsewhere/bin/cyrillic-share"
 chmod +x "$WORK/elsewhere/bin/cyrillic-share"
 has "$(PATH=/usr/bin:/bin "$WORK/elsewhere/bin/claude-resume-timer" terminal 10 -m 'продолжай работу' 2>&1)" '(99% Cyrillic'
 
-echo "PASS: $asserts asserts; cyrillic-share reading a quoted «...» phrase as English — worker-run's preamble opening with who the reader is, its start refusing a Russian brief by name before a run directory exists and passing one that only quotes Egor, an unmeasurable brief never refused — and a non-Claude run's Russian result stamped \`LANG: cyrillic 100%\` where it lands, the stamp surviving into \`worker-run report\`, with an English result stamped not at all — and claude-resume-timer refusing a Russian -m message before Hammerspoon is reached, since whatever it types is read by the model sitting in that chat"
+echo "PASS: $asserts asserts; cyrillic-share reading a short «...» trigger phrase and code as English but a long or unclosed quote, an unclosed fence and a single Russian word in English text as Russian — worker-run's preamble opening with who the reader is, its start refusing a Russian brief by name before a run directory exists and passing one that only carries a trigger phrase, an unmeasurable brief refused — and a non-Claude run's Russian result stamped \`LANG: cyrillic 100%\` where it lands, the stamp surviving into \`worker-run report\`, with an English result stamped not at all — and claude-resume-timer refusing a Russian -m message before Hammerspoon is reached, since whatever it types is read by the model sitting in that chat"

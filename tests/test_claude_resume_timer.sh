@@ -74,12 +74,14 @@ for surface in app auto kimi; do
   grep -q HS "$CALLS" && fail "$surface must not reach hs: $(cat "$CALLS")"
 done
 
-for tty in '' ttys005; do
-  out=$(run_timer env FAKE_TTY="$tty" CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal 10 2>&1)
-  status=$?
-  [ "$status" -ne 0 ] || fail "a caller on tty '$tty' (no Claude chat) should arm nothing"
-  echo "$out" | grep -q "no Claude chat" || fail "a caller outside every chat should be told why: $out"
-  grep -q HS "$CALLS" && fail "a caller on tty '$tty' must not reach hs: $(cat "$CALLS")"
+for surface in terminal all; do
+  for tty in '' ttys005; do
+    out=$(run_timer env FAKE_TTY="$tty" CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" "$surface" 10 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "a caller on tty '$tty' (no Claude chat) should arm nothing ($surface)"
+    echo "$out" | grep -q "no Claude chat" || fail "a caller outside every chat should be told why ($surface): $out"
+    grep -q HS "$CALLS" && fail "a caller on tty '$tty' must not reach hs ($surface): $(cat "$CALLS")"
+  done
 done
 
 for surface in terminal all; do
@@ -255,7 +257,7 @@ ttys006 /opt/homebrew/bin/node /Users/e/dev/server.js
 EOF
 
 write_limits notcom "$(date -u -r "$((now + 1200 + 30))" +%Y-%m-%dT%H:%M:%SZ)"
-out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0) || fail "all run failed"
+out=$(run_timer env FAKE_TTY=ttys001 CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all 0) || fail "all run failed"
 for tty in ttys001 ttys002 ttys003 ttys004; do
   grep -qF "startTimerFor(\"terminal\", 20, nil, \"/dev/$tty\")" "$CALLS" \
     || fail "all should arm /dev/$tty: $(cat "$CALLS")"

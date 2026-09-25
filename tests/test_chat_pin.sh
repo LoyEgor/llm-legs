@@ -182,7 +182,7 @@ rm -f "$GRANT"
 assert contains "$("$PIN")" 'every grok pool account (*)'
 
 # --- With the words library, the grant is the pin grant claude-setup's word intake wrote ---------
-export WORDS_LIB="$ROOT/../claude-setup/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
+export WORDS_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/words.sh" WORDS_DIR="$WORK/words"
 [ -r "$WORDS_LIB" ] || fail "the words library is missing: $WORDS_LIB"
 words_grant() { # target [session]
   mkdir -p "$WORDS_DIR/${2:-sess-1}"

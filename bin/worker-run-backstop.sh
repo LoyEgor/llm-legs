@@ -14,6 +14,7 @@ set -u
 payload=$(cat 2>/dev/null) || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 [ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
+self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
 { IFS= read -r session; IFS= read -r agent; } <<EOF
 $(jq -r '(.session_id // ""), (.agent_id // "")' <<<"$payload" 2>/dev/null)
 EOF
@@ -55,7 +56,7 @@ for run in "$run_root"/*/; do
   [ -f "$run/state.json" ] && [ ! -e "$run/exit_code" ] || continue
   [ "$(tr -d '[:space:]' <"$run/launcher" 2>/dev/null)" = "$session" ] || continue
   pid=$(jq -r '.pid // 0' "$run/meta.json" 2>/dev/null)
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && kill -0 "$pid" 2>/dev/null || continue
+  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 1 ] && supervisor_running "$run" "$pid" || continue
   id=${run##*/}
   case "$id" in *[!A-Za-z0-9._-]*) continue ;; esac
   owned run "$id" && continue

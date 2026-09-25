@@ -57,6 +57,16 @@ done
 repo=$(cd "$repo" && pwd -P) || fail "unreadable repo: $repo"
 [ -d "$repo/tests" ] || fail "no tests directory under $repo"
 
+# A linked worktree (<repo>/.claude/worktrees/<branch>) has no sibling checkouts beside it, so the
+# suites' `$ROOT/../claude-setup` defaults would point at nothing; hand them the main checkout's.
+if common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+  projects=$(dirname "$(dirname "$common")")
+  for sibling in CLAUDE_SETUP_ROOT=claude-setup REVIEW_BENCH_ROOT=review-bench REVIEW_ROOT=review-bench LLM_LEGS_ROOT=llm-legs; do
+    var=${sibling%%=*} name=${sibling#*=}
+    if [ -z "${!var:-}" ] && [ ! -d "$repo/../$name" ] && [ -d "$projects/$name" ]; then export "$var=$projects/$name"; fi
+  done
+fi
+
 # Absolute, not -n: a nested run must stay at 10, not sink further.
 renice 10 -p $$ >/dev/null 2>&1 || :
 [[ "$jobs" =~ ^[0-9]+$ ]] || usage

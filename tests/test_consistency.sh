@@ -348,12 +348,12 @@ horizon = int(re.search(r"^REVIEWERS_TOKEN_HORIZON_S=(\d+)$", Path(sys.argv[2]).
 assert horizon == catalog.RATER_TIMEOUT_S + cell_runtime._TOKEN_MARGIN_S
 assert horizon >= judge.JUDGE_TIMEOUT_S + cell_runtime._TOKEN_MARGIN_S
 HORIZONPY
-assert doc_has 'Gemini review cell lifetime'
-assert doc_has 'REVIEW_TIERS[tier]["budget_min"] * 60'
-assert grep -Fq 'GEMINI_CELL_GRACE_S = 60' "$RB_CATALOG"
-assert grep -Fq 'started + _catalog.REVIEW_TIERS[self.tier]["budget_min"] * 60' "$RB_LAUNCH"
-assert grep -Fq '_launch.bind_gemini_lifetime(run_dir, submitted_raters, tier_name)' "$RB_CLI"
-assert grep -Fq 'previous.tier if previous is not None else None' "$RB_LAUNCH"
+assert doc_has 'Panel cell lifetime'
+assert doc_has 'PANEL_CELL_GRACE_S = 60'
+assert grep -Fq 'PANEL_CELL_GRACE_S = 60' "$RB_CATALOG"
+assert grep -Fq 'return self.alone_at is None or now < self.alone_at + _catalog.PANEL_CELL_GRACE_S' "$RB_LAUNCH"
+assert grep -Fq '_launch.bind_panel_lifetime(run_dir, submitted_raters)' "$RB_CLI"
+assert grep -Fq 'bind_panel_lifetime(run_dir, [rater for _, (rater, _, _) in pending])' "$RB_LAUNCH"
 
 # A pin over a package needs both of these. `grep -Fq a.py b.py` is OR — it exits at the first
 # match — so a value spelled in two modules keeps passing after one of them drops it; and a count
@@ -526,6 +526,8 @@ spec.loader.exec_module(doctor)
 assert [(word, pattern.pattern, pattern.flags) for word, pattern in doctor.FAILURE_REASONS] \
     == [(word, pattern.pattern, pattern.flags) for word, pattern in panel.FAILURE_REASONS]
 assert doctor.FAILURE_ORIGIN == panel.FAILURE_ORIGIN, doctor.FAILURE_ORIGIN
+assert (doctor.PROVIDER_TIMEOUT_RE.pattern, doctor.PROVIDER_TIMEOUT_RE.flags) \
+    == (panel.PROVIDER_TIMEOUT_RE.pattern, panel.PROVIDER_TIMEOUT_RE.flags)
 assert set(doctor.ORIGIN_ORDER) == set(panel.FAILURE_ORIGIN.values()) == {"ours", "theirs"}
 ledger = json.load(open(sys.argv[3]))
 assert set(ledger["owners"]) == set(doctor.BLOCKS), ledger["owners"]
@@ -1153,7 +1155,7 @@ chmod +x "$LIGHT_GATE_WORK/bin/worker-pick"
 jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:100}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 light_gate() {
-  jq -cn --arg w "$1" '{tool_input:{subagent_type:$w, prompt:"x"}}' |
+  jq -cn --arg w "$1" --arg p "${2:-x}" '{tool_input:{subagent_type:$w, prompt:$p}}' |
     LIGHT_PICK_LOG="$LIGHT_GATE_WORK/picks" \
     WORKER_PICK_CONFIG_FILE="$LIGHT_GATE_WORK/worker-model" \
     LLM_LIMITS_FILE="$LIGHT_GATE_WORK/limits.json" \
@@ -1181,6 +1183,15 @@ assert grep -Fq 'Light on Claude accounts: alpha 10%' <<<"$light_toggle_out"
 assert test "$(grep -c 'The worker toggle says' <<<"$light_toggle_out")" = 0
 # A vendor relay under the same toggle still hears it.
 assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
+# A Computer Use brief routes codex under `computer`, a role codex_workers=off does not close.
+printf 'worker=claudeb\ncodex_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
+: >"$LIGHT_GATE_WORK/picks"
+computer_gate_out=$(light_gate codex-worker $'COMPUTER: yes\nx')
+assert grep -qx -- '--account codex --role computer' "$LIGHT_GATE_WORK/picks"
+assert test "$(grep -c 'The worker toggle says' <<<"$computer_gate_out")" = 0
+: >"$LIGHT_GATE_WORK/picks"
+light_gate codex-worker >/dev/null
+assert grep -qx -- '--account codex' "$LIGHT_GATE_WORK/picks"
 # Light switched off in Egor's menu: the spawn hook refuses the spawn, and this gate neither prices
 # a Light quota nor asks for an account.
 printf 'light_paused=on\nlight_edit=claudeb:sonnet\n' >"$LIGHT_GATE_WORK/worker-model"
@@ -1608,17 +1619,25 @@ JOURNAL_LIB="$CLAUDE_SETUP/hooks/lib/review-journal.sh"
 assert doc_has 'Worker run liveness identity'
 assert grep -Fq '.pid_started_at = $began' "$ROOT/bin/worker-run"
 assert eq "$(grep -c '\.pid_started_at = ' "$ROOT/bin/worker-run")" 1
-# Wait, report and both launch guards must share the supervisor identity check.
-assert grep -Fq 'PID_START_SLACK=30' "$ROOT/bin/worker-run"
-assert grep -Fq 'ps -p "$2" -o etime=' "$ROOT/bin/worker-run"
+# Wait, report, both launch guards, the relay hold and the Stop backstop share the supervisor
+# identity check.
+RUN_LIVENESS="$ROOT/share/run-liveness.sh"
+assert grep -Fq '. "$SCRIPT_DIRECTORY/../share/run-liveness.sh"' "$ROOT/bin/worker-run"
+assert grep -Fq 'supervisor_running "$directory" "$pid"' "$ROOT/bin/worker-relay-hold.sh"
+assert grep -Fq 'supervisor_running "$run" "$pid"' "$ROOT/bin/worker-run-backstop.sh"
+assert grep -Fq 'supervisor_running "$2" "$3"' "$ROOT/bin/llm-doctor"
+assert eq "$(grep -cE 'os\.kill|[^[:alnum:]_]etime' "$ROOT/bin/llm-doctor")" 0
+assert eq "$(grep -c '^[^#]*kill -0' "$ROOT/bin/worker-relay-hold.sh" "$ROOT/bin/worker-run-backstop.sh" | awk -F: '{s += $2} END {print s}')" 0
+assert grep -Fq 'PID_START_SLACK=30' "$RUN_LIVENESS"
+assert grep -Fq 'ps -p "$2" -o etime=' "$RUN_LIVENESS"
 # 0 is the pre-launch placeholder both sides must refuse to probe: `ps -p 0` answers nothing while
 # pid 1 answers, so read as a pid it says the supervisor of a run that has not started is gone.
-assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$ROOT/bin/worker-run"
+assert grep -Fq '[ "$2" -gt 0 ] || return 1' "$RUN_LIVENESS"
 # An empty answer from ps means "no such process" and "ps could not answer" at once, and one of the
 # two is a live run about to be reported failed or swept. Both sites ask a pid that must be listed
 # before they believe the silence — pid 1, because a sandbox hiding every process but our own still
 # lists `$$` and a foreign supervisor then still reads gone.
-assert grep -Fq 'ps -p 1 -o etime=' "$ROOT/bin/worker-run"
+assert grep -Fq 'ps -p 1 -o etime=' "$RUN_LIVENESS"
 assert eq "$(grep -c 'supervisor_running "\$directory" "\$pid"' "$ROOT/bin/worker-run")" 4
 if test -r "$JOURNAL_LIB"; then
   assert grep -Fq 'RJ_PID_SLACK=30' "$JOURNAL_LIB"

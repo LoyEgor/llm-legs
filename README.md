@@ -42,7 +42,8 @@ decision-support) as a git submodule. One fix here propagates to every consumer 
   haiku entries do not poison the guard); codex's from the CLI banner. agy does NOT report the
   served model — its audit rows record the pin, marked unverified.
 - **English between models:** `bin/cyrillic-share` reads text on stdin and prints the share of
-  Cyrillic letters outside «…» quotes and code; `worker-run` refuses a brief over 15%, prepends an
+  Cyrillic letters outside code and closed «…» quotes of up to 6 words (a trigger phrase), rounded
+  up; `worker-run` refuses a brief with any, or one it cannot measure, prepends an
   AUDIENCE line telling the worker its reader is a model, and stamps a Russian result
   `LANG: cyrillic N%`; `claude-resume-timer -m` refuses Russian too.
 

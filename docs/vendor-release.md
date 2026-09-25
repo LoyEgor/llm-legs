@@ -16,6 +16,8 @@ over an account set that changes.
 - Read your vendor's lines in `docs/vendor-release-open.md`: prove what this release lets you
   prove, and never re-check what a closed event already settled.
 - No id given: `bin/vendor-fingerprint events` lists the open ones; handle each vendor's together.
+- Several ids given: the weekly chat carries every event that waited since the last one, each already
+  folding its vendor's changes over the week; do the procedure per event, one vendor after another.
 - A manual request (`request [--here] <vendor>`) has no diff: do the whole checklist against the
   current CLI.
 - Model: this runs on a strong model (Opus 5.5+ or Fable). Any other session model stops here and

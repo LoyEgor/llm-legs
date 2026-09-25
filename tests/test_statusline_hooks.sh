@@ -5853,6 +5853,7 @@ relay_payload() { # agent-type agent-id command
 relay_brief_file relaysol $'ACCOUNT: notcom\nMODEL: sol\n\n# Probe\nRun codex --version.'
 relay_brief_file relaynomodel $'ACCOUNT: notcom\n\n# Task\nNames the sol model only in prose, where no MODEL: line starts.'
 relay_brief_file relaybare $'# Task\nNo header lines at all.'
+relay_brief_file relaycomputer $'COMPUTER: yes\n\n# Task\nSend a message in the Telegram app.'
 jq -cn '{type:"user",message:{role:"user",content:[{type:"text",text:"ACCOUNT: work4\nMODEL: astra\n\nbody"}]}}' \
   >"${relay_parent%.jsonl}/subagents/agent-relayblocks.jsonl"
 launch_with() { printf 'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<'"'"'BRIEF_EOF'"'"'\nMODEL: gpt-5.6-sol\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /tmp %s\n' "$1"; }
@@ -5863,7 +5864,9 @@ for relay_case in \
   "codex-worker relaysol --model sol|ACCOUNT: notcom" \
   "codex-worker relaynomodel --account notcom --model astra|no MODEL: line" \
   "light-worker relaysol --account notcom --model sol|light row decides" \
-  "claudeb-worker relayblocks --account work4 --model=opus|MODEL: astra"; do
+  "claudeb-worker relayblocks --account work4 --model=opus|MODEL: astra" \
+  "codex-worker relaycomputer|COMPUTER: yes" \
+  "codex-worker relaynomodel --account notcom --computer|no \`COMPUTER: yes\` line"; do
   relay_spec=${relay_case%%|*} relay_reason=${relay_case#*|}
   read -r relay_type relay_id relay_flags <<<"$relay_spec"
   gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
@@ -5879,7 +5882,8 @@ for relay_case in \
   "codex-worker relaybare --account work4" \
   "light-worker relaynomodel --account notcom" \
   "claudeb-worker relayblocks --account work4 --model astra" \
-  "codex-worker relaymissing --model gpt-5.6-sol"; do
+  "codex-worker relaymissing --model gpt-5.6-sol" \
+  "codex-worker relaycomputer --computer"; do
   read -r relay_type relay_id relay_flags <<<"$relay_case"
   gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
     fail "launch gate exited nonzero"
@@ -5931,6 +5935,14 @@ tr_codex=$(tr_spawn tr-codex-sol codex-worker $'ACCOUNT: alt\nMODEL: sol\nx') ||
 assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · sol · medium: Do the task"' <<<"$tr_codex" >/dev/null
 tr_codex=$(tr_spawn tr-claudeb-fable claudeb-worker $'ACCOUNT: alt\nMODEL: fable\nx') || fail "claudeb spawn exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "alt · fable · low: Do the task"' <<<"$tr_codex" >/dev/null
+# A Computer Use brief's row names the account the picker gives the `computer` role, which
+# codex_workers=off leaves open while the workers query is refused.
+printf '#!/usr/bin/env bash\ncase " $* " in *" --role computer "*) echo cuacct ;; *) exit 3 ;; esac\n' >"$WORK/tr-computer-pick"
+chmod +x "$WORK/tr-computer-pick"
+tr_codex=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Agent",session_id:"tr-computer",
+  tool_input:{subagent_type:"codex-worker",description:"Do the task",prompt:"COMPUTER: yes\nx"}}' |
+  WORKER_SPAWN_WORKER_PICK="$WORK/tr-computer-pick" "$SPAWN_HOOK") || fail "computer spawn exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description | startswith("cuacct · ")' <<<"$tr_codex" >/dev/null
 
 # A review-waiter row reads tier, composition and lens off the run's progress document and seeds `review=`.
 TR_STATS="$WORK/tr-stats"

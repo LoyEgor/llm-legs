@@ -145,13 +145,15 @@ if [ -n "${WORKER_RUN_RECORD:-}" ]; then
   echo "claude-resume-timer: a worker run arms no timer; its chat does, on Egor's word" >&2
   exit 1
 fi
-target_tty=""
-if [ "$arm_all" -eq 0 ]; then
-  target_tty=$(detect_controlling_tty) || target_tty=""
-  if [ -z "$target_tty" ] || ! enumerate_claude_ttys | grep -qxF "$target_tty"; then
-    echo "claude-resume-timer: the caller sits in no Claude chat's terminal, so no timer is armed" >&2
-    exit 1
-  fi
+target_tty=$(detect_controlling_tty) || target_tty=""
+chat_ttys=$(enumerate_claude_ttys)
+if [ "$arm_all" -eq 1 ] && [ -z "$chat_ttys" ]; then
+  echo "claude-resume-timer: no active Claude chat ttys" >&2
+  exit 1
+fi
+if [ -z "$target_tty" ] || ! grep -qxF "$target_tty" <<<"$chat_ttys"; then
+  echo "claude-resume-timer: the caller sits in no Claude chat's terminal, so no timer is armed" >&2
+  exit 1
 fi
 
 cache="$HOME/.llm-limits.json"

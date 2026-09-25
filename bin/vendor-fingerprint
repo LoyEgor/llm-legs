@@ -22,7 +22,7 @@ grok_home="${GROK_HOME:-$HOME/.grok}"
 grokb_cache="${GROKB_CACHE_DIR:-$HOME/.cache/grokb}/models.json"
 vendors="codex grok gemini claude"
 # Facets that are recorded in an event but never open an integration chat on their own.
-info_facets="version catalog_text foreign_clients"
+info_facets="version catalog_text catalog_order foreign_clients"
 id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
 id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
 read -r -a opener <<<"${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}"
@@ -151,7 +151,9 @@ codex_facets() {
             | if length == 1 then .[0] else {per_account: .} end)))}) | from_entries' \
       "${homes[@]/%//models_cache.json}" >"$work/catalog" 2>/dev/null
     # Prompts ride in the catalog as long strings; they change without any capability changing.
-    jq 'delpaths([paths(type == "string" and length > 300)])' "$work/catalog" | put catalog
+    # priority only orders the list: every launch passes a resolved -m, so it serves nothing.
+    jq 'delpaths([paths(type == "string" and length > 300)]) | map_values(del(.priority))' "$work/catalog" | put catalog
+    jq 'map_values(.priority) | with_entries(select(.value != null))' "$work/catalog" | put catalog_order
     jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
       "$work/catalog" | while IFS=$'\t' read -r key text; do
       printf '%s\t%s\n' "$key" "$(printf '%s' "$text" | base64 -D 2>/dev/null | shasum -a 256 | cut -c1-16)"
@@ -160,6 +162,7 @@ codex_facets() {
   else
     fail catalog remote
     fail catalog_text remote
+    fail catalog_order remote
     fail docs remote
   fi
   jq -r '.codex.divergence // [] | .[]' "$state_dir/state.json" 2>/dev/null >"$work/divergence"
@@ -217,10 +220,9 @@ render() { # facet value on stdin -> diffable lines
     else tojson end'
 }
 
-write_diff() { # previous current facets... -> unified diff per facet
+write_diff() { # previous current changed-json -> unified diff per facet
   local previous=$1 current=$2 facet
-  shift 2
-  for facet in "$@"; do
+  jq -r '.[]' <<<"$3" | while IFS= read -r facet; do
     printf '### %s\n' "$facet"
     diff -u -L before -L after \
       <(jq --arg k "$facet" '.facets[$k] // empty' "$previous" | render) \
@@ -247,6 +249,46 @@ new_event() { # vendor from to status reason changed-json substantive-json -> id
   printf '%s\n' "$id"
 }
 
+# Codex serves accounts A/B catalog variants that roll out and back with no release. A catalog change
+# in which every field only takes values some account already had (a field no account has reads as
+# null) is accounts regrouping: logged, never a chat. A new model, field or value still opens one.
+catalog_regrouped() { # previous current
+  jq -e -s '
+    def leaves: [paths((type != "object" and type != "array") or . == {} or . == []
+                       or (type == "object" and has("per_account")))
+                 | select(any(.[]; . == "per_account") | not)];
+    def vals($k): (try getpath($k) catch null) | if type == "object" and has("per_account") then .per_account else [.] end;
+    def unordered: map_values(if type == "object" then del(.priority) else . end);
+    (.[0].facets.catalog // {} | unordered) as $p | (.[1].facets.catalog // {}) as $c
+    | (($p | leaves) + ($c | leaves) | unique)
+    | all(.[]; . as $k | (($c | vals($k)) - ($p | vals($k))) == [])' "$1" "$2" >/dev/null
+}
+
+changes() { # vendor previous current -> changed-json<TAB>substantive-json
+  local changed substantive
+  changed=$(jq -s -c '.[0].facets as $p | .[1].facets as $c
+    | [(($p | keys) + ($c | keys) | unique)[] | select(($p[.] // null) != ($c[.] // null))]' "$2" "$3")
+  substantive=$(jq -c --arg info "$info_facets" '($info | split(" ")) as $i | map(select(. as $f | $i | index($f) | not))' <<<"$changed")
+  if [ "$1" = codex ] && jq -e 'index("catalog")' <<<"$substantive" >/dev/null && catalog_regrouped "$2" "$3"; then
+    substantive=$(jq -c 'map(select(. != "catalog"))' <<<"$substantive")
+  fi
+  # Only a newly lagging install is news; one catching up to the primary or still lagging is not.
+  if jq -e 'index("installs")' <<<"$substantive" >/dev/null &&
+    jq -e -s '(.[0].facets.installs // {} | keys) as $p | (.[1].facets.installs // {} | keys) - $p == []' "$2" "$3" >/dev/null; then
+    substantive=$(jq -c 'map(select(. != "installs"))' <<<"$substantive")
+  fi
+  printf '%s\t%s\n' "$changed" "$substantive"
+}
+
+pending_event() { # vendor -> its open event still waiting for a chat, which keeps the fingerprint it started from
+  local base
+  for base in "$events_dir/$1"-*.base; do
+    [ -f "$base" ] && jq -e '.status == "open" and .launched_at == null' "${base%.base}.json" >/dev/null 2>&1 &&
+      { basename "${base%.base}"; return 0; }
+  done
+  return 0
+}
+
 check_vendor() { # vendor
   local vendor=$1 previous="$fp_dir/$1.json" current changed substantive status id
   current=$(mktemp "$fp_dir/current.XXXXXX") || return 0
@@ -269,35 +311,57 @@ check_vendor() { # vendor
     log "$vendor baseline $(jq -r .version "$previous")"
     return 0
   fi
-  changed=$(jq -s -c '.[0].facets as $p | .[1].facets as $c
-    | [(($p | keys) + ($c | keys) | unique)[] | select(($p[.] // null) != ($c[.] // null))]' "$previous" "$current")
+  IFS=$'\t' read -r changed substantive < <(changes "$vendor" "$previous" "$current")
   if [ "$changed" = '[]' ]; then
     mv -f "$current" "$previous"
     return 0
   fi
-  substantive=$(jq -c --arg info "$info_facets" '($info | split(" ")) as $i | map(select(. as $f | $i | index($f) | not))' <<<"$changed")
+  # An event waits for the weekly chat; a change meanwhile joins it and is re-judged against the
+  # fingerprint from before the event, so a flap that has reverted by then closes it unseen.
+  id=$(pending_event "$vendor")
+  if [ -n "$id" ]; then
+    IFS=$'\t' read -r changed substantive < <(changes "$vendor" "$events_dir/$id.base" "$current")
+    write_diff "$events_dir/$id.base" "$current" "$changed" >"$events_dir/$id.diff"
+    if [ "$substantive" = '[]' ]; then
+      status=auto-closed
+      rm -f "$events_dir/$id.base"
+    else
+      status=open
+    fi
+    event_set "$id" '.status = $s | .to = $to | .changed = $c | .substantive = $sub
+      | if $s == "open" then . else .note = "only informational changes were left before its chat" end' \
+      --arg s "$status" --arg to "$(jq -r .version "$current")" --argjson c "$changed" --argjson sub "$substantive"
+    mv -f "$current" "$previous"
+    log "$vendor event $id $status, joined: $(jq -r 'join(", ")' <<<"$changed")"
+    return 0
+  fi
   if [ "$substantive" = '[]' ]; then status=auto-closed; else status=open; fi
   id=$(new_event "$vendor" "$(jq -r .version "$previous")" "$(jq -r .version "$current")" "$status" \
     "$([ "$status" = open ] && printf 'fingerprint changed' || printf 'only informational facets changed')" \
     "$changed" "$substantive")
-  local facets=() facet
-  while IFS= read -r facet; do facets+=("$facet"); done < <(jq -r '.[]' <<<"$changed")
-  write_diff "$previous" "$current" "${facets[@]}" >"$events_dir/$id.diff"
+  write_diff "$previous" "$current" "$changed" >"$events_dir/$id.diff"
+  [ "$status" != open ] || cp "$previous" "$events_dir/$id.base"
   mv -f "$current" "$previous"
   log "$vendor event $id $status: $(jq -r 'join(", ")' <<<"$changed")"
 }
 
-launch_event() { # id
-  local id=$1 file claudeb account session
+launch_event() { # id... -> one chat for all of them
+  local id file claudeb account session prompt
   # A bare `claude` runs on ~/.claude, which holds no login: the chat opens on a picked profile.
-  claudeb=$(command -v claudeb) || { log "cannot open $id: no claudeb on PATH"; return 0; }
+  claudeb=$(command -v claudeb) || { log "cannot open $*: no claudeb on PATH"; return 1; }
   # The chat role: this is an interactive chat, and the workers switch it meets is lifted only by the
   # pin written below, once the account is already chosen.
   account=$("${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" --account claudeb --role chat 2>/dev/null) &&
     [ -n "$account" ] ||
-    { log "cannot open $id: worker-pick names no Claude account; retried next run"; return 0; }
+    { log "cannot open $*: worker-pick names no Claude account; retried next run"; return 1; }
   session=$(uuidgen | tr '[:upper:]' '[:lower:]')
-  file="$events_dir/$id.command"
+  file="$events_dir/$1.command"
+  if [ $# = 1 ]; then
+    prompt="Vendor release event $1: read $repo_root/docs/vendor-release.md in full and follow it."
+  else
+    printf -v prompt '%s, ' "$@"
+    prompt="Vendor release events ${prompt%, }: read $repo_root/docs/vendor-release.md in full and follow it for each event in turn."
+  fi
   {
     printf '#!/bin/bash\n'
     printf 'cd %q || exit 1\n' "$repo_root"
@@ -305,24 +369,36 @@ launch_event() { # id
     # «воркер на все» writes. Run from Terminal, where no Claude session asks for his words.
     printf 'CLAUDE_CODE_SESSION_ID=%q %q all >/dev/null || echo "chat-pin all failed: this chat meets the worker switches"\n' \
       "$session" "$repo_root/bin/chat-pin"
-    printf 'exec %q profile %q --session-id %q --model opus --effort high %q\n' "$claudeb" "$account" "$session" \
-      "Vendor release event $id: read $repo_root/docs/vendor-release.md in full and follow it."
+    printf 'exec %q profile %q --session-id %q --model opus --effort high %q\n' "$claudeb" "$account" "$session" "$prompt"
   } >"$file"
   chmod 755 "$file"
-  if "${opener[@]}" "$file" >/dev/null 2>&1; then
-    event_set "$id" '.launched_at = $t' --arg t "$(stamp)"
-    log "opened integration chat for $id"
-  else
-    log "could not open integration chat for $id; retried next run"
+  if ! "${opener[@]}" "$file" >/dev/null 2>&1; then
+    log "could not open integration chat for $*; retried next run"
+    return 1
   fi
+  for id in "$@"; do
+    event_set "$id" '.launched_at = $t' --arg t "$(stamp)"
+    rm -f "$events_dir/$id.base"
+  done
+  log "opened integration chat for $*"
 }
 
+# Releases flap and batch well: every waiting event goes to one chat at most once a week. A manual
+# request asked for a chat now, so a failed launch of one is retried on the next run regardless.
 launch_pending() {
-  local file
+  local file ids=() last held=false
+  # A manual update opens its own chat for every vendor right after this check.
+  [ -z "${VENDOR_FINGERPRINT_HOLD:-}" ] || return 0
+  last=$(cat "$fp_dir/last-launch" 2>/dev/null) || last=0
+  [ $(($(date +%s) - ${last:-0})) -ge "${VENDOR_FINGERPRINT_LAUNCH_EVERY:-604800}" ] || held=true
   for file in "$events_dir"/*.json; do
     [ -f "$file" ] || continue
-    jq -e '.status == "open" and (.launched_at == null)' "$file" >/dev/null 2>&1 && launch_event "$(jq -r .id "$file")"
+    jq -e --argjson held "$held" '.status == "open" and .launched_at == null
+      and (($held | not) or (.reason // "" | startswith("manual request")))' "$file" >/dev/null 2>&1 &&
+      ids+=("$(jq -r .id "$file")")
   done
+  [ ${#ids[@]} -gt 0 ] || return 0
+  launch_event "${ids[@]}" && ! $held && date +%s >"$fp_dir/last-launch"
   return 0
 }
 
@@ -338,29 +414,56 @@ check() { # [--here] [vendor...]
   for file in "$events_dir"/*.json; do
     [ -f "$file" ] || continue
     jq -e --arg v " ${*:-$vendors} " '.status == "open" and .launched_at == null and (.vendor as $x | $v | contains(" \($x) "))' \
-      "$file" >/dev/null 2>&1 && event_set "$(jq -r .id "$file")" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"
+      "$file" >/dev/null 2>&1 || continue
+    event_set "$(jq -r .id "$file")" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"
+    rm -f "${file%.json}.base"
   done
   return 0
 }
 
-request() { # [--here] vendor [note...] -> a full integration pass without waiting for a fingerprint change
-  local here=false vendor version id
-  [ "${1:-}" = --here ] && { here=true; shift; }
-  vendor=${1:-}
-  [ -n "$vendor" ] || usage
+manual_event() { # vendor note... -> id
+  local vendor=$1 version id
   shift
-  case " $vendors " in *" $vendor "*) ;; *) printf 'vendor-fingerprint: unknown vendor %s\n' "$vendor" >&2; exit 2 ;; esac
-  mkdir -p "$fp_dir" "$events_dir"
   version=$(version_of timeout_command 30 "$(cli_of "$vendor")" --version)
   id=$(new_event "$vendor" "${version:-unknown}" "${version:-unknown}" open "manual request${*:+: $*}" '[]' '[]')
   printf 'manual request: integrate every capability of %s %s against the manifests and surfaces\n' "$vendor" "${version:-unknown}" >"$events_dir/$id.diff"
   log "$vendor event $id open: manual request"
   printf '%s\n' "$id"
-  if $here; then
-    event_set "$id" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"
+}
+
+waiting() { # [vendor] -> the open events no chat has taken yet
+  local file
+  for file in "$events_dir/${1:+$1-}"*.json; do
+    [ -f "$file" ] && jq -e '.status == "open" and .launched_at == null' "$file" >/dev/null 2>&1 && basename "$file" .json
+  done
+  return 0
+}
+
+request() { # [--here] vendor|--all [note...] -> a full integration pass without waiting for a fingerprint change
+  local here=false all=false vendor id ids=()
+  [ "${1:-}" = --here ] && { here=true; shift; }
+  vendor=${1:-}
+  [ -n "$vendor" ] || usage
+  shift
+  mkdir -p "$fp_dir" "$events_dir"
+  if [ "$vendor" = --all ]; then
+    all=true
+    # Every vendor in one chat now: a waiting event already carries its vendor's pass.
+    for vendor in $vendors; do [ -n "$(waiting "$vendor")" ] || manual_event "$vendor" "$@" >/dev/null; done
+    while IFS= read -r id; do ids+=("$id"); done < <(waiting)
   else
-    launch_event "$id"
+    case " $vendors " in *" $vendor "*) ;; *) printf 'vendor-fingerprint: unknown vendor %s\n' "$vendor" >&2; exit 2 ;; esac
+    ids=("$(manual_event "$vendor" "$@")")
   fi
+  printf '%s\n' "${ids[@]}"
+  if $here; then
+    for id in "${ids[@]}"; do event_set "$id" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"; rm -f "$events_dir/$id.base"; done
+  elif $all; then
+    launch_event "${ids[@]}" && date +%s >"$fp_dir/last-launch"
+  else
+    launch_event "${ids[@]}"
+  fi
+  return 0
 }
 
 # The completeness gate: every changed line of an event's diff carries a decision row
@@ -422,7 +525,7 @@ show_event() { # id
 }
 
 usage() {
-  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor> [note]\n' >&2
+  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor>|--all [note]\n' >&2
   exit 2
 }
 

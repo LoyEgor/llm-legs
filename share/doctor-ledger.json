@@ -46,7 +46,7 @@
    "block": "reviewers",
    "match": {
     "word": "bad output",
-    "detail": "command_execution"
+    "detail": "\\bno command_execution\\b"
    },
    "title": "codex \"no command_execution\" is a true label",
    "status": "not-a-bug",
@@ -55,6 +55,21 @@
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
    "note": ""
+  },
+  {
+   "id": "V14",
+   "block": "reviewers",
+   "match": {
+    "word": "bad output",
+    "detail": "ruled on \\d+ of \\d+ claims"
+   },
+   "title": "the judge ruled on fewer claims than it was given",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-25",
+   "reviewed_by": "LLM doctor",
+   "note": "kept apart from R1, which is about review-cell shapes"
   },
   {
    "id": "R1",
@@ -328,7 +343,7 @@
    "fixed_at": null,
    "last_reviewed": "2026-09-24",
    "reviewed_by": "LLM doctor",
-   "note": "a pool empty only because every account is walled reads as walled weather, never here"
+   "note": "reviewers: a cell staffed on a vendor already closed before its run began; a switch closed mid-run reads as off. Workers and image: a refusal no recorded switch or pool flip explains; one that met a closed switch reads as off, the gate having worked. A pool empty only because every account is walled reads as walled weather, never here"
   },
   {
    "id": "V3",
@@ -368,9 +383,9 @@
    "status": "open",
    "fixed_in": [],
    "fixed_at": null,
-   "last_reviewed": "2026-09-24",
+   "last_reviewed": "2026-09-25",
    "reviewed_by": "LLM doctor",
-   "note": ""
+   "note": "only the CLI's own refusal after launch; a prelaunch EFFORT_REFUSED or MODEL_REFUSED is worker-run's guard stopping the selection before the CLI and reads as off weather, never here"
   },
   {
    "id": "V6",

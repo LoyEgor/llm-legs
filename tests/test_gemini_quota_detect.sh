@@ -15,6 +15,7 @@
 #   quota            -> every model silent-quota-fails (log line, empty stdout)
 #   empty            -> every model produces plain-empty output (no quota markers)
 #   high_quota_low_ok-> (High) silent-quota-fails, (Low) answers on stdout (per-model quota)
+#   high_partial_low_ok -> (High) prints part of an answer and exits 3, (Low) answers
 #
 # Self-contained; exits 0 on pass, non-zero on failure.
 set -u
@@ -60,6 +61,21 @@ case "${STUB_MODE:-quota}" in
       *) [ -n "$logf" ] && printf '%s\n' "$QLINE" >> "$logf" ;;
     esac ;;
   empty) : ;;  # plain generic empty output; log untouched
+  high_partial_low_ok)
+    # agy >= 1.2.10: a streamed answer that ends on a model error exits 3 with AGY_ERROR on stderr.
+    case "$model" in
+      *"(Low)"*) printf '%s\n' "FULL ANSWER FROM LOW TIER" ;;
+      *) printf '%s\n' "TRUNCATED HIGH ANSWER"
+         printf '%s\n' 'AGY_ERROR: {"status":"INTERNAL","code":500,"retryable":true}' >&2
+         exit 3 ;;
+    esac ;;
+  high_quota_low_partial)
+    case "$model" in
+      *"(Low)"*) printf '%s\n' "TRUNCATED LOW ANSWER"
+         printf '%s\n' 'AGY_ERROR: {"status":"INTERNAL","code":500,"retryable":true}' >&2
+         exit 3 ;;
+      *) [ -n "$logf" ] && printf '%s\n' "$QLINE" >> "$logf" ;;
+    esac ;;
 esac
 exit 0
 STUB
@@ -93,6 +109,28 @@ rc=$?
 grep -q 'FALLBACK ANSWER FROM LOW TIER' "$out1b" \
   || fail "high_quota_low_ok case: fallback (Low) answer missing from stdout: $(cat "$out1b")"
 grep -q '(High)' "$err1b" || fail "high_quota_low_ok case: stderr should note the (High) quota hit"
+
+# --- Case 1c: (High) cut short with exit 3 -> its text is never delivered, (Low) answers ---
+DATA1c="$WORK/data-partial"
+out1c="$WORK/out1c.txt"; err1c="$WORK/err1c.txt"
+STUB_MODE=high_partial_low_ok LLM_LEGS_DATA_DIR="$DATA1c" \
+  bash "$SCRIPT" "test prompt" >"$out1c" 2>"$err1c"
+rc=$?
+[ "$rc" -eq 0 ] || fail "partial case: expected exit 0, got $rc; stderr: $(cat "$err1c")"
+grep -q 'FULL ANSWER FROM LOW TIER' "$out1c" || fail "partial case: (Low) answer missing: $(cat "$out1c")"
+! grep -q 'TRUNCATED HIGH ANSWER' "$out1c" || fail "partial case: the cut-short (High) text was delivered"
+grep -q 'cut the answer short (exit 3)' "$err1c" || fail "partial case: stderr does not name the cut: $(cat "$err1c")"
+grep -q '"served":"PARTIAL"' "$DATA1c/served-models.jsonl" || fail "partial case: audit row PARTIAL not logged"
+
+# --- Case 1d: (High) quota, (Low) served but cut short -> not an account-wide quota, exit 1 ---
+DATA1d="$WORK/data-quota-partial"
+err1d="$WORK/err1d.txt"
+STUB_MODE=high_quota_low_partial LLM_LEGS_DATA_DIR="$DATA1d" \
+  bash "$SCRIPT" "test prompt" >/dev/null 2>"$err1d"
+rc=$?
+[ "$rc" -eq 1 ] || fail "quota+partial case: expected exit 1, got $rc; stderr: $(cat "$err1d")"
+! grep -q 'account-wide' "$err1d" || fail "quota+partial case: reported an account-wide quota: $(cat "$err1d")"
+grep -q '"served":"FAILED"' "$DATA1d/served-models.jsonl" || fail "quota+partial case: audit row FAILED not logged"
 
 # --- Case 2: plain empty (no quota markers) -> tries both models, exit 1 ---
 DATA2="$WORK/data-empty"
@@ -132,5 +170,5 @@ rc=$?
 grep -q 'no `pro` row' "$err4" || fail "no-pro case: refusal does not name the missing row: $(cat "$err4")"
 [ ! -s "$WORK/data-no-pro/served-models.jsonl" ] || fail "no-pro case: a model was called anyway"
 
-echo "PASS: quota-chain->5, quota-fallback-ok->0, empty->1, probe->0, no-pro-row->1"
+echo "PASS: quota-chain->5, quota-fallback-ok->0, partial-fallback->0, empty->1, probe->0, no-pro-row->1"
 exit 0

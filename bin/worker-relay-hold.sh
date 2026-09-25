@@ -27,11 +27,12 @@ release() {
   exit 0
 }
 
+self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
 run_live() { # run-id
   local directory="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$1" pid
   [ -r "$directory/meta.json" ] && [ ! -e "$directory/exit_code" ] || return 1
   pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
-  [[ "$pid" =~ ^[0-9]+$ ]] && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null
+  supervisor_running "$directory" "$pid"
 }
 # A panel whose heartbeat stopped is dead whatever its document still says.
 review_live() { # run-id

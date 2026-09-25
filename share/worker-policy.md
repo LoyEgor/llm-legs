@@ -34,7 +34,7 @@ Source: `share/worker-model.sh` (`worker_model_table`); first model per vendor i
 Use the first `NEXT` row's account. Effort defaults to `<vendor>_effort` in
 `~/.claude/worker-model`, else the resolved model's table default. Write `EFFORT:` only to move
 off that default within Brief efforts. Word efforts and word-only models (`fable`,
-codex `sol`) require Egor's ask in this chat; quote nothing but his ask. A codex `MODEL:` names the
+codex `sol`) require Egor's ask in this chat; the brief never quotes it. A codex `MODEL:` names the
 family word (codex `astra`, `sol`), which launches the newest slug `codexb models` lists; a full
 slug is a deliberate pin and launches as written.
 His cues «не парься / задача простая / не жги» lower effort within Brief efforts;

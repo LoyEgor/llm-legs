@@ -53,6 +53,9 @@ run other s2 codex
 run done s1 codex; printf '0\n' >"$WORKER_RUN_DIR/done/exit_code"
 run dead s1 codex 999999
 run starting s1 codex; rm -f "$WORKER_RUN_DIR/starting/state.json"
+run recycled s1 codex
+jq -c --argjson t "$(($(date +%s) - 86400))" '.pid_started_at = $t' "$WORKER_RUN_DIR/recycled/meta.json" >"$WORK/m" &&
+  mv "$WORK/m" "$WORKER_RUN_DIR/recycled/meta.json"
 assert_eq "" "$(stop)"
 
 # Inside a headless worker or a subagent the backstop is silent.
