@@ -6398,7 +6398,7 @@ fi
 # the real review-anchors: the fixer's fix anchor lands on exactly what it wrote, in either
 # repository, and the other run's edits to reviewed paths stay owed.
 fix_owned_tests() {
-  local a b round=20260902T100000Z-ccccccc fixer other saved_path="$PATH" repo path
+  local a b round=20260902T100000Z-ccccccc fixer other saved_path="$PATH" repo path folded
   fix_kinds() { jq -r --arg p "$2" '.anchors[$p][]?.kind' "$1/.git/review-anchors.json"; }
   fix_holds_current() {
     jq -e --arg p "$2" --arg b "$(git -C "$1" hash-object "$1/$2")" \
@@ -6467,6 +6467,16 @@ fix_owned_tests() {
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$b" theirs.txt)"
   assert_fails "$RUNNER" claim "$fixer" --paths "$b/theirs.txt/nope" 2>/dev/null
   assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" theirs.txt)"
+  # A run outside any round claiming in the sibling repository: the launcher's touch, and no fold.
+  WORKER_TEST_WORKDIR=$a start_ok codex
+  printf 'manual\n' >"$b/manual.txt"
+  assert await_done
+  review-anchors untouch --repo "$b" --session fix-chat manual.txt
+  folded=$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")
+  sleep 1
+  "$RUNNER" claim "$RUN_ID" --paths "$b/manual.txt" >/dev/null || fail "claim in the sibling repository failed"
+  assert jq -e --arg k "$b/.git" '.touches[$k]["manual.txt"]["fix-chat"] != null' "$b/.git/review-anchors.json" >/dev/null
+  assert test "$(jq -r --arg r "$RUN_ID" '.runs[$r].folded' "$b/.git/review-anchors.json")" = "$folded"
   assert test ! -e "$HOME/.cache/claude/review-debt/gaps/fix-chat"
   export PATH="$saved_path"
   rm -f "$HOME/.cache/claude/review-journal/fix-chat.repos"

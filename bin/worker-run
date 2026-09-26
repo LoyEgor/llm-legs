@@ -3997,6 +3997,18 @@ normalize_path() { # path
   printf '%s' "${out:-/}"
 }
 
+# Claimed paths of one family, top-relative: the launcher's touch always, the fix fold only in a round.
+claim_family_anchors() { # directory snap repo top launcher path...
+  local directory="$1" snap="$2" repo="$3" top="$4" launcher="$5" round path
+  local -a touched=()
+  shift 5
+  for path in "$@"; do touched+=("./$path"); done
+  review_anchors touch --repo "$top" --session "$launcher" -- "${touched[@]}" >/dev/null 2>&1 ||
+    debt_gap "$launcher" claim-touch "${directory##*/}"
+  round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
+  [ -z "$round" ] || fold_family_anchors "$directory" "$snap" "$repo" "$top" "$launcher" "$round" "$@"
+}
+
 claim_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" directory workdir top complete=false session launcher path absolute relative
@@ -4141,16 +4153,10 @@ claim_run() {
       case "$absolute" in ("$top"/*) touched+=("./${absolute#"$top"/}") ;; esac
     done
     [ "${#touched[@]}" -eq 0 ] ||
-      review_anchors touch --repo "$top" --session "$launcher" -- "${touched[@]}" >/dev/null 2>&1 ||
-      debt_gap "$launcher" claim-touch "$run_id"
-    local round
-    round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
-    [ -z "$round" ] || [ "${#touched[@]}" -eq 0 ] ||
-      fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round" "${touched[@]#./}"
+      claim_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "${touched[@]#./}"
   fi
   if [ "${#elsewhere[@]}" -ne 0 ]; then
-    local entry round
-    round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
+    local entry
     { cat "$directory/files-external" 2>/dev/null; printf '%s\n' "${elsewhere[@]##*$'\t'}"; } |
       sed '/^$/d' | sort -u >"$directory/files-external.tmp.$$" &&
       mv -f "$directory/files-external.tmp.$$" "$directory/files-external"
@@ -4164,7 +4170,7 @@ claim_run() {
         physical=${entry#*$'\t'}
         paths+=("${physical#"$family"/}")
       done
-      [ -z "$family" ] || fold_family_anchors "$directory" "$sub" "$family" "$family" "$launcher" "$round" "${paths[@]}"
+      [ -z "$family" ] || claim_family_anchors "$directory" "$sub" "$family" "$family" "$launcher" "${paths[@]}"
     done
   fi
   printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "$((${#resolved[@]} + ${#elsewhere[@]}))" "$run_id"
