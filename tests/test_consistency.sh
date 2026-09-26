@@ -1608,7 +1608,8 @@ assert grep -Fq 'done < <(brief_text_rounds "$brief")' "$ROOT/bin/worker-run"
 # The flag and the header name one round through one validator, and the id reaches the store that
 # closes the round: a launch that carries it no further leaves the fix unattributed.
 assert grep -Fq -e '--round) [ "$#" -ge 2 ] || usage; round_flag="$2"; shift 2 ;;' "$ROOT/bin/worker-run"
-assert grep -Fq '[ -z "$6" ] || fold+=(--round "$6")' "$ROOT/bin/worker-run"
+assert grep -Fq 'fold+=(--round "$6" --owned)' "$ROOT/bin/worker-run"
+assert grep -Fq 'p.add_argument("--owned"' "$RB_ANCHORS"
 assert grep -Fq 'fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round"' "$ROOT/bin/worker-run"
 assert grep -Fq 'f"fix:{a.round}:{a.run}"' "$RB_ANCHORS"
 

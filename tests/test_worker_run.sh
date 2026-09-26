@@ -146,11 +146,12 @@ if [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
   [ "$attempt" = 1 ] || transcript_name="$STUB_TRANSCRIPT_SESSION-$attempt"
   jq -cn --arg t "$input" '{type:"user",message:{role:"user",content:$t}}' \
     >"$transcript_dir/$transcript_name.jsonl"
-  if [ -n "${STUB_EDIT_PATH:-}" ]; then
-    jq -cn --arg path "$STUB_EDIT_PATH" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  while IFS= read -r edit_path; do
+    [ -n "$edit_path" ] || continue
+    jq -cn --arg path "$edit_path" --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{timestamp:$timestamp,type:"assistant",message:{content:[{type:"tool_use",name:"Edit",input:{file_path:$path}}]}}' \
       >>"$transcript_dir/$transcript_name.jsonl"
-  fi
+  done <<<"${STUB_EDIT_PATH:-}"
 fi
 if [ -n "${STUB_TRANSCRIPT_GROW:-}" ] && [ -n "${STUB_TRANSCRIPT_SESSION:-}" ]; then
   # A working claudeb writes NOTHING to stdout until its very last line; the transcript growing is
@@ -6392,6 +6393,87 @@ STAMPEOF
 else
   fail "the touch writer of ../claude-setup or ../review-bench's review-anchors is unreadable (set CLAUDE_SETUP_ROOT / REVIEW_BENCH_ROOT)"
 fi
+
+# A round fixer and a non-round run of the same chat, concurrent in a two-repository round, both on
+# the real review-anchors: the fixer's fix anchor lands on exactly what it wrote, in either
+# repository, and the other run's edits to reviewed paths stay owed.
+fix_owned_tests() {
+  local a b round=20260902T100000Z-ccccccc fixer other saved_path="$PATH" repo path
+  fix_kinds() { jq -r --arg p "$2" '.anchors[$p][]?.kind' "$1/.git/review-anchors.json"; }
+  fix_holds_current() {
+    jq -e --arg p "$2" --arg b "$(git -C "$1" hash-object "$1/$2")" \
+      '[.anchors[$p][]?.blob] | index($b) != null' "$1/.git/review-anchors.json" >/dev/null
+  }
+  for repo in fix-a fix-b; do
+    mkdir -p "$WORK/$repo"
+    git -C "$WORK/$repo" init -q .
+    for path in own.txt theirs.txt extra.txt shell.txt link.txt; do printf 'base\n' >"$WORK/$repo/$path"; done
+    git -C "$WORK/$repo" add -A >/dev/null
+    git -C "$WORK/$repo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+  done
+  a=$(cd "$WORK/fix-a" && pwd -P)
+  b=$(cd "$WORK/fix-b" && pwd -P)
+  mkdir -p "$CLAUDEB_DIR/worker-stats/benches/$round"
+  jq -n --arg a "$a" --arg b "$b" '{
+    repos: [{repo: $a, common_dir: ($a + "/.git"), label: "fix-a"},
+            {repo: $b, common_dir: ($b + "/.git"), label: "fix-b"}],
+    reviewed: {"fix-a/own.txt": "x", "fix-a/theirs.txt": "x", "fix-a/shell.txt": "x",
+               "fix-b/own.txt": "x", "fix-b/theirs.txt": "x", "fix-b/link.txt": "x", "fix-b/shell.txt": "x"}}' \
+    >"$CLAUDEB_DIR/worker-stats/benches/$round/meta.json"
+  export PATH="$WORK/stamp-bin:$PATH"
+  # Reviewed before, outside this round: the fixer's edit is the only new content in it.
+  review-anchors anchor --repo "$a" --kind review:20260901T000000Z-0000000 extra.txt
+  mkdir -p "$HOME/.cache/claude/review-journal"
+  printf '%s\n%s\n' "$a" "$b" >"$HOME/.cache/claude/review-journal/fix-chat.repos"
+  set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=medium'
+  clear_stub
+  export PICK_RC=0 PICK_ACCOUNT=fixacct CLAUDE_CODE_SESSION_ID=fix-chat STUB_SLEEP=4
+  export STUB_SESSION=fix-worker STUB_TRANSCRIPT_SESSION=fix-worker STUB_TRANSCRIPT_ACCOUNT=fixacct
+  ln -s "$b" "$WORK/fix-b-link"
+  export STUB_EDIT_PATH="own.txt"$'\n'"extra.txt"$'\n'"$b/own.txt"$'\n'"$WORK/fix-b-link/link.txt"
+  WORKER_TEST_WORKDIR=$a start_ok claudeb --round "$round"
+  fixer=$RUN_ID
+  unset STUB_EDIT_PATH STUB_TRANSCRIPT_SESSION STUB_SESSION
+  WORKER_TEST_WORKDIR=$a start_ok codex
+  other=$RUN_ID
+  printf 'fixed\n' >>"$a/own.txt"
+  printf 'fixed\n' >>"$a/extra.txt"
+  printf 'fixed\n' >>"$a/shell.txt"
+  printf 'fixed\n' >>"$b/own.txt"
+  printf 'fixed\n' >>"$b/link.txt"
+  printf 'fixed\n' >>"$b/shell.txt"
+  printf 'other\n' >>"$a/theirs.txt"
+  printf 'other\n' >>"$b/theirs.txt"
+  RUN_ID=$fixer; assert await_done
+  RUN_ID=$other; assert await_done
+  assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$a" own.txt)"
+  assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$b" own.txt)"
+  assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$a" extra.txt)"
+  assert fix_holds_current "$b" own.txt
+  # Named through a symlink to the repository, which no literal prefix of its top matches.
+  assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$b" link.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" theirs.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$b" theirs.txt)"
+  assert_fails fix_holds_current "$a" theirs.txt
+  assert_fails fix_holds_current "$b" theirs.txt
+  # Written through the shell, so no record names it until the launching chat claims it.
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" shell.txt)"
+  "$RUNNER" claim "$fixer" --paths "$a/shell.txt" >/dev/null || fail "claim of the fixer's shell write failed"
+  assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$a" shell.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$b" shell.txt)"
+  "$RUNNER" claim "$fixer" --paths "$WORK/fix-b-link/shell.txt" >/dev/null ||
+    fail "claim of the fixer's shell write in the second repository failed"
+  assert grep -qx "fix:$round:$fixer" <<<"$(fix_kinds "$b" shell.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$b" theirs.txt)"
+  assert_fails "$RUNNER" claim "$fixer" --paths "$b/theirs.txt/nope" 2>/dev/null
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$a" theirs.txt)"
+  assert test ! -e "$HOME/.cache/claude/review-debt/gaps/fix-chat"
+  export PATH="$saved_path"
+  rm -f "$HOME/.cache/claude/review-journal/fix-chat.repos"
+  unset PICK_RC PICK_ACCOUNT CLAUDE_CODE_SESSION_ID STUB_TRANSCRIPT_ACCOUNT
+  clear_stub
+}
+fix_owned_tests
 
 # Snapshot attribution P1/P2 (after-snapshot UNKNOWN, first-row-wins, foreign HEAD, path shape, symlink, claim).
 clear_stub

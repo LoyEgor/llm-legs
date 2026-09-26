@@ -1231,6 +1231,7 @@ persist_run_files() {
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
     rm -f "$directory/files.tmp.$$" 2>/dev/null
+  printf '%s' "$RUN_FILES_EXTERNAL" >"$directory/files-external" 2>/dev/null || :
   record_workdir_dirt "$directory" "$workdir"
   [ -n "$RUN_FILES_REASON" ] || record_produced "$directory" "$workdir"
   transcript_crosscheck "$directory"
@@ -3999,7 +4000,8 @@ normalize_path() { # path
 claim_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" directory workdir top complete=false session launcher path absolute relative
-  local -a paths=() resolved=()
+  local sub family physical
+  local -a paths=() resolved=() elsewhere=()
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4048,8 +4050,27 @@ claim_run() {
     case "$absolute" in
       "$workdir"/*) ;;
       *)
-        [ -n "$top" ] && [ "$absolute" != "${absolute#"$top"/}" ] ||
-          fail "$path is not under this run's workdir ($workdir)${top:+ or its repository ($top)}"
+        physical=$(physical_path "$absolute") || physical=$absolute
+        if [ -n "$top" ] && [ "$physical" != "${physical#"$top"/}" ]; then
+          absolute=$physical
+        else
+          # A repository the run snapshotted beside its workdir (an --add-dir, the launcher's
+          # `.repos`): a fix it made there is claimed and folded in that family.
+          family=''
+          for sub in "$directory"/families/*; do
+            [ -f "$sub/top" ] && [ -f "$sub/head-after" ] || continue
+            IFS= read -r family <"$sub/top" 2>/dev/null || continue
+            family=$(cd "$family" 2>/dev/null && pwd -P) || { family=''; continue; }
+            [ "$physical" != "${physical#"$family"/}" ] && break
+            family=''
+          done
+          [ -n "$family" ] ||
+            fail "$path is not under this run's workdir ($workdir)${top:+, its repository ($top)} or a repository it snapshotted"
+          snapshot_changed_paths "$sub" "$family" | grep -qxF -- "${physical#"$family"/}" ||
+            fail "$path is not in this run's snapshot diff"
+          elsewhere+=("$sub"$'\t'"$family"$'\t'"$physical")
+          continue
+        fi
         ;;
     esac
     if [ -f "$directory/head-after" ]; then
@@ -4069,7 +4090,7 @@ claim_run() {
       grep '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null
     fi
     { grep -v '^WORKDIR: \|^UNKNOWN: \|^PARTIAL: ' "$directory/files" 2>/dev/null
-      for absolute in "${resolved[@]}"; do
+      for absolute in ${resolved[@]+"${resolved[@]}"}; do
         relative=${absolute#"$workdir"/}
         printf '%s\n' "$relative"
       done; } | sed '/^$/d' | sort -u
@@ -4083,7 +4104,7 @@ claim_run() {
     # ADDED to it by the very call that names it.
     remaining=$(comm -23 \
       <(grep -v '^WORKDIR: ' "$directory/dirty" 2>/dev/null | sed '/^$/d' | sort -u) \
-      <(for absolute in "${resolved[@]}"; do
+      <(for absolute in ${resolved[@]+"${resolved[@]}"}; do
           case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
         done | sort -u))
     if [ -n "$remaining" ]; then
@@ -4110,20 +4131,43 @@ claim_run() {
       grep -qxF -- "$row" "$directory/produced" 2>/dev/null ||
         printf '%s\n' "$row" >>"$directory/produced"
     done < <(produced_edit_rows "$directory" "$top" "$rel" "$head" \
-      < <(for absolute in "${resolved[@]}"; do
+      < <(for absolute in ${resolved[@]+"${resolved[@]}"}; do
             case "$absolute" in ("$top"/*) printf '%s\n' "${absolute#"$top"/}" ;; esac
           done))
   fi
   if [ -n "$top" ]; then
     local -a touched=()
-    for absolute in "${resolved[@]}"; do
+    for absolute in ${resolved[@]+"${resolved[@]}"}; do
       case "$absolute" in ("$top"/*) touched+=("./${absolute#"$top"/}") ;; esac
     done
     [ "${#touched[@]}" -eq 0 ] ||
       review_anchors touch --repo "$top" --session "$launcher" -- "${touched[@]}" >/dev/null 2>&1 ||
       debt_gap "$launcher" claim-touch "$run_id"
+    local round
+    round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
+    [ -z "$round" ] || [ "${#touched[@]}" -eq 0 ] ||
+      fold_family_anchors "$directory" "$directory" "$workdir" "$top" "$launcher" "$round" "${touched[@]#./}"
   fi
-  printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "${#resolved[@]}" "$run_id"
+  if [ "${#elsewhere[@]}" -ne 0 ]; then
+    local entry round
+    round=$(jq -r '.review_round // empty' "$directory/meta.json" 2>/dev/null) || round=''
+    { cat "$directory/files-external" 2>/dev/null; printf '%s\n' "${elsewhere[@]##*$'\t'}"; } |
+      sed '/^$/d' | sort -u >"$directory/files-external.tmp.$$" &&
+      mv -f "$directory/files-external.tmp.$$" "$directory/files-external"
+    for sub in "$directory"/families/*; do
+      family=''
+      paths=()
+      for entry in "${elsewhere[@]}"; do
+        [ "${entry%%$'\t'*}" = "$sub" ] || continue
+        entry=${entry#*$'\t'}
+        family=${entry%%$'\t'*}
+        physical=${entry#*$'\t'}
+        paths+=("${physical#"$family"/}")
+      done
+      [ -z "$family" ] || fold_family_anchors "$directory" "$sub" "$family" "$family" "$launcher" "$round" "${paths[@]}"
+    done
+  fi
+  printf 'CLAIMED: %s path(s) for %s\nFILES:\n' "$((${#resolved[@]} + ${#elsewhere[@]}))" "$run_id"
   head -n 20 "$directory/files" 2>/dev/null
 }
 
@@ -4313,15 +4357,52 @@ snapshot_other_families() { # directory workdir launcher add-dir...
   done < <(printf '%s\n' "$@"; cat "$HOME/.cache/claude/review-journal/$launcher.repos" 2>/dev/null)
 }
 
+# Only the directories are resolved, never the last component: a claimed symlink names itself, and a
+# deleted path still resolves through its deepest surviving ancestor.
+physical_path() { # absolute-path
+  local head="${1%/*}" tail="/${1##*/}" resolved
+  while [ -n "$head" ] && [ ! -d "$head" ]; do
+    tail="/${head##*/}$tail"
+    head=${head%/*}
+  done
+  resolved=$(cd "${head:-/}" 2>/dev/null && pwd -P) || return 1
+  printf '%s%s\n' "${resolved%/}" "$tail"
+}
+
+# The run's transcript-named paths outside its workdir's repository that fall under TOP, top-relative.
+external_top_paths() { # directory top
+  local top row resolved
+  top=$(cd "$2" 2>/dev/null && pwd -P) || return 0
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    resolved=$(physical_path "$row") || continue
+    case "$resolved" in "$top"/*) printf '%s\n' "${resolved#"$top"/}" ;; esac
+  done <"$1/files-external"
+} 2>/dev/null
+
 # One family's fold: the changed set and bases from the before/after listings in SNAP, plus what the
 # run left at each path, so a fix anchor is never written over content a co-tenant moved since.
-fold_family_anchors() { # directory snap repo top launcher round
-  local directory="$1" snap="$2" changed entry base after
-  local -a fold paths
+# PATHs given narrow the fold to them (a claim); otherwise a round fix owns only what the run's own
+# records name, since the snapshot diff also holds every concurrent run's edits in the family.
+fold_family_anchors() { # directory snap repo top launcher round [path...]
+  local directory="$1" snap="$2" changed entry base after owned=''
+  local -a fold paths only=("${@:7}")
   fold=(run-fold --repo "$3" --run "${directory##*/}" --session "$5")
-  [ -z "$6" ] || fold+=(--round "$6")
   paths=()
+  if [ -n "$6" ]; then
+    fold+=(--round "$6" --owned)
+    if [ "${#only[@]}" -ne 0 ]; then
+      owned=$(printf '%s\n' "${only[@]}")
+    else
+      [ "$snap" != "$directory" ] || owned=$(listing_top_paths "$directory" "$4" "$3")
+      owned+=$'\n'$(external_top_paths "$directory" "$4")
+    fi
+    while IFS= read -r entry; do
+      [ -z "$entry" ] || fold+=("./$entry")
+    done <<<"$owned"
+  fi
   if changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null); then
+    [ "${#only[@]}" -eq 0 ] || changed=$(grep -xF -f <(printf '%s\n' "${only[@]}") <<<"$changed")
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
       paths+=("$entry")
