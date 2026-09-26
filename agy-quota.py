@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import selectors
 import signal
 import subprocess
@@ -18,9 +19,13 @@ WORKDIR = os.path.expanduser(
     os.environ.get("AGY_WORKDIR", os.path.dirname(os.path.abspath(__file__)))
 )
 TIMEOUT = float(os.environ.get("AGY_QUOTA_TIMEOUT", "45"))
+NO_BROWSER_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "share", "no-browser")
 SOURCE = "agy-print-usage"
 AUTH_EXIT = 2
 AUTH_STDERR_MARKER = "Authentication required"
+# Google refusing the account itself until its owner verifies it in a browser: every launch answers
+# the same, so it is a login verdict and never a failed query the menu would show as healthy.
+ELIGIBILITY_RE = re.compile(r"not eligible for antigravity|verify your account", re.IGNORECASE)
 
 
 class AuthRequired(Exception):
@@ -58,9 +63,8 @@ def run_usage() -> tuple[str, str]:
         raise RuntimeError(f"AGY_WORKDIR does not exist: {WORKDIR}")
 
     env = dict(os.environ)
-    # A logged-out leg tries to open the OAuth page in the user's real browser.
-    env["BROWSER"] = "/usr/bin/true"
-    env["ANTIGRAVITY_BROWSER"] = "/usr/bin/true"
+    # agy ignores BROWSER: a logged-out leg hands its OAuth page to whatever `open` PATH resolves.
+    env["PATH"] = os.pathsep.join([NO_BROWSER_DIR, env.get("PATH") or os.defpath])
 
     with open(os.devnull, "rb") as devnull:
         process = subprocess.Popen(
@@ -110,6 +114,8 @@ def run_usage() -> tuple[str, str]:
     stderr = err.decode("utf-8", "replace")
     if process.returncode != 0:
         detail = first_line(stderr) or first_line(stdout) or "no output"
+        if ELIGIBILITY_RE.search(stderr + stdout):
+            raise AuthRequired(detail)
         raise RuntimeError(f"agy exited with status {process.returncode}: {detail}")
     return stdout, stderr
 

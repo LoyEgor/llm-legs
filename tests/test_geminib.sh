@@ -51,6 +51,7 @@ cat >"$FAKE_BIN/agy" <<'EOF'
 {
   printf 'CALL home=%s argc=%s\n' "$HOME" "$#"
   for argument in "$@"; do printf 'ARG=%q\n' "$argument"; done
+  printf 'OPEN=%s\n' "$(command -v open)"
 } >>"$AGY_CALLS"
 EOF
 chmod +x "$FAKE_BIN/agy"
@@ -585,11 +586,13 @@ assert grep -q 'alpha is out of the worker pool' "$POOL_OUT"
 assert_fails grep -q "home=$HOME/.gemini-profiles/alpha" "$AGY_CALLS"
 assert gb profile alpha --mode plan
 assert grep -q "home=$HOME/.gemini-profiles/alpha" "$AGY_CALLS"
+assert_fails grep -q '^OPEN=.*/share/no-browser/open$' "$AGY_CALLS"
 GEMINI_PIN_CONFIG="$WORK/worker-model-pin"
 printf 'gemini_profile=alpha\n' >"$GEMINI_PIN_CONFIG"
 : >"$AGY_CALLS"
 assert env WORKER_PICK_CONFIG_FILE="$GEMINI_PIN_CONFIG" bash "$SCRIPT" profile alpha --print hello
 assert grep -q "home=$HOME/.gemini-profiles/alpha" "$AGY_CALLS"
+assert grep -qxF "OPEN=$(cd "$ROOT" && pwd -P)/share/no-browser/open" "$AGY_CALLS"
 # The pool file lives beside the profiles and must never be read back as one.
 mkdir -p "$HOME/.gemini-profiles/.junk"
 assert gb list

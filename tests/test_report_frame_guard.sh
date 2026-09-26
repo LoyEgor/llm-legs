@@ -38,8 +38,6 @@ assert test -z "$hits"
 
 assert grep -Fq 'share/report_frame.py}' "$ROOT/bin/report-bus"
 assert grep -Fq 'python3 "$FRAME" block' "$ROOT/bin/report-bus"
-assert grep -Fq 'jq -cn' "$ROOT/bin/worker-run"
-assert grep -Eq "word: *\"worker\"" "$ROOT/bin/worker-run"
 assert grep -Fq 'import report_frame as _frame' "$REVIEW_BENCH/share/rbench/report.py"
 assert grep -Fq 'import report_frame as _frame' "$REVIEW_BENCH/share/rbench/panel.py"
 assert grep -Fq 'input=json.dumps(document, ensure_ascii=False)' "$REVIEW_BENCH/share/rbench/report.py"

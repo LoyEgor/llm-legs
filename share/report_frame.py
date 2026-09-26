@@ -74,6 +74,23 @@ def fit(text, room):
     return cut.rstrip(" ·,;:") + MORE
 
 
+def prose(text, lines=2, more=False, room=WIDTH - LABEL_WIDTH):
+    """Prose folded at words into at most `lines` items of the value column. What does not fit,
+    or `more` that the caller left out, ends the last item in `…`."""
+    items = []
+    for word in flat(text).split():
+        if items and len(items[-1]) + 1 + len(word) <= room:
+            items[-1] += f" {word}"
+        else:
+            items.append(word)
+    if len(items) > lines:
+        items = items[:lines - 1] + [fit(" ".join(items[lines - 1:]), room)]
+    elif more and items:
+        last = items[-1].rstrip(" ·,;:")
+        items[-1] = last + MORE if len(last) < room else fit(f"{last} {MORE}", room)
+    return [fit(item, room) for item in items]
+
+
 def time_word(seconds):
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0:
         return UNKNOWN

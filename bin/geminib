@@ -713,6 +713,8 @@ launch_agy() { # agy's own arguments; env assignments come from agy_env
   for argument in ${args[@]+"${args[@]}"}; do
     case "$argument" in --print | --print=*) headless=true ;; esac
   done
+  # agy ignores BROWSER: a logged-out headless leg hands its OAuth page to whatever `open` PATH resolves.
+  [ "$headless" != true ] || agy_env+=(PATH="$geminib_root/share/no-browser:$PATH")
   for ((index = 0; index < ${#args[@]}; index++)); do
     case "${args[$index]}" in
       --model) model_index=$index; slug="${args[$((index + 1))]:-}" ;;

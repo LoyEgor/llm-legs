@@ -43,6 +43,7 @@ for argument in "$@"; do
 done
 printf 'model=%s log=%s\n' "$model" "$log" >>"$CALLS"
 printf '%s\n' "${HOME:-}" >>"$CALLS-home"
+command -v open >>"$CALLS-open"
 printf '%s\n' "$$" >"$CALLS-pid"
 [ "${IGNORE_TERM:-0}" = 0 ] || trap '' TERM
 for ((step = 0; step < ${STEPS:-0}; step++)); do
@@ -216,6 +217,7 @@ mkdir -p "$CELL_HOME"
 agy_run() { # agy arguments
   : >"$CALLS"
   : >"$CALLS-home"
+  : >"$CALLS-open"
   rm -f "$WORK/log"
   geminib_families_seed "$CELL_CACHE"
   env HOME="$CELL_HOME" GEMINIB_CACHE_DIR="$CELL_CACHE" \
@@ -237,6 +239,7 @@ assert test ! -e "$MARKERS/gemini-3.8-flash"
 # Every attempt keeps the caller's HOME: the sandbox holds the account's auth, a profile home would
 # be unreadable there.
 assert_eq "$(sort -u "$CALLS-home")" "$CELL_HOME"
+assert_eq "$(sort -u "$CALLS-open")" "$(cd "$ROOT" && pwd -P)/share/no-browser/open"
 
 # The hold is read back out of that same cache on the next launch.
 STARVED=''

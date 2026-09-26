@@ -21,6 +21,7 @@ printf 'chat-session\n' >"$RUN/launcher"
 
 record() { # session
   FAKE_SESSION="$1" ROTATE_BYTES="${ROTATE_BYTES:-16777216}" bash -c '
+    . "$1/share/store-lock.sh"
     source <(sed -n "/^record_worker_session() {/,/^}/p;/^file_bytes() {/,/^}/p;/^journal_worker_attempt() {/,/^}/p" "$1/bin/worker-run")
     WORKER_ATTEMPTS_ROTATE_BYTES=$ROTATE_BYTES
     session_id() { printf "%s\n" "$FAKE_SESSION"; }
@@ -61,5 +62,22 @@ ROTATE_BYTES=10 record 01a0-fourth
 assert test "$(jq -r '.session' "$JOURNAL.1")" = "01a0-third"
 assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-fourth"
 assert test ! -d "$JOURNAL.rotating"
+
+# A live holder's lock is neither broken nor released: that attempt appends without rotating.
+mkdir "$JOURNAL.rotating" && printf '%s\n' "$$" >"$JOURNAL.rotating/pid"
+touch -t "$(date -v-10M +%Y%m%d%H%M)" "$JOURNAL.rotating"
+ROTATE_BYTES=10 record 01a0-fifth
+assert test "$(jq -r '.session' "$JOURNAL.1")" = "01a0-third"
+assert test "$(jq -r '.session' "$JOURNAL" | paste -sd, -)" = "01a0-fourth,01a0-fifth"
+assert test "$(cat "$JOURNAL.rotating/pid")" = "$$"
+rm -rf "$JOURNAL.rotating"
+
+# GNU stat first on PATH reads `-f` as filesystem mode: the size read still rotates the journal.
+mkdir -p "$WORK/gnu-stat"
+printf '#!/bin/bash\n[ "$1" = -f ] && { printf "  File: \\"%%s\\"\\n    ID: 0 Namelen: 255\\n" "$3"; exit 1; }\nexec /usr/bin/stat "$@"\n' >"$WORK/gnu-stat/stat"
+chmod +x "$WORK/gnu-stat/stat"
+PATH="$WORK/gnu-stat:$PATH" ROTATE_BYTES=10 record 01a0-sixth
+assert test "$(jq -r '.session' "$JOURNAL.1" | paste -sd, -)" = "01a0-fourth,01a0-fifth"
+assert test "$(jq -r '.session' "$JOURNAL")" = "01a0-sixth"
 
 printf 'OK: worker attempts journal (%d assertions)\n' "$asserts"

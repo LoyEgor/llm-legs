@@ -943,7 +943,7 @@ if [ "$start_windows" -eq 1 ] && [ -z "$refresh_account" ] && ! vendor_paused ge
         printf 'llm-limits.sh: gemini/%s 5h window state unknown; not starting a window\n' "$gemini_account" >&2
       elif [ "$gemini_5h_reset" -le "$now_epoch" ]; then
         if [ -x "$agy_bin" ]; then
-          (export HOME="$gemini_home"; cd "${AGY_WORKDIR:-$script_dir}" &&
+          (export HOME="$gemini_home" PATH="$script_dir/share/no-browser:$PATH"; cd "${AGY_WORKDIR:-$script_dir}" &&
             run_bounded 120 "$agy_bin" --print 'Reply with exactly: ok')
           new_gemini_refresh_result
           refresh_gemini_quota "$gemini_account" "$gemini_refresh_result_file" || true

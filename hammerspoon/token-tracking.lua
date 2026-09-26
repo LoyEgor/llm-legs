@@ -123,7 +123,7 @@ local function byWeekMenu(data)
     for c, week in ipairs(columns) do rows[1].nums[c] = week.short or week.label end
     for _, row in ipairs(data.rows) do
         if #(row.weeks or {}) > 0 then
-            local label = row.label
+            local label = row.label or ""
             if row.weeks_unit and row.weeks_unit ~= data.unit_label then label = label .. " · " .. row.weeks_unit end
             local nums = {}
             for c, week in ipairs(row.weeks) do nums[c] = week.cell end
@@ -167,7 +167,7 @@ local function rowMenu(row)
         end
     end
     if #(row.weeks or {}) > 0 then
-        items[#items + 1] = { title = "-" }
+        if #items > 0 then items[#items + 1] = { title = "-" } end
         items[#items + 1] = { title = "Calendar weeks", menu = weeksMenu(row) }
     end
     return items
@@ -259,7 +259,7 @@ function M.title(watcherAlarm)
     return hs.styledtext.new("Token tracking · " .. table.concat(alarms, " · "), { color = RED })
 end
 
-function M.menuItems(changeLog, watcherAlarm)
+function M.menuItems(changeLogItem)
     local data, problem, attrs = load()
     local items = statusItems(data, problem, attrs)
     if data then
@@ -285,14 +285,7 @@ function M.menuItems(changeLog, watcherAlarm)
         items[#items + 1] = { title = "By week", menu = byWeekMenu(data) }
     end
     items[#items + 1] = { title = "-" }
-    if type(changeLog) == "function" then
-        local ok, logItems = pcall(changeLog)
-        local title = watcherAlarm and style("Instruction file changes · watcher DOWN", RED)
-            or "Instruction file changes"
-        items[#items + 1] = { title = title,
-                              menu = (ok and type(logItems) == "table") and logItems
-                                  or { { title = "change log failed to render", disabled = true } } }
-    end
+    if changeLogItem then items[#items + 1] = changeLogItem end
     if hs.fs.attributes(PAGE) then
         items[#items + 1] = { title = "Open token map page", fn = function()
             hs.task.new("/usr/bin/open", nil, { PAGE }):start()

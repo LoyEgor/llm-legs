@@ -90,7 +90,7 @@ one writer's line count and its own append. Kinds are informational; no reader b
 | Task/Agent PreToolUse, main session only | `dispatch` | the first `/`-rooted token of the brief that is a directory `add` writes a line for |
 | EnterWorktree / ExitWorktree PostToolUse | `enter-worktree` / `exit-worktree` | the worktree / `CLAUDE_PROJECT_DIR`, else the session cwd |
 | `worker-run start`, when `CLAUDE_CODE_SESSION_ID` names a chat | `worker-start` | the run's workdir |
-| `worker-run`'s terminal outcome, for the run's recorded launcher, once per run (a `.place-end` directory in the run dir), with or without `report-bus` | `worker-end` | the run's workdir |
+| `worker-run`'s terminal outcome, for the run's recorded launcher, once per run (a `.place-end` directory in the run dir) | `worker-end` | the run's workdir |
 | `review-bench`, a progress document created `running` | `review-start` | its `repo`, for its `session` |
 | `review-bench`, the run itself stamping its document `done`/`dead` as it ends (never the reaper retiring a run nobody ended) | `review-end` | the same |
 

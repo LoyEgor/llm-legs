@@ -2054,7 +2054,7 @@ GEMINI_START_SENTINEL="$WORK/agy-called"
 GEMINI_STATE="$WORK/gemini-quota-state"
 GEMINI_CACHE2="$WORK/gemini-start.json"
 FAKE_AGY="$WORK/fake-agy"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$GEMINI_START_SENTINEL"\n' >"$FAKE_AGY"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" "OPEN=$(command -v open)" >>"$GEMINI_START_SENTINEL"\n' >"$FAKE_AGY"
 cat >"$WORK/fake-gemini-quota" <<EOF
 #!/usr/bin/env bash
 printf 'called\n' >>"\$GEMINI_SENTINEL"
@@ -2074,6 +2074,7 @@ gemini_start=$(GEMINI_SENTINEL="$GEMINI_SENTINEL" GEMINI_STATE="$GEMINI_STATE" G
   PATH="$FAKE_BIN:$PATH" HOME="$HOME_FIXTURE" CLAUDEB_DIR="$CLAUDEB" LLM_LIMITS_CACHE="$CACHE" \
   bash "$SCRIPT" --refresh --start-windows 2>/dev/null) || fail "gemini start-windows collection failed"
 grep -q -- '--print' "$GEMINI_START_SENTINEL" || fail "expired gemini window did not trigger agy --print"
+grep -qxF "OPEN=$ROOT/share/no-browser/open" "$GEMINI_START_SENTINEL" || fail "gemini window start ran agy with a real open on PATH"
 [ "$(grep -c called "$GEMINI_SENTINEL")" -eq 2 ] || fail "gemini quota was not re-read after the window start"
 jq -e '.vendors.gemini.weekly.used_pct == 40' <<<"$gemini_start" >/dev/null || fail "post-start gemini snapshot was not picked up"
 rm -f "$GEMINI_SENTINEL" "$GEMINI_START_SENTINEL" "$GEMINI_STATE" "$GEMINI_CACHE2"

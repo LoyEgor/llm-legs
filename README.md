@@ -220,8 +220,9 @@ row appends ` · rescanning` during rescans; action rows are disabled and read `
 | Gemini | Per-profile last successful manual Get Data & Refresh through agy's print-mode `/usage` |
 
 Gemini refresh runs `agy -p /usage --output-format json` under each profile's `HOME`, which
-answers the read-only usage command without a model turn, quota spend or conversation. `BROWSER`
-is muzzled so a logged-out profile cannot open an OAuth page, and the `Authentication required`
+answers the read-only usage command without a model turn, quota spend or conversation. agy
+ignores `BROWSER` and opens its OAuth page with `open` off PATH, so the no-op `share/no-browser/open`
+goes first on PATH and a logged-out profile cannot open a tab; the `Authentication required`
 line on stderr ends the run as `login needed`. Set `AGY_WORKDIR` to the folder agy should run in.
 Overrides for tests or alternate installs:
 `AGY_BIN`, `LLM_LIMITS_GEMINI_CMD`, `LLM_LIMITS_GEMINI_CACHE`,

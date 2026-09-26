@@ -778,15 +778,9 @@ EOF
 report_bus_tests() {
   local CLAUDE_CODE_SESSION_ID=report-launcher CLAUDE_LAUNCHER_SESSION=report-launcher
   local WORKER_RUN_IDLE_S=0 WORKER_RUN_SILENT_S=0 WORKER_RUN_DEADLINE=600
-  local PICK_RC=0 PICK_ACCOUNT=reportacct rc early_id old_id old_dir
+  local PICK_RC=0 PICK_ACCOUNT=reportacct rc old_id old_dir
   export CLAUDE_CODE_SESSION_ID CLAUDE_LAUNCHER_SESSION WORKER_RUN_IDLE_S WORKER_RUN_SILENT_S WORKER_RUN_DEADLINE PICK_RC PICK_ACCOUNT
   set_config 'codex_effort=high'
-  clear_stub
-  start_ok codex --account reportacct
-  assert await_done
-  "$RUNNER" report "$RUN_ID" >/dev/null
-  "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
-  assert_worker_post "$RUN_ID" DONE
 
   local place_repo="$WORK/place-repo" place_top
   git init -q "$place_repo"
@@ -795,38 +789,16 @@ report_bus_tests() {
   TMPDIR=/nonexistent WORKER_TEST_WORKDIR=$place_repo start_ok codex --account reportacct
   assert await_done
   TMPDIR=/nonexistent "$RUNNER" report "$RUN_ID" >/dev/null
+  "$RUNNER" wait "$RUN_ID" --max 0 >/dev/null
   assert test "$(cut -f2,3 "$HOME/.cache/claude-statusline/place-report-launcher" | tr '\t' ' ')" = "worker-start $place_top
 worker-end $place_top"
-
-  local norb_repo="$WORK/place-repo-norb" norb_top norb_path place_dir
-  git init -q "$norb_repo"
-  norb_top=$(cd "$norb_repo" && pwd -P)
-  mv "$WORK/bin/report-bus" "$WORK/report-bus.aside"
-  norb_path=$(IFS=:; for place_dir in $PATH; do [ -x "$place_dir/report-bus" ] || printf '%s:' "$place_dir"; done)
-  clear_stub
-  PATH=${norb_path%:} TMPDIR=/nonexistent WORKER_TEST_WORKDIR=$norb_repo start_ok codex --account reportacct
-  PATH=${norb_path%:} assert await_done
-  mv "$WORK/report-bus.aside" "$WORK/bin/report-bus"
-  TMPDIR=/nonexistent "$RUNNER" report "$RUN_ID" >/dev/null
-  assert test "$(tail -n 2 "$HOME/.cache/claude-statusline/place-report-launcher" | cut -f2,3 | tr '\t' ' ')" = "worker-start $norb_top
-worker-end $norb_top"
-
-  clear_stub
-  STUB_SLEEP=60 start_ok codex --account reportacct
-  sleep 0.3
-  kill -TERM "$(jq -r .pid "$RUN_DIR/meta.json")"
-  assert await_done
-  "$RUNNER" report "$RUN_ID" >/dev/null
-  assert_worker_post "$RUN_ID" CODEX_UNAVAILABLE
 
   clear_stub
   rc=0
   PICK_RC=3 "$RUNNER" start codex --brief "$WORK/brief" >"$WORK/report-limit.out" 2>"$WORK/report-limit.err" || rc=$?
   assert test "$rc" = 3
+  assert grep -qx 'OUTCOME: CODEX_USAGE_LIMIT' "$WORK/report-limit.out"
   assert test -z "$(sed -n 's/^RUN: //p' "$WORK/report-limit.out")"
-  early_id=$(posted_id CODEX_USAGE_LIMIT)
-  assert test -n "$early_id"
-  assert_worker_post "$early_id" CODEX_USAGE_LIMIT
 
   clear_stub
   STUB_SLEEP=60 start_ok codex --account reportacct
@@ -834,66 +806,15 @@ worker-end $norb_top"
   rc=0
   WORKER_RUN_ALLOW_DUPLICATE=0 "$RUNNER" start codex --account reportacct --brief "$WORK/brief" >"$WORK/report-duplicate.out" 2>&1 || rc=$?
   assert test "$rc" = 4
-  assert test -z "$(sed -n 's/^RUN: //p' "$WORK/report-duplicate.out")"
-  early_id=$(posted_id "DUPLICATE_RUN $old_id")
-  assert test -n "$early_id"
-  assert test "$early_id" != "$old_id"
-  assert_worker_post "$early_id" "DUPLICATE_RUN $old_id"
+  assert grep -qx "OUTCOME: DUPLICATE_RUN $old_id" "$WORK/report-duplicate.out"
   kill -TERM "$(jq -r .pid "$old_dir/meta.json")"
   assert await_done
-  assert_worker_post "$old_id" CODEX_UNAVAILABLE
+  "$RUNNER" report "$old_id" >/dev/null
   clear_stub
 }
-# A refusal that never made a run directory prints no `RUN:` line — that line means a run exists to
-# wait on — so its report id is read back off the bus.
-posted_id() { # outcome
-  jq -rs --arg o "$1" '[.[] | select([.body | fromjson | .rows[] | select(.[0] == "outcome")
-    | .[1]] == [$o])] | last | .argv[4] // ""' "$REPORT_BUS_LOG"
-}
-assert_worker_post() {
-  local id="$1" outcome="$2" rows
-  rows=$(jq -s --arg id "$id" '[.[] | select(.argv[4] == $id)]' "$REPORT_BUS_LOG")
-  assert test "$(jq length <<<"$rows")" = 1
-  assert jq -e --arg id "$id" '.[0].argv == ["post","--kind","notice","--id",$id,"--session","report-launcher"]' <<<"$rows" >/dev/null
-  assert jq -e --arg o "$outcome" '.[0].body | fromjson | .word == "worker"
-    and ([.rows[] | .[0]] - ["repo"]) == ["outcome", "worker", "wall-clock", "files"]
-    and ([.rows[] | select(.[0] == "outcome") | .[1]] == [$o])
-    and ([.rows[] | select(.[0] == "wall-clock") | .[1] | keys] == [["seconds"]])' <<<"$rows" >/dev/null
-  jq -r '.[0].body' <<<"$rows" | python3 "$ROOT/share/report_frame.py" block >"$WORK/notice-frame"
-  assert grep -qx "outcome:      $outcome" "$WORK/notice-frame"
-}
 report_bus_tests
-
-for marker_state in dead aged; do
-  marker_run="$WORKER_RUN_DIR/codex-stale-$marker_state"
-  mkdir -p "$marker_run/.report-posting"
-  printf '{"vendor":"codex","account":"main","model":"gpt-6-astra","effort":"medium","started_at":1}\n' >"$marker_run/meta.json"
-  printf 'report-launcher\n' >"$marker_run/launcher"
-  printf '0\n' >"$marker_run/exit_code"
-  if [ "$marker_state" = dead ]; then printf '99999999\n' >"$marker_run/.report-posting/pid"
-  else printf '%s\n' "$$" >"$marker_run/.report-posting/pid"; touch -t 202001010001 "$marker_run/.report-posting"; fi
-  "$RUNNER" report "${marker_run##*/}" >"$WORK/stale-report.out"
-  assert test -f "$marker_run/report-posted"
-  assert test ! -e "$marker_run/.report-posting"
-done
-
-# The repo row names the repository, never a worktree's branch directory or the caller's cwd.
-notice_repo="$WORK/notice-repos/myrepo"
-git init -q "$notice_repo"
-git -C "$notice_repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
-git -C "$notice_repo" worktree add -q -b feat/x "$notice_repo/.claude/worktrees/feat-x"
-for repo_case in worktree:"$notice_repo/.claude/worktrees/feat-x" none:; do
-  repo_run="$WORKER_RUN_DIR/codex-repo-${repo_case%%:*}"
-  mkdir -p "$repo_run"
-  jq -cn --arg w "${repo_case#*:}" '{vendor:"codex",account:"main",model:"gpt-6-astra",effort:"medium",started_at:1}
-    + if $w == "" then {} else {workdir: $w} end' >"$repo_run/meta.json"
-  printf 'report-launcher\n' >"$repo_run/launcher"
-  printf '0\n' >"$repo_run/exit_code"
-  (cd "$notice_repo" && "$RUNNER" report "${repo_run##*/}" >/dev/null)
-  repo_row=$(jq -rs --arg id "${repo_run##*/}" '[.[] | select(.argv[4] == $id)] | last | .body | fromjson
-    | [.rows[] | select(.[0] == "repo") | .[1]] | join(",")' "$REPORT_BUS_LOG")
-  case $repo_case in worktree:*) assert test "$repo_row" = myrepo ;; *) assert test -z "$repo_row" ;; esac
-done
+# A finished worker posts nothing to Egor's chat; its outcome is the relay's to read.
+assert test ! -s "$REPORT_BUS_LOG"
 
 if [ "${WORKER_RUN_TEST_REPORTS_ONLY:-0}" = 1 ]; then
   printf 'PASS: %s report producer asserts\n' "$asserts"
@@ -3037,7 +2958,7 @@ cp "$RUNNER" "$SELF_RUNNER"
 mkdir -p "$WORK/share"
 cp "$ROOT/share/worker-pool.sh" "$ROOT/share/gemini-accounts.sh" "$ROOT/share/codex-accounts.sh" \
   "$ROOT/share/worker-model.sh" "$ROOT/share/limits-view.sh" "$ROOT/share/worker-walls.sh" \
-  "$ROOT/share/web-search.sh" "$ROOT/share/run-liveness.sh" "$WORK/share/"
+  "$ROOT/share/web-search.sh" "$ROOT/share/run-liveness.sh" "$ROOT/share/store-lock.sh" "$WORK/share/"
 [ -e "$WORK/bin/codexb" ] || ln -s "$ROOT/bin/codexb" "$WORK/bin/codexb"
 [ -e "$WORK/bin/cyrillic-share" ] || ln -s "$ROOT/bin/cyrillic-share" "$WORK/bin/cyrillic-share"
 printf '%s\n' "$SELF_RUNNER" >"$STUB_DIR/codex_append_target"
@@ -4774,11 +4695,16 @@ unset STUB_SESSION
 # priced as nobody's, which is the hole the pair on record exists to close.
 clear_stub
 export STUB_SESSION=resumed-session STUB_SLEEP=0.5
-start_ok claudeb --account resumeacct --resume resumed-session
+RESUME_TAGS="$HOME/.cache/claude-worker-tags/chat-resume"
+mkdir -p "$RESUME_TAGS"
+printf 'seed · opus · high\nstart=%s\n' "$(date +%s)" >"$RESUME_TAGS/agent-resumed"
+CLAUDE_LAUNCHER_SESSION=chat-resume start_ok claudeb --account resumeacct --resume resumed-session
 assert test "$(cat "$RUN_DIR/worker-session")" = resumed-session
 assert await_done
 # And once per id, however many times the record is rewritten over it.
 assert test "$(grep -c . "$RUN_DIR/worker-session")" -eq 1
+# Its one attempt line is written at launch, so it names the agent the launch claimed.
+assert test "$(jq -r --arg run "$RUN_ID" 'select(.run == $run) | .agent' "$CLAUDEB_DIR/worker-stats/worker-attempts.jsonl" | paste -sd, -)" = agent-resumed
 unset STUB_SESSION STUB_SLEEP
 
 # "429" only counts as a limit signature with digit boundaries: an error id that
@@ -5562,6 +5488,34 @@ assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T130000Z-d
 assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = flag
 await_done || fail "the flag-source run never finished"
 
+# A round over several repositories grants the fixer every one of them: round dd96a57's claudeb fixer
+# ran in llm-legs alone, and its writes to claude-setup had no baseline and read as escaped. The
+# workdir's own repository is not granted again, even when the workdir is a worktree of it.
+round_repos="$WORK/round-repos"
+for name in alpha beta gamma; do
+  git init -q "$round_repos/$name"
+  git -C "$round_repos/$name" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+done
+git -C "$round_repos/alpha" worktree add -q -b fix "$round_repos/alpha-fix"
+round_repos=$(cd "$round_repos" && pwd -P)
+mkdir -p "$DELEG_BENCHES/20260801T160000Z-1b2c3d4"
+jq -n --arg root "$round_repos" '{repo: ($root + "/merged"),
+  repos: [{label: "alpha", repo: ($root + "/alpha")}, {label: "beta", repo: ($root + "/beta")},
+          {label: "gamma", repo: ($root + "/gamma")}]}' \
+  >"$DELEG_BENCHES/20260801T160000Z-1b2c3d4/meta.json"
+cp "$WORK/brief" "$WORK/brief.before-round"
+printf 'ROUND: 20260801T160000Z-1b2c3d4\nFix the confirmed findings.\n' >"$WORK/brief"
+for round_vendor in codex claudeb; do
+  clear_stub
+  start_ok "$round_vendor" --workdir "$round_repos/alpha-fix" --add-dir "$round_repos/gamma"
+  assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" \
+    = "$(jq -cn --arg root "$round_repos" '[$root + "/gamma", $root + "/beta"]')"
+  await_done || fail "the $round_vendor multi-repository round run never finished"
+done
+assert grep -qx "ARG=--add-dir" "$CALL_LOG"
+assert grep -qx "ARG=$(printf '%q' "$round_repos/beta")" "$CALL_LOG"
+mv "$WORK/brief.before-round" "$WORK/brief"
+
 # Round-SHAPED is not a round id: a bare timestamp, a date and a run id are tokens the scan drops
 # before it asks review-bench anything.
 clear_stub
@@ -5585,6 +5539,22 @@ for bad_round in 'ROUND: 20260801T140000Z-0A1B2C3' 'ROUND: 20260801T140000Z-0a1b
   assert_fails grep -q '^RUN: ' "$WORK/round.out"
 done
 
+
+# A Light edit lands through one repository's worktree, so a multi-repository round grants it no
+# other: one Light edit per repository launches.
+clear_stub
+set_config 'light_edit=claudeb:sonnet' 'claudeb_workers=off' 'claudeb_model=opus' 'claudeb_effort=high'
+export PICK_ACCOUNT=picked PICK_RC=0
+printf 'base\n' >"$round_repos/alpha/file"
+git -C "$round_repos/alpha" add file
+git -C "$round_repos/alpha" -c user.email=t@t -c user.name=t commit -qm file
+printf 'ROUND: 20260801T160000Z-1b2c3d4\nSCOPE: file\nFix the confirmed findings.\n' >"$WORK/round-brief"
+"$RUNNER" start light --brief "$WORK/round-brief" --workdir "$round_repos/alpha" \
+  >"$WORK/start.out" 2>"$WORK/start.err" || fail "Light edit multi-repository round start failed: $(<"$WORK/start.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+assert jq -e '.light == "edit" and (.add_dirs // [] | length) == 0' "$RUN_DIR/meta.json" >/dev/null
+assert await_done
 
 # --- grok ----------------------------------------------------------------------------------------
 # The brief rides a FILE (1.0.13 takes no prompt on argv), memory is off by env because the flag
@@ -5620,6 +5590,16 @@ assert grep -qxF "ARG=$grok_workdir" "$CALL_LOG"
 assert test "$(grep -c '^ARG=-m$' "$CALL_LOG")" -eq 0
 # The answer arrives as `text` chunks; the raw NDJSON is the one shape a report cannot be read from.
 assert grep -qx 'grok result' <<<"$("$RUNNER" report "$RUN_ID")"
+
+# grok takes no --add-dir, so a round over several repositories grants it none: one run per repository.
+clear_stub
+printf 'ROUND: 20260801T160000Z-1b2c3d4\nFix the confirmed findings.\n' >"$WORK/round-brief"
+"$RUNNER" start grok --brief "$WORK/round-brief" --workdir "$round_repos/alpha" \
+  >"$WORK/start.out" 2>"$WORK/start.err" || fail "grok multi-repository round start failed: $(<"$WORK/start.err")"
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+assert test "$(jq -c '.add_dirs // []' "$RUN_DIR/meta.json")" = '[]'
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+assert await_done
 
 clear_stub
 # A model that is not the one `grokb models` marks default is its own label; only that default

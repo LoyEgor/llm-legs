@@ -66,7 +66,8 @@ local copied, alerts = nil, {}
 M.setPasteboard(function(value) copied = value end)
 M.setAlert(function(value) alerts[#alerts + 1] = value end)
 
-local items = M.menuItems(function() return { { title = "log row" } } end, nil)
+local logItem = { title = "Instruction file changes", menu = { { title = "log row" } } }
+local items = M.menuItems(logItem)
 check(text(items[1].title):find("^7 days to 13:53 vs the 7 before") ~= nil
     or text(items[1].title):find("^7 days to Sep 25 13:53") ~= nil,
     "status line: " .. text(items[1].title))
@@ -140,21 +141,25 @@ check(codexLine and matrix[codexLine - 1].title == "-", "the By week matrix does
 local counts = find(items, "Counts")
 check(counts and counts.menu and find(counts.menu, "hook blocks"), "the Counts row has no drill")
 
-local failing = M.menuItems(function() error("boom") end, "watcher: DOWN")
-local sawFailure, sawAlarm = false, false
-for _, item in ipairs(failing) do
-    local line = text(item.title)
-    if line:find("Instruction file changes · watcher DOWN", 1, true) then sawAlarm = true end
-    if item.menu and item.menu[1] and text(item.menu[1].title) == "change log failed to render" then sawFailure = true end
-end
-check(sawFailure, "a throwing change log was not contained")
-check(sawAlarm, "the watcher alarm is not on the change-log row")
+check(codex and codex.menu and #codex.menu > 0 and codex.menu[1].title ~= "-"
+    and text(codex.menu[1].title) == "Calendar weeks", "a drill with weeks but no sections opens on a separator")
+
+local _, logAt = find(items, "Instruction file changes")
+local _, rescanAt = find(items, "Rescan now")
+check(logAt and items[logAt] == logItem and rescanAt and logAt < rescanAt and items[logAt - 1].title == "-",
+    "the change-log item is not placed verbatim above Rescan now")
+check(find(M.menuItems(nil), "Instruction file changes") == nil, "no change-log item still rendered one")
 
 check(text(M.title(nil)) == "Token tracking", "fresh title: " .. text(M.title(nil)))
 hs.fs.touch(path, os.time() - 30 * 3600)
 local stale = M.menuItems(nil, nil)
 check(text(stale[1].title):find("^STALE") ~= nil, "a 30h-old export is not STALE: " .. text(stale[1].title))
 check(text(M.title("down")) == "Token tracking · stale · watcher down", "alarm title: " .. text(M.title("down")))
+
+write('{"rows": [{"label": null, "cells": ["1"], "weeks": [{"label": "Sep 22–28", "cell": "1"}],'
+    .. ' "weeks_unit": "per context", "sections": []}], "unit_label": "limit tokens"}')
+local nullOk, nullItems = pcall(M.menuItems, nil)
+check(nullOk and find(nullItems, "By week"), "a null row label broke the menu: " .. tostring(nullItems))
 
 write("{not json")
 check(text(M.menuItems(nil, nil)[1].title):find("unreadable", 1, true) ~= nil, "garbage is not called unreadable")

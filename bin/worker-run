@@ -40,6 +40,23 @@ review_round_ok() { # round
   [[ "$1" =~ $REVIEW_ROUND_RE ]] && [ -d "$(review_bench_dir "$1")" ]
 }
 
+git_common_dir() { # dir
+  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+}
+
+# Whether repo is already granted: a worktree of it is the same repository, and granting the main
+# checkout beside the worktree would hand the worker a second copy to write into.
+same_repository() { # repo dir...
+  local repo=$1 common dir
+  shift
+  common=$(git_common_dir "$repo") || common=''
+  for dir in "$@"; do
+    [ "$(cd "$dir" 2>/dev/null && pwd -P)" = "$(cd "$repo" && pwd -P)" ] && return 0
+    [ -n "$common" ] && [ "$(git_common_dir "$dir")" = "$common" ] && return 0
+  done
+  return 1
+}
+
 # The anchors store's CLI, resolved off PATH: a machine without it has no store to write to, and
 # every caller here answers that with a gap line rather than a failure.
 review_anchors() { # subcommand argument...
@@ -144,6 +161,8 @@ command -v worker_walls_record >/dev/null ||
   fail 'share/gemini-accounts.sh is missing: worker-run cannot resolve an agy profile HOME'
 . "$SCRIPT_DIRECTORY/../share/codex-accounts.sh" ||
   fail 'share/codex-accounts.sh is missing: worker-run cannot tell whether codex main was removed'
+. "$SCRIPT_DIRECTORY/../share/store-lock.sh" ||
+  fail 'share/store-lock.sh is missing: worker-run cannot rotate the worker-attempts journal safely'
 gemini_base_home=$HOME
 gemini_profiles_dir="${GEMINIB_PROFILES_DIR:-$HOME/.gemini-profiles}"
 
@@ -532,12 +551,6 @@ codex_config_model() {
   worker_model_allowed_models codex | head -n1
 }
 
-# Every terminal outcome leaves worker-run through this one line, so a report reaches Egor from
-# every exit — including the early ones that never made a run directory. The bus is optional:
-# a machine without `report-bus` on PATH still prints the outcome and posts nothing. A refusal
-# reports under the id its own launch would have had and never under the id of the live run it
-# names, which would dedup that run's completion away; it stays unprinted, because a `RUN:` line
-# on stdout is what tells a relay a run directory exists to wait on.
 # llm-doctor reads the outcome back: beside the run when there is one, else from prelaunch.jsonl.
 outcome_record() { # outcome [directory]
   local log="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/prelaunch.jsonl"
@@ -553,9 +566,7 @@ outcome_record() { # outcome [directory]
 }
 
 outcome_line() (
-  local outcome="$1" report_directory="${2:-}" report_id="${run_id:-}" launcher
-  local details files=unknown elapsed='' began now marker='' marker_pid marker_age place_session repo=''
-  local posting_pid=${BASHPID:-$(sh -c 'echo "$PPID"')}
+  local outcome="$1" report_directory="${2:-}" place_session
   printf 'OUTCOME: %s\n' "$outcome"
   outcome_record "$outcome" "$report_directory"
   if [ -n "$report_directory" ] && mkdir "$report_directory/.place-end" 2>/dev/null; then
@@ -566,52 +577,6 @@ outcome_line() (
         "$SCRIPT_DIRECTORY/statusline-place" add --session "$place_session" --kind worker-end \
           --path "$(jq -r '.workdir // empty' "$report_directory/meta.json" 2>/dev/null)" >/dev/null 2>&1 || : ;;
     esac
-  fi
-  command -v report-bus >/dev/null 2>&1 || return 0
-  launcher=${CLAUDE_LAUNCHER_SESSION:-${CLAUDE_CODE_SESSION_ID:-_orphan}}
-  details="${vendor:-unknown}/${account:-${explicit_account:-unknown}}/${model:-${effective:-unknown}}/${effort:-unknown}"
-  if [ -n "$report_directory" ]; then
-    report_id=${report_directory##*/}
-    [ ! -f "$report_directory/report-posted" ] || return 0
-    marker="$report_directory/.report-posting"
-    if ! mkdir "$marker" 2>/dev/null; then
-      marker_pid=$(cat "$marker/pid" 2>/dev/null) || marker_pid=''
-      marker_age=$(( $(date +%s) - $(stat -f %m "$marker" 2>/dev/null || stat -c %Y "$marker" 2>/dev/null || date +%s) ))
-      if [ "$marker_age" -gt 60 ] || { [[ "$marker_pid" =~ ^[0-9]+$ ]] && ! kill -0 "$marker_pid" 2>/dev/null; }; then
-        rm -f "$marker/pid"
-        rmdir "$marker" 2>/dev/null || return 0
-        mkdir "$marker" 2>/dev/null || return 0
-      else
-        return 0
-      fi
-    fi
-    printf '%s\n' "$posting_pid" >"$marker/pid"
-    trap '[ "$(cat "$marker/pid" 2>/dev/null)" != "$posting_pid" ] || { rm -f "$marker/pid"; rmdir "$marker" 2>/dev/null || :; }' EXIT
-    trap 'exit 0' HUP INT TERM
-    launcher=$(cat "$report_directory/launcher" 2>/dev/null) || launcher=_orphan
-    details=$(jq -r '[.vendor,.account,.model,.effort] | join("/")' "$report_directory/meta.json" 2>/dev/null)
-    began=$(jq -r '.pid_started_at // .started_at // 0' "$report_directory/meta.json" 2>/dev/null)
-    now=$(date +%s)
-    [[ "$began" =~ ^[0-9]+$ ]] && [ "$began" -gt 0 ] && elapsed=$((now - began))
-    repo=$(jq -r '.workdir // empty' "$report_directory/meta.json" 2>/dev/null)
-    if [ -n "$repo" ]; then
-      repo=$(git -C "$repo" rev-parse --path-format=absolute --show-toplevel --git-common-dir 2>/dev/null)
-      case $repo in *$'\n'*/.git) repo=${repo%/.git} ;; *) repo=${repo%%$'\n'*} ;; esac
-      repo=${repo##*/}
-    fi
-    if [ -f "$report_directory/files" ]; then
-      files=$(awk '!/^WORKDIR: |^UNKNOWN: |^PARTIAL: / && NF {n++} END {print n+0}' "$report_directory/files")
-      if grep -q '^UNKNOWN: \|^PARTIAL: ' "$report_directory/files"; then files="$files (incomplete)"; fi
-    fi
-  fi
-  [ -n "$report_id" ] || report_id="${vendor:-worker}-$(date +%s)-$$-$RANDOM"
-  if jq -cn --arg repo "$repo" --arg outcome "$outcome" --arg worker "$details" --arg seconds "$elapsed" \
-      --arg files "$files" '{word: "worker", rows: (([["repo", $repo]] | map(select(.[1] != ""))) + [
-        ["outcome", $outcome], ["worker", $worker],
-        ["wall-clock", {seconds: (if $seconds == "" then null else ($seconds | tonumber) end)}],
-        ["files", $files]])}' |
-    report-bus post --kind notice --id "$report_id" --session "${launcher:-_orphan}" >/dev/null; then
-    [ -z "$marker" ] || : >"$report_directory/report-posted"
   fi
   return 0
 )
@@ -864,12 +829,10 @@ supervise_claudeb() {
   cli=$(jq -r '.cli' "$meta")
   chrome=$(jq -r '.chrome // false' "$meta")
   access=(--dangerously-skip-permissions)
-  if [ "$(jq -r '.role // "workers"' "$meta")" = research ]; then
-    access=(--permission-mode plan)
-    REPLY_ARRAY=()
-    read_json_array '.add_dirs[]' "$meta"
-    for value in "${REPLY_ARRAY[@]}"; do access+=(--add-dir "$value"); done
-  fi
+  [ "$(jq -r '.role // "workers"' "$meta")" != research ] || access=(--permission-mode plan)
+  REPLY_ARRAY=()
+  read_json_array '.add_dirs[]' "$meta"
+  for value in "${REPLY_ARRAY[@]}"; do access+=(--add-dir "$value"); done
   # Into `access` and not into `command`: the effort-drop retry below rebuilds the command from it,
   # and a web-search state left behind there relaunches the run with a capability it was denied.
   while IFS= read -r value; do access+=("$value"); done < <(web_search_args claudeb "$(web_search_meta_state "$meta")")
@@ -1606,7 +1569,9 @@ record_worker_session() {
 WORKER_ATTEMPTS_ROTATE_BYTES=16777216
 
 file_bytes() { # path
-  stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo 0
+  local bytes
+  bytes=$(wc -c 2>/dev/null <"$1" | tr -d '[:space:]')
+  printf '%s\n' "${bytes:-0}"
 }
 
 # tokenmap zones every worker session from this journal: the run directory is pruned after seven
@@ -1619,9 +1584,9 @@ journal_worker_attempt() { # directory session
   journal="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}/worker-attempts.jsonl"
   mkdir -p "${journal%/*}" 2>/dev/null || return 0
   if [ "$(file_bytes "$journal")" -gt "$WORKER_ATTEMPTS_ROTATE_BYTES" ] \
-    && { find "$journal.rotating" -maxdepth 0 -mmin +1 -exec rmdir {} \; 2>/dev/null; mkdir "$journal.rotating" 2>/dev/null; }; then
+    && LLM_STORE_LOCK_RETRIES=1 store_lock_acquire "$journal.rotating"; then
     [ "$(file_bytes "$journal")" -le "$WORKER_ATTEMPTS_ROTATE_BYTES" ] || mv -f "$journal" "$journal.1" 2>/dev/null
-    rmdir "$journal.rotating" 2>/dev/null
+    store_lock_release "$journal.rotating"
   fi
   jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "${directory##*/}" --arg session "$2" \
     --arg attempt "$(head -n1 "$directory/attempt" 2>/dev/null)" \
@@ -2152,6 +2117,16 @@ start_run() {
     fail "brief has Russian ($brief_cyrillic% Cyrillic): the reader is a model — write it in English; Russian only as code in backticks or a trigger phrase of up to 6 words in «…»"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
+  # Every repository of the round is the fixer's to write, and a write outside workdir and
+  # --add-dir has no content baseline: the run's changes there read as escaped. A codex resume,
+  # grok and a Light edit take no --add-dir, so they are granted none and fix one repository a run.
+  if [ -n "$review_round" ] && [ "$vendor" != grok ] && [ "$light" != edit ] &&
+    { [ "$vendor" != codex ] || [ -z "$resume" ]; }; then
+    while IFS= read -r value; do
+      [ -d "$value" ] && ! same_repository "$value" "$workdir" ${add_dirs[@]+"${add_dirs[@]}"} &&
+        add_dirs+=("$value")
+    done < <(jq -r '.repos[]? | objects | .repo // empty' "$(review_bench_dir "$review_round")/meta.json" 2>/dev/null)
+  fi
   web_search_column "$vendor" on >/dev/null ||
     fail "share/web-search.sh has no row for $vendor: a launch with an unknown search state would take whichever one the CLI happens to stand in. Nothing was launched and no account was spent."
   [ "$role" != research ] || web_search=true
@@ -2209,7 +2184,7 @@ start_run() {
   fi
   case "$vendor" in
     claudeb)
-      { [ "${#add_dirs[@]}" -eq 0 ] || [ "$role" = research ]; } && [ "${#images[@]}" -eq 0 ] || fail 'claudeb does not support --add-dir or --image'
+      [ "${#images[@]}" -eq 0 ] || fail 'claudeb does not support --image'
       ;;
     codex)
       [ "$chrome" = false ] || fail 'only claudeb supports --chrome'
@@ -2682,8 +2657,9 @@ exit "$rc"'
     done
   # Before the run is readable and not only when it ends: a resumed session journals under an id
   # this launch already knows, and the gate that prices a live run's worker work reads this file.
-  record_worker_session "$directory"
+  # The claim first: the resumed session's attempt line is journalled here, once, and names its agent.
   [ ! -s "$directory/launcher" ] || claim_agent_tag "$directory" "$(cat "$directory/launcher")"
+  record_worker_session "$directory"
   write_run_state "$directory" start
   : >"$directory/.ready"
   # WEB: on the launch line, because the state the run really got is otherwise only in meta.json and

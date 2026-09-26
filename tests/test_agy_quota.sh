@@ -15,8 +15,7 @@ cat >"$WORK/agy" <<'STUB'
 #!/usr/bin/env bash
 {
   printf 'ARG %s\n' "$@"
-  printf 'BROWSER=%s\n' "${BROWSER-}"
-  printf 'ANTIGRAVITY_BROWSER=%s\n' "${ANTIGRAVITY_BROWSER-}"
+  printf 'OPEN=%s\n' "$(command -v open)"
   printf 'CWD=%s\n' "$PWD"
 } >"$STUB_LOG"
 
@@ -45,6 +44,10 @@ case "${STUB_MODE:-ok}" in
     ;;
   garbage)
     printf 'Antigravity CLI starting...\nnot json at all\n'
+    ;;
+  ineligible)
+    printf 'error: Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.\n\nAlternatively, try signing in with another personal Google account.\n\nPlease verify your account in your browser to continue: https://accounts.google.com/signin/continue?stub\n' >&2
+    exit 1
     ;;
   dies)
     printf 'boom\n' >&2
@@ -87,8 +90,8 @@ assert grep -qxF 'ARG -p' "$WORK/stub.log"
 assert grep -qxF 'ARG /usage' "$WORK/stub.log"
 assert grep -qxF 'ARG --output-format' "$WORK/stub.log"
 assert grep -qxF 'ARG json' "$WORK/stub.log"
-assert grep -qxF 'BROWSER=/usr/bin/true' "$WORK/stub.log"
-assert grep -qxF 'ANTIGRAVITY_BROWSER=/usr/bin/true' "$WORK/stub.log"
+assert grep -qxF "OPEN=$(cd "$ROOT" && pwd -P)/share/no-browser/open" "$WORK/stub.log"
+assert "$ROOT/share/no-browser/open" 'https://accounts.google.com/o/oauth2/auth?client_id=stub'
 
 # A payload without a usable Gemini group is an unexpected response, never a quota.
 run_helper nogemini
@@ -116,6 +119,12 @@ run_helper autherror
 assert test "$rc" -eq 2
 assert jq -e '.auth_needed == true and (.detail | test("authentication"))' "$WORK/out" >/dev/null
 
+# Google refusing the account until its owner verifies it (run dd96a57's abel) is a login verdict:
+# as a failed query the menu kept the account healthy and the pool kept handing it out.
+run_helper ineligible
+assert test "$rc" -eq 2
+assert jq -e '.auth_needed == true and (.detail | test("^error: Eligibility check failed"))' "$WORK/out" >/dev/null
+
 # Any other reported error is a failed query, not a logout.
 run_helper error
 assert test "$rc" -eq 1
@@ -133,4 +142,4 @@ assert test "$rc" -eq 1
 assert test ! -s "$WORK/out"
 assert jq -e '.error | test("agy exited with status 3")' "$WORK/err" >/dev/null
 
-echo "PASS: $asserts asserts; print-mode /usage yields the cache shape with the browser muzzled, a login line on stderr is the verdict in ${nologin_took%.*}s and kills agy with it, and an unusable payload, a reported error, non-JSON output or a dead agy all stay failed queries"
+echo "PASS: $asserts asserts; print-mode /usage yields the cache shape with the browser muzzled, a login line on stderr is the verdict in ${nologin_took%.*}s and kills agy with it, an account Google wants verified is a login verdict, and an unusable payload, a reported error, non-JSON output or a dead agy all stay failed queries"

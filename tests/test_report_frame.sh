@@ -70,6 +70,23 @@ fitted = f.fit(prose, room)
 assert len(fitted) <= room and fitted.endswith("…") and not fitted.endswith(" …"), fitted
 assert prose.startswith(fitted[:-1]), fitted
 assert f.fit("a  b   c", room) == "a  b   c"
+assert f.prose("Hunt: token spend that tokenmap does not track, or tracks wrongly") == [
+    "Hunt: token spend that tokenmap does not", "track, or tracks wrongly"]
+assert f.prose("Hunt: token spend that tokenmap does not track, or tracks wrongly", more=True)[-1] \
+    == "track, or tracks wrongly…"
+assert f.prose("list the retries") == ["list the retries"]
+assert f.prose("list the retries,", more=True) == ["list the retries…"]
+assert f.prose("  \n ") == []
+assert f.prose(prose) == ["the panel cut three chunks and two of them", "stalled under the duration cap"]
+twice = f"{prose} {prose}"
+folded = f.prose(twice)
+assert len(folded) == 2 and all(len(item) <= room for item in folded), folded
+assert folded[-1].endswith("…") and twice.startswith(" ".join(folded)[:-1]), folded
+assert f.prose(prose, lines=1) == [f.fit(prose, room)]
+assert f.prose("x" * (room - 1), more=True) == ["x" * (room - 1) + "…"]
+assert len(f.prose("y" * room + " z", more=True)[-1]) <= room
+assert f.prose("w" * (room + 5)) == ["w" * (room - 1) + "…"]
+assert f.prose(f"a {path} b", lines=3) == ["a", f.fit(path, room), "b"]
 assert f.fit("x" * 60, room) == "x" * (room - 1) + "…"
 
 block = f.block("worker", [("outcome", "done"), ("wall-clock", {"seconds": 45}), ("files", 2),
