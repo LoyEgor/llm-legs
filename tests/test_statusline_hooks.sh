@@ -3457,6 +3457,172 @@ printf '5173\n' > "$STATE_DIR/ports-pp-death"
 STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" "$PORTS_PROBE" pp-death 1001
 assert_eq "" "$(cat "$STATE_DIR/ports-pp-death")"
 
+# --- statusline-work-probe.sh ---
+WORK_PROBE="$ROOT/bin/statusline-work-probe.sh"
+WP_REPO="$WORK/wp repo"
+git -C "$WORK" init -q "wp repo"
+git -C "$WP_REPO" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
+git -C "$WP_REPO" worktree add -q --detach "$WP_REPO/.claude/worktrees/wt-one"
+mkdir -p "$WORK/wp-plain" "$WORK/wp-other/tests"
+git -C "$WORK/wp-other" init -q
+WP_RUNS="$WORK/wp-runs"
+mkdir -p "$WP_RUNS/codex-7-7-live" "$WP_RUNS/codex-7-7-done" "$HOME/.cache/claude-worker-tags/wp-sess"
+printf '{"pid":2000}\n' > "$WP_RUNS/codex-7-7-live/meta.json"
+printf '{"pid":2100}\n' > "$WP_RUNS/codex-7-7-done/meta.json"; printf '0\n' > "$WP_RUNS/codex-7-7-done/exit_code"
+printf 'acc · astra · high\nrun=codex-7-7-live\n' > "$HOME/.cache/claude-worker-tags/wp-sess/t1"
+printf 'acc · astra · high\nrun=codex-7-7-done\n' > "$HOME/.cache/claude-worker-tags/wp-sess/t2"
+WP_LOGS="$WORK/wp-logs"
+mkdir -p "$WP_LOGS"
+printf '0\t3\n' > "$WP_LOGS/test_a.sh.status"; printf '1\t2\n' > "$WP_LOGS/test_b.sh.status"
+printf '%s\t5\n' "$WP_LOGS" > "$STATE_DIR/suites-1101"
+printf '%s\t4\t%s\n' "$WP_LOGS" "$WORK/wp-other" > "$STATE_DIR/suites-1321"
+WP_SNAP='wrap() { printf "%s %s %s /bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && eval %s\n" "$@"; }'
+FAKE_PS_WORK="$FIXTURES/work-ps"
+cat > "$FAKE_PS_WORK" <<PSEOF
+#!/usr/bin/env bash
+$WP_SNAP
+for a in "\$@"; do
+  [ "\$a" = -E ] || continue
+  printf '3000 bash tests/test_orphan.sh PATH=/bin CLAUDE_PID=1000\n'
+  printf '3100 bash tests/test_other.sh PATH=/bin CLAUDE_PID=4242 CLAUDE_CODE_SESSION_ID=other\n'
+  printf '3200 bash tests/test_sid.sh CLAUDE_CODE_SESSION_ID=wp-sess\n'
+  printf '5001 bash tests/test_cell.sh CLAUDE_CODE_SESSION_ID=wp-sess\n'
+  exit 0
+done
+cat <<'SNAP'
+1 0 10-00:00:00 /sbin/launchd
+500 1 01:00:00 login -pf u
+600 500 01:00:00 -zsh
+1000 600 30:00 /Users/u/.local/bin/claude --resume x
+SNAP
+wrap 1100 1000 05:00 "'bash tests/run-all'"
+cat <<'SNAP'
+1101 1100 04:59 /opt/homebrew/bin/bash /r/share/run-suites.sh --repo /r
+1102 1101 00:10 /opt/homebrew/bin/bash tests/test_a.sh
+SNAP
+wrap 1200 1000 00:30 "'sed -n 1,9p tests/test_x.sh; git push origin main'"
+printf '1201 1200 00:29 git push origin main\n'
+wrap 1210 1000 00:05 "'make build'"
+printf '1211 1210 00:04 make build\n'
+wrap 1220 1000 02:00 "'worker-run wait codex-7-7-live'"
+printf '1221 1220 01:59 bash /x/bin/worker-run wait codex-7-7-live\n'
+wrap 1230 1000 01:00 "'python3 -m pytest -q'"
+printf '1231 1230 00:59 /usr/bin/python3 -m pytest -q\n'
+wrap 1260 1000 00:45 "'while :; do :; done'"
+wrap 1290 1000 00:40 "'timeout 600 git push'"
+printf '1291 1290 00:39 timeout -s KILL 600 git push origin\n'
+wrap 1300 1000 00:38 "'curl --user secretword https://x'"
+printf '1301 1300 00:37 curl --user secretword https://x\n'
+wrap 1310 1000 01:30 "'bash /abs/test_y.sh'"
+printf '1311 1310 01:29 bash %s/tests/test_y.sh\n' "$WORK/wp-other"
+wrap 1320 1000 03:00 "'bash /o/tests/run-all'"
+cat <<'SNAP'
+1321 1320 02:59 /opt/homebrew/bin/bash /r/share/run-suites.sh --repo /o
+1270 1000 00:20 node /x/node_modules/.bin/vitest run
+1280 1000 00:07 bash /h/.claude/hooks/instruction-watch.sh check
+1281 1000 00:02 /bin/bash /h/.claude/hooks/review-flow-gate.sh
+5000 1 05:00 /usr/bin/python3 /x/bin/review-bench review --foreground
+5001 5000 04:00 bash tests/test_cell.sh
+1240 1000 20:00 node /mcp/server.js
+1250 1000 00:40 bash /h/.claude/statusline.sh
+2000 1 03:00 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-live
+2001 2000 02:59 codex exec --json
+2002 2001 01:30 /bin/bash -lc pnpm test
+2003 2002 01:29 node /opt/homebrew/bin/pnpm test
+2100 1 03:00 bash -c supervisor _ /x/bin/worker-run /runs/codex-7-7-done
+2101 2100 02:00 bash tests/test_done_run.sh
+3000 1 02:00 bash tests/test_orphan.sh
+3100 1 02:00 bash tests/test_other.sh
+3200 1 01:10 bash tests/test_sid.sh
+4000 1 50:00 claude
+SNAP
+wrap 4001 4000 10:00 "'bash tests/test_b.sh'"
+printf '4002 4001 09:59 bash tests/test_b.sh\n'
+PSEOF
+chmod +x "$FAKE_PS_WORK"
+FAKE_LSOF_WORK="$FIXTURES/work-lsof"
+cat > "$FAKE_LSOF_WORK" <<LSEOF
+#!/usr/bin/env bash
+printf 'p1101\nfcwd\nn%s\n' "$WP_REPO"
+printf 'p1200\nfcwd\nn%s\n' "$WP_REPO/.claude/worktrees/wt-one"
+printf 'p1231\nfcwd\nn%s\n' "$WORK/wp-plain"
+printf 'p1260\nfcwd\nn%s\n' "$WORK/wp-plain"
+for p in 1270 1280 1290 1300 1311; do printf 'p%s\nfcwd\nn%s\n' "\$p" "$WORK/wp-plain"; done
+printf 'p1321\nfcwd\nn%s\n' "$WP_REPO"
+printf 'p3000\nfcwd\nn%s\n' "$WP_REPO"
+printf 'p3200\nfcwd\nn%s\n' "$WP_REPO"
+LSEOF
+chmod +x "$FAKE_LSOF_WORK"
+wp_now=$(date +%s)
+STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" "$WORK_PROBE" wp-sess 1250
+# Tests first, oldest first, then plain shell work; the start column is checked apart from the rest.
+# Not shown: a call younger than 10s (1210), a relay's own worker-run wait, which its task row
+# carries (1220), processes that are no Bash call (the MCP server, the statusline), an orphan whose
+# environment names another chat (3100), a finished run's supervisor (2100), and another chat's
+# tests (4002). A test file only NAMED by a command (`sed … tests/test_x.sh`) is no test. Nor a hook
+# younger than 5s (1281) or a review panel's cell test, whose waiter row carries it (5001).
+# A suite run or a script under another repository is that repository's whatever the cwd (1321,
+# 1311); a test that exec'd over its snapshot shell is still a test (1270); a shell label takes the
+# plain word after the program only, never an option's operand (1300).
+assert_eq "$(printf '%s\n' \
+  $'main\ttests\twp repo\tsuites\t2\t1\t5' \
+  $'main\ttests\twp-other\tsuites\t2\t1\t4' \
+  $'main\ttests\twp repo\ttest_orphan\t\t\t' \
+  $'main\ttests\twp-other\ttest_y\t\t\t' \
+  $'main\ttests\twp repo\ttest_sid\t\t\t' \
+  $'main\ttests\twp-plain\tpytest\t\t\t' \
+  $'main\ttests\twp-plain\tvitest\t\t\t' \
+  $'main\tshell\twp-plain\t\t\t\t' \
+  $'main\tshell\twp-plain\tgit push\t\t\t' \
+  $'main\tshell\twp-plain\tcurl\t\t\t' \
+  $'main\tshell\t⧉ wt-one\tgit push\t\t\t' \
+  $'main\tshell\twp-plain\thook instruction-watch\t\t\t' \
+  $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4- "$STATE_DIR/work-wp-sess")"
+wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
+assert test "$wp_start" -ge "$((wp_now - 301))" -a "$wp_start" -le "$((wp_now - 297))"
+wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
+assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp_now - 87))"
+# No chat above the start pid, or no process list: nothing is claimed.
+STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WORK/none" "$WORK_PROBE" wp-noroot 3000
+assert_eq "" "$(cat "$STATE_DIR/work-wp-noroot")"
+STATUSLINE_PS=true "$WORK_PROBE" wp-sess 1250
+assert_eq "" "$(cat "$STATE_DIR/work-wp-sess")"
+
+# --- work lines ---
+# The render reads the probe's cache only: each `main` record is one magenta line under line 2, tag
+# `<class> · <repo>` then the dim label, the suite count with its failures in red, and the elapsed
+# time recomputed from the start column on every render.
+wl_strip() { perl -pe 's/\e\[[0-9;]*m//g'; }
+wl_now=$(date +%s)
+printf 'main\ttests\t%s\tllm-legs\tsuites\t2\t1\t5\nmain\tshell\t%s\t⧉ wt-one\tgit push\t\t\t\nrun\tcodex-7-7-live\t%s\tpnpm test\n' \
+  "$((wl_now - 300))" "$((wl_now - 30))" "$((wl_now - 90))" > "$STATE_DIR/work-wl-two"
+wl_out=$(run_statusline "$(statusline_payload wl-two)")
+assert_eq 4 "$(printf '%s\n' "$wl_out" | wc -l | tr -d ' ')"
+# A record with no repository keeps its fields in place: tab is IFS whitespace to `read`.
+printf 'main\ttests\t%s\t\tsuites\t2\t1\t5\n' "$((wl_now - 300))" > "$STATE_DIR/work-wl-norepo"
+assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-2]s$' <<< "$(run_statusline "$(statusline_payload wl-norepo)" | sed -n 3p | wl_strip)"
+assert grep -Eq '^tests · llm-legs · suites 2/5 ✗1 · 5m [0-2]s$' <<< "$(sed -n 3p <<< "$wl_out" | wl_strip)"
+assert grep -Eq '^shell · ⧉ wt-one · git push · 3[0-2]s$' <<< "$(sed -n 4p <<< "$wl_out" | wl_strip)"
+assert grep -Fq "${MAGENTA}tests · llm-legs${RESET}" <<< "$wl_out"
+assert grep -Fq "${RED}✗1${RESET}" <<< "$wl_out"
+# Too narrow: the repo goes first, then the label shrinks to nothing; class, count and time stay.
+wl_narrow=$(FIT_COLUMNS=34 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
+assert grep -Eq '^tests · suites 2/5 ✗1 · 5m [0-2]s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
+wl_narrow=$(FIT_COLUMNS=24 FIT_MARGIN=0 run_statusline "$(statusline_payload wl-two)")
+assert grep -Eq '^tests · 2/5 ✗1 · 5m [0-2]s$' <<< "$(sed -n 3p <<< "$wl_narrow" | wl_strip)"
+# At most three lines; the third says how many more are running.
+for wl_i in 1 2 3 4 5; do printf 'main\tshell\t%s\tr\tjob%s\t\t\t\n' "$((wl_now - 60 + wl_i))" "$wl_i"; done > "$STATE_DIR/work-wl-cap"
+wl_cap=$(run_statusline "$(statusline_payload wl-cap)")
+assert_eq 5 "$(printf '%s\n' "$wl_cap" | wc -l | tr -d ' ')"
+assert grep -Eq '^shell · r · job3 · 5[0-9]s · \+2$' <<< "$(sed -n 5p <<< "$wl_cap" | wl_strip)"
+# A cache the probe stopped refreshing is hidden, and an absent one sends the probe to write it.
+touch -t 202001010000 "$STATE_DIR/work-wl-two"
+assert_eq 2 "$(printf '%s\n' "$(run_statusline "$(statusline_payload wl-two)")" | wc -l | tr -d ' ')"
+rm -f "$STATE_DIR/work-wl-fire"
+run_statusline "$(statusline_payload wl-fire)" >/dev/null
+for wl_i in 1 2 3 4 5 6 7 8 9 10; do [ -e "$STATE_DIR/work-wl-fire" ] && break; sleep 0.3; done
+assert test -e "$STATE_DIR/work-wl-fire"
+
 # --- render of the two new segments ---
 # One record per line now, so these two fixtures carry the tab format; `-` is a port this session
 # parents whose directory no tree of the project holds, and it is bright wherever the block sits.
@@ -3563,13 +3729,14 @@ later_output=$(printf '%s' "$later" | "$WORKER_HOOK") || fail "worker rewrite ex
 assert jq -e '.hookSpecificOutput.hookEventName == "PreToolUse" and
   .hookSpecificOutput.permissionDecision == "allow" and
   .hookSpecificOutput.updatedInput.description == "main · astra · high — Run focused tests" and
-  .hookSpecificOutput.updatedInput.command == "bash tests/focused.sh" and
+  .hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:workerone\nbash tests/focused.sh" and
   .hookSpecificOutput.updatedInput.timeout == 42' <<< "$later_output" >/dev/null
 
-# An already-prefixed description is left untouched (no stacking).
+# An already-prefixed description is left untouched (no stacking); the relay token rides every call.
 prefixed=$(worker_payload codex-worker worker/one 'main · astra · high — Run focused tests' true)
 prefixed_output=$(printf '%s' "$prefixed" | "$WORKER_HOOK") || fail "prefixed worker call exited nonzero"
-assert_eq "" "$prefixed_output"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "main · astra · high — Run focused tests" and
+  .hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:workerone\ntrue"' <<< "$prefixed_output" >/dev/null
 
 mkdir -p "$HOME/.codex"
 for config_model in gpt-9-zenith gpt-5.6-terra; do
@@ -3603,6 +3770,13 @@ printf 'work3 · astra · high\n' > "$WRDIR/tag"
 wr_report=$(worker_payload codex-worker worker/wrun 'Collect the report' 'worker-run report codex-1-2-abcd')
 wr_report_out=$(printf '%s' "$wr_report" | "$WORKER_HOOK") || fail "worker-run report exited nonzero"
 assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Collect the report"' <<< "$wr_report_out" >/dev/null
+# A report only prints a record: reading another run's never moves this agent's row off its own.
+mkdir -p "$HOME/.cache/claude-worker-runs/codex-9-9-ffff"
+printf 'other · astra · low\n' > "$HOME/.cache/claude-worker-runs/codex-9-9-ffff/tag"
+wr_other=$(worker_payload codex-worker worker/wrun 'Read the old run' 'worker-run report codex-9-9-ffff')
+wr_other_out=$(printf '%s' "$wr_other" | "$WORKER_HOOK") || fail "worker-run foreign report exited nonzero"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Read the old run"' <<< "$wr_other_out" >/dev/null
+assert_eq 'run=codex-1-2-abcd' "$(sed -n 2p "$TAGDIR/workerwrun")"
 
 # A run id hidden behind a shell variable is unresolvable from command text; the
 # hook must degrade to the previously stored tag, not crash or mis-tag.
@@ -3611,11 +3785,35 @@ wr_var_out=$(printf '%s' "$wr_var" | "$WORKER_HOOK") || fail "worker-run variabl
 assert jq -e '.hookSpecificOutput.updatedInput.description == "work3 · astra · high — Keep waiting"' <<< "$wr_var_out" >/dev/null
 
 # `worker-run start claudeb ...` names a vendor as an argument, not a launch:
-# with no run dir, no stored tag and no pending seed the hook stays silent.
+# with no run dir, no stored tag and no pending seed the hook tags nothing and only stamps the token
+# worker-run opens start and wait to inside Claude Code.
 wr_start=$(worker_payload claudeb-worker worker/wrstart 'Launch the run' 'worker-run start claudeb --brief /tmp/b --workdir /x')
 wr_start_out=$(printf '%s' "$wr_start" | "$WORKER_HOOK") || fail "worker-run start exited nonzero"
-assert_eq "" "$wr_start_out"
+assert jq -e '.hookSpecificOutput.updatedInput == {
+    command: "export WORKER_RUN_RELAY=claudeb-worker:workerwrstart\nworker-run start claudeb --brief /tmp/b --workdir /x",
+    description: "Launch the run", timeout: 42} and .hookSpecificOutput.permissionDecision == "allow"' <<< "$wr_start_out" >/dev/null
 assert test ! -f "$TAGDIR/workerwrstart"
+# An ATTACH relay's token says so, and worker-run starts nothing for it; light-research gets the
+# token with no allow, and an agent that is no relay gets neither.
+relay_parent="$WORK/relay-attach-parent.jsonl"
+mkdir -p "${relay_parent%.jsonl}/subagents"
+jq -cn '{type:"user",message:{role:"user",content:"ATTACH codex-1-2-abcd: finish it\nmore"}}' \
+  >"${relay_parent%.jsonl}/subagents/agent-attach1.jsonl"
+jq -cn '{type:"user",message:{role:"user",content:"Fix the ATTACH parser\nATTACH x: y"}}' \
+  >"${relay_parent%.jsonl}/subagents/agent-plain1.jsonl"
+relay_call() { # agent-type agent-id
+  worker_payload "$1" "$2" 'Look around' 'ls' | jq -c --arg t "$relay_parent" '. + {transcript_path: $t}' | "$WORKER_HOOK"
+}
+assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:attach1:attach\nls"' \
+  <<< "$(relay_call codex-worker attach1)" >/dev/null
+assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=codex-worker:plain1\nls"' \
+  <<< "$(relay_call codex-worker plain1)" >/dev/null
+assert jq -e '.hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=light-research:plain1\nls" and
+  (.hookSpecificOutput | has("permissionDecision") | not)' <<< "$(relay_call light-research plain1)" >/dev/null
+for non_relay in fork review-waiter general-purpose image-gen; do
+  non_relay_out=$(relay_call "$non_relay" plain1)
+  assert test -z "$(jq -r '.hookSpecificOutput.updatedInput.command // empty | select(test("WORKER_RUN_RELAY"))' <<< "$non_relay_out" 2>/dev/null)"
+done
 
 
 # A claudeb launch command derives the 3-part tag.
@@ -3708,10 +3906,21 @@ for light_agent in light-research light-worker; do
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"
     and (.hookSpecificOutput.permissionDecisionReason | contains("Light is off"))' <<<"$light_off_out" >/dev/null
 done
-light_attach_out=$(jq -cn '{hook_event_name:"PreToolUse",session_id:"spawn-light-off",
-  tool_input:{subagent_type:"light-research",description:"Map the hooks",prompt:"ATTACH run-1: wait"}}' | "$SPAWN_HOOK") ||
-  fail "light-off attach spawn hook exited nonzero"
-assert test "$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$light_attach_out")" != deny
+light_attach() { # run-id
+  jq -cn --arg p "ATTACH $1: wait" '{hook_event_name:"PreToolUse",session_id:"spawn-light-off",
+    tool_input:{subagent_type:"light-research",description:"Map the hooks",prompt:$p}}' | "$SPAWN_HOOK" ||
+    fail "light-off attach spawn hook exited nonzero"
+}
+# The harness denies the Light types themselves, so even a live run's ATTACH is sent to its vendor's relay.
+light_runs="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
+mkdir -p "$light_runs/codex-1-live"
+printf '{}\n' >"$light_runs/codex-1-live/meta.json"
+for light_run in codex-1-live run-never; do
+  assert jq -e '.hookSpecificOutput.permissionDecision == "deny"
+    and (.hookSpecificOutput.permissionDecisionReason | contains("goes to the relay of that run'"'"'s vendor"))' \
+    <<<"$(light_attach "$light_run")" >/dev/null
+done
+rm -rf "$light_runs/codex-1-live"
 
 rm -f "$HOME/.claude/worker-model"
 default_effort_spawn=$(jq -cn '{
@@ -3802,7 +4011,8 @@ grok_interactive=$(worker_payload grok-worker worker/grokint 'Look around' 'grok
 grok_interactive_output=$(printf '%s' "$grok_interactive" | "$WORKER_HOOK") \
   || fail "grok interactive tag exited nonzero"
 assert test ! -e "$TAGDIR/workergrokint"
-assert_eq "" "$grok_interactive_output"
+assert jq -e '.hookSpecificOutput.updatedInput == {description: "Look around", timeout: 42,
+  command: "export WORKER_RUN_RELAY=grok-worker:workergrokint\ngrokb profile supergrok models"}' <<< "$grok_interactive_output" >/dev/null
 
 printf 'grok_model=auto\ngrok_effort=high\n' > "$HOME/.claude/worker-model"
 # The brief's MODEL: line has to reach the row, so it names a model the knob fallback and the
@@ -4118,7 +4328,8 @@ assert jq -e '.hookSpecificOutput.updatedInput.description == "gmroute · flash-
 mkdir -p "$TAGDIR"; printf 'com [1m] · high\n' > "$TAGDIR/workerbr"
 br=$(worker_payload claudeb-worker worker/br 'com [1m] · high — Run tests' true)
 br_output=$(printf '%s' "$br" | "$WORKER_HOOK") || fail "bracket-tag idempotent call exited nonzero"
-assert_eq "" "$br_output"
+assert jq -e '.hookSpecificOutput.updatedInput.description == "com [1m] · high — Run tests" and
+  .hookSpecificOutput.updatedInput.command == "export WORKER_RUN_RELAY=claudeb-worker:workerbr\ntrue"' <<< "$br_output" >/dev/null
 
 no_agent=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",agent_id:"workerone",tool_input:{command:"true",description:"Run"}}')
 no_agent_output=$(printf '%s' "$no_agent" | "$WORKER_HOOK") || fail "no-agent call exited nonzero"
@@ -5623,16 +5834,21 @@ for gate_denied in \
   'grok --prompt-json=/tmp/brief.json'; do
   gate_out=$(gate_payload "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
   assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("worker-run start <claudeb\\|codex\\|gemini\\|grok>")' \
+  # The chat is pointed at the relay Agent that runs worker-run, a relay at worker-run itself.
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker")' \
+    <<<"$gate_out" >/dev/null
+  gate_out=$(gate_agent_payload grok-worker "$gate_denied" | "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+  assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("worker-run start <claudeb\\|codex\\|gemini\\|grok")' \
     <<<"$gate_out" >/dev/null
 done
-for gate_relayed in \
-  'worker-run start grok --brief /tmp/brief --workdir /tmp' \
-  'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief'; do
-  gate_out=$(gate_agent_payload grok-worker "$gate_relayed" | "$LAUNCH_GATE_BIN") ||
-    fail "launch gate exited nonzero"
-  assert_eq "" "$gate_out"
-done
+gate_out=$(gate_agent_payload grok-worker 'worker-run start grok --brief /tmp/brief --workdir /tmp' | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+# worker-run exempts its own segment only: a bare launch chained after it is still a bare launch.
+gate_out=$(gate_agent_payload grok-worker 'worker-run start grok --brief /tmp/brief ; grokb profile supergrok --prompt-file /tmp/brief' |
+  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$gate_out" >/dev/null
 for gate_allowed in \
   'grokb profile supergrok' \
   'grok models' \
@@ -5866,7 +6082,8 @@ for relay_case in \
   "light-worker relaysol --account notcom --model sol|light row decides" \
   "claudeb-worker relayblocks --account work4 --model=opus|MODEL: astra" \
   "codex-worker relaycomputer|COMPUTER: yes" \
-  "codex-worker relaynomodel --account notcom --computer|no \`COMPUTER: yes\` line"; do
+  "codex-worker relaynomodel --account notcom --computer|no \`COMPUTER: yes\` line" \
+  "codex-worker relaybare --account work4|no ACCOUNT: line"; do
   relay_spec=${relay_case%%|*} relay_reason=${relay_case#*|}
   read -r relay_type relay_id relay_flags <<<"$relay_spec"
   gate_out=$(relay_payload "$relay_type" "$relay_id" "$(launch_with "$relay_flags")" | "$LAUNCH_GATE_BIN") ||
@@ -5879,7 +6096,6 @@ for relay_case in \
   "codex-worker relaysol --model 'sol' --account=notcom" \
   "codex-worker relaynomodel --account notcom" \
   "codex-worker relaybare" \
-  "codex-worker relaybare --account work4" \
   "light-worker relaynomodel --account notcom" \
   "claudeb-worker relayblocks --account work4 --model astra" \
   "codex-worker relaymissing --model gpt-5.6-sol" \
@@ -5889,6 +6105,11 @@ for relay_case in \
     fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
+# Every start line of the call is held to the brief, not the first alone.
+gate_out=$(relay_payload codex-worker relaysol "$(printf 'worker-run start codex --brief /tmp/b --workdir /tmp --account notcom --model sol\nworker-run start codex --brief /tmp/b --workdir /tmp --account work4 --model sol\n')" |
+  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert jq -e '.hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom"))' <<<"$gate_out" >/dev/null
 # Not a launch: a relay's wait or report is never judged against the brief.
 gate_out=$(relay_payload codex-worker relaysol 'worker-run wait codex-1-2-3 --max 540' | "$LAUNCH_GATE_BIN")
 assert_eq "" "$gate_out"
@@ -5909,8 +6130,17 @@ tr_spawn() { # session type prompt [tool_use_id] [model]
 for tr_native in Explore Plan general-purpose claude-code-guide statusline-setup some-new-type ''; do
   tr_out=$(tr_spawn tr-native "$tr_native" 'look around') || fail "native spawn exited nonzero"
   assert_eq deny "$(printf '%s' "$tr_out" | gate_decision)"
-  assert jq -e '.hookSpecificOutput.permissionDecisionReason | test("use a relay worker [(]worker-run[)] instead")' <<<"$tr_out" >/dev/null
+  assert jq -e '.hookSpecificOutput.permissionDecisionReason | contains("spawn the relay Agent worker-pick'"'"'s NEXT row names instead")' <<<"$tr_out" >/dev/null
 done
+# The refusal names the Light types only while Light is on, and puts no word of Egor's on fork or Workflow.
+tr_reason() { tr_spawn tr-native Explore 'look around' | jq -r '.hookSpecificOutput.permissionDecisionReason'; }
+printf 'light_paused=on\n' >"$WORK/tr-light-toggle"
+tr_light_on=$(tr_reason)
+tr_light_off=$(WORKER_PICK_CONFIG_FILE="$WORK/tr-light-toggle" tr_reason)
+assert grep -Fq 'light-research for a read-only question' <<<"$tr_light_on"
+assert grep -Fq 'gemini-worker or grok-worker; a read-only question is a brief that says so' <<<"$tr_light_off"
+assert_fails grep -Fq 'light-' <<<"$tr_light_off"
+assert_fails grep -Fq "Egor's word" <<<"$tr_light_on"
 assert test ! -e "$TR_HOME_CACHE/tr-native"
 tr_wf=$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Workflow",session_id:"tr-wf",tool_input:{script:"x"}}' |
   "$SPAWN_HOOK") || fail "Workflow spawn exited nonzero"
@@ -6217,11 +6447,14 @@ tr_render() { # columns
 # A second may tick between the fixture's clock and the renderer's; both spell the same width.
 tr_row() { jq -r --arg id "$2" 'select(.id == $id) | .content' <<<"$1" | perl -pe 's/\e\[[0-9;]*m//g; s/1m [5-9]s/1m 5s/'; }
 tr_wide=$(tr_render 300) || fail "renderer exited nonzero"
-assert_eq 12 "$(grep -c . <<<"$tr_wide")"
+assert_eq 15 "$(grep -c . <<<"$tr_wide")"
 assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$tr_wide" w1)"
 # Only running tasks have rows; a run that ended under a running agent shows no state.
 assert_eq 'acc · astra · high — Done run · 1m 5s' "$(tr_row "$tr_wide" w2)"
-assert_eq '' "$(tr_row "$tr_wide" w3)$(tr_row "$tr_wide" w4)$(tr_row "$tr_wide" i5)"
+# A finished task is answered with an empty content, never left out: the harness draws its own
+# native row for a listed id the renderer is silent about, and only "" removes the row.
+assert_eq '{"id":"w3","content":""}{"id":"w4","content":""}{"id":"i5","content":""}' \
+  "$(jq -c 'select(.id == "w3" or .id == "w4" or .id == "i5")' <<<"$tr_wide" | tr -d '\n')"
 assert_eq 'T2 · double · task — hunt over the task rows · all 2/4 opus 0/1 sol 0/1 agy ✓ grok ✗1 · 1m 5s · ↓ 500 tok' "$(tr_row "$tr_wide" r1)"
 assert_eq 'fork · fable · acc — Refactor · edit 3 · 1m 5s' "$(tr_row "$tr_wide" l1)"
 assert_eq 'agent · haiku · rowacct — Look around · 1m 5s' "$(tr_row "$tr_wide" n1)"
@@ -6230,6 +6463,14 @@ assert_fails grep -Fq 'Running suites' <<<"$tr_wide"
 # `fix: <tag> · <round hash> · <state>`.
 assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s · ↓ 900 tok' "$(tr_row "$tr_wide" f1)"
 assert_eq 'fix: acc · astra · high · e66f8e6 · wait 1 · 1m 5s' "$(tr_row "$tr_wide" f2)"
+# A worker whose run is running tests says so after its wait round, from the work probe's cache;
+# a cache the probe stopped refreshing says nothing.
+printf 'run\tcodex-9-9-wait\t%s\tpnpm test\n' "$(( $(date +%s) - 75 ))" > "$STATE_DIR/work-$TR_RSESS"
+assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · tests 1m 15s · 1m 5s · ↓ 12.3k tok' \
+  "$(tr_row "$(tr_render 300)" w1 | perl -pe 's/tests 1m 1[5-9]s/tests 1m 15s/')"
+touch -t 202001010000 "$STATE_DIR/work-$TR_RSESS"
+assert_eq 'acc · astra · high — Implement the parser fix · wait 3 · 1m 5s · ↓ 12.3k tok' "$(tr_row "$(tr_render 300)" w1)"
+rm -f "$STATE_DIR/work-$TR_RSESS"
 assert grep -Fq "${MAGENTA}fix: acc · astra · high${RESET} ${DIM}· e66f8e6${RESET}" <<<"$(jq -r 'select(.id == "f1") | .content' <<<"$tr_wide")"
 assert_fails grep -Fq 'Patch again' <<<"$(tr_row "$tr_wide" f2)"
 assert_eq 'fanout · image · all 3/4 codex ✓ gemini 1/2 grok ✗1 · 1m 5s' "$(tr_row "$tr_wide" i1)"

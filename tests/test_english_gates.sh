@@ -2,6 +2,8 @@
 # Model-to-model text is English in both directions: the brief a worker is handed, and the result
 # it hands back. The measurement itself is `bin/cyrillic-share`.
 set -u
+# worker-run opens start and wait outside Claude Code only; its relay door is tested with CLAUDECODE set.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER WORKER_RUN_RELAY
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/bin/worker-run"

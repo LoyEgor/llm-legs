@@ -119,12 +119,27 @@ keep_revert() {
   src="$SNAP_DIR/$(snap_key "$visible")-$want"
   [ -f "$src" ] || return 1
   mkdir -p "$REVERT_DIR" 2>/dev/null || return 1
-  find "$REVERT_DIR" -mindepth 1 -maxdepth 1 -mtime +7 -delete 2>/dev/null
-  # The pid is in the name because two sessions reporting inside the same second would otherwise
-  # write the same file, and the second one's copy would replace the first one's.
-  stamp="$REVERT_DIR/$(date -u '+%Y%m%dT%H%M%SZ')-$$-$(basename "$src")"
-  cp "$src" "$stamp" 2>/dev/null || return 1
+  prune_reverts
+  # Named by content, as the snapshot is: every session that reports this version shares one copy.
+  # A copy per report grew the directory to 159k files, and the prune's scan of it outran the hook's
+  # timeout on every call. The touch keeps a copy a report just named clear of the week's prune.
+  stamp="$REVERT_DIR/$(basename "$src")"
+  # -c and the re-check: the prune just launched in the background may delete an old copy between
+  # the test and the touch, and a plain touch would recreate it empty.
+  if [ -f "$stamp" ] && touch -c "$stamp" 2>/dev/null && [ -f "$stamp" ]; then
+    :
+  else
+    cp "$src" "$stamp.tmp.$$" 2>/dev/null && mv -f "$stamp.tmp.$$" "$stamp" 2>/dev/null ||
+      { rm -f "$stamp.tmp.$$" 2>/dev/null; return 1; }
+  fi
   printf '%s' "$stamp"
+}
+
+prune_reverts() {
+  local mark="$STATE_DIR/reverts.pruned"
+  [ -z "$(find "$mark" -mmin -60 2>/dev/null)" ] || return 0
+  : >"$mark" 2>/dev/null || return 0
+  ( find "$REVERT_DIR" -mindepth 1 -maxdepth 1 -mtime +7 -delete </dev/null >/dev/null 2>&1 & )
 }
 
 # The bytes about to be overwritten by a revert. Nothing this hook does may be unrecoverable:

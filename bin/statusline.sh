@@ -2538,4 +2538,55 @@ if [ -n "$fit_cols" ]; then
   done
 fi
 
+# Work lines (docs/statusline-contract.md, "Work lines"): the probe walks the process tree in the
+# background; the render reads its cache only, and the elapsed time is recomputed here every render.
+work_rows=()
+if [ -n "$session_id" ]; then
+  work_bin="$(dirname "$probe_self")/statusline-work-probe.sh"
+  work_cache="$statusline_cache_dir/work-$session_id"
+  work_mtime=$(file_mtime "$work_cache" 2>/dev/null)
+  if { ! [[ "$work_mtime" =~ ^[0-9]+$ ]] || [ "$((now - work_mtime))" -gt 4 ]; } && [ -x "$work_bin" ]; then
+    ( "$work_bin" "$session_id" "$PPID" >/dev/null 2>&1 & ) 2>/dev/null
+  fi
+  work_more=0
+  if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then
+    # Split on \037: tab is IFS whitespace, so `read` would fold an empty repo into the label.
+    while IFS=$'\037' read -r w_kind w_class w_start w_repo w_label w_done w_failed w_total || [ -n "$w_kind" ]; do
+      [ "$w_kind" = main ] && [[ "$w_start" =~ ^[0-9]+$ ]] || continue
+      if [ "${#work_rows[@]}" -ge 3 ]; then work_more=$((work_more + 1)); continue; fi
+      w_secs=$((now - w_start))
+      [ "$w_secs" -ge 0 ] || w_secs=0
+      if [ "$w_secs" -lt 60 ]; then w_el="${w_secs}s"
+      elif [ "$w_secs" -lt 3600 ]; then w_el="$((w_secs / 60))m $((w_secs % 60))s"
+      else w_el="$((w_secs / 3600))h $(((w_secs % 3600) / 60))m"
+      fi
+      w_count="" w_count_color=""
+      if [[ "$w_total" =~ ^[0-9]+$ ]] && [[ "$w_done" =~ ^[0-9]+$ ]]; then
+        w_count="$w_done/$w_total" w_count_color="$w_done/$w_total"
+        if [[ "$w_failed" =~ ^[1-9][0-9]*$ ]]; then
+          w_count="$w_count ✗$w_failed" w_count_color="$w_count_color ${RESET}${RED}✗$w_failed${RESET}${DIM}"
+        fi
+      fi
+      w_compose() {
+        w_row="${MAGENTA}${w_class}${w_repo:+ · $w_repo}${RESET}"
+        [ -z "$w_label$w_count" ] || w_row="$w_row ${DIM}· ${w_label}${w_label:+${w_count:+ }}${w_count_color}${RESET}"
+        w_row="$w_row ${DIM}· ${w_el}${RESET}"
+      }
+      w_compose
+      if [ -n "$fit_cols" ]; then
+        fit_width "$w_row"
+        [ "$fit_len" -le "$fit_cols" ] || { w_repo=""; w_compose; fit_width "$w_row"; }
+        if [ "$fit_len" -gt "$fit_cols" ] && [ -n "$w_label" ]; then
+          w_keep=$(( ${#w_label} - (fit_len - fit_cols) - 1 ))
+          if [ "$w_keep" -ge 1 ]; then w_label="${w_label:0:w_keep}…"; else w_label=""; fi
+          w_compose
+        fi
+      fi
+      work_rows+=("$w_row")
+    done < <(tr '\t' '\037' < "$work_cache" 2>/dev/null)
+    [ "$work_more" -eq 0 ] || work_rows[2]="${work_rows[2]} ${DIM}· +${work_more}${RESET}"
+  fi
+fi
+
 printf '%s\n%s' "$line1" "$line2"
+for w_row in ${work_rows[@]+"${work_rows[@]}"}; do printf '\n%s' "$w_row"; done

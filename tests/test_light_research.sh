@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -u
+# worker-run opens start and wait outside Claude Code only; its relay door is tested with CLAUDECODE set.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER WORKER_RUN_RELAY
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT

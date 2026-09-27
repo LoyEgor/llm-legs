@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -u
+# worker-run opens start and wait outside Claude Code only; its relay door is tested with CLAUDECODE set.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER WORKER_RUN_RELAY
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/bin/worker-run"
@@ -121,6 +123,8 @@ printf '%s\n' "${CLAUDE_LAUNCHER_SESSION-}" >"$STUB_DIR/launcher_env"
 # worker's own verdict rows go.
 printf '%s\n' "${CLAUDE_DEBT_OWNER-}" >"$STUB_DIR/debt_owner_env"
 printf '%s\n' "${WORKER_RUN_RECORD-}" >"$STUB_DIR/run_record_env"
+printf '%s\n' "${WORKER_RUN_RELAY-__unset__}" >"$STUB_DIR/relay_env"
+printf '%s\n' "${CLAUDE_CODE_DISABLE_BACKGROUND_TASKS-__unset__}" >"$STUB_DIR/background_env"
 # What a relay's own journal hook is: a process inside the launched CLI, reaching the launching
 # chat through the environment and through nothing else.
 [ ! -x "$STUB_DIR/relay_hook" ] || "$STUB_DIR/relay_hook" "${STUB_SESSION-claude-session}"
@@ -1927,6 +1931,59 @@ attribution_repair_tests() {
   done
 }
 
+# Inside Claude Code, start and wait belong to the relay agent the tag hook stamps WORKER_RUN_RELAY for;
+# a script, an interpreter, a Monitor or a background shell of any other agent holds no token.
+relay_refused() { # expected-text env-assignments... -- worker-run-args...
+  local expected="$1" rc=0 runs_before
+  shift
+  local assignments=()
+  while [ "$1" != -- ]; do assignments+=("$1"); shift; done
+  shift
+  clear_stub
+  runs_before=$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)
+  env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT -u CLAUDEB_WORKER -u WORKER_RUN_RELAY "${assignments[@]}" \
+    "$RUNNER" "$@" >"$WORK/relay.out" 2>"$WORK/relay.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -Fq -- "$expected" "$WORK/relay.err"
+  assert test ! -s "$CALL_LOG"
+  assert test ! -s "$PICK_LOG"
+  assert test "$runs_before" = "$(find "$WORKER_RUN_DIR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+}
+
+relay_door_tests() {
+  local owner='runs only inside the relay agent that owns the run' marker token
+  set_config
+  export PICK_RC=0 PICK_ACCOUNT=picked
+  for marker in CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli CLAUDEB_WORKER=1; do
+    relay_refused "$owner" "$marker" -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+    relay_refused "$owner" "$marker" -- wait claudeb-1-1-abcd --max 0
+  done
+  for token in claudeb-worker claudeb-worker: 'claudeb-worker:a/b' general-purpose:ag1 fork:ag1 review-waiter:ag1; do
+    relay_refused "$owner" CLAUDECODE=1 "WORKER_RUN_RELAY=$token" -- start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+  done
+  relay_refused 'was spawned with an `ATTACH <run-id>:` brief' CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1:attach -- \
+    start claudeb --brief "$WORK/brief" --workdir "$WORK/workdir"
+  relay_refused 'a claudeb-worker relay starts `worker-run start claudeb`, not `codex`' CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1 -- \
+    start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
+  relay_refused 'the research role belongs to the light-research Agent' CLAUDECODE=1 WORKER_RUN_RELAY=codex-worker:ag1 -- \
+    start codex --role research --brief "$WORK/brief" --workdir "$WORK/workdir"
+  relay_refused 'a light-research relay starts research runs only' CLAUDECODE=1 WORKER_RUN_RELAY=light-research:ag1 -- \
+    start codex --brief "$WORK/brief" --workdir "$WORK/workdir"
+  clear_stub
+  CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1 start_ok claudeb
+  local output index
+  for index in $(seq 1 100); do
+    output=$(CLAUDECODE=1 WORKER_RUN_RELAY=claudeb-worker:ag1:attach "$RUNNER" wait "$RUN_ID" --max 0)
+    grep -q '^STATUS: done\|^STATUS: failed' <<<"$output" && break
+    sleep 0.05
+  done
+  assert grep -q '^STATUS: done' <<<"$output"
+  assert test "$(cat "$STUB_DIR/relay_env")" = __unset__
+  assert test "$(cat "$STUB_DIR/background_env")" = 1
+  assert grep -q '^CLAUDEB_CALL$' "$CALL_LOG"
+  relay_refused "$owner" CLAUDECODE=1 -- wait "$RUN_ID" --max 0
+}
+
 if [ "${WORKER_RUN_TEST_ATTRIBUTION_ONLY:-0}" = 1 ]; then
   attribution_repair_tests
   printf 'PASS: %s attribution repair asserts\n' "$asserts"
@@ -1934,6 +1991,7 @@ if [ "${WORKER_RUN_TEST_ATTRIBUTION_ONLY:-0}" = 1 ]; then
 fi
 
 model_effort_tests
+relay_door_tests
 if [ "${WORKER_RUN_TEST_MODEL_EFFORT_ONLY:-0}" = 1 ]; then
   printf 'PASS %s\n' "$asserts"
   exit 0
@@ -4997,9 +5055,13 @@ start_ok claudeb --workdir "$DIRT_REPO"
 unset STUB_SLEEP STUB_TRANSCRIPT_SESSION STUB_TRANSCRIPT_ACCOUNT WORKER_RUN_IDLE_S WORKER_RUN_DEADLINE
 unset STUB_EDIT_PATH
 assert test ! -e "$RUN_DIR/files"
-for editing in 1 2 3 4 5 6; do
-  sleep 2
+# Edits last until the run ends, not a fixed count: under load the stub starts late and outlives
+# twelve seconds of edits by more than the idle window.
+editing=0
+while [ ! -e "$RUN_DIR/exit_code" ] && [ "$editing" -lt 60 ]; do
+  editing=$((editing + 1))
   printf 'edit %s\n' "$editing" >"$DIRT_REPO/bin/the-worker-is-mid-edit"
+  sleep 1
 done
 editing_wait=$("$RUNNER" wait "$RUN_ID" --max 60)
 assert grep -q '^STATUS: done$' <<<"$editing_wait"

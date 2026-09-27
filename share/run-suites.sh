@@ -142,6 +142,12 @@ if [ "$changed" = true ]; then
 fi
 
 logdir=$(mktemp -d "${TMPDIR:-/tmp}/run-suites.XXXXXX") || fail 'could not create a log directory'
+# The statusline's work probe finds this run by its pid, counts its .status files for `n/m` and
+# names the repository from here: this process never leaves the caller's directory.
+progress_file="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/suites-$$"
+mkdir -p "${progress_file%/*}" 2>/dev/null &&
+  printf '%s\t%s\t%s\n' "$logdir" "${#suites[@]}" "$repo" >"$progress_file" 2>/dev/null
+trap 'rm -f "$progress_file"' EXIT
 
 run_one() { # suite-path
   local path="$1" name start finish rc
@@ -153,8 +159,8 @@ run_one() { # suite-path
   (
     export TMPDIR="$logdir/tmp-$name"
     # A suite judges hooks the way a chat meets them; run from inside a worker it would inherit the
-    # worker's marker and be judged as one.
-    unset CLAUDEB_WORKER
+    # worker's markers and be judged as one, and a fixture HOME would still read the real toggle.
+    unset CLAUDEB_WORKER WORKER_RUN_RECORD CLAUDE_LAUNCHER_SESSION WORKER_PICK_CONFIG_FILE
     mkdir -p "$TMPDIR"
     cd "$repo" || exit 4
     case "$path" in

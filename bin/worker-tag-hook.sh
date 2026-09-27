@@ -78,6 +78,35 @@ media_model() { # vendor image|video
   model=$(jq -r --arg kind "$2" '.short[$kind] // empty' "$SELF_DIR/../share/image-caps/$1.json" 2>/dev/null)
   printf '%s' "${model:-$2}"
 }
+# worker-run refuses start and wait inside Claude Code to anything but a relay named by this token, so
+# every call of a relay carries it: the text gates never read a script's body, the environment reaches
+# it. An ATTACH relay's token says so, and worker-run starts nothing for it.
+relay_prefix=''
+case "$agent_type" in
+  codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker|light-research)
+    relay_token="$agent_type:${agent_id//[^A-Za-z0-9_-]/}"
+    command -v relay_first_prompt >/dev/null 2>&1 || . "$SELF_DIR/../share/relay-transcript.sh" 2>/dev/null
+    case "$(relay_first_prompt "$(field '.transcript_path')" "$agent_id" 2>/dev/null | head -n1)" in
+      'ATTACH '*) relay_token="$relay_token:attach" ;;
+    esac
+    relay_prefix="export WORKER_RUN_RELAY=$relay_token"$'\n' ;;
+esac
+decision=allow
+case "$agent_type" in light-research|fork|review-waiter) decision='' ;; esac
+emit() { # description command
+  [ -n "$relay_prefix" ] || [ -n "$1" ] || exit 0
+  printf '%s' "$input" | jq -c --arg description "$1" --arg decision "$decision" \
+    --arg command "$relay_prefix$2" '
+    {hookSpecificOutput: ({
+      hookEventName: "PreToolUse",
+      updatedInput: (.tool_input | if $description != "" then .description = $description else . end
+        | .command = $command)
+    } + (if $decision == "" then {} else {permissionDecision: $decision} end))}
+  ' 2>/dev/null
+  exit 0
+}
+done_untagged() { [ -z "$relay_prefix" ] && exit 0; emit "" "$command"; }
+
 SEED_MAX_AGE_S=${WORKER_TAG_SEED_MAX_AGE_S:-600}
 prompt_key() { shasum -a 256 2>/dev/null | cut -c1-16; }
 # The spawn's first prompt line is the one fact both the seed and the agent's own transcript carry.
@@ -230,6 +259,9 @@ elif printf '%s' "$launch" | grep -qE "${cmd_word}"'worker-run[[:space:]]+(wait|
   # the one this agent's tag file already names, else the one whose state names this agent.
   run_id=$(grab 'worker-run[[:space:]]+(wait|report)[[:space:]]+["'\'']?[a-z0-9][a-z0-9-]*' |
     grep -oE '[a-z0-9][a-z0-9-]*$')
+  # A report only prints a record, so it never moves the row off the run this agent already owns.
+  printf '%s' "$launch" | grep -qE "${cmd_word}"'worker-run[[:space:]]+wait[[:space:]]' ||
+    [ -z "$(tag_value run)" ] || run_id=$(tag_value run)
   [ -n "$run_id" ] || run_id=$(tag_value run)
   if [ -z "$run_id" ]; then
     run_state=$(ls -t "$runs_root"/*/state.json 2>/dev/null | head -n 50 |
@@ -328,7 +360,7 @@ fi
 
 umask 077
 if [ -n "$tag" ]; then
-  write_tag_file "$tag" ${extra[@]+"${extra[@]}"} || exit 0
+  write_tag_file "$tag" ${extra[@]+"${extra[@]}"} || done_untagged
 elif [ -n "$(tag_line)" ]; then
   tag=$(tag_line)
   if [ "${#extra[@]}" -gt 0 ]; then write_tag_file "" "${extra[@]}"; else touch "$tag_file" 2>/dev/null; fi
@@ -336,8 +368,8 @@ else
   # Pre-launch calls (brief saving etc.): claim the oldest seed worker-spawn-hook left for this
   # agent type — one seed per spawn, moved away so a sibling spawn claims its own; the legacy
   # per-type seed is only read. The real launch re-derives over it.
-  mkdir -p "$cache_dir" 2>/dev/null || exit 0
-  tag_lock || exit 0
+  mkdir -p "$cache_dir" 2>/dev/null || done_untagged
+  tag_lock || done_untagged
   seed=$(pick_seed)
   seed_lines=''
   [ -z "$seed" ] || seed_lines=$(cat "$seed" 2>/dev/null)
@@ -351,7 +383,7 @@ else
   [ -z "$tag" ] || { write_tag_file_locked "$tag" ${seed_extra[@]+"${seed_extra[@]}"} ${extra[@]+"${extra[@]}"} && written=0; }
   [ "$written" != 0 ] || [ -z "$seed" ] || rm -f "$seed" 2>/dev/null
   rmdir "$cache_dir/.claim.lock" 2>/dev/null
-  [ "$written" = 0 ] || exit 0
+  [ "$written" = 0 ] || done_untagged
 fi
 
 prune() {
@@ -367,7 +399,7 @@ prune() {
 
 tag_prefix="$tag — "
 if [ "${description:0:${#tag_prefix}}" = "$tag_prefix" ] && [ -z "$waiter_command" ]; then
-  prune; exit 0
+  prune; done_untagged
 fi
 # Strip a stale tag-shaped prefix (account rotation mid-task, model echoing an
 # old tag) so prefixes never stack.
@@ -377,19 +409,8 @@ if [ -n "$description" ]; then
 else
   updated_description=$tag
 fi
+prune
 # Worker sessions already bypass permissions; allow avoids a redundant prompt. light-research does
 # NOT: it is a native in-session agent, so an `allow` here would grant a call nobody granted it —
 # the tag is a rewrite and never a permission.
-decision=allow
-case "$agent_type" in light-research|fork|review-waiter) decision='' ;; esac
-printf '%s' "$input" | jq -c --arg description "$updated_description" --arg decision "$decision" \
-  --arg command "$waiter_command" '
-  {hookSpecificOutput: ({
-    hookEventName: "PreToolUse",
-    updatedInput: (.tool_input | .description = $description
-      | if $command != "" then .command = $command else . end)
-  } + (if $decision == "" then {} else {permissionDecision: $decision} end))}
-' 2>/dev/null
-
-prune
-exit 0
+emit "$updated_description" "${waiter_command:-$command}"

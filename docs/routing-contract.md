@@ -194,16 +194,28 @@ own launches, and this is the whole list: `worker-run`, `review-bench`,
 OWNED pair — `worker-run start|wait`, which only a relay agent may spell, and `codex-image` /
 `gemini-image` / `grok-image`, which only the `image-gen` agent may: a run or an image started from
 the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.sh` is the
-mechanical half — a PreToolUse Bash gate denying a command that spells a bare launch unless one of
-those launchers stands in command position in the same command (a comment or an operand naming one
+mechanical half — a PreToolUse Bash gate denying a bare launch in any segment of a command (a
+launcher in command position exempts only its own segment, and a comment or an operand naming one
 exempts nothing), and denying an owned one outside the agent type that owns it. The `ask_*.sh`
-legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash, and a headless
-worker (`CLAUDEB_WORKER=1`) never launches a review panel. The run itself is the backstop: a live
+legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash, and no agent,
+no Monitor and no headless worker (`CLAUDEB_WORKER=1`) launches a review panel (`review-waiter`
+keeps only the recoveries of the run it waits on). The run itself is the backstop: a live
 run of the chat that no relay owns holds the chat's Stop (`bin/worker-run-backstop.sh`). It reads the whole command string, and a vendor name counts only where a
 shell would run it: quoted text collapses into one operand word before the quotes come off, so
 `'claude' -p` and `X="a b" claude -p` are denied while a launch quoted inside an echo or a grep is
 the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /
 `--prompt`, no `exec`, no `run` — are the user, not a worker, and are never gated.
+
+A text gate reads the Bash command line only, so a launch from a script, an interpreter or a
+Monitor never reaches it; the launchers hold runtime doors of their own. Inside Claude Code
+`worker-run start|wait` runs only under the `WORKER_RUN_RELAY` token `bin/worker-tag-hook.sh`
+stamps on every Bash call of a relay agent (shared-invariants row `cx`): a relay starts its own
+vendor only, `light-research` research only, and an ATTACH relay nothing. `review-bench
+review|run` runs only with the single-use nonce the review door stamps on the main-chat call it
+let through on Egor's word (row `cy`). Setting either token by hand is denied, and Egor's own
+terminal carries none of the markers and is never refused.
+The codex MCP tools (`mcp__codex__codex`, `mcp__codex__codex-reply`) are a headless codex launch
+and are denied outright; the legacy `Task` name reaches the same two Agent gates.
 
 The other half of the same rule is the Agent tool, and the gate there is
 `bin/worker-spawn-hook.sh`, the one owner of the native-type policy (shared-invariants row `bt`).
@@ -211,10 +223,15 @@ Workers are unified: every run that edits, reviews, verifies or scans is a relay
 `worker-run`, so on every session a NATIVE agent type is refused outright, because it runs on the
 session's own model, which is the one quota the whole relay design exists to spare. Four
 `general-purpose` read-only checks at 35–45k tokens each on a live Fable chat is the case this
-closes. The allowlist is `fork` (Egor's word only), `review-waiter`, `light-research` and
-`image-gen`; `Explore`, `Plan`, `general-purpose`, `claude-code-guide` and anything custom are
+closes. The allowlist is `fork`, `review-waiter`, `light-research` and `image-gen` (`fork` and
+Workflow need no word of Egor's: neither can reach worker-run nor a review, so they spend only the
+session's quota); `Explore`, `Plan`, `general-purpose`, `claude-code-guide` and anything custom are
 denied with the ask to use a relay worker instead — read-only research goes to `light-research`
-by name. The refusal carries no retry and does not depend on the session model: a stamped
+by name. With Light off (`light_paused=on`) the refusal texts drop both Light types, and the menu
+switch writes the deny rules `Agent(light-research)` and `Agent(light-worker)` into
+`~/.claude/settings.json` (`worker_light_agents_sync`, share/worker-model.sh), from which the
+harness removes a denied type from every chat's agent list; switching Light on removes them. A Light
+run still in flight is then attached through its vendor's plain relay. The refusal carries no retry and does not depend on the session model: a stamped
 one-shot deny is a rule a model walks through by calling twice. `bin/worker-limit-gate.sh` judges
 no native type, since a deny there would outrank the spawn hook's allow; it keeps only `image-gen`'s
 older session-account rule, scoped to an orchestrator session — Fable **or** a `claudegpt` gateway

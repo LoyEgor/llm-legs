@@ -78,6 +78,24 @@ jq '.heartbeat_epoch -= 3600' "$WORKER_STATS_DIR/progress/x.json" >"$WORK/x" && 
 assert_eq "" "$(stop)"
 rm -f "$WORKER_STATS_DIR/progress/x.json"
 
+# The relay follows the run's Light marker while Light is on, and the vendor's plain relay once it is off.
+export WORKER_PICK_CONFIG_FILE="$WORK/worker-model"
+: >"$WORKER_PICK_CONFIG_FILE"
+run l1 s1 codex
+jq -c '. + {light:"edit"}' "$WORKER_RUN_DIR/l1/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/l1/meta.json"
+assert_has 'spawn light-worker `ATTACH l1:`' "$(stop | reason)"
+assert_eq light-worker "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/l1")"
+forget
+run l2 s1 gemini
+jq -c '. + {role:"research"}' "$WORKER_RUN_DIR/l2/meta.json" >"$WORK/m" && mv "$WORK/m" "$WORKER_RUN_DIR/l2/meta.json"
+assert_has 'spawn gemini-worker `ATTACH l2:`' "$(stop | reason)"
+forget
+printf 'light_paused=on\n' >"$WORKER_PICK_CONFIG_FILE"
+assert_has 'spawn codex-worker `ATTACH l1:`' "$(stop | reason)"
+assert_eq codex-worker "$(bash "$HOOK" --relay "$WORKER_RUN_DIR/l1")"
+rm -rf "$WORKER_RUN_DIR/l1" "$WORKER_RUN_DIR/l2"; forget
+unset WORKER_PICK_CONFIG_FILE
+
 # Three holds in a row, then the stop goes through; a hold minutes apart starts the count over.
 run r3 s1 gemini
 for _ in 1 2 3; do assert_eq block "$(stop | jq -r .decision)"; done

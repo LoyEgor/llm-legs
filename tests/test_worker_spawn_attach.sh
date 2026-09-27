@@ -5,7 +5,7 @@ HOOK="$ROOT/bin/worker-spawn-hook.sh"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 export HOME="$WORK/home" WORKER_RUN_DIR="$WORK/runs" WORKER_SPAWN_WORKER_PICK=/nonexistent
-unset CLAUDEB_WORKER
+unset CLAUDEB_WORKER WORKER_PICK_CONFIG_FILE
 mkdir -p "$HOME" "$WORKER_RUN_DIR"
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }

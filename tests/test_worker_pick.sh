@@ -1841,6 +1841,54 @@ assert set_paused light on
 assert grep -Fqx 'light_paused=on' "$PAUSE_MODEL"
 assert set_paused light off
 assert test -z "$(grep light_paused "$PAUSE_MODEL")"
+# With the switch the two Light agent types leave or rejoin every chat's agent list, through the
+# settings file every profile links to; nothing else in it moves.
+LIGHT_SETTINGS_REAL="$WORK/claude-setup-settings.json"
+mkdir -p "$HOME_FIXTURE/.claude"
+printf '%s\n' '{"model":"opus","permissions":{"deny":["Bash(rm -rf *)"],"allow":["Read"]}}' | jq . >"$LIGHT_SETTINGS_REAL"
+ln -sf "$LIGHT_SETTINGS_REAL" "$HOME_FIXTURE/.claude/settings.json"
+light_deny() { jq -c '.permissions.deny' "$LIGHT_SETTINGS_REAL"; }
+assert set_paused light on
+assert test "$(light_deny)" = '["Bash(rm -rf *)","Agent(light-research)","Agent(light-worker)"]'
+assert test -L "$HOME_FIXTURE/.claude/settings.json"
+assert test "$(jq -c '[.model, .permissions.allow]' "$LIGHT_SETTINGS_REAL")" = '["opus",["Read"]]'
+light_bytes=$(cksum <"$LIGHT_SETTINGS_REAL")
+assert set_paused light on
+assert test "$(cksum <"$LIGHT_SETTINGS_REAL")" = "$light_bytes"
+assert set_paused grok off
+assert test "$(cksum <"$LIGHT_SETTINGS_REAL")" = "$light_bytes"
+assert set_paused light off
+assert test "$(light_deny)" = '["Bash(rm -rf *)"]'
+assert test -z "$(find "$WORK" -maxdepth 1 -name 'claude-setup-settings.json.light.*')"
+# The file keeps its mode, and a write Claude Code lands while the rules are computed survives.
+chmod 644 "$LIGHT_SETTINGS_REAL"
+mkdir -p "$WORK/racing-jq"
+real_jq=$(command -v jq)
+cat >"$WORK/racing-jq/jq" <<RACE
+#!/bin/sh
+"$real_jq" "\$@"; rc=\$?
+case "\$*" in *light-research*)
+  if [ ! -e "$WORK/racing-jq/landed" ]; then
+    : >"$WORK/racing-jq/landed"
+    "$real_jq" '.permissions.allow += ["Write"]' "$LIGHT_SETTINGS_REAL" >"$WORK/racing-jq/next" &&
+      cat "$WORK/racing-jq/next" >"$LIGHT_SETTINGS_REAL"
+  fi ;;
+esac
+exit \$rc
+RACE
+chmod +x "$WORK/racing-jq/jq"
+assert env PATH="$WORK/racing-jq:$PATH" env -u CLAUDECODE "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$PAUSE_MODEL" \
+  bash -c '. "$1"; worker_model_set_paused light on' _ "$ROOT/share/worker-model.sh"
+assert test -e "$WORK/racing-jq/landed"
+assert test "$(jq -c '.permissions.allow' "$LIGHT_SETTINGS_REAL")" = '["Read","Write"]'
+assert test "$(light_deny)" = '["Bash(rm -rf *)","Agent(light-research)","Agent(light-worker)"]'
+assert test "$(stat -f %Lp "$LIGHT_SETTINGS_REAL" 2>/dev/null || stat -c %a "$LIGHT_SETTINGS_REAL")" = 644
+assert set_paused light off
+# An unreadable settings file never fails the switch itself: the gates still refuse a Light spawn.
+rm -f "$HOME_FIXTURE/.claude/settings.json"
+assert set_paused light on
+assert grep -Fqx 'light_paused=on' "$PAUSE_MODEL"
+assert set_paused light off
 set_paused nosuchvendor on 2>/dev/null && fail 'worker_model_set_paused accepted an unknown vendor'
 set_paused grok sometimes 2>/dev/null && fail 'worker_model_set_paused accepted an unknown state'
 # Parking a vendor takes it out of every router at once, so a session may not do it.

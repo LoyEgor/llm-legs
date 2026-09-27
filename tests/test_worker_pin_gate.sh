@@ -372,8 +372,8 @@ assert allowed "$(bash_event "printf 'codex_profile=x\\n' > ~/.claude/worker-mod
 pin_grant chat
 assert denied "$(write_event "$PIN_FILE")"
 assert denied "$(bash_event "printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
-# A WORD= quote opens the word door with no grant file behind it: the account pin still needs a
-# quote of his that names IT, so the chat pin quoted here moves nothing global.
+# A WORD= quote opens the word door with no grant file behind it, and no quote moves the account
+# pin: the pin family names chat pins only, so even «пин аккаунта» moves nothing global.
 rm -f "$WORDS_DIR/s/grant.pin"
 printf 'воркеры на codex\n' >"$WORDS_DIR/s/last.txt"
 assert denied "$(bash_event "WORD='воркеры на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
@@ -383,7 +383,7 @@ quoted_event() { # call command
 }
 assert denied "$(quoted_event toolu_pin1 "WORD='воркеры на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
 printf 'сделай пин аккаунта на codex\n' >"$WORDS_DIR/s/last.txt"
-assert allowed "$(quoted_event toolu_pin2 "WORD='сделай пин аккаунта на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
+assert denied "$(quoted_event toolu_pin2 "WORD='сделай пин аккаунта на codex' printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
 rm -f "$WORDS_DIR/s/last.txt" "$WORDS_DIR/s"/attest.* "$WORDS_DIR/s"/claim.*
 pin_grant account
 touch -t 202601010000 "$WORDS_DIR/s/grant.pin"

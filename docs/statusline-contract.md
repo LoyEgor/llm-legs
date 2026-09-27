@@ -268,13 +268,28 @@ the URLs behind that decision are in `docs/claudegpt.md`.
 | `/clear` or new empty chat | Complete transcript scan finds no qualifying response | Known cold until the first response |
 | Transcript missing/unreadable or current model id absent | Read/model gate fails | Unknown `? <n>k` |
 
+## Work lines (below line 2)
+
+Shell work of this chat that no task row carries — foreground and background Bash calls, the tests
+inside them, tests backgrounded out of them — one magenta line each under line 2, drawn like a task
+row: `<class> · <repo>` magenta, then dim `· <label>[ n/m[ ✗k]] · <elapsed>` (`tests · llm-legs ·
+suites 12/41 ✗1 · 6m 12s`, `shell · ⧉ wt-one · git push · 31s`). Two classes and no more (Egor,
+2026-09-26: minimize the kinds): `tests` and `shell`.
+
+| Segment | Source of truth | Update trigger | Staleness / dim policy | Removal condition |
+|---|---|---|---|---|
+| work line `<class> · <repo> · <label> · <elapsed>` | `work-<sid>` cache (`$STATUSLINE_CACHE_DIR`) written by `statusline-work-probe.sh` from one `ps -axo pid=,ppid=,etime=,command=` snapshot. **Cache format: one tab-separated record per line**, `main <class> <start-epoch> <repo> <label> <done> <failed> <total>` for a line here and `run <run-id> <start-epoch> <label>` for the `tests` field of a worker row (Task rows); the probe sorts `tests` first, oldest first; readers split it on `\037`, since `read` folds an empty tab field (a repo `lsof` found no cwd for) into the next. **Whose:** a Bash tool call is a child of the chat's own `claude` (the walk from the render's `$PPID`) whose command runs the harness shell snapshot (`/shell-snapshots/snapshot-`), or a direct child that is itself a test (a call that `exec`s its runner replaces the snapshot shell) — so MCP servers and the statusline itself never count; a hook (a direct child running a script under a `/hooks/` directory) still going at 5s is a `shell` line labelled `hook <script name>`, since it holds the chat the way a call does; a test anywhere under one is the chat's; a test reparented to launchd (`&`, `nohup`) is the chat's when its environment (`ps -E`) carries `CLAUDE_PID=<that claude>` or `CLAUDE_CODE_SESSION_ID=<sid>`; a subtree under another `claude` is another chat's, and the orphan walk stops at `worker-run`, `review-bench` and the image scripts, whose rows carry what they run. **Which program:** argv[0], or for an interpreter or launcher (`bash`, `python3 -m`, `node`, `lua`, `env`, `nohup`, `time`, `timeout`, `nice`, `sudo`, `caffeinate`, `setsid`, `uv run`, `poetry run`, `npx`, each skipping its own option values) the script it runs — never the command text, so `sed -n 1p tests/test_x.sh` is no test. `tests` = `run-all`/`run-suites.sh` (label `suites`), `test_*.sh|.bash|.py|.lua` (label = its name), `pytest`, `vitest`, `jest`, `busted`, `bats`, `rspec`, `phpunit`, `ctest`, `python -m unittest`, `node --test`, `npm|pnpm|yarn|bun test` (past `-C`/`--dir`/`--filter`-style options and their values), `go|cargo|swift|mix|dotnet|deno test`, `playwright test`, `make test|check`, `xcodebuild test`; the top-most test wins, so a suite's own children fold into it. `shell` = any other Bash call of at least 10s, labelled by its oldest child's program plus the plain word right after it (`git push`; `curl --user x` is `curl`, an option's operand never shows), empty when the call runs builtins only. A call whose subtree runs `worker-run`, `review-bench`, an image script or `grok-video` is not drawn: its task row carries it. `suites n/m ✗k` reads `suites-<pid>` (`<logdir>\t<total>\t<repo>`, written by `share/run-suites.sh` for its own pid and removed on exit) and counts `<logdir>/*.status`, `✗k` those with a nonzero code, red. `<repo>` is the basename of `git rev-parse --show-toplevel` from, first match wins: the directory of the test script a `test_*` run names, the repository `run-suites.sh` was handed (its pointer), the process working directory (`lsof -d cwd`) — so `bash /r/review-bench/tests/run-all` from llm-legs is `review-bench`; `⧉ <name>` for a worktree under `.claude/worktrees/`, the directory's own basename outside git | Render fires the probe in the background when the cache is >4s stale (every other 3s refresh); `<elapsed>` is recomputed from the start column on every render. A `cd` inside a call moves `<repo>` on the next probe; `/clear` or `/resume` changes the session id and with it the cache, and the `CLAUDE_PID` claim keeps orphaned tests; model, account and rename events change nothing here | Cache mtime >15s → every work line hidden (probe presumed dead); a probe killed holding its lock loses it after 12s, inside that window | A finished process leaves on the next probe (≤~6s); at most three lines, the third ending `· +N` for the rest; too narrow, `<repo>` goes first, then the label shrinks to nothing; class, count and elapsed stay |
+
 ## Task rows (subagentStatusLine, `bin/subagent-statusline.sh`)
 
 The harness hands the renderer only `local_agent` tasks (never background Bash or Monitor) and lets it
 rewrite the body of each id it received. A row exists only while the harness lists the task as
 `running`: a completed, failed, killed or otherwise finished task produces no row whatever its run
-files say (the harness keeps finished agents listed for hours; the rows show only what is going on),
-so there is no `✓ done` / `✗ failed` / `⏸ checkpoint` / `cancelled` row state. Every running task is painted:
+files say (the harness keeps finished agents listed for hours; the rows show only what is going on).
+The renderer answers such a task with `{"id": <id>, "content": ""}` — the harness draws its own native
+row for any listed id the renderer says nothing about, and an empty content is the one answer that
+removes the row (Claude Code 2.1.283 filters rows on `content !== ""`; `completed`/`failed`/`killed`
+are its terminal statuses). So there is no `✓ done` / `✗ failed` / `⏸ checkpoint` / `cancelled` row state. Every running task is painted:
 `<tag> — <title> · <state> · <elapsed>[ · ↓ tok]` — tag magenta, state dim with `✓` green and `✗` red;
 review, fix and image rows carry no title: `<tag> · <state> · <elapsed>[ · ↓ tok]`, except a
 review of lens `task` (a hunt), which keeps its title without the `WAIT|ATTACH <run-id>: ` prefix. A
@@ -292,7 +307,7 @@ agent's momentary activity) is never read, so concurrent workers stay distinguis
 
 | kind | tag (writer) | state (source) |
 |---|---|---|
-| relay worker run, ATTACH | `<acct> · <model> · <effort>` (`worker-spawn-hook` seed, `worker-tag-hook`, `worker-run` claim) | tag line `run=<id>` → `$WORKER_RUN_DIR/<id>/state.json` `phase`: `start`, `wait N` (`round`); no state once the run has an `exit_code` |
+| relay worker run, ATTACH | `<acct> · <model> · <effort>` (`worker-spawn-hook` seed, `worker-tag-hook`, `worker-run` claim) | tag line `run=<id>` → `$WORKER_RUN_DIR/<id>/state.json` `phase`: `start`, `wait N` (`round`), then ` · tests <elapsed>` while the work cache (Work lines, at most 15s old) has a `run <id>` record — a test under the run's setsid'd supervisor (`meta.json` `pid`), Light's VERIFY included; the fit's short state keeps `tests` without its time; no state once the run has an `exit_code` |
 | fix run of a review round | `fix: ` + the worker tag | the hash field (last 7 of `state.json` `round_id`), then as a relay worker run |
 | review-bench run (`review-waiter`) | `<tier> · <composition> · <lens>` from the progress doc's `tier`, `composition` (default `standard`), `lens` (`task` for a hunt); `review · <last 7 of run id>` while no doc names the run; never `rev`, never task text (`worker-spawn-hook` seed, `worker-tag-hook` on `review-bench wait <run-id>`, re-read by the renderer) | `review=<run-id>` (or `WAIT`/`ATTACH <run-id>` in the description) → progress doc `$(state dir)/progress/*.json` (`run_id`): `all n/m` (finished/`cells`; a cell in `done` or `failed_cells` is finished) + one group per label in first-appearance order: `label done/total`, `label ✓` when all finished and none failed, ` ✗N` after the fraction for N failed (`✗N` alone when all failed): `all 5/8 agy 2/4 ✗1 opus 1/2 sol ✓` (label = the short model name, the first cell segment with a `claude-`/`codex-`/`oc-`/`opencode-`/`gemini-` prefix dropped, no account; a group with any `chunks` entry `[read, total]` of total > 1 counts chunk passes instead, a finished cell as total/total and one without an entry as 1/1 or 0/1: `all 3/8 agy 7/20 opus ✓ sol 3/10`; a group with a cell in the doc's `verifying` map (`{cell: "running"\|"done"}`, review-bench's opencode/agy verifiers) at `running` says `verify` after its fraction, `agy 4/4 verify`, and gets `✓` only when every cell is finished and none is verifying — a doc without `verifying` renders as before, and the panel phase `verify` shows the groups, no word of its own), then `phase` `report`, while `judge` leaves the panel row's cells in place and adds a judge row below it (see "The judge row"); `state` `done` → `✓ report <confirmed>`, `dead` (legacy `failed`) → `✗ dead`, `cancelled` → no state |
 | image-gen | `<acct> · <short>` (`short.<kind>` of `share/image-caps/<vendor>.json`: `notcom · gpt-image-2`); `image-fanout` → `fanout · image` or `fanout · video` | `media=gen` (`edit` with `--ref`/`--resume`) while the script runs, no state once `exit=N` is stamped (`statusline-workdir-hook` PostToolUse Bash → 0, PostToolUseFailure `Exit code N` → N); fan-out: `image=<dest-dir>` → `<dest-dir>/fanout.state.json` `{kind, cells: [{vendor, account, status, exit}]}` (`image-fanout` rewrites it on every cell change, none on `--dry-run`; `status` is `waiting` while the cell holds for a `--max-parallel` slot with no process of its own, then `running`, then `done`/`failed` — the renderer counts anything but `done`/`failed` as pending, so a queued account is never read as work in flight) through the review cell code, label = vendor: `all 2/3 codex ✓ gemini 0/1 grok ✗1` |
@@ -306,7 +321,10 @@ and at the end: `{phase, round, exit_code, agent_task_id, session, account, mode
 started_epoch, ts}`; `session` is the launching chat (`CLAUDE_LAUNCHER_SESSION`, else
 `CLAUDE_CODE_SESSION_ID`). `worker-tag-hook` marks `start=<epoch>` on the agent's tag file before a
 `worker-run start`; the run swaps the freshest mark (≤120s), or the `CLAUDE_AGENT_ID` file, for
-`run=<id>` and its resolved tag, keeping every other key line. Spawn seeds are
+`run=<id>` and its resolved tag, keeping every other key line; a relay's `WORKER_RUN_RELAY` token
+(shared-invariants row `cx`) sets `CLAUDE_AGENT_ID` from its agent id, so the claim finds that
+agent's file however the start was spelled, and a `report` never moves the row off the agent's run.
+Spawn seeds are
 `pending-<type>-<tool_use_id or epoch-pid-rand>`, one per spawn, carrying `spawn=<key>` (the first 16
 hex of the SHA-256 of the brief's first line), claimed by the agent's first Bash call: the seed whose
 key matches the first prompt line of the agent's own transcript (`<parent>/subagents/agent-<id>.jsonl`),
@@ -457,6 +475,14 @@ warm arrow.
   dim file counts; a tree dirty with ONLY such changes shows the file counts
   alone. A huge untracked text file (an unignored log/dataset) inflates `+A`
   honestly — gitignore it.
+- **Work lines see processes, not intent.** A test run a worker of a run with
+  no task row here starts is drawn as this chat's work line when its environment
+  still names this chat's `claude`; a live run whose waiter ended has no row and
+  no line until the Stop ask's ATTACH; a runner outside the list above is
+  `shell`, and a call faster than one probe (~6s) is never drawn. WebFetch,
+  WebSearch, MCP calls and compaction run inside `claude` or a long-lived server
+  with no process per call, so no line or row can show them: the harness
+  spinner is their only surface.
 - **Cache scan is bounded.** An assistant response hidden behind more than
   8 MiB of later transcript data renders unknown until a newer qualifying
   response appears; the renderer never performs an unbounded full scan.

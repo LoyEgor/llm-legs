@@ -288,14 +288,15 @@ eff_defs='
     elif (($b.effective_pct // null) | type) == "number" then $b.effective_pct
     elif (($b.used_pct // null) | type) == "number" then $b.used_pct
     else null end;
+  def vendor_rows($vendor):
+    (.vendors[$vendor] // {}) as $v |
+    if (($v.accounts // []) | length) > 0 then $v.accounts else [$v + {account:"main"}] end;
 '
 
 account_pressure() {
   [ -r "$LIMITS_FILE" ] || return 0
   jq -r --arg vendor "$1" --arg account "$2" --argjson now "$(date +%s)" "$eff_defs"'
-    (.vendors[$vendor] // {}) as $v |
-    (if (($v.accounts // []) | length) > 0 then $v.accounts
-     else [{account:"main", five_hour:($v.five_hour // {}), weekly:($v.weekly // {})}] end) |
+    vendor_rows($vendor) |
     first(.[] | select((.account // "main") == $account)) as $row |
     if $row == null then empty
     else ([eff($row.five_hour; "five_hour"), eff($row.weekly; "weekly")] |
@@ -307,10 +308,7 @@ account_pressure() {
 account_inventory() {
   [ -r "$LIMITS_FILE" ] || return 0
   jq -r --arg vendor "$1" --argjson now "$(date +%s)" "$eff_defs"'
-    (.vendors[$vendor] // {}) as $v |
-    (if (($v.accounts // []) | length) > 0 then $v.accounts
-     else [{account:"main", enabled:$v.enabled, auth_needed:$v.auth_needed, auth:$v.auth,
-            five_hour:($v.five_hour // {}), weekly:($v.weekly // {})}] end) |
+    vendor_rows($vendor) |
     map(select(.removed != true)) |
     map({
       name:(.account // "main"),
@@ -327,6 +325,22 @@ account_inventory() {
     map("\(.name) \(.value // "?")%\(if .off then " off" else "" end)\(if .auth then " auth!" else "" end)") | join(", ")
   ' "$LIMITS_FILE" 2>/dev/null
 }
+
+# An ACCOUNT line routes one task past worker-pick, never onto an account Egor switched off or removed
+# in the menu: the wall below reads only percentages.
+account_off() { # vendor limits_vendor account
+  if _load_wm && command -v worker_pool_refuse_headless >/dev/null 2>&1 &&
+    ! worker_pool_refuse_headless "$1" "$3" "$(worker_model_pin_csv < <(worker_model_pins "$1" 2>/dev/null))" 2>/dev/null; then
+    return 0
+  fi
+  [ -r "$LIMITS_FILE" ] || return 1
+  jq -e --arg vendor "$2" --arg account "$3" "$eff_defs"'
+    any(vendor_rows($vendor)[]; (.account // "main") == $account and .removed == true)
+  ' "$LIMITS_FILE" >/dev/null 2>&1
+}
+if [ -n "$brief_account" ] && account_off "$vendor" "$limits_vendor" "$brief_account"; then
+  deny "The brief's ACCOUNT: ${brief_account} is switched off or removed in Egor's menu, so ${worker} cannot spawn on it. Put worker-pick's NEXT account${router_account:+ (${router_account})} in the ACCOUNT line, or drop the line."
+fi
 
 spawn_account=$brief_account
 if [ -z "$spawn_account" ]; then

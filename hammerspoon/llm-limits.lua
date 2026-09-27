@@ -1451,6 +1451,22 @@ local function appendDoctor(menu)
   table.insert(menu, { title = "-" })
 end
 
+-- TEMP-TESTTIME(test-history): the summary bin/test-history writes (EXPERIMENTS.json, test-time).
+local function appendTestTime(menu)
+  local text = readTextFile(os.getenv("HOME") .. "/.cache/claude-statusline/test-history.txt")
+  if not text then
+    table.insert(menu, { title = infoTitle("Test time (temp): no finished test yet", false, true), disabled = true })
+    return
+  end
+  local title, items = nil, {}
+  for line in text:gmatch("[^\n]+") do
+    if not title then title = line
+    elseif line == "-" then items[#items + 1] = { title = "-" }
+    else items[#items + 1] = { title = infoTitle(line), disabled = true } end
+  end
+  table.insert(menu, { title = infoTitle(title or "Test time (temp)"), menu = items })
+end
+
 -- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
 -- changed disappears/updates immediately. Shared by the toggle/switch/remove wiring.
 local function runAccountCommand(launchPath, args, failMessage, onSuccess, options)
@@ -2288,6 +2304,7 @@ function M.menuItems()
     if announced then table.insert(menu, { title = "-" }) end
   end
   appendDoctor(menu)
+  appendTestTime(menu)
   table.insert(menu, { title = "-" })
   table.insert(menu, {
     title = infoTitle("Routing"),

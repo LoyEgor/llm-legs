@@ -3,6 +3,8 @@
 # only when the brief's SCOPE fence held and its VERIFY command passed. Every case here proves the
 # shared tree is either advanced by a green run or byte-identical after a red one.
 set -u
+# worker-run opens start and wait outside Claude Code only; its relay door is tested with CLAUDECODE set.
+unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER WORKER_RUN_RELAY
 unset WORKER_PICK_CONFIG_FILE WORKER_RUN_CONFIG_FILE CLAUDE_LAUNCHER_SESSION CLAUDE_CODE_SESSION_ID
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT

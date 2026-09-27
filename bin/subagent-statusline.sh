@@ -10,6 +10,12 @@ export LC_ALL=en_US.UTF-8
 
 input=$(cat) || exit 0
 
+# The harness paints its own row for any listed id this prints nothing for, and keeps finished
+# agents listed for hours; an empty content is the one answer that removes the row.
+printf '%s' "$input" | jq -c '(.tasks // [])[]
+  | select((.type // "local_agent") == "local_agent" and ((.status // "") | IN("completed", "failed", "killed")))
+  | ((.id // "") | tostring) | select(. != "") | {id: ., content: ""}' 2>/dev/null
+
 parsed=$(printf '%s' "$input" | jq -r '
   ((.session_id // "") | tostring | gsub("[^A-Za-z0-9_-]"; "")) as $sid |
   ((.columns // 0) | tostring) as $cols |
@@ -84,6 +90,13 @@ worker_state() { # run-id
     wait) set_state "wait $round" "wait $round" ;;
     *) return 1 ;;
   esac
+  local work="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/work-$sid" mtime since
+  mtime=$(stat -f %m "$work" 2>/dev/null || stat -c %Y "$work" 2>/dev/null)
+  [[ "$mtime" =~ ^[0-9]+$ ]] && [ "$((now_ms / 1000 - mtime))" -le 15 ] || return 0
+  since=$(awk -F'\t' -v run="$1" '$1 == "run" && $2 == run { print $3; exit }' "$work" 2>/dev/null)
+  [[ "$since" =~ ^[0-9]+$ ]] && [ "$((now_ms / 1000))" -ge "$since" ] || return 0
+  set_state "$state_plain · tests $(elapsed_str "$((now_ms / 1000 - since))")" \
+    "$state_color · tests $(elapsed_str "$((now_ms / 1000 - since))")" "$state_plain · tests" "$state_color · tests"
 }
 
 cells_state() { # stdin: label, done|failed|other, chunk passes read, chunk passes total, late, verifying

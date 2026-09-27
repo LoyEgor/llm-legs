@@ -6,5 +6,18 @@
     "started": "2026-09-19",
     "review_by": "2026-10-03",
     "how_to_remove": "Delete the TEMP-LIGHTLAND block in bin/worker-run (light_brief_header_value, light_recipe_compose, light_worktree_add, light_worktree_remove, light_start_abandon, light_verify_run, light_touched_paths, light_scope_state, light_gate), its call `light_gate` (which takes the run's terminal status) at the end of complete_run, the `light = edit` blocks in start_run (SCOPE/VERIFY parse, worktree creation, light-scope/light-verify files, light_worktree/light_shared_top/light_base in meta.json, the LIGHT_ABANDON trap), the light-verdict cat in report_run, share/light-recipes/, tests/test_light_edit.sh and this entry. allocate_run_directory stays: it is the run-id allocation start_run always had. Keeping it means the shared checkout keeps taking a cheap model's diff unreviewed."
+  },
+  {
+    "id": "test-time",
+    "tag": "TEMP-TESTTIME(test-history)",
+    "what": "Every test the statusline work probe saw end (chat or worker, from bin/statusline-work-probe.sh) is journaled with its wall time, and a temporary `Test time (temp)` menubar submenu shows today's and the last 7 days' totals, the latest runs and the slowest suites. The trial question is Egor's feeling that tests eat much of his time: whether they do, and which ones.",
+    "started": "2026-09-26",
+    "review_by": "2026-10-10",
+    "evidence": "~/.cache/claude-statusline/test-history.jsonl (one line per finished test: end, secs, who, repo, label[, total, failed])",
+    "surfaces": [
+      "menubar `Test time (temp)` submenu",
+      "menubar experiment header row"
+    ],
+    "how_to_remove": "Delete bin/test-history and tests/test_test_history.sh; delete every TEMP-TESTTIME(test-history) block: the journal block before `write_cache \"$new_cache\"` in bin/statusline-work-probe.sh (write_cache takes the new cache as before), appendTestTime and its call after appendDoctor(menu) in hammerspoon/llm-limits.lua, the testHistoryText fake and the Test time case in tests/llm_limits_renderer_harness.lua; delete ~/.cache/claude-statusline/test-history.jsonl and test-history.txt; then this entry. The work lines and the run-suites progress pointer are not part of the experiment and stay."
   }
 ]

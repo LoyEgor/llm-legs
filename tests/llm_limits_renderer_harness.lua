@@ -17,6 +17,8 @@ local fastModeMarkers = {}
 local profileFastModeConfigs = {}
 local codexCatalogs = {}
 local workerModelSh = nil
+-- TEMP-TESTTIME(test-history): the Test time summary file; nil is the file being absent.
+local testHistoryText = nil
 
 -- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
 -- the Gemini submenu reads; nil is the file being absent — no cache is what the
@@ -162,6 +164,10 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         contents = "CODEX_CATALOG:" .. catalogAccount
       end
       if path:match("/share/worker%-model%.sh$") and workerModelSh then contents = workerModelSh end
+      if path:match("/test%-history%.txt$") then
+        if testHistoryText == nil then return nil end
+        contents = testHistoryText
+      end
       local profileAccount = path:match("/%.codex%-profiles/([^/]+)/config%.toml$")
       if profileAccount and profileFastModeConfigs[profileAccount] then
         contents = profileFastModeConfigs[profileAccount]
@@ -3220,6 +3226,24 @@ do
         and launched.env.WM_VENDOR == "light" and launched.env.WM_STATE == case.state,
       "the Light switch asked the writer for the wrong state")
   end
+end
+
+-- TEMP-TESTTIME(test-history): the Test time submenu is the summary file line for line, `-` a separator.
+do
+  local function testTimeRow(mod, title)
+    for _, entry in ipairs(mod.menuItems()) do
+      if titleText(entry) == title then return entry end
+    end
+  end
+  testHistoryText = nil
+  local row = testTimeRow(loadModule(roleFixture), "Test time (temp): no finished test yet")
+  assert(row and row.disabled, "the Test time row did not say that no test has finished yet")
+  testHistoryText = "Test time (temp) · today 3m 10s\ntoday: 1 runs · 3m 10s\n-\n21:19 llm-legs · suites 73 ✗1 · 3m 10s · chat"
+  row = testTimeRow(loadModule(roleFixture), "Test time (temp) · today 3m 10s")
+  assert(row and #row.menu == 3 and row.menu[2].title == "-"
+      and titleText(row.menu[3]) == "21:19 llm-legs · suites 73 ✗1 · 3m 10s · chat",
+    "the Test time submenu is not the summary file line for line")
+  testHistoryText = nil
 end
 
 -- Saying nothing about a click already in flight is what makes a menu look dead and earns the

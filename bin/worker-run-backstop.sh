@@ -10,11 +10,38 @@
 # younger than the tag hook's seed age. A run whose state.json is not written yet is still inside
 # `worker-run start`, before the claim that names its relay. Fail-open everywhere.
 set -u
+self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || exit 0
+
+light_off() {
+  [ -n "${light_off_known:-}" ] || {
+    light_off_known=no
+    (. "${self%/*}/../share/worker-model.sh" 2>/dev/null && worker_light_off) && light_off_known=yes
+  }
+  [ "$light_off_known" = yes ]
+}
+
+# The one relay choice for a worker run; claude-setup's stop.d/ask-run-unfinished.sh asks it through
+# `--relay <run-dir>`. Light off, the harness denies both Light agent types, so a Light run in flight
+# is waited out by its vendor's plain relay; a research run launched while Light was off is plain.
+relay_of() { # run-dir
+  local vendor light
+  { IFS= read -r vendor; IFS= read -r light; } <<EOF
+$(jq -r '(.vendor // ""), (.light // "")' "$1/meta.json" 2>/dev/null)
+EOF
+  [ -n "$light" ] && light_off && light=''
+  case "$vendor:$light" in
+    *:research) printf 'light-research' ;;
+    *:edit) printf 'light-worker' ;;
+    claudeb:* | codex:* | gemini:* | grok:*) printf '%s-worker' "$vendor" ;;
+    *) printf 'its relay worker' ;;
+  esac
+}
+[ "${1:-}" = --relay ] && { relay_of "${2:-}"; exit 0; }
 
 payload=$(cat 2>/dev/null) || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 [ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
-self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
+. "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
 { IFS= read -r session; IFS= read -r agent; } <<EOF
 $(jq -r '(.session_id // ""), (.agent_id // "")' <<<"$payload" 2>/dev/null)
 EOF
@@ -38,15 +65,6 @@ owned() { # key id
     esac
   done
   return 1
-}
-
-relay_of() { # run-dir
-  case "$(jq -r '[.vendor // "", .role // "", .light // ""] | join(":")' "$1/meta.json" 2>/dev/null)" in
-    *:research:*) printf 'light-research' ;;
-    *:*:edit) printf 'light-worker' ;;
-    claudeb:* | codex:* | gemini:* | grok:*) printf '%s-worker' "$(jq -r .vendor "$1/meta.json")" ;;
-    *) printf 'its relay worker' ;;
-  esac
 }
 
 lines=''

@@ -676,7 +676,47 @@ worker_model_set_paused() {
     } >"$tmp" || return 2
     mv "$tmp" "$file" || return 2
     trap - EXIT
-  ) 9>"$file.lock"
+  ) 9>"$file.lock" || return
+  [ "$vendor" = light ] || return 0
+  worker_light_agents_sync ||
+    printf 'worker-model: the Light switch moved, but the agent list in %s did not follow it\n' \
+      "$(worker_light_settings_file)" >&2
+  return 0
+}
+
+worker_light_settings_file() {
+  printf '%s' "${WORKER_LIGHT_SETTINGS:-$HOME/.claude/settings.json}"
+}
+
+# Off, the two Light agent types leave every chat's agent list: the harness drops a type named by a
+# deny rule `Agent(<type>)` from what it offers the model and refuses its spawn. The settings file
+# is every profile's symlink target, so the write goes through to the real file, and only on change.
+# Claude Code writes the same file without any lock this side could share, so the write is a
+# compare-and-swap: a file that changed while the rules were computed is read again, never
+# overwritten. `cp -p` keeps the file's mode, which a bare mktemp would turn into 0600.
+worker_light_agents_sync() {
+  local settings real tmp orig new off=false attempt
+  settings=$(worker_light_settings_file)
+  real=$(realpath "$settings" 2>/dev/null) && [ -f "$real" ] || return 2
+  worker_light_off && off=true
+  for attempt in 1 2 3; do
+    orig=$(cat "$real") || return 2
+    new=$(jq --argjson off "$off" '["Agent(light-research)", "Agent(light-worker)"] as $rules
+      | .permissions.deny = (((.permissions.deny // []) - $rules) + (if $off then $rules else [] end))' \
+      <<<"$orig" 2>/dev/null) || return 2
+    [ "$new" != "$orig" ] || return 0
+    tmp=$(mktemp "$real.light.XXXXXX") || return 2
+    if ! { cp -p "$real" "$tmp" && printf '%s\n' "$new" >"$tmp"; }; then
+      rm -f "$tmp"
+      return 2
+    fi
+    if [ "$(cat "$real")" = "$orig" ]; then
+      mv "$tmp" "$real" || { rm -f "$tmp"; return 2; }
+      return 0
+    fi
+    rm -f "$tmp"
+  done
+  return 2
 }
 
 worker_model_pin_account() {

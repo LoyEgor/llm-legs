@@ -1192,6 +1192,36 @@ assert test "$(grep -c 'The worker toggle says' <<<"$computer_gate_out")" = 0
 : >"$LIGHT_GATE_WORK/picks"
 light_gate codex-worker >/dev/null
 assert grep -qx -- '--account codex' "$LIGHT_GATE_WORK/picks"
+# A brief's ACCOUNT is judged by the worker pool itself, not the limits file's cached `enabled`:
+# an excluded account is refused even when that copy is stale, and a pinned one passes like
+# worker-run lets it.
+mkdir -p "$LIGHT_GATE_WORK/codex/.codexb"
+printf 'beta\n' >"$LIGHT_GATE_WORK/codex/.codexb/disabled"
+jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:true, five_hour:{used_pct:10}}]}}}' \
+  >"$LIGHT_GATE_WORK/limits.json"
+printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
+assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx')"
+jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", enabled:false, five_hour:{used_pct:10}}]}}}' \
+  >"$LIGHT_GATE_WORK/limits.json"
+printf 'worker=codex\ncodex_profile=beta\n' >"$LIGHT_GATE_WORK/worker-model"
+assert test "$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx' |
+  grep -c '"permissionDecision":"deny"')" = 0
+rm -f "$LIGHT_GATE_WORK/codex/.codexb/disabled"
+jq -n '{schema:1, vendors:{codex:{accounts:[{account:"beta", removed:true, five_hour:{used_pct:10}}]}}}' \
+  >"$LIGHT_GATE_WORK/limits.json"
+printf 'worker=codex\n' >"$LIGHT_GATE_WORK/worker-model"
+assert grep -Fq 'ACCOUNT: beta is switched off or removed' \
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: beta\nx')"
+# A single-account vendor states main's removal on the vendor object itself.
+jq -n '{schema:1, vendors:{codex:{removed:true, status:"removed"}}}' >"$LIGHT_GATE_WORK/limits.json"
+assert grep -Fq 'ACCOUNT: main is switched off or removed' \
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: main\nx')"
+printf 'main\n' >"$LIGHT_GATE_WORK/codex/.codexb/disabled"
+jq -n '{schema:1, vendors:{codex:{enabled:true, five_hour:{used_pct:10}}}}' >"$LIGHT_GATE_WORK/limits.json"
+assert grep -Fq 'ACCOUNT: main is switched off or removed' \
+  <<<"$(CODEXB_PROFILES_DIR="$LIGHT_GATE_WORK/codex" light_gate codex-worker $'ACCOUNT: main\nx')"
+rm -f "$LIGHT_GATE_WORK/codex/.codexb/disabled"
 # Light switched off in Egor's menu: the spawn hook refuses the spawn, and this gate neither prices
 # a Light quota nor asks for an account.
 printf 'light_paused=on\nlight_edit=claudeb:sonnet\n' >"$LIGHT_GATE_WORK/worker-model"
@@ -1209,7 +1239,10 @@ assert test ! -s "$LIGHT_GATE_WORK/picks"
 rm -rf "$LIGHT_GATE_WORK"
 
 assert test -r "$WORKER_GATE_SETTINGS"
-assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent") | .hooks[] | select(.command == "~/.claude/hooks/worker-limit-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
+assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent|Task") | .hooks[] | select(.command == "~/.claude/hooks/worker-limit-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
+# The legacy Task name reaches the same two Agent gates, and the codex MCP tools the launch gate.
+assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher == "Agent|Task") | .hooks[] | select(.command == "~/.claude/hooks/worker-spawn-hook.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
+assert eq "$(jq '[.hooks.PreToolUse[] | select(.matcher | split("|") | index("mcp__codex__codex") and index("mcp__codex__codex-reply")) | .hooks[] | select(.command == "~/.claude/hooks/worker-launch-gate.sh")] | length' "$WORKER_GATE_SETTINGS")" 1
 assert eq "$(jq '[.hooks.PreToolUse[] | .hooks[]? | select(.command | test("(claudeb|codex)-limit-gate"))] | length' "$WORKER_GATE_SETTINGS")" 0
 assert grep -Fq 'warned from `85`%' "$ROOT/$DOC"
 assert grep -Fq '`95`% is the protective block only when worker-pick is unavailable or fails' "$ROOT/$DOC"
@@ -1228,7 +1261,8 @@ for native in $(native_list NATIVE_ALLOWLIST); do
   assert grep -Fq "\`$native\`" "$ROOT/$DOC"
   assert grep -Fq "\`$native\`" "$ROUTING_DOC"
 done
-assert grep -Fq 'use a relay worker (worker-run) instead' "$SPAWN_HOOK_BIN"
+assert grep -Fq "spawn the relay Agent worker-pick's NEXT row names instead" "$SPAWN_HOOK_BIN"
+assert doc_has "the ask to spawn the relay Agent worker-pick's NEXT row names instead"
 assert test "$(grep -Ec '^NATIVE_[A-Z_]+=' "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc "runs on this session's own quota" "$WORKER_GATE")" -eq 0
 assert test "$(grep -Fc 'light-research' "$WORKER_GATE")" -eq 0
@@ -2535,7 +2569,9 @@ done
 # reused by the worker-run ownership rule, which is not a vendor.
 assert eq "$(sed -n '/^LAUNCH_RES=(/,/^)/p' "$LAUNCH_GATE" | grep -Fc '${VENDOR_WORD}')" 7
 assert grep -Fq 'OWNED_RUN_RE=' "$LAUNCH_GATE"
-assert grep -Fq 'grep -Eq "$SANCTIONED_RE" <<<"$scan" && exit 0' "$LAUNCH_GATE"
+assert grep -Fq 'unsanctioned=$(grep -Ev "$SANCTIONED_RE" <<<"$scan")' "$LAUNCH_GATE"
+assert test "$(grep -Fc '"$SANCTIONED_RE" <<<"$scan" && exit 0' "$LAUNCH_GATE")" -eq 0
+assert doc_has 'a launcher in command position exempting only its own segment'
 assert grep -Fq 'worker-launch-gate.sh' "$WORKER_GATE_SETTINGS"
 assert doc_has 'Sanctioned headless launchers'
 assert grep -Fq '## Sanctioned launchers' "$ROOT/docs/routing-contract.md"
@@ -3032,6 +3068,34 @@ for caller in bin/worker-run bin/light-research share/light-research.sh; do
   assert grep -q 'web_search_args\|web_search_meta_state' "$ROOT/$caller"
 done
 assert doc_has 'ONE table, `share/web-search.sh` `web_search_table`'
+
+# --- Rows cx, cy: the runtime doors ------------------------------------------------
+# One relay list in three spellings: the types the tag hook stamps, the types worker-run accepts
+# (plus the end-report composer), and the spawn hook's RELAY_TYPES beside light-research.
+TAG_HOOK_BIN="$ROOT/bin/worker-tag-hook.sh"
+WORKER_RUN_BIN="$ROOT/bin/worker-run"
+stamped_types=$(awk '/^relay_prefix=/{on=1} on && /^  [a-z|-]+\)$/{gsub(/[ )]/, ""); print; exit}' "$TAG_HOOK_BIN" | tr '|' '\n' | sort | xargs)
+accepted_types=$(awk '/^  case "\$RELAY_TYPE" in$/{getline; sub(/\) ;;$/, ""); gsub(/ /, ""); print; exit}' "$WORKER_RUN_BIN" |
+  tr '|' '\n' | grep -vx end-report | sort | xargs)
+assert eq "$stamped_types" "$(printf '%s\n' $(native_list RELAY_TYPES) light-research | sort | xargs)"
+assert eq "$accepted_types" "$stamped_types"
+assert grep -Fq 'relay_prefix="export WORKER_RUN_RELAY=$relay_token"' "$TAG_HOOK_BIN"
+assert grep -Fq 'relay_token="$agent_type:${agent_id//[^A-Za-z0-9_-]/}"' "$TAG_HOOK_BIN"
+assert grep -Fq 'relay_door "${1:-}"' "$WORKER_RUN_BIN"
+assert grep -Fq 'unset WORKER_RUN_RELAY' "$WORKER_RUN_BIN"
+assert grep -Fq '(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)=' "$ROOT/bin/worker-launch-gate.sh"
+assert grep -Fq 'WORKER_RUN_RELAY="end-report:%d"' "$FAMILY_SETUP_ROOT/skills-on-demand/end-report/compose.py"
+assert doc_has '`WORKER_RUN_RELAY=<agent_type>:<agent_id>[:attach]`'
+# The review nonce: one directory, one TTL, one variable name on both sides of the door.
+REVIEW_DOOR_HOOK="$FAMILY_SETUP_ROOT/hooks/review-flow-gate.sh"
+assert grep -Fq 'door_dir=$HOME/.cache/claude-review-door' "$REVIEW_DOOR_HOOK"
+assert grep -Fq 'export REVIEW_BENCH_DOOR=$door_nonce' "$REVIEW_DOOR_HOOK"
+assert grep -Fq 'head -c 32' "$REVIEW_DOOR_HOOK"
+assert grep -Fq 'Path.home() / ".cache" / "claude-review-door"' "$REVIEW_ROOT/share/rbench/cli.py"
+assert grep -Fq 'REVIEW_DOOR_ENV = "REVIEW_BENCH_DOOR"' "$REVIEW_ROOT/share/rbench/cli.py"
+assert grep -Fq 'REVIEW_DOOR_TTL_S = 600' "$REVIEW_ROOT/share/rbench/cli.py"
+assert doc_has '`~/.cache/claude-review-door/<nonce>`'
+assert doc_has 'at most `600` s old'
 
 printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, and the Hammerspoon entry points this repository calls, pinned fail-closed at their install path) and match %s
 ' "$asserts" "$DOC"

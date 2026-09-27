@@ -2313,8 +2313,10 @@ alert_said() {
   done
   return 1
 }
-printf 'tier doc\n' > "$DOC"
+printf 'tier doc of the quiet case\n' > "$DOC"
 span_base sid-quiet >/dev/null
+span_base sid-quiet-twin >/dev/null
+span_base sid-quiet-race >/dev/null
 : > "$INSTRUCTION_WATCH_LOG"
 rm -f "$ALERT_REC"
 kept_before=$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f 2>/dev/null | wc -l)
@@ -2323,8 +2325,22 @@ assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T
 assert_contains "CHANGED" "$(cat "$INSTRUCTION_WATCH_LOG")"
 assert_contains "instruction-watch" "$(alert_said)"
 assert_contains "review-tiers.md" "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq -r '.files[0]')"
-assert [ "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)" -gt "$kept_before" ]
+kept_after=$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)
+assert [ "$kept_after" -gt "$kept_before" ]
 assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T")"
+# A second session reporting the same version shares the first one's copy.
+: > "$INSTRUCTION_WATCH_LOG"
+raw_check sid-quiet-twin Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_contains "CHANGED" "$(cat "$INSTRUCTION_WATCH_LOG")"
+assert_eq "$kept_after" "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)"
+# The week's prune deleting that shared copy between its test and its touch never leaves it empty.
+mkdir -p "$WORK/prune-race"
+printf '#!/bin/sh\nfor a; do last=$a; done\ncase "$last" in */reverts/*) rm -f "$last" ;; esac\nexec /usr/bin/touch "$@"\n' \
+  > "$WORK/prune-race/touch"
+chmod +x "$WORK/prune-race/touch"
+PATH="$WORK/prune-race:$PATH" raw_check sid-quiet-race Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert_eq 0 "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f -empty | wc -l | tr -d ' ')"
+assert_eq "$kept_after" "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)"
 
 echo "== tripwire: a session whose write was put back is still told"
 printf 'tier doc\n' > "$DOC"
@@ -2979,8 +2995,9 @@ import subprocess
 import sys
 
 try:
-    result = subprocess.run(["hs", *sys.argv[1:]], stdin=subprocess.DEVNULL,
-                            capture_output=True, text=True, timeout=10)
+    # hs's own IPC timeout defaults to 4s, below the bound this wrapper is for.
+    result = subprocess.run(["hs", "-t", "10", *sys.argv[1:]], stdin=subprocess.DEVNULL,
+                            capture_output=True, text=True, timeout=15)
 except (FileNotFoundError, subprocess.TimeoutExpired):
     raise SystemExit(124)
 sys.stdout.write(result.stdout)

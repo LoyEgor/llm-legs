@@ -3,6 +3,7 @@ set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
+export STATUSLINE_CACHE_DIR="$WORK/sl"
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*"; exit 1; }; }
 
@@ -30,4 +31,12 @@ assert grep -q 'PASS: siblings' <<<"$out"
 out=$(CLAUDE_SETUP_ROOT=/elsewhere REVIEW_BENCH_ROOT=/other WANT='/elsewhere|/other' bash "$ROOT/share/run-suites.sh" --repo "$tree" 2>&1)
 assert grep -q 'PASS: siblings' <<<"$out"
 
-printf 'PASS: %s asserts; run-suites runs every suite at nice 10, in parallel, and a worktree finds its siblings\n' "$asserts"
+# While it runs, the statusline's work probe finds its log directory, suite count and repository
+# by its pid; the repository is the one it was handed, never the caller's directory.
+mkdir -p "$WORK/count/tests"
+printf '#!/usr/bin/env bash\ncat "$STATUSLINE_CACHE_DIR"/suites-* >"$SEEN"; echo PASS\n' >"$WORK/count/tests/test_c.sh"
+(cd "$WORK" && SEEN="$WORK/seen" bash "$ROOT/share/run-suites.sh" --repo "$WORK/count" >/dev/null 2>&1)
+assert grep -Eq $'^/.*/run-suites\\.[A-Za-z0-9]+\t1\t/.*/count$' "$WORK/seen"
+assert test -z "$(ls "$WORK/sl")"
+
+printf 'PASS: %s asserts; run-suites runs every suite at nice 10, in parallel, a worktree finds its siblings, and a run leaves its progress pointer only while it lasts\n' "$asserts"
