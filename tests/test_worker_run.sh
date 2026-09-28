@@ -3276,6 +3276,7 @@ chmod +x "$WORK/slow-sed/sed"
 claim_race() (
   eval "$(sed -n '/^claim_agent_tag() {/,/^}/p' "$RUNNER")"
   eval "$(sed -n '/^claim_agent_tag_locked() {/,/^}/p' "$RUNNER")"
+  eval "$(sed -n '/^launch_agent_tag() {/,/^}/p' "$RUNNER")"
   PATH="$WORK/slow-sed:$PATH"
   unset CLAUDE_AGENT_ID
   claim_agent_tag "$1" chat-race
@@ -5477,6 +5478,51 @@ assert test "$rc" -eq 4
 assert grep -Fq "open review round(s) 20260801T140000Z-0a1b2c3 but has no ROUND: line" "$WORK/round.err"
 assert_fails grep -q '^RUN: ' "$WORK/round.out"
 
+# A relay that rewrote its brief drops the ROUND: header the orchestrator's Agent prompt carried
+# (round c3c2395's fixer, 2026-09-28): worker-spawn-hook seeds it into the agent's tag file and the
+# launch adopts it from there, and a brief or flag naming another round is refused.
+SPAWN_TAGS="$HOME/.cache/claude-worker-tags/chat-spawn-round"
+spawn_seed() { # round
+  mkdir -p "$SPAWN_TAGS"
+  printf 'seed · opus · high\nstart=%s\nround=%s\n' "$(date +%s)" "$1" >"$SPAWN_TAGS/agent-relay"
+}
+clear_stub
+spawn_seed 20260801T140000Z-0a1b2c3
+printf 'Repository: somewhere\n\nFix the findings.\n' >"$WORK/round-brief"
+CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "prompt-round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260801T140000Z-0a1b2c3
+assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = prompt
+assert grep -q 'STUB FIX RULE fix 20260801T140000Z-0a1b2c3' "$RUN_DIR/brief.launch"
+assert test "$(cat "$RUN_DIR/agent-task")" = agent-relay
+await_done || fail "the prompt-round run never finished"
+clear_stub
+spawn_seed 20260801T140000Z-0a1b2c3
+printf 'ROUND: 20260801T140000Z-0a1b2c3\nFix the findings.\n' >"$WORK/round-brief"
+CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start || fail "agreeing prompt-round start failed: $(<"$WORK/round.err")"
+RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/round.out")
+RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/round.out")
+assert test "$(jq -r '.round_source' "$RUN_DIR/meta.json")" = header
+await_done || fail "the agreeing prompt-round run never finished"
+for conflict in 'ROUND: 20260801T130000Z-def4560' 'ROUND: none' '--round'; do
+  clear_stub
+  spawn_seed 20260801T140000Z-0a1b2c3
+  conflict_args=()
+  if [ "$conflict" = --round ]; then
+    printf 'Fix the findings.\n' >"$WORK/round-brief"
+    conflict_args=(--round 20260801T130000Z-def4560)
+  else
+    printf '%s\nFix the findings.\n' "$conflict" >"$WORK/round-brief"
+  fi
+  rc=0
+  CLAUDE_CODE_SESSION_ID=chat-spawn-round round_start ${conflict_args[@]+"${conflict_args[@]}"} || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -Fq "the Agent prompt that spawned this relay says 'ROUND: 20260801T140000Z-0a1b2c3'" "$WORK/round.err"
+  assert_fails grep -q '^RUN: ' "$WORK/round.out"
+done
+rm -rf "$SPAWN_TAGS"
+
 # A brief that names an open round in prose alone is refused, never bound: bound, a read-only audit
 # that cited a run as evidence was handed that round's findings to fix (2026-09-23), and unasked a
 # hand-written fix brief lands its fixes as debt. The refusal names both headers that answer it.
@@ -6546,6 +6592,48 @@ fix_owned_tests() {
   clear_stub
 }
 fix_owned_tests
+
+# A round fixer launched in the parent of its repositories (claudeb-1790559409, 2026-09-28): the
+# workdir is no repository, so its fold and its claims go through the families it snapshotted.
+fix_nonrepo_tests() {
+  local parent c round=20260903T100000Z-ddddddd saved_path="$PATH" path
+  fix_kinds() { jq -r --arg p "$2" '.anchors[$p][]?.kind' "$1/.git/review-anchors.json"; }
+  mkdir -p "$WORK/fix-np/c"
+  git -C "$WORK/fix-np/c" init -q .
+  for path in own.txt shell.txt theirs.txt; do printf 'base\n' >"$WORK/fix-np/c/$path"; done
+  git -C "$WORK/fix-np/c" add -A >/dev/null
+  git -C "$WORK/fix-np/c" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+  parent=$(cd "$WORK/fix-np" && pwd -P)
+  c="$parent/c"
+  mkdir -p "$CLAUDEB_DIR/worker-stats/benches/$round"
+  jq -n --arg c "$c" '{repos: [{repo: $c, common_dir: ($c + "/.git"), label: "c"}],
+    reviewed: {"c/own.txt": "x", "c/shell.txt": "x", "c/theirs.txt": "x"}}' \
+    >"$CLAUDEB_DIR/worker-stats/benches/$round/meta.json"
+  export PATH="$WORK/stamp-bin:$PATH"
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  clear_stub
+  export PICK_RC=0 PICK_ACCOUNT=fixacct CLAUDE_CODE_SESSION_ID=np-chat STUB_SLEEP=3
+  export STUB_SESSION=np-worker STUB_TRANSCRIPT_SESSION=np-worker STUB_TRANSCRIPT_ACCOUNT=fixacct
+  export STUB_EDIT_PATH="c/own.txt"
+  WORKER_TEST_WORKDIR=$parent start_ok claudeb --round "$round"
+  assert test -f "$RUN_DIR/families/1/top"
+  printf 'fixed\n' >>"$c/own.txt"
+  printf 'fixed\n' >>"$c/shell.txt"
+  printf 'other\n' >>"$c/theirs.txt"
+  assert await_done
+  unset STUB_EDIT_PATH STUB_TRANSCRIPT_SESSION STUB_SESSION
+  assert grep -qx "fix:$round:$RUN_ID" <<<"$(fix_kinds "$c" own.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$c" shell.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$c" theirs.txt)"
+  "$RUNNER" claim "$RUN_ID" --paths c/shell.txt >/dev/null || fail "claim under a non-repository workdir failed"
+  assert grep -qx "fix:$round:$RUN_ID" <<<"$(fix_kinds "$c" shell.txt)"
+  assert_fails grep -q '^fix:' <<<"$(fix_kinds "$c" theirs.txt)"
+  assert_fails "$RUNNER" claim "$RUN_ID" --paths c/never-changed.txt 2>/dev/null
+  export PATH="$saved_path"
+  unset PICK_RC PICK_ACCOUNT CLAUDE_CODE_SESSION_ID STUB_TRANSCRIPT_ACCOUNT
+  clear_stub
+}
+fix_nonrepo_tests
 
 # Snapshot attribution P1/P2 (after-snapshot UNKNOWN, first-row-wins, foreign HEAD, path shape, symlink, claim).
 clear_stub

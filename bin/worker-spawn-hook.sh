@@ -254,6 +254,21 @@ if [ -n "$attach_run" ] && IFS= read -r run_tag <"$attach_dir/tag" 2>/dev/null &
   esac
 fi
 
+# Read by worker-run's brief_review_round header rules; `worker-run start` adopts it from the tag
+# file when the relay rewrote the brief without it.
+prompt_round=''
+case "$subagent" in
+  claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        ROUND:*) prompt_round=$(printf '%s' "${line#ROUND:}" | tr -cd 'A-Za-z0-9-'); break ;;
+        RESUME\ *:* | ATTACH\ *:*) continue ;;
+      esac
+      [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || break
+    done <<<"$prompt"
+    [ "$prompt_round" != none ] || prompt_round='' ;;
+esac
+
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}(: | — )//')
 [ -n "$title" ] || title=task
 
@@ -274,6 +289,7 @@ if mkdir -p "$pending_dir" 2>/dev/null; then
   { printf '%s\n' "$prefix"; printf 'spawn=%s\n' "$(printf '%s\n' "$first_line" | shasum -a 256 2>/dev/null | cut -c1-16)"
     [ -z "${review_run:-}" ] || printf 'review=%s\n' "$review_run"
     [ -z "$attach_run" ] || printf 'run=%s\n' "$attach_run"
+    [ -z "$prompt_round" ] || printf 'round=%s\n' "$prompt_round"
     [ -z "${seed_extra:-}" ] || printf '%s\n' "$seed_extra"; } > "$tmp_pending" 2>/dev/null &&
     mv -f "$tmp_pending" "$pending_dir/pending-$subagent-$spawn_key" 2>/dev/null
   rm -f "$tmp_pending" 2>/dev/null

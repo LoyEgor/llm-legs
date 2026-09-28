@@ -1176,7 +1176,7 @@ supervise() {
 }
 
 persist_run_files() {
-  local directory="$1" workdir snapshot reason top path
+  local directory="$1" workdir snapshot reason top path nonrepo_named=''
   workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
   if snapshot_workdir "$directory" "$workdir" after; then
     compute_snapshot_files "$directory" "$workdir"
@@ -1203,6 +1203,12 @@ persist_run_files() {
       /*)
         [ -z "$top" ] || [[ "$path" != "$top"/* ]] || continue
         RUN_FILES_EXTERNAL+="$path"$'\n'
+        ;;
+      ?*)
+        # A workdir that is no repository (the parent of several) folds only through its families,
+        # which read the named paths from files-external. Kept out of RUN_FILES_EXTERNAL: its
+        # PARTIAL line would let `claim` accept unchecked paths of a workdir that lost its .git.
+        [ -n "$top" ] || [ -z "$workdir" ] || [ "$workdir" = null ] || nonrepo_named+="${workdir%/}/$path"$'\n'
         ;;
     esac
   done <<<"$RUN_LISTING_LIST"
@@ -1234,7 +1240,7 @@ persist_run_files() {
   } >"$directory/files.tmp.$$" 2>/dev/null &&
     mv -f "$directory/files.tmp.$$" "$directory/files" 2>/dev/null ||
     rm -f "$directory/files.tmp.$$" 2>/dev/null
-  printf '%s' "$RUN_FILES_EXTERNAL" >"$directory/files-external" 2>/dev/null || :
+  printf '%s' "$RUN_FILES_EXTERNAL$nonrepo_named" >"$directory/files-external" 2>/dev/null || :
   record_workdir_dirt "$directory" "$workdir"
   [ -n "$RUN_FILES_REASON" ] || record_produced "$directory" "$workdir"
   transcript_crosscheck "$directory"
@@ -1654,8 +1660,8 @@ claim_agent_tag() { # directory launcher
   [ -z "$lock" ] || rmdir "$lock" 2>/dev/null || :
 }
 
-claim_agent_tag_locked() { # directory tag-dir
-  local directory="$1" dir="$2" file best='' best_mark=0 mark now tag tmp
+launch_agent_tag() { # tag-dir
+  local dir="$1" file best='' best_mark=0 mark now
   if [ -n "${CLAUDE_AGENT_ID:-}" ] && [ -f "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" ]; then
     best="$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}"
   else
@@ -1668,6 +1674,22 @@ claim_agent_tag_locked() { # directory tag-dir
       best=$file best_mark=$mark
     done
   fi
+  printf '%s' "$best"
+}
+
+# The spawning Agent prompt's ROUND: header, which worker-spawn-hook seeds into the relay's tag file
+# in the spawning chat's cache: a relay that rewrites the brief drops the header, never this.
+spawn_review_round() {
+  local session=${CLAUDE_CODE_SESSION_ID:-} file
+  case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) return 0 ;; esac
+  file=$(launch_agent_tag "$HOME/.cache/claude-worker-tags/$session")
+  [ -n "$file" ] || return 0
+  sed -n 's/^round=//p' "$file" 2>/dev/null | tail -n1
+}
+
+claim_agent_tag_locked() { # directory tag-dir
+  local directory="$1" dir="$2" best tag tmp
+  best=$(launch_agent_tag "$dir")
   [ -n "$best" ] || return 0
   printf '%s\n' "${best##*/}" >"$directory/agent-task" 2>/dev/null || :
   IFS= read -r tag <"$directory/tag" 2>/dev/null || IFS= read -r tag <"$best" 2>/dev/null || tag=''
@@ -1976,7 +1998,7 @@ refuse_live_run() { # brief resume
 start_run() {
   [ "$#" -ge 1 ] || usage
   local vendor="$1" brief='' workdir="$PWD" explicit_account='' model='' effort='' resume='' first_line='' review_round='' round_flag='' role='workers' research_timeout='' sandbox_exec=''
-  local round_source='' candidate='' rule=''
+  local round_source='' spawn_round='' candidate='' rule=''
   local -a text_rounds=()
   local account pin config_model model_label agy_model='' gemini_family='' grok_turns='' root run_id='' directory=''
   local explicit_model='' explicit_effort='' light='' light_model='' model_class=workers fix_rule='' anchors_top='' chat_fast=false fast_role='' model_id='' slug_account=''
@@ -2091,11 +2113,22 @@ start_run() {
     round_source=flag
   else
     review_round=$(brief_review_round "$brief") || exit 4
+    [ -z "$review_round" ] || round_source=header
+  fi
+  spawn_round=$(spawn_review_round)
+  if [ -n "$spawn_round" ] && [ -n "$review_round" ] && [ "$review_round" != "$spawn_round" ]; then
+    fail "--round/ROUND: says '$review_round' but the Agent prompt that spawned this relay says 'ROUND: $spawn_round': launch with the prompt's ROUND: line, or have the orchestrator respawn with the right one"
+  elif [ -n "$spawn_round" ] && [ -z "$review_round" ]; then
+    review_round_ok "$spawn_round" ||
+      fail "the Agent prompt that spawned this relay names no review round on record: 'ROUND: $spawn_round'"
+    review_round=$spawn_round
+    round_source=prompt
+  fi
+  if [ -z "$round_flag" ]; then
     if [ "$review_round" = none ]; then
       review_round=''
-    elif [ -n "$review_round" ]; then
-      round_source=header
-    elif [ "$role" = workers ]; then
+      round_source=''
+    elif [ -z "$review_round" ] && [ "$role" = workers ]; then
       # Prose that names a round with a confirmed finding left is asked about, never bound: bound,
       # a read-only audit citing a run as evidence was handed that round's findings to fix. Unasked,
       # a hand-written fix brief lands its fixes as the next chat's debt.
@@ -4016,7 +4049,7 @@ claim_family_anchors() { # directory snap repo top launcher path...
 claim_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" directory workdir top complete=false session launcher path absolute relative
-  local sub family physical
+  local sub family physical under
   local -a paths=() resolved=() elsewhere=()
   shift
   while [ "$#" -gt 0 ]; do
@@ -4064,31 +4097,35 @@ claim_run() {
       *) absolute=$(normalize_path "$workdir/$path") ;;
     esac
     case "$absolute" in
-      "$workdir"/*) ;;
-      *)
-        physical=$(physical_path "$absolute") || physical=$absolute
-        if [ -n "$top" ] && [ "$physical" != "${physical#"$top"/}" ]; then
-          absolute=$physical
-        else
-          # A repository the run snapshotted beside its workdir (an --add-dir, the launcher's
-          # `.repos`): a fix it made there is claimed and folded in that family.
+      "$workdir"/*) under=true ;;
+      *) under=false ;;
+    esac
+    if [ "$under" = false ] || [ -z "$top" ]; then
+      physical=$(physical_path "$absolute") || physical=$absolute
+      if [ "$under" = false ] && [ -n "$top" ] && [ "$physical" != "${physical#"$top"/}" ]; then
+        absolute=$physical
+      else
+        # A repository the run snapshotted beside its workdir (an --add-dir, the launcher's
+        # `.repos`), or under a workdir that is no repository itself: a fix it made there is
+        # claimed and folded in that family.
+        family=''
+        for sub in "$directory"/families/*; do
+          [ -f "$sub/top" ] && [ -f "$sub/head-after" ] || continue
+          IFS= read -r family <"$sub/top" 2>/dev/null || continue
+          family=$(cd "$family" 2>/dev/null && pwd -P) || { family=''; continue; }
+          [ "$physical" != "${physical#"$family"/}" ] && break
           family=''
-          for sub in "$directory"/families/*; do
-            [ -f "$sub/top" ] && [ -f "$sub/head-after" ] || continue
-            IFS= read -r family <"$sub/top" 2>/dev/null || continue
-            family=$(cd "$family" 2>/dev/null && pwd -P) || { family=''; continue; }
-            [ "$physical" != "${physical#"$family"/}" ] && break
-            family=''
-          done
-          [ -n "$family" ] ||
-            fail "$path is not under this run's workdir ($workdir)${top:+, its repository ($top)} or a repository it snapshotted"
+        done
+        if [ -n "$family" ]; then
           snapshot_changed_paths "$sub" "$family" | grep -qxF -- "${physical#"$family"/}" ||
             fail "$path is not in this run's snapshot diff"
           elsewhere+=("$sub"$'\t'"$family"$'\t'"$physical")
           continue
         fi
-        ;;
-    esac
+        [ "$under" = true ] ||
+          fail "$path is not under this run's workdir ($workdir)${top:+, its repository ($top)} or a repository it snapshotted"
+      fi
+    fi
     if [ -f "$directory/head-after" ]; then
       [ -n "$top" ] && snapshot_changed_paths "$directory" "$top" |
         grep -qxF -- "${absolute#"$top"/}" ||
