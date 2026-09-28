@@ -102,6 +102,12 @@ assert_fails bash -c '. "$1"; rj_autonomous matrix-plain' _ "$JOURNAL_LIB" >/dev
 # what keeps one state's denial from handing the other the retry the gate grants on a repeat.
 in_span() { GATE_SID=matrix-span GATE_TRANSCRIPT="$SPAN_T" "$@"; }
 out_span() { GATE_SID=matrix-plain GATE_TRANSCRIPT="$NOSPAN_T" "$@"; }
+# Without `words_span_live` both doors keep the older span rule; a stub library supplies it.
+export WORDS_LIB="$WORK/no-words.sh"
+SPAN_LIB="$WORK/span-words.sh"
+printf '. %q\nwords_span_live() { words_sync "${1:-}" "${2:-}"; words_span_on "${1:-}" >/dev/null; }\n' \
+  "$HOME/.claude/hooks/lib/words.sh" > "$SPAN_LIB"
+live_span() { WORDS_LIB=$SPAN_LIB "$@"; }
 
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 REAL_MD="$REPO/global/CLAUDE.md"
@@ -1694,6 +1700,32 @@ for f in "$HOME/.claude/docs/review-tiers.md" "$HOME/.claude/agents/codex-worker
   assert_eq deny "$(out_span decision "echo more >> $f")"
 done
 
+echo "== gate matrix: the live span helper lets the span grow the on-demand files and CLAUDE.md too"
+for f in "$HOME/.claude/docs/review-tiers.md" "$HOME/.claude/agents/codex-worker.md" \
+         "$HOME/.claude/skills/demo/SKILL.md" "$HOME/.claude/commands/worker.md"; do
+  assert_eq pass "$(live_span in_span decision "echo live-more >> $f")"
+  assert_eq deny "$(live_span out_span decision "echo live-more >> $f")"
+done
+assert_eq pass "$(live_span in_span decision "python3 -c \"open('$HOME/.claude/docs/review-tiers.md','a').write('x')\"")"
+assert_eq pass "$(live_span in_span decision "echo live-more >> $CLAUDE_MD")"
+assert_eq deny "$(live_span out_span decision "echo live-more >> $CLAUDE_MD")"
+assert_contains "orchestrator's to edit" "$(CLAUDEB_WORKER=1 live_span in_span gate "echo live-more >> $CLAUDE_MD" 2>&1)"
+assert_eq deny "$(live_span in_span decision "echo live-more >> $HOME/.claude/review-debt-ignore")"
+
+echo "== bloat gate: the live span helper passes growth, out of the span it is still priced"
+bloat_as() { # session transcript path
+  local out
+  out=$(jq -cn --arg p "$3" --arg n "$big" --arg s "$1" --arg t "$2" \
+          '{tool_name:"Edit",cwd:"/tmp",session_id:$s,transcript_path:$t,tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
+        | bash "$BLOAT")
+  [ -n "$out" ] || { printf 'pass\n'; return 0; }
+  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
+}
+assert_eq pass "$(live_span bloat_as matrix-span "$SPAN_T" "$CLAUDE_MD")"
+assert_eq pass "$(live_span bloat_as matrix-span "$SPAN_T" "$HOME/.claude/docs/review-tiers.md")"
+assert_eq deny "$(live_span bloat_as matrix-plain "$NOSPAN_T" "$HOME/.claude/docs/review-tiers.md")"
+assert_eq deny "$(bloat_as matrix-span "$SPAN_T" "$HOME/.claude/agents/codex-worker.md")"
+
 echo "== gate matrix: every write shape the gate reads is judged on whether it can shrink"
 DOC="$HOME/.claude/docs/review-tiers.md"
 assert_eq pass "$(in_span decision "printf x >| $DOC")"
@@ -1867,6 +1899,22 @@ printf 'a brief nobody approved\n' >> "$AGENT_MD"
 ctx=$(span_check sid-revert-edit Edit file_path "$AGENT_MD" "$SPAN_T")
 assert_contains "REVERTED" "$ctx"
 assert_eq "$before" "$(cat "$AGENT_MD")"
+
+echo "== tripwire: with the live span helper growth inside the span stays"
+printf 'words_span_live() { return 1; }\n' > "$WORK/span-off-words.sh"
+span_base sid-live-off >/dev/null
+pre_call sid-live-off Bash command "$grow_cmd" "$SPAN_T"
+printf 'grown while the helper says off\n' >> "$DOC"
+ctx=$(WORDS_LIB="$WORK/span-off-words.sh" span_check sid-live-off Bash command "$grow_cmd" "$SPAN_T")
+assert_contains "REVERTED" "$ctx"
+span_base sid-live >/dev/null
+pre_call sid-live Bash command "$grow_cmd" "$SPAN_T"
+printf 'grown inside the live span\n' >> "$DOC"
+ctx=$(live_span span_check sid-live Bash command "$grow_cmd" "$SPAN_T")
+case "$ctx" in *REVERTED*) fail "growth inside the live span was put back" ;; esac
+assert_contains "grown inside the live span" "$(cat "$DOC")"
+printf 'tier doc before the revert case\n' > "$DOC"
+span_base sid-live >/dev/null
 
 echo "== tripwire: outside the span nothing is rolled back"
 # Egor is here to arbiter, and the writer may be another chat sharing the checkout.

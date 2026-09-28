@@ -357,6 +357,9 @@ worker_model_pin_allowed() {
   # pin, and a session that only has to type the path differently has no gate at all.
   [ "$(worker_model_canonical_path "$(worker_model_file)")" \
     = "$(worker_model_canonical_path "$HOME/.claude/worker-model")" ] || return 0
+  ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" &&
+    command -v words_span_live && command -v words_session_transcript && sid=$(worker_model_chat_session) &&
+    words_span_live "$sid" "$(words_session_transcript "$sid")" ) >/dev/null 2>&1 && return 0
   [ -n "$(find "$(worker_model_pin_grant)" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ]
 }
 

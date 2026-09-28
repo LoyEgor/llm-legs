@@ -114,7 +114,11 @@ if [ "$own_source" = claudeb-state ]; then
   exit 0
 fi
 
-if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null; then
+span_live() {
+  ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" && command -v words_span_live &&
+    words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
+}
+if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null && ! span_live; then
   jq -cn --arg r "Session account $vendor/$own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through claudeb-/codex-workers (run worker-pick), or ask Egor." \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null
   exit 0

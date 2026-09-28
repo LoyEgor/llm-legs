@@ -144,8 +144,9 @@ span_active() {
 # away, the model is the only actor, and a write that replaces a doc's bytes is exactly the cleanup
 # he left it — while an append can only add to a file every later session re-reads. What this gate
 # can know before the call is the SHAPE of the write; what the bytes come to is settled afterwards
-# by the tripwire, which puts back growth this session's own call produced. The every-session class
-# and the review-debt list are out of it entirely: both are denied always.
+# by the tripwire, which puts back growth this session's own call produced. Once `words_span_live`
+# answers, any write to either class passes, the every-session class included unless a relay
+# worker writes it; the review-debt list stays denied always.
 #
 # Returns 0 for a REFUSED destination and publishes the state the denial is written from. realpath
 # runs here and nowhere else, and only for a name that already matched a guarded spelling.
@@ -170,6 +171,10 @@ judge_row() { # name mode [verb]
   if [ "$row_class" = span ] && span_active; then
     row_span=1
     [ "$2" = trunc ] && return 1
+    instruction_span_live "$sid" "$transcript" && return 1
+  fi
+  if [ "$row_class" = always ] && ! instruction_in_relay && span_active; then
+    instruction_span_live "$sid" "$transcript" && return 1
   fi
   hit=$1; class=$row_class; span=$row_span; abs=$row_abs; abs_real=$row_real
   return 0

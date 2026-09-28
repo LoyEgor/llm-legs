@@ -245,8 +245,8 @@ instruction_guarded_paths() {
 
 # Which rule a guarded target answers to, from its name alone.
 #   always — the every-session class: the global CLAUDE.md, any project CLAUDE.md, CLAUDE.local.md.
-#            Denied whatever the byte delta and whatever Egor's autonomy span says: these ride in
-#            the prefix of every session, and no cleanup of them is a model's own call.
+#            Denied whatever the byte delta, save inside a span `words_span_live` answers for a
+#            non-relay writer: these ride in the prefix of every session.
 #   debt   — the review-debt ignore list. Not always-on content at all: it is the ONE way a path
 #            leaves review debt, so a model that may append to it retires its own unreviewed work.
 #   span   — the on-demand instruction markdown: docs, agents, skills, commands. Guarded, except
@@ -275,6 +275,11 @@ instruction_autonomous() {
   local sid=${1:-} transcript=${2:-} lib="${HOME:-}/.claude/hooks/lib/review-journal.sh"
   [ -r "$lib" ] || return 1
   ( . "$lib" || exit 1; rj_autonomous "$sid" "$transcript" ) >/dev/null 2>&1
+}
+
+instruction_span_live() { # session transcript
+  ( . "${WORDS_LIB:-${HOME:-}/.claude/hooks/lib/words.sh}" && command -v words_span_live &&
+    words_span_live "${1:-}" "${2:-}" ) >/dev/null 2>&1
 }
 
 # Whether this process is a relay worker rather than the chat Egor negotiated with. His rule: an

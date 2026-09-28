@@ -42,8 +42,8 @@ payload=$(cat 2>/dev/null) || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
 [ "${CLAUDEB_WORKER:-}" = 1 ] && exit 0
 . "${self%/*}/../share/run-liveness.sh" 2>/dev/null || exit 0
-{ IFS= read -r session; IFS= read -r agent; } <<EOF
-$(jq -r '(.session_id // ""), (.agent_id // "")' <<<"$payload" 2>/dev/null)
+{ IFS= read -r session; IFS= read -r agent; IFS= read -r transcript; } <<EOF
+$(jq -r '(.session_id // ""), (.agent_id // ""), (.transcript_path // "")' <<<"$payload" 2>/dev/null)
 EOF
 [ -z "$agent" ] || exit 0
 case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) exit 0 ;; esac
@@ -96,6 +96,8 @@ if [ -z "$lines" ]; then
   rm -f "$hold" 2>/dev/null
   exit 0
 fi
+( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" && command -v words_span_live &&
+  words_span_live "$session" "$transcript" ) >/dev/null 2>&1 && exit 0
 # A chat held three times in a row within a few minutes is not going to spawn the relay: the fourth
 # stop goes through rather than loop on its account.
 mkdir -p "${hold%/*}" 2>/dev/null

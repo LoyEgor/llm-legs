@@ -51,9 +51,13 @@ account_vendors() { # name → every vendor whose live pool holds it, one per li
 }
 
 granted() { # target
-  local grant content lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}
+  local grant content sid lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}
   [ -n "${CLAUDECODE:-}" ] || return 0
   if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v words_grant_target >/dev/null 2>&1; then
+    if command -v words_span_live >/dev/null 2>&1 && command -v words_session_transcript >/dev/null 2>&1; then
+      sid=$(worker_model_chat_session)
+      words_span_live "$sid" "$(words_session_transcript "$sid")" && return 0
+    fi
     content=$(words_grant_target "$(worker_model_chat_session)" pin) || return 1
     content=$(lower "$content")
     [ -n "$content" ] || return 1

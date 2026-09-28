@@ -330,6 +330,7 @@ if [ "$rate_state" = measured ] && [ "$weekly_zero" != true ]; then
   [ "$derived" -gt "$threshold" ] 2>/dev/null && threshold=$derived
 fi
 [ "$delta" -gt "$threshold" ] 2>/dev/null || pass
+instruction_span_live "$sid" "$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null)" && pass
 
 # The session is part of the key, exactly as it is in the write gate: approval Egor gave in one
 # chat is not approval a parallel or later one inherits for the same edit.

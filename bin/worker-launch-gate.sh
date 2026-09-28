@@ -114,6 +114,10 @@ deny() {
     2>/dev/null
   exit 0
 }
+span_live() {
+  ( . "${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh}" && command -v words_span_live &&
+    words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
+}
 
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat) || exit 0
@@ -342,7 +346,7 @@ if [ -n "$agent_id" ] || [ "${CLAUDEB_WORKER:-}" = 1 ]; then
 fi
 legs_hit=$(grep -E "$OWNED_LEGS_RE" <<<"$scan" 2>/dev/null | grep -Ev -e "$LEGS_FREE_RE" | head -n1 |
   grep -Eo "$OWNED_LEGS_RE" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-[ -z "$legs_hit" ] ||
+[ -z "$legs_hit" ] || span_live ||
   deny "Blocked: \`${legs_hit}\` spends a Claude, Codex or Gemini account from Claude Code's Bash with no worker-run record and no task row naming the account. A question for a model goes to ${RELAY_AGENTS}; a live probe is Egor's to run — hand him the paste-ready command for his own terminal."
 case "$agent_type" in
   image-gen) ;;
@@ -525,7 +529,7 @@ piped=$(grep -Eo "(^|[^|])[|][[:space:]]*((${WRAPPER})[[:space:]]+)*([^[:space:]
 scheduled=$(grep -E '^[[:space:]]*(at|batch)([[:space:]]|$)|^[[:space:]]*crontab([[:space:]]|$)' <<<"$scan" 2>/dev/null |
   grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l[[:space:]]*$' | head -n1 |
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
-[ -z "$scheduled" ] || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
+[ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
 for launch_re in "${LAUNCH_RES[@]}"; do
   hit=$(grep -Eo "$launch_re" <<<"$unsanctioned" 2>/dev/null | head -n1 |
     tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')

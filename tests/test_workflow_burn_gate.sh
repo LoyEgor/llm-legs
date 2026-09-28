@@ -25,8 +25,8 @@ HOME_DIR="$WORK/home"
 mkdir -p "$HOME_DIR/.claude-profiles/.claudeb"
 
 gate() {
-  jq -cn '{hook_event_name:"PreToolUse",tool_name:"Workflow",tool_input:{}}' |
-    env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" \
+  jq -cn --arg s "${SESSION_ID-}" '{hook_event_name:"PreToolUse",tool_name:"Workflow",session_id:$s,tool_input:{}}' |
+    env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" WORDS_LIB="${WORDS_LIB_ENV-}" \
       CLAUDE_LIMITS_ACCOUNT="${ACCOUNT_ENV-}" CLAUDE_CONFIG_DIR="${CONFIG_DIR_ENV-}" \
       CLAUDEGPT_ACCOUNT="${GATEWAY_ENV-}" \
       bash "$GATE"
@@ -41,6 +41,17 @@ assert warned "$(gate)"
 assert contains "$(gate)" 'alona'
 limits alona 97
 assert denied "$(gate)"
+# Egor's autonomy span opens the door; the warning still speaks.
+printf 'words_span_live() { [ "$1" = span-sid ]; }\n' >"$WORK/span-words.sh"
+SESSION_ID=span-sid WORDS_LIB_ENV="$WORK/span-words.sh"
+out=$(gate)
+assert lacks "$out" '"permissionDecision"'
+assert warned "$out"
+SESSION_ID=other-sid
+assert denied "$(gate)"
+SESSION_ID=span-sid WORDS_LIB_ENV="$WORK/no-words.sh"
+assert denied "$(gate)"
+SESSION_ID= WORDS_LIB_ENV=
 
 # --- Nothing in the environment: claudeb's own state file names the account --------------------
 # A plain `claude` launch sets neither variable, and the gate used to skip that session entirely —

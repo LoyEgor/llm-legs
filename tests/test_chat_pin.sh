@@ -230,7 +230,18 @@ assert "$PIN" auto
 assert_fails test -e "$CHAT"
 words_grant grok-fast
 assert "$PIN" grok-fast
-unset WORDS_LIB WORDS_DIR
+# Egor's autonomy span moves this chat's pin with no grant.
+rm -f "$WORDS_DIR/sess-1/grant.pin"
+# The span reads the chat's transcript first, so a span-off he queued mid-turn is caught.
+mkdir -p "$WORK/troot/projects/p" && : >"$WORK/troot/projects/p/sess-1.jsonl"
+export CLAUDE_TRANSCRIPT_ROOTS="$WORK/troot"
+printf '. %q\nwords_span_live() { [ "$1" = "$SPAN_SID" ] && [ "$2" = %q ]; }\n' "$WORDS_LIB" \
+  "$WORK/troot/projects/p/sess-1.jsonl" >"$WORK/span-words.sh"
+assert exits 3 env WORDS_LIB="$WORK/span-words.sh" SPAN_SID=sess-2 "$PIN" codex
+assert env WORDS_LIB="$WORK/span-words.sh" SPAN_SID=sess-1 "$PIN" codex
+assert chat_is 'codex_profile=*'
+assert env WORDS_LIB="$WORK/span-words.sh" SPAN_SID=sess-1 "$PIN" grok-fast
+unset WORDS_LIB WORDS_DIR CLAUDE_TRANSCRIPT_ROOTS
 rm -f "$GRANT"
 
 # --- The pin reaches the one resolver every reader uses -----------------------------------------

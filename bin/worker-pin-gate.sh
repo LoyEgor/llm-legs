@@ -139,6 +139,8 @@ fresh() { # call
   local lib=${WORDS_LIB:-$HOME/.claude/hooks/lib/words.sh} sid grant
   if [ -r "$lib" ] && . "$lib" 2>/dev/null && command -v word_gate_allow >/dev/null 2>&1; then
     sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+    command -v words_span_live >/dev/null 2>&1 &&
+      words_span_live "$sid" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" && return 0
     word_gate_allow "$sid" pin "$(jq -r '.tool_input.command // empty' <<<"$input" 2>/dev/null)" \
       "${1:-}" "$(pin_file)" "$(jq -r '.transcript_path // empty' <<<"$input" 2>/dev/null)" || return 1
     grant=$(words_grant_fresh "$sid" pin)

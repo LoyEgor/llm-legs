@@ -212,4 +212,15 @@ for refound in 'BRIEF=$(ls -t /tmp/claudeb-brief.* | head -1); worker-run start 
   expect_as deny "$RELAY_T" "$refound" 'another relay'"'"'s brief'
 done
 
+# Egor's autonomy span hands the ask_*/probe legs and scheduling back to the model; the mechanical
+# denials stay.
+printf 'words_span_live() { [ "$1" = s1 ]; }\n' >"$WORK/span-on.sh"
+printf 'words_span_live() { [ "$1" = other ]; }\n' >"$WORK/span-off.sh"
+for handed in 'ask_codex.sh "what is this"' 'gemini-probe --account rawi' 'crontab /tmp/tab' 'batch < /tmp/job'; do
+  WORDS_LIB="$WORK/span-on.sh" expect pass '' "$handed"
+  WORDS_LIB="$WORK/span-off.sh" expect deny '' "$handed"
+done
+WORDS_LIB="$WORK/span-on.sh" expect deny '' 'claude -p hi'
+WORDS_LIB="$WORK/span-on.sh" expect deny '' 'echo hi | claude'
+
 printf 'PASS: %s asserts; the launch gate denies inline print flags, every headless codex subcommand, wrapped and program-string vendor calls, comment and operand exemptions, the ask_*/probe legs, image-gen worker-run launches, worker review panels, relay polls that are backgrounded (behind a redirection or a chain too) or outrun their timeout (--max=N read, review-waiter and light-research included), hand-set relay and review tokens, review launches from any agent or a Monitor (review-waiter keeps its recoveries), a launch chained after a sanctioned segment and the package-runner, flock and exec wrappers, a vendor fed through a pipe, at/batch/crontab scheduling and the codex MCP tools, with deny texts naming the relay Agents, while plain reads pass\n' "$asserts"

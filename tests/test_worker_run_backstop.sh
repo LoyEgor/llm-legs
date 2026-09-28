@@ -63,6 +63,11 @@ run r2 s1 claudeb
 assert_eq "" "$(CLAUDEB_WORKER=1 stop)"
 assert_eq "" "$(stop '+ {agent_id:"a1"}')"
 assert_has 'spawn claudeb-worker `ATTACH r2:`' "$(stop | reason)"
+# Inside Egor's autonomy span the stop is never held.
+forget
+printf 'words_span_live() { [ "$1" = s1 ] && [ "$2" = /t/s1.jsonl ]; }\n' >"$WORK/span-words.sh"
+assert_eq "" "$(WORDS_LIB="$WORK/span-words.sh" stop '+ {transcript_path:"/t/s1.jsonl"}')"
+assert_eq block "$(WORDS_LIB="$WORK/span-words.sh" stop | jq -r .decision)"
 rm -rf "$WORKER_RUN_DIR/r2"; forget
 
 # A live review of this chat needs a live review-waiter tag; a stale heartbeat is a dead panel.

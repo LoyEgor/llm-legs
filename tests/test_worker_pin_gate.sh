@@ -395,6 +395,12 @@ rm -f "$GRANT"
 chmod 000 "$WORDS_DIR/s"
 assert allowed "$(write_event "$PIN_FILE")"
 chmod 700 "$WORDS_DIR/s"
+# Egor's autonomy span moves the pin with no grant at all.
+printf '. %q\nwords_span_live() { [ "$1" = "$SPAN_SID" ]; }\n' "$WORDS_LIB" >"$WORK/span-words.sh"
+assert denied "$(WORDS_LIB="$WORK/span-words.sh" SPAN_SID=other write_event "$PIN_FILE")"
+assert allowed "$(WORDS_LIB="$WORK/span-words.sh" SPAN_SID=s write_event "$PIN_FILE")"
+assert allowed "$(WORDS_LIB="$WORK/span-words.sh" SPAN_SID=s bash_event "printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
+assert denied "$(WORDS_LIB="$WORK/span-words.sh" SPAN_SID=other bash_event "printf 'codex_profile=x\\n' > ~/.claude/worker-model")"
 unset WORDS_LIB WORDS_DIR
 
 # --- The chat pin file is chat-pin's alone ------------------------------------------------------
@@ -481,6 +487,17 @@ touch -t 202601010000 "$GRANT"
 assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
 assert lacks "$(cat "$REAL_PIN")" 'claudeb_profile='
 rm -f "$GRANT"
+
+# Egor's autonomy span moves it with no grant.
+printf '%s\n' 'words_session_transcript() { printf "/t/%s.jsonl\n" "$1"; }' \
+  'words_span_live() { [ "$1" = s ] && [ "$2" = /t/s.jsonl ]; }' >"$WORK/span-only.sh"
+WORDS_LIB="$WORK/span-only.sh" CLAUDE_CODE_SESSION_ID=other \
+  assert_fails worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
+WORDS_LIB="$WORK/span-only.sh" CLAUDE_CODE_SESSION_ID=s \
+  assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled beta
+assert contains "$(cat "$REAL_PIN")" 'claudeb_profile=beta'
+WORDS_LIB="$WORK/span-only.sh" CLAUDE_CODE_SESSION_ID=s \
+  assert worker_model_pin_account claudeb_profile claudeb accounts never_disabled --clear
 
 # The same file spelled differently is still his file: keying the fixture exemption on the path
 # TEXT hands a session the pin for the price of an extra slash.

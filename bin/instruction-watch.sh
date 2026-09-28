@@ -608,7 +608,7 @@ revert_growth() {
   # decides the wording, and a worker inside a span told to leave the addition for Egor's next turn
   # is a worker handed a human's instruction instead of the MD-PROPOSAL protocol it answers by.
   ! instruction_in_relay || relay_revert=1
-  if ! instruction_autonomous "$sid" "$transcript"; then
+  if ! instruction_autonomous "$sid" "$transcript" || instruction_span_live "$sid" "$transcript"; then
     # A worker's own class check, narrower than the span's: the review-debt list and anything else
     # a class speaks for but no session re-reads is not what the orchestrator's rule is about.
     [ -n "$relay_revert" ] && instruction_always_loaded "$vis" "$HOME" >/dev/null || return 1

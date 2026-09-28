@@ -197,10 +197,11 @@ the main chat's Bash belongs to a turn nothing renders. `bin/worker-launch-gate.
 mechanical half — a PreToolUse Bash gate denying a bare launch in any segment of a command (a
 launcher in command position exempts only its own segment, and a comment or an operand naming one
 exempts nothing), and denying an owned one outside the agent type that owns it. The `ask_*.sh`
-legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash, and no agent,
+legs, `codex-fast-probe` and `gemini-probe` are denied from every Claude Code Bash outside Egor's
+autonomy span (`words_span_live`), and no agent,
 no Monitor and no headless worker (`CLAUDEB_WORKER=1`) launches a review panel (`review-waiter`
 keeps only the recoveries of the run it waits on). The run itself is the backstop: a live
-run of the chat that no relay owns holds the chat's Stop (`bin/worker-run-backstop.sh`). It reads the whole command string, and a vendor name counts only where a
+run of the chat that no relay owns holds the chat's Stop outside his span (`bin/worker-run-backstop.sh`). It reads the whole command string, and a vendor name counts only where a
 shell would run it: quoted text collapses into one operand word before the quotes come off, so
 `'claude' -p` and `X="a b" claude -p` are denied while a launch quoted inside an echo or a grep is
 the operand it is. It fails open on its own errors. Interactive launches — no `-p` / `--print` /
