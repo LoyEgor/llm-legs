@@ -99,10 +99,6 @@ WAIT_ASK="wait through the ATTACH relay / review-waiter agent so the run has a m
 REVIEW_LAUNCH_RE="${VENDOR_WORD}review-bench[[:space:]]+(review|run)${EDGE}"
 REVIEW_IDLE_RE='[[:space:]](--help|-h|--price)([[:space:]]|$)'
 RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker, grok-worker or light-worker, the one worker-pick's NEXT row names, or light-research for a read-only question — which runs worker-run itself"
-if self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/worker-model.sh" 2>/dev/null &&
-  worker_light_off; then
-  RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker or grok-worker, the one worker-pick's NEXT row names, a read-only question in a brief that says so — which runs worker-run itself"
-fi
 # The owner tokens worker-run and review-bench check are the hooks' to stamp; a command setting one
 # by hand is a forged owner.
 FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:space:]]+-[^[:space:]]+)*[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)="
@@ -110,8 +106,8 @@ FORGED_TOKEN_RE="^[[:space:]]*((export|env|declare|typeset|local|readonly)([[:sp
 SANCTIONED_RE="${VENDOR_WORD}(worker-run|review-bench|llm-limits(\.sh)?|claude-session-driver|opencode-go|light-research|claudeb[[:space:]]+(revive|warm))${EDGE}"
 
 deny() {
-  jq -cn --arg r "$1" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}' \
+  jq -cn --arg hook "${0##*/}" --arg r "$1" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: ("[" + $hook + "] " + $r)}}' \
     2>/dev/null
   exit 0
 }
@@ -124,13 +120,26 @@ command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat) || exit 0
 tool=$(printf '%s' "$input" | jq -r 'select(.hook_event_name == "PreToolUse") | .tool_name // empty' 2>/dev/null) ||
   exit 0
+cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
+# A Bash call that provably writes nothing runs no program, so it launches nothing. The forged-owner
+# check reads the text with its quotes gone, so a call naming either token still takes the full path.
+if [ "$tool" = Bash ]; then
+  case "${cmd//[\'\"\\]/}" in
+    *WORKER_RUN_RELAY* | *REVIEW_BENCH_DOOR*) ;;
+    *) . "${READONLY_COMMAND_LIB:-$HOME/.claude/hooks/lib/readonly-command.sh}" 2>/dev/null &&
+         rc_readonly_command "$cmd" && exit 0 ;;
+  esac
+fi
+if self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/worker-model.sh" 2>/dev/null &&
+  worker_light_off; then
+  RELAY_AGENTS="a relay Agent — claudeb-worker, codex-worker, gemini-worker or grok-worker, the one worker-pick's NEXT row names, a read-only question in a brief that says so — which runs worker-run itself"
+fi
 case "$tool" in
   Bash | Monitor) ;;
   mcp__codex__*)
     deny "Blocked: \`${tool}\` runs codex headless on this session's own codex login — no worker-run record, no task row naming the account, no workers switch. Work for a model goes to ${RELAY_AGENTS}; Computer Use is a codex-worker brief carrying \`COMPUTER: yes\`." ;;
   *) exit 0 ;;
 esac
-cmd=$(printf '%s' "$input" | jq -r '.tool_input.command // empty' 2>/dev/null) || exit 0
 [ -n "$cmd" ] || exit 0
 
 # A shell word, in command position, whose whole job is to interpret what it is fed: what stands
@@ -473,6 +482,31 @@ relay_brief() {
     "$(printf '%s' "$input" | jq -r '.agent_id // empty' 2>/dev/null)" | head -n 400
 }
 brief_value() { grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" <<<"$brief" | sed -E "s/^$1:[[:space:]]*//"; }
+# worker-run reads a header line itself when its flag is absent, so a missing flag only matters when
+# the brief this start line launches does not carry the line the relay was handed. Only a heredoc
+# written in this call to the start line's own --brief counts, and research and recipe starts never
+# adopt a line in worker-run, so nothing is carried for them.
+carried() { # key value
+  local target
+  case " $start_line " in *[[:space:]]--recipe[[:space:]=]* | *[[:space:]]--role[[:space:]=][\"\']research[\"\'][[:space:]]* | *[[:space:]]--role[[:space:]=]research[[:space:]]*) return 1 ;; esac
+  target=$(grep -oE -e "--brief(=|[[:space:]]+)(\"[^\"]*\"|'[^']*'|[^[:space:];&|]+)" <<<"$start_line" | head -n 1 |
+    sed -E "s/^--brief(=|[[:space:]]+)//; s/^[\"']//; s/[\"']$//")
+  [ -n "$target" ] || return 1
+  [ "$(awk -v target="$target" -v q="'" '
+    BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = ">>?[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+" }
+    body { line = $0; if (strip) sub(/^\t+/, "", line); if (line == delim) { body = 0; if (hit) exit; next } if (hit) print; next }
+    match($0, doc) {
+      delim = substr($0, RSTART, RLENGTH); strip = delim ~ /<<-/
+      sub(/^[^<]*<<-?[ \t]*/, "", delim); gsub("[\"" q "]", "", delim)
+      rest = $0; hit = 0
+      while (match(rest, to)) {
+        r = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+        sub(/^>>?[ \t]*/, "", r); gsub("[\"" q "]", "", r)
+        if (r == target) hit = 1
+      }
+      body = 1
+    }' <<<"$cmd" | head -n 400 | grep -m1 -oE "^$1:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$1:[[:space:]]*//")" = "$2" ]
+}
 flag_value() {
   grep -oE -e "--$1(=|[[:space:]]+)[\"']?[A-Za-z0-9_.-]+" <<<"$start_line" | head -n 1 |
     sed -E "s/^--$1(=|[[:space:]]+)[\"']?//"
@@ -495,7 +529,7 @@ case "$agent_type" in
       want_model=$(brief_value MODEL)
       [ "$agent_type" != light-worker ] || want_model=''
       have_model=$(flag_value model)
-      if [ "$have_model" != "$want_model" ]; then
+      if [ "$have_model" != "$want_model" ] && { [ -n "$have_model" ] || ! carried MODEL "$want_model"; }; then
         if [ -z "$want_model" ]; then
           header_deny "Blocked: this launch passes \`--model ${have_model}\`, but the brief carries no MODEL: line$([ "$agent_type" != light-worker ] || printf ' (a light-worker never passes one: the light row decides)'). Drop \`--model\`; worker-run resolves the default itself."
         fi
@@ -506,13 +540,14 @@ case "$agent_type" in
       [ -n "$want_account" ] || [ -z "$have_account" ] ||
         header_deny "Blocked: this launch passes \`--account ${have_account}\`, but the brief carries no ACCOUNT: line. Drop \`--account\`: worker-run routes the run itself, and only the orchestrator's brief names an account."
       [ -z "$want_account" ] || [ "$have_account" = "$want_account" ] ||
+        { [ -z "$have_account" ] && carried ACCOUNT "$want_account"; } ||
         header_deny "Blocked: the brief says \`ACCOUNT: ${want_account}\`, so the launch passes \`--account ${want_account}\`$([ -z "$have_account" ] || printf ', not `--account %s`' "$have_account")."
       # Computer Use opens codex under codex_workers=off, so only the orchestrator's brief may ask for it.
       want_computer=no
       [ "$(brief_value COMPUTER)" != yes ] || want_computer=yes
       have_computer=no
       ! grep -Eq -- '--computer([[:space:]]|$)' <<<"$start_line" || have_computer=yes
-      [ "$want_computer" = no ] || [ "$have_computer" = yes ] ||
+      [ "$want_computer" = no ] || [ "$have_computer" = yes ] || carried COMPUTER yes ||
         header_deny "Blocked: the brief says \`COMPUTER: yes\`, so the launch passes \`--computer\`."
       [ "$have_computer" = no ] || [ "$want_computer" = yes ] ||
         header_deny "Blocked: this launch passes \`--computer\`, but the brief carries no \`COMPUTER: yes\` line. Drop \`--computer\`: whether a task needs Computer Use is the orchestrator's call, made in the brief."
@@ -535,6 +570,10 @@ scheduled=$(grep -E '^[[:space:]]*(at|batch)([[:space:]]|$)|^[[:space:]]*crontab
   grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l[[:space:]]*$' | head -n1 |
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
+# `help` is a subcommand only to some CLIs; to gemini and claude it is a positional prompt, so a flag
+# after it (`gemini help -p "fix x"`) is a headless launch.
+HELP_RE="${VENDOR_WORD}(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)(${SUBCOMMAND}(-h|--help)${EDGE}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*[[:space:]]*\$)"
+unsanctioned=$(grep -Ev "$HELP_RE" <<<"$unsanctioned")
 launch_any=()
 for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done
 grep -Eq "${launch_any[@]}" <<<"$unsanctioned" 2>/dev/null || LAUNCH_RES=()

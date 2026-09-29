@@ -480,6 +480,8 @@ cmd_baseline() {
     -delete 2>/dev/null
   find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
   find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
+  # A read-only call that exits non-zero gets no PostToolUse, so its note is never taken.
+  find "$STATE_DIR/readonly" -mindepth 1 -maxdepth 1 -type f -mmin +1440 -delete 2>/dev/null
   instruction_ranked_refresh "$HOME" "$RANKED_CACHE" || true
   load_visible
   [ -z "$ref" ] || cmd_check "$out" "$event" "$sid" between "$ref"
@@ -540,7 +542,7 @@ inflight_window() { # file name start agent
 load_inflight() {
   local f name m_start m_id m_agent m_end start own_name own_file='' own_count=0 k own_agent
   local aged_files=() aged_names=() aged_starts=() aged_agents=() own_stale=() own_stale_starts=()
-  now_ns=$(instruction_ns "$(instruction_now)") || { now_ns=''; return 0; }
+  instruction_ns_to now_ns "$(instruction_now)" || { now_ns=''; return 0; }
   own_name=$(instruction_sid_name "$sid")
   own_agent=${agent_id:--}
   own_agent=${own_agent//[^A-Za-z0-9._-]/_}
@@ -549,7 +551,7 @@ load_inflight() {
     name=${f##*/}
     name=${name%%@*}
     read -r m_start m_id _ m_agent _ <"$f" 2>/dev/null || continue
-    start=$(instruction_ns "$m_start") || continue
+    instruction_ns_to start "$m_start" || continue
     if [ "$name" = "$own_name" ] && [ -n "$tool_use_id" ] && [ "$m_id" = "${tool_use_id//[^A-Za-z0-9._-]/_}" ]; then
       own_count=$((own_count + 1)); own_file=$f; own_start=$start
       continue
@@ -711,23 +713,10 @@ load_baseline() { # file
   targets=($(LC_ALL=C awk -F'\t' "$_watch_row_awk"'
     n >= 8 && F[1] !~ /^#/ { if (!seen[F[8]]++) print F[8]; if (!seen[F[7]]++) print F[7] }' "$1"))
   set +f
-  {
-    IFS= read -r -d $'\035' pinned
-    IFS= read -r -d $'\035' b_all
-    while IFS= read -r line; do
-      IFS=$'\t' read -r mtime size ino trust hash link vis real <<<"${line%%$'\036'*}"
-      case "$mtime" in
-        '#root') roots_known="$roots_known$size$_watch_nl"; continue ;;
-        '#unwatchable') unw_known="$unw_known$size$_watch_nl"; continue ;;
-        '#'*) continue ;;
-      esac
-      [ -n "$real" ] || continue
-      b_mtime+=("$mtime"); b_size+=("$size"); b_ino+=("$ino"); b_trust+=("$trust")
-      b_hash+=("$hash"); b_link+=("$link"); b_vis+=("$vis"); b_real+=("$real")
-      line=${line#*$'\036'}
-      c_real+=("${line%%$'\036'*}"); c_vis+=("${line#*$'\036'}")
-    done
-  } < <(
+  # Captured whole and read back from a here-string: `read -d` takes a pipe one byte at a time, and
+  # these rows run to hundreds of kilobytes.
+  local rows
+  rows=$(
     { [ "${#targets[@]}" -eq 0 ] || stat -f '%N%t%Fm%t%z%t%i%t%Y' -- "${targets[@]}" 2>/dev/null; } |
     LC_ALL=C awk -F'\t' '
       FILENAME == "-" { if (length($1)) S[$1] = substr($0, length($1) + 2); next }
@@ -750,6 +739,23 @@ load_baseline() { # file
         printf "\035"; for (k = 1; k <= na; k++) print all[k]
         printf "\035"; for (k = 1; k <= nr; k++) print rest[k]
       }' - "$1")
+  {
+    IFS= read -r -d $'\035' pinned
+    IFS= read -r -d $'\035' b_all
+    while IFS= read -r line; do
+      IFS=$'\t' read -r mtime size ino trust hash link vis real <<<"${line%%$'\036'*}"
+      case "$mtime" in
+        '#root') roots_known="$roots_known$size$_watch_nl"; continue ;;
+        '#unwatchable') unw_known="$unw_known$size$_watch_nl"; continue ;;
+        '#'*) continue ;;
+      esac
+      [ -n "$real" ] || continue
+      b_mtime+=("$mtime"); b_size+=("$size"); b_ino+=("$ino"); b_trust+=("$trust")
+      b_hash+=("$hash"); b_link+=("$link"); b_vis+=("$vis"); b_real+=("$real")
+      line=${line#*$'\036'}
+      c_real+=("${line%%$'\036'*}"); c_vis+=("${line#*$'\036'}")
+    done
+  } <<<"$rows"
 }
 
 # $4 says what the comparison is against. `check`: this session's own baseline, after one of its
@@ -1000,6 +1006,9 @@ values=$(printf '%s' "$payload" | jq -er '
   { gate_journal watch fault '' '' '' 'payload does not parse'
     echo "instruction watch: the hook payload does not parse, so no change can be attributed" >&2; exit 2; }
 IFS=$'\x1f' read -r -d '' event sid transcript tool_use_id cwd agent_id <<<"$values" || :
+if [ "${1:-check}" = check ] && instruction_readonly_take "${sid:-}" "${tool_use_id:-}"; then
+  exit 0
+fi
 # A read that found no field at all leaves the newline the here-string added, and that newline is
 # the event name every emitted record would carry.
 case "${event:-}" in ''|*[!A-Za-z]*) event=PostToolUse ;; esac

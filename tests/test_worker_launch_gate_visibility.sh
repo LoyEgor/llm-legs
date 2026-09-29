@@ -9,6 +9,10 @@ mkdir -p "$HOME"
 unset CLAUDEB_WORKER WORKER_PICK_CONFIG_FILE
 asserts=0
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+# The deployed gate lets a provably read-only call skip its scan, so every denial below also proves
+# the skip swallows none.
+export READONLY_COMMAND_LIB="${CLAUDE_SETUP_ROOT:-$ROOT/../claude-setup}/hooks/lib/readonly-command.sh"
+[ -r "$READONLY_COMMAND_LIB" ] || fail "readonly-command.sh not readable (set CLAUDE_SETUP_ROOT)"
 
 verdict() { # agent command [timeout-ms|null] [background]
   jq -cn --arg agent "$1" --arg command "$2" --argjson timeout "${3:-null}" --argjson bg "${4:-false}" \
@@ -115,7 +119,8 @@ expect_as pass '{"tool_name":"mcp__other__tool","tool_input":{"prompt":"hi"}}' '
 # The relay and review tokens are the hooks' to stamp; a command setting one forges its owner.
 for forged in 'WORKER_RUN_RELAY=codex-worker:a1 worker-run start codex --brief /tmp/b --workdir /tmp' \
   'export WORKER_RUN_RELAY=codex-worker:a1; bash /tmp/launch.sh' 'env WORKER_RUN_RELAY=x python3 go.py' \
-  'X=1 REVIEW_BENCH_DOOR=abc review-bench review --mode diff' 'declare -x REVIEW_BENCH_DOOR=abc'; do
+  'X=1 REVIEW_BENCH_DOOR=abc review-bench review --mode diff' 'declare -x REVIEW_BENCH_DOOR=abc' \
+  'export WORKER_RUN_RELAY=codex-worker:a1; ls' "export WORKER_RUN_REL''AY=x; ls" "declare -x 'REVIEW_BENCH_DOOR'=abc"; do
   expect_as deny "$RELAY" "$forged" 'stamped by the hooks alone'
   expect_as deny '{}' "$forged" 'stamped by the hooks alone'
 done
@@ -141,6 +146,18 @@ expect_as deny '{}' 'llm-limits --table --no-write; claude -p hi' 'bare headless
 expect_as deny '{}' 'review-bench debt && codex exec hi' 'bare headless vendor launch'
 expect_as deny "$RELAY" 'worker-run wait r1 --max 540; codex exec hi' 'bare headless vendor launch'
 expect_as pass '{}' 'llm-limits --table --no-write'
+
+# A help screen launches nothing, while a real launch chained beside one still does.
+for help in 'codex help exec' 'codex exec --help' 'claude -p --help' 'claude -p -h' 'codexb exec -h' \
+  'gemini -p --help' 'grokb --prompt x --help' 'opencode run --help' 'codex exec --help | head -40'; do
+  expect_as pass '{}' "$help"
+  expect_as pass "$RELAY" "$help"
+done
+expect_as deny '{}' 'codex exec --help; codex exec hi' 'bare headless vendor launch'
+expect_as deny '{}' 'claude -p "explain --help"' 'bare headless vendor launch'
+expect_as deny '{}' 'codex exec help' 'bare headless vendor launch'
+expect_as deny '{}' 'gemini help -p "fix src/x.py"' 'bare headless vendor launch'
+expect_as deny '{}' 'claude help --print "fix it"' 'bare headless vendor launch'
 
 # The package runners and lock or exec wrappers put the vendor back in command position.
 for wrapped in 'npx claude -p hi' 'bunx codex exec hi' 'pnpx claude -p hi' 'npm exec claude -p hi' \

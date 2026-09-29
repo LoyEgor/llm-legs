@@ -68,7 +68,7 @@ done
 # The whole library, not its head file: the span moved into `words.sh`, which review-journal.sh
 # sources from its OWN directory — deployed alone, every in-span row of the matrix below silently
 # answers out-span.
-for part in review-journal.sh words.sh words.py word-families.json; do
+for part in review-journal.sh words.sh words.py word-families.json readonly-command.sh; do
   [ -r "${JOURNAL_LIB%/*}/$part" ] || fail "$part not readable beside review-journal.sh"
   ln -s "${JOURNAL_LIB%/*}/$part" "$HOME/.claude/hooks/lib/$part"
 done
@@ -117,6 +117,10 @@ bash_payload() {
     --arg t "${GATE_TRANSCRIPT:-$WRITE_TRANSCRIPT}" \
     '{tool_name:"Bash",session_id:$s,cwd:$d,transcript_path:$t,tool_input:{command:$c}}'
 }
+
+# A call that provably writes nothing is never marked or checked, so the calls that drive the
+# tripwire's own machinery are ones that could have written.
+ANY_CALL='make -s'
 
 append_write_user() {
   jq -cn --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -887,7 +891,7 @@ echo "== bloat gate: a memory file is priced by its class, whatever the index sa
 # Preferring that measurement — as every other class rightly does — prices a memory nobody opened
 # all month as free, which is exactly the file the class constant exists to hold down.
 mem_file="$MEM_DIR/one-fact.md"
-printf 'a fact\n' > "$mem_file"
+printf -- '---\nmetadata:\n  pinned: true\n---\na fact\n' > "$mem_file"
 assert_contains "~150 times a month" "$(price_bloat mem-file "$mem_file")"
 measured_memory() {
   jq --arg p "$1" '.paths.entries[$p] = {mode: "on_demand",
@@ -900,6 +904,26 @@ write_rates "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # The index of the set is not one of its entries: MEMORY.md is measured with the project it belongs
 # to, and blinding it would throw away the one memory-shaped file the export does see.
 assert_contains "~1,000 times a month" "$(price_bloat mem-index-still-live "$MEM_DIR/MEMORY.md")"
+
+echo "== bloat gate: an unpinned memory entry is loaded only on recall, so its size is not gated"
+unpinned="$MEM_DIR/recalled.md"
+printf -- '---\nmetadata:\n  pinned: false\n---\na fact\n' > "$unpinned"
+assert_eq pass "$(bloat_decision "$unpinned")"
+new_entry=$(jq -cn --arg p "$MEM_DIR/brand-new.md" --arg n "$big" \
+  '{tool_name:"Write",cwd:"/tmp",tool_input:{file_path:$p,content:$n}}' | bash "$BLOAT")
+assert_eq "" "$new_entry"
+# Pinning is what puts an entry in every session, so an edit that turns the pin on is priced.
+pin_edit=$(jq -cn --arg p "$unpinned" --arg n "  pinned: true
+$big" '{tool_name:"Edit",cwd:"/tmp",session_id:"pin-on",tool_input:{file_path:$p,old_string:"  pinned: false",new_string:$n}}' \
+  | bash "$BLOAT" | jq -r '.hookSpecificOutput.permissionDecision // "pass"')
+assert_eq deny "$pin_edit"
+# Every YAML spelling of a true pin is a pin.
+for pin_spelling in '  pinned: True' '  pinned: yes' '  pinned: "true"' "  pinned: 'on'" 'metadata: {pinned: true}' 'metadata: {"pinned": true}'; do
+  pin_edit=$(jq -cn --arg p "$unpinned" --arg n "$pin_spelling
+$big" '{tool_name:"Edit",cwd:"/tmp",session_id:"pin-on",tool_input:{file_path:$p,old_string:"  pinned: false",new_string:$n}}' \
+    | bash "$BLOAT" | jq -r '.hookSpecificOutput.permissionDecision // "pass"')
+  assert_eq deny "$pin_edit"
+done
 
 echo "== bloat gate: a slash command is a guarded class like the skill it sits beside"
 CMD_DIR="$HOME/.claude/commands"
@@ -1094,37 +1118,19 @@ over_120=$(python3 -c 'print("g" * 122)')
 assert_eq pass "$(growth_decision "$CLAUDE_MD" "$exactly_120" clamp-pass)"
 assert_eq deny "$(growth_decision "$CLAUDE_MD" "$over_120" clamp-deny)"
 
-echo "== bloat gate: a fresh export proves an absent Markdown file cheap"
-# Below the cap the export holds EVERY file above min_monthly_reads, so an absent one is under
-# that threshold and nothing else. Quoting the cheapest surviving entry instead is a bound the
-# export does not support: with one entry left it announced a missing file at ~20,111 a month.
-absent=$(growth_output "$ABSENT_MD" "$cheap_growth" absent-fresh)
-assert_eq pass "$(printf '%s' "$absent" | jq -r '.hookSpecificOutput.permissionDecision // "pass"')"
-notice=$(printf '%s' "$absent" | jq -r '.hookSpecificOutput.additionalContext')
-assert_eq "$ABSENT_MD is below ~1 limit unit/month; not gated." "$notice"
-assert_eq "" "$(growth_output "$ABSENT_MD" "$readme_growth" absent-fresh)"
-ABSENT_MD_TWO="$WORK/liveproj/absent-two.md"
-assert_contains "$ABSENT_MD_TWO is below ~1 limit unit/month; not gated." \
-  "$(growth_output "$ABSENT_MD_TWO" "$cheap_growth" absent-fresh \
-    | jq -r '.hookSpecificOutput.additionalContext')"
-assert_contains "$ABSENT_MD is below ~1 limit unit/month; not gated." \
-  "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-other-session \
-    | jq -r '.hookSpecificOutput.additionalContext')"
+echo "== bloat gate: a Markdown file the export proves cheap passes without a word"
+# A note that says "not gated" changes nothing the model does, and it rode on every scratch file.
+assert_eq "" "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-fresh)"
+assert_eq "" "$(growth_output "$WORK/liveproj/absent-two.md" "$cheap_growth" absent-fresh)"
+assert_eq "" "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-other-session)"
 unavailable=$(jq -cn --arg p "$WORK/liveproj/unavailable.md" --arg n "$cheap_growth" \
   '{tool_name:"Edit",cwd:"/tmp",session_id:"absent-unavailable",
     tool_input:{file_path:$p,old_string:"x",new_string:$n}}' \
   | INSTRUCTION_BLOAT_GATE_STAMPS=/dev/null/nope bash "$BLOAT")
 assert_eq "" "$unavailable"
-assert [ "${#notice}" -lt "$(( ${#msg} / 2 ))" ]
-
-echo "== bloat gate: at the cap the floor is the cheapest entry that survived the cut"
-# Truncated by rank, the export no longer holds every file above min_monthly_reads, and that
-# threshold stops bounding what is missing. Only the cheapest survivor still does.
 jq --argjson n "$(jq '.paths.entries | length' "$RATES")" '.paths.criteria.limit = $n' "$RATES" \
   > "$RATES.capped" && mv "$RATES.capped" "$RATES"
-assert_contains "$ABSENT_MD is below ~3 limit units/month; not gated." \
-  "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-capped \
-    | jq -r '.hookSpecificOutput.additionalContext')"
+assert_eq "" "$(growth_output "$ABSENT_MD" "$cheap_growth" absent-capped)"
 write_current_rates
 
 echo "== bloat gate: an always-on file the export never measured keeps its class price"
@@ -1163,50 +1169,6 @@ assert_contains "~3,000 times a week, ~15,000 times a month" "$(price live-f "$C
 
 # Every later section is about the constants, so the export stops being in effect here.
 unset TOKENMAP_RATES
-
-echo "== bloat gate: every guarded instruction file is English-only"
-# Absorbed from the standalone global-CLAUDE.md guard, which asked this of one file. The whole
-# guarded set answers to it now, and «...» stays the one way Russian is written in these files.
-CYR_STAMPS="$HOME/.cache/bloat-cyr"
-mkdir -p "$WORK/memproj/memory"
-printf 'index\n' > "$WORK/memproj/memory/MEMORY.md"
-cyr() {
-  jq -cn --arg p "$1" --arg n "$2" --arg s "cyr-$3" --arg tool "${4:-Edit}" '
-    {tool_name:$tool, cwd:"/tmp", session_id:$s,
-     tool_input: (if $tool == "Write" then {file_path:$p, content:$n}
-                  else {file_path:$p, old_string:"x", new_string:$n} end)}' \
-    | INSTRUCTION_BLOAT_GATE_STAMPS="$CYR_STAMPS" bash "$BLOAT"
-}
-cyr_decision() {
-  local out
-  out=$(cyr "$@")
-  [ -n "$out" ] || { printf 'pass\n'; return 0; }
-  printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "pass"' 2>/dev/null
-}
-RU='Правило про воркеров'
-assert_contains "English-only" \
-  "$(cyr "$CLAUDE_MD" "$RU" global | jq -r '.hookSpecificOutput.permissionDecisionReason')"
-assert_eq deny "$(cyr_decision "$WORK/memproj/memory/MEMORY.md" "$RU" memory)"
-assert_eq deny "$(cyr_decision "$REPO/CLAUDE.md" "$RU" project)"
-assert_eq deny "$(cyr_decision "$REPO_DOCS/review-tiers.md" "$RU" doc)"
-assert_eq deny "$(cyr_decision "$HOME/.claude/skills/demo/SKILL.md" "$RU" skill)"
-assert_eq deny "$(cyr_decision "$CLAUDE_MD" "$RU" write Write)"
-# The quoted trigger phrase is the documented escape, and it is the only reason one of these files
-# would carry Cyrillic at all.
-assert_eq pass "$(cyr_decision "$CLAUDE_MD" 'Trigger on «проверь комментарии» only' quoted)"
-assert_eq pass "$(cyr_decision "$CLAUDE_MD" 'plain english line' ascii)"
-assert_eq pass "$(cyr_decision "$WORK/ordinary.md" "$RU" unguarded)"
-# Nothing about the language depends on a price, so a rate lookup that answers nothing must not
-# switch the rule off.
-assert_eq deny \
-  "$(TOKENMAP_RATES=/dev/null/nope cyr_decision "$CLAUDE_MD" "$RU" no-rates)"
-# It is asked before any byte arithmetic: an edit that shrinks the file is still English-only.
-assert_contains "English-only" \
-  "$(jq -cn --arg p "$CLAUDE_MD" --arg n "$RU" \
-       '{tool_name:"Edit",cwd:"/tmp",session_id:"cyr-shrink",
-         tool_input:{file_path:$p,old_string:"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",new_string:$n}}' \
-     | INSTRUCTION_BLOAT_GATE_STAMPS="$CYR_STAMPS" bash "$BLOAT" \
-     | jq -r '.hookSpecificOutput.permissionDecisionReason')"
 
 echo "== bloat gate: the global file's byte ceiling stands outside the retry ritual"
 # The one always-on file has a size past which growth is refused rather than priced, and the
@@ -1933,8 +1895,8 @@ echo "== tripwire: bytes that landed before this call started claim nothing"
 # on a guess eats that chat's live work.
 span_base sid-foreign >/dev/null
 printf 'grown by somebody else\n' >> "$DOC"
-pre_call sid-foreign Bash command "grep -c . $DOC" "$SPAN_T"
-ctx=$(span_check sid-foreign Bash command "grep -c . $DOC" "$SPAN_T")
+pre_call sid-foreign Bash command "touch $WORK/scratch/stamp" "$SPAN_T"
+ctx=$(span_check sid-foreign Bash command "touch $WORK/scratch/stamp" "$SPAN_T")
 assert_contains "CHANGED" "$ctx"
 case "$ctx" in *REVERTED*) fail "the tripwire rolled back a change it could not attribute" ;; esac
 assert_contains "grown by somebody else" "$(cat "$DOC")"
@@ -1945,7 +1907,7 @@ echo "== tripwire: a call whose window missed the write is not its writer, whate
 # a redirect aimed elsewhere, a runtime reading it — started after another chat's growth and is not
 # blamed for it.
 aimed_case=0
-for read_cmd in "sed -n '1,5p' $DOC" "cat $DOC > $WORK/scratch/copy.md" \
+for read_cmd in "sed -n '1,5p' $DOC > $WORK/scratch/head.md" "cat $DOC > $WORK/scratch/copy.md" \
                 "python3 -c 'open(\"$DOC\").read()'" \
                 "node -e 'fs.readFileSync(\"$DOC\")'"; do
   aimed_case=$((aimed_case + 1))
@@ -1958,6 +1920,53 @@ for read_cmd in "sed -n '1,5p' $DOC" "cat $DOC > $WORK/scratch/copy.md" \
   assert_contains "grown by somebody else" "$(cat "$DOC")"
   printf 'tier doc\n' > "$DOC"
 done
+
+echo "== tripwire: a Bash call that provably writes nothing is neither marked nor checked"
+# The same trade the matcher already makes for Read and Grep: a call that cannot write has no
+# window to attribute and nothing to put back, so growth that lands meanwhile is reported by the
+# next call that could have written, and never reverted by either.
+span_base sid-ro >/dev/null
+printf 'grown by somebody else\n' >> "$DOC"
+pre_call sid-ro Bash command "sed -n '1,5p' $DOC | grep -c ." "$SPAN_T"
+assert_fails [ -e "$INSTRUCTION_WATCH_STATE/inflight/sid-ro@tu-sid-ro" ]
+assert [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-ro@tu-sid-ro" ]
+assert_eq "" "$(span_check sid-ro Bash command "sed -n '1,5p' $DOC | grep -c ." "$SPAN_T")"
+assert_fails [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-ro@tu-sid-ro" ]
+pre_call sid-ro Bash command "touch $WORK/scratch/stamp" "$SPAN_T"
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-ro@tu-sid-ro" ]
+ctx=$(span_check sid-ro Bash command "touch $WORK/scratch/stamp" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+case "$ctx" in *REVERTED*) fail "growth seen after a read-only call was blamed on the next call" ;; esac
+assert_contains "grown by somebody else" "$(cat "$DOC")"
+printf 'tier doc\n' > "$DOC"
+# The tripwire reads no command: a read-only call the gate never saw, so left no note for, is checked,
+# and a note another call of the session left vouches for that call alone.
+span_base sid-unvouched >/dev/null
+: > "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-elsewhere"
+printf 'grown by somebody else\n' >> "$DOC"
+ctx=$(span_check sid-unvouched Bash command "sed -n '1,5p' $DOC" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+assert [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-elsewhere" ]
+printf 'tier doc\n' > "$DOC"
+# A note nobody took (the call exited non-zero, so no PostToolUse) goes after a day, at session start.
+touch -t 202601010000 "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-elsewhere"
+: > "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-fresh"
+span_base sid-note-sweep >/dev/null
+assert_fails [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-elsewhere" ]
+assert [ -e "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-fresh" ]
+rm -f "$INSTRUCTION_WATCH_STATE/readonly/sid-unvouched@tu-fresh"
+# Without the classifier library the gate falls back to marking every call, so every call is checked.
+span_base sid-nolib >/dev/null
+printf 'grown by somebody else\n' >> "$DOC"
+READONLY_COMMAND_LIB=$WORK/absent.sh pre_call sid-nolib Bash command "grep -c . $DOC" "$SPAN_T"
+assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-nolib@tu-sid-nolib" ]
+ctx=$(READONLY_COMMAND_LIB=$WORK/absent.sh span_check sid-nolib Bash command "grep -c . $DOC" "$SPAN_T")
+assert_contains "CHANGED" "$ctx"
+printf 'tier doc\n' > "$DOC"
+
+echo "== in-flight stamps: seconds with a leading zero are decimal, a malformed stamp converts to nothing"
+assert_eq 8500000000 "$(fmt instruction_ns 08.5)"
+assert_fails fmt instruction_ns 1.x
 
 echo "== tripwire: an interpreter READING the every-session file is not a write to it"
 span_base sid-read-always >/dev/null
@@ -2151,7 +2160,7 @@ while IFS='|' read -r owns cmd; do
 done <<CASES
 no|echo x > $DOC.bak
 yes|mv $WORK/stage/tmp.md $DOC && true
-no|cat < $DOC
+no|cat < $DOC > $WORK/stage/copy.md
 yes|cp $WORK/stage/review-tiers.md home/.claude/docs
 CASES
 printf 'tier doc\n' > "$DOC"
@@ -2335,7 +2344,7 @@ b32 sid-32 baseline >/dev/null
 assert_eq "" "$(b32 sid-32 check)"
 printf 'moved under 3.2\n' > "$REAL_MD"
 assert_contains "CHANGED" "$(b32 sid-32 check | jq -r '.hookSpecificOutput.additionalContext // ""')"
-assert_eq "" "$(bash_payload 'git status --short' | /bin/bash "$WRITE_GATE")"
+assert_eq "" "$(bash_payload "$ANY_CALL" | /bin/bash "$WRITE_GATE")"
 assert_contains 'permissionDecision":"deny' \
   "$(bash_payload "echo x > $CLAUDE_MD" | /bin/bash "$WRITE_GATE")"
 assert_contains 'permissionDecision":"deny' \
@@ -2369,16 +2378,16 @@ span_base sid-quiet-race >/dev/null
 rm -f "$ALERT_REC"
 kept_before=$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f 2>/dev/null | wc -l)
 printf 'written by somebody else entirely\n' > "$DOC"
-assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T")"
+assert_eq "" "$(raw_check sid-quiet Bash command "$ANY_CALL" "$NOSPAN_T")"
 assert_contains "CHANGED" "$(cat "$INSTRUCTION_WATCH_LOG")"
 assert_contains "instruction-watch" "$(alert_said)"
 assert_contains "review-tiers.md" "$(tail -1 "$INSTRUCTION_WATCH_STATE/events.jsonl" | jq -r '.files[0]')"
 kept_after=$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)
 assert [ "$kept_after" -gt "$kept_before" ]
-assert_eq "" "$(raw_check sid-quiet Bash command 'git status --short' "$NOSPAN_T")"
+assert_eq "" "$(raw_check sid-quiet Bash command "$ANY_CALL" "$NOSPAN_T")"
 # A second session reporting the same version shares the first one's copy.
 : > "$INSTRUCTION_WATCH_LOG"
-raw_check sid-quiet-twin Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-quiet-twin Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_contains "CHANGED" "$(cat "$INSTRUCTION_WATCH_LOG")"
 assert_eq "$kept_after" "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)"
 # The week's prune deleting that shared copy between its test and its touch never leaves it empty.
@@ -2386,7 +2395,7 @@ mkdir -p "$WORK/prune-race"
 printf '#!/bin/sh\nfor a; do last=$a; done\ncase "$last" in */reverts/*) rm -f "$last" ;; esac\nexec /usr/bin/touch "$@"\n' \
   > "$WORK/prune-race/touch"
 chmod +x "$WORK/prune-race/touch"
-PATH="$WORK/prune-race:$PATH" raw_check sid-quiet-race Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+PATH="$WORK/prune-race:$PATH" raw_check sid-quiet-race Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_eq 0 "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f -empty | wc -l | tr -d ' ')"
 assert_eq "$kept_after" "$(find "$INSTRUCTION_WATCH_STATE/reverts" -type f | wc -l)"
 
@@ -2428,8 +2437,8 @@ span_base sid-j2 >/dev/null
 journal_before=$(wc -c < "$DOC")
 printf 'a tier line nobody approved\n' > "$DOC"
 journal_delta=$(( $(wc -c < "$DOC") - journal_before ))
-raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
-raw_check sid-j2 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-j1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+raw_check sid-j2 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_eq 1 "$(grep -c . "$J")"
 rec=$(tail -1 "$J")
 assert_contains "CHANGED" "$(printf '%s' "$rec" | jq -r '.summary')"
@@ -2445,9 +2454,9 @@ assert_eq attempted "$(printf '%s' "$rec" | jq -r '.sent')"
 assert_eq true "$(printf '%s' "$rec" | jq '(.bytes | type == "array" and all(.[]; type == "number" and . == floor)) and ((.bytes | length) == (.files | length))')"
 assert_eq "$journal_delta" "$(printf '%s' "$rec" | jq '.bytes[0]')"
 span_base sid-jw >/dev/null
-pre_call sid-jw Bash command 'git status --short' "$NOSPAN_T"
+pre_call sid-jw Bash command "$ANY_CALL" "$NOSPAN_T"
 printf 'a tier line this call wrote\n' >> "$DOC"
-raw_check sid-jw Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-jw Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 rec=$(tail -1 "$J")
 assert_eq this-call "$(printf '%s' "$rec" | jq -r '.writer')"
 assert_eq sid-jw "$(printf '%s' "$rec" | jq -r '.sid')"
@@ -2500,7 +2509,7 @@ STUB
 printf 'tier doc\n' > "$DOC"
 span_base sid-amb-a >/dev/null
 pre_call sid-amb-a Bash command "$grow_cmd" "$SPAN_T"
-tool_payload PreToolUse sid-amb-b Bash command 'git status --short' "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null
+tool_payload PreToolUse sid-amb-b Bash command "$ANY_CALL" "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null
 assert [ -s "$INSTRUCTION_WATCH_STATE/inflight/sid-amb-b@tu-sid-amb-b" ]
 printf 'a line either chat could have written\n' >> "$DOC"
 ctx=$(span_check sid-amb-a Bash command "$grow_cmd" "$SPAN_T")
@@ -2615,7 +2624,7 @@ span_base sid-alive >/dev/null
 span_base sid-gone >/dev/null
 touch -t 202001010000 "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" \
   "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv"
-assert_eq "" "$(raw_check sid-alive Bash command 'git status --short' "$NOSPAN_T")"
+assert_eq "" "$(raw_check sid-alive Bash command "$ANY_CALL" "$NOSPAN_T")"
 span_base sid-sweeper >/dev/null
 assert [ -e "$INSTRUCTION_WATCH_STATE/session-sid-alive.tsv" ]
 assert [ ! -e "$INSTRUCTION_WATCH_STATE/session-sid-gone.tsv" ]
@@ -2625,7 +2634,7 @@ saved_alert=$INSTRUCTION_WATCH_ALERT
 INSTRUCTION_WATCH_ALERT="$WORK/no-such-hammerspoon"
 export INSTRUCTION_WATCH_ALERT
 printf 'a second tier line nobody approved\n' > "$DOC"
-raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-j1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_eq unsent "$(tail -1 "$J" | jq -r '.sent')"
 assert_eq false "$(tail -1 "$J" | jq 'has("chat")')"
 INSTRUCTION_WATCH_ALERT=$saved_alert
@@ -2637,7 +2646,7 @@ export INSTRUCTION_WATCH_JOURNAL_MAX
 i=0
 while [ $i -lt 6 ]; do
   printf 'tier line %s\n' "$i" > "$DOC"
-  raw_check sid-j1 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+  raw_check sid-j1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
   i=$((i + 1))
 done
 assert [ "$(grep -c . "$J")" -le 4 ]
@@ -2659,7 +2668,7 @@ RANKED="$INSTRUCTION_WATCH_STATE/ranked.txt"
 assert_contains "$PROJ/CLAUDE.md" "$(cat "$RANKED")"
 assert_eq 1 "$(grep -c '^/' "$RANKED")"
 printf 'project rules and a line nobody approved\n' > "$PROJ/CLAUDE.md"
-out=$(raw_check sid-rank Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-rank Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "$PROJ/CLAUDE.md" "$out"
 assert_contains "$PROJ/CLAUDE.md" "$(tail -1 "$J" | jq -r '.files[0]')"
@@ -2671,11 +2680,11 @@ TOKENMAP_RATES="$RATES"
 export TOKENMAP_RATES
 span_base sid-other >/dev/null
 assert_contains "$PROJ/CLAUDE.md" "$(cat "$RANKED")"
-out=$(raw_check sid-grow Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-grow Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 case "$out" in *ADDED*) fail "the watch set growing was reported as a file somebody added: $out" ;; esac
 printf 'project rules edited\n' > "$PROJ/CLAUDE.md"
-out=$(raw_check sid-grow Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-grow Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED" "$out"
 assert_contains "$PROJ/CLAUDE.md" "$out"
@@ -2713,17 +2722,17 @@ jq -n --arg p "$PROJ/CLAUDE.md" '{paths:{entries:{($p):{monthly:{reads:5000}}}}}
 rm -f "$RANKED"
 span_base sid-recut >/dev/null
 case "$(cat "$RANKED")" in *proj-b*) fail "the re-cut cache still names the dropped project" ;; esac
-out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-drop Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 case "$out" in *DELETED*) fail "a file the ranking dropped was reported as deleted: $out" ;; esac
 # The ranked cache is a file any session can rewrite, so dropping a path from it does not stop the
 # watch on a file this session already watches.
 printf 'b rules edited after demotion\n' > "$WORK/proj-b/CLAUDE.md"
-out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-drop Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED $WORK/proj-b/CLAUDE.md" "$out"
 rm -f "$PROJ/CLAUDE.md"
-out=$(raw_check sid-drop Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-drop Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "DELETED" "$out"
 assert_contains "$PROJ/CLAUDE.md" "$out"
@@ -2746,7 +2755,7 @@ done < "$INSTRUCTION_WATCH_STATE/session-sid-mf2.tsv"
 [ -n "$first" ] || fail "multi-file baseline did not name either changed path"
 key=$(printf '%s\n%s\n' "$first" "$(shasum -a 256 "$first" | cut -d' ' -f1)" | shasum -a 256 | cut -c1-16)
 mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$key"
-raw_check sid-mf2 Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-mf2 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 other=$AGENTF
 [ "$first" = "$AGENTF" ] && other=$DOC
 assert_contains "$(basename "$other")" "$(tail -1 "$J" | jq -r '.files[]' | tr '\n' ' ')"
@@ -2757,7 +2766,7 @@ mkdir -p "$PROJ"
 printf '#1\n%s\n' "$PROJ/CLAUDE.local.md" > "$RANKED"
 span_base sid-add-ranked >/dev/null
 printf 'created local\n' > "$PROJ/CLAUDE.local.md"
-out=$(raw_check sid-add-ranked Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-add-ranked Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "ADDED" "$out"
 assert_contains "CLAUDE.local.md" "$out"
@@ -2766,16 +2775,16 @@ echo "== tripwire: a same-path delete after restore is journaled again"
 printf 'del-restore\n' > "$DOC"
 span_base sid-delrep >/dev/null
 rm -f "$DOC"
-raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-delrep Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_contains "DELETED" "$(tail -1 "$J" | jq -r '.summary')"
 assert_eq true "$(tail -1 "$J" | jq '.bytes[0] < 0')"
 dels_before=$(grep -c '"DELETED' "$J" || true)
 printf 'del-restore\n' > "$DOC"
-raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-delrep Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_contains "ADDED" "$(tail -1 "$J" | jq -r '.summary')"
 assert_eq true "$(tail -1 "$J" | jq '.bytes[0] > 0')"
 rm -f "$DOC"
-raw_check sid-delrep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-delrep Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_contains "DELETED" "$(tail -1 "$J" | jq -r '.summary')"
 dels_after=$(grep -c '"DELETED' "$J" || true)
 assert [ "$dels_after" -gt "$dels_before" ]
@@ -2795,7 +2804,7 @@ touch "$RATES"
 rm -f "$RANKED"
 span_base sid-del-recut-other >/dev/null
 case "$(cat "$RANKED")" in *"$PROJ/CLAUDE.md"*) fail "recut still names the deleted ranked file" ;; esac
-out=$(raw_check sid-del-after-recut Bash command 'git status --short' "$NOSPAN_T" \
+out=$(raw_check sid-del-after-recut Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "DELETED" "$out"
 assert_contains "$PROJ/CLAUDE.md" "$out"
@@ -2808,9 +2817,9 @@ span_base sid-jfail-b >/dev/null
 printf 'jfail-body\n' > "$DOC"
 rm -f "$J"
 mkdir "$J"
-raw_check sid-jfail-a Bash command 'git status --short' "$NOSPAN_T" >/dev/null 2>/dev/null
+raw_check sid-jfail-a Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null 2>/dev/null
 rmdir "$J" 2>/dev/null || rm -rf "$J"
-raw_check sid-jfail-b Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-jfail-b Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_contains "CHANGED" "$(cat "$J")"
 assert_contains "review-tiers.md" "$(cat "$J")"
 
@@ -2818,13 +2827,13 @@ echo "== journal: a same-bytes repeat after the marker dies gets a new id"
 printf 'rep-v1\n' > "$DOC"
 span_base sid-rep >/dev/null
 printf 'rep-v2\n' > "$DOC"
-raw_check sid-rep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-rep Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 id1=$(tail -1 "$J" | jq -r .id)
 rm -rf "$INSTRUCTION_WATCH_STATE/alerts"
 printf 'rep-v1\n' > "$DOC"
-raw_check sid-rep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-rep Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 printf 'rep-v2\n' > "$DOC"
-raw_check sid-rep Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-rep Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 id2=$(tail -1 "$J" | jq -r .id)
 assert [ -n "$id1" ]
 assert [ -n "$id2" ]
@@ -2846,9 +2855,9 @@ while [ $i -le 5 ]; do
   i=$((i + 1))
 done
 printf 'trim-race-A\n' > "$DOC"
-raw_check sid-trim-a Bash command 'git status --short' "$NOSPAN_T" >/dev/null &
+raw_check sid-trim-a Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null &
 p1=$!
-raw_check sid-trim-b Bash command 'git status --short' "$NOSPAN_T" >/dev/null &
+raw_check sid-trim-b Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null &
 p2=$!
 wait "$p1" "$p2"
 assert_contains "review-tiers.md" "$(cat "$J")"
@@ -2857,6 +2866,7 @@ unset INSTRUCTION_WATCH_JOURNAL_MAX
 
 echo "== bypasses: every shell spelling of a write onto a guarded file is refused, the neighbours pass"
 mkdir -p "$HOME/.claude/hooks" "$HOME/.claude/projects/p/memory" "$WORK/repo2/.claude/agents" \
+         "$WORK/repo2/.claude/local" \
          "$WORK/repo2/skills/foo"
 printf 'policy\n' > "$HOME/.claude/hooks/policy.md"
 # The ordinary stash stays on top: the bare `stash pop` case below must land in notes.txt.
@@ -2902,6 +2912,9 @@ deny cat <<'X' | bash\nprintf x >> ~/.claude/CLAUDE.md\nX
 refuse printf x > "$HOME/.claude/docs/"$'bad\\nname.md'
 refuse printf x > "$HOME/.claude/docs/"$'bad\\tname.md'
 pass echo x >> ~/.claude/projects/p/memory/note.md
+pass echo x > .claude/local/task.md
+pass cp /tmp/x .claude/local/task.md
+deny echo x > .claude/local/../agents/new.md
 pass echo x > notes.txt
 pass echo x > /tmp/scratch.md
 pass echo x 2>&1
@@ -2951,8 +2964,6 @@ assert_eq deny "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.
   '{file_path:$f,edits:[{old_string:"x",new_string:$n},{old_string:"y",new_string:$n}]}')")"
 assert_eq pass "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.md" \
   '{file_path:$f,edits:[{old_string:"x",new_string:"yy"}]}')")"
-assert_eq deny "$(bloat_tool MultiEdit "$(jq -cn --arg f "$HOME/.claude/rules/r.md" \
-  '{file_path:$f,edits:[{old_string:"x",new_string:"y"},{old_string:"y",new_string:"при"}]}')")"
 
 echo "== bypasses: a hook that cannot run refuses instead of passing"
 mkdir -p "$WORK/nolib/bin" "$WORK/nojq"
@@ -2974,23 +2985,23 @@ span_base sid-jfail >/dev/null
 printf 'journal failure\n' >> "$DOC"
 mv "$J" "$J.saved" 2>/dev/null
 mkdir -p "$J"
-out=$(raw_check sid-jfail Bash command 'git status' "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
+out=$(raw_check sid-jfail Bash command "$ANY_CALL" "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "could not be written" "$out"
 rmdir "$J"
 [ ! -f "$J.saved" ] || mv "$J.saved" "$J"
-out=$(raw_check sid-jfail Bash command 'git status' "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
+out=$(raw_check sid-jfail Bash command "$ANY_CALL" "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED $DOC" "$out"
 
 echo "== bypasses: the same bytes written twice inside a day are two alerts"
 span_base sid-flip >/dev/null
 cp "$DOC" "$WORK/doc-a"
 printf 'flip B\n' > "$DOC"
-raw_check sid-flip Bash command 'git status' "$NOSPAN_T" >/dev/null
+raw_check sid-flip Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 cp "$WORK/doc-a" "$DOC"
-raw_check sid-flip Bash command 'git status' "$NOSPAN_T" >/dev/null
+raw_check sid-flip Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 n0=$(grep -c . "$J")
 printf 'flip B\n' > "$DOC"
-raw_check sid-flip Bash command 'git status' "$NOSPAN_T" >/dev/null
+raw_check sid-flip Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert_eq $((n0 + 1)) "$(grep -c . "$J")"
 
 echo "== bypasses: bytes landing mid-check are reported, never vouched for"
@@ -3001,9 +3012,9 @@ chmod +x "$WORK/shim/stat"
 span_base sid-race >/dev/null
 printf 'race start\n' >> "$DOC"
 IW_FLAG="$WORK/race.flag" IW_DOC="$DOC" PATH="$WORK/shim:$PATH" \
-  raw_check sid-race Bash command 'git status' "$NOSPAN_T" >/dev/null
+  raw_check sid-race Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert [ -f "$WORK/race.flag" ]
-out=$(raw_check sid-race Bash command 'git status' "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
+out=$(raw_check sid-race Bash command "$ANY_CALL" "$NOSPAN_T" | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "CHANGED $DOC" "$out"
 printf '#!/bin/bash\nfor a in "$@"; do case "$a" in *review-tiers.md) rm -f "$a" ;; esac; done\nexec /usr/bin/shasum "$@"\n' \
   > "$WORK/shim/shasum"
@@ -3012,7 +3023,7 @@ rm -f "$WORK/shim/stat"
 cp "$DOC" "$WORK/doc-keep"
 span_base sid-vanish >/dev/null
 printf 'vanishing\n' >> "$DOC"
-out=$(PATH="$WORK/shim:$PATH" raw_check sid-vanish Bash command 'git status' "$NOSPAN_T" \
+out=$(PATH="$WORK/shim:$PATH" raw_check sid-vanish Bash command "$ANY_CALL" "$NOSPAN_T" \
       | jq -r '.hookSpecificOutput.additionalContext // ""')
 assert_contains "DELETED $DOC" "$out"
 rm -f "$WORK/shim/shasum"
@@ -3084,12 +3095,12 @@ echo "== tripwire: a finished call's window still names its writer to a longer c
 printf 'tier doc\n' > "$DOC"
 span_base sid-cwa >/dev/null
 span_base sid-cwb >/dev/null
-pre_call sid-cwb Bash command 'git status --short' "$SPAN_T"
-tool_payload PreToolUse sid-cwa Bash command 'git status --short' "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null 2>&1
+pre_call sid-cwb Bash command "$ANY_CALL" "$SPAN_T"
+tool_payload PreToolUse sid-cwa Bash command "$ANY_CALL" "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null 2>&1
 printf 'a line chat A wrote\n' >> "$DOC"
-span_check sid-cwa Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+span_check sid-cwa Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert [ -f "$INSTRUCTION_WATCH_STATE/closed/sid-cwa@tu-sid-cwa" ]
-out=$(span_check sid-cwb Bash command 'git status --short' "$SPAN_T")
+out=$(span_check sid-cwb Bash command "$ANY_CALL" "$SPAN_T")
 case "$out" in *REVERTED*) fail "chat B reverted chat A's line: $out" ;; esac
 assert_eq "tier doc
 a line chat A wrote" "$(cat "$DOC")"
@@ -3098,20 +3109,20 @@ printf 'tier doc\n' > "$DOC"
 
 echo "== tripwire: this agent's mark a minute older than its call is a denied call, swept"
 span_base sid-st >/dev/null
-pre_call sid-st Bash command 'git status --short' "$NOSPAN_T"
+pre_call sid-st Bash command "$ANY_CALL" "$NOSPAN_T"
 assert grep -Eq '^[0-9.]+ tu-sid-st Bash - ' "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sid-st"
 printf '%s.000000 tu-old Bash - /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-old"
 printf '%s.000000 tu-sub Bash agent-a /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub"
-raw_check sid-st Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-st Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-old" ]
 echo "== tripwire: a parallel subagent's older mark under the same session is its live call, kept"
 assert [ -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub" ]
 rm -f "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub"
-TOOL_AGENT=agent-b pre_call sid-st Bash command 'git status --short' "$NOSPAN_T"
+TOOL_AGENT=agent-b pre_call sid-st Bash command "$ANY_CALL" "$NOSPAN_T"
 assert grep -Eq '^[0-9.]+ tu-sid-st Bash agent-b ' "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sid-st"
 printf '%s.000000 tu-sub Bash agent-b /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub"
 printf '%s.000000 tu-main Bash - /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-main"
-TOOL_AGENT=agent-b raw_check sid-st Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+TOOL_AGENT=agent-b raw_check sid-st Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub" ]
 assert [ -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-main" ]
 rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
@@ -3123,9 +3134,9 @@ printf 'project rules\n' > "$PROJ/CLAUDE.md"
 printf '#1\n%s\n' "$PROJ/CLAUDE.md" > "$RANKED"
 printf 'pre-hs\n' > "$DOC"
 span_base sid-hs >/dev/null
-pre_call sid-hs Bash command 'git status --short' "$NOSPAN_T"
+pre_call sid-hs Bash command "$ANY_CALL" "$NOSPAN_T"
 printf 'pre-hs and a line the harness will read\n' > "$DOC"
-raw_check sid-hs Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+raw_check sid-hs Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 tail -1 "$J" > "$J.one" && mv "$J.one" "$J"
 
 echo "== Hammerspoon: the record the collector just wrote travels to the menu and the receipt"

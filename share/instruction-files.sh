@@ -106,7 +106,7 @@ _instruction_find_files() { # dir
   for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
   find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
     -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
-    \( -path '*/.claude/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null | _instruction_emit_paths
+    \( -path '*/.claude/*' ! -path '*/.claude/local/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null | _instruction_emit_paths
 }
 
 # git instead of a walk: a walk descends every ignored tree (570k files, 20 s a call). The set is
@@ -133,7 +133,7 @@ instruction_repo_files() { # repo-root
         if ($part == 2 && m{/$}) { push @out, "d\t$full\n" if m{(?:^|/)\.claude/}; next }
         ($base = $_) =~ s{.*/}{};
         next unless $base =~ /^(?:claude|claude\.local|skill)\.md$/i
-          || ("$root/$_" =~ m{/\.claude/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
+          || ("$root/$_" =~ m{/\.claude/} && "$root/$_" !~ m{/\.claude/local/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
         push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
         END { exit 1 if $part != 3; print @out }
       ' "$root" "$INSTRUCTION_MD_EXTENSIONS"); then
@@ -162,12 +162,23 @@ instruction_repo_files() { # repo-root
 # being the config repository ~/.claude links into — is listed once, by resolved target, or every
 # change to it is reported twice.
 instruction_visible_paths() {
-  local home=${1:-$HOME} cache=${2:-} root=${3:-} link real
-  local -a linked=()
+  local home=${1:-$HOME} cache=${2:-} root=${3:-} link real resolved
+  local -a linked=() links=()
   for link in "$home"/.claude/*; do
-    [ -L "$link" ] || continue
-    real=$(realpath "$link" 2>/dev/null) && linked+=("$real")
+    [ -L "$link" ] && links+=("$link")
   done
+  # One realpath for every link. A link it cannot resolve, or a newline in a target, falls back to one
+  # call per link, which is exact: a dangling link and a newline name together keep the line count.
+  if [ "${#links[@]}" -gt 0 ]; then
+    if resolved=$(realpath -q "${links[@]}" 2>/dev/null); then real=${resolved//[!$'\n']/}; else resolved=''; fi
+    if [ -n "$resolved" ] && [ $((${#real} + 1)) -eq "${#links[@]}" ]; then
+      while IFS= read -r real; do linked+=("$real"); done <<<"$resolved"
+    else
+      for link in "${links[@]}"; do
+        real=$(realpath "$link" 2>/dev/null) && linked+=("$real")
+      done
+    fi
+  fi
   {
     [ -f "$home/.claude/settings.json" ] && _instruction_emit "$home/.claude/settings.json"
     instruction_guarded_paths "$home"
@@ -1243,14 +1254,17 @@ instruction_guarded_dirs() {
   done
 }
 
-# The two carve-outs from the directory rule, asked of an absolute path the gate already matched.
-# A memory file under ~/.claude/projects is the model's to write (see the MEMORY.md note above),
-# and an ordinary markdown file inside a worktree is repository work, not instruction content: a
-# worktree's own CLAUDE files and `.claude/` tree stay guarded like the repository's.
+# The carve-outs from the directory rule, asked of an absolute path the gate already matched.
+# A memory file under ~/.claude/projects is the model's to write (see the MEMORY.md note above), a
+# task file under a `.claude/local/` is loaded by nothing, and an ordinary markdown file inside a
+# worktree is repository work, not instruction content: a worktree's own CLAUDE files and `.claude/`
+# tree stay guarded like the repository's. The path may be unresolved (a file not yet written), so a
+# `..` or `.` segment would walk a carve-out prefix back into a guarded directory.
 instruction_carved_out() { # abs-path [home]
   local p=$1 home=${2:-$HOME} rest
+  case "/$p/" in */../*|*/./*) return 1 ;; esac
   printf '%s' "${p##*/}" | grep -Eqx "$INSTRUCTION_GUARDED_BASENAMES" && return 1
-  case "$p" in "$home"/.claude/projects/*) return 0 ;; esac
+  case "$p" in "$home"/.claude/projects/*|*/.claude/local/*) return 0 ;; esac
   case "$p" in
     */.claude/worktrees/*/*)
       rest=${p##*/.claude/worktrees/}
@@ -1505,7 +1519,7 @@ _instruction_deny_witnessed() { # hash transcript
     | .message.content? | arrays | .[]
     | select(type == "object" and .type == "tool_result" and .is_error == true)
     | (.content | if type == "string" then . else ([.[]? | objects | .text? | strings] | join("")) end)
-    | select(test("^(PreToolUse:[A-Za-z]+ hook error: )?Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
+    | select(test("^(PreToolUse:[A-Za-z]+ hook error: )?(\\[[^\\]]+\\] )?Instruction(-bloat)? gate: ") and contains($tag))' >/dev/null 2>&1
 }
 
 instruction_stamp_consume() {
@@ -1595,12 +1609,18 @@ instruction_now() {
 
 # Integer nanoseconds: a float loses the digits that separate two writes a millisecond apart.
 instruction_ns() { # epoch[.fraction]
-  local s=${1%%.*} f=''
-  case "$1" in *.*) f=${1#*.} ;; esac
-  case "$s" in ''|*[!0-9]*) return 1 ;; esac
-  case "$f" in *[!0-9]*) return 1 ;; esac
-  f="${f}000000000"
-  printf '%s' "$((s * 1000000000 + 10#${f:0:9}))"
+  local ns
+  instruction_ns_to ns "$1" || return 1
+  printf '%s' "$ns"
+}
+# Into a variable, with no subshell: the tripwire converts one stamp per in-flight mark on every check.
+instruction_ns_to() { # var epoch[.fraction]
+  local _ins_s=${2%%.*} _ins_f=''
+  case "$2" in *.*) _ins_f=${2#*.} ;; esac
+  case "$_ins_s" in ''|*[!0-9]*) return 1 ;; esac
+  case "$_ins_f" in *[!0-9]*) return 1 ;; esac
+  _ins_f="${_ins_f}000000000"
+  printf -v "$1" '%s' "$((10#$_ins_s * 1000000000 + 10#${_ins_f:0:9}))"
 }
 
 # PreToolUse marks the call in flight and PostToolUse `check` consumes the mark: bytes whose mtime
@@ -1623,6 +1643,26 @@ instruction_inflight_mark() { # session tool_use_id tool cwd [agent_id]
 
 instruction_inflight_clear() {
   [ -z "${INSTRUCTION_INFLIGHT_FILE:-}" ] || rm -f "$INSTRUCTION_INFLIGHT_FILE" 2>/dev/null
+  return 0
+}
+
+# A Bash call the write gate proved read-only leaves `readonly/<session>@<tool_use_id>` instead of a
+# mark, and the tripwire's check takes it and skips: the command text is read once, by the gate, and
+# a check nobody vouched for runs in full.
+instruction_readonly_note() { # session tool_use_id
+  local dir
+  [ -n "${2:-}" ] || return 0
+  dir="$(instruction_watch_state)/readonly"
+  [ -d "$dir" ] || mkdir -p "$dir" 2>/dev/null || return 0
+  : >"$dir/$(instruction_sid_name "$1")@${2//[^A-Za-z0-9._-]/_}" 2>/dev/null
+  return 0
+}
+instruction_readonly_take() { # session tool_use_id
+  local f
+  [ -n "${2:-}" ] || return 1
+  f="$(instruction_watch_state)/readonly/$(instruction_sid_name "$1")@${2//[^A-Za-z0-9._-]/_}"
+  [ -e "$f" ] || return 1
+  rm -f "$f" 2>/dev/null
   return 0
 }
 

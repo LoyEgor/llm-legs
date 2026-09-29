@@ -51,6 +51,10 @@ values=$(printf '%s' "$input" | jq -er '
     echo "instruction write gate: the hook payload does not parse" >&2; exit 2; }
 IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript tool_use_id agent_id command <<< "$values" || :
 [ "$tool_name" = Bash ] || exit 0
+# A call that provably writes nothing gets a read-only note instead of a mark, and instruction-watch.sh
+# skips the check that takes it.
+. "${READONLY_COMMAND_LIB:-$HOME/.claude/hooks/lib/readonly-command.sh}" 2>/dev/null &&
+  rc_readonly_command "$command" && { instruction_readonly_note "$sid" "$tool_use_id"; exit 0; }
 # Before any decision: the tripwire attributes bytes to this call by the mark's time, never by the
 # command text. A denied call never runs, so every deny below takes its mark back.
 instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd" "$agent_id"
@@ -388,7 +392,7 @@ case "$class" in
 esac
 
 gate_journal write denied "$sid" "$abs" '' "$class"
-jq -cn --arg r "$reason $(instruction_denial_tag "$hash")" \
-  '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null ||
+jq -cn --arg hook "${0##*/}" --arg r "$reason $(instruction_denial_tag "$hash")" \
+  '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null ||
   { printf '%s\n' "$reason $(instruction_denial_tag "$hash")" >&2; exit 2; }
 exit 0
