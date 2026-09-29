@@ -156,7 +156,7 @@ for scheduled in 'echo hi | gemini' 'cat /tmp/b | agy' 'printf q | nohup codex' 
   expect_as deny '{}' "$scheduled"
 done
 for plain in 'crontab -l' 'crontab -u me -l' 'false || claude' 'echo x | grep gemini' 'claude --version' \
-  "rg 'gemini|claude ' docs" $'cat > /tmp/t.md <<EOF\n| codex | 40% |\nEOF'; do
+  "rg 'gemini|claude ' docs" $'cat > /tmp/t.md <<EOF\n| codex | 40% |\nEOF' 'grep -c "agy\|gemini" share/*.py'; do
   expect_as pass '{}' "$plain"
 done
 

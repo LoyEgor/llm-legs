@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Always exits 0 — a nonzero exit here would block the triggering tool call.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 input=$(cat 2>/dev/null) || exit 0

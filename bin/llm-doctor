@@ -4,12 +4,14 @@ Image blocks, bugs kept apart from weather, and every bug held against the probl
 import argparse
 import calendar
 import datetime
+import glob
 import importlib.machinery
 import importlib.util
 import json
 import os
 import re
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
@@ -43,6 +45,17 @@ SLOW_BASE_N = 20
 SLOW_FLOOR_S = 30
 SLOW_SIZE_RATIO = 2
 STOP_REPEAT_S = 30 * 60
+DEBT_GAP_DAYS = 7
+GROWTH_MIN_B = 120
+GATE_BEFORE_S = 900
+GATE_AFTER_S = 60
+WATCH_TICK_S = 120
+DEFERRED_S = 2 * 3600
+SILENT_S = 6 * 3600
+REBOOT_SLACK_S = 300
+# No heartbeat dates a supervisor's death: a run silent this long before the boot died on its own.
+REBOOT_QUIET_S = 3600
+_REBOOTS = []
 TREND_MIN = 3
 MAX_INCIDENTS = 15
 DETAIL_MAX = 40
@@ -56,8 +69,8 @@ LEDGER_STATUSES = ("open", "fixed", "not-a-bug", "weather")
 
 # Copied from review-bench share/rbench/panel.py FAILURE_REASONS (and catalog.py's status anchors);
 # review-bench is not importable from here, so the two tables drift unless both are edited.
-HTTP_STATUS_PREFIX = (r"(?:HTTP(?:/[0-9.]+)?(?:\s+error)?\s*:?\s+"
-                      r"|\"?status(?:_code)?\"?\s*[:=]\s*)")
+HTTP_STATUS_PREFIX = (r"(?<![\w.])(?:HTTP(?:/[0-9.]+)?(?:\s+error)?\s*:?\s+"
+                      r"|\"?(?:api_error_)?status(?:_code)?\"?\s*:\s*)")
 FAILURE_REASONS = (
     ("killed memory", re.compile(r"SIGKILLed by the memory guard")),
     ("pool empty", re.compile(r"has no \w+ account left", re.IGNORECASE)),
@@ -82,10 +95,11 @@ FAILURE_REASONS = (
         r"|safeguards flagged this"
         r"|(?i:violat\w* (?:our |the )?usage (?:policy|policies"
         r"|guidelines))|\"stop_reason\"\s*:\s*\"refusal\"")),
+    ("turn budget", re.compile(r"stopped at the \d+-turn budget", re.IGNORECASE)),
     ("bad output", re.compile(
         r"no parseable finding|malformed (?:Markdown|JSON)|no explicit no-issues"
         r"|did not declare a clean review|stopped before reviewing|returned empty content"
-        r"|no result event|no assistant message|stopped at the \d+-turn budget"
+        r"|no result event|no assistant message"
         r"|without a final message|answered the clean marker without reading",
         re.IGNORECASE)),
     ("root commit", re.compile(r"root commit", re.IGNORECASE)),
@@ -104,7 +118,7 @@ FAILURE_REASONS = (
         r"|unauthor|cell preparation refused|not eligible for antigravity|verify your account"
         r"|accounts\.google\.com/signin"
         r"|" + HTTP_STATUS_PREFIX + r"40[13]\b|\b40[13]\s+(?:Unauthorized|Forbidden)\b", re.IGNORECASE)),
-    ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b)",
+    ("not found", re.compile(r"(?:" + HTTP_STATUS_PREFIX + r"404\b|\b404\s+Not\s+Found\b|\(code 404\))",
                              re.IGNORECASE)),
     ("chunks unread", re.compile(r"chunks unread", re.IGNORECASE)),
 )
@@ -119,6 +133,7 @@ FAILURE_ORIGIN = {
     "bare 429": "theirs",
     "refused": "theirs",
     "bad output": "ours",
+    "turn budget": "ours",
     "capacity": "theirs",
     "server error": "theirs",
     "cancelled": "theirs",
@@ -147,7 +162,7 @@ LOGIN_STATE_RE = re.compile(
     r"not logged in|not signed in|session has expired|credentials were rejected|not eligible for antigravity"
     r"|verify your account|accounts\.google\.com/signin", re.IGNORECASE)
 EXPORT_REFUSAL_RE = re.compile(r"cell preparation refused|credential export", re.IGNORECASE)
-# Copied from review-bench panel.py PROVIDER_TIMEOUT_RE: the vendor's clock, not our cap.
+# The vendor's clock, not our cap (review-bench dropped its copy with the agy watchdog fallback).
 PROVIDER_TIMEOUT_RE = re.compile(
     r"gateway time-?out|" + HTTP_STATUS_PREFIX + r"504\b|\(code 504\)"
     r"|DEADLINE_EXCEEDED|upstream (?:request )?timeout", re.IGNORECASE)
@@ -318,6 +333,27 @@ def stop_journal():
 def words_journal():
     return os.path.join(os.environ.get("WORDS_DIR") or os.path.join(base_home(), ".cache", "claude", "words"),
                         "journal.jsonl")
+
+
+def watch_state():
+    return os.environ.get("INSTRUCTION_WATCH_STATE") or os.path.join(base_home(), ".cache",
+                                                                      "claude-instruction-watch")
+
+
+def newest_transcript():
+    """The newest (mtime, birth) over every chat transcript, the clock the silent-hook checks run against."""
+    home, newest, born = base_home(), 0, 0
+    for pattern in (os.path.join(home, ".claude", "projects", "*", "*.jsonl"),
+                    os.path.join(home, ".claude-profiles", "*", "projects", "*", "*.jsonl"),
+                    os.path.join(home, ".claude-profiles", ".*", "projects", "*", "*.jsonl")):
+        for path in glob.glob(pattern):
+            try:
+                info = os.stat(path)
+            except OSError:
+                continue
+            newest = max(newest, info.st_mtime)
+            born = max(born, getattr(info, "st_birthtime", info.st_mtime))
+    return newest, born
 
 
 def debt_dir():
@@ -603,9 +639,10 @@ def classify_failure_text(text, exit_code, timeout_s=None):
         return "failed", "timeout", "provider timeout", "theirs"
     if CEILING_RE.search(text):
         return "cap", "timeout", timeout_detail(text, timeout_s), ""
-    if reason == "bad output" and TURN_BUDGET_RE.search(text) \
-            and failure_reason(TURN_BUDGET_RE.sub("", text)) != "bad output":
-        return "cap", "turns", "turn budget", ""
+    if reason == "turn budget":
+        if failure_reason(TURN_BUDGET_RE.sub("", text)) != "bad output":
+            return "cap", "turns", "turn budget", ""
+        reason = "bad output"
     detail = reason
     if reason in ("unclassified", "no output") and exit_code not in (None, 0, 1):
         detail = "%s · exit %s" % (reason, exit_code)
@@ -979,7 +1016,13 @@ def worker_legs(cutoff, now):
             if now - started < 6 * 3600 or not supervisor_gone(run_dir, meta.get("pid") or ""):
                 continue
             ended = mtime_of(os.path.join(run_dir, "out")) or started
-            if cutoff <= ended <= now + 3600:
+            boot = min((at for at in reboots(now)
+                        if started < at and at - REBOOT_QUIET_S <= ended <= at + REBOOT_SLACK_S), default=None)
+            if boot is not None and cutoff <= ended <= now + 3600:
+                legs.append(leg(block, "worker", fields[1], ended, "rebooted", "reboot",
+                                "no exit: the Mac rebooted at %s" % time.strftime("%H:%M", time.localtime(boot)),
+                                "", **common))
+            elif cutoff <= ended <= now + 3600:
                 legs.append(leg(block, "worker", fields[1], ended, "failed", "crashed",
                                 "no exit: supervisor gone", "ours", **common))
             continue
@@ -1004,6 +1047,39 @@ def worker_legs(cutoff, now):
     if earliest is not None:
         earliest = max(earliest, now - WORKER_KEEP_D * 86400)
     return legs, earliest
+
+
+def reboots(now):
+    """Boot times, newest first, off `last reboot` (LLM_DOCTOR_REBOOTS: epochs, for fixtures)."""
+    if _REBOOTS:
+        return _REBOOTS[0]
+    fixture = os.environ.get("LLM_DOCTOR_REBOOTS")
+    found = []
+    if fixture is not None:
+        found = [int(value) for value in fixture.split(",") if value.strip().isdigit()]
+    else:
+        try:
+            out = subprocess.run(["last", "reboot"], capture_output=True, text=True, timeout=5).stdout
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+        year = time.localtime(now).tm_year
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 4 or parts[0] != "reboot":
+                continue
+            # The locale orders `last`'s date: "28 Sep 16:39" or "Sep 28 16:39"; it prints no year.
+            stamp = " ".join(parts[-3:])
+            for layout in ("%d %b %H:%M", "%b %d %H:%M"):
+                try:
+                    at = time.mktime(time.strptime("%d %s" % (year, stamp), "%Y " + layout))
+                    if at > now + 86400:
+                        at = time.mktime(time.strptime("%d %s" % (year - 1, stamp), "%Y " + layout))
+                except ValueError:
+                    continue
+                found.append(int(at))
+                break
+    _REBOOTS.append(sorted(found, reverse=True))
+    return _REBOOTS[0]
 
 
 def supervisor_gone(run_dir, pid):
@@ -1107,13 +1183,23 @@ def comparable_size(size, other):
     return isinstance(other, (int, float)) and other > 0 and max(size, other) <= SLOW_SIZE_RATIO * min(size, other)
 
 
+def local_slow_windows():
+    """[(start, end)] the Harness doctor judged this Mac itself slow in: a leg slow inside one is no
+    model's weather. Its `local_slow` key, epochs; absent, nothing is local."""
+    path = os.environ.get("HARNESS_DOCTOR_LATEST") or os.path.join(base_home(), ".cache", "harness-doctor",
+                                                                   "latest.json")
+    windows = (read_json(path) or {}).get("local_slow")
+    return [(pair[0], pair[1]) for pair in windows or [] if isinstance(pair, list) and len(pair) == 2
+            and all(isinstance(value, (int, float)) for value in pair)]
+
+
 def mark_slow(legs):
     """Each completed leg against the median of the SLOW_BASE_N completions of its cohort, within
     SLOW_SIZE_RATIO of its input size, that ended before it within SLOW_BASE_D. Slow legs
     stay in the sample: a model whose new speed persists becomes its own baseline after about half
     that many legs, and a verdict, resting only on what came before, never flips when later legs
     arrive."""
-    history = {}
+    history, local = {}, local_slow_windows()
     for leg_row in sorted(legs, key=lambda row: row["at"]):
         duration = leg_row["duration"]
         if leg_row["class"] is not None or leg_row["attempt"] != "final" or not duration or duration <= 0:
@@ -1134,6 +1220,9 @@ def mark_slow(legs):
             leg_row["detail"] = "%d%s vs %d%s median" % (
                 round(duration / unit), "m" if unit == 60 else "s", round(median / unit),
                 "m" if unit == 60 else "s")
+            if any(start < leg_row["at"] and leg_row["at"] - duration < end for start, end in local):
+                leg_row["reason"] = "local slow"
+                leg_row["detail"] += " · this Mac was slow (Harness)"
 
 
 def verdict_of(leg_row):
@@ -1542,46 +1631,55 @@ def name_chats(rows):
     if not pending:
         return
     if not _CHAT_SOURCES:
-        from chat_names import chat_name, short_session, store_names, worker_run_launchers
-        _CHAT_SOURCES.extend((chat_name, short_session, worker_run_launchers(), store_names()))
-    chat_name, short_session, launchers, store = _CHAT_SOURCES
+        from chat_names import chat_name, chat_title, store_names, worker_run_launchers
+        _CHAT_SOURCES.extend((chat_name, chat_title, worker_run_launchers(), store_names()))
+    chat_name, chat_title, launchers, store = _CHAT_SOURCES
     for row in pending:
-        row["chat"] = chat_name(row["session"], launchers=launchers, store=store) \
-            or row.get("chat") or short_session(row["session"])
+        row["chat"] = chat_name(row["session"], launchers=launchers, store=store) or row.get("chat") \
+            or chat_title(row["session"], launchers=launchers, store=store) or "unnamed chat"
 
 
 def health_row(name, items, notes=()):
     name_chats(list(items.values()))
     merged = {}
     for item in items.values():
-        into = merged.setdefault((item["label"], item["chat"]), dict(item, count=0, last=0, lines=0))
+        into = merged.setdefault((item["label"], item["chat"]), dict(item, count=0, last=0, lines=0, repeats=0))
         into["count"] += item["count"]
         into["last"] = max(into["last"], item["last"])
         into["lines"] += item["lines"]
+        into["repeats"] += item["repeats"]
     items = sorted(merged.values(), key=lambda item: -item["last"])
     count = sum(item["count"] for item in items)
     return {"name": name, "status": "problem" if count else "ok", "count": count,
             "items": items, "notes": list(notes)}
 
 
-def add_item(items, label, at, lines=0, session="", chat=""):
+def add_item(items, label, at, lines=0, session="", chat="", repeats=1):
     session = str(session or "")
-    item = items.setdefault((label, session), {"label": label, "session": session, "chat": "",
-                                               "count": 0, "last": 0, "lines": 0})
+    chat = re.sub(r" \([0-9a-f]{8}\)$", "", str(chat or ""))
+    item = items.setdefault((label, session or chat), {"label": label, "session": session, "chat": "",
+                                                       "count": 0, "last": 0, "lines": 0, "repeats": 0})
     if chat and chat != session and not item["chat"]:
-        item["chat"] = re.sub(r" \([0-9a-f]{8}\)$", "", str(chat))
+        item["chat"] = chat
     item["count"] += 1
     item["last"] = max(item["last"], at)
     item["lines"] += lines
+    item["repeats"] += repeats
 
 
 def hooks_health(cutoff, now):
     """Hook failures, asks the model left unanswered, and word notices it gave no reading line."""
-    items, asked = {}, {}
-    for row in read_jsonl(stop_journal()):
+    items, asked, notes, streaks, last_stop = {}, {}, [], {}, None
+    journal = read_jsonl(stop_journal())
+    if not journal and not os.path.exists(stop_journal()):
+        notes.append("stop journal not found")
+    for row in journal:
         at = iso_epoch(row.get("ts"))
+        if at is not None:
+            last_stop = max(last_stop or at, at)
         if at is None or not cutoff <= at <= now + 3600:
             continue
+        deferred(streaks, items, row, at)
         for hook in row.get("hooks") or []:
             if not isinstance(hook, dict):
                 continue
@@ -1589,6 +1687,8 @@ def hooks_health(cutoff, now):
             session = row.get("session")
             if outcome == "error":
                 add_item(items, "%s: %s" % (name, reason or "error"), at, session=session)
+            elif outcome == "held":
+                add_item(items, "%s: held a run no relay owns" % name, at, session=session)
             elif outcome == "asked":
                 key = (session, name, reason[:120])
                 if row.get("busy"):
@@ -1611,35 +1711,189 @@ def hooks_health(cutoff, now):
                      if row.get("unprompted") else
                      "word notice with no reading: %s" % str(row.get("hook"))[:40])
             add_item(items, label, row["ts"], session=row.get("session"), chat=row.get("chat"))
-    return health_row("hooks", items)
+    for session, (_, first, last) in streaks.items():
+        if last - first >= DEFERRED_S:
+            add_item(items, "asks deferred over 2 h: %s" % session[1], last, session=session[0])
+    active, _ = newest_transcript()
+    if active and active - (last_stop or 0) > SILENT_S and active >= cutoff:
+        add_item(items, "stop-dispatch.sh: no journal line while chats ran", last_stop or cutoff)
+    return health_row("hooks", items, notes)
 
 
-def debt_health(cutoff, now):
-    """Debt that recording failed to capture (gaps) or that a store dropped unreviewed (losses)."""
-    items, notes = {}, []
-    root = os.path.join(debt_dir(), "gaps")
-    try:
-        sessions = os.listdir(root)
-    except OSError:
-        sessions = []
-    for session in sessions:
-        for line in (read_text(os.path.join(root, session)) or "").splitlines():
-            parts = line.split("\t")
-            try:
-                at = float(parts[0])
-            except (ValueError, IndexError):
-                continue
+def deferred(streaks, items, row, at):
+    """Per (session, reason) the span of consecutive stops whose every ask was deferred, busy or re-entered.
+
+    A deferral is the rule working, one that never ends is an ask nobody will ever see."""
+    session = str(row.get("session") or "")
+    asks = [hook for hook in row.get("hooks") or [] if isinstance(hook, dict)
+            and str(hook.get("name") or "").startswith("ask-")]
+    if not asks:
+        return
+    outcomes = {hook.get("outcome") for hook in asks}
+    reason = ("busy " + str(row.get("busy") or "").split(":", 1)[0] if outcomes == {"skipped-busy"} else
+              "stop hook active" if outcomes == {"skipped-active"} else "")
+    for key in [key for key in streaks if key[0] == session and key[1] != reason]:
+        streak = streaks.pop(key)
+        if streak[2] - streak[1] >= DEFERRED_S:
+            add_item(items, "asks deferred over 2 h: %s" % key[1], streak[2], session=session)
+    if reason:
+        streak = streaks.setdefault((session, reason), [reason, at, at])
+        streak[2] = max(streak[2], at)
+
+
+def short_path(path):
+    return "/".join(str(path).rstrip("/").split("/")[-2:])
+
+
+def gate_verdict(decisions, path, at):
+    """`passed` when a gate priced or passed this write, `denied` when it only refused one, else None."""
+    names = {path, os.path.realpath(path)}
+    verdict = None
+    for row in decisions:
+        if not at - GATE_BEFORE_S <= row["at"] <= at + GATE_AFTER_S:
+            continue
+        if not names & {row.get("file"), row.get("real")}:
+            continue
+        if row.get("decision") in ("passed", "span-pass", "granted"):
+            return "passed"
+        verdict = "denied"
+    return verdict
+
+
+def change_writer(row):
+    """(session, chat) of whoever wrote a journaled change: the session only when its own call did."""
+    if row.get("writer") == "this-call":
+        return row.get("sid") or "", row.get("chat") or ""
+    if row.get("source") == "watcher" and row.get("sid"):
+        # The watcher names every chat with a call in flight at the write, likeliest first.
+        others = row["writers"] - 1 if isinstance(row.get("writers"), int) else \
+            str(row.get("writer") or "").count("), ")
+        if not others:
+            return row["sid"], row.get("chat") or ""
+        return "", "likely %s, %d more in flight" % (
+            re.sub(r" \([0-9a-f]{8}\)$", "", str(row.get("chat") or "unnamed chat"))[:24], others)
+    names = [re.sub(r" \([0-9a-f]{8}\)$", "", str(cand.get("chat") or "unnamed chat"))[:24]
+             for cand in row.get("candidates") or [] if isinstance(cand, dict)]
+    names = [name for name in names if name]
+    return "", "one of: " + ", ".join(names) if names else "writer unknown"
+
+
+def guards_health(cutoff, now):
+    """What the instruction guards let through or could not do: growth of an instruction file no gate priced
+    or passed, forged retry stamps, the guards' own failures, and a watcher or tripwire that went quiet."""
+    items, notes, decisions = {}, [], []
+    state = watch_state()
+    if not os.path.isdir(state):
+        return health_row("guards", items, ["instruction watch state not found"])
+    for row in read_jsonl(os.path.join(state, "gates.jsonl")):
+        at = row.get("at")
+        if not isinstance(at, (int, float)):
+            continue
+        if row.get("decision") == "fault":
             if cutoff <= at <= now + 3600:
-                add_item(items, "not recorded: %s" % (parts[1] if len(parts) > 1 else "gap"), at, session=session)
-    losses = os.path.join(debt_dir(), "losses.jsonl")
-    if os.path.exists(losses):
-        for row in read_jsonl(losses):
-            at = row.get("at")
-            if isinstance(at, (int, float)) and cutoff <= at <= now + 3600:
-                add_item(items, "lost unreviewed: %s" % (row.get("kind") or "?"), at, as_int(row.get("lines")) or 0,
-                         session=row.get("session"))
-    else:
-        notes.append("losses.jsonl not written yet: only recording gaps are seen")
+                add_item(items, "%s gate: %s" % (row.get("gate") or "?", str(row.get("detail") or "fault")[:DETAIL_MAX]),
+                         at, session=row.get("sid"))
+        else:
+            decisions.append(row)
+    for row in read_jsonl(os.path.join(state, "events.jsonl")):
+        at = iso_epoch(row.get("at"))
+        if at is None or not cutoff <= at <= now + 3600:
+            continue
+        kind = row.get("kind") or "change"
+        session, chat = change_writer(row)
+        files = [str(path) for path in row.get("files") or []]
+        if kind in ("change", "changed-between-sessions") and not row.get("reverted"):
+            for path, delta in zip(files, row.get("bytes") or []):
+                if not isinstance(delta, (int, float)) or delta <= GROWTH_MIN_B or path.endswith("/settings.json"):
+                    continue
+                verdict = gate_verdict(decisions, path, at)
+                if verdict != "passed":
+                    add_item(items, "%s grew %s" % (short_path(path), "after a denial" if verdict else
+                                                    "with no gate seeing it"), at, session=session, chat=chat)
+        elif kind == "stamp-forged":
+            add_item(items, "forged retry stamp: %s" % short_path(files[0] if files else "?"), at,
+                     session=row.get("sid"), chat=row.get("chat"))
+        elif kind in ("changed-while-watcher-off", "baseline-missing", "dropped"):
+            add_item(items, {"changed-while-watcher-off": "changed while the watcher was off",
+                             "baseline-missing": "tripwire baseline missing",
+                             "dropped": "change journal dropped records"}[kind], at, session=row.get("sid"),
+                     chat=row.get("chat"))
+    beat = os.path.join(state, "watcher", "heartbeat")
+    born, body = mtime_of(beat), read_text(beat) or ""
+    failure = re.search(r"error=([^\n]+)", body)
+    if born is None:
+        add_item(items, "watcher never started", now)
+    elif now - born > 2 * WATCH_TICK_S:
+        add_item(items, "watcher down", born)
+    elif failure or re.search(r"\broots=0\b", body):
+        add_item(items, "watcher down: %s" % (failure.group(1) if failure else "no root watched")[:DETAIL_MAX], born)
+    baselines = [mtime_of(path) or 0 for path in glob.glob(os.path.join(state, "session-*.tsv"))]
+    _, started = newest_transcript()
+    if started and started - max(baselines or [0]) > SILENT_S and started >= cutoff:
+        add_item(items, "tripwire wrote no baseline while chats started", max(baselines or [cutoff]))
+    return health_row("guards", items, notes)
+
+
+def open_gaps(window_h):
+    """review-anchors' open gap groups, or a note saying why they could not be read."""
+    days = max(DEBT_GAP_DAYS, -(-int(window_h) // 24))
+    search = os.pathsep.join((os.environ.get("PATH", ""), os.path.join(base_home(), ".local", "bin")))
+    binary = shutil.which("review-anchors", path=search)
+    if not binary:
+        return [], "gaps not read: review-anchors not found"
+    try:
+        done = subprocess.run([binary, "gaps", "--days", str(days), "--json"], capture_output=True, text=True,
+                              timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], "gaps not read: review-anchors %s" % type(exc).__name__
+    if done.returncode:
+        return [], "gaps not read: review-anchors exited %d" % done.returncode
+    rows = []
+    for line in done.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and isinstance(row.get("last"), (int, float)):
+            rows.append(row)
+    skipped = sum(1 for line in done.stderr.splitlines() if "skipped" in line)
+    return rows, "review-anchors skipped %d unreadable gap stores" % skipped if skipped else ""
+
+
+def debt_health(cutoff, now, window_h):
+    """Debt that recording failed to capture and nobody has reviewed since (open gaps), or that a store
+    dropped unreviewed (losses)."""
+    items, notes = {}, []
+    gaps, note = open_gaps(window_h)
+    causes = {}
+    for row in gaps:
+        detail = str(row.get("detail") or "")
+        # The recorder puts the event's specifics after "<repo>: " (the first capped path, the tool call id):
+        # every gap of one kind in one repository is one cause.
+        repo = detail.split(": ", 1)[0] if detail.startswith("/") and ": " in detail else ""
+        label = "not recorded: %s" % (row.get("kind") or "gap")
+        if repo:
+            label += " in %s" % os.path.basename(repo.rstrip("/"))
+        cause = causes.setdefault((row.get("session"), label, repo or detail), [label, 0, 0])
+        cause[1] = max(cause[1], row["last"])
+        cause[2] += as_int(row.get("count")) or 1
+    for (session, _, _), (label, last, repeats) in causes.items():
+        add_item(items, label, last, session=session, repeats=repeats)
+    if note:
+        notes.append(note)
+    drops = {}
+    for row in read_jsonl(os.path.join(debt_dir(), "losses.jsonl")):
+        at = row.get("at")
+        if isinstance(at, (int, float)) and cutoff <= at <= now + 3600:
+            session = str(row.get("session") or "")
+            chat = "" if session else os.path.basename(str(row.get("repo") or "").rstrip("/"))
+            # One row per dropped path; "run <id>: <why>" names the one drop they all came from.
+            drop = drops.setdefault((session, chat, row.get("kind") or "?",
+                                     str(row.get("detail") or "").split(": ", 1)[0]), [0, 0])
+            drop[0] = max(drop[0], at)
+            drop[1] += as_int(row.get("lines")) or 0
+    for (session, chat, kind, _), (at, lines) in drops.items():
+        add_item(items, "lost unreviewed: %s" % kind, at, lines, session=session, chat=chat)
     return health_row("debt", items, notes)
 
 
@@ -1670,7 +1924,8 @@ def collect(window_h, now, write_daily=False):
     return {"as_of": int(now), "window_h": window_h, "trend_days": TREND_DAYS,
             "bugs": sum(block["bugs"] for block in blocks), "summary": summary,
             "not_measurable": list(NOT_MEASURABLE), "blocks": blocks,
-            "health": [hooks_health(window_cutoff, now), debt_health(window_cutoff, now)]}
+            "health": [hooks_health(window_cutoff, now), guards_health(window_cutoff, now),
+                       debt_health(window_cutoff, now, window_h)]}
 
 
 def write_cache(report):
@@ -1727,9 +1982,11 @@ def render(report, only=None):
         lines.append("%s: %s" % (row["name"].capitalize(), "%d problem%s" % (row["count"], "" if row["count"] == 1 else "s")
                                   if row["count"] else "ok"))
         for item in row["items"]:
-            lines.append("  %-4d %4s  %s%s%s" % (item["count"], age_text(max(0, report["as_of"] - item["last"])),
-                                                 item["chat"] + " · " if item.get("chat") else "", item["label"],
-                                                 " · %d lines" % item["lines"] if item["lines"] else ""))
+            lines.append("  %-4d %4s  %s%s%s%s" % (item["count"], age_text(max(0, report["as_of"] - item["last"])),
+                                                   item["chat"] + " · " if item.get("chat") else "", item["label"],
+                                                   " · %d lines" % item["lines"] if item["lines"] else "",
+                                                   " · seen %d×" % item["repeats"]
+                                                   if item.get("repeats", 0) > item["count"] else ""))
         for note in row["notes"]:
             lines.append("  %s" % note)
     lines.append("")

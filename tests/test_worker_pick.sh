@@ -94,15 +94,22 @@ run_env=(TZ=UTC "PATH=$WORK/bin:$PATH" "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_
 clear_claims() { rm -rf "$CLAIMS"; mkdir -p "$CLAIMS"; }
 clear_walls() { rm -rf "$WALLS"; mkdir -p "$WALLS"; }
 sync_fixture_pool() {
-  local vendor dir
+  local vendor dir item
+  local -A disabled=([claude]='' [codex]='' [gemini]='' [grok]='')
+  # One jq for the four lists, each vendor under its own `try`: a shape one vendor chokes on still
+  # empties that vendor's list alone, as a call per vendor did.
+  while IFS= read -r -d '' vendor && IFS= read -r -d '' item; do
+    disabled[$vendor]+="$item"$'\n'
+  done < <(jq --raw-output0 '("claude", "codex", "gemini", "grok") as $vendor |
+    try (.vendors[$vendor] | (.accounts // [.])[]? | select(.enabled == false) | .account // "main") catch empty |
+    $vendor, .' "$STORE" 2>/dev/null)
   for vendor in claude codex gemini grok; do
     case "$vendor" in
       claude) dir="$HOME_FIXTURE/.claude-profiles/.claudeb" ;;
       *) dir="$HOME_FIXTURE/.$vendor-profiles/.${vendor}b" ;;
     esac
-    mkdir -p "$dir"
-    jq -r --arg vendor "$vendor" '.vendors[$vendor] | (.accounts // [.])[]? |
-      select(.enabled == false) | .account // "main"' "$STORE" > "$dir/disabled" 2>/dev/null
+    [ -d "$dir" ] || mkdir -p "$dir"
+    printf '%s' "${disabled[$vendor]}" >"$dir/disabled"
   done
 }
 run_store() {
@@ -2223,5 +2230,43 @@ rm -f "$STORE"
 query --list
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
+
+# The catalogs are read once per process: after prime, a different cache must not move the table.
+# A codex prime omits the other catalogs. A stale grok cache must not call grok (NO_FETCH).
+prime_a=$WORK/prime-a
+prime_b=$WORK/prime-b
+mkdir -p "$prime_a" "$prime_b"
+jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now' \
+  "$ROOT/tests/fixtures/grokb-models.json" >"$prime_a/models.json"
+jq --argjson now "$(date +%s)" '.fetched_at = $now | .attempted_at = $now | .default = "grok-9"
+  | .models = [{slug:"grok-9", default:true, label:"grok-9"}]' \
+  "$ROOT/tests/fixtures/grokb-models.json" >"$prime_b/models.json"
+prime_frozen=$(GROKB_CACHE_DIR="$prime_a" bash -c '
+  . "$1"
+  worker_model_prime
+  t1=$(worker_model_table)
+  export GROKB_CACHE_DIR="$2"
+  t2=$(worker_model_table)
+  if [ "$t1" = "$t2" ]; then printf same; else printf moved; fi
+  printf "\n%s\n" "$t1"
+' _ "$ROOT/share/worker-model.sh" "$prime_b")
+assert test "${prime_frozen%%$'\n'*}" = same
+assert contains "$prime_frozen" 'grok-4.7'
+assert not_contains "$prime_frozen" 'grok-9'
+prime_codex=$(bash -c '. "$1"; worker_model_prime codex; worker_model_table' _ "$ROOT/share/worker-model.sh")
+assert contains "$prime_codex" 'codex astra'
+assert not_contains "$prime_codex" 'gemini '
+assert not_contains "$prime_codex" 'grok '
+stale_grok=$WORK/stale-grok
+mkdir -p "$stale_grok"
+jq '.fetched_at = 0 | .attempted_at = 0' "$GROKB_CACHE_DIR/models.json" >"$stale_grok/models.json"
+grok_mark=$WORK/grok-fetch
+: >"$grok_mark"
+jq -c '.golden' "$FIXTURES" >"$STORE"
+sync_fixture_pool
+env "${run_env[@]}" GROKB_CACHE_DIR="$stale_grok" GROK_FETCH_MARKER="$grok_mark" \
+  "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account codex >"$WORK/nofetch.out" 2>"$WORK/nofetch.err"
+assert test ! -s "$grok_mark"
+assert test "$(cat "$WORK/nofetch.out")" = "$(env "${run_env[@]}" "LLM_LIMITS_FILE=$STORE" "$SCRIPT" --account codex)"
 
 printf 'PASS:%s assertions; the routing-contract rules (pool-toggle candidacy with a computable daily budget, pin-or-largest-budget selection where a nearer reset outranks an equal percentage and equal budgets order by name, walls only at effective 100%% with dead auth its own state), the five-hour deferral at 80%% with its `5h!` tag, claims as the second soft key (fresh demotes, TTL-expired does not, per-vendor, table never writes one, a refused query records nothing), the session account as an ordinary candidate in every role with no reserve anywhere, the seven roles including chat, research, light and computer without pins or role keys and light, image and computer ignoring workers-off and the pin alike, loud pin lapses, the fable bucket on explicit ask, --exclude re-queries and ALL WALLED exit 3, an emptied pool named as the switch it is rather than a limit, a NEXT block that ranks the top five ACCOUNTS across the vendors with several rows per vendor allowed, pins above budget and walls out of it, grok as the fourth vendor (weekly-only ranking, refreshable `expired` auth behind `ok`, mode arm, and absence that renders as absence), data hygiene and DATA age sourcing that a parked vendor contributes nothing to, the all-paused run naming the pause once and nothing else in the render and in the fail-safe alike, model/effort straight from worker-model, account rows that print the daily budget that ranked them with WALLED kept to the usage wall, a DATA line that names the stale rows instead of branding the table, the vendor and account a gateway chat owns rather than a Claude row it never spends, and the output/decision golden contract with no routing prose\n' "$asserts"

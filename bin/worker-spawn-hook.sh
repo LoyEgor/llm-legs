@@ -5,6 +5,7 @@
 # from the brief's MODEL:/EFFORT: lines with worker-model defaults — instead
 # of trusting the orchestrating model to compose it. Fail-open: on any doubt
 # leave the call untouched.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 # A hook runs on the interactive path: it reads the model list, it never refreshes it. A cold
@@ -255,7 +256,8 @@ if [ -n "$attach_run" ] && IFS= read -r run_tag <"$attach_dir/tag" 2>/dev/null &
 fi
 
 # Read by worker-run's brief_review_round header rules; `worker-run start` adopts it from the tag
-# file when the relay rewrote the brief without it.
+# file when the relay rewrote the brief without it. `none` is seeded too: dropped, the orchestrator's
+# opt-out turns into worker-run's prose round-ask.
 prompt_round=''
 case "$subagent" in
   claudeb-worker | codex-worker | gemini-worker | grok-worker | light-worker)
@@ -265,8 +267,7 @@ case "$subagent" in
         RESUME\ *:* | ATTACH\ *:*) continue ;;
       esac
       [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || break
-    done <<<"$prompt"
-    [ "$prompt_round" != none ] || prompt_round='' ;;
+    done <<<"$prompt" ;;
 esac
 
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}(: | — )//')

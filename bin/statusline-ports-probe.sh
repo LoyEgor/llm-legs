@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 5.
+if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && "$modern_bash" -c '[ "${BASH_VERSINFO[0]}" -ge 5 ]' && exec "$modern_bash" "$0" "$@"
+  done
+  echo "statusline-ports-probe: bash 5 required (found $BASH_VERSION)" >&2
+  exit 1
+fi
 set -u
 
 session_id="${1:-}"
@@ -8,7 +16,7 @@ start_pid="${2:-$PPID}"
 # loses almost every dev server a session ever starts; an orphan is claimed back by its own
 # working directory sitting inside one of the project's working trees.
 project_top="${3:-}"
-session_id=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9_-')
+session_id=${session_id//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || exit 0
 
 cache_dir="$HOME/.cache/claude-statusline"
@@ -20,7 +28,7 @@ file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
 mkdir -p "$cache_dir" 2>/dev/null || exit 0
 # One probe per session at a time; reclaim a stale lock (a killed lsof).
 if ! mkdir "$lock" 2>/dev/null; then
-  now=$(date +%s 2>/dev/null); m=$(file_mtime "$lock" 2>/dev/null)
+  now=$EPOCHSECONDS; m=$(file_mtime "$lock" 2>/dev/null)
   if [[ "${now:-}" =~ ^[0-9]+$ ]] && [[ "${m:-}" =~ ^[0-9]+$ ]] && [ "$((now - m))" -gt 120 ]; then
     rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null || exit 0
   else
@@ -56,13 +64,15 @@ if [ -z "$root" ]; then write_cache ""; exit 0; fi
 # Every listener this user owns, in one call: the pid list can no longer be narrowed to the
 # session's descendants beforehand, because the servers worth showing are exactly the ones that
 # left that set when their shell returned. Ownership is decided below instead.
-lsof_out=$("$LSOF_CMD" -a -u "$(id -u)" -iTCP -sTCP:LISTEN -nP 2>/dev/null)
+lsof_out=$("$LSOF_CMD" -a -u "$UID" -iTCP -sTCP:LISTEN -nP 2>/dev/null)
 
 # The working directory of each listening process, for the orphans among them. Asked for all of
 # them rather than only for the orphans the ownership walk finds: one more lsof is cheaper than
 # threading a second pass through this script. Chunked at 40 pids like the query this replaced,
 # because the failure mode of an over-long -p list is a short answer, not an error — every orphan
 # would silently lose its directory and vanish from the segment.
+ports=""
+if [[ "$lsof_out" = *'(LISTEN)'* ]]; then
 cwds=""
 cwd_chunk=""; cwd_n=0
 while IFS= read -r pid; do
@@ -88,7 +98,10 @@ fi
 # git resolves the paths it prints, which is how they compare against the render's `pwd -P` tops.
 trees=""
 if [ -n "$project_top" ]; then
-  trees=$(git -C "$project_top" worktree list --porcelain 2>/dev/null | sed -n 's/^worktree //p')
+  while IFS= read -r tree_line; do
+    case "$tree_line" in worktree\ *) trees+="${tree_line#worktree }"$'\n' ;; esac
+  done < <(git -C "$project_top" worktree list --porcelain 2>/dev/null)
+  trees=${trees%$'\n'}
   # Not a repository (or no git): the one tree given is the whole project, as before.
   [ -n "$trees" ] || trees="$project_top"
 fi
@@ -218,10 +231,11 @@ ports=$(awk -v root="$root" '
 ' <(printf 'x\n%s\n' "$snapshot") <(printf 'x\n%s\n' "$cwds") \
    <(printf 'x\n%s\n' "$trees") <(printf 'x\n%s\n' "$lsof_out"))
 
+fi
 write_cache "$ports"
 
 marker="$cache_dir/.ports-prune"
-now=$(date +%s 2>/dev/null)
+now=$EPOCHSECONDS
 if [[ "${now:-}" =~ ^[0-9]+$ ]]; then
   m=$(file_mtime "$marker" 2>/dev/null || printf '0')
   [[ "$m" =~ ^[0-9]+$ ]] || m=0

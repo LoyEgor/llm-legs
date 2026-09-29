@@ -4,6 +4,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$WORK"' EXIT
 export STATUSLINE_CACHE_DIR="$WORK/sl"
+export RUN_SUITES_TIMES="$WORK/times.tsv"
 asserts=0
 assert() { asserts=$((asserts + 1)); "$@" || { printf 'FAIL: assert %s: %s\n' "$asserts" "$*"; exit 1; }; }
 
@@ -39,4 +40,18 @@ printf '#!/usr/bin/env bash\ncat "$STATUSLINE_CACHE_DIR"/suites-* >"$SEEN"; echo
 assert grep -Eq $'^/.*/run-suites\\.[A-Za-z0-9]+\t1\t/.*/count$' "$WORK/seen"
 assert test -z "$(ls "$WORK/sl")"
 
-printf 'PASS: %s asserts; run-suites runs every suite at nice 10, in parallel, a worktree finds its siblings, and a run leaves its progress pointer only while it lasts\n' "$asserts"
+# The wave starts the longest suite first by its last passing duration, an unknown one before all;
+# another repository's durations are neither read nor dropped.
+mkdir -p "$WORK/order/tests"
+for name in a b c d; do
+  printf '#!/usr/bin/env bash\necho %s >>"$ORDER"; echo PASS\n' "$name" >"$WORK/order/tests/test_$name.sh"
+done
+printf '%s\t%s\t%s\n' "$WORK/order" test_a.sh 5 "$WORK/order" test_b.sh 50 "$WORK/order" test_c.sh 20 \
+  /elsewhere test_d.sh 99 >"$RUN_SUITES_TIMES"
+ORDER="$WORK/order.log" bash "$ROOT/share/run-suites.sh" --repo "$WORK/order" -j 1 >/dev/null 2>&1
+assert test "$(tr '\n' ' ' <"$WORK/order.log")" = "d b c a "
+assert grep -q $'^/elsewhere\ttest_d.sh\t99$' "$RUN_SUITES_TIMES"
+assert grep -Eq "^$WORK/order"$'\ttest_d.sh\t[01]$' "$RUN_SUITES_TIMES"
+assert test "$(grep -c "^$WORK/order"$'\t' "$RUN_SUITES_TIMES")" = 4
+
+printf 'PASS: %s asserts; run-suites runs every suite at nice 10, in parallel, longest first, a worktree finds its siblings, and a run leaves its progress pointer only while it lasts\n' "$asserts"

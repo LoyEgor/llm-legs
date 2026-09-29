@@ -75,6 +75,18 @@ if [ "$jobs" -eq 0 ]; then
   [ "$jobs" -ge 2 ] || jobs=2
 fi
 
+# Each suite's last passing duration, keyed by the main checkout so a worktree shares it: the wave
+# starts the longest first, since alphabetical order left the slowest suite starting last.
+times_file=${RUN_SUITES_TIMES:-${XDG_CACHE_HOME:-$HOME/.cache}/run-suites/times.tsv}
+times_key=$repo
+[ "${common:-}" = "${common%/.git}/.git" ] && times_key=${common%/.git}
+declare -A last_secs=()
+if [ -r "$times_file" ]; then
+  while IFS=$'\t' read -r key name secs; do
+    [ "$key" = "$times_key" ] && [[ "$secs" =~ ^[0-9]+$ ]] && last_secs[$name]=$secs
+  done <"$times_file"
+fi
+
 # Suites that read live machine state — the real limits store, the real instruction-file export —
 # and so answer about this Mac rather than about the code. They are honest checks and they are not
 # repeatable beside twenty other processes, so they stay out of the wave unless asked for.
@@ -180,6 +192,13 @@ for entry in "${suites[@]}"; do
   if serial_suite "$(basename "$entry")"; then tail_wave+=("$entry"); else wave+=("$entry"); fi
 done
 
+# Unknown suites first: a new one may be the longest.
+if [ "${#wave[@]}" -gt 1 ]; then
+  mapfile -t wave < <(for i in "${!wave[@]}"; do
+    printf '%s\t%s\t%s\n' "${last_secs[${wave[i]##*/}]:-999999}" "$i" "${wave[i]}"
+  done | sort -t $'\t' -k1,1nr -k2,2n | cut -f3-)
+fi
+
 printf 'run-suites: %s suites, -j %s, logs under %s\n' "${#suites[@]}" "$jobs" "$logdir"
 wall_start=$(date +%s)
 running=0
@@ -208,11 +227,19 @@ for entry in "${suites[@]}"; do
   serial_total=$((serial_total + seconds))
   verdict=PASS
   [ "$rc" -eq 0 ] || { verdict="FAIL $rc"; failed+=("$name"); }
+  [ "$rc" -ne 0 ] || last_secs[$name]=$seconds
   printf '%-*s  %-6s  %5s  %s\n' "$width" "$name" "$verdict" "$seconds" \
     "$(grep -v '^[[:space:]]*$' "$logdir/$name.log" 2>/dev/null | tail -n1 | cut -c1-100)"
 done
 printf '\n%s suites · %s PASS · %s FAIL · %ss wall (%ss serial)\n' \
   "${#suites[@]}" "$(( ${#suites[@]} - ${#failed[@]} ))" "${#failed[@]}" "$wall" "$serial_total"
+
+if [ "${#last_secs[@]}" -gt 0 ] && mkdir -p "${times_file%/*}" 2>/dev/null &&
+    times_tmp=$(mktemp "$times_file.XXXXXX" 2>/dev/null); then
+  { [ -r "$times_file" ] && TIMES_KEY=$times_key awk -F'\t' '$1 != ENVIRON["TIMES_KEY"]' "$times_file"
+    for name in "${!last_secs[@]}"; do printf '%s\t%s\t%s\n' "$times_key" "$name" "${last_secs[$name]}"; done
+  } >"$times_tmp" 2>/dev/null && mv -f "$times_tmp" "$times_file" 2>/dev/null || rm -f "$times_tmp"
+fi
 
 [ "${#failed[@]}" -eq 0 ] || {
   for name in "${failed[@]}"; do

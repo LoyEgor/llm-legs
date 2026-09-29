@@ -2,11 +2,19 @@
 # Shell work of one session, for the statusline's work lines and the `tests` field of its worker
 # rows — docs/statusline-contract.md, "Work lines". Fired from the render; writes the cache the
 # render and bin/subagent-statusline.sh read.
+# `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 5.
+if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && "$modern_bash" -c '[ "${BASH_VERSINFO[0]}" -ge 5 ]' && exec "$modern_bash" "$0" "$@"
+  done
+  echo "statusline-work-probe: bash 5 required (found $BASH_VERSION)" >&2
+  exit 1
+fi
 set -u
 
 session_id="${1:-}"
 start_pid="${2:-$PPID}"
-session_id=$(printf '%s' "$session_id" | tr -cd 'A-Za-z0-9_-')
+session_id=${session_id//[^A-Za-z0-9_-]/}
 [ -n "$session_id" ] || exit 0
 
 cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
@@ -21,7 +29,7 @@ file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
 
 mkdir -p "$cache_dir" 2>/dev/null || exit 0
 if ! mkdir "$lock" 2>/dev/null; then
-  now=$(date +%s 2>/dev/null); m=$(file_mtime "$lock" 2>/dev/null)
+  now=$EPOCHSECONDS; m=$(file_mtime "$lock" 2>/dev/null)
   # Under the render's 15s cut, so a probe killed holding the lock blanks no line; one runs in well under 1s.
   if [[ "${now:-}" =~ ^[0-9]+$ ]] && [[ "${m:-}" =~ ^[0-9]+$ ]] && [ "$((now - m))" -gt 12 ]; then
     rmdir "$lock" 2>/dev/null && mkdir "$lock" 2>/dev/null || exit 0
@@ -38,14 +46,18 @@ write_cache() {
 
 snapshot=$("$PS_CMD" -axo pid=,ppid=,etime=,command= 2>/dev/null)
 if [ -z "$snapshot" ]; then write_cache ""; exit 0; fi
-now=$(date +%s)
+now=$EPOCHSECONDS
 
 # This session's live worker runs, from the rows its task-row cache names: their supervisors are
 # setsid'd away from the chat, so ancestry from the chat never reaches their tests.
 runs=""
 for tag_file in "$tags_dir"/*; do
   [ -f "$tag_file" ] || continue
-  run=$(sed -n 's/^run=//p' "$tag_file" | tail -n1 | tr -cd 'a-z0-9-')
+  run=""
+  while IFS= read -r tag_line || [ -n "$tag_line" ]; do
+    case "$tag_line" in run=*) run=${tag_line#run=} ;; esac
+  done < "$tag_file"
+  run=${run//[^a-z0-9-]/}
   [ -n "$run" ] && [ -f "$runs_root/$run/meta.json" ] && [ ! -f "$runs_root/$run/exit_code" ] || continue
   pid=$(jq -r '.pid // 0' "$runs_root/$run/meta.json" 2>/dev/null)
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] && runs="$runs $run:$pid"
@@ -179,28 +191,52 @@ found=$(printf '%s\n' "$snapshot" | awk -v start="$start_pid" -v runs="$runs" '
 
 # An orphan test is this session's when the environment it inherited says so: a test backgrounded
 # with `&` or nohup is reparented to launchd the moment its shell returns.
-orphans=$(printf '%s\n' "$found" | awk -F'\t' '$1 == "O" { print $3 }' | paste -sd, -)
+orphans=""; root_pid=""
+while IFS=$'\t' read -r kind a pid rest; do
+  case "$kind" in
+    ROOT) root_pid=$a ;;
+    O) orphans="${orphans:+$orphans,}$pid" ;;
+  esac
+done <<< "$found"
 mine=""
 if [ -n "$orphans" ]; then
-  root_pid=$(printf '%s\n' "$found" | awk -F'\t' '$1 == "ROOT" { print $2 }')
   mine=$("$PS_CMD" -E -ww -o pid=,command= -p "$orphans" 2>/dev/null | awk -v sid="$session_id" -v root="${root_pid:-x}" '
     index($0 " ", " CLAUDE_CODE_SESSION_ID=" sid " ") || index($0 " ", " CLAUDE_PID=" root " ") { print $1 }' | paste -sd' ' -)
 fi
 
 # pid of the cwd to read, class, elapsed, label, test script — one per main-line work item. Split on
 # \037, never on tab: tab is IFS whitespace, so `read` would fold an empty field into the next one.
-items=$(printf '%s\n' "$found" | awk -F'\t' -v mine=" $mine " '
-  $1 == "M" || ($1 == "O" && index(mine, " " $3 " ")) { print $3 "\037" $2 "\037" $4 "\037" $5 "\037" $6 }')
+items=""; pids=""; runs_out=""
+while IFS= read -r found_line; do
+  IFS=$'\037' read -r kind a b c d e _ <<< "${found_line//$'\t'/$'\037'}"
+  case "$kind" in
+    M|O)
+      [ "$kind" = M ] || [[ " $mine " = *" $b "* ]] || continue
+      items+="$b"$'\037'"$a"$'\037'"$c"$'\037'"$d"$'\037'"$e"$'\n'
+      pids="${pids:+$pids,}$b" ;;
+    R) runs_out+="run"$'\t'"$a"$'\t'"$((now - b))"$'\t'"$c"$'\n' ;;
+  esac
+done <<< "$found"
+runs_out=${runs_out%$'\n'}
 
-cwds=""
-pids=$(printf '%s\n' "$items" | awk -F$'\037' 'NF { print $1 }' | paste -sd, -)
-[ -z "$pids" ] || cwds=$("$LSOF_CMD" -a -d cwd -Fn -p "$pids" 2>/dev/null | awk '
-  /^p/ { pid = substr($0, 2) } /^n/ && pid != "" { print pid "\t" substr($0, 2); pid = "" }')
+declare -A cwd_by_pid=()
+if [ -n "$pids" ]; then
+  cwd_pid=""
+  while IFS= read -r cwd_line; do
+    case "$cwd_line" in
+      p*) cwd_pid=${cwd_line#p} ;;
+      n*)
+        [ -z "$cwd_pid" ] || [ -n "${cwd_by_pid[$cwd_pid]+set}" ] ||
+          { cwd_line=${cwd_line#n}; cwd_by_pid[$cwd_pid]=${cwd_line%%$'\t'*}; }
+        cwd_pid="" ;;
+    esac
+  done < <("$LSOF_CMD" -a -d cwd -Fn -p "$pids" 2>/dev/null)
+fi
 
 records=""
 while IFS=$'\037' read -r pid class elapsed label tpath; do
   [ -n "$pid" ] || continue
-  cwd=$(printf '%s\n' "$cwds" | awk -F'\t' -v p="$pid" '$1 == p { print $2; exit }')
+  cwd=${cwd_by_pid[$pid]:-}
   done_n=$'\t' total="" srepo=""
   if [ "$label" = suites ] && [ -f "$cache_dir/suites-$pid" ] && IFS=$'\t' read -r logdir total srepo < "$cache_dir/suites-$pid" \
       && [ -d "$logdir" ] && [[ "$total" =~ ^[0-9]+$ ]]; then
@@ -226,17 +262,21 @@ while IFS=$'\037' read -r pid class elapsed label tpath; do
   records="${records}main"$'\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\n'
 done <<< "$items"
 
-runs_out=$(printf '%s\n' "$found" | awk -F'\t' -v now="$now" '$1 == "R" { print "run\t" $2 "\t" (now - $3) "\t" $4 }')
-
-new_cache="$(printf '%s' "$records" | sort -t$'\t' -k2,2r -k3,3n)${runs_out:+
+sorted_records=""
+[ -z "$records" ] || sorted_records=$(printf '%s' "$records" | sort -t$'\t' -k2,2r -k3,3n)
+new_cache="$sorted_records${runs_out:+
 $runs_out}"
 
-# TEMP-TESTTIME(test-history): a test the last probe saw and this one does not has finished; its time
-# goes to the journal behind the temporary Test time menu (EXPERIMENTS.json, test-time). A start
-# re-derived from etime drifts by a second, so an item still running matches within 3s.
-old_mtime=$(file_mtime "$cache_file")
+# A test the last probe saw and this one does not has finished; its time goes to the journal the
+# Harness doctor's Tests section reads. A start re-derived from etime drifts by a second, so an item
+# still running matches within 3s.
+old_cache=""; old_mtime=""
+[ ! -r "$cache_file" ] || IFS= read -r -d '' old_cache < "$cache_file" || :
+if [[ "$old_cache" = *$'main\ttests\t'* || "$old_cache" = *$'run\t'* ]]; then
+  old_mtime=$(file_mtime "$cache_file")
+fi
 if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
-  finished=$({ printf 'OLD\n'; cat "$cache_file"; printf 'NEW\n%s\n' "$new_cache"; } | awk -F'\t' '
+  finished=$({ printf 'OLD\n'; printf '%s' "$old_cache"; printf 'NEW\n%s\n' "$new_cache"; } | awk -F'\t' '
     $0 == "OLD" || $0 == "NEW" { side = $0; next }
     $1 == "main" && $2 == "tests" { key = "chat\t" $4 "\t" $5 }
     $1 == "run" { key = "worker\t" $2 "\t" $4 }
@@ -265,12 +305,8 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
           --arg failed "$f" --arg total "$g" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
           + (if $total == "" then {} else {total: ($total | tonumber), failed: (($failed | tonumber?) // 0)} end)'
       fi
-    done <<< "$(tr '\t' '\037' <<< "$finished")" >> "$cache_dir/test-history.jsonl" 2>/dev/null
+    done <<< "${finished//$'\t'/$'\037'}" >> "$cache_dir/test-history.jsonl" 2>/dev/null
   fi
-fi
-if [ -n "${finished:-}" ] || { [ -f "$cache_dir/test-history.txt" ] &&
-    [ "$(date -r "$cache_dir/test-history.txt" +%Y-%m-%d)" != "$(date +%Y-%m-%d)" ]; }; then
-  "$(dirname "$0")/test-history" >/dev/null 2>&1
 fi
 
 write_cache "$new_cache"

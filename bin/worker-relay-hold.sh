@@ -4,6 +4,7 @@
 # going left two fixers invisible for an hour (2026-09-24), so a relay whose run is still alive is
 # sent back to wait. A relay let go is marked `stopped=` in its tag file: bin/worker-run-backstop.sh
 # reads that mark as "no relay owns this run any more". Fail-open everywhere.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 input=$(cat) || exit 0

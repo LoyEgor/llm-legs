@@ -17,8 +17,8 @@ local fastModeMarkers = {}
 local profileFastModeConfigs = {}
 local codexCatalogs = {}
 local workerModelSh = nil
--- TEMP-TESTTIME(test-history): the Test time summary file; nil is the file being absent.
-local testHistoryText = nil
+-- The Harness doctor menu.txt the fake io.open serves; nil is the file being absent.
+local harnessMenuText = nil
 
 -- What the fake io.open serves for geminib's review Flash pin file and family cache, the two files
 -- the Gemini submenu reads; nil is the file being absent — no cache is what the
@@ -43,13 +43,15 @@ local function colorKey(color)
     color.red or -1, color.green or -1, color.blue or -1, color.alpha or 1)
 end
 
--- The whole palette the menu may ever paint with: one dim, one red, one dim red. A second gray is
--- exactly what Egor cannot tell apart from the system's, so it may not reach a row at all.
+-- The whole palette the menu may ever paint with: one dim, one red, one dim red, and Token tracking's
+-- better-Δ green. A second gray is exactly what Egor cannot tell apart from the system's, so it may
+-- not reach a row at all.
 local KNOWN_COLORS = {}
 for _, color in ipairs({
   dimTone(0), dimTone(1),
   { red = 0.9, green = 0.25, blue = 0.2 },
   { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 },
+  { red = 0.13, green = 0.55, blue = 0.25 },
 }) do
   KNOWN_COLORS[colorKey(color)] = true
 end
@@ -72,7 +74,7 @@ local function styled(text, attributes)
   -- anywhere without this failing.
   if color ~= nil then
     assert(type(color) == "table" and KNOWN_COLORS[colorKey(color)],
-      "a colour outside the one dim, red and dim red reached the menu: "
+      "a colour outside the one dim, red, dim red and green reached the menu: "
         .. describeColor(color) .. " on " .. string.format("%q", tostring(text)))
   end
   return setmetatable({
@@ -164,9 +166,9 @@ local function loadModule(fixture, taskFactory, nowOverride, alertFn, osascriptF
         contents = "CODEX_CATALOG:" .. catalogAccount
       end
       if path:match("/share/worker%-model%.sh$") and workerModelSh then contents = workerModelSh end
-      if path:match("/test%-history%.txt$") then
-        if testHistoryText == nil then return nil end
-        contents = testHistoryText
+      if path:match("/harness%-doctor/menu%.txt$") then
+        if harnessMenuText == nil then return nil end
+        contents = harnessMenuText
       end
       local profileAccount = path:match("/%.codex%-profiles/([^/]+)/config%.toml$")
       if profileAccount and profileFastModeConfigs[profileAccount] then
@@ -264,6 +266,11 @@ local function submenuItem(row, title)
     if titleText(item) == title then return item end
   end
   return nil
+end
+
+local function launchesWorkerPick(task, mod)
+  return task ~= nil and task.path == "/usr/bin/nice" and type(task.args) == "table"
+    and task.args[1] == "-n" and task.args[2] == "10" and task.args[3] == mod.workerPickPath
 end
 
 local function routingItem(menu)
@@ -758,7 +765,7 @@ do
   end, routingNow)
   failedRouting.routingCache = { text = routingText, at = routingNow }
   failedRouting.refreshRouting()
-  assert(tasks[1] and tasks[1].path == failedRouting.workerPickPath,
+  assert(launchesWorkerPick(tasks[1], failedRouting),
     "routing refresh did not launch worker-pick")
   tasks[1].callback(1, "", "worker-pick failed")
   local failedMenu = routingItem(failedRouting.menuItems()).menu
@@ -1338,7 +1345,7 @@ do
   local after = poolItemFor(mod, "spare")
   assert(after and after.checked == true,
     "a successful toggle did not show in the next menu build")
-  assert(tasks[2] and tasks[2].path == mod.workerPickPath, "pool toggle did not refresh Routing")
+  assert(launchesWorkerPick(tasks[2], mod), "pool toggle did not refresh Routing")
   local collect = tasks[3]
   assert(collect and collect.path:find("llm%-limits", 1, false),
     "a successful vendor command did not start the follow-up collect")
@@ -2117,7 +2124,7 @@ assert(watcherStarted[watchModule.workerModelPath], "worker-model watcher was no
 assert(watchModule.workerModelWatcher ~= nil,
   "worker-model watcher must be module-scoped so it is not GC'd")
 assert(#watchTasks == 1 and watchStarts == 1, "startup did not refresh routing exactly once")
-assert(watchTasks[1].path == watchModule.workerPickPath, "startup launched the wrong routing command")
+assert(launchesWorkerPick(watchTasks[1], watchModule), "startup launched the wrong routing command")
 
 local watchNotifies = 0
 watchModule.onRefreshStateChanged = function() watchNotifies = watchNotifies + 1 end
@@ -2132,7 +2139,7 @@ assert(watchNotifies == 3, "routing completion did not re-render the menu")
 assert(#watchTasks == 2 and watchStarts == 2,
   "store watcher lost the routing refresh queued behind the startup task")
 for _, task in ipairs(watchTasks) do
-  assert(task.path == watchModule.workerPickPath, "watcher constructed a collector task")
+  assert(launchesWorkerPick(task, watchModule), "watcher constructed a collector task")
 end
 watchTasks[2].callback(0, routingText)
 watchCallbacks[watchModule.workerModelPath]()
@@ -2703,9 +2710,21 @@ local function doctorDocument(asOf)
         items = { { label = "ask-english-report.sh: exit 124", count = 2, last = os.time() - 7200, lines = 0,
                     chat = "Design system" },
                   { label = "word notice with no reading: ⚡ review", count = 1, last = os.time() - 7300, lines = 0 } } },
-      { name = "debt", status = "ok", count = 0, items = {},
-        notes = { "losses.jsonl not written yet: only recording gaps are seen" } },
+      { name = "debt", status = "problem", count = 1, notes = {},
+        items = { { label = "not recorded: hash-cap in logo-vectorizer-bench", count = 1, repeats = 1090, last = os.time() - 3 * 86400,
+                    lines = 0, chat = "Logo bench" } } },
     } }
+end
+
+do
+  local document = doctorDocument()
+  document.health[2] = { name = "debt", status = "ok", count = 0, items = {}, notes = {} }
+  local module = loadModule(doctorFixture, captureTasks({}), nil, nil, nil, nil, nil, nil, nil, document)
+  local row = doctorRow(module.menuItems())
+  assert(titleText(row.menu[6]) == "Debt: OK", titleText(row.menu[6]))
+  assert(isDimmed(row.menu[6].title.runs[1].attributes, 0), "a clean health row is not dimmed")
+  local debt = submenuTitles(row.menu[6])
+  assert(debt[1] == "nothing in the window" and #debt == 1, table.concat(debt, "|"))
 end
 
 do
@@ -2720,20 +2739,19 @@ do
   local module = loadModule(doctorFixture, captureTasks(tasks), nil, nil, nil, nil, nil, nil, nil, doctorDocument())
   local menu = module.menuItems()
   local row = doctorRow(menu)
-  assert(titleText(row) == "LLM doctor: 3 bugs · 3 issues · no snapshot", titleText(row))
+  assert(titleText(row) == "LLM doctor: 3 bugs · 4 issues · no snapshot", titleText(row))
   assert(not isDimmed(row.title.runs[1].attributes, 0), "the doctor line is dimmed over open bugs")
   local titles = submenuTitles(row)
   assert(titles[1] == "Reviewers: 2 bugs · 40 weather · 1 new · 1 regressed", titles[1])
   assert(titles[2] == "Workers: 0 bugs · 2 weather" and titles[3] == "Light: 1 bug · 0 weather"
     and titles[4] == "Image: no legs", table.concat(titles, "|"))
-  assert(titles[5] == "Hooks: 3 problems" and titles[6] == "Debt: OK", table.concat(titles, "|"))
+  assert(titles[5] == "Hooks: 3 problems" and titles[6] == "Debt: 1 problem", table.concat(titles, "|"))
   assert(not isDimmed(row.menu[5].title.runs[1].attributes, 0), "a health row with problems is dimmed")
-  assert(isDimmed(row.menu[6].title.runs[1].attributes, 0), "a clean health row is not dimmed")
   local hooks = submenuTitles(row.menu[5])
   assert(hooks[1] == "2 · 2h · Design system · ask-english-report.sh: exit 124"
     and hooks[2] == "1 · 2h · word notice with no reading: ⚡ review" and #hooks == 2, table.concat(hooks, "|"))
   local debt = submenuTitles(row.menu[6])
-  assert(debt[1] == "losses.jsonl not written yet: only recording gaps are seen" and #debt == 1, table.concat(debt, "|"))
+  assert(debt[1] == "1 · 72h · Logo bench · not recorded: hash-cap in logo-vectorizer-bench · seen 1090×" and #debt == 1, table.concat(debt, "|"))
   assert(titles[7] == "not measurable yet: worker false-green reports, weakened tests", titles[7])
   assert(titles[8] == "window: 24 h" and titles[9] == "Refresh blocks" and titles[10] == "-"
     and titles[11] == "Gemini", table.concat(titles, "|"))
@@ -2820,7 +2838,7 @@ do
   local snapshot = { as_of = os.time(), total = 14, anomalies = { anchors = 3, closure_pending = 11 },
     rows = { anchors = {}, closure_pending = {} } }
   local healthy = loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
-  assert(titleText(doctorRow(healthy)) == "LLM doctor: 3 bugs · 14 issues", titleText(doctorRow(healthy)))
+  assert(titleText(doctorRow(healthy)) == "LLM doctor: 3 bugs · 15 issues", titleText(doctorRow(healthy)))
   document.health = nil
   local menu = loadModule(doctorFixture, nil, nil, nil, nil, nil, nil, nil, snapshot, document).menuItems()
   assert(titleText(doctorRow(menu)) == "LLM doctor: 3 bugs · 11 issues", titleText(doctorRow(menu)))
@@ -3228,22 +3246,76 @@ do
   end
 end
 
--- TEMP-TESTTIME(test-history): the Test time submenu is the summary file line for line, `-` a separator.
+-- Harness doctor: one top-level entry, its rows read off bin/harness-doctor's laid-out menu.txt
+-- alone. A red span is its own red run, the rest of the row stays one run, a deeper line nests.
 do
-  local function testTimeRow(mod, title)
+  local function harnessRow(mod)
     for _, entry in ipairs(mod.menuItems()) do
-      if titleText(entry) == title then return entry end
+      if titleText(entry):match("^Harness doctor") then return entry end
     end
   end
-  testHistoryText = nil
-  local row = testTimeRow(loadModule(roleFixture), "Test time (temp): no finished test yet")
-  assert(row and row.disabled, "the Test time row did not say that no test has finished yet")
-  testHistoryText = "Test time (temp) · today 3m 10s\ntoday: 1 runs · 3m 10s\n-\n21:19 llm-legs · suites 73 ✗1 · 3m 10s · chat"
-  row = testTimeRow(loadModule(roleFixture), "Test time (temp) · today 3m 10s")
-  assert(row and #row.menu == 3 and row.menu[2].title == "-"
-      and titleText(row.menu[3]) == "21:19 llm-legs · suites 73 ✗1 · 3m 10s · chat",
-    "the Test time submenu is not the summary file line for line")
-  testHistoryText = nil
+  local function menuText(asOf)
+    return "T\t1\t" .. asOf .. "\tHarness doctor: 1 problem\n"
+      .. "0\td\tn:0:5\tWaits                   affects        1 h   24 h\n"
+      .. "0\t\tr:37:6\ttool call · llm-legs    every Bash  10.8 s  2.9 s\n"
+      .. "0\td\t\tread                    every Read   0.2 s  0.2 s\n"
+      .. "0\td\t\ttool call · 9 projects  every Bash   3.6 s   11 s\n"
+      .. "1\td\t\t                            1 h\n"
+      .. "1\t\tr:27:5\ttool call · review-bench  4.6 s\n"
+      .. "0\td\t\t  median wait per call\n"
+      .. "0\ts\t\t-\n"
+      .. "0\td\tn:0:4\tLoad      detail        1 h\n"
+      .. "0\t\t\tCPU busy  kernel 31 %  72 %\n"
+      .. "0\t\tr:22:5,g:39:4\tBash wait s  12  3.5  +243%  1.0  2.0  -50%\n"
+      .. "0\ts\t\t-\n"
+      .. "0\td\t\tas of 21:40 · collector 1.4 s\n"
+  end
+  harnessMenuText = nil
+  local row = harnessRow(loadModule(roleFixture))
+  assert(row and titleText(row) == "Harness doctor: no data"
+      and titleText(row.menu[1]) == "no data yet: Refresh runs bin/harness-doctor",
+    "the Harness doctor entry did not say the collector has not run")
+  harnessMenuText = menuText(os.time())
+  row = harnessRow(loadModule(roleFixture))
+  assert(row and titleText(row) == "Harness doctor: 1 problem" and #redRuns(row.title) == 1,
+    "a Harness doctor with a red row did not carry a red title")
+  local items = row.menu
+  assert(titleText(items[1]) == "Waits                   affects        1 h   24 h" and #items[1].title.runs == 2,
+    "the section header is not the plain section name over dim column heads: " .. titleText(items[1]))
+  local red = redRuns(items[2].title)
+  assert(#red == 1 and red[1] == "10.8 s" and #items[2].title.runs == 3,
+    "the red span is not the only red run of its row")
+  assert(#items[3].title.runs == 1 and items[3].disabled, "a quiet row is not one disabled run")
+  assert(items[4].menu and not items[4].disabled and #items[4].menu == 2
+      and titleText(items[4].menu[2]) == "tool call · review-bench  4.6 s"
+      and redRuns(items[4].menu[2].title)[1] == "4.6 s", "a deeper line did not open as its row's submenu")
+  assert(titleText(items[5]) == "  median wait per call" and titleText(items[6]) == "-",
+    "the section note does not close its section before the separator")
+  local delta = items[9].title.runs
+  assert(#delta == 4 and delta[2].text == "+243%" and delta[2].attributes.color.red == 0.9
+      and delta[4].text == "-50%" and delta[4].attributes.color.green == 0.55,
+    "a worse Δ is not red and a better Δ not green")
+  assert(titleText(items[#items]) == "Refresh" and items[#items].fn, "the Harness doctor has no Refresh")
+  harnessMenuText = menuText(os.time() - 3 * 3600)
+  row = harnessRow(loadModule(roleFixture))
+  assert(titleText(row) == "Harness doctor: 1 problem · stale 3 h", "an old menu was not marked stale")
+  harnessMenuText = "garbage"
+  row = harnessRow(loadModule(roleFixture))
+  assert(titleText(row) == "Harness doctor: no data", "an unreadable menu.txt was rendered")
+
+  local inode = 1
+  local cached = loadModule(roleFixture, nil, nil, nil, nil, nil, function(path)
+    if path:match("/harness%-doctor/menu%.txt$") then return { ino = inode, modification = 100, size = 10 } end
+  end)
+  harnessMenuText = menuText(os.time())
+  local first = harnessRow(cached).menu
+  harnessMenuText = menuText(os.time()):gsub("1 problem", "2 problems")
+  local second = harnessRow(cached)
+  assert(titleText(second) == "Harness doctor: 1 problem" and #second.menu == #first,
+    "an unchanged menu.txt was parsed again, or Refresh piled up on the cached items")
+  inode = 2
+  assert(titleText(harnessRow(cached)) == "Harness doctor: 2 problems", "a replaced menu.txt kept the old document")
+  harnessMenuText = nil
 end
 
 -- Saying nothing about a click already in flight is what makes a menu look dead and earns the

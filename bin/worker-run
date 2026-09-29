@@ -220,6 +220,8 @@ SILENT=${WORKER_RUN_SILENT_S:-600}
 WALL_SETTLE=${WORKER_RUN_WALL_SETTLE_S:-60}
 [[ "$WALL_SETTLE" =~ ^[0-9]+$ ]] || WALL_SETTLE=60
 [[ "$SILENT" =~ ^[0-9]+$ ]] || SILENT=600
+WAIT_POLL=${WORKER_RUN_WAIT_POLL_S:-5}
+[[ "$WAIT_POLL" =~ ^[1-9][0-9]*$ ]] || WAIT_POLL=5
 
 # The run record the watchdog watches, set by `supervise` before any vendor is launched.
 RUN_DIRECTORY=''
@@ -276,15 +278,22 @@ launch_attempt() { # directory
 # long before `out` does; matched on the token of the attempt now running, since a co-tenant run on
 # the same account writes into the same tree. Called once per watchdog tick until it answers.
 claudeb_discover_session() { # directory
-  local directory="$1" account resume root candidate launched first_line text token started fallback=''
+  local directory="$1" account resume root candidate launched first_line text token started fallback='' _wd_now
   [ ! -s "$directory/session-file" ] || return 0
   # A transcript that has not appeared within ten minutes never will — Claude names the file on the
   # first turn — and searching on would walk a profile tree of thousands of files every tick for the
   # rest of a six-hour run.
-  started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
+  # The watchdog reads meta once per attempt; those fields do not move until the next one.
+  if [ -n "${WD_META_READY:-}" ]; then
+    started=$WD_STARTED
+    account=$WD_ACCOUNT
+  else
+    started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
+    account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
+  fi
   [[ "$started" =~ ^[0-9]+$ ]] || started=0
-  [ "$started" -eq 0 ] || [ $(($(date +%s) - started)) -le 600 ] || return 1
-  account=$(jq -r '.account // empty' "$directory/meta.json" 2>/dev/null)
+  printf -v _wd_now '%(%s)T' -1
+  [ "$started" -eq 0 ] || [ $((_wd_now - started)) -le 600 ] || return 1
   [ -n "$account" ] || return 1
   # PHYSICALLY, because every real profile reaches the shared transcript tree through a SYMLINK
   # (`~/.claude-profiles/<account>/projects` -> `~/.claude/projects`) and `find` handed a symlinked
@@ -292,7 +301,11 @@ claudeb_discover_session() { # directory
   # on this machine until 2026-09-04, and `test -d` cannot see the difference.
   root=$(cd "${CLAUDEB_PROFILES_ROOT:-$HOME/.claude-profiles}/$account/projects" 2>/dev/null && pwd -P) ||
     return 1
-  resume=$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)
+  if [ -n "${WD_META_READY:-}" ]; then
+    resume=$WD_RESUME
+  else
+    resume=$(jq -r '.resume // empty' "$directory/meta.json" 2>/dev/null)
+  fi
   if [ -n "$resume" ]; then
     # A resumed session keeps the id it already had and APPENDS to a transcript whose first user
     # record is the original brief, so nothing here is matched: the id is known, only its file is
@@ -305,7 +318,8 @@ claudeb_discover_session() { # directory
     done
     return 1
   fi
-  token=$(head -n1 "$directory/launch-token" 2>/dev/null)
+  token=''
+  [ ! -r "$directory/launch-token" ] || IFS= read -r token <"$directory/launch-token" || true
   launched=$(<"$directory/brief.launch")
   first_line=${launched%%$'\n'*}
   while IFS= read -r candidate; do
@@ -352,14 +366,17 @@ record_session_file() { # directory session transcript
 
 # Shared-checkout dirt is not this run's activity; only paths its own transcript names count.
 activity_fingerprint() { # directory vendor workdir
-  local directory="$1" vendor="$2" workdir="$3" path stamp observed=y fingerprint=''
+  local directory="$1" vendor="$2" workdir="$3" path stamp observed=y fingerprint='' session_path
   if [ "$vendor" = claudeb ]; then
     claudeb_discover_session "$directory"
     observed=n
     [ ! -s "$directory/session-file" ] || observed=y
   fi
-  for path in "$directory/out" "$directory/err" "$directory/log" \
-      "$(cat "$directory/session-file" 2>/dev/null)"; do
+  session_path=''
+  if [ -r "$directory/session-file" ]; then
+    IFS= read -r session_path <"$directory/session-file" || true
+  fi
+  for path in "$directory/out" "$directory/err" "$directory/log" "$session_path"; do
     [ -n "$path" ] && [ -e "$path" ] || continue
     fingerprint+="$(stat -f '%N %z %m' "$path" 2>/dev/null || stat -c '%n %s %Y' "$path" 2>/dev/null)|"
   done
@@ -421,9 +438,16 @@ run_with_deadline() {
   (
     directory=$RUN_DIRECTORY
     vendor='' workdir=''
-    if [ -n "$directory" ]; then
-      vendor=$(jq -r '.vendor // empty' "$directory/meta.json" 2>/dev/null)
-      workdir=$(jq -r '.workdir // empty' "$directory/meta.json" 2>/dev/null)
+    WD_META_READY=''
+    WD_STARTED=0
+    WD_ACCOUNT=''
+    WD_RESUME=''
+    if [ -n "$directory" ] && [ -r "$directory/meta.json" ]; then
+      # Not a tab: IFS whitespace collapses an empty field and shifts the next one into its place.
+      IFS=$'\x1f' read -r vendor workdir WD_STARTED WD_ACCOUNT WD_RESUME < <(
+        jq -r '[.vendor // "", .workdir // "", (.started_at // 0 | tostring), .account // "", .resume // ""] | join("\u001f")' \
+          "$directory/meta.json" 2>/dev/null) || true
+      WD_META_READY=1
     fi
     window=$DEADLINE
     [ "$IDLE" -eq 0 ] || [ "$IDLE" -ge "$window" ] || window=$IDLE
@@ -431,19 +455,21 @@ run_with_deadline() {
     hop=$((window / 10))
     [ "$hop" -ge 1 ] || hop=1
     [ "$hop" -le 30 ] || hop=30
-    end=$(($(date +%s) + DEADLINE))
-    idle_since=$(date +%s)
+    printf -v wd_now '%(%s)T' -1
+    end=$((wd_now + DEADLINE))
+    idle_since=$wd_now
     silent_since=$idle_since
     ever_active=0
     reason=''
     # Seeded before the first sleep, not left empty: an empty seed differs from every real reading,
     # so the first tick would always read as progress and no idle kill could land on its own hop.
     seen=$(activity_fingerprint "$directory" "$vendor" "$workdir")
-    while [ "$(date +%s)" -lt "$end" ]; do
+    while [ "$wd_now" -lt "$end" ]; do
       sleep "$hop"
       kill -0 "$child" 2>/dev/null || exit 0
+      printf -v wd_now '%(%s)T' -1
       # Log text may quote a wall; a structured vendor error is authoritative even with heartbeats.
-      if [ -n "$directory" ] && { [ "$(($(date +%s) - $(newest_mtime "$directory/out" "$directory/err")))" -ge "$WALL_SETTLE" ] ||
+      if [ -n "$directory" ] && { [ "$((wd_now - $(newest_mtime "$directory/out" "$directory/err")))" -ge "$WALL_SETTLE" ] ||
            { [ "$vendor" = grok ] && grok_stream_errors "$directory" 4096 | grep -Eiq "$GROK_LIMIT_RE"; }; } &&
          has_limit_signature "$directory" "$vendor" 4096; then
         reason=wall
@@ -458,7 +484,7 @@ run_with_deadline() {
         # is how a hung start looks too.
         [ "${seen%%~*}" != y ] || ever_active=1
         seen=$current
-        idle_since=$(date +%s)
+        idle_since=$wd_now
         silent_since=$idle_since
       fi
       # SILENT catches a hung START only: once the run has shown activity, a single long tool call
@@ -466,7 +492,7 @@ run_with_deadline() {
       # two sweep fixers killed mid `tests/run-all`).
       if [ "$SILENT" -gt 0 ] && [ "$ever_active" -eq 0 ] &&
          [ ! -s "$directory/out" ] && [ ! -s "$directory/err" ] &&
-         [ $(($(date +%s) - silent_since)) -ge "$SILENT" ]; then
+         [ $((wd_now - silent_since)) -ge "$SILENT" ]; then
         reason="silent $SILENT"
         break
       fi
@@ -1325,15 +1351,49 @@ workdir_dirty_paths() { # workdir
 # 2026-08-22). A path git cannot hash (gone, a directory, a special file) records `-`, which
 # compares equal only to itself.
 workdir_dirty_shas() { # workdir
-  local top paths path sha
+  local top paths path sha line fi=0
+  local -a all=() files=() file_shas=()
   top=$(git -C "$1" rev-parse --show-toplevel 2>/dev/null) || return 1
   [ -n "$top" ] || return 1
   paths=$(workdir_dirty_paths "$1") || return 1
   [ -n "$paths" ] || return 0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    printf '%s\t%s\n' "$(hash_workdir_path "$top" "$path")" "$path"
+    all+=("$path")
+    if [ -L "$top/$path" ]; then
+      :
+    elif [ -f "$top/$path" ]; then
+      files+=("$path")
+    fi
   done <<<"$paths"
+  # A missing path makes --stdin-paths stop and print nothing after it; the per-path
+  # fallback is what records `-` for that path and still hashes the rest.
+  if [ "${#files[@]}" -gt 0 ]; then
+    if line=$(printf '%s\n' "${files[@]}" | git -C "$top" hash-object -w --stdin-paths 2>/dev/null); then
+      while IFS= read -r sha; do
+        [ -n "$sha" ] || continue
+        file_shas+=("$sha")
+      done <<<"$line"
+    fi
+    if [ "${#file_shas[@]}" -ne "${#files[@]}" ]; then
+      file_shas=()
+      for path in "${files[@]}"; do
+        sha=$(git -C "$top" hash-object -w -- "$path" 2>/dev/null) || sha=
+        file_shas+=("${sha:--}")
+      done
+    fi
+  fi
+  for path in "${all[@]}"; do
+    if [ -L "$top/$path" ]; then
+      sha=$(printf '%s' "$(readlink "$top/$path")" | git -C "$top" hash-object -w --stdin 2>/dev/null) || sha=
+      printf '%s\t%s\n' "${sha:--}" "$path"
+    elif [ -f "$top/$path" ]; then
+      printf '%s\t%s\n' "${file_shas[$fi]:--}" "$path"
+      fi=$((fi + 1))
+    else
+      printf '%s\t%s\n' '-' "$path"
+    fi
+  done
 }
 
 snapshot_workdir() { # directory workdir side
@@ -1349,9 +1409,11 @@ snapshot_workdir() { # directory workdir side
     mv -f "$directory/head-$side.tmp.$$" "$directory/head-$side" || return 1
 }
 
+# LC_ALL=C on each awk path match (here and in produced_edit_rows): macOS awk compares strings with
+# strcoll, and under a UTF-8 locale two different Cyrillic names compare equal — another file's blob.
 snapshot_blob() { # directory top side path
   local directory="$1" top="$2" side="$3" path="$4" sha head
-  sha=$(AWK_PATH=$path awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
+  sha=$(AWK_PATH=$path LC_ALL=C awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
     "$directory/dirty-$side-shas" 2>/dev/null)
   if [ -z "$sha" ]; then
     head=$(tr -d '[:space:]' <"$directory/head-$side" 2>/dev/null)
@@ -1360,8 +1422,75 @@ snapshot_blob() { # directory top side path
   printf '%s\n' "${sha:--}"
 }
 
+# `<before>\t<after>\t<path>` for each top-relative path on stdin, both sides read as snapshot_blob
+# reads them; with `changed`, the path alone and only where the two differ. One pass: a snapshot_blob
+# per path rescans the listing, and a checkout with thousands of dirty paths took minutes per fold.
+snapshot_pairs() { # directory top [changed]
+  python3 -c '
+import subprocess, sys
+
+directory, top = sys.argv[1], sys.argv[2]
+only_changed = sys.argv[3:] == ["changed"]
+
+
+def listing(side):
+    rows = {}
+    try:
+        with open(directory + "/dirty-" + side + "-shas", "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return rows
+    for line in data.split(b"\n"):
+        cells = line.split(b"\t")
+        if len(cells) == 2:
+            rows.setdefault(cells[1], cells[0])
+    return rows
+
+
+def head_tree(side):
+    try:
+        with open(directory + "/head-" + side, "rb") as fh:
+            head = b"".join(fh.read().split())
+    except OSError:
+        return {}
+    if not head:
+        return {}
+    listed = subprocess.run(["git", "-C", top, "ls-tree", "-r", "-t", "-z", "--full-tree", head],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if listed.returncode:
+        return {}
+    entries = {}
+    for record in listed.stdout.split(b"\0"):
+        meta, tab, path = record.partition(b"\t")
+        if tab:
+            entries[path] = meta.split(b" ")[2]
+    return entries
+
+
+listings = {side: listing(side) for side in ("before", "after")}
+trees = {}
+out = []
+for path in sys.stdin.buffer.read().split(b"\n"):
+    if not path:
+        continue
+    shas = []
+    for side in ("before", "after"):
+        sha = listings[side].get(path, b"")
+        if not sha:
+            if side not in trees:
+                trees[side] = head_tree(side)
+            sha = trees[side].get(path, b"")
+        shas.append(sha or b"-")
+    if not only_changed:
+        out.append(b"\t".join(shas + [path]))
+    elif shas[0] != shas[1]:
+        out.append(path)
+sys.stdout.buffer.write(b"".join(row + b"\n" for row in out))
+' "$@"
+}
+
 snapshot_changed_paths() { # directory top
-  local directory="$1" top="$2" before after changed paths path prev cur
+  local directory="$1" top="$2" before after changed paths path
   [ -f "$directory/dirty-before-shas" ] && [ -f "$directory/dirty-after-shas" ] &&
     [ -f "$directory/head-after" ] || return 1
   before=$(cat "$directory/head-before" 2>/dev/null) || before=''
@@ -1380,12 +1509,7 @@ snapshot_changed_paths() { # directory top
   fi
   paths=$({ cut -f2- "$directory/dirty-before-shas" "$directory/dirty-after-shas"
     [ -z "$changed" ] || printf '%s\n' "$changed"; } | sort -u)
-  while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    prev=$(snapshot_blob "$directory" "$top" before "$path")
-    cur=$(snapshot_blob "$directory" "$top" after "$path")
-    [ "$prev" = "$cur" ] || printf '%s\n' "$path"
-  done <<<"$paths"
+  snapshot_pairs "$directory" "$top" changed <<<"$paths"
 }
 
 compute_snapshot_files() { # directory workdir
@@ -1472,7 +1596,7 @@ produced_edit_rows() { # directory top rel head-before
       cur=$(snapshot_blob "$1" "$top" after "$path")
       after_head=$(cat "$1/head-after")
       if [ -n "$after_head" ] && [ "$after_head" != "$head" ] &&
-          ! AWK_PATH=$path awk -F'\t' '$2 == ENVIRON["AWK_PATH"] { found=1 } END { exit !found }' "$1/dirty-after-shas"; then
+          ! AWK_PATH=$path LC_ALL=C awk -F'\t' '$2 == ENVIRON["AWK_PATH"] { found=1 } END { exit !found }' "$1/dirty-after-shas"; then
         # A clean launch needs only the commit row; preexisting dirt has a different starting blob.
         head_blob=''
         [ -z "$head" ] || head_blob=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
@@ -1483,7 +1607,7 @@ produced_edit_rows() { # directory top rel head-before
     fi
     # Through the environment and never `-v`: awk expands escape sequences in a `-v` assignment, so
     # a filename holding a backslash reaches the program as some other name and matches no row.
-    prev=$(AWK_PATH=$path awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
+    prev=$(AWK_PATH=$path LC_ALL=C awk -F'\t' 'NF == 2 && $2 == ENVIRON["AWK_PATH"] { print $1; exit }' \
       "$before" 2>/dev/null)
     [ -n "$prev" ] || [ -z "$head" ] ||
       prev=$(git -C "$top" rev-parse --verify --quiet "$head:$path" 2>/dev/null)
@@ -1642,11 +1766,17 @@ write_run_state() { # directory phase [exit-code]
 # worker-tag-hook marked `start=` for this very launch in the launching chat's tag cache. The claim
 # swaps that mark for `run=<id>` and the tag for the one this launch resolved.
 claim_agent_tag() { # directory launcher
-  local directory="$1" dir="$HOME/.cache/claude-worker-tags/$2" lock waited=0
+  local dir="$HOME/.cache/claude-worker-tags/$2"
   [ -n "$2" ] && [ -d "$dir" ] || return 0
-  # Select and swap under one lock: two launches of one chat that both read the newest `start=`
-  # before either swaps it claim ONE agent's row for two runs. A holder that died is outwaited.
-  lock="$dir/.claim.lock"
+  with_agent_tag_lock "$dir" claim_agent_tag_locked "$1" "$dir"
+}
+
+# Every read of the chat's fresh `start=` marks runs under this lock: two launches of one chat that
+# both read the newest `start=` before either swaps it claim ONE agent's row for two runs. A holder
+# that died is outwaited.
+with_agent_tag_lock() { # tag-dir command...
+  local lock="$1/.claim.lock" waited=0 rc=0
+  shift
   while ! mkdir "$lock" 2>/dev/null; do
     if [ "$waited" -ge 50 ]; then
       [ -n "$(find "$lock" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$lock" 2>/dev/null
@@ -1656,35 +1786,55 @@ claim_agent_tag() { # directory launcher
     sleep 0.1
     waited=$((waited + 1))
   done
-  claim_agent_tag_locked "$directory" "$dir"
+  "$@" || rc=$?
   [ -z "$lock" ] || rmdir "$lock" 2>/dev/null || :
+  return "$rc"
+}
+
+fresh_agent_tags() { # tag-dir — "mark<TAB>file", one per tag file marked `start=` in the last 120 s
+  local file mark now
+  now=$(date +%s)
+  for file in "$1"/*; do
+    case "${file##*/}" in pending-* | git-unlock-* | *.tmp.* | *.claim.*) continue ;; esac
+    [ -f "$file" ] || continue
+    mark=$(sed -n 's/^start=//p' "$file" 2>/dev/null | tail -n1)
+    [[ "$mark" =~ ^[0-9]+$ ]] && [ $((now - mark)) -le 120 ] || continue
+    printf '%s\t%s\n' "$mark" "$file"
+  done
 }
 
 launch_agent_tag() { # tag-dir
-  local dir="$1" file best='' best_mark=0 mark now
+  local dir="$1"
   if [ -n "${CLAUDE_AGENT_ID:-}" ] && [ -f "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" ]; then
-    best="$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}"
+    printf '%s' "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}"
   else
-    now=$(date +%s)
-    for file in "$dir"/*; do
-      case "${file##*/}" in pending-* | git-unlock-* | *.tmp.* | *.claim.*) continue ;; esac
-      [ -f "$file" ] || continue
-      mark=$(sed -n 's/^start=//p' "$file" 2>/dev/null | tail -n1)
-      [[ "$mark" =~ ^[0-9]+$ ]] && [ $((now - mark)) -le 120 ] && [ "$mark" -gt "$best_mark" ] || continue
-      best=$file best_mark=$mark
-    done
+    fresh_agent_tags "$dir" | sort -s -t $'\t' -k1,1nr | head -n1 | cut -f2- | tr -d '\n'
   fi
-  printf '%s' "$best"
 }
 
 # The spawning Agent prompt's ROUND: header, which worker-spawn-hook seeds into the relay's tag file
 # in the spawning chat's cache: a relay that rewrites the brief drops the header, never this.
 spawn_review_round() {
-  local session=${CLAUDE_CODE_SESSION_ID:-} file
+  local session=${CLAUDE_CODE_SESSION_ID:-} dir
   case "$session" in ''|.|..|*[!A-Za-z0-9._-]*) return 0 ;; esac
-  file=$(launch_agent_tag "$HOME/.cache/claude-worker-tags/$session")
-  [ -n "$file" ] || return 0
-  sed -n 's/^round=//p' "$file" 2>/dev/null | tail -n1
+  dir="$HOME/.cache/claude-worker-tags/$session"
+  [ -d "$dir" ] || return 0
+  with_agent_tag_lock "$dir" spawn_review_round_locked "$dir"
+}
+
+# The claim comes at the end of the launch, so without CLAUDE_AGENT_ID the newest `start=` may be a
+# sibling relay's: a round is adopted only when every fresh tag file agrees on it.
+spawn_review_round_locked() { # tag-dir
+  local dir="$1" rounds
+  if [ -n "${CLAUDE_AGENT_ID:-}" ] && [ -f "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" ]; then
+    sed -n 's/^round=//p' "$dir/${CLAUDE_AGENT_ID//[^A-Za-z0-9_-]/}" 2>/dev/null | tail -n1
+    return 0
+  fi
+  rounds=$(fresh_agent_tags "$dir" | cut -f2- | while IFS= read -r file; do
+    printf '%s\n' "$(sed -n 's/^round=//p' "$file" 2>/dev/null | tail -n1)"
+  done | sort -u)
+  [ "$(printf '%s\n' "$rounds" | wc -l)" -eq 1 ] || return 0
+  printf '%s\n' "$rounds"
 }
 
 claim_agent_tag_locked() { # directory tag-dir
@@ -1954,12 +2104,20 @@ light_gate() { # directory terminal-status
   return 0
 }
 
+# One grep over the glob, in the glob's own order: that is the order the per-file loop stopped at.
+refuse_live_matches() { # needle root filename
+  local needle="$1" root="$2" name="$3" matches
+  matches=$(grep -lxF -- "$needle" "$root"/*/"$name" 2>/dev/null) || true
+  [ -n "$matches" ] || return 0
+  printf '%s\n' "$matches"
+}
+
 refuse_live_run() { # brief resume
   local brief="$1" resume="$2" root entry directory pid now started sha other_sha owner
   root="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
   if [ -n "$resume" ]; then
-    for entry in "$root"/*/worker-session; do
-      [ -f "$entry" ] && grep -qxF -- "$resume" "$entry" || continue
+    while IFS= read -r entry; do
+      [ -n "$entry" ] && [ -f "$entry" ] || continue
       directory=${entry%/worker-session}
       [ ! -e "$directory/exit_code" ] || continue
       pid=$(jq -r '.pid // 0' "$directory/meta.json" 2>/dev/null)
@@ -1967,7 +2125,7 @@ refuse_live_run() { # brief resume
       outcome_line "RESUME_BUSY ${directory##*/}"
       printf 'ATTACH %s\n' "${directory##*/}"
       exit 4
-    done
+    done < <(refuse_live_matches "$resume" "$root" worker-session)
   fi
   [ "${WORKER_RUN_ALLOW_DUPLICATE:-0}" != 1 ] || return 0
   # The same owner start_run writes into `launcher`: inside a worker CLAUDE_CODE_SESSION_ID is the
@@ -1977,8 +2135,8 @@ refuse_live_run() { # brief resume
   sha=$(shasum -a 256 "$brief" | awk '{print $1}')
   [ -n "$sha" ] || return 0
   now=$(date +%s)
-  for entry in "$root"/*/launcher; do
-    [ -f "$entry" ] && grep -qxF -- "$owner" "$entry" || continue
+  while IFS= read -r entry; do
+    [ -n "$entry" ] && [ -f "$entry" ] || continue
     directory=${entry%/launcher}
     [ ! -e "$directory/exit_code" ] || continue
     started=$(jq -r '.pid_started_at // .started_at // 0' "$directory/meta.json" 2>/dev/null)
@@ -1991,7 +2149,7 @@ refuse_live_run() { # brief resume
     outcome_line "DUPLICATE_RUN ${directory##*/}"
     printf 'ATTACH %s\n' "${directory##*/}"
     exit 4
-  done
+  done < <(refuse_live_matches "$owner" "$root" launcher)
   return 0
 }
 
@@ -2118,6 +2276,8 @@ start_run() {
   spawn_round=$(spawn_review_round)
   if [ -n "$spawn_round" ] && [ -n "$review_round" ] && [ "$review_round" != "$spawn_round" ]; then
     fail "--round/ROUND: says '$review_round' but the Agent prompt that spawned this relay says 'ROUND: $spawn_round': launch with the prompt's ROUND: line, or have the orchestrator respawn with the right one"
+  elif [ "$spawn_round" = none ] && [ -z "$review_round" ]; then
+    review_round=none
   elif [ -n "$spawn_round" ] && [ -z "$review_round" ]; then
     review_round_ok "$spawn_round" ||
       fail "the Agent prompt that spawned this relay names no review round on record: 'ROUND: $spawn_round'"
@@ -3333,10 +3493,12 @@ compute_transcript_files() {
   RUN_FILES_REASON=''
   RUN_FILES_PARTIAL=''
   RUN_FILES_ESCAPE=''
-  vendor=$(jq -r '.vendor' "$directory/meta.json" 2>/dev/null)
-  account=$(jq -r '.account' "$directory/meta.json" 2>/dev/null)
-  workdir=$(jq -r '.workdir' "$directory/meta.json" 2>/dev/null)
-  started=$(jq -r '.started_at // 0' "$directory/meta.json" 2>/dev/null)
+  {
+    IFS= read -r vendor || true
+    IFS= read -r account || true
+    IFS= read -r workdir || true
+    IFS= read -r started || true
+  } < <(jq -r '.vendor, .account, .workdir, (.started_at // 0)' "$directory/meta.json" 2>/dev/null)
   session=$(session_id "$directory")
   if ! transcript=$(session_transcript "$vendor" "$account" "$session" "$workdir"); then
     RUN_FILES_REASON="no session transcript for $session"
@@ -3770,7 +3932,7 @@ wait_run() {
     waited=$((now - wait_started)); [ "$waited" -ge 0 ] || waited=0
     if [ "$waited" -ge "$max" ]; then running_report "$directory"; return 0; fi
     remaining=$((max - waited))
-    sleep_for=5; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
+    sleep_for=$WAIT_POLL; [ "$remaining" -ge "$sleep_for" ] || sleep_for=$remaining
     sleep "$sleep_for"
   done
 }
@@ -4046,11 +4208,28 @@ claim_family_anchors() { # directory snap repo top launcher path...
   [ -z "$round" ] || fold_family_anchors "$directory" "$snap" "$repo" "$top" "$launcher" "$round" "$@"
 }
 
+# The diff is the same for every path of one snapshot. Computed in this shell: a cache set
+# inside the grep pipeline would die with that subshell and the next path would rebuild it.
+claim_snap() { # directory top; sets CLAIM_SNAP. Caller owns snap_dirs/snap_blobs.
+  local i
+  if [ "${#snap_dirs[@]}" -gt 0 ]; then
+    for i in "${!snap_dirs[@]}"; do
+      if [ "${snap_dirs[$i]}" = "$1" ]; then
+        CLAIM_SNAP=${snap_blobs[$i]}
+        return 0
+      fi
+    done
+  fi
+  CLAIM_SNAP=$(snapshot_changed_paths "$1" "$2" || true)
+  snap_dirs+=("$1")
+  snap_blobs+=("$CLAIM_SNAP")
+}
+
 claim_run() {
   [ "$#" -ge 1 ] || usage
   local run_id="$1" directory workdir top complete=false session launcher path absolute relative
-  local sub family physical under
-  local -a paths=() resolved=() elsewhere=()
+  local sub family physical under CLAIM_SNAP=''
+  local -a paths=() resolved=() elsewhere=() snap_dirs=() snap_blobs=()
   shift
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -4117,7 +4296,8 @@ claim_run() {
           family=''
         done
         if [ -n "$family" ]; then
-          snapshot_changed_paths "$sub" "$family" | grep -qxF -- "${physical#"$family"/}" ||
+          claim_snap "$sub" "$family"
+          printf '%s\n' "$CLAIM_SNAP" | grep -qxF -- "${physical#"$family"/}" ||
             fail "$path is not in this run's snapshot diff"
           elsewhere+=("$sub"$'\t'"$family"$'\t'"$physical")
           continue
@@ -4127,9 +4307,13 @@ claim_run() {
       fi
     fi
     if [ -f "$directory/head-after" ]; then
-      [ -n "$top" ] && snapshot_changed_paths "$directory" "$top" |
-        grep -qxF -- "${absolute#"$top"/}" ||
+      if [ -n "$top" ]; then
+        claim_snap "$directory" "$top"
+        printf '%s\n' "$CLAIM_SNAP" | grep -qxF -- "${absolute#"$top"/}" ||
+          fail "$path is not in this run's snapshot diff"
+      else
         fail "$path is not in this run's snapshot diff"
+      fi
     elif [ "$complete" != true ] &&
          ! grep -q '^PARTIAL: ' "$directory/files" 2>/dev/null; then
       fail "run $run_id has no after-snapshot; its files cannot be claimed"
@@ -4432,8 +4616,8 @@ external_top_paths() { # directory top
 # PATHs given narrow the fold to them (a claim); otherwise a round fix owns only what the run's own
 # records name, since the snapshot diff also holds every concurrent run's edits in the family.
 fold_family_anchors() { # directory snap repo top launcher round [path...]
-  local directory="$1" snap="$2" changed entry base after owned=''
-  local -a fold paths only=("${@:7}")
+  local directory="$1" snap="$2" changed pairs entry base after owned='' i
+  local -a fold paths bases afters only=("${@:7}")
   fold=(run-fold --repo "$3" --run "${directory##*/}" --session "$5")
   paths=()
   if [ -n "$6" ]; then
@@ -4448,24 +4632,26 @@ fold_family_anchors() { # directory snap repo top launcher round [path...]
       [ -z "$entry" ] || fold+=("./$entry")
     done <<<"$owned"
   fi
-  if changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null); then
-    [ "${#only[@]}" -eq 0 ] || changed=$(grep -xF -f <(printf '%s\n' "${only[@]}") <<<"$changed")
-    while IFS= read -r entry; do
+  if changed=$(snapshot_changed_paths "$snap" "$4" 2>/dev/null) &&
+    { [ "${#only[@]}" -eq 0 ] || changed=$(grep -xF -f <(printf '%s\n' "${only[@]}") <<<"$changed"); true; } &&
+    pairs=$(snapshot_pairs "$snap" "$4" <<<"$changed" 2>/dev/null); then
+    # What each path stood at before this run: its own dirty-before blob, else the content the
+    # HEAD it started from held, else nothing at all. Only a path the store has no anchor for
+    # reads it, so a wrong base cannot move a path a review already knows.
+    while IFS=$'\t' read -r base after entry; do
       [ -n "$entry" ] || continue
       paths+=("$entry")
-    done <<<"$changed"
+      bases+=("$base")
+      afters+=("$after")
+    done <<<"$pairs"
     if [ "${#paths[@]}" -ne 0 ]; then
       fold+=(--changed)
       for entry in "${paths[@]}"; do
         fold+=("./$entry")
       done
-      # What each path stood at before this run: its own dirty-before blob, else the content the
-      # HEAD it started from held, else nothing at all. Only a path the store has no anchor for
-      # reads it, so a wrong base cannot move a path a review already knows.
-      for entry in "${paths[@]}"; do
-        base=$(snapshot_blob "$snap" "$4" before "$entry")
+      for i in "${!paths[@]}"; do
+        entry=${paths[$i]} base=${bases[$i]} after=${afters[$i]}
         [ "$base" = - ] && base=$EMPTY_BLOB
-        after=$(snapshot_blob "$snap" "$4" after "$entry")
         [ "$after" = - ] && after=$EMPTY_BLOB
         fold+=("--base=./$entry=$base" "--after=./$entry=$after")
       done

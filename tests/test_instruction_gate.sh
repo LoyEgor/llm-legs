@@ -1848,8 +1848,8 @@ echo "== tripwire: growth this session's own call produced is put back inside th
 # away, and the span's rule is the only arbiter left in the room.
 tool_payload() { # event sid tool key value transcript
   jq -cn --arg e "$1" --arg s "$2" --arg n "$3" --arg k "$4" --arg v "$5" --arg t "$6" --arg c "$WORK" \
-    --arg u "tu-$2" '{session_id:$s,hook_event_name:$e,transcript_path:$t,tool_name:$n,cwd:$c,
-      tool_use_id:$u,tool_input:{($k):$v}}'
+    --arg u "tu-$2" --arg a "${TOOL_AGENT:-}" '{session_id:$s,hook_event_name:$e,transcript_path:$t,tool_name:$n,cwd:$c,
+      tool_use_id:$u,tool_input:{($k):$v}} + if $a == "" then {} else {agent_id:$a} end'
 }
 # The gate's own PreToolUse is what marks a call in flight, so every case that expects a revert
 # runs it ahead of the bytes landing, exactly as the harness does. The gate calls of the matrix
@@ -2436,11 +2436,23 @@ assert_contains "CHANGED" "$(printf '%s' "$rec" | jq -r '.summary')"
 assert_contains "review-tiers.md" "$(printf '%s' "$rec" | jq -r '.files[0]')"
 assert_contains "cp " "$(printf '%s' "$rec" | jq -r '.restores[0] // ""')"
 assert [ -n "$(printf '%s' "$rec" | jq -r '.id')" ]
-assert_contains "sid-j" "$(printf '%s' "$rec" | jq -r '.sid')"
+# No call of either session wrote these bytes: the record names the chat that noticed them as the
+# observer, never as the writer, and carries no chat name that would blame it.
+assert_eq "" "$(printf '%s' "$rec" | jq -r '.sid')"
+assert_contains "sid-j" "$(printf '%s' "$rec" | jq -r '.observer')"
+assert_eq null "$(printf '%s' "$rec" | jq '.chat')"
 assert_eq attempted "$(printf '%s' "$rec" | jq -r '.sent')"
 assert_eq true "$(printf '%s' "$rec" | jq '(.bytes | type == "array" and all(.[]; type == "number" and . == floor)) and ((.bytes | length) == (.files | length))')"
 assert_eq "$journal_delta" "$(printf '%s' "$rec" | jq '.bytes[0]')"
+span_base sid-jw >/dev/null
+pre_call sid-jw Bash command 'git status --short' "$NOSPAN_T"
+printf 'a tier line this call wrote\n' >> "$DOC"
+raw_check sid-jw Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+rec=$(tail -1 "$J")
+assert_eq this-call "$(printf '%s' "$rec" | jq -r '.writer')"
+assert_eq sid-jw "$(printf '%s' "$rec" | jq -r '.sid')"
 assert_eq 'Stub chat (abcdef12)' "$(printf '%s' "$rec" | jq -r '.chat')"
+assert_eq null "$(printf '%s' "$rec" | jq '.observer')"
 printf '#!/bin/sh\nexit 1\n' > "$HOME/.local/bin/chat-name"
 
 echo "== in flight: bytes no mark accounts for are reported, never put back"
@@ -2524,7 +2536,7 @@ echo "== in flight: a mark older than an hour is a dead call, swept without a wo
 printf 'tier doc\n' > "$DOC"
 span_base sid-live >/dev/null
 pre_call sid-live Bash command "$grow_cmd" "$SPAN_T"
-printf '%s tu-dead Bash /tmp\n' "$(( $(date +%s) - 7200 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-dead@tu-dead"
+printf '%s tu-dead Bash - /tmp\n' "$(( $(date +%s) - 7200 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-dead@tu-dead"
 printf 'a line the live call wrote\n' >> "$DOC"
 assert_contains "REVERTED" "$(span_check sid-live Bash command "$grow_cmd" "$SPAN_T")"
 assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-dead@tu-dead" ]
@@ -2550,7 +2562,7 @@ pre_call sid-long Bash command "$grow_cmd" "$SPAN_T"
 read -r _ long_rest <"$long_mark"
 printf '%s %s\n' "$(( $(date +%s) - 7200 ))" "$long_rest" > "$long_mark"
 old_mark="$INSTRUCTION_WATCH_STATE/inflight/sid-old@tu-old"
-printf '%s tu-old Bash /tmp\n' "$(( $(date +%s) - 7300 ))" > "$old_mark"
+printf '%s tu-old Bash - /tmp\n' "$(( $(date +%s) - 7300 ))" > "$old_mark"
 printf 'a line either long call could have written\n' >> "$DOC"
 assert_eq "" "$(span_check sid-long Bash command "$grow_cmd" "$SPAN_T" | grep -o REVERTED)"
 assert [ -e "$old_mark" ]
@@ -2817,7 +2829,7 @@ id2=$(tail -1 "$J" | jq -r .id)
 assert [ -n "$id1" ]
 assert [ -n "$id2" ]
 assert [ "$id1" != "$id2" ]
-assert [ "$(grep -c '"sid":"sid-rep"' "$J")" -ge 2 ]
+assert [ "$(grep -c '"observer":"sid-rep"' "$J")" -ge 2 ]
 
 echo "== journal: concurrent appends during a trim both survive"
 span_base sid-trim-a >/dev/null
@@ -3026,12 +3038,92 @@ printf 'a line no human asked for\n' >> "$DOC"
 assert_contains "REVERTED" "$(span_check sid-multi MultiEdit file_path "$DOC" "$SPAN_T")"
 assert_eq "tier doc" "$(cat "$DOC")"
 
+echo "== gate journal: every decision on an instruction file outlives its retry stamp"
+GJ="$INSTRUCTION_WATCH_STATE/gates.jsonl"
+gj_last() { tail -1 "$GJ" | jq -r "$1"; }
+rm -rf "$BLOAT_STAMPS"
+assert_eq deny "$(bloat_decision "$CLAUDE_MD")"
+assert_eq "bloat denied 399 cost $(realpath "$REAL_MD")" "$(gj_last '"\(.gate) \(.decision) \(.delta) \(.detail) \(.real)"')"
+age_stamps "$BLOAT_STAMPS"
+assert_eq pass "$(bloat_decision "$CLAUDE_MD")"
+assert_eq "granted $CLAUDE_MD" "$(gj_last '"\(.decision) \(.file)"')"
+n=$(wc -l <"$GJ")
+assert_eq "" "$(jq -cn --arg p "$CLAUDE_MD" \
+  '{tool_name:"Edit",cwd:"/tmp",tool_input:{file_path:$p,old_string:"x",new_string:"yy"}}' | bash "$BLOAT")"
+assert_eq "$n" "$(wc -l <"$GJ")"
+cmd="echo journaled >> $CLAUDE_MD"
+assert_eq deny "$(decision "$cmd")"
+assert_eq "write denied always" "$(gj_last '"\(.gate) \(.decision) \(.detail)"')"
+age_stamps
+append_write_user
+assert_eq pass "$(decision "$cmd")"
+assert_eq "write granted" "$(gj_last '"\(.gate) \(.decision)"')"
+
+echo "== write gate: a leading cd is the directory a relative target resolves against"
+assert_eq deny "$(decision "cd ~/.claude/docs && echo x >> review-tiers.md")"
+assert_eq deny "$(decision 'cd $HOME/.claude && echo x >> CLAUDE.md')"
+assert_eq "$HOME/.claude/CLAUDE.md" "$(gj_last .file)"
+assert_eq pass "$(decision "cd $WORK && echo x >> review-tiers.md")"
+echo "== write gate: every cd the command runs is a directory a relative target may resolve against"
+assert_eq deny "$(decision "cd $WORK && cd ~/.claude/docs && echo x >> review-tiers.md")"
+assert_eq deny "$(decision "cd ~/.claude/docs && echo x >> review-tiers.md && cd $WORK")"
+assert_eq deny "$(decision "cd $WORK; ls; (cd ~/.claude/docs && echo x >> review-tiers.md)")"
+
+echo "== bloat gate: a missing library denies and leaves a fault the doctor reads"
+FG="$WORK/fault-gate"
+mkdir -p "$FG/bin" "$FG/share"
+cp "$BLOAT" "$FG/bin/"
+cp "$ROOT/share/gate-journal.sh" "$FG/share/"
+rc=0
+jq -cn --arg p "$CLAUDE_MD" '{tool_name:"Edit",tool_input:{file_path:$p}}' \
+  | bash "$FG/bin/instruction-bloat-gate.sh" >/dev/null 2>&1 || rc=$?
+assert_eq 2 "$rc"
+assert_eq "fault share/instruction-files.sh missing" "$(gj_last '"\(.decision) \(.detail)"')"
+
+echo "== tripwire: a finished call's window still names its writer to a longer call beside it"
+printf 'tier doc\n' > "$DOC"
+span_base sid-cwa >/dev/null
+span_base sid-cwb >/dev/null
+pre_call sid-cwb Bash command 'git status --short' "$SPAN_T"
+tool_payload PreToolUse sid-cwa Bash command 'git status --short' "$NOSPAN_T" | bash "$WRITE_GATE" >/dev/null 2>&1
+printf 'a line chat A wrote\n' >> "$DOC"
+span_check sid-cwa Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert [ -f "$INSTRUCTION_WATCH_STATE/closed/sid-cwa@tu-sid-cwa" ]
+out=$(span_check sid-cwb Bash command 'git status --short' "$SPAN_T")
+case "$out" in *REVERTED*) fail "chat B reverted chat A's line: $out" ;; esac
+assert_eq "tier doc
+a line chat A wrote" "$(cat "$DOC")"
+rm -rf "$INSTRUCTION_WATCH_STATE/closed"
+printf 'tier doc\n' > "$DOC"
+
+echo "== tripwire: this agent's mark a minute older than its call is a denied call, swept"
+span_base sid-st >/dev/null
+pre_call sid-st Bash command 'git status --short' "$NOSPAN_T"
+assert grep -Eq '^[0-9.]+ tu-sid-st Bash - ' "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sid-st"
+printf '%s.000000 tu-old Bash - /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-old"
+printf '%s.000000 tu-sub Bash agent-a /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub"
+raw_check sid-st Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-old" ]
+echo "== tripwire: a parallel subagent's older mark under the same session is its live call, kept"
+assert [ -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub" ]
+rm -f "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub"
+TOOL_AGENT=agent-b pre_call sid-st Bash command 'git status --short' "$NOSPAN_T"
+assert grep -Eq '^[0-9.]+ tu-sid-st Bash agent-b ' "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sid-st"
+printf '%s.000000 tu-sub Bash agent-b /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub"
+printf '%s.000000 tu-main Bash - /tmp\n' "$(( $(date +%s) - 120 ))" > "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-main"
+TOOL_AGENT=agent-b raw_check sid-st Bash command 'git status --short' "$NOSPAN_T" >/dev/null
+assert [ ! -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-sub" ]
+assert [ -e "$INSTRUCTION_WATCH_STATE/inflight/sid-st@tu-main" ]
+rm -f "$INSTRUCTION_WATCH_STATE"/inflight/*
+rm -rf "$INSTRUCTION_WATCH_STATE/closed"
+
 # The harness reads the FIRST journal line and the ranked cache; the tests above
 # trimmed both. Leave a fresh collector record and the project file it lists.
 printf 'project rules\n' > "$PROJ/CLAUDE.md"
 printf '#1\n%s\n' "$PROJ/CLAUDE.md" > "$RANKED"
 printf 'pre-hs\n' > "$DOC"
 span_base sid-hs >/dev/null
+pre_call sid-hs Bash command 'git status --short' "$NOSPAN_T"
 printf 'pre-hs and a line the harness will read\n' > "$DOC"
 raw_check sid-hs Bash command 'git status --short' "$NOSPAN_T" >/dev/null
 tail -1 "$J" > "$J.one" && mv "$J.one" "$J"

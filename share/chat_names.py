@@ -21,6 +21,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -456,3 +457,74 @@ def chat_name(session, name=_UNSET, headless=False, launchers=None, store=None):
 def chat_label(session, name=_UNSET, headless=False, launchers=None, store=None):
     """What to print where this project names a chat: its original name, else a short id."""
     return chat_name(session, name, headless, launchers, store) or short_session(session)
+
+
+def _born(path):
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return getattr(info, "st_birthtime", info.st_mtime)
+
+
+def _transcript_cwd(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for _, line in zip(range(50), handle):
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(event, dict) and isinstance(event.get("cwd"), str) and event["cwd"]:
+                    return event["cwd"]
+    except OSError:
+        pass
+    return ""
+
+
+def _store_entry(session):
+    for path in session_store_files():
+        try:
+            entry = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(entry, dict) and entry.get("sessionId") == session:
+            return entry
+    return None
+
+
+def _described(kind, where, at):
+    parts = [kind]
+    if where and where != "?":
+        parts.append(where)
+    if at:
+        parts.append(time.strftime("%a %H:%M", time.localtime(at)))
+    return " · ".join(parts)
+
+
+def chat_title(session, launchers=None, store=None):
+    """What a menu calls a chat: its name, else what it was, where and when it ran — never an id,
+    which no window, list or picker Egor uses shows him. None where nothing here knows the session.
+    """
+    session = str(session or "")
+    name = chat_name(session, launchers=launchers, store=store) if session else None
+    if name or not session or not SESSION_OK.match(session):
+        return name
+    path = transcript_path(session)
+    if path is not None:
+        return _described("untitled chat", project_label(_transcript_cwd(path)), _born(path))
+    entry = _store_entry(session)
+    if entry:
+        started = entry.get("startedAt")
+        return _described("untitled chat", project_label(str(entry.get("cwd") or "")),
+                          started / 1000 if isinstance(started, (int, float)) else None)
+    home = Path.home()
+    # A session with no transcript and no live record ran headless without saving one; Claude Code
+    # still leaves its session-env directory, under the profile it ran on.
+    for env in [home / ".claude" / "session-env" / session] + sorted(
+            (home / ".claude-profiles").glob("*/session-env/" + session)):
+        born = _born(env)
+        if born is not None:
+            profile = env.parent.parent.name
+            return _described("run with no transcript", "" if profile == ".claude" else profile, born)
+    return None

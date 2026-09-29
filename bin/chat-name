@@ -17,12 +17,13 @@ gave it and Egor has actually seen, and a worker run folds to the chat that LAUN
 under a name of its own, an errand would answer a question asked about a conversation.
 """
 
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
-from chat_names import chat_label, chat_name, resolve_session, short_session  # noqa: E402
+from chat_names import chat_label, chat_name, chat_title, resolve_session, short_session  # noqa: E402
 
 
 def label(session):
@@ -34,7 +35,7 @@ def label(session):
         return short_session(session)
 
 
-def answer(session):
+def answer(session, as_json=False):
     """This id's line on stdout where it has a name — True — and False where it has none. None is
     a prefix naming several chats: shown under either it hands the reader the wrong conversation,
     so it is shown under neither and the candidates go to stderr instead, which is the refusal an
@@ -50,6 +51,18 @@ def answer(session):
             print(f"  {candidate} {label(candidate)}", file=sys.stderr)
         return None
     session = candidates[0]
+    if as_json:
+        # A menu shows `title` and keeps asking while `name` is empty: a chat gains its name after
+        # its first turn, and a cached fallback would hide it for good.
+        try:
+            name, title = chat_name(session), chat_title(session)
+        except Exception:
+            return False
+        if not title:
+            return False
+        print(json.dumps({"session": session, "short": short_session(session), "name": name or "",
+                          "title": title}, ensure_ascii=False))
+        return True
     try:
         name = chat_name(session)
     except Exception:
@@ -69,13 +82,16 @@ def main(argv):
     # Several ids in ONE call, because resolving one of those prefixes reads the whole transcript
     # corpus: the stop notice naming the chats of a turn asks about up to twenty, and a process
     # each pays that walk twenty times inside the one second all twenty have between them.
+    as_json = bool(argv) and argv[0] == "--json"
+    if as_json:
+        argv = argv[1:]
     if not argv or not all(argv):
-        print("usage: chat-name <session-id|8+-hex prefix>...", file=sys.stderr)
+        print("usage: chat-name [--json] <session-id|8+-hex prefix>...", file=sys.stderr)
         return 2
     several = len(argv) > 1
     named = False
     for session in argv:
-        found = answer(session)
+        found = answer(session, as_json)
         if found is None and not several:
             return 3
         named = named or bool(found)

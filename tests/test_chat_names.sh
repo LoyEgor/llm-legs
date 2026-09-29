@@ -241,4 +241,31 @@ assert grep -qF "$AMBIG_B" <<<"$ambiguous"
 # The full id is unambiguous however crowded its prefix is.
 assert test "$("$CLI" "$AMBIG_A")" = "one of two behind the same prefix (aabbccdd)"
 
+# --- a menu names every chat it knows, and never by its id -------------------
+# No window, list or picker Egor uses shows an id, so a menu row naming one tells him nothing: an
+# untitled chat is described by its project and start, a run that kept no transcript by its profile.
+title() {
+  python3 - "$ROOT/share/chat_names.py" "$@" <<'PY'
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("chat_names", sys.argv[1])
+cn = importlib.util.module_from_spec(importlib.util.spec_from_loader("chat_names", loader))
+loader.exec_module(cn)
+print("\n".join(str(cn.chat_title(session)) for session in sys.argv[2:]))
+PY
+}
+HEADLESS=77777777-7777-7777-7777-777777777777
+mkdir -p "$HOME/.claude-profiles/com/session-env/$HEADLESS"
+assert test "$(title "$CHAT")" = "renamed after the cache was written"
+assert grep -qE '^untitled chat · proj · [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}$' <<<"$(title "$PLAIN")"
+assert grep -qE '^run with no transcript · com · [A-Z][a-z]{2} [0-9]{2}:[0-9]{2}$' <<<"$(title "$HEADLESS")"
+assert test "$(title 88888888-8888-8888-8888-888888888888)" = None
+plain=$("$CLI" --json "$PLAIN")
+assert test "$(jq -r '.name' <<<"$plain")" = ""
+assert test "$(jq -r '.short' <<<"$plain")" = 22222222
+assert grep -q '^untitled chat · proj · ' <<<"$(jq -r '.title' <<<"$plain")"
+assert test "$("$CLI" --json "$CHAT" | jq -r '.name + "|" + .title')" = \
+  "renamed after the cache was written|renamed after the cache was written"
+assert test "$("$CLI" --json 88888888-8888-8888-8888-888888888888 >/dev/null 2>&1; echo $?)" = 1
+assert test "$("$CLI" --json >/dev/null 2>&1; echo $?)" = 2
+
 echo "PASS: chat-names ($asserts assertions)"

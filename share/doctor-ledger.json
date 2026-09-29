@@ -140,6 +140,23 @@
    "note": ""
   },
   {
+   "id": "R14",
+   "block": "reviewers",
+   "match": {
+    "word": "auth",
+    "detail": "does not outlast the run|short of the \\d+s asked|fresh-token ceiling"
+   },
+   "title": "--uncapped handed every pass a 6 h ceiling, longer than an exported token lives, so the export was refused on every account",
+   "status": "fixed",
+   "fixed_in": [
+    "review-bench share/rbench/cell_runtime.py uncapped_timeout_s (uncommitted until the sweep)"
+   ],
+   "fixed_at": "2026-09-28T21:23:17+03:00",
+   "last_reviewed": "2026-09-28",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "grok47 x3 on 09-28 in two --uncapped panels: 22020 s asked of a 21600 s grok token; listed before R12, which it ties on specificity"
+  },
+  {
    "id": "R12",
    "block": "reviewers",
    "match": {
@@ -498,6 +515,20 @@
    "last_reviewed": "2026-09-24",
    "reviewed_by": "LLM doctor",
    "note": "a cross-repository brief can make this legitimate: triage with a model or detail row, never by deleting the class"
+  },
+  {
+   "id": "V15",
+   "block": "any",
+   "match": {
+    "word": "turn budget"
+   },
+   "title": "a leg stopped at the turn budget it was configured with",
+   "status": "open",
+   "fixed_in": [],
+   "fixed_at": null,
+   "last_reviewed": "2026-09-28",
+   "reviewed_by": "Review-bench improvements phase 4",
+   "note": "classify_failure_text files a bare turn-budget stop as a cap; this row catches the word only where it still reads as a failure"
   },
   {
    "id": "M1",

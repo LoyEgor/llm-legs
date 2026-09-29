@@ -21,6 +21,7 @@ local M = {
 
 local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
 local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
+local greenColor = { red = 0.13, green = 0.55, blue = 0.25 }
 local menuFont = { name = "Menlo", size = 13 }
 
 local dimColorName = { list = "System", name = "tertiaryLabelColor" }
@@ -641,7 +642,7 @@ function M.refreshRouting()
     return
   end
   logAction("routing-launch", "worker-pick")
-  local task = hs.task.new(M.workerPickPath, function(exitCode, stdOut)
+  local task = hs.task.new("/usr/bin/nice", function(exitCode, stdOut)
     routingTask = nil
     if exitCode == 0 and type(stdOut) == "string" and stdOut ~= "" then
       M.routingCache = { text = stdOut, at = os.time() }
@@ -656,7 +657,7 @@ function M.refreshRouting()
       routingRefreshPending = false
       M.refreshRouting()
     end
-  end, {})
+  end, { "-n", "10", M.workerPickPath })
   if not task then
     M.routingFailed = true
     logAction("routing-failed", "worker-pick could not start")
@@ -827,7 +828,8 @@ local function startDiagnosticsTask(field, path, args, onExit)
   end, args)
   if not task then return end
   local environment = baseEnvironment()
-  for _, name in ipairs({ "LLM_DOCTOR_DIR", "LLM_DOCTOR_LEDGER", "WORKER_STATS_DIR", "WORKER_RUN_DIR", "IMAGE_LEG_LOG" }) do
+  for _, name in ipairs({ "LLM_DOCTOR_DIR", "LLM_DOCTOR_LEDGER", "WORKER_STATS_DIR", "WORKER_RUN_DIR", "IMAGE_LEG_LOG",
+      "HARNESS_DOCTOR_DIR" }) do
     local override = os.getenv(name)
     if override and override ~= "" then environment[name] = override end
   end
@@ -1374,10 +1376,12 @@ local function appendDoctorBlocks(items, snapshot)
         if type(item) == "table" then
           local age = math.max(0, os.time() - (tonumber(item.last) or 0))
           local lines = tonumber(item.lines) or 0
+          local repeats = tonumber(item.repeats) or 0
           local chat = type(item.chat) == "string" and item.chat ~= "" and (item.chat .. " · ") or ""
-          sub[#sub + 1] = { title = infoTitle(string.format("%d · %s · %s%s%s", tonumber(item.count) or 0,
+          sub[#sub + 1] = { title = infoTitle(string.format("%d · %s · %s%s%s%s", tonumber(item.count) or 0,
             age < 3600 and (math.floor(age / 60) .. "m") or (math.floor(age / 3600) .. "h"), chat,
-            tostring(item.label or ""), lines > 0 and (" · " .. lines .. " lines") or "")), disabled = true }
+            tostring(item.label or ""), lines > 0 and (" · " .. lines .. " lines") or "",
+            repeats > (tonumber(item.count) or 0) and (" · seen " .. repeats .. "×") or "")), disabled = true }
         end
       end
       for _, note in ipairs(type(row.notes) == "table" and row.notes or {}) do
@@ -1451,20 +1455,143 @@ local function appendDoctor(menu)
   table.insert(menu, { title = "-" })
 end
 
--- TEMP-TESTTIME(test-history): the summary bin/test-history writes (EXPERIMENTS.json, test-time).
-local function appendTestTime(menu)
-  local text = readTextFile(os.getenv("HOME") .. "/.cache/claude-statusline/test-history.txt")
-  if not text then
-    table.insert(menu, { title = infoTitle("Test time (temp): no finished test yet", false, true), disabled = true })
+local HARNESS_STALE_S = 1800
+
+local function harnessDoctorDir()
+  if M.harnessDoctorDir then return M.harnessDoctorDir end
+  local override = os.getenv("HARNESS_DOCTOR_DIR")
+  if override and override ~= "" then return override end
+  return home .. "/.cache/harness-doctor"
+end
+
+local function harnessLine(flags, spans, text)
+  if flags:find("s", 1, true) then return { title = "-" } end
+  local dim = flags:find("d", 1, true) ~= nil
+  local title, at = nil, 1
+  local function add(piece, red, pieceDim, green)
+    if piece == "" then return end
+    local styled = green and hs.styledtext.new(piece, { font = menuFont, color = greenColor })
+      or infoTitle(piece, red, pieceDim and not red)
+    title = title and (title .. styled) or styled
+  end
+  for style, start, length in spans:gmatch("(%a):(%d+):(%d+)") do
+    start, length = tonumber(start) + 1, tonumber(length)
+    if start >= at then
+      add(text:sub(at, start - 1), false, dim)
+      add(text:sub(start, start + length - 1), style == "r", false, style == "g")
+      at = start + length
+    end
+  end
+  add(text:sub(at), false, dim)
+  return { title = title or infoTitle(text, false, dim) }
+end
+
+-- menu.txt is laid out by bin/harness-doctor; decoding its JSON here cost ~40 ms per menu open.
+-- The collector replaces the file by rename, so a new inode is a new document; callers must not
+-- mutate the cached items (appendHarness copies before adding Refresh).
+local harnessCache = {}
+
+local function readHarnessMenu()
+  local path = harnessDoctorDir() .. "/menu.txt"
+  local attrs = hs.fs.attributes(path)
+  local key = attrs and string.format("%s:%s:%s:%s", path, attrs.ino or "", attrs.modification or "",
+    attrs.size or "")
+  if key and harnessCache.key == key then return harnessCache.document end
+  local contents = readTextFile(path)
+  if not contents then return nil end
+  local red, asOf, title = contents:match("^T\t(%d+)\t(%d+)\t([^\n]*)")
+  if not title then return nil end
+  local root, stack = {}, {}
+  stack[0] = root
+  for depth, flags, spans, text in contents:gmatch("\n(%d+)\t(%a*)\t([^\t\n]*)\t([^\n]*)") do
+    depth = tonumber(depth)
+    local parent = stack[depth]
+    if parent then
+      local item = harnessLine(flags, spans, text)
+      if item.title ~= "-" then item.disabled = true end
+      parent[#parent + 1] = item
+      local children = {}
+      stack[depth + 1] = children
+      item.children = children
+      for deeper = depth + 2, #stack do stack[deeper] = nil end
+    end
+  end
+  local function settle(items)
+    for _, item in ipairs(items) do
+      if item.children and #item.children > 0 then
+        item.menu, item.disabled = settle(item.children), nil
+      end
+      item.children = nil
+    end
+    return items
+  end
+  local document = { red = tonumber(red), as_of = tonumber(asOf), title = title, items = settle(root) }
+  if key then harnessCache.key, harnessCache.document = key, document end
+  return document
+end
+
+-- The LaunchAgent (com.egor.harness-doctor) runs the collector every 5 minutes; the menu only
+-- runs it on Refresh.
+local function runHarnessDoctor()
+  local path = M.harnessDoctorCmd or (repoRoot and repoRoot .. "/bin/harness-doctor")
+  if not path then return end
+  startDiagnosticsTask("harnessDoctorTask", path, { "--quiet" }, function()
+    local latest = readHarnessMenu()
+    hs.alert.show(latest and latest.title or "Harness doctor: no data", 2.5)
+  end)
+end
+
+-- Harness doctor (docs/harness-doctor-design.md): what is not the model and makes a chat or a
+-- worker wait, or slows the machine. bin/harness-doctor writes the rows; nothing here names one.
+local function appendHarness(menu)
+  local document = readHarnessMenu()
+  local items = {}
+  for index, item in ipairs(document and document.items or {
+    { title = infoTitle("no data yet: Refresh runs bin/harness-doctor", false, true), disabled = true } }) do
+    items[index] = item
+  end
+  if taskRunning(M.harnessDoctorTask) then
+    items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
+  else
+    items[#items + 1] = { title = infoTitle("Refresh"), fn = runHarnessDoctor }
+  end
+  local red = document and document.red or 0
+  local title = document and document.title or "Harness doctor: no data"
+  local age = document and os.time() - document.as_of or 0
+  if document and age > HARNESS_STALE_S then
+    title = title .. (age >= 7200 and string.format(" · stale %d h", math.floor(age / 3600))
+      or string.format(" · stale %d min", math.floor(age / 60)))
+  end
+  table.insert(menu, { title = infoTitle(title, red > 0, red == 0), menu = items })
+end
+
+local function appendChats(menu)
+  local contents = readTextFile(home .. "/Library/Logs/memlogd/chats.json")
+  local ok, snapshot = pcall(hs.json.decode, contents or "")
+  if not ok or type(snapshot) ~= "table" then
+    table.insert(menu, { title = infoTitle("Chats: no snapshot", false, true), disabled = true })
     return
   end
-  local title, items = nil, {}
-  for line in text:gmatch("[^\n]+") do
-    if not title then title = line
-    elseif line == "-" then items[#items + 1] = { title = "-" }
-    else items[#items + 1] = { title = infoTitle(line), disabled = true } end
+  local items = {}
+  for _, row in ipairs(snapshot.rows or {}) do
+    if row == "-" then
+      items[#items + 1] = { title = "-" }
+    elseif type(row) == "table" then
+      local item = { title = infoTitle(tostring(row.text or ""), row.alarm == true, row.dim == true) }
+      if row.session then
+        item.fn = function() copyChatCommand({ session = row.session }) end
+      else
+        item.disabled = true
+      end
+      items[#items + 1] = item
+    end
   end
-  table.insert(menu, { title = infoTitle(title or "Test time (temp)"), menu = items })
+  local failure = tostring(snapshot.error or "")
+  if failure ~= "" then items[#items + 1] = { title = infoTitle(failure, true), disabled = true } end
+  local stale = os.time() - (tonumber(snapshot.as_of) or 0) > 120
+  local alarm = snapshot.alarm == true or failure ~= ""
+  local title = (alarm and "⚠ " or "") .. tostring(snapshot.title or "Chats") .. (stale and " · stale" or "")
+  table.insert(menu, { title = infoTitle(title, alarm or stale), menu = items })
 end
 
 -- Runs a vendor account command (claudeb/codexb/geminib) then re-collects so the row it
@@ -2304,7 +2431,8 @@ function M.menuItems()
     if announced then table.insert(menu, { title = "-" }) end
   end
   appendDoctor(menu)
-  appendTestTime(menu)
+  appendHarness(menu)
+  appendChats(menu)
   table.insert(menu, { title = "-" })
   table.insert(menu, {
     title = infoTitle("Routing"),

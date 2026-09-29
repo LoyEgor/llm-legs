@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 input=$(cat) || exit 0

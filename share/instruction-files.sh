@@ -33,6 +33,7 @@ _instruction_emit() {
   p=${p//"$_instruction_tab"/?}
   printf '%s\n' "$p"
 }
+_instruction_emit_paths() { perl -0pe 's/[\n\t]/?/g; s/\0/\n/g'; }
 _instruction_nl='
 '
 _instruction_tab='	'
@@ -89,11 +90,9 @@ _instruction_class_files() {
   local -a name_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do name_args+=(-o -iname "*.$e"); done
   [ -d "$home/.claude" ] || return 0
-  while IFS= read -r -d '' p; do
-    _instruction_emit "$p"
-  done < <(find -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
+  find -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
              -o -path "$home/.claude/projects" \) -prune -o -type f \( "${name_args[@]}" \) \
-             -print0 2>/dev/null)
+             -print0 2>/dev/null | _instruction_emit_paths
 }
 
 instruction_repo_root() { # cwd
@@ -101,16 +100,53 @@ instruction_repo_root() { # cwd
   git -C "$1" rev-parse --show-toplevel 2>/dev/null
 }
 
-instruction_repo_files() { # repo-root
-  local root=${1:-} p e
+_instruction_find_files() { # dir
+  local e
   local -a md_args=(-name review-debt-ignore)
-  [ -n "$root" ] && [ -d "$root" ] || return 0
   for e in $INSTRUCTION_MD_EXTENSIONS; do md_args+=(-o -iname "*.$e"); done
-  while IFS= read -r -d '' p; do
-    _instruction_emit "$p"
-  done < <(find "$root" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
-             -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
-             \( -path '*/.claude/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null)
+  find "$1" \( -name .git -o -name node_modules -o -name worktrees \) -prune -o \
+    -type f \( -iname CLAUDE.md -o -iname CLAUDE.local.md -o -iname SKILL.md -o \
+    \( -path '*/.claude/*' \( "${md_args[@]}" \) \) \) -print0 2>/dev/null | _instruction_emit_paths
+}
+
+# git instead of a walk: a walk descends every ignored tree (570k files, 20 s a call). The set is
+# the walk's minus files under an ignored directory, save under `.claude` — a gitignored `.claude/`
+# or CLAUDE.local.md is kept on purpose. All-or-nothing: a git failing midway falls back to the
+# walk, never to a partial set.
+instruction_repo_files() { # repo-root
+  local root=${1:-} kind p listing
+  [ -n "$root" ] && [ -d "$root" ] || return 0
+  if [ ! -L "$root" ] && [ -e "$root/.git" ] && listing=$(
+      { git -C "$root" ls-files -c -s -z && printf '\035\0' &&
+        git -C "$root" ls-files -o --exclude-standard -z && printf '\035\0' &&
+        git -C "$root" ls-files -o -i --exclude-standard --directory -z && printf '\035\0'; } 2>/dev/null |
+      perl -0ne '
+        BEGIN { ($root, $md) = splice @ARGV, 0, 2; $md = join "|", split / /, $md }
+        chomp;
+        if ($_ eq "\035") { $part++; next }
+        $link = $part == 0 && m{^160000 };
+        if ($part == 0) { s/^[0-7]+ [0-9a-f]+ [0-3]\t// or next }
+        next if m{(?:^|/)(?:\.git|node_modules|worktrees)/} || $seen{$_}++;
+        ($full = "$root/$_") =~ s/[\n\t]/?/g;
+        $full =~ s{/$}{};
+        if ($link || ($part == 1 && m{/$})) { push @out, "r\t$full\n" if -d $full; next }
+        if ($part == 2 && m{/$}) { push @out, "d\t$full\n" if m{(?:^|/)\.claude/}; next }
+        ($base = $_) =~ s{.*/}{};
+        next unless $base =~ /^(?:claude|claude\.local|skill)\.md$/i
+          || ("$root/$_" =~ m{/\.claude/} && ($base eq "review-debt-ignore" || $base =~ /\.(?:$md)$/i));
+        push @out, "f\t$full\n" if lstat "$root/$_" and -f _;
+        END { exit 1 if $part != 3; print @out }
+      ' "$root" "$INSTRUCTION_MD_EXTENSIONS"); then
+    while IFS=$'\t' read -r kind p; do
+      case "$kind" in
+        f) printf '%s\n' "$p" ;;
+        r) instruction_repo_files "$p" ;;
+        d) _instruction_find_files "$p" ;;
+      esac
+    done <<<"$listing"
+    return 0
+  fi
+  _instruction_find_files "$root"
 }
 
 # What the TRIPWIRE watches: the guarded set plus settings.json, which no gate speaks for.
@@ -1569,10 +1605,10 @@ instruction_ns() { # epoch[.fraction]
 
 # PreToolUse marks the call in flight and PostToolUse `check` consumes the mark: bytes whose mtime
 # lies between the two are this call's. One file per call, `inflight/<session>@<tool_use_id>`, one
-# line `<start> <tool_use_id> <tool> <cwd>`: parallel calls of one session each keep their own
-# window, and a deny takes back only the mark its own call wrote.
-instruction_inflight_mark() { # session tool_use_id tool cwd
-  local dir now id=${2:-} cwd=${4:--}
+# line `<start> <tool_use_id> <tool> <agent_id|-> <cwd>`: parallel calls of one session each keep
+# their own window, and a deny takes back only the mark its own call wrote.
+instruction_inflight_mark() { # session tool_use_id tool cwd [agent_id]
+  local dir now id=${2:-} cwd=${4:--} agent=${5:--}
   INSTRUCTION_INFLIGHT_FILE=''
   dir="$(instruction_watch_state)/inflight"
   mkdir -p "$dir" 2>/dev/null || return 1
@@ -1580,8 +1616,9 @@ instruction_inflight_mark() { # session tool_use_id tool cwd
   [ -n "$id" ] || id="${now%%.*}-$$"
   id=${id//[^A-Za-z0-9._-]/_}
   cwd=${cwd//$'\n'/ }
+  agent=${agent//[^A-Za-z0-9._-]/_}
   INSTRUCTION_INFLIGHT_FILE="$dir/$(instruction_sid_name "$1")@$id"
-  printf '%s %s %s %s\n' "$now" "$id" "${3:--}" "$cwd" >"$INSTRUCTION_INFLIGHT_FILE" 2>/dev/null
+  printf '%s %s %s %s %s\n' "$now" "$id" "${3:--}" "$agent" "$cwd" >"$INSTRUCTION_INFLIGHT_FILE" 2>/dev/null
 }
 
 instruction_inflight_clear() {

@@ -213,6 +213,22 @@ local ok, err = pcall(function()
             "a path with spaces was split: " .. plain(spaceRow.title))
     end
 
+    local bulkFiles, bulkParts = { "/tmp/bulk/sub/a/x.md", "/tmp/bulk/a/x.md" },
+        { "CHANGED /tmp/bulk/sub/a/x.md (+7 bytes)", "CHANGED /tmp/bulk/a/x.md (+5 bytes)" }
+    for i = 1, 1500 do
+        bulkFiles[#bulkFiles + 1] = string.format("/tmp/bulk/deep/nested/dir/file%04d.md", i)
+        bulkParts[#bulkParts + 1] = "CHANGED " .. bulkFiles[#bulkFiles] .. " (+1 bytes)"
+    end
+    appendEvent("bulklegacy", os.date("!%Y-%m-%dT%H:%M:%SZ"), table.concat(bulkParts, ", "), bulkFiles)
+    local bulkStart = os.clock()
+    local bulkItems = M.menuItems()
+    local bulkMs = (os.clock() - bulkStart) * 1000
+    check(bulkMs < 3000, string.format("a 1502-file legacy record took %.0f ms to render", bulkMs))
+    local bulkRow = findRow(bulkItems, " +1501 more")
+    check(bulkRow ~= nil and plain(bulkRow.title):find("+1512", 1, true) ~= nil,
+        "a legacy record's per-file deltas were not read off its summary: "
+        .. (bulkRow and plain(bulkRow.title) or "no row"))
+
     local ratesPath = fixture .. "/read-rates.json"
     local indexed = "/tmp/project/CLAUDE.md"
     local other = "/tmp/x/a.md"
@@ -259,10 +275,9 @@ local ok, err = pcall(function()
         check(offset(multiText, "-10.0k tok/wk") == offset(singleText, "-10.0k tok/wk"),
             "price columns are misaligned")
         local header = plain(multiple.menu[1].title)
-        check(header:find("Named chat (1234abcd)", 1, true) ~= nil
-            and not header:find("harness", 1, true), "resolved chat header exposes the sid or omits the name")
-        check(plain(single.menu[1].title):find("harness", 1, true) ~= nil,
-            "unresolved chat header omits the sid")
+        check(header == "Named chat", "resolved chat header is not the bare name: " .. header)
+        check(plain(single.menu[1].title):find("harness", 1, true) == nil,
+            "unresolved chat header exposes the sid")
         local detail = plain(multiple.menu[2].title)
         check(detail:find("-10.0k tok/wk", 1, true) ~= nil, "negative delta has no negative price")
         check(detail:find("#1", 1, true) ~= nil, "highest weekly reads entry is not rank #1")
@@ -343,9 +358,9 @@ local ok, err = pcall(function()
             "a delivered submenu still carries the receipt line")
     end
     if multiple and single then
-        check(plain(multiple.menu[1].title) == "Named chat (1234abcd)",
+        check(plain(multiple.menu[1].title) == "Named chat",
             "resolved chat header is not exactly the chat name: " .. plain(multiple.menu[1].title))
-        check(plain(single.menu[1].title) == "unnamed chat (harness)",
+        check(plain(single.menu[1].title) == "unnamed chat",
             "unresolved chat header is not the unnamed label: " .. plain(single.menu[1].title))
     end
 
@@ -362,11 +377,11 @@ local ok, err = pcall(function()
         findRow(resolvedMenu, "resolver/silent.md"), findRow(resolvedMenu, "resolver/chat.md")
     check(namedRow ~= nil and silentRow ~= nil and chatRow ~= nil, "resolver rows are missing")
     if namedRow and silentRow and chatRow then
-        check(plain(namedRow.menu[1].title) == resolverLine,
+        check(plain(namedRow.menu[1].title) == "Named by resolver",
             "resolver line is not the header: " .. plain(namedRow.menu[1].title))
-        check(plain(silentRow.menu[1].title) == "unnamed chat (bbbb2222)",
+        check(plain(silentRow.menu[1].title) == "unnamed chat",
             "unanswered sid header is not the unnamed label: " .. plain(silentRow.menu[1].title))
-        check(plain(chatRow.menu[1].title) == "Recorded chat (cccc3333)", "recorded chat header was replaced")
+        check(plain(chatRow.menu[1].title) == "Recorded chat", "recorded chat header was replaced")
     end
     check(askedSids[namedSid] == 1 and askedSids[silentSid] == 1, "unnamed sids were not asked exactly once")
     check(askedSids[chatSid] == nil, "an event with a recorded chat reached the resolver")
@@ -485,6 +500,29 @@ local ok, err = pcall(function()
     check(type(cached[twinA]) == "table" and cached[twinA].name == ""
         and type(cached[twinB]) == "table" and cached[twinB].name == "",
         "two chats sharing a short id were both given the one name the resolver returned")
+    local untitled = "9999aaaa-0000-4000-8000-00000000000e"
+    local untitledTitle = "untitled chat · proj · Mon 20:04"
+    M.setChatResolver(function(_, onDone)
+        onDone(hs.json.encode({ session = untitled, short = "9999aaaa", name = "", title = untitledTitle }))
+    end)
+    appendEvent("untitled", "2026-09-22T00:00:04Z", "CHANGED /tmp/untitled.md (+1 bytes)", nil, { 1 }, nil, untitled)
+    M.pump()
+    local untitledRow = findRow(M.menuItems(), "untitled.md")
+    check(untitledRow ~= nil and plain(untitledRow.menu[1].title) == untitledTitle,
+        "a chat with no name is not shown by what the resolver describes it as")
+    cached = hs.json.decode(readFile(fixture .. "/chat-names.json") or "{}") or {}
+    check(type(cached[untitled]) == "table" and cached[untitled].name == "" and cached[untitled].title == untitledTitle,
+        "a described chat was cached as named, so its name would never be asked for again")
+    local function titles(items, out)
+        for _, item in ipairs(items or {}) do
+            out[#out + 1] = plain(item.title)
+            titles(item.menu, out)
+        end
+        return out
+    end
+    for _, title in ipairs(titles(M.menuItems(), {})) do
+        check(not title:find("%f[%x]%x%x%x%x%x%x%x%x%f[^%x]"), "a menu row shows an id: " .. title)
+    end
 
     local missing = fixture .. "-absent-state"
     M.stop()
@@ -578,6 +616,34 @@ local ok, err = pcall(function()
         and not isRed(liveTitle), "the liveness line is not green with its counts: " .. live)
     check(findRow(M.menuItems(), "older in events.jsonl") == nil, "a trailer was shown with nothing hidden")
 
+    local savedFs = hs.fs
+    local scans = 0
+    hs.fs = setmetatable({ dir = function(path)
+        if path == wf.state .. "/inflight" or path == wf.state .. "/closed" then scans = scans + 1 end
+        return savedFs.dir(path)
+    end }, { __index = savedFs })
+    savedFs.mkdir(wf.state .. "/inflight")
+    savedFs.mkdir(wf.state .. "/closed")
+    local function fireState(path) fired[wf.state]({ path }, {}) end
+    check(fired[wf.state] ~= nil, "the state directory has no watcher")
+    fireState(wf.state .. "/events.jsonl")
+    scans = 0
+    fireState(wf.state .. "/snapshot/unrelated")
+    fireState(wf.state .. "/events.jsonl")
+    write(wf.repo .. "/unrelated.txt", "x\n")
+    fire(wf.repo .. "/unrelated.txt")
+    check(scans == 0, "unrelated FSEvents rescanned attribution directories: " .. scans)
+    fireState(wf.state .. "/inflight/call")
+    check(scans == 2, "an inflight event did not refresh both attribution directories: " .. scans)
+    fireState(wf.state .. "/closed/call")
+    check(scans == 4, "a closed event did not refresh both attribution directories: " .. scans)
+    fired[wf.state]()
+    check(scans == 6, "the timer's pathless callback did not refresh attribution: " .. scans)
+    fire(doc)
+    check(scans == 8, "an instruction-file event did not refresh attribution before its check: " .. scans)
+    os.remove(wf.repo .. "/unrelated.txt")
+    hs.fs = savedFs
+
     local expiredMark = wf.state .. "/alerts/0123456789abcdef"
     os.execute("mkdir -p " .. quoted(expiredMark) .. " && touch -t 202001010000 " .. quoted(expiredMark))
     local before = #records()
@@ -623,6 +689,22 @@ local ok, err = pcall(function()
     local kept = restore:match("^cp '([^']+)'")
     check(kept ~= nil and readFile(kept) == "watched doc\ngrown line\n",
         "the restore command does not point at the bytes before the change")
+
+    local sidLong, sidNear = "aaaa1111-0000-4000-8000-00000000000c", "ffff6666-0000-4000-8000-00000000000d"
+    write(wf.state .. "/inflight/" .. sidLong .. "@toolu_long",
+        string.format("%d.000000000 toolu_long Bash /tmp\n", os.time() - 300), "w")
+    check(tripwire("", sidNear, wf.gate), "the write gate refused the near writer's Bash call")
+    M.setChatResolver(function(_, onDone) onDone("Long suite chat (aaaa1111)\nNear writer chat (ffff6666)") end)
+    before = #records()
+    write(doc, "third wait line\n")
+    fire(doc)
+    os.remove(wf.state .. "/inflight/" .. sidLong .. "@toolu_long")
+    os.remove(wf.state .. "/inflight/" .. sidNear .. "@toolu_seam")
+    local ranked = records()[#records()] or {}
+    check(#records() == before + 1 and ranked.sid == sidNear and ranked.chat == "Near writer chat (ffff6666)"
+        and ranked.writer:find("^Near writer chat %(ffff6666%), ") ~= nil
+        and ranked.writer:find(", Long suite chat %(aaaa1111%)$") ~= nil and ranked.writers >= 2,
+        "a long call of another chat outranked the call that began at the write: " .. hs.json.encode(ranked))
 
     M.setChatResolver(function(_, onDone) onDone("") end)
     check(tripwire("baseline", "sid-watch-c"), "the tripwire baseline did not run")

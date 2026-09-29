@@ -14,6 +14,8 @@ export HOME="$WORK/home"
 export WORKER_STATS_DIR="$HOME/stats" WORKER_RUN_DIR="$HOME/runs" LLM_DOCTOR_DIR="$HOME/doctor"
 export IMAGE_LEG_LOG="$HOME/image-legs/legs.jsonl" LLM_DOCTOR_LEDGER="$WORK/ledger.json"
 export GEMINIB_CACHE_DIR="$WORK/geminib"
+# The Mac's own reboots would turn every fixture run with no exit into one the reboot took down.
+export LLM_DOCTOR_REBOOTS=""
 unset STOP_GATE_JOURNAL WORDS_DIR REVIEW_DEBT_DIR
 mkdir -p "$GEMINIB_CACHE_DIR"
 cat >"$GEMINIB_CACHE_DIR/models.json" <<'JSON'
@@ -23,6 +25,18 @@ cat >"$GEMINIB_CACHE_DIR/models.json" <<'JSON'
 JSON
 NOW=$(( $(date +%s) / 60 * 60 ))
 export LLM_DOCTOR_NOW="$NOW"
+mkdir -p "$WORK/bin"
+cat >"$WORK/bin/review-anchors" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$ANCHORS_ARGS"
+[ -n "${ANCHORS_EXIT:-}" ] && exit "$ANCHORS_EXIT"
+cat "$ANCHORS_ROWS"
+SH
+chmod +x "$WORK/bin/review-anchors"
+export PATH="$WORK/bin:$PATH" ANCHORS_ARGS="$WORK/anchors-args" ANCHORS_ROWS="$WORK/anchors-rows.jsonl"
+printf '{"session":"s1","kind":"touch-failed","detail":"/repo: review-anchors exited 1","count":2,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: more than 500 dirty paths","count":1090,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: 2 capped paths changed, first a.py","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R1 run-a","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R2 run-b","count":1,"first":%d,"last":%d}\n' \
+  "$((NOW - 1800))" "$((NOW - 900))" "$((NOW - 259200))" "$((NOW - 259140))" "$((NOW - 259000))" "$((NOW - 259000))" \
+  "$((NOW - 3000))" "$((NOW - 3000))" "$((NOW - 2000))" "$((NOW - 2000))" >"$ANCHORS_ROWS"
 
 python3 - "$NOW" "$WORKER_STATS_DIR/benches" "$WORKER_RUN_DIR" "$IMAGE_LEG_LOG" "$LLM_DOCTOR_LEDGER" "$LLM_DOCTOR_DIR" <<'PY'
 import json, os, sys, time
@@ -210,7 +224,8 @@ with open(os.path.join(cache, "words", "journal.jsonl"), "w") as handle:
                 {"mark": "ok", "ref": "%d:s1" % (now - 400)}):
         handle.write(json.dumps(row) + "\n")
 with open(os.path.join(cache, "review-debt", "gaps", "s1"), "w") as handle:
-    handle.write("%d\ttouch-failed\t/repo: review-anchors exited 1\n%d\tfixer-missing\told\n" % (now - 900, now - 90000))
+    handle.write("%d\ttouch-failed\t/repo: review-anchors exited 1\n%d\ttouch-failed\t/repo: review-anchors exited 1\n"
+                 "%d\tpre-missing\tsettled by a review\n" % (now - 1800, now - 900, now - 500))
 PY
 
 before=$(find "$LLM_DOCTOR_DIR" -type f | sort | tr '\n' ' ')
@@ -231,22 +246,26 @@ assert test -s "$LLM_DOCTOR_DIR/latest.json"
 rm "$LLM_DOCTOR_DIR/latest.json"
 
 assert python3 - "$WORK/doc.json" "$NOW" <<'PY'
-import json, sys
+import json, re, sys
 doc = json.load(open(sys.argv[1]))
 blocks = {block["block"]: block for block in doc["blocks"]}
 assert [block["block"] for block in doc["blocks"]] == ["reviewers", "workers", "light", "image"]
 assert doc["not_measurable"] == ["worker false-green reports", "weakened tests"]
 health = {row["name"]: row for row in doc["health"]}
-assert [row["name"] for row in doc["health"]] == ["hooks", "debt"]
+assert [row["name"] for row in doc["health"]] == ["hooks", "guards", "debt"]
+assert health["guards"]["count"] == 0 and health["guards"]["notes"] == ["instruction watch state not found"]
 hooks = {(item["label"], item["chat"]): item["count"] for item in health["hooks"]["items"]}
-assert hooks == {("ask-slow.sh: exit 124", "s1"): 2, ("ask-same.sh: same ask again within 30 min", "s1"): 1,
-                 ("word notice with no reading: ⚡ review", "s1"): 1,
-                 ("word notice with no reading: ⚡ review", "s3"): 1,
+# A session nothing on this machine knows is an unnamed chat, never its id.
+assert hooks == {("ask-slow.sh: exit 124", "unnamed chat"): 2,
+                 ("ask-same.sh: same ask again within 30 min", "unnamed chat"): 1,
+                 ("word notice with no reading: ⚡ review", "unnamed chat"): 2,
                  ("⚡ reading with no notice: ⚡ понял: делаю сдвиг оттенка", "Design system"): 2}, hooks
 assert health["hooks"]["status"] == "problem" and health["hooks"]["count"] == 7
-debt = {(item["label"], item["chat"]): item["count"] for item in health["debt"]["items"]}
-assert debt == {("not recorded: touch-failed", "s1"): 1}, debt
-assert health["debt"]["notes"] == ["losses.jsonl not written yet: only recording gaps are seen"]
+debt = {(item["label"], item["chat"]): (item["count"], item["repeats"]) for item in health["debt"]["items"]}
+assert debt == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 2),
+                ("not recorded: hash-cap in repo", "unnamed chat"): (1, 1091),
+                ("not recorded: fixer-missing", "unnamed chat"): (2, 2)}, debt
+assert health["debt"]["count"] == 4 and health["debt"]["notes"] == [], health["debt"]
 
 def problems(block):
     return {(item["label"], (item["ledger"] or {}).get("id", "")): item for item in blocks[block]["problems"]}
@@ -291,11 +310,17 @@ assert ("failed · bad command", "") not in workers, sorted(workers)
 light = problems("light")
 assert light[("failed · crashed", "")]["incidents"][0]["detail"] == "tree digest not taken", sorted(light)
 assert light[("escaped", "")]["incidents"][0]["detail"] == "light scope escaped", sorted(light)
-# Every incident names the chat that launched its run, where the run recorded one.
-assert light[("failed · crashed", "")]["incidents"][0]["chat"] == "feedface", light[("failed · crashed", "")]
+# Every incident names the chat that launched its run, where the run recorded one — by name, and a
+# launcher nothing here knows as an unnamed chat, never by its id.
+crashed = light[("failed · crashed", "")]["incidents"][0]
+assert crashed["session"].startswith("feedface") and crashed["chat"] == "unnamed chat", crashed
 launched = [incident for block in blocks.values() for problem in block["problems"]
             for incident in problem["incidents"] if incident["ref"].endswith("-bbbbbbb")]
-assert launched and all(incident["chat"] == "cafebabe" for incident in launched), launched
+assert launched and all(incident["session"].startswith("cafebabe") and incident["chat"] == "unnamed chat"
+                           for incident in launched), launched
+chats = [incident.get("chat") or "" for block in blocks.values() for problem in block["problems"]
+         for incident in problem["incidents"]] + [item["chat"] for row in doc["health"] for item in row["items"]]
+assert not [chat for chat in chats if re.search(r"\b[0-9a-f]{8}\b", chat)], chats
 assert all(problem["incidents_total"] >= len(problem["incidents"])
            for block in blocks.values() for problem in block["problems"])
 assert blocks["light"]["bugs"] == 2 and blocks["light"]["new"] == 2, blocks["light"]
@@ -353,14 +378,31 @@ assert grep -q 'X1' "$WORK/view.txt"
 assert test "$(grep -c '^Workers: ' "$WORK/view.txt")" -eq 0
 assert test "$(grep -Ec '[0-9]{8}T[0-9]{6}Z|codex-[0-9]{9}' "$WORK/view.txt")" -eq 0
 
-printf '{"at":%d,"kind":"untouch","repo":"/r","path":"a.py","session":"s1","lines":12}\n' "$((NOW - 600))" \
+assert grep -qx 'gaps --days 7 --json' "$ANCHORS_ARGS"
+printf '{"at":%d,"kind":"run-fold-skip","repo":"/r","path":"x.py","session":"s1","lines":5,"detail":"run w-1: a co-tenant touched it during the run"}\n{"at":%d,"kind":"run-fold-skip","repo":"/r","path":"y.py","session":"s1","lines":7,"detail":"run w-1: a co-tenant touched it during the run"}\n{"at":%d,"kind":"run-fold-skip","repo":"/r","path":"x.py","session":"s1","lines":2,"detail":"run w-2: a co-tenant touched it during the run"}\n{"at":%d,"kind":"untouch","repo":"/r","path":"a.py","session":"s1","lines":12}\n{"at":%d,"kind":"migrate","repo":"/w/r1","path":"b.py","session":"","lines":3}\n{"at":%d,"kind":"migrate","repo":"/w/r2/","path":"c.py","session":"","lines":4}\n' \
+  "$((NOW - 700))" "$((NOW - 690))" "$((NOW - 680))" "$((NOW - 600))" "$((NOW - 500))" "$((NOW - 400))" \
   >"$HOME/.cache/claude/review-debt/losses.jsonl"
 assert "$DOCTOR" --dry-run --json >"$WORK/doc2.json"
 assert python3 - "$WORK/doc2.json" <<'PY'
 import json, sys
 debt = [row for row in json.load(open(sys.argv[1]))["health"] if row["name"] == "debt"][0]
-items = {item["label"]: (item["count"], item["lines"]) for item in debt["items"]}
-assert items == {"not recorded: touch-failed": (1, 0), "lost unreviewed: untouch": (1, 12)} and debt["notes"] == [], debt
+items = {(item["label"], item["chat"]): (item["count"], item["lines"]) for item in debt["items"]}
+assert items == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 0),
+                 ("not recorded: hash-cap in repo", "unnamed chat"): (1, 0),
+                 ("not recorded: fixer-missing", "unnamed chat"): (2, 0),
+                 ("lost unreviewed: run-fold-skip", "unnamed chat"): (2, 14),
+                 ("lost unreviewed: untouch", "unnamed chat"): (1, 12), ("lost unreviewed: migrate", "r1"): (1, 3),
+                 ("lost unreviewed: migrate", "r2"): (1, 4)} and debt["notes"] == [], debt
+PY
+"$DOCTOR" --dry-run >"$WORK/view2.txt" || fail "the text view with health failed"
+assert grep -q 'not recorded: hash-cap in repo · seen 1091×' "$WORK/view2.txt"
+ANCHORS_EXIT=1 "$DOCTOR" --dry-run --json >"$WORK/doc3.json" || fail "a failing gaps reader broke the doctor"
+assert python3 - "$WORK/doc3.json" <<'PY'
+import json, sys
+debt = [row for row in json.load(open(sys.argv[1]))["health"] if row["name"] == "debt"][0]
+assert debt["notes"] == ["gaps not read: review-anchors exited 1"], debt
+assert {item["label"] for item in debt["items"]} == {"lost unreviewed: run-fold-skip", "lost unreviewed: untouch",
+                                                    "lost unreviewed: migrate"}, debt
 PY
 
 # Bug or weather, one rule per record shape: the module's own readers on fixtures of each shape.
@@ -368,7 +410,7 @@ UNIT="$WORK/unit"
 mkdir -p "$UNIT"
 assert env LLM_LIMITS_ACTION_LOG="$UNIT/actions.log" WORKER_RUN_DIR="$UNIT/runs" IMAGE_LEG_LOG="$UNIT/legs.jsonl" \
   WORKER_STATS_DIR="$UNIT/stats" STOP_GATE_JOURNAL="$UNIT/journal.jsonl" python3 - "$DOCTOR" "$NOW" "$UNIT" <<'PY'
-import importlib.machinery, importlib.util, json, os, sys, time
+import importlib.machinery, importlib.util, json, os, shutil, sys, time
 loader = importlib.machinery.SourceFileLoader("llm_doctor", sys.argv[1])
 spec = importlib.util.spec_from_loader("llm_doctor", loader)
 doctor = importlib.util.module_from_spec(spec)
@@ -532,6 +574,41 @@ open(os.path.join(old, "err"), "w").write("account lookup failed\n")
 open(os.path.join(old, "exit_code"), "w").write("1\n")
 os.utime(os.path.join(old, "exit_code"), (now - 600, now - 600))
 worker_legs = doctor.worker_legs(now - 86400, now)[0]
+# A run the Mac's reboot took down is weather, not a crashed supervisor.
+rebooted = os.path.join(unit, "runs", "codex-%d-2-beef" % (now - 8 * 3600))
+os.makedirs(rebooted)
+open(os.path.join(rebooted, "tag"), "w").write("main · astra · task\n")
+open(os.path.join(rebooted, "out"), "w").write("working\n")
+os.utime(os.path.join(rebooted, "out"), (now - 7 * 3600, now - 7 * 3600))
+os.environ["LLM_DOCTOR_REBOOTS"] = "%d" % (now - 7 * 3600 + 60)
+doctor._REBOOTS.clear()
+reboot_legs = [row for row in doctor.worker_legs(now - 86400, now)[0] if row["ref"] == os.path.basename(rebooted)]
+assert [(row["class"], row["reason"], doctor.verdict_of(row)) for row in reboot_legs] == \
+    [("rebooted", "reboot", "weather")], reboot_legs
+# A run silent for hours before a later boot died on its own.
+os.environ["LLM_DOCTOR_REBOOTS"] = "%d" % (now - 2 * 3600)
+doctor._REBOOTS.clear()
+reboot_legs = [row for row in doctor.worker_legs(now - 86400, now)[0] if row["ref"] == os.path.basename(rebooted)]
+assert [(row["class"], row["reason"]) for row in reboot_legs] == [("failed", "crashed")], reboot_legs
+# `last` orders day and month by the locale; both read as the same boot.
+shim = os.path.join(unit, "last-shim")
+os.makedirs(shim)
+with open(os.path.join(shim, "last"), "w") as handle:
+    handle.write("#!/bin/sh\nprintf 'reboot time   Mon 28 Sep 16:39\\nreboot time   Mon Sep 28 16:39\\n'\n")
+os.chmod(os.path.join(shim, "last"), 0o755)
+del os.environ["LLM_DOCTOR_REBOOTS"]
+saved_path = os.environ["PATH"]
+os.environ["PATH"] = shim + os.pathsep + saved_path
+doctor._REBOOTS.clear()
+sep28 = int(time.mktime(time.strptime("2026 28 Sep 16:39", "%Y %d %b %H:%M")))
+boots = doctor.reboots(sep28 + 3600)
+os.environ["PATH"] = saved_path
+assert boots == [sep28, sep28], boots
+os.environ["LLM_DOCTOR_REBOOTS"] = ""
+doctor._REBOOTS.clear()
+reboot_legs = [row for row in doctor.worker_legs(now - 86400, now)[0] if row["ref"] == os.path.basename(rebooted)]
+assert [(row["class"], row["reason"]) for row in reboot_legs] == [("failed", "crashed")], reboot_legs
+shutil.rmtree(rebooted)
 assert [(row["ref"], row["reason"]) for row in worker_legs] == [(os.path.basename(old), "crashed")], worker_legs
 
 # A refusal that met a closed switch or pool membership is the gate working.
@@ -570,6 +647,103 @@ hooks = doctor.hooks_health(now - 3600, now)
 assert [(item["label"], item["count"]) for item in hooks["items"] if item["label"].startswith("gate.sh")] \
     == [("gate.sh: asked while busy", 2)], hooks
 
+# Asks deferred past two hours, a held run and a dispatcher silent while chats ran are hook problems.
+with open(os.path.join(unit, "journal.jsonl"), "w") as handle:
+    for offset in (9000, 5000, 1500):
+        handle.write(json.dumps({"ts": iso(offset), "session": "s8", "busy": "bg-task:worker-run",
+                                 "hooks": [{"name": "ask-review.sh", "outcome": "skipped-busy", "reason": ""}]}) + "\n")
+    for offset in (12000, 4000):
+        handle.write(json.dumps({"ts": iso(offset), "session": "s7", "busy": "bg-task:worker-run",
+                                 "hooks": [{"name": "ask-review.sh", "outcome": "skipped-busy", "reason": ""}]}) + "\n")
+    handle.write(json.dumps({"ts": iso(3000), "session": "s7", "busy": "",
+                             "hooks": [{"name": "ask-review.sh", "outcome": "asked", "reason": "review"}]}) + "\n")
+    handle.write(json.dumps({"ts": iso(700), "session": "s6", "busy": "",
+                             "hooks": [{"name": "worker-run-backstop.sh", "outcome": "held", "reason": "run x"}]}) + "\n")
+hooks = {(item["label"], item["chat"]): item["count"] for item in doctor.hooks_health(now - 86400, now)["items"]
+         if item["label"].startswith(("asks deferred", "worker-run-backstop"))}
+assert hooks == {("asks deferred over 2 h: busy bg-task", "unnamed chat"): 2,
+                 ("worker-run-backstop.sh: held a run no relay owns", "unnamed chat"): 1}, hooks
+transcript = os.path.join(home, ".claude", "projects", "x", "chat.jsonl")
+os.makedirs(os.path.dirname(transcript))
+open(transcript, "w").write("{}\n")
+with open(os.path.join(unit, "journal.jsonl"), "w") as handle:
+    handle.write(json.dumps({"ts": iso(8 * 3600), "session": "s8", "busy": "", "hooks": []}) + "\n")
+hooks = [item["label"] for item in doctor.hooks_health(now - 86400, now)["items"] if item["label"].startswith("stop-")]
+assert hooks == ["stop-dispatch.sh: no journal line while chats ran"], hooks
+os.remove(os.path.join(unit, "journal.jsonl"))
+assert doctor.hooks_health(now - 86400, now)["notes"] == ["stop journal not found"]
+
+# Guards: instruction-file growth no gate passed, forged stamps, the gates' faults, a quiet watcher or tripwire.
+state = os.path.join(unit, "watch")
+os.environ["INSTRUCTION_WATCH_STATE"] = state
+os.makedirs(os.path.join(state, "watcher"))
+md, docs = os.path.join(home, ".claude", "CLAUDE.md"), os.path.join(home, ".claude", "docs", "tiers.md")
+def change(offset, path, delta, **extra):
+    row = {"at": iso(offset), "kind": "change", "files": [path], "bytes": [delta], "writer": "this-call",
+           "sid": "s5", "chat": "Vector chat (abcdef12)"}
+    row.update(extra)
+    return json.dumps(row) + "\n"
+with open(os.path.join(state, "events.jsonl"), "w") as handle:
+    handle.write(change(5000, md, 172))
+    handle.write(change(4000, md, 300))
+    handle.write(change(3000, docs, 400))
+    handle.write(change(2500, md, 500, reverted=True))
+    handle.write(change(2400, os.path.join(home, ".claude", "settings.json"), 900))
+    handle.write(change(2300, md, 100))
+    handle.write(change(2200, docs, 250, writer="", source="watcher", sid="s4", chat="Long suite (aaaa1111)",
+                        observer="s3"))
+    handle.write(change(2100, docs, 260, writer="Near (ffff6666), Long suite (aaaa1111)", source="watcher",
+                        sid="s2", chat="Near (ffff6666)"))
+    handle.write(json.dumps({"at": iso(2000), "kind": "stamp-forged", "files": [md], "sid": "s5"}) + "\n")
+    handle.write(json.dumps({"at": iso(1900), "kind": "baseline-missing", "files": [], "sid": "s1"}) + "\n")
+    handle.write(change(90000, md, 800))
+with open(os.path.join(state, "gates.jsonl"), "w") as handle:
+    for row in ({"at": now - 4100, "gate": "bloat", "decision": "passed", "sid": "s5", "file": md, "real": md},
+                {"at": now - 3200, "gate": "write", "decision": "denied", "sid": "s5", "file": docs, "real": docs},
+                {"at": now - 1000, "gate": "bloat", "decision": "fault", "sid": "s5", "file": "",
+                 "detail": "jq missing"}):
+        handle.write(json.dumps(row) + "\n")
+beat = os.path.join(state, "watcher", "heartbeat")
+open(beat, "w").write("since=1 roots=3 files=40\n")
+baseline = os.path.join(state, "session-s1.tsv")
+open(baseline, "w").write("")
+guards = doctor.guards_health(now - 86400, now)
+labels = {(item["label"], item["chat"] or item["session"]): item["count"] for item in guards["items"]}
+assert labels == {(".claude/CLAUDE.md grew with no gate seeing it", "Vector chat"): 1,
+                  ("docs/tiers.md grew after a denial", "Vector chat"): 1,
+                  ("docs/tiers.md grew with no gate seeing it", "Long suite"): 1,
+                  ("docs/tiers.md grew with no gate seeing it", "likely Near, 1 more in flight"): 1,
+                  ("forged retry stamp: .claude/CLAUDE.md", "unnamed chat"): 1,
+                  ("tripwire baseline missing", "unnamed chat"): 1,
+                  ("bloat gate: jq missing", "unnamed chat"): 1}, labels
+assert guards["status"] == "problem" and guards["notes"] == [], guards
+os.utime(beat, (now - 600, now - 600))
+os.utime(baseline, (now - 8 * 3600, now - 8 * 3600))
+os.remove(os.path.join(state, "events.jsonl"))
+os.remove(os.path.join(state, "gates.jsonl"))
+labels = [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]]
+assert sorted(labels) == ["tripwire wrote no baseline while chats started", "watcher down"], labels
+open(beat, "w").write("since=1 roots=0 files=0\n")
+open(baseline, "w").write("")
+assert [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]] == ["watcher down: no root watched"]
+open(beat, "w").write("since=1 roots=2 files=9 error=pathwatcher failed\n")
+assert [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]] == ["watcher down: pathwatcher failed"]
+os.remove(beat)
+assert [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]] == ["watcher never started"]
+os.remove(transcript)
+
+# A leg slow while the Harness doctor judged this Mac slow is local, never the model's weather.
+harness = os.path.join(unit, "harness.json")
+os.environ["HARNESS_DOCTOR_LATEST"] = harness
+json.dump({"local_slow": [[now - 1000, now - 500]]}, open(harness, "w"))
+def timed(offset, duration):
+    return doctor.leg("workers", "worker", "opus", now - offset, None, None, "", "", duration=duration)
+slow_legs = [timed(9000 - step * 100, 20) for step in range(6)] + [timed(600, 300), timed(100, 300)]
+doctor.mark_slow(slow_legs)
+assert [(row["class"], row["reason"]) for row in slow_legs[-2:]] == [("slow", "local slow"), ("slow", "slow")], \
+    slow_legs[-2:]
+os.remove(harness)
+
 # The judge's short ruling has its own ledger row, never R1's review-cell shapes.
 os.environ["LLM_DOCTOR_LEDGER"] = os.path.join(os.path.dirname(os.path.dirname(sys.argv[1])), "share", "doctor-ledger.json")
 ledger = doctor.load_ledger()
@@ -581,4 +755,4 @@ tool_event = doctor.leg("reviewers", "review", "astra", now, "failed", "bad outp
 assert doctor.ledger_match(ledger, tool_event)["id"] != "N5"
 PY
 
-echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, hooks health (hook errors, a repeated ask, an unanswered word notice minus an ok mark), debt health (recording gaps, logged losses with their lines) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age)"
+echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, hooks health (hook errors, a repeated ask, an unanswered word notice minus an ok mark, asks deferred past 2 h, a held run, a silent dispatcher, a missing journal), guards health (instruction-file growth no gate passed or only denied, reverted and settings growth skipped, watcher-named writers hedged, forged stamps, gate faults, a stale, rootless, failing or absent watcher, a silent tripwire), debt health (open gaps from review-anchors counted once per cause (kind and repository, or kind and run) with their repeats, old open gaps kept, a failing reader noted, logged losses once per drop with their lines, sessionless losses grouped by repository) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age)"

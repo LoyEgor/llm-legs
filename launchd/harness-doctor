@@ -1,0 +1,10 @@
+#!/bin/bash
+# Deployed at ~/.local/libexec/harness-doctor; source copy in llm-legs/launchd/harness-doctor.
+# com.egor.harness-doctor runs it every 5 minutes; the LLM Limits menu's Harness doctor block reads
+# the menu.txt it writes (docs/harness-doctor-design.md).
+set -u
+script=/Volumes/Work/Projects/llm-legs/bin/harness-doctor
+[ -r "$script" ] || exit 0
+python=/opt/homebrew/bin/python3
+[ -x "$python" ] || python=/usr/bin/python3
+exec "$python" "$script" --quiet

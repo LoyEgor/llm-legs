@@ -1,0 +1,528 @@
+#!/usr/bin/env python3
+# memlogd runs `sample` every tick: it attributes every process to the chat that launched it, keeps
+# the machine's load per chat for the llm-limits menu (chats.json) and, when RAM runs out, kills the
+# fattest chat job (`docs/memory-guard.md`). `show` prints the last snapshot.
+import ctypes
+import glob
+import json
+import os
+import re
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+GUARD_AVAIL_MB = 3072
+GUARD_JOB_MB = 1536
+GUARD_SHOWN_S = 900
+BUSY_CORES = 0.3
+SATURATED = 0.9
+HISTORY_MINUTES = 15
+TITLE_WIDTH = 22
+PID_SLACK_S = 30
+SPARK = "▁▂▃▄▅▆▇█"
+ENV_KEYS = (b"CLAUDE_LAUNCHER_SESSION=", b"CLAUDE_CODE_SESSION_ID=")
+OTHER_KINDS = (("screen", {"WindowServer"}), ("kernel", {"kernel_task"}), ("signing", {"syspolicyd", "trustd"}))
+
+HOME = os.path.expanduser("~")
+LOG_DIR = os.environ.get("MEMLOGD_DIR") or os.path.join(HOME, "Library/Logs/memlogd")
+STATE_PATH = os.path.join(LOG_DIR, "chat-load.state.json")
+OUT_PATH = os.path.join(LOG_DIR, "chats.json")
+SESSION_DIRS = (os.environ.get("CHAT_LOAD_SESSIONS")
+                or f"{HOME}/.claude-profiles/*/sessions:{HOME}/.claude/sessions").split(":")
+RUNS_DIR = os.environ.get("WORKER_RUN_DIR") or os.path.join(HOME, ".cache/claude-worker-runs")
+STATS_DIR = os.environ.get("WORKER_STATS_DIR") or os.path.join(
+    os.environ.get("CLAUDEB_DIR") or os.path.join(HOME, ".claude-profiles/.claudeb"), "worker-stats")
+HERE = os.path.dirname(os.path.realpath(__file__))
+# The copies install-agent deploys beside this file come first: macOS denies the daemon's Python, and
+# every process it starts, /Volumes/Work even with memlogd itself granted Full Disk Access.
+SHARED = [HERE, os.path.join(os.path.dirname(HERE), "share")]
+REPORT_BUS = os.environ.get("CHAT_LOAD_REPORT_BUS") or os.path.join(HERE, "report-bus")
+REPORT_FRAME = next((path for path in (os.path.join(d, "report_frame.py") for d in SHARED) if os.path.exists(path)), "")
+
+libc = ctypes.CDLL(None, use_errno=True)
+
+
+def sysctl_int(name):
+    value, size = ctypes.c_uint64(0), ctypes.c_size_t(8)
+    if libc.sysctlbyname(name.encode(), ctypes.byref(value), ctypes.byref(size), None, 0) != 0:
+        return None
+    return value.value
+
+
+def procargs(pid):
+    mib = (ctypes.c_int * 3)(1, 49, pid)
+    size = ctypes.c_size_t(0)
+    if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0 or size.value < 8:
+        return None
+    buf = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(mib, 3, buf, ctypes.byref(size), None, 0) != 0:
+        return None
+    raw = buf.raw[:size.value]
+    argc = struct.unpack("i", raw[:4])[0]
+    pos = raw.find(b"\0", 4)
+    if pos < 0:
+        return None
+    while pos < len(raw) and raw[pos] == 0:
+        pos += 1
+    strings = raw[pos:].split(b"\0")
+    argv, env = strings[:argc], []
+    for entry in strings[argc:]:
+        if not entry:
+            break
+        env.append(entry)
+    found = ["", ""]
+    for entry in env:
+        for index, key in enumerate(ENV_KEYS):
+            if entry.startswith(key):
+                found[index] = entry[len(key):].decode("ascii", "replace")
+    return [a.decode("utf-8", "replace") for a in argv], found
+
+
+def clock(text):
+    try:
+        days = 0
+        if "-" in text:
+            head, text = text.split("-", 1)
+            days = int(head)
+        total = 0.0
+        for part in text.split(":"):
+            total = total * 60 + float(part)
+        return days * 86400 + total
+    except ValueError:
+        return -1.0
+
+
+def process_table():
+    out = subprocess.run(["ps", "-axo", "pid=,ppid=,pgid=,uid=,rss=,time=,etime=,state=,comm="],
+                         capture_output=True, text=True, timeout=20).stdout
+    table = {}
+    for line in out.splitlines():
+        fields = line.split(None, 8)
+        if len(fields) < 9:
+            continue
+        try:
+            pid, ppid, pgid, uid, rss = (int(x) for x in fields[:5])
+        except ValueError:
+            continue
+        table[pid] = {"ppid": ppid, "pgid": pgid, "uid": uid, "kb": rss, "cpu": clock(fields[5]),
+                      "age": clock(fields[6]), "zombie": fields[7].startswith("Z"),
+                      "comm": os.path.basename(fields[8].strip())}
+    return table
+
+
+def read_json(path, default):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value):
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w") as handle:
+        json.dump(value, handle, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+def live_sessions(table):
+    sessions = {}
+    for pattern in SESSION_DIRS:
+        for path in glob.glob(os.path.join(os.path.expanduser(pattern), "*.json")):
+            record = read_json(path, {})
+            pid, sid = record.get("pid"), record.get("sessionId")
+            if isinstance(pid, int) and isinstance(sid, str) and pid in table:
+                try:
+                    written = os.path.getmtime(path)
+                except OSError:
+                    continue
+                # A CLI killed without deregistering leaves its record behind, and macOS hands its
+                # pid on: a record older than the process under that pid is a stranger's. It still
+                # spares that process (sample's `protected`) but claims nothing for the dead chat.
+                row = table[pid]
+                own = row["age"] >= 0 and written >= time.time() - row["age"] - PID_SLACK_S
+                sessions[sid] = {"pid": pid, "status": str(record.get("status") or ""), "own": own}
+    return sessions
+
+
+def registered_roots(table):
+    roots = {}
+    for meta in sorted(glob.glob(os.path.join(RUNS_DIR, "*", "meta.json"))):
+        directory = os.path.dirname(meta)
+        if os.path.exists(os.path.join(directory, "exit_code")):
+            continue
+        record = read_json(meta, {})
+        for key in ("cli_pid", "pid"):
+            pid = record.get(key)
+            if isinstance(pid, int) and pid > 1 and pid in table:
+                roots.setdefault(pid, (os.path.basename(directory), directory))
+    for path in sorted(glob.glob(os.path.join(STATS_DIR, "benches", "*", "pid-*"))):
+        try:
+            with open(path) as handle:
+                pid = int(handle.readline().strip())
+        except (OSError, ValueError):
+            continue
+        if pid > 1 and pid in table:
+            directory = os.path.dirname(path)
+            roots.setdefault(pid, (f"{os.path.basename(directory)}/{os.path.basename(path)[4:]}", directory))
+    return roots
+
+
+def lineage(pid, table):
+    chain = []
+    for _ in range(64):
+        row = table.get(pid)
+        if not row or row["ppid"] <= 1 or row["ppid"] == pid:
+            break
+        pid = row["ppid"]
+        chain.append(pid)
+    return chain
+
+
+# macOS hides a platform binary's environment (/bin/*, /usr/bin/*) from KERN_PROCARGS2: a shell or
+# `sleep` claims no chat of its own and is attributed through its ancestry in attribute().
+def environments(table, now, cache):
+    uid, fresh = os.getuid(), {}
+    for pid, row in table.items():
+        if row["uid"] != uid or row["age"] < 0:
+            continue
+        start = now - row["age"]
+        hit = cache.get(str(pid))
+        if hit and abs(hit[0] - start) <= 2:
+            fresh[str(pid)] = hit
+            continue
+        parsed = procargs(pid)
+        found = parsed[1] if parsed else ["", ""]
+        fresh[str(pid)] = [start, found[0], found[1]]
+    return fresh
+
+
+def attribute(table, envs, sessions):
+    cli = {entry["pid"]: sid for sid, entry in sessions.items()}
+
+    def claimed(pid):
+        env = envs.get(str(pid))
+        return (env and (env[1] or env[2])) or ""
+
+    def launcher(pid):
+        for ancestor in lineage(pid, table):
+            sid = claimed(ancestor) or cli.get(ancestor, "")
+            if sid:
+                return sid
+        return ""
+
+    def outermost(sid):
+        seen = set()
+        while sid in sessions and sid not in seen:
+            seen.add(sid)
+            pid = sessions[sid]["pid"]
+            parent = claimed(pid) or launcher(pid)
+            if not parent or parent == sid:
+                break
+            sid = parent
+        return sid
+
+    tops = {}
+    for pid in table:
+        sid = claimed(pid) or launcher(pid) or cli.get(pid, "")
+        if sid:
+            tops[pid] = outermost(sid)
+    return tops
+
+
+def post_notices(sids, identity, body):
+    started = []
+    for sid in sids:
+        try:
+            proc = subprocess.Popen([REPORT_BUS, "post", "--kind", "notice", "--id", identity, "--session", sid],
+                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, text=True,
+                                    env={**os.environ, "REPORT_FRAME": REPORT_FRAME})
+        except OSError:
+            continue
+        try:
+            proc.stdin.write(body)
+            proc.stdin.close()
+        except OSError:
+            pass
+        started.append((sid, proc))
+    deadline = time.monotonic() + 3
+    posted = []
+    for sid, proc in started:
+        try:
+            if proc.wait(timeout=max(0, deadline - time.monotonic())) == 0:
+                posted.append(sid)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    return posted
+
+
+def guard(now, avail, table, envs, tops, sessions, protected, roots, titles):
+    if avail < 0 or avail >= GUARD_AVAIL_MB:
+        return None
+    jobs = {}
+    for pid, top in tops.items():
+        row = table[pid]
+        if pid in protected or row["zombie"]:
+            continue
+        jobs.setdefault((top, row["pgid"]), []).append(pid)
+    if not jobs:
+        return None
+    (top, pgid), members = max(jobs.items(), key=lambda item: (sum(table[p]["kb"] for p in item[1]), -item[0][1]))
+    job_mb = sum(table[p]["kb"] for p in members) // 1024
+    if job_mb <= GUARD_JOB_MB:
+        return None
+    heaviest = max(members, key=lambda p: table[p]["kb"])
+    parsed = procargs(heaviest)
+    command = " ".join(parsed[0]) if parsed and parsed[0] else table[heaviest]["comm"]
+    if len(command) > 160:
+        command = command[:159] + "…"
+    body = json.dumps({"word": "memory guard", "rows": [
+        ["stopped", f"{command} (pid {heaviest}) and the rest of its process group {pgid}: "
+                    f"{len(members)} processes, {job_mb / 1024:.1f} GB resident"],
+        ["why", f"the Mac was down to {avail} MB of available RAM and this was the largest job any chat "
+                "was running; left alone it would have frozen the machine into a forced reboot"],
+        ["this is", "not a crash and not a broken system: the machine is healthy and the task is still solvable"],
+        ["next", "rerun it with fewer parallel jobs or smaller batches; the guard acts again only if RAM runs out again"],
+    ]})
+    notify = [sid for sid in [top] + sorted({envs.get(str(p), [0, "", ""])[2] for p in members} - {top})
+              if sid in sessions]
+    posted = post_notices(notify, f"memguard-{now}-{pgid}", body)
+    killed = []
+    for pid in sorted(members):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed.append(pid)
+        except OSError:
+            pass
+    if not killed:
+        return None
+    by_root = {}
+    for pid in killed:
+        for ancestor in lineage(pid, table):
+            if ancestor in roots:
+                by_root.setdefault(ancestor, []).append(pid)
+                break
+    for root, pids in by_root.items():
+        agent, directory = roots[root]
+        try:
+            with open(os.path.join(directory, "memguard"), "a") as handle:
+                handle.write(f"MEMGUARD {now} avail_mb={avail} tree_rss_mb={job_mb} agent={agent} "
+                             f"root_pid={root} killed={','.join(map(str, pids))}\n")
+        except OSError:
+            pass
+    print(f"KILLED {now} chat={top} job_pgid={pgid} avail_mb={avail} job_rss_mb={job_mb} "
+          f"killed={','.join(map(str, killed))} notified={','.join(posted) or 'none'}", flush=True)
+    return {"at": now, "session": top, "mb": job_mb, "title": titles.get(top, {}).get("t", ""),
+            "told": bool(posted) or not notify}
+
+
+def name_chats(sids, now, cache):
+    stale = [sid for sid in sids if now - cache.get(sid, {}).get("at", 0) > 600]
+    if not stale:
+        return cache
+    found = {}
+    try:
+        sys.dont_write_bytecode = True
+        sys.path[:0] = SHARED
+        import chat_names
+        launchers, store = chat_names.worker_run_launchers(), chat_names.store_names()
+        for sid in stale:
+            name = chat_names.chat_name(sid, launchers=launchers, store=store)
+            found[sid] = (name, name or chat_names.chat_title(sid, launchers, store))
+    except Exception:
+        pass
+    for sid in stale:
+        name, title = found.get(sid, (None, None))
+        cache[sid] = {"t": title or cache.get(sid, {}).get("t", ""), "at": now if name else now - 540}
+    return cache
+
+
+def short(title):
+    if len(title) <= TITLE_WIDTH:
+        return title
+    tail = re.search(r" (PR|phase|ph) ?#?\d+$", title)
+    suffix = tail.group(0) if tail else ""
+    return title[:TITLE_WIDTH - len(suffix) - 1].rstrip() + "…" + suffix
+
+
+def spark(buckets, minute, top_cores):
+    cells = []
+    for m in range(minute - HISTORY_MINUTES, minute):
+        seconds = buckets.get(str(m))
+        if seconds is None:
+            cells.append(" ")
+            continue
+        cells.append(SPARK[min(len(SPARK) - 1, int(seconds / 60 / top_cores * len(SPARK)))])
+    return "".join(cells)
+
+
+def render(now, avail, swap, table, tops, sessions, state, prev):
+    ncpu = os.cpu_count() or 1
+    top_cores = sysctl_int("hw.perflevel0.physicalcpu") or ncpu
+    total_mb = (sysctl_int("hw.memsize") or 0) // 1048576
+    dt = now - prev.get("at", 0)
+    rated = 0 < dt <= 120
+    before = prev.get("procs", {})
+    procs, chat_cpu, chat_kb, machine, other = {}, {}, {}, 0.0, dict.fromkeys([k for k, _ in OTHER_KINDS], 0.0)
+    for pid, row in table.items():
+        if row["cpu"] < 0 or row["age"] < 0:
+            continue
+        start = now - row["age"]
+        procs[str(pid)] = [start, row["cpu"]]
+        seen = before.get(str(pid))
+        if seen and abs(seen[0] - start) <= 2:
+            used = max(0.0, row["cpu"] - seen[1])
+        elif rated and start >= now - dt - 1:
+            used = row["cpu"]
+        else:
+            used = 0.0
+        machine += used
+        top = tops.get(pid)
+        if top:
+            chat_cpu[top] = chat_cpu.get(top, 0.0) + used
+            if not row["zombie"]:
+                chat_kb[top] = chat_kb.get(top, 0) + row["kb"]
+        else:
+            for kind, names in OTHER_KINDS:
+                if row["comm"] in names:
+                    other[kind] += used
+    state["procs"], state["at"] = procs, now
+    minute = now // 60
+    history = state.setdefault("hist", {})
+    if rated:
+        for sid, used in chat_cpu.items():
+            buckets = history.setdefault(sid, {})
+            buckets[str(minute)] = buckets.get(str(minute), 0.0) + used
+    for sid in list(history):
+        history[sid] = {m: v for m, v in history[sid].items() if int(m) >= minute - HISTORY_MINUTES}
+        if not history[sid] and sid not in chat_kb:
+            del history[sid]
+    chats = sorted(set(chat_kb) | set(chat_cpu))
+    titles = name_chats(chats, now, state.setdefault("titles", {}))
+    state["titles"] = {sid: titles[sid] for sid in titles if sid in chats or now - titles[sid]["at"] < GUARD_SHOWN_S}
+    rate = (lambda seconds: seconds / dt) if rated else (lambda seconds: None)
+    chats_cores, machine_cores = rate(sum(chat_cpu.values())), rate(machine)
+    used_mb = total_mb - avail if avail >= 0 and total_mb else None
+    chats_mb = sum(chat_kb.values()) / 1024
+    if used_mb is not None:
+        chats_mb = min(chats_mb, used_mb)
+    other_mb = used_mb - chats_mb if used_mb is not None else None
+
+    def cores(value, width):
+        return f"{value:{width}.1f}" if value is not None else "–".rjust(width)
+
+    def gb(mb, width, digits=1):
+        return f"{mb / 1024:{width}.{digits}f}" if mb is not None else "–".rjust(width)
+
+    other_cores = machine_cores - chats_cores if rated else None
+    title = f"Chats/other  {cores(chats_cores, 0)}/{cores(other_cores, 0)} cores · {gb(chats_mb, 0, 0)}/{gb(other_mb, 0, 0)} GB"
+    rows = [
+        {"text": f"CPU  {cores(chats_cores, 4)} chats + {cores(other_cores, 4)} other = "
+                 f"{cores(machine_cores, 4)} of {ncpu} cores", "dim": True},
+        {"text": f"RAM  {gb(chats_mb, 4)} chats + {gb(other_mb, 4)} other = {gb(used_mb, 4)} of "
+                 f"{total_mb / 1024:.0f} GB · swap {max(swap, 0) / 1024:.1f}", "dim": True},
+    ]
+    event = state.get("guard")
+    alarm = bool(event) and now - event["at"] < GUARD_SHOWN_S
+    if alarm:
+        who = short(event.get("title") or titles.get(event["session"], {}).get("t") or "a chat")
+        rows.append({"text": f"⚠ {time.strftime('%H:%M', time.localtime(event['at']))} guard killed a job of "
+                             f"{who} · freed {event['mb'] / 1024:.1f} GB"
+                             + ("" if event.get("told", True) else " · chat not told"), "alarm": True})
+    rows.append("-")
+    listed = []
+    for sid in chats:
+        now_cores = rate(chat_cpu.get(sid, 0.0))
+        live = sessions.get(sid)
+        if not live:
+            if (now_cores or 0.0) < 0.05 and chat_kb.get(sid, 0) < 51200:
+                continue
+            word = "closed"
+        elif now_cores is not None and now_cores >= BUSY_CORES:
+            word = "needs CPU" if machine_cores >= SATURATED * ncpu else "full speed"
+        elif live["status"] == "busy":
+            word = "wait model"
+        else:
+            word = "idle"
+        listed.append(((now_cores or 0.0), chat_kb.get(sid, 0), {
+            "text": f"{word:<10}  {short(titles[sid]['t'] or 'unnamed chat'):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
+                    f"{gb(chat_kb.get(sid, 0) / 1024, 4)} GB  {spark(history.get(sid, {}), minute, top_cores)}",
+            "session": sid, "dim": word in ("idle", "wait model")}))
+    rows += [row for _, _, row in sorted(listed, key=lambda item: (-item[0], -item[1]))]
+    rows.append("-")
+    rows.append({"text": "Other incl.: " + " · ".join(
+        f"{kind} {cores(rate(other[kind]), 0)}" for kind, _ in OTHER_KINDS) + " cores", "dim": True})
+    return {"as_of": now, "title": title, "alarm": alarm, "rows": rows, "error": ""}
+
+
+def sample(now, avail, swap):
+    os.makedirs(LOG_DIR, exist_ok=True)
+    prev = read_json(STATE_PATH, {})
+    state = {"guard": prev.get("guard"), "titles": prev.get("titles", {}), "hist": prev.get("hist", {})}
+    table = process_table()
+    envs = environments(table, now, prev.get("env", {}))
+    state["env"] = envs
+    registered = live_sessions(table)
+    sessions = {sid: entry for sid, entry in registered.items() if entry["own"]}
+    roots = registered_roots(table)
+    protected = set()
+    for pid in list(roots) + [entry["pid"] for entry in registered.values()]:
+        protected.add(pid)
+        protected.update(lineage(pid, table))
+    tops = attribute(table, envs, sessions)
+    failure = ""
+    try:
+        event = guard(now, avail, table, envs, tops, sessions, protected, roots, state["titles"])
+        if event:
+            state["guard"] = event
+    except Exception as error:
+        failure = f"guard: {error!r}"
+    try:
+        snapshot = render(now, avail, swap, table, tops, sessions, state, prev)
+    except Exception as error:
+        snapshot = {"as_of": now, "title": "Chats: error", "alarm": False, "rows": []}
+        failure = failure or f"render: {error!r}"
+    snapshot["error"] = failure or snapshot.get("error", "")
+    write_json(STATE_PATH, state)
+    write_json(OUT_PATH, snapshot)
+    if failure:
+        print(f"CHAT-LOAD-ERROR {now} {failure}", flush=True)
+        return 1
+    return 0
+
+
+def show():
+    snapshot = read_json(OUT_PATH, None)
+    if not snapshot:
+        print(f"chat-load: no snapshot at {OUT_PATH}", file=sys.stderr)
+        return 1
+    print(snapshot.get("title", ""))
+    for row in snapshot.get("rows", []):
+        print(row if row == "-" else row.get("text", ""))
+    return 0
+
+
+def main(argv):
+    if argv[:1] == ["show"] and len(argv) == 1:
+        return show()
+    if argv[:1] == ["sample"] and len(argv) == 7 and argv[1::2] == ["--now", "--avail", "--swap"]:
+        try:
+            now, avail, swap = int(argv[2]), int(argv[4]), int(argv[6])
+        except ValueError:
+            now = None
+        if now is not None:
+            try:
+                return sample(now, avail, swap)
+            except Exception as error:
+                print(f"CHAT-LOAD-ERROR {now} sample: {error!r}", flush=True)
+                return 1
+    print("usage: chat-load sample --now EPOCH --avail MB --swap MB | chat-load show", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

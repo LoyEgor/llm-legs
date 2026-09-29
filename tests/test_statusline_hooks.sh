@@ -38,6 +38,7 @@ FIXTURES="$WORK/fixtures"
 TMPDIR="$WORK/runtime-tmp"
 CLAUDEB_FIX="$WORK/claudeb"
 export HOME TMPDIR
+unset HARNESS_DOCTOR_DIR
 mkdir -p "$HOME/.claude" "$FIXTURES" "$TMPDIR" "$CLAUDEB_FIX/limits"
 CODEX_FIX="$HOME/.codex-profiles"
 mkdir -p "$CODEX_FIX/work4" "$CODEX_FIX/.codexb/fast-mode"
@@ -1302,6 +1303,12 @@ assert test "${cg_out#*cached}" = "$cg_out"
 assert test "${cg_out#*272k/872k}" = "$cg_out"
 assert grep -Fq '36%' <<< "$cg_out"
 assert grep -Fq '22%' <<< "$cg_out"
+# `env bash` may resolve to macOS bash 3.2 (/bin before Homebrew); the render hands itself to bash 5.
+printf '#!/bin/sh\nexec /bin/bash "%s"\n' "$STATUSLINE" > "$WORK/statusline-bash32"
+chmod +x "$WORK/statusline-bash32"
+cg32_out=$(STATUSLINE="$WORK/statusline-bash32" CLAUDEGPT_ACCOUNT=work4 run_statusline "$cg_payload")
+assert grep -Fq '36%' <<< "$cg32_out"
+assert grep -Fq '22%' <<< "$cg32_out"
 assert test "${cg_out#*OpenAI/}" = "$cg_out"
 assert test "${cg_out#*fb }" = "$cg_out"
 assert_eq "$cg_before" "$(cat "$HOME/.claude/statusline-cache-rl" 2>/dev/null || :)"
@@ -3023,6 +3030,9 @@ cq_start=$(date +%s)
 CLAUDEGPT_ACCOUNT=work4 CODEX_REFRESH_CMD="$CQ_SLOW" run_statusline "$cq_payload" >/dev/null \
   || fail "claudegpt kick with slow refresher exited nonzero"
 assert test "$(( $(date +%s) - cq_start ))" -lt 2
+# Its late write must land here, not in a later case's args file.
+for _ in $(seq 1 200); do [ -s "$CQ_ARGS" ] && break; sleep 0.05; done
+assert_eq "--refresh-account codex/work4" "$(cat "$CQ_ARGS")"
 
 # F: the account label is an environment variable this process does not own — a name that is not
 # a launcher account name probes nothing and writes no stamp anywhere.
@@ -3079,6 +3089,224 @@ fg_out=$(fg_payload PreToolUse Edit "$ROOT/bin/statusline.sh" | "$FRESH_GATE")
 assert_eq "" "$fg_out"
 fg_out=$(printf '{broken' | "$FRESH_GATE") || fail "freshness gate broken json nonzero"
 assert_eq "" "$fg_out"
+
+# --- untracked line count: per-repository content cache (share/statusline-untracked.py) ---
+# The count must equal the uncached `ls-files -z | xargs -0 grep -cI ''` sum it replaced, a warm
+# cache must not read content, and any size/mtime/ctime/inode change must recount.
+UNTRACKED_REPO="$FIXTURES/untracked-repo"
+mkdir -p "$UNTRACKED_REPO"
+git -C "$UNTRACKED_REPO" init -qb main
+assert python3 - "$ROOT/share/statusline-untracked.py" "$UNTRACKED_REPO" "$WORK/untracked-cache" <<'PY'
+import importlib.util
+import marshal
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('untracked', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+top = Path(sys.argv[2])
+cache_dir = sys.argv[3]
+(top / 'text: with spaces').write_bytes(b'a\nb\n')
+(top / 'binary').write_bytes(b'a\0b')
+(top / 'empty').write_bytes(b'')
+(top / 'no-newline').write_bytes(b'x\ny')
+(top / 'sub').mkdir()
+(top / 'sub/deep.txt').write_bytes(b'1\n2\n3\n4\n')
+
+
+def listing():
+    return subprocess.run(['git', '-C', str(top), 'ls-files', '--others', '--exclude-standard', '-z'],
+                          stdout=subprocess.PIPE, check=True).stdout
+
+
+def uncached():
+    out = subprocess.run('git ls-files --others --exclude-standard -z | xargs -0 grep -cI "" '
+                         '| awk -F: \'{ s += $NF } END { print s + 0 }\'', shell=True, cwd=top,
+                         stdout=subprocess.PIPE, check=True).stdout
+    return int(out)
+
+
+def names():
+    return [n for n in listing().split(b'\0') if n]
+
+
+def count():
+    return module.cached_total(os.fsencode(top), names(), cache_dir)
+
+
+def cache_file():
+    files = [p for p in Path(cache_dir).iterdir() if p.suffix == '.cache']
+    assert len(files) == 1, files
+    return files[0]
+
+
+real_run = subprocess.run
+greps = []
+
+
+def counted(*args, **kwargs):
+    if args[0][0] == b'grep':
+        greps.append(args[0])
+    return real_run(*args, **kwargs)
+
+
+with patch.object(subprocess, 'run', counted):
+    assert count() == uncached() == 8
+    assert len(greps) == 1
+    assert count() == 8
+    assert len(greps) == 1, 'a warm cache must not read content'
+    text = top / 'text: with spaces'
+    st = text.stat()
+    text.write_bytes(b'abc\n')
+    os.utime(text, ns=(st.st_atime_ns, st.st_mtime_ns + 1))
+    assert count() == uncached() == 7
+    assert len(greps) == 2, 'a same-size edit with a 1ns mtime step must recount'
+    st = text.stat()
+    text.write_bytes(b'a\nb\nc\n')
+    os.utime(text, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert count() == uncached() == 9
+    assert len(greps) == 3, 'a size change under a restored mtime must recount'
+    st = text.stat()
+    replacement = top / '.replacement'
+    replacement.write_bytes(b'x\nx\nx\n')
+    os.utime(replacement, ns=(st.st_atime_ns, st.st_mtime_ns))
+    replacement.replace(text)
+    assert count() == uncached() == 9
+    assert len(greps) == 4, 'a same-size, same-mtime replacement (new inode) must recount'
+    (top / 'binary').write_bytes(b'x\ny')
+    assert count() == uncached() == 11
+    (top / 'sub/deep.txt').unlink()
+    assert count() == uncached() == 7
+    assert sorted(marshal.loads(cache_file().read_bytes())) == sorted(names()), \
+        'the cache holds the files listed now and nothing else'
+    cache_file().write_bytes(b'\xffbroken')
+    assert count() == uncached() == 7, 'a corrupt cache must recover'
+    # A write racing grep: counted this render, never filed under the file's new stamp.
+    (top / 'racy').write_bytes(b'1\n')
+    real_grep_counts = module.grep_counts
+
+    def racing(top_arg, batch):
+        result = real_grep_counts(top_arg, batch)
+        (top / 'racy').write_bytes(b'1\n2\n')
+        return result
+    with patch.object(module, 'grep_counts', racing):
+        assert count() == 8
+    assert b'racy' not in marshal.loads(cache_file().read_bytes())
+    assert count() == uncached() == 9
+    module.MAX_ENTRIES = 2
+    assert count() == uncached() == 9
+    assert len(marshal.loads(cache_file().read_bytes())) == 2, 'the cache is bounded'
+    assert count() == uncached() == 9
+    module.MAX_ENTRIES = 50000
+    # Another repository's stale file is swept on the next write; a live one stays.
+    stale = Path(cache_dir) / 'stale.cache'
+    live = Path(cache_dir) / 'live.cache'
+    stale.write_text('{}')
+    live.write_text('{}')
+    old = time.time() - module.STALE_SECS - 60
+    os.utime(stale, (old, old))
+    (top / 'fresh').write_bytes(b'1\n')
+    assert count() == uncached() == 10
+    assert not stale.exists() and live.exists()
+    live.unlink()
+PY
+# grep reads a leading `-` as an option: that listing keeps the uncached xargs pass and its count.
+printf 'opt\n' > "$UNTRACKED_REPO/-c"
+untracked_line=$(git -C "$UNTRACKED_REPO" ls-files --others --exclude-standard -z |
+  python3 "$ROOT/share/statusline-untracked.py" "$UNTRACKED_REPO" "$WORK/untracked-cache")
+untracked_want=$( (cd "$UNTRACKED_REPO" && git ls-files --others --exclude-standard -z | xargs -0 grep -cI '' 2>/dev/null) |
+  awk -F: '$NF ~ /^[0-9-]+$/ { s += $NF } END { print s + 0 }')
+untracked_files=$(git -C "$UNTRACKED_REPO" ls-files --others --exclude-standard | wc -l | tr -d ' ')
+assert_eq "$(printf '%s\t0\t\tU%s' "$untracked_want" "$untracked_files")" "$untracked_line"
+rm -f "$UNTRACKED_REPO/-c"
+
+# The render keeps `git status --porcelain` (v1) as the verdict cache key while it reads v2: the
+# rebuilt text must match v1 byte for byte (quoted spaces, renames, unmerged entries sorted in).
+V1_REPO="$FIXTURES/v1-key-repo"
+mkdir -p "$V1_REPO"
+v1git() { git -C "$V1_REPO" -c user.name=Fixture -c user.email=fixture@example.com "$@"; }
+v1git init -qb main
+printf 'a\n' > "$V1_REPO/plain"; printf 'b\n' > "$V1_REPO/with space"; printf 'c\n' > "$V1_REPO/quo\"te"
+printf 'f\n' > "$V1_REPO/torename"; printf 'g\n' > "$V1_REPO/conflict"; printf 'h\n' > "$V1_REPO/del"
+printf 'j\n' > "$V1_REPO/mod space"
+v1git add -A && v1git commit -qm init
+v1git checkout -qb side; printf 'side\n' > "$V1_REPO/conflict"; v1git commit -qam side
+v1git checkout -q main; printf 'main\n' > "$V1_REPO/conflict"; v1git commit -qam main
+v1git merge -q side >/dev/null 2>&1
+assert grep -q '^u ' <<< "$(git -C "$V1_REPO" status --porcelain=v2)"
+v1git mv torename 'renamed to'; v1git mv 'with space' $'new\ttab'
+printf 'x\n' >> "$V1_REPO/plain"; v1git add plain; printf 'y\n' >> "$V1_REPO/plain"
+printf 'k\n' >> "$V1_REPO/mod space"; printf 'z\n' >> "$V1_REPO/quo\"te"; rm "$V1_REPO/del"
+mkdir -p "$V1_REPO/dir sp" "$V1_REPO/newdir/sub"
+printf 'u\n' > "$V1_REPO/dir sp/x"; printf 'u\n' > "$V1_REPO/untr space"; printf 'u\n' > "$V1_REPO/newdir/sub/f"
+v1_extract=$(sed -n '/^  status_unmerged=0$/,/git_status_rc=\$?; }$/p' "$STATUSLINE")
+assert test -n "$v1_extract"
+v1_case() {
+  local git_status="" has_untracked=0 git_status_rc=0 active_top="$V1_REPO" branch="" branch_oid=""
+  local branch_upstream="" ahead="" behind="" status_v2
+  status_v2=$(git -C "$V1_REPO" status --porcelain=v2 --branch --untracked-files=normal --ahead-behind)
+  eval "$v1_extract"
+  assert_eq "$(git -C "$V1_REPO" status --porcelain)" "$git_status"
+  assert_eq 1 "$has_untracked"
+}
+v1_case
+# Without an unmerged entry the key is rebuilt from v2 alone.
+v1git rm -q --cached conflict >/dev/null; v1git add conflict
+assert test -z "$(git -C "$V1_REPO" status --porcelain=v2 | grep '^u ')"
+v1_case
+
+# Render timing for the Harness doctor: one `start_us<TAB>end_us<TAB>session` line per render under
+# $HARNESS_DOCTOR_DIR (default ~/.cache/harness-doctor)/statusline/<local date>.tsv, never on stdout.
+TIMING_DIR="$WORK/harness-doctor"
+timing_file="$TIMING_DIR/statusline/$(date +%Y-%m-%d).tsv"
+timing_plain=$(run_statusline "$(statusline_payload timing-sess)"); timing_plain_rc=$?
+timing_out=$(HARNESS_DOCTOR_DIR="$TIMING_DIR" run_statusline "$(statusline_payload timing-sess)" 2>"$WORK/timing.err")
+timing_rc=$?
+assert_eq "$timing_plain" "$timing_out"
+assert_eq "$timing_plain_rc" "$timing_rc"
+assert_eq "" "$(cat "$WORK/timing.err")"
+assert_eq 1 "$(wc -l < "$timing_file" | tr -d ' ')"
+IFS=$'\t' read -r timing_start timing_end timing_sid < "$timing_file"
+assert_eq timing-sess "$timing_sid"
+assert grep -Eq '^[0-9]{16}$' <<< "$timing_start"
+assert test "$timing_end" -ge "$timing_start"
+HARNESS_DOCTOR_DIR="$TIMING_DIR" run_statusline "$(statusline_payload timing-sess)" >/dev/null
+assert_eq 2 "$(wc -l < "$timing_file" | tr -d ' ')"
+# An unwritable journal changes nothing a render prints or returns.
+printf 'x' > "$WORK/timing-blocker"
+timing_blocked=$(HARNESS_DOCTOR_DIR="$WORK/timing-blocker" run_statusline "$(statusline_payload timing-sess)" 2>"$WORK/timing.err")
+assert_eq "$timing_plain_rc" "$?"
+assert_eq "$timing_plain" "$timing_blocked"
+assert_eq "" "$(cat "$WORK/timing.err")"
+# The default location is under HOME, which this suite points at its own tree.
+assert test -s "$HOME/.cache/harness-doctor/statusline/$(date +%Y-%m-%d).tsv"
+
+# file_mtime/file_inode/file_size through bash's stat loadable must answer what the stat(1)
+# fallback does, lstat included; a BASH with no lib/bash beside it takes the fallback.
+STAT_DIR="$WORK/stat-helpers"
+mkdir -p "$STAT_DIR/dir"
+printf 'twelve bytes' > "$STAT_DIR/file"
+ln -s file "$STAT_DIR/link"
+ln -s missing "$STAT_DIR/dangling"
+stat_helpers=$(sed -n '/^if enable -f .*lib\/bash\/stat/,/^fi$/p' "$STATUSLINE")
+assert grep -q 'file_size()' <<< "$stat_helpers"
+stat_probe='eval "$1"; [ -e "${BASH%/bin/*}/lib/bash/stat" ] && printf "has " || printf "none "
+  printf "%s " "$(type -t stat)"
+  for f in file dir link dangling missing; do
+    printf "%s:%s:%s:%s;" "$f" "$(file_mtime "$2/$f")" "$(file_inode "$2/$f")" "$(file_size "$2/$f")"
+  done'
+stat_loaded=$(bash -c "$stat_probe" _ "$stat_helpers" "$STAT_DIR")
+stat_forked=$(bash -c "BASH=/nonexistent/bin/bash; $stat_probe" _ "$stat_helpers" "$STAT_DIR")
+assert grep -Eq '^(has builtin|none file) ' <<< "$stat_loaded"
+assert_eq "none file ${stat_loaded#* * }" "$stat_forked"
+assert grep -q ';link:[0-9][0-9]*:[0-9][0-9]*:4;' <<< "$stat_forked"
+assert grep -q ';dangling:[0-9][0-9]*:[0-9][0-9]*:7;missing:::;' <<< "$stat_forked"
 
 # --- branch segment: uncommitted diff +A/-D with dim +N~M-Kf file counts ---
 REPO_D="$FIXTURES/diff-repo"
@@ -3384,6 +3612,9 @@ LSEOFT
 chmod +x "$FAKE_LSOF_TOOLS"
 STATUSLINE_PS="$FAKE_PS_TOOLS" STATUSLINE_LSOF="$FAKE_LSOF_TOOLS" "$PORTS_PROBE" pp-tools 1000
 assert_eq "$(ports_records 4321 4326)" "$(cat "$STATE_DIR/ports-pp-tools")"
+rm -f "$STATE_DIR/ports-pp-tools"
+STATUSLINE_PS="$FAKE_PS_TOOLS" STATUSLINE_LSOF="$FAKE_LSOF_TOOLS" /bin/bash "$PORTS_PROBE" pp-tools 1000
+assert_eq "$(ports_records 4321 4326)" "$(cat "$STATE_DIR/ports-pp-tools" 2>/dev/null)"
 
 
 # Each port is attributed to the WORKING TREE its process directory sits in, and the worktrees live
@@ -3582,11 +3813,37 @@ wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_D
 assert test "$wp_start" -ge "$((wp_now - 301))" -a "$wp_start" -le "$((wp_now - 297))"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp_now - 87))"
+wp_cols=$(cut -f1,2,4- "$STATE_DIR/work-wp-sess")
+rm -f "$STATE_DIR/work-wp-sess"
+STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" /bin/bash "$WORK_PROBE" wp-sess 1250
+assert_eq "$wp_cols" "$(cut -f1,2,4- "$STATE_DIR/work-wp-sess" 2>/dev/null)"
 # No chat above the start pid, or no process list: nothing is claimed.
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WORK/none" "$WORK_PROBE" wp-noroot 3000
 assert_eq "" "$(cat "$STATE_DIR/work-wp-noroot")"
 STATUSLINE_PS=true "$WORK_PROBE" wp-sess 1250
 assert_eq "" "$(cat "$STATE_DIR/work-wp-sess")"
+
+IDLE_PS="$FIXTURES/idle-ps"
+printf '#!/usr/bin/env bash\nprintf "1000 1 00:10 claude\\n1250 1000 00:01 bash statusline.sh\\n"\n' > "$IDLE_PS"
+chmod +x "$IDLE_PS"
+IDLE_BIN="$FIXTURES/idle-bin"
+IDLE_CALLS="$WORK/idle-calls"
+mkdir -p "$IDLE_BIN"
+for idle_tool in git jq lsof; do
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s" >> "%s"\nexit 99\n' "$idle_tool" "$IDLE_CALLS" > "$IDLE_BIN/$idle_tool"
+  chmod +x "$IDLE_BIN/$idle_tool"
+done
+PATH="$IDLE_BIN:$PATH" STATUSLINE_PS="$IDLE_PS" STATUSLINE_LSOF="$IDLE_BIN/lsof" \
+  WORKER_RUN_DIR="$WORK/none" "$WORK_PROBE" wp-idle 1250
+assert_eq "" "$(cat "$STATE_DIR/work-wp-idle")"
+assert test ! -e "$IDLE_CALLS"
+PATH="$IDLE_BIN:$PATH" STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$IDLE_BIN/lsof" \
+  "$PORTS_PROBE" pp-idle-no-root 1 "$TOP_A"
+assert test ! -e "$IDLE_CALLS"
+PATH="$IDLE_BIN:$PATH" STATUSLINE_PS="$FAKE_PS" STATUSLINE_LSOF="$FAKE_LSOF_EMPTY" \
+  "$PORTS_PROBE" pp-idle-empty 1001 "$TOP_A"
+assert_eq "" "$(cat "$STATE_DIR/ports-pp-idle-empty")"
+assert test ! -e "$IDLE_CALLS"
 
 # --- work lines ---
 # The render reads the probe's cache only: each `main` record is one magenta line under line 2, tag

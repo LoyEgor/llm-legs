@@ -89,23 +89,21 @@ case "$*" in
       printf '%8s %s\n' 900000 /Applications/Cursor.app/Contents/MacOS/Cursor
     fi
     ;;
-  *pid=,ppid=,rss=*)
-    # The memory-guard cases register REAL process trees and check that real descendants really
-    # died, so ancestry and pids come from the real ps: a fixture table cannot be killed. Only the
-    # WEIGHT is dictated, for the pids a case names — allocating 1.5 GB for real in a suite is not a
-    # test of the guard, it is the bug the guard is for.
-    /bin/ps -axo pid=,ppid=,rss=,state= | awk -v fat="${HEAVY_PIDS:-}" '
+  *pid=,ppid=,pgid=,uid=,rss=,time=,etime=,state=,comm=*)
+    # chat-load's table: the real ps cut down to the process groups a guard case spawned, so the
+    # kills and the survivors are real and nothing outside the case is ever listed. Only the WEIGHT
+    # is dictated, for the pids a case names — allocating 1.5 GB for real in a suite is not a test
+    # of the guard, it is the bug the guard is for.
+    [ -n "${GUARD_SCOPE:-}" ] || exit 0
+    /bin/ps -axo "$2" | awk -v scope="$GUARD_SCOPE" -v fat="${HEAVY_PIDS:-}" '
       BEGIN {
+        n = split(scope, groups, " ")
+        for (i = 1; i <= n; i++) keep[groups[i] + 0] = 1
         n = split(fat, list, " ")
         # `pid` weighs the default; `pid=KB` weighs exactly that, for a case needing two weights.
         for (i = 1; i <= n; i++) heavy[list[i] + 0] = (split(list[i], part, "=") == 2) ? part[2] + 0 : 900000
       }
-      { if (($1 + 0) in heavy) $3 = heavy[$1 + 0]; print $1, $2, $3, $4 }'
-    ;;
-  *pid=,etime=*)
-    # The identity check reads real elapsed times: a fixture etime would make every registered pid
-    # verifiable by construction, which is the very thing being tested.
-    /bin/ps -axo pid=,etime=
+      (($3 + 0) in keep) { if (($1 + 0) in heavy) $5 = heavy[$1 + 0]; print }'
     ;;
   *pid,ppid,pgid,rss,etime,command*)
     printf '  PID  PPID  PGID    RSS  ELAPSED COMMAND\n'
@@ -200,17 +198,22 @@ frames_from() {
 }
 
 # The real ~/Library/Logs is never a test target: every case runs against its own MEMLOGD_DIR.
-# The two registry roots are pinned to empty fixtures for EVERY case, not only the guard's own: the
-# memory guard reads them on any tick under its availability floor, and left at their defaults a
-# low-availability fixture would aim real SIGKILLs at whatever workers Egor has running. A case that
-# wants a registry passes its own WORKER_RUN_DIR/WORKER_STATS_DIR, which land after these and win.
+# Every seam chat-load reads is pinned to a fixture for EVERY case, not only the guard's own: it
+# runs on every tick, and left at their defaults the registries, the live-session directories, the
+# chat namer and the report bus would be Egor's real ones. A guard case passes its own, which land
+# after these and win.
 EMPTY_REGISTRY="$WORK/empty-registry"
-mkdir -p "$EMPTY_REGISTRY/runs" "$EMPTY_REGISTRY/stats"
+mkdir -p "$EMPTY_REGISTRY/runs" "$EMPTY_REGISTRY/stats" "$EMPTY_REGISTRY/sessions"
+BUS_LOG="$WORK/bus.log"
+: >"$BUS_LOG"
+export BUS_LOG
 run_memlogd() {
   local dir="$1"; shift
   run_day=$(date +%F)
   env MEMLOGD_DIR="$dir" MEMLOGD_SYNC=0 MEMLOGD_QUIET_INTERVAL=0 MEMLOGD_INCIDENT_INTERVAL=0 \
     WORKER_RUN_DIR="$EMPTY_REGISTRY/runs" WORKER_STATS_DIR="$EMPTY_REGISTRY/stats" \
+    CHAT_LOAD_SESSIONS="$EMPTY_REGISTRY/sessions" CHAT_NAME_ROOTS="$WORK/transcripts" \
+    CHAT_NAMES_CACHE="$WORK/chat-names.json" CHAT_LOAD_REPORT_BUS="$FAKE_BIN/report-bus" GUARD_SCOPE='' \
     "$@" bash "$SCRIPT" run
 }
 
@@ -268,6 +271,27 @@ assert grep -q 'PID  PPID  PGID    RSS  ELAPSED COMMAND' "$incident_frames"
 assert grep -q '  801   799   801 512000    01:12 node /tmp/worker.js' "$incident_frames"
 assert_fails grep -q 'UNEXPECTED-PS' "$incident_frames"
 assert_fails grep -q 'RECOVERED' "$incident_log"
+
+# --- durable writes fsync the files written, never the whole machine -----------------------------
+SYNC_BIN="$WORK/sync-bin"
+SYNC_LOG="$WORK/sync.log"
+mkdir -p "$SYNC_BIN"
+: >"$SYNC_LOG"
+printf '#!/usr/bin/env bash\nprintf "sync %%s\\n" "$*" >>"%s"\n' "$SYNC_LOG" >"$SYNC_BIN/sync"
+printf '#!/usr/bin/env bash\nprintf "dd %%s\\n" "$*" >>"%s"\nexec /bin/dd "$@"\n' "$SYNC_LOG" >"$SYNC_BIN/dd"
+chmod +x "$SYNC_BIN/sync" "$SYNC_BIN/dd"
+DURABLE_DIR="$WORK/durable"
+probes '8192 2000 2000' 1024
+assert run_memlogd "$DURABLE_DIR" MEMLOGD_MAX_TICKS=3 MEMLOGD_SYNC=1 PATH="$SYNC_BIN:$PATH"
+durable_log=$(log_file "$DURABLE_DIR")
+durable_frames=$(frames_from "$durable_log")
+assert_fails grep -q '^sync' "$SYNC_LOG"
+assert grep -qxF "dd of=$durable_log conv=notrunc,fsync if=/dev/null" "$SYNC_LOG"
+assert grep -qxF "dd of=$durable_frames conv=notrunc,fsync if=/dev/null" "$SYNC_LOG"
+assert test "$(grep -c '^dd ' "$SYNC_LOG")" -eq 5
+assert test "$(grep -c '^PS-BEGIN ' "$durable_frames")" -eq 2
+assert grep -qE '^INCIDENT [0-9]{10} avail_mb=2000 ' "$durable_log"
+assert test "$(grep -c ' incident avail_mb=2000 ' "$durable_log")" -eq 2
 
 # --- swap decides nothing: a machine drowning in swap with healthy RAM stays quiet ----------------
 # macOS keeps swap allocated for hours after the pressure that caused it is gone, so a swap term in
@@ -550,75 +574,110 @@ assert run_memlogd "$LOCK_DIR" MEMLOGD_MAX_TICKS=1
 assert grep -q ' quiet avail_mb=8192 ' "$(log_file "$LOCK_DIR")"
 assert_fails test -e "$LOCK_DIR/memlogd.lock"
 
-# --- the memory guard --------------------------------------------------------------------------
-# Every case here registers a REAL process tree and asserts against real signals: a fixture process
-# table cannot be killed, and the whole point of the rule is which processes are still alive after.
+# --- the memory guard (bin/chat-load, run by the daemon every tick) ----------------------------
+# Every case spawns REAL process groups and asserts against real signals: a fixture process table
+# cannot be killed, and the whole point of the rule is which processes are still alive after. The
+# fake ps shows chat-load only the groups a case put in GUARD_SCOPE, so nothing else on this Mac is
+# ever in reach of a kill.
 GUARD_ROOT="$WORK/guard"
-mkdir -p "$GUARD_ROOT/runs" "$GUARD_ROOT/stats/benches"
+SESSIONS_DIR="$GUARD_ROOT/sessions"
+GUARD_SCOPE=''
 
-# A root that outlives its children, holding two descendants that sleep until something kills them.
-# The root is a bash that waits, so it is the tree's root by ancestry and never exits on its own.
+# Records every post with how many of the job's processes were still alive at that instant: the
+# notice must be on the bus BEFORE the kill, or the killed tool call's own hook flush misses it.
+cat >"$FAKE_BIN/report-bus" <<'EOF'
+#!/usr/bin/env bash
+set -u
+body=$(cat)
+[ -z "${BUS_FAIL:-}" ] || exit 126
+alive=0
+for pid in ${BUS_WATCH:-}; do
+  state=$(/bin/ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+  case "$state" in ''|Z*) ;; *) alive=$((alive + 1)) ;; esac
+done
+frame=missing
+[ ! -r "${REPORT_FRAME:-}" ] || frame=readable
+if [ -n "${BUS_PEERS:-}" ]; then
+  : >"$BUS_PEERS/$$"
+  waited=0
+  while [ "$(ls "$BUS_PEERS" | wc -l)" -lt "$BUS_PEERS_WANT" ] && [ "$waited" -lt 20 ]; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  printf '%s peers=%s\n' "$*" "$(ls "$BUS_PEERS" | wc -l | tr -d ' ')" >>"$BUS_PEERS.log"
+fi
+printf '%s alive=%s frame=%s body=%s\n' "$*" "$alive" "$frame" "$body" >>"$BUS_LOG"
+EOF
+chmod +x "$FAKE_BIN/report-bus"
+
+# The suite may itself run inside a chat, so its own session variables are scrubbed: a fixture is
+# attributed only by what the case hands it, standing in for what a chat's Bash tool exports.
+# Fixtures are python, never bash or sleep: macOS hides a platform binary's environment from
+# KERN_PROCARGS2, so a bash fixture would be attributed by ancestry alone and the env path untested.
+FIXTURE_PY=$(command -v python3)
+session_env() { # session launcher
+  GROUP_ENV=(env -u CLAUDE_CODE_SESSION_ID -u CLAUDE_LAUNCHER_SESSION)
+  [ -z "$1" ] || GROUP_ENV+=("CLAUDE_CODE_SESSION_ID=$1")
+  [ -z "$2" ] || GROUP_ENV+=("CLAUDE_LAUNCHER_SESSION=$2")
+}
+
+# One process group, as every Bash call a chat makes is: a root that leads the group and outlives
+# its children (it never reaps them), under it an optional middle level, then two sleepers.
+cat >"$WORK/tree.py" <<'PY'
+import os, subprocess, sys, time
+report, levels = sys.argv[1], int(sys.argv[2])
+chain = sys.argv[3:]
+if not chain:
+    os.setpgrp()
+chain.append(str(os.getpid()))
+if len(chain) < levels:
+    subprocess.Popen([sys.executable, __file__, report, str(levels)] + chain)
+else:
+    sleepers = [subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"]) for _ in range(2)]
+    with open(report + ".tmp", "w") as handle:
+        handle.write(" ".join(chain + [str(p.pid) for p in sleepers]) + "\n")
+    os.rename(report + ".tmp", report)
+time.sleep(300)
+PY
 TREE_PIDS=()
-spawn_tree() { # -> sets TREE_ROOT / TREE_KIDS
-  local report="$WORK/tree-$RANDOM.pids" hold="$WORK/hold-$RANDOM.fifo"
-  rm -f "$report" "$hold"
-  mkfifo "$hold"
-  bash -c '
-    sleep 300 & first=$!
-    sleep 300 & second=$!
-    printf "%s %s %s\n" "$$" "$first" "$second" >"$1"
-    # Held open read-write, never `wait`: a root that waits on its children exits the instant the
-    # guard kills them, and no assertion could tell that from a guard that killed the root too.
-    exec 3<>"$2"
-    read -r -t 300 -u 3 _ || :
-  ' _ "$report" "$hold" 2>/dev/null &
-  TREE_ROOT=$!
-  local waited=0
+spawn_group() { # levels session launcher -> sets GROUP_PIDS
+  local report="$WORK/group-$RANDOM.pids" waited=0
+  rm -f "$report"
+  session_env "$2" "$3"
+  "${GROUP_ENV[@]}" "$FIXTURE_PY" "$WORK/tree.py" "$report" "$1" >/dev/null 2>&1 &
+  disown
   while [ ! -s "$report" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
-  read -r _ first second <"$report"
-  TREE_KIDS="$first $second"
-  TREE_PIDS+=("$TREE_ROOT" "$first" "$second")
-  rm -f "$report" "$hold"
+  read -r -a GROUP_PIDS <"$report"
+  TREE_PIDS+=("${GROUP_PIDS[@]}")
+  GUARD_SCOPE="${GUARD_SCOPE:+$GUARD_SCOPE }${GROUP_PIDS[0]}"
+  rm -f "$report"
+}
+spawn_tree() { # [session] [launcher] -> sets TREE_ROOT / TREE_KIDS
+  spawn_group 1 "${1:-}" "${2:-}"
+  TREE_ROOT=${GROUP_PIDS[0]} TREE_KIDS="${GROUP_PIDS[1]} ${GROUP_PIDS[2]}"
+}
+# The real shape of a worker run: a supervisor holding a vendor CLI which holds the work.
+spawn_deep_tree() { # [session] [launcher] -> sets DEEP_SUP / DEEP_CLI / DEEP_KIDS
+  spawn_group 2 "${1:-}" "${2:-}"
+  DEEP_SUP=${GROUP_PIDS[0]} DEEP_CLI=${GROUP_PIDS[1]} DEEP_KIDS="${GROUP_PIDS[2]} ${GROUP_PIDS[3]}"
+}
+# A lone process in its own group: the stand-in for a chat's CLI.
+spawn_leaf() { # [session] -> sets LEAF_ROOT
+  session_env "${1:-}" ''
+  "${GROUP_ENV[@]}" "$FIXTURE_PY" -c 'import os, time; os.setpgrp(); time.sleep(300)' >/dev/null 2>&1 &
+  LEAF_ROOT=$!
+  disown
+  TREE_PIDS+=("$LEAF_ROOT")
+  GUARD_SCOPE="${GUARD_SCOPE:+$GUARD_SCOPE }$LEAF_ROOT"
+  local waited=0
+  while [ "$(/bin/ps -o pgid= -p "$LEAF_ROOT" 2>/dev/null | tr -d ' ')" != "$LEAF_ROOT" ] && [ "$waited" -lt 200 ]; do
+    sleep 0.05; waited=$((waited + 1))
+  done
 }
 reap_trees() { local pid; for pid in ${TREE_PIDS[@]+"${TREE_PIDS[@]}"}; do kill -KILL "$pid" 2>/dev/null || :; done; }
-
-# A root with no descendants at all, for the candidate rule: only descendants are ever killed.
-spawn_leaf() { # -> sets LEAF_ROOT
-  sleep 300 &
-  LEAF_ROOT=$!
-  TREE_PIDS+=("$LEAF_ROOT")
-}
-
-# The real shape of a worker run: a supervisor holding a vendor CLI which holds the work. Three
-# levels, because the whole cli_pid question is which of the top two the kill is rooted at.
-cat >"$WORK/deep-tree.sh" <<'DEEP'
-report=$1 hold=$2 supervisor=${3:-}
-if [ -z "$supervisor" ]; then
-  bash "$0" "$report" "$hold" "$$" &
-else
-  sleep 300 & first=$!
-  sleep 300 & second=$!
-  printf '%s %s %s %s\n' "$supervisor" "$$" "$first" "$second" >"$report"
-fi
-exec 3<>"$hold"
-read -r -t 300 -u 3 _ || :
-DEEP
-spawn_deep_tree() { # -> sets DEEP_SUP / DEEP_CLI / DEEP_KIDS
-  local report="$WORK/deep-$RANDOM.pids" hold="$WORK/deep-$RANDOM.fifo" waited=0 first second
-  rm -f "$report" "$hold"
-  mkfifo "$hold"
-  bash "$WORK/deep-tree.sh" "$report" "$hold" 2>/dev/null &
-  while [ ! -s "$report" ] && [ "$waited" -lt 200 ]; do sleep 0.05; waited=$((waited + 1)); done
-  read -r DEEP_SUP DEEP_CLI first second <"$report"
-  DEEP_KIDS="$first $second"
-  TREE_PIDS+=("$DEEP_SUP" "$DEEP_CLI" "$first" "$second")
-  rm -f "$report" "$hold"
-}
 trap 'reap_trees; rm -rf "$WORK"' EXIT
 
-# A zombie is dead, and `kill -0` succeeds on one: these fixture roots deliberately do not reap
-# (they must outlive their children), so liveness asked with a signal would call every SIGKILLed
-# descendant alive forever. The real ps, since the fake one answers only the forms the daemon asks.
+# A zombie is dead, and `kill -0` succeeds on one: these fixture roots deliberately do not reap, so
+# liveness is asked of the real ps.
 alive() {
   local state
   state=$(/bin/ps -o state= -p "$1" 2>/dev/null | tr -d '[:space:]')
@@ -626,265 +685,337 @@ alive() {
   case "$state" in Z*) return 1 ;; esac
   return 0
 }
-# The kill lands before the process leaves the table, so this is asked a few times.
 gone() {
   local waited=0
   while alive "$1" && [ "$waited" -lt 100 ]; do sleep 0.05; waited=$((waited + 1)); done
   ! alive "$1"
 }
 
-# Written through jq exactly as worker-run writes it (`"pid": N`, a space after the colon), so the
-# guard's reader is tested against the real shape and never a hand-typed one.
-# The stamps are real launch instants, because the guard now checks them against the process's own
-# start: a fixture stamp frozen in the past would register a tree the daemon is right to refuse.
-register_run() { # run-id supervisor-pid [cli-pid] [started-at]
-  local began=${4:-$(date +%s)}
+# A live chat, in the shape Claude Code writes `<config>/sessions/<pid>.json`, and its transcript
+# carrying the title the real resolver (share/chat_names.py) names it by.
+register_session() { # session pid [status]
+  jq -n --arg sid "$1" --argjson pid "$2" --arg status "${3:-busy}" \
+    '{pid: $pid, sessionId: $sid, cwd: "/tmp", startedAt: 0, status: $status}' >"$SESSIONS_DIR/$2.json"
+  retitle "$1" "Chat $1"
+}
+retitle() { # session title ('' = untitled)
+  mkdir -p "$WORK/transcripts/demo"
+  { jq -nc '{type: "user", cwd: "/work/demo"}'
+    [ -z "$2" ] || jq -nc --arg title "$2" '{type: "custom-title", customTitle: $title}'
+  } >"$WORK/transcripts/demo/$1.jsonl"
+}
+# Written through jq exactly as worker-run writes it (`"pid": N`, a space after the colon).
+register_run() { # run-id supervisor-pid [cli-pid]
   mkdir -p "$GUARD_ROOT/runs/$1"
-  jq -n --argjson pid "$2" --arg cli "${3:-}" --argjson began "$began" \
+  jq -n --argjson pid "$2" --arg cli "${3:-}" --argjson began "$(date +%s)" \
     '{vendor: "claudeb", account: "main", pid: $pid, pid_started_at: $began, workdir: "/tmp"}
      + if $cli == "" then {} else {cli_pid: ($cli | tonumber), cli_pid_started_at: $began} end' \
     >"$GUARD_ROOT/runs/$1/meta.json"
 }
-
 register_cell() { # bench-run-id cell-artifact root-pid
   mkdir -p "$GUARD_ROOT/stats/benches/$1"
   printf '%s\n' "$3" >"$GUARD_ROOT/stats/benches/$1/pid-$2"
 }
 
-clear_registry() { rm -rf "$GUARD_ROOT/runs" "$GUARD_ROOT/stats"; mkdir -p "$GUARD_ROOT/runs" "$GUARD_ROOT/stats"; }
+clear_registry() {
+  rm -rf "$GUARD_ROOT/runs" "$GUARD_ROOT/stats" "$SESSIONS_DIR"
+  mkdir -p "$GUARD_ROOT/runs" "$GUARD_ROOT/stats" "$SESSIONS_DIR"
+  : >"$BUS_LOG"
+  rm -rf "$WORK/transcripts"
+  GUARD_SCOPE=''
+}
 
 guard_run() { # log-dir extra-env...
   local dir="$1"; shift
-  run_memlogd "$dir" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" "$@"
+  run_memlogd "$dir" WORKER_RUN_DIR="$GUARD_ROOT/runs" WORKER_STATS_DIR="$GUARD_ROOT/stats" \
+    CHAT_LOAD_SESSIONS="$SESSIONS_DIR" GUARD_SCOPE="$GUARD_SCOPE" "$@"
 }
+chats_json() { printf '%s/chats.json\n' "$1"; }
 
-# Healthy RAM and a registered tree: the availability half is unmet, so nothing is touched however
-# the tree measures. Availability alone can never convict.
+# Healthy RAM: the availability half is unmet, so a fat chat job is left alone. Availability
+# alone can never convict.
 clear_registry
-spawn_tree
+spawn_tree chat-roomy
 ROOMY_ROOT=$TREE_ROOT ROOMY_KIDS=$TREE_KIDS
-register_run claudeb-1-2-roomy "$ROOMY_ROOT"
 ROOMY_DIR="$WORK/guard-roomy"
 probes 8192 1024
-assert guard_run "$ROOMY_DIR" MEMLOGD_MAX_TICKS=1
+assert guard_run "$ROOMY_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$ROOMY_KIDS"
 assert_fails grep -q '^KILLED ' "$(log_file "$ROOMY_DIR")"
-assert_fails test -e "$GUARD_ROOT/runs/claudeb-1-2-roomy/memguard"
-for pid in $ROOMY_KIDS; do assert alive "$pid"; done
-assert alive "$ROOMY_ROOT"
+for pid in $ROOMY_ROOT $ROOMY_KIDS; do assert alive "$pid"; done
+assert test ! -s "$BUS_LOG"
 
-# Low RAM but no tree over the ceiling: three sleeping shells weigh a few MB between them, so the
-# fattest-tree half is unmet and the guard stays its hand. The tree half alone cannot convict either.
+# Low RAM but no job over the ceiling: three sleeping shells weigh a few MB, so the fattest-job half
+# is unmet. The job half alone cannot convict either.
 clear_registry
-spawn_tree
+spawn_tree chat-thin
 THIN_ROOT=$TREE_ROOT THIN_KIDS=$TREE_KIDS
-register_run claudeb-1-2-thin "$THIN_ROOT"
 THIN_DIR="$WORK/guard-thin"
 probes 2000 1024
 assert guard_run "$THIN_DIR" MEMLOGD_MAX_TICKS=1
 assert_fails grep -q '^KILLED ' "$(log_file "$THIN_DIR")"
-assert_fails test -e "$GUARD_ROOT/runs/claudeb-1-2-thin/memguard"
-for pid in $THIN_KIDS; do assert alive "$pid"; done
-assert alive "$THIN_ROOT"
+for pid in $THIN_ROOT $THIN_KIDS; do assert alive "$pid"; done
 
-# Both halves met: HEAVY_PIDS makes this very tree's real descendants weigh ~879 MB apiece, so the
-# ancestry, the kills and the survivors are all real and only the weight is dictated.
+# Both halves met by a chat's own Bash job — the 2026-09-28 freeze, which no registry knew about.
+# The whole group goes, its shell included; the chat's CLI, in a group of its own, stays; and the
+# chat hears why BEFORE its job dies.
 clear_registry
-spawn_tree
+spawn_leaf
+FAT_CLI=$LEAF_ROOT
+register_session chat-fat "$FAT_CLI"
+spawn_tree chat-fat
 FAT_ROOT=$TREE_ROOT FAT_KIDS=$TREE_KIDS
-register_run claudeb-1-2-fat "$FAT_ROOT"
 FAT_DIR="$WORK/guard-fat"
 probes 2000 1024
-assert guard_run "$FAT_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$FAT_KIDS"
+assert guard_run "$FAT_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$FAT_KIDS" BUS_WATCH="$FAT_ROOT $FAT_KIDS"
 fat_log=$(log_file "$FAT_DIR")
-# The KILLED line names the agent, both readings and the root it did NOT kill.
-assert grep -qE '^KILLED [0-9]{10} agent=claudeb-1-2-fat avail_mb=2000 tree_rss_mb=[0-9]+ root_pid='"$FAT_ROOT"' killed=[0-9]+(,[0-9]+)?$' "$fat_log"
-# Descendants die; the root of the tree is spared, which is what leaves the run able to report.
-for pid in $FAT_KIDS; do assert gone "$pid"; done
-assert alive "$FAT_ROOT"
-# And the run's own directory carries the record, with every field a reader needs.
+assert grep -qE '^KILLED [0-9]{10} chat=chat-fat job_pgid='"$FAT_ROOT"' avail_mb=2000 job_rss_mb=[0-9]+ killed=[0-9]+,[0-9]+,[0-9]+ notified=chat-fat$' "$fat_log"
+assert test "$(awk -F'job_rss_mb=' '/^KILLED /{ split($2, f, " "); print (f[1] > 1536) }' "$fat_log")" = 1
+for pid in $FAT_ROOT $FAT_KIDS; do assert gone "$pid"; done
+assert alive "$FAT_CLI"
+assert test "$(wc -l <"$BUS_LOG" | tr -d ' ')" = 1
+assert grep -qE "^post --kind notice --id memguard-[0-9]{10}-$FAT_ROOT --session chat-fat alive=3 frame=readable body=" "$BUS_LOG"
+bus_body=$(sed 's/^.* body=//' "$BUS_LOG")
+assert test "$(jq -r .word <<<"$bus_body")" = 'memory guard'
+assert test "$(jq -r '.rows | map(.[0]) | join(",")' <<<"$bus_body")" = 'stopped,why,this is,next'
+assert grep -q 'not a crash' <<<"$bus_body"
+# Egor sees it too: the menu snapshot names the chat, in red, for the next quarter hour.
+assert test "$(jq -r .alarm "$(chats_json "$FAT_DIR")")" = true
+assert jq -e '.rows[] | objects | select(.alarm) | .text | test("^⚠ [0-9]{2}:[0-9]{2} guard killed a job of Chat chat-fat · freed [0-9.]+ GB$")' \
+  "$(chats_json "$FAT_DIR")"
+
+# A job never takes its chat's CLI or the CLI's ancestors with it, even in one group: the registry
+# pid is protected and so is everything above it, while the work below goes.
+clear_registry
+spawn_deep_tree chat-deep
+register_session chat-deep "$DEEP_CLI"
+DEEP_DIR="$WORK/guard-deep"
+probes 2000 1024
+assert guard_run "$DEEP_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
+assert grep -q "^KILLED .* chat=chat-deep job_pgid=$DEEP_SUP " "$(log_file "$DEEP_DIR")"
+for pid in $DEEP_KIDS; do assert gone "$pid"; done
+assert alive "$DEEP_CLI"
+assert alive "$DEEP_SUP"
+
+# A job no environment claims belongs to the chat whose CLI it runs under — while that CLI is the
+# one its record was written by. A chat killed without deregistering leaves its record, and macOS
+# hands its pid to a stranger: that stranger's job is claimed by no chat and killed by nobody.
+clear_registry
+spawn_deep_tree
+register_session chat-own "$DEEP_CLI"
+OWN_DIR="$WORK/guard-own"
+probes 2000 1024
+assert guard_run "$OWN_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
+assert grep -q "^KILLED .* chat=chat-own job_pgid=$DEEP_SUP " "$(log_file "$OWN_DIR")"
+clear_registry
+spawn_deep_tree
+register_session chat-gone "$DEEP_CLI"
+touch -t 202001010000 "$SESSIONS_DIR/$DEEP_CLI.json"
+STALE_DIR="$WORK/guard-stale"
+assert guard_run "$STALE_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
+assert_fails grep -q '^KILLED ' "$(log_file "$STALE_DIR")"
+for pid in $DEEP_KIDS; do assert alive "$pid"; done
+assert test ! -s "$BUS_LOG"
+
+# A worker run is attributed to the chat that launched it (CLAUDE_LAUNCHER_SESSION), its supervisor
+# and vendor CLI are protected through meta.json, and the run's own directory carries the record
+# `worker-run report` prints. The launching chat is gone here, so nobody is posted to — the kill
+# still happens: a closed chat's job is exactly what nothing else would ever stop.
+clear_registry
+spawn_deep_tree '' chat-boss
+register_run claudeb-1-2-fat "$DEEP_SUP" "$DEEP_CLI"
+RUN_DIR="$WORK/guard-run"
+probes 2000 1024
+assert guard_run "$RUN_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
+assert grep -qE "^KILLED [0-9]{10} chat=chat-boss .* notified=none$" "$(log_file "$RUN_DIR")"
+for pid in $DEEP_KIDS; do assert gone "$pid"; done
+assert alive "$DEEP_CLI"
+assert alive "$DEEP_SUP"
+assert test ! -s "$BUS_LOG"
 fat_record="$GUARD_ROOT/runs/claudeb-1-2-fat/memguard"
-assert test -s "$fat_record"
-assert grep -qE '^MEMGUARD [0-9]{10} avail_mb=2000 tree_rss_mb=[0-9]+ agent=claudeb-1-2-fat root_pid='"$FAT_ROOT"' killed=[0-9]+(,[0-9]+)?$' "$fat_record"
+assert grep -qE '^MEMGUARD [0-9]{10} avail_mb=2000 tree_rss_mb=[0-9]+ agent=claudeb-1-2-fat root_pid='"$DEEP_CLI"' killed=[0-9]+,[0-9]+$' "$fat_record"
 assert test "$(awk -F'tree_rss_mb=' '{ split($2, f, " "); print (f[1] > 1536) }' "$fat_record")" = 1
-# Kept for the surfacing section below, which must read a record this daemon actually wrote rather
-# than one the suite composed to match its own expectations.
+# Kept for the surfacing section below, which must read a record this guard actually wrote.
 SURFACE_RUN="$WORK/surface-run"
 mkdir -p "$SURFACE_RUN"
 cp "$fat_record" "$SURFACE_RUN/memguard"
 
-# A review-bench cell registers the same way through its own pid- file, and its agent id names the
-# bench run and the cell, so a panel of many cells says WHICH one was cut.
+# A run from before cli_pid existed protects only its supervisor, so the CLI goes with the work.
 clear_registry
-spawn_tree
+spawn_deep_tree '' chat-boss
+register_run claudeb-1-2-legacy "$DEEP_SUP"
+LEGACY_DIR="$WORK/guard-legacy"
+probes 2000 1024
+assert guard_run "$LEGACY_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
+for pid in $DEEP_KIDS; do assert gone "$pid"; done
+assert gone "$DEEP_CLI"
+assert alive "$DEEP_SUP"
+assert grep -q "root_pid=$DEEP_SUP " "$GUARD_ROOT/runs/claudeb-1-2-legacy/memguard"
+
+# A review-bench cell registers through its own pid- file, and its record names the bench run and
+# the cell, so a panel of many cells says WHICH one was cut.
+clear_registry
+spawn_tree chat-bench
 CELL_ROOT=$TREE_ROOT CELL_KIDS=$TREE_KIDS
 register_cell 20260905T101010Z-abc123 claudeb-opus-high "$CELL_ROOT"
 CELL_DIR="$WORK/guard-cell"
 probes 2000 1024
 assert guard_run "$CELL_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$CELL_KIDS"
-assert grep -q '^KILLED .* agent=20260905T101010Z-abc123/claudeb-opus-high ' "$(log_file "$CELL_DIR")"
 for pid in $CELL_KIDS; do assert gone "$pid"; done
 assert alive "$CELL_ROOT"
 assert grep -q 'agent=20260905T101010Z-abc123/claudeb-opus-high ' \
   "$GUARD_ROOT/stats/benches/20260905T101010Z-abc123/memguard"
 
-# A run that has already ended is not a candidate, whatever its meta.json still says: its exit_code
-# is on disk, and its pid belongs to whatever holds that number now.
+# A run that has ended protects nothing, whatever its meta.json still says: its exit_code is on disk
+# and its pid belongs to whatever holds that number now.
 clear_registry
-spawn_tree
+spawn_tree chat-done
 DONE_ROOT=$TREE_ROOT DONE_KIDS=$TREE_KIDS
 register_run claudeb-1-2-done "$DONE_ROOT"
 printf '0\n' >"$GUARD_ROOT/runs/claudeb-1-2-done/exit_code"
 DONE_DIR="$WORK/guard-done"
 probes 2000 1024
 assert guard_run "$DONE_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DONE_KIDS"
-assert_fails grep -q '^KILLED ' "$(log_file "$DONE_DIR")"
-for pid in $DONE_KIDS; do assert alive "$pid"; done
+for pid in $DONE_ROOT $DONE_KIDS; do assert gone "$pid"; done
+assert test ! -e "$GUARD_ROOT/runs/claudeb-1-2-done/memguard"
 
-# A failed availability probe is unknown, not zero — the same rule pressure() applies, so a broken
-# vm_stat can never be the reason an agent's children are killed.
+# A failed availability probe is unknown, not zero, so a broken vm_stat never kills anything.
 clear_registry
-spawn_tree
+spawn_tree chat-blind
 BLIND_ROOT=$TREE_ROOT BLIND_KIDS=$TREE_KIDS
-register_run claudeb-1-2-blind "$BLIND_ROOT"
 BLIND_DIR="$WORK/guard-blind"
 probes fail 1024
 assert guard_run "$BLIND_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$BLIND_KIDS"
 assert_fails grep -q '^KILLED ' "$(log_file "$BLIND_DIR")"
-for pid in $BLIND_KIDS; do assert alive "$pid"; done
+for pid in $BLIND_ROOT $BLIND_KIDS; do assert alive "$pid"; done
 
-# Only the FATTEST tree is cut. A second registered tree left standing beside the one that was is
-# the whole difference between a guard and a cull.
+# Only the FATTEST job is cut, even when a second one is also over the ceiling: a job left
+# standing beside the one that was is the difference between a guard and a cull.
 clear_registry
-spawn_tree
+spawn_tree chat-pick
 BIG_ROOT=$TREE_ROOT BIG_KIDS=$TREE_KIDS
-spawn_tree
+spawn_tree chat-pick
 SMALL_ROOT=$TREE_ROOT SMALL_KIDS=$TREE_KIDS
-register_run claudeb-1-2-big "$BIG_ROOT"
-register_run claudeb-1-2-small "$SMALL_ROOT"
 PICK_DIR="$WORK/guard-pick"
+small_weights=$(printf '%s=800000 ' $SMALL_KIDS)
 probes 2000 1024
-assert guard_run "$PICK_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$BIG_KIDS"
-assert grep -q '^KILLED .* agent=claudeb-1-2-big ' "$(log_file "$PICK_DIR")"
-assert_fails grep -q 'agent=claudeb-1-2-small ' "$(log_file "$PICK_DIR")"
-for pid in $BIG_KIDS; do assert gone "$pid"; done
-assert alive "$BIG_ROOT"
-for pid in $SMALL_KIDS; do assert alive "$pid"; done
+assert guard_run "$PICK_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$BIG_KIDS $small_weights"
+assert grep -q "^KILLED .* job_pgid=$BIG_ROOT " "$(log_file "$PICK_DIR")"
+assert test "$(grep -c '^KILLED ' "$(log_file "$PICK_DIR")")" = 1
+for pid in $BIG_ROOT $BIG_KIDS; do assert gone "$pid"; done
+for pid in $SMALL_ROOT $SMALL_KIDS; do assert alive "$pid"; done
 
-# A run that recorded its vendor CLI is rooted THERE and not at its supervisor: the CLI's own
-# children — the agent's commands, the hog among them — are what dies, and the agent lives to be
-# told its command was killed by signal 9 (live 2026-09-05: rooted at the supervisor instead, the
-# agent went with them and the run came back a bare exit 137).
-clear_registry
-spawn_deep_tree
-register_run claudeb-1-2-cli "$DEEP_SUP" "$DEEP_CLI"
-CLI_DIR="$WORK/guard-cli"
-probes 2000 1024
-assert guard_run "$CLI_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
-assert grep -q "^KILLED .* root_pid=$DEEP_CLI " "$(log_file "$CLI_DIR")"
-for pid in $DEEP_KIDS; do assert gone "$pid"; done
-assert alive "$DEEP_CLI"
-assert alive "$DEEP_SUP"
-
-# A run from before cli_pid existed still has a root: the supervisor's pid, which is what its
-# meta.json carries. Everything under it goes, the CLI included — the old behaviour, kept because a
-# guard that skipped such runs would leave exactly the trees it was built to cut.
-clear_registry
-spawn_deep_tree
-register_run claudeb-1-2-legacy "$DEEP_SUP"
-LEGACY_DIR="$WORK/guard-legacy"
-probes 2000 1024
-assert guard_run "$LEGACY_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$DEEP_KIDS"
-assert grep -q "^KILLED .* root_pid=$DEEP_SUP " "$(log_file "$LEGACY_DIR")"
-for pid in $DEEP_KIDS; do assert gone "$pid"; done
-assert gone "$DEEP_CLI"
-assert alive "$DEEP_SUP"
-
-# A registered pid is only a claim about a NUMBER, and macOS hands numbers out again within the day:
-# a supervisor killed before it wrote exit_code leaves its registration standing until the 7-day
-# prune. So the process wearing the number must have STARTED when the registration says it did —
-# here it started minutes ago and the stamp says two hours, so the guard leaves the tree alone
-# rather than SIGKILLing an unrelated process's children.
+# What no chat launched is never a candidate, however fat — Egor's apps and shells carry no session
+# variable and no chat is their ancestor — and it does not shield the chat job behind it either.
 clear_registry
 spawn_tree
-STAMP_ROOT=$TREE_ROOT STAMP_KIDS=$TREE_KIDS
-register_run claudeb-1-2-stamp "$STAMP_ROOT" '' $(( $(date +%s) - 7200 ))
-STAMP_DIR="$WORK/guard-stamp"
+MINE_ROOT=$TREE_ROOT MINE_KIDS=$TREE_KIDS
+spawn_tree chat-next
+NEXT_ROOT=$TREE_ROOT NEXT_KIDS=$TREE_KIDS
+MINE_DIR="$WORK/guard-mine"
+mine_weights=$(printf '%s=2097152 ' $MINE_KIDS)
 probes 2000 1024
-assert guard_run "$STAMP_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$STAMP_KIDS"
-assert_fails grep -q '^KILLED ' "$(log_file "$STAMP_DIR")"
-for pid in $STAMP_KIDS; do assert alive "$pid"; done
-# The same tree, the same pids, the stamp now telling the truth: this is what the check is FOR, so
-# the accepting half is asserted against the very fixture the refusing half just spared.
-register_run claudeb-1-2-stamp "$STAMP_ROOT" '' "$(date +%s)"
-MATCH_DIR="$WORK/guard-stamp-match"
-probes 2000 1024
-assert guard_run "$MATCH_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$STAMP_KIDS"
-assert grep -q "^KILLED .* root_pid=$STAMP_ROOT " "$(log_file "$MATCH_DIR")"
-for pid in $STAMP_KIDS; do assert gone "$pid"; done
-assert alive "$STAMP_ROOT"
+assert guard_run "$MINE_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$mine_weights $NEXT_KIDS"
+assert grep -q "^KILLED .* chat=chat-next job_pgid=$NEXT_ROOT " "$(log_file "$MINE_DIR")"
+for pid in $NEXT_ROOT $NEXT_KIDS; do assert gone "$pid"; done
+for pid in $MINE_ROOT $MINE_KIDS; do assert alive "$pid"; done
+assert test "$(jq -c '[.rows[] | objects | select(.session) | .session]' "$(chats_json "$MINE_DIR")")" = '["chat-next"]'
 
-# A record carrying no stamp at all cannot be checked, and unverifiable is SKIPPED: a run old enough
-# to predate the stamps is prunable in days, and a kill on an identity nobody could confirm is not
-# the trade this guard makes.
-clear_registry
-spawn_tree
-NOSTAMP_ROOT=$TREE_ROOT NOSTAMP_KIDS=$TREE_KIDS
-mkdir -p "$GUARD_ROOT/runs/claudeb-1-2-nostamp"
-jq -n --argjson pid "$NOSTAMP_ROOT" '{vendor: "claudeb", account: "main", pid: $pid, workdir: "/tmp"}' \
-  >"$GUARD_ROOT/runs/claudeb-1-2-nostamp/meta.json"
-NOSTAMP_DIR="$WORK/guard-nostamp"
-probes 2000 1024
-assert guard_run "$NOSTAMP_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$NOSTAMP_KIDS"
-assert_fails grep -q '^KILLED ' "$(log_file "$NOSTAMP_DIR")"
-for pid in $NOSTAMP_KIDS; do assert alive "$pid"; done
-
-# A cell file carries no stamp of its own, so its mtime answers — it is written right after Popen.
-# One whose mtime sits nowhere near its pid's start is a leftover pointing at a recycled number.
-clear_registry
-spawn_tree
-MTIME_ROOT=$TREE_ROOT MTIME_KIDS=$TREE_KIDS
-register_cell 20260905T202020Z-def456 claudeb-opus-high "$MTIME_ROOT"
-touch -t 202601010101.00 "$GUARD_ROOT/stats/benches/20260905T202020Z-def456/pid-claudeb-opus-high"
-MTIME_DIR="$WORK/guard-mtime"
-probes 2000 1024
-assert guard_run "$MTIME_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$MTIME_KIDS"
-assert_fails grep -q '^KILLED ' "$(log_file "$MTIME_DIR")"
-for pid in $MTIME_KIDS; do assert alive "$pid"; done
-
-# The tree's weight is its DESCENDANTS, never its root: only descendants are killed, so a run fat at
-# the root alone would be convicted for memory no kill can free — and its small children would be
-# SIGKILLed every tick for nothing.
-clear_registry
-spawn_tree
-HEAD_ROOT=$TREE_ROOT HEAD_KIDS=$TREE_KIDS
-register_run claudeb-1-2-fathead "$HEAD_ROOT"
-HEAD_DIR="$WORK/guard-fathead"
-probes 2000 1024
-assert guard_run "$HEAD_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$HEAD_ROOT=2097152"
-assert_fails grep -q '^KILLED ' "$(log_file "$HEAD_DIR")"
-for pid in $HEAD_KIDS; do assert alive "$pid"; done
-# The same tree with the weight where the kill can reach it does fire, so the case above is the
-# root being excluded and not the fixture failing to weigh anything.
-probes 2000 1024
-assert guard_run "$WORK/guard-fatkids" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$HEAD_KIDS"
-assert grep -q "^KILLED .* root_pid=$HEAD_ROOT " "$(log_file "$WORK/guard-fatkids")"
-for pid in $HEAD_KIDS; do assert gone "$pid"; done
-
-# A candidate is a tree with something to kill. A childless root that outweighs every other tree
-# would otherwise win the pick each tick, kill nothing, and leave the tree that IS cuttable standing
-# while the machine thrashes.
+# A chat's CLI fat on its own is never convicted for memory no kill of its work could free.
 clear_registry
 spawn_leaf
-spawn_tree
-NEXT_ROOT=$TREE_ROOT NEXT_KIDS=$TREE_KIDS
-register_run claudeb-1-2-leaf "$LEAF_ROOT"
-register_run claudeb-1-2-next "$NEXT_ROOT"
-LEAF_DIR="$WORK/guard-leaf"
+register_session chat-head "$LEAF_ROOT"
+HEAD_CLI=$LEAF_ROOT
+spawn_tree chat-head
+HEAD_ROOT=$TREE_ROOT HEAD_KIDS=$TREE_KIDS
+HEAD_DIR="$WORK/guard-fathead"
 probes 2000 1024
-assert guard_run "$LEAF_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$LEAF_ROOT=2097152 $NEXT_KIDS"
-assert grep -q '^KILLED .* agent=claudeb-1-2-next ' "$(log_file "$LEAF_DIR")"
-for pid in $NEXT_KIDS; do assert gone "$pid"; done
-assert alive "$LEAF_ROOT"
+assert guard_run "$HEAD_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$HEAD_CLI=4194304"
+assert_fails grep -q '^KILLED ' "$(log_file "$HEAD_DIR")"
+for pid in $HEAD_CLI $HEAD_ROOT $HEAD_KIDS; do assert alive "$pid"; done
+
+# A worker's job belongs to the chat that launched the worker, and both hear of the kill: the
+# launching chat, whose row Egor reads, and the worker, whose command it was.
+clear_registry
+spawn_leaf
+register_session chat-lead "$LEAF_ROOT"
+spawn_tree chat-worker chat-lead
+register_session chat-worker "$TREE_ROOT"
+LEAD_ROOT=$TREE_ROOT LEAD_KIDS=$TREE_KIDS
+LEAD_DIR="$WORK/guard-lead"
+probes 2000 1024
+assert guard_run "$LEAD_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$LEAD_KIDS"
+assert grep -qE "^KILLED [0-9]{10} chat=chat-lead job_pgid=$LEAD_ROOT .* notified=chat-lead,chat-worker$" "$(log_file "$LEAD_DIR")"
+for pid in $LEAD_KIDS; do assert gone "$pid"; done
+assert alive "$LEAD_ROOT"
+assert test "$(grep -c -- '--session chat-lead alive=' "$BUS_LOG")" = 1
+assert test "$(grep -c -- '--session chat-worker alive=' "$BUS_LOG")" = 1
+assert test "$(jq '[.rows[] | objects | select(.session)] | length' "$(chats_json "$LEAD_DIR")")" = 1
+
+# Both notices are in flight at once, each still posted while the job is alive: a slow bus costs
+# the relief one post's wait, not one per chat told.
+clear_registry
+spawn_leaf
+register_session chat-lead "$LEAF_ROOT"
+spawn_tree chat-worker chat-lead
+register_session chat-worker "$TREE_ROOT"
+PAIR_KIDS=$TREE_KIDS
+PAIR_DIR="$WORK/guard-pair"
+PAIR_PEERS="$WORK/bus-peers"
+mkdir -p "$PAIR_PEERS"
+: >"$BUS_LOG"
+probes 2000 1024
+assert guard_run "$PAIR_DIR" MEMLOGD_MAX_TICKS=1 HEAVY_PIDS="$PAIR_KIDS" BUS_WATCH="$PAIR_KIDS" \
+  BUS_PEERS="$PAIR_PEERS" BUS_PEERS_WANT=2
+assert grep -qE "^KILLED .* notified=chat-lead,chat-worker$" "$(log_file "$PAIR_DIR")"
+assert test "$(grep -c -- '--session chat-[a-z]* peers=2$' "$PAIR_PEERS.log")" = 2
+assert test "$(grep -cE -- '--session chat-(lead|worker) alive=2 ' "$BUS_LOG")" = 2
+for pid in $PAIR_KIDS; do assert gone "$pid"; done
+
+# The menu snapshot: one aligned row per chat, the title shortened to its column with a trailing
+# phase number kept, state words for live chats, and every number carrying its unit.
+clear_registry
+spawn_leaf
+register_session chat-long "$LEAF_ROOT" busy
+LONG_CLI=$LEAF_ROOT
+retitle chat-long 'Vector Magic macOS ARM migration phase 4'
+spawn_leaf
+register_session chat-calm "$LEAF_ROOT" idle
+spawn_leaf
+register_session chat-anon "$LEAF_ROOT" idle
+retitle chat-anon ''
+MENU_DIR="$WORK/guard-menu"
+probes 8192 1024
+assert guard_run "$MENU_DIR" MEMLOGD_MAX_TICKS=2 MEMLOGD_QUIET_INTERVAL=1 HEAVY_PIDS="$LONG_CLI=1048576"
+menu=$(chats_json "$MENU_DIR")
+assert jq -e '.title | test("^Chats/other  [0-9.]+/[0-9.]+ cores · [0-9]+/[0-9]+ GB$")' "$menu"
+assert jq -e '.rows[0].text | test("^CPU +[0-9.]+ chats \\+ +[0-9.]+ other = +[0-9.]+ of [0-9]+ cores$")' "$menu"
+assert jq -e '.rows[1].text | test("^RAM +[0-9.]+ chats \\+ +[0-9.]+ other = +[0-9.]+ of [0-9]+ GB · swap 1.0$")' "$menu"
+assert test "$(jq -r '.rows[] | objects | select(.session == "chat-long") | .text[0:34]' "$menu")" = 'wait model  Vector Magic… phase 4 '
+assert jq -e '.rows[] | objects | select(.session == "chat-long") | .text | test("  1.0 GB  ")' "$menu"
+assert jq -e '.rows[] | objects | select(.session == "chat-calm") | (.text | startswith("idle        Chat chat-calm")) and .dim' "$menu"
+# Every column starts at the same code point on every chat row, the one with the ellipsis included.
+columns() { python3 -c 'import json, sys
+rows = [r["text"] for r in json.load(open(sys.argv[1]))["rows"] if isinstance(r, dict) and r.get("session")]
+print(len(rows), len({(t.index(" cores  "), t.index(" GB  ")) for t in rows}))' "$1"; }
+assert test "$(columns "$menu")" = '3 1'
+# An untitled chat is never shown by its id and takes no neighbour's title.
+assert jq -e '.rows[] | objects | select(.session == "chat-anon") | .text | startswith("idle        untitled chat · demo")' "$menu"
+assert jq -e '[.rows[] | objects | .text | contains("chat-ano")] | any | not' "$menu"
+assert jq -e '.rows[-1].text | test("^Other incl\\.: screen [0-9.]+ · kernel [0-9.]+ · signing [0-9.]+ cores$")' "$menu"
+assert test "$(jq -r .alarm "$menu")" = false
+assert test "$(jq -r .error "$menu")" = ''
+
+# A notice that did not land says so on the kill row.
+clear_registry
+spawn_leaf
+register_session chat-untold "$LEAF_ROOT"
+spawn_tree chat-untold
+UNTOLD_KIDS=$TREE_KIDS
+UNTOLD_DIR="$WORK/guard-untold"
+probes 2000 1024
+assert guard_run "$UNTOLD_DIR" MEMLOGD_MAX_TICKS=1 BUS_FAIL=1 HEAVY_PIDS="$UNTOLD_KIDS"
+assert grep -qE '^KILLED .* chat=chat-untold .* notified=none$' "$(log_file "$UNTOLD_DIR")"
+assert jq -e '.rows[] | objects | select(.alarm) | .text | endswith(" · chat not told")' "$(chats_json "$UNTOLD_DIR")"
 
 # --- MEMGUARD surfacing in worker-run report/wait -------------------------------------------------
 # The record is written by this daemon and read by worker-run, so the two ends are checked against
@@ -909,14 +1040,24 @@ for shape in terminal_report unknown_report running_report; do
   assert grep -q "memguard_lines" <(sed -n "/^$shape() {/,/^}/p" "$WORKER_RUN")
 done
 assert test "$(grep -c 'memguard_lines "\$directory"' "$WORKER_RUN")" -eq 5
-# The guard's own thresholds are stated once, in the daemon, and the decision record quotes them.
-assert grep -q '^memguard_avail_mb=3072$' "$SCRIPT"
-assert grep -q '^memguard_tree_mb=1536$' "$SCRIPT"
+# The guard's own thresholds are stated once, in chat-load, and the decision record quotes them;
+# install-agent deploys chat-load beside the daemon copy launchd runs, which is where it is looked up.
+assert grep -q '^GUARD_AVAIL_MB = 3072$' "$ROOT/bin/chat-load"
+assert grep -q '^GUARD_JOB_MB = 1536$' "$ROOT/bin/chat-load"
+assert grep -qF 'chat_load="$(dirname "$script_path")/chat-load"' "$SCRIPT"
+# So are the resolver and the bus it runs: macOS denies the daemon's Python /Volumes/Work.
+assert grep -qF 'for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py; do' "$SCRIPT"
+assert grep -qF 'mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"' "$SCRIPT"
 assert grep -q '3072' "$ROOT/docs/memory-guard.md"
 assert grep -q '1536' "$ROOT/docs/memory-guard.md"
 # The agent process env is scoped to the run's own tree and set nowhere wider.
 assert grep -q 'export NX_PARALLEL=1 NX_DAEMON=false' "$WORKER_RUN"
 
+# A Background agent gets no CPU once a runaway fan-out saturates the cores — on 2026-09-28 memlogd
+# went silent 13 s before swap started and never woke to log or guard the freeze.
+assert plutil -lint "$ROOT/launchd/com.egor.memlogd.plist"
+assert test "$(plutil -extract ProcessType raw "$ROOT/launchd/com.egor.memlogd.plist")" = Interactive
+
 reap_trees
 
-echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, and a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one; plus the memory guard on real process trees — neither low RAM nor a fat tree convicting alone, both halves firing SIGKILL at the descendants while the tree's root survives, a failed probe never convicting, only the fattest tree cut with its neighbour left standing, an ended run dropping out of the registry, both registries read (worker-run meta.json and review-bench pid- cell files), a run rooted at its recorded cli_pid so the vendor CLI outlives the kill while its own children go, and a legacy run with no cli_pid still rooted at the supervisor, a registered root proving its identity before it can be cut (a stamp far from the process's own start skipped, the same tree with a truthful stamp cut, a record with no stamp skipped, a cell file whose mtime is nowhere near its pid's start skipped), a tree weighed by its descendants alone so a root fat by itself never costs its children their lives, a childless root never taking the pick from a tree that can be cut, the memguard record's fields, and the MEMGUARD: line worker-run renders from it in every report shape"
+echo "PASS: $asserts asserts; quiet line format and node roll-up, a failed vm_stat probe that never fakes pressure, durable writes that fsync the day log and frames file and never call sync(2), incident entry on available RAM alone with a marker naming its frames file and full pid/ppid/pgid/rss/etime blocks in frames/ not the day file, swap reported everywhere but deciding neither entry nor exit (drowning swap with healthy RAM stays quiet, recovery lands with swap unmoved), a probe that breaks mid-incident never latching it, recovery hysteresis both ways (held open under the window, closed and back to quiet once met), an incident spanning midnight marking the new day's file with frames continuing in the episode file, three-day rotation that spares neither an INCIDENT day nor a non-log file nor today's log and honours the retention knob including old frames, rotation sparing the frames file a live episode is still writing even when its name predates the window, a frames-directory budget that evicts the oldest file first and never the current episode, survives a name with a space and a file that vanished under the listing, an episode cap that stops the frames and says EPISODE-CAP once while the summaries keep coming, fast-then-slow incident frame cadence, a quiet-state jump that writes one frame headed jump and a JUMP marker without opening an incident, stays quiet below both thresholds and treats a failed ps probe as -1 rather than a rise on the next healthy tick, a LaunchAgent scheduled Interactive so it keeps running under a saturated CPU, and a single-instance lock that refuses a live holder, refuses one that has written no pid yet, and takes over a dead one; plus the memory guard on real process groups — neither low RAM nor a fat job convicting alone, a chat's own Bash job killed whole with its CLI left standing and the chat notified while the job was still alive, a registered CLI and its ancestors protected inside one group, a worker run attributed to its launching chat with supervisor and CLI protected and the run's memguard record written, a legacy run protecting its supervisor only, a bench cell's record naming bench and cell, an ended run protecting nothing, a failed probe never convicting, only the fattest job cut, nothing no chat launched ever a candidate, a fat CLI never convicted on its own weight, a worker's job billed to the launching chat with both sessions notified (both notices in flight at once, each before the kill), the menu snapshot's aligned one-line rows, shortened titles, state words and units, an untitled chat never taking a neighbour's title, a macOS denial of /Volumes/Work and an undelivered notice each shown as such, and the MEMGUARD: line the run report renders from the record in every shape"

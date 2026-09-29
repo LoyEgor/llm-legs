@@ -281,11 +281,32 @@ end
 -- (`CHANGED <path> (+184 bytes)`); a REVERTED report there names growth already put back.
 -- Anchored on the verb: `/a/path/x.md` is a suffix of `/sub/a/path/x.md`, and only the verb
 -- and its space in front say which record a delta belongs to.
+-- A plain find per file, never a pattern: a pattern retried from every offset of a 300-file
+-- summary cost seconds per menu open.
 local function segment(summary, file)
-    local plain = file:gsub("(%W)", "%%%1")
-    local verb, delta = summary:match("([%u%-]+) " .. plain .. " %(([%+%-]%d+) bytes%)")
-    if not verb then verb = summary:match("([%u%-]+) " .. plain .. "%f[^%w/%.%-_]") or summary:match("([%u%-]+) " .. plain .. "$") end
-    return verb, delta
+    local needle, last = " " .. file, #summary + 1
+    local function leftmost(tail)
+        local from = 1
+        while true do
+            local s, e = summary:find(needle, from, true)
+            if not s then return nil end
+            local v = s
+            while v > 1 and summary:find("^[%u%-]", v - 1) do v = v - 1 end
+            if v < s then
+                local ok, delta = tail(e + 1)
+                if ok then return summary:sub(v, s - 1), delta end
+            end
+            from = s + 1
+        end
+    end
+    local verb, delta = leftmost(function(at)
+        local d = summary:match("^ %(([%+%-]%d+) bytes%)", at)
+        return d ~= nil, d
+    end)
+    if verb then return verb, delta end
+    verb = leftmost(function(at) return summary:find("^%f[^%w/%.%-_]", at) ~= nil end)
+        or leftmost(function(at) return at == last end)
+    return verb, nil
 end
 
 local function verbs(event)
@@ -345,13 +366,35 @@ local function runChatResolver(sids, onDone)
     task = hs.task.new(resolverPath(), function(_, stdout)
         task = nil
         onDone(stdout or "")
-    end, sids)
+    end, { "--json", table.unpack(sids) })
     if not task or not task:start() then
         task = nil
         onDone("")
     end
 end
 local chatResolverFn = runChatResolver
+-- `{short = {name = "<name> (<short>)" or "", title = what a menu may show}}`, off `chat-name --json`
+-- lines or the plain `<name> (<short>)` ones. `name` stays the stored form every record carries;
+-- `title` also describes a chat with no name, which is asked again until it gains one.
+local function parseResolver(stdout)
+    local found = {}
+    for line in (stdout or ""):gmatch("[^\r\n]+") do
+        local ok, row = false, nil
+        if line:sub(1, 1) == "{" then ok, row = pcall(hs.json.decode, line) end
+        if ok and type(row) == "table" and type(row.short) == "string" then
+            local name = type(row.name) == "string" and row.name ~= "" and (row.name .. " (" .. row.short .. ")") or ""
+            found[row.short] = { name = name, title = type(row.title) == "string" and row.title or "" }
+        else
+            local short = line:match("^.- %((%x+)%)$")
+            if short then found[short] = { name = line, title = line } end
+        end
+    end
+    return found
+end
+-- Egor looks chats up by name only: no window or picker of his shows an id.
+local function withoutIds(label)
+    return (tostring(label):gsub(" %(%x%x%x%x%x%x%x%x%)", ""))
+end
 resolveChatNames = function(events)
     if chatPending then chatRerun = true; return end
     local names, now, ask, asked = loadChatNames(), os.time(), {}, {}
@@ -370,18 +413,15 @@ resolveChatNames = function(events)
     chatPending = true
     chatResolverFn(ask, function(stdout)
         chatPending = false
-        local found = {}
-        for line in stdout:gmatch("[^\r\n]+") do
-            local name, short = line:match("^(.-) %((%x+)%)$")
-            if name and short then found[short] = line end
-        end
+        local found = parseResolver(stdout)
         -- The resolver answers by short id, so two asked ids sharing one are left unnamed rather
         -- than both handed whichever chat answered first.
         local shared = {}
         for _, sid in ipairs(ask) do shared[sid:sub(1, 8)] = (shared[sid:sub(1, 8)] or 0) + 1 end
         for _, sid in ipairs(ask) do
             local short = sid:sub(1, 8)
-            names[sid] = { name = shared[short] == 1 and found[short] or "", at = now }
+            local entry = shared[short] == 1 and found[short] or {}
+            names[sid] = { name = entry.name or "", title = entry.title or "", at = now }
         end
         writeFile(chatCachePath(), hs.json.encode(names))
         if chatRerun then
@@ -391,14 +431,16 @@ resolveChatNames = function(events)
     end)
 end
 local function chatLabel(event)
-    if event.source == "watcher" and (type(event.chat) ~= "string" or event.chat == "") then
-        return "writer: " .. tostring(event.writer or "unknown")
+    if (event.source == "watcher" or type(event.observer) == "string")
+        and (type(event.chat) ~= "string" or event.chat == "") then
+        return "writer: " .. withoutIds(event.writer or "unknown")
     end
-    if type(event.chat) == "string" and event.chat ~= "" then return event.chat end
+    if type(event.chat) == "string" and event.chat ~= "" then return withoutIds(event.chat) end
     local sid = type(event.sid) == "string" and event.sid or ""
     local row = loadChatNames()[sid]
-    if type(row) == "table" and row.name ~= "" then return row.name end
-    return "unnamed chat (" .. (sid ~= "" and sid:sub(1, 8) or "?") .. ")"
+    if type(row) == "table" and type(row.name) == "string" and row.name ~= "" then return withoutIds(row.name) end
+    if type(row) == "table" and type(row.title) == "string" and row.title ~= "" then return withoutIds(row.title) end
+    return "unnamed chat"
 end
 
 -- The file watcher. `hash_of` and `watch_mark_key` are eval'ed out of bin/instruction-watch.sh on
@@ -593,24 +635,40 @@ local function refreshInflight()
             end
         end
     end
+    local closed = stateDir .. "/closed"
+    if hs.fs.attributes(closed, "mode") == "directory" then
+        for name in hs.fs.dir(closed) do
+            local first, last = (readFile(closed .. "/" .. name) or ""):match("^(%d+)%s+(%d+)")
+            if first then
+                local key = "closed|" .. name
+                present[key] = true
+                W.inflight[key] = W.inflight[key] or { sid = name:match("^(.-)@") or name,
+                    start = tonumber(first) / 1e9, ended = tonumber(last) / 1e9 }
+            end
+        end
+    end
     for key, row in pairs(W.inflight) do
         if not present[key] and not row.ended then row.ended = now end
         if row.ended and now - row.ended > 600 then W.inflight[key] = nil end
     end
 end
 
--- A second of slack both ways: the write's mtime is floored to whole seconds here.
+-- A second of slack both ways: the write's mtime is floored to whole seconds here. Likeliest writer
+-- first — the call that began last before the write; another chat's long suite merely spans it.
 local function writersAt(stamps)
-    local sids, seen, now = {}, {}, os.time()
+    local latest, sids, now = {}, {}, os.time()
     for _, row in pairs(W.inflight) do
         for _, stamp in ipairs(stamps) do
-            if not seen[row.sid] and stamp >= row.start - 1 and stamp <= (row.ended or now) + 1 then
-                seen[row.sid] = true
-                sids[#sids + 1] = row.sid
+            if stamp >= row.start - 1 and stamp <= (row.ended or now) + 1 then
+                if not latest[row.sid] then sids[#sids + 1] = row.sid end
+                latest[row.sid] = math.max(latest[row.sid] or row.start, row.start)
             end
         end
     end
-    table.sort(sids)
+    table.sort(sids, function(a, b)
+        if latest[a] ~= latest[b] then return latest[a] > latest[b] end
+        return a < b
+    end)
     return sids
 end
 
@@ -674,17 +732,17 @@ local function watchEmit(entries, kind)
     if #sids == 0 then return finish() end
     record.sid = sids[1]
     chatResolverFn(sids, function(stdout)
-        local found = {}
-        for line in (stdout or ""):gmatch("[^\r\n]+") do
-            local short = line:match("^.- %((%x+)%)$")
-            if short then found[short] = line end
-        end
+        local found = parseResolver(stdout)
         local labels = {}
         for _, sid in ipairs(sids) do
-            labels[#labels + 1] = found[sid:sub(1, 8)] or ("unnamed chat (" .. sid:sub(1, 8) .. ")")
+            local entry = found[sid:sub(1, 8)] or {}
+            labels[#labels + 1] = entry.name ~= nil and entry.name ~= "" and entry.name
+                or entry.title ~= nil and entry.title ~= "" and entry.title or "unnamed chat"
         end
         record.writer = table.concat(labels, ", ")
-        if found[sids[1]:sub(1, 8)] then record.chat = found[sids[1]:sub(1, 8)] end
+        record.writers = #sids
+        local first = found[sids[1]:sub(1, 8)]
+        if first and first.name ~= "" then record.chat = first.name end
         finish()
     end)
 end
@@ -762,6 +820,17 @@ local function watchPaths()
 end
 
 local function under(path, dir) return path == dir or path:sub(1, #dir + 1) == dir .. "/" end
+
+local function attributionEvent(paths)
+    if paths == nil then return true end
+    local real = hs.fs.pathToAbsolute(stateDir) or stateDir
+    for _, path in ipairs(paths) do
+        for _, dir in ipairs({ stateDir, real }) do
+            if under(dir, path) or under(path, dir .. "/inflight") or under(path, dir .. "/closed") then return true end
+        end
+    end
+    return false
+end
 
 local function watchRefresh()
     local out, err = runScan("list")
@@ -915,7 +984,6 @@ function M.watchEvent(paths)
     if not W or W.busy then return end
     W.busy = true
     pcall(function()
-        refreshInflight()
         local wanted, seen, unknown = {}, {}, false
         for _, path in ipairs(paths or {}) do
             local vis = W.byReal[path] or W.byReal[realOf(path)]
@@ -926,7 +994,10 @@ function M.watchEvent(paths)
                 unknown = true
             end
         end
-        if #wanted > 0 then watchCheck(wanted, true, "", "change", W.listedAt) end
+        if #wanted > 0 then
+            refreshInflight()
+            watchCheck(wanted, true, "", "change", W.listedAt)
+        end
         if W.dirty then writeSnapshot() end
         if unknown and not W.relist and hs.timer and hs.timer.doAfter then
             W.relist = hs.timer.doAfter(3, function()
@@ -1215,9 +1286,9 @@ ensureWatcher = function()
     if watcher then watcher:start() end
 end
 
-onChange = function()
+onChange = function(paths)
     ensureWatcher()
-    if W then pcall(refreshInflight) end
+    if W and attributionEvent(paths) then pcall(refreshInflight) end
     local stamp = journalStamp()
     if stamp ~= nil and stamp == lastSeen then return end
     lastSeen = stamp
@@ -1230,11 +1301,15 @@ function M.start()
     ensureWatcher()
     watchWanted = true
     watchStart()
+    -- Decoding the rates file takes most of a second; done here and on the tick, a menu open
+    -- finds it decoded.
+    pcall(rates)
     -- The fallback, not the mechanism: FSEvents can coalesce or drop across a sleep, and a change
     -- Egor is never told about is the one failure this module exists to remove.
     timer = hs.timer.doEvery(WATCH_TICK, function()
         watchTick()
         onChange()
+        pcall(rates)
     end)
     M.pump()
     return M

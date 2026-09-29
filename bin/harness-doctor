@@ -1,0 +1,2076 @@
+#!/usr/bin/env python3
+"""Harness doctor: everything that is not the model and makes a chat or worker wait, or slows the
+machine for everyone. Collects into ~/.cache/harness-doctor/latest.json and lays it out as menu.txt,
+which the LLM Limits menu renders as its Harness doctor block. Design: docs/harness-doctor-design.md."""
+
+import argparse
+import bisect
+import calendar
+import ctypes
+import fcntl
+import glob
+import hashlib
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+LIMITS = {
+    "call_s": 5.0,
+    "call_note_s": 3.0,
+    "call_min_calls": 5,
+    "cut_share": 0.01,
+    "cut_min": 3,
+    "event_s": 5.0,
+    "hook_p50_s": 1.0,
+    "hook_min_samples": 5,
+    "busy": 0.90,
+    "busy_note": 0.70,
+    "kernel": 0.50,
+    "kernel_note": 0.30,
+    "forks": 2500,
+    "forks_note": 1000,
+    "unseen_cores": 5.0,
+    "unseen_note": 2.0,
+    "swap_share": 0.90,
+    "suites_at_once": 5,
+    "suites_note": 3,
+    "test_slow_ratio": 2.0,
+    "test_slow_min_s": 600,
+    "loose_note": 6700,
+    "loose_red": 13400,
+    "store_entries": 50000,
+    "store_bytes": 1 << 30,
+    "store_growth": 2.0,
+    "impact_min_calls": 3,
+}
+
+SYNC_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",
+               "PreCompact", "SessionEnd")
+DEFAULT_HOOK_TIMEOUT_S = 600
+TRIVIAL_WORDS = {"ls", "cat", "pwd", "true", "echo", "head", "tail", "wc", "date", "stat", "file", "test",
+                 "which", "basename", "dirname", "printf", "grep", "sed", "awk", "jq", "cut", "sort", "uniq",
+                 "tr", "readlink", "realpath"}
+TRIVIAL_BREAK = re.compile(r"[;&<>`\n]|\$\(|\|\|")
+TRIVIAL_RECURSIVE = re.compile(r"(^|\s)-(-recursive|[a-zA-Z]*[rR][a-zA-Z]*)(\s|$)")
+QUIET_REDIRECT = re.compile(r"\s[12]?>\s?/dev/null|\s2>&1")
+EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+EVENT_ROWS = (("SessionStart", "session start", "every chat start"),
+              ("UserPromptSubmit", "prompt submit", "every message"),
+              ("Stop", "turn end", "every turn"),
+              ("SubagentStop", "subagent end", "every subagent"))
+BACKFILL_DAYS = 28
+EVENT_DAYS = 8
+DAY_SUMMARY_DAYS = 60
+PENDING_TTL_S = 7200
+SAMPLE_GAP_S = 900
+SLOW_STEP_S = 300
+INVENTORY_ROWS = 20
+LATEST_TESTS = 10
+CHANGE_ROWS = 20
+HOOK_TIME_LIB = "hooks/lib/hook-time.sh"
+STATUSLINE_KEY = "\tstatusline"
+HIST_EDGES_MS = (5, 10, 20, 30, 50, 75, 100, 150, 200, 300, 500, 750, 1000, 1500, 2000, 3000, 5000, 7500, 10000,
+                 15000, 30000, 60000, 120000, 300000, 600000)
+SLOT_S = 600
+JOURNAL_KEEP_S = 25 * 3600
+JOURNAL_FILE_DAYS = 3
+SPOOL_STALE_S = 900
+SUMMARY_V = 2
+WEEK_DAYS = 7
+BY_WEEKS = 8
+DELTA_MATERIAL = 0.10
+DELTA_TIMES_FROM = 11
+WEEK_MIN_RUNS = 20
+WEEK_MIN_DAYS = 3
+LOAD_KEYS = ("busy", "kernel", "forks", "unseen")
+BLIND_SPOTS = (
+    "MCP server start-up, worker spawn and relay latency",
+    "worker-run supervise loops, worker-pick, review-cell preparation",
+    "launchd jobs and Hammerspoon's own tasks",
+)
+
+
+def base_home():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def env_dir(name, *default):
+    return os.environ.get(name) or os.path.join(base_home(), *default)
+
+
+def state_dir():
+    return env_dir("HARNESS_DOCTOR_DIR", ".cache", "harness-doctor")
+
+
+def projects_dir():
+    return env_dir("CLAUDE_PROJECTS_DIR", ".claude", "projects")
+
+
+def settings_path():
+    return env_dir("HARNESS_SETTINGS", ".claude", "settings.json")
+
+
+def statusline_cache():
+    return env_dir("STATUSLINE_CACHE_DIR", ".cache", "claude-statusline")
+
+
+def memlogd_dir():
+    return env_dir("MEMLOGD_DIR", "Library", "Logs", "memlogd")
+
+
+def watch_state():
+    return env_dir("INSTRUCTION_WATCH_STATE", ".cache", "claude-instruction-watch")
+
+
+def worker_stats_dir():
+    claudeb = env_dir("CLAUDEB_DIR", ".claude-profiles", ".claudeb")
+    return os.environ.get("WORKER_STATS_DIR") or os.path.join(claudeb, "worker-stats")
+
+
+def watch_roots():
+    override = os.environ.get("HARNESS_WATCH_ROOTS")
+    if override is not None:
+        return [p for p in override.split(":") if p]
+    return [os.path.realpath(os.path.join(base_home(), ".claude", "hooks")),
+            os.path.join(ROOT_DIR, "bin"), os.path.join(ROOT_DIR, "share")]
+
+
+def now_s():
+    return float(os.environ.get("HARNESS_DOCTOR_NOW") or time.time())
+
+
+def local_day(t):
+    return time.strftime("%Y-%m-%d", time.localtime(t))
+
+
+def day_start(day):
+    return time.mktime(time.strptime(day, "%Y-%m-%d"))
+
+
+def day_end(day):
+    return day_start(local_day(day_start(day) + 30 * 3600))
+
+
+def short_path(path):
+    path = str(path)
+    for prefix, repl in ((os.path.join(base_home(), ""), "~/"), (os.path.join(os.path.realpath(base_home()), ""), "~/"),
+                         ("/Volumes/Work/Projects/", "")):
+        if path.startswith(prefix):
+            return repl + path[len(prefix):]
+    return path
+
+
+def read_json(path, default):
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+def write_json(path, value):
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    with open(tmp, "w") as handle:
+        json.dump(value, handle, separators=(",", ":"))
+    os.replace(tmp, path)
+
+
+def iso_epoch(text):
+    if not isinstance(text, str) or len(text) < 19:
+        return None
+    try:
+        base = calendar.timegm(time.strptime(text[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return None
+    digits = re.match(r"\.(\d+)", text[19:])
+    return base + (float("0." + digits.group(1)) if digits else 0.0)
+
+
+_toplevels = {}
+
+
+def repo_top(cwd):
+    if not cwd:
+        return ""
+    cwd = cwd.split("/.claude/worktrees/")[0].rstrip("/") or "/"
+    if cwd in _toplevels:
+        return _toplevels[cwd]
+    probe, top = cwd, ""
+    while probe and probe != "/":
+        if os.path.exists(os.path.join(probe, ".git")):
+            top = probe
+            break
+        probe = os.path.dirname(probe)
+    _toplevels[cwd] = top or cwd
+    return _toplevels[cwd]
+
+
+def project_of(top):
+    if not top or top == "/":
+        return "/"
+    if top.rstrip("/") == base_home().rstrip("/"):
+        return "~"
+    if top.startswith(("/private/tmp/", "/tmp/", "/private/var/")):
+        return "tmp"
+    return os.path.basename(top.rstrip("/"))
+
+
+def trivial_bash(command):
+    command = QUIET_REDIRECT.sub(" ", (command or "").strip())
+    if not command or len(command) > 300 or TRIVIAL_BREAK.search(command):
+        return False
+    for segment in command.split("|"):
+        words = segment.split()
+        if not words or words[0] not in TRIVIAL_WORDS:
+            return False
+        if words[0] == "grep" and TRIVIAL_RECURSIVE.search(segment):
+            return False
+        if words[0] == "sed" and re.search(r"(^|\s)-i", segment):
+            return False
+    return True
+
+
+def fmt_s(value):
+    if value is None:
+        return "–"
+    if value < 10:
+        return "%.1f s" % value
+    if value < 600:
+        return "%.0f s" % value
+    return fmt_dur(value)
+
+
+def fmt_dur(secs):
+    secs = int(round(secs or 0))
+    if secs < 60:
+        return "%ds" % secs
+    if secs < 3600:
+        return "%dm %02ds" % (secs // 60, secs % 60)
+    return "%dh %02dm" % (secs // 3600, secs % 3600 // 60)
+
+
+def fmt_pct(share):
+    if share is None:
+        return "–"
+    if 0 < share < 0.01:
+        return "%.1f %%" % (share * 100)
+    return "%.0f %%" % (share * 100)
+
+
+def fmt_count(n):
+    return "{:,}".format(int(n)).replace(",", " ")
+
+
+def fmt_bytes(n):
+    if n is None:
+        return "–"
+    for unit, size in (("GB", 1 << 30), ("MB", 1 << 20), ("KB", 1 << 10)):
+        if n >= size:
+            return "%.1f %s" % (n / size, unit)
+    return "%d B" % n
+
+
+def median(values):
+    return statistics.median(values) if values else None
+
+
+def percentile(values, q):
+    if not values:
+        return None
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(q * (len(ordered) - 1) + 0.5))]
+
+
+# ---------------------------------------------------------------- transcripts
+
+
+def transcript_files():
+    root = projects_dir()
+    return glob.glob(os.path.join(root, "*", "*.jsonl")) + glob.glob(
+        os.path.join(root, "*", "*", "subagents", "*.jsonl"))
+
+
+def head_hash(path):
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.sha1(handle.read(512)).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
+def scan_transcripts(state, now, events, versions):
+    files = state.setdefault("files", {})
+    first = not files
+    horizon = now - BACKFILL_DAYS * 86400
+    seen = set()
+    for path in transcript_files():
+        seen.add(path)
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        rec = files.get(path)
+        if rec and rec["size"] == st.st_size and rec["mtime"] == st.st_mtime_ns:
+            continue
+        if not rec and st.st_mtime < (horizon if first else now - 2 * 86400):
+            files[path] = {"size": st.st_size, "mtime": st.st_mtime_ns, "head": head_hash(path),
+                           "off": st.st_size}
+            continue
+        head = head_hash(path)
+        if not rec or rec.get("head") != head or st.st_size < rec.get("off", 0):
+            rec = {"off": 0}
+        rec.update(size=st.st_size, mtime=st.st_mtime_ns, head=head)
+        files[path] = rec
+        read_transcript(path, rec, events, versions)
+    for path in list(files):
+        if path not in seen:
+            del files[path]
+
+
+def read_transcript(path, rec, events, versions):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(rec["off"])
+            data = handle.read()
+    except OSError:
+        return
+    end = data.rfind(b"\n") + 1
+    if end == 0:
+        return
+    rec["off"] += end
+    pend = rec.setdefault("pend", {})
+    last_t = 0.0
+    for line in data[:end].split(b"\n"):
+        if not line or not (b'"tool_use' in line or b'"tool_result"' in line or b'"hook_' in line
+                            or b'"permissionMode"' in line):
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("permissionMode"):
+            rec["mode"] = entry["permissionMode"]
+        if entry.get("entrypoint"):
+            rec["entry"] = entry["entrypoint"]
+        if entry.get("cwd"):
+            rec["top"] = repo_top(entry["cwd"])
+        t = iso_epoch(entry.get("timestamp"))
+        if t is None:
+            continue
+        last_t = max(last_t, t)
+        version = entry.get("version")
+        if isinstance(version, str) and version and (version not in versions or t < versions[version]):
+            versions[version] = t
+        project = project_of(rec.get("top", ""))
+        attachment = entry.get("attachment")
+        if isinstance(attachment, dict):
+            hook_event(attachment, t, project, events)
+            continue
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_use" and block.get("id"):
+                name = str(block.get("name") or "")
+                command = (block.get("input") or {}).get("command") if name == "Bash" else None
+                pend[block["id"]] = [t, name, 1 if trivial_bash(command) else 0]
+            elif block.get("type") == "tool_result" and block.get("tool_use_id") in pend:
+                start, name, trivial = pend.pop(block["tool_use_id"])
+                who = session_kind(rec)
+                events.append(["c", round(start, 3), project, name, trivial, round(max(0.0, t - start), 3),
+                               who, block["tool_use_id"][-10:]])
+    for key in [k for k, v in pend.items() if v[0] < last_t - PENDING_TTL_S]:
+        del pend[key]
+
+
+def session_kind(rec):
+    if rec.get("entry") == "sdk-cli":
+        return "w"
+    return "c" if rec.get("mode") == "bypassPermissions" else "h"
+
+
+def hook_event(attachment, t, project, events):
+    kind = attachment.get("type")
+    if kind not in ("hook_cancelled", "hook_success"):
+        return
+    event = str(attachment.get("hookEvent") or "")
+    name = str(attachment.get("hookName") or "")
+    tool = name.split(":", 1)[1] if ":" in name and event in ("PreToolUse", "PostToolUse") else ""
+    tid = str(attachment.get("toolUseID") or "")[-10:]
+    command = str(attachment.get("command") or "")
+    try:
+        ms = int(float(attachment.get("durationMs") or 0))
+    except (TypeError, ValueError):
+        ms = 0
+    if kind == "hook_cancelled":
+        try:
+            timeout = int(float(attachment.get("timeoutMs") or 0))
+        except (TypeError, ValueError):
+            timeout = 0
+        events.append(["x", round(t, 3), project, event, command, ms, timeout, tool, tid])
+    elif ms > 0:
+        events.append(["h", round(t, 3), project, event, command, ms, tool, tid])
+
+
+# ---------------------------------------------------------------- event store
+
+
+def events_path(day):
+    return os.path.join(state_dir(), "events", day + ".jsonl")
+
+
+def append_events(events):
+    by_day = {}
+    for event in events:
+        by_day.setdefault(local_day(event[1]), []).append(event)
+    os.makedirs(os.path.join(state_dir(), "events"), exist_ok=True)
+    for day, rows in by_day.items():
+        with open(events_path(day), "a") as handle:
+            handle.write("".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows))
+
+
+def load_events(days):
+    out = []
+    for day in days:
+        try:
+            with open(events_path(day)) as handle:
+                for line in handle:
+                    try:
+                        out.append(json.loads(line))
+                    except ValueError:
+                        continue
+        except OSError:
+            continue
+    return out
+
+
+def day_list(now, count):
+    days, t = [], now
+    while len(days) < count:
+        day = local_day(t)
+        if day not in days:
+            days.append(day)
+        t -= 3600
+    return days
+
+
+def sample_value(sample, key):
+    if key != "unseen":
+        return sample.get(key)
+    if sample.get("busy") is None or sample.get("visible") is None:
+        return None
+    return max(0.0, sample["busy"] * (sample.get("ncpu") or os.cpu_count() or 1) - sample["visible"])
+
+
+def summarize_day(day, rows, samples, hooks, windows):
+    calls = [r for r in rows if r[0] == "c"]
+    cuts = [r for r in rows if r[0] == "x"]
+    printed = [r for r in rows if r[0] == "h"]
+    waits = {}
+    for call in calls:
+        key = wait_group(call)
+        if key:
+            hist_put(waits.setdefault(key, hist_new()), call[5] * 1000.0)
+    for event, _, _ in EVENT_ROWS:
+        for _, secs, _ in event_waits(printed, cuts, event):
+            hist_put(waits.setdefault("event:" + event, hist_new()), secs * 1000.0)
+    start, end = day_start(day), day_end(day)
+    out = {"v": SUMMARY_V, "waits": waits,
+           "slow_s": int(sum(max(0, min(e, end) - max(s, start)) for s, e in windows))}
+    if hooks:
+        out["hooks"] = hooks
+    load = {}
+    for key in LOAD_KEYS:
+        value = mean([sample_value(x, key) for x in samples if start <= x.get("t", 0) < end])
+        if value is not None:
+            load[key] = round(value, 3)
+    if load:
+        out["load"] = load
+    return out
+
+
+def day_summaries(state, now, write, samples, windows, today_rows):
+    """A day is summarized once, when it ends; bumping SUMMARY_V rebuilds pruned days from the transcripts."""
+    folder = os.path.join(state_dir(), "days")
+    today = local_day(now)
+    oldest = local_day(now - DAY_SUMMARY_DAYS * 86400)
+    journal_days = state.setdefault("journal", {}).setdefault("days", {})
+    out = {}
+    for path in glob.glob(os.path.join(folder, "*.json")):
+        day = os.path.basename(path)[:-5]
+        if oldest <= day < today:
+            summary = read_json(path, {})
+            if summary.get("v") == SUMMARY_V:
+                out[day] = summary
+    logged = {os.path.basename(p)[:-6] for p in glob.glob(os.path.join(state_dir(), "events", "*.jsonl"))}
+    missing = {d for d in logged | set(journal_days) if oldest <= d < today and d not in out}
+    rebuilt, rebuilt_windows = {}, []
+    if write and state.get("rebuilt") != SUMMARY_V:
+        found, horizon = [], local_day(now - BACKFILL_DAYS * 86400)
+        scan_transcripts({}, now, found, {})
+        for event in found:
+            day = local_day(event[1])
+            if horizon <= day < today and day not in logged and day not in out:
+                rebuilt.setdefault(day, []).append(event)
+        if rebuilt:
+            rows = [e for day_rows in rebuilt.values() for e in day_rows]
+            rebuilt_windows = slow_windows([e for e in rows if e[0] == "c"], [e for e in rows if e[0] == "x"],
+                                           day_start(min(rebuilt)), day_end(max(rebuilt)))
+        missing |= set(rebuilt)
+        state["rebuilt"] = SUMMARY_V
+    for day in sorted(missing):
+        summary = (summarize_day(day, rebuilt[day], samples, journal_days.get(day), rebuilt_windows)
+                   if day in rebuilt else
+                   summarize_day(day, load_events([day]), samples, journal_days.get(day), windows))
+        out[day] = summary
+        if write:
+            os.makedirs(folder, exist_ok=True)
+            write_json(os.path.join(folder, day + ".json"), summary)
+    if write:
+        for day in [d for d in journal_days if d < today]:
+            del journal_days[day]
+    out[today] = summarize_day(today, today_rows, samples, journal_days.get(today), windows)
+    return out
+
+
+def prune(now):
+    old = []
+    for sub, keep in (("events", EVENT_DAYS), ("days", DAY_SUMMARY_DAYS), ("statusline", JOURNAL_FILE_DAYS)):
+        cutoff = local_day(now - keep * 86400)
+        old += [p for p in glob.glob(os.path.join(state_dir(), sub, "*")) if os.path.basename(p)[:10] < cutoff]
+    old += [p for p in glob.glob(os.path.join(state_dir(), "hooks", "*.tsv"))
+            if os.path.basename(p)[:-4].isdigit() and int(os.path.basename(p)[:-4]) < now // 86400 - JOURNAL_FILE_DAYS]
+    for path in old:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------- settings and change log
+
+
+def settings_hooks():
+    settings = read_json(settings_path(), {})
+    out = []
+    for event, groups in (settings.get("hooks") or {}).items():
+        for group in groups or []:
+            matcher = str(group.get("matcher") or "")
+            for hook in group.get("hooks") or []:
+                if hook.get("type", "command") != "command":
+                    continue
+                out.append({"event": event, "matcher": matcher, "command": str(hook.get("command") or ""),
+                            "timeout": hook.get("timeout"), "async": bool(hook.get("async"))})
+    return out
+
+
+def settings_mtime():
+    try:
+        return os.stat(settings_path()).st_mtime
+    except OSError:
+        return 0.0
+
+
+def hook_script(command):
+    word = (command or "").split()[0] if (command or "").split() else ""
+    if word.startswith("~/"):
+        word = os.path.join(base_home(), word[2:])
+    return word if word.startswith("/") and os.path.isfile(word) else ""
+
+
+def hook_label(command):
+    script = hook_script(command)
+    if script:
+        rest = command.split(None, 1)
+        name = os.path.basename(script)
+        name = name[:-3] if name.endswith(".sh") else name
+        return name + (" " + rest[1] if len(rest) > 1 else "")
+    return "inline: " + (command or "")[:30]
+
+
+def hook_key(command):
+    words = (command or "").split()
+    if not hook_script(command):
+        return command or ""
+    return os.path.basename(words[0]) + (" " + words[1] if len(words) > 1 else "")
+
+
+def hook_text(command, cache={}):
+    script = hook_script(command)
+    if script not in cache:
+        try:
+            with open(script, errors="replace") as handle:
+                cache[script] = handle.read(200000)
+        except OSError:
+            cache[script] = ""
+    return cache[script]
+
+
+def niced(command):
+    return bool(re.search(r"(?m)^[^#\n]*\b(renice|nice\s+-n)\b", hook_text(command)))
+
+
+def hook_journaled(command):
+    return bool(hook_script(command)) and HOOK_TIME_LIB in hook_text(command)
+
+
+def matches(matcher, tool):
+    if matcher in ("", "*"):
+        return True
+    try:
+        return re.fullmatch(matcher, tool) is not None
+    except re.error:
+        return matcher == tool
+
+
+def watch_changes(state, now, versions, hooks):
+    changes = []
+    known = state.get("watched")
+    seeding = known is None
+    known = known or {}
+    current = {}
+    paths = []
+    for root in watch_roots():
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in ("node_modules", "__pycache__")
+                           and dirpath.count(os.sep) - root.count(os.sep) < 3]
+            paths.extend(os.path.realpath(os.path.join(dirpath, name)) for name in filenames
+                         if not name.startswith(".") and not name.endswith((".pyc", ".tmp")))
+    for hook in hooks:
+        script = hook_script(hook["command"])
+        if script:
+            paths.append(os.path.realpath(script))
+    for path in set(paths):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        if st.st_size > 4 << 20:
+            continue
+        old = known.get(path)
+        if old and old[0] == st.st_size and old[1] == st.st_mtime_ns:
+            current[path] = old
+            continue
+        try:
+            with open(path, "rb") as handle:
+                digest = hashlib.sha1(handle.read()).hexdigest()[:12]
+        except OSError:
+            continue
+        current[path] = [st.st_size, st.st_mtime_ns, digest]
+        if (not old or old[2] != digest) and (not seeding or st.st_mtime >= now - 7 * 86400):
+            changes.append({"at": round(st.st_mtime, 1), "kind": "edited" if old else "new",
+                            "what": short_path(path)})
+    if not seeding:
+        for path in set(known) - set(current):
+            if not os.path.exists(os.path.dirname(path)):
+                current[path] = known[path]
+                continue
+            changes.append({"at": round(now, 1), "kind": "removed", "what": short_path(path)})
+    state["watched"] = current
+
+    snapshot = {"%s|%s|%s" % (h["event"], h["matcher"], h["command"]): h["timeout"] for h in hooks}
+    old_hooks = state.get("hooks")
+    if old_hooks is not None:
+        for key in sorted(set(snapshot) | set(old_hooks)):
+            event, _, command = key.split("|", 2)
+            name = "%s %s" % (event, hook_label(command))
+            if key not in old_hooks:
+                changes.append({"at": now, "kind": "hook added", "what": name})
+            elif key not in snapshot:
+                changes.append({"at": now, "kind": "hook removed", "what": name})
+            elif snapshot[key] != old_hooks[key]:
+                changes.append({"at": now, "kind": "hook timeout",
+                                "what": "%s %s → %s s" % (name, old_hooks[key] or "none", snapshot[key] or "none")})
+    state["hooks"] = snapshot
+
+    known_versions = state.get("versions")
+    oldest = min(versions.values()) if versions and known_versions is None else None
+    for version, first in versions.items():
+        if version not in (known_versions or {}) and first != oldest:
+            changes.append({"at": round(first, 1), "kind": "Claude Code", "what": version})
+    merged = dict(known_versions or {})
+    for version, first in versions.items():
+        merged[version] = min(first, merged.get(version, first))
+    state["versions"] = merged
+    return changes
+
+
+# ---------------------------------------------------------------- machine sample
+
+
+class _HostCpu:
+    def __init__(self):
+        self.lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
+        self.lib.mach_host_self.restype = ctypes.c_uint
+
+    def ticks(self):
+        values = (ctypes.c_uint * 4)()
+        count = ctypes.c_uint(4)
+        if self.lib.host_statistics(self.lib.mach_host_self(), 3, ctypes.byref(values), ctypes.byref(count)):
+            return None
+        return list(values)
+
+
+def host_ticks():
+    try:
+        return _HostCpu().ticks()
+    except (OSError, AttributeError):
+        return None
+
+
+def spawn_pid():
+    process = subprocess.Popen(["/usr/bin/true"])
+    process.wait()
+    return process.pid
+
+
+def sysctl(*names):
+    try:
+        out = subprocess.run(["/usr/sbin/sysctl", "-n"] + list(names), capture_output=True, text=True,
+                             timeout=5).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError):
+        return [""] * len(names)
+    return (out + [""] * len(names))[:len(names)]
+
+
+def visible_cores(now):
+    chats = read_json(os.path.join(memlogd_dir(), "chats.json"), {})
+    if not isinstance(chats, dict) or now - (chats.get("as_of") or 0) > 120:
+        return None, None
+    found = re.search(r"([\d.]+)/([\d.]+) cores", str(chats.get("title") or ""))
+    visible = float(found.group(1)) + float(found.group(2)) if found else None
+    return visible, bool(chats.get("alarm"))
+
+
+def running_tests(now):
+    count = 0
+    for path in glob.glob(os.path.join(statusline_cache(), "work-*")):
+        try:
+            if now - os.path.getmtime(path) > 30:
+                continue
+            with open(path, errors="replace") as handle:
+                count += sum(1 for line in handle if line.startswith("main\ttests\t"))
+        except OSError:
+            continue
+    return count
+
+
+def take_sample(state, now):
+    fake = os.environ.get("HARNESS_DOCTOR_FAKE_SAMPLE")
+    if fake is not None:
+        sample = json.loads(fake) if fake else None
+        if sample is not None:
+            sample.setdefault("t", now)
+        return sample
+    ncpu = os.cpu_count() or 1
+    ticks = host_ticks()
+    start_pid, started = spawn_pid(), time.monotonic()
+    time.sleep(2)
+    forks = ((spawn_pid() - start_pid) % 99999) / (time.monotonic() - started)
+    sample = {"t": now, "forks": round(forks), "ncpu": ncpu, "tests": running_tests(now)}
+    previous = state.get("ticks")
+    if ticks and previous and 0 < now - previous[0] <= SAMPLE_GAP_S:
+        delta = [(b - a) % (1 << 32) for a, b in zip(previous[1], ticks)]
+        total = sum(delta)
+        if total > 0:
+            sample["busy"] = round((delta[0] + delta[1] + delta[3]) / total, 3)
+            sample["kernel"] = round(delta[1] / total, 3)
+    if ticks:
+        state["ticks"] = [now, ticks]
+    swap, level = sysctl("vm.swapusage", "kern.memorystatus_level")
+    used = re.search(r"used = ([\d.]+)M", swap)
+    total = re.search(r"total = ([\d.]+)M", swap)
+    if used and total:
+        sample["swap_mb"], sample["swap_total_mb"] = float(used.group(1)), float(total.group(1))
+    if level.strip().isdigit():
+        sample["mem_free"] = int(level)
+    sample["visible"], sample["guard"] = visible_cores(now)
+    return sample
+
+
+def load_samples(now):
+    rows = []
+    try:
+        with open(os.path.join(state_dir(), "samples.jsonl")) as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and now - row.get("t", 0) <= EVENT_DAYS * 86400:
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+# ---------------------------------------------------------------- hook and statusline journals
+
+
+def hist_new():
+    return [0, 0, None, None, 0, 0, []]
+
+
+def hist_put(entry, ms, failed=False):
+    if ms is None:
+        entry[5] += 1
+        return
+    ms = max(0, int(round(ms)))
+    entry[0] += 1
+    entry[1] += ms
+    entry[2] = ms if entry[2] is None else min(entry[2], ms)
+    entry[3] = ms if entry[3] is None else max(entry[3], ms)
+    entry[4] += 1 if failed else 0
+    index = bisect.bisect_right(HIST_EDGES_MS, ms)
+    counts = entry[6]
+    counts.extend([0] * (index + 1 - len(counts)))
+    counts[index] += 1
+
+
+def hist_join(merged, entry):
+    for index in (0, 1, 4, 5):
+        merged[index] += entry[index]
+    if entry[2] is not None:
+        merged[2] = entry[2] if merged[2] is None else min(merged[2], entry[2])
+        merged[3] = entry[3] if merged[3] is None else max(merged[3], entry[3])
+    merged[6].extend([0] * (len(entry[6]) - len(merged[6])))
+    for index, count in enumerate(entry[6]):
+        merged[6][index] += count
+    return merged
+
+
+def hist_add(slots, t, key, ms, failed=False):
+    slot = slots.setdefault(str(int(t // SLOT_S * SLOT_S)), {})
+    hist_put(slot.setdefault(key, hist_new()), ms, failed)
+
+
+def hist_merge(slots, since):
+    out = {}
+    for slot, entries in slots.items():
+        if int(slot) + SLOT_S <= since:
+            continue
+        for key, entry in entries.items():
+            hist_join(out.setdefault(key, hist_new()), entry)
+    return {key: entry for key, entry in out.items() if entry[0] or entry[5]}
+
+
+def hist_percentile(entry, q):
+    if not entry or not entry[0]:
+        return None
+    target, seen = q * entry[0], 0
+    for index, count in enumerate(entry[6]):
+        if count and seen + count >= target:
+            low = HIST_EDGES_MS[index - 1] if index else 0
+            high = HIST_EDGES_MS[index] if index < len(HIST_EDGES_MS) else entry[3]
+            value = low + (high - low) * (target - seen) / count
+            return min(max(value, entry[2]), entry[3]) / 1000.0
+        seen += count
+    return entry[3] / 1000.0
+
+
+def fold_tsv(journal, sub, parse):
+    offsets = journal.setdefault("offsets", {})
+    folder = os.path.join(state_dir(), sub)
+    names = set()
+    for path in sorted(glob.glob(os.path.join(folder, "*.tsv"))):
+        name = sub + "/" + os.path.basename(path)
+        names.add(name)
+        start = offsets.get(name, 0)
+        try:
+            if os.path.getsize(path) < start:
+                start = 0
+            with open(path, "rb") as handle:
+                handle.seek(start)
+                data = handle.read()
+        except OSError:
+            continue
+        end = data.rfind(b"\n") + 1
+        offsets[name] = start + end
+        for text in data[:end].decode("utf-8", "replace").splitlines():
+            try:
+                parse(text.split("\t"))
+            except (ValueError, IndexError):
+                pass
+    for name in [n for n in offsets if n.startswith(sub + "/") and n not in names]:
+        del offsets[name]
+
+
+def fold_spool(add, now, write):
+    for path in glob.glob(os.path.join(state_dir(), "hooks", "spool", "*")):
+        try:
+            info = os.stat(path)
+            with open(path, errors="replace") as handle:
+                fields = handle.read().rstrip("\n").split("\t")
+        except OSError:
+            continue
+        birth = getattr(info, "st_birthtime", info.st_mtime)
+        done = len(fields) >= 2 and fields[1] != ""
+        if not done and now - birth < SPOOL_STALE_S:
+            continue
+        if done:
+            add(info.st_mtime, fields[0], (info.st_mtime - birth) * 1000.0, fields[1] != "0")
+        else:
+            add(birth, fields[0] or "?", None)
+        if write:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+def read_journals(state, now, write):
+    journal = state.setdefault("journal", {})
+    slots = journal.setdefault("slots", {})
+    if "days" not in journal:
+        journal["days"] = {}
+        for slot, entries in slots.items():
+            day = journal["days"].setdefault(local_day(int(slot)), {})
+            for key, entry in entries.items():
+                hist_join(day.setdefault(key, hist_new()), entry)
+    days = journal["days"]
+
+    def add(t, key, ms, failed=False):
+        hist_add(slots, t, key, ms, failed)
+        hist_put(days.setdefault(local_day(t), {}).setdefault(key, hist_new()), ms, failed)
+
+    def hook_row(fields):
+        start, end = int(fields[0]), int(fields[1])
+        add(end / 1e6, fields[2], (end - start) / 1000.0, fields[3] != "0")
+
+    def statusline_row(fields):
+        start, end = int(fields[0]), int(fields[1])
+        add(end / 1e6, STATUSLINE_KEY, (end - start) / 1000.0)
+
+    fold_tsv(journal, "hooks", hook_row)
+    fold_tsv(journal, "statusline", statusline_row)
+    fold_spool(add, now, write)
+    for slot in [k for k in slots if int(k) < now - JOURNAL_KEEP_S]:
+        del slots[slot]
+    return hist_merge(slots, now - 86400), hist_merge(slots, now - 3600)
+
+
+# ---------------------------------------------------------------- growth
+
+
+def count_entries(path):
+    try:
+        return sum(1 for _ in os.scandir(path))
+    except OSError:
+        return None
+
+
+def du_bytes(path):
+    try:
+        out = subprocess.run(["/usr/bin/du", "-sk", path], capture_output=True, text=True, timeout=60).stdout
+        return int(out.split()[0]) * 1024
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def loose_objects(top):
+    try:
+        out = subprocess.run(["git", "-C", top, "count-objects", "-v"], capture_output=True, text=True,
+                             timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    values = dict(line.split(": ", 1) for line in out.splitlines() if ": " in line)
+    try:
+        return int(values["count"]), int(values["size"]) * 1024
+    except (KeyError, ValueError):
+        return None, None
+
+
+def growth_sample(now, tops):
+    stores = {}
+    for name, path in (("instruction-watch reverts", os.path.join(watch_state(), "reverts")),
+                       ("statusline cache files", statusline_cache()),
+                       ("review benches", os.path.join(worker_stats_dir(), "benches")),
+                       ("harness doctor state", state_dir())):
+        if os.path.isdir(path):
+            stores[name] = [count_entries(path), du_bytes(path)]
+    if os.path.isdir(projects_dir()):
+        stores["transcripts"] = [len(transcript_files()), du_bytes(projects_dir())]
+    for top in sorted(tops):
+        if not os.path.isdir(os.path.join(top, ".git")):
+            continue
+        count, size = loose_objects(top)
+        if count is not None:
+            stores["loose git objects · " + os.path.basename(top)] = [count, size]
+    return {"day": local_day(now), "t": now, "stores": stores}
+
+
+def load_growth():
+    rows = []
+    try:
+        with open(os.path.join(state_dir(), "growth.jsonl")) as handle:
+            for line in handle:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return rows
+
+
+# ---------------------------------------------------------------- tests journal
+
+
+def load_tests(now):
+    rows = []
+    try:
+        with open(os.path.join(statusline_cache(), "test-history.jsonl")) as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(row, dict) and isinstance(row.get("end"), (int, float))
+                        and isinstance(row.get("secs"), (int, float)) and now - row["end"] <= 28 * 86400):
+                    rows.append(row)
+    except OSError:
+        pass
+    return rows
+
+
+def union_secs(intervals):
+    total, last_end = 0.0, None
+    for start, end in sorted(intervals):
+        if last_end is None or start > last_end:
+            total += end - start
+            last_end = end
+        elif end > last_end:
+            total += end - last_end
+            last_end = end
+    return total
+
+
+def peak_overlap(intervals):
+    points = sorted([(s, 1) for s, _ in intervals] + [(e, -1) for _, e in intervals], key=lambda p: (p[0], p[1]))
+    peak = level = 0
+    for _, step in points:
+        level += step
+        peak = max(peak, level)
+    return peak
+
+
+def running_now(now):
+    out = []
+    for path in glob.glob(os.path.join(statusline_cache(), "work-*")):
+        try:
+            if now - os.path.getmtime(path) > 30:
+                continue
+            with open(path, errors="replace") as handle:
+                for line in handle:
+                    parts = line.rstrip("\n").split("\t")
+                    if len(parts) >= 5 and parts[0] == "main" and parts[1] == "tests" and parts[2].isdigit():
+                        out.append({"repo": parts[3], "label": parts[4], "secs": max(0, now - int(parts[2]))})
+        except OSError:
+            continue
+    return sorted(out, key=lambda r: -r["secs"])
+
+
+# ---------------------------------------------------------------- document
+
+
+def row(cells, red=(), dim=False, menu=None, key=None, say=None, green=()):
+    out = {"cells": [str(c) for c in cells], "red": sorted(set(red)), "dim": bool(dim)}
+    if green:
+        out["green"] = sorted(set(green))
+    if menu:
+        out["menu"] = menu
+    if key:
+        out["key"] = key
+    if say:
+        out["say"] = say
+    return out
+
+
+def line(text, dim=True, red=False, menu=None):
+    out = {"cells": [text], "free": True, "red": [0] if red else [], "dim": dim and not red}
+    if menu:
+        out["menu"] = menu
+    return out
+
+
+def num(value, scale=1.0):
+    if value is None:
+        return "–"
+    value = value / scale
+    return "%.1f" % value if value < 10 else fmt_count(round(value))
+
+
+def fmt_long(secs):
+    secs = int(round(secs or 0))
+    if secs < 60:
+        return "%d s" % secs
+    if secs < 3600:
+        return "%d min" % round(secs / 60.0)
+    return "%d h %02d min" % (secs // 3600, secs % 3600 // 60)
+
+
+def section(name, rows, columns, right, lead=(), nav=(), ok=""):
+    problems = [r for r in rows if r.get("red")]
+    watches = [r for r in rows if not r.get("red") and not r.get("dim") and r.get("say")]
+    state = "problem" if problems else "watch" if watches else "ok"
+    first = (problems or watches or [None])[0]
+    fact = (first.get("say") if first else None) or ok
+    extra = len(problems or watches) - 1
+    if first and extra > 0:
+        fact += " (+%d more)" % extra
+    return {"name": name, "state": state, "fact": fact, "lead": list(lead), "columns": columns, "right": right,
+            "rows": rows, "nav": list(nav)}
+
+
+WAIT_COLUMNS = ["", "calls 1 h", "wait s 1 h", "wait s 7 d", "cuts 1 h"]
+WAIT_RIGHT = [False, True, True, True, True]
+
+
+def event_waits(printed, cuts, event):
+    occurrences = {}
+    for sample in printed:
+        if sample[3] == event:
+            occurrences.setdefault(sample[7] or sample[1], []).append((sample[1], sample[5] / 1000.0, False))
+    for cut in cuts:
+        if cut[3] == event:
+            occurrences.setdefault(cut[8] or cut[1], []).append((cut[1], (cut[5] or cut[6]) / 1000.0, True))
+    return [(min(x[0] for x in v), max(x[1] for x in v), any(x[2] for x in v)) for v in occurrences.values()]
+
+
+def waits_section(calls, cuts, samples_h, week, now):
+    hour = now - 3600
+    cut_tids = {c[8] for c in cuts if c[3] in ("PreToolUse", "PostToolUse") and c[8]}
+    groups = {}
+    for call in calls:
+        key = wait_group(call)
+        if key:
+            groups.setdefault(key, []).append(call)
+    fine = fmt_s(LIMITS["call_note_s"])
+
+    def usual(key):
+        return num(hist_percentile(week["waits"].get(key), 0.5))
+
+    def make(label, items, key, subject):
+        recent = [c for c in items if c[1] >= hour]
+        n1 = len(recent)
+        m1 = median([c[5] for c in recent])
+        cut1 = sum(1 for c in recent if c[7] in cut_tids)
+        red = [{3: 2, 6: 4}[i] for i in waits_red(n1, m1, cut1)]
+        few = n1 < LIMITS["call_min_calls"]
+        watch = not red and m1 is not None and m1 > LIMITS["call_s" if few else "call_note_s"]
+        if 4 in red and 2 not in red:
+            say = "hooks cut %d of %d calls in the last hour (%s)" % (cut1, n1, label)
+        elif red or watch:
+            say = "%s waits %s, fine under %s" % (subject, fmt_s(m1), fine)
+            if few:
+                say += ", only %d call%s" % (n1, "" if n1 == 1 else "s")
+        else:
+            say = None
+        return row([label, fmt_count(n1), num(m1), usual(key), fmt_count(cut1)],
+                   red, dim=not red and not watch, key="wait:" + label, say=say)
+
+    projects = sorted({k[5:] for k in groups if k.startswith("bash:")}, key=lambda p: -len(groups["bash:" + p]))
+    project_rows = [make("Bash · " + clip(p, 22), groups["bash:" + p], "bash:" + p, "a Bash call in " + clip(p, 22))
+                    for p in projects]
+    rows = project_rows[:5] + [r for r in project_rows[5:] if not r["dim"]]
+    nav = []
+    if len(project_rows) > len(rows):
+        nav.append(line("all %d projects" % len(project_rows),
+                        menu=section("", project_rows, WAIT_COLUMNS, WAIT_RIGHT)))
+    if "edit" in groups:
+        rows.append(make("Edit, Write", groups["edit"], "edit", "an Edit"))
+    if "read" in groups:
+        rows.append(make("Read", groups["read"], "read", "a Read"))
+
+    for event, label, _ in EVENT_ROWS:
+        recent = [w for w in event_waits(samples_h, cuts, event) if w[0] >= hour]
+        if not recent:
+            continue
+        m1 = median([w[1] for w in recent])
+        cut1 = sum(1 for w in recent if w[2])
+        red = []
+        if m1 is not None and len(recent) >= 3 and m1 > LIMITS["event_s"]:
+            red.append(2)
+        if cut1 >= LIMITS["cut_min"]:
+            red.append(4)
+        rows.append(row([label, fmt_count(len(recent)), num(m1), usual("event:" + event), fmt_count(cut1)], red,
+                        dim=not red, key="wait:" + label,
+                        say=("a %s waits %s" % (label, fmt_s(m1)) if 2 in red
+                             else "hooks cut %d %ss in the last hour" % (cut1, label)) if red else None))
+    overall = [c for k, items in groups.items() if k.startswith("bash:") for c in items if c[1] >= hour]
+    m_all = median([c[5] for c in overall])
+    return section("Waits", rows, WAIT_COLUMNS, WAIT_RIGHT, nav=nav,
+                   ok="a Bash call waits %s, fine under %s" % (fmt_s(m_all), fine) if m_all is not None
+                   else "no tool call in the last hour")
+
+
+def waits_red(n1, m1, cut1):
+    red = []
+    if m1 is not None and n1 >= LIMITS["call_min_calls"] and m1 > LIMITS["call_s"]:
+        red.append(3)
+    if n1 and cut1 >= LIMITS["cut_min"] and cut1 / n1 > LIMITS["cut_share"]:
+        red.append(6)
+    return red
+
+
+def wait_group(call):
+    if call[6] == "h":
+        return None
+    if call[3] == "Bash" and call[4]:
+        return "bash:" + call[2]
+    if call[3] in EDIT_TOOLS:
+        return "edit"
+    return "read" if call[3] == "Read" else None
+
+
+def merge_windows(windows):
+    merged = []
+    for start, end in sorted(windows):
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def slow_windows(calls, cuts, since, now):
+    """The periods a Waits call row was red, replayed on a 5-minute grid; LLM doctor's mark_slow reads
+    them as `local_slow` to tell this Mac's slowness from the model's."""
+    cut_tids = {c[8] for c in cuts if c[3] in ("PreToolUse", "PostToolUse") and c[8]}
+    groups = {}
+    for call in calls:
+        key = wait_group(call)
+        if key:
+            groups.setdefault(key, []).append(call)
+    windows = []
+    first = (int(since) // SLOW_STEP_S + 1) * SLOW_STEP_S
+    for items in groups.values():
+        items.sort(key=lambda c: c[1])
+        times = [c[1] for c in items]
+        for t in range(first, int(now) + 1, SLOW_STEP_S):
+            recent = items[bisect.bisect_left(times, t - 3600):bisect.bisect_right(times, t)]
+            if not recent:
+                continue
+            cut1 = sum(1 for c in recent if c[7] in cut_tids)
+            if not waits_red(len(recent), median([c[5] for c in recent]), cut1):
+                continue
+            slow = [c for c in recent if c[5] > LIMITS["call_s"] or c[7] in cut_tids]
+            if slow:
+                windows.append([int(slow[0][1]), int(max(c[1] + c[5] for c in slow)) + 1])
+    return merge_windows(windows)
+
+
+def days_between(start, end):
+    days, t = [], end
+    while t >= start - 86400:
+        day = local_day(t)
+        if day >= local_day(start) and day not in days:
+            days.append(day)
+        t -= 3600
+    return days
+
+
+def local_slow(state, now, new_events, write):
+    slow = state.get("slow") or {}
+    since = max(now - EVENT_DAYS * 86400, (slow.get("upto") or 0) - 3600)
+    events = load_events(days_between(since - 3600, now)) + ([] if write else new_events)
+    calls = [e for e in events if e[0] == "c" and e[1] >= since - 3600]
+    cuts = [e for e in events if e[0] == "x" and e[1] >= since - 3600]
+    windows = merge_windows([w for w in slow.get("windows") or [] if w[1] >= now - EVENT_DAYS * 86400]
+                            + slow_windows(calls, cuts, since, now))
+    state["slow"] = {"upto": int(now) // SLOW_STEP_S * SLOW_STEP_S, "windows": windows}
+    return windows
+
+
+def slow_section(windows, now):
+    day = now - 86400
+    total = sum(min(e, now) - max(s, day) for s, e in windows if e > day)
+    rows = [row([time.strftime("%m-%d %H:%M", time.localtime(s)), time.strftime("%H:%M", time.localtime(e)),
+                 num(e - s, 60.0)]) for s, e in sorted(windows, key=lambda w: -w[0])[:12]]
+    last = max(e for _, e in windows) if windows else None
+    out = section("Slow periods", rows, ["from", "to", "lasted min"], [False, False, True],
+                  ok="no slow period in the last 24 h" + (
+                      ", the last one ended %s" % time.strftime("%m-%d", time.localtime(last)) if last else ""))
+    if total:
+        out["state"] = "watch"
+        out["fact"] = "tool calls were slow %s of the last 24 h, last until %s" % (
+            fmt_long(total), time.strftime("%H:%M", time.localtime(last)))
+    return out
+
+
+HOOK_COLUMNS = ["hook", "when", "median s 24 h", "min 24 h", "cuts 24 h"]
+HOOK_RIGHT = [False, False, True, True, True]
+HOOK_WHEN = {"SessionStart": "chat start", "UserPromptSubmit": "each message", "Stop": "turn end",
+             "SubagentStop": "subagent end", "PreCompact": "compaction", "SessionEnd": "chat end",
+             "Notification": "notification"}
+HOOK_WAITERS = {"SessionStart": "chat starts", "UserPromptSubmit": "messages", "Stop": "turn ends",
+                "SubagentStop": "subagent ends"}
+
+
+def hook_when(hook):
+    event, matcher = hook["event"], hook["matcher"] if hook["matcher"] not in ("", "*") else "any tool"
+    if event == "PreToolUse":
+        return clip("before " + matcher, 20)
+    if event == "PostToolUse":
+        return clip("after " + matcher, 20)
+    return HOOK_WHEN.get(event, event)
+
+
+def attribute_post_cuts(cuts, calls, hooks, hooks_since):
+    durations = {c[7]: (c[3], c[5]) for c in calls}
+    out = []
+    for cut in cuts:
+        if cut[3] != "PostToolUse" or cut[4]:
+            out.append((cut, cut[4]))
+            continue
+        tool, seconds = durations.get(cut[8], (cut[7], None))
+        if seconds is None or cut[1] < hooks_since:
+            out.append((cut, ""))
+            continue
+        candidates = []
+        for hook in hooks:
+            if hook["event"] != "PostToolUse" or hook["async"] or not matches(hook["matcher"], tool):
+                continue
+            limit = float(hook["timeout"] or DEFAULT_HOOK_TIMEOUT_S)
+            if seconds - max(3.0, 0.2 * seconds) <= limit <= seconds + 1.0:
+                candidates.append((limit, hook["command"]))
+        if candidates:
+            top = max(c[0] for c in candidates)
+            names = sorted({c[1] for c in candidates if c[0] == top})
+            out.append((cut, names[0] if len(names) == 1 else " | ".join(names)))
+        else:
+            out.append((cut, ""))
+    return out
+
+
+def hooks_section(hooks, calls, cuts, samples_h, hooks_since, timed24, timed1, now):
+    hour = now - 3600
+    attributed = attribute_post_cuts(cuts, calls, hooks, hooks_since)
+    groups = {}
+    for hook in hooks:
+        groups.setdefault(hook_key(hook["command"]), []).append(hook)
+    full, risky = [], []
+    for key, members in groups.items():
+        first = members[0]
+        pairs = {(h["event"], h["command"]) for h in members}
+        if key in timed24:
+            count, count1 = timed24[key][0], timed1[key][0] if key in timed1 else 0
+            p50, p50_1 = hist_percentile(timed24[key], 0.5), hist_percentile(timed1.get(key), 0.5)
+            total = timed24[key][1] / 1000.0
+        else:
+            mine_h = [s for s in samples_h if (s[3], s[4]) in pairs]
+            times = [s[5] / 1000.0 for s in mine_h]
+            times1 = [s[5] / 1000.0 for s in mine_h if s[1] >= hour]
+            count, count1 = len(times), len(times1)
+            p50, p50_1 = percentile(times, 0.5), percentile(times1, 0.5)
+            total = None
+        mine = [cut for cut, name in attributed if (cut[3], name) in pairs]
+        cut1 = sum(1 for cut in mine if cut[1] >= hour)
+        ambiguous = sum(1 for cut, name in attributed if " | " in name
+                        and any((cut[3], command) in pairs for command in name.split(" | ")))
+        tool_hooks = [h for h in members if h["event"] in ("PreToolUse", "PostToolUse")]
+        calls1 = None
+        if tool_hooks:
+            calls1 = sum(1 for c in calls if c[1] >= hour and any(matches(h["matcher"], c[3]) for h in tool_hooks))
+        limit = first["timeout"]
+        synchronous = any(h["event"] in SYNC_EVENTS and not h["async"] for h in members)
+        name = hook_label(first["command"])
+        red = []
+        if cut1 >= LIMITS["cut_min"] and (not calls1 or cut1 / calls1 > LIMITS["cut_share"]):
+            red.append(4)
+        if (synchronous and p50_1 is not None and count1 >= LIMITS["hook_min_samples"]
+                and p50_1 > LIMITS["hook_p50_s"]):
+            red.append(2)
+        watch = (not red and synchronous and p50 is not None and count >= 3 and p50 > LIMITS["hook_p50_s"])
+        for hook in members:
+            if hook["event"] in SYNC_EVENTS and not hook["async"] and (not hook["timeout"] or niced(hook["command"])):
+                risky.append(hook)
+        waiter = HOOK_WAITERS.get(first["event"]) or "%s calls" % (
+            first["matcher"] if re.fullmatch(r"\w+", first["matcher"]) else "tool")
+        if 2 in red:
+            say = "%d %s waited %s for %s in the last hour" % (count1, waiter, fmt_s(p50_1), name)
+        elif red:
+            say = "%s was cut %d times in the last hour at its %s limit" % (
+                name, cut1, fmt_s(float(limit or DEFAULT_HOOK_TIMEOUT_S)))
+        elif watch:
+            say = "%d %s waited %s for %s in 24 h" % (count, waiter, fmt_s(p50), name)
+        else:
+            say = None
+        when = hook_when(first) if len(members) == 1 else clip(hook_when(first), 17) + " +%d" % (len(members) - 1)
+        entry = row([clip(name, 28), when, num(p50), num(total, 60.0),
+                     fmt_count(len(mine)) + (" +%d?" % ambiguous if ambiguous else "")], red, dim=not red and not watch,
+                    key="hook:" + key, say=say)
+        entry["weight"] = (total if total is not None else sum(times)) + len(mine) * float(
+            limit or DEFAULT_HOOK_TIMEOUT_S)
+        full.append(entry)
+    statusline24, statusline1 = timed24.get(STATUSLINE_KEY), timed1.get(STATUSLINE_KEY)
+    if statusline24:
+        p50 = hist_percentile(statusline24, 0.5)
+        watch = p50 > LIMITS["hook_p50_s"]
+        entry = row(["statusline (not a hook)", "each render", num(p50), num(statusline24[1] / 60000.0), "–"],
+                    dim=not watch, key="hook:statusline",
+                    say="the statusline takes %s a render" % fmt_s(p50) if watch else None)
+        entry["weight"] = statusline24[1] / 1000.0
+        full.append(entry)
+    ranked = sorted(full, key=lambda r: (-len(r["red"]), r["dim"], -r["weight"]))
+    rows = [r for r in ranked if not r["dim"]][:6]
+    for r in ranked:
+        if len(rows) >= 4:
+            break
+        if r not in rows and r["weight"] > 0:
+            rows.append(r)
+    unknown = {}
+    for cut, name in attributed:
+        if not name:
+            counts = unknown.setdefault(cut[3], [0, 0])
+            counts[1] += 1
+            if cut[1] >= hour:
+                counts[0] += 1
+    for event, (cut1, cut24) in sorted(unknown.items()):
+        red = [4] if cut1 >= LIMITS["cut_min"] else []
+        rows.append(row(["(which hook is unknown)", hook_when({"event": event, "matcher": ""}), "–", "–",
+                         fmt_count(cut24)], red, dim=not red, key="hook:unknown:" + event,
+                        say="%d hooks were cut in the last hour, which ones is unknown" % cut1))
+    rest = ranked[INVENTORY_ROWS:]
+    for r in full:
+        r.pop("weight", None)
+    nav = [line("top %d of %d hooks" % (INVENTORY_ROWS, len(groups)) if rest else "all %d hooks" % len(groups),
+                menu=section("", ranked[:INVENTORY_ROWS], HOOK_COLUMNS, HOOK_RIGHT))]
+    if risky:
+        nav.append(line("%d hooks can hold a chat up to %d s" % (len(risky), DEFAULT_HOOK_TIMEOUT_S), menu=section(
+            "", [row([clip(hook_label(h["command"]), 28), hook_when(h), str(h["timeout"]) if h["timeout"] else "none",
+                      "niced" if niced(h["command"]) else ""]) for h in risky],
+            ["hook", "when", "limit s", ""], [False, False, True, False])))
+    return section("Hooks", rows, HOOK_COLUMNS, HOOK_RIGHT, nav=nav,
+                   ok="%d hooks, none slow or cut in the last hour" % len(groups))
+
+
+def clip(text, width):
+    return text if len(text) <= width else text[:width - 1] + "…"
+
+
+def mean(values):
+    values = [v for v in values if v is not None]
+    return sum(values) / len(values) if values else None
+
+
+def level(value, note_limit, red_limit):
+    if value is None:
+        return "dim"
+    return "red" if value > red_limit else "note" if value > note_limit else "dim"
+
+
+def load_section(samples, now):
+    hour, week = now - 3600, now - 7 * 86400
+    latest = samples[-1] if samples else {}
+    ncpu = latest.get("ncpu") or os.cpu_count() or 1
+    first = min((s.get("t", now) for s in samples), default=now)
+
+    def series(key, since, fn=None):
+        return mean([fn(s) if fn else s.get(key) for s in samples if s.get("t", 0) >= since
+                     and (fn or s.get(key) is not None)])
+
+    def measure(label, now_value, week_value, fmt, lv, key, say):
+        red = [1] if lv == "red" else []
+        return row([label, fmt(now_value), fmt(week_value)], red, dim=lv == "dim", key=key,
+                   say=say if lv != "dim" else None)
+
+    pct = fmt_pct
+    busy, busy7 = series("busy", hour), series("busy", week)
+    kernel, kernel7 = series("kernel", hour), series("kernel", week)
+    forks, forks7 = series("forks", hour), series("forks", week)
+    unseen = lambda s: sample_value(s, "unseen")
+    gap, gap7 = series(None, hour, unseen), series(None, week, unseen)
+    rows = [
+        measure("CPU busy", busy, busy7, pct, level(busy, LIMITS["busy_note"], LIMITS["busy"]), "load:busy",
+                "CPU %s busy, usual under %s" % (pct(busy), pct(LIMITS["busy_note"]))),
+        measure("  of it the kernel", kernel, kernel7, pct, level(kernel, LIMITS["kernel_note"], LIMITS["kernel"]),
+                "load:kernel", "the kernel takes %s of CPU, usual under %s" % (pct(kernel),
+                                                                                pct(LIMITS["kernel_note"]))),
+        measure("new processes", forks, forks7, lambda v: "–" if v is None else fmt_count(v) + " /s",
+                level(forks, LIMITS["forks_note"], LIMITS["forks"]), "load:forks",
+                "%s new processes a second, usual under %s" % (fmt_count(forks or 0), fmt_count(LIMITS["forks_note"]))),
+        measure("unaccounted CPU", gap, gap7, lambda v: "–" if v is None else "%.1f cores" % v,
+                level(gap, LIMITS["unseen_note"], LIMITS["unseen_cores"]), "load:unseen",
+                "%.1f of %d cores go to short-lived processes and the kernel" % (gap or 0, ncpu)),
+    ]
+    swap, swap_total, guard = latest.get("swap_mb"), latest.get("swap_total_mb"), latest.get("guard")
+    swap_share = swap / swap_total if swap is not None and swap_total else None
+    rows.append(row(["memory free", "%s %%" % latest["mem_free"] if latest.get("mem_free") is not None else "–", ""],
+                    [1] if guard else [], dim=not guard, key="load:memory",
+                    say="the memory guard raised an alarm" if guard else None))
+    swap_level = level(swap_share, 0.5, LIMITS["swap_share"])
+    rows.append(row(["swap used", "%.1f GB" % (swap / 1024.0) if swap is not None else "–", ""],
+                    [1] if swap_level == "red" else [], dim=swap_level == "dim", key="load:swap",
+                    say="swap %.1f GB, nearly full" % (swap / 1024.0) if swap is not None and swap_level != "dim"
+                    else None))
+    tests_now = latest.get("tests")
+    rows.append(row(["tests running", fmt_count(tests_now) if tests_now is not None else "–", ""], dim=not tests_now))
+    columns = ["", "last hour", "7 days" if first <= week + 3600 else
+               "since " + time.strftime("%m-%d %H:%M", time.localtime(first))]
+    if first > hour - 1800:
+        columns = drop_column(rows, columns, 2)
+    return section("Load", rows, columns, [False, True, True],
+                   ok="CPU %s busy, swap %.1f GB" % (pct(busy), (swap or 0) / 1024.0) if busy is not None
+                   else "no sample yet")
+
+
+def repo_name(repo):
+    """The statusline marks a worktree with ⧉, which Menlo lacks: its fallback glyph shifts the row."""
+    return (repo or "?").replace("⧉ ", "wt ").replace("⧉", "wt ")
+
+
+def tests_section(tests, now):
+    today = local_day(now)
+    todays = [t for t in tests if local_day(t["end"]) == today]
+    intervals = lambda xs: [(t["end"] - t["secs"], t["end"]) for t in xs]
+    suites = [t for t in todays if t.get("label") == "suites"]
+    peak = peak_overlap(intervals(suites)) if suites else 0
+    rows = []
+    groups = {}
+    for t in tests:
+        groups.setdefault((repo_name(t.get("repo")), t.get("label") or "?"), []).append(t)
+    ranked = []
+    for (repo, label), items in groups.items():
+        items.sort(key=lambda t: t["end"])
+        todays_items = [t for t in items if local_day(t["end"]) == today]
+        if not todays_items:
+            continue
+        usual = median([t["secs"] for t in items])
+        last = items[-1]["secs"]
+        red = []
+        if len(items) >= 3 and last > LIMITS["test_slow_ratio"] * usual and last > LIMITS["test_slow_min_s"]:
+            red.append(4)
+        name = clip("%s · %s" % (label, repo), 34)
+        ranked.append((sum(t["secs"] for t in todays_items), row(
+            [name, fmt_count(len(todays_items)), num(sum(t["secs"] for t in todays_items), 60.0), num(usual, 60.0),
+             num(last, 60.0)], red, dim=not red, key="tests:%s:%s" % (repo, label),
+            say="%s took %s, usual %s" % (name, fmt_long(last), fmt_long(usual)))))
+    ranked.sort(key=lambda x: -x[0])
+    rows = [r for _, r in ranked[:6]] + [r for _, r in ranked[6:] if r["red"]]
+    overlap = line("suites at once today: %d" % peak, dim=peak < LIMITS["suites_note"],
+                   red=peak >= LIMITS["suites_at_once"])
+    overlap.update(key="tests:overlap", say="%d suite runs at once today, fine up to %d" % (
+        peak, LIMITS["suites_at_once"] - 1))
+    columns, right = ["test · repo", "runs today", "min today", "usual min", "last min"], [False, True, True, True, True]
+    nav = []
+    if len(ranked) > len(rows):
+        rest = ranked[INVENTORY_ROWS:]
+        nav.append(line("top %d of %d tests today" % (INVENTORY_ROWS, len(ranked)) if rest
+                        else "all %d tests today" % len(ranked),
+                        menu=section("", [r for _, r in ranked[:INVENTORY_ROWS]], columns, right)))
+    live = running_now(now)
+    if live:
+        nav.append(line("running now: %d" % len(live), menu=section(
+            "", [row([clip("%s · %s" % (r["label"], repo_name(r["repo"])), 34), num(r["secs"], 60.0)]) for r in live],
+            ["test · repo", "running min"], [False, True])))
+    latest = sorted(tests, key=lambda t: -t["end"])[:LATEST_TESTS]
+    if latest:
+        nav.append(line("latest %d" % len(latest), menu=section("", [
+            row([time.strftime("%H:%M" if local_day(t["end"]) == today else "%m-%d %H:%M", time.localtime(t["end"])),
+                 clip("%s · %s" % (t.get("label"), repo_name(t.get("repo"))), 34), num(t["secs"], 60.0),
+                 t.get("who") or ""])
+            for t in latest], ["at", "test · repo", "took min", "who"], [False, False, True, False])))
+    out = section("Tests", rows, columns, right, lead=[overlap], nav=nav,
+                  ok=("%d runs today, %s of wall clock, none slower than usual" % (
+                      len(todays), fmt_long(union_secs(intervals(todays)))) if todays else "no test finished today")
+                  + ("; %d running now" % len(live) if live else ""))
+    if overlap["red"] and out["state"] != "problem":
+        out.update(state="problem", fact=overlap["say"])
+    out["extra_red"] = [overlap] if overlap["red"] else []
+    return out
+
+
+def growth_section(growth, now):
+    if not growth:
+        return None
+    latest = growth[-1]
+    week = [g for g in growth if g.get("t", 0) <= now - 6.5 * 86400]
+    before = week[-1]["stores"] if week else {}
+    every = []
+    for name, (count, size) in sorted(latest["stores"].items(), key=lambda kv: -(kv[1][1] or 0)):
+        old = before.get(name, [None, None])[0]
+        red, note = [], False
+        loose = name.startswith("loose git objects")
+        if loose:
+            if count is not None and count > LIMITS["loose_red"]:
+                red.append(1)
+            elif count is not None and count > LIMITS["loose_note"]:
+                note = True
+            say = "%s: %s loose git objects slow its git, limit %s" % (
+                name.split(" · ", 1)[-1], fmt_count(count or 0), fmt_count(LIMITS["loose_red"]))
+        else:
+            big = (count or 0) > LIMITS["store_entries"] or (size or 0) > LIMITS["store_bytes"]
+            grew = old and count and count > LIMITS["store_growth"] * old
+            if big and grew:
+                red.append(1)
+            elif big:
+                note = True
+            say = ("%s doubled in a week to %s entries" % (name, fmt_count(count or 0)) if red
+                   else "%s holds %s entries, %s" % (name, fmt_count(count or 0), fmt_bytes(size)))
+        every.append(row([clip(name, 40), fmt_count(count) if count is not None else "–",
+                          fmt_count(old) if old is not None else "–",
+                          fmt_count((size or 0) / float(1 << 20)) if size is not None else "–"], red,
+                         dim=not red and not note, key="growth:" + name, say=say if red or note else None))
+    columns, right = ["store", "entries", "a week ago", "size MB"], [False, True, True, True]
+    if not before:
+        columns, right = drop_column(every, columns, 2), [False, True, True]
+    rows = [r for r in every if not r["dim"]]
+    rows += [r for r in every if r not in rows][:max(0, 5 - len(rows))]
+    nav = [line("all %d stores" % len(every), menu=section("", every, columns, right))] if len(every) > len(rows) else []
+    return section("Growth", rows, columns, right, nav=nav,
+                   ok="no store big enough to slow things down")
+
+
+def drop_column(rows, columns, index):
+    for r in rows:
+        del r["cells"][index:index + 1]
+    return columns[:index] + columns[index + 1:]
+
+
+def day_share(day, now):
+    start = day_start(day)
+    return min(1.0, max(0.0, (now - start) / (day_end(day) - start)))
+
+
+def period(summaries, days, now, tests):
+    out = {"waits": {}, "hooks": {}, "load": {k: [] for k in LOAD_KEYS}, "slow": 0.0, "days": 0.0,
+           "hook_days": 0.0, "wall": 0.0, "test_days": 0.0, "by_test": {}}
+    for day in days:
+        summary = summaries.get(day)
+        if not summary:
+            continue
+        share = day_share(day, now)
+        out["days"] += share
+        out["slow"] += summary.get("slow_s", 0)
+        for key, entry in (summary.get("waits") or {}).items():
+            hist_join(out["waits"].setdefault(key, hist_new()), entry)
+        if summary.get("hooks"):
+            out["hook_days"] += share
+            for key, entry in summary["hooks"].items():
+                hist_join(out["hooks"].setdefault(key, hist_new()), entry)
+        for key, value in (summary.get("load") or {}).items():
+            if key in out["load"]:
+                out["load"][key].append(value)
+    first = local_day(min(t["end"] for t in tests)) if tests else None
+    for day in days:
+        mine = [t for t in tests if local_day(t["end"]) == day]
+        if first and day >= first:
+            out["test_days"] += day_share(day, now)
+        out["wall"] += union_secs([(t["end"] - t["secs"], t["end"]) for t in mine])
+        for t in mine:
+            out["by_test"].setdefault("%s · %s" % (t.get("label") or "?", repo_name(t.get("repo"))), []).append(
+                t["secs"])
+    return out
+
+
+def by_hist(entry):
+    return (hist_percentile(entry, 0.5), bool(entry) and entry[0] >= WEEK_MIN_RUNS)
+
+
+def by_rate(total, days, unit):
+    return (total / days / unit if days else None, days >= WEEK_MIN_DAYS)
+
+
+def by_mean(values, scale=1.0):
+    return (mean(values) * scale if values else None, len(values) >= WEEK_MIN_DAYS)
+
+
+def bash_waits(p):
+    merged = hist_new()
+    for key, entry in p["waits"].items():
+        if key.startswith("bash:"):
+            hist_join(merged, entry)
+    return merged
+
+
+def blank(fmt):
+    return lambda v: "–" if v is None else fmt(v)
+
+
+WEEK_METRICS = (
+    ("Bash wait s", lambda p: by_hist(bash_waits(p)), blank(num)),
+    ("Edit wait s", lambda p: by_hist(p["waits"].get("edit")), blank(num)),
+    ("Read wait s", lambda p: by_hist(p["waits"].get("read")), blank(num)),
+    ("chat start s", lambda p: by_hist(p["waits"].get("event:SessionStart")), blank(num)),
+    ("turn end s", lambda p: by_hist(p["waits"].get("event:Stop")), blank(num)),
+    ("slow h/day", lambda p: by_rate(p["slow"], p["days"], 3600.0), blank(num)),
+    ("hooks h/day", lambda p: by_rate(sum(e[1] for k, e in p["hooks"].items() if k != STATUSLINE_KEY),
+                                        p["hook_days"], 3600000.0), blank(num)),
+    ("CPU busy %", lambda p: by_mean(p["load"]["busy"], 100.0), blank(lambda v: "%d" % round(v))),
+    ("kernel %", lambda p: by_mean(p["load"]["kernel"], 100.0), blank(lambda v: "%d" % round(v))),
+    ("new proc/s", lambda p: by_mean(p["load"]["forks"]), blank(lambda v: fmt_count(round(v)))),
+    ("unaccounted cores", lambda p: by_mean(p["load"]["unseen"]), blank(lambda v: "%.1f" % v)),
+    ("tests h/day", lambda p: by_rate(p["wall"], p["test_days"], 3600.0), blank(num)),
+)
+
+
+def delta(cur, prev, enough=True):
+    """Row db of docs/shared-invariants.md: tokenmap tracking.py's Δ, cell text and tone alike."""
+    if cur is None or prev is None or not (cur or prev):
+        return "", ""
+    if not prev:
+        return "new", ""
+    ratio = cur / prev
+    pct = round((ratio - 1) * 100)
+    text = "×%.0f" % ratio if ratio >= DELTA_TIMES_FROM else "%+d%%" % pct if pct else "0%"
+    if abs(ratio - 1) < DELTA_MATERIAL or not enough:
+        return text, ""
+    return text, "worse" if cur > prev else "better"
+
+
+def compare_row(label, cur, prev, fmt, menu=None):
+    text, tone = delta(cur[0], prev[0], cur[1] and prev[1])
+    out = row([label, fmt(cur[0]), fmt(prev[0]), text], red=[3] if tone == "worse" else [],
+              green=[3] if tone == "better" else [], dim=cur[0] is None and prev[0] is None, menu=menu)
+    out["tone"] = tone
+    return out
+
+
+def compare_table(header, cur, prev, labels, value, fmt):
+    rows = [compare_row(label, value(cur, key), value(prev, key), fmt) for key, label in labels]
+    return section("", rows, [header, "7 days", "prev 7", "Δ"], [False, True, True, True])
+
+
+def week_days(now):
+    today = local_day(now)
+    noon = day_start(today) + 12 * 3600
+    monday = local_day(noon - time.localtime(noon).tm_wday * 86400)
+    weeks = []
+    for back in range(BY_WEEKS - 1, -1, -1):
+        first = day_start(monday) + 12 * 3600 - back * 7 * 86400
+        weeks.append([d for d in (local_day(first + k * 86400) for k in range(7)) if d <= today])
+    return weeks
+
+
+def weeks_section(summaries, tests, now, hooks):
+    days = day_list(now, 2 * WEEK_DAYS)
+    cur, prev = period(summaries, days[:WEEK_DAYS], now, tests), period(summaries, days[WEEK_DAYS:], now, tests)
+    names = {}
+    for hook in hooks:
+        names.setdefault(hook_key(hook["command"]), hook_label(hook["command"]))
+    names[STATUSLINE_KEY] = "statusline (not a hook)"
+
+    def ranked(pairs, weight, limit):
+        return sorted(pairs, key=lambda kv: -weight(kv[0]))[:limit]
+
+    projects = ranked([(k, "Bash · " + clip(k[5:], 22)) for k in set(cur["waits"]) | set(prev["waits"])
+                       if k.startswith("bash:")], lambda k: (cur["waits"].get(k) or [0])[0], 10)
+    hook_keys = ranked([(k, clip(names.get(k) or re.sub(r"\.sh\b", "", k, count=1), 28))
+                        for k in set(cur["hooks"]) | set(prev["hooks"])],
+                       lambda k: (cur["hooks"].get(k) or [0, 0])[1], INVENTORY_ROWS)
+    test_keys = ranked([(k, clip(k, 34)) for k in set(cur["by_test"]) | set(prev["by_test"])],
+                       lambda k: sum(cur["by_test"].get(k) or []), 10)
+    drills = {
+        "Bash wait s": compare_table("Bash wait s", cur, prev, projects,
+                                     lambda p, k: by_hist(p["waits"].get(k)), blank(num)),
+        "hooks h/day": compare_table("hook median s", cur, prev, hook_keys,
+                                       lambda p, k: by_hist(p["hooks"].get(k)), blank(num)),
+        "tests h/day": compare_table("test median min", cur, prev, test_keys,
+                                     lambda p, k: (median(p["by_test"].get(k) or []) / 60.0
+                                                   if p["by_test"].get(k) else None,
+                                                   len(p["by_test"].get(k) or []) >= WEEK_MIN_DAYS), blank(num)),
+    }
+    rows = [compare_row(label, value(cur), value(prev), fmt, menu=drills.get(label) if drills.get(label, {}).get(
+        "rows") else None) for label, value, fmt in WEEK_METRICS]
+    weeks = week_days(now)
+    per_week = [period(summaries, w, now, tests) for w in weeks]
+    by_week = section("", [row([label] + [fmt(value(p)[0]) for p in per_week]) for label, value, fmt in WEEK_METRICS],
+                      ["week (Mon–Sun)"] + [w[0][5:] for w in weeks], [False] + [True] * len(weeks))
+    out = section("", rows, ["", "7 days", "prev 7", "Δ"], [False, True, True, True],
+                  nav=[line("by week", dim=False, menu=by_week)])
+    worse = sum(1 for r in rows if r["tone"] == "worse")
+    better = sum(1 for r in rows if r["tone"] == "better")
+    parts = [("7 days vs prev 7", "")]
+    if worse:
+        parts.append((" · %d worse" % worse, "r"))
+    if better:
+        parts.append(((", " if worse else " · ") + "%d better" % better, "g"))
+    entry = line("".join(p[0] for p in parts), dim=False, menu=out)
+    entry["parts"] = parts
+    return entry, cur
+
+
+def change_impact(calls, samples, now):
+    short = [(c[1], c[5]) for c in calls if c[3] == "Bash" and c[4] and c[6] != "h"]
+
+    def bash(start, end):
+        waits = [w for t, w in short if start <= t < end]
+        return median(waits) if len(waits) >= LIMITS["impact_min_calls"] else None
+
+    def forks(start, end):
+        return mean([s["forks"] for s in samples if start <= s.get("t", 0) < end and s.get("forks") is not None])
+
+    def pair(before, after, fmt):
+        if before is None and after is None:
+            return "–"
+        return "%s→%s" % (fmt(before) if before is not None else "–", fmt(after) if after is not None else "–")
+
+    def impact(at):
+        end = min(at + 3600, now)
+        return [pair(bash(at - 3600, at), bash(at, end), num),
+                pair(forks(at - 3600, at), forks(at, end), lambda v: fmt_count(round(v)))]
+    return impact
+
+
+def change_table(changes, impact):
+    rows = [row([time.strftime("%m-%d %H:%M", time.localtime(c["at"])), c["kind"], clip(c["what"], 44)]
+                + impact(c["at"])) for c in changes]
+    return section("", rows, ["at", "change", "what", "short Bash s", "new proc/s"],
+                   [False, False, False, True, True])
+
+
+def attach_causes(state, sections, changes_log, impact, now):
+    born = state.setdefault("born", now)
+    firstred = state.setdefault("firstred", {})
+    for part in sections:
+        for r in part["rows"] + part.get("extra_red", []):
+            if r.get("red") and r.get("key"):
+                entry = firstred.setdefault(r["key"], {"since": now, "label": r["cells"][0]})
+                entry["last"] = now
+    for key in [k for k, v in firstred.items() if now - v.get("last", 0) > 3600]:
+        del firstred[key]
+    for part in sections:
+        reds = [r for r in part["rows"] + part.get("extra_red", []) if r.get("red") and r.get("key") in firstred]
+        if part["state"] != "problem" or not reds:
+            continue
+        since = min(firstred[r["key"]]["since"] for r in reds)
+        stamp = time.strftime("%H:%M" if local_day(since) == local_day(now) else "%m-%d %H:%M", time.localtime(since))
+        if since <= born:
+            part["lead"].insert(0, line("started before %s · cause unknown" % stamp, dim=False))
+            continue
+        part["fact"] += " · since " + stamp
+        near = sorted([c for c in changes_log if since - 6 * 3600 <= c["at"] <= since + 900], key=lambda c: -c["at"])
+        if near:
+            part["lead"].insert(0, line("started %s · %d change%s before it" % (
+                stamp, len(near), "" if len(near) == 1 else "s"), dim=False, menu=change_table(near[:12], impact)))
+        else:
+            part["lead"].insert(0, line("started %s · no change in the 6 h before" % stamp, dim=False))
+
+
+def load_changes(now):
+    rows = []
+    try:
+        with open(os.path.join(state_dir(), "changes.jsonl")) as handle:
+            for line_text in handle:
+                try:
+                    change = json.loads(line_text)
+                except ValueError:
+                    continue
+                if isinstance(change, dict) and now - change.get("at", 0) <= DAY_SUMMARY_DAYS * 86400:
+                    rows.append(change)
+    except OSError:
+        pass
+    return rows
+
+
+def menu_text(document):
+    """The menu as laid-out lines: `depth<TAB>flags<TAB>spans<TAB>text`, spans as `style:byte:bytes`.
+    hs.json.decode of the document costs ~40 ms per menu open; these lines cost a match each."""
+    lines = ["T\t%d\t%d\t%s" % (document["red"], document["as_of"], document["title"])]
+
+    def emit(depth, flags, spans, text):
+        lines.append("%d\t%s\t%s\t%s" % (depth, flags, ",".join("%s:%d:%d" % s for s in spans),
+                                         text.replace("\t", " ").replace("\n", " ") or " "))
+
+    def free(item, depth):
+        text = item["cells"][0]
+        spans = [("r", 0, len(text.encode()))] if item.get("red") else []
+        if item.get("parts"):
+            at = 0
+            for piece, style in item["parts"]:
+                size = len(piece.encode())
+                if style:
+                    lead = len(piece[:len(piece) - len(piece.lstrip(" ·,"))].encode())
+                    spans.append((style, at + lead, size - lead))
+                at += size
+        emit(depth, "d" if item.get("dim") else "", spans, text)
+        if item.get("menu"):
+            layout(item["menu"], depth + 1)
+
+    def grid_rows(columns, right, rows, depth, header=True):
+        grid = ([[str(c) for c in columns]] if header else []) + [r["cells"] for r in rows]
+        if not grid:
+            return
+        count = max(len(r) for r in grid)
+        widths = [max(len(r[c]) if c < len(r) else 0 for r in grid) for c in range(count)]
+        right = list(right) + [False] * count
+        for index, cells in enumerate(grid):
+            source = rows[index - 1 if header else index] if index or not header else None
+            last = max([c for c, text in enumerate(cells) if text != ""] or [-1])
+            text, spans = "", []
+            for c in range(last + 1):
+                piece = cells[c] if c == last and not right[c] else (
+                    cells[c].rjust(widths[c]) if right[c] else cells[c].ljust(widths[c]))
+                if c:
+                    text += "  "
+                style = source and ("r" if c in source.get("red", ()) else "g" if c in source.get("green", ())
+                                    else "n" if c in source.get("bright", ()) else "")
+                if style:
+                    lead = len(piece) - len(piece.lstrip(" "))
+                    spans.append((style, len((text + piece[:lead]).encode()), len(piece.strip(" ").encode())))
+                text += piece
+            if source is None:
+                emit(depth, "d", [], text)
+            else:
+                emit(depth, "d" if source.get("dim") else "", spans, text)
+                if source.get("menu"):
+                    layout(source["menu"], depth + 1)
+
+    def layout(part, depth):
+        for item in part.get("lead", ()):
+            free(item, depth)
+        if part["rows"]:
+            grid_rows(part["columns"], part["right"], part["rows"], depth)
+        if part.get("nav"):
+            emit(depth, "s", [], "-")
+        for item in part.get("nav", ()):
+            free(item, depth)
+
+    top = []
+    for part in document["sections"]:
+        state = part["state"]
+        entry = row([part["name"], state, part["fact"]], [1] if state == "problem" else [], dim=state == "ok",
+                    menu=part)
+        if state == "ok":
+            entry["bright"] = [0]
+        top.append(entry)
+    grid_rows(["", "", ""], [False] * 3, top, 0, header=False)
+    emit(0, "s", [], "-")
+    for item in document.get("extras", ()):
+        free(item, 0)
+    emit(0, "s", [], "-")
+    emit(0, "d", [], document["footer"])
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------- main
+
+
+def collect(write, now):
+    started = time.monotonic()
+    folder = state_dir()
+    if write:
+        os.makedirs(folder, exist_ok=True)
+    state = read_json(os.path.join(folder, "state.json"), {})
+    new_events, versions = [], {}
+    if not state.get("files"):
+        state["rebuilt"] = SUMMARY_V
+    scan_transcripts(state, now, new_events, versions)
+    hooks = settings_hooks()
+    changes = watch_changes(state, now, versions, hooks)
+    sample = take_sample(state, now)
+    samples = load_samples(now) + ([sample] if sample else [])
+    timed24, timed1 = read_journals(state, now, write)
+
+    if write:
+        append_events(new_events)
+        if changes:
+            with open(os.path.join(folder, "changes.jsonl"), "a") as handle:
+                handle.write("".join(json.dumps(c, separators=(",", ":")) + "\n" for c in changes))
+    growth = load_growth()
+    if not growth or growth[-1].get("day") != local_day(now):
+        tops = {rec.get("top") for rec in state.get("files", {}).values()
+                if rec.get("top") and now - rec.get("mtime", 0) / 1e9 <= 7 * 86400}
+        growth.append(growth_sample(now, {t for t in tops if t and t != "/"}))
+        if write:
+            with open(os.path.join(folder, "growth.jsonl"), "a") as handle:
+                handle.write(json.dumps(growth[-1], separators=(",", ":")) + "\n")
+    days = day_list(now, 2)
+    events = load_events(days) if write else load_events(days) + new_events
+    today = local_day(now)
+    today_rows = [e for e in events if local_day(e[1]) == today]
+    events = [e for e in events if now - e[1] <= 86400]
+    calls = [e for e in events if e[0] == "c"]
+    cuts = [e for e in events if e[0] == "x"]
+    samples_h = [e for e in events if e[0] == "h"]
+    changes_log = load_changes(now) + ([] if write else changes)
+
+    slow_periods = local_slow(state, now, new_events, write)
+    summaries = day_summaries(state, now, write, samples, slow_periods, today_rows)
+    if write:
+        prune(now)
+    tests = load_tests(now)
+    weeks, week = weeks_section(summaries, tests, now, hooks)
+    sections = [waits_section(calls, cuts, samples_h, week, now),
+                slow_section(slow_periods, now),
+                hooks_section(hooks, calls, cuts, samples_h, settings_mtime(), timed24, timed1, now),
+                load_section(samples, now),
+                tests_section(tests, now)]
+    growth_part = growth_section(growth, now)
+    if growth_part:
+        sections.append(growth_part)
+    impact = change_impact(calls, samples, now)
+    attach_causes(state, sections, changes_log, impact, now)
+    red = sum(1 for s in sections if s["state"] == "problem")
+    recent = sorted([c for c in changes_log if c["at"] >= now - 7 * 86400], key=lambda c: -c["at"])
+    outside = sorted({hook_label(h["command"]) for h in hooks if not hook_journaled(h["command"])})
+    blind = (["hook time of %s outside the hook journal, known only when it printed" % clip(", ".join(outside), 60)]
+             if outside else [])
+    if STATUSLINE_KEY not in timed24:
+        blind.append("statusline cost per render (no render journal in 24 h)")
+    blind += BLIND_SPOTS
+    extras = [weeks,
+              line("changes, 7 d: %d" % len(recent), menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
+              line("not measured: %d blind spots" % len(blind),
+                   menu=section("", [row([b], dim=True) for b in blind], ["blind spot"], [False]))]
+    elapsed = time.monotonic() - started
+    document = {
+        "as_of": int(now), "collector_s": round(elapsed, 2), "red": red, "local_slow": slow_periods,
+        "title": "Harness doctor: " + ("OK" if not red else "%d problem%s" % (red, "" if red == 1 else "s")),
+        "sections": sections, "extras": extras,
+        "footer": "as of %s" % time.strftime("%H:%M", time.localtime(now)),
+    }
+    if write:
+        write_json(os.path.join(folder, "state.json"), state)
+        if sample:
+            kept = [s for s in samples if now - s.get("t", 0) <= EVENT_DAYS * 86400]
+            with open(os.path.join(folder, "samples.jsonl.tmp"), "w") as handle:
+                handle.write("".join(json.dumps(s, separators=(",", ":")) + "\n" for s in kept))
+            os.replace(os.path.join(folder, "samples.jsonl.tmp"), os.path.join(folder, "samples.jsonl"))
+        write_json(os.path.join(folder, "latest.json"), document)
+        tmp = os.path.join(folder, "menu.txt.tmp")
+        with open(tmp, "w") as handle:
+            handle.write(menu_text(document))
+        os.replace(tmp, os.path.join(folder, "menu.txt"))
+    return document
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Harness doctor collector")
+    parser.add_argument("--json", action="store_true", help="print the document and persist nothing")
+    parser.add_argument("--menu", action="store_true", help="print the menu lines and persist nothing")
+    parser.add_argument("--quiet", action="store_true")
+    args = parser.parse_args()
+    now = now_s()
+    if args.json or args.menu:
+        document = collect(False, now)
+        print(menu_text(document) if args.menu else json.dumps(document, indent=1, ensure_ascii=False), end="")
+        return 0
+    os.makedirs(os.path.join(state_dir(), "hooks", "spool"), exist_ok=True)
+    with open(os.path.join(state_dir(), "lock"), "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if not args.quiet:
+                print("harness-doctor: another run holds the lock", file=sys.stderr)
+            return 0
+        document = collect(True, now)
+    if not args.quiet:
+        print(document["title"] + " · " + document["footer"])
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

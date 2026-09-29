@@ -3,6 +3,7 @@
 # threshold is denied ONCE with the recurring token cost quoted; the same edit
 # passes on retry once the transcript shows the file re-read after that denial
 # (the deny is the "audit it, then tell Egor" step, not a wall).
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 [ -n "${HOME:-}" ] || exit 0
@@ -25,44 +26,54 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
+. "$(dirname "$self")/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
 . "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
-  { echo "instruction bloat gate: cannot load share/instruction-files.sh, so no edit can be priced" >&2; exit 2; }
+  { gate_journal bloat fault '' '' '' 'share/instruction-files.sh missing'
+    echo "instruction bloat gate: cannot load share/instruction-files.sh, so no edit can be priced" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 ||
-  { echo "instruction bloat gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
+  { gate_journal bloat fault '' '' '' 'jq missing'
+    echo "instruction bloat gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
 # A size warning about the global file is not a decision of its own: the edit may still be priced,
 # denied and retried, so the note rides along with whatever this gate ends up saying.
 ceiling_note=''
 
-deny() {
-  local reason=$1
+# An exit 0 with nothing printed is an allow, so a denial jq cannot print leaves by exit 2 instead.
+deny() { # tag reason
+  local reason=$2
   instruction_inflight_clear "$sid"
+  gate_journal bloat denied "$sid" "$file_path" "${delta:-}" "$1"
   [ -n "$ceiling_note" ] && reason="$reason $ceiling_note"
   jq -cn --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null ||
+    { printf '%s\n' "$reason" >&2; exit 2; }
   exit 0
 }
 
-pass() {
+pass() { # [decision detail]
+  [ -z "${1:-}" ] || gate_journal bloat "$1" "$sid" "$file_path" "${delta:-}" "${2:-}"
   [ -n "$ceiling_note" ] && jq -cn --arg c "$ceiling_note" \
     '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c}}' 2>/dev/null
   exit 0
 }
 
-tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/instruction-gate.XXXXXX") || exit 0
-trap 'rm -rf "$tmp_dir" 2>/dev/null' EXIT
+sid='' file_path=''
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/instruction-gate.XXXXXX") ||
+  { gate_journal bloat fault '' '' '' 'mktemp failed'; exit 0; }
+trap 'hook_time_end 2>/dev/null || :; rm -rf "$tmp_dir" 2>/dev/null' EXIT
 input_file="$tmp_dir/input.json"
 cat >"$input_file" || : >"$input_file"
 
 jq -e 'type == "object"' "$input_file" >/dev/null 2>&1 ||
-  { echo "instruction bloat gate: the hook payload does not parse" >&2; exit 2; }
-IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd < <(jq -j '
-  [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // "")]
+  { gate_journal bloat fault '' '' '' 'payload does not parse'
+    echo "instruction bloat gate: the hook payload does not parse" >&2; exit 2; }
+IFS=$'\x1f' read -r -d '' tool_name sid tool_use_id payload_cwd agent_id < <(jq -j '
+  [(.tool_name // ""), (.session_id // ""), (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring)]
   | join("\u001f")' "$input_file" 2>/dev/null) || :
 # Before any decision: the tripwire attributes bytes to this call by the mark's time, and deny()
 # takes the mark back, since a denied call never runs.
 case "$tool_name" in
-  Edit|Write|MultiEdit|NotebookEdit) instruction_inflight_mark "$sid" "$tool_use_id" "$tool_name" "$payload_cwd" ;;
+  Edit|Write|MultiEdit|NotebookEdit) instruction_inflight_mark "$sid" "$tool_use_id" "$tool_name" "$payload_cwd" "$agent_id" ;;
 esac
 jq -e '.tool_name == "Edit" or .tool_name == "Write" or .tool_name == "MultiEdit"' \
   "$input_file" >/dev/null 2>&1 || exit 0
@@ -78,7 +89,7 @@ case "$file_path" in
   /*) ;;
   *)
     cwd=$(jq -r '.cwd // ""' "$input_file" 2>/dev/null) || exit 0
-    [ -n "$cwd" ] || exit 0
+    [ -n "$cwd" ] || { gate_journal bloat fault "$sid" "$file_path" '' 'relative path with no cwd'; exit 0; }
     file_path="$cwd/$file_path"
     ;;
 esac
@@ -89,6 +100,7 @@ esac
 # no part of this — `instruction_always_loaded` answers for the always-on classes alone.
 if instruction_in_relay && instruction_always_loaded "$file_path" "$HOME" >/dev/null; then
   instruction_inflight_clear "$sid"
+  gate_journal bloat relay-refused "$sid" "$file_path"
   instruction_relay_refusal "$file_path" >&2
   exit 2
 fi
@@ -177,14 +189,16 @@ cyrillic=$(jq -r '
   | if test("[А-Яа-яЁё]") then "yes" else "no" end
 ' "$input_file" 2>/dev/null) || cyrillic=''
 if [ -n "$class_reads" ] && [ "$cyrillic" = "yes" ]; then
-  deny "${file_path} is English-only. Russian is allowed only inside «...»-quoted verbatim user phrases."
+  deny cyrillic "${file_path} is English-only. Russian is allowed only inside «...»-quoted verbatim user phrases."
 fi
+
+payload_fault() { gate_journal bloat fault "$sid" "$file_path" '' 'edit payload unreadable'; exit 0; }
 
 # All sizes in UTF-8 bytes via files + wc -c; jq's `length` counts codepoints
 # and silently understates multibyte (Cyrillic) growth against the threshold.
-tool_name=$(jq -r '.tool_name' "$input_file" 2>/dev/null) || exit 0
+tool_name=$(jq -r '.tool_name' "$input_file" 2>/dev/null) || payload_fault
 if [ "$tool_name" = "Write" ]; then
-  jq -j '.tool_input.content // ""' "$input_file" >"$tmp_dir/new" 2>/dev/null || exit 0
+  jq -j '.tool_input.content // ""' "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
   new_bytes=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')
   old_bytes=0
   [ -f "$file_path" ] && old_bytes=$(wc -c <"$file_path" | tr -d '[:space:]')
@@ -196,17 +210,17 @@ else
     edits='[.tool_input]'
   fi
   jq -e "($edits | type == \"array\") and all($edits[]; (.old_string | type == \"string\") and (.new_string | type == \"string\"))" \
-    "$input_file" >/dev/null 2>&1 || exit 0
-  n_edits=$(jq -r "$edits | length" "$input_file" 2>/dev/null) || exit 0
+    "$input_file" >/dev/null 2>&1 || payload_fault
+  n_edits=$(jq -r "$edits | length" "$input_file" 2>/dev/null) || payload_fault
   delta=0
   i=0
   while [ "$i" -lt "$n_edits" ]; do
-    jq -j --argjson i "$i" "$edits[\$i].old_string" "$input_file" >"$tmp_dir/old" 2>/dev/null || exit 0
-    jq -j --argjson i "$i" "$edits[\$i].new_string" "$input_file" >"$tmp_dir/new" 2>/dev/null || exit 0
+    jq -j --argjson i "$i" "$edits[\$i].old_string" "$input_file" >"$tmp_dir/old" 2>/dev/null || payload_fault
+    jq -j --argjson i "$i" "$edits[\$i].new_string" "$input_file" >"$tmp_dir/new" 2>/dev/null || payload_fault
     old_len=$(wc -c <"$tmp_dir/old" | tr -d '[:space:]')
     new_len=$(wc -c <"$tmp_dir/new" | tr -d '[:space:]')
     one=$((new_len - old_len))
-    replace_all=$(jq -r --argjson i "$i" "$edits[\$i].replace_all // false" "$input_file" 2>/dev/null) || exit 0
+    replace_all=$(jq -r --argjson i "$i" "$edits[\$i].replace_all // false" "$input_file" 2>/dev/null) || payload_fault
     if [ "$replace_all" = "true" ] && [ -f "$file_path" ] && [ "$old_len" -gt 0 ]; then
       count=$(perl -e '
         local $/; open my $f, "<", $ARGV[0] or exit; my $hay = <$f>;
@@ -232,7 +246,7 @@ if [ -n "$global" ] && [ "$delta" -gt 0 ] 2>/dev/null; then
   prospective=$((current_bytes + delta))
   bound="Keep it bounded: put new detail in an on-demand instruction document and leave only a pointer in global CLAUDE.md."
   if [ "$prospective" -gt "$INSTRUCTION_GLOBAL_HARD_BYTES" ] 2>/dev/null; then
-    deny "Global CLAUDE.md would be ${prospective} bytes, past its ${INSTRUCTION_GLOBAL_HARD_BYTES}-byte ceiling. ${bound} An edit that shrinks the file passes at any size; this one grows it."
+    deny ceiling "Global CLAUDE.md would be ${prospective} bytes, past its ${INSTRUCTION_GLOBAL_HARD_BYTES}-byte ceiling. ${bound} An edit that shrinks the file passes at any size; this one grows it."
   fi
   if [ "$prospective" -gt "$INSTRUCTION_GLOBAL_WARN_BYTES" ] 2>/dev/null; then
     ceiling_note="Global CLAUDE.md would be ${prospective} bytes. ${bound}"
@@ -283,23 +297,23 @@ fallback_rate() {
 }
 case "$rate_state" in
   measured)
-    weekly_display=$(display_rate "$weekly_reads") || pass
-    monthly_display=$(display_rate "$monthly_reads") || pass
+    weekly_display=$(display_rate "$weekly_reads") || pass fault 'weekly rate unreadable'
+    monthly_display=$(display_rate "$monthly_reads") || pass fault 'monthly rate unreadable'
     reads=$monthly_display
     live=1
     ;;
   legacy)
-    reads=$(fallback_rate "$monthly_reads") || pass
+    reads=$(fallback_rate "$monthly_reads") || pass fault 'legacy rate unreadable'
     live=legacy
     ;;
   cheap) ;;
   *) reads=$class_reads ;;
 esac
-[ -n "$reads" ] || [ "$rate_state" = cheap ] || pass
+[ -n "$reads" ] || [ "$rate_state" = cheap ] || pass passed unpriced
 
 if [ "$rate_state" = cheap ]; then
   if [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null; then
-    cheap_display=$(display_floor "$cheap_floor") || pass
+    cheap_display=$(display_floor "$cheap_floor") || pass fault 'cheap floor unreadable'
     sid=$(jq -r '.session_id // ""' "$input_file" 2>/dev/null) || sid=''
     notice_hash=$(printf '%s\n%s\n' "$sid" "$file_path" | shasum -a 256 | cut -c1-16)
     if instruction_mark_once "$STAMP_DIR/notices" "$notice_hash"; then
@@ -310,7 +324,7 @@ if [ "$rate_state" = cheap ]; then
       ceiling_note="${file_path} is below ~${cheap_display} ${unit}/month; not gated."
     fi
   fi
-  pass
+  pass passed cheap
 fi
 
 threshold=$THRESHOLD_BYTES
@@ -329,8 +343,8 @@ if [ "$rate_state" = measured ] && [ "$weekly_zero" != true ]; then
   case "$derived" in ''|*[!0-9]*) derived=$THRESHOLD_BYTES ;; esac
   [ "$derived" -gt "$threshold" ] 2>/dev/null && threshold=$derived
 fi
-[ "$delta" -gt "$threshold" ] 2>/dev/null || pass
-instruction_span_live "$sid" "$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null)" && pass
+[ "$delta" -gt "$threshold" ] 2>/dev/null || pass passed "threshold $threshold"
+instruction_span_live "$sid" "$(jq -r '.transcript_path // ""' "$input_file" 2>/dev/null)" && pass span-pass
 
 # The session is part of the key, exactly as it is in the write gate: approval Egor gave in one
 # chat is not approval a parallel or later one inherits for the same edit.
@@ -390,6 +404,7 @@ instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid" "$(jq -r '.transcript_path /
 stamp_rc=$?
 if [ "$stamp_rc" = 3 ]; then
   instruction_inflight_clear "$sid"
+  gate_journal bloat forged "$sid" "$file_path" "$delta"
   instruction_stamp_forged "$file_path" "$sid"
   echo "instruction bloat gate: a retry stamp for this edit of $file_path was there before any denial of this session minted it, so it was removed and recorded for Egor; running the edit again gets the ordinary denial." >&2
   exit 2
@@ -397,9 +412,9 @@ fi
 if [ "$stamp_rc" = 0 ]; then
   if retry_read_seen; then
     rm -f "$note" 2>/dev/null
-    instruction_stamp_consume "$STAMP_DIR" "$hash" && pass
+    instruction_stamp_consume "$STAMP_DIR" "$hash" && pass granted
   else
-    deny "Gate retry requires re-reading the file first: Read ${file_path} in full, then retry the same edit — it will pass."
+    deny unread "Gate retry requires re-reading the file first: Read ${file_path} in full, then retry the same edit — it will pass."
   fi
 fi
 
@@ -420,8 +435,13 @@ if [ -f "$file_path" ]; then
   fi
 fi
 
-tokens=$(jq -nr --argjson d "$delta" --argjson c "$CHARS_PER_TOKEN" '($d / $c) | round' 2>/dev/null) || exit 0
-case "$tokens" in ''|*[!0-9]*) exit 0 ;; esac
+# The growth is already past the threshold here, so a price that cannot be computed still denies.
+unpriced() {
+  gate_journal bloat fault "$sid" "$file_path" "$delta" "price not computable: $1"
+  deny price "Instruction-bloat gate: +${delta} bytes to ${file_path}, a file LLMs re-read across sessions; its price could not be computed. Re-read the WHOLE file, cut what is stale or duplicated so the edit nets out, or ask Egor with the byte delta; after that Read the same edit passes once. $(instruction_denial_tag "$hash")"
+}
+tokens=$(jq -nr --argjson d "$delta" --argjson c "$CHARS_PER_TOKEN" '($d / $c) | round' 2>/dev/null) || unpriced tokens
+case "$tokens" in ''|*[!0-9]*) unpriced tokens ;; esac
 # Multiplied from the SHOWN rate, not the measured one. The denial orders its reader to quote all
 # three figures to Egor verbatim, so the token count, the re-read count and the cost have to be a
 # sentence he can multiply out; snapping the product to the ladder a second time broke that —
@@ -435,11 +455,11 @@ if [ "$rate_state" != measured ]; then
   # reader told to quote it verbatim and forbidden to derive its own has nowhere else to get it.
   # The rescale is the export's own: a month of measurement is the only window wide enough to
   # price a file, and a seventh-of-thirty slice of it is what a week of that behaviour costs.
-  monthly_display=$(display_rate "$reads") || exit 0
-  weekly_display=$(display_rate "$(jq -nr --argjson n "$reads" '$n * 7 / 30' 2>/dev/null)") || exit 0
+  monthly_display=$(display_rate "$reads") || unpriced 'monthly rate'
+  weekly_display=$(display_rate "$(jq -nr --argjson n "$reads" '$n * 7 / 30' 2>/dev/null)") || unpriced 'weekly rate'
 fi
-weekly=$(cost "$weekly_display") || exit 0
-monthly=$(cost "$monthly_display") || exit 0
+weekly=$(cost "$weekly_display") || unpriced 'weekly cost'
+monthly=$(cost "$monthly_display") || unpriced 'monthly cost'
 weekly_shown=$(instruction_times "$(instruction_format_count "$weekly_display")")
 monthly_shown=$(instruction_times "$(instruction_format_count "$monthly_display")")
 if [ "$rate_state" = measured ]; then
@@ -451,4 +471,4 @@ else
 fi
 headline="+${delta} bytes (~${tokens_shown} tokens) costs ~${weekly} tokens/week and ~${monthly}/month against the weekly usage limit, because this file re-enters the cached prefix ~${weekly_shown} a week and ~${monthly_shown} a month — every token added is paid for that many times over (${measured})."
 
-deny "Instruction-bloat gate: ${headline} Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough for net <= 0 passes immediately, no approval needed — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE and wait for his explicit OK in this turn. Report it as exactly three lines in his language, quoting the figures from this message verbatim rather than deriving your own, and adding nothing else: line 1 COST — the file, the byte delta, the token delta, the weekly cost, the monthly cost; line 2 CUT — what you cut, or that nothing was safely cuttable; line 3 PAYS BACK — what the addition saves per month (avoided corrections, repeated output, worker calls), or that it does not pay for itself. A rule that saves less than it costs does not get written. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again. $(instruction_denial_tag "$hash")"
+deny cost "Instruction-bloat gate: ${headline} Protocol, fastest path first: (1) AUDIT — re-read the WHOLE file now and look for up to 3 lines that are stale, duplicated in another live surface, or restate what code/hooks already enforce (criteria: ~/.claude/docs/context-file-hygiene.md). A combined edit that adds your text AND cuts enough for net <= 0 passes immediately, no approval needed — name the cuts in your reply so Egor can veto them. (2) 'Nothing defensibly cuttable' is a fully valid audit outcome — NEVER cut a live rule to make room. In that case present Egor the NET BALANCE and wait for his explicit OK in this turn. Report it as exactly three lines in his language, quoting the figures from this message verbatim rather than deriving your own, and adding nothing else: line 1 COST — the file, the byte delta, the token delta, the weekly cost, the monthly cost; line 2 CUT — what you cut, or that nothing was safely cuttable; line 3 PAYS BACK — what the addition saves per month (avoided corrections, repeated output, worker calls), or that it does not pay for itself. A rule that saves less than it costs does not get written. (3) Content rules trump cost math: history/changelog, anything derivable from code, linter rules as prose, and defensive verification scaffolding are cut, not costed; prefer a hook/mechanical control over prose, and compress what remains. The gate verifies the audit mechanically: after this denial, Read the target file, then retry — the same edit passes once. A retry without that Read is denied again. $(instruction_denial_tag "$hash")"

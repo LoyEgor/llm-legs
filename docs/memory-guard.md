@@ -1,181 +1,161 @@
 # Memory guard (decision record)
 
-`bin/memlogd` does not only log. Under memory pressure it acts, on one rule with no knobs.
+`bin/memlogd` does not only log. Every tick it runs `bin/chat-load` (deployed beside the daemon
+copy in `~/.local/libexec/`), which attributes every process to the chat that launched it, writes the
+per-chat load snapshot the llm-limits menu shows, and under memory pressure acts on one rule with no
+knobs. A forced reboot is the one outcome this exists to prevent; lag and heavy swapping are fine.
 
 ## The rule
 
 Trigger, both halves required, evaluated once per tick:
 
 - system available RAM < **3072 MB**, AND
-- the **fattest currently-registered agent process tree** > **1536 MB**, weighed as the summed RSS of
-  its live **descendants** — never the root's own, since the root is never killed and memory no kill
-  can free must not convict a tree.
+- the **fattest chat job** > **1536 MB**, weighed as the summed RSS of its members.
 
-Action: **SIGKILL that one tree's descendants**. The tree's root is spared.
+A **job** is one process group launched by one chat — every Bash call a chat makes is its own group
+— minus every protected process. Action: **post the notice, then SIGKILL every member of that one
+job**. The next tick re-evaluates; the next fattest goes then, if the pressure did not end.
 
-On a kill that landed, memlogd writes a `KILLED` line into its day log and appends a `MEMGUARD`
-record to the run directory of the agent it cut.
+On a kill that landed, chat-load prints a `KILLED` line memlogd appends to its day log, appends a
+`MEMGUARD` record to the run directory of any worker run or review cell the job ran under, and the
+menu shows a red `⚠ HH:MM guard killed a job of <chat> · freed N GB` row for 15 minutes.
+
+## Who a process belongs to
+
+Every process a chat launches inherits `CLAUDE_CODE_SESSION_ID`, and `worker-run` exports
+`CLAUDE_LAUNCHER_SESSION` into every worker it starts. chat-load reads both from the kernel
+(`KERN_PROCARGS2`, same user only), cached per pid and start time. Order: the launcher, then the
+process's own session, then the nearest ancestor that claims one or is a registered chat CLI, then
+the process's own registry entry (a top-level CLI carries neither variable). The session found is
+then walked up to the outermost chat, so a worker's job is billed to the chat that launched it.
+
+macOS hides the environment of platform binaries (`/bin/*`, `/usr/bin/*`), so a shell or `sleep`
+is attributed through its ancestry alone. The hogs that froze this machine — python, node — expose
+theirs, so even one orphaned to launchd still has an owner.
+
+**What no chat launched is never a candidate**: Egor's apps and shells carry no session variable and
+have no chat ancestor. There is no vendor or CLI name list anywhere; the registries below decide.
+
+## Protected
+
+The registry pids and all their ancestors are never members of a job:
+
+1. live chat CLIs — `~/.claude-profiles/*/sessions/<pid>.json` and `~/.claude/sessions/<pid>.json`
+   (`CHAT_LOAD_SESSIONS` in tests);
+2. `worker-run` runs without an `exit_code` — `meta.json` `.cli_pid` and `.pid`
+   (`${WORKER_RUN_DIR:-~/.cache/claude-worker-runs}`);
+3. review-bench cells — `<state_dir>/benches/<run-id>/pid-<cell artifact>`, `<state_dir>` being
+   `${WORKER_STATS_DIR:-${CLAUDEB_DIR:-~/.claude-profiles/.claudeb}/worker-stats}`, written right
+   after `Popen` and removed in its `finally`.
+
+A stale registration can only spare a process, never condemn one, so no identity check is needed:
+the old guard's start-time verification existed because a registered pid used to be a kill TARGET.
+
+So the agent always survives its command: the chat or worker CLI sees the command die by signal 9
+and can say so, and a worker run's supervisor still writes its exit code and report.
+
+## The notice comes first
+
+Before the kill, chat-load posts a `notice` block (the deployed `report-bus`, all posts at once under
+one 3 s timeout) to the
+launching chat and to every live session a member ran under (the worker's own, for a worker's job):
+what was stopped, the available RAM, that this is not a crash and the task is still solvable, and to
+rerun with fewer parallel jobs or smaller batches. Posted first, it is already on the bus when the
+killed tool call returns, so that call's own PostToolUse flush carries it into the model's context
+and Egor's view. A closed chat gets no post — nothing may wait for a chat that never comes back —
+but its job is still killed: that is exactly what nothing else would ever stop.
+
+Nothing is paused or queued: SIGSTOP would park a chat for minutes and leave stopped processes
+behind for chats that die. A killed job leaves nothing.
 
 ## Why 3072 / 1536
 
 Neither number alone convicts, and that is the whole design. macOS keeps swapping long past the
 point where a machine is comfortable, so "low memory" on its own is a state this machine lives in
-for hours at a time — a guard that fired on it would kill working agents most days. A single fat
-agent tree on its own is likewise ordinary: a review panel with several cells open legitimately
-holds a couple of gigabytes and finishes fine.
+for hours at a time. A single fat job on its own is likewise ordinary.
 
 - **3072 MB available** is below the band where the machine still swaps its way out on its own and
-  above the point where the UI has already stopped responding. Above it, waiting is the better
-  move; below it, something is going to die and the only question is what.
-- **1536 MB for one tree** is above every healthy agent tree measured on this machine and below the
-  runaway shapes that caused the freezes this guard exists for (the 2026-08-28 incident, where a
-  review cell's own `pnpm test` fan-out took the machine down). It picks out a tree that is
-  anomalous, not merely busy.
+  above the point where the UI has already stopped responding.
+- **1536 MB for one job** is above every healthy agent job measured on this machine and below the
+  runaway shapes that caused the freezes (2026-08-28: a review cell's `pnpm test` fan-out;
+  2026-09-28: a chat's `nohup` bench loop spawning tracers and node, invisible to the old guard,
+  which knew only registered worker trees — 35 minutes frozen, then the power button).
 
-Neither threshold is an environment variable. A threshold an operator can turn down is a guard that
-stops firing exactly when it is needed, and both numbers are claims about this machine that belong
-in this record rather than in a shell profile.
+Neither threshold is an environment variable: a threshold an operator can turn down is a guard that
+stops firing exactly when it is needed. Both are stated once, in `bin/chat-load`.
 
-## Why SIGKILL the descendants and spare the root
+## Why SIGKILL
 
-**SIGKILL, not SIGTERM**, because the trigger condition is that the machine is nearly out of RAM. A
-polite signal asks a process to unwind, which takes time and often takes *more* memory first; under
-this trigger there is no time to give.
+The trigger is that the machine is nearly out of RAM. A polite signal asks a process to unwind,
+which takes time and often more memory first; under this trigger there is no time to give. One job
+per tick, the fattest: killing every job over the ceiling would take out the innocent alongside the
+runaway.
 
-**Descendants, not the whole tree**, because the root is what reports. For a `worker-run` run the
-root is the **vendor CLI** — the agent itself (`.cli_pid`, see the registry section): its children
-are the commands it runs, the fan-out among them, and it survives to see one of them die by signal 9
-and to say so. For a review-bench cell the root is the launcher (`claudeb`, `codexb`, `geminib`,
-`grokb`) whose exit the panel is waiting on. Killing the root turns a legible "your children were
-killed under memory pressure" into a run that simply vanished — which is precisely the failure mode
-the 2026-08-28 incident produced and this guard exists to make legible.
+## What the live test showed (2026-09-05, old guard, same physics)
 
-So the root survives, sees its children die, and *reports*. Two things make that report say why: the
-`MEMGUARD:` line worker-run prints, and one sentence in `BRIEF_PREAMBLE` (`bin/worker-run`) that
-every worker is launched with — a command that ended by signal 9 was killed by this guard, do not
-rerun it as is, run one project's tests rather than the whole monorepo's or split the work. Without
-it the agent reads a bare exit 137 and reruns the command that took the machine down.
+`INCIDENT avail_mb=2726` → `KILLED avail_mb=3027 tree_rss_mb=1850` (9 pids) → `RECOVERED`.
 
-**One tree per trigger**, the fattest — of the trees that have something to kill. A candidate is a
-tree with at least one live, non-zombie descendant: pick the fattest tree outright and a childless
-root wins the pick every tick, kills nothing, and the tree that *is* cuttable stands untouched while
-the machine thrashes. Killing every tree over the ceiling would take out the innocent alongside the
-runaway; the fattest candidate is the one whose death most reliably ends the pressure, and the next
-tick re-evaluates — the next fattest goes then, if it did not.
+- **A cold allocation never trips it and never froze the machine either.** 48 GB mapped and touched
+  once does not move `avail` off ~4.3 GB: the kernel pages it out and the resident size stays small.
+- **A hot working set trips it immediately**, which is the shape that does freeze this machine.
+- **RSS counts resident pages only**, so the ceiling is a statement about *hot* memory.
 
-## Where the pid registry comes from
+## The memguard file
 
-memlogd builds its candidate list from two writers, each read through the seam that writer already
-uses. No registry file of its own, because a third copy of "which agents are live" is a third thing
-to go stale.
-
-1. **`worker-run` runs** — `${WORKER_RUN_DIR:-~/.cache/claude-worker-runs}/<run-id>/meta.json`,
-   field **`.cli_pid`** where present, falling back to **`.pid`**. `.pid` is the detached
-   supervisor, written at launch; `.cli_pid` is the vendor CLI, written by `run_with_deadline` the
-   moment it has the child's pid. The guard kills the root's *descendants*, so registering the
-   supervisor makes the CLI a descendant and the agent dies with the hog — which is exactly what the
-   2026-09-05 live test produced (run `claudeb-1788615828-30933-684d` came back a bare `EXIT 137`).
-   `.pid` remains the fallback so runs started before `cli_pid` existed still have a root; skipping
-   them would leave standing exactly the trees this guard is for. A run directory carrying an
-   `exit_code` is over and is skipped whatever its metadata still says.
-
-   The field is read with `grep -o '"cli_pid": *[0-9][0-9]*'` and then `tr -dc 0-9`. Two traps in
-   that one line: `"pid":` with the quote and colon, never bare `pid`, because the same object
-   carries `pid_started_at` and a looser match aims the guard at whatever process now wears the
-   launch instant; and the **space after the colon**, which is how `jq` writes these files — a
-   reader that assumed `"pid":N` shipped in round 1, passed a suite whose fixtures were hand-typed
-   JSON, and matched nothing at all on a real `meta.json`. Every fixture here is written through
-   `jq`, exactly as `worker-run` writes it.
-2. **review-bench cells** — `<state_dir>/benches/<run-id>/pid-<cell artifact>`, one file
-   per launched cell, holding the cell's process-group leader pid. `<state_dir>` is
-   `${WORKER_STATS_DIR:-${CLAUDEB_DIR:-~/.claude-profiles/.claudeb}/worker-stats}`. The name follows
-   the run dir's existing flat per-cell convention (`raw-<artifact>.json`,
-   `usage-<artifact>.jsonl`, `agy-<artifact>.log`). Written by `run_streamed` in
-   `share/rbench/launch.py` right after `Popen` and removed in its `finally`, so it covers every
-   transport and cannot outlive its cell on any exit path — a registration that outlives its process
-   aims the guard at whatever now holds that number.
-
-Both sources are then intersected with one `ps -axo pid=,ppid=,rss=` snapshot: a stale registration
-whose pid is no longer in the table yields no tree at all, and one snapshot answers for every
-candidate, because a `ps` per candidate at incident cadence costs more than the guard saves.
-
-**Every root must prove its identity**, because a registration is only ever a claim about a *number*
-and nothing on disk retires it: a supervisor killed before it wrote `exit_code` leaves its pids
-registered until the 7-day prune, and macOS hands the same numbers out again within the day — the
-guard would then SIGKILL the children of whatever unrelated process inherited one. So the process
-wearing the number must have *started* when the registration says it did: its start, `now` minus the
-elapsed time `ps -axo pid=,etime=` reports, within **60 s** of the stamp its writer left
-(`cli_pid_started_at` beside `cli_pid`, `pid_started_at` beside `.pid`; a review-bench cell file
-carries no stamp, so its **mtime** answers — it is written right after `Popen`). Unverifiable — no
-stamp, no `etime`, no `ps` at all — is **skipped**, never killed: fail safe is the only safe side
-when the action is SIGKILL. `worker-run` judges the same pids by the same comparison
-(`supervisor_running`, `PID_START_SLACK`).
-
-## What the live test showed (2026-09-05)
-
-Run `claudeb-1788615828-30933-684d`, against the real daemon:
-`INCIDENT avail_mb=2726` → `KILLED avail_mb=3027 tree_rss_mb=1850 root_pid=31116` (9 pids) →
-`RECOVERED`. The guard fired, the machine stayed usable, and `worker-run wait` printed the
-`MEMGUARD:` line. Three readings worth keeping:
-
-- **A cold allocator never trips it, and never froze the machine either.** A process that maps and
-  touches 48 GB once does not move `avail` off ~4.3 GB: the kernel pages the untouched, never
-  re-read pages straight out to swap and the tree's *resident* size stays small. Same physics both
-  ways — this is why "some process allocated a huge amount" was never the freeze shape, and why the
-  guard is right not to react to it.
-- **A hot working set trips it immediately**, which is the shape that does freeze this machine: the
-  kill landed at `avail 3027 MB` with a tree of `1850 MB` resident.
-- **RSS counts resident pages only.** A tree partly paged out weighs less here than its footprint,
-  so the ceiling is deliberately a statement about *hot* memory. Reading it as "total memory this
-  agent asked for" would make both thresholds look far too low.
-
-## Where the memguard file lives
-
-In the run directory of the agent that was cut — `<run dir>/memguard`, append-only, one line per
-kill (a long run can be cut more than once):
+In the run directory of a worker run or review cell the job ran under — `<run dir>/memguard`,
+append-only, one line per kill:
 
 ```
 MEMGUARD <epoch> avail_mb=<n> tree_rss_mb=<n> agent=<id> root_pid=<n> killed=<pid,pid,...>
 ```
 
-`agent` is the `worker-run` run id, or `<bench run id>/<cell artifact>` for a review-bench cell. The
-day log's line carries the same fields under the `KILLED` marker.
-
-Nothing is written when nothing died. A fat root with no descendants leaves the guard no move, and a
-`KILLED` line for it would record a kill that never happened.
-
-## How it surfaces in worker-run
-
-`worker-run report` and `worker-run wait` both print, from `<run dir>/memguard`:
+`agent` is the `worker-run` run id, or `<bench run id>/<cell artifact>`; `root_pid` the nearest
+registered ancestor of the killed pids. `worker-run report` and `wait` print it on every shape,
+running included:
 
 ```
 MEMGUARD: 2 descendants SIGKILLed under memory pressure (avail 2900 MB, tree 2100 MB); the run's own root was spared
 ```
 
-It appears on every report shape — running, terminal, and the unknown-exit one — because a run can
-be cut while still going and the line must not wait for an exit code that a torn run may never
-produce.
+`BRIEF_PREAMBLE` in `bin/worker-run` tells every worker that a command ending by signal 9 was this
+guard.
+
+## The menu snapshot
+
+`~/Library/Logs/memlogd/chats.json`, rewritten every tick and read by `appendChats` in
+`hammerspoon/llm-limits.lua`. Title `Chats/other  <cores>/<cores> cores · <GB>/<GB> GB`; inside,
+the CPU and RAM split (CPU from the delta of each process's cumulative CPU time between ticks; RAM
+used = total − available, chats' RSS capped at it, other = the rest), the guard row, one aligned
+line per chat — state, title shortened to 22 columns keeping a trailing PR/phase number, cores, GB,
+a 15-minute CPU spark scaled to the performance cores — and what inside "other" chats may cause
+indirectly (screen = WindowServer, kernel = kernel_task, signing = syspolicyd + trustd). States:
+`needs CPU` (using ≥ 0.3 cores on a machine ≥ 90 % busy — the only state more CPU would speed up),
+`full speed`, `wait model` (turn running, CPU near zero), `idle`, `closed` (chat gone, jobs alive).
+A click copies the chat's resume command. A chat appears only by its title from
+`share/chat_names.py` (`chat_title`: the name, else `untitled chat · <project> · <when>`), never an
+id or a derived session name. Older than 120 s the title reads `· stale` in red: the guard is not
+running.
+
+## Nothing it runs lives on /Volumes/Work
+
+`install-agent` deploys `chat-load`, `chat_names.py`, `report-bus` and `report_frame.py` beside the
+daemon copy in `~/.local/libexec/`, and chat-load imports and runs those copies. macOS denies a
+LaunchAgent's Python /Volumes/Work, and every process that Python starts, even with memlogd itself
+granted Full Disk Access (seen live 2026-09-28: titles and the bus probe both refused after the
+grant). Re-run `bin/memlogd install-agent` after editing any of the four.
 
 ## Agent process environment
 
-Agents that this guard tracks are launched with `NX_PARALLEL=1` and `NX_DAEMON=false` in their own
-process environment, and nowhere wider: `supervise()` in `bin/worker-run` exports them into the
-setsid'd supervisor every vendor child inherits from, and `run_streamed` in review-bench merges them
-into each cell's env at `Popen`. This is prevention rather than cure — a serial, daemonless nx keeps
-one agent's fan-out from becoming the tree the guard has to cut down — and it deliberately does not
-touch the machine's other builds.
+Workers and review cells run with `NX_PARALLEL=1` and `NX_DAEMON=false` in their own environment
+and nowhere wider (`supervise()` in `bin/worker-run`, `run_streamed` in review-bench): prevention,
+so one agent's fan-out does not become the job the guard has to cut.
 
 ## Tests
 
-`bash tests/test_memlogd.sh` covers the threshold logic (both halves required; either alone does not
-fire), that the root survives while its descendants die, that a run recording `cli_pid` is rooted
-there — the CLI lives, its own children die — while a run carrying only `.pid` still roots at the
-supervisor, the `memguard` file's contents, and the `MEMGUARD:` line in `worker-run report`/`wait`.
-It also covers the identity check (a stamp far from the process's own start is skipped, the same
-tree with a truthful stamp is cut, a record with no stamp and a cell file whose mtime is nowhere
-near its pid's start are skipped), a tree fat at the root alone never costing its children their
-lives, and a childless root never taking the pick from a tree that can be cut.
-`bash tests/test_worker_run.sh` covers `cli_pid` and `cli_pid_started_at` reaching `meta.json` at
-launch, the pid being the CLI's rather than the supervisor's and the stamp matching the CLI's own
-elapsed time, and the preamble sentence reaching every launched brief. review-bench's `tests/test_review_bench.sh` covers
-the per-cell pid file being written, holding the group leader, and being removed when the cell ends.
+`bash tests/test_memlogd.sh` runs the daemon against real process groups (the fake `ps` lists only
+the groups a case spawned): both halves required, a chat's own Bash job killed whole with its CLI
+standing and the notice posted while the job was alive, registered CLIs, supervisors and cells and
+their ancestors protected, an ended run protecting nothing, only the fattest job cut, unattributed
+processes never touched, a fat CLI never convicted on its own weight, a worker's job billed to the
+launching chat with both sessions notified, the `memguard` record and the `MEMGUARD:` line, and the
+menu snapshot's aligned rows.

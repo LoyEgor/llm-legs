@@ -11,7 +11,17 @@ worker_model_file() {
 # columns is the mechanical rule; the first row of each vendor is its default model.
 # Gemini runs at `high` and nothing else, on every leg (Egor, 2026-09-16), so its rows offer no
 # other effort and `worker-run` raises a lower one instead of refusing the run.
+# A lookup from $(...) is a subshell: a cache set there dies with it, and the next lookup
+# rebuilds both catalogs. worker_model_prime stores the bytes in THIS shell first.
 worker_model_table() {
+  if [ -n "${_WM_TABLE_PRIMED+x}" ]; then
+    printf '%s' "$_WM_TABLE"
+    return 0
+  fi
+  _worker_model_table_build
+}
+
+_worker_model_table_build() {
   cat <<'TABLE'
 claudeb opus high high,xhigh low,medium,max no
 claudeb fable low low,medium,high xhigh,max yes
@@ -20,28 +30,69 @@ codex sol medium medium,high low,xhigh yes
 TABLE
   # Flash rows first in list order, `pro` last: the first gemini row is the vendor default, and a
   # Pro newer than every Flash would otherwise make the word-gated model everyone's default.
-  worker_model_gemini_families | awk -F'\t' '
-    $2 == "pro" { pro = pro sprintf("gemini %s high high - yes\n", $2); next }
-    { printf "gemini %s high high - no\n", $2 }
-    END { printf "%s", pro }'
+  if [ -z "${_WM_SKIP_GEMINI+x}" ]; then
+    worker_model_gemini_families | awk -F'\t' '
+      $2 == "pro" { pro = pro sprintf("gemini %s high high - yes\n", $2); next }
+      { printf "gemini %s high high - no\n", $2 }
+      END { printf "%s", pro }'
+  fi
   # `auto` stays the vendor default: it is the CLI's own default model, so a release that moves it
   # self-integrates, and every slug the list prints is offered beside it.
   # A slug offers high/xhigh only where its catalog efforts carry them; `-` (unknown) offers both.
-  worker_model_grok_models | awk -F'\t' '
-    function row(model, efforts,   n, e, i, allowed) {
-      if (efforts == "" || efforts == "-") efforts = "high,xhigh"
-      n = split(efforts, e, ",")
-      for (i = 1; i <= n; i++) if (e[i] == "high") allowed = "high"
-      for (i = 1; i <= n; i++) if (e[i] == "xhigh") allowed = allowed (allowed == "" ? "" : ",") "xhigh"
-      if (allowed == "") allowed = efforts
-      split(allowed, e, ",")
-      return sprintf("grok %s %s %s - no\n", model, e[1], allowed)
-    }
-    { rows = rows row($1, $4); if ($2 == "yes") auto = row("auto", $4) }
-    END { printf "%s%s", (auto == "" ? row("auto", "-") : auto), rows }'
+  if [ -z "${_WM_SKIP_GROK+x}" ]; then
+    worker_model_grok_models | awk -F'\t' '
+      function row(model, efforts,   n, e, i, allowed) {
+        if (efforts == "" || efforts == "-") efforts = "high,xhigh"
+        n = split(efforts, e, ",")
+        for (i = 1; i <= n; i++) if (e[i] == "high") allowed = "high"
+        for (i = 1; i <= n; i++) if (e[i] == "xhigh") allowed = allowed (allowed == "" ? "" : ",") "xhigh"
+        if (allowed == "") allowed = efforts
+        split(allowed, e, ",")
+        return sprintf("grok %s %s %s - no\n", model, e[1], allowed)
+      }
+      { rows = rows row($1, $4); if ($2 == "yes") auto = row("auto", $4) }
+      END { printf "%s%s", (auto == "" ? row("auto", "-") : auto), rows }'
+  fi
+}
+
+# [vendor] empty = every catalog. A single-vendor prime omits the other catalog: its rows are not
+# in that query's answer. A wider prime after a narrow one rebuilds.
+worker_model_prime() {
+  local scope="${1-}"
+  case "$scope" in
+    claudeb|codex|gemini|grok) ;;
+    *) scope='' ;;
+  esac
+  if [ -n "${_WM_TABLE_PRIMED+x}" ] && [ "${_WM_TABLE_SCOPE-}" = "$scope" ]; then
+    return 0
+  fi
+  case "$scope" in
+    gemini) unset _WM_SKIP_GEMINI; _WM_SKIP_GROK=1 ;;
+    grok) _WM_SKIP_GEMINI=1; unset _WM_SKIP_GROK ;;
+    claudeb|codex) _WM_SKIP_GEMINI=1; _WM_SKIP_GROK=1 ;;
+    *) unset _WM_SKIP_GEMINI _WM_SKIP_GROK ;;
+  esac
+  if [ -z "${_WM_SKIP_GROK+x}" ] && [ -z "${_WM_GROK_PRIMED+x}" ]; then
+    _WM_GROK_MODELS=$(worker_model_grok_models; printf x)
+    _WM_GROK_MODELS=${_WM_GROK_MODELS%x}
+    _WM_GROK_PRIMED=1
+  fi
+  if [ -z "${_WM_SKIP_GEMINI+x}" ] && [ -z "${_WM_GEMINI_PRIMED+x}" ]; then
+    _WM_GEMINI_FAMILIES=$(worker_model_gemini_families; printf x)
+    _WM_GEMINI_FAMILIES=${_WM_GEMINI_FAMILIES%x}
+    _WM_GEMINI_PRIMED=1
+  fi
+  _WM_TABLE=$(_worker_model_table_build; printf x)
+  _WM_TABLE=${_WM_TABLE%x}
+  _WM_TABLE_SCOPE=$scope
+  _WM_TABLE_PRIMED=1
 }
 
 worker_model_grok_models() {
+  if [ -n "${_WM_GROK_PRIMED+x}" ]; then
+    printf '%s' "$_WM_GROK_MODELS"
+    return 0
+  fi
   "${BASH_SOURCE[0]%/*}/../bin/grokb" models 2>/dev/null
 }
 
@@ -154,6 +205,10 @@ worker_model_codex_slug() { # word-or-slug [account]
 }
 
 worker_model_gemini_families() {
+  if [ -n "${_WM_GEMINI_PRIMED+x}" ]; then
+    printf '%s' "$_WM_GEMINI_FAMILIES"
+    return 0
+  fi
   "${BASH_SOURCE[0]%/*}/../bin/geminib" families 2>/dev/null
 }
 
@@ -172,13 +227,24 @@ claudeb sonnet medium low,medium,high - no
 TABLE
 }
 
-worker_model_rows() { # [workers|light]
-  worker_model_table
+# A one-vendor lookup on an unprimed table builds that vendor's rows alone: the gemini and grok
+# catalogs are CLI calls, and a codex launch paid for both on every row it read.
+worker_model_rows() { # [workers|light] [vendor]
+  if [ -n "${2-}" ] && [ -z "${_WM_TABLE_PRIMED+x}" ]; then
+    case "$2" in
+      gemini) local _WM_SKIP_GROK=1 ;;
+      grok) local _WM_SKIP_GEMINI=1 ;;
+      *) local _WM_SKIP_GEMINI=1 _WM_SKIP_GROK=1 ;;
+    esac
+    _worker_model_table_build
+  else
+    worker_model_table
+  fi
   [ "${1-}" != light ] || worker_model_light_table
 }
 
 worker_model_allowed_models() { # vendor [class]
-  worker_model_rows "${2-}" | awk -v vendor="${1-}" '
+  worker_model_rows "${2-}" "${1-}" | awk -v vendor="${1-}" '
     $1 == vendor { print $2; found = 1 }
     END { if (!found) exit 2 }
   '
@@ -195,14 +261,14 @@ worker_model_row_key() { # vendor model -> the name the table keys the model on
 }
 
 worker_model_default_effort() { # vendor model [class]
-  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
+  worker_model_rows "${3-}" "${1-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
     $1 == vendor && $2 == model { print $3; found = 1; exit }
     END { if (!found) exit 2 }
   '
 }
 
 worker_model_effort_list() { # vendor model [class]
-  worker_model_rows "${3-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
+  worker_model_rows "${3-}" "${1-}" | awk -v vendor="${1-}" -v model="$(worker_model_row_key "${1-}" "${2-}")" '
     $1 == vendor && $2 == model {
       found = 1; sep = ""
       for (col = 4; col <= 5; col++) {
@@ -363,7 +429,25 @@ worker_model_pin_allowed() {
   [ -n "$(find "$(worker_model_pin_grant)" -mmin "-$WORKER_MODEL_PIN_TTL_MIN" 2>/dev/null)" ]
 }
 
+# Set in the parent shell after the pin file's last write of this process. A cache filled inside
+# $(worker_model_pins) would not be there for the next vendor.
+worker_model_prime_pins() { # file
+  [ -n "${1-}" ] && [ -r "$1" ] || return 0
+  _WM_PIN_FILE=$1
+  # $(<file) keeps every line; a trailing newline is only a terminator for `read`.
+  _WM_PIN_TEXT=$(<"$1")
+}
+
 worker_model_pin_line() { # file key
+  local line=''
+  if [ -n "${_WM_PIN_FILE+x}" ] && [ "$1" = "$_WM_PIN_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in
+        "$2"=*) printf '%s\n' "${line#"$2"=}"; return 0 ;;
+      esac
+    done <<<"$_WM_PIN_TEXT"
+    return 0
+  fi
   [ -f "$1" ] || return 0
   [ -r "$1" ] || return 1
   awk -v prefix="$2=" 'index($0, prefix) == 1 { print substr($0, length(prefix) + 1); exit }' \

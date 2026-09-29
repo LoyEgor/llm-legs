@@ -31,6 +31,7 @@
 # instead of an agent — no magenta tagged row, and nothing to wake the chat when it ends — and an
 # image generated there spends an account nothing renders. `report` prints a finished record and
 # spends nothing, and the commit-journal and edit-conflict hooks name it to the chat itself.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 EDGE="([[:space:]]|\$)"
@@ -270,7 +271,10 @@ scan=$(awk -v shellfed="$HEREDOC_SHELL_RE" -v postshell="$HEREDOC_POST_SHELL_RE"
                }
              }
            }
-           else if (q == "\"" && c == "\\") { out = out c substr($0, i + 1, 1); i++; continue }
+           else if (q == "\"" && c == "\\") {
+             c = substr($0, i + 1, 1)
+             out = out "\\" ((!body && c ~ /[[:space:];|&()`]/) ? "" : c); i++; continue
+           }
            else if (c == q) { q = ""; if (body) { body = 0; c = "\n" } }
            else if (!body && c ~ /[[:space:];|&()`]/) c = ""
            out = out c
@@ -318,8 +322,9 @@ done < <(grep -Eo "$ASSIGN_RE" <<<"$scan")
 # to a Bash turn nobody can see instead of to the agent whose row shows who is spending quota.
 agent_type=$(printf '%s' "$input" | jq -r '.agent_type // empty' 2>/dev/null)
 first_hit() { # regex
-  grep -Eo "$1" <<<"$scan" 2>/dev/null | head -n1 |
-    tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
+  local hit
+  hit=$(grep -Eo "$1" <<<"$scan" 2>/dev/null) || return 0
+  printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//'
 }
 forged=$(grep -Eo "$FORGED_TOKEN_RE" <<<"$scan" 2>/dev/null | head -n1 | grep -Eo '(WORKER_RUN_RELAY|REVIEW_BENCH_DOOR)=$')
 [ -z "$forged" ] ||
@@ -530,9 +535,12 @@ scheduled=$(grep -E '^[[:space:]]*(at|batch)([[:space:]]|$)|^[[:space:]]*crontab
   grep -Ev '^[[:space:]]*crontab([[:space:]]+-u[[:space:]]+[^[:space:]]+)?[[:space:]]+-l[[:space:]]*$' | head -n1 |
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
-for launch_re in "${LAUNCH_RES[@]}"; do
-  hit=$(grep -Eo "$launch_re" <<<"$unsanctioned" 2>/dev/null | head -n1 |
-    tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
+launch_any=()
+for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done
+grep -Eq "${launch_any[@]}" <<<"$unsanctioned" 2>/dev/null || LAUNCH_RES=()
+for launch_re in ${LAUNCH_RES[@]+"${LAUNCH_RES[@]}"}; do
+  hit=$(grep -Eo "$launch_re" <<<"$unsanctioned" 2>/dev/null) || continue
+  hit=$(printf '%s\n' "${hit%%$'\n'*}" | tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
   [ -n "$hit" ] || continue
   deny "Blocked: \`${hit}\` is a bare headless vendor launch — it leaves no worker-run record, no statusline tag, no journal ownership, no pool refusal, no limit signature and no stall watch. ${launch_ask}; the other tools own their launches (review-bench, llm-limits, claudeb revive, claude-session-driver, opencode-go; the image scripts belong to the image-gen Agent). An interactive launch — no -p/--print/--prompt, no exec, no run — is not gated. Quotes and backslashes do not hide a launch: the gate strips them, then reads the first word of every chained command, and a sanctioned tool exempts only its own segment."
 done

@@ -24,8 +24,9 @@
 # watched for as long as it exists. When this hook cannot run at all — its library, jq or the
 # payload missing — it exits 2 with the reason instead of passing silently.
 #
-# Hot path cost is one find, one stat process and one join per call: the baseline comparison is
-# shell builtins over the joined rows, and a hash runs only for a file whose fingerprint moved.
+# Hot path cost is one enumeration, one stat process and one awk join per call: only the rows
+# whose fingerprint moved reach the shell, and a hash runs only for those.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 [ -n "${HOME:-}" ] || exit 0
@@ -42,16 +43,28 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
+. "$(dirname "$self")/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
 . "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
-  { echo "instruction watch: cannot load share/instruction-files.sh, so no instruction-file change can be seen" >&2; exit 2; }
+  { gate_journal watch fault '' '' '' 'share/instruction-files.sh missing'
+    echo "instruction watch: cannot load share/instruction-files.sh, so no instruction-file change can be seen" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 ||
-  { echo "instruction watch: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
+  { gate_journal watch fault '' '' '' 'jq missing'
+    echo "instruction watch: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
 STATE_DIR=$(instruction_watch_state)
 RANKED_CACHE="$STATE_DIR/ranked.txt"
 repo_root=''
 
-visible_paths() { instruction_visible_paths "$HOME" "$RANKED_CACHE" "$repo_root"; }
+visible_set='' visible_ready=''
+# Enumerated once per run: the check, the between-sessions check and the rewrite all ask for it.
+load_visible() {
+  visible_set=$(instruction_visible_paths "$HOME" "$RANKED_CACHE" "$repo_root")
+  visible_ready=1
+}
+visible_paths() {
+  [ -n "$visible_ready" ] || load_visible
+  printf '%s\n' "$visible_set"
+}
 
 # The harness rewrites settings.json whenever the model or the permission mode changes, and
 # those are Egor's own switches, not an edit to the file's meaning: five alerts in seventeen
@@ -101,6 +114,7 @@ REVERT_DIR="$STATE_DIR/reverts"
 ALERT_DIR="$STATE_DIR/alerts"
 RECEIPT_DIR="$STATE_DIR/receipts"
 INFLIGHT_DIR="$STATE_DIR/inflight"
+CLOSED_DIR="$STATE_DIR/closed"
 SNAP_MAX_BYTES=1048576
 _watch_nl='
 '
@@ -171,43 +185,46 @@ park_current() {
 # recorded as `#unwatchable`, so it is reported once rather than on every call.
 write_baseline() {
   local out=$1 tmp=$2 prior=${3:-} pinned=${4:-} p real mtime size ino link hash trust ht line i k t
-  local trusted='' had_prior='' kept='' roots='' rows=''
+  local trusted='' had_prior='' kept='' roots=''
+  local -a rows=()
   local nl=$_watch_nl
   if [ -n "$prior" ] && [ -f "$prior" ]; then
     had_prior=1
-    local _m _s _t _v
-    while IFS=$'\t' read -r _m _s _ _t _ _ _v _; do
-      case "$_m" in
-        '#root') [ -n "$_s" ] && roots="$roots$_s$nl"; continue ;;
-        '#'*) continue ;;
-      esac
-      [ -n "$_t$_v" ] || continue
-      case "$_t" in
-        1) [ -n "$_v" ] && trusted="$trusted$_v$nl" ;;
-        0) ;;
-        # An older row format lands its fourth column here. Distrusting the whole set over it
-        # would be permanent — every later rewrite reads back the zeros this one wrote — so a
-        # prior this one cannot parse counts as no prior at all.
-        *) trusted=''; had_prior=''; kept=''; break ;;
-      esac
-      [ -n "$_v" ] && kept="$kept$_v$nl"
-    done <"$prior"
+    # An older row format lands a fourth column other than 0/1. Distrusting the whole set over it
+    # would be permanent — every later rewrite reads back the zeros this one wrote — so a prior
+    # this one cannot parse counts as no prior at all, from that row on.
+    { IFS= read -r -d $'\035' roots; IFS= read -r -d $'\035' kept; IFS= read -r -d $'\035' trusted
+      IFS= read -r line; } < <(LC_ALL=C awk -F'\t' "$_watch_row_awk"'
+        F[1] == "#root" { if (F[2] != "") print F[2]; next }
+        F[1] ~ /^#/ || F[4] F[7] == "" { next }
+        F[4] != "1" && F[4] != "0" { bad = 1; exit }
+        F[4] == "1" && F[7] != "" { T[++nt] = F[7] }
+        F[7] != "" { K[++nk] = F[7] }
+        END {
+          printf "\035"; if (!bad) for (k = 1; k <= nk; k++) print K[k]
+          printf "\035"; if (!bad) for (k = 1; k <= nt; k++) print T[k]
+          printf "\035%s\n", bad ? "bad" : ""
+        }' "$prior")
+    [ -z "$line" ] || had_prior=''
   fi
   [ -n "$repo_root" ] && roots="$roots$repo_root$nl"
   : >"$tmp" || return 1
   printf '%s' "$roots" | LC_ALL=C awk 'length && !seen[$0]++ { print "#root\t" $0 }' >>"$tmp"
   mkdir -p "$SNAP_DIR" 2>/dev/null
 
-  local -a wp=() wpin=() wst=()
+  local -a wp=() wpin=() wst=() wtrust=()
   while IFS= read -r line; do
-    wp+=("${line%%$'\036'*}"); wpin+=("${line#*$'\036'}")
-  done < <({ printf '%s\n' "$pinned"; printf '\035\n'; visible_paths; printf '%s' "$kept"; } |
+    wp+=("${line%%$'\036'*}"); line=${line#*$'\036'}
+    wpin+=("${line%$'\036'*}"); wtrust+=("${line##*$'\036'}")
+  done < <({ printf '%s' "$trusted"; printf '\035\n'; printf '%s\n' "$pinned"; printf '\035\n'
+             visible_paths; printf '%s' "$kept"; } |
     LC_ALL=C awk -F'\t' '
-      !sep { if ($0 == "\035") { sep = 1; next }
-             if (length($1)) { P[$1] = substr($0, length($1) + 2); order[++n] = $1 }
-             next }
-      length($0) && !seen[$0]++ { print $0 "\036" P[$0] }
-      END { for (k = 1; k <= n; k++) if (!seen[order[k]]++) print order[k] "\036" P[order[k]] }')
+      sep == 0 { if ($0 == "\035") { sep = 1; next } T[$0] = 1; next }
+      sep == 1 { if ($0 == "\035") { sep = 2; next }
+                 if (length($1)) { P[$1] = substr($0, length($1) + 2); order[++n] = $1 }
+                 next }
+      length($0) && !seen[$0]++ { print $0 "\036" P[$0] "\036" ($0 in T) }
+      END { for (k = 1; k <= n; k++) if (!seen[order[k]]++) print order[k] "\036" P[order[k]] "\036" (order[k] in T) }')
   if [ "${#wp[@]}" -eq 0 ]; then
     mv "$tmp" "$out" 2>/dev/null
     return
@@ -273,7 +290,10 @@ write_baseline() {
       while IFS= read -r line; do hashed+=("$line"); done < <(
         { shasum -a 256 -- "${plain[@]}" 2>/dev/null; printf '\035\n'; printf '%s\n' "${plain[@]}"; } |
         LC_ALL=C awk '
-          !sep { if ($0 == "\035") { sep = 1; next } H[substr($0, 67)] = $1; next }
+          # shasum escapes a name holding a backslash and flags its line with a leading one.
+          !sep { if ($0 == "\035") { sep = 1; next }
+                 if (substr($0, 1, 1) != "\\") { H[substr($0, 67)] = $1; next }
+                 name = substr($0, 68); gsub(/\\\\/, "\\", name); H[name] = substr($1, 2); next }
           { print H[$0] }')
       k=0
       for i in "${fresh[@]}"; do
@@ -295,15 +315,13 @@ write_baseline() {
       continue
     fi
     trust=1
-    if [ -n "$had_prior" ]; then
-      case "$nl$trusted" in *"$nl$p$nl"*) ;; *) trust=0 ;; esac
-    fi
+    [ -z "$had_prior" ] || trust=${wtrust[$i]}
     t=$_watch_tab
-    rows="$rows${r_m[$i]}$t${r_s[$i]}$t${r_i[$i]}$t$trust$t${r_h[$i]}$t${r_l[$i]}$t$p$t${r_r[$i]}$nl"
+    rows+=("${r_m[$i]}$t${r_s[$i]}$t${r_i[$i]}$t$trust$t${r_h[$i]}$t${r_l[$i]}$t$p$t${r_r[$i]}")
     [ "$trust" = 1 ] && [ -n "${r_snap[$i]}" ] && [ "${r_s[$i]}" -le "$SNAP_MAX_BYTES" ] 2>/dev/null &&
       snap_idx+=("$i")
   done
-  printf '%s' "$rows" >>"$tmp" || return 1
+  [ "${#rows[@]}" -eq 0 ] || printf '%s\n' "${rows[@]}" >>"$tmp" || return 1
 
   # Copying only what the snapshot lacks and touching the rest: the bytes under a content-addressed
   # name are identical either way, and the fresh mtime is what keeps a version still in use from
@@ -359,24 +377,31 @@ log_line() {
 }
 
 journal_event() { # sent id summary
-  local sent=$1 id=$2 summary=$3 line files='' k chat='' c cands=''
-  [ -z "${sid:-}" ] || chat=$(instruction_chat_name "$sid") || chat=''
+  local sent=$1 id=$2 summary=$3 line files='' k chat='' c cands='' writer owner='' observer=''
+  writer=$(record_writer)
+  if [ "$writer" = this-call ] || [ "${kind:-change}" = baseline-missing ]; then
+    owner=${sid:-}
+    [ -z "$owner" ] || chat=$(instruction_chat_name "$owner") || chat=''
+  else
+    observer=${sid:-}
+  fi
   for k in "${keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
   for c in ${cand_sids[@]+"${cand_sids[@]}"}; do
     cands="$cands$c$_watch_tab$(instruction_chat_name "$c" | head -n 1)$_watch_nl"
   done
   line=$(jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    --arg sid "${sid:-}" --arg summary "$summary" --arg sent "$sent" --arg kind "${kind:-change}" \
+    --arg sid "$owner" --arg observer "$observer" --arg summary "$summary" --arg sent "$sent" --arg kind "${kind:-change}" \
     --arg chat "$chat" --arg bytes "$(printf '%s\n' ${deltas[@]+"${deltas[@]}"})" \
     --arg files "$files" --arg restores "$(printf '%s\n' ${restores[@]+"${restores[@]}"})" \
     --arg reverted "$(printf '%s\n' ${reverted[@]+"${reverted[@]}"})" \
-    --arg writer "$(record_writer)" --arg cands "$cands" \
+    --arg writer "$writer" --arg cands "$cands" \
     '{id:$id,at:$at,sid:$sid,kind:$kind,summary:$summary,sent:$sent,writer:$writer,
       files:($files|split("\n")|map(select(length>0))),
       bytes:($bytes|split("\n")|map(select(length>0)|tonumber)),
       restores:($restores|split("\n")|map(select(length>0))),
       reverted:($reverted|split("\n")|map(select(length>0)))} +
       (if $chat != "" then {chat:$chat} else {} end) +
+      (if $observer != "" then {observer:$observer} else {} end) +
       (if $cands != "" then {candidates:($cands|split("\n")|map(select(length>0)|split("\t")
         | {sid:.[0]} + (if (.[1] // "") != "" then {chat:.[1]} else {} end)))} else {} end)' \
     2>/dev/null) || return 1
@@ -445,7 +470,7 @@ alert_once() { # path content-key summary
 # into the new baseline unreported.
 cmd_baseline() {
   local out=$1 ref=''
-  mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+  mkdir -p "$STATE_DIR" 2>/dev/null || { gate_journal watch fault "$sid" '' '' 'state dir not creatable'; exit 0; }
   if has_rows "$out"; then ref=$out; else ref=$(newest_baseline "$out") || ref=''; fi
   # The per-session baselines age out at a week. Snapshots outlive them by far, because the
   # version a file has sat at for a month is exactly the one worth being able to restore; only a
@@ -456,6 +481,7 @@ cmd_baseline() {
   find "$SNAP_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +90 -delete 2>/dev/null
   find "$RECEIPT_DIR" -mindepth 1 -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null
   instruction_ranked_refresh "$HOME" "$RANKED_CACHE" || true
+  load_visible
   [ -z "$ref" ] || cmd_check "$out" "$event" "$sid" between "$ref"
   write_baseline "$out" "$out.$$" "$out" || true
   exit 0
@@ -493,15 +519,17 @@ offer_restore() {
   restores+=("cp $(shq "$kept") $(shq "${b_real[$i]}")")
 }
 
-inflight_window() { # file name start
+inflight_window() { # file name start agent
   if [ "$2" = "$own_name" ]; then
     own_count=$((own_count + 1))
     if [ -z "$tool_use_id" ]; then
       own_file=$1; own_start=$3
+    elif [ "$4" = "$own_agent" ]; then
+      own_stale+=("$1"); own_stale_starts+=("$3")
     fi
     return 0
   fi
-  other_sids+=("$2"); other_starts+=("$3")
+  other_sids+=("$2"); other_starts+=("$3"); other_ends+=("")
 }
 
 # The in-flight windows, read once per check: this session's own mark, consumed only when it names
@@ -510,29 +538,43 @@ inflight_window() { # file name start
 # other mark older than an hour is a call that died and is swept without a word — unless this call
 # itself ran over an hour, when an equally old mark may be just as alive and stays a window.
 load_inflight() {
-  local f name m_start m_id start own_name own_file='' own_count=0 k
-  local aged_files=() aged_names=() aged_starts=()
+  local f name m_start m_id m_agent m_end start own_name own_file='' own_count=0 k own_agent
+  local aged_files=() aged_names=() aged_starts=() aged_agents=() own_stale=() own_stale_starts=()
   now_ns=$(instruction_ns "$(instruction_now)") || { now_ns=''; return 0; }
   own_name=$(instruction_sid_name "$sid")
+  own_agent=${agent_id:--}
+  own_agent=${own_agent//[^A-Za-z0-9._-]/_}
   for f in "$INFLIGHT_DIR"/*; do
     [ -f "$f" ] || continue
     name=${f##*/}
     name=${name%%@*}
-    read -r m_start m_id _ <"$f" 2>/dev/null || continue
+    read -r m_start m_id _ m_agent _ <"$f" 2>/dev/null || continue
     start=$(instruction_ns "$m_start") || continue
     if [ "$name" = "$own_name" ] && [ -n "$tool_use_id" ] && [ "$m_id" = "${tool_use_id//[^A-Za-z0-9._-]/_}" ]; then
       own_count=$((own_count + 1)); own_file=$f; own_start=$start
       continue
     fi
     if [ $((now_ns - start)) -gt 3600000000000 ]; then
-      aged_files+=("$f"); aged_names+=("$name"); aged_starts+=("$start")
+      aged_files+=("$f"); aged_names+=("$name"); aged_starts+=("$start"); aged_agents+=("$m_agent")
       continue
     fi
-    inflight_window "$f" "$name" "$start"
+    inflight_window "$f" "$name" "$start" "$m_agent"
+  done
+  # A consumed mark stays a window for ten minutes: the writer's own check takes its mark away, and
+  # another chat's long call covering the same instant would then read the bytes as its own.
+  for f in "$CLOSED_DIR"/*; do
+    [ -f "$f" ] || continue
+    name=${f##*/}
+    name=${name%%@*}
+    read -r start m_end _ <"$f" 2>/dev/null || continue
+    case "$start$m_end" in ''|*[!0-9]*) rm -f "$f" 2>/dev/null; continue ;; esac
+    if [ $((now_ns - m_end)) -gt 600000000000 ]; then rm -f "$f" 2>/dev/null; continue; fi
+    [ "$name" = "$own_name" ] && continue
+    other_sids+=("$name"); other_starts+=("$start"); other_ends+=("$m_end")
   done
   for k in ${aged_files[@]+"${!aged_files[@]}"}; do
     if [ -n "$own_start" ] && [ $((now_ns - own_start)) -gt 3600000000000 ]; then
-      inflight_window "${aged_files[$k]}" "${aged_names[$k]}" "${aged_starts[$k]}"
+      inflight_window "${aged_files[$k]}" "${aged_names[$k]}" "${aged_starts[$k]}" "${aged_agents[$k]}"
     else
       rm -f "${aged_files[$k]}" 2>/dev/null
     fi
@@ -541,7 +583,17 @@ load_inflight() {
   if [ -z "$tool_use_id" ] && [ "$own_count" -gt 1 ]; then
     own_file=''; own_start=''
   fi
-  [ -z "$own_file" ] || rm -f "$own_file" 2>/dev/null
+  # Calls of one agent start together or in turn, so its mark a minute older than this call's is a
+  # call another hook denied: it never reaches a check, and every other chat's watcher read it as live.
+  # Parallel subagents share the session id, and another agent's older mark is its live long call.
+  if [ -n "$own_file" ]; then
+    for k in ${own_stale[@]+"${!own_stale[@]}"}; do
+      [ "${own_stale_starts[$k]}" -lt $((own_start - 60000000000)) ] && rm -f "${own_stale[$k]}" 2>/dev/null
+    done
+    mkdir -p "$CLOSED_DIR" 2>/dev/null &&
+      printf '%s %s\n' "$own_start" "$now_ns" >"$CLOSED_DIR/${own_file##*/}" 2>/dev/null
+    rm -f "$own_file" 2>/dev/null
+  fi
 }
 
 add_candidate() {
@@ -562,7 +614,7 @@ attribute() { # mtime
     attr=this-call
   fi
   for k in ${other_starts[@]+"${!other_starts[@]}"}; do
-    [ "$m" -ge "${other_starts[$k]}" ] && [ "$m" -le "$now_ns" ] || continue
+    [ "$m" -ge "${other_starts[$k]}" ] && [ "$m" -le "${other_ends[$k]:-$now_ns}" ] || continue
     hit=1
     add_candidate "${other_sids[$k]}"
   done
@@ -642,19 +694,62 @@ stable_hash() { # real vis
   done
 }
 
-load_baseline() { # file — fills cmd_check's b_* arrays, roots_known and unw_known
-  local mtime size ino trust hash link vis real
+# Splits a baseline row the way `IFS=$'\t' read` does — a run of tabs is one separator — into
+# F[1..8], n being the field count, so awk and the shell agree on which rows exist.
+_watch_row_awk='{ row = $0; gsub(/\t+/, "\t", row); sub(/^\t/, "", row); sub(/\t$/, "", row)
+  n = split(row, F, "\t"); for (k = 9; k <= n; k++) F[8] = F[8] "\t" F[k] }'
+
+# Only rows whose fingerprint moved reach the b_* arrays; the rest go straight to `pinned`. The
+# visible names ride along in the same stat: stat does not follow symlinks, so a row for one
+# reports on the link itself — the only way a retargeted or removed link is ever seen. A missing
+# file makes stat exit 1 AFTER printing every row it could read, so the exit code is ignored.
+load_baseline() { # file
+  local mtime size ino trust hash link vis real line IFS=$'\n'
+  local -a targets=()
   [ -f "$1" ] || return 1
-  while IFS=$'\t' read -r mtime size ino trust hash link vis real; do
-    case "$mtime" in
-      '#root') roots_known="$roots_known$size$_watch_nl"; continue ;;
-      '#unwatchable') unw_known="$unw_known$size$_watch_nl"; continue ;;
-      '#'*) continue ;;
-    esac
-    [ -n "$real" ] || continue
-    b_mtime+=("$mtime"); b_size+=("$size"); b_ino+=("$ino"); b_trust+=("$trust")
-    b_hash+=("$hash"); b_link+=("$link"); b_vis+=("$vis"); b_real+=("$real")
-  done <"$1"
+  set -f
+  targets=($(LC_ALL=C awk -F'\t' "$_watch_row_awk"'
+    n >= 8 && F[1] !~ /^#/ { if (!seen[F[8]]++) print F[8]; if (!seen[F[7]]++) print F[7] }' "$1"))
+  set +f
+  {
+    IFS= read -r -d $'\035' pinned
+    IFS= read -r -d $'\035' b_all
+    while IFS= read -r line; do
+      IFS=$'\t' read -r mtime size ino trust hash link vis real <<<"${line%%$'\036'*}"
+      case "$mtime" in
+        '#root') roots_known="$roots_known$size$_watch_nl"; continue ;;
+        '#unwatchable') unw_known="$unw_known$size$_watch_nl"; continue ;;
+        '#'*) continue ;;
+      esac
+      [ -n "$real" ] || continue
+      b_mtime+=("$mtime"); b_size+=("$size"); b_ino+=("$ino"); b_trust+=("$trust")
+      b_hash+=("$hash"); b_link+=("$link"); b_vis+=("$vis"); b_real+=("$real")
+      line=${line#*$'\036'}
+      c_real+=("${line%%$'\036'*}"); c_vis+=("${line#*$'\036'}")
+    done
+  } < <(
+    { [ "${#targets[@]}" -eq 0 ] || stat -f '%N%t%Fm%t%z%t%i%t%Y' -- "${targets[@]}" 2>/dev/null; } |
+    LC_ALL=C awk -F'\t' '
+      FILENAME == "-" { if (length($1)) S[$1] = substr($0, length($1) + 2); next }
+      '"$_watch_row_awk"'
+      F[1] ~ /^#/ { rest[++nr] = $0; next }
+      n < 8 { next }
+      {
+        all[++na] = F[7]
+        r = (F[8] in S) ? S[F[8]] : ""; v = (F[7] != F[8] && (F[7] in S)) ? S[F[7]] : ""
+        split(r, R, "\t"); split(v, V, "\t")
+        # Compared as strings: 1.50 and 1.5 are one number and two different mtimes.
+        if (r != "" && "x" R[1] == "x" F[1] && "x" R[2] == "x" F[2] && "x" R[3] == "x" F[3] &&
+            (F[7] == F[8] || (v != "" && (V[4] == "" ? "-" : V[4]) == F[6] && (F[6] != "-" || V[3] == R[3])))) {
+          print F[7] "\t" F[1] "\t" F[2] "\t" F[3] "\t" F[5] "\t" F[6] "\t" F[8]
+          next
+        }
+        rest[++nr] = $0 "\036" r "\036" v
+      }
+      END {
+        printf "\035"; for (k = 1; k <= na; k++) print all[k]
+        printf "\035"; for (k = 1; k <= nr; k++) print rest[k]
+      }' - "$1")
 }
 
 # $4 says what the comparison is against. `check`: this session's own baseline, after one of its
@@ -664,17 +759,19 @@ load_baseline() { # file — fills cmd_check's b_* arrays, roots_known and unw_k
 # wrote anything.
 cmd_check() {
   local baseline=$1 event=$2 sid=$3 mode=${4:-check} ref=${5:-$1}
-  mkdir -p "$STATE_DIR" 2>/dev/null || exit 0
+  local budget=${INSTRUCTION_WATCH_BUDGET:-20}
+  mkdir -p "$STATE_DIR" 2>/dev/null || { gate_journal watch fault "$sid" '' '' 'state dir not creatable'; exit 0; }
+  [ -n "$visible_ready" ] || load_visible
 
   local -a reports=() keys=() deltas=() restores=() reverted=()
-  local -a b_mtime=() b_size=() b_ino=() b_trust=() b_hash=() b_link=() b_vis=() b_real=()
-  local roots_known='' unw_known='' pinned='' kind=change sfx='' moved=0 top_rate=''
+  local -a b_mtime=() b_size=() b_ino=() b_trust=() b_hash=() b_link=() b_vis=() b_real=() c_real=() c_vis=()
+  local roots_known='' unw_known='' pinned='' b_all='' kind=change sfx='' moved=0 top_rate=''
   local relay_revert='' grown_key=''
   local attr='' own_start='' now_ns='' w_call='' w_unknown='' w_ambig=''
-  local -a other_sids=() other_starts=() cand_sids=()
+  local -a other_sids=() other_starts=() other_ends=() cand_sids=()
   [ "$mode" != check ] || load_inflight
   load_baseline "$ref"
-  if [ "$mode" = check ] && [ "${#b_real[@]}" -eq 0 ]; then
+  if [ "$mode" = check ] && [ -z "$b_all" ]; then
     mode=missing
     report "BASELINE-MISSING $baseline" "$baseline" "missing@$$.$(date +%s)" 0
     roots_known=''; unw_known=''
@@ -687,31 +784,17 @@ cmd_check() {
   [ "$mode" = check ] || moved=1
 
   local i line real vis cur cur_mtime cur_size cur_ino cur_link cur_hash delta
-  local vis_seen vis_ino vis_mtime
+  local vis_seen vis_ino vis_mtime handled=0 deferred=''
   if [ "${#b_real[@]}" -gt 0 ]; then
-    # One process for the whole set; %N echoes the path back so the rows can be joined. A
-    # missing file makes stat exit 1 AFTER printing every row it could read, so the exit code is
-    # deliberately ignored: discarding the output there reported the whole set as deleted.
-    # The visible names ride along in the same call: stat does not follow symlinks, so a row for
-    # one reports on the link itself — the only way a retargeted or removed link is ever seen.
-    # The join is one awk rather than a lookup per row: at a few hundred files a shell scan of the
-    # stat output per row is quadratic, and this runs after every tool call.
-    local -a targets=() c_real=() c_vis=()
-    for i in "${!b_real[@]}"; do
-      targets+=("${b_real[$i]}")
-      [ "${b_vis[$i]}" = "${b_real[$i]}" ] || targets+=("${b_vis[$i]}")
-    done
-    while IFS= read -r line; do
-      c_real+=("${line%%$'\036'*}"); c_vis+=("${line#*$'\036'}")
-    done < <(
-      { stat -f '%N%t%Fm%t%z%t%i%t%Y' -- "${targets[@]}" 2>/dev/null; printf '\035\n'
-        for i in "${!b_real[@]}"; do printf '%s\t%s\n' "${b_real[$i]}" "${b_vis[$i]}"; done; } |
-      LC_ALL=C awk -F'\t' '
-        !sep { if ($0 == "\035") { sep = 1; next } if (length($1)) S[$1] = substr($0, length($1) + 2); next }
-        { r = ($1 in S) ? S[$1] : ""; v = ($2 != $1 && ($2 in S)) ? S[$2] : ""; print r "\036" v }')
-
     for i in "${!b_real[@]}"; do
       real=${b_real[$i]}; vis=${b_vis[$i]}
+      # Past the budget a moved file keeps its old fingerprint, so the next call reports it: a
+      # check the hook timeout kills advances nothing and repeats every report it had made.
+      if [ "$handled" -gt 0 ] && [ "$SECONDS" -ge "$budget" ]; then
+        pin "$vis" "${b_mtime[$i]}" "${b_size[$i]}" "${b_ino[$i]}" "${b_hash[$i]}" "${b_link[$i]}" "$real"
+        continue
+      fi
+      handled=$((handled + 1))
       cur=${c_real[$i]:-}
       vis_seen=''; vis_ino=''; cur_link=''; vis_mtime=''
       if [ "$vis" != "$real" ] && [ -n "${c_vis[$i]:-}" ]; then
@@ -799,7 +882,7 @@ cmd_check() {
   # repository root no baseline has recorded brings its files in with it — this session just
   # opened it — and, outside a check, a path only the ranked cache names is the cache's own re-cut
   # at session start. Against no reference at all there is nothing to call new.
-  if [ "${#b_real[@]}" -gt 0 ]; then
+  if [ -n "$b_all" ]; then
     local root_new='' ranked_set='' st ht size mtime ino p
     if [ -n "$repo_root" ]; then
       case "$_watch_nl$roots_known" in *"$_watch_nl$repo_root$_watch_nl"*) ;; *) root_new=1 ;; esac
@@ -816,6 +899,11 @@ cmd_check() {
           *) case "$ranked_set" in *"$_watch_nl$vis$_watch_nl"*) moved=1; continue ;; esac ;;
         esac
       fi
+      if [ "$handled" -gt 0 ] && [ "$SECONDS" -ge "$budget" ]; then
+        deferred="$deferred$vis$_watch_nl"
+        continue
+      fi
+      handled=$((handled + 1))
       moved=1
       st=$(stat -L -f '%R%t%HT%t%Fm%t%z%t%i' -- "$vis" 2>/dev/null) || st=''
       real='' ht='' mtime='' size='' ino=''
@@ -835,10 +923,13 @@ cmd_check() {
       attribute "$mtime"
       report "ADDED$sfx $vis" "$vis" "$cur_hash@$mtime" "${size:-0}"
       clear_gone_marks "$vis"
-    done < <({ printf '%s\n' "${b_vis[@]}"; printf '\035\n'; visible_paths; } |
+    done < <({ printf '%s' "$b_all"; printf '\035\n'; visible_paths; } |
       LC_ALL=C awk '!sep { if ($0 == "\035") { sep = 1; next } K[$0] = 1; next }
         length($0) && !($0 in K) && !seen[$0]++')
   fi
+  # An arrival left for the next call stays out of the rewritten baseline, or it would be absorbed.
+  [ -z "$deferred" ] || visible_set=$({ printf '%s\035\n' "$deferred"; printf '%s\n' "$visible_set"; } |
+    LC_ALL=C awk '!sep { if ($0 == "\035") { sep = 1; next } D[$0] = 1; next } !($0 in D)')
 
   # Rebuilding the baseline costs a stat of the whole set, so it happens only when
   # something actually moved. This runs after every call; on the quiet path the
@@ -904,19 +995,21 @@ payload=""
 values=$(printf '%s' "$payload" | jq -er '
   if type != "object" then error("not an object") else . end
   | [(.hook_event_name // "PostToolUse"), (.session_id // ""), (.transcript_path // ""),
-     (.tool_use_id // "" | tostring), (.cwd // "")]
+     (.tool_use_id // "" | tostring), (.cwd // ""), (.agent_id // "" | tostring)]
   | join("\u001f")' 2>/dev/null) ||
-  { echo "instruction watch: the hook payload does not parse, so no change can be attributed" >&2; exit 2; }
-IFS=$'\x1f' read -r -d '' event sid transcript tool_use_id cwd <<<"$values" || :
+  { gate_journal watch fault '' '' '' 'payload does not parse'
+    echo "instruction watch: the hook payload does not parse, so no change can be attributed" >&2; exit 2; }
+IFS=$'\x1f' read -r -d '' event sid transcript tool_use_id cwd agent_id <<<"$values" || :
 # A read that found no field at all leaves the newline the here-string added, and that newline is
 # the event name every emitted record would carry.
 case "${event:-}" in ''|*[!A-Za-z]*) event=PostToolUse ;; esac
 cwd=${cwd%$'\n'}
+agent_id=${agent_id%$'\n'}
 repo_root=$(instruction_repo_root "${cwd:-}") || repo_root=''
 baseline=$(session_baseline "${sid:-}")
 
 case "${1:-check}" in
   baseline) cmd_baseline "$baseline" ;;
   check)    cmd_check "$baseline" "$event" "$sid" ;;
-  *)        exit 0 ;;
+  *)        gate_journal watch fault "$sid" '' '' "unknown mode ${1:-}"; exit 0 ;;
 esac

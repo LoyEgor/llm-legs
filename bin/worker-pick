@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -u
 
+# A routing read never refreshes the catalog: the hooks export the same switch, and a live
+# `grok models` on every pick is what made the menu's store watcher a process storm.
+export GROKB_MODELS_NO_FETCH=1
+
 # Selection follows docs/routing-contract.md: candidates are pool members with live auth and a
 # daily budget the shared limits view can compute, the answer is the pin or the largest budget,
 # and only a wall (effective 100% or dead auth) skips an account. The two softenings are the
@@ -129,7 +133,18 @@ codex_model_short_label() {
   worker_model_allowed_models codex | head -n1 | sed 's/.*-//'
 }
 
-conf() { sed -n "s/^$1=//p" "$WORKER_FILE" 2>/dev/null | head -n1; }
+# One read: every later lookup is a line of this text. The pin writer runs only after these
+# lookups, so a snapshot here is the file they all would have read.
+WORKER_CONFIG_TEXT=''
+if [ -r "$WORKER_FILE" ]; then WORKER_CONFIG_TEXT=$(<"$WORKER_FILE"); fi
+conf() {
+  local line='' key="$1"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "$key"=*) printf '%s\n' "${line#"$key"=}"; return 0 ;;
+    esac
+  done <<<"$WORKER_CONFIG_TEXT"
+}
 # A paused vendor is parked for months and must not exist for this router: the collectors drop
 # `vendors.<key>` for it, and nothing here may put it back. So the pause sits ABOVE the pin — the
 # one place in the ladder where the pin does not win — and above the mode with it.
@@ -160,6 +175,8 @@ case "$worker_mode" in
   gemini) [ "$gm_paused" = false ] || worker_mode=auto ;;
   grok) [ "$gr_paused" = false ] || worker_mode=auto ;;
 esac
+# Before any $(worker_model_*): those run in subshells and would each rebuild the catalogs.
+worker_model_prime "$query_vendor"
 cb_model=$(conf claudeb_model); cb_model=${cb_model:-opus}
 cb_effort=$(conf claudeb_effort); cb_effort=${cb_effort:-$(worker_model_default_effort claudeb "$cb_model")}
 cx_model=$(worker_model_allowed_models codex | head -n1)
@@ -242,11 +259,15 @@ FIVE_HOUR_DEFER_PCT=80
 # The second: an account a caller claimed minutes ago is already carrying a run this data has not
 # seen yet, so it ranks behind every unclaimed candidate and no further. A query that cannot read
 # the claims answers as if there were none rather than refusing to route.
+json_names() { # names, one per line, possibly empty -> a JSON array
+  if [ -z "${1-}" ]; then printf '%s' '[]'; return 0; fi
+  printf '%s\n' "$1" | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '%s' '[]'
+}
+
 claims_json() {
   local list
-  list=$(worker_claims_fresh "$1" 2>/dev/null |
-    jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
-  printf '%s' "${list:-[]}"
+  list=$(worker_claims_fresh "$1" 2>/dev/null) || true
+  json_names "$list"
 }
 cb_claims=$(claims_json claudeb)
 cx_claims=$(claims_json codex)
@@ -281,8 +302,8 @@ walls_json() {
     as_of=${reading%%	*}; pct=${reading##*	}
     [ -n "$reading" ] && worker_walls_lapse_if_read "$vendor" "$account" "$as_of" "$pct" && continue
     printf '%s\n' "$account"
-  done | jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
-  printf '%s' "${list:-[]}"
+  done) || true
+  json_names "$list"
 }
 cb_walls=$(walls_json claudeb)
 cx_walls=$(walls_json codex)
@@ -310,12 +331,12 @@ if [ "$query_role" = workers ]; then
   [ "$gm_paused" = true ] || clear_observed_pins gemini
   [ "$gr_paused" = true ] || clear_observed_pins grok
 fi
+worker_model_prime_pins "$(worker_model_file)"
 
 pins_json() {
   local list
-  list=$(worker_model_pins "$1" 2>/dev/null |
-    jq -Rsc 'split("\n") | map(select(length > 0))' 2>/dev/null)
-  printf '%s' "${list:-[]}"
+  list=$(worker_model_pins "$1" 2>/dev/null) || true
+  json_names "$list"
 }
 cb_pins=$(pins_json claudeb)
 cx_pins=$(pins_json codex)

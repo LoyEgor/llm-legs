@@ -21,6 +21,7 @@
 #
 # Same contract as the Edit/Write gate: the exact retry passes ONCE, so a deny costs Egor one
 # round trip and never becomes a wall.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 [ -n "${HOME:-}" ] || exit 0
@@ -33,22 +34,26 @@ for _ in 1 2 3 4 5; do
   target=$(readlink "$self")
   case "$target" in /*) self=$target ;; *) self=$(dirname "$self")/$target ;; esac
 done
+. "$(dirname "$self")/../share/gate-journal.sh" 2>/dev/null || gate_journal() { :; }
 . "$(dirname "$self")/../share/instruction-files.sh" 2>/dev/null ||
-  { echo "instruction write gate: cannot load share/instruction-files.sh, so no shell write can be checked" >&2; exit 2; }
+  { gate_journal write fault '' '' '' 'share/instruction-files.sh missing'
+    echo "instruction write gate: cannot load share/instruction-files.sh, so no shell write can be checked" >&2; exit 2; }
 command -v jq >/dev/null 2>&1 ||
-  { echo "instruction write gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
+  { gate_journal write fault '' '' '' 'jq missing'
+    echo "instruction write gate: jq is missing, so the hook payload cannot be read" >&2; exit 2; }
 
 input=$(cat) || input=''
 values=$(printf '%s' "$input" | jq -er '
   [(.tool_name // ""), (.session_id // ""), (.cwd // ""), (.transcript_path // ""),
-   (.tool_use_id // "" | tostring), (.tool_input.command // "")]
+   (.tool_use_id // "" | tostring), (.agent_id // "" | tostring), (.tool_input.command // "")]
   | join("\u001f")' 2>/dev/null) ||
-  { echo "instruction write gate: the hook payload does not parse" >&2; exit 2; }
-IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript tool_use_id command <<< "$values" || :
+  { gate_journal write fault '' '' '' 'payload does not parse'
+    echo "instruction write gate: the hook payload does not parse" >&2; exit 2; }
+IFS=$'\x1f' read -r -d '' tool_name sid cwd transcript tool_use_id agent_id command <<< "$values" || :
 [ "$tool_name" = Bash ] || exit 0
 # Before any decision: the tripwire attributes bytes to this call by the mark's time, never by the
 # command text. A denied call never runs, so every deny below takes its mark back.
-instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd"
+instruction_inflight_mark "$sid" "$tool_use_id" Bash "$cwd" "$agent_id"
 [ -n "$command" ] || exit 0
 
 # A continuation is one command to the shell but two lines to grep, and every pattern below is
@@ -72,17 +77,41 @@ case "$command" in *"\$'"*) ;; *)
   esac ;;
 esac
 
+# Every `cd DIR` a command runs moves where the relative names after it land, and a name may sit
+# before or after any of them: each directory the command can stand in is judged, the latest cd
+# first, so a denial names the file the write most likely reaches.
+cwds=("${cwd:-$PWD}")
+here=${cwd:-$PWD}
+segments=${command//&&/$'\n'}; segments=${segments//||/$'\n'}; segments=${segments//;/$'\n'}
+cd_re='^[[:space:]({]*cd[[:space:]]+([^[:space:]&|)]+)[[:space:]]*[)}]*[[:space:]]*$'
+while IFS= read -r segment; do
+  [[ $segment =~ $cd_re ]] || continue
+  lead=${BASH_REMATCH[1]}
+  lead=${lead#[\"\']}; lead=${lead%[\"\']}
+  case "$lead" in
+    '~') lead=$HOME ;;
+    '~/'*) lead="$HOME/${lead#\~/}" ;;
+    '$HOME'|'$HOME/'*) lead="$HOME${lead#\$HOME}" ;;
+    '${HOME}'|'${HOME}/'*) lead="$HOME${lead#\$\{HOME\}}" ;;
+    /*) ;;
+    *) lead="$here/$lead" ;;
+  esac
+  [ -d "$lead" ] || continue
+  here=$lead
+  cwds=("$lead" "${cwds[@]}")
+done <<< "$segments"
+
 alternation=''
 while IFS= read -r path; do
   case "$command" in *"$path"*) ;; *) continue ;; esac
   alternation="${alternation:+$alternation|}$(instruction_ere_escape "$path")"
-done < <(instruction_all_paths "$HOME" "$cwd" '' "$command")
+done < <(for here in "${cwds[@]}"; do instruction_all_paths "$HOME" "$here" '' "$command"; done)
 
 dir_alternation=''
 while IFS= read -r path; do
   case "$command" in *"$path"/*) ;; *) continue ;; esac
   dir_alternation="${dir_alternation:+$dir_alternation|}$(instruction_ere_escape "$path")"
-done < <(instruction_all_dirs "$HOME" "$cwd")
+done < <(for here in "${cwds[@]}"; do instruction_all_dirs "$HOME" "$here"; done)
 # Matched by name as well as by path: there is no list of every repository, and a project's
 # own CLAUDE.md or MEMORY.md costs the same per read as the global one.
 by_name="([^[:space:];|&'\"]*/)?${INSTRUCTION_GUARDED_BASENAMES}"
@@ -152,6 +181,15 @@ span_active() {
 # runs here and nowhere else, and only for a name that already matched a guarded spelling.
 hit=''; class=''; span=''; abs=''; abs_real=''
 judge_row() { # name mode [verb]
+  local at
+  case "$1" in
+    '~/'*|'$HOME/'*|'${HOME}/'*|/*) judge_at "$1" "$2" "${3:-}" '' ;;
+    *)
+      for at in "${cwds[@]}"; do judge_at "$1" "$2" "${3:-}" "$at" && return 0; done
+      return 1 ;;
+  esac
+}
+judge_at() { # name mode verb directory
   local row_abs row_real row_class row_span=''
   row_abs=$1
   case "$row_abs" in
@@ -159,7 +197,7 @@ judge_row() { # name mode [verb]
     '$HOME/'*)   row_abs="$HOME/${row_abs#\$HOME/}" ;;
     '${HOME}/'*) row_abs="$HOME/${row_abs#\$\{HOME\}/}" ;;
     /*) ;;
-    *) row_abs="${cwd:-$PWD}/${row_abs#./}" ;;
+    *) row_abs="$4/${row_abs#./}" ;;
   esac
   case "${3:-}" in */) [ -d "${row_abs%/*}" ] || return 1 ;; esac
   row_real=$(realpath "$row_abs" 2>/dev/null)
@@ -170,11 +208,11 @@ judge_row() { # name mode [verb]
   [ -n "$row_class" ] || return 1
   if [ "$row_class" = span ] && span_active; then
     row_span=1
-    [ "$2" = trunc ] && return 1
-    instruction_span_live "$sid" "$transcript" && return 1
+    [ "$2" = trunc ] && { gate_journal write span-pass "$sid" "$row_abs" '' reshape; return 1; }
+    instruction_span_live "$sid" "$transcript" && { gate_journal write span-pass "$sid" "$row_abs"; return 1; }
   fi
   if [ "$row_class" = always ] && ! instruction_in_relay && span_active; then
-    instruction_span_live "$sid" "$transcript" && return 1
+    instruction_span_live "$sid" "$transcript" && { gate_journal write span-pass "$sid" "$row_abs"; return 1; }
   fi
   hit=$1; class=$row_class; span=$row_span; abs=$row_abs; abs_real=$row_real
   return 0
@@ -198,6 +236,7 @@ while IFS=$row_sep read -r row_kind row_mode row_verb row_name; do
     redirect|copy) ;;
     refuse)
       instruction_inflight_clear "$sid"
+      gate_journal write denied "$sid" '' '' 'unnamable path'
       echo "instruction write gate: this command writes to a path holding a tab or a newline ($row_name) under an instruction-file location; no gate can check such a name, so it is refused. Use a plain name." >&2
       exit 2
       ;;
@@ -233,7 +272,7 @@ if [ -z "$denied" ]; then
       denied=1
       break
     fi
-  done < <(instruction_git_landing "$command" "$cwd")
+  done < <(for here in "${cwds[@]}"; do instruction_git_landing "$command" "$here"; done)
 fi
 [ -n "$denied" ] || exit 0
 
@@ -241,7 +280,8 @@ fi
 # negotiated with, and a worker spends it by asking twice. The review-debt list keeps its own
 # reason below — what a line in it retires is a review, not a context window.
 case "$class" in
-  always|span) instruction_in_relay && { instruction_inflight_clear "$sid"; instruction_relay_refusal "$hit" >&2; exit 2; } ;;
+  always|span) instruction_in_relay && { instruction_inflight_clear "$sid"; gate_journal write relay-refused "$sid" "$abs"
+    instruction_relay_refusal "$hit" >&2; exit 2; } ;;
 esac
 
 # The session is part of the key: a parallel chat spending its own retry must not spend this
@@ -251,11 +291,12 @@ instruction_stamp_ready "$STAMP_DIR" "$hash" "$sid" "$transcript"
 stamp_rc=$?
 if [ "$stamp_rc" = 0 ]; then
   if instruction_user_turn_after_stamp "$transcript" "$STAMP_DIR/$hash"; then
-    instruction_stamp_consume "$STAMP_DIR" "$hash" && exit 0
+    instruction_stamp_consume "$STAMP_DIR" "$hash" && { gate_journal write granted "$sid" "$abs"; exit 0; }
   fi
 fi
 instruction_inflight_clear "$sid"
 if [ "$stamp_rc" = 3 ]; then
+  gate_journal write forged "$sid" "$abs"
   instruction_stamp_forged "$hit" "$sid"
   echo "instruction write gate: a retry stamp for this write to $hit was there before any denial of this session minted it, so it was removed and recorded for Egor; running the command again gets the ordinary denial." >&2
   exit 2
@@ -346,6 +387,8 @@ case "$class" in
     ;;
 esac
 
+gate_journal write denied "$sid" "$abs" '' "$class"
 jq -cn --arg r "$reason $(instruction_denial_tag "$hash")" \
-  '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
+  '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null ||
+  { printf '%s\n' "$reason $(instruction_denial_tag "$hash")" >&2; exit 2; }
 exit 0

@@ -2,10 +2,11 @@
 # Source of truth; `memlogd install-agent` deploys a copy to ~/.local/libexec/memlogd, which is
 # what launchd runs. The copy is not a convenience: a LaunchAgent that execs off /Volumes/Work
 # gets EPERM from TCC unless that exact program path was granted, and a memory logger must also
-# keep running while that volume is unmounted. Re-run install-agent after editing this file.
-# Besides logging, this daemon ACTS: the memory guard below SIGKILLs the descendants of the fattest
-# registered agent process tree when the machine is nearly out of RAM, sparing that tree's root
-# (`docs/memory-guard.md` is the decision record).
+# keep running while that volume is unmounted. Re-run install-agent after editing this file or any
+# file it deploys beside the copy (chat-load, chat_names.py, report-bus, report_frame.py).
+# Besides logging, this daemon ACTS: every tick runs chat-load, deployed beside this copy, which
+# keeps the per-chat load snapshot for the menubar and, when the machine is nearly out of RAM,
+# SIGKILLs the fattest job a chat launched (`docs/memory-guard.md` is the decision record).
 set -u
 
 resolve_script() {
@@ -37,20 +38,10 @@ jump_rss_mb="${MEMLOGD_JUMP_RSS_MB:-1024}"
 max_ticks="${MEMLOGD_MAX_TICKS:-0}"
 sync_writes="${MEMLOGD_SYNC:-1}"
 
-# The memory guard's whole rule, and deliberately not a knob: a threshold an operator can turn down
-# under pressure is a guard that stops firing exactly when it is needed. Both halves must hold —
-# 3072 MB is below where the machine still swaps its way out, 1536 MB is above every healthy agent
-# tree measured here, so neither number alone can convict.
-memguard_avail_mb=3072
-memguard_tree_mb=1536
-# The two registries, read through the seams their own writers already use rather than seams of the
-# guard's own: worker-run's run dirs and review-bench's bench run dirs.
-worker_runs_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}"
-bench_runs_root="${WORKER_STATS_DIR:-${CLAUDEB_DIR:-$HOME/.claude-profiles/.claudeb}/worker-stats}"
-
 label=com.egor.memlogd
 agent_plist="$HOME/Library/LaunchAgents/$label.plist"
 wrapper="$HOME/.local/libexec/memlogd"
+chat_load="$(dirname "$script_path")/chat-load"
 lock_dir="$log_dir/memlogd.lock"
 current_file=""
 episode_frames=""
@@ -109,161 +100,12 @@ node_stats() {
     END { printf "%d %d\n", count + 0, (total + 0) / 1024 }'
 }
 
-# Every registration currently on disk, one `pid agent_id run_dir` row each, from both writers:
-# worker-run's meta.json, review-bench's pid- file per launched cell. A run carrying an exit_code is
-# over whatever its metadata still says, and a pid nobody is running any more drops out later,
-# against the process table.
-#
-# cli_pid is the VENDOR CLI, and it is what a worker run registers when it has one: the kill takes
-# the root's descendants, so rooted at the supervisor instead the agent dies with the hog and comes
-# back as a bare exit 137. Rooted at the CLI, the agent survives its command's death and can say so.
-# .pid — the supervisor — answers for runs launched before cli_pid existed.
-#
-# Every registration is a CLAIM about a number, and nothing on disk retires it: a supervisor killed
-# before it wrote exit_code leaves its pids registered until the 7-day prune, and macOS hands the
-# same numbers out again within the day. So each root must PROVE it is the process that registered —
-# see memguard_verified. Unproven is SKIPPED, because a kill aimed at an unverified identity is a
-# kill aimed at a stranger's children.
-memguard_registry() { # now
-  local now="$1" meta directory pid stamp file table
-  table=$(ps -axo pid=,etime= 2>/dev/null) || table=''
-  [ -n "$table" ] || return 0
-  for meta in "$worker_runs_dir"/*/meta.json; do
-    [ -f "$meta" ] || continue
-    directory=${meta%/meta.json}
-    [ ! -e "$directory/exit_code" ] || continue
-    # `"pid":` and not `pid`: the same object carries pid_started_at, and a looser match reads the
-    # launch instant as a process id and aims the guard at whatever now holds that number. The
-    # space after the colon is jq's own output shape, which is how these files are written.
-    pid=$(grep -o '"cli_pid": *[0-9][0-9]*' "$meta" 2>/dev/null | head -n1 | tr -dc '0-9')
-    if [ -n "$pid" ]; then
-      stamp=$(grep -o '"cli_pid_started_at": *[0-9][0-9]*' "$meta" 2>/dev/null | head -n1 | tr -dc '0-9')
-    else
-      pid=$(grep -o '"pid": *[0-9][0-9]*' "$meta" 2>/dev/null | head -n1 | tr -dc '0-9')
-      stamp=$(grep -o '"pid_started_at": *[0-9][0-9]*' "$meta" 2>/dev/null | head -n1 | tr -dc '0-9')
-    fi
-    [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || continue
-    memguard_verified "$table" "$now" "$pid" "$stamp" || continue
-    printf '%s %s %s\n' "$pid" "${directory##*/}" "$directory"
-  done
-  for file in "$bench_runs_root"/benches/*/pid-*; do
-    [ -f "$file" ] || continue
-    directory=${file%/*}
-    pid=$(head -n1 "$file" 2>/dev/null | tr -dc '0-9')
-    [ -n "$pid" ] && [ "$pid" -gt 1 ] 2>/dev/null || continue
-    # A cell file carries no stamp of its own; it is written right after Popen, so its mtime IS the
-    # launch instant, and it is removed when the cell ends.
-    stamp=$(stat -f %m "$file" 2>/dev/null | tr -dc '0-9')
-    memguard_verified "$table" "$now" "$pid" "$stamp" || continue
-    printf '%s %s %s\n' "$pid" "${directory##*/}/${file##*/pid-}" "$directory"
-  done
-}
-
-# Whether the process wearing a registered number is the one that was registered: its start —
-# now minus the elapsed time ps reports — within memguard_pid_slack of the instant its writer
-# stamped. Answered against one table for the whole registry, since a ps per candidate at incident
-# cadence costs more than the guard saves. A number the table does not hold, an etime in a shape
-# this cannot read, a missing stamp: all false. worker-run judges its own runs' pids by the same
-# comparison (`supervisor_running`, PID_START_SLACK).
-memguard_pid_slack=60
-memguard_verified() { # table now pid stamp
-  case "$4" in '' | *[!0-9]*) return 1 ;; esac
-  printf '%s\n' "$1" | awk -v want="$3" -v now="$2" -v stamp="$4" -v slack="$memguard_pid_slack" '
-    ($1 + 0) == want {
-      count = split($2, part, /[-:]/)
-      seconds = -1
-      if (count == 2) seconds = part[1] * 60 + part[2]
-      else if (count == 3) seconds = part[1] * 3600 + part[2] * 60 + part[3]
-      else if (count == 4) seconds = part[1] * 86400 + part[2] * 3600 + part[3] * 60 + part[4]
-      if (seconds >= 0) {
-        drift = (now - seconds) - stamp
-        if (drift < 0) drift = -drift
-        if (drift <= slack) ok = 1
-      }
-      exit
-    }
-    END { exit ok ? 0 : 1 }'
-}
-
-# `root total_rss_mb descendant_pid...` per registered root, out of ONE process table: a ps per
-# candidate at incident cadence costs more than the guard saves. Ancestry is walked upward under a
-# hop cap, so a table that somehow cycles cannot spin here, and a root the table no longer holds is
-# a stale registration and yields no row at all.
-memguard_trees() { # root...
-  local roots="$*"
-  ps -axo pid=,ppid=,rss=,state= 2>/dev/null | awk -v roots="$roots" '
-    # A zombie is already dead and weighs nothing, but `kill` still SUCCEEDS on it: counted as a
-    # descendant it would be "killed" again on every tick, and a root that has stopped reaping would
-    # produce a KILLED line a second, forever. It stays in the ancestry (its own children reparent
-    # through it) and out of both the weight and the kill list.
-    { pid = $1 + 0; parent[pid] = $2 + 0; kb[pid] = $3 + 0; live[pid] = 1; dead[pid] = ($4 ~ /^Z/) }
-    END {
-      count = split(roots, list, " ")
-      for (i = 1; i <= count; i++) root[list[i] + 0] = 1
-      for (p in live) {
-        node = p
-        for (hop = 0; hop <= 64; hop++) {
-          if (node in root) {
-            # The root itself is deliberately not weighed: only DESCENDANTS are ever killed, so a
-            # tree fat at the root alone would be convicted for memory the kill cannot free and its
-            # small children would be SIGKILLed every tick for nothing.
-            if (!dead[p] && node != p) {
-              total[node] += kb[p]
-              kids[node] = kids[node] " " p
-            }
-            break
-          }
-          if (node <= 1 || !(node in parent) || parent[node] == node) break
-          node = parent[node]
-        }
-      }
-      for (i = 1; i <= count; i++) {
-        r = list[i] + 0
-        if (!(r in live) || done[r]++) continue
-        printf "%d %d%s\n", r, int(total[r] / 1024), kids[r]
-      }
-    }'
-}
-
-# The one rule: system available RAM under the floor AND the fattest registered agent tree over the
-# ceiling, and that tree's DESCENDANTS are SIGKILLed. The ROOT is spared on purpose — it is the
-# launcher that owns the run directory, writes the exit code and reports the kill, so killing it
-# would end the run with no record of why its work stopped, which is the case this guard exists to
-# make legible. A failed availability probe is unknown rather than zero, the same rule pressure()
-# applies. Nothing is said when nothing died: a fat root with no descendants leaves the guard no
-# move, and a KILLED line for it would be a kill that never happened.
-memguard_tick() { # now avail
-  local now="$1" avail="$2" registry roots trees best root rss kids line agent directory pid killed=''
-  [ "$avail" -ge 0 ] && [ "$avail" -lt "$memguard_avail_mb" ] || return 0
-  registry=$(memguard_registry "$now")
-  [ -n "$registry" ] || return 0
-  roots=$(printf '%s\n' "$registry" | awk '{ print $1 }' | sort -un)
-  trees=$(memguard_trees $roots)
-  [ -n "$trees" ] || return 0
-  # Only a tree with a live descendant is a candidate, because only descendants are killed: pick the
-  # fattest tree first and a childless root wins every tick while nothing is ever cut. NF > 2 is
-  # "this row listed at least one descendant".
-  best=$(printf '%s\n' "$trees" | awk 'NF > 2' | sort -k2,2nr -k1,1n | head -n1)
-  [ -n "$best" ] || return 0
-  root=${best%% *}
-  rss=$(printf '%s\n' "$best" | awk '{ print $2 }')
-  kids=$(printf '%s\n' "$best" | awk '{ $1 = ""; $2 = ""; sub(/^ +/, ""); print }')
-  [ "$rss" -gt "$memguard_tree_mb" ] || return 0
-  for pid in $kids; do
-    kill -KILL "$pid" 2>/dev/null || continue
-    killed="${killed:+$killed,}$pid"
-  done
-  [ -n "$killed" ] || return 0
-  line=$(printf '%s\n' "$registry" | awk -v r="$root" '$1 == r { print; exit }')
-  agent=$(printf '%s\n' "$line" | awk '{ print $2 }')
-  directory=$(printf '%s\n' "$line" | cut -d' ' -f3-)
-  append "KILLED $now agent=$agent avail_mb=$avail tree_rss_mb=$rss root_pid=$root killed=$killed"
-  flush
-  # And beside the run itself, because the day log is not what anyone reads when a worker comes
-  # back wrong: `worker-run report`/`wait` surface this file, so the run states its own cause.
-  [ ! -d "$directory" ] ||
-    printf 'MEMGUARD %s avail_mb=%s tree_rss_mb=%s agent=%s root_pid=%s killed=%s\n' \
-      "$now" "$avail" "$rss" "$agent" "$root" "$killed" >>"$directory/memguard" 2>/dev/null || :
+chat_load_tick() { # now avail swap
+  local line
+  while IFS= read -r line; do
+    append "$line"
+    flush
+  done < <("$chat_load" sample --now "$1" --avail "$2" --swap "$3" 2>/dev/null)
 }
 
 log_path() { printf '%s/%s.log\n' "$log_dir" "$1"; }
@@ -272,7 +114,9 @@ frames_dir() { printf '%s/frames\n' "$log_dir"; }
 
 frames_stamp() { date -r "$1" +%Y-%m-%dT%H%M%S; }
 
-flush() { [ "$sync_writes" = 1 ] || return 0; sync; }
+# fsync of this one file, never sync(2): a machine-wide flush at 1 Hz under memory pressure hurts
+# every process. Without notrunc dd truncates the log.
+flush() { [ "$sync_writes" = 1 ] || return 0; dd of="${1:-$current_file}" conv=notrunc,fsync if=/dev/null 2>/dev/null; }
 
 append() { printf '%s\n' "$*" >>"$current_file"; }
 
@@ -310,7 +154,7 @@ write_frame() {
     ps -axo pid,ppid,pgid,rss,etime,command 2>/dev/null
     printf 'PS-END %s\n' "$now"
   } >>"$dest"
-  flush
+  flush "$dest"
 }
 
 want_frame() {
@@ -410,7 +254,7 @@ run_loop() {
     # Before the state machine, and independent of it: the guard answers to its own two thresholds,
     # not to whether this tick opened an incident, so a change to the incident window cannot quietly
     # move when the machine defends itself.
-    memguard_tick "$now" "$avail"
+    chat_load_tick "$now" "$avail" "$swap"
 
     if [ "$state" = quiet ] && pressure "$avail"; then
       state=incident
@@ -486,7 +330,7 @@ run_loop() {
 }
 
 install_agent() {
-  local plist_source="$repo_root/launchd/$label.plist" deployed_tmp
+  local plist_source="$repo_root/launchd/$label.plist" deployed_tmp source
   if [ ! -f "$plist_source" ]; then
     printf 'memlogd: no plist at %s — run install-agent from the repo checkout\n' "$plist_source" >&2
     return 1
@@ -496,6 +340,12 @@ install_agent() {
   cat "$script_path" >"$deployed_tmp"
   chmod 755 "$deployed_tmp"
   mv -f "$deployed_tmp" "$wrapper"
+  for source in bin/chat-load share/chat_names.py bin/report-bus share/report_frame.py; do
+    deployed_tmp=$(mktemp "${wrapper}.tmp.XXXXXX") || return 1
+    cat "$repo_root/$source" >"$deployed_tmp" || return 1
+    chmod 755 "$deployed_tmp"
+    mv -f "$deployed_tmp" "$(dirname "$wrapper")/${source##*/}"
+  done
   cp "$plist_source" "$agent_plist"
   launchctl bootout "gui/$UID" "$agent_plist" >/dev/null 2>&1 || true
   if ! launchctl bootstrap "gui/$UID" "$agent_plist"; then
@@ -509,7 +359,7 @@ uninstall_agent() {
     launchctl unload -w "$agent_plist" >/dev/null 2>&1 || true
   rm -f "$agent_plist"
   if [ -f "$wrapper" ] && grep -qF "label=$label" "$wrapper"; then
-    rm -f "$wrapper"
+    (cd "$(dirname "$wrapper")" && rm -f "$wrapper" chat-load chat_names.py report-bus report_frame.py)
   fi
   printf 'Uninstalled %s.\n' "$label"
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# TEMP-TESTTIME(test-history): the temporary Test time journal and its menu summary (EXPERIMENTS.json,
-# test-time). Deleted whole with the experiment.
+# The test journal bin/harness-doctor's Tests section reads: the work probe writes one line per test
+# it saw end, chat or worker.
 set -u
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 WORK=$(cd "$(mktemp -d)" && pwd -P)
@@ -37,7 +37,6 @@ assert_eq "$(printf '%s\n' '{"who":"chat","repo":"repo","label":"test_a"}' '{"wh
 secs=$(jq -s 'map(.secs) | sort | join(" ")' -r "$STATUSLINE_CACHE_DIR/test-history.jsonl")
 case "$secs" in "6"[0-3]" 9"[0-3]) ;; *) fail "journaled durations off: $secs" ;; esac
 asserts=$((asserts + 1))
-assert_eq 1 "$(grep -c 'Test time (temp)' "$STATUSLINE_CACHE_DIR/test-history.txt")"
 # A cache the probe stopped refreshing says nothing about what ended since.
 touch -t 202001010000 "$STATUSLINE_CACHE_DIR/work-th"
 : > "$WORK/snap"; printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n' > "$WORK/snap"
@@ -53,30 +52,4 @@ probe
   shell_line 13 01:03; printf '12 13 01:02 bash tests/test_twin.sh\n'; } > "$WORK/snap"
 probe
 assert_eq test_twin "$(sed -n 3p "$STATUSLINE_CACHE_DIR/test-history.jsonl" | jq -r .label)"
-# No test ending after midnight still rebuilds the summary, so yesterday's totals never read as today's.
-touch -t 202001010000 "$STATUSLINE_CACHE_DIR/test-history.txt"
-probe
-assert_eq "$(date +%Y-%m-%d)" "$(date -r "$STATUSLINE_CACHE_DIR/test-history.txt" +%Y-%m-%d)"
-
-now=1790000000
-{ printf '{"end":%s,"secs":190,"who":"chat","repo":"llm-legs","label":"suites","total":73,"failed":1}\n' "$((now - 100))"
-  printf '{"end":%s,"secs":121,"who":"worker","repo":"find-truth","label":"pnpm test"}\n' "$((now - 50))"
-  printf 'torn line\n'
-  printf '{"end":%s,"secs":3700,"who":"chat","repo":"llm-legs","label":"suites","total":70}\n' "$((now - 2 * 86400))"
-  printf '{"end":%s,"secs":999,"who":"chat","repo":"old","label":"suites"}\n' "$((now - 9 * 86400))"; } > "$STATUSLINE_CACHE_DIR/test-history.jsonl"
-TEST_HISTORY_NOW=$now "$ROOT/bin/test-history"
-assert_eq "Test time (temp) · today 5m 11s
-today: 2 runs · 5m 11s — chat 3m 10s · workers 2m 1s
-7 days: 3 runs · 1h 6m — chat 1h 4m · workers 2m 1s
--
-14:12 find-truth · pnpm test · 2m 1s · worker
-14:11 llm-legs · suites 73 ✗1 · 3m 10s · chat
-09-19 14:13 llm-legs · suites 70 · 1h 1m · chat
-09-12 14:13 old · suites · 16m 39s · chat
--
-slowest over 7 days:
-suites · llm-legs · 2× · 1h 4m
-pnpm test · find-truth · 1× · 2m 1s
-as of 14:13" "$(cat "$STATUSLINE_CACHE_DIR/test-history.txt")"
-
-printf 'PASS: %s asserts; the probe journals every test it saw end, chat or worker, and the Test time summary reads that journal\n' "$asserts"
+printf 'PASS: %s asserts; the probe journals every test it saw end, chat or worker\n' "$asserts"

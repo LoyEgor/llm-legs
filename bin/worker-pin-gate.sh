@@ -17,6 +17,7 @@
 # regex cannot close over) are out of scope by design and are not defects, let alone P1s; the
 # spellings worth closing are the ones an honest session plausibly types. False-deny is the
 # acceptable side throughout.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 MODE="${1:-}"

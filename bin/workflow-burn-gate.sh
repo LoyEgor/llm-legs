@@ -4,6 +4,7 @@
 # that still has to finish the task — this happened live on alona 2026-07-18.
 # Warn the model at 70% of the session account's usage, deny at 95%.
 # Fail-open on any error.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"

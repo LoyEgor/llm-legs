@@ -92,7 +92,11 @@ over an account set that changes.
    `worker-pick` roles, relay agent md files (every flag the leg accepts), review-bench catalog,
    cells, raters and tests, Light rows, image legs and `image-fanout`, the Hammerspoon menu (read-only
    checks), statusline short names (`docs/statusline-contract.md`), `docs/image-vendors*.md`,
-   `docs/DIAGNOSTICS.md`.
+   `docs/DIAGNOSTICS.md`. And the vendor's review-bench transport (`share/rbench/launch.py`
+   `run_<side>` and its stream-evidence parser): a changed event shape, tool name or parameter,
+   tool-output truncation or preview, or sandbox flag breaks what a cell reads or what the report
+   counts without any error. Where the release touches one, run one real cell and compare its
+   stream with its `rater_runs` row.
 9. Per account: resolve and check each account the pool holds today (`codexb models --account`,
    per-account catalogs, entitlements); an entitlement refusal is typed apart from a usage limit.
 10. Live proof. LLM models: one real `worker-run` per new model (cheapest fitting account from

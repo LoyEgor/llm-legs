@@ -5,15 +5,25 @@
 # for main, limits/<acct>.json for claudeb accounts — ~/.claude-profiles/README.md),
 # never from raw headers alone.
 # Runs every 5s even while idle: GIT_OPTIONAL_LOCKS=0 keeps renders off index.lock.
+# `env bash` resolves to macOS bash 3.2 when PATH lists /bin before Homebrew; this script needs bash 5.
+if [ "${BASH_VERSINFO[0]}" -lt 5 ]; then
+  for modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [ -x "$modern_bash" ] && "$modern_bash" -c '[ "${BASH_VERSINFO[0]}" -ge 5 ]' && exec "$modern_bash" "$0" "$@"
+  done
+  echo "statusline: bash 5 required (found $BASH_VERSION)"
+  exit 0
+fi
+statusline_start_us=${EPOCHREALTIME//[!0-9]/}
 export GIT_OPTIONAL_LOCKS=0
 
-input=$(cat)
+IFS= read -r -d '' input || :
 statusline_cache_dir="${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}"
 cache_rl="$HOME/.claude/statusline-cache-rl"
 acct="${CLAUDE_LIMITS_ACCOUNT:-}"
 if [ -z "$acct" ]; then
   if [ -n "${CLAUDE_CONFIG_DIR:-}" ] && [ "$CLAUDE_CONFIG_DIR" != "$HOME/.claude" ]; then
-    acct=$(basename "$CLAUDE_CONFIG_DIR")
+    acct=${CLAUDE_CONFIG_DIR%"${CLAUDE_CONFIG_DIR##*[!/]}"}
+    acct=${acct##*/}; acct=${acct:-/}
   else
     acct=main
   fi
@@ -27,17 +37,40 @@ limits_file="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 # Never $0: `bash bin/statusline.sh` would double the directory, and the harness may invoke a
 # symlink — realpath resolves both to the script's real home.
 statusline_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || statusline_self="${BASH_SOURCE[0]}"
-statusline_dir=$(dirname "$statusline_self")
+statusline_dir=${statusline_self%/*}
 . "$statusline_dir/../share/limits-view.sh"
 . "$statusline_dir/../share/codex-accounts.sh"
 
-file_mtime() {
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+statusline_parent_dir() {
+  local path="$1"
+  while [[ "$path" = */ && "$path" != / ]]; do path=${path%/}; done
+  case "$path" in
+    */*) path=${path%/*}
+         while [[ "$path" = */ && "$path" != / ]]; do path=${path%/}; done
+         statusline_parent=${path:-/} ;;
+    *) statusline_parent=. ;;
+  esac
 }
 
-file_inode() {
-  stat -f %i "$1" 2>/dev/null || stat -c %i "$1" 2>/dev/null
-}
+# The loadable replaces a stat fork per call where this bash ships it; -L is lstat, as the stat(1)
+# fallbacks are. Once enabled it shadows stat(1) for the whole script.
+if enable -f "${BASH%/bin/*}/lib/bash/stat" stat 2>/dev/null; then
+  file_stat_field() { local -A st; stat -L -A st "$2" 2>/dev/null && printf '%s' "${st[$1]}"; }
+  file_mtime() { file_stat_field mtime "$1"; }
+  file_inode() { file_stat_field inode "$1"; }
+  file_size() { file_stat_field size "$1"; }
+else
+  file_mtime() {
+    [ -e "$1" ] || [ -L "$1" ] || return 1
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+  }
+  file_inode() {
+    stat -f %i "$1" 2>/dev/null || stat -c %i "$1" 2>/dev/null
+  }
+  file_size() {
+    stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null
+  }
+fi
 
 # Stock macOS ships neither `timeout` nor `gtimeout`, and a probe with no deadline outlives the 120s
 # after which its lock counts as dead — so a second probe starts while the first still walks. An
@@ -62,7 +95,7 @@ run_bounded() { # seconds command...
 snapshot_lock_acquire() {
   local lock="$1" now mtime
   mkdir "$lock" 2>/dev/null && return 0
-  now=$(date +%s 2>/dev/null) || return 1
+  now=$EPOCHSECONDS
   mtime=$(file_mtime "$lock" 2>/dev/null) || return 1
   [[ "$mtime" =~ ^[0-9]+$ ]] || return 1
   [ "$((now - mtime))" -gt 120 ] || return 1
@@ -255,7 +288,9 @@ review_gate_verdict() { # toplevel session
 # keyed off a worktree's own git dir instead, a key goes blind to the edits a sibling checkout of
 # the same project folds into the file the answer was actually read from.
 journal_dir() { # toplevel
-  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+  if [ "$1" = "$active_top" ]; then printf '%s\n' "$active_common"
+  elif [ "$1" = "$project_top" ]; then printf '%s\n' "$project_common"
+  else git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; fi
 }
 
 # Renders every ~5s, so the gate's answer is cached on what can invalidate it: the repository, its
@@ -348,7 +383,8 @@ review_verdict_line() { # toplevel session status_key now
   cached=""
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
     IFS= read -r cached_key < "$cache" 2>/dev/null
-    cached=$(tail -n +2 "$cache" 2>/dev/null)
+    cached=$(<"$cache")
+    case "$cached" in *$'\n'*) cached=${cached#*$'\n'} ;; *) cached="" ;; esac
   fi
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
@@ -415,7 +451,8 @@ repo_debt_lines() { # toplevel now
   cached=""
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
     IFS= read -r cached_key < "$cache" 2>/dev/null
-    cached=$(tail -n +2 "$cache" 2>/dev/null)
+    cached=$(<"$cache")
+    case "$cached" in *$'\n'*) cached=${cached#*$'\n'} ;; *) cached="" ;; esac
   fi
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
@@ -514,10 +551,17 @@ unpushed_marker() { # toplevel session now
   local key cached_key cached cache_mtime lock_mtime commondir head upstream commit_mtime debt_mtime
   local timeout_bin
   [ -n "$sid" ] && [ -n "$top" ] && [ -x "$gate" ] || { printf '%s' off; return 0; }
-  head=$(git -C "$top" rev-parse HEAD 2>/dev/null)
   # A branch with no upstream owes nothing here — nothing on this machine knows where it would go —
   # and one whose upstream is HEAD is a branch with nothing ahead at all. Both answer without the
   # gate, which is what keeps the marker off the render path for the repositories it never marks.
+  # The render's own status already says which: no `branch.upstream`, or `branch.ab +0 -0`. An
+  # upstream whose ref is missing prints no `branch.ab`, and rev-parse echoes `@{upstream}` for it.
+  if [ "$git_status_rc" -eq 0 ] && [[ "$branch_oid" =~ ^[0-9a-f]+$ ]]; then
+    [ -n "$branch_upstream" ] && [ "$branch_ab" != "+0 -0" ] || { printf '%s' off; return 0; }
+    head=$branch_oid
+  else
+    head=$(git -C "$top" rev-parse HEAD 2>/dev/null)
+  fi
   upstream=$(git -C "$top" rev-parse '@{upstream}' 2>/dev/null)
   [ -n "$head" ] && [ -n "$upstream" ] && [ "$head" != "$upstream" ] ||
     { printf '%s' off; return 0; }
@@ -526,7 +570,7 @@ unpushed_marker() { # toplevel session now
   debt_mtime=""
   if [ -n "$commondir" ]; then
     commit_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
-    debt_mtime=$(file_mtime "$commondir/review-anchors.json" 2>/dev/null)
+    debt_mtime=$commit_mtime
   fi
   [[ "$commit_mtime" =~ ^[0-9]+$ ]] || commit_mtime=0
   [[ "$debt_mtime" =~ ^[0-9]+$ ]] || debt_mtime=0
@@ -536,7 +580,8 @@ unpushed_marker() { # toplevel session now
   cached=""
   if [[ "$cache_mtime" =~ ^[0-9]+$ ]]; then
     IFS= read -r cached_key < "$cache" 2>/dev/null
-    cached=$(tail -n +2 "$cache" 2>/dev/null)
+    cached=$(<"$cache")
+    case "$cached" in *$'\n'*) cached=${cached#*$'\n'} ;; *) cached="" ;; esac
   fi
   if [ "$cached_key" = "$key" ] && [[ "$cache_mtime" =~ ^[0-9]+$ ]] &&
     [ "$((now - cache_mtime))" -le 15 ]; then
@@ -578,18 +623,15 @@ unpushed_marker() { # toplevel session now
 # (never --refresh); full contract: docs/statusline-contract.md "Store merge-kick".
 # Every failure is silent — the statusline must never break because a nudge failed.
 store_merge_kick() {
-  local collector self kick_dir stamp now_ts age
+  local collector kick_dir stamp now_ts age
   collector="${STATUSLINE_STORE_MERGE_CMD:-}"
   if [ -z "$collector" ]; then
-    self="$0"
-    [ -L "$self" ] && self=$(readlink "$self")
-    case "$self" in /*) ;; *) self="$(dirname "$0")/$self" ;; esac
-    collector="$(dirname "$self")/../llm-limits.sh"
+    collector="$statusline_dir/../llm-limits.sh"
   fi
   [ -x "$collector" ] || return 0
   kick_dir="$statusline_cache_dir"
   stamp="$kick_dir/store-merge-kick"
-  now_ts=$(date +%s 2>/dev/null) || return 0
+  now_ts=$EPOCHSECONDS
   age=$(file_mtime "$stamp" 2>/dev/null)
   [[ "$age" =~ ^[0-9]+$ ]] && [ "$((now_ts - age))" -lt 60 ] && return 0
   mkdir -p "$kick_dir" 2>/dev/null || return 0
@@ -748,7 +790,7 @@ rl_merge() {
   # Only a strictly newer window (or higher pct in the same window) is taken —
   # unless this session has spent since its last accepted merge, which makes the
   # payload a live reading of a window that simply has not moved.
-  merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$(date +%s)" \
+  merged_rl=$(jq -cn --argjson old "$old_rl" --argjson fresh "$rl_json" --argjson now "$EPOCHSECONDS" \
     --arg cost "$rl_cost_now" --arg prevcost "$rl_cost_prev" '
     # A cached header-origin week is synthetic (shared-invariants n) and must not survive
     # the merge: newer() only replaces on a HIGHER pct within the same window, so a
@@ -837,19 +879,20 @@ elif [ -n "$rl_json" ]; then
 else
   rl_cache_file="$account_cache"
   [ "$acct" = main ] && rl_cache_file="$cache_rl"
-  rl_json=$(cat "$rl_cache_file" 2>/dev/null)
+  rl_json=""
+  if [ -r "$rl_cache_file" ]; then IFS= read -r -d '' rl_json < "$rl_cache_file" || :; fi
   rl_from_cache=1
   rl_mtime=$(file_mtime "$rl_cache_file")
 fi
 
-now=$(date +%s)
+now=$EPOCHSECONDS
 h5_absent=false; h5_pct=""; h5_reset=""; h5_dim=""; wk_pct=""; wk_reset=""; wk_dim=""; wk_origin=""
 if [ -n "$rl_json" ]; then
   # Legacy raw-headers caches carry no as_of; the cache file's mtime is the honest lower bound
   # (captured before any rewrite this render did), and a payload without either is as fresh as
   # this render.
   [[ "$rl_mtime" =~ ^[0-9]+$ ]] || rl_mtime="$now"
-  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent < <(printf '%s' "$rl_json" | jq -r \
+  IFS=$'\x1f' read -r h5_pct h5_reset h5_dim wk_pct wk_reset wk_dim wk_origin h5_absent < <(jq -r \
     --argjson now "$now" --argjson mtime "$rl_mtime" \
     --argjson thr5 "$LIMITS_STALE_FIVE_HOUR" --argjson thrw "$LIMITS_STALE_WEEKLY" "$LIMITS_VIEW_JQ"'
     (.auth.status == "expired") as $auth_expired
@@ -869,27 +912,28 @@ if [ -n "$rl_json" ]; then
       (limits_window_absent(.five_hour //
         (if .auth_needed == true or (.auth.status | IN("failed", "expired"))
          then {stale:true} else null end)) | tostring)]
-    | join("\u001f")' 2>/dev/null)
+    | join("\u001f")' <<< "$rl_json" 2>/dev/null)
 fi
 
 # Rendering a header-origin week would print a percentage nobody measured — and one every
 # other surface discards (shared-invariants n). Show `?` instead.
 [ "$wk_origin" = headers ] && { wk_pct=""; wk_reset=""; }
 
-if [ -n "$rl_json" ]; then
-  stale_acct=""
-  if [ -n "$rl_from_cache" ]; then
-    if [ "$acct" != main ]; then
-      stale_acct="$acct"
-    fi
-  fi
-  if [ -n "$stale_acct" ]; then
-    IFS=$'\x1f' read -r h5_stale wk_stale < <(jq -r --arg account "$stale_acct" '
-      [.vendors.claude.accounts[]? | select(.account == $account)][0] as $a |
+h5_stale=""; wk_stale=""; fable_found=""; fable_pct=""; fable_reset=""; fable_dim=""
+if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$acct" ] && [ "$acct" != main ]; then
+  IFS=$'\x1f' read -r h5_stale wk_stale fable_found fable_pct fable_reset fable_dim < <(jq -r --arg account "$acct" '
+    (try ([.vendors.claude.accounts[]? | select(.account == $account)][0] as $a |
       if $a == null then ["", ""]
-      else [($a.five_hour.stale == true | tostring), ($a.weekly.stale == true | tostring)] end |
-      join("")
-    ' "$limits_file" 2>/dev/null)
+      else [($a.five_hour.stale == true | tostring), ($a.weekly.stale == true | tostring)] end
+      | join("\u001f")) catch "\u001f")
+    + "\u001f"
+    + (try (first(.vendors.claude.accounts[]? | select(.account == $account) | .fable // empty
+        | ["1", (if .effective_pct == null then "" else (.effective_pct | round | tostring) end),
+           (.resets_at // ""), (if .stale == true or .expired == true then "1" else "" end)]
+        | join("\u001f")) // "\u001f\u001f\u001f")
+       catch "\u001f\u001f\u001f")
+  ' "$limits_file" 2>/dev/null)
+  if [ -n "$rl_json" ] && [ -n "$rl_from_cache" ]; then
     [ "$h5_stale" = true ] && h5_dim=1
     [ "$wk_stale" = true ] && wk_dim=1
   fi
@@ -921,7 +965,8 @@ if [ -n "${CLAUDEGPT_ACCOUNT:-}" ]; then
   codex_quota_kick "$CLAUDEGPT_ACCOUNT" "$now"
 fi
 
-dir=$(basename "$dir_path")
+dir=${dir_path%"${dir_path##*[!/]}"}
+dir=${dir##*/}; [ -z "$dir_path" ] || dir=${dir:-/}
 project_top=""; project_common=""; project_root=""; project_name=""; project_is_wt=0
 if repo_dirs "$dir_path"; then
   project_top="$REPO_TOP"; project_common="$REPO_COMMON"
@@ -1253,12 +1298,56 @@ ahead=""
 head_known=0
 git_status=""
 git_status_rc=1
+branch_oid=""; branch_upstream=""; branch_ab=""; branch=""; has_untracked=0
 if [ -n "$active_top" ]; then
-  git_status=$(git -C "$active_top" status --porcelain 2>/dev/null)
+  status_v2=$(git -C "$active_top" status --porcelain=v2 --branch --untracked-files=normal --ahead-behind 2>/dev/null)
   git_status_rc=$?
+  # git_status is rebuilt as the `status --porcelain` (v1) text, the verdict cache's key: v1
+  # quotes every path holding a space and sorts unmerged entries in among the rest, v2 lists them last.
+  status_unmerged=0
+  while IFS= read -r status_line; do
+    case "$status_line" in
+      '# branch.oid '*) branch_oid=${status_line#\# branch.oid } ;;
+      '# branch.head '*) branch=${status_line#\# branch.head } ;;
+      '# branch.upstream '*) branch_upstream=${status_line#\# branch.upstream } ;;
+      '# branch.ab '*)
+        branch_ab=${status_line#\# branch.ab }
+        status_rest=${branch_ab#+}
+        ahead=${status_rest%% *}; behind=${status_rest#* -} ;;
+      [12]' '*)
+        status_xy=${status_line:2:2}
+        status_n=8; [ "${status_line:0:1}" = 2 ] && status_n=9
+        status_rest=$status_line
+        for ((status_i = 0; status_i < status_n; status_i++)); do status_rest=${status_rest#* }; done
+        status_path=${status_rest%%$'\t'*}
+        case "$status_path" in \"*) ;; *' '*) status_path="\"$status_path\"" ;; esac
+        if [ "$status_n" = 9 ]; then
+          status_orig=${status_rest#*$'\t'}
+          case "$status_orig" in \"*) ;; *' '*) status_orig="\"$status_orig\"" ;; esac
+          status_path="$status_orig -> $status_path"
+        fi
+        git_status+="${status_xy//./ } $status_path"$'\n' ;;
+      'u '*) status_unmerged=1 ;;
+      '? '*)
+        has_untracked=1; status_path=${status_line#? }
+        case "$status_path" in \"*) ;; *' '*) status_path="\"$status_path\"" ;; esac
+        git_status+="?? $status_path"$'\n' ;;
+    esac
+  done <<< "$status_v2"
+  git_status=${git_status%$'\n'}
+  [ "$status_unmerged" = 1 ] && [ "$git_status_rc" -eq 0 ] &&
+    { git_status=$(git -C "$active_top" status --porcelain 2>/dev/null); git_status_rc=$?; }
 fi
 if [ -n "$active_top" ]; then
-  branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
+  [ "$branch" != '(detached)' ] && [ "$branch_oid" != '(initial)' ] || branch=HEAD
+  if [ "$git_status_rc" -ne 0 ]; then
+    branch=$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    branch_oid=$(git -C "$git_dir" rev-parse -q --verify HEAD 2>/dev/null)
+    branch_upstream=$(git -C "$git_dir" rev-parse --symbolic-full-name '@{upstream}' 2>/dev/null)
+    has_untracked=1
+    [ -n "$branch" ] &&
+      read -r behind ahead < <(git -C "$git_dir" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
+  fi
   # In a worktree the `⧉` label is the whole identity: no branch segment there,
   # whatever HEAD is. `head_known` still gates the diff counters below.
   if [ "$branch" = HEAD ]; then
@@ -1286,7 +1375,7 @@ if [ -n "$active_top" ]; then
     # .cost.total_lines_* — that was a session-lifetime tool-edit counter
     # across all repos, useless for "how much is hanging uncommitted now".
     read -r udiff_add udiff_del f_new f_del f_mod < <({
-        if git -C "$git_dir" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+        if [ -n "$branch_oid" ] && [ "$branch_oid" != "(initial)" ]; then
           git -C "$git_dir" diff --numstat --summary HEAD -- 2>/dev/null
         else
           # Unborn HEAD (no commits yet): diff the worktree against the empty
@@ -1299,16 +1388,22 @@ if [ -n "$active_top" ]; then
         fi
         # ls-files paths are repo-relative; grep must resolve them, and the
         # count must be repo-wide even when git_dir is a subdirectory.
-        ( cd "$active_top" 2>/dev/null && {
-            git ls-files --others --exclude-standard 2>/dev/null \
-              | awk '{print "0\t0\t\tU"}'
-            git ls-files --others --exclude-standard -z 2>/dev/null \
-              | xargs -0 grep -cI '' 2>/dev/null | awk -F: '{print $NF "\t0\t\tL"}'
-          } )
+        if [ "$has_untracked" = 1 ]; then
+          mapfile -d '' untracked_names < <(git -C "$active_top" ls-files --others --exclude-standard -z 2>/dev/null)
+          # python's start costs three greps: a short listing is cheaper counted afresh.
+          if [ "${#untracked_names[@]}" -gt 32 ]; then
+            printf '%s\0' "${untracked_names[@]}" |
+              python3 -E -S "$statusline_dir/../share/statusline-untracked.py" "$active_top" "$statusline_cache_dir/untracked-lines"
+          elif [ "${#untracked_names[@]}" -gt 0 ]; then
+            printf '0\t0\t\tU%s\n' "${#untracked_names[@]}"
+            printf '%s\0' "${untracked_names[@]}" | ( cd "$active_top" 2>/dev/null && xargs -0 grep -cI '' 2>/dev/null ) |
+              awk -F: '{print $NF "\t0\t\tL"}'
+          fi
+        fi
       } | awk -F'\t' '
         /^[0-9-]+\t/ {
           if ($1 != "-") a += $1; if ($2 != "-") d += $2
-          if (NF == 4 && $3 == "" && $4 == "U") fu++
+          if (NF == 4 && $3 == "" && $4 ~ /^U[0-9]+$/) fu += substr($4, 2)
           else if (NF == 4 && $3 == "" && $4 == "L") { }
           else nt++
           next
@@ -1326,20 +1421,18 @@ if [ -n "$active_top" ]; then
       # Dirty with zero countable lines (binary/mode/rename-only): files only.
       diff_show=files
     fi
-
-    read -r behind ahead < <(git -C "$git_dir" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)
   fi
 fi
 
 h5_time=""
-[ -n "$h5_reset" ] && h5_time=$(TZ=Europe/Kyiv date -r "$h5_reset" +%H:%M 2>/dev/null)
+[[ "$h5_reset" =~ ^[0-9]+$ ]] && TZ=Europe/Kyiv printf -v h5_time '%(%H:%M)T' "$h5_reset" 2>/dev/null
 
 wk_arrow_txt=""
 if [ -n "$wk_reset" ]; then
   rem=$(( wk_reset - now ))
   if [ "$rem" -gt 86400 ] || [ "$rem" -le 0 ]; then
-    dow=$(TZ=Europe/Kyiv date -r "$wk_reset" +%u)
-    wtime=$(TZ=Europe/Kyiv date -r "$wk_reset" +%H:%M)
+    TZ=Europe/Kyiv printf -v dow '%(%u)T' "$wk_reset"
+    TZ=Europe/Kyiv printf -v wtime '%(%H:%M)T' "$wk_reset"
     case "$dow" in
       1) dname=Mon ;; 2) dname=Tue ;; 3) dname=Wed ;; 4) dname=Thu ;;
       5) dname=Fri ;; 6) dname=Sat ;; 7) dname=Sun ;;
@@ -1360,15 +1453,6 @@ fable_pct_part=""
 fable_reset_txt=""
 fable_account="$acct"
 if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && [ -n "$fable_account" ] && [ "$fable_account" != main ]; then
-  # The collector's own `effective_pct`/`stale`/`expired` fields, as the menubar renders them.
-  IFS='|' read -r fable_found fable_pct fable_reset fable_dim < <(jq -r --arg name "$fable_account" '
-    .vendors.claude.accounts[]?
-    | select(.account == $name)
-    | .fable // empty
-    | ["1", (if .effective_pct == null then "" else (.effective_pct | round | tostring) end),
-       (.resets_at // ""), (if .stale == true or .expired == true then "1" else "" end)]
-    | join("|")
-  ' "$limits_file" 2>/dev/null)
   if [ "$fable_found" = 1 ]; then
     # Stale flags inside a frozen llm-limits.json never flip; the file's own
     # age is the backstop.
@@ -1460,13 +1544,10 @@ elif [ "$rec_scan" -ge 262144 ] 2>/dev/null && [ "$rec_scan" -le "$scan_max" ] 2
   saved_scan_bytes="$rec_scan"
 fi
 
-file_size() {
-  stat -f %z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null
-}
-
 resolve_parent_transcript() {
   local sibling root candidate found=""
-  sibling="$(dirname "$transcript_path")/$fork_sid.jsonl"
+  statusline_parent_dir "$transcript_path"
+  sibling="$statusline_parent/$fork_sid.jsonl"
   if [ -r "$sibling" ]; then
     printf '%s\n' "$sibling"
     return 0
@@ -1743,7 +1824,8 @@ if [ -n "$track" ] && [ "$latest_ts" -gt 0 ] && [ "$latest_fork" = "-" ]; then
     if [ "$model_rec_ts" -ne "$latest_ts" ] || [ "$model_rec_acct" != "$latest_acct" ] \
        || [ "$model_rec_ttl" -ne "$latest_ttl" ] || [ "$model_rec_uuid" != "$latest_uuid" ] \
        || [ "$model_rec_scan" -ne "$scan_bytes" ]; then
-      mkdir -p "$(dirname "$model_track")" 2>/dev/null
+      statusline_parent_dir "$model_track"
+      mkdir -p "$statusline_parent" 2>/dev/null
       printf 'v1 %s %s %s %s %s\n' "$latest_ts" "$latest_acct" "$latest_ttl" "$latest_uuid" "$scan_bytes" \
         > "$model_track.tmp.$$" 2>/dev/null && mv "$model_track.tmp.$$" "$model_track" 2>/dev/null \
         || rm -f "$model_track.tmp.$$" 2>/dev/null
@@ -1763,7 +1845,8 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" = "-" ] && [ -n "$model_track" ] \
    && { [ "$model_rec_ts" -ne "$assist_ts" ] || [ "$model_rec_acct" != "$track_acct" ] \
         || [ "$model_rec_ttl" -ne "$ttl_bucket" ] || [ "$model_rec_uuid" != "$assist_uuid" ] \
         || [ "$model_rec_scan" -ne "$scan_bytes" ]; }; then
-  mkdir -p "$(dirname "$model_track")" 2>/dev/null
+  statusline_parent_dir "$model_track"
+  mkdir -p "$statusline_parent" 2>/dev/null
   printf 'v1 %s %s %s %s %s\n' "$assist_ts" "$track_acct" "$ttl_bucket" "$assist_uuid" "$scan_bytes" \
     > "$model_track.tmp.$$" 2>/dev/null && mv "$model_track.tmp.$$" "$model_track" 2>/dev/null \
     || rm -f "$model_track.tmp.$$" 2>/dev/null
@@ -1861,7 +1944,8 @@ if [ "$scan_found" = 1 ] && [ "$fork_sid" != "-" ] && [ "$fork_sid" != "$session
         fork_state=unknown
       fi
       if [ -n "$fork_cache" ]; then
-        mkdir -p "$(dirname "$fork_cache")" 2>/dev/null
+        statusline_parent_dir "$fork_cache"
+        mkdir -p "$statusline_parent" 2>/dev/null
         printf 'v4\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
           "$fork_sid" "$fork_anchor_uuid" "$fork_own_ts" "$parent_file" "$parent_size" \
           "$parent_mtime" "$fork_state" "$parent_boundary" "$parent_assist_ts" \
@@ -1920,7 +2004,8 @@ if [ "$ev_valid" = 1 ] && [ "$ev_ts" -gt "$learned_upto" ] 2>/dev/null \
   learn_event=1
 fi
 if [ -z "${CLAUDEGPT_ACCOUNT:-}" ] && { [ -n "$learn_event" ] || [ -n "$bounds_need_decay" ]; }; then
-  mkdir -p "$(dirname "$learned_file")" 2>/dev/null
+  statusline_parent_dir "$learned_file"
+  mkdir -p "$statusline_parent" 2>/dev/null
   lock_tries=0
   while ! snapshot_lock_acquire "$shared_bounds_lock"; do
     lock_tries=$((lock_tries + 1))
@@ -1962,7 +2047,8 @@ if [ -n "$track" ] && [ "$track_ready" = 1 ] \
         || [ "$rec_model" != "${t6:-}" ] || [ "$rec_uuid" != "${t7:-}" ] \
         || [ "$rec_scan" != "${t8:-}" ] || [ "$seen_upto" != "${t9:-}" ] \
         || [ "$seen_acct" != "${t10:-}" ]; }; then
-  mkdir -p "$(dirname "$track")" 2>/dev/null
+  statusline_parent_dir "$track"
+  mkdir -p "$statusline_parent" 2>/dev/null
   printf 'v2 %s %s %s %s %s %s %s %s %s\n' "$rec_ts" "${rec_acct:-?}" "$learned_upto" \
     "$rec_ttl" "$rec_model" "$rec_uuid" "$rec_scan" "$seen_upto" "$seen_acct" \
     > "$track.tmp.$$" 2>/dev/null && mv "$track.tmp.$$" "$track" 2>/dev/null \
@@ -1994,7 +2080,7 @@ fi
 ctx_tokens_part=""
 ctx_warn_part=""
 if [ "$cache_state" = warm ]; then
-  death_time=$(TZ=Europe/Kyiv date -r "$((warm_ts + warm_ttl))" +%H:%M 2>/dev/null)
+  TZ=Europe/Kyiv printf -v death_time '%(%H:%M)T' "$((warm_ts + warm_ttl))" 2>/dev/null
   if [ -n "$death_time" ]; then
     ctx_tokens_part=" ${DIM}→${death_time}${RESET}"
     [ "$warm_ttl" -lt 3600 ] 2>/dev/null && ctx_warn_part="${YELLOW}↓5m${RESET}"
@@ -2049,7 +2135,7 @@ abbrev_model() {
     printf '%s' "$name"
     return
   fi
-  printf '%s%s' "$(printf '%s%s' "$first" "$second" | tr '[:lower:]' '[:upper:]')" "$version"
+  printf '%s%s%s' "${first^^}" "${second^^}" "$version"
 }
 
 # Chat file only (global pin is the menu's); claudeb_profile=* renders `claude`.
@@ -2057,7 +2143,7 @@ pin_body=""
 if [ -n "$session_id" ]; then
   pin_file="${CHAT_PINS_DIR:-$HOME/.cache/claude-chat-pins}/$session_id"
   if [ -s "$pin_file" ]; then
-    pin_line=$(sed -n '1p' "$pin_file")
+    IFS= read -r pin_line < "$pin_file" || :
     case "$pin_line" in
       open=all) pin_body="${MAGENTA}all${RESET}" ;;
       claudeb_profile=*|codex_profile=*|gemini_profile=*|grok_profile=*)
@@ -2072,7 +2158,9 @@ if [ -n "$session_id" ]; then
         fi
         if [ -n "$pin_label" ]; then
           # The pin's own second line, so it is read off the same file on the same tick.
-          grep -qxF "${pin_vendor}_fast=on" "$pin_file" 2>/dev/null && pin_label="${pin_label}⚡"
+          while IFS= read -r pin_setting || [ -n "$pin_setting" ]; do
+            [ "$pin_setting" = "${pin_vendor}_fast=on" ] && { pin_label="${pin_label}⚡"; break; }
+          done < "$pin_file"
           pin_body="${MAGENTA}${pin_label}${RESET}"
         fi
         ;;
@@ -2091,10 +2179,7 @@ fi
 # no tree to disagree with, so it stays bright in every view.
 ports_part=""
 if [ -n "$session_id" ]; then
-  probe_self="$0"
-  [ -L "$probe_self" ] && probe_self=$(readlink "$probe_self")
-  case "$probe_self" in /*) ;; *) probe_self="$(dirname "$0")/$(basename "$probe_self")" ;; esac
-  probe_bin="$(dirname "$probe_self")/statusline-ports-probe.sh"
+  probe_bin="$statusline_dir/statusline-ports-probe.sh"
   ports_cache="$statusline_cache_dir/ports-$session_id"
   ports_mtime=$(file_mtime "$ports_cache" 2>/dev/null)
   if { ! [[ "$ports_mtime" =~ ^[0-9]+$ ]] || [ "$((now - ports_mtime))" -gt 15 ]; } && [ -x "$probe_bin" ]; then
@@ -2542,7 +2627,7 @@ fi
 # background; the render reads its cache only, and the elapsed time is recomputed here every render.
 work_rows=()
 if [ -n "$session_id" ]; then
-  work_bin="$(dirname "$probe_self")/statusline-work-probe.sh"
+  work_bin="$statusline_dir/statusline-work-probe.sh"
   work_cache="$statusline_cache_dir/work-$session_id"
   work_mtime=$(file_mtime "$work_cache" 2>/dev/null)
   if { ! [[ "$work_mtime" =~ ^[0-9]+$ ]] || [ "$((now - work_mtime))" -gt 4 ]; } && [ -x "$work_bin" ]; then
@@ -2551,7 +2636,8 @@ if [ -n "$session_id" ]; then
   work_more=0
   if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then
     # Split on \037: tab is IFS whitespace, so `read` would fold an empty repo into the label.
-    while IFS=$'\037' read -r w_kind w_class w_start w_repo w_label w_done w_failed w_total || [ -n "$w_kind" ]; do
+    while IFS= read -r work_line || [ -n "$work_line" ]; do
+      IFS=$'\037' read -r w_kind w_class w_start w_repo w_label w_done w_failed w_total <<< "${work_line//$'\t'/$'\037'}"
       [ "$w_kind" = main ] && [[ "$w_start" =~ ^[0-9]+$ ]] || continue
       if [ "${#work_rows[@]}" -ge 3 ]; then work_more=$((work_more + 1)); continue; fi
       w_secs=$((now - w_start))
@@ -2583,10 +2669,23 @@ if [ -n "$session_id" ]; then
         fi
       fi
       work_rows+=("$w_row")
-    done < <(tr '\t' '\037' < "$work_cache" 2>/dev/null)
+    done < "$work_cache"
     [ "$work_more" -eq 0 ] || work_rows[2]="${work_rows[2]} ${DIM}· +${work_more}${RESET}"
   fi
 fi
 
 printf '%s\n%s' "$line1" "$line2"
 for w_row in ${work_rows[@]+"${work_rows[@]}"}; do printf '\n%s' "$w_row"; done
+statusline_rc=$?
+
+# Render timing for the Harness doctor, which prunes the files itself. One O_APPEND write per
+# render keeps concurrent sessions' lines whole without a lock.
+statusline_timing_dir="${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/statusline"
+printf -v statusline_day '%(%Y-%m-%d)T' -1
+statusline_end_us=${EPOCHREALTIME//[!0-9]/}
+printf '%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" \
+  2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv" ||
+  { mkdir -p "$statusline_timing_dir" 2>/dev/null &&
+    printf '%s\t%s\t%s\n' "$statusline_start_us" "$statusline_end_us" "$session_id" \
+      2>/dev/null >> "$statusline_timing_dir/$statusline_day.tsv"; }
+exit "$statusline_rc"

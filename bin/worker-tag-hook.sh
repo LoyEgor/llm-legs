@@ -5,6 +5,7 @@
 # then prefixes the tag onto every Bash description so the UI activity line
 # always names who is spending quota. Tag files are session-scoped so the
 # subagent rows can surface the tag. Fail-open everywhere.
+[ -r ~/.claude/hooks/lib/hook-time.sh ] && . ~/.claude/hooks/lib/hook-time.sh
 set -u
 
 # A hook runs on the interactive path: it reads the model list, it never refreshes it. A cold
