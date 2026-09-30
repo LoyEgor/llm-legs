@@ -1179,7 +1179,7 @@ replay() {
 }
 first_ids=$(replay 1)
 assert_eq "$first_ids" "$(replay 2)" "the committed calibration fixture replays with the same problem ids"
-assert_eq '["floor:event:SessionStart=watch","hook_every_call:instruction-watch.sh check=watch","hook_every_call:statusline-workdir-hook.sh=watch","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending"]' \
-  "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and the two fixes as pending proof"
+assert_eq '["floor:event:SessionStart=watch","hook_every_call:instruction-watch.sh check=watch","hook_every_call:statusline-workdir-hook.sh=watch","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","word-miss-deferred-reading-lost=fixed-pending"]' \
+  "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and the four fixes as pending proof"
 
 printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"

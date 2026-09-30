@@ -200,6 +200,62 @@
       "reviewed_by": "night fixer harness-guards-20260930T001642Z-7d95",
       "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): check runs with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. No committed code or transcript names those ids. A real chat losing its baseline would match this row too, so it stays open.",
       "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
+    },
+    {
+      "id": "ask-deferred-bg-task-hold-cap",
+      "title": "Background work that never ends held every end-of-turn ask for hours: a Storybook server, a night-job Monitor, agents launched one after another (35 h in one chat)",
+      "match": {
+        "rule": "ask-deferred",
+        "ident": "busy-bg-task"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T04:05:00+03:00",
+          "by": "night fixer harness-stop-hooks-20260930T001649Z-33fb",
+          "files": [
+            "claude-setup/hooks/stop-dispatch.sh",
+            "claude-setup/hooks/stop.d/ask-span-drill.sh",
+            "claude-setup/hooks/stop.d/ask-run-unfinished.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "word-miss-deferred-reading-lost"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-stop-hooks-20260930T001649Z-33fb",
+      "note": "stop-dispatch.sh holds asks for background work at most STOP_DISPATCH_HELD_CAP (3600 s), then runs them at that stop with busy empty and the journal line's `held` naming what it would have called busy, and the hold restarts; ask-span-drill stays silent under STOP_HELD; ask-run-unfinished also sees waiter tasks under the 2.1.285 label `subagent`. The doctor's ask-busy rule does not see asks run under `held`, by design.",
+      "handoff": null
+    },
+    {
+      "id": "word-miss-deferred-reading-lost",
+      "title": "A half-read joined notice was never asked for: its turn's stops were all busy, and ask-word-reading read only the current turn at the next idle stop",
+      "match": {
+        "rule": "word-miss",
+        "ident": "commit\\+review"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T04:05:00+03:00",
+          "by": "night fixer harness-stop-hooks-20260930T001649Z-33fb",
+          "files": [
+            "claude-setup/hooks/lib/words_journal.py"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "ask-deferred-bg-task-hold-cap"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-stop-hooks-20260930T001649Z-33fb",
+      "note": "words_journal.py ask reads every turn since the last stop it ran at (reading-checked), asks once per notice (asked-reading), and a reading written for a late ask settles the old row ok (reading-late) instead of reading as unprompted (asked). Evidence: words:1790697197/4ba97859, turn 9, only commit+push read; next idle stop 16:44Z was turn 12+.",
+      "handoff": null
     }
   ],
   "blind_spots": [
@@ -279,6 +335,13 @@
       "reason": "the guards rule counts each record per file; a record carries no write key (hash@mtime), so a second record of the same write reads as new growth",
       "since": "2026-09-30",
       "would_catch_if": "each events.jsonl file entry carried its alert key and the guards rule counted a key once"
+    },
+    {
+      "id": "stop-payload-task-labels",
+      "what": "the background task type labels Stop hooks filter the payload on",
+      "reason": "Claude Code 2.1.285 labels an Agent task `subagent` where ask-run-unfinished.sh matched only `local_agent`; the stop journal records the count of live tasks, never their types",
+      "since": "2026-09-30",
+      "would_catch_if": "the stop journal recorded each live background task's type, so a hook filter matching none of the labels in use showed"
     }
   ]
 }
