@@ -480,7 +480,7 @@ case $mode in
     while [ $# -ge 3 ]; do
       [ "$3" = 1 ] && clear_gone_marks "$1"
       key=$(watch_mark_key "$1" "$2")
-      if instruction_mark_once "$ALERT_DIR" "$key"; then printf '%s\n' "$key"; else printf -- '-\n'; fi
+      if instruction_mark_once "$ALERT_DIR" "$key" "$state"; then printf '%s\n' "$key"; else printf -- '-\n'; fi
       shift 3
     done ;;
   release) release_marks "$@" ;;
@@ -685,7 +685,7 @@ local function watchEmit(entries, kind)
     end
     local keys, claimed = outputLines(runScan("claim", args)), {}
     for index, entry in ipairs(entries) do
-        if (keys[index] or ""):match("^%x+$") then
+        if (keys[index] or ""):match("^%x+w?$") then
             entry.key = keys[index]
             claimed[#claimed + 1] = entry
         end

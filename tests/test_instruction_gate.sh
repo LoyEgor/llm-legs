@@ -2753,9 +2753,11 @@ while IFS=$'\t' read -r _ _ _ _ _ _ vis _; do
   esac
 done < "$INSTRUCTION_WATCH_STATE/session-sid-mf2.tsv"
 [ -n "$first" ] || fail "multi-file baseline did not name either changed path"
-key=$(printf '%s\n%s\n' "$first" "$(shasum -a 256 "$first" | cut -d' ' -f1)@$(stat -L -f %Fm "$first")" |
-  shasum -a 256 | cut -c1-16)
-mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$key"
+write_mark() { # path: the alert key of the write that left its current bytes
+  printf '%s\n%s\n' "$1" "$(shasum -a 256 "$1" | cut -d' ' -f1)@$(stat -L -f %Fm "$1")" | shasum -a 256 |
+    cut -c1-16 | sed 's/$/w/'
+}
+mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$(write_mark "$first")"
 raw_check sid-mf2 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 other=$AGENTF
 [ "$first" = "$AGENTF" ] && other=$DOC
@@ -2766,11 +2768,15 @@ case "$mf_files" in *"$first"*) fail "an already-claimed change was journaled ag
 assert_eq 1 "$(tail -1 "$J" | jq '.bytes | length')"
 case "$(tail -1 "$J" | jq -r '.summary')" in *"$first"*) fail "an already-claimed change stayed in the summary" ;; esac
 
-echo "== tripwire: a two-day-old claim still keeps a stale baseline's re-report out of the journal"
+echo "== tripwire: a nine-day-old claim still keeps a ten-day-old baseline's re-report out of the journal"
 span_base sid-stale >/dev/null
+touch -t "$(date -v-10d +%Y%m%d%H%M.%S)" "$INSTRUCTION_WATCH_STATE/session-sid-stale.tsv"
 printf 'stale-A\n' > "$DOC"
 raw_check sid-mf1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
-find "$INSTRUCTION_WATCH_STATE/alerts" -mindepth 1 -maxdepth 1 -type d -exec touch -A -480000 {} +
+find "$INSTRUCTION_WATCH_STATE/alerts" -mindepth 1 -maxdepth 1 -type d -exec touch -t "$(date -v-9d +%Y%m%d%H%M.%S)" {} +
+state_mark=0123456789abcdef
+mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$state_mark"
+touch -A -480000 "$INSTRUCTION_WATCH_STATE/alerts/$state_mark"
 lines=$(wc -l < "$J")
 printf 'unrelated\n' > "$AGENTF"
 raw_check sid-mf1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
@@ -2778,6 +2784,35 @@ raw_check sid-stale Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 stale_files=$(tail -n +"$((lines + 1))" "$J" | jq -r '.files[]' | tr '\n' ' ')
 assert_contains "$(basename "$AGENTF")" "$stale_files"
 case "$stale_files" in *"$DOC"*) fail "a claim aged past a day let the same write be journaled again: $stale_files" ;; esac
+
+echo "== tripwire: a state marker such as absent still goes at a day, whatever baseline is older"
+assert [ ! -d "$INSTRUCTION_WATCH_STATE/alerts/$state_mark" ]
+
+echo "== tripwire: a write marker goes once no baseline predates it"
+old_write=0123456789abcdefw
+mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$old_write"
+touch -A -480000 "$INSTRUCTION_WATCH_STATE/alerts/$old_write"
+printf 'sweep trigger\n' > "$AGENTF"
+raw_check sid-mf1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+assert [ ! -d "$INSTRUCTION_WATCH_STATE/alerts/$old_write" ]
+
+echo "== tripwire: a record's writer and restores come from the files it names alone"
+printf 'tier doc\n' > "$DOC"
+printf 'worker agent\n' > "$AGENTF"
+span_base sid-won >/dev/null
+printf 'agent changed before the call\n' > "$AGENTF"
+mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$(write_mark "$AGENTF")"
+pre_call sid-won Bash command "$ANY_CALL" "$NOSPAN_T"
+printf 'tier doc grew inside the call\n' > "$DOC"
+raw_check sid-won Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+rec=$(tail -1 "$J")
+assert_eq "$DOC" "$(printf '%s' "$rec" | jq -r '.files | join(" ")')"
+assert_eq this-call "$(printf '%s' "$rec" | jq -r .writer)"
+assert_eq sid-won "$(printf '%s' "$rec" | jq -r .sid)"
+assert_eq 1 "$(printf '%s' "$rec" | jq '.restores | length')"
+case "$(printf '%s' "$rec" | jq -r '.restores[]')" in *codex-worker.md*) fail "a restore for a file the record does not name" ;; esac
+printf 'tier doc\n' > "$DOC"
+printf 'worker agent\n' > "$AGENTF"
 
 echo "== tripwire: creating a ranked path that was absent from the baseline is ADDED"
 unset TOKENMAP_RATES

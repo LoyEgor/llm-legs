@@ -1438,15 +1438,21 @@ instruction_claim_stamp() {
 # Unlike a retry stamp, a notice marker is retained for the session's lifetime: only the atomic
 # creator speaks, and an unavailable cache returns silence.
 # The retry sweep runs one level down from the stamp root and so never reaches these, which sit a
-# level below that. The same name shape decides here. A marker must outlive every baseline it can
-# be compared against — the tripwire sweeps those at a week — or a resumed or compacted session
-# re-journals every write it slept through.
-instruction_mark_once() {
-  local dir=$1 hash=$2 h='[0-9a-f]'
+# level below that. The same name shape decides here: a state marker (`absent`) goes at a day, so
+# the next deletion of that path is news again. A write marker (`…w`) goes only once it is also
+# older than every baseline in $3, since a baseline that predates the write reports it again —
+# a resumed or compacted session's own baseline has no fixed age.
+instruction_mark_once() { # dir hash [baseline-dir]
+  local dir=$1 hash=$2 h='[0-9a-f]' oldest=''
+  local -a older=()
   case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
   mkdir -p "$dir" 2>/dev/null || return 1
   find "$dir" -mindepth 1 -maxdepth 1 -type d \
-    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mtime +8 -exec rmdir {} + 2>/dev/null
+    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mmin +1440 -exec rmdir {} + 2>/dev/null
+  [ -z "${3:-}" ] || oldest=$(ls -tr "$3"/session-*.tsv 2>/dev/null | head -n 1)
+  [ -z "$oldest" ] || older=(! -newer "$oldest")
+  find "$dir" -mindepth 1 -maxdepth 1 -type d -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h${h}w" -mmin +1440 \
+    ${older[@]+"${older[@]}"} -exec rmdir {} + 2>/dev/null
   mkdir "$dir/$hash" 2>/dev/null
 }
 

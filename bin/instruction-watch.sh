@@ -378,7 +378,7 @@ log_line() {
 
 journal_event() { # sent id summary
   local sent=$1 id=$2 summary=$3 line files='' k chat='' c cands='' writer owner='' observer=''
-  writer=$(record_writer)
+  writer=$(record_writer ${won_attrs[@]+"${won_attrs[@]}"})
   if [ "$writer" = this-call ] || [ "${kind:-change}" = baseline-missing ]; then
     owner=${sid:-}
     [ -z "$owner" ] || chat=$(instruction_chat_name "$owner") || chat=''
@@ -386,14 +386,14 @@ journal_event() { # sent id summary
     observer=${sid:-}
   fi
   for k in "${won_keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
-  for c in ${cand_sids[@]+"${cand_sids[@]}"}; do
+  for c in ${won_cands[@]+"${won_cands[@]}"}; do
     cands="$cands$c$_watch_tab$(instruction_chat_name "$c" | head -n 1)$_watch_nl"
   done
   line=$(jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sid "$owner" --arg observer "$observer" --arg summary "$summary" --arg sent "$sent" --arg kind "${kind:-change}" \
     --arg chat "$chat" --arg bytes "$(printf '%s\n' ${won_deltas[@]+"${won_deltas[@]}"})" \
-    --arg files "$files" --arg restores "$(printf '%s\n' ${restores[@]+"${restores[@]}"})" \
-    --arg reverted "$(printf '%s\n' ${reverted[@]+"${reverted[@]}"})" \
+    --arg files "$files" --arg restores "$(printf '%s\n' ${won_restores[@]+"${won_restores[@]}"})" \
+    --arg reverted "$(printf '%s\n' ${won_reverted[@]+"${won_reverted[@]}"})" \
     --arg writer "$writer" --arg cands "$cands" \
     '{id:$id,at:$at,sid:$sid,kind:$kind,summary:$summary,sent:$sent,writer:$writer,
       files:($files|split("\n")|map(select(length>0))),
@@ -419,8 +419,13 @@ journal_event() { # sent id summary
 # A → B → A → B inside a day is two writes of B, and a key on the content alone swallowed the second.
 # Only the session that wins the atomic claim speaks; every other one still rewrites its baseline
 # and still reports the change to its own model, which is per-session context and stays.
+# A key naming one write (`…@mtime`) ends in `w`: instruction_mark_once keeps those while any
+# baseline that predates them is on disk, and a state key such as `absent` a day.
 watch_mark_key() { # path content-key
-  printf '%s\n%s\n' "$1" "$2" | shasum -a 256 | cut -c1-16
+  local key
+  key=$(printf '%s\n%s\n' "$1" "$2" | shasum -a 256 | cut -c1-16)
+  case "$2" in *@*) key="${key}w" ;; esac
+  printf '%s\n' "$key"
 }
 
 clear_gone_marks() { # path
@@ -440,22 +445,31 @@ release_marks() { # key...
 # 1 when the journal could not take the record: the caller then keeps its baseline where it was, so
 # the change is found and reported again rather than absorbed unrecorded.
 alert_once() { # path content-key summary
-  local key sent=unsent id='' claimed='' i summary=''
-  local -a won_keys=() won_deltas=()
+  local key sent=unsent id='' claimed='' i c summary=''
+  local -a won_keys=() won_deltas=() won_attrs=() won_restores=() won_reverted=() won_cands=()
   # Keying only keys[0] skipped the rest of a multi-file check when that first
-  # file was already marked by another session. A file another session's claim already journaled
-  # stays out of this record, or the doctor counts that one write twice.
+  # file was already marked by another session. Everything of a file another session's claim
+  # already journaled stays out of this record — its writer and restore included — or the doctor
+  # counts that one write twice.
   for i in "${!keys[@]}"; do
     key=$(watch_mark_key "${keys[$i]%%"$_watch_nl"*}" "${keys[$i]#*"$_watch_nl"}")
-    if instruction_mark_once "$ALERT_DIR" "$key"; then
+    if instruction_mark_once "$ALERT_DIR" "$key" "$STATE_DIR"; then
       claimed="$claimed$key "
       [ -n "$id" ] || id=$key
       won_keys+=("${keys[$i]}"); won_deltas+=("${deltas[$i]}")
+      [ -z "${r_attr[$i]}" ] || won_attrs+=("${r_attr[$i]}")
+      [ -z "${r_restore[$i]}" ] || won_restores+=("${r_restore[$i]}")
+      [ -z "${r_revert[$i]}" ] || won_reverted+=("${r_revert[$i]}")
+      while IFS= read -r c; do
+        [ -n "$c" ] || continue
+        case "$_watch_nl$(printf '%s\n' ${won_cands[@]+"${won_cands[@]}"})" in *"$_watch_nl$c$_watch_nl"*) continue ;; esac
+        won_cands+=("$c")
+      done <<<"${r_cands[$i]}"
       summary="$summary${summary:+; }${reports[$i]}"
     fi
   done
   [ -n "$id" ] || return 0
-  # Receipts live 30d, the marker 1d; reusing the marker as the journal id lets
+  # Receipts live 30d, a marker a day or more; reusing the marker as the journal id lets
   # a leftover receipt swallow a same-bytes repeat after the marker expires.
   id=$(printf '%s\n%s\n%s\n%s\n' "$id" "$$" "$RANDOM" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     | shasum -a 256 | cut -c1-16)
@@ -504,6 +518,8 @@ report() {
   reports+=("$1")
   keys+=("$2$_watch_nl${3:-}")
   deltas+=("${4:-0}")
+  r_attr+=("$pending_attr"); r_cands+=("$pending_cands"); r_restore+=(''); r_revert+=('')
+  pending_attr='' pending_cands=''
   moved=1
   rate=$(instruction_read_rate "$2" "$HOME")
   [ -n "$rate" ] || return 0
@@ -523,6 +539,7 @@ offer_restore() {
   [ "${b_trust[$i]}" = 1 ] || return 0
   kept=$(keep_revert "${b_vis[$i]}" "${b_real[$i]}" "${b_hash[$i]}") || return 0
   restores+=("cp $(shq "$kept") $(shq "${b_real[$i]}")")
+  r_restore[$((${#reports[@]} - 1))]=${restores[$((${#restores[@]} - 1))]}
 }
 
 inflight_window() { # file name start agent
@@ -603,9 +620,8 @@ load_inflight() {
 }
 
 add_candidate() {
-  local c
-  for c in ${cand_sids[@]+"${cand_sids[@]}"}; do [ "$c" = "$1" ] && return 0; done
-  cand_sids+=("$1")
+  case "$_watch_nl$pending_cands" in *"$_watch_nl$1$_watch_nl"*) return 0 ;; esac
+  pending_cands="$pending_cands$1$_watch_nl"
 }
 
 # Who wrote bytes that landed at mtime $1: `this-call` when they fall inside this call's window
@@ -613,9 +629,9 @@ add_candidate() {
 # including every check the gate did not mark, since only a mark says a call of this session ran.
 attribute() { # mtime
   local m k hit=''
-  attr=unknown
-  [ -n "$now_ns" ] || { w_unknown=1; return 0; }
-  m=$(instruction_ns "$1") || { w_unknown=1; return 0; }
+  attr=unknown pending_attr=unknown
+  [ -n "$now_ns" ] || return 0
+  m=$(instruction_ns "$1") || return 0
   if [ -n "$own_start" ] && [ "$m" -ge "$own_start" ] && [ "$m" -le "$now_ns" ]; then
     attr=this-call
   fi
@@ -628,18 +644,16 @@ attribute() { # mtime
     attr=ambiguous
     add_candidate "$(instruction_sid_name "$sid")"
   fi
-  case "$attr" in
-    this-call) w_call=1 ;;
-    ambiguous) w_ambig=1 ;;
-    *) w_unknown=1 ;;
-  esac
+  pending_attr=$attr
 }
 
-record_writer() {
-  if [ -n "${w_ambig:-}" ]; then printf ambiguous
-  elif [ -n "${w_call:-}" ] && [ -z "${w_unknown:-}" ]; then printf this-call
-  else printf unknown
-  fi
+record_writer() { # attr...
+  case " $* " in
+    *" ambiguous "*) printf ambiguous ;;
+    *" unknown "*) printf unknown ;;
+    *" this-call "*) printf this-call ;;
+    *) printf unknown ;;
+  esac
 }
 
 # Growth put back rather than reported. Three conditions, every one of them required:
@@ -680,6 +694,7 @@ revert_growth() {
   pin "$vis" "$cur_mtime" "$cur_size" "$cur_ino" "${b_hash[$i]}" "${b_link[$i]}" "$real"
   reverted+=("$vis (+$delta bytes; what it wrote is parked at $parked)")
   report "REVERTED $vis (+$delta bytes)" "$vis" "revert:$grown_key" 0
+  r_revert[$((${#reports[@]} - 1))]=${reverted[$((${#reverted[@]} - 1))]}
 }
 
 # The hash of a file whose fingerprint moved, taken between two stats that agree: a writer still
@@ -773,12 +788,12 @@ cmd_check() {
   mkdir -p "$STATE_DIR" 2>/dev/null || { gate_journal watch fault "$sid" '' '' 'state dir not creatable'; exit 0; }
   [ -n "$visible_ready" ] || load_visible
 
-  local -a reports=() keys=() deltas=() restores=() reverted=()
+  local -a reports=() keys=() deltas=() restores=() reverted=() r_attr=() r_cands=() r_restore=() r_revert=()
   local -a b_mtime=() b_size=() b_ino=() b_trust=() b_hash=() b_link=() b_vis=() b_real=() c_real=() c_vis=()
   local roots_known='' unw_known='' pinned='' b_all='' kind=change sfx='' moved=0 top_rate=''
   local relay_revert='' grown_key=''
-  local attr='' own_start='' now_ns='' w_call='' w_unknown='' w_ambig=''
-  local -a other_sids=() other_starts=() other_ends=() cand_sids=()
+  local attr='' own_start='' now_ns='' pending_attr='' pending_cands=''
+  local -a other_sids=() other_starts=() other_ends=()
   [ "$mode" != check ] || load_inflight
   load_baseline "$ref"
   if [ "$mode" = check ] && [ -z "$b_all" ]; then
