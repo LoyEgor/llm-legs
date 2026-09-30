@@ -1,28 +1,50 @@
 -- Automations ▸ Token tracking: tokenmap's week-over-week spend rows.
 --
 -- The whole Automations menu is rebuilt on every click, so this module reads one small JSON
--- that `tokenmap scan` writes (tracking.json), decoded once per size+mtime — never a query or
--- a subprocess on the click path. Every number, label and Δ tone is decided by tokenmap
--- (tokenmap/tracking.py); this side only aligns the columns and colours the tone.
+-- tokenmap writes (tracking.json, or tracking-range.json for a chosen Compare range), decoded
+-- once per size+mtime — never a query or a subprocess on the click path. Every number, label
+-- and Δ tone is decided by tokenmap (tokenmap/tracking.py); this side only aligns the columns
+-- and colours the tone.
 
 local M = {}
 local menuStyle = require("menu-style")
 local HOME = os.getenv("HOME") or ""
 local DEFAULT_PATH = HOME .. "/.local/share/tokenmap/tracking.json"
+local DEFAULT_RANGE_PATH = HOME .. "/.local/share/tokenmap/tracking-range.json"
 local PAGE = HOME .. "/.local/share/tokenmap/tokenmap.html"
 local TOKENMAP = HOME .. "/.local/bin/tokenmap"
 local TASK_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 local STALE_HOURS = 26
+local SCAN_FIRST_SECONDS = 30 * 60
+local SNAPSHOT_HOURS = 6
+local SETTINGS_KEY = "tokenTracking.range"
+local SINCE_HINT = "Forms: 2026-09-29 18:00 · 18:00 · yesterday 18:00 · 6h · 90m"
+local RANGES = {
+    { key = "7d", label = "7 days vs 7 before" },
+    { key = "24h", label = "24h vs 24h before" },
+    { key = "3d", label = "3 days vs 3 before" },
+    { key = "today", label = "Today vs yesterday, same hours" },
+}
 local DELTA_COLUMN = 3
 
 local RED = menuStyle.RED
 local TONES = { worse = RED, better = menuStyle.GREEN }
 
-local path = DEFAULT_PATH
-local cache, cacheStamp, cacheProblem = nil, nil, nil
+local path, rangePath = DEFAULT_PATH, DEFAULT_RANGE_PATH
+local caches = {}
 local pasteboardFn = function(text) hs.pasteboard.setContents(text) end
 local alertFn = function(text) hs.alert.show(text, 4) end
-local scanTask, scanStarted, scanError = nil, nil, nil
+local taskFn = function(...) return hs.task.new(...) end
+local settingsStore = hs.settings
+local function askSince(default)
+    hs.focus()
+    local button, text = hs.dialog.textPrompt("Compare since…", SINCE_HINT, default or "",
+        "Compute", "Cancel")
+    return button == "Compute" and text or nil
+end
+local promptFn = askSince
+local scanTask, scanStarted, scanError, jobLabel = nil, nil, nil, nil
+local active, wanted = nil, nil
 
 local function readFile(file)
     local handle = io.open(file, "r")
@@ -32,20 +54,21 @@ local function readFile(file)
     return body
 end
 
-local function load()
-    local attrs = hs.fs.attributes(path)
+local function load(file)
+    local attrs = hs.fs.attributes(file)
     local stamp = attrs and (tostring(attrs.size) .. "/" .. tostring(attrs.modification)) or "missing"
-    if stamp == cacheStamp then return cache, cacheProblem, attrs end
+    local entry = caches[file]
+    if entry and entry.stamp == stamp then return entry.data, entry.problem, attrs end
     local data, problem = nil, "missing"
     if attrs then
-        local ok, decoded = pcall(hs.json.decode, readFile(path) or "")
+        local ok, decoded = pcall(hs.json.decode, readFile(file) or "")
         if ok and type(decoded) == "table" and type(decoded.rows) == "table" then
             data, problem = decoded, nil
         else
             problem = "unreadable"
         end
     end
-    cache, cacheStamp, cacheProblem = data, stamp, problem
+    caches[file] = { stamp = stamp, data = data, problem = problem }
     return data, problem, attrs
 end
 
@@ -185,7 +208,30 @@ local function isStale(data, attrs)
     return os.time() - attrs.modification > hours * 3600
 end
 
-local function statusItems(data, problem, attrs)
+local function rangeLabel(range)
+    return range.label or ("from " .. range.since)
+end
+
+local function activeRange()
+    if active then return active end
+    local saved = settingsStore.get(SETTINGS_KEY)
+    active = RANGES[1]
+    if type(saved) == "table" and saved.key == "custom" and type(saved.since) == "string"
+        and saved.since ~= "" then
+        active = { key = "custom", since = saved.since }
+    elseif type(saved) == "table" then
+        for _, range in ipairs(RANGES) do
+            if range.key == saved.key then active = range end
+        end
+    end
+    return active
+end
+
+local function activePath()
+    return activeRange() == RANGES[1] and path or rangePath
+end
+
+local function statusItems(data, problem, attrs, snapshot)
     local items = {}
     local running = scanTask ~= nil
     if problem == "missing" then
@@ -194,14 +240,20 @@ local function statusItems(data, problem, attrs)
         items[#items + 1] = { title = style("data unreadable", RED), disabled = true }
     else
         local age = os.time() - attrs.modification
-        local text = string.format("7 days to %s vs the 7 before · scanned %s",
-            clock(data.data_through or data.generated_at), menuStyle.ago(age))
-        local color = isStale(data, attrs) and RED or dimColor()
-        if isStale(data, attrs) then text = "stale: " .. text end
-        items[#items + 1] = { title = style(text, color), disabled = true }
+        local through = clock(data.data_through or data.generated_at)
+        local verb = (snapshot and age > SNAPSHOT_HOURS * 3600) and "computed" or "scanned"
+        local text = string.format("7 days to %s vs the 7 before · %s %s", through, verb, menuStyle.ago(age))
+        if type(data.range) == "table" and data.range.title then
+            text = string.format("%s · data to %s · %s %s", data.range.title, through, verb,
+                menuStyle.ago(age))
+        end
+        local stale = not snapshot and isStale(data, attrs)
+        if stale then text = "stale: " .. text end
+        items[#items + 1] = { title = style(text, stale and RED or dimColor()), disabled = true }
     end
     if running then
-        items[#items + 1] = { title = style("refreshing since " .. menuStyle.clock(scanStarted) .. "…", dimColor()),
+        local doing = jobLabel and ("computing " .. jobLabel) or "refreshing"
+        items[#items + 1] = { title = style(doing .. " since " .. menuStyle.clock(scanStarted) .. "…", dimColor()),
                               disabled = true }
     elseif scanError then
         items[#items + 1] = { title = style("last refresh failed: " .. scanError, RED), disabled = true }
@@ -217,14 +269,22 @@ local function lastLine(text)
     return last and last:sub(1, 120) or nil
 end
 
-function M.rescan()
-    if scanTask then return false end
-    scanError = nil
-    local task = hs.task.new(TOKENMAP, function(code, _, err)
+local function remember(range)
+    active = range
+    settingsStore.set(SETTINGS_KEY, { key = range.key, since = range.since })
+end
+
+local function startStep(steps, index, onDone)
+    local step = steps[index]
+    local task = taskFn(step.launch, function(code, _, err)
         scanTask = nil
-        if code ~= 0 then scanError = lastLine(err) or ("exit " .. tostring(code)) end
-        alertFn(code == 0 and "Token tracking updated" or ("Token tracking refresh failed: " .. scanError))
-    end, { "scan", "--quiet" })
+        if code ~= 0 then
+            scanError = lastLine(err) or ("exit " .. tostring(code))
+            return onDone(false)
+        end
+        if index == #steps then return onDone(true) end
+        if not startStep(steps, index + 1, onDone) then onDone(false) end
+    end, step.args)
     if not task then
         scanError = "could not start " .. TOKENMAP
         return false
@@ -234,14 +294,81 @@ function M.rescan()
         scanError = "could not start " .. TOKENMAP
         return false
     end
-    scanTask, scanStarted = task, os.time()
+    scanTask = task
     return true
+end
+
+local function startJob(range, scanFirst)
+    if scanTask then return false end
+    scanError = nil
+    local steps = {}
+    if scanFirst then steps[1] = { launch = TOKENMAP, args = { "scan", "--quiet" } } end
+    local ranged = range ~= RANGES[1]
+    if ranged then
+        local args = { "-n", "10", TOKENMAP, "tracking" }
+        if range.key == "custom" then
+            args[#args + 1], args[#args + 2] = "--since", range.since
+        else
+            args[#args + 1], args[#args + 2] = "--range", range.key
+        end
+        args[#args + 1] = "--write"
+        steps[#steps + 1] = { launch = "/usr/bin/nice", args = args }
+    end
+    jobLabel = ranged and rangeLabel(range) or nil
+    wanted = ranged and range or nil
+    scanStarted = os.time()
+    local what = ranged and ("Token tracking " .. rangeLabel(range)) or "Token tracking refresh"
+    local started = startStep(steps, 1, function(ok)
+        if ok and ranged and wanted == range then remember(range) end
+        if ok then
+            alertFn(ranged and (what .. " ready") or "Token tracking updated")
+        else
+            alertFn(what .. " failed: " .. scanError)
+        end
+    end)
+    if not started then alertFn(what .. " failed: " .. scanError) end
+    return started
+end
+
+function M.rescan()
+    return startJob(activeRange(), true)
+end
+
+function M.choose(range)
+    if range == RANGES[1] then
+        wanted = nil
+        remember(range)
+        return true
+    end
+    if scanTask then
+        alertFn("Token tracking is busy; try again when it finishes")
+        return false
+    end
+    local attrs = hs.fs.attributes(path)
+    return startJob(range, not attrs or os.time() - attrs.modification > SCAN_FIRST_SECONDS)
+end
+
+local function compareItem()
+    local current = activeRange()
+    local choices = {}
+    for _, range in ipairs(RANGES) do
+        choices[#choices + 1] = { title = range.label, checked = current == range,
+                                  fn = function() M.choose(range) end }
+    end
+    local custom = current.key == "custom"
+    local sinceTitle = custom and ("Since " .. current.since) or "Since…"
+    choices[#choices + 1] = { title = sinceTitle, checked = custom, fn = function()
+        local text = promptFn(custom and current.since or "")
+        text = text and text:match("^%s*(.-)%s*$")
+        if text and text ~= "" then M.choose({ key = "custom", since = text }) end
+    end }
+    return { title = "Compare: " .. rangeLabel(current), menu = choices }
 end
 
 -- The Automations row itself: red when the export is stale or the instruction watcher is down,
 -- so neither alarm needs the submenu opened to be seen.
 function M.title(watcherAlarm)
-    local data, _, attrs = load()
+    local data, _, attrs = load(path)
     local alarms = {}
     if isStale(data, attrs) then alarms[#alarms + 1] = "stale" end
     if watcherAlarm then alarms[#alarms + 1] = "watcher down" end
@@ -250,8 +377,10 @@ function M.title(watcherAlarm)
 end
 
 function M.menuItems(changeLogItem)
-    local data, problem, attrs = load()
-    local items = statusItems(data, problem, attrs)
+    local file = activePath()
+    local data, problem, attrs = load(file)
+    local items = statusItems(data, problem, attrs, file ~= path)
+    items[#items + 1] = compareItem()
     if data then
         local rows = { { label = data.unit_label or "", nums = data.columns or { "7 days", "prev 7", "Δ" },
                          dim = true } }
@@ -287,11 +416,17 @@ function M.menuItems(changeLogItem)
     return menuStyle.mono(items, style)
 end
 
-function M.setPath(value)
-    path = value or DEFAULT_PATH
-    cache, cacheStamp, cacheProblem = nil, nil, nil
+function M.setPath(value, rangeValue)
+    path, rangePath = value or DEFAULT_PATH, rangeValue or DEFAULT_RANGE_PATH
+    caches = {}
 end
 function M.setPasteboard(fn) pasteboardFn = fn or function(text) hs.pasteboard.setContents(text) end end
 function M.setAlert(fn) alertFn = fn or function(text) hs.alert.show(text, 4) end end
+function M.setTask(fn) taskFn = fn or function(...) return hs.task.new(...) end end
+function M.setSettings(store)
+    settingsStore = store or hs.settings
+    active = nil
+end
+function M.setPrompt(fn) promptFn = fn or askSince end
 
 return M
