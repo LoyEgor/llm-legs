@@ -65,13 +65,41 @@
         "rule": "floor",
         "ident": "edit"
       },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T03:40:00+03:00",
+          "by": "night fixer harness-hook-waits",
+          "files": [
+            "claude-setup/hooks/edit-conflict-notice.sh"
+          ],
+          "in": null
+        }
+      ],
+      "same_cause": [
+        "floor-bash-other-hooks"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-hook-waits",
+      "note": "Design §7.1 calibration: 655 ms on 2026-09-29; 549 ms in the live run of 2026-09-29 21:18. 2026-09-30: 768 ms p50 = edit-conflict-notice 390 ms before + commit-journal 280 / instruction-watch check 237 ms after. The before side was live_run_holder forking head, sed and a same_owner subshell per unswept worker-run record of every repository (46 records); it now reads them with builtins and asks same_owner only of a record that concerns the file. The after side is the hooks run of the same night (hook_every_call / hook_grows_* on commit-journal and instruction-watch check); see the handoff.",
+      "handoff": "docs/handoffs/2026-09-30-floor-bash-other-hooks.md"
+    },
+    {
+      "id": "floor-bash-other-hooks",
+      "title": "A non-trivial Bash call waits over 500 ms on hooks",
+      "match": {
+        "rule": "floor",
+        "ident": "bash:other"
+      },
       "status": "open",
       "fixes": [],
-      "same_cause": [],
-      "last_reviewed": "2026-09-29",
-      "reviewed_by": "Harness Doctor",
-      "note": "Design §7.1 calibration: 655 ms on 2026-09-29; 549 ms in the live run of 2026-09-29 21:18.",
-      "handoff": null
+      "same_cause": [
+        "floor-edit-hooks"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-hook-waits",
+      "note": "2026-09-30 03:18: 867 ms p50 over 346 calls = review-flow-gate 253 ms (p90 841) before + commit-journal 178 / instruction-watch check 170 ms (p90 843 / 344) after; every other hook ends under 180 ms. All three hooks are the problems of the night's hooks run, so this run changed none of them.",
+      "handoff": "docs/handoffs/2026-09-30-floor-bash-other-hooks.md"
     },
     {
       "id": "unjournaled-sessionstart-branch-check",
