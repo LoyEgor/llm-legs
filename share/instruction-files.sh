@@ -33,7 +33,7 @@ _instruction_emit() {
   p=${p//"$_instruction_tab"/?}
   printf '%s\n' "$p"
 }
-_instruction_emit_paths() { perl -0pe 's/[\n\t]/?/g; s/\0/\n/g'; }
+_instruction_emit_paths() { LC_ALL=C tr '\n\t\000' '??\n'; }
 _instruction_nl='
 '
 _instruction_tab='	'
@@ -90,8 +90,11 @@ _instruction_class_files() {
   local -a name_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do name_args+=(-o -iname "*.$e"); done
   [ -d "$home/.claude" ] || return 0
+  # file-history is the harness's own edit backups, loaded by nothing: most of the walk, and it grows
+  # with every session.
   find -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
-             -o -path "$home/.claude/projects" \) -prune -o -type f \( "${name_args[@]}" \) \
+             -o -path "$home/.claude/projects" -o -path "$home/.claude/file-history" \) -prune \
+             -o -type f \( "${name_args[@]}" \) \
              -print0 2>/dev/null | _instruction_emit_paths
 }
 

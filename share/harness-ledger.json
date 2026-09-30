@@ -256,6 +256,190 @@
       "reviewed_by": "night fixer harness-stop-hooks-20260930T001649Z-33fb",
       "note": "words_journal.py ask reads every turn since the last stop it ran at (reading-checked), asks once per notice (asked-reading), and a reading written for a late ask settles the old row ok (reading-late) instead of reading as unprompted (asked). Evidence: words:1790697197/4ba97859, turn 9, only commit+push read; next idle stop 16:44Z was turn 12+.",
       "handoff": null
+    },
+    {
+      "id": "hook-grows-repos-commit-journal",
+      "title": "commit-journal consumed each repository's snapshot in turn after every write call",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "commit-journal\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T03:58:29+03:00",
+          "by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+          "files": [
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-grows-repos-review-flow-gate",
+        "hook-grows-size-commit-journal",
+        "hook-grows-size-review-flow-gate"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Snapshot of every repository in the session's .repos registry ran one repository after another, Pre and Post; now RJ_SNAPSHOT_JOBS=4 parallel jobs (3 repos at load 190: 799 ms in turn, 286 ms side by side).",
+      "handoff": null
+    },
+    {
+      "id": "hook-grows-repos-review-flow-gate",
+      "title": "review-flow-gate snapshotted each registered repository in turn before every Bash call",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "review-flow-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T03:58:29+03:00",
+          "by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+          "files": [
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-grows-repos-commit-journal",
+        "hook-grows-size-commit-journal",
+        "hook-grows-size-review-flow-gate"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Snapshot of every repository in the session's .repos registry ran one repository after another, Pre and Post; now RJ_SNAPSHOT_JOBS=4 parallel jobs (3 repos at load 190: 799 ms in turn, 286 ms side by side).",
+      "handoff": null
+    },
+    {
+      "id": "hook-grows-size-commit-journal",
+      "title": "commit-journal slower in long sessions: their registries hold more repositories",
+      "match": {
+        "rule": "hook_grows_size",
+        "ident": "commit-journal\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T03:58:29+03:00",
+          "by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+          "files": [
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-grows-repos-commit-journal",
+        "hook-grows-repos-review-flow-gate",
+        "hook-grows-size-review-flow-gate"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Snapshot of every repository in the session's .repos registry ran one repository after another, Pre and Post; now RJ_SNAPSHOT_JOBS=4 parallel jobs (3 repos at load 190: 799 ms in turn, 286 ms side by side). The transcript-size split rides on the registry: sessions over 10 MB carry 2.9 repositories on average (18 % with 5+), under 1 MB 1.2.",
+      "handoff": null
+    },
+    {
+      "id": "hook-grows-size-review-flow-gate",
+      "title": "review-flow-gate slower in long sessions: their registries hold more repositories",
+      "match": {
+        "rule": "hook_grows_size",
+        "ident": "review-flow-gate\\.sh"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T03:58:29+03:00",
+          "by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+          "files": [
+            "claude-setup/hooks/lib/review-journal.sh",
+            "claude-setup/hooks/review-flow-gate.sh",
+            "claude-setup/hooks/commit-journal.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "hook-grows-repos-commit-journal",
+        "hook-grows-repos-review-flow-gate",
+        "hook-grows-size-commit-journal"
+      ],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Snapshot of every repository in the session's .repos registry ran one repository after another, Pre and Post; now RJ_SNAPSHOT_JOBS=4 parallel jobs (3 repos at load 190: 799 ms in turn, 286 ms side by side). The transcript-size split rides on the registry: sessions over 10 MB carry 2.9 repositories on average (18 % with 5+), under 1 MB 1.2.",
+      "handoff": null
+    },
+    {
+      "id": "hook-every-call-commit-journal",
+      "title": "commit-journal over 50 ms on every write call",
+      "match": {
+        "rule": "hook_every_call",
+        "ident": "commit-journal\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Narrowed: the multi-repository part is cut by hook-grows-repos-commit-journal; what stays is its floor on a one-repository call (bash, the 2.3k-line review-journal.sh source at ~40 ms under load, jq, one git status). Under 50 ms needs a design change or a different limit for hooks that must do work per write call: the owner's.",
+      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-every-call-instruction-watch",
+      "title": "instruction-watch check over 50 ms on every write call",
+      "match": {
+        "rule": "hook_every_call",
+        "ident": "instruction-watch\\.sh check"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Narrowed: the ~/.claude walk no longer descends file-history (3 596 of 5 784 walked entries, no watched file) and its path spelling runs tr instead of perl (llm-legs share/instruction-files.sh); what stays is the enumeration (three git ls-files, perl) plus one stat and two awk per call. Under 50 ms needs a design change or a different limit: the owner's.",
+      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-grows-repos-report-flush",
+      "title": "report-flush slower in chats with 5+ repositories",
+      "match": {
+        "rule": "hook_grows_repos",
+        "ident": "report-flush\\.sh"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Narrowed to contention: report-flush and report-bus read no repository and no registry. Its PostToolUse sibling commit-journal did: report-flush p50 90 ms beside a commit-journal run over 300 ms, 49-57 ms beside shorter ones (journal 2026-09-29 19:00 to 2026-09-30 03:20). Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+    },
+    {
+      "id": "hook-grows-size-instruction-watch",
+      "title": "instruction-watch check slower in transcripts over 10 MB",
+      "match": {
+        "rule": "hook_grows_size",
+        "ident": "instruction-watch\\.sh check"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
+      "note": "Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file) and its baseline is dominated by the constant ~/.claude set; the same split shows on report-flush, which reads neither. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
     }
   ],
   "blind_spots": [

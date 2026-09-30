@@ -129,6 +129,14 @@ class InstructionPerformance(unittest.TestCase):
         self.assertEqual({'plain.md', 'tab?name.md', 'line?name.md'},
                          {Path(line).name for line in out.splitlines()})
 
+    def test_home_walk_skips_the_harness_file_history(self):
+        kept = self.put(self.home / '.claude/agents/a.md')
+        self.put(self.home / '.claude/file-history/sess/notes.md')
+        output = subprocess.check_output(['bash', '-c', '. "$1"; _instruction_class_files "$2"', '_',
+                                          str(ROOT / 'share/instruction-files.sh'), str(self.home)],
+                                         env=self.env, text=True)
+        self.assertEqual([str(kept)], output.splitlines())
+
     def test_backslash_name_is_hashed_and_watched(self):
         odd = self.put(self.home / '.claude/docs/a\\b.md')
         self.assertEqual(0, self.hook('baseline').returncode)
