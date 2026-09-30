@@ -418,6 +418,134 @@
    "reviewed_by": "LLM Doctor меню refactoring",
    "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed",
    "handoff": null
+  },
+  {
+   "id": "H1",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:fixer-missing$"
+   },
+   "title": "three rounds folded without fixer rows, open until their chats close or rerun them",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "rounds 20260923T143320Z-c52158a, 20260924T222306Z-8877b05, 20260925T152101Z-06f549b; none new since 2026-09-27",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H2",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:hash-cap/logo-vectorizer-bench$"
+   },
+   "title": "changes past commit-journal's hash cap in logo-vectorizer-bench",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "a tree of more than 500 dirty research paths; the cap records the gap as designed",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H3",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:pre-missing/gilbarbara-logos$"
+   },
+   "title": "no Pre snapshot for a sparse partial clone the call itself made",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "toolu_019LXU 2026-09-25: git clone --sparse inside ( cd … ); created_by_call should have exempted it",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H4",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:pre-missing/llm-legs$"
+   },
+   "title": "pre-missing gaps with fake tool ids from hand-run hook probes",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "toolu_probe_timing and toolu_perf_big (session perf-big-93348): hook timing probes run against the live store",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H5",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:pre-missing/logo-vectorizer-bench$"
+   },
+   "title": "no Pre snapshot for a repository the call itself initialised",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "toolu_01TccPjY 2026-09-25: git -C <existing dir> init with no commit",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H6",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:touch-failed/egorloy$"
+   },
+   "title": "commit-journal stopped an hour after a read-only call from a non-repository cwd",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "toolu_01KsrAub (worker-run wait) 2026-09-29, before claude-setup 48bfc77 skipped read-only calls",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H7",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-gap:touch-failed/logo-vectorizer-bench$"
+   },
+   "title": "commit-journal killed at its 60 s timeout in a tree past the hash cap",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "toolu_01GVuJcS 2026-09-29: TERM 102 s after the call started",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
+  },
+  {
+   "id": "H8",
+   "block": "any",
+   "match": {
+    "health": "debt",
+    "key": "^debt-loss:run-fold-skip$"
+   },
+   "title": "run-fold logs co-tenant skips as losses while the co-tenant's touch still owes the lines",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
+   "note": "all 20 in 24 h are 'a co-tenant touched it during the run'; the key cannot tell that reason from 'committed since the run started'; whether a co-tenant skip is a loss is review-bench's contract",
+   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
   }
  ],
  "blind_spots": [
