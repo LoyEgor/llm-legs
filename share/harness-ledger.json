@@ -87,6 +87,21 @@
       "reviewed_by": "Harness Doctor",
       "note": "An inline one-liner in settings.json cannot source hook-time.sh; one git call per chat start. The ident is the sha1 of the exact command, so any edit to it is judged again.",
       "handoff": null
+    },
+    {
+      "id": "suites-llm-legs-concurrent-load",
+      "title": "suites · llm-legs doubles its wall clock when several full runs share the machine",
+      "match": {
+        "rule": "test_slow",
+        "ident": "llm-legs:suites"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-tests-20260930T001649Z-7ba4",
+      "note": "Narrowed to concurrent full runs: the 1326 s run of 2026-09-30 02:29 local overlapped three other full llm-legs runs (02:24 2060 s, 02:38 1538 s, 02:39 1463 s; logdirs under $TMPDIR/run-suites.*), each -j 5 on 10 cores. Its summed suite time was 6506 s against about 2200 s in quiet runs, and wall ≈ summed/5, so the run was throughput-bound; no suite regressed. The design accepts it: run-suites has no cross-invocation lock, and handoff 2026-09-28 §4 forbids a cross-chat queue. A slow run with no overlapping full run is a new cause for this row.",
+      "handoff": "docs/handoffs/2026-09-30-suites-llm-legs-slow-under-load.md"
     }
   ],
   "blind_spots": [
@@ -138,6 +153,13 @@
       "reason": "hook batches join calls by time only",
       "since": "2026-09-29",
       "would_catch_if": "hook-time's line carried the tool_use_id (contract row da)"
+    },
+    {
+      "id": "suites-journal-sampled",
+      "what": "suite runs missing from test-history.jsonl, so suites_at_once and test_slow see only part of the load",
+      "reason": "bin/statusline-work-probe.sh writes a row only when a render of the owning chat sees the run start and end within 15 s; 3 of 4 full llm-legs runs overlapping 2026-09-30 02:24-03:03 local left no row",
+      "since": "2026-09-30",
+      "would_catch_if": "share/run-suites.sh appended its own wall time, outcome and overlap to the journal at exit"
     }
   ]
 }
