@@ -6,13 +6,19 @@ unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDEB_WORKER WORKER_RUN_RELAY
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNNER="$ROOT/bin/worker-run"
 WORK="$(mktemp -d)"
-# A full run hands the sections RELIABILITY_ONLY and WATCHDOG_ONLY cover to copies of itself, which
-# get the environment as it is here, before anything is exported, so each builds its own $WORK; they
-# are skipped below and their asserts are added at the end, where a failure of theirs fails this run.
+# A full run hands the sections RELIABILITY_ONLY, WATCHDOG_ONLY and TAIL_ONLY cover to copies of
+# itself, which get the environment as it is here, before anything is exported, so each builds its own
+# $WORK; they are skipped below and their asserts are added at the end, where a failure of theirs
+# fails this run.
 split_names=() split_pids=() split_env=()
+. "$ROOT/share/test-scope.sh"
 if [ -z "${WORKER_RUN_TEST_CASE:-}" ] && ! env | grep -q '^WORKER_RUN_TEST_[A-Z_]*_ONLY=1$'; then
-  split_names=(reliability watchdog)
+  split_names=(reliability watchdog tail)
   for split_var in $(compgen -e); do split_env+=("$split_var=${!split_var}"); done
+  split_env+=(WORKER_RUN_TEST_SPLIT=1)
+fi
+if [ -z "${WORKER_RUN_TEST_SPLIT:-}" ] && test_scope_narrowed "${BASH_SOURCE[0]}" WORKER_RUN_TEST_; then
+  test_scope_partial "$0"
 fi
 split_stop() {
   local split
@@ -379,9 +385,9 @@ await_done() {
       printf '%s\n' "$output" >"$WORK/wait.out"
       return 0
     fi
-    # The file only paces the loop; `wait` alone decides, and still runs at least every 0.2s, because
-    # a supervisor that died without an exit code is terminal too.
-    for tick in 1 2 3 4; do
+    # The file only paces the loop; `wait` alone decides, and still runs at least every second,
+    # because a supervisor that died without an exit code is terminal too.
+    for tick in {1..20}; do
       [ ! -e "$WORKER_RUN_DIR/$RUN_ID/exit_code" ] || break
       sleep 0.05
     done
@@ -2313,11 +2319,481 @@ for waiting in $(seq 1 60); do kill -0 "$stub_child" 2>/dev/null || break; sleep
 assert_fails kill -0 "$stub_child"
 }
 
+# --- the anchors store ---------------------------------------------------------------------------
+# `review-anchors` belongs to another repository; here it is a PATH shim logging one tab-separated
+# line per call, so what worker-run promises the store is checked without the store existing.
+anchors_store_tests() {
+  local repo bench gaps rc bad changed fold bases saved_path
+  local dirty_base doomed_base empty_blob=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+  local anchors_tab=$'\t'
+  ANCHOR_LOG="$WORK/anchors.log"
+  export ANCHOR_LOG
+  cat >"$WORK/bin/review-anchors" <<'ANCHORS'
+#!/usr/bin/env bash
+{ printf '%s' "$1"; shift; [ "$#" -eq 0 ] || printf '\t%s' "$@"; printf '\n'; } >>"$ANCHOR_LOG"
+[ -z "${ANCHORS_FAIL:-}" ] || { printf 'store locked\nsecond line\n' >&2; exit 3; }
+ANCHORS
+  chmod +x "$WORK/bin/review-anchors"
+  : >"$ANCHOR_LOG"
+
+  anchors_line() { grep "^$1$anchors_tab" "$ANCHOR_LOG" | tail -n 1; }
+  anchors_changed() {
+    anchors_line run-fold | tr '\t' '\n' |
+      awk '/^--/ { listing = 0 } listing { sub(/^\.\//, ""); print } $0 == "--changed" { listing = 1 }'
+  }
+  anchors_bases() {
+    anchors_line run-fold | tr '\t' '\n' | awk 'sub(/^--base=\.\//, "") { print }'
+  }
+
+  repo="$WORK/anchors-repo"
+  mkdir -p "$repo/bin"
+  git -C "$repo" init -q .
+  printf 'base\n' >"$repo/bin/keep"
+  printf 'gone\n' >"$repo/bin/doomed"
+  git -C "$repo" add -A >/dev/null
+  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+  repo=$(cd "$repo" && pwd -P)
+  bench="${CLAUDEB_DIR}/worker-stats/benches"
+  mkdir -p "$bench/20260901T100000Z-aaaaaaa" "$bench/20260901T110000Z-bbbbbbb"
+  gaps="$HOME/.cache/claude/review-debt/gaps/anchors-chat"
+
+  set_config 'codex_model=default' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=anchors-chat
+
+  # An id of the wrong shape and an id no bench holds are refused at LAUNCH and alike: a run bound
+  # to a round nothing recorded would anchor its fix against nothing at all.
+  for bad in 20260901T100000Z-AAAAAAA 20260901T100000Z-aaaaaa 20260901T990000Z-fffffff; do
+    clear_stub
+    rc=0
+    "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" --round "$bad" \
+      >"$WORK/anchors.out" 2>"$WORK/anchors.err" || rc=$?
+    assert test "$rc" -eq 4
+    assert test "$(wc -l <"$WORK/anchors.err" | tr -d ' ')" = 1
+    assert grep -Fq -- '--round names no review round on record' "$WORK/anchors.err"
+    assert_fails grep -q '^RUN: ' "$WORK/anchors.out"
+  done
+  assert test ! -s "$ANCHOR_LOG"
+
+  # The flag is the binding review-bench composes; the header it also writes is the fallback, so a
+  # brief naming another round loses to it.
+  clear_stub
+  printf 'ROUND: 20260901T110000Z-bbbbbbb\nFix the confirmed findings.\n' >"$WORK/anchors-brief"
+  # Left dirty BEFORE the launch, so the base the fold reports for it can only have come from the
+  # run's own before-listing and not from the commit the run started on.
+  printf 'first\n' >"$repo/bin/dirty-first"
+  dirty_base=$(git -C "$repo" hash-object "$repo/bin/dirty-first")
+  doomed_base=$(git -C "$repo" rev-parse HEAD:bin/doomed)
+  # Two Cyrillic names a UTF-8 awk collates as equal: a lookup by name must still tell them apart.
+  printf 'ef\n' >"$repo/bin/ф"
+  export STUB_SLEEP=3
+  LC_ALL=en_US.UTF-8 "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
+    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
+    fail "round start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
+  assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260901T100000Z-aaaaaaa
+  # Opened while it runs, so the launching chat's verdict says `?run` instead of a confident number
+  # about a tree a worker is writing in.
+  assert test "$(anchors_line run-start)" = \
+    "run-start${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat"
+  # Every kind of change the run's own listings can see, and nothing the transcript has to name: a
+  # file written through a heredoc, a file deleted, a file committed inside the run.
+  printf 'heredoc\n' >"$repo/bin/heredoc-only"
+  printf 'new\n' >"$repo/bin/новый"
+  printf 'second\n' >>"$repo/bin/dirty-first"
+  rm "$repo/bin/doomed"
+  printf 'committed\n' >"$repo/bin/committed"
+  git -C "$repo" add bin/committed >/dev/null
+  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm inside >/dev/null
+  assert await_done
+  changed=$(anchors_changed)
+  assert grep -qx 'bin/heredoc-only' <<<"$changed"
+  assert grep -qx 'bin/doomed' <<<"$changed"
+  assert grep -qx 'bin/committed' <<<"$changed"
+  assert grep -qx 'bin/dirty-first' <<<"$changed"
+  assert_fails grep -qx 'bin/keep' <<<"$changed"
+  assert grep -qx 'bin/новый' <<<"$changed"
+  assert_fails grep -qx 'bin/ф' <<<"$changed"
+  # Every changed path carries what it stood at before the run, which is the only thing that lets
+  # the store anchor a path no review has ever read: the path's own before-content where it had
+  # one, the HEAD it started from where it was clean, and the empty blob where the run made it.
+  bases=$(anchors_bases)
+  assert test "$(grep -c . <<<"$bases")" = "$(grep -c . <<<"$changed")"
+  assert grep -qx "bin/dirty-first=$dirty_base" <<<"$bases"
+  assert grep -qx "bin/doomed=$doomed_base" <<<"$bases"
+  assert grep -qx "bin/heredoc-only=$empty_blob" <<<"$bases"
+  assert grep -qx "bin/committed=$empty_blob" <<<"$bases"
+  assert grep -qx "bin/новый=$empty_blob" <<<"$bases"
+  assert test "$(git -C "$repo" hash-object -t blob /dev/null)" = "$empty_blob"
+  fold=$(anchors_line run-fold)
+  assert grep -qF -- "--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" <<<"$fold"
+  assert grep -qF -- "--session${anchors_tab}anchors-chat" <<<"$fold"
+  assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
+  assert grep -qF -- "--after=./bin/heredoc-only=$(git -C "$repo" hash-object bin/heredoc-only)" <<<"$fold"
+  assert grep -qF -- "--after=./bin/doomed=$empty_blob" <<<"$fold"
+  assert test ! -e "$gaps"
+
+  # A run that also writes in another repository the launching chat works in is folded there too,
+  # or a fix it makes there is never anchored and the launcher owes the fix itself.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  other="$WORK/anchors-other"
+  mkdir -p "$other"
+  git -C "$other" init -q .
+  printf 'base\n' >"$other/kept"
+  git -C "$other" add -A >/dev/null
+  git -C "$other" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
+  other=$(cd "$other" && pwd -P)
+  mkdir -p "$HOME/.cache/claude/review-journal"
+  printf '%s\n%s\n' "$repo" "$other" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
+  kept_base=$(git -C "$other" rev-parse HEAD:kept)
+  export STUB_SLEEP=3
+  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
+    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
+    fail "two-family start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
+  printf 'fixed\n' >>"$other/kept"
+  assert await_done
+  fold=$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG" | tail -n 1)
+  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
+  assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
+  assert grep -qF -- "--changed${anchors_tab}./kept${anchors_tab}" <<<"$fold"
+  assert grep -qF -- "--base=./kept=$kept_base" <<<"$fold"
+  assert grep -qF -- "--after=./kept=$(git -C "$other" hash-object kept)" <<<"$fold"
+  assert test "$(grep -c "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = 1
+  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
+
+  # A run that failed is folded like any other — the store's question is what content moved, never
+  # how the vendor ended — and a run that moved nothing carries no `--changed` at all. The paths
+  # the case above left dirty stand in both snapshots and are not this run's.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  export STUB_SLEEP=1 STUB_CODE=3
+  "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" \
+    >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "failing start failed: $(<"$WORK/anchors.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
+  assert await_done
+  assert grep -q '^STATUS: failed' "$WORK/wait.out"
+  fold=$(anchors_line run-fold)
+  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
+  assert_fails grep -qF -- '--changed' <<<"$fold"
+  assert_fails grep -qF -- '--round' <<<"$fold"
+
+  # No binary is not silence: the fact goes to the gaps file, which needs no repository, no lock
+  # and no python, and the launching chat's verdict reads `?gap` until somebody looks.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  mv "$WORK/bin/review-anchors" "$WORK/bin/review-anchors.off"
+  # A machine with no store to write to, which is not the machine the suite runs on: a real
+  # `review-anchors` is installed beside it, and every directory holding one leaves the path.
+  saved_path=$PATH
+  PATH=$(IFS=:; keep=''
+    for entry in $PATH; do
+      { [ -z "$entry" ] || [ -x "$entry/review-anchors" ]; } && continue
+      keep="${keep:+$keep:}$entry"
+    done
+    printf '%s' "$keep")
+  export PATH
+  export STUB_SLEEP=1
+  start_ok codex --workdir "$repo"
+  printf 'gap\n' >"$repo/bin/gap-file"
+  assert await_done
+  PATH=$saved_path
+  export PATH
+  assert test ! -s "$ANCHOR_LOG"
+  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
+  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
+  assert test "$(awk -F'\t' 'END { print ($1 ~ /^[0-9]+$/) }' "$gaps")" = 1
+  mv "$WORK/bin/review-anchors.off" "$WORK/bin/review-anchors"
+
+  # And a binary that refuses is the same case: the call is made, the failure is recorded.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  : >"$gaps"
+  export STUB_SLEEP=1 ANCHORS_FAIL=1
+  start_ok codex --workdir "$repo"
+  assert await_done
+  assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
+  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
+  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
+  unset ANCHORS_FAIL
+
+  # A workdir that became a repository during the run has nothing to fold; its families still do.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  : >"$gaps"
+  born="$WORK/anchors-born"
+  mkdir -p "$born"
+  born=$(cd "$born" && pwd -P)
+  printf '%s\n' "$repo" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
+  export STUB_SLEEP=3
+  WORKER_TEST_WORKDIR=$born start_ok codex
+  git -C "$born" init -q .
+  git -C "$born" -c user.email=t@t -c user.name=t commit -q --allow-empty -m born
+  assert await_done
+  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
+  assert_fails grep -qF "${anchors_tab}run-fold${anchors_tab}" "$gaps"
+  assert_fails grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${born}${anchors_tab}" "$ANCHOR_LOG"
+  assert test ! -e "$born/.git/review-anchors.json"
+  assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
+
+  # The vendor process is told both: whose debt what it writes is, and where its own run record is.
+  clear_stub
+  : >"$ANCHOR_LOG"
+  export STUB_SLEEP=1
+  start_ok claudeb --workdir "$repo"
+  assert await_done
+  assert test "$(cat "$STUB_DIR/debt_owner_env")" = anchors-chat
+  assert test "$(cat "$STUB_DIR/run_record_env")" = "$RUN_DIR"
+
+  clear_stub
+  unset CLAUDE_CODE_SESSION_ID
+}
+
+# Web search, every vendor against every entry point, driven from the one table the launcher reads:
+# a vendor or an entry point added without the capability fails here rather than answering a
+# research brief from memory.
+web_search_tests() {
+  local vendor entry brief expected workdir state WEB_SEARCH_ENTRY=''
+  . "$ROOT/share/web-search.sh"
+  cat >"$WORK/bin/sandbox-exec" <<'SANDBOX'
+#!/usr/bin/env bash
+shift 2
+exec "$@"
+SANDBOX
+  chmod +x "$WORK/bin/sandbox-exec"
+  export GEMINI_RESEARCH_SANDBOX_EXEC="$WORK/bin/sandbox-exec"
+  workdir="$WORK/websearch-workdir"
+  # The research sandbox profile resolves the account's home with `readlink -f`, which fails on a
+  # path that does not exist — without the directory gemini's research row dies as GEMINI_UNAVAILABLE.
+  mkdir -p "$workdir" "$WORK/websearch" "$HOME/.gemini-profiles/websearch"
+  git -C "$workdir" init -q
+  printf 'base\n' >"$workdir/file"
+  git -C "$workdir" add file
+  git -C "$workdir" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
+  printf 'probe\nsecond line\n' >"$WORK/websearch/plain"
+  printf 'WEB: on\nprobe\nsecond line\n' >"$WORK/websearch/on"
+  printf 'WEB: off\nprobe\nsecond line\n' >"$WORK/websearch/off"
+  printf 'web: ON\nprobe\nsecond line\n' >"$WORK/websearch/on-lower"
+  printf 'SCOPE: file\nprobe\n' >"$WORK/websearch/light-plain"
+  printf 'WEB: on\nSCOPE: file\nprobe\n' >"$WORK/websearch/light-on"
+  printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
+  export PICK_RC=0 PICK_ACCOUNT=websearch
+
+  web_search_launch() { # brief vendor extra-arg...
+    local file="$1" target="$2"
+    shift 2
+    clear_stub
+    printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
+    "$RUNNER" start "$target" --brief "$file" --workdir "$workdir" "$@" \
+      >"$WORK/start.out" 2>"$WORK/start.err" || fail "web-search start $target failed: $(<"$WORK/start.err")"
+    RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+    RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+    WEB_SEARCH_ENTRY=$target
+    assert await_done
+  }
+
+  # The stubs record each argument as `ARG=%q`, so a table cell carrying anything the shell quotes
+  # (claudeb's `WebSearch,WebFetch`) never matches the raw cell text.
+  web_search_quoted() { # argv words on stdin
+    local word
+    while IFS= read -r word; do printf '%q\n' "$word"; done
+  }
+
+  # The state's whole argv as one adjacent run, never word by word: `-c` is codex's ordinary config
+  # flag and stands in both states and elsewhere in the command, so a per-word search reads a state
+  # the run was never launched in.
+  web_search_sequence_present() { # vendor state
+    local needle haystack
+    needle=$(web_search_args "$1" "$2" | web_search_quoted | paste -sd $'\x1f' -)
+    [ -n "$needle" ] || return 1
+    if [ "$WEB_SEARCH_ENTRY" = light ]; then
+      # A Light edit run launches inside the write sandbox, which denies every path outside the Light
+      # worktree and the run directory — the stub's shared call log among them — so the command the
+      # launcher recorded is the only record of this entry point's argv.
+      haystack=$'\x1f'$(jq -r '.cmd[]' "$RUN_DIR/meta.json" | web_search_quoted | paste -sd $'\x1f' -)$'\x1f'
+    else
+      haystack=$'\x1f'$(sed -n 's/^ARG=//p' "$CALL_LOG" | paste -sd $'\x1f' -)$'\x1f'
+    fi
+    case "$haystack" in *$'\x1f'"$needle"$'\x1f'*) return 0 ;; esac
+    return 1
+  }
+
+  web_search_assert() { # vendor state
+    local target="$1" want="$2" other=on
+    [ "$want" = off ] || other=off
+    [ -z "$(web_search_args "$target" "$want")" ] || assert web_search_sequence_present "$target" "$want"
+    [ -z "$(web_search_args "$target" "$other")" ] || assert_fails web_search_sequence_present "$target" "$other"
+    assert test "$(jq -r '.web_search' "$RUN_DIR/meta.json")" = "$([ "$want" = on ] && printf true || printf false)"
+    # Named where a reader looks, not only in meta.json: the launch line and the report.
+    assert grep -qx "WEB: $want" "$WORK/start.out"
+    assert grep -qx "WEB: $want" <("$RUNNER" report "$RUN_ID")
+  }
+
+  # A state the vendor's column cannot reach, asked for outright: refused before an account is spent.
+  web_search_refused() { # brief vendor extra-arg...
+    local file="$1" target="$2" rc=0
+    shift 2
+    clear_stub
+    printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
+    "$RUNNER" start "$target" --brief "$file" --workdir "$workdir" "$@" \
+      >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/start.out"
+    assert grep -qF 'no switch that turns web search off' "$WORK/start.err"
+    assert test ! -s "$CALL_LOG"
+  }
+
+  # The vendors come from the table: a row added without an entry point, or an entry point that
+  # stops reading the table, is what this grid exists to catch — a hand-written list catches neither.
+  for vendor in $(web_search_table | cut -f1); do
+    # Both columns empty argv is only legal where the vendor HAS no off switch: a blank cell there
+    # would read as "the CLI already does this" and hide a flag nobody wired.
+    if [ -z "$(web_search_args "$vendor" on)" ] && [ -z "$(web_search_args "$vendor" off)" ]; then
+      assert test "$(web_search_column "$vendor" off)" = '!'
+    fi
+    set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=low' \
+      'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high' \
+      "light_research=$vendor" "light_edit=$vendor"
+    expected=$(web_search_state "$vendor" false)
+    web_search_launch "$WORK/websearch/plain" "$vendor"
+    web_search_assert "$vendor" "$expected"
+    web_search_launch "$WORK/websearch/light-plain" light
+    web_search_assert "$vendor" "$expected"
+
+    expected=$(web_search_state "$vendor" true)
+    web_search_launch "$WORK/websearch/plain" "$vendor" --web-search
+    web_search_assert "$vendor" "$expected"
+    web_search_launch "$WORK/websearch/on" "$vendor"
+    web_search_assert "$vendor" "$expected"
+    # The key and the state are case-insensitive: `web: ON` was silently ignored while `WEB: yes`
+    # failed loudly, so the shape a caller guesses wrong is the one that costs a run.
+    web_search_launch "$WORK/websearch/on-lower" "$vendor"
+    web_search_assert "$vendor" "$expected"
+    web_search_launch "$WORK/websearch/light-on" light
+    web_search_assert "$vendor" "$expected"
+    # Research needs no flag and no header: the role is the ask.
+    web_search_launch "$WORK/websearch/plain" "$vendor" --role research
+    web_search_assert "$vendor" "$expected"
+
+    if [ "$(web_search_column "$vendor" off)" = '!' ]; then
+      web_search_refused "$WORK/websearch/off" "$vendor" --role research
+      web_search_refused "$WORK/websearch/plain" "$vendor" --no-web-search
+    else
+      expected=$(web_search_state "$vendor" false)
+      web_search_launch "$WORK/websearch/off" "$vendor" --role research
+      web_search_assert "$vendor" "$expected"
+      web_search_launch "$WORK/websearch/plain" "$vendor" --no-web-search
+      web_search_assert "$vendor" "$expected"
+    fi
+  done
+
+  # A header that is neither state is a typo, not a default: launching on it would silently pick one.
+  clear_stub
+  printf 'WEB: maybe\nprobe\n' >"$WORK/websearch/bad"
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/websearch/bad" --workdir "$workdir" \
+    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qF "brief header 'WEB: maybe' names no state" "$WORK/websearch.err"
+  assert test ! -s "$CALL_LOG"
+
+  # A WEB: line the header block cannot reach is refused, never dropped: a prose first line, a blank
+  # line above the header, a space before the colon and a launcher's own prefix pushing it down all
+  # used to launch a web-facing brief with search off and no word about it anywhere.
+  printf 'probe\n\nWEB: on\n' >"$WORK/websearch/stray"
+  printf 'WEB : on\nprobe\n' >"$WORK/websearch/spaced"
+  printf 'REPOSITORY: /tmp\n\nWEB: on\nprobe\n' >"$WORK/websearch/pushed"
+  for stray in stray spaced pushed; do
+    clear_stub
+    rc=0
+    "$RUNNER" start claudeb --brief "$WORK/websearch/$stray" --workdir "$workdir" \
+      >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qF 'spells a WEB: state worker-run does not read' "$WORK/websearch.err"
+    assert test ! -s "$CALL_LOG"
+  done
+  # A body line that merely starts with `web:` names no state: `Web: <url>` is prose, not a header.
+  printf 'probe\n\nWeb: https://example.test/page\n web: nginx\n' >"$WORK/websearch/prose"
+  assert test "$(web_search_brief_state "$WORK/websearch/prose"; printf 'rc=%s' "$?")" = rc=0
+
+  # Flag against header: the flag used to win in silence, so a brief that ruled live pages out was
+  # launched on them by a caller who passed --web-search out of habit.
+  while read -r flag brief; do
+    clear_stub
+    rc=0
+    "$RUNNER" start claudeb --brief "$WORK/websearch/$brief" --workdir "$workdir" "$flag" \
+      >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
+    assert test "$rc" -eq 4
+    assert grep -qF 'ask for opposite states' "$WORK/websearch.err"
+    assert test ! -s "$CALL_LOG"
+  done <<'CONTRADICTIONS'
+--web-search off
+--no-web-search on
+CONTRADICTIONS
+  clear_stub
+  rc=0
+  "$RUNNER" start claudeb --brief "$WORK/websearch/plain" --workdir "$workdir" --web-search --no-web-search \
+    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qF 'ask for opposite states' "$WORK/websearch.err"
+
+  # A run recorded before the table existed carries no state at all, and the CLIs that search by
+  # default did search: reported `off`, it promises a relaunch a capability its answer already had.
+  for vendor in $(web_search_table | cut -f1); do
+    expected=off
+    [ "$(web_search_column "$vendor" on)" != '-' ] || expected=on
+    jq -cn --arg v "$vendor" '{vendor:$v}' >"$WORK/websearch/legacy.json"
+    assert test "$(web_search_meta_state "$WORK/websearch/legacy.json")" = "$expected"
+    jq -cn --arg v "$vendor" '{vendor:$v,web_search:false}' >"$WORK/websearch/legacy.json"
+    assert test "$(web_search_meta_state "$WORK/websearch/legacy.json")" = off
+  done
+
+  # The grok research leg is policed from outside by a tree digest, and the answer contract now asks
+  # it to fetch pages: the fence rides in the launched brief only, never in the recorded one.
+  set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok' 'light_edit=grok'
+  web_search_launch "$WORK/websearch/plain" grok --role research
+  assert grep -qF 'READ-ONLY TREE' "$RUN_DIR/brief.launch"
+  assert test "$(grep -cF 'READ-ONLY TREE' "$RUN_DIR/brief")" = 0
+  web_search_launch "$WORK/websearch/plain" grok
+  assert test "$(grep -cF 'READ-ONLY TREE' "$RUN_DIR/brief.launch")" = 0
+  assert test "$(grep -cF 'EDITS: change repository files only' "$RUN_DIR/brief.launch")" = 0
+  # A claudeb worker is told up front what worker-edit-guard would otherwise refuse call by call.
+  web_search_launch "$WORK/websearch/plain" claudeb
+  assert grep -qF 'EDITS: change repository files only through the Edit and Write tools' "$RUN_DIR/brief.launch"
+  assert test "$(grep -cF 'EDITS:' "$RUN_DIR/brief")" = 0
+
+  # Off the light_research row the refusal names what to pass, not just that something is missing.
+  set_config 'codex_effort=low' 'light_research=gemini' 'light_edit=gemini'
+  clear_stub
+  rc=0
+  "$RUNNER" start codex --brief "$WORK/websearch/plain" --workdir "$workdir" --role research \
+    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
+  assert test "$rc" -eq 4
+  assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/websearch.out"
+  assert grep -qF -- '--model <id>' "$WORK/websearch.err"
+  assert grep -qF 'light ids (astra' "$WORK/websearch.err"
+  assert test ! -s "$CALL_LOG"
+
+  unset GEMINI_RESEARCH_SANDBOX_EXEC
+  rm -f "$STUB_DIR/gemini_profiles"
+  clear_stub
+  set_config
+}
+
 split_base=$asserts
 if [ "${WORKER_RUN_TEST_WATCHDOG_ONLY:-0}" = 1 ]; then
   dirt_repo_init
   watchdog_tests
   printf 'PASS: %s watchdog asserts\n' "$asserts"
+  exit 0
+fi
+if [ "${WORKER_RUN_TEST_TAIL_ONLY:-0}" = 1 ]; then
+  web_search_tests
+  anchors_store_tests
+  attribution_repair_tests
+  printf 'PASS: %s tail asserts\n' "$asserts"
   exit 0
 fi
 if [ "${#split_names[@]}" -eq 0 ]; then
@@ -3449,7 +3925,7 @@ transcript_report() (
     for name in compute_transcript_files session_id session_transcript codex_home grok_home \
         grok_end_field grok_session_dir_matches classify_tool_rows resolve_tool_path \
         writes_through_shell gemini_tool_rows codex_tool_rows grok_tool_rows transcript_files \
-        transcript_wrote_through_shell workdir_escape_line; do
+        listing_spelling transcript_wrote_through_shell workdir_escape_line; do
       sed -n "/^$name() {/,/^}/p" "$RUNNER"
     done >"$WORK/transcript-report.fns"
     sed -n '/^SHELL_FLOOR_PARTIAL=/p' "$RUNNER" >>"$WORK/transcript-report.fns"
@@ -3925,6 +4401,47 @@ EOF
   clear_stub
 }
 snapshot_shell_tests
+
+# worker-edit-guard lets a shell write through by recording it in the run's `shell-writes`, spelled
+# against the physical top; the run folds it into its listing with no claim, a recorded directory
+# answering for the changed files under it, and a recorded path the run left unchanged naming nothing.
+guard_recorded_tests() {
+  clear_stub
+  set_config 'claudeb_model=opus' 'claudeb_effort=high'
+  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=chat-abc STUB_SLEEP=1
+  mkdir -p "$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture"
+  cat >"$STUB_DIR/relay_hook" <<'EOF'
+#!/usr/bin/env bash
+top=$(cd "$GUARD_REPO" && pwd -P)
+mkdir -p "$GUARD_REPO/bin/guard-tree"
+printf 'copied\n' >"$GUARD_REPO/bin/guard-recorded"
+printf 'copied\n' >"$GUARD_REPO/bin/guard-tree/one"
+printf 'unrecorded\n' >"$GUARD_REPO/bin/guard-unrecorded"
+printf '%s\n' "$top/bin/guard-recorded" "$top/bin/guard-tree" "$top/bin/guard-restored" \
+  >>"$WORKER_RUN_RECORD/shell-writes"
+EOF
+  chmod +x "$STUB_DIR/relay_hook"
+  export GUARD_REPO=$DIRT_REPO
+  TOOL_TS=$(iso $(($(date +%s) + 600)))
+  tool_call Bash command 'cp -R /tmp/tree bin/guard-tree; cp /tmp/x bin/guard-recorded' \
+    >"$CLAUDEB_PROFILES_ROOT/recordacct/projects/fixture/claude-session.jsonl"
+  start_ok claudeb --workdir "$DIRT_REPO"
+  assert await_done
+  assert grep -qx 'bin/guard-recorded' "$RUN_DIR/files"
+  assert grep -qx 'bin/guard-tree/one' "$RUN_DIR/files"
+  assert_fails grep -qx 'bin/guard-tree' "$RUN_DIR/files"
+  assert_fails grep -q 'guard-restored' "$RUN_DIR/files"
+  assert_fails grep -qx 'bin/guard-unrecorded' "$RUN_DIR/files"
+  assert grep -qx 'bin/guard-unrecorded' "$RUN_DIR/dirty"
+  assert_fails grep -q 'bin/guard-recorded\|bin/guard-tree' "$RUN_DIR/dirty"
+  assert grep -q 'bin/guard-recorded' "$RUN_DIR/produced"
+  assert grep -qx 'RUN-FILE: bin/guard-recorded' <<<"$("$RUNNER" report "$RUN_ID")"
+  rm -f "$STUB_DIR/relay_hook"
+  rm -rf "$DIRT_REPO/bin/guard-tree" "$DIRT_REPO/bin/guard-recorded" "$DIRT_REPO/bin/guard-unrecorded"
+  unset GUARD_REPO
+  clear_stub
+}
+guard_recorded_tests
 
 clear_stub
 INITIAL_REPO="$WORK/initial-repo"
@@ -7005,469 +7522,11 @@ assert test "$(grep -c '^ARG=--chrome$' "$CALL_LOG")" -eq 2
 assert jq -e '.effort_flag_dropped == true' "$RUN_DIR/meta.json" >/dev/null
 assert jq -e '.chrome == true' "$RUN_DIR/meta.json" >/dev/null
 
-# --- the anchors store ---------------------------------------------------------------------------
-# `review-anchors` belongs to another repository; here it is a PATH shim logging one tab-separated
-# line per call, so what worker-run promises the store is checked without the store existing.
-anchors_store_tests() {
-  local repo bench gaps rc bad changed fold bases saved_path
-  local dirty_base doomed_base empty_blob=e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
-  local anchors_tab=$'\t'
-  ANCHOR_LOG="$WORK/anchors.log"
-  export ANCHOR_LOG
-  cat >"$WORK/bin/review-anchors" <<'ANCHORS'
-#!/usr/bin/env bash
-{ printf '%s' "$1"; shift; [ "$#" -eq 0 ] || printf '\t%s' "$@"; printf '\n'; } >>"$ANCHOR_LOG"
-[ -z "${ANCHORS_FAIL:-}" ] || { printf 'store locked\nsecond line\n' >&2; exit 3; }
-ANCHORS
-  chmod +x "$WORK/bin/review-anchors"
-  : >"$ANCHOR_LOG"
-
-  anchors_line() { grep "^$1$anchors_tab" "$ANCHOR_LOG" | tail -n 1; }
-  anchors_changed() {
-    anchors_line run-fold | tr '\t' '\n' |
-      awk '/^--/ { listing = 0 } listing { sub(/^\.\//, ""); print } $0 == "--changed" { listing = 1 }'
-  }
-  anchors_bases() {
-    anchors_line run-fold | tr '\t' '\n' | awk 'sub(/^--base=\.\//, "") { print }'
-  }
-
-  repo="$WORK/anchors-repo"
-  mkdir -p "$repo/bin"
-  git -C "$repo" init -q .
-  printf 'base\n' >"$repo/bin/keep"
-  printf 'gone\n' >"$repo/bin/doomed"
-  git -C "$repo" add -A >/dev/null
-  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
-  repo=$(cd "$repo" && pwd -P)
-  bench="${CLAUDEB_DIR}/worker-stats/benches"
-  mkdir -p "$bench/20260901T100000Z-aaaaaaa" "$bench/20260901T110000Z-bbbbbbb"
-  gaps="$HOME/.cache/claude/review-debt/gaps/anchors-chat"
-
-  set_config 'codex_model=default' 'codex_effort=high' 'claudeb_model=opus' 'claudeb_effort=high'
-  export PICK_RC=0 PICK_ACCOUNT=recordacct CLAUDE_CODE_SESSION_ID=anchors-chat
-
-  # An id of the wrong shape and an id no bench holds are refused at LAUNCH and alike: a run bound
-  # to a round nothing recorded would anchor its fix against nothing at all.
-  for bad in 20260901T100000Z-AAAAAAA 20260901T100000Z-aaaaaa 20260901T990000Z-fffffff; do
-    clear_stub
-    rc=0
-    "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" --round "$bad" \
-      >"$WORK/anchors.out" 2>"$WORK/anchors.err" || rc=$?
-    assert test "$rc" -eq 4
-    assert test "$(wc -l <"$WORK/anchors.err" | tr -d ' ')" = 1
-    assert grep -Fq -- '--round names no review round on record' "$WORK/anchors.err"
-    assert_fails grep -q '^RUN: ' "$WORK/anchors.out"
-  done
-  assert test ! -s "$ANCHOR_LOG"
-
-  # The flag is the binding review-bench composes; the header it also writes is the fallback, so a
-  # brief naming another round loses to it.
-  clear_stub
-  printf 'ROUND: 20260901T110000Z-bbbbbbb\nFix the confirmed findings.\n' >"$WORK/anchors-brief"
-  # Left dirty BEFORE the launch, so the base the fold reports for it can only have come from the
-  # run's own before-listing and not from the commit the run started on.
-  printf 'first\n' >"$repo/bin/dirty-first"
-  dirty_base=$(git -C "$repo" hash-object "$repo/bin/dirty-first")
-  doomed_base=$(git -C "$repo" rev-parse HEAD:bin/doomed)
-  # Two Cyrillic names a UTF-8 awk collates as equal: a lookup by name must still tell them apart.
-  printf 'ef\n' >"$repo/bin/ф"
-  export STUB_SLEEP=3
-  LC_ALL=en_US.UTF-8 "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
-    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
-    fail "round start failed: $(<"$WORK/anchors.err")"
-  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
-  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/anchors.out")
-  assert test "$(jq -r '.review_round' "$RUN_DIR/meta.json")" = 20260901T100000Z-aaaaaaa
-  # Opened while it runs, so the launching chat's verdict says `?run` instead of a confident number
-  # about a tree a worker is writing in.
-  assert test "$(anchors_line run-start)" = \
-    "run-start${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat"
-  # Every kind of change the run's own listings can see, and nothing the transcript has to name: a
-  # file written through a heredoc, a file deleted, a file committed inside the run.
-  printf 'heredoc\n' >"$repo/bin/heredoc-only"
-  printf 'new\n' >"$repo/bin/новый"
-  printf 'second\n' >>"$repo/bin/dirty-first"
-  rm "$repo/bin/doomed"
-  printf 'committed\n' >"$repo/bin/committed"
-  git -C "$repo" add bin/committed >/dev/null
-  git -C "$repo" -c user.email=t@t -c user.name=t commit -qm inside >/dev/null
-  assert await_done
-  changed=$(anchors_changed)
-  assert grep -qx 'bin/heredoc-only' <<<"$changed"
-  assert grep -qx 'bin/doomed' <<<"$changed"
-  assert grep -qx 'bin/committed' <<<"$changed"
-  assert grep -qx 'bin/dirty-first' <<<"$changed"
-  assert_fails grep -qx 'bin/keep' <<<"$changed"
-  assert grep -qx 'bin/новый' <<<"$changed"
-  assert_fails grep -qx 'bin/ф' <<<"$changed"
-  # Every changed path carries what it stood at before the run, which is the only thing that lets
-  # the store anchor a path no review has ever read: the path's own before-content where it had
-  # one, the HEAD it started from where it was clean, and the empty blob where the run made it.
-  bases=$(anchors_bases)
-  assert test "$(grep -c . <<<"$bases")" = "$(grep -c . <<<"$changed")"
-  assert grep -qx "bin/dirty-first=$dirty_base" <<<"$bases"
-  assert grep -qx "bin/doomed=$doomed_base" <<<"$bases"
-  assert grep -qx "bin/heredoc-only=$empty_blob" <<<"$bases"
-  assert grep -qx "bin/committed=$empty_blob" <<<"$bases"
-  assert grep -qx "bin/новый=$empty_blob" <<<"$bases"
-  assert test "$(git -C "$repo" hash-object -t blob /dev/null)" = "$empty_blob"
-  fold=$(anchors_line run-fold)
-  assert grep -qF -- "--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" <<<"$fold"
-  assert grep -qF -- "--session${anchors_tab}anchors-chat" <<<"$fold"
-  assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
-  assert grep -qF -- "--after=./bin/heredoc-only=$(git -C "$repo" hash-object bin/heredoc-only)" <<<"$fold"
-  assert grep -qF -- "--after=./bin/doomed=$empty_blob" <<<"$fold"
-  assert test ! -e "$gaps"
-
-  # A run that also writes in another repository the launching chat works in is folded there too,
-  # or a fix it makes there is never anchored and the launcher owes the fix itself.
-  clear_stub
-  : >"$ANCHOR_LOG"
-  other="$WORK/anchors-other"
-  mkdir -p "$other"
-  git -C "$other" init -q .
-  printf 'base\n' >"$other/kept"
-  git -C "$other" add -A >/dev/null
-  git -C "$other" -c user.email=t@t -c user.name=t commit -qm base >/dev/null
-  other=$(cd "$other" && pwd -P)
-  mkdir -p "$HOME/.cache/claude/review-journal"
-  printf '%s\n%s\n' "$repo" "$other" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
-  kept_base=$(git -C "$other" rev-parse HEAD:kept)
-  export STUB_SLEEP=3
-  "$RUNNER" start codex --brief "$WORK/anchors-brief" --workdir "$repo" \
-    --round 20260901T100000Z-aaaaaaa >"$WORK/anchors.out" 2>"$WORK/anchors.err" ||
-    fail "two-family start failed: $(<"$WORK/anchors.err")"
-  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
-  assert grep -qxF "run-start${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}--run${anchors_tab}${RUN_ID}${anchors_tab}--session${anchors_tab}anchors-chat" "$ANCHOR_LOG"
-  printf 'fixed\n' >>"$other/kept"
-  assert await_done
-  fold=$(grep "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG" | tail -n 1)
-  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
-  assert grep -qF -- "--round${anchors_tab}20260901T100000Z-aaaaaaa" <<<"$fold"
-  assert grep -qF -- "--changed${anchors_tab}./kept${anchors_tab}" <<<"$fold"
-  assert grep -qF -- "--base=./kept=$kept_base" <<<"$fold"
-  assert grep -qF -- "--after=./kept=$(git -C "$other" hash-object kept)" <<<"$fold"
-  assert test "$(grep -c "^run-fold${anchors_tab}--repo${anchors_tab}${other}${anchors_tab}" "$ANCHOR_LOG")" = 1
-  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
-
-  # A run that failed is folded like any other — the store's question is what content moved, never
-  # how the vendor ended — and a run that moved nothing carries no `--changed` at all. The paths
-  # the case above left dirty stand in both snapshots and are not this run's.
-  clear_stub
-  : >"$ANCHOR_LOG"
-  export STUB_SLEEP=1 STUB_CODE=3
-  "$RUNNER" start codex --brief "$WORK/brief" --workdir "$repo" \
-    >"$WORK/anchors.out" 2>"$WORK/anchors.err" || fail "failing start failed: $(<"$WORK/anchors.err")"
-  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/anchors.out")
-  assert await_done
-  assert grep -q '^STATUS: failed' "$WORK/wait.out"
-  fold=$(anchors_line run-fold)
-  assert grep -qF -- "--run${anchors_tab}${RUN_ID}" <<<"$fold"
-  assert_fails grep -qF -- '--changed' <<<"$fold"
-  assert_fails grep -qF -- '--round' <<<"$fold"
-
-  # No binary is not silence: the fact goes to the gaps file, which needs no repository, no lock
-  # and no python, and the launching chat's verdict reads `?gap` until somebody looks.
-  clear_stub
-  : >"$ANCHOR_LOG"
-  mv "$WORK/bin/review-anchors" "$WORK/bin/review-anchors.off"
-  # A machine with no store to write to, which is not the machine the suite runs on: a real
-  # `review-anchors` is installed beside it, and every directory holding one leaves the path.
-  saved_path=$PATH
-  PATH=$(IFS=:; keep=''
-    for entry in $PATH; do
-      { [ -z "$entry" ] || [ -x "$entry/review-anchors" ]; } && continue
-      keep="${keep:+$keep:}$entry"
-    done
-    printf '%s' "$keep")
-  export PATH
-  export STUB_SLEEP=1
-  start_ok codex --workdir "$repo"
-  printf 'gap\n' >"$repo/bin/gap-file"
-  assert await_done
-  PATH=$saved_path
-  export PATH
-  assert test ! -s "$ANCHOR_LOG"
-  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
-  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors not on PATH" <<<"$(cut -f2- "$gaps")"
-  assert test "$(awk -F'\t' 'END { print ($1 ~ /^[0-9]+$/) }' "$gaps")" = 1
-  mv "$WORK/bin/review-anchors.off" "$WORK/bin/review-anchors"
-
-  # And a binary that refuses is the same case: the call is made, the failure is recorded.
-  clear_stub
-  : >"$ANCHOR_LOG"
-  : >"$gaps"
-  export STUB_SLEEP=1 ANCHORS_FAIL=1
-  start_ok codex --workdir "$repo"
-  assert await_done
-  assert grep -q "^run-fold$anchors_tab" "$ANCHOR_LOG"
-  assert grep -qxF "run-start${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
-  assert grep -qxF "run-fold${anchors_tab}${RUN_ID} $repo: review-anchors exited 3: store locked" <<<"$(cut -f2- "$gaps")"
-  unset ANCHORS_FAIL
-
-  # A workdir that became a repository during the run has nothing to fold; its families still do.
-  clear_stub
-  : >"$ANCHOR_LOG"
-  : >"$gaps"
-  born="$WORK/anchors-born"
-  mkdir -p "$born"
-  born=$(cd "$born" && pwd -P)
-  printf '%s\n' "$repo" >"$HOME/.cache/claude/review-journal/anchors-chat.repos"
-  export STUB_SLEEP=3
-  WORKER_TEST_WORKDIR=$born start_ok codex
-  git -C "$born" init -q .
-  git -C "$born" -c user.email=t@t -c user.name=t commit -q --allow-empty -m born
-  assert await_done
-  rm -f "$HOME/.cache/claude/review-journal/anchors-chat.repos"
-  assert_fails grep -qF "${anchors_tab}run-fold${anchors_tab}" "$gaps"
-  assert_fails grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${born}${anchors_tab}" "$ANCHOR_LOG"
-  assert test ! -e "$born/.git/review-anchors.json"
-  assert grep -qF "run-fold${anchors_tab}--repo${anchors_tab}${repo}${anchors_tab}--run${anchors_tab}${RUN_ID}" "$ANCHOR_LOG"
-
-  # The vendor process is told both: whose debt what it writes is, and where its own run record is.
-  clear_stub
-  : >"$ANCHOR_LOG"
-  export STUB_SLEEP=1
-  start_ok claudeb --workdir "$repo"
-  assert await_done
-  assert test "$(cat "$STUB_DIR/debt_owner_env")" = anchors-chat
-  assert test "$(cat "$STUB_DIR/run_record_env")" = "$RUN_DIR"
-
-  clear_stub
-  unset CLAUDE_CODE_SESSION_ID
-}
-
-# Web search, every vendor against every entry point, driven from the one table the launcher reads:
-# a vendor or an entry point added without the capability fails here rather than answering a
-# research brief from memory.
-web_search_tests() {
-  local vendor entry brief expected workdir state WEB_SEARCH_ENTRY=''
-  . "$ROOT/share/web-search.sh"
-  cat >"$WORK/bin/sandbox-exec" <<'SANDBOX'
-#!/usr/bin/env bash
-shift 2
-exec "$@"
-SANDBOX
-  chmod +x "$WORK/bin/sandbox-exec"
-  export GEMINI_RESEARCH_SANDBOX_EXEC="$WORK/bin/sandbox-exec"
-  workdir="$WORK/websearch-workdir"
-  # The research sandbox profile resolves the account's home with `readlink -f`, which fails on a
-  # path that does not exist — without the directory gemini's research row dies as GEMINI_UNAVAILABLE.
-  mkdir -p "$workdir" "$WORK/websearch" "$HOME/.gemini-profiles/websearch"
-  git -C "$workdir" init -q
-  printf 'base\n' >"$workdir/file"
-  git -C "$workdir" add file
-  git -C "$workdir" -c user.name=fixture -c user.email=fixture@example.test commit -qm base
-  printf 'probe\nsecond line\n' >"$WORK/websearch/plain"
-  printf 'WEB: on\nprobe\nsecond line\n' >"$WORK/websearch/on"
-  printf 'WEB: off\nprobe\nsecond line\n' >"$WORK/websearch/off"
-  printf 'web: ON\nprobe\nsecond line\n' >"$WORK/websearch/on-lower"
-  printf 'SCOPE: file\nprobe\n' >"$WORK/websearch/light-plain"
-  printf 'WEB: on\nSCOPE: file\nprobe\n' >"$WORK/websearch/light-on"
-  printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
-  export PICK_RC=0 PICK_ACCOUNT=websearch
-
-  web_search_launch() { # brief vendor extra-arg...
-    local file="$1" target="$2"
-    shift 2
-    clear_stub
-    printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
-    "$RUNNER" start "$target" --brief "$file" --workdir "$workdir" "$@" \
-      >"$WORK/start.out" 2>"$WORK/start.err" || fail "web-search start $target failed: $(<"$WORK/start.err")"
-    RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
-    RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
-    WEB_SEARCH_ENTRY=$target
-    assert await_done
-  }
-
-  # The stubs record each argument as `ARG=%q`, so a table cell carrying anything the shell quotes
-  # (claudeb's `WebSearch,WebFetch`) never matches the raw cell text.
-  web_search_quoted() { # argv words on stdin
-    local word
-    while IFS= read -r word; do printf '%q\n' "$word"; done
-  }
-
-  # The state's whole argv as one adjacent run, never word by word: `-c` is codex's ordinary config
-  # flag and stands in both states and elsewhere in the command, so a per-word search reads a state
-  # the run was never launched in.
-  web_search_sequence_present() { # vendor state
-    local needle haystack
-    needle=$(web_search_args "$1" "$2" | web_search_quoted | paste -sd $'\x1f' -)
-    [ -n "$needle" ] || return 1
-    if [ "$WEB_SEARCH_ENTRY" = light ]; then
-      # A Light edit run launches inside the write sandbox, which denies every path outside the Light
-      # worktree and the run directory — the stub's shared call log among them — so the command the
-      # launcher recorded is the only record of this entry point's argv.
-      haystack=$'\x1f'$(jq -r '.cmd[]' "$RUN_DIR/meta.json" | web_search_quoted | paste -sd $'\x1f' -)$'\x1f'
-    else
-      haystack=$'\x1f'$(sed -n 's/^ARG=//p' "$CALL_LOG" | paste -sd $'\x1f' -)$'\x1f'
-    fi
-    case "$haystack" in *$'\x1f'"$needle"$'\x1f'*) return 0 ;; esac
-    return 1
-  }
-
-  web_search_assert() { # vendor state
-    local target="$1" want="$2" other=on
-    [ "$want" = off ] || other=off
-    [ -z "$(web_search_args "$target" "$want")" ] || assert web_search_sequence_present "$target" "$want"
-    [ -z "$(web_search_args "$target" "$other")" ] || assert_fails web_search_sequence_present "$target" "$other"
-    assert test "$(jq -r '.web_search' "$RUN_DIR/meta.json")" = "$([ "$want" = on ] && printf true || printf false)"
-    # Named where a reader looks, not only in meta.json: the launch line and the report.
-    assert grep -qx "WEB: $want" "$WORK/start.out"
-    assert grep -qx "WEB: $want" <("$RUNNER" report "$RUN_ID")
-  }
-
-  # A state the vendor's column cannot reach, asked for outright: refused before an account is spent.
-  web_search_refused() { # brief vendor extra-arg...
-    local file="$1" target="$2" rc=0
-    shift 2
-    clear_stub
-    printf 'websearch\n' >"$STUB_DIR/gemini_profiles"
-    "$RUNNER" start "$target" --brief "$file" --workdir "$workdir" "$@" \
-      >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
-    assert test "$rc" -eq 4
-    assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/start.out"
-    assert grep -qF 'no switch that turns web search off' "$WORK/start.err"
-    assert test ! -s "$CALL_LOG"
-  }
-
-  # The vendors come from the table: a row added without an entry point, or an entry point that
-  # stops reading the table, is what this grid exists to catch — a hand-written list catches neither.
-  for vendor in $(web_search_table | cut -f1); do
-    # Both columns empty argv is only legal where the vendor HAS no off switch: a blank cell there
-    # would read as "the CLI already does this" and hide a flag nobody wired.
-    if [ -z "$(web_search_args "$vendor" on)" ] && [ -z "$(web_search_args "$vendor" off)" ]; then
-      assert test "$(web_search_column "$vendor" off)" = '!'
-    fi
-    set_config 'claudeb_model=opus' 'claudeb_effort=high' 'codex_effort=low' \
-      'gemini_model=flash38' 'gemini_effort=high' 'grok_model=auto' 'grok_effort=high' \
-      "light_research=$vendor" "light_edit=$vendor"
-    expected=$(web_search_state "$vendor" false)
-    web_search_launch "$WORK/websearch/plain" "$vendor"
-    web_search_assert "$vendor" "$expected"
-    web_search_launch "$WORK/websearch/light-plain" light
-    web_search_assert "$vendor" "$expected"
-
-    expected=$(web_search_state "$vendor" true)
-    web_search_launch "$WORK/websearch/plain" "$vendor" --web-search
-    web_search_assert "$vendor" "$expected"
-    web_search_launch "$WORK/websearch/on" "$vendor"
-    web_search_assert "$vendor" "$expected"
-    # The key and the state are case-insensitive: `web: ON` was silently ignored while `WEB: yes`
-    # failed loudly, so the shape a caller guesses wrong is the one that costs a run.
-    web_search_launch "$WORK/websearch/on-lower" "$vendor"
-    web_search_assert "$vendor" "$expected"
-    web_search_launch "$WORK/websearch/light-on" light
-    web_search_assert "$vendor" "$expected"
-    # Research needs no flag and no header: the role is the ask.
-    web_search_launch "$WORK/websearch/plain" "$vendor" --role research
-    web_search_assert "$vendor" "$expected"
-
-    if [ "$(web_search_column "$vendor" off)" = '!' ]; then
-      web_search_refused "$WORK/websearch/off" "$vendor" --role research
-      web_search_refused "$WORK/websearch/plain" "$vendor" --no-web-search
-    else
-      expected=$(web_search_state "$vendor" false)
-      web_search_launch "$WORK/websearch/off" "$vendor" --role research
-      web_search_assert "$vendor" "$expected"
-      web_search_launch "$WORK/websearch/plain" "$vendor" --no-web-search
-      web_search_assert "$vendor" "$expected"
-    fi
-  done
-
-  # A header that is neither state is a typo, not a default: launching on it would silently pick one.
-  clear_stub
-  printf 'WEB: maybe\nprobe\n' >"$WORK/websearch/bad"
-  rc=0
-  "$RUNNER" start claudeb --brief "$WORK/websearch/bad" --workdir "$workdir" \
-    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
-  assert test "$rc" -eq 4
-  assert grep -qF "brief header 'WEB: maybe' names no state" "$WORK/websearch.err"
-  assert test ! -s "$CALL_LOG"
-
-  # A WEB: line the header block cannot reach is refused, never dropped: a prose first line, a blank
-  # line above the header, a space before the colon and a launcher's own prefix pushing it down all
-  # used to launch a web-facing brief with search off and no word about it anywhere.
-  printf 'probe\n\nWEB: on\n' >"$WORK/websearch/stray"
-  printf 'WEB : on\nprobe\n' >"$WORK/websearch/spaced"
-  printf 'REPOSITORY: /tmp\n\nWEB: on\nprobe\n' >"$WORK/websearch/pushed"
-  for stray in stray spaced pushed; do
-    clear_stub
-    rc=0
-    "$RUNNER" start claudeb --brief "$WORK/websearch/$stray" --workdir "$workdir" \
-      >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
-    assert test "$rc" -eq 4
-    assert grep -qF 'spells a WEB: state worker-run does not read' "$WORK/websearch.err"
-    assert test ! -s "$CALL_LOG"
-  done
-  # A body line that merely starts with `web:` names no state: `Web: <url>` is prose, not a header.
-  printf 'probe\n\nWeb: https://example.test/page\n web: nginx\n' >"$WORK/websearch/prose"
-  assert test "$(web_search_brief_state "$WORK/websearch/prose"; printf 'rc=%s' "$?")" = rc=0
-
-  # Flag against header: the flag used to win in silence, so a brief that ruled live pages out was
-  # launched on them by a caller who passed --web-search out of habit.
-  while read -r flag brief; do
-    clear_stub
-    rc=0
-    "$RUNNER" start claudeb --brief "$WORK/websearch/$brief" --workdir "$workdir" "$flag" \
-      >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
-    assert test "$rc" -eq 4
-    assert grep -qF 'ask for opposite states' "$WORK/websearch.err"
-    assert test ! -s "$CALL_LOG"
-  done <<'CONTRADICTIONS'
---web-search off
---no-web-search on
-CONTRADICTIONS
-  clear_stub
-  rc=0
-  "$RUNNER" start claudeb --brief "$WORK/websearch/plain" --workdir "$workdir" --web-search --no-web-search \
-    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
-  assert test "$rc" -eq 4
-  assert grep -qF 'ask for opposite states' "$WORK/websearch.err"
-
-  # A run recorded before the table existed carries no state at all, and the CLIs that search by
-  # default did search: reported `off`, it promises a relaunch a capability its answer already had.
-  for vendor in $(web_search_table | cut -f1); do
-    expected=off
-    [ "$(web_search_column "$vendor" on)" != '-' ] || expected=on
-    jq -cn --arg v "$vendor" '{vendor:$v}' >"$WORK/websearch/legacy.json"
-    assert test "$(web_search_meta_state "$WORK/websearch/legacy.json")" = "$expected"
-    jq -cn --arg v "$vendor" '{vendor:$v,web_search:false}' >"$WORK/websearch/legacy.json"
-    assert test "$(web_search_meta_state "$WORK/websearch/legacy.json")" = off
-  done
-
-  # The grok research leg is policed from outside by a tree digest, and the answer contract now asks
-  # it to fetch pages: the fence rides in the launched brief only, never in the recorded one.
-  set_config 'grok_model=auto' 'grok_effort=high' 'light_research=grok' 'light_edit=grok'
-  web_search_launch "$WORK/websearch/plain" grok --role research
-  assert grep -qF 'READ-ONLY TREE' "$RUN_DIR/brief.launch"
-  assert test "$(grep -cF 'READ-ONLY TREE' "$RUN_DIR/brief")" = 0
-  web_search_launch "$WORK/websearch/plain" grok
-  assert test "$(grep -cF 'READ-ONLY TREE' "$RUN_DIR/brief.launch")" = 0
-
-  # Off the light_research row the refusal names what to pass, not just that something is missing.
-  set_config 'codex_effort=low' 'light_research=gemini' 'light_edit=gemini'
-  clear_stub
-  rc=0
-  "$RUNNER" start codex --brief "$WORK/websearch/plain" --workdir "$workdir" --role research \
-    >"$WORK/websearch.out" 2>"$WORK/websearch.err" || rc=$?
-  assert test "$rc" -eq 4
-  assert grep -qx 'OUTCOME: MODEL_REFUSED' "$WORK/websearch.out"
-  assert grep -qF -- '--model <id>' "$WORK/websearch.err"
-  assert grep -qF 'light ids (astra' "$WORK/websearch.err"
-  assert test ! -s "$CALL_LOG"
-
-  unset GEMINI_RESEARCH_SANDBOX_EXEC
-  rm -f "$STUB_DIR/gemini_profiles"
-  clear_stub
-  set_config
-}
-
-web_search_tests
-
-anchors_store_tests
-
-attribution_repair_tests
+if [ "${#split_names[@]}" -eq 0 ]; then
+  web_search_tests
+  anchors_store_tests
+  attribution_repair_tests
+fi
 
 for split_index in ${split_pids[@]+"${!split_pids[@]}"}; do
   split=${split_names[$split_index]}

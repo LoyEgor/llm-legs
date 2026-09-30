@@ -1,5 +1,5 @@
 # What the instruction guards decided, and where one of them could not run: one JSON line per event
-# in `<watch state>/gates.jsonl`, read by llm-doctor. It needs nothing but bash and printf, because
+# in `<watch state>/gates.jsonl`, read by harness-doctor. It needs nothing but bash and printf, because
 # the event it exists for most is the one where jq or the big library is missing.
 #
 # A decision the doctor matches a watched change against: a change no gate priced or passed is a

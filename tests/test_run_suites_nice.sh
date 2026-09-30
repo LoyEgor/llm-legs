@@ -17,6 +17,17 @@ done
 out=$(bash "$ROOT/share/run-suites.sh" --repo "$WORK/repo" 2>&1)
 assert test "$(grep -c 'PASS: nice=10' <<<"$out")" = 2
 assert grep -q '2 PASS' <<<"$out"
+assert test "$(grep -c wall-clock <<<"$out")" = 0
+
+# Wall-clock budget suites stay at the caller's nice; the parallel wave is what drops to 10.
+parent_nice=$(ps -o nice= -p $$ | tr -d '[:space:]')
+mkdir -p "$WORK/prio/tests"
+printf '#!/usr/bin/env bash\necho "PASS: wave=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_wave.sh"
+printf '#!/usr/bin/env bash\necho "PASS: budget=$(ps -o nice= -p $$ | tr -d " ")"\n' >"$WORK/prio/tests/test_commit_journal.sh"
+out=$(bash "$ROOT/share/run-suites.sh" --repo "$WORK/prio" 2>&1)
+assert grep -q 'PASS: wave=10' <<<"$out"
+assert grep -q "PASS: budget=$parent_nice" <<<"$out"
+assert grep -q "wall-clock suite(s) stay at nice $parent_nice; the wave is nice 10" <<<"$out"
 
 # A suite in a linked worktree finds its sibling repositories beside the main checkout.
 mkdir -p "$WORK/projects/main" "$WORK/projects/claude-setup" "$WORK/projects/review-bench"
@@ -32,13 +43,42 @@ assert grep -q 'PASS: siblings' <<<"$out"
 out=$(CLAUDE_SETUP_ROOT=/elsewhere REVIEW_BENCH_ROOT=/other WANT='/elsewhere|/other' bash "$ROOT/share/run-suites.sh" --repo "$tree" 2>&1)
 assert grep -q 'PASS: siblings' <<<"$out"
 
+# Same branch in a sibling repo: that worktree. No such worktree: the main checkout. An export wins.
+git -C "$WORK/projects/claude-setup" init -q
+git -C "$WORK/projects/claude-setup" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
+git -C "$WORK/projects/claude-setup" worktree add -q -b 'night/n/job' "$WORK/projects/claude-setup/.claude/worktrees/night-n-job"
+mkdir -p "$WORK/projects/llm-legs"
+git -C "$WORK/projects/llm-legs" init -q
+git -C "$WORK/projects/llm-legs" -c user.name=t -c user.email=t@t -c core.hooksPath=/dev/null commit -q --allow-empty -m init
+git -C "$WORK/projects/llm-legs" worktree add -q -b 'night/n/job' "$WORK/projects/llm-legs/.claude/worktrees/night-n-job"
+git -C "$WORK/projects/main" worktree add -q -b 'night/n/job' "$WORK/projects/main/.claude/worktrees/night-n-job"
+tree2="$WORK/projects/main/.claude/worktrees/night-n-job"
+mkdir -p "$tree2/tests"
+setup_wt="$WORK/projects/claude-setup/.claude/worktrees/night-n-job"
+legs_wt="$WORK/projects/llm-legs/.claude/worktrees/night-n-job"
+bench="$WORK/projects/review-bench"
+printf '#!/usr/bin/env bash\n[ "$CLAUDE_SETUP_ROOT|$REVIEW_BENCH_ROOT|$REVIEW_ROOT|$LLM_LEGS_ROOT|$LLM_LEGS_SHARE" = "$WANT" ] && echo PASS: same-branch || echo "FAIL: $CLAUDE_SETUP_ROOT|$REVIEW_BENCH_ROOT|$REVIEW_ROOT|$LLM_LEGS_ROOT|$LLM_LEGS_SHARE"\n' >"$tree2/tests/test_b.sh"
+want="$setup_wt|$bench|$bench|$legs_wt|$legs_wt/share"
+out=$(env -u CLAUDE_SETUP_ROOT -u REVIEW_BENCH_ROOT -u REVIEW_ROOT -u LLM_LEGS_ROOT -u LLM_LEGS_SHARE WANT="$want" \
+  bash "$ROOT/share/run-suites.sh" --repo "$tree2" 2>&1)
+assert grep -q 'PASS: same-branch' <<<"$out"
+out=$(env -u REVIEW_BENCH_ROOT -u REVIEW_ROOT -u LLM_LEGS_ROOT CLAUDE_SETUP_ROOT=/keep LLM_LEGS_SHARE=/share-kept \
+  WANT="/keep|$bench|$bench|$legs_wt|/share-kept" bash "$ROOT/share/run-suites.sh" --repo "$tree2" 2>&1)
+assert grep -q 'PASS: same-branch' <<<"$out"
+mkdir -p "$WORK/projects/main/tests"
+printf '#!/usr/bin/env bash\n[ -z "${CLAUDE_SETUP_ROOT:-}" ] && [ -z "${REVIEW_BENCH_ROOT:-}" ] && echo PASS: beside || echo "FAIL:${CLAUDE_SETUP_ROOT-}:${REVIEW_BENCH_ROOT-}"\n' >"$WORK/projects/main/tests/test_beside.sh"
+out=$(env -u CLAUDE_SETUP_ROOT -u REVIEW_BENCH_ROOT -u REVIEW_ROOT -u LLM_LEGS_ROOT \
+  bash "$ROOT/share/run-suites.sh" --repo "$WORK/projects/main" 2>&1)
+assert grep -q 'PASS: beside' <<<"$out"
+
 # While it runs, the statusline's work probe finds its log directory, suite count and repository
 # by its pid; the repository is the one it was handed, never the caller's directory.
 mkdir -p "$WORK/count/tests"
 printf '#!/usr/bin/env bash\ncat "$STATUSLINE_CACHE_DIR"/suites-* >"$SEEN"; echo PASS\n' >"$WORK/count/tests/test_c.sh"
 (cd "$WORK" && SEEN="$WORK/seen" bash "$ROOT/share/run-suites.sh" --repo "$WORK/count" >/dev/null 2>&1)
-assert grep -Eq $'^/.*/run-suites\\.[A-Za-z0-9]+\t1\t/.*/count$' "$WORK/seen"
-assert test -z "$(ls "$WORK/sl")"
+assert grep -Eq $'^/.*/run-suites\\.[A-Za-z0-9]+\t1\t/.*/count\t[0-9]+$' "$WORK/seen"
+assert test -z "$(ls "$WORK/sl" | grep -v '^test-scope\.jsonl$')"
+assert test "$(jq -sc 'map(.scope) | unique' "$WORK/sl/test-scope.jsonl")" = '["full"]'
 
 # The wave starts the longest suite first by its last passing duration, an unknown one before all;
 # another repository's durations are neither read nor dropped.
@@ -54,4 +94,4 @@ assert grep -q $'^/elsewhere\ttest_d.sh\t99$' "$RUN_SUITES_TIMES"
 assert grep -Eq "^$WORK/order"$'\ttest_d.sh\t[01]$' "$RUN_SUITES_TIMES"
 assert test "$(grep -c "^$WORK/order"$'\t' "$RUN_SUITES_TIMES")" = 4
 
-printf 'PASS: %s asserts; run-suites runs every suite at nice 10, in parallel, longest first, a worktree finds its siblings, and a run leaves its progress pointer only while it lasts\n' "$asserts"
+printf 'PASS: %s asserts; run-suites runs the wave at nice 10 and wall-clock suites at the caller'\''s nice, in parallel, longest first, a worktree on branch B uses a sibling worktree on B else the main checkout, and a run leaves its progress pointer only while it lasts\n' "$asserts"

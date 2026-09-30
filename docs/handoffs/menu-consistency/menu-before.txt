@@ -1,0 +1,1516 @@
+Send To: No destination    ⟨plain⟩
+  Claude App    ⟨plain | clickable⟩
+  Claude Terminal    ⟨plain | clickable⟩
+  Kimi    ⟨plain | clickable⟩
+────
+LLM Limits    ⟨plain⟩
+  logo-bench-throttle holds 3 jobs, longest 16 min: 1 of 8 slots open, all busy, pressure level 2, 43% free    ⟨1-105 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  ────
+  Chats/other  1.4/2.1 cores · 5/14 GB    ⟨1-37 Menlo-Regular 13.0⟩
+    CPU   1.4 chats +  2.1 other =  3.5 of 10 cores    ⟨1-47 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    RAM   4.6 chats + 14.0 other = 18.6 of 24 GB · swap 0.1    ⟨1-56 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    ────
+    full speed  Vector Magic macOS AR…   1.2 cores   2.5 GB  ▁▂▁▁▂▁▁▁▁▁▁▂▂▁▂    ⟨1-104 Menlo-Regular 13.0 | clickable⟩
+    wait model  Updater doctor           0.1 cores   0.5 GB  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁    ⟨1-102 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+    closed      Дизайн-система настро…   0.0 cores   0.4 GB  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁    ⟨1-123 Menlo-Regular 13.0 | clickable⟩
+    wait model  Harness Doctor           0.0 cores   0.7 GB  ▁▁▁▂▁▁▁▁▁▁▁▁▁▁▁    ⟨1-102 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+    idle        Hammersmith меню iPad…   0.0 cores   0.5 GB  ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁    ⟨1-108 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+    ────
+    Other incl.: screen 0.4 · kernel 0.0 · signing 0.1 cores    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+  ────
+  Routing    ⟨1-7 Menlo-Regular 13.0⟩
+    as of 01:02    ⟨1-11 Menlo-Regular 13.0 | disabled⟩
+    NEXT     budget          wk    5h    vendor/account       model·eff    ⟨1-68 Menlo-Regular 13.0 | disabled⟩
+     1       24.0%/d ×2.9d   31%   38%   claude/locomthebest  opus·high    ⟨1-69 Menlo-Regular 13.0 | disabled⟩
+     2       20.0%/d ×4.3d   14%   2%    claude/notcom        opus·high    ⟨1-69 Menlo-Regular 13.0 | disabled⟩
+     3       15.2%/d ×6.3d   4%    1%    claude/com           opus·high    ⟨1-69 Menlo-Regular 13.0 | disabled⟩
+    ACCOUNT: locomthebest    ⟨1-21 Menlo-Regular 13.0 | disabled⟩
+    codex:   off for workers    ⟨1-24 Menlo-Regular 13.0 | disabled⟩
+    gemini:  off for workers    ⟨1-24 Menlo-Regular 13.0 | disabled⟩
+    grok:    off for workers    ⟨1-24 Menlo-Regular 13.0 | disabled⟩
+    claude:  24.0%/d ×2.9d   31%   38%   locomthebest         opus·high    ↺ Fri 22:00    ⟨1-86 Menlo-Regular 13.0 | disabled⟩
+             20.0%/d ×4.3d   14%   2%    notcom               opus·high    ↺ Sun 07:59    ⟨1-86 Menlo-Regular 13.0 | disabled⟩
+             15.2%/d ×6.3d   4%    1%    com                  opus·high    ↺ Tue 09:00    ⟨1-86 Menlo-Regular 13.0 | disabled⟩
+    light:   off    ⟨1-12 Menlo-Regular 13.0 | disabled⟩
+    DATA: fresh (10 min old)    ⟨1-24 Menlo-Regular 13.0 | disabled⟩
+  Light (research + edit)    ⟨plain | clickable⟩
+  review flash T0–T1: 3.7 · pinned    ⟨1-35 Menlo-Regular 13.0⟩
+    3.8    ⟨plain | clickable⟩
+    3.7    ⟨plain | checked,clickable⟩
+    3.6    ⟨plain | clickable⟩
+    newest (default)    ⟨plain | clickable⟩
+  ────
+  Claude    ⟨1-6 Menlo-Regular 13.0⟩
+    For workers    ⟨plain | checked,clickable⟩
+    For reviewers    ⟨plain | checked,clickable⟩
+    Pin vendor for workers    ⟨plain | clickable⟩
+    Pause    ⟨plain | clickable⟩
+    Refresh    ⟨plain | clickable⟩
+  notcom  ↻1  9m    ⟨1-12 Menlo-Regular 13.0; 13-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | checked⟩
+    In pool    ⟨plain | checked,clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+          5h  ░░░░░    2%      04:29    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓░░░░   14%  Sun 07:59    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          fb  ▓░░░░   16%  Sun 07:59    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  com  ↻1  9m    ⟨1-9 Menlo-Regular 13.0; 10-13 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | checked⟩
+    In pool    ⟨plain | checked,clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+          5h  ░░░░░    1%      04:20    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ░░░░░    4%  Tue 09:00    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          fb  ░░░░░    0%  Tue 09:00    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  locomthebest  ↻1  10m    ⟨1-18 Menlo-Regular 13.0; 19-23 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | checked⟩
+    In pool    ⟨plain | checked,clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+          5h  ▓▓░░░   38%      01:10    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓░░░   31%  Fri 22:00    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          fb  ░░░░░    7%  Fri 22:00    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  ────
+  Codex    ⟨1-5 Menlo-Regular 13.0⟩
+    For workers    ⟨plain | clickable⟩
+    For reviewers    ⟨plain | clickable⟩
+    Pin vendor for workers    ⟨plain | clickable⟩
+    Pause    ⟨plain | clickable⟩
+    Refresh    ⟨plain | clickable⟩
+  notcom  ↻1  9m    ⟨1-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 29    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ░░░░░    0%      05:53    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓░   83%  Sat 20:34    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  com  ↻2  9m    ⟨1-13 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ░░░░░    0%      05:53    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓░   83%  Sat 20:35    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  work4  9m    ⟨1-9 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          wk  ░░░░░    0%     Oct 29    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  burkhartor  ↻2  9m    ⟨1-20 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ░░░░░    0%      05:53    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓░   80%  Sat 21:32    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  locomthebest  ↻2  9m    ⟨1-22 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ▓▓░░░   40%      01:31    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓░   89%  Sat 10:22    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  borodatch  ↻1  9m    ⟨1-19 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 29    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ░░░░░    0%      05:54    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓░   84%  Sat 10:32    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  rawilimo  ↻2  8m    ⟨1-18 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 23    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ░░░░░    0%      05:54    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓░   88%  Sat 12:27    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  egbogd  ↻2  8m    ⟨1-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Switch chat to this    ⟨plain | clickable⟩
+    Redeem usage reset · Oct 22    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          5h  ░░░░░    0%      00:54    ⟨1-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+          wk  ▓▓▓▓░   82%  Sat 13:04    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  ────
+  Grok    ⟨1-4 Menlo-Regular 13.0⟩
+    For workers    ⟨plain | clickable⟩
+    For reviewers    ⟨plain | clickable⟩
+    Pin vendor for workers    ⟨plain | clickable⟩
+    Pause    ⟨plain | clickable⟩
+    Refresh    ⟨plain | clickable⟩
+  notcom  7m    ⟨1-10 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          wk  ▓▓▓▓▓   90%  Sun 17:50    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  rawilimo  7m    ⟨1-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+    Fast Mode (workers)    ⟨plain | clickable⟩
+          wk  ░░░░░    4%  Tue 12:57    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+  ────
+  Gemini    ⟨1-6 Menlo-Regular 13.0⟩
+    For workers    ⟨plain | clickable⟩
+    For reviewers    ⟨plain | clickable⟩
+    Pin vendor for workers    ⟨plain | clickable⟩
+    Pause    ⟨plain | clickable⟩
+    Refresh    ⟨plain | clickable⟩
+  com  8m    ⟨1-3 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 4-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      13:54    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  rawilimo  8m    ⟨1-8 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 9-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      13:54    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  egbogd  8m    ⟨1-6 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 7-10 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      14:31    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  locomthebest  8m    ⟨1-12 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 13-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      14:31    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  egbor  8m    ⟨1-5 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 6-9 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      14:31    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  mish  8m    ⟨1-4 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 5-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      14:31    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  abel  7m    ⟨1-4 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 5-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      14:47    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  jihangarangan  7m    ⟨1-13 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a0.55); 14-17 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    In pool    ⟨plain | clickable⟩
+    Pin for workers    ⟨plain | clickable⟩
+    Hard refresh    ⟨plain | clickable⟩
+          5h  ░░░░░    0%        –    ⟨1-44 Menlo-Regular 13.0 | disabled⟩
+          wk  ▓▓▓▓▓  100%      14:47    ⟨1-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  ────
+  OpenCode Go — paused    ⟨1-22 Menlo-Regular 13.0⟩
+    Resume    ⟨plain | clickable⟩
+  ────
+  Refresh    ⟨plain | clickable⟩
+  Refresh + Start Windows    ⟨plain | clickable⟩
+Better Terminal    ⟨plain⟩
+  Tiling: OFF    ⟨plain | clickable⟩
+  Show grab areas    ⟨plain | clickable⟩
+  Equalize All    ⟨plain | disabled,clickable⟩
+  Snap ←    ⟨plain | disabled,clickable⟩
+  Snap →    ⟨plain | disabled,clickable⟩
+  Snap ↑    ⟨plain | disabled,clickable⟩
+Token tracking · stale    ⟨1-23 .AppleSystemUIFont 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+  STALE — 7 days to Sep 28 16:04 vs the 7 before · scanned 32h ago    ⟨1-67 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+  ────
+  limit tokens         7 days  prev 7      Δ   share    ⟨1-51 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+  Claude spend           0.4B    0.4B   +19%  100.0%    ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    By zone                7 days  prev 7      Δ    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    review-bench           139.2M  106.5M   +31%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    chat                   137.5M  105.9M   +30%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    worker                 114.6M  119.2M    -4%    ⟨1-44 Menlo-Regular 13.0⟩
+    subagent                54.9M   44.7M   +23%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    ────
+    Top projects           7 days  prev 7      Δ    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    llm-legs               122.0M  120.5M    +1%    ⟨1-44 Menlo-Regular 13.0⟩
+    find-truth              89.8M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    arbostar-frs-frontend   51.6M   23.6M  +119%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    egorloy                 27.1M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    logo-vectorizer-bench   25.3M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    claude-setup            14.7M   79.5M   -81%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    hammerspoon             10.5M    6.5M   +60%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    review-bench             9.3M   59.5M   -84%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    token-map                7.6M    0.3M    ×23    ⟨1-37 Menlo-Regular 13.0; 38-45 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    dd96a57ec583e940         5.6M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    94 more                 82.6M   86.3M    -4%    ⟨1-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)         41.1M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                430.7M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                370.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                 189.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6             434.7M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                185.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                 73.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                 36.8M    ⟨1-33 Menlo-Regular 13.0⟩
+  Review-bench           0.1B    0.1B   +31%   31.2%    ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    By project                 7 days  prev 7      Δ    ⟨1-49 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    find-truth                  41.1M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    llm-legs                    11.5M   17.3M   -33%    ⟨1-41 Menlo-Regular 13.0; 42-48 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    arbostar-frs-frontend        9.4M    5.0M   +88%    ⟨1-41 Menlo-Regular 13.0; 42-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    dd96a57ec583e940             5.6M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    e7cae20e0660bcc1             5.4M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    fde7240115327bf9             4.6M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    inventory                    4.6M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    229bbe45e914724a             3.4M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    share                        3.4M    1.2M  +180%    ⟨1-41 Menlo-Regular 13.0; 42-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    ffa44c043627effd             2.9M       0    new    ⟨1-48 Menlo-Regular 13.0⟩
+    80 more                     47.2M   82.9M   -43%    ⟨1-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Other vendors (own pools)  7 days  prev 7      Δ    ⟨1-49 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Gemini                       1.1B    0.1B  +638%    ⟨1-41 Menlo-Regular 13.0; 42-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Grok                         0.1B    0.1B   +98%    ⟨1-41 Menlo-Regular 13.0; 42-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Codex                       <0.1B   <0.1B  +242%    ⟨1-41 Menlo-Regular 13.0; 42-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          5.3M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                149.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                 96.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                  38.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6              90.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                 48.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                     0    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                     0    ⟨1-33 Menlo-Regular 13.0⟩
+  Cache re-writes        0.1B   <0.1B   +26%   12.8%    ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    By cause                                                7 days  prev 7      Δ    ⟨1-78 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    expired (5m ttl)                                         32.0M   18.4M   +74%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    expired (1h+ idle)                                       24.1M   19.9M   +21%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    context shrank                                            0.8M    0.1M  +423%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    unexplained                                               0.1M    2.4M   -97%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    idle 5-60min                                             <0.1M    4.4M  -100%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    model switch                                                 0    0.1M  -100%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    By zone                                                 7 days  prev 7      Δ    ⟨1-78 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    subagent                                                 32.3M   18.9M   +71%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    chat                                                     22.2M   15.3M   +46%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    worker                                                    2.4M   11.1M   -79%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Top chats                                               7 days  prev 7      Δ    ⟨1-78 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    /Users/egorloy · Sep 25                                  17.1M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/find-truth · Sep 27                4.5M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Users/egorloy/Arbostar/arbostar-frs-frontend · Sep 21    4.5M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/llm-legs · Sep 16                  3.1M    5.7M   -46%    ⟨1-71 Menlo-Regular 13.0; 72-78 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    /Volumes/Work/Projects/llm-legs · Sep 27                  2.8M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/llm-legs · Sep 24                  2.8M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/llm-legs · Sep 22                  2.1M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/hammerspoon · Sep 17               2.1M    0.6M  +220%    ⟨1-71 Menlo-Regular 13.0; 72-78 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    /Volumes/Work/Projects/find-truth · Sep 23                1.8M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/llm-legs · Sep 23                  1.5M       0    new    ⟨1-78 Menlo-Regular 13.0⟩
+    ────
+    Other vendors (own pools)                               7 days  prev 7      Δ    ⟨1-78 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Gemini                                                  120.7M   23.1M  +422%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Codex                                                     2.5M    1.1M  +123%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Grok                                                         0    0.2M  -100%    ⟨1-70 Menlo-Regular 13.0; 71-77 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)         11.8M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                 47.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                 45.7M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                  24.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6              45.2M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                 25.1M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                 10.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                  7.9M    ⟨1-33 Menlo-Regular 13.0⟩
+  Startup               <0.1B   <0.1B    +5%    2.0%    ⟨1-50 Menlo-Regular 13.0⟩
+    Per context (avg)              7 days  prev 7      Δ    ⟨1-53 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    system + tools (not in total)   6,823   9,170   -26%    ⟨1-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    CLAUDE.md + memory index        4,869   6,239   -22%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    skill listing                   2,638   3,077   -14%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      Synced from claude.ai           7 days  prev 7     Δ    ⟨1-53 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      anthropic-skills:docs              212       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:pptx              209       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:xlsx              206       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:docx              203       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:pdf                98       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:morning            78       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:skill-creator      75       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      anthropic-skills:import-memory      37       —   new    ⟨1-54 Menlo-Regular 13.0⟩
+      total                            1,118       0   new    ⟨1-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      ────
+      Local skills and commands       7 days  prev 7     Δ    ⟨1-53 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      dataviz                            307     619  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      claude-api                         229     463  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      code-review                        181     345  -48%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      update-config                      150     303  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      schedule                            81     163  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      run                                 78     158  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      loop                                73     147  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      comment-review                      55     111  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      workflow-authoring                  54     108  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      keybindings-help                    53     106  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      fewer-permission-prompts            41      82  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      simplify                            40      81  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      experiment                          39      79  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      worker                              35      71  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      security-review                     19      38  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      wut-ticket                          15      30  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      init                                14      29  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      impeccable                          14      29  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      md-compact                          14      28  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      trash                               14      28  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      3d-review                           13      26  -50%    ⟨1-46 Menlo-Regular 13.0; 47-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+      resume-timer                         —      32  gone    ⟨1-54 Menlo-Regular 13.0⟩
+      total                            1,519   3,077  -51%    ⟨1-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      ────
+      Calendar weeks    ⟨plain⟩
+        week (Mon–Sun)     per context    ⟨1-32 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Sep 28–Oct 4 (1d)         3.7k    ⟨1-32 Menlo-Regular 13.0⟩
+        Sep 21–27                 2.5k    ⟨1-32 Menlo-Regular 13.0⟩
+        Sep 14–20                 3.1k    ⟨1-32 Menlo-Regular 13.0⟩
+        Sep 7–13                  4.3k    ⟨1-32 Menlo-Regular 13.0⟩
+        Aug 31–Sep 6              3.5k    ⟨1-32 Menlo-Regular 13.0⟩
+        Aug 24–30                 4.1k    ⟨1-32 Menlo-Regular 13.0⟩
+        Aug 17–23                23.9k    ⟨1-32 Menlo-Regular 13.0⟩
+        Aug 10–16                 9.3k    ⟨1-32 Menlo-Regular 13.0⟩
+    agent listing                   1,071   1,286   -17%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    MCP instructions                  687     548   +25%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    deferred tool list                595     636    -6%    ⟨1-52 Menlo-Regular 13.0⟩
+    nested CLAUDE.md files            124      66   +88%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    ────
+    By zone, per context (avg)     7 days  prev 7      Δ    ⟨1-53 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    chat                            39.8k   23.3k   +71%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    worker                          23.0k   25.3k    -9%    ⟨1-52 Menlo-Regular 13.0⟩
+    review-bench                        0    0.3k  -100%    ⟨1-45 Menlo-Regular 13.0; 46-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          0.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                  8.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                  8.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                   6.2M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6              17.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                  3.7M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                  0.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                  0.3M    ⟨1-33 Menlo-Regular 13.0⟩
+  Big tool outputs      <0.1B   <0.1B   +10%    1.6%    ⟨1-50 Menlo-Regular 13.0⟩
+    By tool                                                   7 days  prev 7      Δ    ⟨1-80 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Bash                                                        4.2M    4.1M    +2%    ⟨1-79 Menlo-Regular 13.0⟩
+    Read                                                        3.0M    2.4M   +23%    ⟨1-72 Menlo-Regular 13.0; 73-79 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    mcp__atlassian__searchJiraIssuesUsingJql                   <0.1M   <0.1M   +27%    ⟨1-72 Menlo-Regular 13.0; 73-79 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    WebFetch                                                   <0.1M       0    new    ⟨1-79 Menlo-Regular 13.0⟩
+    ReadMcpResourceTool                                        <0.1M       0    new    ⟨1-79 Menlo-Regular 13.0⟩
+    Artifact                                                   <0.1M       0    new    ⟨1-79 Menlo-Regular 13.0⟩
+    mcp__claude_ai_Atlassian__searchJiraIssuesUsingJql             0    0.1M  -100%    ⟨1-72 Menlo-Regular 13.0; 73-79 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    mcp__atlassian__getJiraIssue                                   0   <0.1M  -100%    ⟨1-72 Menlo-Regular 13.0; 73-79 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Top commands and paths (click copies)                     7 days  prev 7      Δ    ⟨1-80 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    …/scratchpad/system-inventory/astra-findings.md             0.2M       0    new    ⟨3-81 Menlo-Regular 13.0 | clickable⟩
+    …/app/pages/user/theme-lab/theme-lab-panel.component.ts     0.2M       0    new    ⟨3-81 Menlo-Regular 13.0 | clickable⟩
+    …/scratchpad/drift-grouped.txt                              0.1M       0    new    ⟨3-81 Menlo-Regular 13.0 | clickable⟩
+    …/Work/Projects/llm-legs/bin/worker-launch-gate.sh          0.1M       0    new    ⟨3-81 Menlo-Regular 13.0 | clickable⟩
+    /Volumes/Work/Projects/llm-legs/bin/instruction-watch.sh    0.1M       0    new    ⟨1-79 Menlo-Regular 13.0 | clickable⟩
+    python3 - <<'EOF'                                           0.1M    0.1M   +16%    ⟨1-72 Menlo-Regular 13.0; 73-79 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | clickable⟩
+    …/fix-risk-engine-consistency/data/sizing_rules.py          0.1M       0    new    ⟨3-81 Menlo-Regular 13.0 | clickable⟩
+    …/claude-setup/skills-on-demand/end-report/end_report.py    0.1M   <0.1M  +230%    ⟨3-74 Menlo-Regular 13.0; 75-81 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | clickable⟩
+    /Volumes/Work/Projects/llm-legs/bin/llm-doctor              0.1M       0    new    ⟨1-79 Menlo-Regular 13.0 | clickable⟩
+    /Volumes/Work/Projects/claude-setup/hooks/lib/words.py      0.1M   <0.1M   +53%    ⟨1-72 Menlo-Regular 13.0; 73-79 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | clickable⟩
+    553 more                                                    6.3M    6.4M    -2%    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          0.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                  7.2M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                  6.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                   5.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6               9.9M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                  4.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                  1.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                  0.1M    ⟨1-33 Menlo-Regular 13.0⟩
+  Hooks                 <0.1B   <0.1B   -25%    1.6%    ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00); 43-50 Menlo-Regular 13.0⟩
+    Blocked calls                                     7 days  prev 7      Δ    ⟨1-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    edit-conflict-notice.sh                             2.6M    3.0M   -15%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    cd-guard.sh                                         0.8M    0.7M   +22%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    instruction-bloat-gate.sh                           0.3M    0.3M   +17%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    review-flow-gate.sh                                 0.2M    0.3M   -24%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    worker-edit-guard.sh                                0.2M    0.2M   +42%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    worker-launch-gate.sh                               0.2M    0.1M  +106%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    english-gate.sh                                     0.1M       0    new    ⟨1-71 Menlo-Regular 13.0⟩
+    worker-pin-gate.sh                                  0.1M    0.1M   -11%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    worker-spawn-hook.sh                                0.1M   <0.1M  +713%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Blocked                                             0.1M   <0.1M    ×21    ⟨1-64 Menlo-Regular 13.0; 65-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    13 more                                             0.2M    0.1M   +28%    ⟨1-71 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Stop-hook re-answers                              7 days  prev 7      Δ    ⟨1-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    SubagentStop · Your reader is                       1.5M    3.3M   -56%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    Stop · The word hook                               <0.1M       0    new    ⟨1-72 Menlo-Regular 13.0⟩
+    Stop · Your reader is                              <0.1M   <0.1M   +12%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Stop · worker run claudeb-N-N-Ndd                  <0.1M       0    new    ⟨1-72 Menlo-Regular 13.0⟩
+    Stop · No ⚡ notice                                 <0.1M       0    new    ⟨1-74 Menlo-Regular 13.0⟩
+    Stop · Review run NTNZ-dNeNcNa                         0   <0.1M  -100%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    Stop · Review run NTNZ-NfN                             0   <0.1M  -100%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    Stop · A grant was                                     0   <0.1M  -100%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    Stop · Review run NTNZ-bNfcN                           0   <0.1M  -100%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    Stop · The reading lines                               0   <0.1M  -100%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    1 more                                                 0   <0.1M  -100%    ⟨1-71 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Injected text                                     7 days  prev 7      Δ    ⟨1-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    UserPromptSubmit [word-intake]                    285.6k  332.1k   -14%    ⟨1-64 Menlo-Regular 13.0; 65-71 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    PostToolUse:Bash · Context is at                  113.7k   85.4k   +33%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    PostToolUse:Bash · URGENT                          94.3k   65.4k   +44%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    PreToolUse:Write · is below ~N.N                   77.6k   39.2k   +98%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    PreToolUse:Agent · Claude accounts                 73.0k   94.9k   -23%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    UserPromptSubmit [cite-first]                      55.2k   53.4k    +3%    ⟨1-71 Menlo-Regular 13.0⟩
+    PreToolUse:Agent · The brief names                 25.8k   11.1k  +133%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    PostToolUse:Edit · Native-first check (PrimeNG     24.7k       0    new    ⟨1-72 Menlo-Regular 13.0⟩
+    PostToolUse:Edit · Statusline freshness contract   23.2k   92.0k   -75%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    PreToolUse:Agent · Codex accounts                  21.0k    8.3k  +152%    ⟨1-65 Menlo-Regular 13.0; 66-72 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    99 more                                            84.3k  729.2k   -88%    ⟨1-71 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          0.2M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                  7.3M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                  9.9M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                   3.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6               8.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                  2.8M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                  2.3M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                  0.6M    ⟨1-33 Menlo-Regular 13.0⟩
+  Worker cold resumes   <0.1B   <0.1B   -74%    0.5%    ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00); 43-50 Menlo-Regular 13.0⟩
+    Last 7 days                                                                                                  cost  context   idle    ⟨1-129 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    /Volumes/Work/Projects/logo-vectorizer-bench · Sep 28                                                      425.4k   228.2k     1h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/logo-vectorizer-bench · Sep 26                                                      400.8k   212.8k     1h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Users/egorloy/Arbostar/arbostar-frs-frontend/.claude/worktrees/WUT-459_feat_theme-lab-prototype · Sep 23  322.5k   182.2k     1h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/review-bench · Sep 27                                                               306.7k   167.3k     4h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/claude-setup · Sep 27                                                               302.1k   164.9k     4h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/logo-vectorizer-bench · Sep 27                                                      193.1k   108.8k     3h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/logo-vectorizer-bench · Sep 27                                                      175.6k   102.8k     3h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/llm-legs · Sep 27                                                                   137.5k    83.8k     1h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/logo-vectorizer-bench · Sep 28                                                       52.6k    44.9k     1h    ⟨1-130 Menlo-Regular 13.0⟩
+    /Volumes/Work/Projects/logo-vectorizer-bench · Sep 28                                                       51.0k    45.2k     6h    ⟨1-130 Menlo-Regular 13.0⟩
+    ────
+    Other vendors (own pools)                                                                                  7 days   prev 7      Δ    ⟨1-130 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Codex                                                                                                      462.8k   114.4k  +305%    ⟨1-122 Menlo-Regular 13.0; 123-129 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          1.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                  0.9M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                  9.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                   2.2M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6               3.7M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                  0.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                     0    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                     0    ⟨1-33 Menlo-Regular 13.0⟩
+  Doc reads             <0.1B   <0.1B   +13%    0.4%    ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    Top files (click copies)                                 7 days  prev 7     Δ    ⟨1-78 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    …/scratchpad/system-inventory/astra-findings.md            0.2M       0   new    ⟨3-79 Menlo-Regular 13.0 | clickable⟩
+    /Volumes/Work/Projects/llm-legs/docs/vendor-release.md     0.1M       0   new    ⟨1-77 Menlo-Regular 13.0 | clickable⟩
+    …/scratchpad/joined.md                                     0.1M       0   new    ⟨3-79 Menlo-Regular 13.0 | clickable⟩
+    /Volumes/Work/Projects/claude-setup/global/CLAUDE.md       0.1M    0.1M   -6%    ⟨1-77 Menlo-Regular 13.0 | clickable⟩
+    …/find-truth/research/vision-architecture-2026-09-26.md    0.1M       0   new    ⟨3-79 Menlo-Regular 13.0 | clickable⟩
+    …/claude-setup/skills-on-demand/review-bench/SKILL.md     <0.1M   <0.1M  +60%    ⟨3-73 Menlo-Regular 13.0; 74-79 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | clickable⟩
+    /Volumes/Work/Projects/find-truth/inputs/strategy.md      <0.1M       0   new    ⟨1-77 Menlo-Regular 13.0 | clickable⟩
+    …/scratchpad/research/r2-weather-opus.md                  <0.1M       0   new    ⟨3-79 Menlo-Regular 13.0 | clickable⟩
+    …/scratchpad/vm/lane-rules.md                             <0.1M       0   new    ⟨3-79 Menlo-Regular 13.0 | clickable⟩
+    …/scratchpad/r3-double-findings.md                        <0.1M       0   new    ⟨3-79 Menlo-Regular 13.0 | clickable⟩
+    415 more                                                   1.0M    1.3M  -21%    ⟨1-77 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    By how it loaded                                         7 days  prev 7     Δ    ⟨1-78 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Read                                                     965.1k  806.2k  +20%    ⟨1-71 Menlo-Regular 13.0; 72-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    @-mention                                                442.3k  386.9k  +14%    ⟨1-71 Menlo-Regular 13.0; 72-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    changed on disk                                          154.8k  190.6k  -19%    ⟨1-71 Menlo-Regular 13.0; 72-77 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    Skill                                                     10.7k    9.3k  +15%    ⟨1-71 Menlo-Regular 13.0; 72-77 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Command                                                    0.8k       0   new    ⟨1-77 Menlo-Regular 13.0⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          0.1M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                  1.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                  1.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                   0.7M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6               1.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                  1.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                  0.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                  0.3M    ⟨1-33 Menlo-Regular 13.0⟩
+  ────
+  Other vendors — each its own pool    ⟨1-35 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+  Gemini                 1.1B    0.2B  +498%            ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    By zone                7 days  prev 7      Δ    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    review-bench             1.1B    0.1B  +638%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    worker                  <0.1B   <0.1B   +92%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    unknown                 <0.1B   <0.1B   -99%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Top projects           7 days  prev 7      Δ    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    (temp checkouts)       335.3M   31.1M  +979%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    find-truth             242.7M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    arbostar-frs-frontend   70.8M   28.0M  +152%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    e7cae20e0660bcc1        57.6M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    dd96a57ec583e940        51.0M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    fde7240115327bf9        45.4M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    ffa44c043627effd        42.5M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    llm-legs                34.9M   16.6M  +111%    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    08f8c0ec48f57f32        33.6M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    inventory               22.8M       0    new    ⟨1-44 Menlo-Regular 13.0⟩
+    43 more                177.1M  110.5M   +60%    ⟨1-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)             0    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                  1.2B    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                  0.1B    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                   0.7B    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6               0.4B    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                 <0.1B    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                 <0.1B    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                  0.1B    ⟨1-33 Menlo-Regular 13.0⟩
+  Grok                   0.1B    0.1B   +64%            ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    By zone                7 days  prev 7     Δ    ⟨1-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    review-bench           115.4M   58.4M  +98%    ⟨1-37 Menlo-Regular 13.0; 38-43 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    worker                   4.2M    3.9M   +6%    ⟨1-43 Menlo-Regular 13.0⟩
+    unknown                  0.1M   10.8M  -99%    ⟨1-37 Menlo-Regular 13.0; 38-43 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Top projects           7 days  prev 7     Δ    ⟨1-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    llm-legs                31.9M   16.1M  +98%    ⟨1-37 Menlo-Regular 13.0; 38-43 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    arbostar-frs-frontend   15.6M    0.4M   ×43    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    find-truth              11.2M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    229bbe45e914724a         9.1M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    e7cae20e0660bcc1         4.0M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    inventory                4.0M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    apps                     3.8M    0.1M   ×35    ⟨1-37 Menlo-Regular 13.0; 38-44 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    9b90ca87d86b84c6         3.3M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    9ba28ce7d0fc3729         3.0M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    93da2000b9493c78         2.6M       0   new    ⟨1-43 Menlo-Regular 13.0⟩
+    38 more                 31.2M   56.6M  -45%    ⟨1-43 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          8.3M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                115.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                 81.0M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                  86.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6             115.8M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                     0    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                     0    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                     0    ⟨1-33 Menlo-Regular 13.0⟩
+  Codex                  0.1B   <0.1B  +190%            ⟨1-35 Menlo-Regular 13.0; 36-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 43-50 Menlo-Regular 13.0⟩
+    By zone                       7 days  prev 7      Δ    ⟨1-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    worker                         58.5M    7.6M  +673%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    review-bench                   37.4M   10.9M  +242%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    chat                            6.0M   13.2M   -55%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    unknown                         2.3M    4.0M   -44%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    subagent                        0.1M    0.2M   -22%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+    ────
+    Top projects                  7 days  prev 7      Δ    ⟨1-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    logo-vectorizer-bench          36.5M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    arbostar-frs-frontend          15.3M    3.5M  +333%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    find-truth                      9.4M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    llm-legs                        5.3M    4.7M   +13%    ⟨1-44 Menlo-Regular 13.0; 45-51 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    chrome-tabs-the-user-has-the    4.2M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    e84902eb4c9d1174                3.4M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    (temp checkouts)                2.3M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    08f8c0ec48f57f32                2.1M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    work with mac                   1.9M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    9b90ca87d86b84c6                1.6M       0    new    ⟨1-51 Menlo-Regular 13.0⟩
+    89 more                        22.2M   27.6M   -20%    ⟨1-51 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+    ────
+    Calendar weeks    ⟨plain⟩
+      week (Mon–Sun)     limit tokens    ⟨1-33 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Sep 28–Oct 4 (1d)          0.1M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 21–27                107.4M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 14–20                 36.8M    ⟨1-33 Menlo-Regular 13.0⟩
+      Sep 7–13                 103.3M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 31–Sep 6             103.6M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 24–30                123.2M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 17–23                 83.5M    ⟨1-33 Menlo-Regular 13.0⟩
+      Aug 10–16                 55.8M    ⟨1-33 Menlo-Regular 13.0⟩
+  ────
+  Counts                                                ⟨1-50 Menlo-Regular 13.0⟩
+    Events                 7 days  prev 7      Δ    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    main contexts             879     704   +25%    ⟨1-44 Menlo-Regular 13.0⟩
+    review-bench sessions   2,831   1,283  +121%    ⟨1-44 Menlo-Regular 13.0⟩
+    worker cold resumes        16      33   -52%    ⟨1-44 Menlo-Regular 13.0⟩
+    hook blocks             2,595   2,585     0%    ⟨1-44 Menlo-Regular 13.0⟩
+    Stop-hook re-answers      268     549   -51%    ⟨1-44 Menlo-Regular 13.0⟩
+    big tool results          341     318    +7%    ⟨1-44 Menlo-Regular 13.0⟩
+    doc loads                 402     418    -4%    ⟨1-44 Menlo-Regular 13.0⟩
+    ────
+    Git run by models      7 days  prev 7      Δ    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    chat · git commit         140     159   -12%    ⟨1-45 Menlo-Regular 13.0⟩
+    chat · git push           107     146   -27%    ⟨1-45 Menlo-Regular 13.0⟩
+    worker · git commit        21      26   -19%    ⟨1-45 Menlo-Regular 13.0⟩
+    subagent · git commit      14       9   +56%    ⟨1-45 Menlo-Regular 13.0⟩
+    worker · git push           8      15   -47%    ⟨1-45 Menlo-Regular 13.0⟩
+    subagent · git push         4      10   -60%    ⟨1-45 Menlo-Regular 13.0⟩
+  ────
+  By week    ⟨plain⟩
+    week (Mon–Sun)       Sep 28 (1d)  Sep 21  Sep 14   Sep 7  Aug 31  Aug 24  Aug 17  Aug 10    ⟨1-90 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Claude spend               41.1M  430.7M  370.4M  189.6M  434.7M  185.0M   73.6M   36.8M    ⟨1-88 Menlo-Regular 13.0⟩
+    Review-bench                5.3M  149.4M   96.6M   38.6M   90.6M   48.5M       0       0    ⟨1-88 Menlo-Regular 13.0⟩
+    Cache re-writes            11.8M   47.6M   45.7M   24.0M   45.2M   25.1M   10.5M    7.9M    ⟨1-88 Menlo-Regular 13.0⟩
+    Startup                     0.6M    8.4M    8.6M    6.2M   17.0M    3.7M    0.4M    0.3M    ⟨1-88 Menlo-Regular 13.0⟩
+    Big tool outputs            0.4M    7.2M    6.6M    5.0M    9.9M    4.4M    1.0M    0.1M    ⟨1-88 Menlo-Regular 13.0⟩
+    Hooks                       0.2M    7.3M    9.9M    3.4M    8.5M    2.8M    2.3M    0.6M    ⟨1-88 Menlo-Regular 13.0⟩
+    Worker cold resumes         1.5M    0.9M    9.0M    2.2M    3.7M    0.5M       0       0    ⟨1-88 Menlo-Regular 13.0⟩
+    Doc reads                   0.1M    1.6M    1.4M    0.7M    1.0M    1.5M    0.6M    0.3M    ⟨1-88 Menlo-Regular 13.0⟩
+    ────
+    Gemini                         0    1.2B    0.1B    0.7B    0.4B   <0.1B   <0.1B    0.1B    ⟨1-88 Menlo-Regular 13.0⟩
+    Grok                        8.3M  115.4M   81.0M   86.5M  115.8M       0       0       0    ⟨1-88 Menlo-Regular 13.0⟩
+    Codex                       0.1M  107.4M   36.8M  103.3M  103.6M  123.2M   83.5M   55.8M    ⟨1-88 Menlo-Regular 13.0⟩
+  ────
+  Instruction file changes    ⟨plain⟩
+    watcher: live since 30 Sep 01:00 · 6 roots · 463 files    ⟨1-56 Menlo-Regular 13.0 | disabled⟩
+    29 Sep 23:50  .claude/settings.json +19 more               +466k  -9608 tok/wk    ⟨1-35 Menlo-Regular 13.0; 36-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 45-78 Menlo-Regular 13.0⟩
+      writer: unknown    ⟨1-15 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/settings.json                                                                                                                  changed-between-sessions  +177    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/docs/context-file-hygiene.md                                                                                                   changed-between-sessions     0                #320  demand    ⟨1-202 Menlo-Regular 13.0; 203-208 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      /Users/egorloy/.claude/docs/review-tiers.md                                                                                                           changed-between-sessions  +113   +141 tok/wk   #17  demand    ⟨1-202 Menlo-Regular 13.0; 203-208 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      /Users/egorloy/.claude/CLAUDE.md                                                                                                                      changed-between-sessions   -22  -9749 tok/wk    #1  always    ⟨1-202 Menlo-Regular 13.0; 203-208 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      /Volumes/Work/Projects/hammerspoon/CLAUDE.md                                                                                                          changed-between-sessions   +61    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/slides.md  added-between-sessions    +47k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/charts.md  added-between-sessions    +16k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/sheets.md  added-between-sessions    +39k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/docs.md    added-between-sessions    +40k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/SKILL.md              added-between-sessions    +14k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/slides.md  added-between-sessions    +47k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/charts.md  added-between-sessions    +16k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/sheets.md  added-between-sessions    +39k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/docs.md    added-between-sessions    +40k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/SKILL.md              added-between-sessions    +14k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/slides.md  added-between-sessions    +47k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/charts.md  added-between-sessions    +16k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/sheets.md  added-between-sessions    +39k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/docs.md    added-between-sessions    +40k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/SKILL.md              added-between-sessions    +14k    ⟨1-180 Menlo-Regular 13.0 | disabled⟩
+    29 Sep 23:33  references/slides.md +4 more                 +155k    ⟨1-34 Menlo-Regular 13.0; 35-42 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 43-64 Menlo-Regular 13.0⟩
+      Harness performance fix execution    ⟨1-33 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/slides.md  added  +47k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/charts.md  added  +16k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/sheets.md  added  +39k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/references/docs.md    added  +40k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_e705d643-6ff8-4987-8ecf-2690d6177404/google-workspace/SKILL.md              added  +14k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      ────
+      Copy command to open this chat    ⟨plain | clickable⟩
+    29 Sep 23:20  references/slides.md +4 more                 +155k    ⟨1-34 Menlo-Regular 13.0; 35-42 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 43-64 Menlo-Regular 13.0⟩
+      Harness Doctor    ⟨1-14 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/slides.md  added  +47k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/charts.md  added  +16k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/sheets.md  added  +39k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/references/docs.md    added  +40k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/0c354f45-a323-4361-bb4e-e5c3c45d1ea3_c67795da-c5c3-456a-98a7-ad7e1a722bb0/google-workspace/SKILL.md              added  +14k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      ────
+      Copy command to open this chat    ⟨plain | clickable⟩
+    29 Sep 23:14  references/slides.md +4 more                 +155k    ⟨1-34 Menlo-Regular 13.0; 35-42 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 43-64 Menlo-Regular 13.0⟩
+      Harness Doctor    ⟨1-14 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/slides.md  added  +47k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/charts.md  added  +16k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/sheets.md  added  +39k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/references/docs.md    added  +40k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/skills/synced/db7b3c90-8019-49e8-814a-4af2439e17e3_73f02285-a301-4be1-b840-e600d16fb56e/google-workspace/SKILL.md              added  +14k    ⟨1-161 Menlo-Regular 13.0 | disabled⟩
+      ────
+      Copy command to open this chat    ⟨plain | clickable⟩
+    29 Sep 18:05  …tion-watch/session-hlprof-a.tsv  baseline-missing    ⟨1-50 Menlo-Regular 13.0; 51-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      unnamed chat    ⟨1-12 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.cache/claude-instruction-watch/session-hlprof-a.tsv  baseline-missing  0    ⟨1-88 Menlo-Regular 13.0 | disabled⟩
+      ────
+      Copy command to open this chat    ⟨plain | clickable⟩
+    29 Sep 17:10  …s/opus-5-5-harness-alignment.md             -5491    ⟨1-66 Menlo-Regular 13.0⟩
+      Harness performance fix execution    ⟨1-33 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/handoffs/opus-5-5-harness-alignment.md  deleted  -5491    ⟨1-77 Menlo-Regular 13.0 | disabled⟩
+      ────
+      Copy command to open this chat    ⟨plain | clickable⟩
+    29 Sep 16:10  .claude/settings.json                         +111    ⟨1-64 Menlo-Regular 13.0⟩
+      writer: ambiguous    ⟨1-17 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/settings.json  +111    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+    29 Sep 12:51  .claude/settings.json                         -149    ⟨1-64 Menlo-Regular 13.0⟩
+      writer: ambiguous    ⟨1-17 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.claude/settings.json  -149    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+    29 Sep 12:39  hammerspoon/CLAUDE.md                          +61    ⟨1-64 Menlo-Regular 13.0⟩
+      writer: unknown    ⟨1-15 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/hammerspoon/CLAUDE.md  +61    ⟨1-49 Menlo-Regular 13.0 | disabled⟩
+    29 Sep 05:03  .pytest_cache/README.md                       +302    ⟨1-64 Menlo-Regular 13.0⟩
+      writer: ambiguous    ⟨1-17 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-tests/.pytest_cache/README.md  added  +302    ⟨1-97 Menlo-Regular 13.0 | disabled⟩
+    29 Sep 03:19  …tion-watch/session-perf-lvb.tsv  baseline-missing    ⟨1-50 Menlo-Regular 13.0; 51-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      unnamed chat    ⟨1-12 Menlo-Regular 13.0 | disabled⟩
+      /Users/egorloy/.cache/claude-instruction-watch/session-perf-lvb.tsv  baseline-missing  0    ⟨1-88 Menlo-Regular 13.0 | disabled⟩
+      ────
+      Copy command to open this chat    ⟨plain | clickable⟩
+    29 Sep 03:07  …ude/review-debt-ignore +31 more             -685k    ⟨1-39 Menlo-Regular 13.0; 40-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 49-66 Menlo-Regular 13.0⟩
+      writer: unknown    ⟨1-15 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/.claude/review-debt-ignore                                        deleted   -328    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/image-vendors.md                                             deleted  -5942    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/harness-doctor-design.md                                     deleted   -19k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/routing-contract.md                                          deleted   -37k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/statusline-contract.md                                       deleted   -97k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/vendor-release.md                                            deleted   -11k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/worker-symbiosis-spec.md                                     deleted  -8700    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/shared-invariants.md                                         deleted  -148k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/claudegpt.md                                                 deleted   -20k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/image-vendors/codex.md                                       deleted  -9552    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/image-vendors/gemini.md                                      deleted   -13k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/image-vendors/grok.md                                        deleted   -18k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/EXIT-PLAN.md                                                 deleted  -1785    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/report-bus.md                                                deleted  -6731    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/DIAGNOSTICS.md                                               deleted  -161k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/memory-guard.md                                              deleted  -9337    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-18-folder-debt-segment-findings.md          deleted  -1857    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-28-speed-investigation.md                   deleted   -26k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-22-md-hook-reliability.md                   deleted  -9286    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-20-failed-split-ours-theirs.md              deleted  -3972    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-27-llm-doctor-debt-reading.md               deleted  -3568    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-28-harness-performance-fix.md               deleted   -16k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-24-llm-doctor-worker-reviewer-split.md      deleted   -14k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/handoffs/2026-09-20-review-findings-light-and-worker-run.md  deleted  -5217    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/docs/vendor-release-open.md                                       deleted  -2040    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/README.md                                                         deleted   -23k    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/hammerspoon/config/README.md                                      deleted   -515    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/CLAUDE.md                                                         deleted  -2053    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/share/image-caps/README.md                                        deleted  -2240    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/share/worker-policy.md                                            deleted  -8680    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/share/light-recipes/rename.md                                     deleted   -398    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+      /Volumes/Work/Projects/llm-legs/.claude/worktrees/perf-statusline/.statusline-perf/untouched-base/share/light-recipes/test-scaffold.md                              deleted   -476    ⟨1-178 Menlo-Regular 13.0 | disabled⟩
+    ────
+    Coverage    ⟨plain⟩
+      ~/.claude: settings.json and every guarded markdown    ⟨plain | disabled⟩
+      ────
+      /Volumes/Work/Projects/llm-legs/CLAUDE.md    ⟨plain | disabled⟩
+      /Volumes/Work/Projects/review-bench/CLAUDE.md    ⟨plain | disabled⟩
+      /Volumes/Work/Projects/claude-setup/CLAUDE.md    ⟨plain | disabled⟩
+      /Users/egorloy/Arbostar/arbostar-frs-frontend/CLAUDE.local.md    ⟨plain | disabled⟩
+      /Volumes/Work/Projects/transcriptions-gpt/CLAUDE.md    ⟨plain | disabled⟩
+    Reveal change log    ⟨plain | clickable⟩
+  Open token map page    ⟨plain | clickable⟩
+  Rescan now    ⟨plain | clickable⟩
+Doctors · 41 problems    ⟨1-22 .AppleSystemUIFont 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+  LLM doctor: 14 problems    ⟨1-23 Menlo-Regular 13.0⟩
+    Fix — open a fixer chat    ⟨1-25 Menlo-Regular 13.0 | clickable⟩
+    fixer: never ran    ⟨1-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    ────
+    Reviewers: 0 bugs · 5 weather    ⟨1-30 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      owner: Review-bench improvements phase 4 · 32 legs in 24 h    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Review machinery: 400 · 3 new    ⟨1-30 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+        anchors: 324 · open  M1    ⟨1-24 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+          3h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          5h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          5h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          5h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          5h  …go-vectorizer-bench  Vector Magic macOS ARM …  warn gap-stale    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 5-56 Menlo-Regular 13.0; 57-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          … 312 more: review-bench doctor --json    ⟨1-42 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        closure_pending: 35 · open  M2    ⟨1-31 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+             15h  merged                Harness performance fix…  T2 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-58 Menlo-Regular 13.0; 59-69 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           1d 1h  …3_feat_portal_terms  WUT-483                   T2 standard    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-58 Menlo-Regular 13.0; 59-71 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           1d 4h  …l_gallery_images_v2  arbostar-frs-frontend P…  T2 standard    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-60 Menlo-Regular 13.0; 61-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           1d 5h  merged                make автономная работа …  T1 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-74 Menlo-Regular 13.0; 75-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 2h  merged                make автономная работа …  T0 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-74 Menlo-Regular 13.0; 75-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 4h  find-truth            make автономная работа …  T0 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-74 Menlo-Regular 13.0; 75-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 6h  merged                Чистка                    T0 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-62 Menlo-Regular 13.0; 63-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          2d 19h  …-freshness-contract  M1 freshness and fix br…  T2 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-60 Menlo-Regular 13.0; 61-71 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           4d 4h  …theme-lab-prototype  Дизайн-система настройк…  T2 frontier    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-81 Menlo-Regular 13.0; 82-94 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4d 18h  merged                Ревью и закрытие техдол…  T0 double    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-78 Menlo-Regular 13.0; 79-89 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          4d 21h  merged                LLM Doctor меню refacto…  T2 frontier    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-62 Menlo-Regular 13.0; 63-75 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           5d 2h  …ding-loading-states  Дизайн состояний загруз…  T1 standard    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-81 Menlo-Regular 13.0; 82-94 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          … 23 more: review-bench doctor --json    ⟨1-41 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        debt_line: 3 · new    ⟨1-19 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+            Vector Magic macOS ARM …  WHY=gap    ⟨1-2 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 3-30 Menlo-Regular 13.0; 31-39 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+            LLM Doctor меню refacto…  WHY=gap    ⟨1-2 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 3-34 Menlo-Regular 13.0; 35-43 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+            Harness Doctor            WHY=gap    ⟨1-2 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 3-28 Menlo-Regular 13.0; 29-37 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+        debt_scope: 30 · open  M3    ⟨1-26 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+             15h  Harness performance fix…  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-36 Menlo-Regular 13.0; 37-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           1d 5h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          1d 15h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          1d 22h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 1h  Debt hardening handoff    debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-34 Menlo-Regular 13.0; 35-46 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 2h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 4h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 6h  Чистка                    debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-40 Menlo-Regular 13.0; 41-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 6h  Чистка                    debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-40 Menlo-Regular 13.0; 41-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 7h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           2d 8h  make автономная работа …  debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-52 Menlo-Regular 13.0; 53-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          2d 13h  Чистка                    debt scope    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 9-40 Menlo-Regular 13.0; 41-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          … 18 more: review-bench doctor --json    ⟨1-41 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        integrity: 8 · open  M4    ⟨1-24 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+           1h  llm-legs              Updater doctor            llm-legs · docs/harness-doctor-design.md    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-53 Menlo-Regular 13.0; 54-96 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           1h  llm-legs              Updater doctor            llm-legs · docs/harness-doctor-design.md    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-53 Menlo-Regular 13.0; 54-96 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           3h  llm-legs              Harness performance fix…  llm-legs · docs/harness-doctor-design.md +1    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-55 Menlo-Regular 13.0; 56-101 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           3h  …d-watermark-overlap  Watermark на директлинк…  WUT-481_fix_powered-watermark-overlap · .nx/workspace-data/d/daemon.log +1    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-69 Menlo-Regular 13.0; 70-146 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+           3h  claude-setup          Harness performance fix…  claude-setup · skills/synced/unnamed chat_unnamed chat/.last-complete-round +18    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-55 Menlo-Regular 13.0; 56-137 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          15h  claude-setup          Harness performance fix…  claude-setup · skills/synced/unnamed chat_unnamed chat/.last-complete-round +3    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-55 Menlo-Regular 13.0; 56-136 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          23h  llm-legs              Harness Doctor            llm-legs · bin/harness-doctor +1    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-53 Menlo-Regular 13.0; 54-88 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+          23h  llm-legs              Harness Doctor            llm-legs · bin/harness-doctor    ⟨1-5 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 6-53 Menlo-Regular 13.0; 54-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | clickable⟩
+        Rescan now    ⟨1-10 Menlo-Regular 13.0 | clickable⟩
+      slow  3  ↑  ▄▆ ▂ ▁▁▅█▁▅▄▂    5h  opus    ⟨1-61 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+         5h  opus  llm-legs+claude-setup+hammerspoon  T2  Harness performance fix exe…  22m vs 6m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-44 Menlo-Regular 13.0; 45-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 49-98 Menlo-Regular 13.0 | disabled⟩
+         5h  opus  llm-legs+claude-setup+hammerspoon  T2  Harness performance fix exe…  18m vs 5m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-44 Menlo-Regular 13.0; 45-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 49-98 Menlo-Regular 13.0 | disabled⟩
+        16h  opus  llm-legs+claude-setup              T2  Harness performance fix exe…  judge: 10m vs 2m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-44 Menlo-Regular 13.0; 45-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 49-105 Menlo-Regular 13.0 | disabled⟩
+        ────
+        Copy for an LLM    ⟨1-15 Menlo-Regular 13.0 | clickable⟩
+      cap   2     ▄▆▁ ▁  █▂ ▁▁▁   16h  grok47    ⟨1-57 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        16h  grok47  llm-legs+claude-setup  T2  Harness performance fix exe…  chunk 1: exit 124 · chunk    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-34 Menlo-Regular 13.0; 35-38 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 39-98 Menlo-Regular 13.0 | disabled⟩
+        16h  grok47  llm-legs+claude-setup  T2  Harness performance fix exe…  chunk 1: exit 124 · chunk    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-34 Menlo-Regular 13.0; 35-38 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 39-98 Menlo-Regular 13.0 | disabled⟩
+        ────
+        Copy for an LLM    ⟨1-15 Menlo-Regular 13.0 | clickable⟩
+      top: opus slow ×3 · grok47 cap ×2    ⟨1-36 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      By model    ⟨1-8 Menlo-Regular 13.0⟩
+        model   legs  bugs  walled  off  cap  stalled  failed  theirs  slow  escaped  retried    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        opus      23                                                      3    ⟨1-6 Menlo-Regular 13.0; 7-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 13-18 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 19-67 Menlo-Regular 13.0 | disabled⟩
+        grok47     4                       2    ⟨1-6 Menlo-Regular 13.0; 7-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 13-18 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 19-36 Menlo-Regular 13.0 | disabled⟩
+        sol        3    ⟨1-6 Menlo-Regular 13.0; 7-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        astra      1    ⟨1-6 Menlo-Regular 13.0; 7-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        fable      1    ⟨1-6 Menlo-Regular 13.0; 7-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Copy brief for the owner    ⟨1-24 Menlo-Regular 13.0 | clickable⟩
+    Workers: 1 bug · 19 weather · 1 new    ⟨1-37 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+      owner: LLM Doctor меню refactoring · 101 legs in 24 h    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      escaped   5  ▃▅▁▂▁▄▂█▁   ▂▃   2m  new  opus    ⟨1-7 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 8-54 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 55-59 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 60-65 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+         2m  opus  llm-legs               Harness Doctor                wrote test_throttle.py    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-86 Menlo-Regular 13.0 | disabled⟩
+        16m  opus  llm-legs               Updater doctor                wrote test_doctors_menu.lua    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-91 Menlo-Regular 13.0 | disabled⟩
+        20m  opus  llm-legs               Harness Doctor                wrote test_throttle.py    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-86 Menlo-Regular 13.0 | disabled⟩
+         9h  opus  llm-legs               Token map хуки оптимизация    wrote worker-edit-guard.sh    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-105 Menlo-Regular 13.0 | disabled⟩
+        22h  opus  llm-legs/perf-daemons  Harness performance fix exe…  wrote review-bench/perf-review-debt    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-101 Menlo-Regular 13.0 | disabled⟩
+        ────
+        Copy for an LLM    ⟨1-15 Menlo-Regular 13.0 | clickable⟩
+      ────
+      slow     19  ▅▃▁▂▂ ▂ ▃▆▅▆█▁  17m       opus, grok    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        17m  opus  llm-legs               Updater doctor                50m vs 14m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-81 Menlo-Regular 13.0 | disabled⟩
+         5h  opus  llm-legs               Harness Doctor                55m vs 10m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-81 Menlo-Regular 13.0 | disabled⟩
+         5h  opus  llm-legs               Harness Doctor                52m vs 10m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-81 Menlo-Regular 13.0 | disabled⟩
+         6h  opus  logo-vectorizer-bench  Vector Magic macOS ARM migr…  138m vs 10m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-84 Menlo-Regular 13.0 | disabled⟩
+         6h  opus  Rentiva                Rental project career requi…  32m vs 8m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-82 Menlo-Regular 13.0 | disabled⟩
+         7h  opus  Rentiva                Rental project career requi…  19m vs 9m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-82 Menlo-Regular 13.0 | disabled⟩
+         9h  opus  logo-vectorizer-bench  Vector Magic macOS ARM migr…  133m vs 8m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-83 Menlo-Regular 13.0 | disabled⟩
+         9h  opus  Rentiva                Rental project career requi…  28m vs 9m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-82 Menlo-Regular 13.0 | disabled⟩
+         9h  opus  claude-setup           Token map хуки оптимизация    23m vs 8m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-95 Menlo-Regular 13.0 | disabled⟩
+         9h  opus  llm-legs               Token map хуки оптимизация    22m vs 8m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-95 Menlo-Regular 13.0 | disabled⟩
+        13h  opus  logo-vectorizer-bench  Vector Magic macOS ARM migr…  90m vs 10m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-83 Menlo-Regular 13.0 | disabled⟩
+        15h  opus  logo-vectorizer-bench  Vector Magic macOS ARM migr…  22m vs 10m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-83 Menlo-Regular 13.0 | disabled⟩
+        15h  opus  logo-vectorizer-bench  Vector Magic macOS ARM migr…  63m vs 9m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-82 Menlo-Regular 13.0 | disabled⟩
+        16h  opus  logo-vectorizer-bench  Vector Magic macOS ARM migr…  64m vs 15m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-83 Menlo-Regular 13.0 | disabled⟩
+        19h  opus  llm-legs/perf-tests    Harness performance fix exe…  143m vs 14m median    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 4-84 Menlo-Regular 13.0 | disabled⟩
+        latest 15 of 19    ⟨1-15 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        ────
+        Copy for an LLM    ⟨1-15 Menlo-Regular 13.0 | clickable⟩
+      top: opus escaped ×5    ⟨1-21 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+      ────
+      By model    ⟨1-8 Menlo-Regular 13.0⟩
+        model  legs  bugs  walled  off  cap  stalled  failed  theirs  slow  escaped  retried    ⟨1-84 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        opus     82     1                                               18        5    ⟨1-5 Menlo-Regular 13.0; 6-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 12-17 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 18-75 Menlo-Regular 13.0 | disabled⟩
+        grok     15                                                      1    ⟨1-5 Menlo-Regular 13.0; 6-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26); 12-17 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 18-66 Menlo-Regular 13.0 | disabled⟩
+        astra     4    ⟨1-5 Menlo-Regular 13.0; 6-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Copy brief for the owner    ⟨1-24 Menlo-Regular 13.0 | clickable⟩
+    Light: no legs    ⟨1-14 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      owner: LLM Doctor меню refactoring · 0 legs in 24 h    ⟨1-56 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      no legs failed in the window    ⟨1-28 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      Copy brief for the owner    ⟨1-24 Menlo-Regular 13.0 | clickable⟩
+    Image: no legs    ⟨1-14 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      owner: LLM Doctor меню refactoring · 0 legs in 24 h    ⟨1-56 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      no legs failed in the window    ⟨1-28 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      Copy brief for the owner    ⟨1-24 Menlo-Regular 13.0 | clickable⟩
+    Debt: 18 problems    ⟨1-17 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+      4 · 8m · Harness Doctor · lost unreviewed: run-fold-skip · 4592 lines    ⟨1-73 Menlo-Regular 13.0 | disabled⟩
+      2 · 23m · Updater doctor · lost unreviewed: run-fold-skip · 491 lines    ⟨1-73 Menlo-Regular 13.0 | disabled⟩
+      1 · 1h · Vector Magic macOS ARM migration · not recorded: hash-cap in logo-vectorizer-bench · seen 1638×    ⟨1-109 Menlo-Regular 13.0 | disabled⟩
+      1 · 4h · Harness performance fix execution · lost unreviewed: run-fold-skip · 399 lines    ⟨1-91 Menlo-Regular 13.0 | disabled⟩
+      1 · 18h · Vector Magic macOS ARM migration · not recorded: touch-failed in egorloy · seen 6×    ⟨1-97 Menlo-Regular 13.0 | disabled⟩
+      1 · 19h · Vector Magic macOS ARM migration · not recorded: touch-failed in logo-vectorizer-bench    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      1 · 22h · unnamed chat · not recorded: pre-missing in llm-legs    ⟨1-65 Menlo-Regular 13.0 | disabled⟩
+      1 · 23h · Vector Magic macOS ARM migration · not recorded: pre-missing in logo-vectorizer-bench · seen 12×    ⟨1-111 Menlo-Regular 13.0 | disabled⟩
+      1 · 29h · Harness Doctor · not recorded: pre-missing in llm-legs    ⟨1-67 Menlo-Regular 13.0 | disabled⟩
+      1 · 74h · ТОС запускает много парниров · not recorded: hash-cap in logo-vectorizer-bench · seen 5×    ⟨1-128 Menlo-Regular 13.0 | disabled⟩
+      1 · 101h · Vector Magic macOS ARM migration · not recorded: pre-missing in gilbarbara-logos    ⟨1-94 Menlo-Regular 13.0 | disabled⟩
+      1 · 102h · Дизайн-система настройка клиентов · not recorded: fixer-missing    ⟨1-107 Menlo-Regular 13.0 | disabled⟩
+      1 · 118h · LLM Doctor меню refactoring · not recorded: fixer-missing    ⟨1-75 Menlo-Regular 13.0 | disabled⟩
+      1 · 150h · Review-bench improvements phase 4 · not recorded: fixer-missing    ⟨1-77 Menlo-Regular 13.0 | disabled⟩
+    not measurable yet: worker false-green reports, weakened tests, the code revision a leg ran, false-clean reviews    ⟨1-112 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    window: 24 h    ⟨1-12 Menlo-Regular 13.0⟩
+      3 h    ⟨plain | clickable⟩
+      6 h    ⟨plain | clickable⟩
+      12 h    ⟨plain | clickable⟩
+      24 h    ⟨plain | checked,clickable⟩
+      3 d    ⟨plain | clickable⟩
+      7 d    ⟨plain | clickable⟩
+    refreshing…    ⟨1-13 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+  Harness doctor: 24 problems    ⟨1-27 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Fix — open a fixer chat    ⟨1-25 Menlo-Regular 13.0 | clickable⟩
+    fixer: never ran    ⟨1-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    ────
+    Waits         ok       a Bash call waits 0.3 s, fine under 3.0 s    ⟨1-5 Menlo-Regular 13.0; 6-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+                                    calls 1 h  wait s 1 h  wait s 7 d  cuts 1 h    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash · llm-legs                      10         0.3          10         0    ⟨1-74 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash · logo-vectorizer-bench          0           –          14         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash · hammerspoon                    5         0.4          12         0    ⟨1-74 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash · claude-setup                   0           –          12         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash · Rentiva                        0           –         0.3         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Edit, Write                          51         0.6         7.8         0    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Read                                 32         0.1         0.2         0    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      all 8 projects    ⟨1-14 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+                                      calls 1 h  wait s 1 h  wait s 7 d  cuts 1 h    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · llm-legs                      10         0.3          10         0    ⟨1-74 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · logo-vectorizer-bench          0           –          14         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · hammerspoon                    5         0.4          12         0    ⟨1-74 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · claude-setup                   0           –          12         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · Rentiva                        0           –         0.3         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · ~                              0           –          13         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · arbostar-frs-frontend          0           –          12         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · logo-dark-adapt                0           –          11         0    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Slow periods  watch    tool calls were slow 1 h 56 min of the last 24 h, last until 02:56    ⟨1-89 Menlo-Regular 13.0⟩
+      from         to     lasted min    ⟨1-30 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      09-29 00:01  02:56         175    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-28 21:01  22:00          59    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-28 10:28  20:56         628    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-28 07:31  09:03          92    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-28 00:17  06:34         377    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-27 20:11  00:15         244    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-27 12:54  18:34         340    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-27 08:19  09:51          91    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-26 15:21  07:24         964    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-26 11:12  11:48          36    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-26 07:10  10:01         172    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+      09-26 04:58  06:19          81    ⟨1-30 Menlo-Regular 13.0 | disabled⟩
+    Hook waits    problem  a non-trivial Bash call waits 573 ms on hooks, limit 500 ms · review-flow-gate before, commit-journal after (+1 more) · since 00:39    ⟨1-14 Menlo-Regular 13.0; 15-21 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 22-156 Menlo-Regular 13.0⟩
+      started 00:39 · 96 changes before it    ⟨1-37 Menlo-Regular 13.0⟩
+        at           change  what                                        hook wait ms  short Bash s    ⟨1-91 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        09-29 21:05  edited  claude-setup/hooks/edit-conflict-notice.sh       569→440       0.2→0.2    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:56  edited  llm-legs/bin/vendor-cli-update                   330→603       0.2→0.3    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:56  new     llm-legs/share/updater-ledger.json               330→603       0.2→0.3    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 20:18  edited  claude-setup/hooks/review-flow-gate.sh           322→559       0.2→0.2    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 20:18  edited  claude-setup/hooks/review-flow-gate.sh           322→559       0.2→0.2    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 20:20  edited  llm-legs/bin/harness-doctor                      322→542       0.2→0.2    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 20:21  new     hammerspoon/config_reload.lua                    326→534       0.2→0.2    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:56  new     llm-legs/bin/updater-doctor                      367→593       0.2→0.3    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 20:21  new     hammerspoon/tests/test_config_reload.lua         326→526       0.2→0.2    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:54  edited  hammerspoon/notify.log                           367→577       0.2→0.3    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:54  edited  llm-legs/hammerspoon/llm-limits.lua              367→577       0.2→0.3    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:54  new     llm-legs/bin/doctor-fix                          367→577       0.2→0.3    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+                      calls 1 h  wait ms 1 h  wait ms 24 h  set by 1 h    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash · trivial         15          240           421  english-gate · commit-report    ⟨1-84 Menlo-Regular 13.0⟩
+                         calls 1 h  wait ms 1 h  p95 ms 1 h  set by 1 h    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        before the tool         15          123         159  english-gate 47 %    ⟨1-70 Menlo-Regular 13.0 | disabled⟩
+        after the tool          15          125         175  commit-report 60 %    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+      Bash · other          297          573           555  review-flow-gate · commit-journal    ⟨1-36 Menlo-Regular 13.0; 37-39 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 40-89 Menlo-Regular 13.0⟩
+                         calls 1 h  wait ms 1 h  p95 ms 1 h  set by 1 h    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        before the tool        297          288         953  review-flow-gate 53 %    ⟨1-74 Menlo-Regular 13.0 | disabled⟩
+        after the tool         297          274         983  commit-journal 49 %    ⟨1-72 Menlo-Regular 13.0 | disabled⟩
+      Edit, Write            50          577           486  edit-conflict-notice · commit-journal    ⟨1-35 Menlo-Regular 13.0; 36-38 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 39-92 Menlo-Regular 13.0⟩
+                         calls 1 h  wait ms 1 h  p95 ms 1 h  set by 1 h    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        before the tool         50          356         778  edit-conflict-notice 88 %    ⟨1-78 Menlo-Regular 13.0 | disabled⟩
+        after the tool          50          266         430  commit-journal 84 %    ⟨1-72 Menlo-Regular 13.0 | disabled⟩
+      Read                   31           73            79  report-flush    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+                        calls 1 h  wait ms 1 h  p95 ms 1 h  set by 1 h    ⟨1-62 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        after the tool         31           73         123  report-flush 81 %    ⟨1-69 Menlo-Regular 13.0 | disabled⟩
+      other tools             4          442            75  worker-limit-gate · report-flush    ⟨1-87 Menlo-Regular 13.0⟩
+                         calls 1 h  wait ms 1 h  p95 ms 1 h  set by 1 h    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        before the tool          3          500         864  worker-limit-gate 67 %    ⟨1-75 Menlo-Regular 13.0 | disabled⟩
+        after the tool           4          124         143  report-flush 100 %    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+      message                20          141            54  report-flush    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      turn end               16          456           440  stop-dispatch    ⟨1-67 Menlo-Regular 13.0 | disabled⟩
+      subagent end           28           43            15  report-flush    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      chat start             13          694           787  instruction-watch baseline    ⟨1-80 Menlo-Regular 13.0 | disabled⟩
+      compaction              3           35            26  precompact-preserve    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      chat end               13           75            65  session-trash hook-end    ⟨1-76 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      tool batches joined to their call, 24 h: 90 %    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Hooks         watch    commit-journal takes 233 ms a run in the last hour, fine under 150 ms (+5 more)    ⟨1-102 Menlo-Regular 13.0⟩
+      started before 09-28 22:16 · cause unknown    ⟨1-43 Menlo-Regular 13.0 | disabled⟩
+      fast paths: 16 quiet libraries load    ⟨1-35 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        library               shell                   sourced by                                state    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        english-report.sh     /bin/bash               english-gate                              loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        english-report.sh     /opt/homebrew/bin/bash  compact-auto hook-session-start           loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        eod-commits.sh        /bin/bash               eod-commits-notice, eod-sorted-gate       loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        readonly-command.sh   /bin/bash               commit-journal, review-flow-gate          fast path works    ⟨1-103 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        readonly-command.sh   /opt/homebrew/bin/bash  instruction-write-gate, worker-launch-g…  fast path works    ⟨1-105 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        report-emit.sh        /bin/bash               commit-report                             loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review-journal.sh     /bin/bash               comment-gate, english-gate, eod-sorted-…  loads    ⟨1-95 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review-journal.sh     /opt/homebrew/bin/bash  review-owner-gate bash                    loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        words.sh              /bin/bash               comment-gate, eod-sorted-gate, word-gat…  loads    ⟨1-95 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        words.sh              /opt/homebrew/bin/bash  review-owner-gate bash, worker-pin-gate…  loads    ⟨1-95 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        gate-journal.sh       /opt/homebrew/bin/bash  instruction-bloat-gate, instruction-wat…  loads    ⟨1-95 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-files.sh  /bin/bash               english-gate, review-flow-gate            loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-files.sh  /opt/homebrew/bin/bash  instruction-bloat-gate, instruction-wat…  loads    ⟨1-95 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        relay-transcript.sh   /opt/homebrew/bin/bash  worker-launch-gate, worker-tag-hook       loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        run-liveness.sh       /opt/homebrew/bin/bash  worker-relay-hold                         loads    ⟨1-93 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-model.sh       /opt/homebrew/bin/bash  worker-launch-gate, worker-limit-gate, …  loads    ⟨1-95 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      hook                        when                  median ms 24 h  min 24 h  cuts 24 h    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      commit-journal              after Bash|Edit|Wri…             348       178          0    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+      instruction-watch check     after Bash|Edit|Wri…             304       100          0    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+      review-flow-gate            before Bash                      439        59          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+      statusline-workdir-hook     before Bash|Task… +2              52        18          8    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+      worker-launch-gate          before Bash +1                   180        22          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+      instruction-watch baseline  chat start                       728        12          1    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+      (which hook is unknown)     after any tool                     –         –         66    ⟨1-89 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      top 20 of 49 hooks    ⟨1-18 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        hook                        when                  median ms 24 h  min 24 h  cuts 24 h    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        commit-journal              after Bash|Edit|Wri…             348       178          0    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        instruction-watch check     after Bash|Edit|Wri…             304       100          0    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        review-flow-gate            before Bash                      439        59          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        statusline-workdir-hook     before Bash|Task… +2              52        18          8    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        worker-launch-gate          before Bash +1                   180        22          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        instruction-watch baseline  chat start                       728        12          1    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        stop-dispatch               turn end                         606       5.9          2    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        report-flush                after any tool +2                 63        17          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        context-nudge               after any tool                    82        17          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        english-gate                before Agent|SendMe…              78        14          0    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        commit-report               after Bash                       107        13          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        instruction-write-gate      before Bash                       68        13          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        worker-edit-guard           before Bash                       77        10          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        edit-conflict-notice        before Edit|Write|N…             287       9.3          0    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        worker-git-guard            before Bash                       68       8.9          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        review-owner-gate bash      before Bash                       69       8.8          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        eod-sorted-gate             before Bash                       67       8.3          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        word-gate                   before Bash                       63       7.6          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        worker-tag-hook             before Bash                       40       6.9          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        cd-guard                    before Bash                       54       6.7          0    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+      on every tool call: 6 hooks, 146 min a day    ⟨1-42 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        hook                     calls 24 h  median ms 24 h  median × calls min    ⟨1-72 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        commit-journal                9 080             348                  53    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+        instruction-watch check       9 080             304                  46    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+        context-nudge                10 898              82                  15    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+        english-gate                  9 246              78                  12    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+        report-flush                 10 898              63                  11    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+        statusline-workdir-hook      10 475              52                 9.0    ⟨1-71 Menlo-Regular 13.0 | disabled⟩
+      full work on trivial Bash: 20 of 25 hooks    ⟨1-41 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        hook                     trivial ms 1 h  other ms 1 h  trivial ms 24 h  other ms 24 h    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        comment-gate                         26            22               21             21    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        statusline-workdir-hook              51            55               45             53    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        worker-git-guard                     68            63               71             70    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        worker-edit-guard                    68            64               76             80    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        worker-tag-hook                      41            39               38             37    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        cd-guard                             58            57               49             53    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        eod-sorted-gate                      75            71               61             63    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        dia-not-chrome                       28            24               21             22    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        instruction-write-gate               69            72               63             68    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        worker-pin-gate bash                 64            55               52             51    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        review-owner-gate bash               70            73               67             69    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        chat-switch-link                     39            34               30             31    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        resume-timer-guard                   57            64               50             56    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        word-gate                            69            65               53             56    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        english-gate                         82            89               67             77    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        limits-triage-nudge                  18            16               16             15    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        word-spend                           67            57               35             43    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        commit-report                       105           112               71             87    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        report-flush                        108            91               45             62    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        context-nudge                        76            71               86             83    ⟨1-85 Menlo-Regular 13.0 | disabled⟩
+        review-flow-gate                     82           291               66            213    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-launch-gate                   50           148              159            184    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch check              53           174              250            286    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        commit-journal                       62           269               45            162    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        pr-auto-reviewers                   7.8           5.4              4.3            4.6    ⟨1-85 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      by transcript size: 4 of 40 hooks grow    ⟨1-38 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        hook                        under 1 MB ms  1-10 MB ms  10 MB+ ms    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review-flow-gate                       95         119        271    ⟨1-64 Menlo-Regular 13.0 | disabled⟩
+        worker-launch-gate                     56          73        119    ⟨1-64 Menlo-Regular 13.0 | disabled⟩
+        word-spend                             30          35         50    ⟨1-64 Menlo-Regular 13.0 | disabled⟩
+        report-flush                           44          44        110    ⟨1-64 Menlo-Regular 13.0 | disabled⟩
+        comment-gate                           21          20         21    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-limit-gate                     473         376        352    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-spawn-hook                     141         154        118    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        statusline-workdir-hook                51          45         51    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-git-guard                       78          72         45    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-edit-guard                      92          83         45    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-tag-hook                        34          33         35    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        cd-guard                               56          45         53    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        eod-sorted-gate                        64          61         64    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-bloat-gate                 52          62         53    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-pin-gate write                  33          36         32    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        slash-collision-gate                   16          16         15    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        dia-not-chrome                         22          21         23    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-write-gate                 61          58         62    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-pin-gate bash                   47          45         47    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review-owner-gate bash                 64          60         62    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        chat-switch-link                       30          30         32    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        resume-timer-guard                     57          54         56    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        word-gate                              58          55         56    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        edit-conflict-notice                  389         286        251    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        english-gate                           74          70         72    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch check               139         145        152    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        commit-journal                        157         157        194    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        limits-triage-nudge                    14          13         14    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        commit-report                          87          81         92    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        pr-auto-reviewers                     4.7         4.4        4.5    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        statusline-freshness-gate              16          17         15    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        context-nudge                          51          51         54    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        memory-prune hook                      11          12         11    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch baseline              –         421        425    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        eod-commits-notice                      –          36         31    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        chat-link-format                        –          14         11    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        cite-before-building                    –          52         36    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        word-intake                             –         102         78    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-relay-hold                      48         9.3        7.7    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        stop-dispatch                         225         425        464    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      by repositories in the chat: 3 of 43 hooks grow    ⟨1-47 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        hook                          up to 2 repos ms  3-4 repos ms  5+ repos ms    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review-flow-gate                           179           304          333    ⟨1-73 Menlo-Regular 13.0 | disabled⟩
+        commit-journal                             165           235          262    ⟨1-73 Menlo-Regular 13.0 | disabled⟩
+        report-flush                                47            71          128    ⟨1-73 Menlo-Regular 13.0 | disabled⟩
+        comment-gate                                21            21           21    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-limit-gate                          384           317          354    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-spawn-hook                          154           117          133    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        statusline-workdir-hook                     48            50           49    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-git-guard                            72            57           43    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-edit-guard                           81            57           43    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-tag-hook                             34            38           34    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        cd-guard                                    49            52           52    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        eod-sorted-gate                             62            65           65    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-bloat-gate                      62            57           46    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-pin-gate write                       36            32           31    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        slash-collision-gate                        16            15           15    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        dia-not-chrome                              22            23           22    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-write-gate                      61            63           60    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-pin-gate bash                        47            48           45    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-launch-gate                         123           143          129    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review-owner-gate bash                      63            65           59    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        chat-switch-link                            31            31           31    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        resume-timer-guard                          56            56           54    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        word-gate                                   56            58           54    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        edit-conflict-notice                       317            91           92    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        english-gate                                72            80           70    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch check                    150           148          157    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        limits-triage-nudge                         13            14           13    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        word-spend                                  38            48           48    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        commit-report                               85            88           84    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        pr-auto-reviewers                          4.6           4.6          4.3    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        statusline-freshness-gate                   17            14           14    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        context-nudge                               52            45           51    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        memory-prune hook                           12          10.0           11    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch baseline                 579           677          432    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        compact-auto hook-session-s…                77            80           63    ⟨1-75 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        eod-commits-notice                          33            31           34    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        chat-link-format                            13            12           11    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        cite-before-building                        41            35           36    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        word-intake                                 89            75           81    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        session-trash hook-end                      50            47           65    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        worker-relay-hold                           11           7.7          8.4    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        stop-dispatch                              419           425          582    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        precompact-preserve                         28            32           20    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    Load          problem  6.1 of 10 cores go to short-lived processes and the kernel · since 00:27    ⟨1-14 Menlo-Regular 13.0; 15-21 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 22-96 Menlo-Regular 13.0⟩
+      started 00:27 · 94 changes before it    ⟨1-37 Menlo-Regular 13.0⟩
+        at           change  what                                      CPU busy  new proc/s    ⟨1-83 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        09-30 00:01  edited  hammerspoon/notify.log                   53 %→90 %   725→1 971    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-30 00:00  edited  llm-legs/hammerspoon/llm-limits.lua      53 %→90 %   725→1 971    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-30 00:06  edited  llm-legs/bin/vendor-fingerprint          55 %→92 %   968→1 866    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-30 00:06  new     llm-legs/bin/vendor-fingerprint.mutbak   55 %→92 %   968→1 866    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-30 00:02  new     hammerspoon/tests/test_doctors_menu.sh   55 %→92 %   908→1 866    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-30 00:02  new     hammerspoon/tests/test_doctors_menu.lua  55 %→92 %   908→1 866    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:54  edited  hammerspoon/notify.log                   53 %→88 %   877→2 015    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:54  edited  llm-legs/hammerspoon/llm-limits.lua      53 %→88 %   877→2 015    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:54  new     llm-legs/bin/doctor-fix                  53 %→88 %   877→2 015    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:53  edited  hammerspoon/automation_menu.lua          53 %→88 %   877→2 015    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:53  new     llm-legs/hammerspoon/doctors.lua         53 %→88 %   877→2 015    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+        09-29 23:52  edited  llm-legs/bin/vendor-fingerprint          53 %→88 %   877→2 015    ⟨1-87 Menlo-Regular 13.0 | disabled⟩
+                          last hour  since 09-28 22:16    ⟨1-48 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      CPU busy                 87 %               73 %    ⟨1-48 Menlo-Regular 13.0 | disabled⟩
+        of it the kernel       45 %               31 %    ⟨1-48 Menlo-Regular 13.0 | disabled⟩
+      new processes        1 851 /s           1 060 /s    ⟨1-48 Menlo-Regular 13.0 | disabled⟩
+      unaccounted CPU     6.1 cores          4.9 cores    ⟨1-20 Menlo-Regular 13.0; 21-29 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 30-48 Menlo-Regular 13.0 | disabled⟩
+      memory free              43 %    ⟨1-29 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      swap used              0.1 GB    ⟨1-29 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      tests running               1    ⟨1-29 Menlo-Regular 13.0 | disabled⟩
+    Tests         ok       49 runs today, 41 min of wall clock, none slower than usual; 1 running now    ⟨1-5 Menlo-Regular 13.0; 6-97 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      suites at once, 6 h: 2    ⟨1-22 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      failed under load, 6 h: 0    ⟨1-25 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      test · repo                         runs today  min today  usual min  last min    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      suites · llm-legs                            4         24        9.6       4.0    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      test_vendor_fingerprint · llm-legs          20         15        0.9       1.0    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      test_llm_limits · llm-legs                   3        7.7        4.6       2.5    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      test_send_actions · hammerspoon              1        1.9        0.0       1.9    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      test_ipad_mode · hammerspoon                 1        1.9        0.0       1.9    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      test_ipad_overlay · hammerspoon              1        1.9        0.0       1.9    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      all 14 tests today    ⟨1-18 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        test · repo                         runs today  min today  usual min  last min    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        suites · llm-legs                            4         24        9.6       4.0    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_vendor_fingerprint · llm-legs          20         15        0.9       1.0    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_llm_limits · llm-legs                   3        7.7        4.6       2.5    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_send_actions · hammerspoon              1        1.9        0.0       1.9    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_ipad_mode · hammerspoon                 1        1.9        0.0       1.9    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_ipad_overlay · hammerspoon              1        1.9        0.0       1.9    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_consistency · llm-legs                  4        1.8        0.9       0.3    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_reports_menu · llm-legs                 1        1.0        0.0       1.0    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_claudeb · llm-legs                      1        0.8        0.8       0.8    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_vendor_cli_update · llm-legs            3        0.8        0.3       0.2    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_doctor_fix · llm-legs                   5        0.7        0.1       0.1    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_updater_doctor · llm-legs               3        0.3        0.1       0.1    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_harness_doctor · llm-legs               1        0.1        0.1       0.1    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_updater_doctor · mutu                   1        0.1        0.0       0.1    ⟨1-79 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      running now: 1    ⟨1-14 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        test · repo                      running min    ⟨1-45 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        test_send_actions · hammerspoon           26    ⟨1-45 Menlo-Regular 13.0 | disabled⟩
+      latest 10    ⟨1-9 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        at     test · repo                         took min  who    ⟨1-57 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        00:58  test_llm_limits · llm-legs               2.5  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:52  test_llm_limits · llm-legs               3.1  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:49  test_ipad_mode · hammerspoon             1.9  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:49  test_updater_doctor · mutu               0.1  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:47  test_send_actions · hammerspoon          1.9  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:46  test_ipad_overlay · hammerspoon          1.9  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:45  test_vendor_fingerprint · llm-legs       1.0  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:44  test_vendor_fingerprint · llm-legs       0.9  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:43  test_vendor_fingerprint · llm-legs       0.9  chat    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        00:40  test_consistency · llm-legs              0.3  worker    ⟨1-60 Menlo-Regular 13.0 | disabled⟩
+    Stop hooks    problem  asks deferred over 2 h: busy bg-task ×6 in 24 h (+1 more)    ⟨1-14 Menlo-Regular 13.0; 15-21 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 22-81 Menlo-Regular 13.0⟩
+      started before 09-28 22:16 · cause unknown    ⟨1-43 Menlo-Regular 13.0 | disabled⟩
+                                                            times 24 h  last    ⟨1-70 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      asks deferred over 2 h: busy bg-task                           6  00:58    ⟨1-36 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 37-71 Menlo-Regular 13.0 | disabled⟩
+      word notice with no reading: ⚡ review  ⚡ commit+push           1  09-29 18:53    ⟨1-56 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 57-81 Menlo-Regular 13.0 | disabled⟩
+    Guards        problem  instruction files grew between sessions ×17 in 24 h (+17 more)    ⟨1-14 Menlo-Regular 13.0; 15-21 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 22-86 Menlo-Regular 13.0⟩
+      started before 09-28 22:16 · cause unknown    ⟨1-43 Menlo-Regular 13.0 | disabled⟩
+                                                               times 24 h  last    ⟨1-73 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      instruction files grew between sessions                          17  09-29 23:50    ⟨1-39 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 40-80 Menlo-Regular 13.0 | disabled⟩
+      references/slides.md grew with no gate seeing it                  1  09-29 23:33    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/charts.md grew with no gate seeing it                  1  09-29 23:33    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/sheets.md grew with no gate seeing it                  1  09-29 23:33    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/docs.md grew with no gate seeing it                    1  09-29 23:33    ⟨1-46 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 47-80 Menlo-Regular 13.0 | disabled⟩
+      google-workspace/SKILL.md grew with no gate seeing it             1  09-29 23:33    ⟨1-53 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 54-80 Menlo-Regular 13.0 | disabled⟩
+      references/slides.md grew with no gate seeing it                  1  09-29 23:20    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/charts.md grew with no gate seeing it                  1  09-29 23:20    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/sheets.md grew with no gate seeing it                  1  09-29 23:20    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/docs.md grew with no gate seeing it                    1  09-29 23:20    ⟨1-46 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 47-80 Menlo-Regular 13.0 | disabled⟩
+      google-workspace/SKILL.md grew with no gate seeing it             1  09-29 23:20    ⟨1-53 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 54-80 Menlo-Regular 13.0 | disabled⟩
+      references/slides.md grew with no gate seeing it                  1  09-29 23:14    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/charts.md grew with no gate seeing it                  1  09-29 23:14    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/sheets.md grew with no gate seeing it                  1  09-29 23:14    ⟨1-48 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 49-80 Menlo-Regular 13.0 | disabled⟩
+      references/docs.md grew with no gate seeing it                    1  09-29 23:14    ⟨1-46 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 47-80 Menlo-Regular 13.0 | disabled⟩
+      google-workspace/SKILL.md grew with no gate seeing it             1  09-29 23:14    ⟨1-53 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 54-80 Menlo-Regular 13.0 | disabled⟩
+      tripwire baseline missing                                         4  09-29 18:05    ⟨1-25 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 26-80 Menlo-Regular 13.0 | disabled⟩
+      docs/statusline-contract.md grew with no gate seeing it           1  09-29 02:18    ⟨1-55 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 56-80 Menlo-Regular 13.0 | disabled⟩
+      hammerspoon/CLAUDE.md grew with no gate seeing it                 1  09-29 12:39    ⟨1-80 Menlo-Regular 13.0 | disabled⟩
+    Growth        watch    transcripts holds 6 091 entries, 3.7 GB (+3 more)    ⟨1-72 Menlo-Regular 13.0⟩
+      started before 09-28 22:16 · cause unknown    ⟨1-43 Menlo-Regular 13.0 | disabled⟩
+      store                         entries  size MB    ⟨1-46 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      transcripts                     6 091    3 787    ⟨1-46 Menlo-Regular 13.0 | disabled⟩
+      review benches                  1 392    2 910    ⟨1-46 Menlo-Regular 13.0 | disabled⟩
+      instruction-watch reverts     159 964    1 377    ⟨1-46 Menlo-Regular 13.0 | disabled⟩
+      loose git objects · llm-legs    7 944      190    ⟨1-47 Menlo-Regular 13.0 | disabled⟩
+      hook spool, not folded yet          4    ⟨1-37 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      all 25 stores    ⟨1-13 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        store                                     entries  size MB    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        hook spool, not folded yet                      4    ⟨1-49 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        transcripts                                 6 091    3 787    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        review benches                              1 392    2 910    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        instruction-watch reverts                 159 964    1 377    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        loose git objects · logo-vectorizer-ben…    6 154      730    ⟨1-61 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · llm-legs                7 944      190    ⟨1-59 Menlo-Regular 13.0 | disabled⟩
+        loose git objects · review-bench            3 977      187    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review journal                              5 477      181    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review journal .hashes, .ref, .heads          674      165    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · find-truth              1 743       47    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · claude-setup            2 835       34    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · transcriptions-gpt      1 599       30    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        harness doctor state                           12       28    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · arbostar-frs-fronte…    4 321       20    ⟨1-61 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        statusline cache files                      2 334       12    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · logo-dark-adapt           789        8    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · token-map               1 146        8    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · Rentiva                   136        5    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        loose git objects · hammerspoon               314        1    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        context-nudge state                           446        1    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch temp leftovers               18        0    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch closed                       89        0    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        review journal .repos                         804        0    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch inflight                      7        0    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        instruction-watch read-only notes              26        0    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    ────
+    24 h vs prev 24 h · 1 worse, 4 better    ⟨1-21 Menlo-Regular 13.0; 22-28 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00); 29-30 Menlo-Regular 13.0; 31-38 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+                          24 h  prev 24 h      Δ    ⟨1-43 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      Bash wait s          0.7         12   -94%    ⟨1-38 Menlo-Regular 13.0; 39-42 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+        Bash wait s                   24 h  prev 24 h     Δ    ⟨1-52 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · llm-legs                0.6         11  -95%    ⟨1-48 Menlo-Regular 13.0; 49-52 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        Bash · logo-vectorizer-bench    16         13  +16%    ⟨1-48 Menlo-Regular 13.0; 49-52 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+        Bash · claude-setup            1.0         12  -92%    ⟨1-52 Menlo-Regular 13.0 | disabled⟩
+        Bash · hammerspoon             0.3         11  -97%    ⟨1-52 Menlo-Regular 13.0 | disabled⟩
+        Bash · ~                       1.4         13  -89%    ⟨1-52 Menlo-Regular 13.0 | disabled⟩
+        Bash · Rentiva                 0.3          –    ⟨1-48 Menlo-Regular 13.0 | disabled⟩
+        Bash · arbostar-frs-frontend   0.8         11  -93%    ⟨1-52 Menlo-Regular 13.0 | disabled⟩
+        Bash · logo-dark-adapt         0.3         11  -97%    ⟨1-52 Menlo-Regular 13.0 | disabled⟩
+        Bash · Projects                  –         11    ⟨1-48 Menlo-Regular 13.0 | disabled⟩
+        Bash · find-truth                –         12    ⟨1-48 Menlo-Regular 13.0 | disabled⟩
+      Edit wait s          0.7         13   -94%    ⟨1-38 Menlo-Regular 13.0; 39-42 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+      Read wait s          0.2        0.2    +2%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      chat start s         7.5         11   -29%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      turn end s           0.8        0.8    +6%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      hook wait ms         458      1 769   -74%    ⟨1-38 Menlo-Regular 13.0; 39-42 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00)⟩
+        hook wait ms    24 h  prev 24 h     Δ    ⟨1-38 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        Bash · trivial   401      1 929  -79%    ⟨1-34 Menlo-Regular 13.0; 35-38 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        Bash · other     547      2 241  -76%    ⟨1-34 Menlo-Regular 13.0; 35-38 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        Edit, Write      480      2 152  -78%    ⟨1-33 Menlo-Regular 13.0; 34-37 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        Read              77        178  -57%    ⟨1-33 Menlo-Regular 13.0; 34-37 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        other tools       75      1 750  -96%    ⟨1-37 Menlo-Regular 13.0 | disabled⟩
+        message           55         62  -12%    ⟨1-33 Menlo-Regular 13.0; 34-37 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        turn end         449          –    ⟨1-33 Menlo-Regular 13.0 | disabled⟩
+        subagent end      17         18   -1%    ⟨1-37 Menlo-Regular 13.0 | disabled⟩
+        chat start       763      8 750  -91%    ⟨1-37 Menlo-Regular 13.0 | disabled⟩
+        compaction        27         62  -56%    ⟨1-37 Menlo-Regular 13.0 | disabled⟩
+        chat end          71        107  -33%    ⟨1-37 Menlo-Regular 13.0 | disabled⟩
+      slow h/day           1.9         20   -90%    ⟨1-38 Menlo-Regular 13.0; 39-42 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+      hooks h/day           18        3.0  +490%    ⟨1-37 Menlo-Regular 13.0; 38-42 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+        hook median ms                  24 h  prev 24 h     Δ    ⟨1-54 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        statusline (not a hook)          272          –    ⟨1-49 Menlo-Regular 13.0 | disabled⟩
+        review-flow-gate verdict         136          –    ⟨1-49 Menlo-Regular 13.0 | disabled⟩
+        commit-journal                   348      2 551  -86%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        instruction-watch check          304      1 935  -84%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        review-flow-gate                 439      1 707  -74%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        session-trash __purge-delay…  12 736     10 554  +21%    ⟨1-55 Menlo-Regular 13.0 | disabled⟩
+        worker-launch-gate               180        434  -59%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        statusline-workdir-hook           52         71  -27%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        report-flush                      63         98  -36%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        context-nudge                     82        152  -46%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        review-flow-gate autonomous       37         58  -37%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        english-gate                      78        122  -36%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        commit-report                    107        350  -69%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        instruction-write-gate            68        134  -49%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        instruction-watch baseline       728      9 375  -92%    ⟨1-53 Menlo-Regular 13.0 | disabled⟩
+        worker-edit-guard                 77        144  -46%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        edit-conflict-notice             287        855  -66%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        worker-git-guard                  68        115  -41%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        review-owner-gate bash            69        116  -41%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        eod-sorted-gate                   67        102  -35%    ⟨1-49 Menlo-Regular 13.0; 50-53 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+      CPU busy %            72         85   -16%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      kernel %              30         42   -27%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      new proc/s         1 030      1 344   -23%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      unaccounted cores    4.8        5.7   -16%    ⟨1-42 Menlo-Regular 13.0 | disabled⟩
+      tests h/day           12         11    +2%    ⟨1-42 Menlo-Regular 13.0⟩
+        test median min                     24 h  prev 24 h     Δ    ⟨1-58 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        suites · llm-legs                     10         38  -74%    ⟨1-54 Menlo-Regular 13.0; 55-58 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        test_worker_run · llm-legs           5.6        4.3  +30%    ⟨1-54 Menlo-Regular 13.0; 55-58 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+        test_instruction_gate · llm-legs     3.5        6.5  -45%    ⟨1-54 Menlo-Regular 13.0; 55-58 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        test_statusline_hooks · llm-legs     2.8        3.5  -21%    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        suites · claude-setup                7.1        9.9  -28%    ⟨1-54 Menlo-Regular 13.0; 55-58 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        test_statusline_hooks · perf-stat…   5.2        3.8  +38%    ⟨1-60 Menlo-Regular 13.0 | disabled⟩
+        suites · review-bench                9.8         10   -3%    ⟨1-58 Menlo-Regular 13.0 | disabled⟩
+        test_worker_run · headcopy           8.1          –    ⟨1-54 Menlo-Regular 13.0 | disabled⟩
+        test_llm_limits · llm-legs           2.5        4.9  -49%    ⟨1-54 Menlo-Regular 13.0; 55-58 Menlo-Regular 13.0 rgb(0.13,0.55,0.25,a1.00) | disabled⟩
+        suites · perf-worker-run              13          –    ⟨1-54 Menlo-Regular 13.0 | disabled⟩
+    logo-bench-throttle holds 3 jobs, longest 13 min: 1 of 8 slots open, all busy, pressure level 2, 43% free    ⟨1-105 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+    changes, 7 d: 517    ⟨1-17 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      at           change  what                                         short Bash s   new proc/s    ⟨1-91 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      09-30 00:59  edited  hammerspoon/ipad_overlay_app/overlay_app.py         0.3→–      1 971→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:58  edited  hammerspoon/notify.log                              0.3→–      1 971→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:58  edited  hammerspoon/automation_menu.lua                     0.3→–      1 971→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:58  edited  llm-legs/hammerspoon/token-tracking.lua             0.3→–      1 971→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:58  edited  llm-legs/hammerspoon/doctors.lua                    0.3→–      1 971→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:56  edited  llm-legs/hammerspoon/instruction-watch.lua          0.3→–      1 971→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:55  edited  llm-legs/hammerspoon/llm-limits.lua                 0.3→–      1 866→–    ⟨1-99 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:54  edited  hammerspoon/automation_menu.lua                     0.3→–    2 015→374    ⟨1-97 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:53  edited  hammerspoon/claude_compact.log                      0.3→–    2 015→374    ⟨1-97 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:47  edited  llm-legs/bin/updater-doctor                       0.3→0.3    1 928→789    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:46  edited  hammerspoon/claude_compact.log                    0.3→0.3    1 928→789    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:44  edited  hammerspoon/ipad_overlay_app/overlay_app.py       0.3→0.3  1 687→1 428    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:41  edited  llm-legs/bin/vendor-fingerprint                   0.3→0.3  1 687→1 428    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:39  edited  hammerspoon/notify.log                            0.3→0.3  1 559→1 428    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:39  edited  llm-legs/hammerspoon/llm-limits.lua               0.3→0.3  1 559→1 428    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:39  edited  llm-legs/hammerspoon/llm-limits.lua               0.3→0.4  1 592→1 378    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:38  edited  llm-legs/share/limiter_hold.py                    0.3→0.4  1 592→1 378    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:38  edited  llm-legs/share/limiter-hold.sh                    0.3→0.4  1 592→1 378    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:38  edited  llm-legs/bin/harness-doctor                       0.3→0.4  1 592→1 378    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+      09-30 00:36  edited  hammerspoon/notify.log                            0.3→0.4  1 592→1 378    ⟨1-95 Menlo-Regular 13.0 | disabled⟩
+    not measured: 8 blind spots    ⟨1-27 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      blind spot    ⟨1-10 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      hook time of inline: b=$(git branch --show-current  on SessionStart outside the hook journal, known only when it printed    ⟨1-120 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      interpreter start before a hook's first line    ⟨1-44 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      MCP server start-up, worker spawn and relay latency    ⟨1-51 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      worker-run supervise loops, worker-pick, review-cell preparation    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      launchd jobs; Hammerspoon's own tasks other than the menu builds    ⟨1-64 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      calls from sessions outside bypassPermissions (who h)    ⟨1-53 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      hook output that reached a spool file instead of its reader    ⟨1-59 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      the 13-15 % of tool batches the time join cannot tie to a call    ⟨1-62 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    collector: 5.8 s a run, limit 30 s    ⟨1-34 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    ────
+    as of 01:00    ⟨1-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    window: 24 h    ⟨1-12 Menlo-Regular 13.0⟩
+      3 h    ⟨plain | clickable⟩
+      6 h    ⟨plain | clickable⟩
+      12 h    ⟨plain | clickable⟩
+      24 h    ⟨plain | checked,clickable⟩
+      3 d    ⟨plain | clickable⟩
+      7 d    ⟨plain | clickable⟩
+    Refresh    ⟨1-7 Menlo-Regular 13.0 | clickable⟩
+  Updater doctor: 3 problems    ⟨1-26 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00)⟩
+    Fix — update and integrate all vendors    ⟨1-40 Menlo-Regular 13.0 | clickable⟩
+    fixer: never ran    ⟨1-16 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    ────
+    codex 0.156.1 → 0.159.0: new gpt-6.1-sol · catalog, divergence, docs, features, ids · waiting 4d    ⟨1-100 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+    gemini 1.2.10 → 1.2.13: help: agy --help · waiting 4d    ⟨1-56 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+    claude 2.1.282 → 2.1.284: new claude-0, claude-sonnet-5-5 · help: claude --help, ids · waiting 3d    ⟨1-101 Menlo-Regular 13.0 rgb(0.90,0.25,0.20,a1.00) | disabled⟩
+    codex: 3 other installs at another version: /Applications/ChatGPT.app/Contents/Resources/codex 0.155.0, /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex 0.158.…    ⟨1-202 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    codex 0.159.0 · checked 8 h ago    ⟨1-32 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      gpt-6.1-sol    ⟨1-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-6-astra    ⟨1-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-6-sol    ⟨1-9 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-6-luna    ⟨1-10 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-5.6-sol    ⟨1-11 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-5.6-terra    ⟨1-13 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-5.6-luna    ⟨1-12 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gpt-5.5    ⟨1-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      codex-20260925T203308Z · open · 0.156.1 → 0.159.0 · 4 d ago    ⟨1-64 Menlo-Regular 13.0⟩
+        catalog    ⟨1-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        divergence    ⟨1-10 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        docs    ⟨1-4 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        features    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+        ids    ⟨1-3 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      codex-20260924T220335Z · closed · 0.156.1 → 0.156.1 · 4 d ago    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      codex-20260924T064915Z · closed · 0.156.1 → 0.156.1 · 5 d ago    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        catalog    ⟨1-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      codex-20260924T071822Z · closed · 0.156.1 → 0.156.1 · 5 d ago    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        catalog    ⟨1-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      codex-20260923T162030Z · closed · 0.156.1 → 0.156.1 · 6 d ago    ⟨1-66 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        probe_failures    ⟨1-14 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    grok 1.0.44 · checked 8 h ago    ⟨1-30 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      grok-4.7    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      grok-4.7-build-fast    ⟨1-19 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      grok-4.6    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      grok-4.5    ⟨1-8 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      grok-20260929T134217Z · auto-closed · 1.0.41 → 1.0.44 · 8 h ago    ⟨1-68 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        version    ⟨1-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      grok-20260924T220335Z · closed · 1.0.41 → 1.0.41 · 4 d ago    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      grok-20260923T165302Z · closed · 1.0.41 → 1.0.41 · 6 d ago    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+        catalog    ⟨1-7 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      grok-20260923T131713Z · closed · 1.0.41 → 1.0.41 · 6 d ago    ⟨1-63 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+    gemini 1.2.13 · checked 8 h ago    ⟨1-32 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26)⟩
+      gemini-3.8-flash-high    ⟨1-21 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.8-flash-medium    ⟨1-23 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.8-flash-low    ⟨1-20 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.7-flash-high    ⟨1-21 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.7-flash-medium    ⟨1-23 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.7-flash-low    ⟨1-20 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.6-flash-high    ⟨1-21 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.6-flash-medium    ⟨1-23 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.6-flash-low    ⟨1-20 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.1-pro-high    ⟨1-19 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      gemini-3.1-pro-low    ⟨1-18 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      claude-sonnet-4-6    ⟨1-17 Menlo-Regular 13.0 rgb(0.00,0.00,0.00,a0.26) | disabled⟩
+      ────
+      gemini-20260925T203348Z · open · 1.2.10 → 1.2.13 · 4 d ago    ⟨1-63 Menlo-Regular 1

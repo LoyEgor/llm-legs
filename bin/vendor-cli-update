@@ -219,13 +219,24 @@ run_all() {
   # Appended, not prepended: the native claude in ~/.local/bin must stay the one found first.
   PATH="$PATH$bin_dirs" timeout_command 900 "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" check \
     >>"$log_file" 2>&1 || printf '%s fingerprint check failed\n' "$(stamp)" >>"$log_file"
+  run_doctor
+}
+
+run_doctor() {
+  "${VENDOR_CLI_UPDATE_DOCTOR:-$repo_root/bin/updater-doctor}" --quiet >/dev/null 2>&1 ||
+    printf '%s updater doctor failed\n' "$(stamp)" >>"$log_file"
+  return 0
 }
 
 # Egor's «сделай апдейт» (word family `update`): this pass, then every vendor's integration in one chat at once. It
 # returns at once, since the pass takes minutes and the chat that asked must not wait on it.
+# `--night` (night-run prep) blocks until the pass ends and opens no chat: `vendor-fingerprint request --night`
+# takes the waiting events next, and a chat would have claimed them first.
 update_now() {
+  local night=false
+  [ "${1:-}" = --night ] && night=true
   mkdir -p "$state_dir"
-  if [ -z "${VENDOR_CLI_UPDATE_DETACHED:-}" ]; then
+  if ! $night && [ -z "${VENDOR_CLI_UPDATE_DETACHED:-}" ]; then
     VENDOR_CLI_UPDATE_DETACHED=1 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$script_path" now \
       </dev/null >>"$state_dir/launchd.log" 2>&1 &
     printf 'vendor update started: CLIs, model lists and fingerprints first, then one integration chat for every vendor opens in Terminal; progress in %s\n' "$log_file"
@@ -240,11 +251,17 @@ update_now() {
     printf '%s manual update: another run held the lock for 900s; no pass, no integration chat\n' "$(stamp)" >>"$log_file"
     return 1
   fi
+  if $night; then
+    printf '%s night update: pass done, no integration chat\n' "$(stamp)" >>"$log_file"
+    run_doctor
+    return 0
+  fi
   for vendor in $vendors; do
     bin_dir=$(node_bin_dir "$vendor") && bin_dirs+=":$bin_dir"
   done
   PATH="$PATH$bin_dirs" "${VENDOR_CLI_UPDATE_FINGERPRINT:-$repo_root/bin/vendor-fingerprint}" request --all \
     "Egor's manual update" >/dev/null
+  run_doctor
 }
 
 wrapper_exec_line() {
@@ -319,11 +336,11 @@ show_status() {
   return 0
 }
 
-usage() { printf 'usage: vendor-cli-update [run|now|install|uninstall|status]\n' >&2; exit 2; }
+usage() { printf 'usage: vendor-cli-update [run|now [--night]|install|uninstall|status]\n' >&2; exit 2; }
 
 case "${1:-run}" in
   run) run_all ;;
-  now) update_now ;;
+  now) update_now "${@:2}" ;;
   install) install_agent ;;
   uninstall) uninstall_agent ;;
   status) show_status ;;

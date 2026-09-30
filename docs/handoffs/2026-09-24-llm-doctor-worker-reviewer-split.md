@@ -1,5 +1,7 @@
 # Hand-off: LLM doctor splits WORKER problems from REVIEWER problems and keeps a problem ledger
 
+Status: done 2026-09-29 — the four blocks (reviewers, workers, light, image) and `share/doctor-ledger.json` shipped; the ledger's shape is now `docs/doctors-contract.md` §2 and shared-invariants row `cw`.
+
 For the chat that owns LLM doctor: the menubar row `LLM doctor: N issues`, `bin/llm-weather`, and
 review-bench's doctor snapshot (row `av`). This comes from the reviewer failure triage done in the chat
 "Review-bench improvements phase 4" on 2026-09-23/24. Its findings are the seed ledger below.

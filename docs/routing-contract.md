@@ -25,7 +25,9 @@ An account is measured on its **weekly** bucket and the reset that bucket carrie
 that reports no weekly percentage at all is measured on its five-hour reading over the
 neutral window instead — its five-hour reset says nothing about a week. A `--fable` query
 reads the same formula against the fable bucket and the fable reset, and so does every
-`--role chat` answer on Claude, because a chat runs Fable and spends that bucket. An account whose budget
+`--role chat` answer on Claude whose chat runs Fable: a chat spends the bucket of its model (`--model`, else the
+default model in the shared settings.json; `chat_model_bucket` in `share/chat-account.sh`), and every model
+but Fable spends the general weekly one. An account whose budget
 is `null` — no numeric percentage in either bucket — is not a candidate.
 
 Two accounts at the same percentage are not equal: the one whose week resets sooner may
@@ -231,7 +233,9 @@ denied with the ask to use a relay worker instead — read-only research goes to
 by name. With Light off (`light_paused=on`) the refusal texts drop both Light types, and the menu
 switch writes the deny rules `Agent(light-research)` and `Agent(light-worker)` into
 `~/.claude/settings.json` (`worker_light_agents_sync`, share/worker-model.sh), from which the
-harness removes a denied type from every chat's agent list; switching Light on removes them. A Light
+harness removes a denied type from every chat's agent list; switching Light on removes them. The same file denies `Agent(Explore)`, `Agent(general-purpose)`, `Agent(Plan)` and
+`Agent(claude-code-guide)` for good — types this hook refuses anyway — so no chat is offered them;
+Workflow `agent()` runs its own default type and is unaffected (probed 2026-09-29). A Light
 run still in flight is then attached through its vendor's plain relay. The refusal carries no retry and does not depend on the session model: a stamped
 one-shot deny is a rule a model walks through by calling twice. `bin/worker-limit-gate.sh` judges
 no native type, since a deny there would outrank the spawn hook's allow; it keeps only `image-gen`'s
@@ -431,6 +435,12 @@ routing-math paragraph the rules above replace.
   of the pool), each vendor's rows in exactly the order its section of the table prints them,
   then one `NEXT\t<vendor>\t<account or ->` line per vendor naming what `--account <vendor>`
   answers for that role. `bin/chats` orders its account bar by it and ranks nothing itself.
+- `worker-pick --menu` is the table for the menubar's Routing submenu. It routes exactly like
+  the plain table. The difference is the vendor sections: every vendor gets a header line of
+  its own naming its switch state (`on`, `workers off · reviewers off`, `workers off`,
+  `reviewers off`, `paused` for a parked vendor the plain table omits), and under that header
+  every account keeps its row. Chats never pass the flag, because those rows would cost every
+  chat context while routing nothing.
 - Advisory warnings (≥85%) live in hooks and never block below a wall.
 - Data hygiene is unchanged: `effective_pct` / stale / expired semantics per
   `docs/shared-invariants.md` row y; a bucket past its reset reads as 0%.

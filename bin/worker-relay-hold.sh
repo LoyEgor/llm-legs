@@ -70,6 +70,6 @@ case "$agent_type" in
   light-research) wait_call="light-research --attach $live --out <the same OUT>" ;;
   *) wait_call="worker-run wait $live --max 540" ;;
 esac
-jq -cn --arg run "$live" --arg call "$wait_call" '{decision: "block",
-  reason: ("Run \($run) is still running, and your task row is the only place Egor sees this worker. Do not return: run `\($call)` (Bash timeout 600000) again, repeated until the run is over, then report.")}'
+jq -cn --arg hook "${0##*/}" --arg run "$live" --arg call "$wait_call" '{decision: "block",
+  reason: ("[" + $hook + "] " + "Run \($run) is still running, and your task row is the only place Egor sees this worker. Do not return: run `\($call)` (Bash timeout 600000) again, repeated until the run is over, then report.")}'
 exit 0

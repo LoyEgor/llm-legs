@@ -49,7 +49,7 @@ if [ "${1:-}" = "-axo" ] && [ "${2:-}" = "tty=,command=" ]; then
   exit 0
 fi
 if [ "${1:-}" = "-o" ] && [ "${2:-}" = "tty=" ]; then
-  echo "${FAKE_TTY:-??}"
+  if [ -f "$PS_FIXTURE.pid.${4:-}" ]; then cat "$PS_FIXTURE.pid.$4"; else echo "${FAKE_TTY:-??}"; fi
   exit 0
 fi
 exec /bin/ps "$@"
@@ -298,6 +298,63 @@ status=$?
 [ "$status" -eq 2 ] || fail "a multi-line message should exit 2 (got $status): $out"
 echo "$out" | grep -q "single line" || fail "a multi-line message should say why: $out"
 grep -q HS "$CALLS" && fail "a rejected message must not reach hs: $(cat "$CALLS")"
+
+# --- --to: another live chat by name or session id; --now: fires at once, no limits read ---
+
+mkdir -p "$FIXTURE_HOME/.claude/sessions" "$FIXTURE_HOME/.claude-profiles/acct/sessions"
+printf '{"pid":501,"sessionId":"sid-peer","name":"peer"}' >"$FIXTURE_HOME/.claude-profiles/acct/sessions/501.json"
+cp "$FIXTURE_HOME/.claude-profiles/acct/sessions/501.json" "$FIXTURE_HOME/.claude/sessions/501.json"
+printf '{"pid":502,"sessionId":"sid-shell","name":"shell"}' >"$FIXTURE_HOME/.claude-profiles/acct/sessions/502.json"
+echo ttys007 >"$PS_FIXTURE.pid.501"
+echo ttys008 >"$PS_FIXTURE.pid.502"
+printf '%s\n' 'ttys009 /Users/e/.local/bin/claude --resume' 'ttys007 /Users/e/.local/bin/claude' 'ttys008 -zsh' >"$PS_FIXTURE"
+
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to peer --now -m 'next pass') \
+  || fail "--to --now run failed"
+grep -qxF 'HS -q -c ClaudeContinue.startTimerFor("terminal", 0, "next pass", "/dev/ttys007")' "$CALLS" \
+  || fail "--to --now should arm the named chat's tty for +0: $(cat "$CALLS")"
+grep -q LLM_LIMITS "$CALLS" && fail "--now reads no limits: $(cat "$CALLS")"
+echo "$out" | grep -q '^claude-resume-timer: .*armed ' || fail "--now should print the armed line: $out"
+
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to sid-peer --now >/dev/null || fail "--to by session id failed"
+grep -qF '"/dev/ttys007")' "$CALLS" || fail "--to should take a session id too: $(cat "$CALLS")"
+
+for bad in nobody shell; do
+  out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to "$bad" --now 2>&1)
+  [ $? -ne 0 ] || fail "--to $bad should refuse"
+  grep -q HS "$CALLS" && fail "--to $bad must not reach hs: $(cat "$CALLS")"
+done
+echo "$out" | grep -q 'where no Claude chat runs' || fail "--to a shell tty should say why: $out"
+
+# The name is the resolver's: a derived placeholder in the registry names no chat, and a title the
+# transcript carries does.
+printf '{"pid":504,"sessionId":"sid-derived","name":"llm-legs-7","nameSource":"derived"}' \
+  >"$FIXTURE_HOME/.claude/sessions/504.json"
+echo ttys009 >"$PS_FIXTURE.pid.504"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to llm-legs-7 --now 2>&1)
+[ $? -ne 0 ] || fail "--to a derived placeholder name should refuse"
+echo "$out" | grep -q 'no live chat is named' || fail "a derived placeholder should name no chat: $out"
+mkdir -p "$FIXTURE_HOME/.claude/projects/p"
+printf '{"type":"custom-title","customTitle":"Renamed chat","sessionId":"sid-derived"}\n' \
+  >"$FIXTURE_HOME/.claude/projects/p/sid-derived.jsonl"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to 'Renamed chat' --now >/dev/null \
+  || fail "--to a transcript title failed"
+grep -qF '"/dev/ttys009")' "$CALLS" || fail "--to should find a chat by its transcript title: $(cat "$CALLS")"
+rm -f "$FIXTURE_HOME/.claude/sessions/504.json" "$PS_FIXTURE.pid.504"
+
+printf '{"pid":503,"sessionId":"sid-peer2","name":"peer"}' >"$FIXTURE_HOME/.claude/sessions/503.json"
+echo ttys009 >"$PS_FIXTURE.pid.503"
+out=$(run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to peer --now 2>&1)
+[ $? -ne 0 ] || fail "two live chats named alike should refuse"
+echo "$out" | grep -q 'several live chats' || fail "an ambiguous --to should say so: $out"
+
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" all --to peer >/dev/null 2>&1
+[ $? -eq 2 ] || fail "all with --to should exit 2"
+run_timer env CLAUDE_LIMITS_ACCOUNT=notcom "$SCRIPT" terminal --to >/dev/null 2>&1
+[ $? -eq 2 ] || fail "--to without a chat should exit 2"
+
+rm -rf "$FIXTURE_HOME/.claude" "$FIXTURE_HOME/.claude-profiles" "$PS_FIXTURE".pid.*
+echo 'ttys009 /Users/e/.local/bin/claude --resume' >"$PS_FIXTURE"
 
 # --- hs unreachable ---
 

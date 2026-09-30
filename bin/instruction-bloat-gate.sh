@@ -44,8 +44,8 @@ deny() { # tag reason
   instruction_inflight_clear "$sid"
   gate_journal bloat denied "$sid" "$file_path" "${delta:-}" "$1"
   [ -n "$ceiling_note" ] && reason="$reason $ceiling_note"
-  jq -cn --arg r "$reason" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null ||
+  jq -cn --arg hook "${0##*/}" --arg r "$reason" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null ||
     { printf '%s\n' "$reason" >&2; exit 2; }
   exit 0
 }
@@ -131,7 +131,6 @@ live=''
 rate_state=''
 weekly_reads=''
 monthly_reads=''
-cheap_floor=''
 global=''
 if is_global "$file_path"; then
   global=1
@@ -172,25 +171,11 @@ fi
 # This hook runs before every Edit and every Write in every session, so what it does for a file it
 # will never price has to be nothing. Only markdown is ever measured (the export indexes no other
 # extension) and only markdown carries a class rate, so a source file with neither leaves here
-# rather than paying for a Cyrillic scan and a lookup over the whole rate index.
+# rather than paying for a lookup over the whole rate index.
 case "$file_path" in
   *.[Mm][Dd]|*.[Mm][Aa][Rr][Kk][Dd][Oo][Ww][Nn]) ;;
   *) [ -n "$class_reads" ] || [ -n "$global" ] || exit 0 ;;
 esac
-
-# Every guarded instruction file is English-only. Russian survives only inside «...», which is how a
-# verbatim user phrase — a trigger word Egor actually types — is marked, and the only reason one of
-# these files would carry Cyrillic at all.
-cyrillic=$(jq -r '
-  (if .tool_name == "Edit" then .tool_input.new_string
-   elif .tool_name == "MultiEdit" then ([.tool_input.edits[]?.new_string | strings] | join("\n"))
-   else .tool_input.content end)
-  | if type == "string" then gsub("«[^»]*»"; "") else "" end
-  | if test("[А-Яа-яЁё]") then "yes" else "no" end
-' "$input_file" 2>/dev/null) || cyrillic=''
-if [ -n "$class_reads" ] && [ "$cyrillic" = "yes" ]; then
-  deny cyrillic "${file_path} is English-only. Russian is allowed only inside «...»-quoted verbatim user phrases."
-fi
 
 payload_fault() { gate_journal bloat fault "$sid" "$file_path" '' 'edit payload unreadable'; exit 0; }
 
@@ -259,6 +244,16 @@ fi
 # lookup over the whole rate index to be told what its size already settled.
 [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null || pass
 
+# An unpinned memory entry reaches a session only when its topic is recalled, so the base threshold
+# denied nearly every new one for a cost it never has; a pinned entry rides every session and stays
+# gated, judged on the file as it stands and on everything this edit writes.
+if instruction_index_blind "$file_path"; then
+  pinned=$( { cat "$file_path" "$tmp_dir/new" 2>/dev/null
+    jq -r '(.tool_input.edits // [.tool_input])[]?.new_string? // empty' "$input_file" 2>/dev/null
+  } | grep -ciE "(^|[{,[:space:]])[\"']?pinned[\"']?:[[:space:]]*[\"']?(true|yes|on)([^A-Za-z]|\$)")
+  [ "${pinned:-0}" -gt 0 ] 2>/dev/null || pass passed memory-unpinned
+fi
+
 # The global identity is settled before its spelling, so a repository path behind the symlink
 # cannot take a project rate. Current path entries carry both windows; old exports retain their
 # original monthly always-on lookup until the producer's next run.
@@ -268,7 +263,7 @@ else
   rate_info=$(instruction_live_rates "$file_path" "$HOME")
 fi
 if [ -n "$rate_info" ]; then
-  IFS='|' read -r rate_state weekly_reads monthly_reads cheap_floor <<< "$rate_info"
+  IFS='|' read -r rate_state weekly_reads monthly_reads _ <<< "$rate_info"
 fi
 # What loads a memory file leaves no path behind, so whatever the index holds for one is the odd
 # hand-opened copy and nothing else. Preferring it — as every other class rightly does, a
@@ -289,9 +284,6 @@ fi
 display_rate() {
   instruction_display_rate "$1"
 }
-display_floor() {
-  jq -nr --argjson n "$1" '$n | if . < 10 then ((. * 100 | round) / 100) else round end' 2>/dev/null
-}
 fallback_rate() {
   jq -nr --argjson n "$1" '$n | if . < 1 then 1 else round end' 2>/dev/null
 }
@@ -311,21 +303,7 @@ case "$rate_state" in
 esac
 [ -n "$reads" ] || [ "$rate_state" = cheap ] || pass passed unpriced
 
-if [ "$rate_state" = cheap ]; then
-  if [ "$delta" -gt "$THRESHOLD_BYTES" ] 2>/dev/null; then
-    cheap_display=$(display_floor "$cheap_floor") || pass fault 'cheap floor unreadable'
-    sid=$(jq -r '.session_id // ""' "$input_file" 2>/dev/null) || sid=''
-    notice_hash=$(printf '%s\n%s\n' "$sid" "$file_path" | shasum -a 256 | cut -c1-16)
-    if instruction_mark_once "$STAMP_DIR/notices" "$notice_hash"; then
-      case "$cheap_display" in
-        1) unit="limit unit" ;;
-        *) unit="limit units" ;;
-      esac
-      ceiling_note="${file_path} is below ~${cheap_display} ${unit}/month; not gated."
-    fi
-  fi
-  pass passed cheap
-fi
+[ "$rate_state" != cheap ] || pass passed cheap
 
 threshold=$THRESHOLD_BYTES
 # A weekly rate of zero under a positive monthly one cannot happen while the export rescales one

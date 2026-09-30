@@ -3073,16 +3073,38 @@ printf '{}' > "$WORK/limits.json"
 # --- statusline-freshness-gate.sh ---
 FRESH_GATE="$ROOT/bin/statusline-freshness-gate.sh"
 fg_payload() {
-  jq -cn --arg event "$1" --arg tool "$2" --arg file "$3" \
-    '{hook_event_name:$event,tool_name:$tool,
+  jq -cn --arg event "$1" --arg tool "$2" --arg file "$3" --arg sid "${4-}" \
+    '{hook_event_name:$event,tool_name:$tool,session_id:$sid,
       tool_input:(if $tool=="NotebookEdit" then {notebook_path:$file} else {file_path:$file} end)}'
 }
 fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline.sh" | "$FRESH_GATE")
 assert grep -Fq 'freshness contract' <<< "$fg_out"
 fg_out=$(fg_payload PostToolUse Write "$ROOT/bin/statusline-ports-probe.sh" | "$FRESH_GATE")
 assert grep -Fq 'statusline-contract.md' <<< "$fg_out"
-fg_out=$(fg_payload PostToolUse NotebookEdit "/x/statusline-ports-probe.sh" | "$FRESH_GATE")
+fg_out=$(fg_payload PostToolUse NotebookEdit "$ROOT/bin/statusline-ports-probe.sh" | "$FRESH_GATE")
 assert grep -Fq 'freshness contract' <<< "$fg_out"
+# Once per session: the ~430-token checklist rode on every statusline edit of a long session.
+fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline.sh" fg-once | "$FRESH_GATE")
+assert grep -Fq 'freshness contract' <<< "$fg_out"
+fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline-ports-probe.sh" fg-once | "$FRESH_GATE")
+assert_eq "" "$fg_out"
+fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline.sh" fg-other | "$FRESH_GATE")
+assert grep -Fq 'freshness contract' <<< "$fg_out"
+fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline.sh" fg-once |
+  jq -c '. + {agent_id:"sub1"}' | "$FRESH_GATE")
+assert grep -Fq 'freshness contract' <<< "$fg_out"
+fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/statusline.sh" '../fg-escape' | "$FRESH_GATE")
+assert grep -Fq 'freshness contract' <<< "$fg_out"
+assert [ ! -e "$HOME/.cache/fg-escape" ]
+# The contract itself and another project's statusline file are not this repository's segments.
+fg_out=$(fg_payload PostToolUse Edit "$ROOT/docs/statusline-contract.md" | "$FRESH_GATE")
+assert_eq "" "$fg_out"
+fg_out=$(fg_payload PostToolUse NotebookEdit "/x/statusline-ports-probe.sh" | "$FRESH_GATE")
+assert_eq "" "$fg_out"
+ln -s "$ROOT/bin/statusline.sh" "$WORK/statusline.sh"
+fg_out=$(fg_payload PostToolUse Edit "$WORK/statusline.sh" | "$FRESH_GATE")
+assert grep -Fq 'freshness contract' <<< "$fg_out"
+rm -f "$WORK/statusline.sh"
 fg_out=$(fg_payload PostToolUse Edit "$ROOT/bin/claudeb" | "$FRESH_GATE")
 assert_eq "" "$fg_out"
 fg_out=$(fg_payload PreToolUse Edit "$ROOT/bin/statusline.sh" | "$FRESH_GATE")
@@ -3705,8 +3727,8 @@ printf 'acc · astra · high\nrun=codex-7-7-done\n' > "$HOME/.cache/claude-worke
 WP_LOGS="$WORK/wp-logs"
 mkdir -p "$WP_LOGS"
 printf '0\t3\n' > "$WP_LOGS/test_a.sh.status"; printf '1\t2\n' > "$WP_LOGS/test_b.sh.status"
-printf '%s\t5\n' "$WP_LOGS" > "$STATE_DIR/suites-1101"
-printf '%s\t4\t%s\n' "$WP_LOGS" "$WORK/wp-other" > "$STATE_DIR/suites-1321"
+printf '%s\t5\t%s\t%s\n' "$WP_LOGS" "$WP_REPO" "$(date +%s)" > "$STATE_DIR/suites-1101"
+printf '%s\t4\t%s\t1000\n' "$WP_LOGS" "$WORK/wp-other" > "$STATE_DIR/suites-1321"
 WP_SNAP='wrap() { printf "%s %s %s /bin/zsh -c source /h/.claude/shell-snapshots/snapshot-zsh-1.sh 2>/dev/null || true && eval %s\n" "$@"; }'
 FAKE_PS_WORK="$FIXTURES/work-ps"
 cat > "$FAKE_PS_WORK" <<PSEOF
@@ -3808,15 +3830,20 @@ assert_eq "$(printf '%s\n' \
   $'main\tshell\twp-plain\tcurl\t\t\t' \
   $'main\tshell\t⧉ wt-one\tgit push\t\t\t' \
   $'main\tshell\twp-plain\thook instruction-watch\t\t\t' \
-  $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4- "$STATE_DIR/work-wp-sess")"
+  $'run\tcodex-7-7-live\tpnpm test')" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")"
 wp_start=$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_start" -ge "$((wp_now - 301))" -a "$wp_start" -le "$((wp_now - 297))"
 wp_run_start=$(awk -F'\t' '$1 == "run" { print $3 }' "$STATE_DIR/work-wp-sess")
 assert test "$wp_run_start" -ge "$((wp_now - 91))" -a "$wp_run_start" -le "$((wp_now - 87))"
-wp_cols=$(cut -f1,2,4- "$STATE_DIR/work-wp-sess")
+# A pointer older than its process (1321) names no log directory the journal may judge by.
+assert_eq "$WP_LOGS" "$(awk -F'\t' '$1 == "main" && $9 != "" { printf "%s%s", s, $9; s = " " }' "$STATE_DIR/work-wp-sess")"
+wp_real=$(cd "$WP_REPO" && pwd -P)
+assert_eq "$wp_real $wp_real" \
+  "$(awk -F'\t' '$4 == "wp repo" && $5 == "suites" || $4 == "⧉ wt-one" { printf "%s%s", s, $10; s = " " }' "$STATE_DIR/work-wp-sess")"
+wp_cols=$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess")
 rm -f "$STATE_DIR/work-wp-sess"
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WP_RUNS" /bin/bash "$WORK_PROBE" wp-sess 1250
-assert_eq "$wp_cols" "$(cut -f1,2,4- "$STATE_DIR/work-wp-sess" 2>/dev/null)"
+assert_eq "$wp_cols" "$(cut -f1,2,4-8 "$STATE_DIR/work-wp-sess" 2>/dev/null)"
 # No chat above the start pid, or no process list: nothing is claimed.
 STATUSLINE_PS="$FAKE_PS_WORK" STATUSLINE_LSOF="$FAKE_LSOF_WORK" WORKER_RUN_DIR="$WORK/none" "$WORK_PROBE" wp-noroot 3000
 assert_eq "" "$(cat "$STATE_DIR/work-wp-noroot")"
@@ -6329,7 +6356,9 @@ relay_brief_file relaybare $'# Task\nNo header lines at all.'
 relay_brief_file relaycomputer $'COMPUTER: yes\n\n# Task\nSend a message in the Telegram app.'
 jq -cn '{type:"user",message:{role:"user",content:[{type:"text",text:"ACCOUNT: work4\nMODEL: astra\n\nbody"}]}}' \
   >"${relay_parent%.jsonl}/subagents/agent-relayblocks.jsonl"
-launch_with() { printf 'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<'"'"'BRIEF_EOF'"'"'\nMODEL: gpt-5.6-sol\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /tmp %s\n' "$1"; }
+launch_with() { # flags [brief-text]
+  printf 'BRIEF=$(mktemp /tmp/codex-brief.XXXXXX) && cat >"$BRIEF" <<'"'"'BRIEF_EOF'"'"'\n%s\nBRIEF_EOF\nworker-run start codex --brief "$BRIEF" --workdir /tmp %s\n' "${2:-MODEL: gpt-5.6-sol}" "$1"
+}
 for relay_case in \
   "codex-worker relaysol --account notcom --model gpt-5.6-sol|MODEL: sol" \
   "codex-worker relaysol --account notcom|MODEL: sol" \
@@ -6362,6 +6391,36 @@ for relay_case in \
     fail "launch gate exited nonzero"
   assert_eq "" "$gate_out"
 done
+# A relay that saved its brief verbatim and forgot the flags passes: worker-run reads the same lines.
+# One whose written brief says something else is still held to the brief it was handed.
+gate_out=$(relay_payload codex-worker relaysol "$(launch_with "" $'ACCOUNT: notcom\nMODEL: sol\n\nbody')" | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(relay_payload codex-worker relaycomputer "$(launch_with "" $'COMPUTER: yes\n\nbody')" | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(relay_payload codex-worker relaysol "$(launch_with "" $'ACCOUNT: work4\nMODEL: sol\n\nbody')" | "$LAUNCH_GATE_BIN") ||
+  fail "launch gate exited nonzero"
+assert jq -e '.hookSpecificOutput.permissionDecision == "deny" and
+  (.hookSpecificOutput.permissionDecisionReason | contains("ACCOUNT: notcom"))' <<<"$gate_out" >/dev/null
+# Only the heredoc written to that start line's own --brief carries a line, and research starts adopt
+# nothing in worker-run, so the line elsewhere in the call carries nothing for them.
+for carried_elsewhere in \
+  $': <<\'N\'\nACCOUNT: notcom\nMODEL: sol\nN\nworker-run start codex --brief /tmp/other-brief --workdir /tmp' \
+  $'cat >/tmp/b1 <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief /tmp/b1 --workdir /tmp\nworker-run start codex --brief /tmp/b2 --workdir /tmp' \
+  $'cat >>/tmp/b1 <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief /tmp/b1 --workdir /tmp' \
+  $'echo "x\nACCOUNT: notcom\nMODEL: sol" >/dev/null; worker-run start codex --brief /tmp/nohdr --workdir /tmp' \
+  $'cat >"$BRIEF" <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief "$BRIEF" --workdir /tmp --role research --research-timeout 10m'; do
+  gate_out=$(relay_payload codex-worker relaysol "$carried_elsewhere" | "$LAUNCH_GATE_BIN") ||
+    fail "launch gate exited nonzero"
+  assert_eq deny "$(printf '%s' "$gate_out" | gate_decision)"
+done
+gate_out=$(relay_payload codex-worker relaysol $'cat <<\'E\' >/tmp/b1\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --brief=/tmp/b1 --workdir /tmp' |
+  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
+gate_out=$(relay_payload codex-worker relaysol $'cat >/tmp/research-b.md <<\'E\'\nACCOUNT: notcom\nMODEL: sol\nE\nworker-run start codex --role workers --brief /tmp/research-b.md --workdir /tmp' |
+  "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"
+assert_eq "" "$gate_out"
 # Every start line of the call is held to the brief, not the first alone.
 gate_out=$(relay_payload codex-worker relaysol "$(printf 'worker-run start codex --brief /tmp/b --workdir /tmp --account notcom --model sol\nworker-run start codex --brief /tmp/b --workdir /tmp --account work4 --model sol\n')" |
   "$LAUNCH_GATE_BIN") || fail "launch gate exited nonzero"

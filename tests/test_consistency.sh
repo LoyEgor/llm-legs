@@ -514,7 +514,6 @@ assert python3 - "$RB_PKG" "$DOCTOR_BIN" "$ROOT/share/doctor-ledger.json" <<'ORI
 import importlib.machinery
 import importlib.util
 import json
-import re
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]).parent))
@@ -528,32 +527,9 @@ assert [(word, pattern.pattern, pattern.flags) for word, pattern in doctor.FAILU
 assert doctor.FAILURE_ORIGIN == panel.FAILURE_ORIGIN, doctor.FAILURE_ORIGIN
 assert set(doctor.ORIGIN_ORDER) == set(panel.FAILURE_ORIGIN.values()) == {"ours", "theirs"}
 ledger = json.load(open(sys.argv[3]))
-assert set(ledger["owners"]) == set(doctor.BLOCKS), ledger["owners"]
-words = set(doctor.FAILURE_ORIGIN) | set(doctor.IMAGE_ORIGIN) | {
-    "escaped", "slow", "cap", "walled", "stalled", "verify failed", "land conflict"}
-ids = [row["id"] for row in ledger["rows"]]
-assert len(ids) == len(set(ids)), ids
-for row in ledger["rows"]:
-    assert row["block"] in doctor.BLOCKS + ("any",), row
-    assert row["status"] in doctor.LEDGER_STATUSES, row
-    if row["status"] == "fixed":
-        assert doctor.zoned_epoch(row["fixed_at"]) and row["fixed_in"], row
-    if "machinery" in row["match"]:
-        assert set(row["match"]) == {"machinery"} and row["block"] == "reviewers", row
-        continue
-    assert row["match"]["word"] in words, row
-    for key in ("model", "detail"):
-        if row["match"].get(key):
-            re.compile(row["match"][key])
-    assert set(row["match"]) <= {"word", "model", "detail", "until"}, row
-    if "until" in row["match"]:
-        assert doctor.zoned_epoch(row["match"]["until"]), row
-bug_words = {word for word, origin in doctor.FAILURE_ORIGIN.items() if origin == "ours"} | {"escaped"}
-covered = {row["match"]["word"] for row in ledger["rows"] if row["block"] == "any"
-           and "word" in row["match"] and not row["match"].get("model") and not row["match"].get("detail")}
+assert doctor.ledger_faults(ledger) == [], doctor.ledger_faults(ledger)
 machinery = [row["match"]["machinery"] for row in ledger["rows"] if "machinery" in row["match"]]
 assert len(machinery) == len(set(machinery)), machinery
-assert bug_words <= covered, sorted(bug_words - covered)
 ORIGINPY
 assert doc_has '`FAILURE_REASONS`, `FAILURE_ORIGIN`'
 assert doc_has 'LLM doctor problem ledger'
@@ -1173,12 +1149,22 @@ assert grep -Fq 'Light on Claude' <<<"$light_gate_out"
 assert grep -qx -- '--account claudeb --role light' "$LIGHT_GATE_WORK/picks"
 # The Light leg is placed by the `light_edit` row and never by `worker=`, so a toggle naming
 # another vendor is no advice about where this spawn lands and reaches none of its notes.
-jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:10}}]}}}' \
+jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:90}}]}}}' \
   >"$LIGHT_GATE_WORK/limits.json"
 printf 'worker=codex\nlight_edit=claudeb:sonnet\nclaudeb_workers=off\n' >"$LIGHT_GATE_WORK/worker-model"
 light_toggle_out=$(light_gate light-worker)
-assert grep -Fq 'Light on Claude accounts: alpha 10%' <<<"$light_toggle_out"
+assert grep -Fq 'Light on Claude account alpha is at 90%' <<<"$light_toggle_out"
 assert test "$(grep -c 'The worker toggle says' <<<"$light_toggle_out")" = 0
+# A spawn on worker-pick's own pick carries nothing back: the orchestrator ran worker-pick for it.
+jq -n '{schema:1, vendors:{claude:{accounts:[{account:"alpha", five_hour:{used_pct:10}},
+  {account:"beta", five_hour:{used_pct:20}}]}}}' >"$LIGHT_GATE_WORK/limits.json"
+assert test -z "$(light_gate light-worker $'ACCOUNT: alpha\nx')"
+assert test -z "$(light_gate light-worker)"
+light_mismatch_out=$(light_gate light-worker $'ACCOUNT: beta\nx')
+assert test "$(jq -r '.hookSpecificOutput.additionalContext' <<<"$light_mismatch_out")" = 'ACCOUNT beta ≠ worker-pick alpha (allowed).'
+# A re-attach to a live run launches nothing and says nothing, even under a disagreeing toggle.
+mkdir -p "$LIGHT_GATE_WORK/runs/claudeb-1-attach"
+assert test -z "$(WORKER_RUN_DIR="$LIGHT_GATE_WORK/runs" light_gate claudeb-worker $'ATTACH claudeb-1-attach: keep waiting')"
 # A vendor relay under the same toggle still hears it.
 assert grep -Fq 'The worker toggle says worker=codex' <<<"$(light_gate claudeb-worker)"
 # A Computer Use brief routes codex under `computer`, a role codex_workers=off does not close.
@@ -3121,6 +3107,11 @@ assert grep -Fq 'fold_tsv(journal, "statusline", statusline_row)' "$HARNESS_DOCT
 assert grep -Fq 'os.path.join(state_dir(), "hooks", "spool", "*")' "$HARNESS_DOCTOR_BIN"
 assert doc_has '`start_us<TAB>end_us<TAB>script[ first arg]<TAB>exit<TAB>ppid`'
 assert doc_has '`start_us<TAB>end_us<TAB>session`'
+assert grep -Fq 'fold_tsv(journal, "menu", menu_row)' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'os.makedirs(os.path.join(state_dir(), "menu"), exist_ok=True)' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'local file = io.open(harnessDoctorDir() .. "/menu/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))' "$ROOT/hammerspoon/llm-limits.lua"
+assert doc_has '`start_us<TAB>end_us<TAB>menu`'
 
 # --- Row db: the week-over-week Δ ------------------------------------------------------
 TOKENMAP_TRACKING="${TOKENMAP_ROOT:-$ROOT/../token-map}/tokenmap/tracking.py"
@@ -3130,9 +3121,55 @@ if [ -f "$TOKENMAP_TRACKING" ]; then
 fi
 assert grep -Fxq 'DELTA_TIMES_FROM = 11' "$HARNESS_DOCTOR_BIN"
 assert grep -Fxq 'DELTA_MATERIAL = 0.10' "$HARNESS_DOCTOR_BIN"
-assert grep -Fxq 'local GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 1 }' "$ROOT/hammerspoon/token-tracking.lua"
-assert grep -Fxq 'local greenColor = { red = 0.13, green = 0.55, blue = 0.25 }' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fxq 'local TONES = { worse = RED, better = menuStyle.GREEN }' "$ROOT/hammerspoon/token-tracking.lua"
+assert grep -Fxq 'local redColor, dimRedColor, greenColor, menuFont = style.RED, style.DIM_RED, style.GREEN, style.MONO' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fxq 'M.GREEN = { red = 0.13, green = 0.55, blue = 0.25 }' "$ROOT/hammerspoon/menu-style.lua"
 assert doc_has '`7 days · prev 7 · Δ`'
 
-printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, and the week-over-week Δ Token tracking and the Harness doctor share) and match %s
+# --- Row dc: limiter hold files ---------------------------------------------------------
+assert grep -Fq 'local dir="${HARNESS_HOLDS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/holds}"' "$ROOT/share/limiter-hold.sh"
+assert grep -Fq 'local file="$dir/$name-$$${5:+-$5}.json"' "$ROOT/share/limiter-hold.sh"
+assert grep -Fq 'return os.environ.get("HARNESS_HOLDS_DIR") or os.path.join(' "$ROOT/share/limiter_hold.py"
+assert grep -Fq 'os.environ.get("HARNESS_DOCTOR_DIR") or os.path.expanduser("~/.cache/harness-doctor"), "holds")' "$ROOT/share/limiter_hold.py"
+assert grep -Fxq 'from limiter_hold import hold_dir' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'harnessDoctorDir() .. "/holds"' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq 'local HOLD_NOTE_S, HOLD_RED_S = 60, 300' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq '"hold_note_s": 60,' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq '"hold_red_s": 300,' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'local HOLD_START_SLACK_S = 2' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fxq 'HOLD_START_SLACK_S = 2' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq '{ "-o", "pid=,etime=", "-p", key }' "$ROOT/hammerspoon/llm-limits.lua"
+assert grep -Fq '["/bin/ps", "-o", "pid=,etime=", "-p",' "$HARNESS_DOCTOR_BIN"
+assert grep -Fq 'os.getenv("HARNESS_HOLDS_DIR")' "$ROOT/hammerspoon/llm-limits.lua"
+assert doc_has '`${HARNESS_HOLDS_DIR:-${HARNESS_DOCTOR_DIR:-$HOME/.cache/harness-doctor}/holds}/<limiter>-<pid>[-<key>].json`'
+THROTTLE_PY="${LOGO_BENCH_ROOT:-$ROOT/../logo-vectorizer-bench}/bench/throttle.py"
+if [ -f "$THROTTLE_PY" ]; then
+  assert grep -Fq "os.environ.get('HARNESS_DOCTOR_DIR') or os.path.expanduser('~/.cache/harness-doctor'), 'holds')" "$THROTTLE_PY"
+fi
+
+# --- Row dd: one menu red, and styled text always names its font ------------------------
+menu_lua=("$ROOT"/hammerspoon/*.lua)
+for f in "$HS_ROOT"/*.lua; do [ -f "$f" ] && menu_lua+=("$f"); done
+menu_reds=$(perl -0ne 'while (/\{\s*red\s*=\s*([0-9.]+)\s*,\s*green\s*=\s*([0-9.]+)\s*,\s*blue\s*=\s*([0-9.]+)/g) {
+  print "$ARGV $1 $2 $3\n" if $1 >= 0.5 && $2 < 0.4 && $3 < 0.4 }' "${menu_lua[@]}")
+assert [ -n "$menu_reds" ]
+assert test -z "$(grep -v ' 0.9 0.25 0.2$' <<<"$menu_reds")"
+assert test -z "$(grep -l 'systemRedColor' "${menu_lua[@]}")"
+menu_fontless=$(perl -0ne 'while (/hs\.styledtext\.new\(((?:[^()]++|\((?1)\))*)\)/g) { my $a = $1;
+  print "$ARGV: $a\n" if $a =~ /,\s*[\{a-zA-Z]/ && $a !~ /font|attributes/ }' "${menu_lua[@]}")
+assert test -z "$menu_fontless"
+assert doc_has '`{ red = 0.9, green = 0.25, blue = 0.2 }`'
+menu_title_literals=$(perl -ne 'next if /^\s*--/;
+  while (/(?:\btitle\s*=|\b(?:infoTitle|dim|style|metaTitle|rowTitle|hs\.styledtext\.new)\()\s*(.*)/g) { my $rest = $1;
+    while ($rest =~ /"((?:[^"\\]|\\.)*)"|'"'"'((?:[^'"'"'\\]|\\.)*)'"'"'/g) { print "$ARGV:$.: ", $1 // $2, "\n" } }
+  close ARGV if eof' "${menu_lua[@]}")
+assert [ -n "$menu_title_literals" ]
+assert test -z "$(grep -F 'bin/' <<<"$menu_title_literals")"
+assert test -z "$(grep -E '^[^:]+:[0-9]+: .*\b(OK|DOWN|STALE|FAILED|FAIL|BLIND|ERROR|DEAD|RUNNING|IDLE|LIVE|WARN|PAUSED|DONE|HOLD|UP|ON|OFF)\b' <<<"$menu_title_literals")"
+menu_age_formatters=$(perl -ne 'next if /^\s*--/ || $ARGV =~ m{/menu-style\.lua$};
+  print "$ARGV:$.: $_" if /"[^"]*%[0-9]*d[mhd](?: ago)?\b[^"]*"|\.\.\s*"[mhd](?: ago)?"|\.\.\s*" ago"/; close ARGV if eof' "${menu_lua[@]}")
+assert test -z "$menu_age_formatters"
+assert doc_has 'no local age or relative-time formatter'
+
+printf 'PASS: %s asserts; shared invariants agree across sites (staleness thresholds, keychain formula, weather HTTP classes, OAuth 429 cooldown, the permanently off robot curl refresh, the one rank vector every vendor orders its accounts by, Antigravity review cell models, Gemini worker knobs, the Grok worker knobs whose `auto` is the absence of a model override, worker account resolution, quota-group matching, shared profile mapping, weekly bucket provenance, Claude rotation usability presence, reserved profile names, worker spawn pressure gate, worker-pool membership, user-entry refresh classification, late review thresholds, account data age, claude account existence, one limits view, the Hammerspoon launchd agent identity, the account pin no session may move without Egor naming it, the debt word the bench prints, the gate translates and the statusline deduplicates only a same-repository live `rev` label, the one reader both hooks name a commit target with and the journal homes they fall back on when nothing resolves it, the usage wall record both of its writers share, the per-vendor role switches the routers, the menu and the bench all read, the per-vendor pause whose parked vendor is absent from the store rather than walled anywhere, the auto-refresh roster whose one inverted vendor is polled only where polling is free, the OpenCode rows whose standing wall the collector and the bench pool read off one served stamp, the run record that carries a worker'"'"'s files into the anchors store under the chat that launched it, the launching-chat pid walk the progress writer runs once and the statusline only falls back to, the doctor snapshot envelope the menubar reads, the one resolver every surface names a chat through, the review round a fixing worker'"'"'s brief carries in the one field both repositories read, the launchers a headless vendor run may reach the machine through, the one anchors store per git family every side resolves with the same command and one writer holds a lock over, the one file that says gemini main is removed, the one that says codex main is, the one daily-budget formula every ranking site calls, the claims ledger a caller about to spend an answer takes its account out of, the shield that keeps a base account out of the pool, the reset consumable whose glyph names no vendor and whose spending RPC has exactly one caller, the instruction-file class table both hooks ask rather than copy and the single definition of Egor'"'"'s autonomy span they reach it through, the native agent types the spawn hook alone admits and no second gate judges, the inactivity watchdog that ends a worker run before its six-hour ceiling ever does, the launched brief that carries the test-loop preamble while the recorded one stays the caller'"'"'s input, the persistent grok wall wording both repositories retire a SuperGrok plan on, the Codex out-of-credits wording the relay and the bench share, the one gateway context window every cut below it is derived from, the five carriers that spell the gateway model-id prefix, the one Gemini family list `geminib families` prints, the one file that pins which Flash family the review cells run and no worker reads, the one Grok model list `grokb models` prints and the single rule that collapses its default to the vendor word, the one web-search table every vendor and every worker-run entry point resolves through, the Hammerspoon entry points this repository calls, pinned fail-closed at their install path, the hook and statusline journals the Harness doctor reads, the week-over-week Δ Token tracking and the Harness doctor share, the one limiter hold directory every writer raises a hold in and both the doctor and the menu read, and the one red every Hammerspoon menu paints with styled text that always names its font) and match %s
 ' "$asserts" "$DOC"

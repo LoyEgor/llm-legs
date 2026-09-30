@@ -158,14 +158,11 @@ DASH_C_RE="${SHELL_WORD}([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[A-Za-z]*c[[:s
 PROGRAM_STRING_RE="${DASH_C_RE}|(^|[;|&(){}])[[:space:]]*(eval|ssh|tmux|screen|watch|su|env([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[A-Za-z]*S)([[:space:]]+[^[:space:]]+)*[[:space:]]+\$"
 
 # Four passes, and their ORDER is the whole difference between reading a launch and inventing one.
-# A heredoc body is text a command is FED, so it is blanked first, while the line structure that
-# says where the body ends is still intact — `cat > brief <<EOF` quoting `worker-run wait` is a
-# brief being written, not a run being awaited, and masking can only lose a command, never invent
-# one. Which is why the `<<` has to be a REAL heredoc before anything is blanked: outside quotes,
-# and with its delimiter line actually present later. A `<<` inside quotes is text — `echo '<<X';
-# worker-run wait id` is a run — and one whose delimiter never arrives opens no body at all, so
-# blanking from it would swallow every command that follows. The one heredoc whose body is not text
-# is the one fed to a SHELL, which runs those lines: `bash <<EOF` is scanned, `cat > f <<EOF` masked.
+# A heredoc body is text a command is FED, so it is blanked first (share/heredoc-mask.sh), while the
+# line structure that says where the body ends is still intact — `cat > brief <<EOF` quoting
+# `worker-run wait` is a brief being written, not a run being awaited, and masking can only lose a
+# command, never invent one: `bash <<EOF` is scanned, `cat > f <<EOF` masked. Unloadable, nothing
+# is masked, which can only deny more.
 # A backslash-continued line is one command, so the join comes next: splitting there would
 # sever a vendor name from the flag on the next line, which is how a long brief is routinely typed.
 # Then quoted text loses its separators and its spaces, which is what makes it one operand word:
@@ -173,97 +170,9 @@ PROGRAM_STRING_RE="${DASH_C_RE}|(^|[;|&(){}])[[:space:]]*(eval|ssh|tmux|screen|w
 # `X="a b" claude -p` loses the env assignment that keeps the vendor word out of one. The one quoted
 # span that is not an operand is a `sh -c` string, whose words the shell runs: it is broken out onto
 # its own line instead. Only then are the quotes themselves dropped, so `'claude' -p` is a launch.
-scan=$(awk -v shellfed="$HEREDOC_SHELL_RE" -v postshell="$HEREDOC_POST_SHELL_RE" '
-       # Everything a heredoc body still EXECUTES when its delimiter is unquoted: the shell expands
-       # such a body, so `$( … )` and a backtick span inside it are command lines, and masking them
-       # with the text around them would blank a run the shell is about to make. Their contents are
-       # kept, chained with `;`, and everything else on the line goes.
-       function subst_only(s,   i, c, out, depth, buf) {
-         out = ""
-         i = 1
-         while (i <= length(s)) {
-           c = substr(s, i, 1)
-           if (c == "$" && substr(s, i + 1, 1) == "(") {
-             depth = 1; i += 2; buf = ""
-             while (i <= length(s) && depth > 0) {
-               c = substr(s, i, 1)
-               if (c == "(") depth++
-               else if (c == ")") { depth--; if (depth == 0) { i++; break } }
-               buf = buf c
-               i++
-             }
-             out = out buf ";"
-             continue
-           }
-           if (c == "`") {
-             i++; buf = ""
-             while (i <= length(s) && substr(s, i, 1) != "`") { buf = buf substr(s, i, 1); i++ }
-             i++
-             out = out buf ";"
-             continue
-           }
-           i++
-         }
-         return out
-       }
-       function find_heredoc(line,   i, c, q, rest) {
-         q = ""
-         for (i = 1; i <= length(line); i++) {
-           c = substr(line, i, 1)
-           # A backslash escapes inside DOUBLE quotes and outside them, never inside single ones.
-           # Missing that, `echo "a\"b <<EOF"` closes the quote a character early and the rest of
-           # the line reads as bare text, so the `<<EOF` inside the string is taken for a real
-           # heredoc and blanks the commands that follow it.
-           if (q != "") {
-             if (q == "\"" && c == "\\") { i++; continue }
-             if (c == q) q = ""
-             continue
-           }
-           if (c == "\\") { i++; continue }
-           if (c == "\047" || c == "\"") { q = c; continue }
-           if (c != "<") continue
-           # A herestring is not a heredoc, and its word would read as a delimiter that never closes.
-           if (substr(line, i, 3) == "<<<") { i += 2; continue }
-           if (substr(line, i + 1, 1) != "<") continue
-           rest = substr(line, i)
-           if (match(rest, /^<<-?[[:space:]]*("[^"]*"|\047[^\047]*\047|\\?[A-Za-z_][A-Za-z0-9_.-]*)/)) {
-             HD_TOK = substr(rest, RSTART, RLENGTH)
-             HD_PRE = substr(line, 1, i - 1)
-             HD_POST = substr(line, i + RLENGTH)
-             return 1
-           }
-           i++
-         }
-         return 0
-       }
-       { line[NR] = $0 }
-       END {
-         for (i = 1; i <= NR; i++) {
-           if (!find_heredoc(line[i])) continue
-           dash = (substr(HD_TOK, 3, 1) == "-")
-           delim = HD_TOK
-           sub(/^<<-?[[:space:]]*/, "", delim)
-           # A quoted or backslashed delimiter is the one spelling that turns expansion OFF, so an
-           # unexpanded body is inert text all the way down.
-           expand = (delim !~ /^["\047\\]/)
-           gsub(/["\047\\]/, "", delim)
-           end = 0
-           for (j = i + 1; j <= NR; j++) {
-             probe = line[j]
-             if (dash) sub(/^\t+/, "", probe)
-             if (probe == delim) { end = j; break }
-           }
-           if (!end) continue
-           mask[end] = 1
-           if (HD_PRE !~ shellfed && HD_POST !~ postshell)
-             for (k = i + 1; k < end; k++) {
-               mask[k] = 1
-               if (expand) keep[k] = subst_only(line[k])
-             }
-           i = end
-         }
-         for (i = 1; i <= NR; i++) print (i in mask) ? ((i in keep) ? keep[i] : "") : line[i]
-       }' <<<"$cmd" |
+self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
+  heredoc_mask() { cat; }
+prestrip=$(heredoc_mask "$HEREDOC_SHELL_RE" "$HEREDOC_POST_SHELL_RE" <<<"$cmd" |
   awk '{ if (sub(/\\[[:space:]]*$/, " ")) { printf "%s", $0; next } print }' |
   awk -v dashc="$PROGRAM_STRING_RE" 'BEGIN { out = ""; q = ""; body = 0 }
        {
@@ -293,8 +202,8 @@ scan=$(awk -v shellfed="$HEREDOC_SHELL_RE" -v postshell="$HEREDOC_POST_SHELL_RE"
          print out
          out = ""
        }
-       END { if (out != "") print out }' |
-  sed -e "s/[\\\\'\"]//g") || exit 0
+       END { if (out != "") print out }') || exit 0
+scan=$(sed -e "s/[\\\\'\"]//g" <<<"$prestrip") || exit 0
 # The pipe check reads the text before this split, the one form that still holds the pipes.
 unsplit=$scan
 scan=$(tr ';|&()`' '\n' <<<"$unsplit")
@@ -493,7 +402,7 @@ carried() { # key value
     sed -E "s/^--brief(=|[[:space:]]+)//; s/^[\"']//; s/[\"']$//")
   [ -n "$target" ] || return 1
   [ "$(awk -v target="$target" -v q="'" '
-    BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = ">>?[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+" }
+    BEGIN { doc = "(^|[^<])<<-?[ \t]*[\"" q "]?[A-Za-z_][A-Za-z0-9_]*[\"" q "]?"; to = "(^|[^>])>[ \t]*[\"" q "]?[^ \t\"" q ";&|<>()]+" }
     body { line = $0; if (strip) sub(/^\t+/, "", line); if (line == delim) { body = 0; if (hit) exit; next } if (hit) print; next }
     match($0, doc) {
       delim = substr($0, RSTART, RLENGTH); strip = delim ~ /<<-/
@@ -501,7 +410,7 @@ carried() { # key value
       rest = $0; hit = 0
       while (match(rest, to)) {
         r = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
-        sub(/^>>?[ \t]*/, "", r); gsub("[\"" q "]", "", r)
+        sub(/^[^>]?>[ \t]*/, "", r); gsub("[\"" q "]", "", r)
         if (r == target) hit = 1
       }
       body = 1
@@ -571,9 +480,13 @@ scheduled=$(grep -E '^[[:space:]]*(at|batch)([[:space:]]|$)|^[[:space:]]*crontab
   tr -s '[:space:]' ' ' | sed -e 's/^ //' -e 's/ $//')
 [ -z "$scheduled" ] || span_live || deny "Blocked: \`${scheduled}\` schedules a command to run later, outside every gate and every task row. Run the work now through its owner; a scheduled job is Egor's to set up — hand him the paste-ready command."
 # `help` is a subcommand only to some CLIs; to gemini and claude it is a positional prompt, so a flag
-# after it (`gemini help -p "fix x"`) is a headless launch.
-HELP_RE="${VENDOR_WORD}(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)(${SUBCOMMAND}(-h|--help)${EDGE}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*[[:space:]]*\$)"
-unsanctioned=$(grep -Ev "$HELP_RE" <<<"$unsanctioned")
+# after it (`gemini help -p "fix x"`) is a headless launch. A help line is exempt only as a segment
+# that held no quote or backslash before stripping: `sh -c "claude -p 'ls -h'"` strips to a help line.
+HELP_TAIL='([[:space:]]+[0-9]*>+[^[:space:]]*)*[[:space:]]*$'
+HELP_RE="${VENDOR_WORD}(claude|claudeb|claudegpt|codex|codexb|gemini|geminib|agy|opencode|grok|grokb)(${SUBCOMMAND}(-h|--help)${HELP_TAIL}|[[:space:]]+help([[:space:]]+[^[:space:]-][^[:space:]]*)*${HELP_TAIL})"
+help_lines=$(grep -E "$HELP_RE" <<<"$unsanctioned" |
+  grep -Fx -f <(tr ';|&()`' '\n' <<<"$prestrip" | grep -v "[\\\\'\"]"))
+[ -z "$help_lines" ] || unsanctioned=$(grep -Fxv -f <(printf '%s\n' "$help_lines") <<<"$unsanctioned")
 launch_any=()
 for launch_re in "${LAUNCH_RES[@]}"; do launch_any+=(-e "$launch_re"); done
 grep -Eq "${launch_any[@]}" <<<"$unsanctioned" 2>/dev/null || LAUNCH_RES=()

@@ -1,5 +1,7 @@
 # Hand-off: the LLM doctor's Debt row counts raw gap lines, not open problems
 
+Status: done 2026-09-29 — `debt_health` counts the open gaps `review-anchors gaps` prints once per cause and logged losses once per drop (rules `debt-gap`, `debt-loss`; `tests/test_llm_doctor.sh`).
+
 For the chat that owns `bin/llm-doctor` (`debt_health`). Written 2026-09-27 by the chat «Debt
 hardening handoff», which fixed the recording side the same day (claude-setup hooks, review-bench
 store). Nothing in `bin/llm-doctor` was edited: every item below is the doctor's to change.

@@ -19,12 +19,9 @@ local M = {
   onRefreshStateChanged = function() end,
 }
 
-local redColor = { red = 0.9, green = 0.25, blue = 0.2 }
-local dimRedColor = { red = 0.9, green = 0.25, blue = 0.2, alpha = 0.55 }
-local greenColor = { red = 0.13, green = 0.55, blue = 0.25 }
-local menuFont = { name = "Menlo", size = 13 }
-
-local dimColorName = { list = "System", name = "tertiaryLabelColor" }
+local style = require("menu-style")
+local redColor, dimRedColor, greenColor, menuFont = style.RED, style.DIM_RED, style.GREEN, style.MONO
+local dimColorName = style.DIM
 
 -- Measured off a real popup menu: macOS paints a disabled row's text at tertiaryLabelColor, and
 -- every percentage row here is a disabled row, so that colour IS the menu's own dim. Any literal
@@ -182,15 +179,7 @@ local function formatAccountAge(value)
   if seconds <= 300 then
     return nil
   end
-  local minutes = math.floor(seconds / 60)
-  if minutes < 60 then
-    return string.format("%dm", minutes)
-  end
-  local hours = math.floor(minutes / 60)
-  if hours < 24 then
-    return string.format("%dh", hours)
-  end
-  return string.format("%dd", math.floor(hours / 24))
+  return style.ago(seconds)
 end
 
 -- The pin goes straight after the name, ahead of the age and the warnings: it says which account
@@ -236,7 +225,7 @@ local function formatResetTime(value)
     end
     return os.date("%H:%M", timestamp)
   end
-  return os.date("%b %d", timestamp)
+  return style.day(timestamp)
 end
 
 local function resetIsPast(resetsAt)
@@ -281,7 +270,7 @@ local vendorRefreshErrors, refreshErrorItem, appendRefreshErrorRows
 -- parked vendor, so the store cannot tell "paused" from "not installed".
 local function pausedRow(vendorKey, label)
   return {
-    title = infoTitle(label .. " — paused"),
+    title = infoTitle(label .. ": paused"),
     menu = {{ title = "Resume", fn = function() M.resumeVendor(vendorKey) end }},
   }
 end
@@ -380,7 +369,7 @@ local function doctorStaleSuffix(asOf)
   if not stamp then return "" end
   local age = os.time() - stamp
   if age < DOCTOR_STALE_S then return "" end
-  return string.format(" · snapshot %dd old", math.floor(age / 86400))
+  return " · stale · scanned " .. style.ago(age)
 end
 
 local function readLlmLimits()
@@ -657,7 +646,7 @@ function M.refreshRouting()
       routingRefreshPending = false
       M.refreshRouting()
     end
-  end, { "-n", "10", M.workerPickPath })
+  end, { "-n", "10", M.workerPickPath, "--menu" })
   if not task then
     M.routingFailed = true
     logAction("routing-failed", "worker-pick could not start")
@@ -731,6 +720,8 @@ local function taskForKey(key)
   return registryEntryForKey(key)
 end
 
+local readHolds
+
 function M.refreshState()
   purgeTasks()
   local busy = false
@@ -746,32 +737,26 @@ function M.refreshState()
     globalError = { cause = readError, at = os.time() }
   end
   local vendorErrors = {}
+  -- One account's failed refresh retries next cycle and shows as its own ⚠ row, so only a store
+  -- nobody can read warns the menubar. A parked vendor renders no error rows at all.
   local warning = globalError ~= nil
-  -- A parked vendor renders one row and no errors under it, so counting its errors here lights a
-  -- warning nothing in the menu can explain. Parked is out of play, and its state is not news.
   local pausedVendors = select(3, readWorkerModel())
   if limits and type(limits.vendors) == "table" then
     for _, name in ipairs({ "claude", "codex", "gemini", "grok", "opencode" }) do
       local vendor = limits.vendors[name]
       if pausedVendors[name] then vendor = nil end
       local entries = vendorRefreshErrors(name, vendor)
-      if #entries > 0 then
-        vendorErrors[name] = entries
-        if not warning then
-          for _, err in ipairs(entries) do
-            if not err.needsUserEntry then
-              warning = true
-              break
-            end
-          end
-        end
-      end
+      if #entries > 0 then vendorErrors[name] = entries end
     end
   end
+  local holds = readHolds()
   return {
     busy = busy,
-    warning = warning,
-    prefix = busy and "⟳ " or (warning and "⚠ " or ""),
+    warning = warning or #holds > 0,
+    refreshWarning = warning,
+    holds = holds,
+    holdText = holds[1] and holds[1].text,
+    prefix = #holds > 0 and "⚠ " or busy and "⟳ " or (warning and "⚠ " or ""),
     globalError = globalError,
     vendorErrors = vendorErrors,
   }
@@ -819,6 +804,16 @@ local function taskRunning(task)
   return ok and running == true
 end
 
+function M.diagnosticsEnvironment()
+  local environment = baseEnvironment()
+  for _, name in ipairs({ "LLM_DOCTOR_DIR", "LLM_DOCTOR_LEDGER", "WORKER_STATS_DIR", "WORKER_RUN_DIR", "IMAGE_LEG_LOG",
+      "HARNESS_DOCTOR_DIR", "UPDATER_DOCTOR_DIR", "DOCTORS_DIR" }) do
+    local override = os.getenv(name)
+    if override and override ~= "" then environment[name] = override end
+  end
+  return environment
+end
+
 local function startDiagnosticsTask(field, path, args, onExit)
   if taskRunning(M[field]) then return end
   local task = hs.task.new(path, function(exitCode)
@@ -827,13 +822,7 @@ local function startDiagnosticsTask(field, path, args, onExit)
     if onExit then onExit() end
   end, args)
   if not task then return end
-  local environment = baseEnvironment()
-  for _, name in ipairs({ "LLM_DOCTOR_DIR", "LLM_DOCTOR_LEDGER", "WORKER_STATS_DIR", "WORKER_RUN_DIR", "IMAGE_LEG_LOG",
-      "HARNESS_DOCTOR_DIR" }) do
-    local override = os.getenv(name)
-    if override and override ~= "" then environment[name] = override end
-  end
-  task:setEnvironment(environment)
+  task:setEnvironment(M.diagnosticsEnvironment())
   M[field] = task
   logAction("diagnostics-start", path .. " " .. table.concat(args, " "))
   task:start()
@@ -988,11 +977,32 @@ local function copyChatCommand(row)
   end
 end
 
+-- A live chat's Terminal tab comes to the front; a closed chat, or one with no terminal (a
+-- headless worker), copies its reopen command instead.
+local function focusChat(row)
+  local pid = math.tointeger(tonumber(row.pid))
+  local gate = M.chatGate or package.loaded["chat_gate"]
+  if not pid or type(gate) ~= "table" or type(gate.selectTabByTty) ~= "function" then
+    copyChatCommand(row)
+    return
+  end
+  local task
+  task = hs.task.new("/bin/ps", function(_, stdout)
+    task = nil
+    local tty = (stdout or ""):match("(ttys%d+)")
+    if not (tty and gate.selectTabByTty("/dev/" .. tty)) then copyChatCommand(row) end
+  end, { "-o", "tty=", "-p", tostring(pid) })
+  if not task or not task:start() then
+    task = nil
+    copyChatCommand(row)
+  end
+end
+
 local LLM_DOCTOR_FRESH_S = 300
-local LLM_DOCTOR_DEFAULT_H = 24
-local LLM_DOCTOR_WINDOWS = {
-  { hours = 3, label = "3 h" }, { hours = 6, label = "6 h" }, { hours = 12, label = "12 h" }, { hours = 24, label = "24 h" },
-  { hours = 72, label = "3 d" }, { hours = 168, label = "7 d" },
+local DOCTOR_DEFAULT_H = 24
+local DOCTOR_WINDOWS = {
+  { hours = 3, label = "3h" }, { hours = 6, label = "6h" }, { hours = 12, label = "12h" }, { hours = 24, label = "24h" },
+  { hours = 72, label = "3d" }, { hours = 168, label = "7d" },
 }
 local DOCTOR_BLOCK_NAMES = { reviewers = "Reviewers", workers = "Workers", light = "Light", image = "Image" }
 -- The collector's own column words, in its order; blank for zero so a class keeps its column.
@@ -1004,11 +1014,23 @@ local function plural(count, word)
   return string.format("%d %s%s", count, word, count == 1 and "" or "s")
 end
 
-local function llmDoctorWindowLabel(hours)
-  for _, choice in ipairs(LLM_DOCTOR_WINDOWS) do
+local function doctorWindowLabel(hours)
+  for _, choice in ipairs(DOCTOR_WINDOWS) do
     if choice.hours == hours then return choice.label end
   end
-  return string.format("%d h", hours)
+  return style.age(hours * 3600)
+end
+
+local function doctorWindowItem(suffix, onChoose)
+  local selected = M.doctorWindowH or DOCTOR_DEFAULT_H
+  local choices = {}
+  for _, choice in ipairs(DOCTOR_WINDOWS) do
+    choices[#choices + 1] = { title = choice.label, checked = selected == choice.hours, fn = function()
+      M.doctorWindowH = choice.hours
+      if onChoose then onChoose() end
+    end }
+  end
+  return { title = infoTitle("window: " .. doctorWindowLabel(selected) .. (suffix or "")), menu = choices }
 end
 
 local function llmDoctorPath()
@@ -1018,19 +1040,27 @@ local function llmDoctorPath()
   return home .. "/.cache/llm-doctor/latest.json"
 end
 
+-- Keyed like harnessCache: bin/llm-doctor replaces latest.json by rename.
+local llmDoctorCache = {}
+
 local function readLlmDoctor()
+  local path = llmDoctorPath()
+  local attrs = hs.fs.attributes(path)
+  local key = attrs and string.format("%s:%s:%s:%s", path, attrs.ino or "", attrs.modification or "", attrs.size or "")
+  if key and llmDoctorCache.key == key then return llmDoctorCache.document end
   local ok, decoded = pcall(function()
-    local contents = readTextFile(llmDoctorPath())
+    local contents = readTextFile(path)
     return contents and hs.json.decode(contents) or nil
   end)
-  if not ok or type(decoded) ~= "table" or type(decoded.blocks) ~= "table" then return nil end
+  if not ok or type(decoded) ~= "table" or type(decoded.blocks) ~= "table" then decoded = nil end
+  if key then llmDoctorCache.key, llmDoctorCache.document = key, decoded end
   return decoded
 end
 
 local function kickLlmDoctor(document, force, stale)
   local now = os.time()
-  local asOf = type(document) == "table" and tonumber(document.as_of) or 0
-  local selected = M.llmDoctorWindowH or LLM_DOCTOR_DEFAULT_H
+  local asOf = type(document) == "table" and (tonumber(document.as_of_s) or tonumber(document.as_of)) or 0
+  local selected = M.doctorWindowH or DOCTOR_DEFAULT_H
   local cachedWindow = type(document) == "table" and tonumber(document.window_h) or selected
   local fresh = now - asOf < LLM_DOCTOR_FRESH_S or now - lastLlmDoctorKick < LLM_DOCTOR_FRESH_S
   if not force and not stale and cachedWindow == selected and fresh then return end
@@ -1044,7 +1074,7 @@ local function kickLlmDoctor(document, force, stale)
   startDiagnosticsTask("llmDoctorTask", path, { "--window", tostring(selected), "--quiet" }, force and function()
     local latest = readLlmDoctor()
     local summary = latest and tostring(latest.summary or "") or ""
-    hs.alert.show("LLM doctor: " .. (not latest and "no data" or summary ~= "" and summary or "no bugs"), 2.5)
+    hs.alert.show("LLM doctor: " .. (not latest and "no data yet" or summary ~= "" and summary or "no bugs"), 2.5)
   end or nil)
 end
 
@@ -1069,11 +1099,6 @@ local function doctorTableTitles(rows, right, styles)
     titles[index] = title or infoTitle("")
   end
   return titles
-end
-
-local function problemTag(problem)
-  local ledger = type(problem.ledger) == "table" and problem.ledger or nil
-  return ledger and tostring(ledger.id or "") or ""
 end
 
 local function incidentRows(problem)
@@ -1111,8 +1136,9 @@ local function problemBrief(problem, block, windowLabel)
   end
   local root = repoRoot or "llm-legs"
   lines[#lines + 1] = string.format("Find the cause in the code, fix it or rule it out, and record the verdict as a row"
-    .. " in %s/share/doctor-ledger.json (status open, fixed with fixed_in repo@hash and fixed_at as an ISO time with"
-    .. " offset, not-a-bug or weather). `%s/bin/llm-doctor --block %s --json` prints every field.", root, root, block)
+    .. " in %s/share/doctor-ledger.json (status open, fixed-pending with a fixes[] entry {at, by, files, in: null} the"
+    .. " doctor completes once the sweep commits, not-a-bug or weather; docs/doctor-fix.md has the rules)."
+    .. " `%s/bin/llm-doctor --block %s --json` prints every field.", root, root, block)
   return table.concat(lines, "\n")
 end
 
@@ -1123,8 +1149,9 @@ local function ownerBrief(entry, windowLabel, hours)
   return string.format("You own the %s block of LLM doctor%s. Run `%s/bin/llm-doctor --block %s --window %d`"
     .. " (add --json for every field and each run's ref) and triage its regressed, new and open bugs one by one:"
     .. " find each cause in the code, fix it or rule it out, and record the verdict in %s/share/doctor-ledger.json —"
-    .. " one row per cause with status open, fixed (fixed_in repo@hash, fixed_at an ISO time with offset), not-a-bug"
-    .. " or weather, plus last_reviewed and reviewed_by. Weather (walled, cap, stalled, failed · theirs, slow, retried)"
+    .. " one row per cause with status open, fixed-pending (append a fixes[] entry {at, by, files, in: null}; the"
+    .. " doctor fills in once the sweep commits), not-a-bug or weather, plus last_reviewed and reviewed_by (docs/doctor-fix.md)."
+    .. " Weather (walled, cap, stalled, failed · theirs, slow, retried)"
     .. " is not a bug, and caps are caps: never propose dropping a cell or a vendor or raising a cap."
     .. " Last %s: %s (%d new, %d regressed), %d weather%s.",
     DOCTOR_BLOCK_NAMES[block] or block, owner ~= "" and (" (owner: " .. owner .. ")") or "", root, block, hours,
@@ -1142,10 +1169,12 @@ local function problemMenu(problem, block, windowLabel)
   local items = {}
   local ledger = type(problem.ledger) == "table" and problem.ledger or nil
   if ledger then
-    items[#items + 1] = { title = infoTitle(tostring(ledger.id or "") .. "  " .. tostring(ledger.title or "")), disabled = true }
+    items[#items + 1] = { title = infoTitle(tostring(ledger.title or "")), disabled = true }
     local facts = { tostring(ledger.status or "") }
-    if type(ledger.fixed_in) == "table" and #ledger.fixed_in > 0 then
-      facts[#facts + 1] = "fixed in " .. table.concat(ledger.fixed_in, ", ")
+    local fix = type(ledger.fixes) == "table" and ledger.fixes[#ledger.fixes] or nil
+    if type(fix) == "table" then
+      facts[#facts + 1] = type(fix["in"]) == "string" and ("fixed in " .. fix["in"]) or "fix pending commit"
+      if #ledger.fixes > 1 then facts[#facts + 1] = "fixed " .. #ledger.fixes .. "×" end
     end
     if (problem.looked or "") ~= "" then facts[#facts + 1] = tostring(problem.looked) end
     if (ledger.reviewed_by or "") ~= "" then facts[#facts + 1] = "by " .. tostring(ledger.reviewed_by) end
@@ -1213,7 +1242,7 @@ local function blockMenu(entry, windowLabel, hours, lead)
     if type(problem) == "table" then
       local row = { tostring(problem.label or ""), tostring(tonumber(problem.count) or 0),
         TREND_MARK[problem.trend] or "", tostring(problem.spark or ""), tostring(problem.last_seen or ""),
-        tostring(problem.status_text or ""), problemTag(problem),
+        tostring(problem.status_text or ""),
         table.concat(type(problem.models) == "table" and problem.models or {}, ", ") }
       if problem.kind == "weather" then
         weatherRows[#weatherRows + 1] = row
@@ -1288,12 +1317,11 @@ local function machineryRow(snapshot, statuses)
       if count > 0 then
         local known = statuses and statuses[name] or nil
         local status = known and tostring(known.status or "") or "new"
-        local ledger = known and type(known.ledger) == "table" and known.ledger or nil
         local loud = status == "new" or status == "regressed"
         total = total + count
         if status == "new" then fresh = fresh + count elseif status == "regressed" then regressed = regressed + count end
-        items[#items + 1] = { title = infoTitle(string.format("%s: %d · %s%s", name, count, status,
-          ledger and ledger.id and ("  " .. tostring(ledger.id)) or ""), loud, not loud), disabled = true }
+        items[#items + 1] = { title = infoTitle(string.format("%s: %d · %s", name, count, status), loud, not loud),
+          disabled = true }
         local detail = {}
         for _, row in ipairs(type(rows[name]) == "table" and rows[name] or {}) do
           if type(row) == "table" then table.insert(detail, row) end
@@ -1303,8 +1331,8 @@ local function machineryRow(snapshot, statuses)
           items[#items + 1] = { title = title, fn = function() copyChatCommand(row) end }
         end
         if count > #detail then
-          items[#items + 1] = { title = infoTitle(string.format("  … %d more: review-bench doctor --json",
-            count - #detail), false, true), disabled = true }
+          items[#items + 1] = { title = infoTitle(string.format("  … %d more", count - #detail), false, true),
+            disabled = true }
         end
       else
         table.insert(clean, name)
@@ -1314,17 +1342,18 @@ local function machineryRow(snapshot, statuses)
       items[#items + 1] = { title = infoTitle("ok: " .. table.concat(clean, ", "), false, true), disabled = true }
     end
   else
-    items[#items + 1] = { title = infoTitle("no doctor snapshot yet", false, true), disabled = true }
+    items[#items + 1] = { title = infoTitle("no data yet", false, true), disabled = true }
   end
+  items[#items + 1] = { title = "-" }
   if taskRunning(M.doctorRescanTask) then
     items[#items + 1] = { title = infoTitle("rescanning…", false, true), disabled = true }
   else
-    items[#items + 1] = { title = infoTitle("Rescan now"), fn = function() M.rescanDoctor() end }
+    items[#items + 1] = { title = infoTitle("Refresh"), fn = function() M.rescanDoctor() end }
   end
   local parts = {}
   if fresh > 0 then parts[#parts + 1] = tostring(fresh) .. " new" end
   if regressed > 0 then parts[#parts + 1] = tostring(regressed) .. " regressed" end
-  local text = not snapshot and "no snapshot" or total == 0 and "OK"
+  local text = not snapshot and "no data yet" or total == 0 and "ok"
     or tostring(total) .. (#parts > 0 and (" · " .. table.concat(parts, " · ")) or "")
   local loud = fresh + regressed
   return { title = infoTitle("Review machinery: " .. text, loud > 0, loud == 0), menu = items }, loud
@@ -1345,13 +1374,13 @@ local function appendDoctorBlocks(items, snapshot)
   -- Statuses judged off an older snapshot than the one shown (a rescan just ran) are re-judged.
   kickLlmDoctor(document, false, snapshot and document and tonumber(snapshot.as_of) ~= nil
     and tonumber(snapshot.as_of) ~= judged)
-  local selected = M.llmDoctorWindowH or LLM_DOCTOR_DEFAULT_H
+  local selected = M.doctorWindowH or DOCTOR_DEFAULT_H
   local hours = document and tonumber(document.window_h) or selected
-  local windowLabel = llmDoctorWindowLabel(hours)
+  local windowLabel = doctorWindowLabel(hours)
   local bugs = 0
   if not document then
     items[#items + 1] = machinery
-    items[#items + 1] = { title = infoTitle("Blocks: no data", false, true), disabled = true }
+    items[#items + 1] = { title = infoTitle("Blocks: no data yet", false, true), disabled = true }
   end
   for _, entry in ipairs(document and document.blocks or {}) do
     if type(entry) == "table" and DOCTOR_BLOCK_NAMES[entry.block] then
@@ -1379,7 +1408,7 @@ local function appendDoctorBlocks(items, snapshot)
           local repeats = tonumber(item.repeats) or 0
           local chat = type(item.chat) == "string" and item.chat ~= "" and (item.chat .. " · ") or ""
           sub[#sub + 1] = { title = infoTitle(string.format("%d · %s · %s%s%s%s", tonumber(item.count) or 0,
-            age < 3600 and (math.floor(age / 60) .. "m") or (math.floor(age / 3600) .. "h"), chat,
+            style.ago(age), chat,
             tostring(item.label or ""), lines > 0 and (" · " .. lines .. " lines") or "",
             repeats > (tonumber(item.count) or 0) and (" · seen " .. repeats .. "×") or "")), disabled = true }
         end
@@ -1389,7 +1418,7 @@ local function appendDoctorBlocks(items, snapshot)
       end
       if #sub == 0 then sub[1] = { title = infoTitle("nothing in the window", false, true), disabled = true } end
       local name = row.name:sub(1, 1):upper() .. row.name:sub(2)
-      items[#items + 1] = { title = infoTitle(name .. ": " .. (count > 0 and plural(count, "problem") or "OK"),
+      items[#items + 1] = { title = infoTitle(name .. ": " .. (count > 0 and plural(count, "problem") or "ok"),
         count > 0, count == 0), menu = sub }
       issues = issues + count
     end
@@ -1398,61 +1427,67 @@ local function appendDoctorBlocks(items, snapshot)
     items[#items + 1] = { title = infoTitle("not measurable yet: " .. table.concat(document.not_measurable, ", "),
       false, true), disabled = true }
   end
-  local choices = {}
-  for _, choice in ipairs(LLM_DOCTOR_WINDOWS) do
-    choices[#choices + 1] = { title = choice.label, checked = selected == choice.hours, fn = function()
-      M.llmDoctorWindowH = choice.hours
-      kickLlmDoctor(readLlmDoctor(), true)
-    end }
-  end
-  local windowText = "window: " .. llmDoctorWindowLabel(selected)
-  local age = document and (os.time() - (tonumber(document.as_of) or 0)) or 0
-  if document and age >= 86400 then windowText = windowText .. string.format(" · stale %dd", math.floor(age / 86400)) end
-  items[#items + 1] = { title = infoTitle(windowText), menu = choices }
+  local age = document and (os.time() - (tonumber(document.as_of_s) or tonumber(document.as_of) or 0)) or 0
+  items[#items + 1] = doctorWindowItem(document and age >= 86400 and (" · stale · ran " .. style.ago(age)),
+    function() kickLlmDoctor(readLlmDoctor(), true) end)
+  items[#items + 1] = { title = "-" }
   if taskRunning(M.llmDoctorTask) then
     items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
   else
-    items[#items + 1] = { title = infoTitle("Refresh blocks"), fn = function() kickLlmDoctor(readLlmDoctor(), true) end }
+    items[#items + 1] = { title = infoTitle("Refresh"), fn = function() kickLlmDoctor(readLlmDoctor(), true) end }
   end
-  return bugs, issues
+  return bugs, issues, document
 end
 
--- ONE diagnostics entry: LLM doctor's four blocks (the review machinery inside Reviewers), then
--- the review Flash pin.
-local function appendDoctor(menu)
-  local snapshot = readDoctorSnapshot()
-  local items = {}
-  local bugs, issues = appendDoctorBlocks(items, snapshot)
-
-  items[#items + 1] = { title = "-" }
-  items[#items + 1] = { title = infoTitle("Gemini", false, true), disabled = true }
+local function reviewFlashItem()
   local flashSlugs = geminiFlashSlugs()
   if not flashSlugs then
-    items[#items + 1] = { title = infoTitle("review flash T0–T1: unavailable", false, true), disabled = true }
-  else
-    local flashSlug, flashState = reviewFlash(flashSlugs)
-    local flashes = {}
-    for _, slug in ipairs(flashSlugs) do
-      flashes[#flashes + 1] = { title = flashLabel(slug),
-        checked = flashState == "pinned" and slug == flashSlug,
-        fn = function() M.setReviewFlash(slug) end }
-    end
-    flashes[#flashes + 1] = { title = "newest (default)", checked = flashState ~= "pinned",
-      fn = function() M.setReviewFlash(nil) end }
-    items[#items + 1] = { title = infoTitle("review flash T0–T1: " .. flashLabel(flashSlug)
-      .. (flashState == "pinned" and " · pinned" or "")), menu = flashes }
+    return { title = infoTitle("review flash T0–T1: unavailable", false, true), disabled = true }
   end
+  local flashSlug, flashState = reviewFlash(flashSlugs)
+  local flashes = {}
+  for _, slug in ipairs(flashSlugs) do
+    flashes[#flashes + 1] = { title = flashLabel(slug),
+      checked = flashState == "pinned" and slug == flashSlug,
+      fn = function() M.setReviewFlash(slug) end }
+  end
+  flashes[#flashes + 1] = { title = "newest (default)", checked = flashState ~= "pinned",
+    fn = function() M.setReviewFlash(nil) end }
+  return { title = infoTitle("review flash T0–T1: " .. flashLabel(flashSlug)
+    .. (flashState == "pinned" and " · pinned" or "")), menu = flashes }
+end
+
+local DOCTOR_STATUSES = { ok = true, problems = true, blind = true, error = true }
+
+-- LLM doctor's four blocks (the review machinery inside Reviewers), for the Doctors entry.
+function M.llmDoctorEntry()
+  local snapshot = readDoctorSnapshot()
+  local items = {}
+  local bugs, issues, document = appendDoctorBlocks(items, snapshot)
 
   local parts = {}
-  if bugs > 0 then parts[#parts + 1] = plural(bugs, "bug") end
-  if issues > 0 then parts[#parts + 1] = plural(issues, "issue") end
-  if not snapshot then parts[#parts + 1] = "no snapshot" end
-  local doctorText = "LLM doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "OK")
+  local status = document and document.status
+  local problems = document and tonumber(document.problem_count)
+  if status == "error" then
+    parts[#parts + 1] = "collector failed"
+  elseif problems then
+    if problems > 0 then parts[#parts + 1] = plural(problems, "problem") end
+    if status == "blind" then parts[#parts + 1] = "blind" end
+  else
+    if bugs > 0 then parts[#parts + 1] = plural(bugs, "bug") end
+    if issues > 0 then parts[#parts + 1] = plural(issues, "issue") end
+  end
+  if not snapshot then parts[#parts + 1] = "no data yet" end
+  local doctorText = "LLM doctor: " .. (#parts > 0 and table.concat(parts, " · ") or "ok")
   local title = doctorText .. (snapshot and doctorStaleSuffix(snapshot.as_of) or "")
     .. (taskRunning(M.doctorRescanTask) and " · rescanning" or "")
-  local quiet = issues == 0 and bugs == 0
-  table.insert(menu, { title = infoTitle(title, false, quiet), menu = items })
-  table.insert(menu, { title = "-" })
+  local count = problems or bugs + issues
+  local quiet = count == 0 and status ~= "error" and status ~= "blind"
+  local state = DOCTOR_STATUSES[status] and status or not document and count == 0 and "nodata"
+    or count > 0 and "problems" or "ok"
+  return { title = infoTitle(title, count > 0 or status == "error", quiet), menu = style.mono(items, infoTitle),
+    problems = count,
+    status = state }
 end
 
 local HARNESS_STALE_S = 1800
@@ -1463,6 +1498,105 @@ local function harnessDoctorDir()
   if override and override ~= "" then return override end
   return home .. "/.cache/harness-doctor"
 end
+
+-- Limiter holds (docs/harness-doctor-design.md §12) are read live: the collector runs every 5 min.
+local HOLD_NOTE_S, HOLD_RED_S = 60, 300
+local holdsCache = {}
+local HOLD_START_SLACK_S = 2
+local holdPids = { asked = {}, started = {}, key = "", at = 0 }
+
+local function etimeSeconds(text)
+  local days, clock = text:match("^(%d+)%-(.+)$")
+  local total = 0
+  for part in (clock or text):gmatch("%d+") do total = total * 60 + tonumber(part) end
+  return (tonumber(days) or 0) * 86400 + total
+end
+
+-- Liveness comes from an async ps: a pid no finished check has asked about counts as alive; a pid
+-- whose process started after the hold's since was reused, so the holder is gone.
+local function checkHoldPids(pids, now)
+  local key = table.concat(pids, ",")
+  if holdPids.task or (holdPids.key == key and now - holdPids.at < 30) then return end
+  local task = hs.task.new("/bin/ps", function(_, stdOut)
+    local asked, started = {}, {}
+    for _, pid in ipairs(pids) do asked[pid] = true end
+    for pid, etime in tostring(stdOut or ""):gmatch("(%d+)%s+([%d:%-]+)") do
+      started[pid] = now - etimeSeconds(etime)
+    end
+    holdPids.asked, holdPids.started, holdPids.task, holdsCache.key = asked, started, nil, nil
+  end, { "-o", "pid=,etime=", "-p", key })
+  holdPids.key, holdPids.at = key, now
+  if task and task:start() then holdPids.task = task end
+end
+
+readHolds = function()
+  local ok, holds = pcall(function()
+    local dir, now, found, pids, names, listed = os.getenv("HARNESS_HOLDS_DIR"), os.time(), {}, {}, {}, {}
+    if not dir or dir == "" then dir = harnessDoctorDir() .. "/holds" end
+    for name in hs.fs.dir(dir) do
+      if name:match("%.json$") then names[#names + 1] = name end
+    end
+    local key = now .. ":" .. table.concat(names, "/")
+    if holdsCache.key == key then return holdsCache.holds end
+    local due = false
+    for _, name in ipairs(names) do
+      local text = readTextFile(dir .. "/" .. name)
+      local decoded, hold = false, nil
+      if text and text ~= "" then decoded, hold = pcall(hs.json.decode, text) end
+      if decoded and type(hold) == "table" and type(hold.limiter) == "string" and math.type(hold.pid) == "integer"
+          and type(hold.since) == "number" then
+        found[#found + 1], due = hold, due or now - hold.since >= HOLD_NOTE_S
+        if not listed[hold.pid] then listed[hold.pid], pids[#pids + 1] = true, tostring(hold.pid) end
+      end
+    end
+    if not due then return {} end
+    checkHoldPids(pids, now)
+    local byLimiter, out = {}, {}
+    for _, hold in ipairs(found) do
+      local pid = tostring(hold.pid)
+      local started = holdPids.started[pid]
+      if not holdPids.asked[pid] or (started and started <= hold.since + HOLD_START_SLACK_S) then
+        local group = byLimiter[hold.limiter]
+        if not group then
+          group = { limiter = hold.limiter, count = 0, jobs = {} }
+          byLimiter[hold.limiter], out[#out + 1] = group, group
+        end
+        group.count, group.jobs[#group.jobs + 1] = group.count + 1, hold
+        if not group.since or hold.since < group.since then
+          group.since, group.hold = hold.since, hold
+        end
+      end
+    end
+    local shown = {}
+    for _, group in ipairs(out) do
+      local age = now - group.since
+      if age >= HOLD_NOTE_S then shown[#shown + 1] = group end
+      group.red = age > HOLD_RED_S
+      group.text = string.format("%s: holding %s, longest %s", group.limiter, plural(group.count, "job"),
+        style.age(age))
+      table.sort(group.jobs, function(a, b) return a.since < b.since end)
+      group.rows = {}
+      for _, job in ipairs(group.jobs) do
+        local held = type(job.held) == "table" and job.held or {}
+        local parts = {}
+        if type(held.what) == "string" and held.what ~= "" then parts[#parts + 1] = held.what end
+        local chat = type(held.cwd) == "string" and projectName(held.cwd) or ""
+        if chat ~= "" then parts[#parts + 1] = chat end
+        parts[#parts + 1] = "for " .. style.age(now - job.since)
+        group.rows[#group.rows + 1] = table.concat(parts, " · ")
+      end
+      group.rows[#group.rows + 1] = "why: " .. tostring(group.hold.why or "no reason given")
+      if type(group.hold["until"]) == "number" then
+        group.rows[#group.rows + 1] = "until " .. style.clock(group.hold["until"], now)
+      end
+    end
+    table.sort(shown, function(a, b) return a.since < b.since end)
+    holdsCache.key, holdsCache.holds = key, shown
+    return shown
+  end)
+  return ok and holds or {}
+end
+M.limiterHolds = function() return readHolds() end
 
 local function harnessLine(flags, spans, text)
   if flags:find("s", 1, true) then return { title = "-" } end
@@ -1488,14 +1622,15 @@ end
 
 -- menu.txt is laid out by bin/harness-doctor; decoding its JSON here cost ~40 ms per menu open.
 -- The collector replaces the file by rename, so a new inode is a new document; callers must not
--- mutate the cached items (appendHarness copies before adding Refresh).
+-- mutate the cached items (harnessDoctorEntry copies before adding Refresh).
 local harnessCache = {}
 
 local function readHarnessMenu()
   local path = harnessDoctorDir() .. "/menu.txt"
   local attrs = hs.fs.attributes(path)
-  local key = attrs and string.format("%s:%s:%s:%s", path, attrs.ino or "", attrs.modification or "",
-    attrs.size or "")
+  local window = M.doctorWindowH or DOCTOR_DEFAULT_H
+  local key = attrs and string.format("%s:%s:%s:%s:%d", path, attrs.ino or "", attrs.modification or "",
+    attrs.size or "", window)
   if key and harnessCache.key == key then return harnessCache.document end
   local contents = readTextFile(path)
   if not contents then return nil end
@@ -1503,10 +1638,13 @@ local function readHarnessMenu()
   if not title then return nil end
   local root, stack = {}, {}
   stack[0] = root
-  for depth, flags, spans, text in contents:gmatch("\n(%d+)\t(%a*)\t([^\t\n]*)\t([^\n]*)") do
+  for depth, flags, spans, text in contents:gmatch("\n(%d+)\t(%w*)\t([^\t\n]*)\t([^\n]*)") do
     depth = tonumber(depth)
     local parent = stack[depth]
-    if parent then
+    local tag = tonumber(flags:match("w(%d+)$"))
+    if tag and tag ~= window then
+      for deeper = depth + 1, #stack do stack[deeper] = nil end
+    elseif parent then
       local item = harnessLine(flags, spans, text)
       if item.title ~= "-" then item.disabled = true end
       parent[#parent + 1] = item
@@ -1537,39 +1675,43 @@ local function runHarnessDoctor()
   if not path then return end
   startDiagnosticsTask("harnessDoctorTask", path, { "--quiet" }, function()
     local latest = readHarnessMenu()
-    hs.alert.show(latest and latest.title or "Harness doctor: no data", 2.5)
+    hs.alert.show(latest and latest.title or "Harness doctor: no data yet", 2.5)
   end)
 end
 
 -- Harness doctor (docs/harness-doctor-design.md): what is not the model and makes a chat or a
 -- worker wait, or slows the machine. bin/harness-doctor writes the rows; nothing here names one.
-local function appendHarness(menu)
+function M.harnessDoctorEntry()
   local document = readHarnessMenu()
   local items = {}
   for index, item in ipairs(document and document.items or {
-    { title = infoTitle("no data yet: Refresh runs bin/harness-doctor", false, true), disabled = true } }) do
+    { title = infoTitle("no data yet", false, true), disabled = true } }) do
     items[index] = item
   end
+  items[#items + 1] = doctorWindowItem()
+  items[#items + 1] = { title = "-" }
   if taskRunning(M.harnessDoctorTask) then
     items[#items + 1] = { title = infoTitle("refreshing…", false, true), disabled = true }
   else
     items[#items + 1] = { title = infoTitle("Refresh"), fn = runHarnessDoctor }
   end
   local red = document and document.red or 0
-  local title = document and document.title or "Harness doctor: no data"
+  local title = document and document.title or "Harness doctor: no data yet"
   local age = document and os.time() - document.as_of or 0
-  if document and age > HARNESS_STALE_S then
-    title = title .. (age >= 7200 and string.format(" · stale %d h", math.floor(age / 3600))
-      or string.format(" · stale %d min", math.floor(age / 60)))
-  end
-  table.insert(menu, { title = infoTitle(title, red > 0, red == 0), menu = items })
+  if document and age > HARNESS_STALE_S then title = title .. " · stale · ran " .. style.ago(age) end
+  -- menu.txt's count is problem_count, or 1 for a failed collector whose problem_count is 0.
+  local failed = document and document.title:match("^Harness doctor: error") ~= nil
+  local status = not document and "nodata" or failed and "error" or red > 0 and "problems"
+    or document.title:find("blind", 1, true) and "blind" or "ok"
+  return { title = infoTitle(title, red > 0, red == 0), menu = style.mono(items, infoTitle),
+    problems = failed and 0 or red, status = status }
 end
 
 local function appendChats(menu)
   local contents = readTextFile(home .. "/Library/Logs/memlogd/chats.json")
   local ok, snapshot = pcall(hs.json.decode, contents or "")
   if not ok or type(snapshot) ~= "table" then
-    table.insert(menu, { title = infoTitle("Chats: no snapshot", false, true), disabled = true })
+    table.insert(menu, { title = infoTitle("Chats: no data yet", false, true), disabled = true })
     return
   end
   local items = {}
@@ -1579,7 +1721,7 @@ local function appendChats(menu)
     elseif type(row) == "table" then
       local item = { title = infoTitle(tostring(row.text or ""), row.alarm == true, row.dim == true) }
       if row.session then
-        item.fn = function() copyChatCommand({ session = row.session }) end
+        item.fn = function() focusChat({ session = row.session, pid = row.pid }) end
       else
         item.disabled = true
       end
@@ -2173,7 +2315,7 @@ local function refreshItems(menu)
     end,
   })
   table.insert(menu, {
-    title = "Refresh + Start Windows",
+    title = "Refresh + start windows",
     disabled = M.refreshState().busy,
     fn = function()
       userRefreshData({ "--refresh", "--start-windows" }, "start-windows", 1200, "start-windows")
@@ -2185,9 +2327,7 @@ local function refreshErrorAge(at)
   if type(at) ~= "number" then return "unknown" end
   local seconds = math.max(0, os.time() - at)
   if seconds < 60 then return "now" end
-  if seconds < 3600 then return string.format("%dm", math.floor(seconds / 60)) end
-  if seconds < 86400 then return string.format("%dh", math.floor(seconds / 3600)) end
-  return string.format("%dd", math.floor(seconds / 86400))
+  return style.ago(seconds)
 end
 
 local function rosterSet(vendor)
@@ -2354,13 +2494,50 @@ appendRefreshErrorRows = function(menu, entries, fallbackWho, onlyAccount, rende
   end
 end
 
+local function workerSwitchItems(vendorKey)
+  local _, roles, _, vendorPins = readWorkerModel()
+  local items = {}
+  for _, role in ipairs(WORKER_ROLES) do
+    local on = roles[vendorKey][role]
+    table.insert(items, {
+      title = role == "workers" and "For workers" or "For reviewers",
+      checked = on,
+      fn = function() M.setWorkerRole(vendorKey, role, not on) end,
+    })
+  end
+  local vendorPinned = vendorPins[vendorKey] == true
+  table.insert(items, {
+    title = "Pin vendor for workers",
+    checked = vendorPinned,
+    fn = function() pinVendor(vendorKey, vendorPinned) end,
+  })
+  table.insert(items, {
+    title = "Pause",
+    fn = function() M.setWorkerPaused(vendorKey, true) end,
+  })
+  return items
+end
+
+local function lightSwitch(title, dim)
+  local lightOff = select(3, readWorkerModel()).light == true
+  return {
+    title = infoTitle(title or ("light: " .. (lightOff and "off" or "on")), false, dim),
+    checked = not lightOff,
+    fn = function() M.setWorkerPaused("light", not lightOff) end,
+  }
+end
+
+-- worker-pick --menu answers in rows already aligned in the menu font: the rows are shown as it
+-- printed them, so Egor reads what a chat reads, and the switches ride on the rows they govern.
 local function routingSubmenu()
   local cache = M.routingCache
   local unavailable = function()
-    if M.routingFailed == true then
-      return {{ title = infoTitle("⚠ routing refresh failed", true, false), disabled = true }}
-    end
-    return {{ title = infoTitle("routing unavailable", false, true), disabled = true }}
+    local text = M.routingFailed == true and "⚠ routing refresh failed" or "routing unavailable"
+    return {
+      { title = infoTitle(text, M.routingFailed == true, M.routingFailed ~= true), disabled = true },
+      lightSwitch(),
+      reviewFlashItem(),
+    }, "Routing"
   end
   if type(cache) ~= "table" or type(cache.text) ~= "string"
       or type(cache.at) ~= "number" then
@@ -2383,21 +2560,36 @@ local function routingSubmenu()
     return unavailable()
   end
   local menu = {{
-    title = infoTitle("as of " .. os.date("%H:%M", cache.at), false, dim),
+    title = infoTitle("as of " .. style.clock(cache.at, os.time()) .. " · outside any chat", false, true),
     disabled = true,
   }}
   if M.routingFailed == true then
     table.insert(menu, { title = infoTitle("⚠ routing refresh failed", true, false), disabled = true })
   end
-  -- worker-pick already answers in rows: one account per line, columns aligned in the menu font.
-  -- Anything this renderer split or re-laid-out here would be a second layout to keep in step.
-  for _, line in ipairs(lines) do
-    table.insert(menu, { title = infoTitle(line, false, dim), disabled = true })
+  local pick, section, flashAt = nil, nil, nil
+  for index, line in ipairs(lines) do
+    local label, state = line:match("^(%a+):%s+(.-)%s*$")
+    if label then section = label elseif not line:match("^%s") then section = nil end
+    local header = index == 1 and line:match("^NEXT%s") ~= nil
+    pick = pick or line:match("^ACCOUNT:%s+(%S+)")
+    local item
+    if label and WORKER_MODEL_PREFIX[label] then
+      item = { title = infoTitle(line, false, dim), menu = state == "paused"
+        and {{ title = "Resume", fn = function() M.resumeVendor(label) end }}
+        or workerSwitchItems(label) }
+    elseif label == "light" then
+      item = lightSwitch(line, dim)
+    else
+      item = { title = infoTitle(header and line:lower() or line, false, dim or header), disabled = true }
+    end
+    table.insert(menu, item)
+    if section == "light" then flashAt = #menu + 1 end
   end
-  return menu
+  table.insert(menu, flashAt or #menu + 1, reviewFlashItem())
+  return menu, pick and ("Routing: next " .. pick) or "Routing"
 end
 
-function M.menuItems()
+local function buildMenuItems()
   local menu = {}
   local state = M.refreshState()
   if state.globalError then
@@ -2430,45 +2622,22 @@ function M.menuItems()
     end
     if announced then table.insert(menu, { title = "-" }) end
   end
-  appendDoctor(menu)
-  appendHarness(menu)
+  for _, hold in ipairs(state.holds) do
+    local rows = {}
+    for _, row in ipairs(hold.rows or {}) do
+      rows[#rows + 1] = { title = infoTitle(row, false, true), disabled = true }
+    end
+    table.insert(menu, { title = infoTitle(hold.text, hold.red, false), menu = rows })
+  end
+  if #state.holds > 0 then table.insert(menu, { title = "-" }) end
   appendChats(menu)
   table.insert(menu, { title = "-" })
-  table.insert(menu, {
-    title = infoTitle("Routing"),
-    menu = routingSubmenu(),
-  })
-  local lightOff = select(3, readWorkerModel()).light == true
-  table.insert(menu, {
-    title = "Light (research + edit)",
-    checked = not lightOff,
-    fn = function() M.setWorkerPaused("light", not lightOff) end,
-  })
+  local routing, routingTitle = routingSubmenu()
+  table.insert(menu, { title = infoTitle(routingTitle), menu = routing })
   table.insert(menu, { title = "-" })
   if limits and type(limits.vendors) == "table" then
     local pins, roles, paused, vendorPins = readWorkerModel()
-    local function roleItems(vendorKey)
-      local items = {}
-      for _, role in ipairs(WORKER_ROLES) do
-        local on = roles[vendorKey][role]
-        table.insert(items, {
-          title = role == "workers" and "For workers" or "For reviewers",
-          checked = on,
-          fn = function() M.setWorkerRole(vendorKey, role, not on) end,
-        })
-      end
-      local vendorPinned = vendorPins[vendorKey] == true
-      table.insert(items, {
-        title = "Pin vendor for workers",
-        checked = vendorPinned,
-        fn = function() pinVendor(vendorKey, vendorPinned) end,
-      })
-      table.insert(items, {
-        title = "Pause",
-        fn = function() M.setWorkerPaused(vendorKey, true) end,
-      })
-      return items
-    end
+    local roleItems = workerSwitchItems
     -- With a role off the list row already shows it; the submenu item stays plain and its click
     -- restores the off roles instead of dropping an account out of a pool nobody closed.
     local function poolItem(vendorKey, checked, toggleFn)
@@ -2867,7 +3036,7 @@ function M.menuItems()
     refreshItems(menu)
   else
     table.insert(menu, {
-      title = infoTitle("no data — press Refresh"),
+      title = infoTitle("no data yet"),
       disabled = true,
     })
     if readErrorReason then
@@ -2883,11 +3052,57 @@ function M.menuItems()
       end
     end
     appendOpenCode(menu, limits, pausedVendors)
+    table.insert(menu, { title = "-" })
     refreshItems(menu)
   end
 
   return menu
 end
+
+local function epochNow()
+  return hs.timer and hs.timer.secondsSinceEpoch and hs.timer.secondsSinceEpoch()
+end
+
+-- Contract row `da`: bin/harness-doctor reads menu/<YYYY-MM-DD>.tsv and makes the folder; a
+-- missing folder or any error drops the line, never the menu.
+function M.menuJournal(name, startedAt)
+  pcall(function()
+    local endedAt = epochNow()
+    if not startedAt or not endedAt then return end
+    local file = io.open(harnessDoctorDir() .. "/menu/" .. os.date("%Y-%m-%d", math.floor(endedAt)) .. ".tsv", "a")
+    if not file then return end
+    file:write(string.format("%d\t%d\t%s\n", math.floor(startedAt * 1e6), math.floor(endedAt * 1e6), name))
+    file:close()
+  end)
+end
+
+function M.timedMenu(name, build, ...)
+  local _, startedAt = pcall(epochNow)
+  local menu = build(...)
+  M.menuJournal(name, startedAt)
+  return menu
+end
+
+function M.menuItems()
+  return M.timedMenu("llm-limits", function() return style.mono(buildMenuItems(), infoTitle) end)
+end
+
+function M.title()
+  local state = M.refreshState()
+  local parts, red = {}, 0
+  for _, hold in ipairs(state.holds) do
+    if hold.red then red = red + 1 end
+  end
+  if red > 0 then parts[#parts + 1] = plural(red, "hold") end
+  if state.globalError then
+    parts[#parts + 1] = state.globalError.class or "refresh failed"
+  end
+  if #parts == 0 then return "LLM Limits" end
+  return hs.styledtext.new("LLM Limits: " .. table.concat(parts, " · "),
+    { font = (hs.styledtext.defaultFonts or {}).menu, color = redColor })
+end
+
+M.infoTitle, M.dimColor, M.parseTime = infoTitle, dimColor, parseTime
 
 -- The store is written by the collector and now every session's
 -- statusline merge-kick; watch it so the menubar reflects fresh data without a

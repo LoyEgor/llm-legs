@@ -451,7 +451,7 @@ def render(now, avail, swap, table, tops, sessions, state, prev):
         listed.append(((now_cores or 0.0), chat_kb.get(sid, 0), {
             "text": f"{word:<10}  {short(titles[sid]['t'] or 'unnamed chat'):<{TITLE_WIDTH}}  {cores(now_cores, 4)} cores  "
                     f"{gb(chat_kb.get(sid, 0) / 1024, 4)} GB  {spark(history.get(sid, {}), minute, top_cores)}",
-            "session": sid, "dim": word in ("idle", "wait model")}))
+            "session": sid, "dim": word in ("idle", "wait model"), **({"pid": live["pid"]} if live else {})}))
     rows += [row for _, _, row in sorted(listed, key=lambda item: (-item[0], -item[1]))]
     rows.append("-")
     rows.append({"text": "Other incl.: " + " · ".join(

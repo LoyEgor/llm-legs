@@ -81,7 +81,13 @@ jq -e --arg service "$3" '.[$service] | select(. != null) | {claudeAiOauth:{expi
 SECURITY
 chmod +x "$WORK/bin/security"
 
+# The chat role spends the bucket of the chat's model and a query naming none reads the default
+# model from settings.json; the suite's chat cases are written for a Fable default, the Opus ones
+# below name their model or their settings file.
+CHAT_SETTINGS="$WORK/settings.json"
+printf '{"model":"fable[1m]"}\n' > "$CHAT_SETTINGS"
 run_env=(TZ=UTC "PATH=$WORK/bin:$PATH" "HOME=$HOME_FIXTURE" "WORKER_PICK_CONFIG_FILE=$CONFIG"
+  "CHAT_MODEL_SETTINGS=$CHAT_SETTINGS"
   "WORKER_PICK_TIERS_FILE=$TIERS" WORKER_PICK_NOW=2000000000
   "CLAUDEB_DIR=$HOME_FIXTURE/.claude-profiles/.claudeb"
   "CODEXB_PROFILES_DIR=$HOME_FIXTURE/.codex-profiles"
@@ -676,7 +682,7 @@ grok_case "$GROK_PAIR"
 assert contains "$(nrow 1)" 'grok/spare grok·high'
 assert contains "$(vsection grok)" '10% – spare grok·high'
 assert contains "$(vsection grok)" '40% – supergrok grok·high'
-assert contains "$(section_order)" 'grok claude'
+assert contains "$(section_order)" 'codex grok gemini'
 # Six candidates over four vendors, and the table stops at NEXT_MAX_ROWS: codex/main, the smallest
 # budget of the six, is the one left to its own section.
 assert test "$(grep -c -- '^ [0-9]  ' <<<"$output")" -eq 5
@@ -1077,6 +1083,43 @@ grok_case "$GROK_PAIR"
 assert test "$(vsection grok)" = 'off for workers'
 assert not_contains "$output" 'grok unavailable'
 assert not_contains "$(next_block)" 'grok/'
+# `--menu` keeps the closed vendor's accounts under a header naming the closed roles, and routes
+# exactly as the plain table does.
+table=$output
+grok_query "$GROK_PAIR_JSON" --menu
+assert test "$query_rc" -eq 0
+output=$query_out
+assert test "$(vline grok: | squeeze)" = 'grok: workers off'
+assert contains "$(vsection grok)" 'supergrok'
+assert contains "$(vsection grok)" 'spare'
+assert test "$(next_block)" = "$(output=$table next_block)"
+write_config 'grok_workers=off' 'grok_reviewers=off'
+grok_query "$GROK_PAIR_JSON" --menu
+output=$query_out
+assert test "$(vline grok: | squeeze)" = 'grok: workers off · reviewers off'
+assert contains "$(vsection grok)" 'spare'
+write_config 'grok_reviewers=off'
+grok_query "$GROK_PAIR_JSON" --menu
+output=$query_out
+assert test "$(vline grok: | squeeze)" = 'grok: reviewers off'
+assert contains "$(nrow 1)$(next_block)" 'grok/'
+grok_query "$GROK_PAIR_JSON"
+assert not_contains "$query_out" 'reviewers off'
+write_config
+grok_query "$GROK_PAIR_JSON" --menu
+output=$query_out
+assert test "$(vline grok: | squeeze)" = 'grok: on'
+assert contains "$(vsection grok)" 'supergrok'
+write_config 'grok_paused=on'
+grok_query "$GROK_PAIR_JSON" --menu
+output=$query_out
+assert test "$(vsection grok)" = 'paused'
+grok_query "$GROK_PAIR_JSON"
+assert not_contains "$query_out" 'grok:'
+query --menu --list
+assert test "$query_rc" -eq 2
+write_config 'grok_workers=off'
+output=$table
 grok_query "$GROK_PAIR_JSON" --account grok
 assert test "$query_rc" -eq 3
 assert test -z "$query_out"
@@ -1464,6 +1507,32 @@ assert test "$query_rc" -eq 0
 assert test "$query_out" = fb-free
 query --account claudeb --role reviewers
 assert test "$query_out" = wk-free
+# A chat on any other Claude model spends the weekly bucket like ordinary work: named with
+# --model, or read from the default model when the chat is a new one.
+query --account claudeb --role chat --model claude-opus-5-5
+assert test "$query_rc" -eq 0
+assert test "$query_out" = wk-free
+query --account claudeb --role chat --model claude-fable-5-1
+assert test "$query_out" = fb-free
+printf '{"model":"opus"}\n' > "$CHAT_SETTINGS"
+query --account claudeb --role chat
+assert test "$query_out" = wk-free
+query --account claudeb --role chat --model Fable
+assert test "$query_out" = fb-free
+printf '{}\n' > "$CHAT_SETTINGS"
+query --account claudeb --role chat
+assert test "$query_out" = wk-free
+rm -f "$CHAT_SETTINGS"
+query --account claudeb --role chat
+assert test "$query_rc" -eq 0
+assert test "$query_out" = wk-free
+printf '{"model":"fable[1m]"}\n' > "$CHAT_SETTINGS"
+# The model is a chat's fact: no other role spends it, so naming one elsewhere is refused.
+query --account claudeb --model fable
+assert test "$query_rc" -eq 2
+assert grep -q -- '--model only means something with --role chat' "$WORK/query.err"
+query --list --model opus
+assert test "$query_rc" -eq 2
 # The fable window has no five-hour twin to be paced by, so an account nobody measured one for is
 # no chat candidate, exactly as it is no `--fable` answer.
 run_filter claude_pool '.vendors.claude.accounts = [
@@ -1688,7 +1757,7 @@ assert contains "$output" 'session*'
 assert contains "$(vsection claude)" '* = this session account'
 assert not_contains "$output" 'RESERVE'
 assert test "$(sed -n '1p' <<<"$output" | cut -c1-4)" = NEXT
-assert test "$(section_order)" = 'codex gemini claude'
+assert test "$(section_order)" = 'claude codex gemini'
 assert test "$(grep -c -- '^DATA: ' <<<"$output")" -eq 1
 assert test "$(wc -l <<<"$output" | tr -d ' ')" -eq 14
 assert not_contains "$output" '# Worker routing policy'
@@ -2208,6 +2277,11 @@ run_filter claude_pool '.vendors.claude.accounts = [
 query --list --role chat
 assert test "$(next_of claudeb)" = fb-free
 query --list --role workers
+assert test "$(next_of claudeb)" = wk-free
+# The picker asks one list per bucket, naming a model of each.
+query --list --role chat --model fable
+assert test "$(next_of claudeb)" = fb-free
+query --list --role chat --model opus
 assert test "$(next_of claudeb)" = wk-free
 # Other vendors have one bucket and the role never moves it.
 query_case golden --list --role chat

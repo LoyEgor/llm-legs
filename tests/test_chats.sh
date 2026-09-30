@@ -245,7 +245,7 @@ STUB="$WORK/stub-bin"
 mkdir -p "$STUB"
 cat >"$STUB/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "--list --role chat" ] || { printf 'stub: %s\n' "$*" >&2; exit 2; }
+case "$*" in "--list --role chat"|"--list --role chat --model "*) ;; *) false ;; esac || { printf 'stub: %s\n' "$*" >&2; exit 2; }
 [ -n "${PICK_ANSWER:-}" ] || exit 3
 printf 'claudeb\t%s\t10\tok\nNEXT\tclaudeb\t%s\nNEXT\tcodex\t-\n' "$PICK_ANSWER" "$PICK_ANSWER"
 EOF
@@ -331,7 +331,7 @@ mkdir -p "$WORK/profiles/alpha" "$WORK/profiles/beta" "$WORK/profiles/zeta" \
   "$WORK/profiles/omega" "$STUB/list"
 cat >"$STUB/list/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "--list --role chat" ] || exit 2
+case "$*" in "--list --role chat"|"--list --role chat --model "*) ;; *) false ;; esac || exit 2
 printf '%s\t%s\t%s\t%s\n' \
   claudeb omega 5 ok claudeb beta - login claudeb alpha 100 walled claudeb ghost 1 ok \
   codex delta 30 ok codex gamma 0 login codex epsilon 60 ok gemini alpha 3 ok
@@ -367,6 +367,64 @@ assert grep -qx 'line1: omega 5%|alpha 100%!|zeta' <<<"$OUT"
 assert grep -qx 'line2: gpt:delta 30%|gpt:epsilon 60%|gpt:zulu' <<<"$OUT"
 assert grep -qx 'chosen: omega 0' <<<"$OUT"
 assert test -z "$(grep -n 'llm-limits' "$SCRIPT")"
+
+# --- the bar is the ranking of the bucket the landed chat spends --------------
+# worker-pick decides which bucket a model spends; the picker asks one list per bucket, naming a
+# model of each, and a Fable chat is offered the fable pick while an Opus chat gets the weekly one.
+mkdir -p "$STUB/boards"
+cat >"$STUB/boards/worker-pick" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${0%/*}/asked"
+case "$*" in
+  "--list --role chat --model fable")
+    printf 'claudeb\tomega\t100\twalled\nclaudeb\talpha\t4\tok\nNEXT\tclaudeb\talpha\n' ;;
+  "--list --role chat --model opus")
+    printf 'claudeb\tomega\t10\tok\nclaudeb\talpha\t80\tok\nNEXT\tclaudeb\tomega\n' ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$STUB/boards/worker-pick"
+OUT=$(CLAUDEB_WORKER_PICK="$STUB/boards/worker-pick" python3 - "$SCRIPT" <<'PY'
+import importlib.machinery, importlib.util, sys
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+
+boards = chats.rankings()
+for model in ("claude-fable-5-1", "claude-opus-5-5", "anthropic.ccr.astra", None):
+    board = chats.board_of({"model": model})
+    order, used, hidden, chosen = boards[board]
+    print("board:", model, board, chosen, used[("claudeb", "omega")])
+PY
+) || fail "boards probe failed"
+assert grep -qx 'board: claude-fable-5-1 fable alpha 100%!' <<<"$OUT"
+assert grep -qx 'board: claude-opus-5-5 weekly omega 10%' <<<"$OUT"
+assert grep -qx 'board: anthropic.ccr.astra weekly omega 10%' <<<"$OUT"
+assert grep -qx 'board: None weekly omega 10%' <<<"$OUT"
+assert test "$(sort "$STUB/boards/asked" | tr '\n' '|')" = '--list --role chat --model fable|--list --role chat --model opus|'
+
+# The bucket is chat_model_bucket's answer, so a changed rule there moves the picker's rows with it.
+TREE="$WORK/bucket-tree"
+mkdir -p "$TREE/bin" "$TREE/share"
+cp "$SCRIPT" "$TREE/bin/chats"
+for f in "$ROOT"/share/*; do
+  [ "${f##*/}" = chat-account.sh ] || ln -s "$f" "$TREE/share/"
+done
+printf 'chat_model_bucket() { case "$1" in *sonnet*) echo fable ;; *) echo weekly ;; esac; }\n' \
+  > "$TREE/share/chat-account.sh"
+OUT=$(python3 - "$TREE/bin/chats" <<'PY'
+import importlib.machinery, importlib.util, sys
+
+loader = importlib.machinery.SourceFileLoader("chats", sys.argv[1])
+spec = importlib.util.spec_from_loader("chats", loader)
+chats = importlib.util.module_from_spec(spec)
+loader.exec_module(chats)
+print("buckets:", chats.board_of({"model": "claude-sonnet-5-5"}), chats.board_of({"model": "claude-fable-5-1"}))
+PY
+) || fail "bucket resolver probe failed"
+assert grep -qx 'buckets: fable weekly' <<<"$OUT"
 
 # --- arguments are answered without a terminal ------------------------------
 run() { OUT=$("$SCRIPT" "$@" </dev/null 2>&1); RC=$?; }
@@ -557,7 +615,7 @@ EOF
 cat >"$FAST/bin/worker-pick" <<'EOF'
 #!/usr/bin/env bash
 sleep 1
-[ "$*" = "--list --role chat" ] || exit 2
+case "$*" in "--list --role chat"|"--list --role chat --model "*) ;; *) false ;; esac || exit 2
 printf '%s\t%s\t%s\t%s\n' claudeb gamma 10 ok claudeb alpha 40 ok claudeb beta - login
 printf 'NEXT\t%s\t%s\n' claudeb gamma codex - gemini - grok -
 EOF
@@ -689,7 +747,7 @@ assert grep -qx 'full-rows: 3' <<<"$OUT"
 mkdir -p "$FAST/login"
 cat >"$FAST/login/worker-pick" <<'EOF'
 #!/usr/bin/env bash
-[ "$*" = "--list --role chat" ] || exit 2
+case "$*" in "--list --role chat"|"--list --role chat --model "*) ;; *) false ;; esac || exit 2
 printf '%s\t%s\t%s\t%s\n' claudeb gamma 10 login claudeb alpha 40 login claudeb beta - login \
   codex delta 20 login
 printf 'NEXT\t%s\t%s\n' claudeb - codex - gemini - grok -

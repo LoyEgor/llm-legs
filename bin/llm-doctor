@@ -4,7 +4,7 @@ Image blocks, bugs kept apart from weather, and every bug held against the probl
 import argparse
 import calendar
 import datetime
-import glob
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -20,6 +20,8 @@ import time
 BIN_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.dirname(BIN_DIR)
 sys.path.insert(0, os.path.join(ROOT_DIR, "share"))
+
+from fix_commit import fix_commit
 
 
 def load_gemini_weather():
@@ -44,28 +46,35 @@ SLOW_MIN_LEGS = 5
 SLOW_BASE_N = 20
 SLOW_FLOOR_S = 30
 SLOW_SIZE_RATIO = 2
-STOP_REPEAT_S = 30 * 60
 DEBT_GAP_DAYS = 7
-GROWTH_MIN_B = 120
-GATE_BEFORE_S = 900
-GATE_AFTER_S = 60
-WATCH_TICK_S = 120
-DEFERRED_S = 2 * 3600
-SILENT_S = 6 * 3600
 REBOOT_SLACK_S = 300
 # No heartbeat dates a supervisor's death: a run silent this long before the boot died on its own.
 REBOOT_QUIET_S = 3600
+NO_EXIT_S = 6 * 3600
 _REBOOTS = []
 TREND_MIN = 3
+PROOF_MIN = 10
+RECOVERED_MIN = 3
+NEAR_SHARE = 0.5
 MAX_INCIDENTS = 15
 DETAIL_MAX = 40
 TEXT_MAX = 4000
 TOP_MAX = 3
+EVIDENCE_MAX = 3
+EXCERPT_MAX = 300
 BLOCKS = ("reviewers", "workers", "light", "image")
 COLUMNS = ("walled", "off", "cap", "stalled", "failed", "theirs", "slow", "escaped", "retried")
-NOT_MEASURABLE = ("worker false-green reports", "weakened tests")
 SPARK = "▁▂▃▄▅▆▇█"
-LEDGER_STATUSES = ("open", "fixed", "not-a-bug", "weather")
+CONTRACT = 1
+LEDGER_STATUSES = ("open", "fixed-pending", "fixed", "not-a-bug", "weather")
+DISMISSALS = ("not-a-bug", "weather")
+FIXED_STATUSES = ("fixed-pending", "fixed")
+COUNTED = ("new", "open", "regressed")
+HEALTH_RULES = ("debt",)
+FIX_IN_RE = re.compile(r"^([\w.-]+)@([0-9a-f]{7,40})$")
+LIMIT_NAMES = ("SLOW_FACTOR", "SLOW_MIN_LEGS", "SLOW_BASE_N", "SLOW_FLOOR_S", "SLOW_SIZE_RATIO", "SLOW_BASE_D",
+               "NO_EXIT_S", "REBOOT_SLACK_S", "REBOOT_QUIET_S", "TREND_MIN", "PROOF_MIN", "RECOVERED_MIN",
+               "NEAR_SHARE", "KILLED_EARLY_SLACK_S", "SWITCH_SLACK_S", "DEBT_GAP_DAYS")
 
 # Copied from review-bench share/rbench/panel.py FAILURE_REASONS (and catalog.py's status anchors);
 # review-bench is not importable from here, so the two tables drift unless both are edited.
@@ -325,43 +334,17 @@ def image_log():
     return os.environ.get("IMAGE_LEG_LOG") or os.path.join(base_home(), ".cache", "image-legs", "legs.jsonl")
 
 
-def stop_journal():
-    return os.environ.get("STOP_GATE_JOURNAL") or os.path.join(base_home(), ".cache", "claude", "stop-gate",
-                                                               "journal.jsonl")
-
-
-def words_journal():
-    return os.path.join(os.environ.get("WORDS_DIR") or os.path.join(base_home(), ".cache", "claude", "words"),
-                        "journal.jsonl")
-
-
-def watch_state():
-    return os.environ.get("INSTRUCTION_WATCH_STATE") or os.path.join(base_home(), ".cache",
-                                                                      "claude-instruction-watch")
-
-
-def newest_transcript():
-    """The newest (mtime, birth) over every chat transcript, the clock the silent-hook checks run against."""
-    home, newest, born = base_home(), 0, 0
-    for pattern in (os.path.join(home, ".claude", "projects", "*", "*.jsonl"),
-                    os.path.join(home, ".claude-profiles", "*", "projects", "*", "*.jsonl"),
-                    os.path.join(home, ".claude-profiles", ".*", "projects", "*", "*.jsonl")):
-        for path in glob.glob(pattern):
-            try:
-                info = os.stat(path)
-            except OSError:
-                continue
-            newest = max(newest, info.st_mtime)
-            born = max(born, getattr(info, "st_birthtime", info.st_mtime))
-    return newest, born
-
-
 def debt_dir():
     return os.environ.get("REVIEW_DEBT_DIR") or os.path.join(base_home(), ".cache", "claude", "review-debt")
 
 
 def ledger_path():
     return os.environ.get("LLM_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "doctor-ledger.json")
+
+
+def repos_dir():
+    """Where a fix's `repo/path` files live: the ledger names repositories by their directory name."""
+    return os.environ.get("LLM_DOCTOR_REPOS") or os.path.dirname(ROOT_DIR)
 
 
 def read_json(path):
@@ -736,9 +719,16 @@ def escape_evidence(meta):
 def leg(block, surface, model, at, klass, reason, detail, origin, **extra):
     row = {"block": block, "surface": surface, "model": model or "", "at": at, "class": klass,
            "reason": reason, "detail": detail or "", "origin": origin, "attempt": "final",
-           "duration": None, "project": "", "tier": "", "ref": "", "text": "", "session": ""}
+           "duration": None, "project": "", "tier": "", "ref": "", "event": "", "start": None, "account": "",
+           "text": "", "session": ""}
     row.update(extra)
+    if not row["event"]:
+        row["event"] = row["ref"]
     return row
+
+
+def event_stamp(ts):
+    return "%d" % ts if float(ts).is_integer() else "%.3f" % ts
 
 
 def bench_legs(cutoff, now):
@@ -822,7 +812,10 @@ def run_legs(meta, name, started, cutoff, now):
         pass_lines = scope_lines / passes if scope_lines and chunked else scope_lines
         model = bench_model(cell)
         cohort = "·".join(part for part in (model, str(cell.get("effort") or ""), "chunks" if chunked else "") if part)
+        begun = iso_epoch(cell.get("started_at"))
+        begun = begun if begun is not None else (ended - duration_s if duration_s else started)
         common = {"project": project, "tier": tier, "ref": name, "account": cell.get("account") or "",
+                  "event": "bench:%s/%s#%d" % (name, cell.get("rater") or "?", index), "start": begun,
                   "text": (cell.get("stderr") or "")[-TEXT_MAX:]}
         legs.append(leg("reviewers", "review", model, ended, klass, reason, detail, origin,
                         attempt="final" if final else "superseded", cohort=cohort,
@@ -853,22 +846,25 @@ def run_legs(meta, name, started, cutoff, now):
     judge = meta.get("judge")
     if isinstance(judge, dict) and judge.get("state") in ("ran", "failed") and cutoff <= finished <= now + 3600:
         legs.append(judge_leg(judge, finished, project, tier, name))
+        if legs[-1]["start"] is None:
+            legs[-1]["start"] = started
     failure = str(meta.get("failure") or "")
     if failure and not failure.startswith("cell failures:") and cutoff <= finished <= now + 3600:
+        panel = {"project": project, "tier": tier, "ref": name, "event": "bench:%s/panel" % name, "start": started,
+                 "text": failure[-TEXT_MAX:]}
         if re.search(r"SystemExit: *(?:143|130|2)\b|SIGTERM|KeyboardInterrupt", failure):
-            legs.append(leg("reviewers", "panel", "panel", finished, "cap", "cut", "panel killed", "",
-                            project=project, tier=tier, ref=name, text=failure[-TEXT_MAX:]))
+            legs.append(leg("reviewers", "panel", "panel", finished, "cap", "cut", "panel killed", "", **panel))
         else:
             legs.append(leg("reviewers", "panel", "panel", finished, "failed", "crashed",
-                            failure.splitlines()[0][:DETAIL_MAX], "ours",
-                            project=project, tier=tier, ref=name, text=failure[-TEXT_MAX:]))
+                            failure.splitlines()[0][:DETAIL_MAX], "ours", **panel))
     return legs
 
 
 def judge_leg(judge, at, project, tier, ref):
     duration = judge.get("duration_ms")
     duration_s = duration / 1000.0 if isinstance(duration, (int, float)) and duration > 0 else None
-    common = {"project": project, "tier": tier, "ref": ref, "duration": duration_s,
+    common = {"project": project, "tier": tier, "ref": ref, "event": "bench:%s/judge" % ref,
+              "start": at - duration_s if duration_s else None, "duration": duration_s,
               "size": as_int(judge.get("claims")), "text": str(judge.get("reason") or "")[-TEXT_MAX:]}
     model = str(judge.get("model") or "judge")
     batches = as_int(judge.get("batches")) or 1
@@ -1009,11 +1005,16 @@ def worker_legs(cutoff, now):
         killed = first_line(killed_path)
         exit_text = read_text(exit_path)
         block = worker_block(meta)
-        common = {"project": project_of(meta.get("workdir")), "ref": name, "account": fields[0],
+        common = {"project": project_of(meta.get("workdir")), "ref": name, "event": "run:%s" % name,
+                  "start": started, "account": fields[0],
                   "text": read_tail(os.path.join(run_dir, "err"), TEXT_MAX),
                   "session": (read_text(os.path.join(run_dir, "launcher")) or "").strip()}
         if exit_text is None and not killed:
-            if now - started < 6 * 3600 or not supervisor_gone(run_dir, meta.get("pid") or ""):
+            if now - started < NO_EXIT_S:
+                if now - started >= NEAR_SHARE * NO_EXIT_S and supervisor_gone(run_dir, meta.get("pid") or ""):
+                    near_miss("NO_EXIT_S", now - started, "s", now, "run:%s" % name)
+                continue
+            if not supervisor_gone(run_dir, meta.get("pid") or ""):
                 continue
             ended = mtime_of(os.path.join(run_dir, "out")) or started
             boot = min((at for at in reboots(now)
@@ -1043,7 +1044,8 @@ def worker_legs(cutoff, now):
                         size=file_size(os.path.join(run_dir, "brief")), **common))
         for account in meta.get("walled_accounts") or []:
             legs.append(leg(block, "worker", fields[1], started, "walled", "walled", "usage limit", "",
-                            attempt="superseded", **dict(common, account=str(account))))
+                            attempt="superseded", **dict(common, account=str(account),
+                                                         event="run:%s/walled:%s" % (name, account))))
     if earliest is not None:
         earliest = max(earliest, now - WORKER_KEEP_D * 86400)
     return legs, earliest
@@ -1104,7 +1106,9 @@ def prelaunch_legs(cutoff, now):
             continue
         block = "light" if row.get("light") or row.get("role") == "research" else "workers"
         model = str(row.get("model") or row.get("vendor") or "")
-        common = {"account": str(row.get("account") or ""), "ref": "prelaunch", "text": outcome}
+        account = str(row.get("account") or "")
+        common = {"account": account, "ref": "prelaunch:%s/%s" % (event_stamp(at), account or "-"), "start": at,
+                  "text": outcome}
         if outcome.endswith("_USAGE_LIMIT"):
             legs.append(leg(block, "worker", model, at, "walled", "walled", "pool walled at launch", "", **common))
         elif outcome.endswith("_UNAVAILABLE") and refused_by_switch(str(row.get("vendor") or ""),
@@ -1168,12 +1172,13 @@ def image_legs(cutoff, now):
         if reason == "pool empty" and refused_by_switch(model.split("-")[0], str(row.get("account") or ""), at):
             klass, reason, detail, origin = "off", "off", "switched off", ""
         served = str(row.get("served") or "")
-        seconds = row.get("seconds")
+        seconds = row.get("seconds") if isinstance(row.get("seconds"), (int, float)) and row["seconds"] > 0 else None
+        account = str(row.get("account") or "")
         legs.append(leg("image", str(row.get("kind") or "image"), model, at, klass, reason, detail, origin,
-                        cohort=model + "·" + served if served else model,
-                        duration=seconds if isinstance(seconds, (int, float)) and seconds > 0 else None,
-                        size=as_int(row.get("size")), account=str(row.get("account") or ""), ref=str(row.get("tool") or ""),
-                        text=err[-TEXT_MAX:]))
+                        cohort=model + "·" + served if served else model, duration=seconds,
+                        size=as_int(row.get("size")), account=account,
+                        ref="image:%s/%s/%s" % (event_stamp(at), model or "-", account or "-"),
+                        start=at - seconds if seconds else at, text=err[-TEXT_MAX:]))
     return legs, earliest
 
 
@@ -1239,13 +1244,13 @@ def verdict_of(leg_row):
 
 
 BUG_STATES = ("new", "open", "regressed")
-
-
-def cause_of(leg_row):
-    """One problem: its ledger row, else its word and detail with the numbers blanked."""
-    if leg_row["ledger"] is not None:
-        return leg_row["ledger"]["id"]
-    return "|".join(problem_key(leg_row) + (re.sub(r"\d+", "N", leg_row["detail"]),))
+# The words a bug leg can carry (word_of): a ledger row naming any other word never matches a leg.
+LEDGER_WORDS = frozenset({word for word, origin in FAILURE_ORIGIN.items() if origin == "ours"}
+                         | {word for word, origin in IMAGE_ORIGIN.items() if origin == "ours"}
+                         | {"escaped", "unclassified", "no output", "killed early", "verify failed", "land conflict"})
+WORD_MATCH_KEYS = {"word", "model", "detail", "until"}
+FIX_KEYS = {"at", "by", "files", "in", "regressed_at"}
+BLIND_KEYS = ("id", "what", "reason", "since", "would_catch_if")
 
 
 def word_of(leg_row):
@@ -1267,38 +1272,178 @@ def key_label(key):
     return klass
 
 
+def leg_rule(leg_row):
+    return "leg-escape" if leg_row["class"] == "escaped" else "leg-failure"
+
+
+def leg_id(leg_row, row):
+    """A bug leg's problem id: its ledger row, else its rule, block and word, never text of the leg."""
+    if row is not None:
+        return row["id"]
+    return "%s:%s/%s" % (leg_rule(leg_row), leg_row["block"], word_of(leg_row))
+
+
+def narrow_regex(pattern):
+    """A matcher that matches empty text, or names no three-character literal, matches (nearly) every leg."""
+    if not isinstance(pattern, str) or not re.search(r"[A-Za-z0-9]{3}", pattern):
+        return False
+    try:
+        return re.compile(pattern, re.IGNORECASE).search("") is None
+    except re.error:
+        return False
+
+
+def fix_faults(fix):
+    if not isinstance(fix, dict) or not set(fix) <= FIX_KEYS:
+        return ["a fix is {at, by, files, in, regressed_at}"]
+    faults = []
+    if zoned_epoch(fix.get("at")) is None:
+        faults.append("fix at is no ISO time with offset")
+    if not isinstance(fix.get("by"), str) or not fix["by"].strip():
+        faults.append("fix by names no chat")
+    files = fix.get("files")
+    if not isinstance(files, list) or not all(isinstance(path, str) and "/" in path.strip("/") for path in files):
+        faults.append("fix files are repo/path strings")
+    if fix.get("in") is not None and not FIX_IN_RE.match(str(fix["in"])):
+        faults.append("fix in %r is not repo@hash" % fix["in"])
+    if fix.get("regressed_at") is not None and zoned_epoch(fix["regressed_at"]) is None:
+        faults.append("fix regressed_at is no ISO time")
+    return faults
+
+
+def row_faults(row, ids):
+    """Why one ledger row may not judge: a row the judge cannot trust never matches a leg."""
+    if not isinstance(row, dict):
+        return ["not an object"]
+    faults = []
+    if row.get("block") not in BLOCKS + ("any",):
+        faults.append("block %r" % row.get("block"))
+    status = row.get("status")
+    if status not in LEDGER_STATUSES:
+        faults.append("status %r" % status)
+    if "fixed_in" in row or "fixed_at" in row:
+        faults.append("fixed_in/fixed_at are fixes[]")
+    if not isinstance(row.get("title"), str) or not row["title"].strip():
+        faults.append("no title")
+    if not isinstance(row.get("reviewed_by"), str) or not row["reviewed_by"].strip():
+        faults.append("reviewed_by names no chat")
+    match = row.get("match")
+    if not isinstance(match, dict):
+        faults.append("no match")
+    elif "machinery" in match:
+        if set(match) != {"machinery"} or row.get("block") != "reviewers":
+            faults.append("a machinery row is {machinery} alone on reviewers")
+        if status in DISMISSALS:
+            faults.append("a machinery row matches a whole class: open or fixed, never %s" % status)
+    elif "health" in match:
+        if set(match) != {"health", "key"} or match.get("health") not in HEALTH_RULES:
+            faults.append("a health row is {health, key}")
+        elif not narrow_regex(match.get("key")):
+            faults.append("health key %r matches every item" % match.get("key"))
+    else:
+        if not set(match) <= WORD_MATCH_KEYS or match.get("word") not in LEDGER_WORDS:
+            faults.append("match %r names no bug word" % match)
+        if not (match.get("model") or match.get("detail")):
+            faults.append("a catch-all: word %r with no model or detail" % match.get("word"))
+        for key in ("model", "detail"):
+            if match.get(key) and not narrow_regex(match[key]):
+                faults.append("%s %r matches every leg" % (key, match[key]))
+        if "until" in match and zoned_epoch(match["until"]) is None:
+            faults.append("until is no ISO time with offset")
+    fixes = row.get("fixes")
+    if not isinstance(fixes, list):
+        faults.append("no fixes list")
+        fixes = []
+    for fix in fixes:
+        faults.extend(fix_faults(fix))
+    if status in FIXED_STATUSES and not fixes:
+        faults.append("%s with no fix" % status)
+    elif status == "fixed" and isinstance(fixes[-1], dict) and not fixes[-1].get("in"):
+        faults.append("fixed while its last fix has no commit (fixed-pending)")
+    elif status == "fixed-pending" and isinstance(fixes[-1], dict) and (fixes[-1].get("in") or not fixes[-1].get("files")):
+        faults.append("fixed-pending needs its last fix's files and no commit yet")
+    same = row.get("same_cause")
+    if not isinstance(same, list) or not all(isinstance(other, str) and other in ids and other != row.get("id")
+                                             for other in same):
+        faults.append("same_cause names an id the ledger lacks")
+    if row.get("handoff") is not None and not isinstance(row["handoff"], str):
+        faults.append("handoff is a path or null")
+    return faults
+
+
+def ledger_faults(document):
+    """Every reason the ledger may not judge, one line each, `<where>: <why>`. The doctor drops a faulty
+    row from judging and reports the fault as a problem; the tests hold the committed ledger to none."""
+    if not isinstance(document, dict):
+        return ["ledger: not a JSON object"]
+    faults = []
+    if not isinstance(document.get("owner"), str) or not document["owner"].strip():
+        faults.append("owner: names no chat")
+    owners = document.get("owners")
+    if not isinstance(owners, dict) or set(owners) != set(BLOCKS) \
+            or not all(isinstance(name, str) and name.strip() for name in owners.values()):
+        faults.append("owners: every block names a chat")
+    rows = document.get("rows") if isinstance(document.get("rows"), list) else []
+    ids = [row.get("id") for row in rows if isinstance(row, dict)]
+    for row in rows:
+        where = row.get("id") if isinstance(row, dict) and isinstance(row.get("id"), str) and row["id"] else "?"
+        if ids.count(where) > 1:
+            faults.append("%s: id used twice" % where)
+        faults.extend("%s: %s" % (where, fault) for fault in row_faults(row, ids))
+    spots = document.get("blind_spots")
+    if not isinstance(spots, list):
+        faults.append("blind_spots: not a list")
+        spots = []
+    for spot in spots:
+        if not isinstance(spot, dict) or not all(isinstance(spot.get(key), str) and spot[key].strip()
+                                                  for key in BLIND_KEYS):
+            faults.append("blind_spots: each is {%s}" % ", ".join(BLIND_KEYS))
+    return faults
+
+
+def last_fix_at(row):
+    fixes = row.get("fixes") or []
+    return zoned_epoch(fixes[-1].get("at")) if fixes and isinstance(fixes[-1], dict) else None
+
+
 def load_ledger():
     document = read_json(ledger_path())
-    if not isinstance(document, dict):
-        return {"owners": {}, "rows": [], "machinery": {}}
-    rows, machinery_rows = [], {}
-    for row in document.get("rows") or []:
-        if not isinstance(row, dict) or not isinstance(row.get("match"), dict):
+    faults = ledger_faults(document) if document is not None else ["ledger: missing or not JSON"]
+    document = document if isinstance(document, dict) else {}
+    source = [row for row in document.get("rows") or [] if isinstance(row, dict)]
+    ids = [row.get("id") for row in source]
+    rows, machinery_rows, health_rows = [], {}, []
+    for row in source:
+        if row_faults(row, ids) or ids.count(row.get("id")) > 1:
             continue
-        if row["match"].get("machinery"):
-            compiled = dict(row, _fixed_at=zoned_epoch(row.get("fixed_at")) if row.get("fixed_at") else None)
-            machinery_rows.setdefault(row["match"]["machinery"], compiled)
+        compiled = dict(row, _fixed_at=last_fix_at(row))
+        match = row["match"]
+        if match.get("machinery"):
+            machinery_rows.setdefault(match["machinery"], compiled)
             continue
-        if not row["match"].get("word"):
+        if match.get("health"):
+            compiled["_key"] = re.compile(match["key"], re.IGNORECASE)
+            health_rows.append(compiled)
             continue
-        compiled = dict(row)
-        compiled["_model"] = re.compile(row["match"]["model"]) if row["match"].get("model") else None
-        compiled["_detail"] = re.compile(row["match"]["detail"], re.IGNORECASE) if row["match"].get("detail") else None
-        compiled["_fixed_at"] = zoned_epoch(row.get("fixed_at")) if row.get("fixed_at") else None
-        compiled["_until"] = zoned_epoch(row["match"]["until"]) if row["match"].get("until") else None
+        compiled["_model"] = re.compile(match["model"]) if match.get("model") else None
+        compiled["_detail"] = re.compile(match["detail"], re.IGNORECASE) if match.get("detail") else None
+        compiled["_until"] = zoned_epoch(match["until"]) if match.get("until") else None
         compiled["_specific"] = int(bool(compiled["_model"])) + int(bool(compiled["_detail"])) \
-            + int(row.get("block") not in (None, "any")) + int(compiled["_until"] is not None)
+            + int(row.get("block") != "any") + int(compiled["_until"] is not None)
         rows.append(compiled)
     order = {id(row): index for index, row in enumerate(rows)}
     rows.sort(key=lambda row: (-row["_specific"], order[id(row)]))
     owners = document.get("owners") if isinstance(document.get("owners"), dict) else {}
-    return {"owners": owners, "rows": rows, "machinery": machinery_rows}
+    spots = [spot for spot in document.get("blind_spots") or [] if isinstance(spot, dict)]
+    return {"owner": document.get("owner") or "", "owners": owners, "rows": rows, "machinery": machinery_rows,
+            "health": health_rows, "blind_spots": spots, "faults": faults, "ids": set(ids),
+            "by_id": {row["id"]: row for row in rows + list(machinery_rows.values()) + health_rows}}
 
 
 def ledger_match(ledger, leg_row):
     word = word_of(leg_row)
     for row in ledger["rows"]:
-        if row["match"]["word"] != word or row.get("block") not in ("any", None, leg_row["block"]):
+        if row["match"]["word"] != word or row.get("block") not in ("any", leg_row["block"]):
             continue
         if row["_model"] and not row["_model"].search(leg_row["model"]):
             continue
@@ -1310,8 +1455,14 @@ def ledger_match(ledger, leg_row):
     return None
 
 
+def leg_start(leg_row):
+    start = leg_row.get("start")
+    return start if isinstance(start, (int, float)) else leg_row["at"]
+
+
 def judge_leg_state(ledger, leg_row):
-    """new | open | regressed | fixed | weather — the leg's standing once the ledger has spoken."""
+    """new | open | regressed | fixed | weather — the leg's standing once the ledger has spoken. Only a leg
+    that STARTED after the last fix ran on code that holds it, so only such a leg regresses the fix."""
     verdict = verdict_of(leg_row)
     if verdict != "bug":
         return verdict, None
@@ -1319,12 +1470,25 @@ def judge_leg_state(ledger, leg_row):
     if row is None:
         return "new", None
     status = row.get("status")
-    if status in ("not-a-bug", "weather"):
+    if status in DISMISSALS:
         return "weather", row
-    if status == "fixed":
+    if status in FIXED_STATUSES:
         fixed_at = row["_fixed_at"]
-        return ("regressed" if fixed_at is None or leg_row["at"] > fixed_at else "fixed"), row
+        return ("regressed" if fixed_at is None or leg_start(leg_row) > fixed_at else "fixed"), row
     return "open", row
+
+
+def mark_problems(ledger, legs):
+    """Each leg's state, ledger row and problem id (`pid`); a superseded attempt that failed on our side
+    keeps the id it would carry as a final one in `hidden`, so a cause a retry hides still adds up."""
+    for leg_row in legs:
+        leg_row["state"], leg_row["ledger"] = judge_leg_state(ledger, leg_row)
+        if leg_row["state"] in BUG_STATES + ("fixed",):
+            leg_row["pid"] = leg_id(leg_row, leg_row["ledger"])
+        else:
+            leg_row["pid"] = leg_row["ledger"]["id"] if leg_row["ledger"] is not None else ""
+        if leg_row["attempt"] == "superseded" and leg_row["class"] == "failed" and leg_row["origin"] != "theirs":
+            leg_row["hidden"] = leg_id(leg_row, ledger_match(ledger, leg_row))
 
 
 def local_day(epoch):
@@ -1342,23 +1506,22 @@ def day_start(day):
 
 def rollup_key(leg_row):
     klass, reason, origin = problem_key(leg_row)
-    ledger_id = leg_row["ledger"]["id"] if leg_row["ledger"] is not None else ""
-    return "|".join((leg_row["block"], leg_row["model"], klass, reason, origin, ledger_id))
+    return "|".join((leg_row["block"], leg_row["model"], klass, reason, origin, leg_row.get("pid") or ""))
 
 
 def relabel_frozen(counts, ledger, at):
-    """A day frozen before its cause got a ledger row keeps the empty id; a row that needs no detail
-    text to match claims those counts, so the problem's history follows it into the ledger."""
+    """A frozen day keeps the id its bug legs had then: none, or a ledger row since deleted. Such counts
+    move to the row that claims them without detail text, else to the unledgered id the split gives them,
+    so a problem's sparkline holds its own history and no other's."""
     relabeled = {}
     for key, value in counts.items():
         fields = key.split("|")
         bug = len(fields) == 6 and (fields[2] == "escaped" or (fields[2] == "failed" and fields[4] != "theirs"))
-        if bug and not fields[5]:
-            row = ledger_match(ledger, {"block": fields[0], "model": fields[1], "class": fields[2],
-                                        "reason": fields[3] if fields[2] == "failed" else fields[2],
-                                        "text": "", "detail": "", "at": at})
-            if row is not None and row["_detail"] is None:
-                fields[5] = row["id"]
+        if bug and ":" not in fields[5] and fields[5] not in ledger["by_id"]:
+            synthetic = {"block": fields[0], "model": fields[1], "class": fields[2],
+                         "reason": fields[3] if fields[2] == "failed" else fields[2], "text": "", "detail": "", "at": at}
+            row = ledger_match(ledger, synthetic)
+            fields[5] = leg_id(synthetic, row if row is not None and row["_detail"] is None else None)
         relabeled["|".join(fields)] = relabeled.get("|".join(fields), 0) + value
     return relabeled
 
@@ -1436,24 +1599,102 @@ def top_counts(counter, limit):
     return [name for name, _ in sorted(counter.items(), key=lambda pair: (-pair[1], pair[0]))[:limit]]
 
 
+def iso_time(epoch):
+    if not isinstance(epoch, (int, float)):
+        return None
+    return datetime.datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
+
+
+def excerpt_of(leg_row):
+    """At most EXCERPT_MAX characters of the raw text the matcher read, around what it matched."""
+    text = (leg_row.get("text") or "").strip()
+    if leg_row["class"] == "failed":
+        for word, pattern in FAILURE_REASONS + IMAGE_REASONS:
+            found = pattern.search(text) if word == leg_row["reason"] else None
+            if found:
+                begin = max(0, min(found.start() - EXCERPT_MAX // 3, len(text) - EXCERPT_MAX))
+                return text[begin:begin + EXCERPT_MAX]
+    return (text[-EXCERPT_MAX:] if leg_row["class"] == "failed" else "") or leg_row["detail"][:EXCERPT_MAX]
+
+
+def evidence_of(rows):
+    """Up to EVIDENCE_MAX events, newest first, one per event ref."""
+    seen, found = set(), []
+    for leg_row in sorted(rows, key=lambda item: -item["at"]):
+        if leg_row["event"] in seen:
+            continue
+        seen.add(leg_row["event"])
+        found.append({"at": iso_time(leg_row["at"]), "ref": leg_row["event"], "account": leg_row.get("account") or "",
+                      "excerpt": excerpt_of(leg_row)})
+        if len(found) == EVIDENCE_MAX:
+            break
+    return found
+
+
 def incident_of(leg_row, now):
     age = max(0, int(now - leg_row["at"]))
-    return {"age_s": age, "age": age_text(age), "model": leg_row["model"], "surface": leg_row["surface"],
-            "project": leg_row["project"], "tier": leg_row["tier"], "attempt": leg_row["attempt"],
-            "detail": leg_row["detail"][:DETAIL_MAX], "ref": leg_row["ref"], "session": leg_row["session"], "chat": ""}
+    return {"age_s": age, "age": age_text(age), "at": int(leg_row["at"]), "model": leg_row["model"],
+            "surface": leg_row["surface"], "project": leg_row["project"], "tier": leg_row["tier"],
+            "attempt": leg_row["attempt"], "detail": leg_row["detail"][:DETAIL_MAX], "ref": leg_row["ref"],
+            "event": leg_row["event"], "account": leg_row.get("account") or "", "session": leg_row["session"],
+            "chat": ""}
 
 
 def ledger_view(row):
     if row is None:
         return None
     return {key: row.get(key) for key in
-            ("id", "title", "status", "fixed_in", "fixed_at", "last_reviewed", "reviewed_by", "note")}
+            ("id", "title", "status", "fixes", "same_cause", "last_reviewed", "reviewed_by", "note", "handoff")}
 
 
 def days_since(date_text, now):
     epoch = zoned_epoch(date_text + "T00:00:00") if isinstance(date_text, str) and len(date_text) == 10 \
         else zoned_epoch(date_text)
     return None if epoch is None else max(0, int((now - epoch) // 86400))
+
+
+def proof(row, legs):
+    """(events, matched) since the row's last fix: the final legs its matcher could have met that started
+    after the fix, and how many of them it met."""
+    fixed_at = row["_fixed_at"]
+    events = matched = 0
+    for leg_row in legs:
+        if fixed_at is None or leg_row["attempt"] != "final" or leg_start(leg_row) <= fixed_at:
+            continue
+        if row.get("block") not in ("any", leg_row["block"]):
+            continue
+        if row.get("_model") and not row["_model"].search(leg_row["model"]):
+            continue
+        events += 1
+        matched += int(leg_row.get("pid") == row["id"] and leg_row["state"] == "regressed")
+    return events, matched
+
+
+def proof_text(row, legs, now):
+    events, matched = proof(row, legs)
+    since = days_since((row.get("fixes") or [{}])[-1].get("at"), now)
+    return "%s %s· %d since · %d matched%s" % (
+        "fix pending commit" if row.get("status") == "fixed-pending" else "fixed",
+        "%dd " % since if since is not None else "", events, matched, " · unproven" if events < PROOF_MIN else "")
+
+
+def seen_span(legs):
+    """pid → (first start, last end) over every loaded leg of a bug problem."""
+    span = {}
+    for leg_row in legs:
+        if leg_row.get("pid") and leg_row["state"] in BUG_STATES + ("fixed",):
+            first, last = span.get(leg_row["pid"], (leg_start(leg_row), leg_row["at"]))
+            span[leg_row["pid"]] = (min(first, leg_start(leg_row)), max(last, leg_row["at"]))
+    return span
+
+
+def recovered_of(window):
+    """hidden id → [lost attempts] of the superseded legs that failed on our side before a retry won."""
+    hidden = {}
+    for leg_row in window:
+        if leg_row.get("hidden"):
+            hidden.setdefault(leg_row["hidden"], []).append(leg_row)
+    return hidden
 
 
 def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
@@ -1463,19 +1704,22 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
     days = sorted(daily)
     base_days = [day for day in days if day_start(day) + 86400 <= window_cutoff and block in daily[day]["covered"]]
     base_legs = sum(value for day in base_days for key, value in daily[day]["legs"].items() if key.startswith(prefix))
+    span, hidden = seen_span(legs), recovered_of(window)
     groups = {}
     for leg_row in window:
         state, row = leg_row["state"], leg_row["ledger"]
         if state == "clean":
             continue
         key = problem_key(leg_row)
-        group_id = ("weather" if state == "weather" else "bug", key, row["id"] if row is not None else "")
+        group_id = ("bug", leg_row["pid"]) if state in BUG_STATES + ("fixed",) else ("weather", key, leg_row["pid"])
         group = groups.setdefault(group_id, {"key": key, "ledger": row, "legs": [], "states": {}})
         group["legs"].append(leg_row)
         group["states"][state] = group["states"].get(state, 0) + 1
     problems = []
-    for (group_kind, key, ledger_id), group in groups.items():
-        dismissed = group_kind == "weather" and bool(ledger_id)
+    for group_id, group in groups.items():
+        pid = group_id[1] if group_id[0] == "bug" else ""
+        key = group["key"]
+        dismissed = group_id[0] == "weather" and bool(group_id[2])
         states = group["states"]
         bug_count = states.get("new", 0) + states.get("open", 0) + states.get("regressed", 0)
         fixed_count = states.get("fixed", 0)
@@ -1490,9 +1734,7 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
         elif states.get("open"):
             status, status_text = "open", "open"
         elif fixed_count:
-            since = days_since(row.get("fixed_at"), now) if row else None
-            status = "fixed"
-            status_text = "fixed %s · 0 since" % ("%dd" % since if since is not None else "")
+            status, status_text = "fixed", proof_text(row, legs, now)
         else:
             status = "not-a-bug" if dismissed else "weather"
             status_text = "not a bug" if dismissed else ""
@@ -1506,34 +1748,39 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
             total = 0
             for rolled, value in daily[day]["counts"].items():
                 fields = rolled.split("|")
-                if rolled.startswith(prefix) and len(fields) == 6 \
-                        and tuple(fields[2:5]) == key and fields[5] == ledger_id:
+                if not rolled.startswith(prefix) or len(fields) != 6:
+                    continue
+                if (fields[5] == pid) if pid else (tuple(fields[2:5]) == key and fields[5] == group_id[2]):
                     total += value
             series.append(total)
         count = bug_count or fixed_count or weather_count
         base_count = sum(value for day, value in zip(days, series) if day in base_days)
         last = max(leg_row["at"] for leg_row in group["legs"])
         looked = days_since(row.get("last_reviewed"), now) if row is not None else None
+        lost = hidden.get(pid, []) if pid else []
         problems.append({
+            "id": pid or None, "rule": leg_rule(group["legs"][0]) if pid else None,
             "kind": kind, "label": key_label(key) + (" · not a bug" if dismissed else ""),
             "class": key[0], "reason": key[1], "origin": key[2],
             "models": top_counts(model_counter, TOP_MAX), "count": count,
             "trend": trend_mark(count, window_legs, base_count, base_legs) if kind != "fixed" else "",
             "daily": series, "spark": spark(series),
+            "first_seen": iso_time(span[pid][0]) if pid in span else None,
             "last_seen_s": max(0, int(now - last)), "last_seen": age_text(max(0, int(now - last))),
             "status": status, "status_text": status_text,
             "looked": "" if looked is None else "looked at %dd ago" % looked,
             "ledger": ledger_view(row),
+            "recovered": len(lost), "lost_s": int(sum(item["duration"] or 0 for item in lost)),
             "incidents": [incident_of(leg_row, now) for leg_row in
                           sorted(group["legs"], key=lambda item: -item["at"])[:MAX_INCIDENTS]],
             "incidents_total": len(group["legs"]),
         })
     rank = {"regressed": 0, "new": 1, "open": 2, "fixed": 3, "not-a-bug": 4, "weather": 5}
     problems.sort(key=lambda item: (rank[item["status"]], -item["count"], item["label"]))
-    bugs = len({cause_of(leg_row) for leg_row in window if leg_row["state"] in BUG_STATES})
+    bug_ids = {leg_row["pid"] for leg_row in window if leg_row["state"] in BUG_STATES}
     weather = sum(1 for leg_row in window if leg_row["state"] == "weather")
     top = {}
-    top_pool = [leg_row for leg_row in window if leg_row["state"] in ("new", "open", "regressed")] \
+    top_pool = [leg_row for leg_row in window if leg_row["state"] in BUG_STATES] \
         or [leg_row for leg_row in window if leg_row["state"] == "weather" and leg_row["attempt"] != "superseded"]
     for leg_row in top_pool:
         name = "%s %s" % (leg_row["model"], leg_row["reason"] if leg_row["class"] == "failed" else leg_row["class"])
@@ -1545,7 +1792,7 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
         if leg_row["attempt"] == "final":
             entry["legs"] += 1
         if leg_row["state"] in BUG_STATES:
-            entry["causes"].add(cause_of(leg_row))
+            entry["causes"].add(leg_row["pid"])
         elif leg_row["state"] == "weather":
             entry["weather"] += 1
         column = None
@@ -1561,17 +1808,21 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
         entry["bugs"] = len(entry.pop("causes"))
     model_rows = sorted((entry for entry in models.values() if entry["model"]),
                         key=lambda item: (-item["bugs"], -item["weather"], -item["legs"], item["model"]))
+    ratios = [leg_row["duration"] / leg_row["baseline"] for leg_row in window
+              if leg_row.get("baseline") and leg_row["duration"]]
     return {
         "block": block, "owner": ledger["owners"].get(block) or "",
         "legs": window_legs,
-        "bugs": bugs, "weather": weather,
-        "new": len({cause_of(leg_row) for leg_row in window if leg_row["state"] == "new"}),
-        "regressed": len({cause_of(leg_row) for leg_row in window if leg_row["state"] == "regressed"}),
+        "bugs": len(bug_ids), "weather": weather,
+        "new": len({leg_row["pid"] for leg_row in window if leg_row["state"] == "new"}),
+        "regressed": len({leg_row["pid"] for leg_row in window if leg_row["state"] == "regressed"}),
         "top": " · ".join("%s ×%d" % (name, top[name]) for name in top_counts(top, TOP_MAX)),
-        "top_kind": "bug" if bugs else ("weather" if top else ""),
+        "top_kind": "bug" if bug_ids else ("weather" if top else ""),
         "coverage_from": int(coverage[block]) if coverage.get(block) else None,
         "speed": {"judged": sum(1 for leg_row in window if leg_row.get("baseline") is not None),
-                  "unjudged": sum(1 for leg_row in window if "baseline" in leg_row and leg_row["baseline"] is None)},
+                  "unjudged": sum(1 for leg_row in window if "baseline" in leg_row and leg_row["baseline"] is None),
+                  "ratio_p50": round(gemini.percentile(ratios, 0.5), 2) if ratios else None,
+                  "ratio_p95": round(gemini.percentile(ratios, 0.95), 2) if ratios else None},
         "problems": problems,
         "models": [{"model": entry["model"], "legs": entry["legs"], "bugs": entry["bugs"],
                     "weather": entry["weather"],
@@ -1580,13 +1831,69 @@ def build_block(block, legs, ledger, daily, window_cutoff, now, coverage):
     }
 
 
+def problem(pid, rule, state, fact, value, limit, unit, window_h, exposure, count, span, evidence, ledger_id, **extra):
+    entry = {"id": pid, "rule": rule, "state": state, "fact": fact, "value": value, "limit": limit, "unit": unit,
+             "window_h": window_h, "exposure": exposure, "count": count,
+             "first_seen": iso_time(span[0]) if span else None, "last_seen": iso_time(span[1]) if span else None,
+             "evidence": evidence, "ledger": ledger_id}
+    entry.update(extra)
+    return entry
+
+
+def leg_problems(ledger, legs, window_cutoff, window_h, now):
+    """The contract's problems for legs: one per bug id in the window, a cause retries keep hiding as
+    `watch`, and every fixed row still short of its proof."""
+    window = [leg_row for leg_row in legs if leg_row["at"] >= window_cutoff]
+    span, hidden, by_pid = seen_span(legs), recovered_of(window), {}
+    for leg_row in window:
+        if leg_row["state"] in BUG_STATES:
+            by_pid.setdefault(leg_row["pid"], []).append(leg_row)
+    problems = []
+    for pid, rows in sorted(by_pid.items()):
+        states = {leg_row["state"] for leg_row in rows}
+        state = "regressed" if "regressed" in states else ("new" if "new" in states else "open")
+        row = rows[0]["ledger"]
+        blocks = sorted({leg_row["block"] for leg_row in rows})
+        exposure = sum(1 for leg_row in window if leg_row["attempt"] == "final" and leg_row["block"] in blocks
+                       and not (row and row.get("_model") and not row["_model"].search(leg_row["model"])))
+        lost = hidden.get(pid, [])
+        fact = "%s: %s ×%d in %s%s" % ("+".join(blocks), key_label(problem_key(rows[0])), len(rows),
+                                       window_text(window_h), " · " + row["title"] if row else "")
+        problems.append(problem(pid, leg_rule(rows[0]), state, fact, len(rows), 0, "legs", window_h, exposure,
+                                len(rows), span.get(pid), evidence_of(rows), row["id"] if row else None,
+                                recovered=len(lost), lost_s=int(sum(item["duration"] or 0 for item in lost))))
+    for pid, rows in sorted(hidden.items()):
+        if pid in by_pid or len(rows) < RECOVERED_MIN:
+            continue
+        blocks = sorted({leg_row["block"] for leg_row in rows})
+        fact = "%s: %s ×%d in %s, each hidden by a retry that won" % (
+            "+".join(blocks), key_label(("failed", rows[0]["reason"], rows[0]["origin"])), len(rows),
+            window_text(window_h))
+        problems.append(problem(pid, leg_rule(rows[0]), "watch", fact, len(rows), RECOVERED_MIN, "attempts", window_h,
+                                len(rows), len(rows), (min(leg_start(item) for item in rows),
+                                                       max(item["at"] for item in rows)),
+                                evidence_of(rows), pid if pid in ledger["by_id"] else None,
+                                recovered=len(rows), lost_s=int(sum(item["duration"] or 0 for item in rows))))
+    for row in ledger["rows"]:
+        if row.get("status") not in FIXED_STATUSES or row["id"] in by_pid:
+            continue
+        events, matched = proof(row, legs)
+        if row["status"] == "fixed" and events >= PROOF_MIN:
+            continue
+        state = "fixed-pending" if row["status"] == "fixed-pending" else "watch"
+        problems.append(problem(row["id"], "fix-proof", state, "%s · %s" % (row["title"], proof_text(row, legs, now)),
+                                events, PROOF_MIN, "events since the fix", window_h, events, 0, span.get(row["id"]),
+                                [], row["id"]))
+    return problems
+
+
 def machinery_state(row, details, as_of):
     if row is None:
         return "new"
     status = row.get("status")
-    if status in ("not-a-bug", "weather"):
+    if status in DISMISSALS:
         return "not-a-bug"
-    if status != "fixed":
+    if status not in FIXED_STATUSES:
         return "open"
     fixed_at = row["_fixed_at"]
     for detail in details:
@@ -1597,8 +1904,8 @@ def machinery_state(row, details, as_of):
 
 
 def machinery(ledger, now, window_cutoff):
-    """review-bench doctor's snapshot classes, each held against the ledger like a leg's problem:
-    a class nobody has looked at is new, so the menu title counts only new and regressed ones."""
+    """review-bench doctor's snapshot classes, each held against the ledger like a leg's problem. A class
+    is that detector's own rule: its ledger row matches the whole class."""
     snapshot = read_json(os.path.join(stats_dir(), "doctor-snapshot.json"))
     if not isinstance(snapshot, dict) or not isinstance(snapshot.get("anomalies"), dict):
         return None
@@ -1610,14 +1917,38 @@ def machinery(ledger, now, window_cutoff):
         if not isinstance(count, int) or count <= 0:
             continue
         row = ledger["machinery"].get(name)
-        rows = details.get(name) if isinstance(details.get(name), list) else []
+        rows = [detail for detail in details.get(name) or [] if isinstance(detail, dict)] \
+            if isinstance(details.get(name), list) else []
         classes.append({"class": name, "count": count, "status": machinery_state(row, rows, as_of),
-                        "ledger": ledger_view(row)})
+                        "ledger": ledger_view(row), "rows": rows})
     stale = as_of < window_cutoff
     return {"as_of": snapshot.get("as_of"), "total": snapshot.get("total"), "anomalies": snapshot["anomalies"],
             "classes": classes, "stale": stale,
-            "issues": 0 if stale else sum(item["count"] for item in classes
-                                          if item["status"] in ("new", "open", "regressed"))}
+            "issues": 0 if stale else sum(item["count"] for item in classes if item["status"] in COUNTED)}
+
+
+def machinery_problems(found, window_h):
+    if not found or found["stale"]:
+        return []
+    as_of = found["as_of"] if isinstance(found["as_of"], (int, float)) else None
+    problems = []
+    for item in found["classes"]:
+        if item["status"] not in COUNTED:
+            continue
+        ages = [row["age_s"] for row in item["rows"] if isinstance(row.get("age_s"), (int, float))]
+        span = (as_of - max(ages), as_of - min(ages)) if ages and as_of is not None else None
+        evidence = [{"at": iso_time(as_of - row["age_s"]) if as_of is not None and isinstance(row.get("age_s"), (int, float))
+                     else iso_time(as_of), "ref": "snapshot:%s/%s" % (item["class"], row.get("id") or "?"), "account": "",
+                     "excerpt": " · ".join(str(row.get(key) or "") for key in ("where", "label"))[:EXCERPT_MAX]}
+                    for row in item["rows"][:EVIDENCE_MAX]]
+        ledger_id = item["ledger"]["id"] if item["ledger"] else None
+        fact = "review machinery %s: %d in the snapshot%s" % (
+            item["class"], item["count"], " · " + item["ledger"]["title"] if item["ledger"] else "")
+        problems.append(problem(ledger_id or "machinery:%s" % item["class"], "machinery", item["status"], fact,
+                                item["count"], 0, "anomalies", window_h, 0, item["count"], span, evidence, ledger_id))
+    for item in found["classes"]:
+        item.pop("rows", None)
+    return problems
 
 
 _CHAT_SOURCES = []
@@ -1639,199 +1970,90 @@ def name_chats(rows):
             or chat_title(row["session"], launchers=launchers, store=store) or "unnamed chat"
 
 
-def health_row(name, items, notes=()):
+_NEAR = {}
+def limits():
+    return {name: globals()[name] for name in LIMIT_NAMES}
+
+
+def near_miss(limit_name, value, unit, at, ref):
+    """Keep the largest value a threshold rule measured under its limit, so a cost below the line stays visible."""
+    entry = _NEAR.setdefault(limit_name, {"limit_name": limit_name, "value": None, "limit": globals()[limit_name],
+                                          "unit": unit, "count": 0, "at": None, "ref": ""})
+    entry["count"] += 1
+    if entry["value"] is None or value > entry["value"]:
+        entry.update(value=int(value), at=iso_time(at), ref=ref)
+
+
+def health_row(name, items, notes=(), exposure=0):
     name_chats(list(items.values()))
-    merged = {}
+    merged, rules = {}, {}
     for item in items.values():
-        into = merged.setdefault((item["label"], item["chat"]), dict(item, count=0, last=0, lines=0, repeats=0))
-        into["count"] += item["count"]
+        rule = rules.setdefault((item["rule"], item["key"]), {"rule": item["rule"], "key": item["key"], "count": 0,
+                                                              "first": None, "last": 0, "value": None, "events": []})
+        rule["count"] += item["count"]
+        rule["first"] = min(rule["first"] or item["first"], item["first"])
+        rule["last"] = max(rule["last"], item["last"])
+        if item["value"] is not None:
+            rule["value"] = max(rule["value"] or item["value"], item["value"])
+        rule["events"].extend(item["events"])
+        into = merged.setdefault((item["label"], item["chat"]), dict(
+            {key: value for key, value in item.items() if key not in ("events", "first", "value")},
+            count=0, last=0, lines=0, repeats=0))
+        for key in ("count", "lines", "repeats"):
+            into[key] += item[key]
         into["last"] = max(into["last"], item["last"])
-        into["lines"] += item["lines"]
-        into["repeats"] += item["repeats"]
-    items = sorted(merged.values(), key=lambda item: -item["last"])
+    items = sorted(merged.values(), key=lambda entry: -entry["last"])
+    for rule in rules.values():
+        rule["events"] = sorted(rule["events"], key=lambda event: -event[0])[:EVIDENCE_MAX]
     count = sum(item["count"] for item in items)
-    return {"name": name, "status": "problem" if count else "ok", "count": count,
-            "items": items, "notes": list(notes)}
+    return {"name": name, "status": "problem" if count else "ok", "count": count, "items": items,
+            "notes": list(notes), "exposure": exposure,
+            "rules": sorted(rules.values(), key=lambda rule: (rule["rule"], rule["key"]))}
 
 
-def add_item(items, label, at, lines=0, session="", chat="", repeats=1):
+def add_item(items, label, at, lines=0, session="", chat="", repeats=1, rule="", key="", value=None, ref="",
+             excerpt=""):
     session = str(session or "")
     chat = re.sub(r" \([0-9a-f]{8}\)$", "", str(chat or ""))
-    item = items.setdefault((label, session or chat), {"label": label, "session": session, "chat": "",
-                                                       "count": 0, "last": 0, "lines": 0, "repeats": 0})
+    item = items.setdefault((label, session or chat), {"label": label, "session": session, "chat": "", "rule": rule,
+                                                       "key": key, "count": 0, "first": at, "last": 0, "lines": 0,
+                                                       "repeats": 0, "value": None, "events": []})
     if chat and chat != session and not item["chat"]:
         item["chat"] = chat
     item["count"] += 1
+    item["first"] = min(item["first"], at)
     item["last"] = max(item["last"], at)
     item["lines"] += lines
     item["repeats"] += repeats
+    if isinstance(value, (int, float)):
+        item["value"] = max(item["value"] or value, value)
+    item["events"].append((at, ref, str(excerpt or "")[:EXCERPT_MAX]))
 
 
-def hooks_health(cutoff, now):
-    """Hook failures, asks the model left unanswered, and word notices it gave no reading line."""
-    items, asked, notes, streaks, last_stop = {}, {}, [], {}, None
-    journal = read_jsonl(stop_journal())
-    if not journal and not os.path.exists(stop_journal()):
-        notes.append("stop journal not found")
-    for row in journal:
-        at = iso_epoch(row.get("ts"))
-        if at is not None:
-            last_stop = max(last_stop or at, at)
-        if at is None or not cutoff <= at <= now + 3600:
+def health_problems(row, ledger, window_h):
+    """The contract's problems for one health row: one per rule and identity key."""
+    problems = []
+    for rule in row["rules"]:
+        computed = "%s:%s" % (rule["rule"], rule["key"]) if rule["key"] else rule["rule"]
+        match = next((entry for entry in ledger["health"] if entry["match"]["health"] == row["name"]
+                      and entry["_key"].search(computed)), None)
+        status = match.get("status") if match else None
+        if status in DISMISSALS:
             continue
-        deferred(streaks, items, row, at)
-        for hook in row.get("hooks") or []:
-            if not isinstance(hook, dict):
+        if status in FIXED_STATUSES:
+            if match["_fixed_at"] is not None and rule["last"] <= match["_fixed_at"]:
                 continue
-            name, outcome, reason = str(hook.get("name") or "?"), hook.get("outcome"), str(hook.get("reason") or "")
-            session = row.get("session")
-            if outcome == "error":
-                add_item(items, "%s: %s" % (name, reason or "error"), at, session=session)
-            elif outcome == "held":
-                add_item(items, "%s: held a run no relay owns" % name, at, session=session)
-            elif outcome == "asked":
-                key = (session, name, reason[:120])
-                if row.get("busy"):
-                    add_item(items, "%s: asked while busy" % name, at, session=session)
-                elif key in asked and at - asked[key] <= STOP_REPEAT_S:
-                    add_item(items, "%s: same ask again within 30 min" % name, at, session=session)
-                asked[key] = at
-    rows, marks = [], {}
-    for row in read_jsonl(words_journal()):
-        if row.get("mark"):
-            marks[row.get("ref")] = row["mark"]
-        elif isinstance(row.get("ts"), (int, float)) and cutoff <= row["ts"] <= now + 3600:
-            rows.append(row)
-    for row in rows:
-        if row.get("silent") or not (row.get("hook") or row.get("unprompted")):
-            continue
-        mark = marks.get("%s:%s" % (row.get("ts"), row.get("session")))
-        if mark == "miss" or (row.get("match") is False and mark != "ok"):
-            label = ("⚡ reading with no notice: %s" % "; ".join(row.get("model") or [])[:40]
-                     if row.get("unprompted") else
-                     "word notice with no reading: %s" % str(row.get("hook"))[:40])
-            add_item(items, label, row["ts"], session=row.get("session"), chat=row.get("chat"))
-    for session, (_, first, last) in streaks.items():
-        if last - first >= DEFERRED_S:
-            add_item(items, "asks deferred over 2 h: %s" % session[1], last, session=session[0])
-    active, _ = newest_transcript()
-    if active and active - (last_stop or 0) > SILENT_S and active >= cutoff:
-        add_item(items, "stop-dispatch.sh: no journal line while chats ran", last_stop or cutoff)
-    return health_row("hooks", items, notes)
-
-
-def deferred(streaks, items, row, at):
-    """Per (session, reason) the span of consecutive stops whose every ask was deferred, busy or re-entered.
-
-    A deferral is the rule working, one that never ends is an ask nobody will ever see."""
-    session = str(row.get("session") or "")
-    asks = [hook for hook in row.get("hooks") or [] if isinstance(hook, dict)
-            and str(hook.get("name") or "").startswith("ask-")]
-    if not asks:
-        return
-    outcomes = {hook.get("outcome") for hook in asks}
-    reason = ("busy " + str(row.get("busy") or "").split(":", 1)[0] if outcomes == {"skipped-busy"} else
-              "stop hook active" if outcomes == {"skipped-active"} else "")
-    for key in [key for key in streaks if key[0] == session and key[1] != reason]:
-        streak = streaks.pop(key)
-        if streak[2] - streak[1] >= DEFERRED_S:
-            add_item(items, "asks deferred over 2 h: %s" % key[1], streak[2], session=session)
-    if reason:
-        streak = streaks.setdefault((session, reason), [reason, at, at])
-        streak[2] = max(streak[2], at)
-
-
-def short_path(path):
-    return "/".join(str(path).rstrip("/").split("/")[-2:])
-
-
-def gate_verdict(decisions, path, at):
-    """`passed` when a gate priced or passed this write, `denied` when it only refused one, else None."""
-    names = {path, os.path.realpath(path)}
-    verdict = None
-    for row in decisions:
-        if not at - GATE_BEFORE_S <= row["at"] <= at + GATE_AFTER_S:
-            continue
-        if not names & {row.get("file"), row.get("real")}:
-            continue
-        if row.get("decision") in ("passed", "span-pass", "granted"):
-            return "passed"
-        verdict = "denied"
-    return verdict
-
-
-def change_writer(row):
-    """(session, chat) of whoever wrote a journaled change: the session only when its own call did."""
-    if row.get("writer") == "this-call":
-        return row.get("sid") or "", row.get("chat") or ""
-    if row.get("source") == "watcher" and row.get("sid"):
-        # The watcher names every chat with a call in flight at the write, likeliest first.
-        others = row["writers"] - 1 if isinstance(row.get("writers"), int) else \
-            str(row.get("writer") or "").count("), ")
-        if not others:
-            return row["sid"], row.get("chat") or ""
-        return "", "likely %s, %d more in flight" % (
-            re.sub(r" \([0-9a-f]{8}\)$", "", str(row.get("chat") or "unnamed chat"))[:24], others)
-    names = [re.sub(r" \([0-9a-f]{8}\)$", "", str(cand.get("chat") or "unnamed chat"))[:24]
-             for cand in row.get("candidates") or [] if isinstance(cand, dict)]
-    names = [name for name in names if name]
-    return "", "one of: " + ", ".join(names) if names else "writer unknown"
-
-
-def guards_health(cutoff, now):
-    """What the instruction guards let through or could not do: growth of an instruction file no gate priced
-    or passed, forged retry stamps, the guards' own failures, and a watcher or tripwire that went quiet."""
-    items, notes, decisions = {}, [], []
-    state = watch_state()
-    if not os.path.isdir(state):
-        return health_row("guards", items, ["instruction watch state not found"])
-    for row in read_jsonl(os.path.join(state, "gates.jsonl")):
-        at = row.get("at")
-        if not isinstance(at, (int, float)):
-            continue
-        if row.get("decision") == "fault":
-            if cutoff <= at <= now + 3600:
-                add_item(items, "%s gate: %s" % (row.get("gate") or "?", str(row.get("detail") or "fault")[:DETAIL_MAX]),
-                         at, session=row.get("sid"))
+            state = "regressed"
         else:
-            decisions.append(row)
-    for row in read_jsonl(os.path.join(state, "events.jsonl")):
-        at = iso_epoch(row.get("at"))
-        if at is None or not cutoff <= at <= now + 3600:
-            continue
-        kind = row.get("kind") or "change"
-        session, chat = change_writer(row)
-        files = [str(path) for path in row.get("files") or []]
-        if kind in ("change", "changed-between-sessions") and not row.get("reverted"):
-            for path, delta in zip(files, row.get("bytes") or []):
-                if not isinstance(delta, (int, float)) or delta <= GROWTH_MIN_B or path.endswith("/settings.json"):
-                    continue
-                verdict = gate_verdict(decisions, path, at)
-                if verdict != "passed":
-                    add_item(items, "%s grew %s" % (short_path(path), "after a denial" if verdict else
-                                                    "with no gate seeing it"), at, session=session, chat=chat)
-        elif kind == "stamp-forged":
-            add_item(items, "forged retry stamp: %s" % short_path(files[0] if files else "?"), at,
-                     session=row.get("sid"), chat=row.get("chat"))
-        elif kind in ("changed-while-watcher-off", "baseline-missing", "dropped"):
-            add_item(items, {"changed-while-watcher-off": "changed while the watcher was off",
-                             "baseline-missing": "tripwire baseline missing",
-                             "dropped": "change journal dropped records"}[kind], at, session=row.get("sid"),
-                     chat=row.get("chat"))
-    beat = os.path.join(state, "watcher", "heartbeat")
-    born, body = mtime_of(beat), read_text(beat) or ""
-    failure = re.search(r"error=([^\n]+)", body)
-    if born is None:
-        add_item(items, "watcher never started", now)
-    elif now - born > 2 * WATCH_TICK_S:
-        add_item(items, "watcher down", born)
-    elif failure or re.search(r"\broots=0\b", body):
-        add_item(items, "watcher down: %s" % (failure.group(1) if failure else "no root watched")[:DETAIL_MAX], born)
-    baselines = [mtime_of(path) or 0 for path in glob.glob(os.path.join(state, "session-*.tsv"))]
-    _, started = newest_transcript()
-    if started and started - max(baselines or [0]) > SILENT_S and started >= cutoff:
-        add_item(items, "tripwire wrote no baseline while chats started", max(baselines or [cutoff]))
-    return health_row("guards", items, notes)
+            state = "open" if match else "new"
+        label = next((item["label"] for item in row["items"] if item["rule"] == rule["rule"]
+                      and item["key"] == rule["key"]), computed)
+        evidence = [{"at": iso_time(at), "ref": ref, "account": "", "excerpt": excerpt} for at, ref, excerpt in rule["events"]]
+        problems.append(problem(match["id"] if match else computed, rule["rule"], state,
+                                "%s: %s ×%d in %s" % (row["name"], label, rule["count"], window_text(window_h)),
+                                rule["count"], 0, "events", window_h, row["exposure"], rule["count"],
+                                (rule["first"], rule["last"]), evidence, match["id"] if match else None))
+    return problems
 
 
 def open_gaps(window_h):
@@ -1865,40 +2087,156 @@ def debt_health(cutoff, now, window_h):
     dropped unreviewed (losses)."""
     items, notes = {}, []
     gaps, note = open_gaps(window_h)
+    seen = len(gaps)
     causes = {}
     for row in gaps:
         detail = str(row.get("detail") or "")
         # The recorder puts the event's specifics after "<repo>: " (the first capped path, the tool call id):
         # every gap of one kind in one repository is one cause.
         repo = detail.split(": ", 1)[0] if detail.startswith("/") and ": " in detail else ""
-        label = "not recorded: %s" % (row.get("kind") or "gap")
+        kind = str(row.get("kind") or "gap")
+        label = "not recorded: %s" % kind
         if repo:
             label += " in %s" % os.path.basename(repo.rstrip("/"))
-        cause = causes.setdefault((row.get("session"), label, repo or detail), [label, 0, 0])
+        cause = causes.setdefault((row.get("session"), label, repo or detail), [label, 0, 0, kind, repo, detail])
         cause[1] = max(cause[1], row["last"])
         cause[2] += as_int(row.get("count")) or 1
-    for (session, _, _), (label, last, repeats) in causes.items():
-        add_item(items, label, last, session=session, repeats=repeats)
+    for (session, _, _), (label, last, repeats, kind, repo, detail) in causes.items():
+        key = "%s/%s" % (kind, os.path.basename(repo.rstrip("/"))) if repo else kind
+        add_item(items, label, last, session=session, repeats=repeats, rule="debt-gap", key=key,
+                 ref="gaps:%s/%s/%s" % (session or "-", kind, event_stamp(last)), excerpt=detail)
     if note:
         notes.append(note)
     drops = {}
     for row in read_jsonl(os.path.join(debt_dir(), "losses.jsonl")):
         at = row.get("at")
         if isinstance(at, (int, float)) and cutoff <= at <= now + 3600:
+            seen += 1
             session = str(row.get("session") or "")
             chat = "" if session else os.path.basename(str(row.get("repo") or "").rstrip("/"))
             # One row per dropped path; "run <id>: <why>" names the one drop they all came from.
             drop = drops.setdefault((session, chat, row.get("kind") or "?",
-                                     str(row.get("detail") or "").split(": ", 1)[0]), [0, 0])
+                                     str(row.get("detail") or "").split(": ", 1)[0]), [0, 0, ""])
             drop[0] = max(drop[0], at)
             drop[1] += as_int(row.get("lines")) or 0
-    for (session, chat, kind, _), (at, lines) in drops.items():
-        add_item(items, "lost unreviewed: %s" % kind, at, lines, session=session, chat=chat)
-    return health_row("debt", items, notes)
+            drop[2] = drop[2] or str(row.get("detail") or "")
+    for (session, chat, kind, _), (at, lines, detail) in drops.items():
+        add_item(items, "lost unreviewed: %s" % kind, at, lines, session=session, chat=chat, rule="debt-loss",
+                 key=kind, ref="losses:%s/%s" % (event_stamp(at), kind), excerpt=detail)
+    return health_row("debt", items, notes, seen)
+
+
+def git_out(root, *args):
+    try:
+        done = subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout if done.returncode == 0 else None
+
+
+def missing_commit(value):
+    """Why a fix's `repo@hash` names no commit, or None (also when the repository is not here to ask)."""
+    repo, commit = FIX_IN_RE.match(value).groups()
+    root = os.path.join(repos_dir(), repo)
+    if not os.path.isdir(root):
+        return None
+    return None if git_out(root, "cat-file", "-e", commit + "^{commit}") is not None else \
+        "%s is no commit of %s" % (commit, repo)
+
+
+def settle_fixes(ledger):
+    """Turn a fixed-pending row fixed once the sweep has committed its fix, and check every recorded commit.
+    Returns {row id: repo@hash} for the rows it settled and the faults it found."""
+    settled, faults = {}, []
+    for row in list(ledger["by_id"].values()):
+        for index, fix in enumerate(row.get("fixes") or []):
+            if fix.get("in"):
+                fault = missing_commit(fix["in"])
+                if fault:
+                    faults.append("%s: %s" % (row["id"], fault))
+            elif row.get("status") == "fixed-pending" and index == len(row["fixes"]) - 1:
+                found = fix_commit(fix, repos_dir())
+                if found:
+                    settled[row["id"]] = found
+                    row["fixes"] = row["fixes"][:-1] + [dict(fix, **{"in": found})]
+                    row["status"] = "fixed"
+    return settled, faults
+
+
+def write_settled(settled, source):
+    """Record the commits settle_fixes found in the ledger file, unless someone changed it since it was read."""
+    path = ledger_path()
+    if not settled or read_text(path) != source:
+        return
+    document = json.loads(source)
+    for row in document["rows"]:
+        if row.get("id") in settled:
+            row["fixes"][-1]["in"] = settled[row["id"]]
+            row["status"] = "fixed"
+    temporary = "%s.tmp.%d" % (path, os.getpid())
+    try:
+        with open(temporary, "w", encoding="utf-8") as handle:
+            json.dump(document, handle, ensure_ascii=False, indent=1)
+            handle.write("\n")
+        os.replace(temporary, path)
+    except OSError as error:
+        print("llm-doctor: ledger not settled: %s" % error, file=sys.stderr)
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def judge_digest(ledger):
+    """What decides a verdict: this code, its limits and the ledger's dismissal rows. Tracking a fix
+    (open, fixed-pending, fixed, fixes, notes) leaves it unchanged."""
+    digest = hashlib.sha256()
+    with open(os.path.realpath(__file__), "rb") as handle:
+        digest.update(handle.read())
+    dismissals = sorted((row["id"], row.get("block"), row["match"], row["status"]) for row in ledger["by_id"].values()
+                        if row.get("status") in DISMISSALS)
+    digest.update(json.dumps([dismissals, limits()], sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    return digest.hexdigest()
+
+
+def input_state(path, kind="file", fresh_after=None):
+    if kind == "dir":
+        if not os.path.isdir(path):
+            return "missing"
+        try:
+            return "ok" if os.listdir(path) else "empty"
+        except OSError:
+            return "missing"
+    size = file_size(path)
+    if size is None:
+        return "missing"
+    if size == 0:
+        return "empty"
+    if fresh_after is not None and (mtime_of(path) or 0) < fresh_after:
+        return "stale"
+    return "ok"
+
+
+def inputs_of(found, window_cutoff):
+    """Every store the doctor reads; a required one that is not `ok` leaves a rule unable to see."""
+    snapshot = os.path.join(stats_dir(), "doctor-snapshot.json")
+    snapshot_state = input_state(snapshot)
+    if snapshot_state == "ok" and (found is None or found["stale"]):
+        snapshot_state = "stale" if found is not None else "unjoinable"
+    rows = [("bench store", os.path.join(stats_dir(), "benches"), True, input_state(os.path.join(stats_dir(), "benches"), "dir")),
+            ("worker runs", runs_dir(), True, input_state(runs_dir(), "dir")),
+            ("machinery snapshot", snapshot, True, snapshot_state),
+            ("prelaunch log", os.path.join(runs_dir(), "prelaunch.jsonl"), False,
+             input_state(os.path.join(runs_dir(), "prelaunch.jsonl"))),
+            ("image legs", image_log(), False, input_state(image_log())),
+            ("debt store", debt_dir(), False, input_state(debt_dir(), "dir"))]
+    return [{"name": name, "path": path, "required": required, "state": state} for name, path, required, state in rows]
 
 
 def collect(window_h, now, write_daily=False):
+    began = time.monotonic()
+    _NEAR.clear()
     ledger = load_ledger()
+    source = read_text(ledger_path()) or ""
+    settled, commit_faults = settle_fixes(ledger)
     window_cutoff = now - window_h * 3600
     start = min(window_cutoff, now - TREND_DAYS * 86400)
     legs, coverage = [], {}
@@ -1912,20 +2250,53 @@ def collect(window_h, now, write_daily=False):
             coverage[block] = earliest
     mark_slow(legs)
     legs = [leg_row for leg_row in legs if leg_row["at"] >= start]
-    for leg_row in legs:
-        leg_row["state"], leg_row["ledger"] = judge_leg_state(ledger, leg_row)
+    mark_problems(ledger, legs)
     daily = rollup(legs, coverage, now, write_daily, ledger)
     blocks = [build_block(block, legs, ledger, daily, window_cutoff, now, coverage)
               for block in BLOCKS]
     name_chats([incident for block in blocks for problem in block["problems"] for incident in problem["incidents"]])
-    reviewers = blocks[0]
-    reviewers["machinery"] = machinery(ledger, now, window_cutoff)
+    found = machinery(ledger, now, window_cutoff)
+    blocks[0]["machinery"] = found
+    health = [debt_health(window_cutoff, now, window_h)]
+    problems = leg_problems(ledger, legs, window_cutoff, window_h, now) + machinery_problems(found, window_h)
+    for row in health:
+        problems.extend(health_problems(row, ledger, window_h))
+    for fault in ledger["faults"] + commit_faults:
+        where = fault.split(":", 1)[0]
+        problems.append(problem("ledger:%s" % where, "ledger", "new", "ledger %s" % fault, 1, 0, "faults", window_h, 0, 1,
+                                (now, now), [{"at": iso_time(now), "ref": "ledger:%s" % where, "account": "",
+                                              "excerpt": fault[:EXCERPT_MAX]}], None))
+    if write_daily:
+        write_settled(settled, source)
+    inputs = inputs_of(found, window_cutoff)
+    count = sum(1 for item in problems if item["state"] in COUNTED)
+    blind = [item["name"] for item in inputs if item["required"] and item["state"] != "ok"]
     summary = " · ".join("%s %d" % (block["block"], block["bugs"]) for block in blocks if block["bugs"])
-    return {"as_of": int(now), "window_h": window_h, "trend_days": TREND_DAYS,
+    spots = ledger["blind_spots"]
+    return {"contract": CONTRACT, "doctor": "llm", "as_of": iso_time(now), "as_of_s": int(now),
+            "judge": judge_digest(ledger), "status": "blind" if blind else ("problems" if count else "ok"),
+            "problem_count": count, "problems": problems, "blind_spots": spots,
+            "self": {"collector_s": round(time.monotonic() - began, 2), "error": None},
+            "owner": ledger["owner"], "limits": limits(), "near": [_NEAR[name] for name in sorted(_NEAR)],
+            "inputs": inputs, "blind": blind,
+            "window_h": window_h, "trend_days": TREND_DAYS,
             "bugs": sum(block["bugs"] for block in blocks), "summary": summary,
-            "not_measurable": list(NOT_MEASURABLE), "blocks": blocks,
-            "health": [hooks_health(window_cutoff, now), guards_health(window_cutoff, now),
-                       debt_health(window_cutoff, now, window_h)]}
+            "not_measurable": [spot.get("what") or "" for spot in spots], "blocks": blocks, "health": health}
+
+
+def error_report(window_h, now, error):
+    """The document a failed collector leaves: the menu shows the error, never an older document's colour."""
+    ledger = {"by_id": {}, "blind_spots": []}
+    try:
+        ledger = load_ledger()
+        judge = judge_digest(ledger)
+    except Exception:  # noqa: BLE001 - the error document must be written whatever broke
+        judge = None
+    return {"contract": CONTRACT, "doctor": "llm", "as_of": iso_time(now), "as_of_s": int(now), "judge": judge,
+            "status": "error", "problem_count": 0, "problems": [], "blind_spots": ledger["blind_spots"],
+            "self": {"collector_s": None, "error": ("%s: %s" % (type(error).__name__, error)).splitlines()[0][:300]},
+            "window_h": window_h, "trend_days": TREND_DAYS, "bugs": 0, "summary": "", "not_measurable": [],
+            "blocks": [], "health": []}
 
 
 def write_cache(report):
@@ -1941,8 +2312,15 @@ def write_cache(report):
 
 
 def render(report, only=None):
-    lines = ["LLM doctor · %s · %d bug%s" % (window_text(report["window_h"]), report["bugs"],
-                                              "" if report["bugs"] == 1 else "s")]
+    if report["status"] == "error":
+        return "LLM doctor · error · %s\n" % report["self"]["error"]
+    lines = ["LLM doctor · %s · %d problem%s · %d bug%s%s" % (
+        window_text(report["window_h"]), report["problem_count"], "" if report["problem_count"] == 1 else "s",
+        report["bugs"], "" if report["bugs"] == 1 else "s",
+        " · blind: %s" % ", ".join(report["blind"]) if report["blind"] else "")]
+    if not only:
+        for item in report["problems"]:
+            lines.append("  %-13s %s  %s" % (item["state"], item["id"], item["fact"]))
     for block in report["blocks"]:
         if only and block["block"] != only:
             continue
@@ -1982,7 +2360,7 @@ def render(report, only=None):
         lines.append("%s: %s" % (row["name"].capitalize(), "%d problem%s" % (row["count"], "" if row["count"] == 1 else "s")
                                   if row["count"] else "ok"))
         for item in row["items"]:
-            lines.append("  %-4d %4s  %s%s%s%s" % (item["count"], age_text(max(0, report["as_of"] - item["last"])),
+            lines.append("  %-4d %4s  %s%s%s%s" % (item["count"], age_text(max(0, report["as_of_s"] - item["last"])),
                                                    item["chat"] + " · " if item.get("chat") else "", item["label"],
                                                    " · %d lines" % item["lines"] if item["lines"] else "",
                                                    " · seen %d×" % item["repeats"]
@@ -1990,7 +2368,7 @@ def render(report, only=None):
         for note in row["notes"]:
             lines.append("  %s" % note)
     lines.append("")
-    lines.append("not measurable yet: %s" % ", ".join(report["not_measurable"]))
+    lines.append("blind spots: %s" % ", ".join(spot["what"] for spot in report["blind_spots"]))
     return "\n".join(lines) + "\n"
 
 
@@ -2011,7 +2389,11 @@ def main(argv):
     now_override = os.environ.get("LLM_DOCTOR_NOW")
     now = float(now_override) if now_override else time.time()
     write = not (args.dry_run or args.json)
-    report = collect(args.window, now, write_daily=write)
+    try:
+        report = collect(args.window, now, write_daily=write)
+    except Exception as error:  # noqa: BLE001 - a collector failure is written as the document's own error
+        report = error_report(args.window, now, error)
+        print("llm-doctor: collector failed: %s" % report["self"]["error"], file=sys.stderr)
     if write:
         try:
             write_cache(report)
@@ -2019,14 +2401,14 @@ def main(argv):
             print("llm-doctor: cache not written: %s" % error, file=sys.stderr)
             return 1
     if args.quiet:
-        return 0
+        return 1 if report["status"] == "error" else 0
     if args.json:
         shown = report if not args.block else dict(report, blocks=[
             block for block in report["blocks"] if block["block"] == args.block])
         sys.stdout.write(json.dumps(shown, ensure_ascii=False) + "\n")
         return 0
     sys.stdout.write(render(report, args.block))
-    return 0
+    return 1 if report["status"] == "error" else 0
 
 
 if __name__ == "__main__":

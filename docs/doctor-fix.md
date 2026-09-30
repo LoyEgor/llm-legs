@@ -1,0 +1,220 @@
+# Doctor fixer run
+
+One run of one doctor's fixer: by day a chat Egor's Fix button opened, at night a headless worker on
+one area (`docs/night-run.md`). Work autonomously and go deep. Updater release events follow
+`docs/vendor-release.md`; shared shapes are in `docs/doctors-contract.md`.
+
+## 0. Entry
+
+- Run `bin/doctor-fix show <run id>` (a night brief carries it). Per problem: the snapshot, its
+  ledger row, earlier runs' decisions, the component with its files and rule line, each file's first
+  and last 5 commits, and the handoffs, invariant rows and memory files naming it. These ids are your
+  scope; a problem that appeared after launch goes into the report for the next run.
+- Read this common part and your own doctor's section below; skip the other doctors' sections.
+
+## 1. Purpose before fixes
+
+1. For each problem, before deciding anything, name the component that produces or suffers it: a hook, gate, collector, launcher, worker path, or
+   a rule of the doctor itself. The packet names it when existing data can.
+2. Learn why it exists: the packet first, then `git log -S`, the design doc, the handoffs.
+3. Write its goal in one sentence. Then judge two things apart: does it do what it says, and does
+   doing that reach the goal.
+
+   Egor's example: a hook forcing English between models did what it said. It denied a message and
+   made the model write it again. Yet its goal, fewer tokens, was missed, because the rewrite cost
+   more than it saved. Only its history showed that.
+4. A change that turns a row green while the goal stays missed is not a fix.
+
+Each decision line's `purpose` column cites where the goal is stated, and it must touch the
+component: one of its files (`path` or `path:line`), or `repo@hash` of a commit that changed one.
+When the packet names no component file, any file or commit that resolves is accepted.
+`doctor-fix close` refuses anything else.
+
+## 2. Decide every problem
+
+| verdict | when | what you leave behind |
+|---|---|---|
+| `fixed` | a clear bug, or a component of ours that works as specified but misses its goal | the fix (a change or a deletion; deletions beat additions), a test red on the old code, a `fixes[]` entry and status `fixed-pending` per your doctor's section |
+| `ruled-out` | not a bug of ours | an `open` ledger row narrowed to this cause, the reason in its `note`, and a handoff proposing the dismissal to the owner |
+| `weather` | vendor-side or external | the same as `ruled-out` |
+| `blind-spot` | cannot be measured yet | a ledger `blind_spots` row with `would_catch_if` |
+| `handoff` | ambiguous, owned by another chat (a goal miss included), needs Egor's word, or would loosen the judge | `docs/handoffs/<date>-<topic>.md` with a `Status: open` line, addressed to the ledger's `owner` or `owners`, and the row's `handoff` pointing at it |
+
+Clear bugs are fixed, never handed off. A fixer never writes a `not-a-bug` or `weather` row: the
+narrowed `open` row keeps the cause on record without loosening the judge, and the owner decides the
+dismissal.
+
+Done means the run is closed with every `fixed` row at `fixed-pending`. Proof is the doctor's later
+job (your section says what it counts); never wait for it.
+
+## 3. Watch for
+
+- **Repeated or complex fixes.** A row with more than one `fixes[]` entry, or a `same_cause` group,
+  means the earlier fixes missed the cause. Find the shared cause instead of patching again.
+- **No bulk.** No new layer, switch, mode or prose rule where a deletion or an existing mechanism
+  (journals, registries, trackers, word families) does the job.
+- **The doctor's own blind spots, bounded.** When a cause you met was not a problem in the document,
+  add a `blind_spots` row with `would_catch_if`. Record, do not build: a new detector is its owner's
+  work, not a fix run's.
+- **The judge is not yours to loosen.** See your doctor's section.
+
+## 4. Ground rules
+
+- Work in a worktree per repository you change, per `~/.claude/docs/worktrees.md`. By day the
+  branch is `doctor-fix/<run id>`; at night see Night.
+  - By day, pour the result into main uncommitted, as `docs/vendor-release.md` §3 step 14 does.
+    Never revert, stash or overwrite someone else's uncommitted work. Never commit, push or review:
+    Egor's end-of-day pass does all three.
+- Tests use fixtures only. Never point one at `~/.claude-profiles/.claudeb`, and never mutate the
+  live Hammerspoon singleton.
+- A hook or gate change gets an adversarial edge-case critique (missed catches, false catches)
+  before it counts as done. A worker's "done" is a claim: diff every test it changed against HEAD.
+- Comments near zero. Never generate an image.
+
+## 5. Close
+
+1. Rerun the doctor. By day, `bin/llm-doctor --quiet`, `bin/harness-doctor --quiet` or
+   `bin/updater-doctor --quiet` rewrites `latest.json`; at night see Night.
+2. Write a decisions file with one line per problem id of the run:
+   `id<TAB>fixed|ruled-out|weather|blind-spot|handoff<TAB>purpose<TAB>evidence`. `evidence` is a
+   test name, a `file:line`, a document fact or a handoff path. If `judge` moved since launch, add
+   `judge<TAB>changed<TAB>purpose<TAB>why`, the purpose a file of the judge (the doctor or its
+   ledger) or a commit that changed one.
+3. Run `bin/doctor-fix close <run id> --decisions <file> [--doc <document>] <one-line note>`. It
+   refuses until every id is decided and every citation resolves and touches its component, and it
+   refuses an abandoned or failed run.
+4. Rewrite the `Status:` line of every handoff you settled.
+
+## 6. Report
+
+By day to Egor in short Russian, at night to the orchestrator in English: per problem the verdict,
+one line of why and where it was fixed and tested; handoffs and blind spots added; what was poured
+(day) or committed as `repo@hash` (night). No session ids, diffs or transcripts.
+
+## Night
+
+The brief (`<runs>/<id>.brief.md`) names your area, worktree and branch `night/<night-id>/<run-id>`.
+It replaces the pour:
+- Work only in that worktree; a second repository gets its own worktree on the same branch name,
+  started from that repository's `refs/night/<night>/base` (main as pressed, uncommitted work included).
+  Never write a main checkout: hooks and other chats read it.
+- Commit on your branch (one long line). Never push, review or merge: the orchestrator reviews the
+  branch, has you fix findings, rebases and pushes.
+- Never ask Egor anything and never stop on a question: decide, or hand off (§2).
+- Close against a run-local document, never the shared `latest.json` that launchd and other fixers
+  rewrite: from the worktree, `bin/<doctor>-doctor --json > <runs>/<id>.d/latest.json` (live
+  journals, your branch's code and ledger, nothing shared written), then `close … --doc` it. The judge
+  is compared with your branch's base, so a limit or dismissal you changed shows.
+- At the deadline the orchestrator abandons an unfinished run; it closes no more and its branch
+  stays unmerged.
+
+## Updater doctor
+
+Owner: the chat «Updater doctor» (`share/updater-ledger.json` `owner`). Scope at night: the doctor's
+own machinery (`pass-stale`, `pass-failed`, `cli-behind`, `client-too-old`, `probe-broken`,
+`event-stuck`, …); `event-waiting` is `vendor-fingerprint`'s. Read `latest.json` `vendors[]` and
+`blind[]`, then the ledger; recompute with `bin/updater-doctor --json`. The judge (`bin/updater-doctor`,
+its ledger, `LIMITS`, `PASS_OK`) is not yours to loosen; a loosening is a handoff to the owner.
+
+## Harness doctor
+
+Owner: the chat «Harness Doctor» (`share/harness-ledger.json` `owner`). Scope: what makes a chat or
+a worker wait that is not the model — call waits, hook floors, hook cost and cuts, load, tests,
+store growth.
+
+### Read first, in this order
+
+1. `~/.cache/harness-doctor/latest.json`: `status`, `problems[]` (`id`, `rule`, `state`, `value`
+   against `limit`, `exposure`, `evidence[].ref`), `blind_spots[]`, `self`. `status: error` means
+   the collector failed: `self.error` names the exception and its line; fix that first.
+2. `share/harness-ledger.json`: the row named by a problem's `ledger` (the packet shows it).
+3. `docs/harness-doctor-design.md` §3 (signals) and §4 (limits and their calibration) for the rule.
+4. `docs/DIAGNOSTICS.md`, the Harness doctor rows.
+
+`evidence[].ref` names one event: `tool_use <id>`, `test-history <repo> <label> <end>`, a cut's
+event and time, the Stop hooks/Guards refs of design §11, or `holds/<file>` (design §12).
+A `new` problem has no ledger row; add one with a `match` of `{rule, ident}` whose `ident`
+regex matches that problem's identity only: at least 3 literal characters, never the empty ident,
+none of the doctor's random probe idents, and for `not-a-bug`/`weather` one exact ident with no
+pattern. Anything wider is a ledger fault: the row judges nothing and shows as `ledger:<id>`.
+
+### Recompute and prove
+
+- Now, writing nothing: `bin/harness-doctor --json | jq '.problems'`; at a given time prefix
+  `HARNESS_DOCTOR_NOW=<epoch>`. `bash tests/test_harness_doctor.sh` replays the committed fixture
+  `tests/fixtures/harness-calibration/` and pins its problem ids.
+
+Proof (the doctor's, later): `fixed · E events since · 0 matched` with E ≥ 20 (`PROOF_MIN_EXPOSURE`)
+over a window after the fix's `at`; a quiet row alone proves nothing. Record a `fixes[]` entry with
+`in: null` and status `fixed-pending`; the doctor fills `in` once every listed file is committed.
+Never edit `in` by hand.
+
+### The judge is not yours to loosen
+
+The judge is `LIMITS` and the rules in `bin/harness-doctor`, the dismissal rows of
+`share/harness-ledger.json`, and the pins in `tests/test_harness_doctor.sh` (`PINNED`,
+`PROOF_MIN_EXPOSURE`, the ledger guards). `latest.json` `judge` changes whenever any of them does.
+A fixer never raises a limit, widens a `match`, or adds a `not-a-bug`/`weather` row to make a
+problem go away; a loosening goes to the owner chat as a handoff.
+
+### Would the doctor have caught this?
+
+When the cause you fixed was not a problem in `latest.json`, ask that question before closing and
+add a `blind_spots` row to the ledger with `would_catch_if` (§3: record, do not build).
+
+## LLM doctor
+
+Owner: the chat «LLM Doctor меню refactoring» (`share/doctor-ledger.json` `owner`); each block's
+triage chat is in `owners`. Scope: why review cells, worker runs, light runs and image legs fail,
+escape or run slow; the review machinery classes; review-debt health. Stop hooks, word notices and
+the instruction-watch guards are the Harness doctor's.
+
+### Read first, in this order
+
+1. `~/.cache/llm-doctor/latest.json` (`bin/llm-doctor --dry-run --json` prints a fresh one):
+   `status`, `problems[]` (`id`, `rule`, `state`, `value` against `limit`, `exposure`,
+   `evidence[]`), `blind` and `inputs[]` (a required store that is not `ok`), `blind_spots`, `self`.
+   `status: error` means the collector failed: `self.error` names the exception; fix that first.
+2. `share/doctor-ledger.json`: the row named by a problem's `ledger` (the packet shows it).
+3. `bin/llm-doctor --block <block> --dry-run --json`: the block's `problems[]` with the same `id`
+   carry every incident (`event`, `ref`, `detail`, `chat`) and the 14-day `daily` series.
+4. `docs/DIAGNOSTICS.md`, row "Which legs keep failing", and shared-invariants rows `cq`/`cw`.
+
+`evidence[].ref` names one event: `bench:<run>/<rater>#<index>` (a `rater_runs` row),
+`bench:<run>/judge|panel`, `run:<name>[/walled:<account>]`, `prelaunch:<ts>/<account>`,
+`image:<ts>/<tool>/<account>`, `gaps:<session>/<kind>/<at>`, `losses:<at>/<kind>`, `snapshot:<class>/<row>`. A
+`new` problem has no ledger row; add one whose `match` names its word plus a `model` or `detail`
+regex that matches this cause only. A catch-all is a ledger fault: it judges nothing and shows as
+`ledger:<id>`.
+
+Triage notes that outlived their rows: a `pool empty` on reviewers is a cell staffed on a vendor
+closed before its run began (closed mid-run reads `off`; a pool empty only because every account is
+walled is `walled`); a `bad command` is only the CLI's own refusal after launch (a prelaunch
+`EFFORT_REFUSED`/`MODEL_REFUSED` is the guard working, `off`); an `escaped` can be legitimate for a
+cross-repository brief — triage it with a model or detail row, never by dismissing the class.
+
+### Recompute and prove
+
+- Now, writing nothing: `bin/llm-doctor --json | jq '.problems'`; at a given time prefix
+  `LLM_DOCTOR_NOW=<epoch>`; from fixtures `bash tests/test_llm_doctor.sh`.
+
+Proof (the doctor's, later): `fixed Nd · E since · 0 matched` with E ≥ 10 (`PROOF_MIN`) final legs
+of the row's block (and model) that STARTED after the last fix's `at`. Record a `fixes[]` entry
+`{at, by, files, in: null, regressed_at: null}` (`files` as `repo/path`, one repository per entry)
+and status `fixed-pending`; the doctor fills `in` once git shows every file committed after `at`.
+Never edit `in` by hand. A regressed fix keeps its entry (set `regressed_at`); the re-fix is a new one.
+
+### The judge is not yours to loosen
+
+The judge is `bin/llm-doctor` (the vocabulary copied from review-bench `panel.py`, which words are
+`theirs`, the exemptions `PROFILE_HOME_RE`/`MAIN_STATE_RE`/`is_scratch_path`, `PRELAUNCH_SKIP`, and
+the thresholds `limits()` lists), the ledger's `not-a-bug`/`weather` rows, and the pins in
+`tests/test_llm_doctor.sh`. `latest.json` `judge` changes whenever any of them does. A fixer never
+raises a limit, widens a `match`, moves a word to `theirs`, or adds a dismissal to make a problem go
+away; a loosening goes to the ledger's `owner` as a handoff. Caps are caps: an agy cap kill is
+weather, never a reason to drop a cell or a vendor or to raise a cap.
+
+### Would the doctor have caught this?
+
+When the cause you fixed was not a problem in `latest.json`, ask that question before closing and
+add a `blind_spots` row to the ledger with `would_catch_if` (§3: record, do not build).

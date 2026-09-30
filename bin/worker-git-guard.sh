@@ -130,6 +130,22 @@ is_revert_segment() {
   return 1
 }
 
+# A heredoc body is data unless a shell reads it; an unquoted delimiter still runs the body's
+# `$( … )` and backtick spans, so those stay (share/heredoc-mask.sh). Unloadable, bodies stay whole.
+heredoc_wrap='([A-Za-z_][A-Za-z0-9_]*=[^ \t]*|env|command|exec|nohup|sudo|timeout|[0-9]+|-[^ \t]*)[ \t]+'
+heredoc_shell='(eval[ \t]|([^ \t]*/)?((ba|z|k|da|a)?sh)([ \t]|$))'
+heredoc_bodies_cut() {
+  heredoc_mask "^[ \t]*(${heredoc_wrap})*${heredoc_shell}" "[|][ \t]*(${heredoc_wrap})*${heredoc_shell}"
+}
+
+# A body the same command can later run — a script file handed to a shell, `source`, `eval`, sudo —
+# is not data, and nothing here can follow which file it lands in: the body is judged whole.
+body_cut=heredoc_bodies_cut
+self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) && . "${self%/*}/../share/heredoc-mask.sh" 2>/dev/null ||
+  body_cut=cat
+printf '%s' "$command_text" |
+  grep -Eq '(^|[^[:alnum:]_.-])((ba|z|k|da|a|fi)?sh|source|eval|xargs|sudo|exec)([^[:alnum:]_.-]|$)|(^|[;&|(`[:space:]])\.[[:space:]]' &&
+  body_cut=cat
 blocked=0
 while IFS= read -r segment; do
   segment=${segment#"${segment%%[![:space:]]*}"}
@@ -137,9 +153,9 @@ while IFS= read -r segment; do
     blocked=1
     break
   fi
-done < <(printf '%s\n' "$command_text" | tr ';&|()' '\n')
+done < <(printf '%s\n' "$command_text" | "$body_cut" | tr ';&|()' '\n')
 
 [ "$blocked" -eq 1 ] || exit 0
 
-jq -cn '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Shared checkout: uncommitted/untracked changes you did not make this run are other agents'\'' live work, and revert-class git commands (checkout --/restore/reset --hard/clean/stash) are blocked for workers. Do not retry or work around this through other tools. Report the unexpected tree state in your OUTCOME instead — the orchestrator arbitrates. Only a '\''GIT-CLEANUP: allowed'\'' line in the brief unlocks these commands."}}' 2>/dev/null
+jq -cn --arg hook "${0##*/}" '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + "Shared checkout: uncommitted/untracked changes you did not make this run are other agents'\'' live work, and revert-class git commands (checkout --/restore/reset --hard/clean/stash) are blocked for workers. Do not retry or work around this through other tools. Report the unexpected tree state in your OUTCOME instead — the orchestrator arbitrates. Only a '\''GIT-CLEANUP: allowed'\'' line in the brief unlocks these commands.")}}' 2>/dev/null
 exit 0

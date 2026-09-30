@@ -225,7 +225,7 @@ local ok, err = pcall(function()
     local bulkMs = (os.clock() - bulkStart) * 1000
     check(bulkMs < 3000, string.format("a 1502-file legacy record took %.0f ms to render", bulkMs))
     local bulkRow = findRow(bulkItems, " +1501 more")
-    check(bulkRow ~= nil and plain(bulkRow.title):find("+1512", 1, true) ~= nil,
+    check(bulkRow ~= nil and plain(bulkRow.title):find("+1,512 B", 1, true) ~= nil,
         "a legacy record's per-file deltas were not read off its summary: "
         .. (bulkRow and plain(bulkRow.title) or "no row"))
 
@@ -283,6 +283,7 @@ local ok, err = pcall(function()
         check(detail:find("#1", 1, true) ~= nil, "highest weekly reads entry is not rank #1")
         check(detail:find("always", 1, true) ~= nil, "indexed file mode is missing")
         check(not plain(absent.title):find("tok/wk", 1, true), "unindexed path has a top-row price")
+        check(plain(absent.title):find("+184 B", 1, true) ~= nil, "a byte delta carries no unit: " .. plain(absent.title))
         local absentDetail = plain(absent.menu[2].title)
         check(not absentDetail:find("tok/wk", 1, true) and not absentDetail:find("#", 1, true),
             "unindexed path has a price or rank")
@@ -292,7 +293,7 @@ local ok, err = pcall(function()
             local zeroTop, zeroDetail = plain(zeroRow.title), plain(zeroRow.menu[2].title)
             check((zeroTop:match("zero/CLAUDE%.md%s+(%S+)%s*$")) == "reverted",
                 "a reverted zero delta does not show the verb in the top row: " .. zeroTop)
-            check(zeroDetail:find("  0", 1, true) ~= nil and not zeroDetail:find("+0", 1, true),
+            check(zeroDetail:find("  0 B", 1, true) ~= nil and not zeroDetail:find("+0", 1, true),
                 "zero delta is not rendered as 0 in the file row")
             check(not zeroTop:find("tok/wk", 1, true) and not zeroDetail:find("tok/wk", 1, true),
                 "zero delta has a price")
@@ -336,9 +337,9 @@ local ok, err = pcall(function()
     appendEvent("aligned", now, "unused", { indexed, "/tmp/top/f09.md" }, { -32000, 5 })
     local alignedMenu = M.menuItems()[2].menu
     local lineA, lineB = plain(alignedMenu[2].title), plain(alignedMenu[3].title)
-    check(lineA:find("-32k", 1, true) and lineB:find("+5", 1, true) and lineA:find("#1 ", 1, true)
+    check(lineA:find("-32.0 kB", 1, true) and lineB:find("+5 B", 1, true) and lineA:find("#1 ", 1, true)
         and lineB:find("#13", 1, true), "aligned fixture lines lack their cells: [" .. lineA .. "] [" .. lineB .. "]")
-    check(column(lineA, "-32k", true) == column(lineB, "+5", true), "submenu delta column is misaligned")
+    check(column(lineA, "-32.0 kB", true) == column(lineB, "+5 B", true), "submenu delta column is misaligned")
     check(column(lineA, " tok/wk") == column(lineB, " tok/wk"), "submenu price column is misaligned")
     check(column(lineA, "#1", true) == column(lineB, "#13", true), "submenu rank column is misaligned")
     check(column(lineA, "always") ~= nil and column(lineA, "always") == column(lineB, "brief"),
@@ -406,13 +407,13 @@ local ok, err = pcall(function()
         end
         check(after(plain(changedRow.title), "changed.md"):find("-42", 1, true) ~= nil,
             "legacy CHANGED summary delta is missing from the top row")
-        check(after(plain(changedRow.menu[2].title), "changed.md"):find("-42", 1, true) ~= nil,
+        check(after(plain(changedRow.menu[2].title), "changed.md"):find("-42 B", 1, true) ~= nil,
             "legacy CHANGED summary delta is missing from the file line")
         local revertedTop = after(plain(revertedRow.title), "reverted.md")
         check(revertedTop:match("^%s*reverted%s*$") ~= nil,
             "legacy REVERTED top row does not show the verb: " .. revertedTop)
-        check(after(plain(revertedRow.menu[2].title), "reverted.md"):match("^%s*reverted  0%s*$") ~= nil,
-            "legacy REVERTED file line is not reverted  0")
+        check(after(plain(revertedRow.menu[2].title), "reverted.md"):match("^%s*reverted  0 B%s*$") ~= nil,
+            "legacy REVERTED file line is not reverted  0 B")
         check(not after(plain(addedRow.title), "added.md"):find("%d"), "legacy ADDED row shows a delta")
         check(not after(plain(addedRow.menu[2].title), "added.md"):find("%d"), "legacy ADDED file line shows a delta")
         check(type(addedRow.title) == "userdata" and after(addedRow.title:getString(), "added.md"):find("added", 1, true),
@@ -610,11 +611,17 @@ local ok, err = pcall(function()
     for _, dir in ipairs({ wf.home .. "/.claude", wf.repo }) do wantRoots[hs.fs.pathToAbsolute(dir)] = true end
     check(#roots == 2 and wantRoots[roots[1]] and wantRoots[roots[2]],
         "the watcher does not watch exactly ~/.claude and the ranked repository: " .. table.concat(roots, ", "))
-    local liveTitle = M.menuItems()[1].title
-    local live = plain(liveTitle)
-    check(live:find("^watcher: live since ") ~= nil and live:find("· 2 roots · 3 files", 1, true) ~= nil
-        and not isRed(liveTitle), "the liveness line is not green with its counts: " .. live)
-    check(findRow(M.menuItems(), "older in events.jsonl") == nil, "a trailer was shown with nothing hidden")
+    local liveHeartbeat = readFile(heartbeat) or ""
+    check(liveHeartbeat:find("roots=2", 1, true) ~= nil and liveHeartbeat:find("files=3", 1, true) ~= nil,
+        "the heartbeat does not carry its counts: " .. liveHeartbeat)
+    check(findRow(M.menuItems(), "watcher:") == nil and M.watcherAlarm() == nil,
+        "a live watcher still renders a liveness row: " .. plain(M.menuItems()[1].title))
+    local function trailer(items)
+        for _, item in ipairs(items) do
+            if plain(item.title):match("^%+%d+ older$") then return item end
+        end
+    end
+    check(trailer(M.menuItems()) == nil, "a trailer was shown with nothing hidden")
 
     local savedFs = hs.fs
     local scans = 0
@@ -735,11 +742,11 @@ local ok, err = pcall(function()
     local fresh = os.time()
     hs.fs.touch(heartbeat, fresh - 10 * 60, fresh - 10 * 60)
     local downTitle = M.menuItems()[1].title
-    check(plain(downTitle):find("^watcher: DOWN since ") ~= nil and isRed(downTitle),
+    check(plain(downTitle):find("^watcher: down since ") ~= nil and isRed(downTitle),
         "a stale heartbeat does not render a red DOWN line: " .. plain(downTitle))
     write(heartbeat, string.format("since=%d roots=0 files=3\n", fresh), "w")
     local noRoots = M.menuItems()[1].title
-    check(plain(noRoots):find("^watcher: DOWN since ") ~= nil and isRed(noRoots),
+    check(plain(noRoots):find("^watcher: down since ") ~= nil and isRed(noRoots),
         "a heartbeat with no running root does not render DOWN: " .. plain(noRoots))
     os.remove(heartbeat)
     local never = M.menuItems()[1].title
@@ -762,7 +769,7 @@ local ok, err = pcall(function()
             summary = "CHANGED /tmp/older.md (+1 bytes)", bytes = { 1 } })
     end
     local total = #records()
-    check(findRow(M.menuItems(), "+" .. (total - 12) .. " older in events.jsonl") ~= nil,
+    check(trailer(M.menuItems()) ~= nil and plain(trailer(M.menuItems()).title) == "+" .. (total - 12) .. " older",
         "the twelve-row cap hides " .. (total - 12) .. " records without a trailer")
 
     local flood = {}

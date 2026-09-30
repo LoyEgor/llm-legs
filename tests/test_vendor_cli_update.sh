@@ -62,6 +62,13 @@ EOF
 printf '2.1.280\n' >"$FAKE_BIN/ver-claude"
 printf '2.1.280\n' >"$FAKE_BIN/latest-claude"
 export VENDOR_CLI_UPDATE_FINGERPRINT="$FAKE_BIN/fingerprint"
+cat >"$FAKE_BIN/doctor" <<'EOF'
+#!/usr/bin/env bash
+printf 'doctor %s\n' "$*" >>"$CALLS"
+[ ! -e "$FAKE_BIN/doctor-fails" ]
+EOF
+chmod +x "$FAKE_BIN/doctor"
+export VENDOR_CLI_UPDATE_DOCTOR="$FAKE_BIN/doctor"
 cat >"$FAKE_BIN/npm" <<'EOF'
 #!/usr/bin/env bash
 name() { case $1 in @openai/codex*) printf codex ;; @xai-official/grok*) printf grok ;; @anthropic-ai/claude-code*) printf claude ;; esac; }
@@ -128,8 +135,14 @@ assert grep -qE ' codex updated 0\.154\.0 -> 0\.156\.1$' "$LOG"
 assert [ "$(result claude)" = "current 2.1.280" ]
 # The fingerprint runs last, after the lists were re-read, with the npm bin dirs appended to PATH so
 # the native claude found first stays the one it fingerprints.
-assert [ "$(tail -n 1 "$CALLS" | cut -d' ' -f1-2)" = "fingerprint check" ]
-assert [ "$(tail -n 1 "$CALLS" | sed 's/.*PATH=//')" = "$PATH:$FAKE_BIN:$FAKE_BIN:$FAKE_BIN" ]
+assert [ "$(tail -n 2 "$CALLS" | head -n 1 | cut -d' ' -f1-2)" = "fingerprint check" ]
+assert [ "$(tail -n 2 "$CALLS" | head -n 1 | sed 's/.*PATH=//')" = "$PATH:$FAKE_BIN:$FAKE_BIN:$FAKE_BIN" ]
+# Then the Updater doctor reads what the pass left; its failure never fails the pass.
+assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
+: >"$FAKE_BIN/doctor-fails"
+run || fail "a failing doctor failed the pass"
+rm "$FAKE_BIN/doctor-fails"
+assert grep -qE '^[0-9TZ:-]+ updater doctor failed$' "$LOG"
 
 # Current clients: nothing is installed and the log does not grow, but the lists are re-read every
 # run — a server adds a model for a client already installed.
@@ -268,9 +281,10 @@ assert grep -qF 'codex divergence: none' "$LOG"
 VENDOR_CLI_UPDATE_DETACHED=1 bash "$SCRIPT" now
 assert [ "$(grep -c '^fingerprint ' "$CALLS")" = 2 ]
 assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
-assert [ "$(tail -n 1 "$CALLS" | cut -d' ' -f1-4)" = "fingerprint request --all Egor's" ]
+assert [ "$(tail -n 2 "$CALLS" | head -n 1 | cut -d' ' -f1-4)" = "fingerprint request --all Egor's" ]
+assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
 # The request probes each CLI's --version, so it gets the npm bin dirs the check got.
-assert [ "$(tail -n 1 "$CALLS" | sed 's/.*PATH=//')" = "$PATH:$FAKE_BIN:$FAKE_BIN:$FAKE_BIN" ]
+assert [ "$(tail -n 2 "$CALLS" | head -n 1 | sed 's/.*PATH=//')" = "$PATH:$FAKE_BIN:$FAKE_BIN:$FAKE_BIN" ]
 # A lock held past lockf's 900s means no pass ran: no integration chat for CLIs nobody updated.
 : >"$CALLS"
 printf '#!/usr/bin/env bash\ncase "$*" in *run.lock*) exit 75 ;; esac\nexec /usr/bin/lockf "$@"\n' >"$FAKE_BIN/lockf"
@@ -283,6 +297,14 @@ assert grep -qF 'another run held the lock' "$LOG"
 assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
 for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done
 assert grep -qF 'fingerprint request --all' "$CALLS"
+
+# Night prep: the same pass in the foreground, no integration chat, so `request --night` still finds the events.
+: >"$CALLS"
+bash "$SCRIPT" now --night
+assert grep -qE '^fingerprint check HOLD=1 ' "$CALLS"
+assert_fails grep -qF 'fingerprint request' "$CALLS"
+assert [ "$(tail -n 1 "$CALLS")" = "doctor --quiet" ]
+assert grep -qF 'night update: pass done, no integration chat' "$LOG"
 
 # launchd runs a wrapper named after the job, never a bare interpreter; uninstall removes both.
 WRAPPER="$HOME/.local/libexec/vendor-cli-update"
@@ -299,4 +321,4 @@ bash "$SCRIPT" uninstall >/dev/null || fail "uninstall failed"
 assert test ! -e "$WRAPPER"
 assert test ! -e "$PLIST"
 
-echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, a manual update detached with one chat for every vendor"
+echo "PASS: $asserts asserts; update when the registry is newer (codex, grok and the npm claude, which follows the native claude version when npm has it), model caches re-read every run, divergence (foreign cache writers, foreign clients, per-account catalog gaps) recorded once per change, no reinstall or downgrade, busy clients left alone, registry and install failures recorded, run lock, launchd wrapper, fingerprint check last with npm bin dirs appended, then the Updater doctor whose failure fails no pass, a manual update detached with one chat for every vendor"

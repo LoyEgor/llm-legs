@@ -111,6 +111,24 @@ assert_allow 'namespaced branch checkout' claudeb-worker 'git checkout feature/n
 assert_allow 'new branch with dot' codex-worker 'git checkout -b release-2.0'
 assert_allow 'attached new branch name' grok-worker 'git checkout -bfix-force-flag'
 
+assert_allow 'quoted heredoc brief prose' claudeb-worker $'BRIEF=$(mktemp /tmp/claudeb-brief.XXXXXX) && cat > "$BRIEF" <<\'BRIEF_EOF\'\nACCOUNT: x\n\nDo not run git clean at start.\ngit checkout -- share/a.py is forbidden\nBRIEF_EOF\nworker-run start claudeb --brief "$BRIEF"'
+assert_allow 'unquoted heredoc body prose' codex-worker $'cat > notes <<EOF\ngit restore file\nEOF'
+assert_allow 'dashed heredoc body prose' codex-worker $'cat > notes <<-EOF\n\tgit stash\n\tEOF\ngit status'
+assert_deny 'command after heredoc' codex-worker $'cat > notes <<\'EOF\'\nhi\nEOF\ngit restore file'
+assert_deny 'unquoted heredoc substitution' codex-worker $'cat > notes <<EOF\n$(git restore file)\nEOF'
+assert_deny 'unquoted heredoc backtick' grok-worker $'cat > notes <<EOF\nrun `git stash`\nEOF'
+assert_deny 'heredoc fed to bash' codex-worker $'bash <<\'EOF\'\ngit restore file\nEOF'
+assert_deny 'heredoc piped to sh' claudeb-worker $'cat <<\'EOF\' | sh\ngit reset --hard\nEOF'
+assert_deny 'quoted heredoc marker without body' codex-worker $'echo "<<X"\ngit restore file'
+assert_deny 'quoted heredoc marker with a closing line' codex-worker $'echo \'<<X\'\ngit restore file\nX'
+assert_deny 'heredoc body run later as a script' codex-worker $'cat > /tmp/fix.sh <<\'EOF\'\ngit reset --hard\nEOF\nbash /tmp/fix.sh'
+assert_deny 'heredoc fed to sudo bash' codex-worker $'sudo -u me bash <<\'EOF\'\ngit reset --hard\nEOF'
+assert_deny 'heredoc sourced from stdin' codex-worker $'source /dev/stdin <<\'EOF\'\ngit stash\nEOF'
+assert_deny 'heredoc lines evaluated' codex-worker $'cat <<\'EOF\' | while read f; do eval "$f"; done\ngit stash\nEOF'
+assert_deny 'heredoc fed to fish' codex-worker $'fish <<\'EOF\'\ngit stash\nEOF'
+assert_deny 'heredoc body dotted in' codex-worker $'cat > /tmp/x <<\'EOF\'\ngit stash\nEOF\n. /tmp/x'
+assert_allow 'heredoc body next to a .sh path' codex-worker $'cat > /tmp/fix.sh <<\'EOF\'\ngit stash\nEOF\nchmod +x /tmp/fix.sh'
+
 unlock_session=unlocked-session
 unlock_dir="$HOME/.cache/claude-worker-tags/$unlock_session"
 mkdir -p "$unlock_dir"

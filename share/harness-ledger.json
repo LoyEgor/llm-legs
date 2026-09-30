@@ -1,0 +1,143 @@
+{
+  "owner": "Harness Doctor",
+  "rows": [
+    {
+      "id": "floor-trivial-bash-readonly-fastpath",
+      "title": "A trivial Bash call waited on the full work of the heavy Bash hooks",
+      "match": {
+        "rule": "floor",
+        "ident": "bash:trivial"
+      },
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-09-29T18:52:42+03:00",
+          "by": "Harness performance fix execution",
+          "files": [
+            "claude-setup/hooks/lib/readonly-command.sh",
+            "claude-setup/hooks/commit-journal.sh",
+            "claude-setup/hooks/context-nudge.sh",
+            "claude-setup/hooks/review-flow-gate.sh"
+          ],
+          "in": "claude-setup@48bfc77",
+          "regressed_at": "2026-09-30T03:08:47+03:00"
+        }
+      ],
+      "same_cause": [
+        "hook-every-call-context-nudge"
+      ],
+      "last_reviewed": "2026-09-29",
+      "reviewed_by": "Harness Doctor",
+      "note": "The llm-legs half of the same pour is llm-legs@c85ff90 (instruction-write-gate read-only note, worker-launch-gate early exit, instruction-files batched realpath).",
+      "handoff": "docs/handoffs/2026-09-28-harness-performance-fix.md"
+    },
+    {
+      "id": "hook-every-call-context-nudge",
+      "title": "context-nudge read a 1 MiB transcript tail through jq on every tool call",
+      "match": {
+        "rule": "hook_every_call",
+        "ident": "context-nudge\\.sh"
+      },
+      "status": "fixed",
+      "fixes": [
+        {
+          "at": "2026-09-29T18:52:42+03:00",
+          "by": "Harness performance fix execution",
+          "files": [
+            "claude-setup/hooks/context-nudge.sh"
+          ],
+          "in": "claude-setup@48bfc77",
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [
+        "floor-trivial-bash-readonly-fastpath"
+      ],
+      "last_reviewed": "2026-09-29",
+      "reviewed_by": "Harness Doctor",
+      "note": "Design §4: 79 ms a call before the 64 KiB tail read, 62 ms after; its own tail read cut it, not the fast path.",
+      "handoff": "docs/handoffs/2026-09-29-harness-doctor-detection-gaps.md"
+    },
+    {
+      "id": "floor-edit-hooks",
+      "title": "An Edit or Write waits over 500 ms on hooks: edit-conflict-notice before, commit-journal after",
+      "match": {
+        "rule": "floor",
+        "ident": "edit"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-29",
+      "reviewed_by": "Harness Doctor",
+      "note": "Design §7.1 calibration: 655 ms on 2026-09-29; 549 ms in the live run of 2026-09-29 21:18.",
+      "handoff": null
+    },
+    {
+      "id": "unjournaled-sessionstart-branch-check",
+      "title": "The inline SessionStart branch-slug check has no hook-time line",
+      "match": {
+        "rule": "unjournaled",
+        "ident": "inline-a78543dc34"
+      },
+      "status": "not-a-bug",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-29",
+      "reviewed_by": "Harness Doctor",
+      "note": "An inline one-liner in settings.json cannot source hook-time.sh; one git call per chat start. The ident is the sha1 of the exact command, so any edit to it is judged again.",
+      "handoff": null
+    }
+  ],
+  "blind_spots": [
+    {
+      "id": "interpreter-start",
+      "what": "interpreter start before a hook's first line",
+      "reason": "hook-time.sh times the body only: about 4 ms for /bin/bash, about 11 ms for Homebrew bash 5",
+      "since": "2026-09-29",
+      "would_catch_if": "the harness reported each hook's spawn-to-exit time"
+    },
+    {
+      "id": "mcp-worker-relay",
+      "what": "MCP server start-up, worker spawn and relay latency",
+      "reason": "no journal line from the MCP servers, worker-run spawn or the relay",
+      "since": "2026-09-28",
+      "would_catch_if": "worker-run and the relay wrote start and ready stamps to a journal this doctor reads"
+    },
+    {
+      "id": "worker-run-loops",
+      "what": "worker-run supervise loops, worker-pick, review-cell preparation",
+      "reason": "they run outside any hook and write no timing",
+      "since": "2026-09-28",
+      "would_catch_if": "each wrote its elapsed time to the hook journal under its own key"
+    },
+    {
+      "id": "launchd-hammerspoon",
+      "what": "launchd jobs; Hammerspoon's own tasks other than the menu builds",
+      "reason": "only the menu builds write a journal line",
+      "since": "2026-09-28",
+      "would_catch_if": "each LaunchAgent wrapper in ~/.local/libexec wrote its run time to a journal"
+    },
+    {
+      "id": "permission-mode-calls",
+      "what": "calls from sessions outside bypassPermissions (who h)",
+      "reason": "their wait includes the human answering a permission prompt, so every wait and floor leaves them out",
+      "since": "2026-09-29",
+      "would_catch_if": "the transcript marked when the permission answer arrived, so the hook part could be split off"
+    },
+    {
+      "id": "spool-stdout",
+      "what": "hook output that reached a spool file instead of its reader",
+      "reason": "5 of 4 561 folded review-flow-gate runs on 2026-09-29 carried STATUS=… LINES=… between key and exit; the reader tolerates it",
+      "since": "2026-09-29",
+      "would_catch_if": "the fold counted spool files with extra lines and judged that count"
+    },
+    {
+      "id": "join-precision",
+      "what": "the 13-15 % of tool batches the time join cannot tie to a call",
+      "reason": "hook batches join calls by time only",
+      "since": "2026-09-29",
+      "would_catch_if": "hook-time's line carried the tool_use_id (contract row da)"
+    }
+  ]
+}

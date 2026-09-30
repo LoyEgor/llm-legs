@@ -107,8 +107,8 @@ mkdir -p "${hold%/*}" 2>/dev/null
 if [ $((now - last)) -lt 300 ]; then count=$((count + 1)); else count=1; fi
 printf '%s %s\n' "$now" "$count" >"$hold" 2>/dev/null || exit 0
 [ "$count" -le 3 ] || exit 0
-jq -nc --arg r "Running with no task row, so Egor cannot see which account and model they spend:
+jq -nc --arg hook "${0##*/}" --arg r "Running with no task row, so Egor cannot see which account and model they spend:
 $lines
 Spawn each relay now (its brief is just that ATTACH line); it waits the run out on a visible row." \
-  '{decision:"block",reason:$r}'
+  '{decision:"block",reason:("[" + $hook + "] " + $r)}'
 exit 0

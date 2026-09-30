@@ -16,7 +16,7 @@ export IMAGE_LEG_LOG="$HOME/image-legs/legs.jsonl" LLM_DOCTOR_LEDGER="$WORK/ledg
 export GEMINIB_CACHE_DIR="$WORK/geminib"
 # The Mac's own reboots would turn every fixture run with no exit into one the reboot took down.
 export LLM_DOCTOR_REBOOTS=""
-unset STOP_GATE_JOURNAL WORDS_DIR REVIEW_DEBT_DIR
+unset REVIEW_DEBT_DIR
 mkdir -p "$GEMINIB_CACHE_DIR"
 cat >"$GEMINIB_CACHE_DIR/models.json" <<'JSON'
 {"fetched_at": 1, "attempted_at": 1, "families": [
@@ -37,6 +37,22 @@ export PATH="$WORK/bin:$PATH" ANCHORS_ARGS="$WORK/anchors-args" ANCHORS_ROWS="$W
 printf '{"session":"s1","kind":"touch-failed","detail":"/repo: review-anchors exited 1","count":2,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: more than 500 dirty paths","count":1090,"first":%d,"last":%d}\n{"session":"s1","kind":"hash-cap","detail":"/repo: 2 capped paths changed, first a.py","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R1 run-a","count":1,"first":%d,"last":%d}\n{"session":"s1","kind":"fixer-missing","detail":"R2 run-b","count":1,"first":%d,"last":%d}\n' \
   "$((NOW - 1800))" "$((NOW - 900))" "$((NOW - 259200))" "$((NOW - 259140))" "$((NOW - 259000))" "$((NOW - 259000))" \
   "$((NOW - 3000))" "$((NOW - 3000))" "$((NOW - 2000))" "$((NOW - 2000))" >"$ANCHORS_ROWS"
+
+export LLM_DOCTOR_REPOS="$WORK/repos"
+FIXREPO="$LLM_DOCTOR_REPOS/review-bench"
+mkdir -p "$FIXREPO/share/rbench"
+fixgit() { git -C "$FIXREPO" -c user.name=t -c user.email=t@t "$@" >/dev/null; }
+fixgit init -q
+for file in cell_runtime report; do echo "$file" >"$FIXREPO/share/rbench/$file.py"; done
+fixgit add -A
+GIT_COMMITTER_DATE="@$((NOW - 30000))" GIT_AUTHOR_DATE="@$((NOW - 30000))" fixgit commit -q -m base
+RUNTIME_COMMIT=$(git -C "$FIXREPO" rev-parse --short HEAD)
+echo changed >>"$FIXREPO/share/rbench/report.py"
+echo panel >"$FIXREPO/share/rbench/panel.py"
+fixgit add share/rbench/panel.py
+fixgit commit -q -m panel
+PANEL_COMMIT=$(git -C "$FIXREPO" rev-parse --short HEAD)
+printf '{"runtime": "review-bench@%s", "panel": "review-bench@%s"}\n' "$RUNTIME_COMMIT" "$PANEL_COMMIT" >"$WORK/commits.json"
 
 python3 - "$NOW" "$WORKER_STATS_DIR/benches" "$WORKER_RUN_DIR" "$IMAGE_LEG_LOG" "$LLM_DOCTOR_LEDGER" "$LLM_DOCTOR_DIR" <<'PY'
 import json, os, sys, time
@@ -106,6 +122,9 @@ bench(3600, "bbbbbbb", session="cafebabe-0000-4000-8000-000000000001", rows=[
    write_evidence=[["haiku-high", "main", "wrote /tmp/scratch/file"],
                    ["glm-high", "main", "wrote /Volumes/Work/Projects/other/file.py"]])
 bench(18000, "ccccccc", [cell("sol-high", "sol", 18000, exit_code=1, stderr="cell processing crashed: OSError")])
+# Started before X1's last fix and ended after it: the leg ran the old code.
+bench(7000, "kkkkkkk", [cell("sol-high", "sol", 7000, exit_code=1, duration_s=400,
+                             stderr="cell processing crashed: spanning the fix")])
 
 def worker(vendor, offset, model, exit_code=None, files=None, meta=None, killed=None):
     started = now - offset - 300
@@ -162,31 +181,44 @@ with open(image_log, "w") as handle:
         handle.write(json.dumps({"ts": now - offset, "tool": "grok-image", "kind": "image", "rc": rc,
                                  "seconds": 20, "account": "main", "served": "", "err": err}) + "\n")
 
-json.dump({"owners": {"reviewers": "Review owner", "workers": None, "light": None, "image": None}, "rows": [
-    {"id": "X1", "block": "reviewers", "match": {"word": "crashed", "detail": "cell processing crashed"},
-     "title": "processing crash", "status": "fixed", "fixed_in": ["review-bench@abc1234"], "fixed_at": iso_local(7200),
-     "last_reviewed": time.strftime("%Y-%m-%d", time.gmtime(now - 86400)), "reviewed_by": "Review owner", "note": ""},
-    {"id": "X2", "block": "workers", "match": {"word": "bad command", "model": "^grok", "detail": "unknown effort level"},
-     "title": "effort grok does not serve", "status": "open", "fixed_in": [], "fixed_at": None,
-     "last_reviewed": "2026-09-24", "reviewed_by": "", "note": ""},
-    {"id": "X3", "block": "any", "match": {"word": "killed memory"}, "title": "memory guard", "status": "not-a-bug",
-     "fixed_in": [], "fixed_at": None, "last_reviewed": "2026-09-24", "reviewed_by": "", "note": ""},
-    {"id": "X4", "block": "image", "match": {"word": "bad output", "model": "^grok-image"}, "title": "no event",
-     "status": "open", "fixed_in": [], "fixed_at": None, "last_reviewed": "2026-09-24", "reviewed_by": "", "note": ""},
-    {"id": "X5", "block": "image", "match": {"word": "walled"}, "title": "image walls", "status": "weather",
-     "fixed_in": [], "fixed_at": None, "last_reviewed": "2026-09-24", "reviewed_by": "", "note": ""},
-    {"id": "X6", "block": "workers", "match": {"word": "unclassified", "until": iso_local(90000)},
-     "title": "old unclassified storm", "status": "not-a-bug", "fixed_in": [], "fixed_at": None,
-     "last_reviewed": "2026-09-24", "reviewed_by": "", "note": ""},
-    {"id": "M1", "block": "reviewers", "match": {"machinery": "anchors"}, "title": "anchor warnings", "status": "open",
-     "fixed_in": [], "fixed_at": None, "last_reviewed": "2026-09-24", "reviewed_by": "", "note": ""},
-    {"id": "M2", "block": "reviewers", "match": {"machinery": "integrity"}, "title": "tree moved", "status": "fixed",
-     "fixed_in": ["review-bench@abc1234"], "fixed_at": iso_local(7200), "last_reviewed": "2026-09-24",
-     "reviewed_by": "", "note": ""},
-    {"id": "M3", "block": "reviewers", "match": {"machinery": "debt_scope"}, "title": "debt scope", "status": "fixed",
-     "fixed_in": ["review-bench@abc1234"], "fixed_at": iso_local(7200), "last_reviewed": "2026-09-24",
-     "reviewed_by": "", "note": ""},
-]}, open(ledger, "w"))
+commits = json.load(open(os.path.join(os.path.dirname(ledger), "commits.json")))
+def fix(offset, files, commit=None, regressed=None):
+    return {"at": iso_local(offset), "by": "Review owner", "files": files, "in": commit,
+            "regressed_at": iso_local(regressed) if regressed else None}
+def entry(id, block, match, title, status, fixes=(), **extra):
+    row = {"id": id, "block": block, "match": match, "title": title, "status": status, "fixes": list(fixes),
+           "same_cause": [], "last_reviewed": "2026-09-24", "reviewed_by": "Review owner", "note": "", "handoff": None}
+    row.update(extra)
+    return row
+runtime = ["review-bench/share/rbench/cell_runtime.py"]
+json.dump({"owner": "Doctor owner", "owners": {"reviewers": "Review owner", "workers": "Worker owner",
+                                               "light": "Worker owner", "image": "Image owner"}, "rows": [
+    # Fixed twice: a crash between the two fixes is judged by the last one.
+    entry("X1", "reviewers", {"word": "crashed", "detail": "cell processing crashed"}, "processing crash", "fixed",
+          [fix(20000, runtime, commits["runtime"], regressed=18000), fix(7200, runtime, commits["runtime"])],
+          last_reviewed=time.strftime("%Y-%m-%d", time.gmtime(now - 86400))),
+    entry("X2", "workers", {"word": "bad command", "model": "^grok", "detail": "unknown effort level"},
+          "effort grok does not serve", "open"),
+    entry("X3", "any", {"word": "killed memory", "detail": "memory guard"}, "memory guard", "not-a-bug"),
+    entry("X4", "image", {"word": "bad output", "model": "^grok-image"}, "no event", "open"),
+    # A dismissal that matches every leg is a ledger fault, never a verdict.
+    entry("X5", "workers", {"word": "crashed", "detail": ".*"}, "every crash", "not-a-bug"),
+    entry("X6", "workers", {"word": "unclassified", "detail": "boom", "until": iso_local(90000)},
+          "old unclassified storm", "not-a-bug"),
+    entry("X7", "reviewers", {"word": "auth", "detail": "HTTP 403"}, "committed since", "fixed-pending",
+          [fix(5000, ["review-bench/share/rbench/panel.py"])]),
+    entry("X8", "reviewers", {"word": "auth", "detail": "HTTP 401"}, "still uncommitted", "fixed-pending",
+          [fix(5000, ["review-bench/share/rbench/report.py"])]),
+    entry("H1", "any", {"health": "debt", "key": "^debt-gap:fixer-missing"}, "fixer gaps", "open"),
+    entry("M1", "reviewers", {"machinery": "anchors"}, "anchor warnings", "open"),
+    entry("M2", "reviewers", {"machinery": "integrity"}, "tree moved", "fixed", [fix(7200, runtime, commits["runtime"])]),
+    entry("M3", "reviewers", {"machinery": "debt_scope"}, "debt scope", "fixed",
+          [fix(7200, runtime, "review-bench@deadbee")]),
+], "blind_spots": [
+    {"id": "B1", "what": "worker false-green reports", "reason": "no reader", "since": "2026-09-29",
+     "would_catch_if": "a worker's report were checked against its diff"},
+    {"id": "B2", "what": "weakened tests", "reason": "no reader", "since": "2026-09-29",
+     "would_catch_if": "test diffs were read against HEAD"}]}, open(ledger, "w"))
 json.dump({"as_of": now - 60, "total": 9,
            "anomalies": {"anchors": 2, "closure_pending": 3, "debt_line": 0, "integrity": 1, "debt_scope": 3},
            "rows": {"integrity": [{"id": "r", "age_s": 600}], "debt_scope": [{"id": "d", "age_s": 9000}]}},
@@ -199,30 +231,7 @@ json.dump({"day": frozen_day, "covered": ["image"], "legs": {"image|grok-image":
           open(os.path.join(doctor, "daily", frozen_day + ".json"), "w"))
 
 cache = os.path.join(os.environ["HOME"], ".cache", "claude")
-for sub in ("stop-gate", "words", os.path.join("review-debt", "gaps")):
-    os.makedirs(os.path.join(cache, sub), exist_ok=True)
-def stop(offset, hooks, busy=""):
-    return json.dumps({"ts": iso(offset), "session": "s1", "cwd": "/tmp", "busy": busy, "hooks": hooks}) + "\n"
-with open(os.path.join(cache, "stop-gate", "journal.jsonl"), "w") as handle:
-    handle.write(stop(3600, [{"name": "ask-slow.sh", "outcome": "error", "reason": "exit 124"}]))
-    handle.write(stop(3000, [{"name": "ask-slow.sh", "outcome": "error", "reason": "exit 124"},
-                             {"name": "ask-same.sh", "outcome": "asked", "reason": "do X"}]))
-    handle.write(stop(2400, [{"name": "ask-same.sh", "outcome": "asked", "reason": "do X"}]))
-    handle.write(stop(90000, [{"name": "ask-old.sh", "outcome": "error", "reason": "exit 1"}]))
-    handle.write(stop(1200, [{"name": "notice-fine.sh", "outcome": "silent", "reason": ""}]))
-with open(os.path.join(cache, "words", "journal.jsonl"), "w") as handle:
-    for row in ({"ts": now - 500, "session": "s1", "turn": "1", "hook": "⚡ review", "match": False},
-                {"ts": now - 400, "session": "s1", "turn": "2", "hook": "⚡ commit", "match": False},
-                {"ts": now - 300, "session": "s1", "turn": "3", "hook": "⚡ push", "match": True},
-                {"ts": now - 200, "session": "s1", "turn": "4", "hook": "⚡ pin", "match": None},
-                {"ts": now - 100, "session": "s1", "turn": "5", "hook": "", "match": None, "silent": True},
-                {"ts": now - 80, "session": "s2", "turn": "1", "chat": "Design system", "hook": None,
-                 "model": ["⚡ понял: делаю сдвиг оттенка"], "match": False, "unprompted": True},
-                {"ts": now - 70, "session": "s4", "turn": "1", "chat": "Design system (abcdef12)", "hook": None,
-                 "model": ["⚡ понял: делаю сдвиг оттенка"], "match": False, "unprompted": True},
-                {"ts": now - 60, "session": "s3", "turn": "1", "chat": "s3", "hook": "⚡ review", "match": False},
-                {"mark": "ok", "ref": "%d:s1" % (now - 400)}):
-        handle.write(json.dumps(row) + "\n")
+os.makedirs(os.path.join(cache, "review-debt", "gaps"))
 with open(os.path.join(cache, "review-debt", "gaps", "s1"), "w") as handle:
     handle.write("%d\ttouch-failed\t/repo: review-anchors exited 1\n%d\ttouch-failed\t/repo: review-anchors exited 1\n"
                  "%d\tpre-missing\tsettled by a review\n" % (now - 1800, now - 900, now - 500))
@@ -244,23 +253,23 @@ assert grep -q '^llm-doctor: daily rollup not written: ' "$WORK/daily-error"
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -type f | sort | tr '\n' ' ')" = "$(printf '%s\n' $before | grep '/daily/' | tr '\n' ' ')"
 assert test -s "$LLM_DOCTOR_DIR/latest.json"
 rm "$LLM_DOCTOR_DIR/latest.json"
+# A written run records the sweep's commit of a pending fix; an uncommitted one stays pending.
+assert python3 - "$LLM_DOCTOR_LEDGER" "$WORK/commits.json" <<'PY'
+import json, sys
+rows = {row["id"]: row for row in json.load(open(sys.argv[1]))["rows"]}
+assert rows["X7"]["status"] == "fixed" and rows["X7"]["fixes"][-1]["in"] == json.load(open(sys.argv[2]))["panel"], rows["X7"]
+assert rows["X8"]["status"] == "fixed-pending" and rows["X8"]["fixes"][-1]["in"] is None, rows["X8"]
+assert rows["M3"]["fixes"][-1]["in"] == "review-bench@deadbee", rows["M3"]
+PY
 
 assert python3 - "$WORK/doc.json" "$NOW" <<'PY'
-import json, re, sys
+import datetime, json, re, sys
 doc = json.load(open(sys.argv[1]))
 blocks = {block["block"]: block for block in doc["blocks"]}
 assert [block["block"] for block in doc["blocks"]] == ["reviewers", "workers", "light", "image"]
 assert doc["not_measurable"] == ["worker false-green reports", "weakened tests"]
 health = {row["name"]: row for row in doc["health"]}
-assert [row["name"] for row in doc["health"]] == ["hooks", "guards", "debt"]
-assert health["guards"]["count"] == 0 and health["guards"]["notes"] == ["instruction watch state not found"]
-hooks = {(item["label"], item["chat"]): item["count"] for item in health["hooks"]["items"]}
-# A session nothing on this machine knows is an unnamed chat, never its id.
-assert hooks == {("ask-slow.sh: exit 124", "unnamed chat"): 2,
-                 ("ask-same.sh: same ask again within 30 min", "unnamed chat"): 1,
-                 ("word notice with no reading: ⚡ review", "unnamed chat"): 2,
-                 ("⚡ reading with no notice: ⚡ понял: делаю сдвиг оттенка", "Design system"): 2}, hooks
-assert health["hooks"]["status"] == "problem" and health["hooks"]["count"] == 7
+assert [row["name"] for row in doc["health"]] == ["debt"]
 debt = {(item["label"], item["chat"]): (item["count"], item["repeats"]) for item in health["debt"]["items"]}
 assert debt == {("not recorded: touch-failed in repo", "unnamed chat"): (1, 2),
                 ("not recorded: hash-cap in repo", "unnamed chat"): (1, 1091),
@@ -275,7 +284,7 @@ labels = sorted(review)
 # The crash after the fix regressed its ledger row; the crash before it counts as fixed, not as a bug.
 crash = review[("failed · crashed", "X1")]
 assert crash["kind"] == "bug" and crash["status"] == "regressed", crash
-assert crash["status_text"] == "regressed ×1 · 1 before fix", crash["status_text"]
+assert crash["status_text"] == "regressed ×1 · 2 before fix", crash["status_text"]
 assert crash["looked"] == "looked at 1d ago", crash["looked"]
 assert review[("failed · pool empty", "")]["status"] == "new", labels
 assert review[("walled", "")]["kind"] == "weather", labels
@@ -296,7 +305,7 @@ for incident in slow["incidents"]:
 assert slow["count"] == 8 and slow_models == {"opus": 1, "sonnet": 1, "haiku2": 5, "sz": 1}, (slow["count"], slow_models)
 speed = blocks["reviewers"]["speed"]
 assert speed["judged"] >= 15 and speed["unjudged"] >= 5, speed
-assert blocks["reviewers"]["owner"] == "Review owner" and blocks["workers"]["owner"] == ""
+assert blocks["reviewers"]["owner"] == "Review owner" and blocks["workers"]["owner"] == "Worker owner"
 for problem in blocks["reviewers"]["problems"]:
     assert len(problem["daily"]) == 14, problem
 
@@ -351,12 +360,62 @@ assert machinery["issues"] == 6 and machinery["classes"][0]["ledger"]["id"] == "
 for block in doc["blocks"]:
     for problem in block["problems"]:
         for incident in problem["incidents"]:
-            assert set(incident) == {"age_s", "age", "model", "surface", "project", "tier", "attempt", "detail", "ref",
-                                     "session", "chat"}
+            assert set(incident) == {"age_s", "age", "at", "model", "surface", "project", "tier", "attempt", "detail",
+                                     "ref", "event", "account", "session", "chat"}
+
+# The doctors' contract envelope.
+now = int(sys.argv[2])
+assert {"contract", "doctor", "as_of", "judge", "status", "problem_count", "problems", "blind_spots", "self"} <= set(doc)
+assert (doc["contract"], doc["doctor"], doc["as_of_s"]) == (1, "llm", now), doc["as_of_s"]
+assert datetime.datetime.fromisoformat(doc["as_of"]).timestamp() == now and doc["as_of"][-6] in "+-", doc["as_of"]
+assert re.fullmatch(r"[0-9a-f]{64}", doc["judge"]) and doc["self"]["error"] is None, doc["self"]
+assert doc["status"] == "problems" and doc["blind"] == [], (doc["status"], doc["blind"])
+assert [spot["id"] for spot in doc["blind_spots"]] == ["B1", "B2"] and doc["owner"] == "Doctor owner"
+assert doc["limits"]["PROOF_MIN"] == 10 and all(item["limit_name"] in doc["limits"] for item in doc["near"]), doc["near"]
+keys = {"id", "rule", "state", "fact", "value", "limit", "unit", "window_h", "exposure", "count", "first_seen",
+        "last_seen", "evidence", "ledger"}
+found = {}
+for item in doc["problems"]:
+    assert keys <= set(item) and item["id"] and item["id"] not in found, item
+    found[item["id"]] = item
+    refs = [event["ref"] for event in item["evidence"]]
+    assert len(refs) == len(set(refs)) and all(set(event) == {"at", "ref", "account", "excerpt"}
+                                               and len(event["excerpt"]) <= 300 for event in item["evidence"]), item
+assert doc["problem_count"] == sum(1 for item in doc["problems"] if item["state"] in ("new", "open", "regressed")) > 0
+states = {pid: (item["state"], item["rule"], item["ledger"]) for pid, item in found.items()}
+assert states["X1"] == ("regressed", "leg-failure", "X1"), states
+assert states["leg-failure:reviewers/pool empty"] == ("new", "leg-failure", None), states
+assert states["leg-failure:workers/crashed"] == ("new", "leg-failure", None), states
+assert states["X2"] == ("open", "leg-failure", "X2") and states["X4"] == ("open", "leg-failure", "X4"), states
+assert states["X8"] == ("fixed-pending", "fix-proof", "X8") and states.get("X7", ("",))[0] != "fixed-pending", states
+assert states["H1"] == ("open", "debt-gap", "H1") and "debt-gap:fixer-missing" not in states, states
+assert states["debt-gap:touch-failed/repo"] == ("new", "debt-gap", None), states
+assert states["M1"][0] == "open" and states["M2"][0] == "regressed" and "M3" not in states, states
+assert states["machinery:closure_pending"] == ("new", "machinery", None), states
+assert "matches every leg" in found["ledger:X5"]["fact"] and "deadbee is no commit" in found["ledger:M3"]["fact"], states
+assert sorted(pid for pid in found if pid.startswith("ledger:")) == ["ledger:M3", "ledger:X5"], states
+# First seen is the earliest start of any loaded leg of the cause, not of the window's.
+assert datetime.datetime.fromisoformat(found["X1"]["first_seen"]).timestamp() == now - 18100, found["X1"]
+assert crash["ledger"]["fixes"][0]["regressed_at"] and len(crash["ledger"]["fixes"]) == 2, crash["ledger"]
+assert found["X1"]["count"] == 1 and found["X1"]["evidence"][0]["ref"].endswith("#4"), found["X1"]
+# One event per ref, in each store's own shape: never a tool name or a run shared by its cells.
+assert all(event["ref"].startswith("image:") and event["ref"].count("/") == 2 and event["account"] == "main"
+           for event in found["X4"]["evidence"]), found["X4"]["evidence"]
+image_events = [incident["event"] for problem in blocks["image"]["problems"] for incident in problem["incidents"]]
+assert len(image_events) == len(set(image_events)) == 5 and \
+    all(re.fullmatch(r"image:\d+/grok-image/main", event) for event in image_events), image_events
+refused = [incident["event"] for problem in blocks["workers"]["problems"] for incident in problem["incidents"]
+           if incident["event"].startswith("prelaunch:")]
+assert len(set(refused)) == 2 and all(re.fullmatch(r"prelaunch:\d+/-", event) for event in refused), refused
 PY
 
 assert "$DOCTOR" --quiet
 assert test -s "$LLM_DOCTOR_DIR/latest.json"
+assert jq -e '[.contract, .doctor, .as_of, .as_of_s, .judge, .status, .problem_count, .problems, .blind_spots, .self]
+  | all(. != null)' "$LLM_DOCTOR_DIR/latest.json" >/dev/null
+# A required store that is missing leaves its rules unable to see: blind, and named.
+assert env WORKER_RUN_DIR="$WORK/no-runs" "$DOCTOR" --dry-run --json >"$WORK/blind.json"
+assert jq -e '.status == "blind" and .blind == ["worker runs"]' "$WORK/blind.json" >/dev/null
 # Days the bench store covers whole are frozen to disk; the older image day stays as it was.
 assert test "$(find "$LLM_DOCTOR_DIR/daily" -name '*.json' | wc -l | tr -d ' ')" -ge 3
 assert grep -q '"image|grok-image|failed|bad output|ours|X4": 5' "$LLM_DOCTOR_DIR/daily/$(python3 -c 'import time,sys; print(time.strftime("%Y-%m-%d", time.localtime(int(sys.argv[1]) - 10 * 86400)))' "$NOW").json"
@@ -409,8 +468,8 @@ PY
 UNIT="$WORK/unit"
 mkdir -p "$UNIT"
 assert env LLM_LIMITS_ACTION_LOG="$UNIT/actions.log" WORKER_RUN_DIR="$UNIT/runs" IMAGE_LEG_LOG="$UNIT/legs.jsonl" \
-  WORKER_STATS_DIR="$UNIT/stats" STOP_GATE_JOURNAL="$UNIT/journal.jsonl" python3 - "$DOCTOR" "$NOW" "$UNIT" <<'PY'
-import importlib.machinery, importlib.util, json, os, shutil, sys, time
+  WORKER_STATS_DIR="$UNIT/stats" python3 - "$DOCTOR" "$NOW" "$UNIT" <<'PY'
+import contextlib, importlib.machinery, importlib.util, io, json, os, shutil, sys, time
 loader = importlib.machinery.SourceFileLoader("llm_doctor", sys.argv[1])
 spec = importlib.util.spec_from_loader("llm_doctor", loader)
 doctor = importlib.util.module_from_spec(spec)
@@ -541,14 +600,19 @@ legs = [doctor.leg("workers", "worker", "astra", now - offset, "failed", "crashe
 legs.append(doctor.leg("workers", "worker", "astra", now - 400, "failed", "unclassified", "unclassified · exit 2", ""))
 legs += [doctor.leg("workers", "worker", "grok", now - 500 - offset, "failed", "timeout", "timeout %ds" % offset, "ours")
          for offset in (60, 90)]
-for leg_row in legs:
-    leg_row["state"], leg_row["ledger"] = doctor.judge_leg_state(doctor.load_ledger(), leg_row)
+doctor.mark_problems(doctor.load_ledger(), legs)
 days = doctor.trend_days(now)
 block = doctor.build_block("workers", legs, doctor.load_ledger(), {day: {"counts": {}, "legs": {}, "covered": []}
                                                                    for day in days}, now - 86400, now, {})
 assert (block["bugs"], block["new"]) == (3, 3), block
 assert sorted(problem["incidents_total"] for problem in block["problems"]) == [1, 2, 3], block["problems"]
 assert {row["model"]: row["bugs"] for row in block["models"]} == {"astra": 2, "grok": 1}, block["models"]
+timed_legs = [dict(doctor.leg("workers", "worker", "astra", now - 100 - step, None, None, "", ""), duration=duration,
+                  baseline=10) for step, duration in enumerate((30, 10))]
+doctor.mark_problems(doctor.load_ledger(), timed_legs)
+speed = doctor.build_block("workers", timed_legs, doctor.load_ledger(), {day: {"counts": {}, "legs": {}, "covered": []}
+                                                                         for day in days}, now - 86400, now, {})["speed"]
+assert (speed["ratio_p50"], speed["ratio_p95"]) == (1.0, 3.0), speed
 
 # Workers.
 def worker(name, meta=None, files=None):
@@ -574,6 +638,15 @@ open(os.path.join(old, "err"), "w").write("account lookup failed\n")
 open(os.path.join(old, "exit_code"), "w").write("1\n")
 os.utime(os.path.join(old, "exit_code"), (now - 600, now - 600))
 worker_legs = doctor.worker_legs(now - 86400, now)[0]
+# A run with no exit whose supervisor is gone, still short of NO_EXIT_S, is a near miss and no leg yet.
+young = os.path.join(unit, "runs", "codex-%d-3-cafe" % (now - 4 * 3600))
+os.makedirs(young)
+open(os.path.join(young, "tag"), "w").write("main · astra · task\n")
+doctor._NEAR.clear()
+assert not [row for row in doctor.worker_legs(now - 86400, now)[0] if row["ref"] == os.path.basename(young)]
+assert (doctor._NEAR["NO_EXIT_S"]["value"], doctor._NEAR["NO_EXIT_S"]["ref"]) == \
+    (4 * 3600, "run:" + os.path.basename(young)), doctor._NEAR
+shutil.rmtree(young)
 # A run the Mac's reboot took down is weather, not a crashed supervisor.
 rebooted = os.path.join(unit, "runs", "codex-%d-2-beef" % (now - 8 * 3600))
 os.makedirs(rebooted)
@@ -638,100 +711,6 @@ json.dump({"as_of": now - 30 * 86400, "anomalies": {"unrecognized": 2}}, open(sn
 stale = doctor.machinery(ledger, now, now - 86400)
 assert stale["issues"] == 0 and stale["stale"], stale
 
-# One busy repeated ask is one problem, not a busy one and a repeat.
-with open(os.path.join(unit, "journal.jsonl"), "w") as handle:
-    for offset in (600, 300):
-        handle.write(json.dumps({"ts": iso(offset), "session": "s9", "busy": "yes",
-                                 "hooks": [{"name": "gate.sh", "outcome": "asked", "reason": "review"}]}) + "\n")
-hooks = doctor.hooks_health(now - 3600, now)
-assert [(item["label"], item["count"]) for item in hooks["items"] if item["label"].startswith("gate.sh")] \
-    == [("gate.sh: asked while busy", 2)], hooks
-
-# Asks deferred past two hours, a held run and a dispatcher silent while chats ran are hook problems.
-with open(os.path.join(unit, "journal.jsonl"), "w") as handle:
-    for offset in (9000, 5000, 1500):
-        handle.write(json.dumps({"ts": iso(offset), "session": "s8", "busy": "bg-task:worker-run",
-                                 "hooks": [{"name": "ask-review.sh", "outcome": "skipped-busy", "reason": ""}]}) + "\n")
-    for offset in (12000, 4000):
-        handle.write(json.dumps({"ts": iso(offset), "session": "s7", "busy": "bg-task:worker-run",
-                                 "hooks": [{"name": "ask-review.sh", "outcome": "skipped-busy", "reason": ""}]}) + "\n")
-    handle.write(json.dumps({"ts": iso(3000), "session": "s7", "busy": "",
-                             "hooks": [{"name": "ask-review.sh", "outcome": "asked", "reason": "review"}]}) + "\n")
-    handle.write(json.dumps({"ts": iso(700), "session": "s6", "busy": "",
-                             "hooks": [{"name": "worker-run-backstop.sh", "outcome": "held", "reason": "run x"}]}) + "\n")
-hooks = {(item["label"], item["chat"]): item["count"] for item in doctor.hooks_health(now - 86400, now)["items"]
-         if item["label"].startswith(("asks deferred", "worker-run-backstop"))}
-assert hooks == {("asks deferred over 2 h: busy bg-task", "unnamed chat"): 2,
-                 ("worker-run-backstop.sh: held a run no relay owns", "unnamed chat"): 1}, hooks
-transcript = os.path.join(home, ".claude", "projects", "x", "chat.jsonl")
-os.makedirs(os.path.dirname(transcript))
-open(transcript, "w").write("{}\n")
-with open(os.path.join(unit, "journal.jsonl"), "w") as handle:
-    handle.write(json.dumps({"ts": iso(8 * 3600), "session": "s8", "busy": "", "hooks": []}) + "\n")
-hooks = [item["label"] for item in doctor.hooks_health(now - 86400, now)["items"] if item["label"].startswith("stop-")]
-assert hooks == ["stop-dispatch.sh: no journal line while chats ran"], hooks
-os.remove(os.path.join(unit, "journal.jsonl"))
-assert doctor.hooks_health(now - 86400, now)["notes"] == ["stop journal not found"]
-
-# Guards: instruction-file growth no gate passed, forged stamps, the gates' faults, a quiet watcher or tripwire.
-state = os.path.join(unit, "watch")
-os.environ["INSTRUCTION_WATCH_STATE"] = state
-os.makedirs(os.path.join(state, "watcher"))
-md, docs = os.path.join(home, ".claude", "CLAUDE.md"), os.path.join(home, ".claude", "docs", "tiers.md")
-def change(offset, path, delta, **extra):
-    row = {"at": iso(offset), "kind": "change", "files": [path], "bytes": [delta], "writer": "this-call",
-           "sid": "s5", "chat": "Vector chat (abcdef12)"}
-    row.update(extra)
-    return json.dumps(row) + "\n"
-with open(os.path.join(state, "events.jsonl"), "w") as handle:
-    handle.write(change(5000, md, 172))
-    handle.write(change(4000, md, 300))
-    handle.write(change(3000, docs, 400))
-    handle.write(change(2500, md, 500, reverted=True))
-    handle.write(change(2400, os.path.join(home, ".claude", "settings.json"), 900))
-    handle.write(change(2300, md, 100))
-    handle.write(change(2200, docs, 250, writer="", source="watcher", sid="s4", chat="Long suite (aaaa1111)",
-                        observer="s3"))
-    handle.write(change(2100, docs, 260, writer="Near (ffff6666), Long suite (aaaa1111)", source="watcher",
-                        sid="s2", chat="Near (ffff6666)"))
-    handle.write(json.dumps({"at": iso(2000), "kind": "stamp-forged", "files": [md], "sid": "s5"}) + "\n")
-    handle.write(json.dumps({"at": iso(1900), "kind": "baseline-missing", "files": [], "sid": "s1"}) + "\n")
-    handle.write(change(90000, md, 800))
-with open(os.path.join(state, "gates.jsonl"), "w") as handle:
-    for row in ({"at": now - 4100, "gate": "bloat", "decision": "passed", "sid": "s5", "file": md, "real": md},
-                {"at": now - 3200, "gate": "write", "decision": "denied", "sid": "s5", "file": docs, "real": docs},
-                {"at": now - 1000, "gate": "bloat", "decision": "fault", "sid": "s5", "file": "",
-                 "detail": "jq missing"}):
-        handle.write(json.dumps(row) + "\n")
-beat = os.path.join(state, "watcher", "heartbeat")
-open(beat, "w").write("since=1 roots=3 files=40\n")
-baseline = os.path.join(state, "session-s1.tsv")
-open(baseline, "w").write("")
-guards = doctor.guards_health(now - 86400, now)
-labels = {(item["label"], item["chat"] or item["session"]): item["count"] for item in guards["items"]}
-assert labels == {(".claude/CLAUDE.md grew with no gate seeing it", "Vector chat"): 1,
-                  ("docs/tiers.md grew after a denial", "Vector chat"): 1,
-                  ("docs/tiers.md grew with no gate seeing it", "Long suite"): 1,
-                  ("docs/tiers.md grew with no gate seeing it", "likely Near, 1 more in flight"): 1,
-                  ("forged retry stamp: .claude/CLAUDE.md", "unnamed chat"): 1,
-                  ("tripwire baseline missing", "unnamed chat"): 1,
-                  ("bloat gate: jq missing", "unnamed chat"): 1}, labels
-assert guards["status"] == "problem" and guards["notes"] == [], guards
-os.utime(beat, (now - 600, now - 600))
-os.utime(baseline, (now - 8 * 3600, now - 8 * 3600))
-os.remove(os.path.join(state, "events.jsonl"))
-os.remove(os.path.join(state, "gates.jsonl"))
-labels = [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]]
-assert sorted(labels) == ["tripwire wrote no baseline while chats started", "watcher down"], labels
-open(beat, "w").write("since=1 roots=0 files=0\n")
-open(baseline, "w").write("")
-assert [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]] == ["watcher down: no root watched"]
-open(beat, "w").write("since=1 roots=2 files=9 error=pathwatcher failed\n")
-assert [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]] == ["watcher down: pathwatcher failed"]
-os.remove(beat)
-assert [item["label"] for item in doctor.guards_health(now - 86400, now)["items"]] == ["watcher never started"]
-os.remove(transcript)
-
 # A leg slow while the Harness doctor judged this Mac slow is local, never the model's weather.
 harness = os.path.join(unit, "harness.json")
 os.environ["HARNESS_DOCTOR_LATEST"] = harness
@@ -752,7 +731,136 @@ short = doctor.leg("reviewers", "judge", "opus", now, "failed", "bad output", "b
 assert doctor.ledger_match(ledger, short)["id"] == "V14"
 tool_event = doctor.leg("reviewers", "review", "astra", now, "failed", "bad output", "bad output", "ours",
                         text="malformed JSON after command_execution completed")
-assert doctor.ledger_match(ledger, tool_event)["id"] != "N5"
+assert (doctor.ledger_match(ledger, tool_event) or {}).get("id") != "N5"
+# A bug no row names reads new under its own id: no catch-all row stands in for a review.
+unseen = doctor.leg("reviewers", "review", "astra", now, "failed", "pool empty", "pool empty", "ours")
+assert doctor.judge_leg_state(ledger, unseen) == ("new", None)
+assert doctor.leg_id(unseen, None) == "leg-failure:reviewers/pool empty"
+committed = json.load(open(os.environ["LLM_DOCTOR_LEDGER"]))
+assert doctor.ledger_faults(committed) == [], doctor.ledger_faults(committed)
+
+# The judge is pinned: loosening a dismissal, a theirs word, an exemption or a limit is an edit here.
+assert sorted((row["id"], row["match"].get("until")) for row in committed["rows"]
+              if row["status"] in doctor.DISMISSALS) == [
+    ("N4", "2026-09-16T23:59:59+03:00"), ("N5", None), ("N6", "2026-09-14T23:59:59+03:00"),
+    ("N7", "2026-09-13T23:59:59+03:00")]
+assert sorted(word for word, origin in doctor.FAILURE_ORIGIN.items() if origin == "theirs") == [
+    "bare 429", "cancelled", "capacity", "mismatch", "refused", "server error", "throttled", "walled"]
+assert set(doctor.FAILURE_ORIGIN.values()) == {"ours", "theirs"} and doctor.IMAGE_ORIGIN == {"bad output": "ours"}
+assert doctor.PRELAUNCH_SKIP == ("LIGHT_OFF", "RESUME_BUSY", "DUPLICATE_RUN")
+assert doctor.PROFILE_HOME_RE.pattern == r"/\.(?:claude|gemini|codex|grok|opencode)-profiles/|/\.gemini/(?:antigravity/brain|tmp)/"
+assert doctor.MAIN_STATE_RE.pattern == r"/\.gemini/(?:antigravity/brain|tmp)/"
+assert [doctor.is_scratch_path(path) for path in ("/tmp/x", "/private/var/folders/x", "/a/scratchpad/x",
+                                                  home + "/.cache/x", "/Volumes/Work/x", "/Users/u/.claude/x")] \
+    == [True, True, True, True, False, False]
+assert doctor.limits() == {
+    "SLOW_FACTOR": 2, "SLOW_MIN_LEGS": 5, "SLOW_BASE_N": 20, "SLOW_FLOOR_S": 30, "SLOW_SIZE_RATIO": 2, "SLOW_BASE_D": 7,
+    "NO_EXIT_S": 21600, "REBOOT_SLACK_S": 300, "REBOOT_QUIET_S": 3600,
+    "TREND_MIN": 3, "PROOF_MIN": 10, "RECOVERED_MIN": 3, "NEAR_SHARE": 0.5, "KILLED_EARLY_SLACK_S": 60,
+    "SWITCH_SLACK_S": 60, "DEBT_GAP_DAYS": 7}
+digest = doctor.judge_digest(ledger)
+ledger["by_id"]["V14"]["note"] = "a tracking edit"
+assert doctor.judge_digest(ledger) == digest
+ledger["by_id"]["N5"]["status"] = "weather"
+assert doctor.judge_digest(ledger) != digest
+
+# A dismissal that matches (nearly) every leg is a fault; a faulty row judges nothing.
+def entry(match, status="not-a-bug", **extra):
+    row = {"id": "Z", "block": "reviewers", "match": match, "title": "t", "status": status, "fixes": [],
+           "same_cause": [], "last_reviewed": "2026-09-29", "reviewed_by": "c", "note": "", "handoff": None}
+    row.update(extra)
+    return row
+def fix_at(offset, commit="review-bench@abc1234", regressed=None):
+    return {"at": time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - offset)), "by": "c",
+            "files": ["review-bench/x.py"], "in": commit, "regressed_at": regressed}
+narrow = {"word": "crashed", "detail": "cell processing crashed"}
+assert doctor.row_faults(entry(narrow), ["Z"]) == []
+for match in ({"word": "crashed"}, {"word": "crashed", "detail": ".*"}, {"word": "crashed", "detail": "."},
+              {"word": "crashed", "detail": "abc|"}, {"word": "crashed", "model": "^o"},
+              {"word": "crashed", "until": "2026-09-01T00:00:00+03:00"}, {"word": "walled", "detail": "usage limit"},
+              {"word": "crashed", "detail": "abcdef", "until": "yesterday"}, {"health": "debt", "key": ".*"},
+              {"machinery": "anchors", "word": "crashed"}, {"health": "hooks", "key": "^hook-error:x"}):
+    assert doctor.row_faults(entry(match), ["Z"]), match
+# A machinery row matches a whole review-bench class: open or fixed, never dismissed.
+assert [bool(doctor.row_faults(entry({"machinery": "integrity"}, status), ["Z"])) for status in
+        ("not-a-bug", "weather", "open")] == [True, True, False]
+for status, extra in (("fixed", {}), ("fixed", {"fixes": [fix_at(100, None)]}),
+                      ("fixed-pending", {"fixes": [fix_at(100)]}), ("open", {"fixes": [fix_at(100, "abc1234")]}),
+                      ("open", {"fixed_in": ["review-bench@abc1234"]}), ("open", {"same_cause": ["Q"]}),
+                      ("closed", {})):
+    assert doctor.row_faults(entry(narrow, status, **extra), ["Z"]), (status, extra)
+path = os.path.join(unit, "ledger.json")
+def fixture_ledger(rows):
+    json.dump({"owner": "o", "owners": {block: "o" for block in doctor.BLOCKS}, "rows": rows, "blind_spots": []},
+              open(path, "w"))
+    os.environ["LLM_DOCTOR_LEDGER"] = path
+    return doctor.load_ledger()
+broad = fixture_ledger([entry({"word": "crashed", "detail": ".*"})])
+crash = doctor.leg("reviewers", "review", "sol", now - 100, "failed", "crashed", "crashed", "ours", text="boom")
+assert doctor.judge_leg_state(broad, crash) == ("new", None) and broad["faults"], broad["faults"]
+# `until` ends a dismissal: a leg after it is judged again.
+until = fixture_ledger([entry(dict(narrow, until=time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 500))))])
+before = doctor.leg("reviewers", "review", "sol", now - 600, "failed", "crashed", "crashed", "ours",
+                    text="cell processing crashed")
+after = dict(before, at=now - 400)
+assert doctor.judge_leg_state(until, before)[0] == "weather" and doctor.judge_leg_state(until, after)[0] == "new"
+
+# Re-fixed: both fixes stay, the last one judges, and a leg regresses a fix only if it started after it.
+fixes = [fix_at(20000, regressed=time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime(now - 18000))), fix_at(7200)]
+refixed = fixture_ledger([entry(narrow, "fixed", fixes=fixes)])
+assert doctor.ledger_view(refixed["by_id"]["Z"])["fixes"] == fixes
+def crashed(start, end):
+    return doctor.leg("reviewers", "review", "sol", now - end, "failed", "crashed", "crashed", "ours",
+                      text="cell processing crashed", start=now - start)
+assert [doctor.judge_leg_state(refixed, crashed(start, end))[0] for start, end in
+        ((18100, 18000), (7400, 7000), (7100, 7000))] == ["fixed", "fixed", "regressed"]
+
+# A cause every retry hid still adds up: three lost attempts are a watch problem with their seconds.
+recovered = fixture_ledger([])
+lost = [doctor.leg("reviewers", "review", "kimi", now - 100 * step, "failed", "crashed", "crashed", "ours",
+                   attempt="superseded", duration=60, event="bench:r/kimi#%d" % step) for step in (1, 2, 3)]
+lost.append(doctor.leg("reviewers", "review", "kimi", now - 50, None, None, "", "", event="bench:r/kimi#4"))
+doctor.mark_problems(recovered, lost)
+found = doctor.leg_problems(recovered, lost, now - 86400, 24, now)
+assert [(item["id"], item["state"], item["recovered"], item["lost_s"], len(item["evidence"])) for item in found] \
+    == [("leg-failure:reviewers/crashed", "watch", 3, 180, 3)], found
+assert doctor.leg_problems(recovered, lost[1:], now - 86400, 24, now) == []
+
+# The sweep's commit settles a pending fix; a ledger changed since it was read is left alone.
+pending = entry(narrow, "fixed-pending", fixes=[fix_at(100, None)])
+fixture_ledger([pending])
+source = open(path).read()
+doctor.write_settled({"Z": "review-bench@abc1234"}, source + " ")
+assert open(path).read() == source
+doctor.write_settled({"Z": "review-bench@abc1234"}, source)
+settled = json.load(open(path))["rows"][0]
+assert settled["status"] == "fixed" and settled["fixes"][-1]["in"] == "review-bench@abc1234", settled
+repos, saved_repos = os.path.join(unit, "cross-repos"), os.environ["LLM_DOCTOR_REPOS"]
+for name in ("one", "two"):
+    top = os.path.join(repos, name)
+    os.makedirs(top)
+    open(os.path.join(top, "f.py"), "w").write(name)
+    for args in (["init", "-q"], ["add", "f.py"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name]):
+        doctor.subprocess.run(["git", "-C", top] + args, check=True, capture_output=True)
+os.environ["LLM_DOCTOR_REPOS"] = repos
+cross = {"id": "C", "status": "fixed-pending", "fixes": [{"at": doctor.iso_time(now - 3600), "files": ["one/f.py", "two/f.py"],
+                                                          "in": None}]}
+settled_ids, _ = doctor.settle_fixes({"by_id": {"C": cross}})
+assert list(settled_ids) == ["C"] and cross["status"] == "fixed" \
+    and doctor.re.fullmatch(r"(one|two)@[0-9a-f]+", cross["fixes"][-1]["in"]), cross
+os.environ["LLM_DOCTOR_REPOS"] = saved_repos
+
+# A collector that throws leaves an error document, never an older document's colour.
+os.environ["LLM_DOCTOR_DIR"] = os.path.join(unit, "doctor-error")
+def broken(*args, **kwargs):
+    raise RuntimeError("boom")
+doctor.collect = broken
+with contextlib.redirect_stderr(io.StringIO()) as said:
+    assert doctor.main(["--quiet"]) == 1
+assert said.getvalue() == "llm-doctor: collector failed: RuntimeError: boom\n", said.getvalue()
+failed = json.load(open(os.path.join(unit, "doctor-error", "latest.json")))
+assert (failed["status"], failed["self"]["error"], failed["problem_count"]) == ("error", "RuntimeError: boom", 0), failed
+
 PY
 
-echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, hooks health (hook errors, a repeated ask, an unanswered word notice minus an ok mark, asks deferred past 2 h, a held run, a silent dispatcher, a missing journal), guards health (instruction-file growth no gate passed or only denied, reverted and settings growth skipped, watcher-named writers hedged, forged stamps, gate faults, a stale, rootless, failing or absent watcher, a silent tripwire), debt health (open gaps from review-anchors counted once per cause (kind and repository, or kind and run) with their repeats, old open gaps kept, a failing reader noted, logged losses once per drop with their lines, sessionless losses grouped by repository) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age)"
+echo "PASS: $asserts asserts; four blocks off fixture bench, worker-run, prelaunch and image-leg stores, bug vs weather, ledger new/open/regressed/fixed/dismissed, per-pass slow, superseded retries, chunk and judge legs, escape filtering, frozen daily history, rate trend against the rollup, files-note escapes, machinery classes held against the ledger, dry-run writes nothing, text view without run ids, debt health (open gaps from review-anchors counted once per cause (kind and repository, or kind and run) with their repeats, old open gaps kept, a failing reader noted, logged losses once per drop with their lines, sessionless losses grouped by repository) and one bug-or-weather rule per record shape (login, status anchors, provider clock, turn budgets, owner switches, killed early, chunk readings, escapes, run records, prelaunch and image refusals, machinery age), the doctors' contract envelope (stable ids, states, evidence one per event ref, a missing required store blind, judge digest, a near miss under NO_EXIT_S), ledger faults for broad dismissals and fix records, a re-fixed row judged by its last fix and by leg start, causes retries hid, pending fixes settled from a fixture repo, the pinned judge (dismissal rows, theirs words, exemptions, prelaunch skips, limits) and the collector's error document"

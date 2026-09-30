@@ -18,14 +18,13 @@
 -- change written while Hammerspoon was down is delivered when it comes back rather than lost.
 
 local M = {}
+local menuStyle = require("menu-style")
 local CHARS_PER_TOKEN = 3.2
 local FILE_WIDTH = 32
 local MODES = { always_on = "always", on_demand = "demand", agent_brief = "brief" }
 local ROOT = debug.getinfo(1, "S").source:match("^@(.+)/hammerspoon/instruction%-watch%.lua$")
 local DEFAULT_RATES = (os.getenv("HOME") or "") .. "/.local/share/tokenmap/read-rates.json"
 local ratesPath, ratesStamp, ratesCache = DEFAULT_RATES, nil, nil
-local menuFont = { name = "Menlo", size = 13 }
-local dimColorName = { list = "System", name = "tertiaryLabelColor" }
 local pasteboardFn = function(text) hs.pasteboard.setContents(text) end
 local function runOpenCommand(sid, onDone)
     if not ROOT then
@@ -1025,19 +1024,32 @@ local function rateKey(cache, path)
     if ok and type(resolved) == "string" and cache.entries[resolved] then return resolved end
 end
 
-local function signed(value, price)
-    if value == nil then return "" end
-    if value == 0 then return "0" end
-    local sign = value < 0 and "-" or "+"
-    local magnitude = math.abs(value)
-    if magnitude >= 10000 then
-        return sign .. string.format(price and "%.1fk" or "%.0fk", magnitude / 1000)
+local TOKEN_UNITS = { { 1e9, "B" }, { 1e6, "M" }, { 1e3, "k" } }
+local BYTE_UNITS = { { 1e6, " MB" }, { 1e3, " kB" }, { 1, " B" } }
+
+local function grouped(text)
+    return (text:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", ""))
+end
+
+-- tokenmap's fmt_tokens rule, so a number reads the same here as under Token tracking.
+local function scaled(magnitude, units)
+    for _, unit in ipairs(units) do
+        local size, suffix = unit[1], unit[2]
+        if magnitude >= 10 * size or size == 1 then
+            local places = (size > 1 and magnitude < 1000 * size) and 1 or 0
+            return grouped(string.format("%." .. places .. "f", magnitude / size)) .. suffix
+        end
     end
-    return sign .. string.format("%.0f", magnitude)
+    return grouped(string.format("%.0f", magnitude))
+end
+
+local function signed(value, units)
+    if value == nil then return "" end
+    return (value < 0 and "-" or value > 0 and "+" or "") .. scaled(math.abs(value), units)
 end
 
 local function priceText(value)
-    return value ~= nil and (signed(value, true) .. " tok/wk") or ""
+    return value ~= nil and (signed(value, TOKEN_UNITS) .. " tok/wk") or ""
 end
 
 local function filePrice(cache, path, delta)
@@ -1062,10 +1074,10 @@ local function dimColor()
     local drawing = hs.drawing
     local palette = type(drawing) == "table" and drawing.color
     local asRGB = type(palette) == "table" and palette.asRGB
-    if type(asRGB) ~= "function" then return dimColorName end
-    local ok, resolved = pcall(asRGB, dimColorName)
+    if type(asRGB) ~= "function" then return menuStyle.DIM end
+    local ok, resolved = pcall(asRGB, menuStyle.DIM)
     if ok and type(resolved) == "table" then return resolved end
-    return dimColorName
+    return menuStyle.DIM
 end
 
 local function alignedTitles(rows, columns, style)
@@ -1101,16 +1113,14 @@ local function alignedTitles(rows, columns, style)
     return titles
 end
 
-local RED = { red = 0.86, green = 0.16, blue = 0.14, alpha = 1 }
 local function renderStyle()
     local color = dimColor()
     return function(text, dim, red)
-        return hs.styledtext.new(text, { font = menuFont, color = red and RED or (dim and color or nil) })
+        return hs.styledtext.new(text, { font = menuStyle.MONO, color = red and menuStyle.RED or (dim and color or nil) })
     end
 end
 local function eventTime(event)
-    local stamp = parseIso(event.at)
-    return stamp and os.date("%d %b %H:%M", stamp) or "?"
+    return menuStyle.clock(parseIso(event.at))
 end
 
 local function eventMenu(event, receipt, cache, style)
@@ -1122,7 +1132,7 @@ local function eventMenu(event, receipt, cache, style)
         rows[#rows + 1] = {
             file,
             (verb[index] and verb[index] ~= "changed") and verb[index] or "",
-            signed(bytes[index]),
+            signed(bytes[index], BYTE_UNITS),
             priceText(filePrice(cache, file, bytes[index])),
             (key and cache.ranks[key]) and ("#" .. cache.ranks[key]) or "",
             type(entry) == "table" and MODES[entry.mode] or "",
@@ -1163,20 +1173,14 @@ local function watcherState()
     local born = hs.fs.attributes(path, "modification")
     local body = readFile(path) or ""
     local since = tonumber(body:match("since=(%d+)"))
-    local roots, files = tonumber(body:match("roots=(%d+)")), tonumber(body:match("files=(%d+)"))
+    local roots = tonumber(body:match("roots=(%d+)"))
     local failure = body:match("error=([^\n]+)")
-    local function stamp(value) return os.date("%d %b %H:%M", value) end
     if not born then return "watcher: never started", true end
-    if os.time() - born > 2 * WATCH_TICK then return "watcher: DOWN since " .. stamp(born), true end
+    if os.time() - born > 2 * WATCH_TICK then return "watcher: down since " .. menuStyle.clock(born), true end
     if failure or (roots or 0) == 0 then
-        return "watcher: DOWN since " .. stamp(since or born) .. " · " .. (failure or "no root watched"), true
+        return "watcher: down since " .. menuStyle.clock(since or born) .. " · " .. (failure or "no root watched"), true
     end
-    return string.format("watcher: live since %s · %d roots · %d files", stamp(since or born), roots, files or 0), false
-end
-
-local function livenessItem(style)
-    local text, down = watcherState()
-    return { title = style(text, false, down), disabled = true }
+    return nil, false
 end
 
 function M.watcherAlarm()
@@ -1187,7 +1191,9 @@ end
 function M.menuItems()
     local events, all = readJournal()
     local cache, style = rates(), renderStyle()
-    local items = { livenessItem(style) }
+    local items = {}
+    local watcherText, down = watcherState()
+    if down then items[1] = { title = style(watcherText, false, true), disabled = true } end
     -- Widths follow this render's content: a column nobody fills takes no room and leaves no
     -- blank tail, while every row still lands on the same offsets.
     local rows, fileWidth, byteWidth, priceWidth = {}, 0, 0, 0
@@ -1206,7 +1212,7 @@ function M.menuItems()
         end
         -- A legacy ADDED/DELETED record carries no number; the verb says what the blank would not.
         local row = { event = event, receipt = receipt, path = path, more = more,
-                      bytes = signed(totalBytes), price = priceText(totalPrice),
+                      bytes = signed(totalBytes, BYTE_UNITS), price = priceText(totalPrice),
                       red = event.kind == "stamp-forged" }
         local verb = verbs(event)[1]
         for _, other in pairs(verbs(event)) do if other ~= verb then verb = nil end end
@@ -1243,7 +1249,7 @@ function M.menuItems()
         if (stamp ~= nil and now - stamp <= ALERT_MAX_AGE) or not receiptFor(event.id) then older = older + 1 end
     end
     if older > 0 then
-        items[#items + 1] = { title = style("+" .. older .. " older in events.jsonl", true), disabled = true }
+        items[#items + 1] = { title = style("+" .. older .. " older", true), disabled = true }
     end
     items[#items + 1] = { title = "-" }
     local ranked = M.rankedPaths()

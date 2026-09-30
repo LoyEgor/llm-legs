@@ -26,6 +26,8 @@ PS_CMD="${STATUSLINE_PS:-ps}"
 LSOF_CMD="${STATUSLINE_LSOF:-lsof}"
 
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null; }
+probe_self=$(realpath "${BASH_SOURCE[0]}" 2>/dev/null) || probe_self="${BASH_SOURCE[0]}"
+. "${probe_self%/*}/../share/test-scope.sh"
 
 mkdir -p "$cache_dir" 2>/dev/null || exit 0
 if ! mkdir "$lock" 2>/dev/null; then
@@ -237,29 +239,31 @@ records=""
 while IFS=$'\037' read -r pid class elapsed label tpath; do
   [ -n "$pid" ] || continue
   cwd=${cwd_by_pid[$pid]:-}
-  done_n=$'\t' total="" srepo=""
-  if [ "$label" = suites ] && [ -f "$cache_dir/suites-$pid" ] && IFS=$'\t' read -r logdir total srepo < "$cache_dir/suites-$pid" \
+  done_n=$'\t' total="" srepo="" logdir="" stamp="" outcome_dir=""
+  if [ "$label" = suites ] && [ -f "$cache_dir/suites-$pid" ] && IFS=$'\t' read -r logdir total srepo stamp < "$cache_dir/suites-$pid" \
       && [ -d "$logdir" ] && [[ "$total" =~ ^[0-9]+$ ]]; then
     done_n=$(cat "$logdir"/*.status 2>/dev/null | awk -F'\t' '{ n++; if ($1 != 0) f++ } END { print n + 0 "\t" f + 0 }')
+    # A runner killed past its EXIT trap leaves its file for the next process to get its pid.
+    [[ "$stamp" =~ ^[0-9]+$ ]] && [ "$stamp" -ge "$((now - elapsed - 3))" ] && outcome_dir=$logdir
   else
     total="" srepo=""
   fi
   # A run started from another repository's directory is that repository's: the script it runs or
   # the one run-suites was handed names it, the cwd only when neither does.
-  top=""
+  top="" root=""
   case "$tpath" in
-    /*) top=$(git -C "${tpath%/*}" rev-parse --show-toplevel 2>/dev/null) ;;
-    */*) [ -z "$cwd" ] || top=$(git -C "$cwd/${tpath%/*}" rev-parse --show-toplevel 2>/dev/null) ;;
+    /*) git_top "${tpath%/*}" ;;
+    */*) [ -z "$cwd" ] || git_top "$cwd/${tpath%/*}" ;;
   esac
-  [ -n "$top" ] || [ -z "$srepo" ] || top=$(git -C "$srepo" rev-parse --show-toplevel 2>/dev/null) || top=$srepo
-  [ -n "$top" ] || [ -z "$cwd" ] || top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null) || top=$cwd
+  [ -n "$top" ] || [ -z "$srepo" ] || git_top "$srepo" || top=$srepo
+  [ -n "$top" ] || [ -z "$cwd" ] || git_top "$cwd" || top=$cwd
   repo=""
   case "$top" in
     '') ;;
     */.claude/worktrees/*) repo="⧉ ${top##*/}" ;;
     *) repo=${top##*/} ;;
   esac
-  records="${records}main"$'\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\n'
+  records="${records}main"$'\t'"$class"$'\t'"$((now - elapsed))"$'\t'"$repo"$'\t'"$label"$'\t'"$done_n"$'\t'"$total"$'\t'"$outcome_dir"$'\t'"$root"$'\n'
 done <<< "$items"
 
 sorted_records=""
@@ -281,13 +285,13 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
     $1 == "main" && $2 == "tests" { key = "chat\t" $4 "\t" $5 }
     $1 == "run" { key = "worker\t" $2 "\t" $4 }
     $1 != "run" && !($1 == "main" && $2 == "tests") { next }
-    side == "OLD" { n++; okey[n] = key; ostart[n] = $3; oline[n] = $0; next }
-    { k++; nkey[k] = key; nstart[k] = $3 }
+    side == "OLD" { n++; okey[n] = key; ostart[n] = $3; olog[n] = $9; oline[n] = $0; next }
+    { k++; nkey[k] = key; nstart[k] = $3; nlog[k] = $9 }
     END {
       for (i = 1; i <= n; i++) {
         best = 0
         for (j = 1; j <= k; j++) {
-          if (used[j] || nkey[j] != okey[i]) continue
+          if (used[j] || nkey[j] != okey[i] || (olog[i] != "" && nlog[j] != "" && olog[i] != nlog[j])) continue
           d = nstart[j] - ostart[i]; if (d < 0) d = -d
           if (d <= 3 && (!best || d < bestd)) { best = j; bestd = d }
         }
@@ -295,15 +299,38 @@ if [[ "$old_mtime" =~ ^[0-9]+$ ]] && [ "$((now - old_mtime))" -le 15 ]; then
       }
     }')
   if [ -n "$finished" ]; then
-    while IFS=$'\037' read -r kind a start c d e f g; do
+    while IFS=$'\037' read -r kind a start c d e f g h root _; do
+      # A code of 129-192 is a kill by signal (interrupt, memory guard), no verdict on the code under test.
+      ok=""
+      if [ "$d" = suites ] && [[ "$g" =~ ^[1-9][0-9]*$ ]] && [ -n "$h" ] && [ -d "$h" ]; then
+        n=0 bad=0 killed=0
+        for status in "$h"/*.status; do
+          [ -f "$status" ] || continue
+          rc=""; IFS=$'\t' read -r rc _ < "$status" || :
+          n=$((n + 1))
+          if [ "$rc" = 0 ]; then :
+          elif [[ "$rc" =~ ^[0-9]{1,3}$ ]] && { [ "$rc" -le 128 ] || [ "$rc" -gt 192 ]; }; then bad=$((bad + 1))
+          else killed=$((killed + 1))
+          fi
+        done
+        f=$((bad + killed))
+        if [ "$bad" -gt 0 ]; then ok=false
+        elif [ "$killed" -eq 0 ] && [ "$n" -eq "$g" ]; then ok=true
+        fi
+      fi
       if [ "$kind" = run ]; then
         workdir=$(jq -r '.workdir // empty' "$runs_root/$a/meta.json" 2>/dev/null)
-        jq -cn --argjson end "$now" --argjson start "$start" --arg repo "${workdir##*/}" --arg label "$c" \
-          '{end: $end, secs: ($end - $start), who: "worker", repo: $repo, label: $label}'
+        root=""
+        [ -z "$workdir" ] || git_top "$workdir" || :
+        jq -cn --argjson end "$now" --argjson start "$start" --arg repo "${workdir##*/}" --arg label "$c" --arg root "$root" \
+          '{end: $end, secs: ($end - $start), who: "worker", repo: $repo, label: $label}
+          + (if $root == "" then {} else {repo_root: $root} end)'
       else
         jq -cn --argjson end "$now" --argjson start "$start" --arg repo "$c" --arg label "$d" --arg done "$e" \
-          --arg failed "$f" --arg total "$g" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
-          + (if $total == "" then {} else {total: ($total | tonumber), failed: (($failed | tonumber?) // 0)} end)'
+          --arg failed "$f" --arg total "$g" --arg ok "$ok" --arg root "$root" '{end: $end, secs: ($end - $start), who: "chat", repo: $repo, label: $label}
+          + (if $total == "" then {} else {total: ($total | tonumber), failed: (($failed | tonumber?) // 0)} end)
+          + (if $ok == "" then {} else {ok: ($ok == "true")} end)
+          + (if $root == "" then {} else {repo_root: $root} end)'
       fi
     done <<< "${finished//$'\t'/$'\037'}" >> "$cache_dir/test-history.jsonl" 2>/dev/null
   fi

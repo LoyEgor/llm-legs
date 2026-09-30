@@ -1,5 +1,7 @@
 # Hand-off: fix the harness's own performance
 
+Status: open
+
 For: an autonomous LLM that fixes, tests and verifies the problems below without supervision.
 Written 2026-09-28 from the speed investigation
 (`docs/handoffs/2026-09-28-speed-investigation.md`, "the investigation" below) and the first day

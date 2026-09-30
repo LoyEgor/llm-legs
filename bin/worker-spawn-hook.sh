@@ -53,8 +53,8 @@ case " $RELAY_TYPES $NATIVE_ALLOWLIST " in
     if command -v worker_light_off >/dev/null 2>&1 && worker_light_off; then
       relays='claudeb-worker, codex-worker, gemini-worker or grok-worker; a read-only question is a brief that says so'
     fi
-    jq -cn --arg r "native ${subagent:-general-purpose} is not spawned: spawn the relay Agent worker-pick's NEXT row names instead ($relays), which runs worker-run itself" \
-      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+    jq -cn --arg hook "${0##*/}" --arg r "native ${subagent:-general-purpose} is not spawned: spawn the relay Agent worker-pick's NEXT row names instead ($relays), which runs worker-run itself" \
+      '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}'
     exit 0 ;;
 esac
 # The harness itself denies both Light types while Light is off (worker_light_agents_sync), so a
@@ -62,8 +62,8 @@ esac
 case "$subagent" in
   light-research | light-worker)
     if command -v worker_light_off >/dev/null 2>&1 && worker_light_off; then
-      jq -cn --arg r "Light is off (Egor's menu: LLM Limits -> Light): work as if it did not exist. Give this brief to the regular worker relay worker-pick names (its NEXT row); a research brief says it is read-only and carries \`WEB: on\` when it needs the web. An \`ATTACH <run-id>:\` brief goes to the relay of that run's vendor (\`<vendor>-worker\`, the vendor is the run id's first word)." \
-        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}'
+      jq -cn --arg hook "${0##*/}" --arg r "Light is off (Egor's menu: LLM Limits -> Light): work as if it did not exist. Give this brief to the regular worker relay worker-pick names (its NEXT row); a research brief says it is read-only and carries \`WEB: on\` when it needs the web. An \`ATTACH <run-id>:\` brief goes to the relay of that run's vendor (\`<vendor>-worker\`, the vendor is the run id's first word)." \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}'
       exit 0
     fi ;;
 esac

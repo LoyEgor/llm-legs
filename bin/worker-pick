@@ -23,10 +23,13 @@ query_exclude_given=false
 query_role=workers
 query_role_given=false
 query_fable=false
+query_model=""
+query_model_given=false
 query_claim=false
 query_list=false
+query_menu=false
 usage() {
-  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer]]\n' >&2
+  printf 'usage: worker-pick [--account claudeb|codex|gemini|grok [--exclude name[,name...]] [--role workers|reviewers|chat|research|image|light|computer] [--model <id>] [--fable] [--claim] | --list [--role workers|reviewers|chat|research|image|light|computer] [--model <id>] | --menu]\n' >&2
   exit 2
 }
 while [ "$#" -gt 0 ]; do
@@ -58,9 +61,18 @@ while [ "$#" -gt 0 ]; do
       ;;
     # Only a task that asks for Fable spends the fable bucket, so the caller names that bucket.
     --fable) query_fable=true; shift ;;
+    --model)
+      [ "$#" -ge 2 ] || usage
+      query_model="$2"
+      query_model_given=true
+      shift 2
+      ;;
     # A caller that is about to spend the answer says so; a surface that only reports never does.
     --claim) query_claim=true; shift ;;
     --list) query_list=true; shift ;;
+    # The menubar alone asks for a closed vendor's accounts: every chat reads this table, and those
+    # rows would cost each one context while routing nothing.
+    --menu) query_menu=true; shift ;;
     *) printf 'worker-pick: unexpected argument %s\n' "$1" >&2; usage ;;
   esac
 done
@@ -84,11 +96,13 @@ if [ "$query_claim" = true ] && [ -z "$query_vendor" ]; then
   printf 'worker-pick: --claim only means something with --account\n' >&2
   usage
 fi
-# A chat runs Fable, whose limit is a bucket of its own, so `--role chat` reads the Claude side
-# through the very path `--fable` asks for rather than through the weekly ranking.
-query_fable_view=false
-if [ "$query_fable" = true ] || [ "$query_role" = chat ]; then
-  query_fable_view=true
+if [ "$query_model_given" = true ] && [ "$query_role" != chat ]; then
+  printf 'worker-pick: --model only means something with --role chat\n' >&2
+  usage
+fi
+if [ "$query_menu" = true ] && { [ -n "$query_vendor" ] || [ "$query_list" = true ]; }; then
+  printf 'worker-pick: --menu is the table alone, without --account or --list\n' >&2
+  usage
 fi
 query_exclude_json='[]'
 if [ "$query_exclude_given" = true ]; then
@@ -121,6 +135,15 @@ worker_pick_share="$(worker_pick_root)/share"
 . "$worker_pick_share/worker-claims.sh"
 . "$worker_pick_share/worker-walls.sh"
 . "$worker_pick_share/chat-account.sh"
+
+query_fable_view=false
+if [ "$query_fable" = true ]; then
+  query_fable_view=true
+elif [ "$query_role" = chat ]; then
+  if [ "$query_model_given" = true ]; then chat_bucket=$(chat_model_bucket "$query_model")
+  else chat_bucket=$(chat_model_bucket); fi
+  [ "$chat_bucket" = fable ] && query_fable_view=true
+fi
 
 LIMITS_FILE="${LLM_LIMITS_FILE:-$HOME/.llm-limits.json}"
 WORKER_FILE="${WORKER_PICK_CONFIG_FILE:-$HOME/.claude/worker-model}"
@@ -439,6 +462,7 @@ summary=$(jq -r \
   --argjson reviewer_token_expiry "$reviewer_token_expiry" \
   --argjson live_pools "$live_pools" \
   --argjson now "$now" --arg own "$own" --arg own_vendor "$own_vendor" --arg pin "$cb_pin" \
+  --arg menu "$query_menu" \
   --arg cb_disp "$cb_display" --arg cx_disp "$cx_display" \
   --arg gm_disp "$gm_display" --arg gr_disp "$gr_display" \
   --argjson defer5h "$FIVE_HOUR_DEFER_PCT" --argjson stale_thr "$LIMITS_STALE_ROUTING" \
@@ -569,7 +593,7 @@ summary=$(jq -r \
      (.budget | sub("^ +"; "")) + (if .flags == "" then "" else " " + .flags end));
   # A vendor section is either its account rows or ONE line saying why there are none. A role the
   # owner closed is that one line too: nothing is routed there, and what those accounts hold is
-  # for the vendor menu section to show, not for this router.
+  # for the menu to show, which asks for them with `--menu` under a header of its own.
   # The switch is read first, exactly as `vendor_reason` reads it: a closed role with no rows left
   # in the store would otherwise blame the data for what the owner turned off.
   def vendor_state($accounts; $off; $pinned; $empty_text):
@@ -583,7 +607,8 @@ summary=$(jq -r \
     $lapses | map("pin \(.pin) \(.lapse) → \($target)");
   # Rows travel to the shell as one field; the record separator is what a `read` cannot split on.
   def section($rows; $state; $note):
-    $note + (if $state != "" then [$state] else ($rows | map(table_row)) end) | join("\u001e");
+    $note + (if $state != "" and ($menu != "true" or $state != "off for workers") then [$state]
+             else ($rows | map(table_row)) end) | join("\u001e");
   # The NEXT table ranks ACCOUNTS across the vendors, so a vendor contributes every candidate it
   # holds and not only the one it would answer with. Each row travels with the keys that ordered it
   # inside its vendor — the rank vector of rule 2, plus which pin tier chose it (0 account pin,
@@ -1147,7 +1172,11 @@ else
 fi
 
 print_section() {
-  local label=$1 blob=$2 first=yes row
+  local label=$1 blob=$2 head=${3:-} first=yes row
+  if [ -n "$head" ]; then
+    printf '%-9s%s\n' "$label:" "$head"
+    first=no
+  fi
   [ -n "$blob" ] || return 0
   local IFS=$'\x1e'
   set -f
@@ -1161,10 +1190,29 @@ print_section() {
   done
   set +f
 }
-[ "$cx_known" = false ] || print_section codex "$cx_rows"
-[ "$gm_known" = false ] || print_section gemini "$gm_rows"
-[ "$gr_known" = false ] || print_section grok "$gr_rows"
-[ "$cb_known" = false ] || print_section claude "$cl_rows"
+menu_head() { # vendor workers_off
+  [ "$query_menu" = true ] || return 0
+  local reviewers=false
+  ! role_off "$1" reviewers || reviewers=true
+  case "$2:$reviewers" in
+    true:true) printf 'workers off · reviewers off' ;;
+    true:false) printf 'workers off' ;;
+    false:true) printf 'reviewers off' ;;
+    *) printf on ;;
+  esac
+}
+menu_section() { # label vendor known rows workers_off paused present
+  if [ "$3" = true ]; then
+    print_section "$1" "$4" "$(menu_head "$2" "$5")"
+  elif [ "$query_menu" = true ] && [ "$6" = true ] && [ "$7" = yes ]; then
+    print_section "$1" "" paused
+  fi
+}
+# The LLM Limits menu lists its vendors in this order too.
+menu_section claude claudeb "$cb_known" "$cl_rows" "$cb_role_off" "$cb_paused" "$cl_present"
+menu_section codex codex "$cx_known" "$cx_rows" "$cx_role_off" "$cx_paused" "$cx_present"
+menu_section grok grok "$gr_known" "$gr_rows" "$gr_role_off" "$gr_paused" "$gr_present"
+menu_section gemini gemini "$gm_known" "$gm_rows" "$gm_role_off" "$gm_paused" "$gm_present"
 light_rows=''
 for light_role in research edit; do
   if light_vendor=$(worker_light_vendor "$light_role" 2>/dev/null) &&
@@ -1182,6 +1230,11 @@ for light_role in research edit; do
   fi
   light_rows="${light_rows:+$light_rows$'\x1e'}$light_row"
 done
-! worker_light_off || light_rows=off
-print_section light "$light_rows"
+if [ "$query_menu" = true ]; then
+  if worker_light_off; then print_section light "$light_rows" off
+  else print_section light "$light_rows" on; fi
+else
+  ! worker_light_off || light_rows=off
+  print_section light "$light_rows"
+fi
 printf 'DATA: %s\n' "$age"

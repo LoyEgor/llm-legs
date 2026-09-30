@@ -25,7 +25,9 @@ vendors="codex grok gemini claude"
 info_facets="version catalog_text catalog_order foreign_clients"
 id_prefixes='gpt|grok|gemini|imagen|veo|sora|claude'
 id_re="($id_prefixes)(-[a-z]+)*-[0-9]+[a-z]?(\\.[0-9]+)*(-[a-z0-9]+){0,3}"
-read -r -a opener <<<"${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}"
+doctor_fix="${VENDOR_FINGERPRINT_DOCTOR_FIX:-$repo_root/bin/doctor-fix}"
+. "$repo_root/share/chat-open.sh"
+. "$repo_root/share/night-worktree.sh"
 # npm puts codex and grok under nvm, which neither a LaunchAgent's PATH nor a plain shell's carries.
 # Appended, so a native install earlier on PATH (~/.local/bin/claude) stays the one that runs.
 while IFS= read -r nvm_bin; do PATH="$PATH:$nvm_bin"; done < <(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -rV)
@@ -145,19 +147,27 @@ codex_facets() {
     # Accounts are served different catalogs (A/B defaults, priorities) and ~/.codex drops in and out
     # of the homes as the ChatGPT app rewrites it: a field the homes disagree on is their sorted value
     # set, so the facet never depends on which home happened to be read first.
-    jq -s 'map(.models[]?) | group_by(.slug) | map(. as $vs | {key: .[0].slug, value: (
+    # A leaf in one home can be a container in another (`[]` beside `["pro"]`): the merge keeps the
+    # shortest such path, or setpath indexes its per_account object with a number and jq dies.
+    if jq -s 'map(.models[]?) | group_by(.slug) | map(. as $vs | {key: .[0].slug, value: (
         [$vs[] | paths((type != "object" and type != "array") or . == {} or . == [])] | unique
+        | . as $all | map(. as $p | select(any($all[]; length < ($p | length) and . == $p[0:length]) | not))
         | reduce .[] as $p (null; setpath($p; [$vs[] | try getpath($p) catch null] | unique
             | if length == 1 then .[0] else {per_account: .} end)))}) | from_entries' \
-      "${homes[@]/%//models_cache.json}" >"$work/catalog" 2>/dev/null
-    # Prompts ride in the catalog as long strings; they change without any capability changing.
-    # priority only orders the list: every launch passes a resolved -m, so it serves nothing.
-    jq 'delpaths([paths(type == "string" and length > 300)]) | map_values(del(.priority))' "$work/catalog" | put catalog
-    jq 'map_values(.priority) | with_entries(select(.value != null))' "$work/catalog" | put catalog_order
-    jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
-      "$work/catalog" | while IFS=$'\t' read -r key text; do
-      printf '%s\t%s\n' "$key" "$(printf '%s' "$text" | base64 -D 2>/dev/null | shasum -a 256 | cut -c1-16)"
-    done | jq -R 'split("\t") | {(.[0]): .[1]}' | jq -s 'add // {}' | put catalog_text
+      "${homes[@]/%//models_cache.json}" >"$work/catalog" 2>/dev/null && [ -s "$work/catalog" ]; then
+      # Prompts ride in the catalog as long strings; they change without any capability changing.
+      # priority only orders the list: every launch passes a resolved -m, so it serves nothing.
+      jq 'delpaths([paths(type == "string" and length > 300)]) | map_values(del(.priority))' "$work/catalog" | put catalog
+      jq 'map_values(.priority) | with_entries(select(.value != null))' "$work/catalog" | put catalog_order
+      jq -r 'paths(type == "string" and length > 300) as $p | [($p | map(tostring) | join(".")), (getpath($p) | @base64)] | @tsv' \
+        "$work/catalog" | while IFS=$'\t' read -r key text; do
+        printf '%s\t%s\n' "$key" "$(printf '%s' "$text" | base64 -D 2>/dev/null | shasum -a 256 | cut -c1-16)"
+      done | jq -R 'split("\t") | {(.[0]): .[1]}' | jq -s 'add // {}' | put catalog_text
+    else
+      fail catalog local
+      fail catalog_text local
+      fail catalog_order local
+    fi
     put_docs docs "${homes[0]}/skills/.system"
   else
     fail catalog remote
@@ -303,7 +313,8 @@ check_vendor() { # vendor
        + ($s.failed | map(.facet as $f | select($p.facets | has($f)) | {($f): $p.facets[$f]}) | add // {})
        + {foreign_clients: (($p.facets.foreign_clients // {}) + ($s.facets.foreign_clients // {}))}
        + {probe_failures: ($s.failed | map(select(.where == "local") | .facet) | unique)}) as $facets
-    | {vendor: $s.vendor, version: $s.version, checked_at: $t, facets: $facets}' \
+    | {vendor: $s.vendor, version: $s.version, checked_at: $t, facets: $facets,
+       remote_failures: ($s.failed | map(select(.where == "remote") | .facet) | unique)}' \
     <({ [ -s "$previous" ] && cat "$previous" || printf 'null\n'; }) "$current.raw" >"$current"
   rm -f "$current.raw"
   if [ ! -s "$previous" ]; then
@@ -316,7 +327,7 @@ check_vendor() { # vendor
     mv -f "$current" "$previous"
     return 0
   fi
-  # An event waits for the weekly chat; a change meanwhile joins it and is re-judged against the
+  # An event waits for Egor's request; a change meanwhile joins it and is re-judged against the
   # fingerprint from before the event, so a flap that has reverted by then closes it unseen.
   id=$(pending_event "$vendor")
   if [ -n "$id" ]; then
@@ -345,16 +356,8 @@ check_vendor() { # vendor
   log "$vendor event $id $status: $(jq -r 'join(", ")' <<<"$changed")"
 }
 
-launch_event() { # id... -> one chat for all of them
-  local id file claudeb account session prompt
-  # A bare `claude` runs on ~/.claude, which holds no login: the chat opens on a picked profile.
-  claudeb=$(command -v claudeb) || { log "cannot open $*: no claudeb on PATH"; return 1; }
-  # The chat role: this is an interactive chat, and the workers switch it meets is lifted only by the
-  # pin written below, once the account is already chosen.
-  account=$("${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" --account claudeb --role chat 2>/dev/null) &&
-    [ -n "$account" ] ||
-    { log "cannot open $*: worker-pick names no Claude account; retried next run"; return 1; }
-  session=$(uuidgen | tr '[:upper:]' '[:lower:]')
+launch_event() { # id... -> one chat for all of them, recorded as one fixer run of doctor updater
+  local id file prompt opened account session run
   file="$events_dir/$1.command"
   if [ $# = 1 ]; then
     prompt="Vendor release event $1: read $repo_root/docs/vendor-release.md in full and follow it."
@@ -362,51 +365,45 @@ launch_event() { # id... -> one chat for all of them
     printf -v prompt '%s, ' "$@"
     prompt="Vendor release events ${prompt%, }: read $repo_root/docs/vendor-release.md in full and follow it for each event in turn."
   fi
-  {
-    printf '#!/bin/bash\n'
-    printf 'cd %q || exit 1\n' "$repo_root"
-    # Egor's rule for test chats: every vendor open for workers and reviews, through the same chat pin
-    # «воркер на все» writes. Run from Terminal, where no Claude session asks for his words.
-    printf 'CLAUDE_CODE_SESSION_ID=%q %q all >/dev/null || echo "chat-pin all failed: this chat meets the worker switches"\n' \
-      "$session" "$repo_root/bin/chat-pin"
-    printf 'exec %q profile %q --session-id %q --model opus --effort high %q\n' "$claudeb" "$account" "$session" "$prompt"
-  } >"$file"
-  chmod 755 "$file"
-  if ! "${opener[@]}" "$file" >/dev/null 2>&1; then
-    log "could not open integration chat for $*; retried next run"
+  if ! opened=$(CHAT_OPEN_OPENER="${VENDOR_FINGERPRINT_OPENER:-open -a Terminal}" \
+    CHAT_OPEN_WORKER_PICK="${VENDOR_FINGERPRINT_WORKER_PICK:-$repo_root/bin/worker-pick}" \
+    chat_open "$file" "$repo_root" "$prompt" 2>&1); then
+    log "could not open integration chat for $*: $opened; retried next run if requested"
     return 1
   fi
+  read -r account session <<<"$opened"
+  run=$("$doctor_fix" record updater --session "$session" --account "$account" --command "$file" --problems "$@" 2>/dev/null) ||
+    { run=''; log "no fixer run recorded for $*"; }
   for id in "$@"; do
-    event_set "$id" '.launched_at = $t' --arg t "$(stamp)"
+    event_set "$id" '.launched_at = $t | .run = (if $r == "" then null else $r end)' --arg t "$(stamp)" --arg r "$run"
     rm -f "$events_dir/$id.base"
   done
-  log "opened integration chat for $*"
+  log "opened integration chat for $*${run:+ (run $run)}"
 }
 
-# Releases flap and batch well: every waiting event goes to one chat at most once a week. A manual
-# request asked for a chat now, so a failed launch of one is retried on the next run regardless.
+# Chats open only on Egor's request. A request whose chat failed to open is his own ask, so the next
+# check retries it.
 launch_pending() {
-  local file ids=() last held=false
+  local file ids=()
   # A manual update opens its own chat for every vendor right after this check.
   [ -z "${VENDOR_FINGERPRINT_HOLD:-}" ] || return 0
-  last=$(cat "$fp_dir/last-launch" 2>/dev/null) || last=0
-  [ $(($(date +%s) - ${last:-0})) -ge "${VENDOR_FINGERPRINT_LAUNCH_EVERY:-604800}" ] || held=true
   for file in "$events_dir"/*.json; do
     [ -f "$file" ] || continue
-    jq -e --argjson held "$held" '.status == "open" and .launched_at == null
-      and (($held | not) or (.reason // "" | startswith("manual request")))' "$file" >/dev/null 2>&1 &&
+    jq -e '.status == "open" and .launched_at == null
+      and (.requested_at != null or (.reason // "" | startswith("manual request")))' "$file" >/dev/null 2>&1 &&
       ids+=("$(jq -r .id "$file")")
   done
   [ ${#ids[@]} -gt 0 ] || return 0
-  launch_event "${ids[@]}" && ! $held && date +%s >"$fp_dir/last-launch"
+  launch_event "${ids[@]}"
   return 0
 }
 
 check() { # [--here] [vendor...]
-  local vendor file here=false
+  local vendor file here=false wait=0
   mkdir -p "$fp_dir" "$events_dir"
   if [ -z "${VENDOR_FINGERPRINT_LOCKED:-}" ]; then
-    exec env VENDOR_FINGERPRINT_LOCKED=1 lockf -k -t 0 "$fp_dir/check.lock" "$script_path" check "$@"
+    [ "${1:-}" != --here ] || wait=${VENDOR_FINGERPRINT_LOCK_WAIT:-600}
+    exec env VENDOR_FINGERPRINT_LOCKED=1 lockf -k -t "$wait" "$fp_dir/check.lock" "$script_path" check "$@"
   fi
   [ "${1:-}" = --here ] && { here=true; shift; }
   for vendor in ${*:-$vendors}; do check_vendor "$vendor"; done
@@ -422,11 +419,18 @@ check() { # [--here] [vendor...]
 }
 
 manual_event() { # vendor note... -> id
-  local vendor=$1 version id
+  local vendor=$1 version id fingerprint="$fp_dir/$1.json"
   shift
   version=$(version_of timeout_command 30 "$(cli_of "$vendor")" --version)
   id=$(new_event "$vendor" "${version:-unknown}" "${version:-unknown}" open "manual request${*:+: $*}" '[]' '[]')
-  printf 'manual request: integrate every capability of %s %s against the manifests and surfaces\n' "$vendor" "${version:-unknown}" >"$events_dir/$id.diff"
+  [ -s "$fingerprint" ] || { fingerprint="$events_dir/$id.fingerprint"; snapshot "$vendor" >"$fingerprint"; }
+  # The whole current fingerprint is its diff, so close gates the full checklist line by line.
+  {
+    printf 'manual request: integrate every capability of %s %s against the manifests and surfaces\n' "$vendor" "${version:-unknown}"
+    write_diff /dev/null "$fingerprint" "$(jq -c --arg info "$info_facets probe_failures" \
+      '($info | split(" ")) as $i | .facets // {} | keys | map(select(. as $f | $i | index($f) | not))' "$fingerprint" 2>/dev/null ||
+      printf '[]')"
+  } >"$events_dir/$id.diff"
   log "$vendor event $id open: manual request"
   printf '%s\n' "$id"
 }
@@ -439,40 +443,100 @@ waiting() { # [vendor] -> the open events no chat has taken yet
   return 0
 }
 
-request() { # [--here] vendor|--all [note...] -> a full integration pass without waiting for a fingerprint change
-  local here=false all=false vendor id ids=()
+night_worktree() { # main-checkout night vendor -> the llm-legs worktree on branch night/<night>/<vendor>
+  local path="$1/.claude/worktrees/night-$2-$3"
+  night_worktree_add "$1" "$2" "night/$2/$3" "$path" && printf '%s\n' "$path"
+}
+
+night_brief() { # main-checkout night id worktree -> the brief a headless worker runs
+  local top=$1 night=$2 id=$3 worktree=$4 vendor
+  vendor=$(jq -r .vendor "$events_dir/$id.json")
+  cat <<EOF
+Night run $night: vendor release event $id ($(jq -r '"\(.vendor) \(.from) -> \(.to), changed: \(.substantive | join(", "))"' "$events_dir/$id.json")).
+
+Working directory: $worktree, the llm-legs worktree on branch night/$night/$vendor.
+Never write a main checkout.
+
+Read $top/docs/vendor-release.md in full and follow it with its §6 Night rules:
+- \`bin/vendor-fingerprint show $id\` is your event; its diff is $events_dir/$id.diff.
+- Another repository you change gets its own worktree, <repo>/.claude/worktrees/night-$night-$vendor,
+  on the same branch night/$night/$vendor.
+- Commit on that branch in every worktree you changed. Never push, merge or rebase.
+- \`bin/vendor-fingerprint check --here $vendor\` runs in this worktree, then
+  \`bin/vendor-fingerprint close $id --decisions <file> <note>\`.
+- A generation, or any step that needs Egor's word, is decided \`blocked\` with evidence starting
+  \`blocked-on-egor:\` and naming what his word unlocks. Never wait for him.
+- Start the research leg (step 3) and the blind cross-check leg (step 4) in parallel.
+
+Report in English, under 300 words, outcome first: event $id closed or not; the branch and commit
+hash per repository; every blocked-on-egor line; the suites run with PASS counts.
+EOF
+}
+
+night_request() { # night-id -> one worktree and brief per vendor with a real waiting release
+  local night=$1 top common vendor id worktree brief failed=0
+  [[ $night =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage
+  common=$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common=''
+  if [ "$(basename "$common")" = .git ]; then top=$(dirname "$common"); else top=$repo_root; fi
+  for vendor in $vendors; do
+    id=$(pending_event "$vendor")
+    [ -n "$id" ] || continue
+    brief="$events_dir/$id.brief.md"
+    if ! worktree=$(night_worktree "$top" "$night" "$vendor") || ! night_brief "$top" "$night" "$id" "$worktree" >"$brief"; then
+      log "night $night: no worktree or brief for $id, it keeps waiting"
+      printf 'vendor-fingerprint: night %s: no worktree or brief for %s\n' "$night" "$id" >&2
+      failed=1
+      continue
+    fi
+    event_set "$id" '.launched_at = $t | .launched = "night" | .night = $n | .worktree = $w | .brief = $b' \
+      --arg t "$(stamp)" --arg n "$night" --arg w "$worktree" --arg b "$brief"
+    rm -f "${events_dir:?}/$id.base"
+    log "night $night: $id to $worktree"
+    printf '%s\t%s\t%s\t%s\n' "$vendor" "$id" "$brief" "$worktree"
+  done
+  return "$failed"
+}
+
+request() { # [--here] vendor|--all [note...] | --night <night-id>
+  local here=false vendor id ids=()
+  if [ "${1:-}" = --night ]; then
+    [ -n "${2:-}" ] || usage
+    mkdir -p "$fp_dir" "$events_dir"
+    night_request "$2"
+    return
+  fi
   [ "${1:-}" = --here ] && { here=true; shift; }
   vendor=${1:-}
   [ -n "$vendor" ] || usage
   shift
   mkdir -p "$fp_dir" "$events_dir"
   if [ "$vendor" = --all ]; then
-    all=true
     # Every vendor in one chat now: a waiting event already carries its vendor's pass.
     for vendor in $vendors; do [ -n "$(waiting "$vendor")" ] || manual_event "$vendor" "$@" >/dev/null; done
     while IFS= read -r id; do ids+=("$id"); done < <(waiting)
   else
     case " $vendors " in *" $vendor "*) ;; *) printf 'vendor-fingerprint: unknown vendor %s\n' "$vendor" >&2; exit 2 ;; esac
-    ids=("$(manual_event "$vendor" "$@")")
+    while IFS= read -r id; do ids+=("$id"); done < <(waiting "$vendor")
+    [ ${#ids[@]} -gt 0 ] || ids=("$(manual_event "$vendor" "$@")")
   fi
   printf '%s\n' "${ids[@]}"
   if $here; then
     for id in "${ids[@]}"; do event_set "$id" '.launched_at = $t | .launched = "here"' --arg t "$(stamp)"; rm -f "$events_dir/$id.base"; done
-  elif $all; then
-    launch_event "${ids[@]}" && date +%s >"$fp_dir/last-launch"
   else
+    for id in "${ids[@]}"; do event_set "$id" '.requested_at //= $t' --arg t "$(stamp)"; done
     launch_event "${ids[@]}"
   fi
   return 0
 }
 
 # The completeness gate: every changed line of an event's diff carries a decision row
-# `facet<TAB>line<TAB>integrated|not-applicable|blocked<TAB>evidence`; a line ending in * covers
-# every line it prefixes.
+# `facet<TAB>line<TAB>integrated|not-applicable|blocked<TAB>purpose<TAB>evidence`; a line ending in *
+# covers every line it prefixes.
+DECISION_ROWS='facet<TAB>line<TAB>integrated|not-applicable|blocked<TAB>purpose<TAB>evidence, purpose a repo@hash or a file stating why the surface exists, a line ending in * covers its prefix'
 undecided() { # id decisions-file -> the diff lines no row covers
   awk -F'\t' '
     FILENAME == ARGV[1] {
-      if (NF >= 4 && $3 ~ /^(integrated|not-applicable|blocked)$/ && $4 != "") { facets[++n] = $1; lines[n] = $2 }
+      if (NF >= 5 && $3 ~ /^(integrated|not-applicable|blocked)$/ && $5 != "") { facets[++n] = $1; lines[n] = $2 }
       next
     }
     /^### / { facet = substr($0, 5); next }
@@ -488,6 +552,21 @@ undecided() { # id decisions-file -> the diff lines no row covers
     }' "$2" "$events_dir/$1.diff"
 }
 
+# doctor-fix owns the purpose rule and is asked, never copied, so both close gates agree. A diff line
+# names no component, so the rule reduces to resolving, the worktree this runs in included.
+unresolved_purposes() { # decisions-file -> one line per decision row whose purpose resolves nowhere
+  local record row purpose
+  "$doctor_fix" help 2>/dev/null | grep -q 'doctor-fix touches ' ||
+    { printf '%s has no touches verb to judge purposes with\n' "$doctor_fix"; return 0; }
+  record=$(mktemp "${TMPDIR:-/tmp}/vendor-fingerprint-purpose.XXXXXX") || return 0
+  jq -n --arg w "$repo_root" '{doctor: "updater", problems: [], worktrees: [$w]}' >"$record"
+  while IFS=$'\t' read -r row purpose; do
+    "$doctor_fix" touches "$record" "row $row" "$purpose" </dev/null >/dev/null 2>&1 ||
+      printf "row %s: purpose '%s' resolves to no commit (repo@hash) and no file\n" "$row" "$purpose"
+  done < <(awk -F'\t' 'NF >= 5 && $3 ~ /^(integrated|not-applicable|blocked)$/ { print NR "\t" $4 }' "$1")
+  rm -f "${record:?}"
+}
+
 close_event() { # id [--decisions file] note...
   local id=$1 decisions=/dev/null missing
   shift
@@ -499,14 +578,39 @@ close_event() { # id [--decisions file] note...
   [ -r "$decisions" ] || { printf 'vendor-fingerprint: cannot read %s\n' "$decisions" >&2; exit 1; }
   missing=$(undecided "$id" "$decisions")
   if [ -n "$missing" ]; then
-    printf 'vendor-fingerprint: %s changed line(s) of %s have no decision; rows are facet<TAB>line<TAB>integrated|not-applicable|blocked<TAB>evidence, a line ending in * covers its prefix:\n' \
-      "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')" "$id" >&2
+    printf 'vendor-fingerprint: %s changed line(s) of %s have no decision; rows are %s:\n' \
+      "$(printf '%s\n' "$missing" | wc -l | tr -d ' ')" "$id" "$DECISION_ROWS" >&2
     printf '%s\n' "$missing" | head -n 20 >&2
     exit 1
   fi
+  missing=$(unresolved_purposes "$decisions")
+  if [ -n "$missing" ]; then
+    printf 'vendor-fingerprint: %s stays open; rows are %s:\n%s\n' "$id" "$DECISION_ROWS" "$missing" >&2
+    exit 1
+  fi
   event_set "$id" '.status = "closed" | .closed_at = $t | .note = $n | .decisions = $d' --arg t "$(stamp)" --arg n "$*" \
-    --argjson d "$(jq -R 'split("\t") | select(length >= 4) | {facet: .[0], line: .[1], decision: .[2], evidence: .[3]}' "$decisions" | jq -s .)"
+    --argjson d "$(jq -R 'split("\t") | select(length >= 5)
+      | {facet: .[0], line: .[1], decision: .[2], purpose: .[3], evidence: .[4]}' "$decisions" | jq -s .)"
+  rm -f "$events_dir/$id.base"
   log "event $id closed: $*"
+  close_run "$(jq -r '.run // ""' "$events_dir/$id.json")"
+}
+
+close_run() { # run -> closed once none of its events is still open
+  local run=$1 events
+  [ -n "$run" ] || return 0
+  events=$(jq -s -c --arg r "$run" 'map(select(.run == $r))' "$events_dir"/*.json 2>/dev/null) || return 0
+  jq -e 'length == 0 or any(.[]; .status == "open")' <<<"$events" >/dev/null && return 0
+  jq 'map((.decisions // []) as $d | ($d | map(.decision)) as $v | {id,
+      purpose: ($d | map(.purpose // empty) | unique | if length > 0 then join(" ") else null end),
+      verdict: (if $d == [] then .status elif any($v[]; . == "blocked") then "blocked"
+                elif any($v[]; . == "integrated") then "integrated" else "not-applicable" end),
+      evidence: "\($d | length) decision rows: \(["integrated", "not-applicable", "blocked"] | map(. as $k | "\($v | map(select(. == $k)) | length) \($k)") | join(", ")) · \(.note // "")"})' \
+    <<<"$events" >"$events_dir/$run.decisions.json"
+  "$doctor_fix" record-close "$run" --decisions "$events_dir/$run.decisions.json" \
+    "$(jq -r 'map("\(.id): \(.note // .status)") | join("; ")' <<<"$events")" >/dev/null 2>&1 ||
+    log "could not close fixer run $run"
+  rm -f "$events_dir/$run.decisions.json"
 }
 
 list_events() { # [--all]
@@ -525,7 +629,7 @@ show_event() { # id
 }
 
 usage() {
-  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor>|--all [note]\n' >&2
+  printf 'usage: vendor-fingerprint check [--here] [vendor...] | snapshot <vendor> | events [--all] | show <id> | close <id> [--decisions <file>] <note> | request [--here] <vendor>|--all [note] | request --night <night-id>\n' >&2
   exit 2
 }
 

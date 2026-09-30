@@ -1,9 +1,10 @@
 {
+ "owner": "LLM Doctor меню refactoring",
  "owners": {
   "reviewers": "Review-bench improvements phase 4",
-  "workers": null,
-  "light": null,
-  "image": null
+  "workers": "LLM Doctor меню refactoring",
+  "light": "LLM Doctor меню refactoring",
+  "image": "LLM Doctor меню refactoring"
  },
  "rows": [
   {
@@ -16,13 +17,22 @@
    },
    "title": "claude \"no result event\" masked a launcher Traceback or EPERM",
    "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3"
+   "fixes": [
+    {
+     "at": "2026-09-23T21:40:26+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/launch.py"
+     ],
+     "in": "review-bench@08d37c3",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "R13",
@@ -33,13 +43,23 @@
    },
    "title": "the agy bare-answer 10-rounds/60-seconds rule false-failed clean reviews",
    "status": "fixed",
-   "fixed_in": [
-    "review-bench@a9270b4"
+   "fixes": [
+    {
+     "at": "2026-09-24T00:59:20+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/launch.py",
+      "review-bench/share/rbench/catalog.py"
+     ],
+     "in": "review-bench@a9270b4",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-24T00:59:20+03:00",
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": "tool reads decide now"
+   "note": "tool reads decide now",
+   "handoff": null
   },
   {
    "id": "N5",
@@ -50,11 +70,12 @@
    },
    "title": "codex \"no command_execution\" is a true label",
    "status": "not-a-bug",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "V14",
@@ -65,27 +86,39 @@
    },
    "title": "the judge ruled on fewer claims than it was given",
    "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-25",
-   "reviewed_by": "LLM doctor",
-   "note": "kept apart from R1, which is about review-cell shapes"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "kept apart from R1, which is about review-cell shapes",
+   "handoff": null
   },
   {
    "id": "R1",
    "block": "reviewers",
    "match": {
-    "word": "bad output"
+    "word": "bad output",
+    "detail": "malformed Markdown|read coverage \\d+ bytes below|no parseable finding and did not declare"
    },
    "title": "bad output: empty-findings chunks, agy Markdown shapes and the read-coverage floor (R1, R3, R4)",
    "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3"
+   "fixes": [
+    {
+     "at": "2026-09-23T21:40:26+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/launch.py",
+      "review-bench/share/rbench/prompts.py"
+     ],
+     "in": "review-bench@08d37c3",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-23T21:40:26+03:00",
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": "R1 a chunk answering {\"findings\":[]} recorded as bad output; R3 agy Markdown shapes rejected (bare file lists, clean phrasing); R4 the read-coverage floor discarded answers that had findings. Any bad output after the fix is a regression or a new cause and needs its own row."
+   "same_cause": [],
+   "last_reviewed": "2026-09-29",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "R1 a chunk answering {\"findings\":[]} recorded as bad output; R3 agy Markdown shapes rejected (bare file lists, clean phrasing); R4 the read-coverage floor discarded answers that had findings. Narrowed on 2026-09-29 from the whole word to the three texts those mechanisms printed: any other bad output is its own problem.",
+   "handoff": null
   },
   {
    "id": "R2",
@@ -97,13 +130,22 @@
    },
    "title": "grok token not rotated in its last 30 min, so every grok cell was refused",
    "status": "fixed",
-   "fixed_in": [
-    "llm-legs@735bb2c"
+   "fixes": [
+    {
+     "at": "2026-09-23T20:41:43+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "llm-legs/bin/grokb"
+     ],
+     "in": "llm-legs@735bb2c",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-23T20:41:43+03:00",
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "N6",
@@ -116,11 +158,12 @@
    },
    "title": "opus mkstemp and FileNotFoundError crashes, one-offs on 09-12 to 09-14",
    "status": "not-a-bug",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "R7",
@@ -131,13 +174,26 @@
    },
    "title": "a credential-export refusal worded \"rater task crashed\" (now `cell preparation refused`, word auth)",
    "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3"
+   "fixes": [
+    {
+     "at": "2026-09-23T21:40:26+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/cell_runtime.py",
+      "review-bench/share/rbench/panel.py"
+     ],
+     "in": "review-bench@08d37c3",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-23T21:40:26+03:00",
+   "same_cause": [
+    "R12",
+    "R14"
+   ],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "R14",
@@ -147,14 +203,26 @@
     "detail": "does not outlast the run|short of the \\d+s asked|fresh-token ceiling"
    },
    "title": "--uncapped handed every pass a 6 h ceiling, longer than an exported token lives, so the export was refused on every account",
-   "status": "fixed",
-   "fixed_in": [
-    "review-bench share/rbench/cell_runtime.py uncapped_timeout_s (uncommitted until the sweep)"
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-09-28T21:23:17+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/cell_runtime.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-28T21:23:17+03:00",
-   "last_reviewed": "2026-09-28",
+   "same_cause": [
+    "R7",
+    "R12"
+   ],
+   "last_reviewed": "2026-09-29",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": "grok47 x3 on 09-28 in two --uncapped panels: 22020 s asked of a 21600 s grok token; listed before R12, which it ties on specificity"
+   "note": "grok47 x3 on 09-28 in two --uncapped panels: 22020 s asked of a 21600 s grok token; listed before R12, which it ties on specificity; the fix sits uncommitted in review-bench until the sweep",
+   "handoff": null
   },
   {
    "id": "R12",
@@ -165,13 +233,25 @@
    },
    "title": "an export refusal ended the cell instead of trying the pool's next account",
    "status": "fixed",
-   "fixed_in": [
-    "review-bench@a9270b4"
+   "fixes": [
+    {
+     "at": "2026-09-24T00:59:20+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/launch.py"
+     ],
+     "in": "review-bench@a9270b4",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-24T00:59:20+03:00",
+   "same_cause": [
+    "R7",
+    "R14"
+   ],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": "claude x6 on 09-16/17 (access token expires ... short of Ns), grok x32 on 09-23; R11 (a hung credential export had no timeout, EXPORT_TIMEOUT_S = 120) was fixed in review-bench@08d37c3"
+   "note": "claude x6 on 09-16/17 (access token expires ... short of Ns), grok x32 on 09-23; R11 (a hung credential export had no timeout, EXPORT_TIMEOUT_S = 120) was fixed in review-bench@08d37c3",
+   "handoff": null
   },
   {
    "id": "N7",
@@ -184,11 +264,12 @@
    },
    "title": "geminib \"sign-in shape\" refusals, 09-13 only",
    "status": "not-a-bug",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "N4",
@@ -200,106 +281,39 @@
    },
    "title": "agy \"print timeout\" rows labelled timeout · ours exist only on 09-16; current code writes watchdog",
    "status": "not-a-bug",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
    "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
+   "note": "",
+   "handoff": null
   },
   {
    "id": "R5",
    "block": "reviewers",
    "match": {
-    "word": "timeout"
+    "word": "timeout",
+    "detail": "print[- ]timeout"
    },
    "title": "agy print-timeout ceiling and stall mislabelled",
    "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3"
+   "fixes": [
+    {
+     "at": "2026-09-23T21:40:26+03:00",
+     "by": "Review-bench improvements phase 4",
+     "files": [
+      "review-bench/share/rbench/panel.py",
+      "review-bench/share/rbench/report.py"
+     ],
+     "in": "review-bench@08d37c3",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-23T21:40:26+03:00",
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
-  },
-  {
-   "id": "R8",
-   "block": "reviewers",
-   "match": {
-    "word": "refused"
-   },
-   "title": "vendor policy refusals were unclassified (now refused · theirs)",
-   "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3",
-    "llm-legs@bc50235"
-   ],
-   "fixed_at": "2026-09-23T21:43:07+03:00",
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": "R14: codex \"flagged for possible cybersecurity risk\" joined the word in review-bench@a9270b4 and llm-legs@90ca761"
-  },
-  {
-   "id": "R9",
-   "block": "reviewers",
-   "match": {
-    "word": "capacity"
-   },
-   "title": "geminib `capacity hold` read as a model mismatch",
-   "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3"
-   ],
-   "fixed_at": "2026-09-23T21:40:26+03:00",
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
-  },
-  {
-   "id": "R10",
-   "block": "reviewers",
-   "match": {
-    "word": "cap"
-   },
-   "title": "stale killed_chunks / max_pass_ms carried over a rerun",
-   "status": "fixed",
-   "fixed_in": [
-    "review-bench@08d37c3"
-   ],
-   "fixed_at": "2026-09-23T21:40:26+03:00",
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": "caps are caps: agy cap kills (about 97 a week) are weather, never a reason to drop a cell or raise a cap"
-  },
-  {
-   "id": "N3",
-   "block": "reviewers",
-   "match": {
-    "word": "cancelled"
-   },
-   "title": "the 09-16 \"context canceled\" storm was an external SIGTERM at launch",
-   "status": "weather",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": ""
-  },
-  {
-   "id": "N2",
-   "block": "reviewers",
-   "match": {
-    "word": "slow"
-   },
-   "title": "a \"6155 s\" cell was the sum of 22 chunks, not one cell",
-   "status": "fixed",
-   "fixed_in": [
-    "llm-legs@a9a033c"
-   ],
-   "fixed_at": "2026-09-24T02:00:00+03:00",
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "slow compares one pass of a chunked cell now"
+   "same_cause": [],
+   "last_reviewed": "2026-09-29",
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "agy's own --print-timeout ceiling reads as cap since the fix; narrowed on 2026-09-29 from the whole word to the print timeout it named.",
+   "handoff": null
   },
   {
    "id": "W1",
@@ -310,11 +324,12 @@
    },
    "title": "a read-only research run could not take the tree digest it is checked against",
    "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "grok research runs x2 on 09-23 (worker-run READ_ONLY_VIOLATION, exit 5)"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "grok research runs x2 on 09-23 (worker-run READ_ONLY_VIOLATION, exit 5)",
+   "handoff": null
   },
   {
    "id": "W2",
@@ -326,209 +341,23 @@
    },
    "title": "worker-run passes an effort grok does not serve (xhigh on a model whose menu lacks it)",
    "status": "fixed",
-   "fixed_in": [
-    "llm-legs@53a472e"
+   "fixes": [
+    {
+     "at": "2026-09-23T23:59:15+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/bin/grokb"
+     ],
+     "in": "llm-legs@53a472e",
+     "regressed_at": null
+    }
    ],
-   "fixed_at": "2026-09-23T23:59:15+03:00",
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "efforts now come from the grok catalog: a model that lists only high refuses xhigh before launch (EFFORT_REFUSED) instead of reaching the CLI"
-  },
-  {
-   "id": "V1",
-   "block": "any",
-   "match": {
-    "word": "killed memory"
-   },
-   "title": "the memory guard cut a leg's process tree",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V2",
-   "block": "any",
-   "match": {
-    "word": "pool empty"
-   },
-   "title": "a leg was staffed on a vendor switched off or excluded for its role",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "reviewers: a cell staffed on a vendor already closed before its run began; a switch closed mid-run reads as off. Workers and image: a refusal no recorded switch or pool flip explains; one that met a closed switch reads as off, the gate having worked. A pool empty only because every account is walled reads as walled weather, never here"
-  },
-  {
-   "id": "V3",
-   "block": "any",
-   "match": {
-    "word": "root commit"
-   },
-   "title": "a review of a root commit failed",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V4",
-   "block": "any",
-   "match": {
-    "word": "permission"
-   },
-   "title": "a tool call needed a permission the leg did not have",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V5",
-   "block": "any",
-   "match": {
-    "word": "bad command"
-   },
-   "title": "a leg was launched with flags, a model or an effort its CLI refuses",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-25",
-   "reviewed_by": "LLM doctor",
-   "note": "only the CLI's own refusal after launch; a prelaunch EFFORT_REFUSED or MODEL_REFUSED is worker-run's guard stopping the selection before the CLI and reads as off weather, never here"
-  },
-  {
-   "id": "V6",
-   "block": "any",
-   "match": {
-    "word": "stalled"
-   },
-   "title": "a rater stalled with no output",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V7",
-   "block": "any",
-   "match": {
-    "word": "crashed"
-   },
-   "title": "a leg's own machinery crashed",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V8",
-   "block": "any",
-   "match": {
-    "word": "auth"
-   },
-   "title": "a leg's login or credential was refused",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V9",
-   "block": "any",
-   "match": {
-    "word": "not found"
-   },
-   "title": "an endpoint or model the vendor no longer serves",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V10",
-   "block": "any",
-   "match": {
-    "word": "chunks unread"
-   },
-   "title": "a chunked cell came back from a minority of its chunks",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V11",
-   "block": "any",
-   "match": {
-    "word": "bad output"
-   },
-   "title": "a leg answered in a shape its reader cannot parse",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V12",
-   "block": "any",
-   "match": {
-    "word": "timeout"
-   },
-   "title": "a leg timed out on a clock of ours",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": ""
-  },
-  {
-   "id": "V13",
-   "block": "any",
-   "match": {
-    "word": "escaped"
-   },
-   "title": "a leg worked outside its workdir or its scratch space",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "a cross-repository brief can make this legitimate: triage with a model or detail row, never by deleting the class"
-  },
-  {
-   "id": "V15",
-   "block": "any",
-   "match": {
-    "word": "turn budget"
-   },
-   "title": "a leg stopped at the turn budget it was configured with",
-   "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
-   "last_reviewed": "2026-09-28",
-   "reviewed_by": "Review-bench improvements phase 4",
-   "note": "classify_failure_text files a bare turn-budget stop as a cap; this row catches the word only where it still reads as a failure"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "efforts now come from the grok catalog: a model that lists only high refuses xhigh before launch (EFFORT_REFUSED) instead of reaching the CLI",
+   "handoff": null
   },
   {
    "id": "M1",
@@ -538,11 +367,12 @@
    },
    "title": "review-anchors check warns on a repository a recent chat reviewed (expired claims, orphans)",
    "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed",
+   "handoff": null
   },
   {
    "id": "M2",
@@ -552,11 +382,12 @@
    },
    "title": "review rounds still pending closure more than 6 h after launch",
    "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed",
+   "handoff": null
   },
   {
    "id": "M3",
@@ -566,11 +397,12 @@
    },
    "title": "debt rounds whose shared or unanchored fix lines look out of scope",
    "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed",
+   "handoff": null
   },
   {
    "id": "M4",
@@ -580,11 +412,42 @@
    },
    "title": "the reviewed tree changed while its review ran",
    "status": "open",
-   "fixed_in": [],
-   "fixed_at": null,
+   "fixes": [],
+   "same_cause": [],
    "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM doctor",
-   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed"
+   "reviewed_by": "LLM Doctor меню refactoring",
+   "note": "chronic since the snapshot collector's trial (2026-08-21 to 2026-09-21); counted in the Reviewers block, kept out of the menu title until it is new or regressed",
+   "handoff": null
+  }
+ ],
+ "blind_spots": [
+  {
+   "id": "B1",
+   "what": "worker false-green reports",
+   "reason": "worker-run records the worker's own OUTCOME and never re-runs the verification its brief names",
+   "since": "2026-09-24",
+   "would_catch_if": "worker-run re-ran the brief's verify command after the worker and recorded its exit"
+  },
+  {
+   "id": "B2",
+   "what": "weakened tests",
+   "reason": "nothing diffs the assertions a worker's changed test files hold against HEAD",
+   "since": "2026-09-24",
+   "would_catch_if": "the run record counted removed or loosened assertions in the test files a run touched"
+  },
+  {
+   "id": "B3",
+   "what": "the code revision a leg ran",
+   "reason": "regression is judged by a leg's start time against the last fix; a leg started after a fix from a worktree or checkout without it reads regressed",
+   "since": "2026-09-29",
+   "would_catch_if": "bench meta and worker-run meta recorded each repository's HEAD and a dirty digest at launch"
+  },
+  {
+   "id": "B4",
+   "what": "false-clean reviews",
+   "reason": "a cell that answers clean in a readable shape is a clean leg; whether it missed findings other raters and the judge confirmed is never joined back to it",
+   "since": "2026-09-29",
+   "would_catch_if": "the judge's confirmed findings were joined per rater cell and a clean cell that missed one counted as a miss"
   }
  ]
 }

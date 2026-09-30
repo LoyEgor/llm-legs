@@ -1,5 +1,7 @@
 # Hand-off: what the harness doctor did not see on 2026-09-29, and the classes it should cover
 
+Status: done 2026-09-29 — hook-every-call-context-nudge, floor-trivial-bash-readonly-fastpath (class K `--bench` left out, recorded in docs/harness-doctor-design.md §8)
+
 For the chat that owns `bin/harness-doctor` (design: `docs/harness-doctor-design.md`). Written
 2026-09-29 by the chat that cut hook latency the same day in claude-setup and llm-legs hooks. That
 chat changed nothing in `bin/harness-doctor` for this; every item below is the doctor's to decide.

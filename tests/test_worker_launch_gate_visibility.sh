@@ -149,7 +149,8 @@ expect_as pass '{}' 'llm-limits --table --no-write'
 
 # A help screen launches nothing, while a real launch chained beside one still does.
 for help in 'codex help exec' 'codex exec --help' 'claude -p --help' 'claude -p -h' 'codexb exec -h' \
-  'gemini -p --help' 'grokb --prompt x --help' 'opencode run --help' 'codex exec --help | head -40'; do
+  'gemini -p --help' 'grokb --prompt x --help' 'opencode run --help' 'codex exec --help | head -40' \
+  'codex exec --help 2>&1 | head -30' 'codex exec -h 2>&1' 'codex exec --help >/tmp/x.txt' 'codex help exec 2>&1'; do
   expect_as pass '{}' "$help"
   expect_as pass "$RELAY" "$help"
 done
@@ -158,6 +159,12 @@ expect_as deny '{}' 'claude -p "explain --help"' 'bare headless vendor launch'
 expect_as deny '{}' 'codex exec help' 'bare headless vendor launch'
 expect_as deny '{}' 'gemini help -p "fix src/x.py"' 'bare headless vendor launch'
 expect_as deny '{}' 'claude help --print "fix it"' 'bare headless vendor launch'
+# A help token inside the prompt is no help screen, however the quotes around it are spelled.
+for prompt_help in 'claude -p "compare ls -h output"' 'codex exec "add a --help flag"' \
+  "bash -c \"claude -p 'compare ls -h output'\"" "sh -c 'codex exec \"add a --help flag\"'" 'claude -p compare\ ls\ -h'; do
+  expect_as deny '{}' "$prompt_help" 'bare headless vendor launch'
+done
+expect_as pass '{}' 'codex exec --help | grep -i "model"'
 
 # The package runners and lock or exec wrappers put the vendor back in command position.
 for wrapped in 'npx claude -p hi' 'bunx codex exec hi' 'pnpx claude -p hi' 'npm exec claude -p hi' \

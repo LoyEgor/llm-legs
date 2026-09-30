@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """How Russian a piece of model-to-model text is. Reads stdin, prints `<share> <letters>`; the rule
-lives in share/english_text.py. `--allowed` prints the rule's one-line statement instead."""
+lives in share/english_text.py. `--allowed` prints the rule's one-line statement instead, `--max`
+the share past which text breaks it."""
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "share"))
 
-from english_text import ALLOWED, cyrillic_share  # noqa: E402
+from english_text import ALLOWED, SHARE_MAX, cyrillic_share  # noqa: E402
 
 
 def main():
     if sys.argv[1:] == ["--allowed"]:
         print(ALLOWED)
+        return 0
+    if sys.argv[1:] == ["--max"]:
+        print(SHARE_MAX)
         return 0
     text = sys.stdin.buffer.read().decode("utf-8", "replace")
     print("%d %d" % cyrillic_share(text))

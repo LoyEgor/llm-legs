@@ -992,6 +992,8 @@ assert jq -e '.rows[0].text | test("^CPU +[0-9.]+ chats \\+ +[0-9.]+ other = +[0
 assert jq -e '.rows[1].text | test("^RAM +[0-9.]+ chats \\+ +[0-9.]+ other = +[0-9.]+ of [0-9]+ GB · swap 1.0$")' "$menu"
 assert test "$(jq -r '.rows[] | objects | select(.session == "chat-long") | .text[0:34]' "$menu")" = 'wait model  Vector Magic… phase 4 '
 assert jq -e '.rows[] | objects | select(.session == "chat-long") | .text | test("  1.0 GB  ")' "$menu"
+# A live chat's row carries its CLI pid: the menu finds the Terminal tab to raise through it.
+assert test "$(jq -r '.rows[] | objects | select(.session == "chat-long") | .pid' "$menu")" = "$LONG_CLI"
 assert jq -e '.rows[] | objects | select(.session == "chat-calm") | (.text | startswith("idle        Chat chat-calm")) and .dim' "$menu"
 # Every column starts at the same code point on every chat row, the one with the ellipsis included.
 columns() { python3 -c 'import json, sys

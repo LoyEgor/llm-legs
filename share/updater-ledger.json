@@ -1,0 +1,27 @@
+{
+  "owner": "Updater doctor",
+  "rows": [],
+  "blind_spots": [
+    {
+      "id": "announced-not-served",
+      "what": "a model the vendor announced that our accounts' catalogs do not list yet",
+      "reason": "Vendors roll models out in stages, Pro plans first (Sol 6.1 on 2026-09-29); the doctor reads only the catalogs our accounts are served, so an announced model none of them lists leaves no trace",
+      "since": "2026-09-29",
+      "would_catch_if": "a release-notes feed, or a weekly research leg per vendor, compared announced ids with the served catalogs"
+    },
+    {
+      "id": "claude-catalog",
+      "what": "a Claude model or capability the CLI serves that no catalog lists",
+      "reason": "The Claude CLI exposes no model catalog; only its help text and the model ids in its binary are fingerprinted",
+      "since": "2026-09-29",
+      "would_catch_if": "the Claude CLI exposed a model list, or the served model were read from modelUsage of real runs"
+    },
+    {
+      "id": "per-account-rollout",
+      "what": "a codex model served to an account whose home another client version wrote",
+      "reason": "The codex catalog facet merges only the homes written by the installed client version; a home another client wrote is left out",
+      "since": "2026-09-29",
+      "would_catch_if": "every account's home were refreshed by the installed client before the fingerprint, or the facet kept each home's list apart"
+    }
+  ]
+}

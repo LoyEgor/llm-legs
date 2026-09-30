@@ -1,8 +1,10 @@
 """Whether text a model reads is English: the one rule behind bin/cyrillic-share, the hooks that
 call it and review-bench's own input checks.
 
-Model-to-model text is English; Russian may appear only as code (a closed fence or backticks) or as
-a trigger phrase in a closed «...» of at most QUOTE_WORDS_MAX words. Everything else counts.
+Model-to-model text is English. Russian in code (a closed fence or backticks) or in a closed quote
+of at most QUOTE_WORDS_MAX words, QUOTED_WORDS_MAX in all, is not counted, and neither are paths and
+URLs; what is left may still hold up to SHARE_MAX percent of the letters — a pasted label or error
+line is data, and a deny over it costs a whole rewrite.
 """
 import re
 
@@ -16,9 +18,17 @@ CYRILLIC_RANGES = (
 
 FENCE = re.compile(r"```.*?```", re.DOTALL)
 INLINE = re.compile(r"`[^`\n]*`")
-QUOTED = re.compile(r"«([^«»]*)»")
+# Typographic quotes only: a straight quote also delimits every string literal, and a Russian prompt
+# inside agent("...") or codex exec "..." is exactly the text this rule exists to catch.
+QUOTED = re.compile(r"«([^«»]*)»|“([^“”]*)”|„([^„“”]*)[“”]")
+# A Latin path or URL pads the letter count of a Russian brief under SHARE_MAX.
+PATHISH = re.compile(r"\S*/\S*")
 QUOTE_WORDS_MAX = 6
-ALLOWED = "Russian only as code in backticks or a trigger phrase of up to 6 words in «…»"
+# A Russian brief cut into short quotes is still a Russian brief.
+QUOTED_WORDS_MAX = 24
+SHARE_MAX = 15
+ALLOWED = ("Russian only as code in backticks, phrases of up to 6 words (24 in all) in «…» or “…”, "
+           "or stray words under 15% of the letters")
 
 
 def is_cyrillic(ch):
@@ -38,14 +48,21 @@ def cyrillic_words(text):
     return words
 
 
-def _trigger_phrase(match):
-    return " " if len(cyrillic_words(match.group(1))) <= QUOTE_WORDS_MAX else match.group(0)
-
-
 def prose(text):
-    for pattern in (FENCE, INLINE):
+    for pattern in (FENCE, INLINE, PATHISH):
         text = pattern.sub(" ", text)
-    return QUOTED.sub(_trigger_phrase, text)
+    budget = QUOTED_WORDS_MAX
+
+    def trigger_phrase(match):
+        nonlocal budget
+        phrase = next(group for group in match.groups() if group is not None)
+        words = len(cyrillic_words(phrase))
+        if words > QUOTE_WORDS_MAX or words > budget:
+            return match.group(0)
+        budget -= words
+        return " "
+
+    return QUOTED.sub(trigger_phrase, text)
 
 
 def russian_words(text):

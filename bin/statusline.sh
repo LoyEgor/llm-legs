@@ -2637,7 +2637,7 @@ if [ -n "$session_id" ]; then
   if [[ "$work_mtime" =~ ^[0-9]+$ ]] && [ "$((now - work_mtime))" -le 15 ]; then
     # Split on \037: tab is IFS whitespace, so `read` would fold an empty repo into the label.
     while IFS= read -r work_line || [ -n "$work_line" ]; do
-      IFS=$'\037' read -r w_kind w_class w_start w_repo w_label w_done w_failed w_total <<< "${work_line//$'\t'/$'\037'}"
+      IFS=$'\037' read -r w_kind w_class w_start w_repo w_label w_done w_failed w_total _ <<<"${work_line//$'\t'/$'\037'}"
       [ "$w_kind" = main ] && [[ "$w_start" =~ ^[0-9]+$ ]] || continue
       if [ "${#work_rows[@]}" -ge 3 ]; then work_more=$((work_more + 1)); continue; fi
       w_secs=$((now - w_start))

@@ -27,8 +27,8 @@ relay_word=$({
   grep -oE 'worker-run[[:space:]]+(start|wait)([^A-Za-z0-9_-]|$)|light-research[[:space:]]+-' <<<"$script"
 } 2>/dev/null | head -n1 | grep -oE '[a-z]+-[a-z]+(-[a-z]+)?' | head -n1)
 if [ -n "$relay_word" ]; then
-  jq -cn --arg r "Blocked: this workflow reaches \`$relay_word\`, but a workflow's agents never get the account·model task row a relay spawned with the Agent tool gets, so Egor could not see what it spends. Spawn relay workers (and review-waiter, light-research, image-gen) with the Agent tool; keep the workflow to native agents on this session's own account." \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null
+  jq -cn --arg hook "${0##*/}" --arg r "Blocked: this workflow reaches \`$relay_word\`, but a workflow's agents never get the account·model task row a relay spawned with the Agent tool gets, so Egor could not see what it spends. Spawn relay workers (and review-waiter, light-research, image-gen) with the Agent tool; keep the workflow to native agents on this session's own account." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null
   exit 0
 fi
 
@@ -81,9 +81,16 @@ if [ ! -r "$LIMITS_FILE" ]; then
 fi
 
 now=$(date +%s) || exit 0
-# Pressure = max of the general 5h window and the fable bucket (workflow
-# agents may inherit a Fable main loop), reset-aware.
-pct=$(jq -r --arg own "$own" --arg vendor "$vendor" --argjson now "$now" '
+# The fan-out's agents inherit the session's model, so its weekly bucket is that model's: the
+# statusline's track records the model of the chat's last reply; a chat with no track yet is a new
+# one, on the default model.
+sid=$(jq -r '.session_id // empty' <<<"$input" 2>/dev/null)
+tv="" tm=""
+[ -z "$sid" ] || read -r tv _ _ _ _ tm _ 2>/dev/null <"${STATUSLINE_CACHE_DIR:-$HOME/.cache/claude-statusline}/cache-ttl-track-$sid"
+if [ "$tv" = v2 ] && [ -n "$tm" ] && [ "$tm" != - ]; then bucket=$(chat_model_bucket "$tm")
+else bucket=$(chat_model_bucket); fi
+# Pressure = max of the general 5h window and that weekly bucket, reset-aware.
+pct=$(jq -r --arg own "$own" --arg vendor "$vendor" --arg bucket "$bucket" --argjson now "$now" '
   def epoch:
     if type == "number" then .
     elif type == "string" then
@@ -101,7 +108,7 @@ pct=$(jq -r --arg own "$own" --arg vendor "$vendor" --argjson now "$now" '
     elif $r != null and $r <= $now then 0
     else ($b.effective_pct // $b.used_pct) end;
   [.vendors[$vendor].accounts[]? | select(.account == $own)
-   | [eff(.five_hour), eff(.fable)] | map(select(. != null)) | (if length == 0 then empty else max end)
+   | [eff(.five_hour), eff(.[$bucket])] | map(select(. != null)) | (if length == 0 then empty else max end)
   ] | first // empty
 ' "$LIMITS_FILE" 2>/dev/null) || exit 0
 if [ -z "$pct" ]; then
@@ -120,8 +127,8 @@ span_live() {
     words_span_live "$(jq -r '.session_id // ""' <<<"$input")" "$(jq -r '.transcript_path // ""' <<<"$input")" ) >/dev/null 2>&1
 }
 if [ "$pct_int" -ge "$DENY_AT" ] 2>/dev/null && ! span_live; then
-  jq -cn --arg r "Session account $vendor/$own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through claudeb-/codex-workers (run worker-pick), or ask Egor." \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null
+  jq -cn --arg hook "${0##*/}" --arg r "Session account $vendor/$own is at ${pct}% — a workflow fan-out would burn this same account and wall the session before its own task finishes. Do not run the workflow now: shrink the work to inline/single agents, route implementation through claudeb-/codex-workers (run worker-pick), or ask Egor." \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null
   exit 0
 fi
 

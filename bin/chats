@@ -69,9 +69,11 @@ def fetch_chats(days):
     except subprocess.CalledProcessError as error:
         raise RuntimeError("chat-find failed: %s" % (error.stderr or "").strip())
     try:
-        return json.loads(out)
+        chats = json.loads(out)
     except ValueError:
         raise RuntimeError("chat-find returned no usable listing")
+    learn_buckets(row.get("model") for row in chats if isinstance(row, dict))
+    return chats
 
 
 def fetcher(days):
@@ -190,18 +192,18 @@ def worker_pick():
     return sibling if os.access(sibling, os.X_OK) else "worker-pick"
 
 
-def ranking(timeout=10):
-    """`worker-pick --list --role chat`, the one ranking the bar shows, as (order, used,
-    hidden, chosen): every account in its order, the label each one's usage adds, the
-    logged-out ones, and the claudeb account a chat would be given.
+def ranking(timeout=10, model=None):
+    """`worker-pick --list --role chat --model <model>`, the one ranking the bar shows, as
+    (order, used, hidden, chosen): every account in its order, the label each one's usage adds,
+    the logged-out ones, and the claudeb account a chat on that model would be given.
 
-    Zero-token — it reads the cached limits table — and asked once, at startup. A gateway
-    account spends the Codex subscription behind it, so the codex rows order the `gpt` line.
+    Zero-token — it reads the cached limits table. A gateway account spends the Codex
+    subscription behind it, so the codex rows order the `gpt` line.
     """
     order, used, hidden, chosen = [], {}, set(), None
+    command = [worker_pick(), "--list", "--role", "chat"] + (["--model", model] if model else [])
     try:
-        done = subprocess.run([worker_pick(), "--list", "--role", "chat"],
-                              capture_output=True, text=True, timeout=timeout)
+        done = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
     except Exception:
         return order, used, hidden, chosen
     if done.returncode != 0:
@@ -224,6 +226,48 @@ def ranking(timeout=10):
         if mark:
             used[entry] = mark
     return order, used, hidden, chosen
+
+
+# One model of each bucket; which bucket a model spends is chat_model_bucket's answer alone, the
+# resolver worker-pick ranks by, so the picker files rows and rankings under the same key it does.
+BOARD_MODELS = ("fable", "opus")
+BUCKETS = {}
+
+
+def learn_buckets(models):
+    """chat_model_bucket (share/chat-account.sh) for every model not yet known, in one call."""
+    models = sorted({model or "" for model in models} - set(BUCKETS))
+    if not models:
+        return
+    script = '. "$1" || exit 1; shift; for m in "$@"; do chat_model_bucket "$m"; done'
+    source = os.path.join(os.path.dirname(HERE), "share", "chat-account.sh")
+    try:
+        done = subprocess.run(["bash", "-c", script, "_", source] + models,
+                              capture_output=True, text=True, timeout=10)
+        answers = done.stdout.split() if done.returncode == 0 else []
+    except Exception:
+        answers = []
+    if len(answers) == len(models):
+        BUCKETS.update(zip(models, answers))
+
+
+def board_of(row):
+    model = row.get("model") or ""
+    if model not in BUCKETS:
+        learn_buckets([model])
+    return BUCKETS.get(model, "weekly")
+
+
+def rankings(timeout=10):
+    """Both boards at once, asked in parallel: {board: ranking(model)}."""
+    boards = {}
+    threads = [threading.Thread(target=lambda m=model: boards.__setitem__(board_of({"model": m}), ranking(timeout, m)),
+                                daemon=True) for model in BOARD_MODELS]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    return boards
 
 
 def arrange(names, order, hidden):
@@ -502,11 +546,13 @@ def run(screen, chats, names, used, profile, level, windows):
     if not ready:
         chats, pending = [], 0
         listing.start(fetcher(windows[0]))
+    boards, shown = {}, None
     if used is None:
         used = {}
-        ranked.start(ranking)
+        ranked.start(rankings)
     if names is None:
         names = profiles()
+    everyone = list(names)
     if profile is None:
         # The last profile launched is a file read, so the bar opens on a plausible
         # account instead of an arbitrary one while worker-pick is still answering.
@@ -526,13 +572,18 @@ def run(screen, chats, names, used, profile, level, windows):
                 pending = level + 1
                 listing.start(fetcher(windows[pending]))
         if ranked.landed():
-            order, used, hidden, chosen = ranked.take()
-            kept = arrange(names, order, hidden)
+            boards, shown = ranked.take(), None
+        rows = [row for row in chats if matches(row, needle)]
+        # The bar is the ranking of the bucket the landed chat spends, so a Fable chat and an
+        # Opus chat are each offered the account freest for their own model.
+        want = board_of(rows[max(0, min(view["cursor"], len(rows) - 1))] if rows else {})
+        if boards and want != shown and want in boards:
+            order, used, hidden, chosen = boards[want]
+            kept = arrange(everyone, order, hidden)
             profile, held, default = restack(names, kept, (profile, held, default))
-            names = kept
+            names, shown = kept, want
             if not pinned:
                 default = current_profile(names, chosen)
-        rows = [row for row in chats if matches(row, needle)]
         # ←→ before the listing lands is a choice of the DEFAULT itself: no row has
         # spoken about its cache yet, so the account landing later must not take it back.
         if not ready and profile != held:
@@ -698,7 +749,7 @@ def open_command(session, timeout):
         die("no such directory: %s" % (cwd or "?"))
     annotate([row])
     names = profiles()
-    order, _, hidden, chosen = ranking(timeout)
+    order, _, hidden, chosen = ranking(timeout, row.get("model"))
     names = arrange(names, order, hidden)
     default = current_profile(names, chosen)
     position = account_for(row, time.time(), names, None)

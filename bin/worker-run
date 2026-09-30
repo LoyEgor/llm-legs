@@ -60,8 +60,17 @@ same_repository() { # repo dir...
 # The anchors store's CLI, resolved off PATH: a machine without it has no store to write to, and
 # every caller here answers that with a gap line rather than a failure.
 review_anchors() { # subcommand argument...
-  local anchors
+  local anchors args rc
   anchors=$(command -v review-anchors 2>/dev/null) && [ -x "$anchors" ] || return 127
+  # A run over thousands of changed paths outgrows ARG_MAX ("Argument list too long", exit 126).
+  if [ "$(printf '%s\n' "$@" | wc -c)" -gt 100000 ]; then
+    args=$(mktemp "${TMPDIR:-/tmp}/review-anchors-args.XXXXXX") || return 1
+    printf '%s\n' "$@" >"$args"
+    "$anchors" "@$args"
+    rc=$?
+    rm -f "$args"
+    return "$rc"
+  fi
   "$anchors" "$@"
 }
 
@@ -83,6 +92,11 @@ debt_gap() { # session kind detail
   [ -n "$1" ] || return 0
   mkdir -p "$gaps" 2>/dev/null || return 0
   printf '%s\t%s\t%s\n' "$(date +%s)" "$2" "$3" >>"$gaps/$1" 2>/dev/null || :
+}
+
+# The same line worker-launch-gate holds a relay's flag to: the first `KEY: value` of the brief.
+brief_line_value() { # brief key
+  head -n 400 "$1" 2>/dev/null | grep -m1 -oE "^$2:[[:space:]]*[A-Za-z0-9_.-]+" | sed -E "s/^$2:[[:space:]]*//"
 }
 
 brief_review_round() {
@@ -186,9 +200,12 @@ Drive Egor'"'"'s Mac apps through Codex Computer Use: the CUA REPL `js` tool, wh
 - Do only what the brief allows. Never log in, enter credentials, approve payments or answer admin password prompts; the surface refuses Terminal. Report such a step instead of working around it.
 - Close the windows and tabs you opened unless the brief says to keep them.
 - Return the evidence the brief asks for and end with: `OUTCOME: COMPUTER_OK` or `OUTCOME: COMPUTER_UNAVAILABLE reason=<text>`'
+# The harness's own prompt steers a bypass-mode model toward sed and heredocs, which worker-edit-guard
+# only records; said up front, a text edit stays an Edit call the transcript names.
+CLAUDEB_EDIT_FENCE='EDITS: change repository files only through the Edit and Write tools where an edit can do it; a cp, mv, rsync or redirect with no Edit form is recorded for the run, never refused.'
 GROK_RESEARCH_FENCE='READ-ONLY TREE: every repository handed to this run is digested before and after it. Creating or changing ANY file in them — a fetched page, a scratch note, a saved quote — fails the finished run and throws your answer away. Quote web pages inline in the answer and write nothing, anywhere.'
 
-CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-0}
+CYRILLIC_MAX=${WORKER_RUN_CYRILLIC_MAX:-}
 CYRILLIC_SHARE=${WORKER_RUN_CYRILLIC_SHARE:-$SCRIPT_DIRECTORY/cyrillic-share}
 
 # The share alone, or nothing where the tool cannot answer: a report is never stamped on a failed
@@ -200,6 +217,12 @@ cyrillic_share() { # <stdin
   answer=${answer%% *}
   [[ "$answer" =~ ^[0-9]+$ ]] || return 1
   printf '%s' "$answer"
+}
+
+cyrillic_over() { # share
+  [ -n "$CYRILLIC_MAX" ] || CYRILLIC_MAX=$("$CYRILLIC_SHARE" --max 2>/dev/null)
+  [[ "$CYRILLIC_MAX" =~ ^[0-9]+$ ]] || CYRILLIC_MAX=0
+  [ "$1" -gt "$CYRILLIC_MAX" ]
 }
 
 # Wall-clock ceiling per vendor invocation, and only the last resort: a wedged CLI is normally
@@ -258,10 +281,11 @@ launch_attempt() { # directory
       printf '\n'
       cat "$directory/fix-rule" || return 1
     fi
-    if [ -s "$directory/research-fence" ]; then
+    for preamble in research-fence edit-fence; do
+      [ -s "$directory/$preamble" ] || continue
       printf '\n'
-      cat "$directory/research-fence" || return 1
-    fi
+      cat "$directory/$preamble" || return 1
+    done
     printf '\n%s\n\nRUN-TOKEN: %s\n' "$BRIEF_PREAMBLE" "$token"; } \
     >"$directory/brief.launch.tmp.$$" &&
     mv -f "$directory/brief.launch.tmp.$$" "$directory/brief.launch" || return 1
@@ -1219,7 +1243,9 @@ persist_run_files() {
   reason=$RUN_FILES_REASON
   # A snapshot detects change, never its author; an unreadable transcript names no owner.
   compute_transcript_files "$directory"
-  RUN_LISTING_LIST=$RUN_FILES_LIST
+  RUN_LISTING_LIST=$(sort -u <(sed '/^$/d' <<<"$RUN_FILES_LIST") \
+                             <([ -z "$workdir" ] || [ "$workdir" = null ] ||
+                                 shell_write_rows "$directory" "$workdir" "$snapshot"))
   RUN_LISTING_REASON=$RUN_FILES_REASON
   RUN_LISTING_PARTIAL=$RUN_FILES_PARTIAL
   RUN_FILES_EXTERNAL=''
@@ -2209,6 +2235,11 @@ start_run() {
   [ "$web_search_flag" = false ] || [ "$web_search_off_flag" = false ] ||
     fail '--web-search and --no-web-search ask for opposite states: pass one of them'
   [ "$role" = workers ] || [ "$role" = research ] || usage
+  if [ -n "$brief" ] && [ "$role" = workers ]; then
+    [ -n "$explicit_account" ] || explicit_account=$(brief_line_value "$brief" ACCOUNT)
+    [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
+    [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
+  fi
   relay_start_door "$vendor" "$role"
   if worker_light_off; then
     if [ "$vendor" = light ]; then
@@ -2311,8 +2342,8 @@ start_run() {
   fi
   brief_cyrillic=$(cyrillic_share <"$brief") ||
     fail "the brief's language could not be measured ($CYRILLIC_SHARE): nothing was launched; fix the tool rather than skipping the check"
-  [ "$brief_cyrillic" -le "$CYRILLIC_MAX" ] ||
-    fail "brief has Russian ($brief_cyrillic% Cyrillic): the reader is a model — write it in English; Russian only as code in backticks or a trigger phrase of up to 6 words in «…»"
+  ! cyrillic_over "$brief_cyrillic" ||
+    fail "brief has Russian ($brief_cyrillic% Cyrillic): the reader is a model — write it in English; $("$CYRILLIC_SHARE" --allowed 2>/dev/null)"
   [ -d "$workdir" ] || fail "workdir is not a directory: $workdir"
   workdir=$(cd "$workdir" && pwd -P) || fail "could not resolve workdir: $workdir"
   # Every repository of the round is the fixer's to write, and a write outside workdir and
@@ -2683,6 +2714,8 @@ start_run() {
   [ -z "$fix_rule" ] || printf '%s\n' "$fix_rule" >"$directory/fix-rule" || fail 'could not write the fix rule'
   [ "$vendor" != grok ] || [ "$role" != research ] ||
     printf '%s\n' "$GROK_RESEARCH_FENCE" >"$directory/research-fence" || fail 'could not write the research fence'
+  [ "$vendor" != claudeb ] || [ "$role" = research ] ||
+    printf '%s\n' "$CLAUDEB_EDIT_FENCE" >"$directory/edit-fence" || fail 'could not write the edit fence'
   if [ "$browser" = true ]; then
     cp "$browser_preamble" "$directory/browser-preamble" || fail 'could not copy browser preamble'
     rm -f "$browser_preamble"
@@ -3463,7 +3496,7 @@ transcript_files() {
   # calls, so the cut is a per-line select ahead of the descent, not a filter on the paths it yields.
   # `fromdateiso8601` refuses the milliseconds every real transcript writes, hence the sub() — parsed
   # without it, every line reads as epoch 0 and a resumed run reports nothing at all.
-  local transcript="$1" workdir="$2" since="${3:-0}" failed paths path dir=''
+  local transcript="$1" workdir="$2" since="${3:-0}" failed paths
   [[ "$since" =~ ^[0-9]+$ ]] || since=0
   failed=$(jq -r '.. | objects
            | select((.type? == "tool_result") and (.is_error? == true))
@@ -3476,15 +3509,36 @@ transcript_files() {
            | select((.type? == "tool_use") and ((.name? // "") | test("^(Write|Edit|MultiEdit|NotebookEdit)$")))
            | select((.id? // "") as $id | ($bad | index($id)) == null)
            | (.input.file_path? // .input.notebook_path? // empty)' "$transcript" 2>/dev/null) || return 1
+  listing_spelling "$workdir" <<<"$paths"
+}
+
+listing_spelling() { # workdir; paths on stdin
+  local workdir="$1" path dir=''
   # A trailing slash makes the prefix double-slashed and silently stops matching; an absent workdir
   # would strip the leading `/` off every absolute path, so it strips nothing at all.
   [ -z "$workdir" ] || [ "$workdir" = null ] || dir="${workdir%/}/"
   while IFS= read -r path; do
     [ -z "$path" ] || resolve_tool_path "$path" "$workdir"
-  done <<<"$paths" | AWK_DIR=$dir awk \
+  done | AWK_DIR=$dir awk \
     'BEGIN { dir = ENVIRON["AWK_DIR"] }
      { if (dir != "" && index($0, dir) == 1) $0 = substr($0, length(dir) + 1) } NF' \
     | sort -u
+}
+
+# The shell writes worker-edit-guard recorded instead of refusing, spelled as the Edit/Write rows
+# are so they fold through the same snapshot intersection. The hook spells them against the PHYSICAL
+# top, and a directory it recorded (`cp -R`) answers for the snapshot rows under it.
+shell_write_rows() { # directory workdir snapshot
+  local physical
+  [ -s "$1/shell-writes" ] || return 0
+  physical=$(cd "$2" 2>/dev/null && pwd -P) || physical=${2%/}
+  AWK_FROM=${physical%/}/ AWK_TO=${2%/}/ awk \
+    'BEGIN { from = ENVIRON["AWK_FROM"]; to = ENVIRON["AWK_TO"] }
+     { if (from != to && index($0, from) == 1) $0 = to substr($0, length(from) + 1); print }' \
+    "$1/shell-writes" | listing_spelling "$2" |
+    AWK_SNAP=$3 awk 'BEGIN { n = split(ENVIRON["AWK_SNAP"], snap, "\n") }
+      { print; for (i = 1; i <= n; i++) if (snap[i] != "" && index(snap[i], $0 "/") == 1) print snap[i] }' |
+    sort -u
 }
 
 compute_transcript_files() {
@@ -3746,7 +3800,7 @@ stamp_result_language() { # directory
   [ -s "$1/result" ] || return 0
   [ ! -e "$1/lang" ] || return 0
   share=$(cyrillic_share <"$1/result") || return 0
-  [ "$share" -gt "$CYRILLIC_MAX" ] || return 0
+  cyrillic_over "$share" || return 0
   printf 'cyrillic %s\n' "$share" >"$1/lang" 2>/dev/null || :
 }
 

@@ -1,0 +1,85 @@
+36 findings from 1 cells at 28 places
+
+P2 ×1  hammerspoon/automation_menu.lua:239  opus-high
+    Some information is shown twice. `watcher down` appears in the Token tracking title (token-tracking.lua:257), again in the `Instruction file changes · watcher DOWN` title (automation_menu.lua:239) and again in the liveness row (instruction-watch.lua:1177). `stale` appears in the Token tracking title
+
+P3 ×1  hammerspoon/automation_menu.lua:318  opus-high
+    The Reports submenu hard-codes its font as `{ name = ".AppleSystemUIFont", size = 13 }` (automation_menu.lua:318). The other styled system-font titles use `hs.styledtext.defaultFonts.menu` (automation_menu.lua:225, doctors.lua:312, token-tracking.lua:259). Its age column also uses a fourth age gramm
+
+P2 ×1 (2 claims)  hammerspoon/automation_menu.lua:431  opus-high
+    Status appears in the title for some menus and only inside the submenu for others. Token tracking puts `stale` and `watcher down` in its top-level title (token-tracking.lua:250), and Doctors puts its problem count there (doctors.lua:312). LLM Limits keeps the plain title `LLM Limits` (automation_men
+
+P1 ×1  llm-legs/hammerspoon/doctors.lua:44  opus-high
+    Time and age formats differ in every module: - token-tracking ageText: `32h ago` / `3d ago`, 48h threshold (token-tracking.lua:187-189). - doctors age(): `14 min` / `3 h` / `2 d` with spaces, plus `ran 3 h ago` (doctors.lua:45-47). - llm-limits formatAccountAge: `9m` / `10h` / `3d` with no `ago`, an
+
+P2 ×1 (2 claims)  llm-legs/hammerspoon/doctors.lua:106  opus-high
+    Rows that carry nothing Egor acts on should be deleted. `fixer: never ran` under every doctor (doctors.lua:106). The liveness row `watcher: live since … · N roots · N files` when healthy (instruction-watch.lua:1174). The `share` column on `Claude spend … 100.0%` (tokenmap cells via token-tracking.lu
+
+P1 ×1  llm-legs/hammerspoon/doctors.lua:167  opus-high
+    The separator between a name and its state is mixed. Top-level titles use `·`: `Doctors · 41 problems` (doctors.lua:312), `Token tracking · stale` (token-tracking.lua:259). Their children use `:`: `LLM doctor: 14 problems`, `Harness doctor: 24 problems`, `Updater doctor: 3 problems` (doctors.lua:167
+
+P1 ×1  llm-legs/hammerspoon/doctors.lua:232  opus-high
+    Internal ids, file names, script names and paths are shown to Egor. Script names: `no data yet: Refresh runs bin/updater-doctor` (doctors.lua:232), `… bin/harness-doctor` (llm-limits.lua:1663), `… N more: review-bench doctor --json` (llm-limits.lua:1338). Files: `+N older in events.jsonl` (instructi
+
+P2 ×1  llm-legs/hammerspoon/doctors.lua:238  opus-high
+    Several rows cannot be understood without reading the code. Updater problem facts: `codex 0.156.1 → 0.159.0: new gpt-6.1-sol · catalog, divergence, docs, features, ids · waiting 4d`, red and disabled (doctors.lua:238; text from updater-doctor). Harness rows: `Hook waits problem a non-trivial Bash ca
+
+P1 ×1  llm-legs/hammerspoon/doctors.lua:284  opus-high
+    Action rows are named and ordered differently in every menu: - Refresh actions: `Refresh` (doctors.lua:258, llm-limits.lua:1670/2287/2673/2715), `Refresh blocks` (1440), `Rescan now` (1355, token-tracking.lua:295), `Hard refresh` (per account), `Refresh + Start Windows` in Title Case (2294), `Fix — 
+
+P2 ×1  llm-legs/hammerspoon/doctors.lua:292  opus-high
+    Action rows are ordered differently between sibling menus. Every doctor puts its action first (`Fix — …`, then `fixer: …`, then a separator; doctors.lua:292) but its `Refresh`/`Refresh blocks`/`Rescan now` last (llm-limits.lua:1440/1670, doctors.lua:258), so one submenu has actions at both ends. Tok
+
+P2 ×1  llm-legs/hammerspoon/instruction-watch.lua:1034  opus-high
+    Number and unit formats disagree. The Token tracking tables mix `0.4B` / `<0.1B`, `139.2M`, `6,823` and `425.4k` in one menu; tokenmap's tracking.json decides these and token-tracking.lua:269-282 only pads them. Instruction watch prints byte deltas as `+184` and prices as `+12k` / `+12.3k tok/wk`, c
+
+P2 ×1  llm-legs/hammerspoon/instruction-watch.lua:1113  opus-high
+    Dates and clock times are written three ways. The change log uses day-month order, `28 Sep 16:04` (instruction-watch.lua:1113 and the watcher row at 1168). Token tracking uses `Sep 28 16:04` with no zero padding (token-tracking.lua:176). Reset and redeem dates use `%b %d`, which zero-pads (`Oct 02`,
+
+P1 ×1  llm-legs/hammerspoon/instruction-watch.lua:1170  opus-high
+    One watcher-down state is written three ways. The Token tracking title says `watcher down` (token-tracking.lua:257). The automation_menu fallback says `Token tracking · watcher down` (automation_menu.lua:262). The change-log submenu title says `Instruction file changes · watcher DOWN` (automation_me
+
+P1 ×1 (2 claims)  llm-legs/hammerspoon/llm-limits.lua:23  opus-high
+    Dim is still made in several ways. (1) The named colour `tertiaryLabelColor` is defined three times: llm-limits.lua:27, instruction-watch.lua:28 and token-tracking.lua:20. Each resolves through its own `dimColor()` copy (llm-limits.lua:36, instruction-watch.lua:1089, token-tracking.lua:54) and falls
+
+P1 ×1  llm-legs/hammerspoon/llm-limits.lua:1339  opus-high
+    Internal ids, file names, script names and CLI hints are shown to a human: - Script paths: `no data yet: Refresh runs bin/updater-doctor` / `bin/harness-doctor` (doctors.lua:232, llm-limits.lua:1663). - CLI hint: `… N more: review-bench doctor --json` (llm-limits.lua:1339). - Ledger ids appended to 
+
+P2 ×1  llm-legs/hammerspoon/llm-limits.lua:1350  opus-high
+    Empty and failure states have no single wording. Examples: `no snapshot` (llm-limits.lua:1476, 1362), `no doctor snapshot yet` (1350), `Chats: no snapshot` (1690), `no data yet: Refresh runs bin/…` (doctors.lua:232, llm-limits.lua:1663), `Harness doctor: no data` / `Updater doctor: no data` / `Block
+
+P2 ×1  llm-legs/hammerspoon/llm-limits.lua:1360  opus-high
+    Empty and no-data states use many different wordings: - `no snapshot` (1360/1483), `no doctor snapshot yet` (1350), `Chats: no snapshot` (1690). - `Blocks: no data` (1387), `Harness doctor: no data` / `Updater doctor: no data` (1673, doctors.lua:161), `no data yet: Refresh runs …` (doctors.lua:232),
+
+P1 ×1  llm-legs/hammerspoon/llm-limits.lua:1440  opus-high
+    Action rows are worded and cased differently for the same act. Refresh variants: `Refresh` (vendor header llm-limits.lua:2715, bottom 2287, harness 1670, updater doctors.lua:258), `Refresh blocks` (llm-limits.lua:1440), `Rescan now` (llm-limits.lua:1355, token-tracking.lua:295), `Hard refresh`, `Ref
+
+P1 ×1 (2 claims)  llm-legs/hammerspoon/llm-limits.lua:1491  opus-high
+    The same state gets a different colour in each doctor. At llm-limits.lua:1491 the LLM doctor child title is built as `infoTitle(title, false, quiet)`, so it is never red. The dump shows `LLM doctor: 14 problems ⟨Menlo⟩` uncoloured, while its siblings are red: `Harness doctor: 24 problems` (llm-limit
+
+P1 ×1 (2 claims)  llm-legs/hammerspoon/llm-limits.lua:1562  opus-high
+    The long jargon limiter row is still at the top of LLM Limits, unchanged. The dump shows `logo-bench-throttle holds 3 jobs, longest 16 min: 1 of 8 slots open, all busy, pressure level 2, 43% free`, fully red. The text is assembled at llm-limits.lua:1562 (`%s holds %d job%s, longest %s: %s`, which pa
+
+P1 ×1  llm-legs/hammerspoon/llm-limits.lua:2287  opus-high
+    Plain system-font rows sit beside Menlo `infoTitle` rows in the same submenus, and action rows switch font between menus. - Doctors: `Fix — …`, `Refresh`, `Refresh blocks`, `Rescan now` and `Copy for an LLM` are all Menlo (doctors.lua:151/258, llm-limits.lua:1203/1288/1355/1440/1670). - LLM Limits: 
+
+P3 ×1  llm-legs/hammerspoon/llm-limits.lua:2515  opus-high
+    Column headers are styled inconsistently. Token tracking and harness headers are dim, disabled and lower case (`limit tokens 7 days prev 7`, `from to lasted min`). The worker-pick routing header is full-contrast upper case (`NEXT budget …`, `ACCOUNT:`), rendered verbatim at llm-limits.lua:2515. The 
+
+P1 ×1  llm-legs/hammerspoon/llm-limits.lua:2563  opus-high
+    Plain system-font rows sit beside Menlo `infoTitle` rows in the same submenu. In LLM Limits: `Light (research + edit)` (llm-limits.lua:2563) sits between Menlo `Routing` and `review flash…`; the bottom `Refresh` and `Refresh + Start Windows` (llm-limits.lua:2287/2294) and `Cancel pending switch` (25
+
+P3 ×1 (2 claims)  llm-legs/hammerspoon/token-tracking.lua:19  opus-high
+    The green is defined twice: token-tracking.lua:19 adds an explicit `alpha = 1`, and llm-limits.lua:24 has none. The red is defined four times (llm-limits.lua:22, doctors.lua:8, instruction-watch.lua:1104, token-tracking.lua:18, automation_menu.lua:224). All have the right values today, but the copie
+
+P2 ×1  llm-legs/hammerspoon/token-tracking.lua:74  opus-high
+    Units and number formats are mixed, and all of them come verbatim from tokenmap cells rendered by `aligned` (token-tracking.lua:74). The top-level table is in `0.4B` units, so most rows read `<0.1B <0.1B`. Drill-downs switch to `139.2M`, `425.4k`, `6,823` and `0.2M` next to `<0.1M`. The change log p
+
+P2 ×1 (2 claims)  llm-legs/hammerspoon/token-tracking.lua:166  opus-high
+    Informational rows behave differently across menus. Machinery detail rows are clickable (they copy a chat command, llm-limits.lua:1336). Chats task rows are clickable while dim (llm-limits.lua:1700), e.g. `wait model Updater doctor ⟨dim | clickable⟩`. Doc reads rows are clickable. By contrast, the s
+
+P1 ×1  llm-legs/hammerspoon/token-tracking.lua:186  opus-high
+    Time and age formats differ by module. Token tracking uses `32h ago`, `7m ago`, `2d ago` with no space (token-tracking.lua:186). Doctors uses `3 h`, `2 d`, `14 min` with a space, and `fixer: ran 3 h ago` (doctors.lua:43). Account rows use `9m`/`3h`/`3d` with no `ago`, hidden under 5 min (llm-limits.
+
+P1 ×1 (2 claims)  llm-legs/hammerspoon/token-tracking.lua:210  opus-high
+    The capitalisation of state words is mixed. `OK` in doctor titles (doctors.lua:167, llm-limits.lua:1479/1426) vs `ok: names` in the machinery row (llm-limits.lua:1347) vs harness status words `ok`/`watch`/`problem` (from bin/harness-doctor, rendered by harnessLine at llm-limits.lua:1576). `STALE —` 

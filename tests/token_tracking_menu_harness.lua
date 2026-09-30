@@ -127,6 +127,20 @@ local leaf = find(startup.menu, "SKILL.md")
 check(leaf and leaf.fn, "the copyable leaf has no action")
 if leaf and leaf.fn then leaf.fn() end
 check(copied == "/abs/SKILL.md", "the leaf copied " .. tostring(copied))
+local zoneLeaf = find(drill, "review-bench")
+check(zoneLeaf and zoneLeaf.disabled and not zoneLeaf.fn and not zoneLeaf.menu,
+    "an informational leaf is not disabled")
+local function inertRow(menu)
+    for _, item in ipairs(menu or {}) do
+        if item.title ~= "-" and item ~= logItem and not (item.menu or item.fn or item.disabled) then
+            return text(item.title)
+        end
+        local nested = item ~= logItem and inertRow(item.menu)
+        if nested then return nested end
+    end
+end
+local inert = inertRow(items)
+check(inert == nil, "a row that neither acts nor is disabled: " .. tostring(inert))
 
 local byWeek = find(items, "By week")
 local matrix = byWeek and byWeek.menu or {}
@@ -145,16 +159,30 @@ check(codex and codex.menu and #codex.menu > 0 and codex.menu[1].title ~= "-"
     and text(codex.menu[1].title) == "Calendar weeks", "a drill with weeks but no sections opens on a separator")
 
 local _, logAt = find(items, "Instruction file changes")
-local _, rescanAt = find(items, "Rescan now")
-check(logAt and items[logAt] == logItem and rescanAt and logAt < rescanAt and items[logAt - 1].title == "-",
-    "the change-log item is not placed verbatim above Rescan now")
+local _, refreshAt = find(items, "Refresh")
+check(logAt and items[logAt] == logItem and refreshAt and logAt < refreshAt and items[logAt - 1].title == "-",
+    "the change-log item is not placed verbatim above Refresh")
+check(refreshAt == #items and items[refreshAt - 1].title == "-" and items[refreshAt].fn,
+    "Refresh is not the bottom row after a separator")
+local function allMenlo(menu)
+    for _, item in ipairs(menu or {}) do
+        if item.title ~= "-" then
+            if type(item.title) == "string" then return false end
+            local font = item.title:asTable()[2].attributes.font
+            if not font or not font.name:find("^Menlo") then return false end
+        end
+        if item.menu and not allMenlo(item.menu) then return false end
+    end
+    return true
+end
+check(allMenlo(items), "a row under Token tracking is not Menlo 13")
 check(find(M.menuItems(nil), "Instruction file changes") == nil, "no change-log item still rendered one")
 
 check(text(M.title(nil)) == "Token tracking", "fresh title: " .. text(M.title(nil)))
 hs.fs.touch(path, os.time() - 30 * 3600)
 local stale = M.menuItems(nil, nil)
-check(text(stale[1].title):find("^STALE") ~= nil, "a 30h-old export is not STALE: " .. text(stale[1].title))
-check(text(M.title("down")) == "Token tracking · stale · watcher down", "alarm title: " .. text(M.title("down")))
+check(text(stale[1].title):find("^stale: 7 days to ") ~= nil, "a 30h-old export is not stale: " .. text(stale[1].title))
+check(text(M.title("down")) == "Token tracking: stale · watcher down", "alarm title: " .. text(M.title("down")))
 
 write('{"rows": [{"label": null, "cells": ["1"], "weeks": [{"label": "Sep 22–28", "cell": "1"}],'
     .. ' "weeks_unit": "per context", "sections": []}], "unit_label": "limit tokens"}')
@@ -164,7 +192,7 @@ check(nullOk and find(nullItems, "By week"), "a null row label broke the menu: "
 write("{not json")
 check(text(M.menuItems(nil, nil)[1].title):find("unreadable", 1, true) ~= nil, "garbage is not called unreadable")
 os.remove(path)
-check(text(M.menuItems(nil, nil)[1].title):find("no tracking.json yet", 1, true) ~= nil, "a missing export is not named")
+check(text(M.menuItems(nil, nil)[1].title) == "no data yet", "a missing export is not named")
 hs.fs.rmdir(dir)
 
 if #failures > 0 then return "FAIL:\n" .. table.concat(failures, "\n") end

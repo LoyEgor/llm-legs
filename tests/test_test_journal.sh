@@ -52,4 +52,111 @@ probe
   shell_line 13 01:03; printf '12 13 01:02 bash tests/test_twin.sh\n'; } > "$WORK/snap"
 probe
 assert_eq test_twin "$(sed -n 3p "$STATUSLINE_CACHE_DIR/test-history.jsonl" | jq -r .label)"
+assert_eq '[]' "$(jq -sc 'map(select(has("ok")))' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# A run-suites run's outcome is its suites' .status codes once it is gone: every one 0 is ok, any
+# plain failure is not, and a run short of its total, killed, with its logs gone or whose pointer
+# predates the process (a killed runner's, its pid reused) has none.
+suite_run() { # pid repo total stamp codes...
+  local pid=$1 repo=$2 total=$3 stamp=$4 rc i=0; shift 4
+  mkdir -p "$WORK/$repo" "$WORK/logs-$pid"; git -C "$WORK/$repo" init -q
+  printf '%s\t%s\t%s\t%s\n' "$WORK/logs-$pid" "$total" "$WORK/$repo" "$stamp" > "$STATUSLINE_CACHE_DIR/suites-$pid"
+  for rc in "$@"; do i=$((i + 1)); printf '%s\t3\n' "$rc" > "$WORK/logs-$pid/test_$i.sh.status"; done
+  shell_line "$((pid + 100))" 02:01; printf '%s %s 02:00 bash tests/run-all -j 5\n' "$pid" "$((pid + 100))"
+}
+fresh=$(($(date +%s) - 110))
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'
+  suite_run 21 r-pass 2 "$fresh" 0; suite_run 22 r-fail 3 "$fresh" 0 0; suite_run 23 r-short 3 "$fresh" 0 0
+  suite_run 24 r-killed 2 "$fresh" 0 137; suite_run 25 r-gone 1 "$fresh" 0; suite_run 26 r-stale 1 1000 0
+  suite_run 27 r-twin 1 "$fresh" 0; suite_run 28 r-twin 1 "$fresh" 1; } > "$WORK/snap"
+probe
+# The last suites end between two probes; only their .status files hold them. Of two runs of one
+# repository started together, the one still running is never journaled for the other.
+printf '0\t1\n' > "$WORK/logs-21/test_2.sh.status"; printf '1\t1\n' > "$WORK/logs-22/test_3.sh.status"
+rm -rf "$WORK/logs-25"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; shell_line 128 02:01; printf '28 128 02:00 bash tests/run-all -j 5\n'; } > "$WORK/snap"
+probe
+assert_eq '{"repo":"r-fail","total":3,"failed":1,"ok":false} {"repo":"r-gone","total":1,"failed":0,"ok":null} {"repo":"r-killed","total":2,"failed":1,"ok":null} {"repo":"r-pass","total":2,"failed":0,"ok":true} {"repo":"r-short","total":3,"failed":0,"ok":null} {"repo":"r-stale","total":1,"failed":0,"ok":null} {"repo":"r-twin","total":1,"failed":0,"ok":true}' \
+  "$(jq -c 'select(.label == "suites") | {repo, total, failed, ok}' "$STATUSLINE_CACHE_DIR/test-history.jsonl" | sort | paste -sd' ' -)"
+assert_eq 3 "$(jq -s 'map(select(has("ok"))) | length' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# Every row names the repository it ran in by its main checkout, so a worktree's runs fold into it;
+# a workdir outside git names none.
+assert_eq "$(printf '"%s"\nnull\n' "$WORK/repo")" \
+  "$(head -2 "$STATUSLINE_CACHE_DIR/test-history.jsonl" | jq -c .repo_root | sort)"
+git -C "$WORK/repo" worktree add -q --orphan -b wt-one "$WORK/repo/.claude/worktrees/wt-one"
+mkdir -p "$WORK/repo/.claude/worktrees/wt-one/tests"
+still_28() { shell_line 128 02:01; printf '28 128 02:00 bash tests/run-all -j 5\n'; }
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  shell_line 30 00:41; printf '31 30 00:40 bash %s/tests/test_wt.sh\n' "$WORK/repo/.claude/worktrees/wt-one"; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
+assert_eq "$(jq -cn --arg root "$WORK/repo" '{repo: "⧉ wt-one", repo_root: $root}')" \
+  "$(jq -c 'select(.label == "test_wt") | {repo, repo_root}' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+# Exit 255 is a failure; only 129-192 is a kill by signal.
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; suite_run 40 r-255 2 "$fresh" 0 255; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
+assert_eq '{"total":2,"failed":1,"ok":false}' \
+  "$(jq -c 'select(.repo == "r-255") | {total, failed, ok}' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+
+# repo_root is the main checkout for every layout: a submodule's and a separate git dir's own
+# toplevel, a .bare layout's project directory, a linked worktree's main checkout.
+. "$ROOT/share/test-scope.sh"
+layouts="$WORK/layouts"
+mkdir -p "$layouts/super/.git/modules" "$layouts/proj"
+git init -q --separate-git-dir="$layouts/super/.git/modules/sub" "$layouts/super/sub"
+git init -q --separate-git-dir="$layouts/sep.git" "$layouts/sep"
+git init -q --bare "$layouts/proj/.bare"
+printf 'gitdir: ./.bare\n' > "$layouts/proj/.git"
+git -C "$layouts/proj" worktree add -q --orphan -b main "$layouts/proj/main"
+roots=""
+for dir in "$layouts/super/sub" "$layouts/sep" "$layouts/proj/main" "$WORK/repo/.claude/worktrees/wt-one"; do
+  top="" root=""
+  git_top "$dir"
+  roots="$roots ${root#"$WORK/"}"
+done
+assert_eq " layouts/super/sub layouts/sep layouts/proj repo" "$roots"
+mkdir -p "$layouts/proj/main/tests"
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28
+  shell_line 50 00:41; printf '51 50 00:40 bash %s/tests/test_bare.sh\n' "$layouts/proj/main"; } > "$WORK/snap"
+probe
+{ printf '1 0 01:00:00 launchd\n5 1 10:00 claude\n'; still_28; } > "$WORK/snap"
+probe
+assert_eq "\"$layouts/proj\"" "$(jq -c 'select(.label == "test_bare") | .repo_root' "$STATUSLINE_CACHE_DIR/test-history.jsonl")"
+
+# run-suites declares its scope, and a marker names the repo_root its run folds into.
+suites_repo="$WORK/suites-repo"
+mkdir -p "$suites_repo/tests"
+git -C "$suites_repo" init -q
+printf '#!/usr/bin/env bash\necho ok\n' > "$suites_repo/tests/test_one.sh"
+: > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
+for args in "" "--all" "--changed" "test_one.sh"; do
+  RUN_SUITES_TIMES="$WORK/times.tsv" bash "$ROOT/share/run-suites.sh" --repo "$suites_repo" -j 2 $args >/dev/null 2>&1 ||
+    fail "run-suites $args failed"
+done
+assert_eq "$(jq -cn --arg root "$suites_repo" '["full","all","changed","named"] | map({label: "suites", scope: ., repo_root: $root})')" \
+  "$(jq -sc 'map({label, scope, repo_root})' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
+
+# A test script that runs part of itself is partial whichever selector it reads narrowed it.
+selectors=$(grep -Eo 'WORKER_RUN_TEST_([A-Z_]*_)?(CASE|ONLY)' "$ROOT/tests/test_worker_run.sh" | sort -u)
+case " $(echo $selectors) " in *" WORKER_RUN_TEST_ATTRIBUTION_CASE "*" WORKER_RUN_TEST_CASE "*) ;;
+  *) fail "selectors read by test_worker_run: $selectors" ;; esac
+asserts=$((asserts + 1))
+narrowed=""
+for selector in $selectors; do
+  env -i PATH="$PATH" "$selector=x" bash -c '. "$1"; test_scope_narrowed "$2" WORKER_RUN_TEST_ && echo y || echo n' _ \
+    "$ROOT/share/test-scope.sh" "$ROOT/tests/test_worker_run.sh" | { read -r v; [ "$v" = y ] || echo "$selector"; }
+done > "$WORK/unnarrowed"
+assert_eq "" "$(cat "$WORK/unnarrowed")"
+assert_eq "n n" "$(for v in "" 0; do env -i PATH="$PATH" WORKER_RUN_TEST_TAIL_ONLY="$v" bash -c \
+  '. "$1"; test_scope_narrowed "$2" WORKER_RUN_TEST_ && echo y || echo n' _ "$ROOT/share/test-scope.sh" \
+  "$ROOT/tests/test_worker_run.sh"; done | paste -sd' ' -)"
+assert_eq 1 "$(grep -c '^if \[ -z "${WORKER_RUN_TEST_SPLIT:-}" \] && test_scope_narrowed "${BASH_SOURCE\[0\]}" WORKER_RUN_TEST_; then$' \
+  "$ROOT/tests/test_worker_run.sh")"
+: > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
+(cd "$WORK" && bash -c '. "$1"; test_scope_partial "$2"' _ "$ROOT/share/test-scope.sh" "$ROOT/tests/test_worker_run.sh")
+main_checkout=$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")
+assert_eq "$(jq -cn --arg root "$main_checkout" '{label: "test_worker_run", scope: "partial", repo_root: $root}')" \
+  "$(jq -c '{label, scope, repo_root}' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
 printf 'PASS: %s asserts; the probe journals every test it saw end, chat or worker\n' "$asserts"

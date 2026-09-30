@@ -277,6 +277,34 @@ do
 done
 # A runtime that opens the PIN is still a pin move, however the payload is quoted.
 assert denied "$(bash_event 'python3 -c "open(\"$HOME/.claude/worker-model\",\"w\").write(\"codex_profile=x\")"')"
+# A runtime editing ANOTHER file whose text quotes the pin path writes that file, not the pin
+# (23 of 23 sampled denials, 2026-09): its write sites are judged by their targets.
+for source_edit in \
+  $'python3 - <<\'EOF\'\np=\'/tmp/other.sh\'; s=open(p).read()\ns=s.replace(\'cat "$HOME/.claude/worker-model"\',\'cat "$HOME/.claude/worker-model" 2>/dev/null\')\nopen(p,\'w\').write(s)\nEOF' \
+  $'python3 - <<\'EOF\'\nfrom pathlib import Path\np=Path(\'share/worker-model.sh\')\ns=p.read_text().replace(\'~/.claude/worker-model\', \'$PIN\')\np.write_text(s)\nEOF' \
+  $'python3 - <<\'EOF\'\nprint(open(\'/Users/x/.claude/worker-model\').read())\nEOF' \
+  $'python3 -c \'import subprocess; print(subprocess.check_output(["cat", "/Users/x/.claude/worker-model"]).decode())\'' \
+  $'python3 -c \'import os; os.system("grep claudeb_profile ~/.claude/worker-model")\''
+do
+  assert allowed "$(bash_event "$source_edit")"
+done
+for runtime_pin in \
+  $'python3 - <<\'EOF\'\nfrom pathlib import Path\nPath.home().joinpath(".claude/worker-model").write_text("claudeb_profile=x\\n")\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\npin = os.path.expanduser("~/.claude/worker-model")\ntmp = pin + ".tmp"\nwith open(tmp, "w") as f:\n    f.write("claudeb_profile=b\\n")\nos.replace(tmp, pin)\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\npin = os.path.expanduser("~/.claude/worker-model")\nwith open(pin, mode="a") as f:\n    f.write("claudeb_profile=b\\n")\nEOF' \
+  $'python3 - <<\'EOF\'\nimport shutil, os\nshutil.copy(\'/tmp/x\', os.path.expanduser(\'~/.claude/worker-model\'))\nEOF' \
+  $'python3 -c "import os;p=os.path.expanduser(\'~/.claude/worker-model\');open(p,\'w\').write(\'claudeb_profile=x\')"' \
+  $'node -e "require(\'fs\').writeFileSync(process.env.HOME+\'/.claude/worker-model\', \'claudeb_profile=x\')"' \
+  $'perl -e \'open(my $fh, ">", "$ENV{HOME}/.claude/worker-model"); print $fh "x"\'' \
+  $'p=~/.claude/worker-model python3 - <<\'EOF\'\nimport os\nopen(os.environ["p"],"w").write("x")\nEOF' \
+  $'python3 - <<\'EOF\'\nx=1\nEOF\necho claudeb_profile=b > ~/.claude/worker-model' \
+  $'python3 - <<\'EOF\'\nimport fileinput, os\nfor line in fileinput.input(os.path.expanduser("~/.claude/worker-model"), inplace=True):\n    print(line.replace("a", "b"), end="")\nEOF' \
+  $'python3 - <<\'EOF\'\nimport os\nfd = os.open(os.path.expanduser("~/.claude/worker-model"), os.O_WRONLY | os.O_APPEND)\nos.write(fd, b"x")\nEOF' \
+  $'python3 -c \'import subprocess; subprocess.run(["sed", "-i", "", "s/a/b/", "/Users/x/.claude/worker-model"])\'' \
+  $'python3 -c \'import os; os.system("echo x > ~/.claude/worker-model")\''
+do
+  assert denied "$(bash_event "$runtime_pin")"
+done
 
 # Quoted text is carried, not executed: a command whose ARGUMENT happens to spell a redirect or an
 # editor's name writes nothing, and denying it gated a read — live-caught on a compact focus prompt

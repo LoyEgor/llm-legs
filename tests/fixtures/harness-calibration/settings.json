@@ -1,0 +1,228 @@
+{
+ "hooks": {
+  "PreToolUse": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/worker-limit-gate.sh",
+      "timeout": 15
+     },
+     {
+      "type": "command",
+      "command": "~/hk/worker-spawn-hook.sh",
+      "timeout": 10
+     }
+    ],
+    "matcher": "Agent|Task"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/statusline-workdir-hook.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Bash|Task|Agent"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/worker-git-guard.sh",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/worker-edit-guard.sh",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/worker-tag-hook.sh",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/cd-guard.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Bash"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/instruction-bloat-gate.sh",
+      "timeout": 10
+     },
+     {
+      "type": "command",
+      "command": "~/hk/worker-pin-gate.sh write",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/slash-collision-gate.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Edit|Write|MultiEdit"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/instruction-write-gate.sh",
+      "timeout": 10
+     },
+     {
+      "type": "command",
+      "command": "~/hk/worker-pin-gate.sh bash",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/worker-launch-gate.sh",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/review-owner-gate.sh bash",
+      "timeout": 10
+     }
+    ],
+    "matcher": "Bash"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/worker-launch-gate.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Monitor|mcp__codex__codex|mcp__codex__codex-reply"
+   }
+  ],
+  "PostToolUse": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/instruction-watch.sh check",
+      "timeout": 60
+     }
+    ],
+    "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/statusline-workdir-hook.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Bash|Edit|Write|NotebookEdit|EnterWorktree|ExitWorktree|Read"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/limits-triage-nudge.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Bash"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/statusline-freshness-gate.sh",
+      "timeout": 5
+     }
+    ],
+    "matcher": "Edit|Write|NotebookEdit"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/context-nudge.sh",
+      "timeout": 10
+     }
+    ],
+    "matcher": "*"
+   },
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/memory-prune.sh hook",
+      "timeout": 15
+     }
+    ],
+    "matcher": "Edit|Write"
+   }
+  ],
+  "SessionStart": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/statusline-workdir-hook.sh",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/session-trash.sh sweep",
+      "timeout": 15,
+      "async": true
+     },
+     {
+      "type": "command",
+      "command": "~/hk/instruction-watch.sh baseline",
+      "timeout": 60
+     }
+    ]
+   }
+  ],
+  "UserPromptSubmit": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/session-trash.sh sweep-bg",
+      "timeout": 5,
+      "async": true
+     },
+     {
+      "type": "command",
+      "command": "~/hk/chat-link-format.sh",
+      "timeout": 5
+     },
+     {
+      "type": "command",
+      "command": "~/hk/cite-before-building.sh",
+      "timeout": 5
+     }
+    ]
+   }
+  ],
+  "SubagentStop": [
+   {
+    "hooks": [
+     {
+      "type": "command",
+      "command": "~/hk/worker-relay-hold.sh",
+      "timeout": 10
+     }
+    ]
+   }
+  ]
+ }
+}

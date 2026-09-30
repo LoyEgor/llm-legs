@@ -1,5 +1,7 @@
 # Hand-off: why every tool call took 10 s, and what else slows the machine
 
+Status: open
+
 For whichever chat fixes the hooks, the statusline and the doctor. Written 2026-09-28 by the chat that
 investigated the Opus 5.5 slowdown and changed nothing: no hook, setting or state was
 edited here. Every number below was measured on 2026-09-28 unless it says otherwise, and every

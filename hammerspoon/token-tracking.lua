@@ -6,6 +6,7 @@
 -- (tokenmap/tracking.py); this side only aligns the columns and colours the tone.
 
 local M = {}
+local menuStyle = require("menu-style")
 local HOME = os.getenv("HOME") or ""
 local DEFAULT_PATH = HOME .. "/.local/share/tokenmap/tracking.json"
 local PAGE = HOME .. "/.local/share/tokenmap/tokenmap.html"
@@ -14,11 +15,8 @@ local TASK_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbi
 local STALE_HOURS = 26
 local DELTA_COLUMN = 3
 
-local menuFont = { name = "Menlo", size = 13 }
-local RED = { red = 0.86, green = 0.16, blue = 0.14, alpha = 1 }
-local GREEN = { red = 0.13, green = 0.55, blue = 0.25, alpha = 1 }
-local DIM = { list = "System", name = "tertiaryLabelColor" }
-local TONES = { worse = RED, better = GREEN }
+local RED = menuStyle.RED
+local TONES = { worse = RED, better = menuStyle.GREEN }
 
 local path = DEFAULT_PATH
 local cache, cacheStamp, cacheProblem = nil, nil, nil
@@ -54,13 +52,13 @@ end
 local function dimColor()
     local palette = type(hs.drawing) == "table" and hs.drawing.color
     local asRGB = type(palette) == "table" and palette.asRGB
-    if type(asRGB) ~= "function" then return DIM end
-    local ok, resolved = pcall(asRGB, DIM)
-    return (ok and type(resolved) == "table") and resolved or DIM
+    if type(asRGB) ~= "function" then return menuStyle.DIM end
+    local ok, resolved = pcall(asRGB, menuStyle.DIM)
+    return (ok and type(resolved) == "table") and resolved or menuStyle.DIM
 end
 
 local function style(text, color)
-    return hs.styledtext.new(text, { font = menuFont, color = color })
+    return hs.styledtext.new(text, { font = menuStyle.MONO, color = color })
 end
 
 local function width(text) return utf8.len(text) or #text end
@@ -109,7 +107,7 @@ local function weeksMenu(row)
     end
     local items = {}
     for index, title in ipairs(aligned(rows)) do
-        items[#items + 1] = { title = title, disabled = index == 1 }
+        items[#items + 1] = { title = title, disabled = true }
     end
     return items
 end
@@ -134,7 +132,7 @@ local function byWeekMenu(data)
     local items = {}
     for index, title in ipairs(aligned(rows)) do
         if index > 2 and groups[index] ~= groups[index - 1] then items[#items + 1] = { title = "-" } end
-        items[#items + 1] = { title = title, disabled = index == 1 }
+        items[#items + 1] = { title = title, disabled = true }
     end
     return items
 end
@@ -163,7 +161,7 @@ local function rowMenu(row)
         elseif item.copy then
             items[#items + 1] = { title = title, fn = copyFn(item.copy) }
         else
-            items[#items + 1] = { title = title }
+            items[#items + 1] = { title = title, disabled = true }
         end
     end
     if #(row.weeks or {}) > 0 then
@@ -173,20 +171,12 @@ local function rowMenu(row)
     return items
 end
 
+-- The digits as written, offset ignored: tokenmap stamps local time.
 local function clock(iso)
-    local date, time = tostring(iso or ""):match("^%d%d%d%d%-(%d%d%-%d%d)T(%d%d:%d%d)")
-    if not date then return "?" end
-    local today = os.date("%m-%d")
-    if date == today then return time end
-    local month, day = date:match("(%d%d)%-(%d%d)")
-    return os.date("%b", os.time({ year = 2000, month = tonumber(month), day = 1 })) .. " "
-        .. tonumber(day) .. " " .. time
-end
-
-local function ageText(seconds)
-    if seconds < 3600 then return math.floor(seconds / 60) .. "m ago" end
-    if seconds < 48 * 3600 then return math.floor(seconds / 3600) .. "h ago" end
-    return math.floor(seconds / 86400) .. "d ago"
+    local y, mo, d, h, mi = tostring(iso or ""):match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d)")
+    if not y then return "?" end
+    return menuStyle.clock(os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = tonumber(h),
+        min = tonumber(mi) }))
 end
 
 local function isStale(data, attrs)
@@ -199,22 +189,22 @@ local function statusItems(data, problem, attrs)
     local items = {}
     local running = scanTask ~= nil
     if problem == "missing" then
-        items[#items + 1] = { title = style("no tracking.json yet — run Rescan now", RED), disabled = true }
+        items[#items + 1] = { title = style("no data yet", RED), disabled = true }
     elseif problem == "unreadable" then
-        items[#items + 1] = { title = style("tracking.json is unreadable — run Rescan now", RED), disabled = true }
+        items[#items + 1] = { title = style("data unreadable", RED), disabled = true }
     else
         local age = os.time() - attrs.modification
         local text = string.format("7 days to %s vs the 7 before · scanned %s",
-            clock(data.data_through or data.generated_at), ageText(age))
+            clock(data.data_through or data.generated_at), menuStyle.ago(age))
         local color = isStale(data, attrs) and RED or dimColor()
-        if isStale(data, attrs) then text = "STALE — " .. text end
+        if isStale(data, attrs) then text = "stale: " .. text end
         items[#items + 1] = { title = style(text, color), disabled = true }
     end
     if running then
-        items[#items + 1] = { title = style("rescanning since " .. os.date("%H:%M", scanStarted) .. "…", dimColor()),
+        items[#items + 1] = { title = style("refreshing since " .. menuStyle.clock(scanStarted) .. "…", dimColor()),
                               disabled = true }
     elseif scanError then
-        items[#items + 1] = { title = style("last rescan failed: " .. scanError, RED), disabled = true }
+        items[#items + 1] = { title = style("last refresh failed: " .. scanError, RED), disabled = true }
     end
     return items
 end
@@ -233,7 +223,7 @@ function M.rescan()
     local task = hs.task.new(TOKENMAP, function(code, _, err)
         scanTask = nil
         if code ~= 0 then scanError = lastLine(err) or ("exit " .. tostring(code)) end
-        alertFn(code == 0 and "Token tracking updated" or ("Token tracking rescan failed: " .. scanError))
+        alertFn(code == 0 and "Token tracking updated" or ("Token tracking refresh failed: " .. scanError))
     end, { "scan", "--quiet" })
     if not task then
         scanError = "could not start " .. TOKENMAP
@@ -256,7 +246,7 @@ function M.title(watcherAlarm)
     if isStale(data, attrs) then alarms[#alarms + 1] = "stale" end
     if watcherAlarm then alarms[#alarms + 1] = "watcher down" end
     if #alarms == 0 then return "Token tracking" end
-    return hs.styledtext.new("Token tracking · " .. table.concat(alarms, " · "), { color = RED })
+    return hs.styledtext.new("Token tracking: " .. table.concat(alarms, " · "), { color = RED, font = (hs.styledtext.defaultFonts or {}).menu })
 end
 
 function M.menuItems(changeLogItem)
@@ -291,9 +281,10 @@ function M.menuItems(changeLogItem)
             hs.task.new("/usr/bin/open", nil, { PAGE }):start()
         end }
     end
-    items[#items + 1] = scanTask and { title = "Rescanning…", disabled = true }
-        or { title = "Rescan now", fn = function() M.rescan() end }
-    return items
+    items[#items + 1] = { title = "-" }
+    items[#items + 1] = scanTask and { title = "refreshing…", disabled = true }
+        or { title = "Refresh", fn = function() M.rescan() end }
+    return menuStyle.mono(items, style)
 end
 
 function M.setPath(value)

@@ -130,6 +130,27 @@ GATEWAY_ENV=
 ACCOUNT_ENV=
 CONFIG_DIR_ENV="$HOME_DIR/.claude"
 
+# --- The weekly bucket is the one the session's model spends ------------------------------------
+ACCOUNT_ENV=alona
+jq -nc '{vendors:{claude:{accounts:[{account:"alona",five_hour:{used_pct:10},weekly:{used_pct:97},fable:{used_pct:20}}]}}}' >"$WORK/limits.json"
+TRACKS_DIR="$HOME_DIR/.cache/claude-statusline"
+mkdir -p "$TRACKS_DIR" "$HOME_DIR/.claude"
+printf 'v2 1 alona 1 3600 claude-opus-5-5 u 0 1 alona\n' >"$TRACKS_DIR/cache-ttl-track-opus-sid"
+printf 'v2 1 alona 1 3600 claude-fable-5-1 u 0 1 alona\n' >"$TRACKS_DIR/cache-ttl-track-fable-sid"
+SESSION_ID=opus-sid
+assert denied "$(gate)"
+SESSION_ID=fable-sid
+assert lacks "$(gate)" 'additionalContext'
+# No track yet: a new chat, on the default model.
+printf '{"model":"fable[1m]"}\n' >"$HOME_DIR/.claude/settings.json"
+SESSION_ID=new-sid
+assert lacks "$(gate)" 'additionalContext'
+printf '{"model":"opus"}\n' >"$HOME_DIR/.claude/settings.json"
+assert denied "$(gate)"
+rm -f "$HOME_DIR/.claude/settings.json"
+assert denied "$(gate)"
+SESSION_ID= ACCOUNT_ENV=
+
 # --- Everything else passes through untouched ---------------------------------------------------
 assert lacks "$(jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{}}' |
   env HOME="$HOME_DIR" LLM_LIMITS_FILE="$WORK/limits.json" bash "$GATE")" 'additionalContext'
@@ -149,4 +170,4 @@ assert denied "$(wf "await agent('run light-research --out o q')")"
 printf "agent('y', {agentType: 'claudeb-worker'})\n" >"$WORK/wf.js"
 assert denied "$(wf "" "$WORK/wf.js")"
 
-printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account, naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a relay agent type or worker-run, inline or from its script file, and stays out of every other tool call\n' "$asserts"
+printf 'PASS: %s asserts; workflow-burn-gate warns at 70%% and denies at 95%% for the session account on the 5h window and the weekly bucket its model spends (fable for Fable, weekly otherwise), naming it from the gateway launcher, the environment, the profile config dir or claudeb state, denying only on an account the session itself names while a claudeb-state guess always speaks and warns that it may belong to another chat, warns without a number when nothing can name it, denies a workflow that reaches a relay agent type or worker-run, inline or from its script file, and stays out of every other tool call\n' "$asserts"

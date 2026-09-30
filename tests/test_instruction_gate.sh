@@ -3181,6 +3181,7 @@ env.hs = setmetatable({
     alert = { show = function() error("unexpected real alert attempt") end },
 }, { __index = hs })
 env.require = function(name)
+    if name == "menu-style" then return assert(loadfile([[$ROOT/hammerspoon/menu-style.lua]], "t", env))() end
     assert(name == "instruction-watch", "unexpected module: " .. name)
     local module = assert(loadfile([[$ROOT/hammerspoon/instruction-watch.lua]], "t", env))()
     env.package.loaded[name] = module

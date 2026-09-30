@@ -242,8 +242,8 @@ PIN_NAME_RE='[^[:space:]]*worker-model'
 DELETE_RE='(^|[[:space:]|;&(])([^[:space:]|;&()<>]*/)?(rm|unlink|shred|chmod|chown)([[:space:]]|$)'
 
 deny() {
-  jq -cn --arg r "$1" \
-    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}' \
+  jq -cn --arg hook "${0##*/}" --arg r "$1" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: ("[" + $hook + "] " + $r)}}' \
     2>/dev/null
   exit 0
 }
@@ -319,10 +319,123 @@ case "$MODE" in
     scan=$(printf '%s' "$cmd" | instruction_shell_scan 2>/dev/null) || scan=''
     [ -n "$scan" ] || scan="$cmd"
     ambiguous=''
-    if grep -Eq "$INSTRUCTION_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan"; then
+    runtime=''
+    if grep -Eq "$INSTRUCTION_SHELL_INTERPRETER_RE|$INSTRUCTION_CMD_POSITION_RE" <<<"$scan"; then
       scan="$cmd"
       ambiguous=1
+    elif grep -Eq "$INSTRUCTION_LANG_INTERPRETER_RE" <<<"$scan"; then
+      runtime=1
     fi
+
+    # A language runtime's program names the pin in its STRINGS far more often than it writes it
+    # (23 of 23 sampled denials: `python3 - <<EOF` source edits whose replace() text quotes the
+    # path). So its write sites are judged by their targets: a statement that binds a name to the
+    # pin's path marks that name, and a write whose target carries the path or a marked name is
+    # a pin move.
+    runtime_writes_pin() { # raw command → 0 when a runtime statement in it writes the pin
+      IWP_MODE=$_INSTRUCTION_MODE LC_ALL=C awk '
+        function pinned(t,   w, rest) {
+          if (t ~ /worker-model([^.[:alnum:]_-]|$)/) return 1
+          rest = t
+          while (match(rest, /(^|[^.A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*/)) {
+            w = substr(rest, RSTART, RLENGTH)
+            sub(/^[^A-Za-z_]/, "", w)
+            if (w in bound) return 1
+            rest = substr(rest, RSTART + RLENGTH)
+          }
+          return 0
+        }
+        # The top-level arguments of the call whose "(" ends at position `at`, into A[1..n].
+        function args(s, at,   i, c, depth, q, cur, n) {
+          depth = 0; q = ""; cur = ""; n = 0
+          for (i = at + 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if (q != "") { if (c == q) q = ""; cur = cur c; continue }
+            if (c == "\"" || c == "\047") { q = c; cur = cur c; continue }
+            if (c == "(" || c == "[" || c == "{") depth++
+            if (c == ")" || c == "]" || c == "}") { if (depth == 0) break; depth-- }
+            if (c == "," && depth == 0) { A[++n] = cur; cur = ""; continue }
+            cur = cur c
+          }
+          if (cur ~ /[^[:space:]]/) A[++n] = cur
+          return n
+        }
+        # Positions are taken before pinned() runs: its match() overwrites RSTART and RLENGTH.
+        function writes(s,   rest, off, at, n, k, pre, hasmode, a, verb, hit) {
+          rest = s; off = 0
+          while (match(rest, /(^|[^A-Za-z0-9_])open[[:space:]]*\(/)) {
+            at = off + RSTART; off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            n = args(s, off)
+            hasmode = 0
+            for (k = 1; k <= n; k++) { a = A[k]; sub(/^[[:space:]]*mode[[:space:]]*=[[:space:]]*/, "", a); if (a ~ "^[[:space:]]*(" ENVIRON["IWP_MODE"] ")[[:space:]]*$") hasmode = k }
+            if (!hasmode) continue
+            pre = substr(s, 1, at)
+            if (hasmode == 1 && pre ~ /\.[[:space:]]*$/) { sub(/.*=[[:space:]]*/, "", pre); if (pinned(pre)) return 1 }
+            for (k = 1; k <= n; k++) if (k != hasmode && pinned(A[k])) return 1
+          }
+          rest = s; off = 0
+          while (match(rest, /\.(write_text|write_bytes|touch|unlink|chmod|symlink_to|hardlink_to)[[:space:]]*\(/)) {
+            pre = substr(s, 1, off + RSTART - 1); off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            sub(/.*=[[:space:]]*/, "", pre)
+            if (pinned(pre)) return 1
+          }
+          rest = s; off = 0
+          while (match(rest, /(shutil\.[a-z_0-9]+|os\.(replace|rename|renames|remove|unlink|chmod|link|symlink|truncate)|fs[A-Za-z]*\.(cp|rename|unlink|rm|symlink|link|truncate|chmod)(Sync)?|(writeFile|appendFile|copyFile)(Sync)?|File\.(write|delete|rename|unlink)|(^|[^A-Za-z0-9_.])(unlink|rename))[[:space:]]*\(/)) {
+            off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            n = args(s, off)
+            for (k = 1; k <= n; k++) if (pinned(A[k])) return 1
+          }
+          # A process call is a write only when its command writes: `check_output(["cat", pin])` reads.
+          rest = s; off = 0
+          while (match(rest, /(subprocess\.[A-Za-z_]+|os\.(system|popen|exec[a-z]*|spawn[a-z]*)|(^|[^A-Za-z0-9_.])(system|popen|exec[a-z]*|spawn[A-Za-z]*|Popen|call|check_call|check_output|run))[[:space:]]*\(/)) {
+            off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            n = args(s, off); verb = 0; hit = 0
+            for (k = 1; k <= n; k++) {
+              if (A[k] ~ />|(^|[^A-Za-z0-9_-])(tee|sed|perl|mv|cp|rm|ln|install|truncate|chmod|touch|dd|rsync|ed|ex|vi|vim|python[0-9.]*|node|ruby|bash|sh|zsh)([^A-Za-z0-9_-]|$)/) verb = 1
+            }
+            for (k = 1; k <= n; k++) if (pinned(A[k])) hit = 1
+            if (verb && hit) return 1
+          }
+          rest = s; off = 0
+          while (match(rest, /(fileinput\.(input|FileInput)|os\.open)[[:space:]]*\(/)) {
+            off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            n = args(s, off); verb = 0; hit = 0
+            for (k = 1; k <= n; k++) if (A[k] ~ /inplace[[:space:]]*=[[:space:]]*(True|1)|O_(WRONLY|RDWR|APPEND|CREAT|TRUNC)/) verb = 1
+            for (k = 1; k <= n; k++) if (pinned(A[k])) hit = 1
+            if (verb && hit) return 1
+          }
+          rest = s; off = 0
+          while (match(rest, /\.(replace|rename)[[:space:]]*\(/)) {
+            off += RSTART + RLENGTH - 1; rest = substr(s, off + 1)
+            n = args(s, off)
+            if (n == 1 && pinned(A[1])) return 1
+          }
+          rest = s
+          while (match(rest, /(^|[^0-9&<>=-])>>?[[:space:]]*[^[:space:]&>=)(,;]+/)) {
+            a = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+            sub(/^[^>]*>>?[[:space:]]*/, "", a)
+            if (pinned(a)) return 1
+          }
+          return 0
+        }
+        { n = split($0, parts, ";"); for (i = 1; i <= n; i++) st[++ns] = parts[i] }
+        END {
+          for (round = 0; round < 4; round++)
+            for (i = 1; i <= ns; i++) {
+              s = st[i]
+              if (match(s, /(^|[^A-Za-z0-9_.$=!<>])[$@%]?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*:?=[^=]/)) {
+                lhs = substr(s, RSTART, RLENGTH); rhs = substr(s, RSTART + RLENGTH - 1)
+                sub(/[[:space:]]*:?=.$/, "", lhs); sub(/^[^A-Za-z_]*/, "", lhs)
+                if (pinned(rhs)) bound[lhs] = 1
+              }
+              if (match(s, /(^|[^A-Za-z0-9_])(for|as)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/) && pinned(s)) {
+                lhs = substr(s, RSTART, RLENGTH); sub(/^.*(for|as)[[:space:]]+/, "", lhs); bound[lhs] = 1
+              }
+            }
+          for (i = 1; i <= ns; i++) if (writes(st[i])) exit 0
+          exit 1
+        }' <<<"$1"
+    }
 
     # A write whose destination the shared parse can NAME, judged against the pin alone: `cat pin >
     # /tmp/out` and `worker-pick > /tmp/pick.txt` leave their bytes elsewhere, and refusing them
@@ -499,9 +612,11 @@ case "$MODE" in
     }
 
     if targeted "$scan" || deletes "$scan"; then :
+    elif [ -n "$runtime" ] && runtime_writes_pin "$cmd"; then :
     elif { [ -n "$ambiguous" ] || travels "$scan"; } && any_write "$scan"; then :
     else exit 0
     fi
+    [ -z "$runtime" ] || scan="$cmd"
     # The scan, not the raw command: a `*_model=` pair the command CARRIES — quoted in a brief, or
     # standing on the search side of a substitution — is not one it stores.
     pending=$(drop_replaced "$scan")
@@ -514,7 +629,7 @@ $(cat "$(pin_file)" 2>/dev/null)")
     [ -z "$offending" ] || deny_light_row "$offending"
     # The raw command, and only while nothing in it is a runtime: matched around one, the shape is
     # a guess, and a guess is exactly what may not open this door.
-    if [ -z "$ambiguous" ] && pin_untouched_write "$cmd"; then exit 0; fi
+    if [ -z "$ambiguous$runtime" ] && pin_untouched_write "$cmd"; then exit 0; fi
     fresh "$(jq -r '.tool_use_id // empty' <<<"$input" 2>/dev/null)" && exit 0
     deny "$DENY_REASON"
     ;;

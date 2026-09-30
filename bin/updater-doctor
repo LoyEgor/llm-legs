@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""Updater doctor: judges the vendor update pass (bin/vendor-cli-update) and the release events of
+bin/vendor-fingerprint from their own state files, and writes ~/.cache/updater-doctor/latest.json in
+the shape of docs/doctors-contract.md. No network, no LLM."""
+
+import argparse
+import datetime
+import glob
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+HOME = os.path.expanduser("~")
+
+LIMITS = {
+    "event_waiting_d": 0,
+    "event_stuck_d": 2,
+    "cli_behind_h": 36,
+    "pass_stale_h": 36,
+}
+PASS_OK = ("current", "updated", "busy", "not-installed")
+VENDORS = ("codex", "grok", "gemini", "claude")
+CATALOG_VENDORS = ("codex", "grok", "gemini")
+COUNTED = ("new", "open", "regressed")
+DISMISSED = ("not-a-bug", "weather")
+MODELS_MAX = 12
+EVENTS_MAX = 5
+EVIDENCE_MAX = 3
+EXCERPT_MAX = 300
+NEW_MODELS_SHOWN = 3
+FACET_WORDS = {"catalog": "model catalog", "catalog_order": "model catalog", "catalog_text": "model catalog",
+               "ids": "model ids", "divergence": "accounts differ", "foreign_clients": "other installs",
+               "installs": "other installs", "probe_failures": "probes"}
+LOG_TAIL_BYTES = 1 << 20
+
+LOG_LINE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) (\S+) (\S+)(?: (.*))?$")
+
+
+def state_dir():
+    return os.environ.get("VENDOR_CLI_UPDATE_STATE_DIR") or os.path.join(HOME, ".cache", "vendor-cli-update")
+
+
+def out_dir():
+    return os.environ.get("UPDATER_DOCTOR_DIR") or os.path.join(HOME, ".cache", "updater-doctor")
+
+
+def ledger_path():
+    return os.environ.get("UPDATER_DOCTOR_LEDGER") or os.path.join(ROOT_DIR, "share", "updater-ledger.json")
+
+
+def codex_homes():
+    profiles = os.environ.get("CODEXB_PROFILES_DIR") or os.path.join(HOME, ".codex-profiles")
+    return [os.path.join(HOME, ".codex")] + sorted(glob.glob(os.path.join(profiles, "*")))
+
+
+def grokb_models_path():
+    return os.path.join(os.environ.get("GROKB_CACHE_DIR") or os.path.join(HOME, ".cache", "grokb"), "models.json")
+
+
+def read_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return default
+
+
+def iso_epoch(text):
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def iso_time(epoch):
+    if epoch is None:
+        return None
+    return datetime.datetime.fromtimestamp(epoch).astimezone().isoformat(timespec="seconds")
+
+
+def version_key(text):
+    return tuple(int(part) for part in re.findall(r"\d+", text or ""))
+
+
+def behind(installed, latest):
+    return bool(installed and latest) and version_key(installed) < version_key(latest)
+
+
+def clip(text, limit=EXCERPT_MAX):
+    text = text or ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def judge_digest():
+    digest = hashlib.sha256()
+    with open(os.path.realpath(__file__), "rb") as handle:
+        digest.update(handle.read())
+    try:
+        with open(ledger_path(), "rb") as handle:
+            digest.update(handle.read())
+    except OSError:
+        digest.update(b"no ledger")
+    digest.update(json.dumps({"limits": LIMITS, "pass_ok": PASS_OK}, sort_keys=True).encode())
+    return digest.hexdigest()
+
+
+def read_log():
+    path = os.path.join(state_dir(), "update.log")
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - LOG_TAIL_BYTES))
+            text = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return []
+    lines = []
+    for raw in text.splitlines():
+        match = LOG_LINE.match(raw)
+        if match:
+            lines.append({"at": iso_epoch(match.group(1)), "ts": match.group(1), "who": match.group(2),
+                          "word": match.group(3), "rest": match.group(4) or "", "raw": raw})
+    return lines
+
+
+def log_evidence(lines):
+    return [{"at": iso_time(line["at"]), "ref": line["ts"], "account": None, "excerpt": clip(line["raw"])}
+            for line in lines[-EVIDENCE_MAX:][::-1]]
+
+
+def event_evidence(event):
+    excerpt = event.get("reason") or ""
+    try:
+        with open(event.get("diff") or "", encoding="utf-8", errors="replace") as handle:
+            excerpt = (excerpt + " · " + handle.read(EXCERPT_MAX)).strip(" ·")
+    except OSError:
+        pass
+    return {"at": iso_time(iso_epoch(event.get("created_at"))), "ref": event.get("id"), "account": None,
+            "excerpt": clip(excerpt)}
+
+
+def model_keys(facet):
+    if isinstance(facet, dict):
+        return list(facet)
+    if isinstance(facet, list):
+        return [str(item).split("\t", 1)[0] for item in facet]
+    return []
+
+
+def event_new_models(event, fingerprint):
+    if not event.get("diff"):
+        return []
+    base = read_json(os.path.splitext(event["diff"])[0] + ".base")
+    if not isinstance(base, dict) or not isinstance(fingerprint, dict):
+        return []
+    before, after = base.get("facets") or {}, fingerprint.get("facets") or {}
+    for facet in ("catalog", "ids"):
+        old = set(model_keys(before.get(facet)))
+        added = [key for key in model_keys(after.get(facet)) if key not in old]
+        if added:
+            return added
+    return []
+
+
+def facet_words(name):
+    return "help text" if name.startswith("help") else FACET_WORDS.get(name, name)
+
+
+def event_changes(event, fingerprint=None):
+    added = event_new_models(event, fingerprint)
+    if added:
+        more = len(added) - NEW_MODELS_SHOWN
+        return "new " + ", ".join(added[:NEW_MODELS_SHOWN]) + (" +%d more" % more if more > 0 else "")
+    names = event.get("substantive") or event.get("changed") or []
+    if not names:
+        return event.get("reason") or "no change listed"
+    return "changed " + ", ".join(dict.fromkeys(facet_words(n) for n in names))
+
+
+def codex_catalogs():
+    found = []
+    for home in codex_homes():
+        cache = read_json(os.path.join(home, "models_cache.json"))
+        if isinstance(cache, dict):
+            found.append((home, cache))
+    return found
+
+
+def catalog_models(vendor, installed, fingerprint, catalogs):
+    if vendor == "codex":
+        order = {}
+        for _home, cache in catalogs:
+            if str(cache.get("client_version") or "") != (installed or ""):
+                continue
+            for model in cache.get("models") or []:
+                slug = model.get("slug") if isinstance(model, dict) else None
+                if not slug or model.get("visibility") == "hide":
+                    continue
+                rank = model.get("priority") if isinstance(model.get("priority"), (int, float)) else 1e9
+                order[slug] = min(order.get(slug, 1e9), rank)
+        return sorted(order, key=lambda slug: (order[slug], slug))[:MODELS_MAX]
+    if vendor == "grok":
+        cache = read_json(grokb_models_path(), {})
+        models = cache.get("models") if isinstance(cache, dict) else None
+        return [m.get("slug") for m in models or [] if isinstance(m, dict) and m.get("slug")][:MODELS_MAX]
+    if vendor == "gemini":
+        catalog = ((fingerprint or {}).get("facets") or {}).get("catalog")
+        if isinstance(catalog, list):
+            return [line.split("\t", 1)[0] for line in catalog if isinstance(line, str) and line][:MODELS_MAX]
+    return []
+
+
+class Collector:
+    def __init__(self, now):
+        self.now = now
+        self.problems = []
+        self.blind = []
+        self.ledger = read_json(ledger_path(), {}) or {}
+        self.rows = self.ledger.get("rows") if isinstance(self.ledger.get("rows"), list) else []
+
+    def add(self, rule, key, state, fact, value, limit, unit, window_h, exposure, count, first, last, evidence):
+        self.problems.append({
+            "id": "%s:%s" % (rule, key), "rule": rule, "state": state, "fact": fact,
+            "value": value, "limit": limit, "unit": unit, "window_h": window_h,
+            "exposure": exposure, "count": count,
+            "first_seen": iso_time(first), "last_seen": iso_time(last),
+            "evidence": evidence[:EVIDENCE_MAX], "ledger": None, "_last": last,
+        })
+
+    def apply_ledger(self):
+        kept = []
+        for row in self.rows:
+            match = row.get("match") if isinstance(row, dict) else None
+            if not (isinstance(match, dict) and isinstance(match.get("rule"), str) and match["rule"]
+                    and isinstance(match.get("key"), str) and match["key"]):
+                rid = row.get("id") if isinstance(row, dict) else None
+                kept.append({"id": "ledger:%s" % rid, "rule": "ledger", "state": "new",
+                             "fact": "ledger row %s names no exact rule and key, so it judges nothing" % rid,
+                             "value": 1, "limit": 0, "unit": "rows", "window_h": None, "exposure": len(self.rows),
+                             "count": 1, "first_seen": None, "last_seen": None, "evidence": [], "ledger": rid})
+        for problem in self.problems:
+            last = problem.pop("_last")
+            row = next((r for r in self.rows if isinstance(r, dict) and isinstance(r.get("match"), dict)
+                        and "%s:%s" % (r["match"].get("rule"), r["match"].get("key")) == problem["id"]), None)
+            if row:
+                status = row.get("status")
+                if status in DISMISSED:
+                    continue
+                problem["ledger"] = problem["id"] = row.get("id")
+                if status == "fixed-pending":
+                    problem["state"] = "fixed-pending"
+                elif status == "fixed":
+                    fixed_at = max([iso_epoch(f.get("at")) or 0 for f in row.get("fixes") or [] if isinstance(f, dict)] or [0])
+                    problem["state"] = "regressed" if (last or 0) > fixed_at else "watch"
+                elif problem["state"] != "watch":
+                    problem["state"] = "open"
+            kept.append(problem)
+        self.problems = kept
+
+
+def collect(now):
+    col = Collector(now)
+    base = state_dir()
+    state = read_json(os.path.join(base, "state.json"))
+    if not isinstance(state, dict) or not state:
+        col.blind.append("state.json")
+        state = {}
+    fingerprints = {v: read_json(os.path.join(base, "fingerprints", v + ".json")) for v in VENDORS}
+    events = []
+    for path in glob.glob(os.path.join(base, "events", "*.json")):
+        event = read_json(path)
+        if isinstance(event, dict) and event.get("id"):
+            events.append(event)
+    events.sort(key=lambda e: (e.get("created_at") or "", e.get("id")))
+    log = read_log()
+    checked = [v for v in VENDORS if v in state or isinstance(fingerprints.get(v), dict)]
+    exposure = len(checked)
+    catalogs = codex_catalogs()
+
+    for event in events:
+        if event.get("status") != "open":
+            continue
+        created = iso_epoch(event.get("created_at"))
+        launched = iso_epoch(event.get("launched_at"))
+        vendor = event.get("vendor") or "?"
+        head = "%s %s → %s: %s" % (vendor, event.get("from"), event.get("to"), event_changes(event, fingerprints.get(vendor)))
+        fp_checked = iso_epoch((fingerprints.get(vendor) or {}).get("checked_at"))
+        if launched is None:
+            days = max(0.0, (now - (created or now)) / 86400)
+            if days > LIMITS["event_waiting_d"]:
+                col.add("event-waiting", event["id"], "new", "%s · waiting %dd for integration" % (head, days), round(days, 1),
+                        LIMITS["event_waiting_d"], "d", None, exposure, 1, created, max(created or 0, fp_checked or 0) or None,
+                        [event_evidence(event)])
+        else:
+            days = (now - launched) / 86400
+            if days > LIMITS["event_stuck_d"]:
+                col.add("event-stuck", event["id"], "new", "%s · integration chat open %dd, not closed" % (head, days),
+                        round(days, 1), LIMITS["event_stuck_d"], "d", None, exposure, 1, launched, launched,
+                        [event_evidence(event)])
+
+    for vendor in VENDORS:
+        fingerprint = fingerprints.get(vendor)
+        if not isinstance(fingerprint, dict):
+            continue
+        facets = fingerprint.get("facets") or {}
+        at = iso_epoch(fingerprint.get("checked_at"))
+        vendor_events = [e for e in events if e.get("vendor") == vendor]
+        fp_log = [line for line in log if line["who"] == "fingerprint" and line["word"] == vendor]
+        for facet in facets.get("probe_failures") or []:
+            noted = [e for e in vendor_events if "probe_failures" in (e.get("changed") or [])]
+            evidence = [event_evidence(e) for e in noted[::-1]] or log_evidence(fp_log)
+            first = iso_epoch(noted[-1].get("created_at")) if noted else at
+            col.add("probe-broken", "%s/%s" % (vendor, facet), "new",
+                    "%s: our %s probe failed locally on the last check; the facet keeps its old value" % (vendor, facet),
+                    1, 0, "facets", None, exposure, 1, first, at, evidence)
+        remote = list(fingerprint.get("remote_failures") or [])
+        if vendor in CATALOG_VENDORS and "catalog" not in facets and "catalog" not in remote:
+            remote.append("catalog")
+        if remote:
+            col.add("catalog-missing", vendor, "watch",
+                    "%s: catalog not fetched on the last check (%s)" % (vendor, ", ".join(sorted(remote))),
+                    len(remote), 0, "facets", None, exposure, len(remote), at, at, log_evidence(fp_log))
+        foreign = {}
+        for name in ("installs", "foreign_clients"):
+            if isinstance(facets.get(name), dict):
+                foreign.update(facets[name])
+        if foreign:
+            listed = ", ".join("%s %s" % (path, ver) for path, ver in sorted(foreign.items()))
+            col.add("foreign-client", vendor, "watch",
+                    clip("%s: %d other install%s at another version: %s" % (vendor, len(foreign), "" if len(foreign) == 1 else "s", listed), 200),
+                    len(foreign), 0, "installs", None, exposure, len(foreign), at, at,
+                    [{"at": iso_time(at), "ref": "fingerprint:%s" % vendor, "account": None, "excerpt": clip(listed)}])
+
+    newest = max([iso_epoch(v.get("checked_at")) or 0 for v in state.values() if isinstance(v, dict)] or [0]) or None
+    stale_h = (now - newest) / 3600 if newest else None
+    if stale_h is None or stale_h > LIMITS["pass_stale_h"]:
+        col.blind.append("pass")
+        fact = ("no update pass on record: state.json is missing or empty" if stale_h is None
+                else "the last update pass ran %dh ago: the LaunchAgent did not run" % stale_h)
+        col.add("pass-stale", "state", "new", fact, None if stale_h is None else round(stale_h, 1),
+                LIMITS["pass_stale_h"], "h", None, exposure, None, newest, newest, log_evidence(log))
+
+    for vendor, entry in sorted(state.items()):
+        if not isinstance(entry, dict):
+            continue
+        at = iso_epoch(entry.get("checked_at"))
+        lines = [line for line in log if line["who"] == vendor]
+        result = entry.get("result")
+        if result not in PASS_OK:
+            failed = [line for line in lines if line["word"] == result]
+            col.add("pass-failed", vendor, "new", "%s: the last update pass ended %s (installed %s, latest %s)" % (
+                vendor, result, entry.get("installed") or "-", entry.get("latest") or "-"),
+                1, 0, "passes", None, exposure, len(failed) or 1,
+                failed[0]["at"] if failed else at, at, log_evidence(failed))
+        if behind(entry.get("installed"), entry.get("latest")):
+            since = None
+            streak = []
+            for line in lines:
+                if line["word"] == "updated":
+                    since, streak = None, []
+                elif line["word"] in ("busy", "install-failed"):
+                    if streak and line["at"] - streak[-1]["at"] > LIMITS["cli_behind_h"] * 3600:
+                        since, streak = None, []
+                    since = since or line["at"]
+                    streak.append(line)
+            hours = (now - since) / 3600 if since else 0
+            if hours > LIMITS["cli_behind_h"]:
+                col.add("cli-behind", vendor, "new", "%s: installed %s is behind %s for %dh" % (
+                    vendor, entry.get("installed"), entry.get("latest"), hours),
+                    round(hours, 1), LIMITS["cli_behind_h"], "h", None, exposure, len(streak), since, at,
+                    log_evidence(streak))
+
+    installed_codex = (state.get("codex") or {}).get("installed") or (fingerprints.get("codex") or {}).get("version")
+    too_old = {}
+    for home, cache in catalogs:
+        for model in cache.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            need = model.get("minimal_client_version")
+            if isinstance(need, str) and installed_codex and version_key(need) > version_key(installed_codex):
+                too_old.setdefault(model.get("slug") or "?", (need, []))[1].append((home, cache))
+    for slug, (need, homes) in sorted(too_old.items()):
+        fetched = [iso_epoch(c.get("fetched_at")) for _h, c in homes]
+        fetched = [f for f in fetched if f]
+        col.add("client-too-old", "codex/%s" % slug, "new",
+                "codex: %s needs client %s, installed %s" % (slug, need, installed_codex),
+                need, installed_codex, "version", None, len(catalogs), len(homes),
+                min(fetched) if fetched else None, max(fetched) if fetched else None,
+                [{"at": iso_time(iso_epoch(c.get("fetched_at"))), "ref": os.path.join(h, "models_cache.json"),
+                  "account": os.path.basename(h), "excerpt": "%s minimal_client_version %s" % (slug, need)}
+                 for h, c in homes[:EVIDENCE_MAX]])
+
+    col.apply_ledger()
+
+    vendors = []
+    for vendor in VENDORS:
+        entry = state.get(vendor) if isinstance(state.get(vendor), dict) else {}
+        fingerprint = fingerprints.get(vendor) if isinstance(fingerprints.get(vendor), dict) else {}
+        installed = entry.get("installed") or fingerprint.get("version")
+        mine = [e for e in events if e.get("vendor") == vendor][::-1][:EVENTS_MAX]
+        vendors.append({
+            "vendor": vendor, "installed": installed, "latest": entry.get("latest"),
+            "checked_at": entry.get("checked_at") or fingerprint.get("checked_at"), "result": entry.get("result"),
+            "models": catalog_models(vendor, installed, fingerprint, catalogs),
+            "events": [{k: e.get(k) for k in ("id", "status", "from", "to", "created_at", "launched_at", "closed_at")}
+                       | {"changed": e.get("substantive") or e.get("changed") or []} for e in mine],
+        })
+    return col, vendors
+
+
+def document(now, started):
+    col, vendors = collect(now)
+    count = sum(1 for p in col.problems if p["state"] in COUNTED)
+    status = "blind" if col.blind else ("problems" if count else "ok")
+    return {
+        "contract": 1, "doctor": "updater", "as_of": iso_time(now), "as_of_s": int(now),
+        "judge": judge_digest(), "status": status, "problem_count": count, "problems": col.problems,
+        "blind_spots": col.ledger.get("blind_spots") or [], "blind": col.blind, "vendors": vendors,
+        "self": {"collector_s": round(time.time() - started, 3), "error": None},
+    }
+
+
+def write(doc):
+    folder = out_dir()
+    os.makedirs(folder, exist_ok=True)
+    target = os.path.join(folder, "latest.json")
+    temporary = "%s.%d.tmp" % (target, os.getpid())
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(doc, handle, ensure_ascii=False, indent=1)
+        handle.write("\n")
+    os.replace(temporary, target)
+
+
+def view(doc):
+    lines = ["Updater doctor: %s · %d problems" % (doc["status"], doc["problem_count"])]
+    for problem in doc["problems"]:
+        lines.append("  %-10s %s" % (problem["state"], problem["fact"]))
+    for vendor in doc.get("vendors") or []:
+        lines.append("  %-7s %s (latest %s) · %d models" % (
+            vendor["vendor"], vendor["installed"] or "-", vendor["latest"] or "-", len(vendor["models"])))
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="updater-doctor", description=__doc__.split("\n")[0])
+    parser.add_argument("--json", action="store_true", help="print the document and write nothing")
+    parser.add_argument("--quiet", action="store_true", help="print nothing")
+    args = parser.parse_args(argv)
+    started = time.time()
+    try:
+        doc = document(time.time(), started)
+    except Exception as error:  # the menu shows the error, never the previous document's colour
+        now = time.time()
+        doc = {"contract": 1, "doctor": "updater", "as_of": iso_time(now), "as_of_s": int(now),
+               "judge": None, "status": "error", "problem_count": 0, "problems": [], "blind_spots": [],
+               "blind": [], "vendors": [],
+               "self": {"collector_s": round(time.time() - started, 3),
+                        "error": clip("%s: %s" % (type(error).__name__, error), 200)}}
+    if args.json:
+        print(json.dumps(doc, ensure_ascii=False, indent=1))
+        return 0 if doc["status"] != "error" else 1
+    write(doc)
+    if not args.quiet:
+        print(view(doc) if doc["status"] != "error" else "Updater doctor: error · %s" % doc["self"]["error"])
+    return 0 if doc["status"] != "error" else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

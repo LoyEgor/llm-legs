@@ -2,7 +2,7 @@
 set -u
 
 usage() {
-  echo "Usage: $(basename "$0") [terminal|all] [extra-minutes] [-m|--message text]" >&2
+  echo "Usage: $(basename "$0") [terminal|all] [extra-minutes] [--to <chat>] [--now] [-m|--message text]" >&2
 }
 
 # A signed integer and nothing else: a pattern admitting any mix of digits and hyphens took
@@ -16,6 +16,8 @@ surface=""
 extra=""
 custom_message=""
 arm_all=0
+to_chat=""
+fire_now=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -26,6 +28,15 @@ while [ $# -gt 0 ]; do
       ;;
     --message=*)
       custom_message=${1#--message=}
+      shift
+      ;;
+    --to)
+      if [ $# -lt 2 ] || [ -z "$2" ]; then usage; exit 2; fi
+      to_chat=$2
+      shift 2
+      ;;
+    --now)
+      fire_now=1
       shift
       ;;
     terminal|all)
@@ -85,6 +96,7 @@ if [ -n "$custom_message" ] && [ -x "$CYRILLIC_SHARE" ]; then
 fi
 
 [ "$surface" = all ] && arm_all=1
+if [ "$arm_all" -eq 1 ] && [ -n "$to_chat" ]; then usage; exit 2; fi
 surface=terminal
 extra=${extra:-10}
 
@@ -156,94 +168,138 @@ if [ -z "$target_tty" ] || ! grep -qxF "$target_tty" <<<"$chat_ttys"; then
   exit 1
 fi
 
-cache="$HOME/.llm-limits.json"
-
-# WHICH quota this chat is waiting on, from the one resolver every surface asks (share/chat-account.sh):
-# a `claudegpt` chat spends `vendors.codex` under CLAUDEGPT_ACCOUNT, and timing it off a Claude
-# account nobody spent arms the resume for a window that was never the one that walled. A timer is
-# the wrong thing to guess at all — it types into a live chat — so an unreadable resolver refuses.
-if [ -z "$legs_root" ] || [ ! -r "$legs_root/share/chat-account.sh" ]; then
-  echo "claude-resume-timer: cannot read share/chat-account.sh; refusing to guess this chat's account" >&2
-  exit 1
-fi
-. "$legs_root/share/chat-account.sh"
-chat_account_resolve
-vendor=$CHAT_ACCOUNT_VENDOR
-account=${CHAT_ACCOUNT_NAME:-notcom}
-
-# The staleness threshold OF the five_hour bucket (not a five-hour one), from the one place it
-# is written down (docs/shared-invariants.md row a) — never a literal of this script's own.
-stale_after=""
-if [ -n "$legs_root" ] && [ -r "$legs_root/share/limits-view.sh" ]; then
-  . "$legs_root/share/limits-view.sh"
-  stale_after=${LIMITS_STALE_FIVE_HOUR:-}
-fi
-
-# The `as_of` of a row the COLLECTOR itself calls fresh, and nothing for one it does not. Staleness
-# is limits-view.sh's `limits_bucket_stale` — expired auth and a cached-origin reading as much as
-# age — and a surface that re-derives any part of it from `as_of` alone trusts a row the rest of
-# the system prints with a `~`. The age below is asked on top because that flag is frozen at the
-# instant the collector wrote it and cannot go stale on its own. `expired` is a separate verdict
-# from `stale` (a just-collected row whose window has already rolled is expired but not stale), and
-# it is the one reading a refresh can actually replace: without it the arming below falls back to a
-# blind 15 minutes off a row the collector already zeroed.
-fresh_five_hour_as_of() {
-  [ -f "$cache" ] || return 1
-  jq -r --arg acct "$account" --arg vendor "$vendor" '
-    (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour)
-    | select(type == "object" and .stale == false and (.expired // false) == false)
-    | .as_of | if type == "number" then . else empty end
-  ' "$cache" 2>/dev/null | head -n1
+# Another chat, by the name peers address it by or its session id. Every profile's registry is read,
+# since a chat on another account is as much his; the glob skips `.claudeb`, which is no profile.
+# The name is share/chat_names.py's, never the registry's `.name`: that one carries the derived
+# placeholders no chat is shown under, and lags a title set in the transcript.
+chat_tty() {
+  local file pid session tty found="" records names
+  records=$(for file in "$HOME"/.claude/sessions/*.json "$HOME"/.claude-profiles/*/sessions/*.json; do
+    [ -f "$file" ] && jq -r '[(.sessionId // "" | tostring), (.pid // "" | tostring)] | @tsv' "$file" 2>/dev/null
+  done)
+  names=$(cut -f1 <<<"$records" | grep -v '^$' | sort -u |
+    python3 -c 'import sys
+sys.path.insert(0, sys.argv[1])
+from chat_names import chat_name, fold_session
+for session in sys.stdin.read().split():
+    print(session + "\t" + ((fold_session(session) == session and chat_name(session)) or ""))' \
+      "${legs_root:-/nonexistent}/share" 2>/dev/null)
+  while IFS=$'\t' read -r session pid; do
+    [ -n "$session" ] || continue
+    [ "$session" = "$1" ] || grep -qxF "$session"$'\t'"$1" <<<"$names" || continue
+    case $pid in ''|*[!0-9]*) continue ;; esac
+    tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    case $tty in ''|'?'|'??') continue ;; esac
+    found="$found/dev/${tty#/dev/}"$'\n'
+  done <<<"$records"
+  found=$(printf '%s' "$found" | sort -u)
+  case $found in
+    '') echo "claude-resume-timer: no live chat is named '$1'" >&2; return 1 ;;
+    *$'\n'*) echo "claude-resume-timer: several live chats answer to '$1': $(tr '\n' ' ' <<<"$found")" >&2; return 1 ;;
+  esac
+  grep -qxF "$found" <<<"$chat_ttys" || {
+    echo "claude-resume-timer: '$1' sits on $found, where no Claude chat runs" >&2
+    return 1
+  }
+  printf '%s\n' "$found"
 }
-
-# A refresh is real OAuth/usage traffic, and one spent on a reading minutes old buys nothing while
-# self-inflicting 429s under capacity weather (Egor, 2026-07-17). Asked of the store first: only a
-# row that is missing, unreadable, marked stale or expired, or past its own threshold is worth it.
-if command -v llm-limits >/dev/null 2>&1; then
-  as_of=$(fresh_five_hour_as_of)
-  if [ -z "$as_of" ] || [ -z "$stale_after" ] ||
-     [ "$(( $(date +%s) - ${as_of%%.*} ))" -ge "$stale_after" ]; then
-    run_bounded 20 llm-limits --refresh
-  fi
-fi
-
-# Same ISO8601-with-offset parser llm-limits.sh uses, so resets_at math stays in sync.
-iso_def='def iso2epoch:
-  if type != "string" then null
-  else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
-    if $c == null then null
-    else ($c.d + "Z" | fromdateiso8601)
-      - (if ($c.tz | ascii_upcase) == "Z" then 0
-         else ($c.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
-               | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
-         end)
-    end
-  end;'
-
-resets_epoch=""
-if [ -f "$cache" ]; then
-  resets_epoch=$(jq -r --arg acct "$account" --arg vendor "$vendor" "$iso_def"'
-    (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour.resets_at) as $resets
-    | if $resets == null then "" else (($resets | iso2epoch) // "") end
-  ' "$cache" 2>/dev/null)
+if [ -n "$to_chat" ]; then
+  target_tty=$(chat_tty "$to_chat") || exit 1
 fi
 
 now=$(date +%s)
+minutes=0
 fallback_reason=""
+if [ "$fire_now" -eq 0 ]; then
+  cache="$HOME/.llm-limits.json"
 
-if [ -z "$resets_epoch" ]; then
-  fallback_reason="no five_hour.resets_at for account '$vendor/$account'"
-elif ! is_int "$resets_epoch"; then
-  fallback_reason="unparseable resets_at for account '$vendor/$account'"
-elif [ "$resets_epoch" -le "$now" ]; then
-  fallback_reason="5h window for account '$vendor/$account' already reset"
-fi
+  # WHICH quota this chat is waiting on, from the one resolver every surface asks (share/chat-account.sh):
+  # a `claudegpt` chat spends `vendors.codex` under CLAUDEGPT_ACCOUNT, and timing it off a Claude
+  # account nobody spent arms the resume for a window that was never the one that walled. A timer is
+  # the wrong thing to guess at all — it types into a live chat — so an unreadable resolver refuses.
+  if [ -z "$legs_root" ] || [ ! -r "$legs_root/share/chat-account.sh" ]; then
+    echo "claude-resume-timer: cannot read share/chat-account.sh; refusing to guess this chat's account" >&2
+    exit 1
+  fi
+  . "$legs_root/share/chat-account.sh"
+  chat_account_resolve
+  vendor=$CHAT_ACCOUNT_VENDOR
+  account=${CHAT_ACCOUNT_NAME:-notcom}
 
-if [ -n "$fallback_reason" ]; then
-  minutes=15
-else
-  minutes=$(( (resets_epoch - now) / 60 + extra ))
-  [ "$minutes" -ge 1 ] || minutes=1
+  # The staleness threshold OF the five_hour bucket (not a five-hour one), from the one place it
+  # is written down (docs/shared-invariants.md row a) — never a literal of this script's own.
+  stale_after=""
+  if [ -n "$legs_root" ] && [ -r "$legs_root/share/limits-view.sh" ]; then
+    . "$legs_root/share/limits-view.sh"
+    stale_after=${LIMITS_STALE_FIVE_HOUR:-}
+  fi
+
+  # The `as_of` of a row the COLLECTOR itself calls fresh, and nothing for one it does not. Staleness
+  # is limits-view.sh's `limits_bucket_stale` — expired auth and a cached-origin reading as much as
+  # age — and a surface that re-derives any part of it from `as_of` alone trusts a row the rest of
+  # the system prints with a `~`. The age below is asked on top because that flag is frozen at the
+  # instant the collector wrote it and cannot go stale on its own. `expired` is a separate verdict
+  # from `stale` (a just-collected row whose window has already rolled is expired but not stale), and
+  # it is the one reading a refresh can actually replace: without it the arming below falls back to a
+  # blind 15 minutes off a row the collector already zeroed.
+  fresh_five_hour_as_of() {
+    [ -f "$cache" ] || return 1
+    jq -r --arg acct "$account" --arg vendor "$vendor" '
+      (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour)
+      | select(type == "object" and .stale == false and (.expired // false) == false)
+      | .as_of | if type == "number" then . else empty end
+    ' "$cache" 2>/dev/null | head -n1
+  }
+
+  # A refresh is real OAuth/usage traffic, and one spent on a reading minutes old buys nothing while
+  # self-inflicting 429s under capacity weather (Egor, 2026-07-17). Asked of the store first: only a
+  # row that is missing, unreadable, marked stale or expired, or past its own threshold is worth it.
+  if command -v llm-limits >/dev/null 2>&1; then
+    as_of=$(fresh_five_hour_as_of)
+    if [ -z "$as_of" ] || [ -z "$stale_after" ] ||
+       [ "$(( $(date +%s) - ${as_of%%.*} ))" -ge "$stale_after" ]; then
+      run_bounded 20 llm-limits --refresh
+    fi
+  fi
+
+  # Same ISO8601-with-offset parser llm-limits.sh uses, so resets_at math stays in sync.
+  iso_def='def iso2epoch:
+    if type != "string" then null
+    else (capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<tz>[Zz]|[+-][0-9]{2}:?[0-9]{2})$") // null) as $c |
+      if $c == null then null
+      else ($c.d + "Z" | fromdateiso8601)
+        - (if ($c.tz | ascii_upcase) == "Z" then 0
+           else ($c.tz | capture("^(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+                 | (if .s == "-" then -1 else 1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60))
+           end)
+      end
+    end;'
+
+  resets_epoch=""
+  if [ -f "$cache" ]; then
+    resets_epoch=$(jq -r --arg acct "$account" --arg vendor "$vendor" "$iso_def"'
+      (.vendors[$vendor].accounts[]? | select(.account == $acct) | .five_hour.resets_at) as $resets
+      | if $resets == null then "" else (($resets | iso2epoch) // "") end
+    ' "$cache" 2>/dev/null)
+  fi
+
+  now=$(date +%s)
+  fallback_reason=""
+
+  if [ -z "$resets_epoch" ]; then
+    fallback_reason="no five_hour.resets_at for account '$vendor/$account'"
+  elif ! is_int "$resets_epoch"; then
+    fallback_reason="unparseable resets_at for account '$vendor/$account'"
+  elif [ "$resets_epoch" -le "$now" ]; then
+    fallback_reason="5h window for account '$vendor/$account' already reset"
+  fi
+
+  if [ -n "$fallback_reason" ]; then
+    minutes=15
+  else
+    minutes=$(( (resets_epoch - now) / 60 + extra ))
+    [ "$minutes" -ge 1 ] || minutes=1
+  fi
 fi
 
 if ! command -v hs >/dev/null 2>&1; then

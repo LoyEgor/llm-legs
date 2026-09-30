@@ -37,6 +37,10 @@ eq "$(printf '%s' "$ONE_WORD" | "$SHARE" | cut -d' ' -f1)" "9"
 eq "$(printf '%s' 'He said «всё готово' | "$SHARE")" "60 15"
 eq "$(printf '%s' $'x\n```\nпривет мир' | "$SHARE" | cut -d' ' -f1)" "90"
 eq "$(printf '%s' $'x\n```\nпривет мир\n```' | "$SHARE" | cut -d' ' -f1)" "0"
+# A Russian brief cut into short quotes, or padded with Latin paths, is still a Russian brief.
+eq "$(printf '%s' '«Сделай ревью всего модуля» «и исправь все найденные баги» «сам без вопросов и отчета» «потом запусти все тесты» «и напиши короткий итог» «ни в коем случае»' | "$SHARE" | cut -d' ' -f1)" "100"
+eq "$(printf 'Проверь что всё работает и почини тесты.\n%s' "$(printf '/Volumes/Work/Projects/llm-legs/bin/helper-%s\n' 1 2 3 4 5 6 7 8 9 10 11 12)" | "$SHARE" | cut -d' ' -f1)" "100"
+eq "$(printf '%s' "$(printf 'Fix the gate. %.0s' {1..30})«сделай ревью» «не парься» «сделай коммит» «подумай как следует»" | "$SHARE" | cut -d' ' -f1)" "0"
 
 # --- 2. the brief worker-run is handed --------------------------------------
 # The preamble tells the worker who reads it, and it is the FIRST thing said: the rule the reports
@@ -67,7 +71,8 @@ eq "$(find "$WORK" -name 'meta.json' | wc -l | tr -d ' ')" "0"
 hasnt "$(start "$WORK/brief-quoting")" 'brief has Russian'
 hasnt "$(start "$WORK/brief-en")" 'brief has Russian'
 has "$(start "$WORK/brief-long-quote")" 'brief has Russian'
-has "$(start "$WORK/brief-one-word")" 'brief has Russian'
+# A stray word stays under the rule's ceiling: a deny over it would cost the whole brief again.
+hasnt "$(start "$WORK/brief-one-word")" 'brief has Russian'
 
 has "$(WORKER_RUN_CYRILLIC_SHARE=/nonexistent start "$WORK/brief-en")" 'could not be measured'
 
@@ -122,4 +127,4 @@ printf '#!/bin/sh\nprintf "99 10\\n"\n' >"$WORK/elsewhere/bin/cyrillic-share"
 chmod +x "$WORK/elsewhere/bin/cyrillic-share"
 has "$(PATH=/usr/bin:/bin "$WORK/elsewhere/bin/claude-resume-timer" terminal 10 -m 'продолжай работу' 2>&1)" '(99% Cyrillic'
 
-echo "PASS: $asserts asserts; cyrillic-share reading a short «...» trigger phrase and code as English but a long or unclosed quote, an unclosed fence and a single Russian word in English text as Russian — worker-run's preamble opening with who the reader is, its start refusing a Russian brief by name before a run directory exists and passing one that only carries a trigger phrase, an unmeasurable brief refused — and a non-Claude run's Russian result stamped \`LANG: cyrillic 100%\` where it lands, the stamp surviving into \`worker-run report\`, with an English result stamped not at all — and claude-resume-timer refusing a Russian -m message before Hammerspoon is reached, since whatever it types is read by the model sitting in that chat"
+echo "PASS: $asserts asserts; cyrillic-share reading a short «...» trigger phrase and code as English but a long or unclosed quote and an unclosed fence as Russian — worker-run's preamble opening with who the reader is, its start refusing a Russian brief by name before a run directory exists and passing one that only carries a trigger phrase or a stray word, an unmeasurable brief refused — and a non-Claude run's Russian result stamped \`LANG: cyrillic 100%\` where it lands, the stamp surviving into \`worker-run report\`, with an English result stamped not at all — and claude-resume-timer refusing a Russian -m message before Hammerspoon is reached, since whatever it types is read by the model sitting in that chat"

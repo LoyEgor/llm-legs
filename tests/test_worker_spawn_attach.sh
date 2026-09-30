@@ -42,10 +42,11 @@ assert_eq 1 "$(grep -c ' · ' <<<"$seed")"
 assert_eq '' "$(spawn codex-worker 'Fix codex-1-a' u5 | grep '^run=')"
 
 # The prompt's ROUND: header rides the seed into the agent's tag file, where `worker-run start` adopts
-# it once the relay rewrote the brief; ACCOUNT:/EFFORT: may precede it, and prose or `none` seeds none.
+# it once the relay rewrote the brief; ACCOUNT:/EFFORT: may precede it, prose seeds nothing, and
+# `none` rides as the opt-out it is.
 seed=$(spawn claudeb-worker $'ACCOUNT: com\nEFFORT: high\nROUND: 20260928T011240Z-c3c2395\nFix it.' u6)
 assert_eq 'round=20260928T011240Z-c3c2395' "$(grep '^round=' <<<"$seed")"
-assert_eq '' "$(spawn claudeb-worker $'ACCOUNT: com\nROUND: none\nFix it.' u7 | grep '^round=')"
+assert_eq 'round=none' "$(spawn claudeb-worker $'ACCOUNT: com\nROUND: none\nFix it.' u7 | grep '^round=')"
 assert_eq '' "$(spawn codex-worker $'ACCOUNT: com\nFix it.\nROUND: 20260928T011240Z-c3c2395' u8 | grep '^round=')"
 rm -f "$HOME/.cache/claude-worker-tags/s1"/pending-*
 spawn claudeb-worker $'ROUND: 20260928T011240Z-c3c2395\nFix it.' u9 >/dev/null

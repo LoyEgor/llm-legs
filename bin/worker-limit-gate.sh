@@ -51,8 +51,8 @@ warn() {
 }
 
 deny() {
-  jq -cn --arg r "$1" \
-    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$r}}' 2>/dev/null || true
+  jq -cn --arg hook "${0##*/}" --arg r "$1" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("[" + $hook + "] " + $r)}}' 2>/dev/null || true
   exit 0
 }
 
@@ -238,7 +238,8 @@ attach_run=$(printf '%s\n' "$prompt" | head -n1 |
 if [ -n "$attach_run" ]; then
   attach_dir="${WORKER_RUN_DIR:-$HOME/.cache/claude-worker-runs}/$attach_run"
   if [ -d "$attach_dir" ] && [ ! -e "$attach_dir/exit_code" ]; then
-    warn "Re-attach to run ${attach_run}: no new launch, so no limit verdict is priced on this spawn. Wait on that run id and report; do not start a new one."
+    toggle_note=''
+    warn ''
   fi
 fi
 
@@ -265,8 +266,8 @@ if [ "$router_rc" -eq 3 ]; then
   deny "worker-pick found no selectable ${label} account. Do not spawn ${worker} until an account becomes selectable."
 fi
 
-# One definition for both callers: the wall check (account_pressure) and the
-# inventory note must never disagree on what an account's effective pct is.
+# One definition for every reader below: the wall check (account_pressure) and the fallback
+# decision must never disagree on what an account's effective pct is.
 eff_defs='
   def epoch:
     if type == "number" then .
@@ -303,27 +304,6 @@ account_pressure() {
     else ([eff($row.five_hour; "five_hour"), eff($row.weekly; "weekly")] |
       map(select(type == "number")) | if length > 0 then max else empty end)
     end
-  ' "$LIMITS_FILE" 2>/dev/null
-}
-
-account_inventory() {
-  [ -r "$LIMITS_FILE" ] || return 0
-  jq -r --arg vendor "$1" --argjson now "$(date +%s)" "$eff_defs"'
-    vendor_rows($vendor) |
-    map(select(.removed != true)) |
-    map({
-      name:(.account // "main"),
-      off:(.enabled == false),
-      # A logged-out account reads 0% and would sort as the freest pick; the marker
-      # keeps the orchestrator from routing at a dead entry. Negated worker-pick
-      # auth_ok, kept in its exact shape: a bare `.auth.status? != "ok"` drops
-      # string-auth accounts (empty propagates) and brands "unknown" as dead.
-      auth:(.auth_needed == true or ((.auth.status? // "ok") | IN("expired", "failed"))),
-      value:([eff(.five_hour; "five_hour"), eff(.weekly; "weekly")] |
-             map(select(type == "number")) | if length > 0 then max else null end)
-    }) |
-    sort_by([(if .off or .auth then 1 else 0 end), (if .value == null then 1 else 0 end), (.value // 0)]) |
-    map("\(.name) \(.value // "?")%\(if .off then " off" else "" end)\(if .auth then " auth!" else "" end)") | join(", ")
   ' "$LIMITS_FILE" 2>/dev/null
 }
 
@@ -374,7 +354,7 @@ if [ "$router_rc" -eq 0 ]; then
   # One combined message: warn() exits, so separate calls would shadow each other.
   note=''
   if [ "$spawn_account" != "$router_account" ]; then
-    note="The brief names ${spawn_account}, while worker-pick would use ${router_account} for ${vendor}. Allowing the explicit account; the router recommendation for this task is ${router_account}."
+    note="ACCOUNT ${spawn_account} ≠ worker-pick ${router_account} (allowed)."
   fi
   if [ -n "$pressure" ] && jq -ne --argjson pct "$pressure" --argjson warn "$WARN_AT" '$pct >= $warn' >/dev/null; then
     pressure_note="${label} account ${spawn_account} is at ${pressure}% — close to the 100% hard wall."
@@ -382,13 +362,6 @@ if [ "$router_rc" -eq 0 ]; then
   fi
   if [ -n "$unknown_note" ]; then
     if [ -n "$note" ]; then note="$note $unknown_note"; else note="$unknown_note"; fi
-  fi
-  # Orchestrators quote whatever account list their context still holds, so every routed spawn
-  # carries the live one back — this is why a plain allow is no longer silent.
-  inventory=$(account_inventory "$limits_vendor")
-  if [ -n "$inventory" ]; then
-    inventory_note="${label} accounts: ${inventory}; worker-pick selects ${router_account}."
-    if [ -n "$note" ]; then note="$note $inventory_note"; else note="$inventory_note"; fi
   fi
   warn "$note"
 fi

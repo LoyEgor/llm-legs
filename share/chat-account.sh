@@ -40,6 +40,20 @@ chat_account_resolve() {
   return 0
 }
 
+# Prints the weekly bucket a chat on model $1 spends: `fable` (Fable has a bucket of its own) or
+# `weekly` (every other model). With no argument the chat is a new one, which starts on the default
+# /model saves into the shared settings.json.
+chat_model_bucket() {
+  local model="${1-}"
+  if [ "$#" -eq 0 ]; then
+    model=$(jq -r '.model // empty' "${CHAT_MODEL_SETTINGS:-${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/settings.json}" 2>/dev/null) || model=""
+  fi
+  case "$(printf '%s' "$model" | tr '[:upper:]' '[:lower:]')" in
+    *fable*) echo fable ;;
+    *) echo weekly ;;
+  esac
+}
+
 # Sourced by every caller; run directly it prints `<vendor> <account>` for the current process,
 # with the argument (default `main`, worker-pick's own) standing in where nothing named the chat.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
