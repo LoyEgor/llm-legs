@@ -530,22 +530,6 @@
    "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
    "note": "toolu_01GVuJcS 2026-09-29: TERM 102 s after the call started",
    "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
-  },
-  {
-   "id": "H8",
-   "block": "any",
-   "match": {
-    "health": "debt",
-    "key": "^debt-loss:run-fold-skip$"
-   },
-   "title": "run-fold logs co-tenant skips as losses while the co-tenant's touch still owes the lines",
-   "status": "open",
-   "fixes": [],
-   "same_cause": [],
-   "last_reviewed": "2026-09-30",
-   "reviewed_by": "night fixer llm-health-20260930T001639Z-73c9",
-   "note": "all 20 in 24 h are 'a co-tenant touched it during the run'; the key cannot tell that reason from 'committed since the run started'; whether a co-tenant skip is a loss is review-bench's contract",
-   "handoff": "docs/handoffs/2026-09-30-debt-health-triage.md"
   }
  ],
  "blind_spots": [

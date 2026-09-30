@@ -7,8 +7,8 @@ fixer run llm-health-20260930T001639Z-73c9. `debt_health` (`bin/llm-doctor`) rep
 correctly: every item is a real open gap in `review-anchors gaps --days 7` or a real row of
 `~/.cache/claude/review-debt/losses.jsonl`. The causes sit in the recording side (claude-setup
 `hooks/commit-journal.sh`), review-bench `review-anchors run-fold`, ad-hoc probes and unclosed
-rounds. Each is now an `open` ledger row H1–H8 narrowed to its key; nothing was dismissed and no
-live store was edited. Please route each item to its owner and decide the dismissals.
+rounds. H1–H7 are now `open` ledger rows narrowed to their keys; H8 has no row (see there);
+nothing was dismissed and no live store was edited. Please route each item to its owner and decide the dismissals.
 
 ## H1 `debt-gap:fixer-missing` — three unclosed rounds (handoff)
 
@@ -73,6 +73,11 @@ family a worker touched. Deciding whether a co-tenant skip is a loss is review-b
 (owner «Review-bench improvements phase 4»); filtering it in `debt_health` would loosen the judge.
 Proposed: review-anchors logs a co-tenant skip only where the run itself changed the path's content
 (its after-snapshot differs from its base), or with `lines` 0 and a distinct kind.
+
+No ledger row: `debt_health` keys a loss by its `kind` alone (`debt-loss:run-fold-skip`), so no
+health `key` can tell a co-tenant skip from a `committed since the run started` drop, and an open
+row would hide a real committed-since loss as `open`. The problem stays `new` until review-anchors
+gives the co-tenant skip its own kind or the doctor keys losses by reason.
 
 ## Also seen
 
