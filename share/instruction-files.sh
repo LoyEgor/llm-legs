@@ -1438,14 +1438,15 @@ instruction_claim_stamp() {
 # Unlike a retry stamp, a notice marker is retained for the session's lifetime: only the atomic
 # creator speaks, and an unavailable cache returns silence.
 # The retry sweep runs one level down from the stamp root and so never reaches these, which sit a
-# level below that. The same age and the same name shape decide here, so a marker that outlived
-# every session it could belong to goes too — a day, which is longer than a session lives.
+# level below that. The same name shape decides here. A marker must outlive every baseline it can
+# be compared against — the tripwire sweeps those at a week — or a resumed or compacted session
+# re-journals every write it slept through.
 instruction_mark_once() {
   local dir=$1 hash=$2 h='[0-9a-f]'
   case "$hash" in [0-9a-f][0-9a-f]*) ;; *) return 1 ;; esac
   mkdir -p "$dir" 2>/dev/null || return 1
   find "$dir" -mindepth 1 -maxdepth 1 -type d \
-    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mmin +1440 -exec rmdir {} + 2>/dev/null
+    -name "$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h$h" -mtime +8 -exec rmdir {} + 2>/dev/null
   mkdir "$dir/$hash" 2>/dev/null
 }
 

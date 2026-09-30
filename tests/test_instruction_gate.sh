@@ -2753,12 +2753,31 @@ while IFS=$'\t' read -r _ _ _ _ _ _ vis _; do
   esac
 done < "$INSTRUCTION_WATCH_STATE/session-sid-mf2.tsv"
 [ -n "$first" ] || fail "multi-file baseline did not name either changed path"
-key=$(printf '%s\n%s\n' "$first" "$(shasum -a 256 "$first" | cut -d' ' -f1)" | shasum -a 256 | cut -c1-16)
+key=$(printf '%s\n%s\n' "$first" "$(shasum -a 256 "$first" | cut -d' ' -f1)@$(stat -L -f %Fm "$first")" |
+  shasum -a 256 | cut -c1-16)
 mkdir -p "$INSTRUCTION_WATCH_STATE/alerts/$key"
 raw_check sid-mf2 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
 other=$AGENTF
 [ "$first" = "$AGENTF" ] && other=$DOC
-assert_contains "$(basename "$other")" "$(tail -1 "$J" | jq -r '.files[]' | tr '\n' ' ')"
+mf_files=$(tail -1 "$J" | jq -r '.files[]' | tr '\n' ' ')
+assert_contains "$(basename "$other")" "$mf_files"
+echo "== tripwire: a file another session already journaled stays out of this record"
+case "$mf_files" in *"$first"*) fail "an already-claimed change was journaled again: $mf_files" ;; esac
+assert_eq 1 "$(tail -1 "$J" | jq '.bytes | length')"
+case "$(tail -1 "$J" | jq -r '.summary')" in *"$first"*) fail "an already-claimed change stayed in the summary" ;; esac
+
+echo "== tripwire: a two-day-old claim still keeps a stale baseline's re-report out of the journal"
+span_base sid-stale >/dev/null
+printf 'stale-A\n' > "$DOC"
+raw_check sid-mf1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+find "$INSTRUCTION_WATCH_STATE/alerts" -mindepth 1 -maxdepth 1 -type d -exec touch -A -480000 {} +
+lines=$(wc -l < "$J")
+printf 'unrelated\n' > "$AGENTF"
+raw_check sid-mf1 Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+raw_check sid-stale Bash command "$ANY_CALL" "$NOSPAN_T" >/dev/null
+stale_files=$(tail -n +"$((lines + 1))" "$J" | jq -r '.files[]' | tr '\n' ' ')
+assert_contains "$(basename "$AGENTF")" "$stale_files"
+case "$stale_files" in *"$DOC"*) fail "a claim aged past a day let the same write be journaled again: $stale_files" ;; esac
 
 echo "== tripwire: creating a ranked path that was absent from the baseline is ADDED"
 unset TOKENMAP_RATES

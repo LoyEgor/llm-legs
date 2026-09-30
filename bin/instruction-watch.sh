@@ -385,13 +385,13 @@ journal_event() { # sent id summary
   else
     observer=${sid:-}
   fi
-  for k in "${keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
+  for k in "${won_keys[@]}"; do files="$files${k%%"$_watch_nl"*}$_watch_nl"; done
   for c in ${cand_sids[@]+"${cand_sids[@]}"}; do
     cands="$cands$c$_watch_tab$(instruction_chat_name "$c" | head -n 1)$_watch_nl"
   done
   line=$(jq -cn --arg id "$id" --arg at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sid "$owner" --arg observer "$observer" --arg summary "$summary" --arg sent "$sent" --arg kind "${kind:-change}" \
-    --arg chat "$chat" --arg bytes "$(printf '%s\n' ${deltas[@]+"${deltas[@]}"})" \
+    --arg chat "$chat" --arg bytes "$(printf '%s\n' ${won_deltas[@]+"${won_deltas[@]}"})" \
     --arg files "$files" --arg restores "$(printf '%s\n' ${restores[@]+"${restores[@]}"})" \
     --arg reverted "$(printf '%s\n' ${reverted[@]+"${reverted[@]}"})" \
     --arg writer "$writer" --arg cands "$cands" \
@@ -440,14 +440,18 @@ release_marks() { # key...
 # 1 when the journal could not take the record: the caller then keeps its baseline where it was, so
 # the change is found and reported again rather than absorbed unrecorded.
 alert_once() { # path content-key summary
-  local key sent=unsent id='' claimed='' k
+  local key sent=unsent id='' claimed='' i summary=''
+  local -a won_keys=() won_deltas=()
   # Keying only keys[0] skipped the rest of a multi-file check when that first
-  # file was already marked by another session.
-  for k in "${keys[@]}"; do
-    key=$(watch_mark_key "${k%%"$_watch_nl"*}" "${k#*"$_watch_nl"}")
+  # file was already marked by another session. A file another session's claim already journaled
+  # stays out of this record, or the doctor counts that one write twice.
+  for i in "${!keys[@]}"; do
+    key=$(watch_mark_key "${keys[$i]%%"$_watch_nl"*}" "${keys[$i]#*"$_watch_nl"}")
     if instruction_mark_once "$ALERT_DIR" "$key"; then
       claimed="$claimed$key "
       [ -n "$id" ] || id=$key
+      won_keys+=("${keys[$i]}"); won_deltas+=("${deltas[$i]}")
+      summary="$summary${summary:+; }${reports[$i]}"
     fi
   done
   [ -n "$id" ] || return 0
@@ -456,7 +460,7 @@ alert_once() { # path content-key summary
   id=$(printf '%s\n%s\n%s\n%s\n' "$id" "$$" "$RANDOM" "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     | shasum -a 256 | cut -c1-16)
   instruction_alert_sendable && sent=attempted
-  if ! journal_event "$sent" "$id" "$3"; then
+  if ! journal_event "$sent" "$id" "$summary"; then
     # A failed append would otherwise leave the change claimed and unjournaled.
     release_marks $claimed
     return 1

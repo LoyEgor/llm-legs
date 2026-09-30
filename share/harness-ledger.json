@@ -145,6 +145,61 @@
       "reviewed_by": "Harness doctor night fixer",
       "note": "60 s process census 2026-09-30 03:25-03:31: 1 081 new processes a second; test suites 61 % (four night worktrees in run-suites at once), statusline 20 % (5 sessions), hooks 8.5 %, worker-run 5.8 %, review-bench 3.8 %. The statusline share is item 2 of docs/handoffs/2026-09-28-harness-performance-fix.md.",
       "handoff": "docs/handoffs/2026-09-30-load-unseen-census.md"
+    },
+    {
+      "id": "guards-tripwire-rejournal",
+      "title": "The tripwire journaled writes another record already carried, so one write counted as growth twice",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "between-sessions"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-09-30T03:59:26+03:00",
+          "by": "night fixer harness-guards-20260930T001642Z-7d95",
+          "files": [
+            "llm-legs/bin/instruction-watch.sh",
+            "llm-legs/share/instruction-files.sh"
+          ],
+          "in": null
+        }
+      ],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-guards-20260930T001642Z-7d95",
+      "note": "Event 5751c770d8700227 (2026-09-29T20:50:18Z, compaction SessionStart of a session whose own baseline dated from before 2026-09-28T19:43Z) listed 20 files: 15 synced-skill files and hammerspoon/CLAUDE.md whose alert marks earlier checks had claimed (20:14-20:33Z, 09:39Z), and review-tiers.md whose 2026-09-28T19:43Z record had outlived its one-day mark. alert_once now journals only the files this check claimed, and a mark lives past the baselines' week-old sweep.",
+      "handoff": null
+    },
+    {
+      "id": "guards-synced-skills-vendor-sync",
+      "title": "Claude Code org-skill sync writes ~/.claude/skills/synced, which no gate can see",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "~/\\.claude/skills/synced/.+"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-guards-20260930T001642Z-7d95",
+      "note": "Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff.",
+      "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
+    },
+    {
+      "id": "guards-baseline-missing-probe-sids",
+      "title": "Ad-hoc hook profiling fed synthetic session ids to the live tripwire",
+      "match": {
+        "rule": "baseline-missing",
+        "ident": "tripwire"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "last_reviewed": "2026-09-30",
+      "reviewed_by": "night fixer harness-guards-20260930T001642Z-7d95",
+      "note": "Narrowed to one cause: every baseline-missing record since 2026-09-28T23:00Z names a sid no chat owns (perf-big-93348, perf-big-8746, perf-lvb, hlprof-a): check runs with made-up session ids against ~/.cache/claude-instruction-watch rather than INSTRUCTION_WATCH_STATE. No committed code or transcript names those ids. A real chat losing its baseline would match this row too, so it stays open.",
+      "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
     }
   ],
   "blind_spots": [
@@ -217,6 +272,13 @@
       "reason": "`tests running` and test-history come from statusline work probes, and a `claude -p` session renders no statusline: 03:19 sampled 0 while four night worktrees ran run-suites",
       "since": "2026-09-30",
       "would_catch_if": "run-suites.sh wrote a start and end line per suite to a journal this doctor reads"
+    },
+    {
+      "id": "tripwire-duplicate-records",
+      "what": "one instruction-file write journaled by two tripwire records",
+      "reason": "the guards rule counts each record per file; a record carries no write key (hash@mtime), so a second record of the same write reads as new growth",
+      "since": "2026-09-30",
+      "would_catch_if": "each events.jsonl file entry carried its alert key and the guards rule counted a key once"
     }
   ]
 }
