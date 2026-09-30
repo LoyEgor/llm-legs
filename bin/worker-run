@@ -123,6 +123,24 @@ brief_review_round() {
   printf '%s\n' "$round"
 }
 
+# Header-only, as ROUND: is: a brief's prose names other repositories to read far more often than to
+# write, and a grant is also what exempts a write there from the doctor's escape count.
+brief_add_dirs() { # brief
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ADD-DIR:*)
+        line=${line#ADD-DIR:}
+        line=${line#"${line%%[![:space:]]*}"}
+        printf '%s\n' "${line%"${line##*[![:space:]]}"}"
+        continue
+        ;;
+      RESUME\ *:* | ATTACH\ *:*) continue ;;
+    esac
+    [[ "$line" =~ ^[A-Z][A-Z-]*: ]] || return 0
+  done <"$1"
+}
+
 # Every round-shaped WHOLE token of the brief, deduplicated: a longer token that merely contains a
 # round id names no round, and one id repeated in the prose must not read as two rounds.
 brief_text_rounds() { # brief
@@ -2239,6 +2257,11 @@ start_run() {
     [ -n "$explicit_account" ] || explicit_account=$(brief_line_value "$brief" ACCOUNT)
     [ -n "$model" ] || [ "$vendor" = light ] || model=$(brief_line_value "$brief" MODEL)
     [ "$computer" = true ] || [ "$(brief_line_value "$brief" COMPUTER)" != yes ] || computer=true
+    while IFS= read -r value; do
+      [[ "$value" = /* ]] && [ -d "$value" ] ||
+        fail "the brief's 'ADD-DIR: $value' names no absolute directory: give each other repository the run writes as its own ADD-DIR: line. Nothing was launched and no account was spent."
+      add_dirs+=("$value")
+    done < <(brief_add_dirs "$brief")
   fi
   relay_start_door "$vendor" "$role"
   if worker_light_off; then

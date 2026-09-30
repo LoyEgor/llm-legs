@@ -3462,6 +3462,27 @@ assert await_done
 assert grep -qxF "ARG=$WORK/rel-extra" "$CALL_LOG"
 assert grep -qxF "ARG=$WORK/rel-image.png" "$CALL_LOG"
 
+# A cross-repository brief grants its second repository in the header (the eight escaped legs of
+# 2026-09-29 named it only in prose); an ADD-DIR: past the first body line is prose, never a grant.
+cp "$WORK/brief" "$WORK/brief.plain"
+mkdir -p "$WORK/header-extra" "$WORK/prose-extra"
+{ printf 'ACCOUNT: options\nADD-DIR:  %s \nEFFORT: high\n\n' "$WORK/header-extra"
+  printf 'ADD-DIR: %s\n' "$WORK/prose-extra"; cat "$WORK/brief.plain"; } >"$WORK/brief"
+clear_stub
+set_config 'codex_effort=high'
+start_ok codex
+assert await_done
+assert grep -qxF "ARG=$WORK/header-extra" "$CALL_LOG"
+assert test "$(jq -c '.add_dirs' "$RUN_DIR/meta.json")" = "$(jq -cn --arg d "$WORK/header-extra" '[$d]')"
+printf 'ACCOUNT: options\nADD-DIR: rel-extra\n\n' >"$WORK/brief"
+clear_stub
+rc=0
+"$RUNNER" start codex --brief "$WORK/brief" --workdir "$WORK/workdir" >"$WORK/start.out" 2>"$WORK/start.err" || rc=$?
+assert test "$rc" -ne 0
+assert grep -qF "'ADD-DIR: rel-extra' names no absolute directory" "$WORK/start.err"
+assert test "$(grep -c '^CODEX_CALL$' "$CALL_LOG")" -eq 0
+cp "$WORK/brief.plain" "$WORK/brief"
+
 # These picks keep naming the one account that walls — a picker that ignores
 # --exclude — so the run has nowhere to reroute and the limit outcome reaches
 # the caller.

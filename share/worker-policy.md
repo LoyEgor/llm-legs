@@ -43,6 +43,9 @@ explicit word; otherwise no `MODEL:` line. Neither Codex model allows `max`.
 `worker-run` mechanically enforces the union of both effort columns (`OUTCOME: EFFORT_REFUSED`)
 and the model list (`OUTCOME: MODEL_REFUSED`) before spending an account; `/worker` refuses to
 store values outside them. Word requirements are orchestrator policy.
+A brief that writes a second repository names it in its header, one `ADD-DIR: <absolute dir>` line
+each: `worker-run` grants it as `--add-dir` and baselines it; a repository named only in the prose
+is ungranted, and the run's writes there count as escaped.
 The canonical knob-to-agy mapping lives in `worker-run`.
 
 ## Brief sizing and test loop

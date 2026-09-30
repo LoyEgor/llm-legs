@@ -360,6 +360,33 @@
    "handoff": null
   },
   {
+   "id": "W3",
+   "block": "workers",
+   "match": {
+    "word": "escaped",
+    "detail": "^wrote "
+   },
+   "title": "a cross-repository brief named its second repository only in prose, so worker-run granted it nothing and every write there read as escaped",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-09-30T03:33:34+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run",
+      "llm-legs/share/worker-policy.md"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-09-30",
+   "reviewed_by": "LLM doctor",
+   "note": "x8 claudeb legs 2026-09-29/30 (hammerspoon, claude-setup, logo-vectorizer-bench): every brief listed its second repository in prose (Working directories / Repos / Workdirs) and no relay or flag carried it, so add_dirs stayed empty; worker-run now grants a header ADD-DIR: line as --add-dir. The detail names the files-note outside-write class, the narrowest the leg carries: a write to a repository no brief names still lands here and reads as a regression.",
+   "handoff": null
+  },
+  {
    "id": "M1",
    "block": "reviewers",
    "match": {
