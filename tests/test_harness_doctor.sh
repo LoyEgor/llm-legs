@@ -797,6 +797,23 @@ dirty = {"rows": [dict(pending["rows"][0], status="fixed-pending",
 check(not m.settle_fixes(dirty) and dirty["rows"][0]["status"] == "fixed-pending",
       "an uncommitted fix stays fixed-pending")
 
+race, prior_ledger = os.path.join(work, "race-ledger.json"), os.environ["HARNESS_LEDGER"]
+os.environ["HARNESS_LEDGER"] = race
+put(os.path.join(repo, "f.sh"), "x\n")
+stale = {"rows": [dict(pending["rows"][0], status="fixed-pending", fixes=[dict(pending["rows"][0]["fixes"][0], **{"in": None})])]}
+put(race, m.json.dumps(stale))
+loaded, _ = m.load_ledger()
+m.settle_fixes(loaded)
+landed = m.json.loads(open(race).read())
+landed["rows"].append({"id": "landed-meanwhile", "status": "open", "fixes": []})
+put(race, m.json.dumps(landed))
+m.write_fix_fields(loaded)
+after = m.json.loads(open(race).read())
+check([r["id"] for r in after["rows"]] == ["p", "landed-meanwhile"] and after["rows"][0]["status"] == "fixed"
+      and after["rows"][0]["fixes"][-1]["in"] == "fixrepo@" + head,
+      "settling a fix re-reads the ledger, so a row landed during the run survives the write")
+os.environ["HARNESS_LEDGER"] = prior_ledger
+
 roots = os.environ.pop("HARNESS_WATCH_ROOTS")
 check(os.path.join(m.ROOT_DIR, "hammerspoon") in m.watch_roots(), "the change log watches hammerspoon/*.lua")
 os.environ["HARNESS_WATCH_ROOTS"] = roots
@@ -1179,7 +1196,7 @@ replay() {
 }
 first_ids=$(replay 1)
 assert_eq "$first_ids" "$(replay 2)" "the committed calibration fixture replays with the same problem ids"
-assert_eq '["floor:event:SessionStart=watch","hook_every_call:instruction-watch.sh check=watch","hook_every_call:statusline-workdir-hook.sh=watch","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","word-miss-deferred-reading-lost=fixed-pending"]' \
-  "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and the four fixes as pending proof"
+assert_eq '["floor:event:SessionStart=watch","hook-every-call-instruction-watch=watch","hook_every_call:statusline-workdir-hook.sh=watch","floor-trivial-bash-readonly-fastpath=fixed-pending","hook-every-call-context-nudge=fixed-pending","floor-edit-hooks=fixed-pending","guards-tripwire-rejournal=fixed-pending","ask-deferred-bg-task-hold-cap=fixed-pending","word-miss-deferred-reading-lost=fixed-pending","hook-grows-repos-commit-journal=fixed-pending","hook-grows-repos-review-flow-gate=fixed-pending","hook-grows-size-commit-journal=fixed-pending","hook-grows-size-review-flow-gate=fixed-pending"]' \
+  "$first_ids" "the 2026-09-29 18:27 calibration reads its known watches and every night fix as pending proof"
 
 printf 'PASS: %s asserts; harness-doctor reads waits, cuts, hooks, load, tests and causes off fixtures, incrementally and under its lock, and compares every picker window, days off its day summaries and hours off the raw rows\n' "$asserts"

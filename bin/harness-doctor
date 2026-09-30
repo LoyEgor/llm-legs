@@ -3565,6 +3565,27 @@ def settle_fixes(ledger):
     return changed
 
 
+def write_fix_fields(judging):
+    fresh, raw = load_ledger()
+    if not raw:
+        return
+    rows = {r.get("id"): r for r in fresh.get("rows") or () if isinstance(r, dict)}
+    for entry in judging.get("rows") or ():
+        target = rows.get(entry["id"])
+        mine = (entry.get("fixes") or [None])[-1]
+        theirs = ((target or {}).get("fixes") or [None])[-1]
+        if not isinstance(mine, dict) or not isinstance(theirs, dict) or mine.get("at") != theirs.get("at"):
+            continue
+        for key in ("in", "regressed_at"):
+            if mine.get(key) and not theirs.get(key):
+                theirs[key] = mine[key]
+        if entry.get("status") == "fixed" and target.get("status") == "fixed-pending" and theirs.get("in"):
+            target["status"] = "fixed"
+    with open(ledger_path() + ".tmp", "w") as handle:
+        handle.write(json.dumps(fresh, indent=2, ensure_ascii=False) + "\n")
+    os.replace(ledger_path() + ".tmp", ledger_path())
+
+
 def problems_from(sections, ledger, state, now, extra=()):
     seen = state.setdefault("seen", {})
     proof_state = state.setdefault("proof", {})
@@ -3896,9 +3917,7 @@ def collect(write, now):
             entry["fixes"][-1]["regressed_at"] = iso_time(now)
             changed = True
     if changed:
-        with open(ledger_path() + ".tmp", "w") as handle:
-            handle.write(json.dumps(ledger, indent=2, ensure_ascii=False) + "\n")
-        os.replace(ledger_path() + ".tmp", ledger_path())
+        write_fix_fields(judging)
     blind_areas = [s["name"] for s in sections if s["state"] == "blind"]
     status = "problems" if problem_count else "blind" if blind_areas else "ok"
     extras = [line("changes, 7 d: %d" % len(recent), menu=change_table(recent[:CHANGE_ROWS], impact) if recent else None),
