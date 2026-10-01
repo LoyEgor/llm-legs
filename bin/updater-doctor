@@ -315,7 +315,7 @@ def collect(now):
         for facet in facets.get("probe_failures") or []:
             noted = [e for e in vendor_events if "probe_failures" in (e.get("changed") or [])]
             evidence = [event_evidence(e) for e in noted[::-1]] or log_evidence(fp_log)
-            first = iso_epoch(noted[-1].get("created_at")) if noted else at
+            first = iso_epoch(noted[0].get("created_at")) if noted else at
             col.add("probe-broken", "%s/%s" % (vendor, facet), "new",
                     "%s: our %s probe failed locally on the last check; the facet keeps its old value" % (vendor, facet),
                     1, 0, "facets", None, exposure, 1, first, at, evidence)

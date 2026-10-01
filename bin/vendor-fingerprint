@@ -627,20 +627,23 @@ close_event() { # id [--decisions file] note...
 }
 
 close_run() { # run -> closed once none of its events is still open
-  local run=$1 events
+  local run=$1 events decisions
   [ -n "$run" ] || return 0
-  events=$(jq -s -c --arg r "$run" 'map(select(.run == $r))' "$events_dir"/*.json 2>/dev/null) || return 0
+  events=$(jq -s -c --arg r "$run" 'map(select(type == "object" and .run == $r))' "$events_dir"/*.json 2>/dev/null) ||
+    return 0
   jq -e 'length == 0 or any(.[]; .status == "open")' <<<"$events" >/dev/null && return 0
+  decisions=$(mktemp "${TMPDIR:-/tmp}/vendor-fingerprint-decisions.XXXXXX") ||
+    { log "could not close fixer run $run: no temporary file"; return 0; }
   jq 'map((.decisions // []) as $d | ($d | map(.decision)) as $v | {id,
       purpose: ($d | map(.purpose // empty) | unique | if length > 0 then join(" ") else null end),
       verdict: (if $d == [] then .status elif any($v[]; . == "blocked") then "blocked"
                 elif any($v[]; . == "integrated") then "integrated" else "not-applicable" end),
       evidence: "\($d | length) decision rows: \(["integrated", "not-applicable", "blocked"] | map(. as $k | "\($v | map(select(. == $k)) | length) \($k)") | join(", ")) · \(.note // "")"})' \
-    <<<"$events" >"$events_dir/$run.decisions.json"
-  "$doctor_fix" record-close "$run" --decisions "$events_dir/$run.decisions.json" \
+    <<<"$events" >"$decisions"
+  "$doctor_fix" record-close "$run" --decisions "$decisions" \
     "$(jq -r 'map("\(.id): \(.note // .status)") | join("; ")' <<<"$events")" >/dev/null 2>&1 ||
     log "could not close fixer run $run"
-  rm -f "$events_dir/$run.decisions.json"
+  rm -f "${decisions:?}"
 }
 
 list_events() { # [--all]
