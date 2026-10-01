@@ -33,6 +33,7 @@ SITE = "https://www.flowmusic.app"
 WALLS = "flow-music-walls.json"
 NOTICES = "notices.json"
 NOTICE_KEY = "agreed_flow_music"
+START_S = 90
 MAGIC = {"wav": lambda b: b[:4] == b"RIFF", "mp3": lambda b: b[:3] == b"ID3" or b[:1] == b"\xff",
          "m4a": lambda b: b[4:8] == b"ftyp"}
 
@@ -90,7 +91,16 @@ class Traffic:
         self.errors: list[str] = []
         self.out_of_credits = False
         self.sent = False
+        self.started = False
+        self.armed = False
+        self.chat = False
+        self.jobs: set[str] = set()
+        self.upload: dict | None = None
         page.on("response", lambda response: self.pending.append(response))
+
+    def arm(self, chat: bool) -> None:
+        self.poll()
+        self.armed, self.chat = True, chat
 
     def poll(self) -> None:
         while self.pending:
@@ -105,9 +115,17 @@ class Traffic:
                     self.balance = int(response.json()["data"]["credits_remaining"])
                 elif path == "/__api/clips":
                     self.clips.update(response.json().get("clips") or {})
-                elif path == "/__api/producer/tool-call" or path.endswith("/stream"):
+                elif path.endswith("/upload-check-status"):
+                    self.upload = response.json()
+                elif not self.armed:
+                    continue
+                elif path == "/__api/producer/tool-call":
                     self.sent = True
+                    self.jobs.add(response.json()["job_id"])
+                elif path.endswith("/stream"):
+                    self.sent = self.sent or self.chat or path.split("/")[-2] in self.jobs
                 elif path.startswith("/__api/audio-create-song-status/"):
+                    self.started = True
                     status = response.json()
                     if status.get("error_type") or status.get("error_message"):
                         self.errors.append(f"{status.get('error_type')}: {status.get('error_message')}")
@@ -208,8 +226,11 @@ def compose(page, plan: dict) -> dict:
 
 
 def answer_notice(page, account: str) -> bool:
-    notice = page.locator(gw.DIALOGS).filter(has_text="necessary rights")
-    if not notice.count() or not notice.first.is_visible():
+    """The upload consent notice is no [role=dialog] (the page dump lists no dialog), so it is found by its own
+    I agree button beside its text."""
+    agree = page.get_by_role("button", name="I agree", exact=True)
+    text = page.get_by_text("necessary rights", exact=False)
+    if not (agree.count() and agree.first.is_visible() and text.count() and text.first.is_visible()):
         return False
     try:
         agreed = json.loads((gw.ROOT / NOTICES).read_text()).get(NOTICE_KEY, [])
@@ -218,12 +239,12 @@ def answer_notice(page, account: str) -> bool:
     if account not in agreed:
         raise gw.Failure(4, f"{account} shows Flow Music's upload notice (\"necessary rights\"); it needs the owner's "
                             f"one-time I agree: with his yes, add {account} to \"{NOTICE_KEY}\" in {gw.ROOT / NOTICES}")
-    notice.first.get_by_role("button", name="I agree", exact=True).click(timeout=8000)
+    agree.first.click(timeout=8000)
     gw.ledger({"kind": "flow-music", "event": "notice-agreed", "account": account})
     return True
 
 
-def attach_audio(page, account: str, path: Path, wait_s: float) -> None:
+def attach_audio(page, traffic: Traffic, account: str, path: Path, wait_s: float) -> None:
     choosers: list = []
     page.on("filechooser", lambda chooser: choosers.append(chooser))
 
@@ -244,20 +265,31 @@ def attach_audio(page, account: str, path: Path, wait_s: float) -> None:
         page.wait_for_timeout(250)
     if not choosers:
         raise gw.Failure(1, "the Audio upload opened no file chooser")
-    choosers[0].set_files(str(path))
-    send = page.get_by_role("button", name="Send message").first
+    traffic.poll()
+    traffic.upload = None
+    choosers[-1].set_files(str(path))
+    chip = page.get_by_role("button", name=f"Remove {path.name}", exact=True)
     deadline = time.time() + wait_s
     while time.time() < deadline:
         page.wait_for_timeout(1000)
-        if send.is_enabled() and not page.evaluate(SPINNING):
+        traffic.poll()
+        if (traffic.upload or {}).get("status") in (None, "pending"):
+            continue
+        # A refused upload (vocals, a copyright match) also reports "complete"; the page then drops the chip.
+        errors = []
+        for _ in range(6):
+            page.wait_for_timeout(250)
+            errors += [" ".join(t.split()) for t in page.evaluate(gw.PAGE_DUMP)["toasts"] if "Error" in t]
+        if chip.count():
             return
+        flags = [k for k in ("has_vocals", "has_cid_match", "lyrics_moderation_failed") if traffic.upload.get(k)]
+        said = re.sub(r"^Notification\s*Error\s*", "", errors[-1]) if errors else ", ".join(flags) or "no reason shown"
+        raise gw.Failure(1, f"Flow Music refused the reference audio upload: {said[:200]}")
     raise gw.Failure(1, f"the reference audio upload did not finish within {wait_s:.0f}s")
 
 
-SPINNING = "() => [...document.querySelectorAll('[role=progressbar]')].some(e => e.getBoundingClientRect().width > 0)"
-
-
-def send(page, plan: dict) -> None:
+def send(page, traffic: Traffic, plan: dict) -> None:
+    traffic.arm(chat=bool(plan["ref_audio"]))
     if plan["ref_audio"]:
         words = [f"Make a song with my uploaded audio as the reference track. Sound: {plan['sound']}"]
         if plan["lyrics"]:
@@ -291,6 +323,7 @@ def library_row(page, traffic: Traffic, account: str, title: str) -> dict | None
 
 def wait_song(page, traffic: Traffic, account: str, plan: dict, title: str, started: float) -> dict:
     checked = 0.0
+    generated, retried = started, False
     while True:
         traffic.poll()
         gw.close_promos(page, account)
@@ -299,13 +332,29 @@ def wait_song(page, traffic: Traffic, account: str, plan: dict, title: str, star
         if traffic.errors:
             raise gw.Failure(1, f"Flow Music returned no track on {account}: {traffic.errors[0][:200]}")
         for clip in traffic.clips.values():
-            if (clip.get("title") == title and clip.get("audio_url")
-                    and (clip.get("duration") or {}).get("status") == "completed"):
+            if clip.get("title") != title:
+                continue
+            traffic.started = True
+            if clip.get("audio_url") and (clip.get("duration") or {}).get("status") == "completed":
                 return {"id": clip["id"], "seconds": float(clip["duration"]["value"])}
-        elapsed = time.time() - started
+        now = time.time()
+        elapsed = now - started
         if not traffic.sent and elapsed > 60:
             raise gw.Failure(1, f"the prompt was never sent on {account}: no generation call within 60s")
-        if traffic.sent and elapsed > 30 and elapsed - checked >= 20:
+        # Until a song shows in traffic the page stays on the session: the library check navigates away.
+        waiting = not plan["ref_audio"] and not traffic.started
+        if waiting and now - generated > START_S:
+            if retried:
+                song = library_row(page, traffic, account, title)
+                if song:
+                    return song
+                gw.ledger({"kind": "flow-music", "event": "no-song", "account": account, "title": title})
+                raise gw.Failure(1, f"no track started on {account}: Flow Music made no song within {START_S}s of "
+                                    f"either of 2 Generate clicks ({page.url})")
+            gw.ledger({"kind": "flow-music", "event": "regenerate", "account": account, "title": title})
+            send(page, traffic, plan)
+            generated, retried = time.time(), True
+        elif not waiting and traffic.sent and elapsed > 30 and elapsed - checked >= 20:
             checked = elapsed
             song = library_row(page, traffic, account, title)
             if song:
@@ -443,13 +492,13 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
     title = f"{plan['title']}-{secrets.token_hex(2)}"
     controls = compose(page, {**plan, "title": title})
     if plan["ref_audio"]:
-        attach_audio(page, account, Path(plan["ref_audio"]), plan["upload_wait_s"])
+        attach_audio(page, traffic, account, Path(plan["ref_audio"]), plan["upload_wait_s"])
     if plan["dry_run"]:
         return {"ok": True, "dry_run": True, "account": account, "controls": controls, "credits": before}
     started = time.time()
     gw.ledger({"kind": "flow-music", "event": "queued", "account": account, "take": take, "model": plan["model"],
                "prompt": plan["sound"][:500], "title": title})
-    send(page, plan)
+    send(page, traffic, plan)
     session = page.url
     song = wait_song(page, traffic, account, plan, title, started)
     render_s = round(time.time() - started, 1)

@@ -178,6 +178,20 @@ def app_version(app: Path) -> str:
         return plistlib.load(f)["CFBundleShortVersionString"]
 
 
+# The clone's GoogleUpdater (--wake-all) holds Chrome's stdio, so context.close waited ~10 min for it (5 of 22
+# bench runs, 2026-10-01). A clone built before build_clone stripped it lacks this mark and is rebuilt.
+CLONE_RECIPE = "no-updater"
+
+
+def clone_current(want: str) -> bool:
+    try:
+        with open(CLONE_APP / "Contents" / "Info.plist", "rb") as f:
+            info = plistlib.load(f)
+    except (OSError, plistlib.InvalidFileException):
+        return False
+    return info.get("CFBundleShortVersionString") == want and info.get("GeminiWebCloneRecipe") == CLONE_RECIPE
+
+
 @contextlib.contextmanager
 def file_lock(path: Path, wait_s: float | None = None):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -224,7 +238,7 @@ def chrome_clone():
             except BlockingIOError:
                 idle = False
             # Running Chromes execute from the clone, so a Chrome update waits for the last of them.
-            if idle and not (CLONE_APP.exists() and app_version(CLONE_APP) == want):
+            if idle and not clone_current(want):
                 build_clone()
             fcntl.flock(use, fcntl.LOCK_SH)
         yield CLONE_APP
@@ -235,6 +249,9 @@ def build_clone() -> None:
     shutil.rmtree(staging, ignore_errors=True)
     try:
         subprocess.run(["cp", "-Rc", str(SOURCE_APP), str(staging)], check=True, timeout=300)
+        for updater in staging.glob("Contents/Frameworks/*/Versions/*/Helpers/GoogleUpdater.app"):
+            shutil.rmtree(updater)
+        shutil.rmtree(staging / "Contents" / "Library" / "LaunchServices", ignore_errors=True)
         info_path = staging / "Contents" / "Info.plist"
         with open(info_path, "rb") as f:
             info = plistlib.load(f)
@@ -243,6 +260,7 @@ def build_clone() -> None:
         info["LSBackgroundOnly"] = True
         info["CFBundleIdentifier"] = CLONE_ID
         info["CFBundleName"] = info["CFBundleDisplayName"] = "Gemini Web Automation"
+        info["GeminiWebCloneRecipe"] = CLONE_RECIPE
         with open(info_path, "wb") as f:
             plistlib.dump(info, f)
         subprocess.run(["xattr", "-cr", str(staging)], check=True, timeout=120)

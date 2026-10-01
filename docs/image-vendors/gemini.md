@@ -322,6 +322,25 @@ opens Flow Music's "necessary rights" notice. The engine clicks I agree only for
 under `agreed_flow_music` in `~/.gemini-web/notices.json` (his Gemini-app yes in `agreed` does not cover Flow
 Music); any other account exits 4. No account is listed yet, so the reference-track path is unverified live.
 
+**Route bench 2026-10-01** — 5 instrumental prompts × 2 runs per route, interleaved two at a time over
+12:13–12:57 UTC, Lyria 3.5 on both, about 60 s songs (`--length short` on the app, `--duration 60` on flow), no
+`--account`. "To saved" is the time from start to the ledger `saved` row.
+App: 9/10 ok (90 %); to saved median 68 s, p90 83 s; to file median 76 s; takes 57–70 s, 1.4–1.7 MB mp3.
+1 failure: "Gemini answered without running the music tool" (egbogd, after 42 s). No daily wall was hit.
+Flow: 7/10 ok (70 %); to saved median 34 s, p90 38 s; to file median 63 s; takes 60–65 s, about 1.0 MB mp3;
+5 credits a song. 3 failures: "no track after 600 s" (locomthebest 2, com 1). None was charged and none of
+those songs reached the library, so each cost a full 600 s.
+Fan-out `--accounts 3`: 2/2 runs ok, 6/6 takes on com, egbogd and locomthebest, 15 credits each.
+Flow Music spent 65 credits in total.
+Five runs from both routes took 140–746 s to the file although they saved at 34–75 s. The automation Chrome
+woke `GoogleUpdater --wake-all`, which inherited Chrome's stdio sockets, so Playwright's context close waited
+until the updater exited, about 10 minutes later. Since then `build_clone` strips GoogleUpdater.app and the
+privileged helper from the clone (recipe `no-updater` in its Info.plist forces one rebuild of an older clone),
+and a flow Generate that starts no song is clicked once more at 90 s and fails 90 s later instead of at 600 s.
+Default: the app route stays the default. It succeeds more often, it fails fast, and it spends no credits.
+Use flow when its features are needed, or with `--accounts 2+` when the time to a take matters: one Flow
+failure costs 600 s, and in this bench a fan-out never lost a take.
+
 **Sound effects** — `bin/gemini-sfx` runs `bin/gemini-video --model omni --resolution 360p` (4/6/8/10 s =
 4/5/6/7 credits) with a prompt that asks for an isolated sound on a close-up of its source. It keeps only the
 soundtrack: trims silence at both ends (-50 dB), applies two-pass loudnorm to -16 LUFS / -1.5 dBTP, and

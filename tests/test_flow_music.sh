@@ -459,6 +459,186 @@ assert code == 1, (code, result)
 code, result = fan("good", "dry", extra=("--dry-run",))
 assert code == 0 and result["dry_run"] and len(result["runs"]) == 2, (code, result)
 
+# The wait after Generate: a second Generate when no song shows within START_S, a fast failure after it, and only
+# our own job's stream counts as sent.
+class Reply:
+    status = 200
+
+    def __init__(self, path, body=None):
+        self.url, self.body = fm.SITE + path, body or {}
+
+    def json(self):
+        return self.body
+
+
+class WaitPage:
+    url = "https://www.flowmusic.app/session/w"
+
+    def __init__(self, on_generate=()):
+        self.clock, self.clicks, self.on_generate, self.handler = 1000.0, 0, list(on_generate), None
+
+    def on(self, event, handler):
+        self.handler = handler
+
+    def locator(self, selector):
+        return self
+
+    def count(self):
+        return 0
+
+    def get_by_text(self, text, exact=False):
+        return self
+
+    def get_by_role(self, role, name=None, exact=False):
+        assert (role, name) == ("button", "Generate"), (role, name)
+        return self
+
+    def click(self, timeout=None):
+        self.clicks += 1
+        for reply in (self.on_generate.pop(0) if self.on_generate else []):
+            self.handler(reply)
+
+    def wait_for_timeout(self, ms):
+        self.clock += ms / 1000
+
+
+song_clip = {"c1": {"id": "c1", "title": "w-1", "audio_url": "https://x/c1",
+                    "duration": {"status": "completed", "value": "61.5"}}}
+wait_plan = {"ref_audio": None, "timeout_s": 600}
+library_calls = []
+saved = (fm.time, fm.library_row)
+fm.library_row = lambda page, traffic, account, title: library_calls.append(page.clock) or None
+
+
+def use_clock(page):
+    fm.time = type("Clock", (), {"time": staticmethod(lambda: page.clock)})
+
+
+def wait(page):
+    use_clock(page)
+    traffic = fm.Traffic(page)
+    fm.send(page, traffic, wait_plan)
+    return traffic, fm.wait_song(page, traffic, "com", wait_plan, "w-1", page.clock)
+
+
+try:
+    tool_call = Reply("/__api/producer/tool-call", {"job_id": "j1"})
+    retry_page = WaitPage([[tool_call], [Reply("/__api/producer/tool-call", {"job_id": "j2"}),
+                                         Reply("/__api/clips", {"clips": song_clip})]])
+    traffic, song = wait(retry_page)
+    assert song == {"id": "c1", "seconds": 61.5} and retry_page.clicks == 2 and not library_calls, (song, retry_page.clicks)
+    assert 1090 < retry_page.clock < 1100 and traffic.jobs == {"j1", "j2"}, (retry_page.clock, traffic.jobs)
+    rows = [json.loads(line) for line in open(gw.ROOT / "jobs.jsonl")]
+    assert [r["event"] for r in rows if r.get("kind") == "flow-music" and r.get("title") == "w-1"] == ["regenerate"], rows
+
+    dead_page = WaitPage([[tool_call], [tool_call]])
+    try:
+        wait(dead_page)
+        raise AssertionError("a Generate that starts no song must fail fast")
+    except gw.Failure as failure:
+        assert failure.reason.startswith("no track started on com: Flow Music made no song within 90s"), failure.reason
+        assert doctor.classify_browser(1, failure.reason)[1:4:2] == ("browser no output", "ours"), \
+            doctor.classify_browser(1, failure.reason)
+    assert dead_page.clicks == 2 and 1180 < dead_page.clock < 1190 and library_calls == [dead_page.clock], \
+        (dead_page.clicks, dead_page.clock, library_calls)
+
+    stray_page = WaitPage([[Reply("/__api/messages/old-job/stream")]])
+    use_clock(stray_page)
+    traffic = fm.Traffic(stray_page)
+    traffic.pending.append(Reply("/__api/messages/j1/stream"))
+    fm.send(stray_page, traffic, wait_plan)
+    traffic.poll()
+    assert not traffic.sent and stray_page.clicks == 1, traffic.sent
+    try:
+        fm.wait_song(stray_page, traffic, "com", wait_plan, "w-1", stray_page.clock)
+        raise AssertionError("another job's stream must not count as sent")
+    except gw.Failure as failure:
+        assert failure.reason.startswith("the prompt was never sent on com"), failure.reason
+    traffic.pending += [Reply("/__api/producer/tool-call", {"job_id": "j9"}), Reply("/__api/messages/j9/stream")]
+    traffic.poll()
+    assert traffic.sent and traffic.jobs == {"j9"}, traffic.jobs
+    chat = fm.Traffic(WaitPage())
+    chat.arm(chat=True)
+    chat.pending.append(Reply("/__api/messages/m1/stream"))
+    chat.poll()
+    assert chat.sent, "the reference-audio chat has no tool call; its stream is the send"
+finally:
+    fm.time, fm.library_row = saved
+
+
+# The reference upload: the newest chooser gets the file, upload-check-status decides, and a dropped chip is a refusal.
+class Chooser:
+    def __init__(self):
+        self.files = None
+
+    def set_files(self, files):
+        self.files = files
+
+
+class UploadPage(WaitPage):
+    def __init__(self, keep_chip, toasts=(), flags=None):
+        super().__init__()
+        self.keep_chip, self.toasts, self.flags, self.choosers, self.set_at = keep_chip, list(toasts), flags or {}, [], None
+        self.handlers = {}
+
+    def on(self, event, handler):
+        self.handlers[event] = handler
+
+    def get_by_role(self, role, name=None, exact=False):
+        self.asked = (role, name)
+        return self
+
+    @property
+    def first(self):
+        return self
+
+    def click(self, timeout=None):
+        if self.asked[0] == "menuitem":
+            for _ in range(2):
+                self.choosers.append(Chooser())
+                self.handlers["filechooser"](self.choosers[-1])
+
+    def count(self):
+        if getattr(self, "asked", None) == ("button", "Remove ref.mp3"):
+            done = self.set_at is not None and self.clock - self.set_at > 3
+            return int(self.keep_chip or not done)
+        return 0
+
+    def evaluate(self, script, arg=None):
+        assert script == gw.PAGE_DUMP, script
+        return {"toasts": self.toasts if self.clock - self.set_at > 3 else []}
+
+    def wait_for_timeout(self, ms):
+        super().wait_for_timeout(ms)
+        if self.set_at is None and any(c.files for c in self.choosers):
+            self.set_at = self.clock
+        if self.set_at is not None:
+            done = self.clock - self.set_at > 3
+            body = {"status": "complete", **self.flags} if done else {"status": "pending"}
+            self.handlers["response"](Reply("/__api/producer/upload-audio/u1/upload-check-status", body))
+
+
+ref = fm.Path(work) / "ref.mp3"
+try:
+    good = UploadPage(keep_chip=True)
+    use_clock(good)
+    fm.attach_audio(good, fm.Traffic(good), "com", ref, 30)
+    assert [c.files for c in good.choosers] == [None, str(ref)] and good.clock - good.set_at < 6, \
+        ([c.files for c in good.choosers], good.clock)
+    vocal = "This track contains vocals. Uploading tracks with vocals is not available in your region."
+    for page, said in ((UploadPage(False, ["Notification Error" + vocal]), vocal),
+                       (UploadPage(False, flags={"has_vocals": True, "has_cid_match": False}), "has_vocals")):
+        use_clock(page)
+        try:
+            fm.attach_audio(page, fm.Traffic(page), "com", ref, 30)
+            raise AssertionError("a dropped chip must fail the upload")
+        except gw.Failure as failure:
+            assert failure.reason == "Flow Music refused the reference audio upload: " + said, failure.reason
+            assert doctor.classify_browser(1, failure.reason)[1] == "browser upload", doctor.classify_browser(1, failure.reason)
+        assert page.clock - page.set_at < 6, page.clock
+finally:
+    fm.time = saved[0]
+
 # Every failure the route raises lands on a named llm-doctor word.
 words = {"Flow Music UI drift: no compose panel (Toggle compose panel)": "browser drift",
          "Flow Music did not load within 45s (https://www.flowmusic.app/session)": "browser drift",
@@ -475,6 +655,48 @@ for reason, word in words.items():
 assert doctor.classify_browser(3, "com is out of Flow Music credits")[0] == "walled"
 assert doctor.classify_browser(4, "Flow Music shows com signed out; the owner signs in once")[1] == doctor.BROWSER_OWNER_STEP
 print("engine checks ok")
+
+
+class Shown:
+    def __init__(self, page, key):
+        self.page, self.key, self.first = page, key, self
+
+    def count(self):
+        return int(self.key in self.page.shown)
+
+    def is_visible(self, timeout=None):
+        return self.key in self.page.shown
+
+    def click(self, timeout=None):
+        self.page.clicked.append(self.key)
+
+
+class NoticePage:
+    def __init__(self, *shown):
+        self.shown, self.clicked = set(shown), []
+
+    def get_by_role(self, role, name=None, exact=False):
+        return Shown(self, (role, name))
+
+    def get_by_text(self, text, exact=False):
+        return Shown(self, ("text", text))
+
+    def locator(self, selector):
+        raise AssertionError("the upload notice has no dialog container to look in")
+
+
+consent = ("button", "I agree"), ("text", "necessary rights")
+(gw.ROOT / fm.NOTICES).write_text(json.dumps({fm.NOTICE_KEY: ["com"]}))
+assert fm.answer_notice(NoticePage(), "com") is False
+assert fm.answer_notice(NoticePage(consent[0]), "com") is False
+agreed = NoticePage(*consent)
+assert fm.answer_notice(agreed, "com") is True and agreed.clicked == [("button", "I agree")], agreed.clicked
+stranger = NoticePage(*consent)
+try:
+    fm.answer_notice(stranger, "abel")
+    raise AssertionError("an account without the owner's yes agreed to the upload notice")
+except gw.Failure as failure:
+    assert failure.code == 4 and "agreed_flow_music" in failure.reason and not stranger.clicked, failure.reason
 PY
 
 printf 'PASS: test_flow_music (%s asserts)\n' "$asserts"

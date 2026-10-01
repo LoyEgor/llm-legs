@@ -452,7 +452,7 @@ plist = '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleShortVersi
 g.SOURCE_APP = app
 (g.CLONE_APP / "Contents").mkdir(parents=True)
 (g.CLONE_APP / "Contents" / "Info.plist").write_text(plist % "1")
-built = []
+real_build, built = g.build_clone, []
 g.build_clone = lambda: built.append(1)
 with open(g.ROOT / ".clone-use.lock", "w") as other:
     fcntl.flock(other, fcntl.LOCK_SH)
@@ -460,6 +460,24 @@ with open(g.ROOT / ".clone-use.lock", "w") as other:
         assert clone == g.CLONE_APP and built == []
 with g.chrome_clone():
     assert built == [1]
+(g.CLONE_APP / "Contents" / "Info.plist").write_text(plist % "2")
+with g.chrome_clone():
+    assert built == [1, 1], "a clone of the current Chrome that still carries its GoogleUpdater was kept"
+
+import subprocess as sp
+helpers = app / "Contents" / "Frameworks" / "Google Chrome Framework.framework" / "Versions" / "2" / "Helpers"
+(helpers / "GoogleUpdater.app" / "Contents").mkdir(parents=True)
+(helpers / "app_mode_loader").write_text("x")
+(app / "Contents" / "Library" / "LaunchServices").mkdir(parents=True)
+(app / "Contents" / "Library" / "LaunchServices" / "com.google.Chrome.UpdaterPrivilegedHelper").write_text("x")
+real_run = g.subprocess.run
+g.subprocess.run = lambda argv, **kw: real_run(argv, **kw) if argv[0] == "cp" else sp.CompletedProcess(argv, 0)
+real_build()
+g.subprocess.run = real_run
+clone_helpers = g.CLONE_APP / helpers.relative_to(app)
+assert not (clone_helpers / "GoogleUpdater.app").exists() and (clone_helpers / "app_mode_loader").exists()
+assert not (g.CLONE_APP / "Contents" / "Library" / "LaunchServices").exists()
+assert g.clone_current("2") and not g.clone_current("3")
 EOF
 
 VEO="$OUT/veo.mp4"
