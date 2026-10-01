@@ -57,9 +57,21 @@ def set_wall(account: str, until: float) -> None:
     gw.update_json(WALLS, lambda data: data.update({account: int(until)}))
 
 
-def note_balance(account: str, credits: int | None) -> None:
+def grant_cycle(grants: list) -> dict:
+    refills = sorted(g["created_at"] for g in grants if g.get("type") == "subscription-refill" and g.get("created_at"))
+    if not refills:
+        return {}
+    since = refills[-1]
+    started = gw.datetime.datetime.fromisoformat(since.replace("Z", "+00:00")).timestamp()
+    total = sum(int(g.get("credits") or 0) for g in grants if (g.get("created_at") or "")[:10] >= since[:10])
+    return {"music_credits_total": total, "music_credits_renews_at": gw.month_after(started),
+            "music_credits_total_source": f"grants since the subscription refill of {since[:10]}"}
+
+
+def note_balance(account: str, credits: int | None, grants: list | None = None) -> None:
     if credits is not None:
-        gw.write_meta(account, music_signed_in=True, music_credits=credits, music_credits_at=int(time.time()))
+        gw.write_meta(account, music_signed_in=True, music_credits=credits, music_credits_at=int(time.time()),
+                      **grant_cycle(grants or []))
 
 
 def rotation(price: int) -> list[str]:
@@ -87,6 +99,7 @@ class Traffic:
     def __init__(self, page):
         self.pending: list = []
         self.balance: int | None = None
+        self.grants: list = []
         self.clips: dict = {}
         self.errors: list[str] = []
         self.out_of_credits = False
@@ -112,7 +125,9 @@ class Traffic:
                 self.out_of_credits = True
             with contextlib.suppress(Exception):
                 if path == "/__api/billing/credits":
-                    self.balance = int(response.json()["data"]["credits_remaining"])
+                    body = response.json()
+                    self.balance = int(body["data"]["credits_remaining"])
+                    self.grants = [g for g in body.get("add_token_transactions") or [] if isinstance(g, dict)]
                 elif path == "/__api/clips":
                     self.clips.update(response.json().get("clips") or {})
                 elif path.endswith("/upload-check-status"):
@@ -485,7 +500,7 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
     traffic = Traffic(page)
     open_page(page, traffic, account, "/session")
     before = traffic.balance
-    note_balance(account, before)
+    note_balance(account, before, traffic.grants)
     if before < plan["price"]:
         raise gw.Failure(3, f"{account} holds {before} Flow Music credits, under the {plan['price']} a song costs",
                          account=account)
@@ -504,11 +519,11 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
     render_s = round(time.time() - started, 1)
     open_page(page, traffic, account, "/library/my-songs")
     after = traffic.balance
-    note_balance(account, after)
+    note_balance(account, after, traffic.grants)
     charged = before - after
     audio, size, stems = save_song(page, traffic, account, title, plan, take, split=True)
     stems_charged = after - traffic.balance if plan["stems"] else None
-    note_balance(account, traffic.balance)
+    note_balance(account, traffic.balance, traffic.grants)
     seconds = song["seconds"]
     gw.ledger({"kind": "flow-music", "event": "saved", "account": account, "clip": song["id"], "model": plan["model"],
                "bytes": size, "seconds": round(seconds, 1), "charged": charged, "credits": traffic.balance,
@@ -667,7 +682,7 @@ def cmd_status(args) -> None:
         page = context.new_page()
         traffic = Traffic(page)
         open_page(page, traffic, args.account, "/settings")
-        note_balance(args.account, traffic.balance)
+        note_balance(args.account, traffic.balance, traffic.grants)
         gw.emit({"ok": True, "account": args.account, "music_credits": traffic.balance})
 
 

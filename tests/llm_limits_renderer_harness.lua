@@ -4160,8 +4160,8 @@ do
 end
 
 -- Flow credits and the media walls ride on the Gemini rows the store already lists, read from the
--- gemini-web files alone: no row of their own, no email, the age and the wall clock times stated.
-do
+-- gemini-web files alone, as bar rows in the weekly row's own columns: fv, fm, gm, no email.
+;(function()
   local now = 1790000000
   local clock = require("menu-style").clock
   local root = geminiWebFake.root
@@ -4195,46 +4195,86 @@ do
     holdFake.getenv = nil
     return module.menuItems()
   end
+  local media = { fv = true, fm = true, gm = true }
   local function mediaRows(menu, account)
     local rows = {}
     for index = accountIndex(menu, account) + 1, #menu do
       local text = titleText(menu[index])
       if not text:match("^%s") then break end
-      if text:match("^        Flow ") or text:match("^        %a+ wall until ") then
-        rows[#rows + 1] = menu[index]
-      end
+      if media[text:match("^        (%a%a)  ") or ""] then rows[#rows + 1] = menu[index] end
     end
     return rows
   end
+  local day = require("menu-style").day
+  local function resetText(ts)
+    if ts - now >= 604800 then return day(ts) end
+    if os.date("%Y-%m-%d", ts) ~= os.date("%Y-%m-%d", now) then return dayText(ts) end
+    return os.date("%H:%M", ts)
+  end
+  local function row(label, bar, pct, reset)
+    return string.format("        %s  %s  %4s  %9s", label, bar, pct, reset)
+  end
+  local function walled(label, untilEpoch) return row(label, "▓▓▓▓▓", "", resetText(untilEpoch)) end
+  local function unmeasured(label) return row(label, "░░░░░", "", "") end
+  local function texts(rows)
+    local out = {}
+    for index, item in ipairs(rows) do out[index] = titleText(item) end
+    return table.concat(out, " | ")
+  end
+  local function isRed(item) local red = redRuns(item.title) return #red == 1 and red[1] == titleText(item) end
   local menu = mediaMenu()
   local abel = mediaRows(menu, "abel")
-  assert(#abel == 1 and titleText(abel[1]) == "        Flow 120 cr · 3h ago · Flow Music 10510 cr · 1h ago"
-      .. " · video wall until "
-      .. clock(now + 7200, now) and abel[1].disabled == true,
-    "abel's Flow row is wrong: " .. (abel[1] and titleText(abel[1]) or "missing"))
-  local red = redRuns(abel[1].title)
-  assert(#red == 1 and red[1] == " · video wall until " .. clock(now + 7200, now),
-    "a standing video wall is not the row's one red run: " .. table.concat(red, "|"))
+  assert(#abel == 2 and titleText(abel[1]) == walled("fv", now + 7200) and isRed(abel[1])
+      and titleText(abel[2]) == unmeasured("fm") and #redRuns(abel[2].title) == 0
+      and abel[1].disabled == true and abel[2].disabled == true,
+    "a standing video wall is not fv's limit hit, or an unknown total drew a bar: " .. texts(abel))
   local egbor = mediaRows(menu, "egbor")
-  assert(#egbor == 1 and titleText(egbor[1]) == "        Flow 50 cr · 10m ago · Flow Music wall until "
-      .. clock(now + 3600, now) and #redRuns(egbor[1].title) == 1,
+  assert(#egbor == 2 and titleText(egbor[1]) == unmeasured("fv") and titleText(egbor[2]) == walled("fm", now + 3600)
+      and isRed(egbor[2]),
     "a gemini-web profile named apart from the roster did not map by its email, or kept an expired wall: "
-      .. (egbor[1] and titleText(egbor[1]) or "missing"))
+      .. texts(egbor))
   local mish = mediaRows(menu, "mish")
-  assert(#mish == 1 and titleText(mish[1]) == "        music wall until " .. clock(now + 26 * 3600, now),
-    "a logged-out account lost its music wall: " .. (mish[1] and titleText(mish[1]) or "missing"))
-  assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a Flow row")
+  assert(#mish == 1 and titleText(mish[1]) == walled("gm", now + 26 * 3600) and isRed(mish[1]),
+    "a logged-out account lost its music wall: " .. texts(mish))
+  assert(#mediaRows(menu, "quiet") == 0, "an account without a gemini-web reading grew a media row")
   for _, item in ipairs(menu) do
     local text = titleText(item)
     assert(not text:find("@", 1, true) and not text:find("secret", 1, true) and not text:find("999", 1, true)
         and not text:find("stray", 1, true),
       "the menu showed an email, a project or an unmapped gemini-web profile: " .. text)
   end
+  ;(function()
+    mediaFixture.vendors.gemini.accounts[#mediaFixture.vendors.gemini.accounts + 1] =
+      { account = "bars", five_hour = bucket(10), weekly = bucket(20) }
+    mediaFixture.vendors.gemini.accounts[#mediaFixture.vendors.gemini.accounts + 1] =
+      { account = "refill", five_hour = bucket(10), weekly = bucket(20) }
+    geminiWebFake.files[root .. "/accounts/bars.json"] = { credits = 828, credits_at = now - 3 * 3600,
+      credits_total = 1000, credits_total_source = "site",
+      music_credits = 10510, music_credits_at = now - 3600, music_credits_total = 10530,
+      music_credits_renews_at = now + 30 * 86400 }
+    geminiWebFake.files[root .. "/accounts/refill.json"] = { credits = 1000, credits_at = now - 600,
+      credits_total = 1050, credits_total_source = "balance after refill", credits_refilled_at = now - 86400,
+      credits_renews_at = now + 3 * 86400 }
+    geminiWebFake.files[root .. "/flow-music-walls.json"]["refill"] = now + 3600
+    menu = mediaMenu()
+    local weekly = titleText(menu[accountIndex(menu, "bars") + 2])
+    local bars = mediaRows(menu, "bars")
+    assert(#bars == 2 and titleText(bars[1]) == row("fv", "▓░░░░", "17%", "–")
+        and titleText(bars[2]) == row("fm", "░░░░░", "0%", day(now + 30 * 86400)) and #redRuns(bars[1].title) == 0,
+      "the credit bars are wrong: " .. texts(bars))
+    assert(weekly:match("^        wk  ") and #weekly == #titleText(bars[1])
+        and weekly:find("[▓░]") == titleText(bars[1]):find("[▓░]"),
+      "a credit bar is not cut to the weekly row's columns: " .. weekly .. " | " .. titleText(bars[1]))
+    local refill = mediaRows(menu, "refill")
+    assert(#refill == 2 and titleText(refill[1]) == row("fv", "░░░░░", "5%", resetText(now + 3 * 86400))
+        and titleText(refill[2]) == walled("fm", now + 3600),
+      "a refill-derived total or a wall over an unread pool is wrong: " .. texts(refill))
+  end)()
   geminiWebFake.files = nil
   local bare = mediaMenu()
   for _, account in ipairs({ "abel", "egbor", "mish", "quiet" }) do
-    assert(#mediaRows(bare, account) == 0, "a missing gemini-web store still drew a Flow row")
+    assert(#mediaRows(bare, account) == 0, "a missing gemini-web store still drew a media row")
   end
-end
+end)()
 
 return "PASS: Hammerspoon projection contract"

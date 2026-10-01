@@ -377,6 +377,77 @@ assert tried == ["walled", "rich"] and '"account": "rich"' in out.getvalue(), (t
 assert g.walls()["walled"] > time.time() + g.WALL_SECONDS, g.walls()
 EOF
 
+# Flow credit totals: the allowance the activity page states, once a day, and a refill jump as the cycle's start.
+assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" <<'EOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import gemini_web as g
+
+
+class Body:
+    def __init__(self, page):
+        self.page = page
+
+    def inner_text(self, timeout=None):
+        self.page.reads += 1
+        return self.page.text if self.page.reads > 1 else "Loading"
+
+
+class Page:
+    def __init__(self, text):
+        self.text, self.reads, self.urls, self.closed = text, 0, [], False
+
+    def goto(self, url, wait_until=None, timeout=None):
+        self.urls.append(url)
+
+    def locator(self, selector):
+        return Body(self)
+
+    def wait_for_timeout(self, ms):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+class Context:
+    def __init__(self, text):
+        self.pages_made = []
+        self.text = text
+
+    def new_page(self):
+        self.pages_made.append(Page(self.text))
+        return self.pages_made[-1]
+
+
+stated = ("Google Flow activity 1,000 Google Flow credits are included as part of your Google AI plan and\n"
+          "refresh monthly. You also receive an additional 50 Google Flow credits daily.")
+context = Context(stated)
+g.read_allowance(context, "totals")
+meta = g.read_meta("totals")
+assert (meta["credits_total"], meta["credits_total_source"]) == (1000, "site"), meta
+assert context.pages_made[0].urls == [g.ALLOWANCE_URL] and context.pages_made[0].closed, context.pages_made[0].urls
+g.read_allowance(context, "totals")
+assert len(context.pages_made) == 1, "the allowance was read again within a day"
+g.write_meta("totals", credits_total_at=0)
+g.read_allowance(Context("Upgrade your plan for more Google Flow credits"), "totals")
+assert g.read_meta("totals")["credits_total"] == 1000, "a page without the allowance erased the total"
+
+g.note_credits("totals", 828)
+g.note_credits("totals", 700)
+assert "credits_refilled_at" not in g.read_meta("totals"), "a spend counted as a refill"
+g.note_credits("totals", 1650)
+meta = g.read_meta("totals")
+assert meta["credits_renews_at"] == g.month_after(meta["credits_refilled_at"]) and meta["credits_total"] == 1000, meta
+g.write_meta("fresh", credits=20)
+g.note_credits("fresh", 1050)
+meta = g.read_meta("fresh")
+assert (meta["credits_total"], meta["credits_total_source"]) == (1050, "balance after refill"), meta
+g.note_credits("fresh", None)
+assert g.read_meta("fresh")["credits"] == 1050
+assert g.month_after(1769817600) == 1772236800, g.month_after(1769817600)
+EOF
+
 # Rotation by cached balance, past a sign-in step, and inside the gemini worker pool; the clone stays while in use.
 assert env GEMINI_WEB_DIR="$GW" python3 - "$ROOT/share" "$GEMINIB_PROFILES_DIR/.geminib/disabled" <<'EOF'
 import argparse, contextlib, fcntl, io, os, sys, time

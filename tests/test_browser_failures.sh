@@ -195,19 +195,43 @@ assert [(r["kind"], r["event"], r["account"], r["route"]) for r in rows[-2:]] ==
     ("dialog", "closed", "egbogd", "gemini-app")] * 2, rows[-2:]
 assert gw.close_promos(promo, "egbogd") == 0 and promo.pressed == ["Escape", "Not now"]
 
-import threading, time
-hides, real_hide = [], gw.hide_clone
-gw.hide_clone, gw.HIDE_EVERY_S = (lambda account="-": hides.append(account)), 0.01
-done = threading.Event()
-keeper = threading.Thread(target=gw.keep_hidden, args=("com", done))
-keeper.start()
-time.sleep(0.2)
-done.set()
-keeper.join(1)
-count = len(hides)
-time.sleep(0.05)
-assert not keeper.is_alive() and count >= 3 and len(hides) == count and set(hides) == {"com"}, hides
-gw.hide_clone = real_hide
+import subprocess, tempfile, time
+launched, real_popen = [], gw.subprocess.Popen
+gw.subprocess.Popen = lambda argv, **kw: launched.append(argv) or "watcher"
+assert gw.keep_hidden("com") == "watcher" and launched == [["osascript", "-e", gw.HIDE_WATCH, gw.CLONE_ID]], launched
+def refused(argv, **kw): raise OSError("no osascript")
+gw.subprocess.Popen = refused
+warned, real_warn = [], gw.warn
+gw.warn = lambda account, reason, route=None: warned.append((account, reason))
+assert gw.keep_hidden("com") is None and warned == [("com", "could not keep the automation Chrome hidden: no osascript")], warned
+gw.subprocess.Popen, gw.warn = real_popen, real_warn
+script = gw.HIDE_WATCH
+assert "delay 0.2" in script and "then return" in script and "visible is true" in script, script
+with tempfile.TemporaryDirectory() as scratch:
+    compiled = subprocess.run(["osacompile", "-o", scratch + "/watch.scpt", "-e", script], capture_output=True, text=True)
+    assert compiled.returncode == 0, compiled.stderr
+    started = time.time()
+    lone = subprocess.run(["osascript", "-e", script, "com.example.no-such-clone"], capture_output=True, timeout=20)
+    assert time.time() - started < 15, "the hide watcher kept polling with no clone running"
+
+class ToastPage:
+    def __init__(self, url, texts): self.url, self.texts = url, texts
+    def evaluate(self, script):
+        assert "gwToasts" in script, script
+        if self.texts is None: raise RuntimeError("Target page, context or browser has been closed")
+        return self.texts
+class ToastContext:
+    def __init__(self, pages): self.pages = pages
+before = len((gw.ROOT / "jobs.jsonl").read_text().splitlines())
+gw.note_toasts(ToastContext([ToastPage("https://labs.google/fx/tools/flow", ["Not enough AI credits on this plan", "Copied"]),
+                             ToastPage("about:blank", None),
+                             ToastPage("https://labs.google/fx/tools/flow/project/x", ["Copied", "Video ready"])]), "egbogd")
+gw.note_toasts(ToastContext([ToastPage("https://labs.google/fx/tools/flow", [])]), "egbogd")
+logged = [json.loads(line) for line in (gw.ROOT / "jobs.jsonl").read_text().splitlines()][before:]
+assert len(logged) == 1 and logged[0]["event"] == "toasts" and logged[0]["account"] == "egbogd" \
+    and logged[0]["route"] == "flow" \
+    and logged[0]["texts"] == ["Not enough AI credits on this plan", "Copied", "Video ready"], logged
+assert "sessionStorage.setItem('gwToasts'" in gw.TOAST_LOG and "[role=alert]" in gw.TOAST_LOG
 PY
 
 assert python3 - "$ROOT" "$NOW" "$HOME" <<'PY'

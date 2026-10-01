@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import base64
+import calendar
 import contextlib
+import datetime
 import fcntl
 import json
 import os
@@ -24,7 +26,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -67,6 +68,36 @@ PAGE_DUMP = """() => {
             .map(b => (b.getAttribute('aria-label') || b.innerText || '').trim().slice(0, 60)).filter(Boolean).slice(0, 80),
           body: (document.body ? document.body.innerText : '').slice(0, 4000)};
 }"""
+
+
+# A toast that came and went during a run that still succeeded leaves no failure note, so every page
+# keeps the texts it showed; sessionStorage outlives the run's own navigations.
+TOAST_LOG = """(() => {
+  const sel = '[role=alert],[role=status],mat-snack-bar-container,simple-snack-bar';
+  let queued = false;
+  const scan = () => {
+    queued = false;
+    let kept;
+    try { kept = JSON.parse(sessionStorage.getItem('gwToasts') || '[]'); } catch (e) { return; }
+    for (const el of document.querySelectorAll(sel)) {
+      const text = (el.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 200);
+      if (/[a-z]{3}/i.test(text) && !kept.includes(text) && kept.length < 20) kept.push(text);
+    }
+    try { sessionStorage.setItem('gwToasts', JSON.stringify(kept)); } catch (e) {}
+  };
+  new MutationObserver(() => { if (!queued) { queued = true; setTimeout(scan, 500); } })
+    .observe(document, {subtree: true, childList: true, characterData: true});
+})()"""
+
+
+def note_toasts(context, account: str) -> None:
+    texts = []
+    for page in list(context.pages):
+        with contextlib.suppress(Exception):
+            texts += [text for text in page.evaluate("() => JSON.parse(sessionStorage.getItem('gwToasts') || '[]')")
+                      if text not in texts]
+    if texts:
+        ledger({"account": account, "event": "toasts", "route": route_of(context.pages[-1].url), "texts": texts})
 
 
 def route_of(url: str) -> str:
@@ -322,11 +353,13 @@ def browser(account: str, visible: bool = False):
             str(profile), executable_path=chrome_binary(clone), headless=False, args=flags,
             ignore_default_args=["--enable-automation"],
             viewport=None, accept_downloads=True, locale="en-US")
-        hidden = threading.Event()
+        with contextlib.suppress(Exception):
+            context.add_init_script(TOAST_LOG)
+        watcher = None
         if not visible:
             hide_clone(account)
             context.on("page", lambda page: hide_clone(account))
-            threading.Thread(target=keep_hidden, args=(account, hidden), daemon=True).start()
+            watcher = keep_hidden(account)
         try:
             yield context
         except Exception as error:
@@ -337,19 +370,38 @@ def browser(account: str, visible: bool = False):
             report(account, error)
             raise
         finally:
-            hidden.set()
+            with contextlib.suppress(Exception):
+                note_toasts(context, account)
             with contextlib.suppress(Exception):
                 context.close()
+            if watcher:
+                watcher.terminate()
 
 
-HIDE_EVERY_S = 3.0
+# Chrome brings itself forward on a new window, a download or a dialog. One osascript polls for the
+# whole run: an osascript spawned every 3 s left the page up long enough for the owner to read it.
+# It quits once no clone runs, so a killed run cannot leave it polling forever.
+HIDE_WATCH = """on run argv
+  set bundleId to item 1 of argv
+  repeat
+    tell application "System Events"
+      if not (exists (first process whose bundle identifier is bundleId)) then return
+      try
+        set visible of (every process whose bundle identifier is bundleId and visible is true) to false
+      end try
+    end tell
+    delay 0.2
+  end repeat
+end run"""
 
 
-def keep_hidden(account: str, done) -> None:
-    """Chrome brings itself forward on a new window, a download or a dialog, and a hidden app takes no stray
-    click; the pages keep rendering (the backgrounding flags), so hiding is repeated until the run ends."""
-    while not done.wait(HIDE_EVERY_S):
-        hide_clone(account)
+def keep_hidden(account: str) -> subprocess.Popen | None:
+    try:
+        return subprocess.Popen(["osascript", "-e", HIDE_WATCH, CLONE_ID],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as error:
+        warn(account, f"could not keep the automation Chrome hidden: {error}")
+        return None
 
 
 # macOS Chrome pulls --window-position back until 40 px of the window are on screen, so only hiding
@@ -617,6 +669,55 @@ def open_project(page, account: str) -> str:
     write_meta(account, project=project)
     composer_ready(page, account)
     return project
+
+
+ALLOWANCE_URL = "https://one.google.com/ai/activity"
+ALLOWANCE_TEXT = re.compile(r"([\d,]+) Google Flow credits are included as part of your Google AI plan and refresh (\w+)")
+REFILL_JUMP = 200
+ALLOWANCE_EVERY_S = 24 * 3600
+
+
+def month_after(epoch: float) -> int:
+    day = datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
+    year, month = (day.year + 1, 1) if day.month == 12 else (day.year, day.month + 1)
+    last = calendar.monthrange(year, month)[1]
+    return int(day.replace(year=year, month=month, day=min(day.day, last)).timestamp())
+
+
+def note_credits(account: str, credits: int | None) -> None:
+    if credits is None:
+        return
+    meta, now = read_meta(account), int(time.time())
+    fields = {"credits": credits, "credits_at": now}
+    previous = meta.get("credits")
+    if isinstance(previous, int) and credits - previous >= REFILL_JUMP:
+        fields.update(credits_refilled_at=now, credits_renews_at=month_after(now),
+                      credits_renews_source="refill observed")
+        if meta.get("credits_total_source") != "site":
+            fields.update(credits_total=credits, credits_total_source="balance after refill")
+    write_meta(account, **fields)
+
+
+def read_allowance(context, account: str) -> None:
+    if time.time() - read_meta(account).get("credits_total_at", 0) < ALLOWANCE_EVERY_S:
+        return
+    page = context.new_page()
+    try:
+        page.goto(ALLOWANCE_URL, wait_until="domcontentloaded", timeout=30000)
+        found = None
+        for _ in range(20):
+            found = ALLOWANCE_TEXT.search(" ".join(page.locator("body").inner_text(timeout=5000).split()))
+            if found:
+                break
+            page.wait_for_timeout(500)
+        if found and found[2] == "monthly":
+            write_meta(account, credits_total=int(found[1].replace(",", "")), credits_total_source="site",
+                       credits_total_at=int(time.time()))
+    except Exception as error:  # noqa: BLE001
+        warn(account, f"could not read the Flow credit allowance: {str(error)[:120]}")
+    finally:
+        with contextlib.suppress(Exception):
+            page.close()
 
 
 def read_credits(page) -> int | None:
@@ -1150,11 +1251,11 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
             if state["email"] != meta["email"]:
                 raise Failure(1, f"profile {account} is signed in as {state['email']}, bound to {meta['email']}")
             credits = read_credits(page)
-            if credits is not None:
-                write_meta(account, credits=credits, credits_at=int(time.time()))
-                if credits < cost:
-                    raise Failure(3, f"{account} has {credits} Flow credits; {plan['what']} costs {cost}",
-                                  credits=credits)
+            note_credits(account, credits)
+            read_allowance(context, account)
+            if credits is not None and credits < cost:
+                raise Failure(3, f"{account} has {credits} Flow credits; {plan['what']} costs {cost}",
+                              credits=credits)
             if plan["extend"]:
                 project, quote = plan["extend"]["project"], None
                 chip = extend_composer(page, plan["extend"], plan["label"])
@@ -1237,7 +1338,7 @@ def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: f
                 if credits is not None and watcher.reply_credits is not None else None
             after = watcher.credits if watcher.credits is not None else \
                 (credits - cost if credits is not None else None)
-            write_meta(account, credits=after, credits_at=int(finished))
+            note_credits(account, after)
             first = saved[0]
             result = {"ok": True, "account": account, "email": meta["email"], "dest": first["dest"],
                     "model": first["model"] or (watcher.submitted or [None])[-1],
@@ -1382,8 +1483,8 @@ def cmd_status(args) -> None:
         page.get_by_role("button", name="New project", exact=True).wait_for(timeout=30000)
         dismiss_dialogs(page, args.account)
         credits = read_credits(page)
-        if credits is not None:
-            write_meta(args.account, credits=credits, credits_at=int(time.time()))
+        note_credits(args.account, credits)
+        read_allowance(context, args.account)
         bound = state["email"] == meta.get("email")
         emit({"ok": bound, "account": args.account, "email": state["email"],
               "bound_to": meta.get("email"), "credits": credits, "build": state["build"],

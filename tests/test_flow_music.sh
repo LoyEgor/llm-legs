@@ -386,6 +386,23 @@ assert {k: v for k, v in gw.read_meta("good").items() if k.startswith("music")} 
 assert gw.read_meta("good")["music_credits_at"] >= now and "credits" not in gw.read_meta("good")
 fm.note_balance("good", None)
 assert gw.read_meta("good")["music_credits"] == 10520
+grants = [{"created_at": "2026-10-01T01:02:32.8Z", "type": "grant", "credits": 500},
+          {"created_at": "2026-10-01T01:02:26.5Z", "type": "subscription-refill", "credits": 10000},
+          {"created_at": "2026-10-01T01:02:25.7Z", "type": "daily-free", "credits": 30},
+          {"created_at": "2026-09-30T09:00:00Z", "type": "daily-free", "credits": 30},
+          {"created_at": "2026-09-01T00:00:00Z", "type": "subscription-refill", "credits": 10000}]
+fm.note_balance("good", 10510, grants)
+cycle = {k: v for k, v in gw.read_meta("good").items() if k.startswith("music_credits_")}
+assert cycle == {"music_credits_at": cycle["music_credits_at"], "music_credits_total": 10530,
+                 "music_credits_renews_at": 1793494946,
+                 "music_credits_total_source": "grants since the subscription refill of 2026-10-01"}, cycle
+assert fm.grant_cycle([{"created_at": "2026-10-01T00:00:00Z", "type": "grant", "credits": 500}]) == {}
+traffic = fm.Traffic(type("P", (), {"on": lambda self, event, handler: None})())
+traffic.pending.append(type("R", (), {"url": fm.SITE + "/__api/billing/credits", "status": 200,
+                                      "json": lambda self: {"data": {"credits_remaining": 7.0},
+                                                            "add_token_transactions": grants[:2]}})())
+traffic.poll()
+assert traffic.balance == 7 and traffic.grants == grants[:2], (traffic.balance, traffic.grants)
 gw.write_meta("poor", music_credits=3, music_credits_at=now)
 gw.write_meta("gone", music_signed_in=False)
 gw.write_meta("dry", music_credits=2, music_credits_at=now - gw.WALL_SECONDS - 60)

@@ -184,7 +184,12 @@ against 1.2.1 below.
 `bin/gemini-video` → `bin/gemini-web` (`share/gemini_web.py`, Playwright 1.61 via `uv run --script`)
 drives flow.google.com in a hidden copy of Google Chrome (`~/.gemini-web/Gemini Web Automation.app`,
 `LSBackgroundOnly`, rebuilt when Chrome's version changes), one profile per geminib account name under
-`~/.gemini-web/profiles/`. It uses Flow's manual composer (the Agent toggle off): the settings popover
+`~/.gemini-web/profiles/`. Chrome unhides itself on a new window, a download or a dialog, so one
+`osascript` watcher (`HIDE_WATCH`) re-hides the clone every 0.2 s for the whole run and quits once no clone
+runs; the earlier 3 s re-hide left a page up long enough for the owner to read a toast (2026-10-01). Every
+toast a page showed (`[role=alert]`, `[role=status]`, snackbars) is kept in its sessionStorage and written
+at the run's end as one `event: toasts` row (`account`, `route`, `texts`) in `jobs.jsonl`, the record of a
+message that came and went during a run that still succeeded. It uses Flow's manual composer (the Agent toggle off): the settings popover
 picks Video, the model family, Frames or Ingredients, aspect, resolution, duration and x1; frames go into
 the Start/End slots, refs and an `--edit` video into the ingredient picker, each uploaded under a unique
 name. Before sending, the popover's own "Generating will use N credits" quote and chip must match the

@@ -264,24 +264,29 @@ local function rowTitle(account, label, bucket, dim, atLimit, barWarning, column
   return infoTitle(prefix .. bar .. suffix, false, dim, atLimit)
 end
 
-local function geminiMediaRow(media, now)
-  if not media then return nil end
-  local title
-  local function add(text, wall)
-    local run = infoTitle((title and " · " or "        ") .. text, wall)
-    title = title and title .. run or run
-  end
-  local function credits(pool, left, at)
-    if left then
-      add(string.format("%s %d cr", pool, math.floor(left)) .. (at and " · " .. style.ago(now - at) or ""))
+-- Labels: fv Flow video credits, fm Flow Music credits, gm the Gemini app's music. A standing wall
+-- is the pool's limit hit, drawn like any walled window; a pool without a known total is unmeasured.
+local function geminiMediaRows(media)
+  local rows = {}
+  if not media then return rows end
+  local function row(label, left, total, renewsAt, wall)
+    local title
+    if wall then
+      title = rowTitle("", label, { effective_pct = 100, resets_at = wall }, false, true, false, { pct = "" })
+    elseif left and total and total > 0 then
+      local used = math.max(0, total - left)
+      title = rowTitle("", label, { effective_pct = used / total * 100, resets_at = renewsAt }, false, used >= total)
+    elseif left then
+      title = rowTitle("", label, nil, false, false, false, { pct = "", reset = "" })
+    else
+      return
     end
+    rows[#rows + 1] = { title = title, disabled = true }
   end
-  credits("Flow", media.credits, media.creditsAt)
-  credits("Flow Music", media.musicCredits, media.musicCreditsAt)
-  if media.videoWall then add("video wall until " .. style.clock(media.videoWall, now), true) end
-  if media.musicWall then add("music wall until " .. style.clock(media.musicWall, now), true) end
-  if media.flowMusicWall then add("Flow Music wall until " .. style.clock(media.flowMusicWall, now), true) end
-  return title and { title = title, disabled = true } or nil
+  row("fv", media.credits, media.creditsTotal, media.creditsRenewsAt, media.videoWall)
+  row("fm", media.musicCredits, media.musicCreditsTotal, media.musicCreditsRenewsAt, media.flowMusicWall)
+  row("gm", nil, nil, nil, media.musicWall)
+  return rows
 end
 
 local vendorRefreshErrors, refreshErrorItem, appendRefreshErrorRows
@@ -922,8 +927,11 @@ local function geminiMediaState(roster, now)
     end
     if acct and roster[acct] and not state[acct] then
       state[acct] = {
-        credits = tonumber(meta.credits), creditsAt = tonumber(meta.credits_at),
-        musicCredits = tonumber(meta.music_credits), musicCreditsAt = tonumber(meta.music_credits_at),
+        credits = tonumber(meta.credits),
+        creditsTotal = tonumber(meta.credits_total), creditsRenewsAt = tonumber(meta.credits_renews_at),
+        musicCredits = tonumber(meta.music_credits),
+        musicCreditsTotal = tonumber(meta.music_credits_total),
+        musicCreditsRenewsAt = tonumber(meta.music_credits_renews_at),
         videoWall = standing(videoWalls, name), musicWall = standing(musicWalls, name),
         flowMusicWall = standing(flowMusicWalls, name),
       }
@@ -3083,8 +3091,9 @@ local function buildMenuItems()
             end
           end
           if isGeminiAccounts then
-            local mediaRow = geminiMediaRow(geminiMedia[acct], mediaNow)
-            if mediaRow then table.insert(menu, mediaRow) end
+            for _, mediaRow in ipairs(geminiMediaRows(geminiMedia[acct])) do
+              table.insert(menu, mediaRow)
+            end
           end
           if isAccountRows then
             appendRefreshErrorRows(menu, vendorErrs, entry.key, acct)
