@@ -8,7 +8,7 @@
         "rule": "floor",
         "ident": "bash:trivial"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-09-29T18:52:42+03:00",
@@ -30,8 +30,8 @@
             "claude-setup/hooks/english-gate.sh",
             "llm-legs/bin/worker-git-guard.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@d36db7b",
+          "regressed_at": "2026-10-01T10:33:21+03:00"
         }
       ],
       "same_cause": [
@@ -959,7 +959,7 @@
         "rule": "floor",
         "ident": "tool"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T09:48:30+03:00",
@@ -967,8 +967,8 @@
           "files": [
             "llm-legs/bin/worker-spawn-hook.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@d36db7b",
+          "regressed_at": "2026-10-01T10:33:21+03:00"
         }
       ],
       "same_cause": [],

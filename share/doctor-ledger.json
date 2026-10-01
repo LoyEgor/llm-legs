@@ -101,7 +101,7 @@
     "detail": "malformed Markdown|read coverage \\d+ bytes below|no parseable finding and did not declare"
    },
    "title": "bad output: empty-findings chunks, agy Markdown shapes and the read-coverage floor (R1, R3, R4)",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-09-23T21:40:26+03:00",
@@ -120,7 +120,7 @@
       "review-bench/share/rbench/launch.py",
       "review-bench/share/rbench/scope.py"
      ],
-     "in": null,
+     "in": "review-bench@cdb8f19",
      "regressed_at": null
     }
    ],
@@ -333,7 +333,7 @@
     "detail": "tree digest"
    },
    "title": "a read-only research run could not take the tree digest it is checked against",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T06:27:00+03:00",
@@ -341,7 +341,7 @@
      "files": [
       "llm-legs/bin/worker-run"
      ],
-     "in": null,
+     "in": "llm-legs@5a4c9ea",
      "regressed_at": null
     }
    ],
@@ -414,7 +414,7 @@
     "detail": "no codex model for cell"
    },
    "title": "a codex family the catalog resolved to no slug crashed its cells instead of ending pool empty",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T05:45:00+03:00",
@@ -422,7 +422,7 @@
      "files": [
       "review-bench/share/rbench/launch.py"
      ],
-     "in": null,
+     "in": "review-bench@cdb8f19",
      "regressed_at": null
     }
    ],
@@ -440,7 +440,7 @@
     "detail": "is not supported when using Codex with a ChatGPT account"
    },
    "title": "a codex cell launched a slug its account's own catalog lacks, and the server answered 400",
-   "status": "fixed-pending",
+   "status": "fixed",
    "fixes": [
     {
      "at": "2026-10-01T05:45:00+03:00",
@@ -448,7 +448,7 @@
      "files": [
       "review-bench/share/rbench/launch.py"
      ],
-     "in": null,
+     "in": "review-bench@cdb8f19",
      "regressed_at": null
     }
    ],
