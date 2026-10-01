@@ -140,6 +140,17 @@ class InstructionPerformance(unittest.TestCase):
                                          env=self.env, text=True)
         self.assertEqual({str(p) for p in kept}, set(output.splitlines()))
 
+    def test_home_walk_prunes_under_a_long_or_odd_home(self):
+        for name in ('a' * 250, 'we(ird)[x]+y.z{1}'):
+            home = self.work / name
+            kept = self.put(home / '.claude/agents/a.md')
+            self.put(home / '.claude/plugins/marketplaces/mp/SKILL.md')
+            self.put(home / '.claude/.backup/SKILL.md')
+            output = subprocess.check_output(['bash', '-c', '. "$1"; _instruction_class_files "$2"', '_',
+                                              str(ROOT / 'share/instruction-files.sh'), str(home)],
+                                             env=self.env, text=True)
+            self.assertEqual([str(kept)], output.splitlines(), name)
+
     def test_a_baseline_row_under_an_unloaded_tree_is_dropped(self):
         agent = self.put(self.home / '.claude/agents/a.md')
         catalog = self.put(self.home / '.claude/plugins/marketplaces/mp/plugins/p/skills/s/SKILL.md')

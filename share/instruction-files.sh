@@ -99,14 +99,14 @@ _instruction_unloaded_awk='
       substr(p, length(h) + 1) ~ ("^" ENVIRON["_INSTRUCTION_UNLOADED_ERE"] "(/|$)")
   }'
 _instruction_class_files() {
-  local home=${1:-$HOME} p e
+  local home=${1:-$HOME} p e ere=${1:-$HOME}
   local -a name_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do name_args+=(-o -iname "*.$e"); done
   [ -d "$home/.claude" ] || return 0
-  # `.{n}` stands for the "$home/.claude/" every printed path starts with: no escaping, no fork.
+  case "$ere" in *[][.*^\$+?\(\){}\|\\]*) ere=$(instruction_ere_escape "$home") ;; esac
   find -E -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
              -o -path "$home/.claude/projects" \
-             -o -regex ".{$((${#home} + 9))}$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
+             -o -regex "$ere/\.claude/$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
              -o -type f \( "${name_args[@]}" \) \
              -print0 2>/dev/null | _instruction_emit_paths
 }
