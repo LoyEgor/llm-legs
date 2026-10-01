@@ -162,24 +162,23 @@ assert_eq yes "$(jq -r --argjson at "$launched" 'if .start - $at <= 1 then "yes"
   "$STATUSLINE_CACHE_DIR/test-scope.jsonl")" "run-suites stamps its scope marker with its own start, not after a slow discovery"
 
 # A test script that runs part of itself is partial whichever selector it reads narrowed it.
-selectors=$(grep -Eo 'WORKER_RUN_TEST_([A-Z_]*_)?(CASE|ONLY)' "$ROOT/tests/test_worker_run.sh" | sort -u)
-case " $(echo $selectors) " in *" WORKER_RUN_TEST_ATTRIBUTION_CASE "*" WORKER_RUN_TEST_CASE "*) ;;
-  *) fail "selectors read by test_worker_run: $selectors" ;; esac
+selectors=$(cd "$ROOT/tests" && grep -Eo 'WORKER_RUN_TEST_([A-Z_]*_)?(CASE|ONLY)' test_worker_run_*.sh | sort -u)
+case " $(echo $selectors) " in *" test_worker_run_attribution.sh:WORKER_RUN_TEST_ATTRIBUTION_CASE "*"test_worker_run_reliability.sh:WORKER_RUN_TEST_CASE "*) ;;
+  *) fail "selectors read by the test_worker_run parts: $selectors" ;; esac
 asserts=$((asserts + 1))
 narrowed=""
 for selector in $selectors; do
-  env -i PATH="$PATH" "$selector=x" bash -c '. "$1"; test_scope_narrowed "$2" WORKER_RUN_TEST_ && echo y || echo n' _ \
-    "$ROOT/share/test-scope.sh" "$ROOT/tests/test_worker_run.sh" | { read -r v; [ "$v" = y ] || echo "$selector"; }
+  env -i PATH="$PATH" "${selector#*:}=x" bash -c '. "$1"; test_scope_narrowed "$2" WORKER_RUN_TEST_ && echo y || echo n' _ \
+    "$ROOT/share/test-scope.sh" "$ROOT/tests/${selector%%:*}" | { read -r v; [ "$v" = y ] || echo "$selector"; }
 done > "$WORK/unnarrowed"
 assert_eq "" "$(cat "$WORK/unnarrowed")"
-assert_eq "n n" "$(for v in "" 0; do env -i PATH="$PATH" WORKER_RUN_TEST_TAIL_ONLY="$v" bash -c \
+assert_eq "n n" "$(for v in "" 0; do env -i PATH="$PATH" WORKER_RUN_TEST_CASE="$v" bash -c \
   '. "$1"; test_scope_narrowed "$2" WORKER_RUN_TEST_ && echo y || echo n' _ "$ROOT/share/test-scope.sh" \
-  "$ROOT/tests/test_worker_run.sh"; done | paste -sd' ' -)"
-assert_eq 1 "$(grep -c '^if \[ -z "${WORKER_RUN_TEST_SPLIT:-}" \] && test_scope_narrowed "${BASH_SOURCE\[0\]}" WORKER_RUN_TEST_; then$' \
-  "$ROOT/tests/test_worker_run.sh")"
+  "$ROOT/tests/test_worker_run_reliability.sh"; done | paste -sd' ' -)"
+assert_eq 1 "$(grep -c '^if test_scope_narrowed "$0" WORKER_RUN_TEST_; then$' "$ROOT/tests/worker_run_harness.sh")"
 : > "$STATUSLINE_CACHE_DIR/test-scope.jsonl"
-(cd "$WORK" && bash -c '. "$1"; test_scope_partial "$2"' _ "$ROOT/share/test-scope.sh" "$ROOT/tests/test_worker_run.sh")
+(cd "$WORK" && bash -c '. "$1"; test_scope_partial "$2"' _ "$ROOT/share/test-scope.sh" "$ROOT/tests/test_worker_run_reliability.sh")
 main_checkout=$(dirname "$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir)")
-assert_eq "$(jq -cn --arg root "$main_checkout" '{label: "test_worker_run", scope: "partial", repo_root: $root}')" \
+assert_eq "$(jq -cn --arg root "$main_checkout" '{label: "test_worker_run_reliability", scope: "partial", repo_root: $root}')" \
   "$(jq -c '{label, scope, repo_root}' "$STATUSLINE_CACHE_DIR/test-scope.jsonl")"
 printf 'PASS: %s asserts; the probe journals every test it saw end, chat or worker\n' "$asserts"
