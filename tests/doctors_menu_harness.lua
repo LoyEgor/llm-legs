@@ -353,45 +353,37 @@ doctors.menuItems()
 check(#tasks == 1, "a second build started a second night-run")
 local quietTitle = text(doctors.title())
 local reason = "deadline, branch night/x/codex (llm-legs 083450f): round 20260930T032123Z-43d191b confirmed 7 findings, unfixed"
-nightTask:finish(0, "Last night 30 Sep: 1 of 3 done and pushed · 1 unfinished · 1 need you\t1\t0\n"
-  .. "LLM fixer: health · done and pushed\t0\t\n"
-  .. "codex update · unfinished · deadline\t0\t" .. reason .. "\n"
+nightTask:finish(0, "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you\t1\t0\n"
+  .. "LLM fixer: debt\t0\t\n"
+  .. "codex update · unfinished · deadline\t2\t" .. reason .. "\n"
   .. "cleanup p1 · needs you · step 10 needs his word\t1\tstep 10 needs his word\n")
 items = doctors.menuItems()
 local nightRow = items[4]
-check(#items == 7 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 done and pushed · 1 unfinished · 1 need you"
+check(#items == 7 and text(nightRow.title) == "Last night 30 Sep: 1 of 3 · 1 unfinished · 1 need you"
   and red(nightRow.title) and not nightRow.disabled and allMenlo({ nightRow }),
   "a red night: " .. (nightRow and text(nightRow.title) or "missing"))
 local jobs = nightRow.menu or {}
-check(#jobs == 3 and text(jobs[1].title) == "LLM fixer: health · done and pushed" and dimmed(jobs[1].title) and jobs[1].disabled
-  and text(jobs[2].title) == "codex update · unfinished · deadline" and dimmed(jobs[2].title) and jobs[2].menu
+check(#jobs == 3 and text(jobs[1].title) == "LLM fixer: debt" and dimmed(jobs[1].title) and jobs[1].disabled
+  and text(jobs[2].title) == "codex update · unfinished · deadline" and not dimmed(jobs[2].title)
+  and not red(jobs[2].title) and jobs[2].menu
   and text(jobs[3].title) == "cleanup p1 · needs you · step 10 needs his word" and red(jobs[3].title),
-  "a job per row, red only where Egor is needed")
+  "a job per row: done dim and wordless, unfinished plain, red only where Egor is needed")
 local reasonRows = {}
 for _, item in ipairs(jobs[2] and jobs[2].menu or {}) do reasonRows[#reasonRows + 1] = text(item.title) end
 check(table.concat(reasonRows, " ") == reason and widest(jobs[2].menu) <= 64, "a job's whole reason one level down")
 check(text(doctors.title()) == quietTitle, "the Night row changed the Doctors title")
 doctors.refreshNight()
-tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 1 done and pushed\t0\t0\n"
-  .. "llm 24 → 28 · proved 0 · pending 1 · new 9 · regressed 0\t0\t\t\tdoctor\t0\n"
-  .. "harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5\t0\t\t\tdoctor\t0\n"
-  .. "LLM fixer: health · done and pushed\t0\t\tllm-1\tfixer\t0\n")
-jobs = doctors.menuItems()[4].menu or {}
-check(#jobs == 4 and text(jobs[2].title) == "harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5"
-  and dimmed(jobs[2].title) and jobs[2].disabled and jobs[3].title == "-"
-  and text(jobs[4].title) == "LLM fixer: health · done and pushed", "the doctor lines head the night's rows, a separator before the jobs")
-doctors.refreshNight()
-tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4 done and pushed\t0\t0\n")
+tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\n")
 nightRow = doctors.menuItems()[4]
-check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4 done and pushed" and dimmed(nightRow.title)
+check(nightRow and text(nightRow.title) == "Last night 30 Sep: 4 of 4" and dimmed(nightRow.title)
   and nightRow.disabled, "a clean night with no job rows is dim")
 
 -- Run everything: bin/night-run start behind a confirmation; off while a night runs.
 items = doctors.menuItems()
 local run = items[#items]
-check(items[#items - 2].title == "-" and text(run.title) == "Run everything now (fixers · updates · cleanup)" and run.fn,
+check(items[#items - 2].title == "-" and text(run.title) == "Run everything now" and run.fn,
   "Run everything is the last Doctors item")
-check(text(items[#items - 1].title) == "Cleanup now (land night branches · debt round)" and items[#items - 1].fn,
+check(text(items[#items - 1].title) == "Cleanup now" and items[#items - 1].fn,
   "Cleanup now sits right above Run everything")
 tasks, dialogs, answer = {}, {}, "Cancel"
 run.fn()
@@ -424,7 +416,7 @@ check(#doctors.menuItems() == 6, "an empty night-run hides the row")
 
 -- Cleanup now: bin/night-run start --cleanup behind the same Cancel-first confirmation; off while a night runs.
 doctors.refreshNight()
-tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4 done and pushed\t0\t0\tn-1\n")
+tasks[#tasks]:finish(0, "Last night 30 Sep: 4 of 4\t0\t0\tn-1\n")
 tasks, dialogs, answer = {}, {}, "Cancel"
 items = doctors.menuItems()
 local cleanup = items[#items - 1]
@@ -443,10 +435,10 @@ check(text(items[#items - 1].title) == "Cleanup — a night run is going" and it
 
 -- Continue: each unfinished job of a night that no longer runs, and all of them plus the cleanup.
 doctors.refreshNight()
-tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 3 done and pushed · 2 unfinished\t0\t0\tn-1\n"
-  .. "LLM fixer · done and pushed\t0\t\tllm-x\tfixer\t0\n"
-  .. "codex update · unfinished · deadline\t0\t" .. reason .. "\tcodex-e1\tvendor\t1\n"
-  .. "cleanup · unfinished · deadline\t0\t\tdebt\tdebt\t1\n")
+tasks[#tasks]:finish(0, "Last night 30 Sep: 1 of 3 · 2 unfinished\t2\t0\tn-1\n"
+  .. "LLM fixer\t0\t\tllm-x\tfixer\t0\n"
+  .. "codex update · unfinished · deadline\t2\t" .. reason .. "\tcodex-e1\tvendor\t1\n"
+  .. "cleanup · unfinished · deadline\t2\t\tdebt\tdebt\t1\n")
 tasks, dialogs, answer = {}, {}, "Continue"
 jobs = doctors.menuItems()[4].menu
 check(#jobs == 5 and jobs[1].disabled and jobs[4].title == "-", "three jobs, then a separator: " .. #jobs)

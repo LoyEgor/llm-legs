@@ -51,6 +51,8 @@ leftovers lists every non-main branch and worktree of the sweep repositories: li
   ones go at finish, every other is a leftover to carry; finish records those under the night's leftovers
 pushed=true is refused unless every commit of the job is on its repository's origin main and not
   in the night's refs/night/<id>/base
+state=merged with a review is refused while `review-bench fix <review> --print` names open findings:
+  the round is fixed through its brief or closed with `review-bench close <review> --nofix`
 EOF
   exit 2
 }
@@ -206,6 +208,16 @@ repo_dir() { # name-or-path -> repository directory
     [ -n "$line" ] && [ "$(basename "$line")" = "$1" ] && { printf '%s\n' "$line"; return 0; }
   done <"$sweep_repos"
   return 1
+}
+
+review_refusal() { # ref round -> why the merged job's review round blocks it, empty when it is settled
+  local open err
+  err=$(mktemp) || { printf 'cannot ask review-bench about round %s\n' "$2"; return; }
+  open=$(review-bench fix "$2" --print 2>"$err") || {
+    printf 'job %s: review round %s cannot be read: %s\n' "$1" "$2" "$(tr '\n' ' ' <"$err")"; rm -f "$err"; return; }
+  rm -f "$err"
+  [ -z "$open" ] || printf "job %s cannot be merged while its review round %s has open findings: fix them (review-bench fix %s --brief <file>, its worker RESUMEd on that brief) or close the round (review-bench close %s --nofix --reason '<why>')\n" \
+    "$1" "$2" "$2" "$2"
 }
 
 push_refusal() { # dir hash night -> why hash is no pushed night commit, empty when it is one
@@ -372,7 +384,7 @@ job_set() { # id ref key=value...
       *) die "no job key $key: state, reason, branch, review, commits or pushed" ;;
     esac
   done
-  local file job checked='' refusal
+  local file job checked='' refusal='' round
   file=$(night_file "$id")
   if [ "$pushed" = true ]; then
     job=$(job_of "$file" "$ref" "$patch")
@@ -384,6 +396,13 @@ job_set() { # id ref key=value...
       refusal=$(push_refusal "$dir" "$hash" "$id")
       [ -z "$refusal" ] || die "$refusal"
     done < <(jq -r '.commits[] | [.repo, .hash] | @tsv' <<<"$job")
+  fi
+  if jq -e 'has("state") or has("review")' <<<"$patch" >/dev/null; then
+    job=$(job_of "$file" "$ref" "$patch")
+    [ -n "$job" ] || die "night $id has no job $ref"
+    round=$(jq -r 'select(.state == "merged") | .review // empty' <<<"$job")
+    [ -z "$round" ] || refusal=$(review_refusal "$ref" "$round")
+    [ -z "$refusal" ] || die "$refusal"
   fi
   lock
   job=$(job_of "$file" "$ref" "$patch")
@@ -602,27 +621,28 @@ cmd_latest() {
         | ($areas[0].renamed["\(.d)-\(.a)"] // .a) as $a
         | ({llm: "LLM", harness: "Harness", updater: "Updater"}[.d] + " fixer"
           + (if $a and $a != $areas[0].own then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
-    def word: {merged: (if .pushed then "done and pushed" else "done, not pushed yet" end), left: "unfinished",
+    def word: {merged: (if .pushed then "" else "not pushed yet" end), left: "unfinished",
       "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do",
       pending: (if $status == "running" then "in progress" else "unfinished" end)}[.state] // .state;
+    def tone: if .state == "failed-launch" or .state == "blocked-on-egor" then 1
+      elif .state == "nothing-to-do" or (.state == "merged" and .pushed) then 0 else 2 end;
     totals as $t
     | (if $t.running then "Night run since \(.started_at | hm)"
        else "Last night \(.started_at | fromdateiso8601 | strflocaltime("%d %b") | ltrimstr("0"))"
          + (if $t.unfinished then ", stopped early" else "" end) end) as $when
     | ($t.merged + $t.nothing) as $done
     | (if (.jobs | length) == 0 then [if .note then "did not start" else "no jobs" end]
-       else ["\($done) of \(.jobs | length) done"
-           + (if $t.merged > 0 and $t.unpushed == 0 then " and pushed" else "" end)]
+       else ["\($done) of \(.jobs | length)"]
          + [count($t.unpushed; "not pushed yet"),
             count($t.left + (if $t.running then 0 else $t.pending end); "unfinished"),
             count(if $t.running then $t.pending else 0 end; "in progress"),
             count($t.failed; "failed to launch"), count($t.blocked; "need you")] end) as $parts
-    | "\($when): \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1 else 0 end)\t\(
+    | "\($when): \($parts | join(" · "))\t\(if $t.failed + $t.blocked > 0 or .note != null then 1
+        elif $t.running or ([.jobs[] | tone] | index(2)) then 2 else 0 end)\t\(
         if $t.running then 1 else 0 end)\t\(.id)",
       (if .note then "orchestrator chat did not open\t1\t\(.note | flat)" else empty end),
-      (doctor_lines | "\(.)\t0\t\t\tdoctor\t0"),
-      (.jobs[] | "\(name) · \(word)\(if .reason then " · " + (.reason | flat | gist) else "" end)\t\(
-        if .state == "failed-launch" or .state == "blocked-on-egor" then 1 else 0 end)\t\(.reason // "" | flat)\t\(
+      (.jobs[] | "\([name, word, (.reason // empty | flat | gist)] | map(select(. != null and . != "")) | join(" · "))\t\(
+        tone)\t\(.reason // "" | flat)\t\(
         .ref | flat)\t\(.kind)\t\(if unfinished and ($t.running | not) then 1 else 0 end)")' \
     "$(night_file "$id")"
 }

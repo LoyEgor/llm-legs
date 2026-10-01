@@ -21,7 +21,7 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 
 ## Shape
 1. **Button.**
-   - Doctors menu → `Run everything now (fixers · updates · cleanup)`, after a confirmation, →
+   - Doctors menu → `Run everything now`, after a confirmation, →
      `bin/night-run start`; off while a night runs. It writes the night record and opens ONE
      orchestrator chat via `chat_open`. That chat takes an account with a claim, runs under
      `caffeinate -i -w <its pid>`, and starts with the prompt
@@ -67,7 +67,10 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
    - One T2 bugs review of that branch.
    - The orchestrator reads the decision table itself and checks every non-`fixed` verdict. That is
      the second model on a fixer's self-clearing.
-   - Findings are fixed by the SAME worker (RESUME).
+   - Findings are fixed by the SAME worker (RESUME) on the round's `review-bench fix` brief, whose
+     `ROUND:` line folds its fixer rows; a fix made any other way leaves the round open, and
+     `night-run job set … state=merged` refuses a job whose `review` round still has open findings
+     until the round is fixed that way or closed `review-bench close <round> --nofix --reason '…'`.
    - The branch is rebased onto main's HEAD. The same worker resolves conflicts, since it knows its
      intent. Suites must pass.
    - Commit (one long line) and push.
@@ -110,8 +113,8 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 - `doctors_before` and `doctors_after` (problem counts), and `doctor_states_before`/`doctor_states_after`:
   per doctor the problems of its `latest.json` by ledger state, `proved` (a harness fix proven,
   `fixed · E events since · 0 matched`), `pending` (`fixed-pending` or rule `fix-proof`), `open`,
-  `new`, `regressed`. `report` and the menu's Last night print one line per doctor,
-  `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`;
+  `new`, `regressed`. `report` prints one line per doctor,
+  `harness 35 → 38 · proved 4 · pending 18 · new 16 · regressed 5`; the menu's Last night shows only the jobs;
 - `jobs[]`, each with:
   - `kind` (fixer, vendor, debt or leftover) and `ref` (run id, event id, review round or
     `leftover-<slug>`); a leftover job also carries `adopted[]` ({repo, branch, worktree, tip,
@@ -141,7 +144,7 @@ process lives, so a start killed mid-open never blocks the next one. Only a runn
 - `night-run start --cleanup` opens a new night with the prompt `сделай чистку — night run <id>
   cleanup`: the orchestrator lands the finished night branches and every leftover, and runs the debt
   round, no fixers, no updates.
-- The Doctors menu: `Cleanup now (land night branches · debt round)` above `Run everything`, behind
+- The Doctors menu: `Cleanup now` above `Run everything`, behind
   the same Cancel-first confirmation and off while a night runs; under the last night, while it does
   not run, each unfinished job gets `Continue this job` one level down, and one item `Continue
   unfinished (N jobs) + cleanup` resumes them all.
@@ -176,11 +179,13 @@ shows `code +A/-R`: lines its commits add and remove, test paths (`tests/`, `tes
 `code ?` when a commit cannot be read. Information only: no threshold.
 
 The Doctors menu shows the last night on one row from `night-run latest --menu`, such as
-`Last night 30 Sep: 11 of 13 done and pushed · 2 unfinished`; its submenu lists every job, done or
-unfinished, with the reason in a few words and the whole reason one level down. Red only where Egor
-is needed: a job blocked on him or a failed launch. Output: a title line `text\tred\trunning\tid`,
-then one `text\tred\treason\tref\tkind\tresumable` line per job (`resumable` 1 for an unfinished job
-of a night that does not run).
+`Last night 30 Sep: 11 of 13 · 2 unfinished`; its submenu lists every job, done or unfinished, with
+the reason in a few words and the whole reason one level down. The state is the color, not words: a
+job done and pushed is a dim name alone (one with nothing to do keeps those words), one still owing work (unfinished, in
+progress, not pushed yet) is plain with its word, red only where Egor is needed: a job blocked on him
+or a failed launch. Output: a title line `text\ttone\trunning\tid`, then one
+`text\ttone\treason\tref\tkind\tresumable` line per job (`tone` 0 dim, 2 plain, 1 red;
+`resumable` 1 for an unfinished job of a night that does not run).
 
 ## Day Fix button
 Unchanged. It opens an interactive chat on one doctor, and that chat pours into main uncommitted.

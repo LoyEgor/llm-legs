@@ -332,8 +332,7 @@ local function nightEntry()
   local jobs, resumable, others = {}, 0, 0
   local idle = not night.running and not running(fixTasks.night)
   for index, job in ipairs(night.jobs) do
-    if index > 1 and night.jobs[index - 1].kind == "doctor" and job.kind ~= "doctor" then jobs[#jobs + 1] = { title = "-" } end
-    local item = { title = infoTitle(job.text, job.red, not job.red) }
+    local item = { title = infoTitle(job.text, job.red, job.quiet) }
     if job.detail ~= "" then item.menu = detailRows(job.detail) end
     if job.resumable and idle then
       resumable, others = resumable + 1, others + (job.kind == "debt" and 0 or 1)
@@ -349,7 +348,7 @@ local function nightEntry()
     jobs[#jobs + 1] = { title = infoTitle(others > 0 and "Continue unfinished (" .. plural(others, "job") .. ") + cleanup"
       or "Continue the unfinished cleanup"), fn = function() M.resumeNight(nil) end }
   end
-  return { title = infoTitle(night.text, night.red, not night.red), menu = #jobs > 0 and jobs or nil,
+  return { title = infoTitle(night.text, night.red, night.quiet), menu = #jobs > 0 and jobs or nil,
     disabled = #jobs == 0 or nil, problems = 0 }
 end
 
@@ -360,18 +359,18 @@ function M.refreshNight()
     nightTask, built = nil, nil
     local lines = {}
     for line in (code == 0 and stdout or ""):gmatch("[^\n]+") do lines[#lines + 1] = line end
-    local text, red, busy, id = (lines[1] or ""):match("^([^\t]*)\t([01])\t?([01]?)\t?([^\t]*)")
+    local text, tone, busy, id = (lines[1] or ""):match("^([^\t]*)\t([012])\t?([01]?)\t?([^\t]*)")
     local jobs = {}
     for index = 2, #lines do
       local fields = {}
       for field in (lines[index] .. "\t"):gmatch("([^\t]*)\t") do fields[#fields + 1] = field end
-      if fields[2] == "0" or fields[2] == "1" then
-        jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", detail = fields[3] or "", ref = fields[4],
-          kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "" }
+      if fields[2] == "0" or fields[2] == "1" or fields[2] == "2" then
+        jobs[#jobs + 1] = { text = fields[1], red = fields[2] == "1", quiet = fields[2] == "0", detail = fields[3] or "",
+          ref = fields[4], kind = fields[5], resumable = fields[6] == "1" and fields[4] ~= nil and fields[4] ~= "" }
       end
     end
-    night = { at = os.time(), text = text ~= "" and text or nil, red = red == "1", running = busy == "1", jobs = jobs,
-      id = id ~= "" and id or nil }
+    night = { at = os.time(), text = text ~= "" and text or nil, red = tone == "1", quiet = tone == "0",
+      running = busy == "1", jobs = jobs, id = id ~= "" and id or nil }
   end, { "latest", "--menu" })
   if not ok or not task then night.at = os.time() return end
   task:setEnvironment(limits.diagnosticsEnvironment())
@@ -524,8 +523,8 @@ local function compute()
   if now - night.at >= NIGHT_REFRESH_S then M.refreshNight() end
   if night.text then entries[#entries + 1] = nightEntry() end
   entries[#entries + 1] = { title = "-", problems = 0 }
-  for _, item in ipairs({ nightItem("Cleanup now (land night branches · debt round)", M.cleanupNow),
-      nightItem("Run everything now (fixers · updates · cleanup)", M.runEverything) }) do
+  for _, item in ipairs({ nightItem("Cleanup now", M.cleanupNow),
+      nightItem("Run everything now", M.runEverything) }) do
     item.problems = 0
     entries[#entries + 1] = item
   end
