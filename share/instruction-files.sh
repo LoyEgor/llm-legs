@@ -85,15 +85,28 @@ instruction_is_md() {
 # carrying a newline arrives whole. Pruned: VCS internals, dependency trees, worktree copies, and
 # `projects/`, which holds transcripts and the memory files the model writes by design (see the
 # MEMORY.md note above). The review-debt list rides in the same walk.
+# Also pruned, and dropped from every baseline that still lists them (instruction-watch.sh), the trees
+# under ~/.claude loaded by nothing: file-history (the harness's edit backups), plugins/marketplaces
+# (catalog clones its auto-update pulls; an installed plugin loads from plugins/cache),
+# plugins/.trash and hidden top-level backups. Together over half the watch set, and the harness's
+# own rewrites of them were reported as instruction-file changes.
+INSTRUCTION_HOME_UNLOADED_ERE='(file-history|plugins/marketplaces|plugins/\.trash|\.[^/]*)'
+# awk: unloaded(path) is true under one of those trees of $_INSTRUCTION_HOME/.claude.
+_instruction_unloaded_awk='
+  function unloaded(p,  h) {
+    h = ENVIRON["_INSTRUCTION_HOME"] "/.claude/"
+    return substr(p, 1, length(h)) == h &&
+      substr(p, length(h) + 1) ~ ("^" ENVIRON["_INSTRUCTION_UNLOADED_ERE"] "(/|$)")
+  }'
 _instruction_class_files() {
   local home=${1:-$HOME} p e
   local -a name_args=(-name review-debt-ignore)
   for e in $INSTRUCTION_MD_EXTENSIONS; do name_args+=(-o -iname "*.$e"); done
   [ -d "$home/.claude" ] || return 0
-  # file-history is the harness's own edit backups, loaded by nothing: most of the walk, and it grows
-  # with every session.
-  find -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
-             -o -path "$home/.claude/projects" -o -path "$home/.claude/file-history" \) -prune \
+  # `.{n}` stands for the "$home/.claude/" every printed path starts with: no escaping, no fork.
+  find -E -L "$home/.claude" \( -name .git -o -name node_modules -o -name worktrees \
+             -o -path "$home/.claude/projects" \
+             -o -regex ".{$((${#home} + 9))}$INSTRUCTION_HOME_UNLOADED_ERE" \) -prune \
              -o -type f \( "${name_args[@]}" \) \
              -print0 2>/dev/null | _instruction_emit_paths
 }
@@ -192,7 +205,8 @@ instruction_visible_paths() {
       done
       printf '%s\n' "$real"
     done
-  } | awk '!seen[$0]++'
+  } | _INSTRUCTION_HOME=$home _INSTRUCTION_UNLOADED_ERE=$INSTRUCTION_HOME_UNLOADED_ERE \
+      awk "$_instruction_unloaded_awk"' !unloaded($0) && !seen[$0]++'
 }
 
 # The enumeration above is what `~/.claude` REACHES, and the gate's `always` class is wider than

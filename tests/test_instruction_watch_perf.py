@@ -129,13 +129,44 @@ class InstructionPerformance(unittest.TestCase):
         self.assertEqual({'plain.md', 'tab?name.md', 'line?name.md'},
                          {Path(line).name for line in out.splitlines()})
 
-    def test_home_walk_skips_the_harness_file_history(self):
-        kept = self.put(self.home / '.claude/agents/a.md')
-        self.put(self.home / '.claude/file-history/sess/notes.md')
+    def test_home_walk_skips_the_trees_nothing_loads(self):
+        kept = {self.put(self.home / '.claude' / p) for p in (
+            'agents/a.md', 'plugins/cache/mp/p/1.0/skills/s/SKILL.md', 'skills/s/.hidden/x.md')}
+        for p in ('file-history/sess/notes.md', 'plugins/marketplaces/mp/plugins/p/skills/s/SKILL.md',
+                  'plugins/.trash/1/p/SKILL.md', '.premove-backup-1/skills/s/SKILL.md'):
+            self.put(self.home / '.claude' / p)
         output = subprocess.check_output(['bash', '-c', '. "$1"; _instruction_class_files "$2"', '_',
                                           str(ROOT / 'share/instruction-files.sh'), str(self.home)],
                                          env=self.env, text=True)
-        self.assertEqual([str(kept)], output.splitlines())
+        self.assertEqual({str(p) for p in kept}, set(output.splitlines()))
+
+    def test_a_baseline_row_under_an_unloaded_tree_is_dropped(self):
+        agent = self.put(self.home / '.claude/agents/a.md')
+        catalog = self.put(self.home / '.claude/plugins/marketplaces/mp/plugins/p/skills/s/SKILL.md')
+        self.assertEqual(0, self.hook('baseline').returncode)
+        baseline = self.state / 'session-perf.tsv'
+        row = '\t'.join(['1.5', '5', '1', '1', '0' * 64, '-', str(catalog), str(catalog)])
+        baseline.write_text(baseline.read_text() + row + '\n')
+        catalog.write_text('pulled by the harness\n')
+        agent.write_text('changed\n')
+        context = self.context(self.hook('check'))
+        self.assertIn('CHANGED ' + str(agent), context)
+        self.assertNotIn(str(catalog), context)
+        self.assertNotIn(str(catalog), baseline.read_text())
+
+    def test_a_session_inside_an_unloaded_tree_watches_none_of_it(self):
+        self.home = self.home.resolve()
+        self.env['HOME'] = str(self.home)
+        self.repo = self.home / '.claude/plugins/marketplaces/mp'
+        self.repo.mkdir(parents=True)
+        self.git('init', '-q')
+        self.put(self.repo / 'CLAUDE.md')
+        self.git('add', 'CLAUDE.md')
+        agent = self.put(self.home / '.claude/agents/a.md')
+        self.assertEqual(0, self.hook('baseline').returncode)
+        self.assertEqual('', self.context(self.hook('check')))
+        agent.write_text('changed\n')
+        self.assertNotIn('ADDED', self.context(self.hook('check')))
 
     def test_backslash_name_is_hashed_and_watched(self):
         odd = self.put(self.home / '.claude/docs/a\\b.md')

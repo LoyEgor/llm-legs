@@ -718,7 +718,9 @@ stable_hash() { # real vis
 # Splits a baseline row the way `IFS=$'\t' read` does — a run of tabs is one separator — into
 # F[1..8], n being the field count, so awk and the shell agree on which rows exist.
 _watch_row_awk='{ row = $0; gsub(/\t+/, "\t", row); sub(/^\t/, "", row); sub(/\t$/, "", row)
-  n = split(row, F, "\t"); for (k = 9; k <= n; k++) F[8] = F[8] "\t" F[k] }'
+  n = split(row, F, "\t"); for (k = 9; k <= n; k++) F[8] = F[8] "\t" F[k] }
+  F[1] !~ /^#/ && unloaded(F[7]) { next }'"$_instruction_unloaded_awk"
+export _INSTRUCTION_HOME=$HOME _INSTRUCTION_UNLOADED_ERE=$INSTRUCTION_HOME_UNLOADED_ERE
 
 # Only rows whose fingerprint moved reach the b_* arrays; the rest go straight to `pinned`. The
 # visible names ride along in the same stat: stat does not follow symlinks, so a row for one
