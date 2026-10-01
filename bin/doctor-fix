@@ -491,6 +491,8 @@ write_brief() { # id worktree -> the brief file
     printf '   Close reruns `bin/%s-doctor --json` in this worktree itself; a `fixed` problem must read fixed-pending or be gone there.\n' "$doctor"
     printf '5. Whatever you found but did not fix, and every cause you ruled out, goes into the ledger (a row'"'"'s `note`, a new row or a `blind_spots` row), so the next fixer does not dig the same ground.\n'
     printf '6. Report: per problem the verdict and one line of why, the commits (repo@hash) and every handoff.\n\n'
+    [ "$doctor/$area" != llm/reviewers ] ||
+      printf 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself, not only its machinery; never touch a round of another project: the LLM doctor section "Stuck review rounds".\n\n'
     printf '## Packet\n\n'
     show_run "$id"
   } >"$runs_dir/$id.brief.md" || return 1

@@ -23,6 +23,7 @@ test `test_doctor_runs_its_checks`, red on the old code). Only the doctor read t
 1. **M2 residue (30 rounds).** Real unfinished rounds: confirmed findings with no fixer row, the
    oldest from 2026-09-16. The class does what it says; whether they close `--nofix` is Egor's or a
    span's decision (`review-anchors-contract.md` table), and a fixed-pending row would hide them.
+   Superseded 2026-10-01: the night reviewers fixer settles them (`docs/doctor-fix.md` "Stuck review rounds").
 2. **M1 `anchors` (324).** 321 are `gap-stale` of ONE chat, «Vector Magic macOS ARM migration», in
    `logo-vectorizer-bench`: 299 `hash-cap` gaps (a bench tree with 164+ dirty result files; each
    Bash call records one gap with a different detail, so `doctor_check_row` keys each apart),
