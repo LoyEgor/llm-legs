@@ -1,0 +1,5 @@
+share/doctor-ledger.json linguist-generated
+share/harness-ledger.json linguist-generated
+share/updater-ledger.json linguist-generated
+tests/fixtures/harness-calibration/hooks/20725.tsv linguist-generated
+tests/fixtures/harness-calibration/statusline/test-history.jsonl linguist-generated
