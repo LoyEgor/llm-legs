@@ -160,9 +160,10 @@ end
 local function verdictCounts(decisions)
   local counts = {}
   for _, decision in pairs(type(decisions) == "table" and decisions or {}) do
+    local id = type(decision) == "table" and decision.id or type(decision) == "string" and decision:match("^([^\t]*)\t")
     local verdict = type(decision) == "table" and (decision.verdict or decision.decision)
       or type(decision) == "string" and (decision:match("^[^\t]*\t([^\t]+)") or decision)
-    if type(verdict) == "string" and verdict ~= "judge-changed" then counts[verdict] = (counts[verdict] or 0) + 1 end
+    if type(verdict) == "string" and id ~= "judge" then counts[verdict] = (counts[verdict] or 0) + 1 end
   end
   local parts, known = {}, {}
   for _, verdict in ipairs(VERDICTS) do
@@ -428,7 +429,7 @@ local function updaterEntry(now)
         local checked = limits.parseTime(vendor.checked_at)
         local text = string.format("%s %s · %s", tostring(vendor.vendor or "?"), tostring(vendor.installed or "?"),
           checked and ("checked " .. style.ago(now - checked)) or "never checked")
-        local behind = vendor.latest ~= nil and vendor.latest ~= vendor.installed
+        local behind = type(vendor.latest) == "string" and vendor.latest ~= "" and vendor.latest ~= vendor.installed
         if behind then text = text .. " · latest " .. tostring(vendor.latest) end
         items[#items + 1] = { title = infoTitle(text, false, not behind), menu = vendorMenu(vendor, now) }
       end

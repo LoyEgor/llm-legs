@@ -518,7 +518,8 @@ run=$(jq -r .run "$EVENTS/$claude_id.json")
 assert [ "$(xargs -I{} jq -r .run "$EVENTS/{}.json" <"$WORK/all-ids" | sort -u)" = "$run" ]
 jq -R . "$WORK/all-ids" | jq -s . >"$WORK/all-ids.json"
 assert jqe --slurpfile ids "$WORK/all-ids.json" '.doctor == "updater" and (.problems | map(.id)) == $ids[0] and .closed_at == null' "$RUNS/$run.json"
-# The run closes with its last event, one decision line per event.
+# The run closes with its last event, one decision line per event, past a decisions array a killed close left.
+printf '[{"id":"stale"}]\n' >"$EVENTS/updater-release-stale.decisions.json"
 n=$(wc -l <"$WORK/all-ids" | tr -d ' ')
 i=0
 while IFS= read -r event_id; do
@@ -530,6 +531,8 @@ while IFS= read -r event_id; do
   [ "$i" = "$n" ] || assert jqe '.closed_at == null and .decisions == []' "$RUNS/$run.json"
 done <"$WORK/all-ids"
 assert jqe --slurpfile ids "$WORK/all-ids.json" '.closed_at != null and .judge_at_close == "u1" and (.decisions | map(.id)) == $ids[0]' "$RUNS/$run.json"
+assert [ "$(ls "$EVENTS" | grep -c 'decisions')" = 1 ]
+rm "$EVENTS/updater-release-stale.decisions.json"
 assert jqe --arg g "$grok_id" '.decisions[] | select(.id == $g) | .verdict == "integrated" and .purpose == "docs/vendor-release.md"
   and (.evidence | startswith("2 decision rows: 2 integrated, 0 not-applicable, 0 blocked · done "))' "$RUNS/$run.json"
 assert jqe --arg m "$manual" '.decisions[] | select(.id == $m) | .verdict == "integrated" and .purpose == "docs/vendor-release.md"' "$RUNS/$run.json"

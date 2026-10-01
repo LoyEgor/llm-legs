@@ -132,6 +132,8 @@ local updater = {
       } },
     { vendor = "claude", installed = "2.4.1", latest = "2.4.1", checked_at = iso(now - 3 * 3600), models = {},
       events = {} },
+    { vendor = "grok", installed = "1.0.40", latest = "", checked_at = iso(now - 3 * 3600), result = "check-failed",
+      models = {}, events = {} },
   },
 }
 write("/snapshot.json", { as_of = now, total = 0, anomalies = {} })
@@ -214,6 +216,9 @@ check(codex and text(codex.title) == "codex 0.159.0 · checked 3h ago · latest 
   .. (codex and text(codex.title) or "missing"))
 local claude = find(up.menu, "claude 2.4.1")
 check(claude and text(claude.title) == "claude 2.4.1 · checked 3h ago", "an up-to-date vendor names no latest")
+local grok = find(up.menu, "grok 1.0.40")
+check(grok and text(grok.title) == "grok 1.0.40 · checked 3h ago" and dimmed(grok.title),
+  "an empty latest is no update: " .. (grok and text(grok.title) or "missing"))
 local sub = {}
 for _, item in ipairs(codex and codex.menu or {}) do sub[#sub + 1] = item.title == "-" and "-" or text(item.title) end
 check(table.concat(sub, "|") == "gpt-6-astra|gpt-6-mini|-|codex-0.159.0 · open · 0.158.0 → 0.159.0 · 2d ago"
@@ -289,7 +294,7 @@ write("/doctors/runs/llm-20260101T000000Z.json", { doctor = "llm", launched_at =
 write("/doctors/runs/llm-20260201T000000Z.json", { doctor = "llm", launched_at = iso(now - 3 * 86400),
   closed_at = iso(now - 2 * 86400), problems = { "a", "b", "c", "d" },
   decisions = { { id = "a", verdict = "fixed" }, { id = "b", verdict = "fixed" }, { id = "c", verdict = "handoff" },
-    { id = "d", verdict = "fixed" }, { id = "judge", verdict = "judge-changed" } } })
+    { id = "d", verdict = "fixed" }, { id = "judge", verdict = "changed" } } })
 write("/doctors/runs/harness-20260201T000000Z.json", { doctor = "harness", launched_at = iso(now - 2 * 3600 - 60) })
 write("/doctors/runs/updater-20260201T000000Z.json", { doctor = "updater", launched_at = iso(now - 3 * 86400),
   abandoned_at = iso(now - 86400 - 60) })

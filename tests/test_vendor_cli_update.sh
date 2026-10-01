@@ -297,6 +297,21 @@ assert grep -qF 'another run held the lock' "$LOG"
 assert grep -qF 'vendor update started' <(bash "$SCRIPT" now)
 for _ in $(seq 1 50); do grep -qF 'request --all' "$CALLS" && break; sleep 0.2; done
 assert grep -qF 'fingerprint request --all' "$CALLS"
+# A second click during the detached pass starts no second pass and no second integration chat.
+for _ in $(seq 1 50); do lockf -k -t 0 "$HOME/.cache/vendor-cli-update/manual.lock" true 2>/dev/null && break; sleep 0.2; done
+lockf -k "$HOME/.cache/vendor-cli-update/manual.lock" sleep 30 &
+HOLDER=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  lockf -k -t 0 "$HOME/.cache/vendor-cli-update/manual.lock" true 2>/dev/null || break
+  sleep 0.2
+done
+: >"$CALLS"
+assert grep -qF 'vendor update already running' <(bash "$SCRIPT" now)
+sleep 1
+assert_fails grep -qF 'fingerprint' "$CALLS"
+kill "$HOLDER" 2>/dev/null
+wait "$HOLDER" 2>/dev/null
+HOLDER=""
 
 # Night prep: the same pass in the foreground, no integration chat, so `request --night` still finds the events.
 : >"$CALLS"

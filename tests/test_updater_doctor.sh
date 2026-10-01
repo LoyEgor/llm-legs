@@ -120,6 +120,16 @@ assert_fails has event-stuck:grok-fresh
 assert_fails has event-waiting:grok-fresh
 assert_fails has event-waiting:gemini-closed
 assert jqe '.state == "new" and .value == 1' <<<"$(problem probe-broken:grok/ids)"
+# A probe broken across several events was first seen at the oldest of them.
+event grok-probe-old grok closed $((10 * D)) $((10 * D)) $((9 * D))
+event grok-probe-new grok closed $((2 * D)) $((2 * D)) $D
+for e in grok-probe-old grok-probe-new; do
+  jq '.changed = ["probe_failures"]' "$STATE/events/$e.json" >"$WORK/e" && mv "$WORK/e" "$STATE/events/$e.json"
+done
+run
+assert [ "$(problem probe-broken:grok/ids | jq -r '.first_seen[:10]')" = "$(date -r $(($(date +%s) - 10 * D)) +%Y-%m-%d)" ]
+rm "$STATE/events/grok-probe-old.json" "$STATE/events/grok-probe-new.json"
+run
 assert [ "$(state_of catalog-missing:gemini)" = watch ]
 assert_fails has catalog-missing:claude
 assert_fails has catalog-missing:grok

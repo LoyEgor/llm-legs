@@ -260,8 +260,12 @@ update_now() {
   [ "${1:-}" = --night ] && night=true
   mkdir -p "$state_dir"
   if ! $night && [ -z "${VENDOR_CLI_UPDATE_DETACHED:-}" ]; then
-    VENDOR_CLI_UPDATE_DETACHED=1 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' "$script_path" now \
-      </dev/null >>"$state_dir/launchd.log" 2>&1 &
+    if ! lockf -k -t 0 "$state_dir/manual.lock" true 2>/dev/null; then
+      printf 'vendor update already running: its integration chat opens when the pass ends; progress in %s\n' "$log_file"
+      return 0
+    fi
+    VENDOR_CLI_UPDATE_DETACHED=1 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV' \
+      lockf -k -t 0 "$state_dir/manual.lock" "$script_path" now </dev/null >>"$state_dir/launchd.log" 2>&1 &
     printf 'vendor update started: CLIs, model lists and fingerprints first, then one integration chat for every vendor opens in Terminal; progress in %s\n' "$log_file"
     return 0
   fi
