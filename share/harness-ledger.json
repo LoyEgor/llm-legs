@@ -148,16 +148,43 @@
       "title": "test_worker_run · llm-legs 24 h cost exceeds 2 h limit due to frequent runs and concurrent load",
       "match": {
         "rule": "test_daily_cost",
-        "ident": "llm-legs:test_worker_run"
+        "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T14:10:00+03:00",
+          "by": "worker split-test-worker-run",
+          "files": [
+            "llm-legs/tests/test_worker_run.sh",
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_entry.sh",
+            "llm-legs/tests/test_worker_run_reliability.sh",
+            "llm-legs/tests/test_worker_run_browse.sh",
+            "llm-legs/tests/test_worker_run_attribution.sh",
+            "llm-legs/tests/test_worker_run_watchdog.sh",
+            "llm-legs/tests/test_worker_run_websearch.sh",
+            "llm-legs/tests/test_worker_run_lifecycle.sh",
+            "llm-legs/tests/test_worker_run_pool.sh",
+            "llm-legs/tests/test_worker_run_outcomes.sh",
+            "llm-legs/tests/test_worker_run_files.sh",
+            "llm-legs/tests/test_worker_run_claims.sh",
+            "llm-legs/tests/test_worker_run_vendor_files.sh",
+            "llm-legs/tests/test_worker_run_rounds.sh",
+            "llm-legs/tests/test_worker_run_grok.sh",
+            "llm-legs/tests/test_worker_run_grok_outcomes.sh",
+            "llm-legs/tests/test_worker_run_stamps.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "test_long_pole-worker-run"
       ],
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-tests-20261001T020701Z-4cc4",
-      "note": "test_worker_run.sh is 7727 lines with ~300 test cases exercising the worker-run CLI lifecycle. Quiet runs take 600-654 s wall clock, and under concurrent load (multiple full test suites running at -j 5) runs take 962-1186 s. Over 24 h, 26 runs accumulated 12535 s (>3.5 h), exceeding the 7200 s limit. Splitting the suite across multiple test files or raising limits requires architectural coordination with the owner chats (Harness Doctor and llm-workers).",
+      "note": "test_worker_run.sh is 7727 lines with ~300 test cases exercising the worker-run CLI lifecycle. Quiet runs take 600-654 s wall clock, and under concurrent load (multiple full test suites running at -j 5) runs take 962-1186 s. Over 24 h, 26 runs accumulated 12535 s (>3.5 h), exceeding the 7200 s limit. Splitting the suite across multiple test files or raising limits requires architectural coordination with the owner chats (Harness Doctor and llm-workers). 2026-10-01: split into sixteen tests/test_worker_run_<part>.sh suites over tests/worker_run_harness.sh, which run-suites runs in parallel; the ident follows every part, so a part that grows back into a long pole or a daily cost still lands on this row.",
       "handoff": "docs/handoffs/2026-10-01-test-worker-run-cost.md"
     },
     {
@@ -165,16 +192,43 @@
       "title": "test_worker_run · llm-legs long pole exceeds 50% share of full test run",
       "match": {
         "rule": "test_long_pole",
-        "ident": "llm-legs:test_worker_run"
+        "ident": "llm-legs:test_worker_run(_(entry|reliability|browse|attribution|watchdog|websearch|lifecycle|pool|outcomes|files|claims|vendor_files|rounds|grok|grok_outcomes|stamps))?"
       },
-      "status": "open",
-      "fixes": [],
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T14:10:00+03:00",
+          "by": "worker split-test-worker-run",
+          "files": [
+            "llm-legs/tests/test_worker_run.sh",
+            "llm-legs/tests/worker_run_harness.sh",
+            "llm-legs/tests/test_worker_run_entry.sh",
+            "llm-legs/tests/test_worker_run_reliability.sh",
+            "llm-legs/tests/test_worker_run_browse.sh",
+            "llm-legs/tests/test_worker_run_attribution.sh",
+            "llm-legs/tests/test_worker_run_watchdog.sh",
+            "llm-legs/tests/test_worker_run_websearch.sh",
+            "llm-legs/tests/test_worker_run_lifecycle.sh",
+            "llm-legs/tests/test_worker_run_pool.sh",
+            "llm-legs/tests/test_worker_run_outcomes.sh",
+            "llm-legs/tests/test_worker_run_files.sh",
+            "llm-legs/tests/test_worker_run_claims.sh",
+            "llm-legs/tests/test_worker_run_vendor_files.sh",
+            "llm-legs/tests/test_worker_run_rounds.sh",
+            "llm-legs/tests/test_worker_run_grok.sh",
+            "llm-legs/tests/test_worker_run_grok_outcomes.sh",
+            "llm-legs/tests/test_worker_run_stamps.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
       "same_cause": [
         "test_daily_cost-worker-run"
       ],
       "last_reviewed": "2026-10-01",
       "reviewed_by": "night fixer harness-tests-20261001T020701Z-4cc4",
-      "note": "test_worker_run.sh took 1162 s of 1186 s full run (98 %), exceeding the 50 % long_pole_share limit. Because worker-run tests cover the entire CLI lifecycle and subprocess supervisors, it dwarfs other suites. Suite decomposition or long pole calibration handed off to Harness Doctor and llm-workers.",
+      "note": "test_worker_run.sh took 1162 s of 1186 s full run (98 %), exceeding the 50 % long_pole_share limit. Because worker-run tests cover the entire CLI lifecycle and subprocess supervisors, it dwarfs other suites. Suite decomposition or long pole calibration handed off to Harness Doctor and llm-workers. 2026-10-01: split into sixteen tests/test_worker_run_<part>.sh suites over tests/worker_run_harness.sh, which run-suites runs in parallel; the ident follows every part, so a part that grows back into a long pole or a daily cost still lands on this row.",
       "handoff": "docs/handoffs/2026-10-01-test-worker-run-cost.md"
     },
     {

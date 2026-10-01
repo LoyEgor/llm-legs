@@ -471,8 +471,8 @@ Also pending:
   sees the script, not the env that narrowed it, so a run declares its scope in a marker
   (`share/test-scope.sh` → `test-scope.jsonl` `{start, label, scope, pid, repo_root}`, joined on
   label, `repo_root` and start within 5 s). `share/run-suites.sh` marks every `suites` run `full`,
-  `all`, `changed` or `named`; `test_worker_run.sh` marks itself `partial` when any
-  `WORKER_RUN_TEST_*CASE`/`*ONLY` selector it reads is set (`test_scope_narrowed` derives the set
+  `all`, `changed` or `named`; a `test_worker_run_*.sh` part marks itself `partial` when a
+  `WORKER_RUN_TEST_*CASE` selector it reads is set (`test_scope_narrowed` derives the set
   from the file). A run of a marked label with no marker of its own is `full`; runs are compared
   only with runs of the same scope. A label with no marker is judged against the p75 of its earlier
   runs of the same scope, a marked label against the median of its known-scope runs. The probe
