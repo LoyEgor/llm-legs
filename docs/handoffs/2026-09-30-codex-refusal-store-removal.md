@@ -1,5 +1,7 @@
 # Codex model refusal store: remove it whole
 
+Status: open
+
 Found 2026-09-30 while cutting codex model resolution down to one rule: a codex account is offered
 only a model in its OWN catalog (`codexb models --account <n> --own`), never a pool-wide guess.
 
@@ -22,6 +24,14 @@ only a model in its OWN catalog (`codexb models --account <n> --own`), never a p
 - llm-legs `share/worker-model.sh`: `worker_model_codex_refuse`.
 - llm-legs `bin/worker-run`: the refusal recording in `supervise_codex`.
 - Their tests, and the `cv` row in `docs/shared-invariants.md`.
+
+## Seen by the LLM doctor (2026-10-01, ledger R15)
+The store's pool-wide skip is the most likely reason `codexb models --family sol` printed nothing at
+02:11 UTC on 2026-09-30, about 35 minutes after the rollout-lag refusal: both sol-high cells of
+round `20260930T021101Z-8810740` crashed on `no codex model for cell sol`. Night fixer
+`llm-reviewers-20261001T020642Z-32c1` made such a cell end `pool empty` instead of crashing
+(review-bench `launch.py` `codex_account_serves`). The removal above is still open: it touches
+worker-run and codexb as well, which is outside a reviewers fixer's scope.
 
 ## Keep
 The longest-list heuristic in `codexb`. review-bench still resolves `-m` machine-wide through

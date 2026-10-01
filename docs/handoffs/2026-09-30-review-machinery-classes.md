@@ -48,3 +48,18 @@ test `test_doctor_runs_its_checks`, red on the old code). Only the doctor read t
    sync, gitignored) and `.nx/workspace-data/d/daemon.log` (the Nx daemon). Proposal: leave ignored
    paths out of the class, or add those two to `DOCTOR_INTEGRITY_NOISE_RE`. That narrows the class,
    so it is yours.
+
+## 2026-10-01, night fixer run `llm-reviewers-20261001T020642Z-32c1`
+
+The same five classes, no machinery bug found. Rows: M1 465, M2 32, M3 30, M4 11, M5 1 at launch;
+12/12/12/11/1 in the 23:27 snapshot.
+
+- **The «Vector Magic macOS ARM migration» chat dominates M1 and M5.** `logo-vectorizer-bench`
+  tracks 12 files and leaves 14 107 bench outputs (`results/lanes`, `results/ab`, `tracers/*`)
+  untracked and unignored. `review-debt <session>` for that chat reads LINES=1667946 FILES=14186
+  WHY=gap and took 165 s (cached) and 106 s (`--no-cache`), past `doctor_debt_line_rows`' 60 s
+  timeout, so M5 now shows it as `review-debt answered 'TimeoutExpired'`. The cure is an ignore list
+  in that repository, which is that chat's work. Raising the timeout would hide it, so it stays.
+- **M4 adds a third kind of ignored write:** a night fixer worktree under claude-setup
+  `.claude/worktrees/` changed during a claude-setup review. It is covered by the item 5 proposal
+  (leave ignored paths out of the class).

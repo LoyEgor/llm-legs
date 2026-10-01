@@ -90,7 +90,7 @@
    "same_cause": [],
    "last_reviewed": "2026-09-25",
    "reviewed_by": "LLM Doctor меню refactoring",
-   "note": "kept apart from R1, which is about review-cell shapes",
+   "note": "kept apart from R1, which is about review-cell shapes. 2026-10-01: the cause still stands in code: review-bench judge.py parse_judge_answer refuses a partial answer whole, and the batch's ruled claims go to the manual path with the missing ones. Since 2e32983 (2026-09-22) a session judges at most JUDGE_BATCH_CLAIMS = 40 claims and none fell short in the window. Keeping a batch's ruled part is a design change for the owner, not a bug fix.",
    "handoff": null
   },
   {
@@ -101,7 +101,7 @@
     "detail": "malformed Markdown|read coverage \\d+ bytes below|no parseable finding and did not declare"
    },
    "title": "bad output: empty-findings chunks, agy Markdown shapes and the read-coverage floor (R1, R3, R4)",
-   "status": "fixed",
+   "status": "fixed-pending",
    "fixes": [
     {
      "at": "2026-09-23T21:40:26+03:00",
@@ -111,13 +111,23 @@
       "review-bench/share/rbench/prompts.py"
      ],
      "in": "review-bench@08d37c3",
+     "regressed_at": "2026-09-30T07:28:56+03:00"
+    },
+    {
+     "at": "2026-10-01T05:45:00+03:00",
+     "by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+     "files": [
+      "review-bench/share/rbench/launch.py",
+      "review-bench/share/rbench/scope.py"
+     ],
+     "in": null,
      "regressed_at": null
     }
    ],
    "same_cause": [],
-   "last_reviewed": "2026-09-29",
-   "reviewed_by": "LLM Doctor меню refactoring",
-   "note": "R1 a chunk answering {\"findings\":[]} recorded as bad output; R3 agy Markdown shapes rejected (bare file lists, clean phrasing); R4 the read-coverage floor discarded answers that had findings. Narrowed on 2026-09-29 from the whole word to the three texts those mechanisms printed: any other bad output is its own problem.",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "R1 a chunk answering {\"findings\":[]} recorded as bad output; R3 agy Markdown shapes rejected (bare file lists, clean phrasing); R4 the read-coverage floor discarded answers that had findings. Narrowed on 2026-09-29 from the whole word to the three texts those mechanisms printed: any other bad output is its own problem. 2026-10-01 regression (2 opus-high legs, rounds 20260930T002018Z-a9fe8ce and 20260930T115302Z-c1f76ba): the floor priced text with nothing left to read, clean verdicts only, never a finding. The a9fe8ce chunk was a 192 KB menu dump (llm-legs docs/handoffs/menu-consistency/menu-before.txt), already unpriced by the base's pending `data_bytes` (scope.py DATA_DUMP_SUFFIXES). The c1f76ba chunks were whole files of a `--files` hunt pasted into the prompt, refused after one grep: a scope whose every file the commit adds outright (or is a dump) and whose diff the prompt carries now prices nothing (scope.py whole_text, launch.py _record_prompt). An edited file's chunk and a prompt without the diff keep the floor. Shared cause of both fixes: the floor's base is the diff's bytes, which overprices text the cell holds whole or that is no code.",
    "handoff": null
   },
   {
@@ -397,6 +407,58 @@
    "handoff": "docs/handoffs/2026-10-01-worker-grants.md"
   },
   {
+   "id": "R15",
+   "block": "reviewers",
+   "match": {
+    "word": "crashed",
+    "detail": "no codex model for cell"
+   },
+   "title": "a codex family the catalog resolved to no slug crashed its cells instead of ending pool empty",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-01T05:45:00+03:00",
+     "by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+     "files": [
+      "review-bench/share/rbench/launch.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "x2 sol-high cells of round 20260930T021101Z-8810740 (borodatch, burkhartor): `codexb models --family sol` printed nothing, most likely because the refusal store skipped gpt-6.1-sol pool-wide after its 01:36 UTC refusal (rollout lag); codex_account_serves swallowed the resolver's ValueError and run_codex raised it again. The family word is now recorded unlisted for every account, so the cell ends `pool empty` with `codex model sol is not served by any account`, as shared-invariants row cv says. The trigger, the refusal store itself, is proposed for removal in docs/handoffs/2026-09-30-codex-refusal-store-removal.md (llm-legs and review-bench together).",
+   "handoff": "docs/handoffs/2026-09-30-codex-refusal-store-removal.md"
+  },
+  {
+   "id": "R16",
+   "block": "reviewers",
+   "match": {
+    "word": "bad command",
+    "detail": "is not supported when using Codex with a ChatGPT account"
+   },
+   "title": "a codex cell launched a slug its account's own catalog lacks, and the server answered 400",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-01T05:45:00+03:00",
+     "by": "uncommitted main work pressed into night base 20261001T020350Z-7640",
+     "files": [
+      "review-bench/share/rbench/launch.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "x2 sol-high legs of round 20260930T032123Z-43d191b on work4: gpt-6.1-sol, which work4's own catalog does not list. The night base already carries the fix, pending in main: codex_account_serves passes over an account whose `codexb models --own` list lacks the slug (test: `An account whose OWN catalog lacks the cell's model` in review-bench tests/test_review_bench.sh). The at stamp is this run's, so the proof counts legs after the fix reaches main.",
+   "handoff": null
+  },
+  {
    "id": "M1",
    "block": "reviewers",
    "match": {
@@ -406,9 +468,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-09-30",
-   "reviewed_by": "Night fixer llm-reviewers-20260930T001641Z-5fac",
-   "note": "2026-09-30: 321 of 324 are gap-stale rows of one chat in logo-vectorizer-bench (299 hash-cap, one row per Bash call), 3 claim-expired claims of the never-recorded round 20260923T105514Z-950f26a; no machinery bug found; row grouping and abandoned-round release proposed to the owner",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "2026-09-30: 321 of 324 are gap-stale rows of one chat in logo-vectorizer-bench (299 hash-cap, one row per Bash call), 3 claim-expired claims of the never-recorded round 20260923T105514Z-950f26a; no machinery bug found; row grouping and abandoned-round release proposed to the owner. 2026-10-01: 465 at launch, 12 in the 23:27 snapshot, every one a gap-stale row of the same chat («Vector Magic macOS ARM migration», logo-vectorizer-bench): the repository tracks 12 files and leaves 14 107 bench outputs (results/, tracers/) untracked and unignored; no new cause.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -421,9 +483,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-09-30",
-   "reviewed_by": "Night fixer llm-reviewers-20260930T001641Z-5fac",
-   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the other 30 are real unfinished rounds whose --nofix decision is the owner's or Egor's",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the other 30 are real unfinished rounds whose --nofix decision is the owner's or Egor's. 2026-10-01: 32 at launch, 12 in the 23:27 snapshot, the same class (rounds with confirmed findings and no fix or --nofix recorded); no machinery bug found.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -436,9 +498,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-09-30",
-   "reviewed_by": "Night fixer llm-reviewers-20260930T001641Z-5fac",
-   "note": "2026-09-30: the suspect rule flags most debt rounds in a shared checkout (shared lines over half) and every round fixed outside worker-run (no fix:R anchor); whether that is a defect is the owner's call",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "2026-09-30: the suspect rule flags most debt rounds in a shared checkout (shared lines over half) and every round fixed outside worker-run (no fix:R anchor); whether that is a defect is the owner's call. 2026-10-01: 30 at launch (the a9fe8ce «Чистка» pair and bbeb0eb «Updater doctor» among them), 12 in the 23:27 snapshot; same rule, no new cause.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -451,9 +513,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-09-30",
-   "reviewed_by": "Night fixer llm-reviewers-20260930T001641Z-5fac",
-   "note": "2026-09-30: concurrent edits by other chats in the shared checkout plus ignored files tools write themselves (claude-setup skills/synced by the Claude app, .nx daemon.log); narrowing the class is the owner's call",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "2026-09-30: concurrent edits by other chats in the shared checkout plus ignored files tools write themselves (claude-setup skills/synced by the Claude app, .nx daemon.log); narrowing the class is the owner's call. 2026-10-01: 11, the same two causes: shared-checkout edits (transcriptions-gpt EXPERIMENTS.json and README.md, llm-legs bin/harness-doctor, hammerspoon, logo-vectorizer-bench report/judge-exam.html) and ignored trees written during the review (claude-setup skills/synced, and a night fixer worktree under claude-setup .claude/worktrees, which integrity.py scans because ignored files are in scope by design).",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
@@ -578,9 +640,9 @@
    "status": "open",
    "fixes": [],
    "same_cause": [],
-   "last_reviewed": "2026-09-30",
-   "reviewed_by": "Night fixer llm-reviewers-20260930T001641Z-5fac",
-   "note": "2026-09-30: 3 chats, all WHY=gap: the logo-vectorizer-bench hash-cap gaps of M1, a fixer-missing gap of round 20260924T222306Z-8877b05 and a pre-missing gap a latency probe (toolu_probe_timing) recorded against the live store; no machinery bug found",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
+   "note": "2026-09-30: 3 chats, all WHY=gap: the logo-vectorizer-bench hash-cap gaps of M1, a fixer-missing gap of round 20260924T222306Z-8877b05 and a pre-missing gap a latency probe (toolu_probe_timing) recorded against the live store; no machinery bug found. 2026-10-01: 1 row, `review-debt answered 'TimeoutExpired'` for the M1 chat: `review-debt <session>` took 165 s (cached) and 106 s (--no-cache), past the collector's 60 s (debt.py doctor_debt_line_rows), because it counts the 14 107 untracked bench outputs of logo-vectorizer-bench (LINES=1667946 FILES=14186); its line reads WHY=gap, the class the 2026-09-30 note already names. The fix is that repository's ignore list, its chat's work.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
