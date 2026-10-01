@@ -984,7 +984,7 @@
         "rule": "hook_p50",
         "ident": "instruction-watch\\.sh baseline"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T05:38:24+03:00",
@@ -993,8 +993,8 @@
             "llm-legs/share/instruction-files.sh",
             "llm-legs/bin/instruction-watch.sh"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "llm-legs@2267da0",
+          "regressed_at": "2026-10-01T12:01:15+03:00"
         }
       ],
       "same_cause": [
@@ -1013,7 +1013,7 @@
         "rule": "hook_p50",
         "ident": "stop-dispatch\\.sh"
       },
-      "status": "fixed-pending",
+      "status": "fixed",
       "fixes": [
         {
           "at": "2026-10-01T05:38:24+03:00",
@@ -1021,8 +1021,8 @@
           "files": [
             "claude-setup/hooks/lib/chat_names.py"
           ],
-          "in": null,
-          "regressed_at": null
+          "in": "claude-setup@ca90fab",
+          "regressed_at": "2026-10-01T12:01:15+03:00"
         }
       ],
       "same_cause": [],
