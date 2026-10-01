@@ -340,10 +340,13 @@ The contract is row `da` of `docs/shared-invariants.md`.
 - **Menu builds**: `menu/<YYYY-MM-DD>.tsv` (local day of the end), `start_us end_us menu` per
   build. `hammerspoon/llm-limits.lua` `M.menuItems` goes through `M.timedMenu("llm-limits", build)`,
   which appends the line through `M.menuJournal` with `hs.timer.secondsSinceEpoch`; every step is
-  under `pcall`, and a missing folder drops the line, never the menu. The hammerspoon repository's
-  `automation_menu.lua` builds the whole Automation menu through `timedMenu("automation", buildMenu)`
-  (plain `buildMenu` when llm-limits did not load), so `menu build: automation` includes the
-  LLM Limits part. The collector makes `menu/` on each run and prunes it after 3 days.
+  under `pcall`, and a missing folder drops the line, never the menu. A line is the time a click
+  waits: a build inside `M.backgroundMenu(build)` writes none. The hammerspoon repository's
+  `automation_menu.lua` answers a click through `timedMenu("automation", buildMenu)`, which assembles
+  cached sections (LLM Limits, Better Terminal, Token tracking, Doctors, Reports); a background
+  refresh rebuilds them one per main-thread slice under `backgroundMenu`, every 5 s while the user
+  is active and every 60 s once idle, so `menu build: automation` is the click's own wait and
+  `llm-limits`/`doctors` lines stop. The collector makes `menu/` on each run and prunes it after 3 days.
 - **Reader**: incremental by byte offset up to the last newline; spool files are folded and removed,
   their runs appended first to `hooks/folded/<epoch day>.tsv` in the journal's line format, so the
   batch join of §3.2 sees `/bin/bash` hooks too. The key is the text up to the first tab and exit

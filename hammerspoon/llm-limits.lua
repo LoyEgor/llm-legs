@@ -3173,7 +3173,19 @@ function M.menuJournal(name, startedAt)
   end)
 end
 
+local backgroundDepth = 0
+
+-- The journal is the time a click waits: a build off the click path runs here and writes no line.
+function M.backgroundMenu(build, ...)
+  backgroundDepth = backgroundDepth + 1
+  local results = table.pack(pcall(build, ...))
+  backgroundDepth = backgroundDepth - 1
+  if not results[1] then error(results[2], 0) end
+  return table.unpack(results, 2, results.n)
+end
+
 function M.timedMenu(name, build, ...)
+  if backgroundDepth > 0 then return build(...) end
   local _, startedAt = pcall(epochNow)
   local menu = build(...)
   M.menuJournal(name, startedAt)

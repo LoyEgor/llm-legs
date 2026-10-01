@@ -2124,7 +2124,7 @@ local automationHs = {
   task = { new = function()
     return { start = function() return true end, isRunning = function() return false end }
   end },
-  timer = { doEvery = function() return {} end },
+  timer = { doEvery = function() return {} end, doAfter = function() return {} end },
 }
 local automationLimits = {
   refreshState = function() return automationState end,
@@ -3586,6 +3586,14 @@ do
   local journalPath = "/fixture/harness-doctor/menu/" .. os.date("%Y-%m-%d", 1790700000) .. ".tsv"
   assert(table.concat(timed.__writes[journalPath] or {}, "") == "1790700000250000\t1790700000500000\tllm-limits\n",
     "a menu build did not append its start, end and name to the harness doctor's menu journal")
+  local quiet = loadModule(roleFixture)
+  quiet.harnessDoctorDir = "/fixture/harness-doctor"
+  assert(#quiet.backgroundMenu(quiet.menuItems) > 0 and next(quiet.__writes) == nil,
+    "a background menu build wrote a journal line, so the journal no longer measures the click's wait")
+  assert(not pcall(quiet.backgroundMenu, function() error("boom") end), "a failing background build was swallowed")
+  harnessClock = function() return 1790700001 end
+  quiet.menuItems()
+  assert(next(quiet.__writes) ~= nil, "a failing background build left the journal switched off")
   harnessClock = function() error("clock broke") end
   local broken = loadModule(roleFixture)
   broken.harnessDoctorDir = "/fixture/harness-doctor"
