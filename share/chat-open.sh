@@ -23,10 +23,8 @@ chat_open() {
   {
     printf '#!/bin/bash\n'
     printf 'cd %q || exit 1\n' "$workdir"
-    # Egor's rule for these chats: every vendor open for workers and reviews, through the same chat pin
-    # «воркер на все» writes. Run from Terminal, where no Claude session asks for his words.
-    printf 'CLAUDE_CODE_SESSION_ID=%q %q all >/dev/null || echo "chat-pin all failed: this chat meets the worker switches"\n' \
-      "$session" "$chat_open_repo/bin/chat-pin"
+    # No chat pin: an opened chat uses exactly what Egor's worker switches allow; `open=all` is his
+    # word in a chat of his, never a launch default (2026-10-01).
     printf 'exec %s%q profile %q --session-id %q --model %q --effort high %q\n' \
       "$prefix_quoted" "$claudeb" "$account" "$session" "$model" "$prompt"
   } >"$file" || { printf 'cannot write %s\n' "$file" >&2; return 1; }

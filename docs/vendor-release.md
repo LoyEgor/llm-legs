@@ -32,8 +32,8 @@ only with a stated reason), and every new capability is supported, per account, 
 - Work in a worktree per repository you change (llm-legs, review-bench, claude-setup), on branch
   `vendor-release/<vendor>-<version>`, per `~/.claude/docs/worktrees.md`. Never review, commit or
   push: Egor's end-of-day pass does all three for everything at once (night: §6).
-- Every vendor is open for workers and reviews (chat pin `open=all`, as «воркер на все»): a live proof
-  on a vendor Egor switched off in the menu runs anyway; pauses, walls and the Light switch apply.
+- Workers and reviews use exactly the vendors Egor's worker switches allow; the chat gets no pin. A
+  live proof that needs a vendor he switched off is not run: it goes into the report's ask.
 - Tests use fixtures only; never point one at `~/.claude-profiles/.claudeb`, a real `~/.codex`,
   `~/.grok` or `~/.gemini`, and never mutate the live Hammerspoon singleton (`menuItems()` only).
 - Never generate an image or video: every generation needs Egor's «сгенерируй». Collect what only a

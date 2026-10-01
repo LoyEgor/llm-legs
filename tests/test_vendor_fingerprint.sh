@@ -177,14 +177,11 @@ id=$(bash "$SCRIPT" request grok | head -n 1)
 assert [ "$id" = "$fid" ]
 assert [ "$(cat "$OPENED")" = "$EVENTS/$id.command" ]
 assert grep -qxF "cd $(printf '%q' "$ROOT") || exit 1" "$EVENTS/$id.command"
-launch_sid=$(sed -n 's/^CLAUDE_CODE_SESSION_ID=\([^ ]*\) .*/\1/p' "$EVENTS/$id.command")
+launch_sid=$(sed -n 's/.* --session-id \([^ ]*\) .*/\1/p' "$EVENTS/$id.command")
 assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$launch_sid"
 assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $launch_sid --model opus --effort high Vendor\\ release\\ event\\ $id:\\ read\\ $ROOT/docs/vendor-release.md" "$EVENTS/$id.command"
-# The chat it opens has every vendor open: the pin line lands in that session's chat pin file.
-launch_pins="$WORK/chat-pins"
-sed -n '/^CLAUDE_CODE_SESSION_ID=/p' "$EVENTS/$id.command" >"$WORK/pin-line.sh"
-env -u CLAUDECODE CHAT_PINS_DIR="$launch_pins" bash "$WORK/pin-line.sh"
-assert [ "$(cat "$launch_pins/$launch_sid")" = open=all ]
+# The chat it opens gets no chat pin: vendors are Egor's worker switches, never a launch default.
+assert [ "$(grep -c 'chat-pin' "$EVENTS/$id.command")" = 0 ]
 assert jqe '.launched_at != null' "$EVENTS/$id.json"
 run=$(jq -r .run "$EVENTS/$id.json")
 assert jqe --arg id "$id" --arg s "$launch_sid" --arg c "$EVENTS/$id.command" '.doctor == "updater" and .launched_at != null

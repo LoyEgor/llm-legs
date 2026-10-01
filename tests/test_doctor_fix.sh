@@ -99,7 +99,7 @@ assert [ "$(jq -r .command "$R")" = "$RUNS/$id.command" ]
 assert [ "$(cat "$OPENED")" = "$RUNS/$id.command" ]
 assert grep -qxF -- '--account claudeb --role chat --model opus --claim' "$DATA/pick-args"
 assert grep -qxF "cd $(printf '%q' "$ROOT") || exit 1" "$RUNS/$id.command"
-assert grep -qF "CLAUDE_CODE_SESSION_ID=$session $(printf '%q' "$ROOT/bin/chat-pin") all" "$RUNS/$id.command"
+assert test "$(grep -c 'chat-pin' "$RUNS/$id.command")" = 0
 assert grep -qF -- "exec $FAKE_BIN/claudeb profile acct-b --session-id $session --model opus --effort high Doctor\\ fixer\\ run\\ $id:\\ read\\ $ROOT/docs/doctor-fix.md\\ in\\ full\\ and\\ follow\\ it\\ for\\ this\\ run." "$RUNS/$id.command"
 
 # An open run younger than 12 h is named, and no second chat opens; an older one is abandoned.
