@@ -677,6 +677,91 @@
    "reviewed_by": "night fixer llm-health-20261001T020632Z-3671",
    "note": "claudeb-1790808567-98231-124d exited 0 but has dirty-before-shas (1080670 bytes), head-before, no dirty-after-shas or head-after, and empty files-note. bin/worker-run snapshot_changed_paths correctly refuses absent after files; fold_family_anchors emits snapshots unreadable. persist_run_files attempts capture, so omitted capture is not established. workdir/path enumeration failure or interrupted capture cannot be distinguished from retained records; hashing alone falls back per path. Do not fabricate an after snapshot from the current shared tree. Owner needs capture failure evidence on a fixture.",
    "handoff": "docs/handoffs/2026-10-01-debt-health-followup.md"
+  },
+  {
+   "id": "I1",
+   "block": "image",
+   "match": {
+    "word": "bad command",
+    "model": "^(codex-image|grok-video|gemini-(image|video|music|sfx|listen))$",
+    "detail": "usage:|takes duration 8, not 6|is not an absolute path"
+   },
+   "title": "Image wrapper argument refusals lack invocation provenance",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night image fixer",
+   "note": "Launch had 84 exits; fresh scan had 85. Live image journal contains mostly usage text (57 codex-image), one Veo duration refusal and one space-joined gemini-listen path. These happen before image_leg_mark; vendor failure is ruled out for these messages. Journal has no argv, cwd or caller, so help probes versus malformed production calls versus tests cannot be confirmed. Existing image suites explicitly isolate IMAGE_LEG_LOG, so their current setup is not evidence of leakage. Suppressing rc=2 or changing the judge is not authorized. Owner should reconstruct callers before proposing a narrow dismissal.",
+   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
+  },
+  {
+   "id": "I2",
+   "block": "image",
+   "match": {
+    "word": "browser drift",
+    "model": "^gemini-music$",
+    "detail": "no Length chip in the music composer"
+   },
+   "title": "Gemini music composer absent behind account notice",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night image fixer",
+   "note": "Read all three PNG/TXT pairs under ~/.gemini-web/failures/20261001T020{013,126,402}Z-locomthebest-*. All show the ordinary Flash composer, Keep in mind privacy/activity notice and Got it, no music chips. A renamed Length selector is not established; sign-out is not shown. open_music waits for a generic textbox after Create music, which does not prove tool readiness. Notice interference versus delayed or reset tool activation remains ambiguous. Do not acknowledge the account notice without owner authorization; request an authorized dry-run through image-gen. No live browser or paid generation was run.",
+   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
+  },
+  {
+   "id": "I3",
+   "block": "image",
+   "match": {
+    "word": "not found",
+    "model": "^gemini-music$",
+    "detail": "video download failed \\(HTTP 404"
+   },
+   "title": "Gemini cover video returned 404 after music generation",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night image fixer",
+   "note": "Event image:1790815478/gemini-music/egbogd returned HTTP 404 and 2860 bytes, not a missing executable or local path. Base c340869 already retries the cover-art MP4 six times with 10-second waits, retains successful audio and reports video_error; bin/gemini-music rejects a requested MP4 when absent. Cannot prove delayed publication versus an invalid/expired URL from the retained journal; no response artifact is retained. Existing retry is not proven obsolete. Owner should verify audio-only success and an existing cover download without spending on another generation.",
+   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
+  },
+  {
+   "id": "I4",
+   "block": "image",
+   "match": {
+    "word": "timeout",
+    "model": "^gemini-(music|video)$",
+    "detail": "filechooser|Short|Add to prompt|1080p upscaled download"
+   },
+   "title": "Historical browser waits require current-route verification",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night image fixer",
+   "note": "Four incidents: Add to prompt at 1790795541, 1080p Download media click at 1790808722, Short chip at 1790813256, filechooser at 1790813446. Base already replaced mandatory Add to prompt with optional click plus attachment verification; music attach handles rights notices and chooser events. No saved screenshot/TXT exists for these older incidents (failure directory contains only the three Length captures). Current Short selection and upscale readiness cannot be verified from traceback alone. Longer vendor generation caps would not fix these UI waits. Do not restore old mandatory attachment clicks or blanket-increase timeouts.",
+   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
+  },
+  {
+   "id": "I5",
+   "block": "image",
+   "match": {
+    "word": "unclassified",
+    "model": "^gemini-(music|video|sfx)$",
+    "detail": "no Length chip|no track after 600s|upload of b-stopwatch\\.png never finished|soundtrack of take\\.mp4 is silent"
+   },
+   "title": "Unclassified image failures have several unresolved causes",
+   "status": "open",
+   "fixes": [],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night image fixer",
+   "note": "Launch six incidents; fresh scan seven adds silent SFX at 1790820477. Earlier Length failures lack BROWSER_FAILURE markers; current base emits structured failures. no track after 600s at 1790814959 stayed on /app?hl=en: submission/notice is plausible, vendor rendering delay unproved; current message distinguishes an unsent prompt. Flow upload b-stopwatch.png at 1790808648 has no capture. Silent take.mp4 messages at 1790820305/352/477 come from bin/gemini-sfx loudnorm measurement: malformed/missing measurement and actual input_i <= -70 share the same message, so vendor silence is not established. No original clip or measurement is linked by image-leg. Owner should retain/recover media and ffmpeg diagnostics before blaming vendor or changing threshold.",
+   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   }
  ],
  "blind_spots": [
@@ -721,6 +806,13 @@
    "reason": "bin/llm-doctor debt_health keeps the first detail but the latest timestamp per session/repository/kind; H5 aggregates 12 calls and H6 aggregates six. health_problems labels seven-day open-gap reads as in 24 h. --block debt is unsupported; inspect health in the full --json document. Handoff: docs/handoffs/2026-10-01-debt-health-followup.md",
    "since": "2026-10-01",
    "would_catch_if": "health evidence preserved individual gap references with their own timestamps and reported the actual open-gap lookback separately from the loss window"
+  },
+  {
+   "id": "image-invocation-and-artifact-provenance",
+   "what": "Image failures cannot distinguish help probes from real calls, or silent media from failed measurement",
+   "reason": "share/image-leg.sh records tool/status/stderr but no sanitized invocation provenance or retained diagnostic artifact reference; bad-command and SFX investigations cannot establish their caller or source measurement.",
+   "since": "2026-10-01",
+   "would_catch_if": "Image journal links a sanitized caller/invocation record and retained browser/media measurement diagnostics without credentials or prompt contents."
   }
  ]
 }
