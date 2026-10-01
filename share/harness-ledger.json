@@ -183,10 +183,10 @@
         }
       ],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "night fixer harness-guards-20260930T001642Z-7d95",
-      "note": "Event 5751c770d8700227 (2026-09-29T20:50:18Z, compaction SessionStart of a session whose own baseline dated from before 2026-09-28T19:43Z) listed 20 files: 15 synced-skill files and hammerspoon/CLAUDE.md whose alert marks earlier checks had claimed (20:14-20:33Z, 09:39Z), and review-tiers.md whose 2026-09-28T19:43Z record had outlived its one-day mark. alert_once now journals only the files this check claimed, and a mark lives past the baselines' week-old sweep.",
-      "handoff": null
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8",
+      "note": "Event 5751c770d8700227 (2026-09-29T20:50:18Z, compaction SessionStart of a session whose own baseline dated from before 2026-09-28T19:43Z) listed 20 files: 15 synced-skill files and hammerspoon/CLAUDE.md whose alert marks earlier checks had claimed (20:14-20:33Z, 09:39Z), and review-tiers.md whose 2026-09-28T19:43Z record had outlived its one-day mark. alert_once now journals only the files this check claimed, and a mark lives past the baselines' week-old sweep. Follow-up 2026-10-01: The regression now includes 6bbd8cc122eaaeea (2026-09-30T09:42:45Z, 15 google-workspace files) and e4a27d26b246bec2 (2026-10-01T01:12:13Z, six math-proof files plus a 33-byte README). Math-proof was already reported by watcher 6abd5e9b7ca01b57 at 19:10:19Z. Current alert_once filters claimed files; Lua watchEmit does too; both derive hash@mtime via the same watch_mark_key and accept w-suffixed markers. Thus the original whole-batch re-journaling implementation is already removed. Historical records carry no hash@mtime, so an actual vendor rewrite versus expired/missing claim versus old resident watcher cannot be distinguished. Do not claim a dedup fix or suppress between-sessions. Owner must obtain write-key/runtime-version evidence and reproduce watcher-first then resumed-baseline behavior. Existing tripwire-duplicate-records blind spot remains applicable.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {
       "id": "guards-synced-skills-vendor-sync",
@@ -198,10 +198,10 @@
       "status": "open",
       "fixes": [],
       "same_cause": [],
-      "last_reviewed": "2026-09-30",
-      "reviewed_by": "night fixer harness-guards-20260930T001642Z-7d95",
-      "note": "Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff.",
-      "handoff": "docs/handoffs/2026-09-30-harness-guards-vendor-sync-and-probe-sids.md"
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8",
+      "note": "Narrowed to one cause: 2026-09-29 20:14/20:20/20:33Z the harness itself synced the newly published org skill google-workspace (SKILL.md + references/*.md, 13-47 kB each) into the three synced/<org>_<account>/ dirs beside manifest.json and .last-complete-round; the dir is gitignored in claude-setup and written by no tool call. Dismissal proposed in the handoff. Follow-up 2026-10-01: Current retained events include vendor docs/docx syncs at 2026-09-30T00:44-03:59Z, including watcher 6abc6f522478d465 and tripwire bba946b035711a7e. This extends the prior google-workspace-only note: the match still names the vendor-owned synced tree, not a model file writer. No native PreToolUse event is available for org synchronization; retain open row and propose dismissal to Harness Doctor without broadening its match. Duplicate observations and missing write keys are separately handed off; the source cannot prove all sync records are distinct writes.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md"
     },
     {
       "id": "guards-baseline-missing-probe-sids",
@@ -466,6 +466,416 @@
       "reviewed_by": "Night fixer harness-hooks-20260930T001647Z-0f22",
       "note": "Narrowed to a confound: the quiet check reads no transcript (only revert_growth does, on a changed guarded file) and its baseline is dominated by the constant ~/.claude set; the same split shows on report-flush, which reads neither. Dismissal proposed in the handoff.",
       "handoff": "docs/handoffs/2026-09-30-hook-cost-rows.md"
+    },
+    {
+      "id": "guards-growth-film-08a95dd4",
+      "title": "hf/CLAUDE.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/film\\-lab/08a95dd4/hf/CLAUDE\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-film-a19f6d01",
+      "title": "hf/CLAUDE.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/film\\-lab/a19f6d01/hf/CLAUDE\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Event 078d5d2199bf5f20 at 2026-09-30T14:48:58Z reports an 8238-byte addition, writer ambiguous. Both current video/alona/R1-{A,B}/hf/CLAUDE.md copies are 8238 bytes; their filesystem mtimes precede the observer call. The observer transcript at 14:48:55 edits harness/skill/SKILL.md and briefs/alona.md, not these files, so observer identity is not writer evidence. No file history was returned by git log for the current paths. Originating initializer/copy is unconfirmed; video/film-lab is outside authorized worktrees. Ask its owner to identify the creator and gate generated instruction copies; do not trim its content here.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-volumes-work-projects-llm-legs-docs",
+      "title": "llm-legs/docs grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^/Volumes/Work/Projects/llm\\-legs/docs$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Event 8eacc04fff044452 at 2026-09-30T02:49:37Z is +396 bytes in the previous night Codex worktree docs/shared-invariants.md, writer ambiguous. gates.jsonl has no matching pass in the existing 900s-before/60s-after window; later 04:25 growth has exact-worktree passes. Main-checkout passes are different paths and cannot authorize this copy. The tripwire caught actual external-worker growth; hook coverage of that writer remains unconfirmed. Owner must decide how non-Claude workers attest instruction audits; widening the temporal/path join would loosen the judge.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-agents-image-gen-md",
+      "title": "agents/image-gen.md grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/agents/image\\-gen\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher events 6abd878e5e994831, 6abd92505a9ae4b5 and 6abdaf3873a00c54 report +443/+428/+1830 bytes at 22:05:02/22:50:56/00:54:16Z. The 19:17:25 Edit in Google video generation integration has a bloat passed record and is correctly absent from the packet; no equivalent matched pass exists for the three packet events. This rules out a general agents symlink join failure. Exact later writers remain unconfirmed; active image-agent work belongs to that chat. Retain detection and ask the owner for those writes/audits, not a blanket exemption.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-readme-md",
+      "title": "math-proof/README.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/README\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-judge-md",
+      "title": "agents/math-proof-judge.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-judge\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-deep-md",
+      "title": "agents/math-proof-worker-deep.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-worker\\-deep\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-agents-math-proof-worker-md",
+      "title": "agents/math-proof-worker.md grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/agents/math\\-proof\\-worker\\.md$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-siege",
+      "title": "skills/siege grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/skills/siege$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-plugins-marketplaces-claude-plugins-official-plugins-math-proof-skills-solo",
+      "title": "skills/solo grew with no gate seeing it, 1 file in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/plugins/marketplaces/claude\\-plugins\\-official/plugins/math\\-proof/skills/solo$"
+      },
+      "status": "open",
+      "fixes": [],
+      "same_cause": [],
+      "note": "Watcher event 6abd5e9b7ca01b57 at 2026-09-30T19:10:19Z added all six math-proof instruction roots. Packet history places each in official marketplace commit ab024cd (2026-09-30), outside both authorized repositories. No model tool gate can preflight a vendor marketplace refresh. Propose owner dismissal for this exact identity only; retain open status and unchanged judge. The later between-session observation is separately tracked under guards-tripwire-rejournal.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes",
+      "title": "skills/hyperframes grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-animation",
+      "title": "skills/hyperframes-animation grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-animation$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-audio",
+      "title": "skills/hyperframes-audio grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-audio$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-cli",
+      "title": "skills/hyperframes-cli grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-cli$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-core",
+      "title": "skills/hyperframes-core grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-core$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-creative",
+      "title": "skills/hyperframes-creative grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-creative$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-keyframes",
+      "title": "skills/hyperframes-keyframes grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-keyframes$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-registry",
+      "title": "skills/hyperframes-registry grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-registry$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-hyperframes-studio",
+      "title": "skills/hyperframes-studio grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/hyperframes\\-studio$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
+    },
+    {
+      "id": "guards-growth-claude-skills-media-use",
+      "title": "skills/media-use grew with no gate seeing it, 3 files in 24 h",
+      "match": {
+        "rule": "growth-ungated",
+        "ident": "^\\~/\\.claude/skills/media\\-use$"
+      },
+      "status": "fixed-pending",
+      "fixes": [
+        {
+          "at": "2026-10-01T02:17:46+00:00",
+          "by": "night fixer harness-guards-20261001T020645Z-3cf8",
+          "files": [
+            "claude-setup/hooks/skill-install-scope-gate.sh",
+            "claude-setup/tests/test_skill_install_scope_gate.sh"
+          ],
+          "in": null,
+          "regressed_at": null
+        }
+      ],
+      "same_cause": [],
+      "note": "Watcher batches 6abce54f1ee2d7ca, 6abd23085f903f23 and 6abdbc4e6d7b9082 at 10:32:47/14:56:08/01:50:06Z reinstall the same ten global SKILL.md roots. Intervening deletion batches at 10:38 and 01:23, plus 01:52 removal, rule out mere repeated observation as the shared cause. A video worker transcript at 2026-10-01T01:49:21Z runs npx -y hyperframes init hf; init internally installs global skills. The owning video chat added init protection at 01:53:37Z and refined it at 01:55:54Z, already in claude-setup base 83cf539 hooks/skill-install-scope-gate.sh. Do not duplicate that active fix or claim new credit. Owner must confirm rollout and later absence; generic shell-parser bypasses and actual runtime hook loading were not established. Fixed in this run: inherited HYPERFRAMES_SKIP_SKILLS=1 previously bypassed init inspection even when the command cleared or overrode it. The gate now evaluates the effective value per command prefix and export/unset segment. Regression suite adds six inherited-environment cases and clears ambient skip state for deterministic tests; old code fails the explicit =0 case, and six fixture probes pass after the change. This hardens the existing init fix rather than replacing it; runtime rollout remains the owner follow-up.",
+      "handoff": "docs/handoffs/2026-10-01-harness-guards-growth-provenance.md",
+      "last_reviewed": "2026-10-01",
+      "reviewed_by": "night fixer harness-guards-20261001T020645Z-3cf8"
     }
   ],
   "blind_spots": [
@@ -552,6 +962,13 @@
       "reason": "Claude Code 2.1.285 labels an Agent task `subagent` where ask-run-unfinished.sh matched only `local_agent`; the stop journal records the count of live tasks, never their types",
       "since": "2026-09-30",
       "would_catch_if": "the stop journal recorded each live background task's type, so a hook filter matching none of the labels in use showed"
+    },
+    {
+      "id": "skill-install-effective-environment",
+      "what": "An inherited skill-install skip variable overridden by the actual Bash command",
+      "reason": "The 2026-10-01 guards fixer reproduced HYPERFRAMES_SKIP_SKILLS=1 in the hook environment followed by an explicit =0 init command passing the old gate. Existing growth records identify installed files, not the initializer effective environment; this specific bypass was found by a fixture probe, not established as the historical writer. The dedicated skill-install-scope gate does not emit the instruction gates journal.",
+      "since": "2026-10-01",
+      "would_catch_if": "The install-scope gate journaled its effective skip decision and initializer identity, allowing the doctor to correlate allowed init calls with subsequent global SKILL.md growth."
     }
   ]
 }
