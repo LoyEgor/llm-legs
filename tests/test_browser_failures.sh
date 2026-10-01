@@ -206,7 +206,7 @@ gw.warn = lambda account, reason, route=None: warned.append((account, reason))
 assert gw.keep_hidden("com") is None and warned == [("com", "could not keep the automation Chrome hidden: no osascript")], warned
 gw.subprocess.Popen, gw.warn = real_popen, real_warn
 script = gw.HIDE_WATCH
-assert "delay 0.2" in script and "then return" in script and "visible is true" in script, script
+assert "delay 0.2" in script and "then return" in script and "visible is true" not in script, script
 with tempfile.TemporaryDirectory() as scratch:
     compiled = subprocess.run(["osacompile", "-o", scratch + "/watch.scpt", "-e", script], capture_output=True, text=True)
     assert compiled.returncode == 0, compiled.stderr

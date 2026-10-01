@@ -380,14 +380,15 @@ def browser(account: str, visible: bool = False):
 
 # Chrome brings itself forward on a new window, a download or a dialog. One osascript polls for the
 # whole run: an osascript spawned every 3 s left the page up long enough for the owner to read it.
-# It quits once no clone runs, so a killed run cannot leave it polling forever.
+# It quits once no clone runs, so a killed run cannot leave it polling forever. The hide is
+# unconditional: filtered on `visible is true` it left the clone's window up (2026-10-01).
 HIDE_WATCH = """on run argv
   set bundleId to item 1 of argv
   repeat
     tell application "System Events"
       if not (exists (first process whose bundle identifier is bundleId)) then return
       try
-        set visible of (every process whose bundle identifier is bundleId and visible is true) to false
+        set visible of (every process whose bundle identifier is bundleId) to false
       end try
     end tell
     delay 0.2
@@ -671,7 +672,8 @@ def open_project(page, account: str) -> str:
     return project
 
 
-ALLOWANCE_URL = "https://one.google.com/ai/activity"
+# The page follows the account's language, not Chrome's --lang, and the allowance text is matched in English.
+ALLOWANCE_URL = "https://one.google.com/ai/activity?hl=en"
 ALLOWANCE_TEXT = re.compile(r"([\d,]+) Google Flow credits are included as part of your Google AI plan and refresh (\w+)")
 REFILL_JUMP = 200
 ALLOWANCE_EVERY_S = 24 * 3600
@@ -699,8 +701,9 @@ def note_credits(account: str, credits: int | None) -> None:
 
 
 def read_allowance(context, account: str) -> None:
-    if time.time() - read_meta(account).get("credits_total_at", 0) < ALLOWANCE_EVERY_S:
+    if time.time() - read_meta(account).get("credits_total_checked_at", 0) < ALLOWANCE_EVERY_S:
         return
+    write_meta(account, credits_total_checked_at=int(time.time()))
     page = context.new_page()
     try:
         page.goto(ALLOWANCE_URL, wait_until="domcontentloaded", timeout=30000)

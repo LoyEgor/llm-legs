@@ -429,9 +429,13 @@ assert (meta["credits_total"], meta["credits_total_source"]) == (1000, "site"), 
 assert context.pages_made[0].urls == [g.ALLOWANCE_URL] and context.pages_made[0].closed, context.pages_made[0].urls
 g.read_allowance(context, "totals")
 assert len(context.pages_made) == 1, "the allowance was read again within a day"
-g.write_meta("totals", credits_total_at=0)
-g.read_allowance(Context("Upgrade your plan for more Google Flow credits"), "totals")
+g.write_meta("totals", credits_total_checked_at=0)
+missed = Context("Upgrade your plan for more Google Flow credits")
+g.read_allowance(missed, "totals")
 assert g.read_meta("totals")["credits_total"] == 1000, "a page without the allowance erased the total"
+g.read_allowance(missed, "totals")
+assert len(missed.pages_made) == 1, "a page without the allowance was opened again within a day"
+assert "hl=en" in g.ALLOWANCE_URL, "the allowance page opens in the account's language, the English match misses"
 
 g.note_credits("totals", 828)
 g.note_credits("totals", 700)
