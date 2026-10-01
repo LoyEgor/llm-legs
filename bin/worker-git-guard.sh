@@ -5,12 +5,13 @@ set -u
 input=$(cat) || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
-printf '%s' "$input" | jq -e . >/dev/null 2>&1 || exit 0
+parsed=$(jq -r '[.hook_event_name // "", .agent_type // "", .session_id // "", .tool_input.command // "",
+  .cwd // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
+fields=()
+eval "fields=($parsed)"
 
-field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
-
-[ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
-agent_type=$(field '.agent_type')
+[ "${fields[0]-}" = PreToolUse ] || exit 0
+agent_type=${fields[1]-}
 case "$agent_type" in
   codex-worker|claudeb-worker|gemini-worker|grok-worker|light-worker) ;;
   # A headless claudeb run is a worker session itself, not a subagent of one, so its
@@ -21,15 +22,15 @@ case "$agent_type" in
      else exit 0; fi ;;
 esac
 
-session_id=$(field '.session_id')
+session_id=${fields[2]-}
 [[ "$session_id" =~ ^[A-Za-z0-9_-]+$ ]] || exit 0
 [ -n "${HOME:-}" ] || exit 0
 [ -e "$HOME/.cache/claude-worker-tags/$session_id/git-unlock-$agent_type" ] && exit 0
 
-command_text=$(field '.tool_input.command')
+command_text=${fields[3]-}
 [ -n "$command_text" ] || exit 0
 
-guard_cwd=$(field '.cwd')
+guard_cwd=${fields[4]-}
 [ -d "$guard_cwd" ] || guard_cwd=$PWD
 
 # A checkout operand is a path when it names something already on disk — which is exactly the

@@ -16,17 +16,21 @@ export GROKB_MODELS_NO_FETCH=1
 input=$(cat) || exit 0
 WORKER_PICK="${WORKER_SPAWN_WORKER_PICK:-$HOME/.local/bin/worker-pick}"
 
-field() { printf '%s' "$input" | jq -r "$1 // empty" 2>/dev/null; }
-hook_session=$(field '.session_id')
+parsed=$(jq -r '[.session_id // "", .hook_event_name // "", .tool_name // "",
+  .tool_input.subagent_type // "", .tool_input.description // "", .tool_input.prompt // "",
+  .tool_input.model // "", .transcript_path // "", .tool_use_id // ""] | @sh' <<<"$input" 2>/dev/null) || exit 0
+fields=()
+eval "fields=($parsed)"
+hook_session=${fields[0]-}
 [ -z "$hook_session" ] || export CLAUDE_CODE_SESSION_ID="$hook_session"
 
-[ "$(field '.hook_event_name')" = PreToolUse ] || exit 0
-[ "$(field '.tool_name')" != Workflow ] || exit 0
+[ "${fields[1]-}" = PreToolUse ] || exit 0
+[ "${fields[2]-}" != Workflow ] || exit 0
 RELAY_TYPES='claudeb-worker codex-worker gemini-worker grok-worker light-worker'
 NATIVE_ALLOWLIST='fork review-waiter light-research image-gen'
-subagent=$(field '.tool_input.subagent_type')
-description=$(field '.tool_input.description')
-prompt=$(field '.tool_input.prompt')
+subagent=${fields[3]-}
+description=${fields[4]-}
+prompt=${fields[5]-}
 
 worker_conf() { sed -n "s/^$1=//p" "$HOME/.claude/worker-model" 2>/dev/null | head -n1; }
 
@@ -188,9 +192,9 @@ elif [ "$subagent" = image-gen ]; then
   fi
   prefix="$acct · $media"
 elif [ "$subagent" = fork ]; then
-  model=$(field '.tool_input.model')
+  model=${fields[6]-}
   if [ -z "$model" ]; then
-    transcript=$(field '.transcript_path')
+    transcript=${fields[7]-}
     [ ! -r "$transcript" ] || model=$(tail -n 200 "$transcript" 2>/dev/null |
       jq -rR 'fromjson? | select(type == "object" and .type == "assistant") | .message | objects | .model // empty' 2>/dev/null |
       tail -n1)
@@ -276,7 +280,7 @@ esac
 title=$(printf '%s' "$description" | sed -E 's/^[A-Za-z0-9_.?-]+( [a-z]+)?( · [A-Za-z0-9_.?-]+){1,3}(: | — )//')
 [ -n "$title" ] || title=task
 
-session_id=$(field '.session_id' | tr -cd 'A-Za-z0-9_-')
+session_id=$(printf '%s' "$hook_session" | tr -cd 'A-Za-z0-9_-')
 [ -n "$session_id" ] || session_id=_
 pending_dir="$HOME/.cache/claude-worker-tags/$session_id"
 unlock_asked=0
@@ -284,7 +288,7 @@ unlock_done=0
 printf '%s' "$prompt" | grep -qE '^GIT-CLEANUP:[[:space:]]*allowed' && unlock_asked=1
 # One seed per spawn: two agents of one type spawned in the same turn each claim their own, oldest
 # first, instead of the second overwriting the first one's tag.
-spawn_key=$(field '.tool_use_id' | tr -cd 'A-Za-z0-9_-')
+spawn_key=$(printf '%s' "${fields[8]-}" | tr -cd 'A-Za-z0-9_-')
 [ -n "$spawn_key" ] || spawn_key="$(date +%s)-$$-$RANDOM"
 if mkdir -p "$pending_dir" 2>/dev/null; then
   umask 077
@@ -329,7 +333,7 @@ fi
 # These types are pinned to their frontmatter model, which a tool-call model would override.
 strip_model=''
 case "$subagent" in
-  review-waiter|light-research|image-gen) [ -z "$(field '.tool_input.model')" ] || strip_model=1 ;;
+  review-waiter|light-research|image-gen) [ -z "${fields[6]-}" ] || strip_model=1 ;;
 esac
 
 [ "$updated" = "$description" ] && [ -z "$md_guard" ] && [ -z "$cleanup_note" ] && [ -z "$strip_model" ] && exit 0

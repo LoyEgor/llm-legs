@@ -23,6 +23,14 @@ mkrun() { # id vendor tag [light]
   jq -nc --arg v "$2" --arg l "${4:-}" '{vendor:$v,role:"workers",light:$l}' >"$WORKER_RUN_DIR/$1/meta.json"
 }
 
+cat >"$WORK/count-jq.sh" <<'SH'
+jq() { printf 'call\n' >> "$JQ_CALLS"; command jq "$@"; }
+SH
+BASH_ENV="$WORK/count-jq.sh" JQ_CALLS="$WORK/jq-calls" bash "$HOOK" <<'JSON'
+{"hook_event_name":"PreToolUse","tool_name":"Workflow","session_id":"s1"}
+JSON
+assert_eq 1 "$(wc -l <"$WORK/jq-calls" | tr -d ' ')"
+
 # An ATTACH relay's row is the attached run's own account and model, and its seed names the run.
 mkrun codex-1-a codex 'acct7 · astra · xhigh'
 seed=$(spawn codex-worker 'ATTACH codex-1-a:' u1)
@@ -55,5 +63,11 @@ jq -cn '{hook_event_name:"PreToolUse",tool_name:"Bash",session_id:"s1",agent_typ
   bash "$ROOT/bin/worker-tag-hook.sh" >/dev/null 2>&1
 assert_eq 'round=20260928T011240Z-c3c2395' "$(grep '^round=' "$HOME/.cache/claude-worker-tags/s1/agent-r" 2>/dev/null)"
 assert_eq 1 "$(grep -c '^start=' "$HOME/.cache/claude-worker-tags/s1/agent-r" 2>/dev/null)"
+
+seed=$(spawn codex-worker $'ATTACH codex-1-a:\nKeep the literal \'quote\' and $(touch '"$WORK/injected"$') text.\n' u-literal)
+assert_eq 'acct7 · astra · xhigh' "$(head -n1 <<<"$seed")"
+assert_eq 'run=codex-1-a' "$(grep '^run=' <<<"$seed")"
+asserts=$((asserts + 1))
+[ ! -e "$WORK/injected" ] || fail "payload text was executed"
 
 printf 'PASS: %s asserts; an ATTACH relay spawn takes its row from the attached run'"'"'s own tag (light relays relabelled as light rows), seeds run=<id> for the Stop backstop, a missing run or plain brief keeps the predicted row, and a prompt ROUND: header reaches the agent tag file\n' "$asserts"

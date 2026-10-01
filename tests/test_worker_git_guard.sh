@@ -94,6 +94,9 @@ assert_deny 'checkout patch' gemini-worker 'git checkout -p'
 assert_deny 'checkout force cluster' claudeb-worker 'git checkout -fq main'
 
 assert_allow 'main session' '' 'git checkout -- f'
+printf '%s\n' 'jq() { printf "call\n" >> "$JQ_CALLS"; command jq "$@"; }' > "$HOME/count-jq.sh"
+payload '' 'ls' | BASH_ENV="$HOME/count-jq.sh" JQ_CALLS="$HOME/jq-calls" bash "$GUARD" >/dev/null
+if [ "$(wc -l < "$HOME/jq-calls" | tr -d ' ')" = 1 ]; then pass; else fail 'a main-session call parsed its payload more than once'; fi
 assert_allow 'explore agent' Explore 'git checkout -- f'
 assert_allow 'branch checkout' codex-worker 'git checkout feature-branch'
 assert_allow 'new branch checkout' codex-worker 'git checkout -b new-branch'
