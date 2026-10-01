@@ -200,6 +200,23 @@ walled is `walled`); a `bad command` is only the CLI's own refusal after launch 
 `EFFORT_REFUSED`/`MODEL_REFUSED` is the guard working, `off`); an `escaped` can be legitimate for a
 cross-repository brief — triage it with a model or detail row, never by dismissing the class.
 
+### Stuck review rounds
+
+`machinery:closure_pending` rounds are yours to settle, not the owner's or Egor's: the night closes
+whatever can be closed; the class row itself stays `open`. `review-bench doctor --json` lists them
+(`id`, `repo`, `session`); `review-bench fix <id> --print` prints a round's unsettled findings. Per round:
+
+- Skip it while its chat is live: a `~/.claude/sessions/*.json` with its `sessionId` whose `pid` is alive.
+- Judge each finding against the code in `repo` now, read-only:
+  - resolved → `review-bench record <id> --verdicts <file>` with a row
+    `{"kind":"fixer","finding":<index>,"outcome":"fixed"}`;
+  - its code gone → once every finding left is gone, `review-bench close <id> --nofix --reason "code gone: <what>"`;
+  - still holds in a sweep repository (`~/.claude/sweep-repos`) → leave it open: night debt, named
+    in the report with its round and index for the orchestrator to fix;
+  - still holds in any other repository, or you cannot judge it → leave it open and list it in the
+    report for Egor.
+- The store is written only through the review-bench CLI. The decision's evidence counts each outcome.
+
 Browser words (`browser drift|upload|download|not sent|no output|price|profile|hide|owner step|other`,
 image block) are failed steps of the hidden-Chrome routes: `gemini-video`/`gemini-sfx` on Google Flow,
 `gemini-music` on the Gemini app (`share/gemini_web.py`, `share/gemini_music.py`, Playwright clicking the

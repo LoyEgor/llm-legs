@@ -485,7 +485,7 @@
    "same_cause": [],
    "last_reviewed": "2026-10-01",
    "reviewed_by": "Night fixer llm-reviewers-20261001T020642Z-32c1",
-   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the other 30 are real unfinished rounds whose --nofix decision is the owner's or Egor's. 2026-10-01: 32 at launch, 12 in the 23:27 snapshot, the same class (rounds with confirmed findings and no fix or --nofix recorded); no machinery bug found.",
+   "note": "2026-09-30: 5 of 35 were a stale stored closure word (fixer rows appended by hand, no fold); the doctor now recomputes it (review-bench share/rbench/debt.py doctor_pending_rows); the other 30 are real unfinished rounds whose --nofix decision is the owner's or Egor's. 2026-10-01: 32 at launch, 12 in the 23:27 snapshot, the same class (rounds with confirmed findings and no fix or --nofix recorded); no machinery bug found. 2026-10-01 contract: the reviewers fixer settles each round itself (docs/doctor-fix.md \"Stuck review rounds\"); this row stays open.",
    "handoff": "docs/handoffs/2026-09-30-review-machinery-classes.md"
   },
   {
