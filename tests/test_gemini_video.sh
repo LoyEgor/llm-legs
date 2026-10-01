@@ -559,33 +559,54 @@ class Download:
         Path(path).write_bytes(b"\0\0\0\x18ftypmp42")
 
 
-class Expect:
-    def __init__(self, download):
-        self.value = download
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        return False
-
-
 class Clickable:
+    def __init__(self, on_click=lambda: None):
+        self.on_click = on_click
+
     def click(self, timeout=None):
-        pass
+        self.on_click()
 
 
 class Editor:
-    def __init__(self, url):
-        self.download, self.context = Download(url), "ctx"
+    """A clip editor whose 1080p item either hands the page a blob link (`caught`) or starts a Chrome download."""
+
+    def __init__(self, url, caught=None, body=b""):
+        self.download, self.context, self.caught, self.body = Download(url), "ctx", None, body
+        self.link, self.listeners, self.reads = caught, [], 0
+
+    def on(self, event, listener):
+        listener._pw_impl_instance_ = self
+        self.listeners.append(listener)
+
+    def remove_listener(self, event, listener):
+        self.listeners.remove(listener)
+
+    def item(self):
+        if self.link:
+            self.caught = self.link
+        else:
+            for listener in self.listeners:
+                listener(self.download)
 
     def get_by_role(self, role, name, exact=True):
-        return Clickable()
+        return Clickable(self.item if role == "menuitem" else lambda: None)
 
-    def expect_download(self, timeout=None):
-        return Expect(self.download)
+    def evaluate(self, script, args=None):
+        if script is g.CATCH_DOWNLOAD:
+            self.caught = None
+        elif script is g.CAUGHT:
+            return self.caught
+        elif script is g.READ_CHUNK:
+            self.reads += 1
+            url, start, size = args
+            assert url == self.link, url
+            return [len(self.body), base64.b64encode(self.body[start:start + size]).decode()]
+
+    def wait_for_timeout(self, ms):
+        pass
 
 
+import base64
 import tempfile
 from pathlib import Path
 hd = Path(tempfile.mkdtemp())
@@ -599,6 +620,13 @@ assert editor.download.cancelled and editor.download.saved is None, vars(editor.
 assert fetched == [("ctx", "https://labs.google/fx/api/upscaled?x=1", str(hd / "hd.mp4"))], fetched
 blob = Editor("blob:https://labs.google/abc")
 assert g.save_upscaled(blob, "p-1", "s-1", hd / "hd2.mp4") > 0 and not blob.download.cancelled and len(fetched) == 1
+assert blob.download.saved and blob.listeners == [], (vars(blob.download), blob.listeners)
+clip = b"\0\0\0\x18ftypmp42" + bytes(range(256)) * 40
+page_link = Editor("blob:https://labs.google/abc", caught="blob:https://labs.google/hd", body=clip)
+assert g.save_upscaled(page_link, "p-1", "s-1", hd / "hd3.mp4") == len(clip), vars(page_link)
+assert (hd / "hd3.mp4").read_bytes() == clip and page_link.download.saved is None, vars(page_link.download)
+g.read_caught(page_link, "blob:https://labs.google/hd", hd / "chunks.part", chunk=1000)
+assert (hd / "chunks.part").read_bytes() == clip and page_link.reads == 1 + 11, page_link.reads
 
 import types
 launches = []

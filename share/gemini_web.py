@@ -13,6 +13,7 @@ Every command prints one JSON line; exit 0 ok, 2 usage, 3 out of credits, 4 logi
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import fcntl
 import json
@@ -940,24 +941,93 @@ def save_video(context, url: str, dest: Path) -> int:
     return len(body)
 
 
+CATCH_DOWNLOAD = """() => {
+  if (!window.__gwCatch) {
+    const catcher = window.__gwCatch = {blobs: new Map(), caught: null};
+    const create = URL.createObjectURL;
+    URL.createObjectURL = function (object) {
+      const url = create.call(URL, object);
+      if (object instanceof Blob) catcher.blobs.set(url, object);
+      return url;
+    };
+    const wanted = (a) => a && a.hasAttribute('download') && /^(blob|data):/.test(a.href);
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (!wanted(this)) return click.call(this);
+      catcher.caught = this.href;
+    };
+    document.addEventListener('click', (event) => {
+      const a = event.target.closest && event.target.closest('a');
+      if (wanted(a)) { event.preventDefault(); catcher.caught = a.href; }
+    }, true);
+  }
+  window.__gwCatch.caught = null;
+}"""
+CAUGHT = "() => window.__gwCatch && window.__gwCatch.caught"
+READ_CHUNK = """async ([url, start, size]) => {
+  const blobs = window.__gwCatch.blobs;
+  if (!blobs.has(url)) blobs.set(url, await (await fetch(url)).blob());
+  const blob = blobs.get(url);
+  const bytes = new Uint8Array(await blob.slice(start, start + size).arrayBuffer());
+  let text = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return [blob.size, btoa(text)];
+}"""
+
+
+def wait_download(page, downloads: list, timeout_s: float = 600.0) -> str | None:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if downloads:
+            return None
+        caught = page.evaluate(CAUGHT)
+        if caught:
+            return caught
+        page.wait_for_timeout(500)
+    raise TimeoutError(f"no 1080p download within {timeout_s:.0f}s")
+
+
+def read_caught(page, url: str, part: Path, chunk: int = 4 << 20) -> None:
+    with part.open("wb") as out:
+        start, size = 0, 1
+        while start < size:
+            size, text = page.evaluate(READ_CHUNK, [url, start, chunk])
+            data = base64.b64decode(text)
+            if not data:
+                break
+            out.write(data)
+            start += len(data)
+
+
 def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
-    """Flow's own 1080p upscaled download from the clip's editor (free on PRO, 2026-10-01)."""
+    """Flow's own 1080p upscaled download from the clip's editor (free on PRO, 2026-10-01). The hidden Chrome
+    segfaults inside its own download manager (10 crashes on 2026-10-01, all in Download.save_as), so the file is
+    caught from the page's download link and read out of the page; Chrome's download is the fallback only."""
     part = dest.with_name(f".{dest.name}.part")
+    downloads: list = []
+
+    def listener(download):
+        downloads.append(download)
+
     try:
         goto_flow(page, f"/project/{project}/edit/{scene}")
         close_promos(page)
+        page.evaluate(CATCH_DOWNLOAD)
+        page.on("download", listener)
         page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
-        item = page.get_by_role("menuitem", name="1080p Upscaled", exact=True)
-        with page.expect_download(timeout=600000) as download:
-            item.click(timeout=10000)
-        # The hidden Chrome segfaults while downloading the file itself (7 crashes on 2026-10-01), so an http
-        # link is taken over at once and fetched like a 720p clip.
-        if download.value.url.startswith("http"):
-            url = download.value.url
+        page.get_by_role("menuitem", name="1080p Upscaled", exact=True).click(timeout=10000)
+        caught = wait_download(page, downloads)
+        if caught:
+            read_caught(page, caught, part)
+        elif downloads[0].url.startswith("http"):
+            url = downloads[0].url
             with contextlib.suppress(Exception):
-                download.value.cancel()
+                downloads[0].cancel()
             return save_video(page.context, url, dest)
-        download.value.save_as(str(part))
+        else:
+            print(f"gemini-web: the 1080p file went through Chrome's download ({downloads[0].url.split(':')[0]})",
+                  file=sys.stderr, flush=True)
+            downloads[0].save_as(str(part))
     except Failure:
         raise
     except Exception as exc:
@@ -965,6 +1035,9 @@ def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
                       f"{(str(exc).strip().splitlines() or [''])[0][:120]})")
         error.extra["crashed"] = exc.__class__.__name__ == "TargetClosedError"
         raise error from exc
+    finally:
+        with contextlib.suppress(Exception):
+            page.remove_listener("download", listener)
     if part.read_bytes()[4:8] != b"ftyp":
         part.unlink()
         raise Failure(1, "the 1080p upscaled download is not an mp4")

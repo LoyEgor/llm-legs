@@ -702,15 +702,34 @@
    "match": {
     "word": "browser drift",
     "model": "^gemini-music$",
-    "detail": "no Length chip in the music composer"
+    "detail": "no Length chip"
    },
-   "title": "Gemini music composer absent behind account notice",
-   "status": "open",
-   "fixes": [],
+   "title": "Create music did not stick: the music composer showed no Length chip",
+   "status": "fixed",
+   "fixes": [
+    {
+     "at": "2026-10-01T09:25:23+03:00",
+     "by": "Google video generation integration",
+     "files": [
+      "llm-legs/share/gemini_music.py"
+     ],
+     "in": "llm-legs@e961a07",
+     "regressed_at": "2026-10-01T11:43:06+03:00"
+    },
+    {
+     "at": "2026-10-01T13:02:10+03:00",
+     "by": "Google video generation integration",
+     "files": [
+      "llm-legs/share/gemini_music.py"
+     ],
+     "in": "llm-legs@6dbbf73",
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
    "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night image fixer",
-   "note": "Read all three PNG/TXT pairs under ~/.gemini-web/failures/20261001T020{013,126,402}Z-locomthebest-*. All show the ordinary Flash composer, Keep in mind privacy/activity notice and Got it, no music chips. A renamed Length selector is not established; sign-out is not shown. open_music waits for a generic textbox after Create music, which does not prove tool readiness. Notice interference versus delayed or reset tool activation remains ambiguous. Do not acknowledge the account notice without owner authorization; request an authorized dry-run through image-gen. No live browser or paid generation was run.",
+   "reviewed_by": "Google video generation integration",
+   "note": "Captures (locomthebest 02:01-02:04, jihangarangan 08:42 UTC) show the plain composer: the Create music pick did not stick, and the next run on the same account worked. close_disclaimer (e961a07) dismisses the first-visit Keep in mind card, which grants nothing; it did not cover the 11:43 event. open_music (6dbbf73) now waits for the Length chip and picks Create music once more; a second miss reads 'Create music did not stay selected (no Length chip, picked twice)', which this detail still matches.",
    "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
   },
   {
@@ -753,16 +772,62 @@
    "match": {
     "word": "unclassified",
     "model": "^gemini-(music|video|sfx)$",
-    "detail": "no Length chip|no track after 600s|upload of b-stopwatch\\.png never finished|soundtrack of take\\.mp4 is silent"
+    "detail": "no Length chip|no track after 600s|upload of b-stopwatch\\.png never finished"
    },
    "title": "Unclassified image failures have several unresolved causes",
    "status": "open",
    "fixes": [],
+   "same_cause": [
+    "I2"
+   ],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Google video generation integration",
+   "note": "Launch six incidents; fresh scan seven adds silent SFX at 1790820477. Earlier Length failures lack BROWSER_FAILURE markers; current base emits structured failures. no track after 600s at 1790814959 stayed on /app?hl=en: submission/notice is plausible, vendor rendering delay unproved; current message distinguishes an unsent prompt. Flow upload b-stopwatch.png at 1790808648 has no capture. Silent take.mp4 messages at 1790820305/352/477 come from bin/gemini-sfx loudnorm measurement: malformed/missing measurement and actual input_i <= -70 share the same message, so vendor silence is not established. No original clip or measurement is linked by image-leg. Owner should retain/recover media and ffmpeg diagnostics before blaming vendor or changing threshold. 2026-10-01 (Google video generation integration): the Length alternative predates BROWSER_ lines and is I2's cause; the silent-take alternative moved to I6, since bin/gemini-sfx wording now classifies it as bad output. no track after 600s and the stopwatch upload stay open.",
+   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
+  },
+  {
+   "id": "I6",
+   "block": "image",
+   "match": {
+    "word": "bad output",
+    "model": "^gemini-sfx$",
+    "detail": "soundtrack of \\S+ is silent|without a soundtrack|loudness of \\S+ could not be measured"
+   },
+   "title": "Flow sound-effect takes rejected as silent",
+   "status": "open",
+   "fixes": [],
    "same_cause": [],
    "last_reviewed": "2026-10-01",
-   "reviewed_by": "Night image fixer",
-   "note": "Launch six incidents; fresh scan seven adds silent SFX at 1790820477. Earlier Length failures lack BROWSER_FAILURE markers; current base emits structured failures. no track after 600s at 1790814959 stayed on /app?hl=en: submission/notice is plausible, vendor rendering delay unproved; current message distinguishes an unsent prompt. Flow upload b-stopwatch.png at 1790808648 has no capture. Silent take.mp4 messages at 1790820305/352/477 come from bin/gemini-sfx loudnorm measurement: malformed/missing measurement and actual input_i <= -70 share the same message, so vendor silence is not established. No original clip or measurement is linked by image-leg. Owner should retain/recover media and ffmpeg diagnostics before blaming vendor or changing threshold.",
-   "handoff": "docs/handoffs/2026-10-01-image-failure-triage.md"
+   "reviewed_by": "Google video generation integration",
+   "note": "Three takes at 05:05-05:07 (jihangarangan x2, egbogd) were rejected by bin/gemini-sfx's loudnorm check before a rejected take was kept and before the message told an unmeasurable level from a measured silent one. Since 6dbbf73 the take is kept under ~/.gemini-web/failures/ and the message names the LUFS level; the next one decides whether Flow returned silence (theirs) or the measurement is ours.",
+   "handoff": null
+  },
+  {
+   "id": "I7",
+   "block": "image",
+   "match": {
+    "word": "browser download",
+    "model": "^gemini-video$",
+    "detail": "1080p upscaled download|Chrome crashed on every 1080p"
+   },
+   "title": "Hidden Chrome segfaults inside its own download of Flow's 1080p upscale",
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-01T13:14:04+03:00",
+     "by": "Google video generation integration",
+     "files": [
+      "llm-legs/share/gemini_web.py"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
+   "same_cause": [],
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Google video generation integration",
+   "note": "14 Chrome crash reports 12:09-12:58 (EXC_BAD_ACCESS on CrBrowserMain, Chrome 154.0.8037.58), each while Download.save_as ran; about half the 1080p downloads still saved. The link is not http, so the http takeover never applied, and the relaunch deferral (6dbbf73) crashed on all 3 launches at 12:58. The fix catches the file from the page's own download link (createObjectURL and anchor-click hook) and reads it out of the page in chunks, so Chrome's download manager never runs; Chrome's download stays as the fallback and prints the link's scheme.",
+   "handoff": null
   }
  ],
  "blind_spots": [

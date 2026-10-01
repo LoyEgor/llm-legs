@@ -265,9 +265,11 @@ Promos over the composer (connect YouTube, Drive and other Google apps) are clos
 declining button (No thanks, Not now, Maybe later, Dismiss, Skip, Close) or Escape, never an accepting one;
 the rights notices are left to the notices.json gate. Each closed dialog is a `kind: dialog` row in
 `jobs.jsonl` and a `gemini-web: closed a dialog on <account>: <text>` stderr line. The hidden Chrome
-segfaults now and then while it downloads Flow's 1080p upscale (10 crashes on 2026-10-01, the file is a
-non-http link only Chrome can save): the rendered clip's free upscale is then taken again in a fresh Chrome,
-up to two relaunches, and only then fails with a `gemini-web fetch … --resolution 1080p` recovery line.
+segfaults inside its own download manager while it saves Flow's 1080p upscale (14 crashes on 2026-10-01,
+every one in `Download.save_as`, even across relaunches), so `save_upscaled` catches the file from the page's
+download link (a `createObjectURL` and anchor-click hook) and reads it out of the page in 4 MB chunks;
+Chrome's download is only the fallback, announced by a `the 1080p file went through Chrome's download`
+line. A crash there still gets two relaunches, then a `gemini-web fetch … --resolution 1080p` recovery line.
 gemini-sfx keeps every rejected take (no soundtrack, silent, loudness not measurable) in the failures folder.
 
 **Flow Music** (flowmusic.app) is signed in on com, egbogd, jihangarangan and locomthebest (Continue with
