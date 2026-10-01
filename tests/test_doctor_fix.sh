@@ -348,7 +348,8 @@ assert grep -qF "docs/doctor-fix.md\`: sections 0-6, \"Night\" and \"LLM doctor\
 assert grep -qF "cd $WT && DOCTORS_DIR=$WORK/doctors bin/doctor-fix close $rid --decisions $RUNS/$rid.d/decisions.tsv <one-line note>" "$B"
 assert grep -qF 'Close reruns `bin/llm-doctor --json` in this worktree itself' "$B"
 assert grep -qF 'Look at the older blocks around what you touch, not only at what you add' "$B"
-assert grep -qF 'Settle every stuck review round (`machinery:closure_pending`) yourself' "$B"
+assert grep -qF 'Settle every stuck review round (`machinery:closure_pending`) of the sweep repositories yourself' "$B"
+assert grep -qF 'never touch a round of another project' "$B"
 assert [ "$(grep -c 'Settle every stuck review round' "$WB")" = 0 ]
 assert grep -qxF "  R9	regressed	crashed again" "$B"
 assert grep -qxF "    ledger R9 fixed-pending · a twice-fixed row" "$B"
