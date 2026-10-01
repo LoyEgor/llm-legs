@@ -2806,6 +2806,35 @@ CONTRADICTIONS
   web_search_launch "$WORK/websearch/plain" grok
   assert test "$(grep -cF 'READ-ONLY TREE' "$RUN_DIR/brief.launch")" = 0
   assert test "$(grep -cF 'EDITS: change repository files only' "$RUN_DIR/brief.launch")" = 0
+
+  # Grok research digests non-git trees and catches edits outside git repos.
+  nongit="$WORK/websearch/scratchpad"
+  mkdir -p "$nongit"
+  clear_stub
+  "$RUNNER" start grok --brief "$WORK/websearch/plain" --workdir "$nongit" --role research \
+    >"$WORK/start.out" 2>"$WORK/start.err" || fail "nongit research start failed: $(<"$WORK/start.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+  WEB_SEARCH_ENTRY=grok
+  assert await_done
+  assert test "$(cat "$RUN_DIR/exit_code")" -eq 0
+  assert test ! -s "$RUN_DIR/research-outcome"
+
+  clear_stub
+  cat >"$STUB_DIR/relay_hook" <<EOF
+#!/usr/bin/env bash
+touch "$nongit/leaked.txt"
+EOF
+  chmod +x "$STUB_DIR/relay_hook"
+  "$RUNNER" start grok --brief "$WORK/websearch/plain" --workdir "$nongit" --role research \
+    >"$WORK/start.out" 2>"$WORK/start.err" || fail "nongit leaked research start failed: $(<"$WORK/start.err")"
+  RUN_ID=$(sed -n 's/^RUN: //p' "$WORK/start.out")
+  RUN_DIR=$(sed -n 's/^DIR: //p' "$WORK/start.out")
+  WEB_SEARCH_ENTRY=grok
+  assert await_done
+  assert test "$(cat "$RUN_DIR/exit_code")" -eq 5
+  assert grep -qx 'READ_ONLY_VIOLATION' "$RUN_DIR/research-outcome"
+  rm -f "$nongit/leaked.txt" "$STUB_DIR/relay_hook"
   # A claudeb worker is told up front what worker-edit-guard would otherwise refuse call by call.
   web_search_launch "$WORK/websearch/plain" claudeb
   assert grep -qF 'EDITS: change repository files only through the Edit and Write tools' "$RUN_DIR/brief.launch"

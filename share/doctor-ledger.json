@@ -323,12 +323,22 @@
     "detail": "tree digest"
    },
    "title": "a read-only research run could not take the tree digest it is checked against",
-   "status": "open",
-   "fixes": [],
+   "status": "fixed-pending",
+   "fixes": [
+    {
+     "at": "2026-10-01T06:27:00+03:00",
+     "by": "LLM doctor",
+     "files": [
+      "llm-legs/bin/worker-run"
+     ],
+     "in": null,
+     "regressed_at": null
+    }
+   ],
    "same_cause": [],
-   "last_reviewed": "2026-09-24",
-   "reviewed_by": "LLM Doctor меню refactoring",
-   "note": "grok research runs x2 on 09-23 (worker-run READ_ONLY_VIOLATION, exit 5)",
+   "last_reviewed": "2026-10-01",
+   "reviewed_by": "Night fixer llm-light-20261001T020642Z-712c",
+   "note": "grok research runs x2 on 09-23 (worker-run READ_ONLY_VIOLATION, exit 5); research_tree_digest now digests non-git trees and repos without HEAD",
    "handoff": null
   },
   {

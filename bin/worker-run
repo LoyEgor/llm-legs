@@ -1089,12 +1089,32 @@ supervise_gemini() {
   return "$rc"
 }
 
+non_git_tree_digest() { # dir
+  (cd "$1" 2>/dev/null || exit 1
+   find . -mindepth 1 2>/dev/null | sort | while IFS= read -r item; do
+    if [ -L "$item" ]; then
+      printf 'l\t%s\t%s\n' "$(readlink "$item" 2>/dev/null)" "$item"
+    elif [ -d "$item" ]; then
+      printf 'd\t%s\n' "$item"
+    elif [ -f "$item" ]; then
+      sha=$(git hash-object -- "$item" 2>/dev/null) || sha=$(shasum -a 256 "$item" 2>/dev/null | cut -d' ' -f1)
+      printf 'f\t%s\t%s\n' "${sha:--}" "$item"
+    fi
+  done)
+}
+
 research_tree_digest() { # root...
-  local root
+  local root head
   for root in "$@"; do
+    [ -d "$root" ] || return 1
     printf '%s\n' "$root"
-    git -C "$root" rev-parse --verify --quiet HEAD || return 1
-    workdir_dirty_shas "$root" || return 1
+    if git -C "$root" rev-parse --show-toplevel >/dev/null 2>&1; then
+      head=$(git -C "$root" rev-parse --verify --quiet HEAD 2>/dev/null) || head=empty
+      printf '%s\n' "$head"
+      workdir_dirty_shas "$root" || return 1
+    else
+      non_git_tree_digest "$root" || return 1
+    fi
   done
 }
 
