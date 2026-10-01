@@ -512,6 +512,14 @@ printf '%s\n' "$WORK/repo" >"$WORK/sweep-repos"
 night job "$idc" add vendor updater-release-20261001T020703Z-0d10 --branch "night/$idc/codex" >/dev/null
 assert grep -q "^codex update · " <(night latest --menu)
 
+# Fixer runs recorded under an area's old name keep their menu word; the doctor's own area names no word.
+for ref in llm-health-20261001T020632Z-3671 harness-self-20261001T020659Z-1dba updater-machinery-20261001T020659Z-1dba \
+    llm-doctor-20261001T030000Z-0a0a harness-hook-waits-20261001T020655Z-4a9f; do
+  night job "$idc" add fixer "$ref" >/dev/null || fail "job add $ref"
+done
+assert [ "$(night latest --menu | cut -f1 | grep ' fixer' | sed 's/ · .*//' | paste -sd, -)" \
+  = "LLM fixer: debt,Harness fixer,Updater fixer,LLM fixer,Harness fixer: hook waits" ]
+
 # A start killed before it recorded the session leaves a night that runs only while that start lives.
 rm "$NIGHTS"/*.json
 opening() { # opener-pid-json

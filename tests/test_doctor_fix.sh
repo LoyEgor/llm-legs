@@ -89,7 +89,7 @@ assert jqe --arg id "$id" '.id == $id and .doctor == "llm" and .area == "all" an
 assert jqe '[.created_at, .launched_at] | all(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$"))' "$R"
 assert jqe '[.problems[] | {id, state, fact}] == [{id: "A", state: "new", fact: "a new bug"}, {id: "B", state: "open", fact: "an open row"},
   {id: "E", state: "regressed", fact: "a regressed fix"}]' "$R"
-assert jqe --arg e "$WORK/projects/llm-legs/bin/llm-doctor" '[.problems[] | .area] == ["health", "health", "health"]
+assert jqe --arg e "$WORK/projects/llm-legs/bin/llm-doctor" '[.problems[] | .area] == ["doctor", "doctor", "doctor"]
   and all(.problems[]; .component.files == [$e])' "$R"
 session=$(jq -r .session "$R")
 assert grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' <<<"$session"
@@ -139,7 +139,7 @@ printf 'why\n' >"$WORK/projects/proj/README"
 git -C "$WORK/projects/proj" add README
 git -C "$WORK/projects/proj" -c user.name=t -c user.email=t@t commit -qm purpose
 hash=$(git -C "$WORK/projects/proj" rev-parse --short HEAD)
-# The llm-legs repository: its doctors are the health block's entry and what night worktrees rerun.
+# The llm-legs repository: its doctors are the doctor area's entry and what night worktrees rerun.
 L="$WORK/projects/llm-legs"
 mkdir -p "$L/bin"
 for d in llm harness updater; do
@@ -278,6 +278,7 @@ jq -n '{id: "llm-reviewers-20260101T000000Z-0000", doctor: "llm", area: "reviewe
   >"$RUNS/llm-reviewers-20260101T000000Z-0000.json"
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: "live-j", status: "problems", problem_count: 4,
   blocks: [{block: "reviewers", machinery: {classes: [{class: "anchors"}]}, problems: []}, {block: "workers", problems: []}],
+  health: [{name: "debt", rules: [{rule: "debt-gap", key: "x"}]}],
   problems: [
     {id: "leg-escape:workers/escaped", rule: "leg-escape", state: "new", fact: "escaped", ledger: null},
     {id: "R9", rule: "leg-failure", state: "regressed", fact: "crashed again", ledger: "R9"},
@@ -302,10 +303,10 @@ DOCTOR_FIX_PROJECTS="$WORK/nowhere" fix launch llm --night n1 >"$WORK/night" 2>"
   fail "night launch failed: $(cat "$WORK/err")"
 assert [ "$(wc -l <"$OPENED")" = "$opened_before" ]
 assert [ "$(wc -l <"$WORK/night" | tr -d ' ')" = 3 ]
-assert [ "$(cut -f1 "$WORK/night" | sed -E 's/^llm-([a-z]+)-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$/\1/' | xargs)" = "health reviewers workers" ]
+assert [ "$(cut -f1 "$WORK/night" | sed -E 's/^llm-([a-z]+)-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$/\1/' | xargs)" = "debt reviewers workers" ]
 rid=$(awk -F'\t' '$1 ~ /^llm-reviewers-/ {print $1}' "$WORK/night")
 wid=$(awk -F'\t' '$1 ~ /^llm-workers-/ {print $1}' "$WORK/night")
-hid=$(awk -F'\t' '$1 ~ /^llm-health-/ {print $1}' "$WORK/night")
+hid=$(awk -F'\t' '$1 ~ /^llm-debt-/ {print $1}' "$WORK/night")
 WT="$L/.claude/worktrees/night-n1-$rid"
 assert [ "$(grep "^$rid" "$WORK/night")" = "$rid	$RUNS/$rid.brief.md	$WT" ]
 assert [ "$(git -C "$WT" rev-parse --abbrev-ref HEAD)" = "night/n1/$rid" ]
@@ -458,7 +459,7 @@ printf '{"owner": "H owner", "rows": [{"id": "gate-row", "status": "open", "matc
   >"$WORK/ledgers/harness.json"
 for n in 1 2 3 4; do bash "$FIX" launch harness --night n3 >"$DATA/h-$n" 2>/dev/null & done
 wait
-assert [ "$(cat "$DATA"/h-* | cut -f1 | sed -E 's/^harness-([a-z-]+)-[0-9]{8}.*/\1/' | sort | xargs)" = "hook-waits hooks load self" ]
+assert [ "$(cat "$DATA"/h-* | cut -f1 | sed -E 's/^harness-([a-z-]+)-[0-9]{8}.*/\1/' | sort | xargs)" = "doctor hook-waits hooks load" ]
 assert [ "$(ls "$RUNS"/harness-*-*-*.json | grep -c -- '-hooks-')" = 1 ]
 hk=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hooks-/ {print $1}')
 assert jqe '[.problems[].id] == ["hook_every_call:gate.sh", "gate-row", "hook_p50:w9", "hook_p50:w8", "hook_p50:w7", "hook_p50:w6",
@@ -470,7 +471,7 @@ assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '.problems[0].com
 assert jqe --arg f "$WORK/projects/claude-setup/hooks/gate.sh" '[.problems[].id] == ["floor:event:PreToolUse", "floor:tool"]
   and .problems[0].component.files == [$f]' "$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-hook-waits-/ {print $1".json"}' | sed "s#^#$RUNS/#")"
 # Every other harness row gets the file it names; one that names none closes, marked component unverified.
-self=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-self-/ {print $1}')
+self=$(cat "$DATA"/h-* | awk -F'\t' '$1 ~ /^harness-doctor-/ {print $1}')
 assert jqe --arg c "$(cd -P "$ROOT" && pwd | sed -E 's#/\.claude/worktrees/[^/]+$##')/bin/harness-doctor" --arg t "$WORK/projects/proj/tests/test_x.sh" \
   '[.problems[] | {id, files: .component.files}] == [{id: "collector:run", files: [$c]}, {id: "test_slow:proj:test_x", files: [$t]},
   {id: "test_long_pole:proj:test_x", files: [$t]}, {id: "test_daily_cost:proj:test_x", files: [$t]}]' "$(record "$self")"
@@ -489,7 +490,7 @@ assert grep -qxF "$(printf '  load:host\tfixed\tproj/README\ttests/test_x.sh\tco
 rm "$DATA/harness-doc.json"
 assert grep -qF 'sections 0-6, "Night" and "Harness doctor" only.' "$RUNS/$hk.brief.md"
 
-# Updater: its own machinery is one area; vendor release events are vendor-fingerprint's. Nothing to do prints nothing.
+# Updater: its own machinery is one area, the doctor's own; vendor release events are vendor-fingerprint's. Nothing to do prints nothing.
 jq -n --argjson s "$(now)" '{contract: 1, doctor: "updater", as_of_s: $s, judge: "u1", status: "problems", problem_count: 1,
   problems: [{id: "event-waiting:grok-1", rule: "event-waiting", state: "new", fact: "waiting"},
     {id: "foreign-client:codex", rule: "foreign-client", state: "watch", fact: "foreign"}]}' >"$WORK/updater/latest.json"
@@ -499,7 +500,7 @@ jq --argjson s "$(now)" '.problems += [{id: "pass-stale", rule: "pass-stale", st
   "$WORK/updater/latest.json" >"$WORK/u" && mv "$WORK/u" "$WORK/updater/latest.json"
 fix launch updater --night n4 >"$WORK/out" || fail "updater night failed"
 uid=$(cut -f1 "$WORK/out")
-assert grep -qE '^updater-machinery-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$uid"
+assert grep -qE '^updater-doctor-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{4}$' <<<"$uid"
 assert jqe --arg f "$WORK/projects/llm-legs/bin/vendor-cli-update" '[.problems[].id] == ["pass-stale"]
   and .problems[0].component.files == [$f] and .judge_at_launch == "base-updater"' "$(record "$uid")"
 assert_fails fix close "$uid" --decisions "$WORK/nd" "x" 2>"$WORK/err"
@@ -512,7 +513,7 @@ jq -n --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{id: "updater-20260101T000000Z",
   launched_at: $t, closed_at: null, abandoned_at: null, problems: [{id: "grok-1", state: "open"}], decisions: []}' \
   >"$RUNS/updater-20260101T000000Z.json"
 fix launch updater --night n4 >"$WORK/out" 2>"$WORK/err" || fail "a legacy release run blocked the updater night: $(cat "$WORK/err")"
-assert grep -qE '^updater-machinery-' "$WORK/out"
+assert grep -qE '^updater-doctor-' "$WORK/out"
 assert jqe '.abandoned_at == null' "$RUNS/updater-20260101T000000Z.json"
 fix record-close updater-20260101T000000Z --decisions "$WORK/ujson" "grok-1: integrated" || fail "a legacy release run does not close"
 
@@ -544,7 +545,7 @@ jq -n --argjson s "$(now)" '{contract: 1, doctor: "llm", as_of_s: $s, judge: nul
   blind_spots: [], self: {collector_s: null, error: "KeyError: '\''x'\''"}}' >"$WORK/llm/latest.json"
 fix launch llm --night n6 >"$WORK/out" 2>"$WORK/err" || fail "a failed collector launched nothing: $(cat "$WORK/err")"
 cid=$(cut -f1 "$WORK/out")
-assert grep -qE '^llm-health-' <<<"$cid"
+assert grep -qE '^llm-doctor-' <<<"$cid"
 assert jqe --arg e "$WORK/projects/llm-legs/bin/llm-doctor" '[.problems[] | {id, rule, state, fact, files: .component.files}]
   == [{id: "collector:error", rule: "collector", state: "new", fact: "the collector failed: KeyError: '\''x'\''", files: [$e]}]' "$(record "$cid")"
 printf 'collector:error\tfixed\tllm-legs/bin/llm-doctor\ttests/test_llm_doctor.sh\n' >"$WORK/cd"

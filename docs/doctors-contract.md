@@ -142,9 +142,11 @@ read-modify-write holds the runs directory's lock (`share/store-lock.sh`). Field
 - `decisions`: `[{id, verdict, purpose, evidence}]`;
 - `note`.
 
-Areas: the LLM doctor's block (from the ledger row, the id or the document's blocks), else `health`;
-the Harness doctor's section of the rule (`self` for its own verdicts); the Updater doctor's
-`machinery` (every rule but `event-waiting`). The snapshot keeps the problems not `watch` or
+Areas: the LLM doctor's block (from the ledger row, the id or the document's blocks), else its health
+row (the ledger row's `match.health`, or the `health[]` row whose `rules` hold the problem's rule); the
+Harness doctor's section of the rule; else `doctor` (`share/doctor-areas.json` `own`), which is every
+Updater rule but `event-waiting`. Old runs' `health`, `self` and `machinery` read as `debt`, `doctor`
+and `doctor` (`renamed`). The snapshot keeps the problems not `watch` or
 `fixed-pending`, plus, for the Harness doctor, the top 8 `watch` rows of Hooks and Hook waits by
 value × exposure.
 

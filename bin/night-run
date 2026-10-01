@@ -575,7 +575,8 @@ cmd_latest() {
   [ "${1:-}" = --menu ] && [ $# -eq 1 ] || usage
   id=$(all_nights | jq -r '.[0].id // empty')
   [ -n "$id" ] || return 0
-  jq -r --arg status "$(night_status "$(night_file "$id")")" "$JQ_TOTALS$JQ_UNFINISHED"'
+  jq -r --arg status "$(night_status "$(night_file "$id")")" --slurpfile areas "$repo_root/share/doctor-areas.json" \
+    "$JQ_TOTALS$JQ_UNFINISHED"'
     def flat: tostring | gsub("[\t\r\n]+"; " ");
     def gist: split(":")[0] | split(",")[0] | split(";")[0] | split(" ") | map(select(. != ""))
       | if length > 6 then .[0:6] + ["…"] else . end | join(" ");
@@ -583,8 +584,9 @@ cmd_latest() {
       elif .kind == "leftover" then "leftover \(.adopted[0].branch // $r)"
       elif .kind == "vendor" then "\(.branch // "" | split("/") | if length > 2 then last else $r | sub("-[0-9]{8}T[0-9]{6}Z.*$"; "") end) update"
       else ($r | capture("^(?<d>llm|harness|updater)(-(?<a>.+?))?-[0-9]{8}T[0-9]{6}Z(-[0-9a-f]+)?$")
+        | ($areas[0].renamed["\(.d)-\(.a)"] // .a) as $a
         | ({llm: "LLM", harness: "Harness", updater: "Updater"}[.d] + " fixer"
-          + (if .a then ": " + (.a | gsub("-"; " ")) else "" end))) // $r end;
+          + (if $a and $a != $areas[0].own then ": " + ($a | gsub("-"; " ")) else "" end))) // $r end;
     def word: {merged: (if .pushed then "done and pushed" else "done, not pushed yet" end), left: "unfinished",
       "failed-launch": "failed to launch", "blocked-on-egor": "needs you", "nothing-to-do": "nothing to do",
       pending: (if $status == "running" then "in progress" else "unfinished" end)}[.state] // .state;

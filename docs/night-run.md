@@ -43,10 +43,14 @@ This design folds in two frontier hunts (runs 20260929T225123Z-3e30191 and 20260
 3. **Dispatch.** Everything below starts in parallel at about t+10 min.
    - **Fixers.**
      - `doctor-fix launch <llm|harness|updater> --night <night-id>` makes one run per area that has
-       problems. The areas are:
-       - the LLM doctor's block, or `health`;
+       problems. The areas are the doctor's own menu words, so the night's `<Doctor> fixer: <area>` row
+       names a row of that doctor's menu:
+       - the LLM doctor's block, or its health row (`debt`);
        - the Harness doctor's section;
-       - for the Updater, its own machinery problems (`pass-stale`, `cli-behind`, …).
+       - else `doctor`, the doctor's own problems (the Updater's machinery: `pass-stale`, `cli-behind`, …),
+         shown as a bare `<Doctor> fixer`. `share/doctor-areas.json` holds that word and the renamed old
+         areas (`llm-health` → `debt`, `harness-self` and `updater-machinery` → `doctor`), so old runs
+         keep their label; `tests/test_doctors_menu.sh` checks every label against the rendered menu.
      - Each run gets a worktree on branch `night/<night-id>/<run-id>` and a brief file.
      - The orchestrator starts each brief as a headless worker (`worker-run`, `--workdir` the
        worktree; account from `worker-pick`).

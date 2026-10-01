@@ -1,3 +1,4 @@
+local vocab = ...
 local root = debug.getinfo(1, "S").source:match("^@(.+)/tests/[^/]+$")
 assert(root, "harness path is unavailable")
 
@@ -485,6 +486,39 @@ quietDoc.status = "error"
 write("/llm-doctor/latest.json", quietDoc)
 items = doctors.menuItems()
 check(not text(items[1].menu[#items[1].menu - 2].title):find("known, quiet", 1, true), "a failed collector hides nothing as quiet")
+
+-- One vocabulary: each night label tests/test_doctors_menu.sh made through bin/doctor-fix and
+-- bin/night-run from these documents names a doctor and, after the colon, a row its menu shows.
+if vocab then
+  local function slurp(path)
+    local handle = assert(io.open(vocab .. "/" .. path))
+    local body = handle:read("*a")
+    handle:close()
+    return body
+  end
+  write("/llm-doctor/latest.json", slurp("llm.json"))
+  write("/harness-doctor/menu.txt", slurp("menu.txt"))
+  write("/updater-doctor/latest.json", slurp("updater.json"))
+  local menus = {}
+  for _, item in ipairs(loadDoctors().menuItems()) do
+    local name = text(item.title):match("^(%a+) doctor")
+    if name then menus[name] = item.menu end
+  end
+  local labels = 0
+  for label in slurp("labels.txt"):gmatch("[^\n]+") do
+    label, labels = label:match("^(.-) · ") or label, labels + 1
+    local name, area = label:match("^(%a+) fixer:? ?(.*)$")
+    local vendor = not name and label:match("^(%S+) update$")
+    local menu = menus[name or vendor and "Updater"]
+    local want = (area and area ~= "" and area .. ":" or vendor and vendor .. " " or ""):lower()
+    local shown = menu ~= nil and want == ""
+    for _, item in ipairs(menu or {}) do
+      shown = shown or item.title ~= "-" and text(item.title):lower():sub(1, #want) == want
+    end
+    check(shown, "night label «" .. label .. "» names no row of its doctor's menu")
+  end
+  check(labels == 15, "the vocabulary labels: " .. labels)
+end
 
 os.execute("rm -rf '" .. dir .. "'")
 if #failures > 0 then return "FAIL: " .. table.concat(failures, "; ") end
