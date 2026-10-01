@@ -217,7 +217,8 @@ ID_LIKE_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-|^[0-9a-f]{12,}$",
 IMAGE_REASONS = (
     ("cap", re.compile(r"exceeded \d+s deadline|print timeout after", re.IGNORECASE)),
     ("bad output", re.compile(r"generated file not found|no ImageGen event"
-                              r"|no (?:ImageToVideo|ReferenceToVideo) event", re.IGNORECASE)),
+                              r"|no (?:ImageToVideo|ReferenceToVideo) event"
+                              r"|soundtrack of \S+ is silent|without a soundtrack|loudness of \S+ could not be measured", re.IGNORECASE)),
     ("not entitled", re.compile(r"zero data retention|SuperGrok|entitlement|no video generation on its tier",
                                 re.IGNORECASE)),
 )

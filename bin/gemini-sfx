@@ -106,18 +106,28 @@ account=$(field account)
 observed_model=$(field model)
 media=$(field media)
 
+rejected() { # source.mp4 why
+  local kept
+  kept="${GEMINI_WEB_DIR:-$HOME/.gemini-web}/failures/$(date -u +%Y%m%dT%H%M%SZ)-${account:--}-$$-$(basename "$1")"
+  mkdir -p "$(dirname "$kept")" && cp "$1" "$kept" 2>/dev/null || kept=''
+  printf 'gemini-sfx: %s%s\n' "$2" "${kept:+ (kept: $kept)}" >&2
+  return 1
+}
+
 clean() { # source.mp4 out.wav keep_length
-  local filters measured
+  local filters measured level
   if [ "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_type -of csv=p=0 "$1" 2>/dev/null)" != audio ]; then
-    printf 'gemini-sfx: Flow returned %s without a soundtrack\n' "$(basename "$1")" >&2
+    rejected "$1" "Flow returned $(basename "$1") without a soundtrack"
     return 1
   fi
   filters=''
   [ "$3" = true ] || filters="$(caps '.sfx.trim'),"
   measured=$(ffmpeg -hide_banner -nostats -i "$1" -vn -af "${filters}loudnorm=$(caps '.sfx.loudnorm'):print_format=json" \
     -f null - 2>&1 | sed -n '/^{/,/^}/p')
+  level=$(jq -r '.input_i // empty' 2>/dev/null <<<"$measured")
+  [ -n "$level" ] || { rejected "$1" "the loudness of $(basename "$1") could not be measured"; return 1; }
   jq -e '.input_i | tonumber > -70' >/dev/null 2>&1 <<<"$measured" || {
-    printf 'gemini-sfx: the soundtrack of %s is silent\n' "$(basename "$1")" >&2
+    rejected "$1" "the soundtrack of $(basename "$1") is silent ($level LUFS)"
     return 1
   }
   filters+=$(jq -r --arg target "$(caps '.sfx.loudnorm')" \

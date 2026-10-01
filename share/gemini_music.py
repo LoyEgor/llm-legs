@@ -188,6 +188,19 @@ def close_disclaimer(page) -> bool:
 
 
 def open_music(page, account: str) -> None:
+    """A Create music click can leave the plain composer (2026-10-01; the next run on the same account worked),
+    so the tool is checked by its Length chip and picked once more."""
+    for attempt in (1, 2):
+        pick_music(page, account)
+        try:
+            page.get_by_role("button", name="Length", exact=True).first.wait_for(timeout=10000)
+            return
+        except Exception as error:  # noqa: BLE001
+            if attempt == 2:
+                raise drift("Create music did not stay selected (no Length chip, picked twice)") from error
+
+
+def pick_music(page, account: str) -> None:
     page.goto(APP, wait_until="domcontentloaded", timeout=60000)
     tools = page.get_by_role("button", name="Upload & tools")
     deadline = time.time() + 45
@@ -200,6 +213,7 @@ def open_music(page, account: str) -> None:
     else:
         raise drift("the Gemini app shows no Upload & tools button")
     close_disclaimer(page)
+    gw.close_promos(page, account)
     tools.first.click()
     page.get_by_text("More tools", exact=True).first.click(timeout=8000)
     music = page.get_by_text("Create music", exact=True)
@@ -223,7 +237,7 @@ def set_chip(page, chip: str, value: str) -> None:
         raise drift(f"the {chip} chip did not change to {value!r}") from error
 
 
-NOTICES = ("necessary rights", "A reminder about creating")
+NOTICES = gw.RIGHTS_NOTICES
 AGREED = "notices.json"
 
 
@@ -336,10 +350,12 @@ def one_take(context, account: str, plan: dict, take: int) -> dict:
     started = time.time()
     gw.ledger({"kind": "music", "event": "queued", "account": account, "take": take,
                "prompt": plan["prompt"][:500], "chips": plan["chips"]})
+    gw.close_promos(page, account)
     page.get_by_role("button", name="Send message").first.click()
     page.wait_for_timeout(3000)
     while not finished(page):
         answer_notice(page, account)
+        gw.close_promos(page, account)
         if time.time() - started > plan["timeout_s"]:
             gw.ledger({"kind": "music", "event": "timeout", "account": account, "url": page.url})
             sent = "/app/" in page.url
@@ -396,7 +412,7 @@ def cmd_generate(args) -> None:
             "upload_wait_s": c["upload_wait_s"]}
     if args.account:
         gw.refuse_out_of_pool(args.account)
-    accounts = [args.account] if args.account else rotation()
+    accounts = [args.account] if args.account else gw.free_first(rotation())
     if not accounts:
         bound = gw.bound_accounts()
         if not bound:

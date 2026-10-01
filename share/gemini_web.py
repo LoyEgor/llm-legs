@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -54,11 +55,12 @@ ROUTES = (("flow.google.com", "flow"), ("labs.google", "flow"), ("gemini.google.
           ("flowmusic.app", "flow-music"))
 ROUTE = "flow"
 _reported: set[tuple[str, str]] = set()
+DIALOGS = "[role=dialog],[role=alertdialog],mat-dialog-container"
 PAGE_DUMP = """() => {
   const seen = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
   const texts = sel => [...document.querySelectorAll(sel)].filter(seen).map(e => e.innerText.trim()).filter(Boolean);
   return {title: document.title,
-          dialogs: texts('[role=dialog],[role=alertdialog],mat-dialog-container'),
+          dialogs: texts('""" + DIALOGS + """'),
           toasts: texts('[role=alert],[role=status],mat-snack-bar-container,simple-snack-bar'),
           buttons: [...document.querySelectorAll('button,[role=button],[role=menuitem]')].filter(seen)
             .map(b => (b.getAttribute('aria-label') || b.innerText || '').trim().slice(0, 60)).filter(Boolean).slice(0, 80),
@@ -191,6 +193,22 @@ def file_lock(path: Path, wait_s: float | None = None):
         yield
 
 
+def busy(account: str) -> bool:
+    with contextlib.suppress(OSError), open(ROOT / "locks" / f"{account}.lock", "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    return False
+
+
+def free_first(accounts: list[str]) -> list[str]:
+    """One Chrome per profile, so a run behind another on its account waits up to 15 min: idle accounts go
+    first, each group in the rotation's own order."""
+    return sorted(accounts, key=busy)
+
+
 @contextlib.contextmanager
 def chrome_clone():
     if not SOURCE_APP.exists():
@@ -285,8 +303,11 @@ def browser(account: str, visible: bool = False):
             str(profile), executable_path=chrome_binary(clone), headless=False, args=flags,
             ignore_default_args=["--enable-automation"],
             viewport=None, accept_downloads=True, locale="en-US")
+        hidden = threading.Event()
         if not visible:
             hide_clone(account)
+            context.on("page", lambda page: hide_clone(account))
+            threading.Thread(target=keep_hidden, args=(account, hidden), daemon=True).start()
         try:
             yield context
         except Exception as error:
@@ -297,8 +318,19 @@ def browser(account: str, visible: bool = False):
             report(account, error)
             raise
         finally:
+            hidden.set()
             with contextlib.suppress(Exception):
                 context.close()
+
+
+HIDE_EVERY_S = 3.0
+
+
+def keep_hidden(account: str, done) -> None:
+    """Chrome brings itself forward on a new window, a download or a dialog, and a hidden app takes no stray
+    click; the pages keep rendering (the backgrounding flags), so hiding is repeated until the run ends."""
+    while not done.wait(HIDE_EVERY_S):
+        hide_clone(account)
 
 
 # macOS Chrome pulls --window-position back until 40 px of the window are on screen, so only hiding
@@ -496,16 +528,51 @@ def click_if_visible(page, role: str, name: str, exact: bool = True) -> bool:
     return False
 
 
-def dismiss_dialogs(page) -> None:
+RIGHTS_NOTICES = ("necessary rights", "A reminder about creating")
+DECLINE = ("No thanks", "Not now", "Maybe later", "Dismiss", "Skip", "Close")
+_closed: set[tuple[str, str]] = set()
+
+
+def close_promos(page, account: str = "-", keep: tuple = RIGHTS_NOTICES) -> int:
+    """Gemini and Flow open promos over the composer (connect YouTube, Drive, other Google apps). Only a declining
+    button or Escape closes one, so nothing is ever accepted; a rights notice (`keep`) is the music engine's to answer."""
+    closed = 0
+    dialogs = page.locator(DIALOGS)
+    for index in reversed(range(dialogs.count())):
+        dialog = dialogs.nth(index)
+        with contextlib.suppress(Exception):
+            if not dialog.is_visible():
+                continue
+            text = " ".join(dialog.inner_text(timeout=2000).split())
+            if any(marker in text for marker in keep):
+                continue
+            buttons = (dialog.get_by_role("button", name=name, exact=True) for name in DECLINE)
+            button = next((b.first for b in buttons if b.count() and b.first.is_visible()), None)
+            if button is None:
+                page.keyboard.press("Escape")
+            else:
+                button.click(timeout=3000)
+            page.wait_for_timeout(600)
+            closed += 1
+            if (account, text[:160]) not in _closed:
+                _closed.add((account, text[:160]))
+                ledger({"kind": "dialog", "event": "closed", "account": account, "route": route_of(page.url),
+                        "text": text[:500]})
+                print(f"gemini-web: closed a dialog on {account}: {text[:160]}", file=sys.stderr, flush=True)
+    return closed
+
+
+def dismiss_dialogs(page, account: str = "-") -> None:
+    close_promos(page, account)
     for name in ("Get started", "Got it", "Dismiss", "No thanks"):
         click_if_visible(page, "button", name)
 
 
-def composer_ready(page, timeout_s: float = 45.0) -> None:
+def composer_ready(page, account: str = "-", timeout_s: float = 45.0) -> None:
     button = page.get_by_role("button", name="Start generation", exact=True)
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        dismiss_dialogs(page)
+        dismiss_dialogs(page, account)
         if button.count() and button.last.is_visible():
             return
         page.wait_for_timeout(500)
@@ -517,7 +584,7 @@ def open_project(page, account: str) -> str:
     if project:
         goto_flow(page, f"/project/{project}")
         if f"/project/{project}" in page.url:
-            composer_ready(page)
+            composer_ready(page, account)
             return project
     goto_flow(page, "/")
     new = page.get_by_role("button", name="New project", exact=True)
@@ -529,7 +596,7 @@ def open_project(page, account: str) -> str:
         raise Failure(1, f"Flow UI drift: could not create a project ({exc.__class__.__name__})")
     project = re.search(r"/project/([0-9a-f-]{36})", page.url).group(1)
     write_meta(account, project=project)
-    composer_ready(page)
+    composer_ready(page, account)
     return project
 
 
@@ -809,6 +876,53 @@ def rotation(cost: int) -> list[str]:
     return sorted(ready, key=lambda n: -balance(n))
 
 
+def save_or_defer(page, account: str, project: str, upscale: dict, model: str) -> bool:
+    """False when Chrome died under the 1080p download: the clip is rendered and its upscale is free, so a fresh
+    Chrome takes it over (upscale_later)."""
+    variant = upscale["variant"]
+    try:
+        variant["bytes"] = save_upscaled(page, project, upscale["scene"], upscale["path"])
+    except Failure as failure:
+        if failure.extra.get("crashed"):
+            report(account, failure)
+            return False
+        raise Failure(failure.code, f"{failure.reason}; recover: {upscale_hint(account, [upscale])}",
+                      media_id=variant["media_id"]) from failure
+    ledger({"account": account, "media_id": variant["media_id"], "dest": str(upscale["path"]), "state": "saved",
+            "model": model, "scene": upscale["scene"], "bytes": variant["bytes"]})
+    return True
+
+
+def upscale_hint(account: str, upscales: list) -> str:
+    return "; ".join(f"gemini-web fetch {account} {u['variant']['media_id']} --dest {u['path']} --resolution 1080p"
+                     for u in upscales)
+
+
+def upscale_later(account: str, project: str, upscales: list, model: str, relaunches: int = 2) -> None:
+    for _ in range(relaunches):
+        with browser(account) as context:
+            page = context.pages[0] if context.pages else context.new_page()
+            left: list = []
+            for upscale in upscales:
+                if left or not save_or_defer(page, account, project, upscale, model):
+                    left.append(upscale)
+            upscales = left
+        if not upscales:
+            return
+    raise Failure(1, f"Chrome crashed on every 1080p upscaled download ({relaunches + 1} launches); the clip is "
+                     f"rendered, recover: {upscale_hint(account, upscales)}",
+                  media_id=upscales[0]["variant"]["media_id"])
+
+
+def job_rows() -> list:
+    rows = []
+    with contextlib.suppress(OSError):
+        for line in (ROOT / "jobs.jsonl").read_text().splitlines():
+            with contextlib.suppress(ValueError):
+                rows.append(json.loads(line))
+    return rows
+
+
 def ledger(entry: dict) -> None:
     ROOT.mkdir(parents=True, exist_ok=True)
     with open(ROOT / "jobs.jsonl", "a") as f:
@@ -828,17 +942,29 @@ def save_video(context, url: str, dest: Path) -> int:
 
 def save_upscaled(page, project: str, scene: str, dest: Path) -> int:
     """Flow's own 1080p upscaled download from the clip's editor (free on PRO, 2026-10-01)."""
-    goto_flow(page, f"/project/{project}/edit/{scene}")
     part = dest.with_name(f".{dest.name}.part")
     try:
+        goto_flow(page, f"/project/{project}/edit/{scene}")
+        close_promos(page)
         page.get_by_role("button", name="Download media", exact=True).click(timeout=30000)
         item = page.get_by_role("menuitem", name="1080p Upscaled", exact=True)
         with page.expect_download(timeout=600000) as download:
             item.click(timeout=10000)
+        # The hidden Chrome segfaults while downloading the file itself (7 crashes on 2026-10-01), so an http
+        # link is taken over at once and fetched like a 720p clip.
+        if download.value.url.startswith("http"):
+            url = download.value.url
+            with contextlib.suppress(Exception):
+                download.value.cancel()
+            return save_video(page.context, url, dest)
         download.value.save_as(str(part))
+    except Failure:
+        raise
     except Exception as exc:
-        raise drift(f"the 1080p upscaled download ({exc.__class__.__name__}: "
-                    f"{(str(exc).strip().splitlines() or [''])[0][:120]})")
+        error = drift(f"the 1080p upscaled download ({exc.__class__.__name__}: "
+                      f"{(str(exc).strip().splitlines() or [''])[0][:120]})")
+        error.extra["crashed"] = exc.__class__.__name__ == "TargetClosedError"
+        raise error from exc
     if part.read_bytes()[4:8] != b"ftyp":
         part.unlink()
         raise Failure(1, "the 1080p upscaled download is not an mp4")
@@ -873,11 +999,7 @@ def media_url(page, media_id: str) -> str | None:
 def extend_source(path: str, ext: dict) -> dict:
     """The Flow clip gemini-video saved at `path`, read back from the job ledger."""
     target = str(Path(path).resolve())
-    rows = []
-    with contextlib.suppress(OSError):
-        for line in (ROOT / "jobs.jsonl").read_text().splitlines():
-            with contextlib.suppress(ValueError):
-                rows.append(json.loads(line))
+    rows = job_rows()
     saved = [r for r in rows if isinstance(r, dict) and r.get("state") == "saved" and r.get("dest")
              and str(Path(r["dest"]).resolve()) == target]
     if not saved:
@@ -920,8 +1042,13 @@ def generate_on(account: str, plan: dict, args) -> dict:
     if not meta.get("email"):
         raise Failure(4, f"account {account} is not bound to a Google account; run: gemini-web status {account}")
     dest = Path(args.dest)
+    with file_lock(ROOT / "locks" / f"{account}.lock", wait_s=900):
+        return render_on(account, plan, args, meta, dest, started)
+
+
+def render_on(account: str, plan: dict, args, meta: dict, dest: Path, started: float) -> dict:
     cost, count = plan["cost"], plan["count"]
-    with file_lock(ROOT / "locks" / f"{account}.lock", wait_s=900), browser(account) as context:
+    with browser(account) as context:
         sent = None
         clips: list[str] = []
         try:
@@ -990,26 +1117,28 @@ def generate_on(account: str, plan: dict, args) -> dict:
                 raise Failure(1, f"not ready after {args.timeout}s; recover later: "
                                  f"{recover_hint(account, clips, dest)}", media_id=clips[0])
             rendered = time.time()
-            saved, refused = [], []
+            saved, refused, later = [], [], []
             for media_id in clips:
                 record = watcher.media[media_id]
                 if record.get("error"):
                     refused.append({"media_id": media_id, "error": record["error"]})
                     continue
                 path = variant_path(dest, len(saved))
+                saved.append({"dest": str(path), "media_id": media_id, "bytes": None,
+                              "duration": record.get("duration"), "model": record.get("model")})
                 if plan["upscale"]:
                     if not record.get("scene"):
                         raise drift(f"clip {media_id} came without a scene id for the 1080p download")
-                    size = save_upscaled(page, project, record["scene"], path)
-                else:
-                    url = record.get("url") or media_url(page, media_id)
-                    if not url:
-                        raise Failure(1, f"clip {media_id} finished but Flow gave no video URL", media_id=media_id)
-                    size = save_video(context, url, path)
+                    upscale = {"variant": saved[-1], "scene": record["scene"], "path": path}
+                    if later or not save_or_defer(page, account, project, upscale, plan["model"]):
+                        later.append(upscale)
+                    continue
+                url = record.get("url") or media_url(page, media_id)
+                if not url:
+                    raise Failure(1, f"clip {media_id} finished but Flow gave no video URL", media_id=media_id)
+                saved[-1]["bytes"] = save_video(context, url, path)
                 ledger({"account": account, "media_id": media_id, "dest": str(path), "state": "saved",
-                        "model": plan["model"], "scene": record.get("scene"), "bytes": size})
-                saved.append({"dest": str(path), "media_id": media_id, "bytes": size,
-                              "duration": record.get("duration"), "model": record.get("model")})
+                        "model": plan["model"], "scene": record.get("scene"), "bytes": saved[-1]["bytes"]})
             if not saved:
                 raise Failure(1, f"Flow refused the clip: {refused[0]['error']}", media_id=refused[0]["media_id"])
             finished = time.time()
@@ -1019,7 +1148,7 @@ def generate_on(account: str, plan: dict, args) -> dict:
                 (credits - cost if credits is not None else None)
             write_meta(account, credits=after, credits_at=int(finished))
             first = saved[0]
-            return {"ok": True, "account": account, "email": meta["email"], "dest": first["dest"],
+            result = {"ok": True, "account": account, "email": meta["email"], "dest": first["dest"],
                     "model": first["model"] or (watcher.submitted or [None])[-1],
                     "model_name": plan["model"], "mode": plan["mode"], "chip": chip,
                     "upscaled": plan["upscale"], "duration": first["duration"],
@@ -1029,7 +1158,6 @@ def generate_on(account: str, plan: dict, args) -> dict:
                     "seconds": {"harness": round((sent - started) + (finished - rendered), 1),
                                 "render": round(rendered - sent, 1),
                                 "total": round(finished - started, 1)}}
-
         except Failure:
             raise
         except Exception as exc:
@@ -1042,6 +1170,10 @@ def generate_on(account: str, plan: dict, args) -> dict:
             detail = (str(exc).strip().splitlines() or [""])[0][:200]
             raise Failure(1, f"Flow UI drift {where}: {exc.__class__.__name__}: {detail}",
                           media_id=clips[0] if clips else None)
+    if later:
+        upscale_later(account, project, later, plan["model"])
+    result["bytes"] = result["variants"][0]["bytes"]
+    return result
 
 
 def extend_plan(args, caps: dict) -> dict:
@@ -1117,7 +1249,7 @@ def cmd_generate(args) -> None:
                          "from its last frame instead: video-chain last-frame")
     if pinned:
         refuse_out_of_pool(pinned)
-    candidates = [pinned] if pinned else rotation(plan["cost"])
+    candidates = [pinned] if pinned else free_first(rotation(plan["cost"]))
     if not candidates:
         bound = bound_accounts()
         if not bound:
@@ -1157,7 +1289,7 @@ def cmd_status(args) -> None:
         if not meta.get("email"):
             meta = write_meta(args.account, email=state["email"])
         page.get_by_role("button", name="New project", exact=True).wait_for(timeout=30000)
-        dismiss_dialogs(page)
+        dismiss_dialogs(page, args.account)
         credits = read_credits(page)
         if credits is not None:
             write_meta(args.account, credits=credits, credits_at=int(time.time()))
@@ -1168,6 +1300,12 @@ def cmd_status(args) -> None:
         sys.exit(0 if bound else 1)
 
 
+def job_project(account: str, media_id: str) -> str | None:
+    rows = job_rows()
+    known = [r["project"] for r in rows if isinstance(r, dict) and r.get("media_id") == media_id and r.get("project")]
+    return known[-1] if known else read_meta(account).get("project")
+
+
 def cmd_fetch(args) -> None:
     with browser(args.account) as context:
         page = context.pages[0] if context.pages else context.new_page()
@@ -1176,7 +1314,14 @@ def cmd_fetch(args) -> None:
         url = video_url(entry, args.media_id) if entry else None
         if not url:
             raise Failure(1, f"no finished video {args.media_id} on {args.account}")
-        size = save_video(context, url, Path(args.dest))
+        if args.resolution == "1080p":
+            project = job_project(args.account, args.media_id)
+            if not (project and len(entry) > 2 and entry[2]):
+                raise Failure(1, f"no project or scene known for the 1080p download of {args.media_id}; "
+                              "fetch it without --resolution")
+            size = save_upscaled(page, project, entry[2], Path(args.dest))
+        else:
+            size = save_video(context, url, Path(args.dest))
         ledger({"account": args.account, "media_id": args.media_id, "dest": str(Path(args.dest)),
                 "state": "saved", "scene": entry[2] if len(entry) > 2 else None, "bytes": size})
         emit({"ok": True, "account": args.account, "dest": args.dest, "media_id": args.media_id,
@@ -1241,6 +1386,8 @@ def main() -> None:
     p.add_argument("account")
     p.add_argument("media_id")
     p.add_argument("--dest", required=True)
+    p.add_argument("--resolution", choices=("720p", "1080p"), default="720p",
+                   help="1080p downloads Flow's own upscale from the clip's editor")
     p.set_defaults(func=cmd_fetch)
     args = parser.parse_args()
     try:

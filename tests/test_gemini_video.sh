@@ -542,6 +542,126 @@ def poor(account, plan, args):
     raise g.Failure(3, "rich has 5 Flow credits")
 g.generate_on = poor
 assert run()[0] == 3 and g.walls().get("rich"), g.walls()
+
+g.ledger({"account": "rich", "media_id": "m-up", "project": "p-9", "state": "queued"})
+assert g.job_project("rich", "m-up") == "p-9" and g.job_project("rich", "m-none") == g.read_meta("rich").get("project")
+
+
+class Download:
+    def __init__(self, url):
+        self.url, self.cancelled, self.saved = url, False, None
+
+    def cancel(self):
+        self.cancelled = True
+
+    def save_as(self, path):
+        self.saved = path
+        Path(path).write_bytes(b"\0\0\0\x18ftypmp42")
+
+
+class Expect:
+    def __init__(self, download):
+        self.value = download
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class Clickable:
+    def click(self, timeout=None):
+        pass
+
+
+class Editor:
+    def __init__(self, url):
+        self.download, self.context = Download(url), "ctx"
+
+    def get_by_role(self, role, name, exact=True):
+        return Clickable()
+
+    def expect_download(self, timeout=None):
+        return Expect(self.download)
+
+
+import tempfile
+from pathlib import Path
+hd = Path(tempfile.mkdtemp())
+g.goto_flow = lambda page, path: None
+g.close_promos = lambda page, account="-", keep=(): 0
+fetched = []
+g.save_video = lambda context, url, dest: fetched.append((context, url, str(dest))) or 7
+editor = Editor("https://labs.google/fx/api/upscaled?x=1")
+assert g.save_upscaled(editor, "p-1", "s-1", hd / "hd.mp4") == 7
+assert editor.download.cancelled and editor.download.saved is None, vars(editor.download)
+assert fetched == [("ctx", "https://labs.google/fx/api/upscaled?x=1", str(hd / "hd.mp4"))], fetched
+blob = Editor("blob:https://labs.google/abc")
+assert g.save_upscaled(blob, "p-1", "s-1", hd / "hd2.mp4") > 0 and not blob.download.cancelled and len(fetched) == 1
+
+import types
+launches = []
+
+
+@contextlib.contextmanager
+def fake_browser(account, visible=False):
+    launches.append(account)
+    yield types.SimpleNamespace(pages=["page"])
+
+
+crashes = [True]
+
+
+def flaky(page, project, scene, path):
+    if crashes and crashes.pop():
+        error = g.drift("the 1080p upscaled download (TargetClosedError: x)")
+        error.extra["crashed"] = True
+        raise error
+    return 11
+
+
+g.browser, g.save_upscaled = fake_browser, flaky
+variant = {"media_id": "m-hd", "bytes": None}
+late = [{"variant": variant, "scene": "s-hd", "path": hd / "late.mp4"}]
+with contextlib.redirect_stderr(io.StringIO()):
+    g.upscale_later("rich", "p-1", late, "fast")
+assert launches == ["rich", "rich"] and variant["bytes"] == 11, (launches, variant)
+dead = []
+
+
+def dies_after_crash(page, project, scene, path):
+    if len(launches) in dead:
+        raise RuntimeError("TargetClosedError: the page died with its Chrome")
+    try:
+        return flaky(page, project, scene, path)
+    except g.Failure:
+        dead.append(len(launches))
+        raise
+
+
+crashes[:], launches[:] = [True], []
+g.save_upscaled = dies_after_crash
+pair = [{"variant": {"media_id": m, "bytes": None}, "scene": m, "path": hd / f"{m}.mp4"} for m in ("m-1", "m-2")]
+with contextlib.redirect_stderr(io.StringIO()):
+    g.upscale_later("rich", "p-1", pair, "fast")
+assert dead == [1] and [u["variant"]["bytes"] for u in pair] == [11, 11] and len(launches) == 2, (dead, pair)
+g.save_upscaled = flaky
+crashes[:], launches[:] = [True] * 3, []
+try:
+    with contextlib.redirect_stderr(io.StringIO()):
+        g.upscale_later("rich", "p-1", late, "fast")
+    raise AssertionError("a Chrome that crashed on every launch passed")
+except g.Failure as failure:
+    assert "3 launches" in failure.reason and "m-hd --dest" in failure.reason and len(launches) == 2, failure.reason
+
+import fcntl
+(g.ROOT / "locks").mkdir(parents=True, exist_ok=True)
+with open(g.ROOT / "locks" / "beta.lock", "w") as held:
+    fcntl.flock(held, fcntl.LOCK_EX)
+    assert g.busy("beta") and not g.busy("alpha") and not g.busy("never-locked")
+    assert g.free_first(["beta", "alpha", "gamma"]) == ["alpha", "gamma", "beta"]
+assert g.free_first(["beta", "alpha", "gamma"]) == ["beta", "alpha", "gamma"]
 EOF
 engine_rc() { GEMINI_WEB_DIR="$GW" python3 "$ROOT/share/gemini_web.py" "$@" >"$WORK/engine.out" 2>"$WORK/engine.err"; printf '%s' "$?"; }
 assert test "$(engine_rc generate --prompt x --dest "$OUT/x.mp4" --duration 6 --model fast)" = 2

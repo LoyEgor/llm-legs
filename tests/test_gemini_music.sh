@@ -280,6 +280,37 @@ class AppPage:
 card = AppPage(True)
 assert m.close_disclaimer(card) is True and card.closed == 1
 assert m.close_disclaimer(AppPage(False)) is False
+
+
+class Chip:
+    def __init__(self, page):
+        self.page, self.first = page, self
+
+    def wait_for(self, timeout=None):
+        if self.page.picked < self.page.sticks_on:
+            raise TimeoutError("no Length chip")
+
+
+class Composer:
+    def __init__(self, sticks_on):
+        self.sticks_on, self.picked = sticks_on, 0
+
+    def get_by_role(self, role, name, exact=True):
+        assert (role, name) == ("button", "Length"), (role, name)
+        return Chip(self)
+
+
+real_pick = m.pick_music
+m.pick_music = lambda page, account: setattr(page, "picked", page.picked + 1)
+composer = Composer(2)
+m.open_music(composer, "alpha")
+assert composer.picked == 2, composer.picked
+try:
+    m.open_music(Composer(3), "alpha")
+    raise AssertionError("a composer without the music tool passed")
+except g.Failure as stuck:
+    assert stuck.code == 1 and "did not stay selected" in stuck.reason, stuck.reason
+m.pick_music = real_pick
 assert m.answer_notice(Page("Some other dialog"), "stranger") is False
 
 for name, email in (("alpha", "a@x"), ("beta", "b@x"), ("gamma", "c@x"), ("delta", "d@x")):

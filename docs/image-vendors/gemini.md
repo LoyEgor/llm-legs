@@ -261,6 +261,15 @@ when the run still succeeded: the clone could not be hidden, the cover mp4 misse
 log; `shot=` is a screenshot in `~/.gemini-web/failures/` beside a `.txt` page dump (dialogs, toasts,
 buttons, text), kept 14 days. llm-doctor turns the lines into `browser …` words in its image block.
 
+Promos over the composer (connect YouTube, Drive and other Google apps) are closed by `close_promos`: a
+declining button (No thanks, Not now, Maybe later, Dismiss, Skip, Close) or Escape, never an accepting one;
+the rights notices are left to the notices.json gate. Each closed dialog is a `kind: dialog` row in
+`jobs.jsonl` and a `gemini-web: closed a dialog on <account>: <text>` stderr line. The hidden Chrome
+segfaults now and then while it downloads Flow's 1080p upscale (10 crashes on 2026-10-01, the file is a
+non-http link only Chrome can save): the rendered clip's free upscale is then taken again in a fresh Chrome,
+up to two relaunches, and only then fails with a `gemini-web fetch … --resolution 1080p` recovery line.
+gemini-sfx keeps every rejected take (no soundtrack, silent, loudness not measurable) in the failures folder.
+
 **Flow Music** (flowmusic.app) is signed in on com, egbogd, jihangarangan and locomthebest (Continue with
 Google → the account → Continue → tick "See your Google One membership…" → Continue → Privacy Notice
 Agree). The PLUS tier shows after a reload. It offers Lyria 3.5 and Lyria 3 Pro, audio uploads up to 40 MB

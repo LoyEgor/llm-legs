@@ -106,7 +106,8 @@ FAKE_VIDEO_MODE=noaudio expect_rc 1 --dest "$WORK/out/none.wav" --prompt 'a knoc
 assert grep -q 'without a soundtrack' "$WORK/err"
 assert test ! -e "$WORK/out/none.wav"
 FAKE_VIDEO_MODE=mute expect_rc 1 --dest "$WORK/out/none.wav" --prompt 'a knock'
-assert grep -q 'is silent' "$WORK/err"
+assert grep -Eq 'is silent \(-?[0-9.inf]+ LUFS\) \(kept: '"$HOME"'/\.gemini-web/failures/[0-9TZ]+-[a-z-]+-[0-9]+-take\.mp4\)$' "$WORK/err"
+assert test -s "$(sed -n 's/.*(kept: \(.*\))$/\1/p' "$WORK/err" | head -n 1)"
 FAKE_VIDEO_MODE=faint expect_rc 1 --dest "$WORK/out/none.wav" --prompt 'a knock' --for-video "$M/scene.mp4"
 assert grep -q 'is silent' "$WORK/err"
 # A silent first take leaves the usable ones; a temp folder with a space keeps its variant paths whole.

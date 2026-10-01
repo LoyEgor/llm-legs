@@ -112,6 +112,102 @@ for name in ("gemini_web.py", "gemini_music.py"):
 assert doctor.classify_browser(1, "clip download failed (HTTP 503, 0 bytes)")[3] == "theirs"
 assert doctor.classify_browser(1, "clip download failed (HTTP 404, 10 bytes)")[1] == "browser download"
 assert doctor.classify_browser(1, "something nobody named")[1] == doctor.BROWSER_OTHER
+for said in ("gemini-sfx: the soundtrack of take.mp4 is silent (-inf LUFS)", "gemini-sfx: Flow returned take.mp4 without a soundtrack",
+             "gemini-sfx: the loudness of take-2.mp4 could not be measured"):
+    assert doctor.classify_image(1, said)[1:] == ("bad output", "bad output", "ours"), (said, doctor.classify_image(1, said))
+
+
+class Button:
+    def __init__(self, dialog, name):
+        self.dialog, self.name, self.first = dialog, name, self
+
+    def count(self):
+        return int(self.name in self.dialog.buttons)
+
+    def is_visible(self):
+        return True
+
+    def click(self, timeout=None):
+        self.dialog.page.pressed.append(self.name)
+        self.dialog.open = False
+
+
+class Dialog:
+    def __init__(self, page, text, buttons):
+        self.page, self.text, self.buttons, self.open = page, text, buttons, True
+
+    def is_visible(self):
+        return self.open
+
+    def inner_text(self, timeout=None):
+        return self.text
+
+    def get_by_role(self, role, name, exact=True):
+        assert role == "button" and exact, (role, exact)
+        return Button(self, name)
+
+
+class Dialogs:
+    def __init__(self, items):
+        self.items = items
+
+    def count(self):
+        return len(self.items)
+
+    def nth(self, index):
+        return self.items[index]
+
+
+class Keyboard:
+    def __init__(self, page):
+        self.page = page
+
+    def press(self, key):
+        self.page.pressed.append(key)
+        for dialog in self.page.dialogs:
+            if dialog.open and not dialog.buttons:
+                dialog.open = False
+
+
+class PromoPage:
+    url = "https://gemini.google.com/app?hl=en"
+
+    def __init__(self):
+        self.pressed, self.keyboard = [], Keyboard(self)
+        self.dialogs = [Dialog(self, "Connect your apps\nYouTube, Google Drive and more", ["Connect", "Not now"]),
+                        Dialog(self, "Make sure you have the necessary rights to any images", ["Agree", "Close"]),
+                        Dialog(self, "Try Gemini in Chrome", [])]
+
+    def locator(self, selector):
+        assert selector == gw.DIALOGS, selector
+        return Dialogs(self.dialogs)
+
+    def wait_for_timeout(self, ms):
+        pass
+
+
+promo = PromoPage()
+said = captured(lambda: gw.close_promos(promo, "egbogd"))
+assert promo.pressed == ["Escape", "Not now"] and promo.dialogs[1].open, promo.pressed
+assert "gemini-web: closed a dialog on egbogd: Connect your apps YouTube, Google Drive and more\n" in said, said
+rows = [json.loads(line) for line in (gw.ROOT / "jobs.jsonl").read_text().splitlines()]
+assert [(r["kind"], r["event"], r["account"], r["route"]) for r in rows[-2:]] == [
+    ("dialog", "closed", "egbogd", "gemini-app")] * 2, rows[-2:]
+assert gw.close_promos(promo, "egbogd") == 0 and promo.pressed == ["Escape", "Not now"]
+
+import threading, time
+hides, real_hide = [], gw.hide_clone
+gw.hide_clone, gw.HIDE_EVERY_S = (lambda account="-": hides.append(account)), 0.01
+done = threading.Event()
+keeper = threading.Thread(target=gw.keep_hidden, args=("com", done))
+keeper.start()
+time.sleep(0.2)
+done.set()
+keeper.join(1)
+count = len(hides)
+time.sleep(0.05)
+assert not keeper.is_alive() and count >= 3 and len(hides) == count and set(hides) == {"com"}, hides
+gw.hide_clone = real_hide
 PY
 
 assert python3 - "$ROOT" "$NOW" "$HOME" <<'PY'
